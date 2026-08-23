@@ -12,7 +12,7 @@ Records, linked and never duplicated here:
 `docs/prototype-*.md` (the certified exemplars), `docs/certificates/` (the evidence).
 
 Numbers are from the tree at this document's commit, measured 2026-08-23:
-60 modules, 17,542 lines, 51 certificates, 845 tests.
+60 modules, 17,582 lines, 51 certificates, 863 tests.
 
 Contents: 1 definitions · 2 pipeline · 3 the lift end to end · 4 the IR ·
 5 verification and the certificate · 6 presentation · 7 CLI and tools ·
@@ -526,11 +526,20 @@ sorted and indented. Fields, all verified against `docs/certificates/*.json`:
 | `sidplayfp` register grid | the tracer's own write log against a `sidtrace` CSV, framed by the interrupt period each write's cycle falls in | `grid.py`, `tests/test_oracle.py` (marker `oracle`) — 3,000 of 3,000 frames agree on *I Could Eat a Knob at Night* |
 | Ghidra complexity | our statements/site and gotos/site against Ghidra's high P-Code, per procedure, tolerance 1.5×. `_flag` subtracts the two bodies' pc *sets*, so a Ghidra body holding more sites than ours is not scored as if it covered them; `ghidra_compare.alignment` states both shapes, `merged` (one Ghidra body over several of our procedures) and `clones` (our procedures sharing a site) | `ghidra_compare.compare`, `ghidra/6510/headless/ExportHighPcode.java` |
 | Ghidra coverage | Ghidra's static reachability from our entries minus the trace's executed sites — i.e. the `trap` arms, classified | `coverage.json` |
-| Ghidra semantics | Ghidra's P-Code emulator over the post-init image, replaying the per-call `reads` the facts export carries: the ordered sequence of SID register *changes*, both sides reduced by the same rule from the same post-init bytes, with the first difference reported as call, index, register, wanted/got and pc. All four exemplars agree byte for byte and step for step; 5 of the 51 certificates do not, 4 being installed handlers that chain to the KERNAL epilogue and never reach the pushed sentinel | `EmulateTrace.java`, `ghidra_facts.emulate_facts` |
+| Ghidra semantics | Ghidra's P-Code emulator over the post-init image, replaying the per-call `reads` the facts export carries: the ordered sequence of SID register *changes*, both sides reduced by the same rule from the same post-init bytes, with the first difference reported as call, index, register, wanted/got and pc. All 51 certificates agree | `EmulateTrace.java`, `ghidra_facts.emulate_facts` |
 | interpreter vs generated Python | the two executors on a prefix of every certified run | `verify.prefix_check`, `--prefix` |
 | `tools/tuneprog_recert.py` | every committed certificate reproduced from the run it records and diffed field for field, timestamp and the two timing fields excepted | 51 of 51 |
 
 The chain is `sidplayfp ⇐ PcodeVM ⇐ tuneprog`.
+
+Three things make that comparison the machine's own. Each call is entered on the
+frame `machine.entry_frame` describes and stepped until `SP` is back where it
+started — the tracer's own stop condition, which `RTS` and `RTI` reach alike, so an
+RTI-framed tick compares. A store to `$D400`–`$D418` is a register change only
+while the 6510 port maps I/O, the gate `tracevm` applies, so a raw diff of those
+bytes is not the register file. And the rows compared are the tick entry's: a
+second entry's are `verify.py`'s to replay, and `ghidra_facts` drops them by
+`wlog`'s `nmi` column.
 
 The two emulator disagreements the semantics oracle used to report were one bug,
 and not ours: the stock 6502 spec's `subtraction_flags1` sets `C` to the borrow,
@@ -692,10 +701,10 @@ until python3 tools/tuneprog_recert.py --out out/recert --resume; do :; done
 | tool | lines | purpose |
 | --- | ---: | --- |
 | `tools/tuneprog_certify.py` | 36 | the whole pipeline standalone; a thin wrapper around `pipeline.main` |
-| `tools/tuneprog_recert.py` | 275 | reproduce every certificate under `docs/certificates/` from the run it records and diff it field for field (`--only`, `--update`, `--certs`, `--hvsc`). `--shard I/N` takes every Nth certificate; `--ghidra-dir DIR` exports the headless facts as it replays and then runs the three Ghidra oracles against the export in `DIR/<certificate>`, exiting 1 on any `ours_bigger` no `--known CERT:ENTRY` names |
+| `tools/tuneprog_recert.py` | 327 | reproduce every certificate under `docs/certificates/` from the run it records and diff it field for field (`--only`, `--update`, `--certs`, `--hvsc`). `--shard I/N` takes every Nth certificate; `--ghidra-dir DIR` exports the headless facts as it replays and then runs the three Ghidra oracles against the export in `DIR/<certificate>`, exiting 1 on any `ours_bigger` no `--known CERT:ENTRY` names |
 | `tools/tuneprog_period.py` | 71 | why a subtune has no state repeat: each cell's smallest period, the SID stream's loop, the cells whose period does not divide it (`period.classify`) |
 | `tools/tuneprog_floor.py` | 288 | the complexity floor of one output directory against its tune: the load band split into executed code / reached data / neither, `xz -9e` of each, printed statements by code range and kind, and every `(b, b+1)` pair the print reads at one index |
-| `tools/tuneprog_ghidra.py` | 127 | write `ghidra_facts.json` + `image_post_init.bin` from an output directory (or the hello-world demo), and join a finished headless run back with `--compare GOUT` (`comparison.json`, `comparison.md`) |
+| `tools/tuneprog_ghidra.py` | 210 | write `ghidra_facts.json` + `image_post_init.bin` from an output directory (or the hello-world demo), and join a finished headless run back with `--compare GOUT` (`comparison.json`, `comparison.md`) |
 | `tools/tuneprog_nmi.py` | 285 | classify the CIA #2 NMI schedules of a tune population (`scan` / `report`) |
 | `tools/survey/headers.py` | 65 | static header census over every HVSC `.sid`, joined with the SIDId family |
 | `tools/survey/tracer.py` | 420 | the prototype dynamic per-site tracer on `PcodeVM`, the survey instrument |
@@ -830,8 +839,8 @@ belongs to:
 | certify at 15 s, not run to length | Blackbird (*Quintessence*), Galway (*Comic Bakery*), Walker (*Chameleon*) |
 | refused by design | a CIA #2 source with no schedule (TOD alarm, serial, FLAG, CNT timer): 6 of 7,023 |
 | survey | 7,023-tune stratified sample at 30 s: **91.2 % of HVSC by weight certifies** (76.7 % raw), 2.5 % diverges, 6.2 % refused with a diagnosis, 0.26 % crashes; `--until-period` over 1,338: 99.4 % of certified programs complete by weight ([survey-tuneprog.md](survey-tuneprog.md)) |
-| code | `deity_informant/tuneprog/`, 60 modules, 17,542 lines, none over 500; 772 hermetic + 63 HVSC + 10 oracle tests, 96 % coverage; SSA 1.0–1.6 statements per instruction |
-| baseline | the Ghidra high-P-Code export with SMC context ([ghidra-highpcode-export.md](ghidra-highpcode-export.md)), 8.3–16.5× our S4 — a baseline, not core. The three Ghidra oracles run nightly over all 51 certificates: the emulator agrees step for step on all four exemplars, 5 of 51 disagree for reasons [tuneprog-backlog.md](tuneprog-backlog.md) §2.6 records, and the 2 standing `ours_bigger` flags are carried as `--known`, so the gate is clean. Beside it the `sidplayfp` grid oracle |
+| code | `deity_informant/tuneprog/`, 60 modules, 17,582 lines, none over 500; 790 hermetic + 63 HVSC + 10 oracle tests, 96 % coverage; SSA 1.0–1.6 statements per instruction |
+| baseline | the Ghidra high-P-Code export with SMC context ([ghidra-highpcode-export.md](ghidra-highpcode-export.md)), 8.3–16.5× our S4 — a baseline, not core. The three Ghidra oracles run nightly over all 51 certificates: 51 exports, the emulator agreeing with every one, no `ERROR` row, and the 2 standing `ours_bigger` flags carried as `--known` ([tuneprog-backlog.md](tuneprog-backlog.md) §2.6), so the gate is clean. Beside it the `sidplayfp` grid oracle |
 | merged PRs | #225–#286, one stage each, every one on green CI with recert reproduced |
 
 Open work, by lever, and the done ledger: [tuneprog-backlog.md](tuneprog-backlog.md).
@@ -958,7 +967,7 @@ record — is [tuneprog-backlog.md](tuneprog-backlog.md) §3; the open work by l
 
 ## 10. Module map
 
-`deity_informant/tuneprog/`, 60 modules, 17,542 lines, none over 500
+`deity_informant/tuneprog/`, 60 modules, 17,582 lines, none over 500
 (`pipeline.py` is the longest at 491). Line counts from `wc -l` at this commit.
 
 **Front end — S0/S1, the traced machine**
@@ -968,9 +977,9 @@ record — is [tuneprog-backlog.md](tuneprog-backlog.md) §3; the open work by l
 | `machine` | 305 | S0: machine image, entry and cadence discovery, init runner, the 6510 port |
 | `cia` | 248 | S0: the CIA 6526, as much of it as a schedule needs |
 | `nmi` | 204 | S1: the second schedule — the CIA #2 NMI, when it fires and what it enters |
-| `tracevm` | 488 | S1: the tracing VM — per-P-Code-op access attribution, sites, edges, logs |
+| `tracevm` | 490 | S1: the tracing VM — per-P-Code-op access attribution, sites, edges, logs |
 | `trace` | 464 | S1: the tracer — init plus *n* ticks of one entry, and the `Trace` it makes |
-| `tracedata` | 448 | the recorded trace: the S1 result type, its files, the union of several |
+| `tracedata` | 449 | the recorded trace: the S1 result type, its files, the union of several |
 | `tracesite` | 185 | S1: one site, resolved once and compiled to Python |
 | `traceflow` | 101 | S1: edges, call/return sites and the shadow stack |
 
@@ -1048,15 +1057,15 @@ record — is [tuneprog-backlog.md](tuneprog-backlog.md) §3; the open work by l
 | `__init__` | 138 | the package guide and its public API |
 | `grid` | 157 | per-frame SID register grids, every write framed by the interrupt |
 | `tunes` | 60 | every HVSC tune this repository names, once |
-| `ghidra_facts` | 227 | export a finished output directory as facts for headless Ghidra |
-| `ghidra_compare` | 213 | the differential complexity oracle, procedure by procedure |
+| `ghidra_facts` | 254 | export a finished output directory as facts for headless Ghidra |
+| `ghidra_compare` | 223 | the differential complexity oracle, procedure by procedure |
 
 Outside the package: `deity_informant/lifter.py` (1,007), `vm.py` (318),
 `c64.py` (173), `cli.py` (149).
 
 ### 10.1 Tests
 
-845 tests: **772 hermetic**, **63 `hvsc`**, **10 `oracle`**; coverage gate 85 %
+863 tests: **790 hermetic**, **63 `hvsc`**, **10 `oracle`**; coverage gate 85 %
 (`--cov-fail-under=85`), measured at 96 %.
 
 | path | contents |

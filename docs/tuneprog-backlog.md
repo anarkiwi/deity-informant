@@ -31,7 +31,7 @@ Measurements marked *12-run* are over 12 certificate tunes, one per family, at a
 
 Struck by #282: the SID register pair landed as a print convention over the rows
 `unroll` aligned, and the two shapes the pair alone does not reach are measured
-boundaries (§2.8) -- the control-join halves are one site on one tune, and the
+boundaries (architecture §8.3) -- the control-join halves are one site on one tune, and the
 nested-borrow compare has none of the shape the row names.
 
 ### 2.3 Expression layer
@@ -88,7 +88,7 @@ domain is an expression: `loops.repeats`). What is left is the closure work.
 |---|---|---|---|---|---|
 | `tuneprog_recert.py --resume` replays a previous tree's verdicts from a reused `--out` | stamp tree identity (HEAD or module digests) in `recert.json` | Q8 | tuneprog_recert | small | a stale state file is refused |
 | the sweep's `cpu_trace` bills S0 entry discovery to S1; a `no entry` refusal costs 14.6 CPU-s each (46 of 60 refused tunes) | a `cpu_entry` column; find out why `no entry` runs a whole init trace on `pysidtracker` | a certified tune's trace CPU is 8.6 % `_traced`; a refused tune's ~100 % and did not move with the 3× tracer (775 → 765 s over 60) | survey/tuneprog_sweep, machine | small | `cpu_entry` reported beside `cpu_trace`; a `no entry` refusal ≤ 1.5 CPU-s, the 60-tune sweep ≤ 200 CPU-s from 765 |
-| the semantic oracle's two standing `ours_bigger` flags | decide them | `ours_bigger` 2 of 51, both standing and both declared to the nightly with `--known`: *Deflektor*'s `init` 2 `goto` vs 0 (the copy fold's cross-copy edges, §2.8) and *Alien 3*'s `tick` 0.80 vs 0.47 stmts/site (the residual stack's three register saves, §2.5) | ghidra_compare, emit | medium | the two flags cleared or recorded as boundaries, and `--known` empty |
+| the semantic oracle's two standing `ours_bigger` flags | decide them | `ours_bigger` 2 of 51, both standing and both declared to the nightly with `--known`: *Deflektor*'s `init` 2 `goto` vs 0 (the copy fold's cross-copy edges, architecture §8.3) and *Alien 3*'s `tick` 0.80 vs 0.47 stmts/site (the residual stack's three register saves, §2.5's residual-stack row) | ghidra_compare, emit | medium | the two flags cleared or recorded as boundaries, and `--known` empty |
 | opcode cells whose alternative is not `RTS` in the SLEIGH export | overlay or paired constructor | 263 of 7,023 have an SMC opcode cell; 198 of them (3.4 % weighted) have one whose alternatives exclude `RTS`, so the `RTS`-only overlay covers the minority | ghidra/6510 | medium | the 198 decode to their non-`RTS` alternative in the export; certificates unmoved (recert 51/51) |
 
 ### 2.7 Complexity and duplication
