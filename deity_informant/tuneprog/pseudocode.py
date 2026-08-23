@@ -7,7 +7,7 @@ the S5 node tree into indented lines. :mod:`.printer` assembles the document.
 
 from __future__ import annotations
 
-from .idioms import CMP, fold, overflow_of, sext_of
+from .idioms import CMP, fold, overflow_of, sext_of, width
 from .ir import (
     Assert,
     Bin,
@@ -16,6 +16,7 @@ from .ir import (
     COPYVAR,
     Let,
     Load,
+    MASK,
     R16,
     REGVAR,
     SID_REG_HI,
@@ -294,6 +295,8 @@ class Printer:
         if t is R16:
             return self.pair(e.lo, e.hi, e.a)
         a, b = e.a, e.b
+        if e.op == "^" and type(b) is Const and b.v == MASK[e.w] and width(a) <= e.w:
+            return "~%s" % self.expr(a, False)
         if e.op in ("==", "!=") and type(b) is Const:
             hit = self.held(Bin("-", a, b, 1))
             if hit is not None:  # x == k is the cell that holds x - k against zero

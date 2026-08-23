@@ -485,6 +485,16 @@ def test_the_v_flag_of_a_subtract_prints_as_one_overflow_test():
     assert " & (" not in doc  # none of the flag plumbing is left
 
 
+def test_a_byte_exclusive_ored_with_its_own_mask_prints_as_a_complement():
+    _T, prog = tuneprog(counter("LDA #$07", "STA $D400"), calls=2, s4=True)
+    p = pseudocode.Printer(prog, recover.recover(prog))
+    byte = pseudocode.Load("ram", pseudocode.Const(0x1934, 2), 1, r=-99)
+    word = pseudocode.Load("ram", pseudocode.Const(0x1934, 2), 2, r=-99)
+    assert p.expr(pseudocode.Bin("^", byte, pseudocode.Const(0xFF), 1)) == "~mem[$1934]"
+    assert p.expr(pseudocode.Bin("^", byte, pseudocode.Const(0x7F), 1)) == "(mem[$1934] ^ $7F)"
+    assert p.expr(pseudocode.Bin("^", word, pseudocode.Const(0xFF), 1)) == "(mem[$1934] ^ $FF)"
+
+
 def test_a_sign_extended_byte_prints_as_sext():
     _T, prog = tuneprog(counter("LDA #$07", "STA $D400"), calls=2, s4=True)
     p = pseudocode.Printer(prog, recover.recover(prog))
