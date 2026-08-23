@@ -66,7 +66,7 @@ region's cells, which the print's data section carries. The two differ by
 - The print is already at the tune's own compressed size (2,956 vs 2,548). It is
   verbose only in that a human reads it linearly and 48 % of the tune never
   appears in it as data. *Closed by the `## data` section*: the print now carries
-  1,867 of the 1,941 reached bytes and its `xz -9e` is 4,512.
+  1,867 of the 1,941 reached bytes and its `xz -9e` is 4,508.
 - The data floor is hard: 1,112 compressed bytes of pattern, track, instrument
   and frequency data are the tune. The frequency table is irreducible — 25 of
   its 84 octave pairs are off by one from exact doubling, so no formula

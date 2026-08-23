@@ -505,7 +505,7 @@ Every one has `divergences: 0` and `envelope_traps: 0`.
   columns as one row per record under their field names, everything else as hex rows
   of 32 bytes; then one line per distinct *printed* accessor (`FREQ[t7 << 1]` in
   `oscillator`), which is why `render` renders the procedures before the header. Over
-  the 51 certificates it carries 189,194 bytes in 15,900 rows, and no tune's program
+  the 51 certificates it carries 189,194 bytes in 15,903 rows, and no tune's program
   text moves; header rows fall 5,065 -> 4,737, one block naming what a row per region
   named. Refused: an `init_constant` region, whose value init computes and the
   *pre*-init `Tuneprog.image()` does not carry (15,249 bytes over the 51, 2,308 of them

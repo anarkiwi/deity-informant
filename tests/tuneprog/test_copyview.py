@@ -157,7 +157,7 @@ def test_the_folded_loop_prints_as_a_for_over_the_copy_index():
 
 
 def test_the_state_header_lists_the_per_copy_addresses_once():
-    head = merged(voices(), calls=8)[0].split("## state")[1].split("## const")[0]
+    head = merged(voices(), calls=8)[0].split("## state")[1].split("## data")[0]
     rows = [ln for ln in head.splitlines() if ln.startswith("voice[3]")]
     assert rows and "per-copy cells" in rows[0], head
     cells = [ln for ln in head.splitlines() if ln.startswith("  .")]

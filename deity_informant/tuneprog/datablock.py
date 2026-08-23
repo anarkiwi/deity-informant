@@ -10,6 +10,7 @@ from __future__ import annotations
 from .partition import SPLITTABLE, refs
 
 ROW = 32  # bytes one data row carries
+ENTRY = "entry"  # the record layout's index column, which its rows sit under
 
 
 def cells(r):
@@ -91,12 +92,18 @@ def blocks(prog, names, reached, wrote):
         end = max(end, r.base + r.size - 1)
     at = {r.id: i for i, g in enumerate(groups) for r in g}
     join = {}
+
+    def root(i):
+        while i in join:
+            i = join[i]
+        return i
+
     for key in names.freq:  # a lo|hi table is two adjacent regions, so two runs
-        own = sorted({at[i] for i in key if i in at})
+        own = sorted({root(at[i]) for i in key if i in at})
         join.update({i: own[0] for i in own[1:]})
     out = {}
     for i, g in enumerate(groups):
-        out.setdefault(join.get(i, i), []).extend(g)
+        out.setdefault(root(i), []).extend(g)
     return [Block(m, reached, wrote) for _i, m in sorted(out.items())]
 
 
@@ -142,13 +149,16 @@ def _head(names, blk, kind, arg):
     notes = list(dict.fromkeys(names.notes[m.id] for m in blk.members if names.notes.get(m.id)))
     seen = blk.members[1:] if kind != "record" else []  # a record's columns are its header
     other = ["%s $%04X" % (names.region.get(m.id, m.name), m.base) for m in seen]
-    return "%-16s $%04X %-18s %-10s %s" % (
-        _name(names, blk, kind, arg),
-        blk.base,
-        "%d bytes%s" % (len(blk.reach), " stride %d" % arg if kind == "record" else ""),
-        names.role.get(blk.members[0].id, ""),
-        "; ".join(notes + (["also " + ", ".join(other)] if other else [])),
-    )
+    return (
+        "%-16s $%04X %-18s %-10s %s"
+        % (
+            _name(names, blk, kind, arg),
+            blk.base,
+            "%d bytes%s" % (len(blk.reach), " stride %d" % arg if kind == "record" else ""),
+            names.role.get(blk.members[0].id, ""),
+            "; ".join(notes + (["also " + ", ".join(other)] if other else [])),
+        )
+    ).rstrip()
 
 
 def _accessors(sites, blk):
@@ -189,9 +199,9 @@ def _u16rows(rgn, img, blk, key, lay):
     """A note table as 16-bit entries, :data:`ROW` bytes to the row; the rest as hex."""
     out, left, row, at = [], set(blk.data), [], None
     for lo, hi in _entries(key, rgn, lay):
-        left -= {lo, hi}
-        at = lo if at is None else at
+        at = min(lo, hi) if at is None else at  # a hi|lo table's low column is the upper one
         both = lo in blk.data and hi in blk.data
+        left -= {lo, hi} if both else set()  # a half whose partner is state still prints, as hex
         row.append("%04X" % (img[lo] | img[hi] << 8) if both else "----")
         if len(row) == ROW // 2:
             out.append("  $%04X  %s" % (at, " ".join(row)))
@@ -208,13 +218,13 @@ def _recordrows(names, img, blk, k):
     wide = [max(2, len(cols[o])) for o in offs]
     out, hit = [], set()
     js = sorted({(a - blk.base) // k for a in blk.data})
-    pad = len(str(js[-1])) if js else 1
+    pad = max(len(str(js[-1])) if js else 1, len(ENTRY) - 2)  # "[j]" is two wider than j
     for j in js:
         addrs = [blk.base + j * k + o for o in offs]
         hit |= {a for a in addrs if a in blk.data}
         cs = ("%02X" % img[a] if a in blk.data else "--" for a in addrs)
         out.append("  [%*d] %s" % (pad, j, " ".join(c.rjust(w) for c, w in zip(cs, wide))))
-    head = "  %*s %s" % (pad + 2, "entry", " ".join(cols[o].rjust(w) for o, w in zip(offs, wide)))
+    head = "  %*s %s" % (pad + 2, ENTRY, " ".join(cols[o].rjust(w) for o, w in zip(offs, wide)))
     return ([head] + out if out else []) + _hexrows(img, sorted(blk.data - hit))
 
 

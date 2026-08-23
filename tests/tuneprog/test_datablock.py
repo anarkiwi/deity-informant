@@ -129,10 +129,11 @@ def test_the_columns_of_one_record_print_one_row_per_record_under_their_fields()
     assert lines[0].startswith("ins[3]           $1000 9 bytes stride 3")
     assert lines[1:] == [
         "  entry  a  b  c",
-        "  [0] 00 01 02",
-        "  [1] 03 04 05",
-        "  [2] 06 07 08",
+        "  [  0] 00 01 02",
+        "  [  1] 03 04 05",
+        "  [  2] 06 07 08",
     ]
+    assert lines[1].index(" a") == lines[2].index("00")  # the header sits over its column
 
 
 # ---- the accessors -----------------------------------------------------------
