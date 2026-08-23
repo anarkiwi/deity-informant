@@ -5,12 +5,20 @@ Same program, same cell set, two independent engines: our Python lifter and the
 self-modified ``STA $0400`` into a store through the operand bytes it modifies.
 """
 
+import sys
+from pathlib import Path
+
 import pytest
 
 from deity_informant import PcodeVM, lift
 from deity_informant.tuneprog.lift import lift_site
 
 from examples.hello_world import ORG, PROGRAM, STA_PC
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ghidra" / "6510"))
+# pylint: disable=wrong-import-position
+import build as build6510  # noqa: E402
+import smc  # noqa: E402
 
 pypcode = pytest.importorskip("pypcode")
 
@@ -207,3 +215,23 @@ def _lifter_sbc(acc, imm, carry):
 def test_sbc_borrow_matches_the_hardware_and_the_lifter(ctx6510, acc, imm, carry, want):
     assert _lifter_sbc(acc, imm, carry) == want
     assert _sleigh_sbc(ctx6510, acc, imm, carry) == want
+
+
+def test_every_patch_applies_to_the_spec_the_build_resolves():
+    """The patches must hit the spec ``build.py`` picks, Ghidra's own under Docker.
+
+    :func:`smc._in_ctor` raises where the stock text drifted, so the image build
+    (``build.py --install``) is the same check on the Ghidra copy of the spec.
+    """
+    text = build6510.find_base_slaspec().read_text()
+    for head, old, new in smc.PATCHES:
+        assert smc._in_ctor(text, head, old, new) != text
+    assert '@include "6510_context.sinc"' in smc.patch_base(text)
+
+
+def test_a_patch_site_that_drifted_is_an_error():
+    text = build6510.find_base_slaspec().read_text()
+    with pytest.raises(ValueError):
+        smc._in_ctor(text, ":JSR", "text no stock spec has", "x")
+    with pytest.raises(ValueError):
+        smc._in_ctor(text, ":NOSUCH", "inst_next;", "x")

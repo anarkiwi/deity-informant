@@ -71,8 +71,12 @@ def _per(d, k):
 
 
 def _body(theirs):
-    """The executed addresses one Ghidra function body owns."""
-    return {int(a, 16) for a in theirs.get("pcs", ())}
+    """The executed addresses one Ghidra function body owns.
+
+    Hard-indexed like every other required key: a ``stats.json`` without it is an
+    export this join cannot make, not one where every body owns nothing.
+    """
+    return {int(a, 16) for a in theirs["pcs"]}
 
 
 def alignment(mine, theirs):
@@ -131,11 +135,17 @@ def compare(out_dir, ghidra_dir, tol=TOL):
         m, t = mine.get(entry), theirs.get(entry)
         verdict, detail = ("unmatched", "") if not (m and t) else _flag(m, t, tol)
         rows.append(
-            {"entry": "%04X" % entry, "ours": m, "ghidra": t, "verdict": verdict, "detail": detail}
+            {
+                "entry": "%04X" % entry,
+                "ours": m and {k: v for k, v in m.items() if k != "pcs"},
+                "ghidra": t,
+                "verdict": verdict,
+                "detail": detail,
+            }
         )
     align = alignment(mine, theirs)
     # procedures are cloned per entry, so distinct pcs -- not the per-proc sum
-    union = {p for r in mine.values() for p in r.pop("pcs")}
+    union = {p for r in mine.values() for p in r["pcs"]}
     tot_m = {
         k: sum(r[k] for r in mine.values()) for k in ("stmts", "blocks", "lets", "lines", "gotos")
     }

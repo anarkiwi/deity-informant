@@ -178,11 +178,15 @@ PATCHES = (
 
 
 def _in_ctor(text, head, old, new):
-    """Replace ``old`` inside the constructor or macro starting with ``head`` only."""
+    """Replace ``old`` inside the constructor or macro starting with ``head`` only.
+
+    Raises on a miss: the stock text drifting is the one way these patches stop
+    applying, and a silently unpatched spec is a wrong emulator, not a build.
+    """
     i = text.find("\n" + head)
     j = text.find("\n}", i)
     if i < 0 or j < 0 or old not in text[i:j]:
-        return text
+        raise ValueError("%r: no %r to patch in the stock spec" % (head, old))
     return text[:i] + text[i:j].replace(old, new, 1) + text[j:]
 
 

@@ -4,11 +4,13 @@ One fixture per recorded mechanism -- per-op access sets, SMC opcode and operand
 cells, index domains, every control-kind edge, JSR/RTS pairing, inputs, IO logs,
 the preemption schedule, both footprint hashes -- hashed after serialisation.
 :func:`capture` regenerates the table; every digest below came from ``main`` at
-f713814 and was regenerated on ``nmi-prototype`` (PR #272), which added
-:attr:`~.tracedata.Trace.nmilog` to the digest and moved nothing: no fixture here
-has a second entry, so the log it hashes is empty. That is the claim -- a
-schedule appearing in a one-entry tune's trace would move a digest, and
-:func:`test_the_digest_follows_the_preemption_schedule` shows it does.
+f713814, was regenerated on ``nmi-prototype`` (PR #272), which added
+:attr:`~.tracedata.Trace.nmilog` to the digest and moved nothing (no fixture here
+has a second entry, so the log it hashes is empty -- a schedule appearing in a
+one-entry tune's trace would move a digest, and
+:func:`test_the_digest_follows_the_preemption_schedule` shows it does), and again
+on ``p4-oracle-fixes``, which gave ``wlog``/``iolog`` their ``nmi`` column: it
+moved exactly the twelve fixtures that write to a chip, and no other.
 """
 
 import hashlib
@@ -158,27 +160,27 @@ def f_period():
 FIXTURES = {
     "branch_zero": (
         f_branch_zero,
-        "a63cb7dab4c7dbd7a24537e1a34fa42b9fbf17779fa787d79ffc9d715f16f2af",
+        "20e5425ba6c73eca83742b49c49f5789733f85dcdfb2c512f6e77258e10578b0",
     ),
     "branch_zero_taken": (
         f_branch_zero_taken,
-        "052269cd259f03fabbec44337ac7c6f1f6c09bdb5213eca5969ddc49d2f30cf6",
+        "e19e075447bab7e584adc51b4076eade77ba43ed362b7f70f21977d65fe27e85",
     ),
-    "calls": (f_calls, "617337b91f65ddd7e4e4801910c75971bb5a3addcdbefbe1b1857352e3d261a0"),
+    "calls": (f_calls, "0958316d2f67ac987f6cb4ce6703e9ed7c2a8158004fb22e7be4695867fa9b05"),
     "indexed": (f_indexed, "33f2ed505af0eabdc15cf2c561214d8597862e9f548a0cd583d3a2b8ce926279"),
-    "io": (f_io, "4177514f959dd56714bc053fdf7d3094caa910362fa7e72dc4dd7b7ace2c91dc"),
+    "io": (f_io, "7acb17b2d616221cc4e01d9fc6be1d1d0ed72a94fb041470d495fd25ed0b8e54"),
     "jmpind": (f_jmpind, "b7c3e7c90bda340724de5e3b369e460321ab58e49b5547f3149cc7f9063ce410"),
-    "period": (f_period, "d13801078c2c53256cc510cad3a5ccc6cca93c10d7df22aee4de48cea5ab4658"),
-    "pointer": (f_pointer, "8b6b93e10131c7275e908298ddee67fae1f764cd48baa0d5039b929f8eeae613"),
+    "period": (f_period, "2bfa63efcd37518e7798dd251051cb5ecd876c5bc882ed12569a36299dcc047d"),
+    "pointer": (f_pointer, "b5a669cf6ed5b66f959b258d41e83dc3fa418f308c782f5d6e5cf91329de8385"),
     "rts_trick": (f_rts_trick, "2fbe563c697f80e431684ee716d6725b8fc20d8a2c9b6148c14fb64693d7c345"),
-    "smc": (f_smc, "3953b32b75827f466ea6eea4059460a4288930c7d5cb7364312486ac7af0f1a3"),
+    "smc": (f_smc, "c7caa67e6fb1ba97b3a02d5687bff2cc2fdff6f1b0ae2d9068873398c3dedd7f"),
     "smc_revert": (
         f_smc_revert,
-        "1c59a6d8601fa78c751521e0d1a398f628f05c30a27e5fc79e4096f71d950e7b",
+        "563ee460620b4f0c9d2ab4c0a8c95ef4a065d28c95f147db9cf69cf7ba6f4f76",
     ),
     "smc_under_io": (
         f_smc_under_io,
-        "4e5bcac6e1884087730e42d463dd63c749c2c0623a61cc32f9b85a6e1d73095a",
+        "394ed3441aa172c640707ae653a18a803e142f19e3896f763e3a8cc2ac414b06",
     ),
 }
 
@@ -215,14 +217,14 @@ def build_song(song):
 
 
 EXTRA = {
-    "irq": (build_irq, "4058e2e77484fb6fa373c5afa23594074fe4c38584beb8c5b91a2599c7f1d293"),
+    "irq": (build_irq, "a9509adaf502e0e43c96e49b08848f18244df529934c8445d4857c919c33b2f4"),
     "song0": (
         lambda: build_song(0),
-        "76e0e40123f3f3d2228211b3725e1a95e80dce20ef56bf1ee4b797946a752e9c",
+        "2e7fc57fe1338efc1b7847e71c83c254530e40afcc24da0313d00844b4caf2dd",
     ),
     "song1": (
         lambda: build_song(1),
-        "bf3787cb9b71bae8e969354e04892443f11e999697b7e1324af12d3408b63639",
+        "00f4ca615cebc57ac0a3a450ca3443ec0c7880a3e74246f77e34bee073e80aa6",
     ),
 }
 
