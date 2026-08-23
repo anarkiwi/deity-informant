@@ -7,7 +7,8 @@ that one frequency layout names, are one block, printed in the layout S6 knows.
 
 from __future__ import annotations
 
-from .partition import SPLITTABLE, refs
+from .irwalk import accessors
+from .partition import SPLITTABLE
 
 ROW = 32  # bytes one data row carries
 ENTRY = "entry"  # the record layout's index column, which its rows sit under
@@ -40,14 +41,14 @@ def spans(prog):
     """
     own = {r.id: cells(r) for r in prog.storage if r.id >= 0 and r.kind in SPLITTABLE}
     hits, wrote = {}, bytearray(0x10000)
-    for _p, rid, lo, hi, _a, w in refs(prog):
-        hits.setdefault(rid, []).append((lo, hi))
-        if not w:
+    for acc in accessors(prog):
+        hits.setdefault(acc.rid, []).append((acc.lo, acc.hi))
+        if not acc.store:
             continue
-        if rid not in own:
-            wrote[lo : hi + 1] = b"\1" * (hi - lo + 1)
-        for a in own.get(rid, ()):
-            if lo <= a <= hi:
+        if acc.rid not in own:
+            wrote[acc.lo : acc.hi + 1] = b"\1" * (acc.hi - acc.lo + 1)
+        for a in own.get(acc.rid, ()):
+            if acc.lo <= a <= acc.hi:
                 wrote[a] = 1
     reached = {}
     for rid, c in own.items():

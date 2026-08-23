@@ -1,15 +1,16 @@
 """S6 -- region typing by accessor-shape partition, and its mirror, the merge.
 
-An access starting at its own operand names a k-element array, a constant address
-a scalar, a reach starting inside the region nothing; the narrow claim wins and the
+An access starting at its own operand names a k-element array, a constant address a
+scalar, a reach starting inside the region nothing; the narrow claim wins and the
 overrunner keeps the fused region and its asserted bound.
 """
 
 from __future__ import annotations
 
-from .facts import image_copy, scales
-from .ir import Load, Rgn, Store
-from .irwalk import addr_split, apply_stmt, apply_term, node_loads, reachable
+from .copyview import fold_fields, remap_cells
+from .facts import image_copy, per_region, scales, unclaimed
+from .ir import Load, Rgn, Store, rgn_name
+from .irwalk import accessors, apply_stmt, apply_term, reachable
 
 SPLITTABLE = ("state", "init_constant", "const", "image")
 RANK = {"array": 0, "scalar": 1}  # an array claim is tried before a scalar one
@@ -23,9 +24,9 @@ def repartition(prog, facts):
     """
     named = _named(facts)
     merged = _merge(prog, named)
-    _recell(prog, [(k, 0, 0xFFFF, v) for k, v in merged.items()])
-    parts, moved = _split(prog, named, _fields(prog))
-    _recell(prog, moved)
+    remap_cells(prog, [(k, 0, 0xFFFF, v) for k, v in merged.items()])
+    parts, moved = _split(prog, named, fold_fields(prog))
+    remap_cells(prog, moved)
     return bool(merged or parts)
 
 
@@ -33,45 +34,10 @@ def _named(facts):
     """Regions a record already partitions: the register image, and a record stride.
 
     An index carrying a scale reaches a record wider than a byte, which is what
-    :func:`~.views.field_split` names; an extent claimed inside it is one of its
-    fields, not a fusion.
+    :func:`~.views.field_split` names off the same map; an extent claimed inside it
+    is one of its fields, not a fusion.
     """
-    sc = scales(facts)
-    out = set(image_copy(facts))
-    return out | {r for n, rids in facts.idxvar.items() if sc.get(n) for r in rids}
-
-
-def _recell(prog, moves):
-    """Point the copy folds' per-copy cells at the region that now owns each address."""
-
-    def at(cell):
-        rid, addr = cell
-        return next(((n, addr) for o, lo, hi, n in moves if o == rid and lo <= addr <= hi), cell)
-
-    for f in prog.meta.get("copyviews") or () if moves else ():
-        cells = [[at(c) for c in v] for v in (f.get("slots") or {}).values()]
-        keys = [tuple(v[0]) for v in cells]
-        if len(set(keys)) != len(keys):
-            raise ValueError("repartition collapsed two slots onto one cell: %r" % (keys,))
-        f["slots"] = dict(zip(keys, cells))
-        f["columns"] = {k: at(c) for k, c in (f.get("columns") or {}).items()}
-
-
-def _fields(prog):
-    """``{region: [{the addresses one fold names as one field}]}`` -- a view not to cut.
-
-    The fold proved those cells one field of one record; a claim that keeps some of
-    them and not others contradicts a partition the program already carries.
-    """
-    out = {}
-    for f in prog.meta.get("copyviews") or ():
-        for cells in (f.get("slots") or {}).values():
-            by = {}
-            for rid, addr in cells:
-                by.setdefault(rid, set()).add(addr)
-            for rid, addrs in by.items():
-                out.setdefault(rid, []).append(addrs)
-    return out
+    return set(image_copy(facts)) | set(per_region(facts, scales(facts)))
 
 
 def _uncut(r, claims, groups):
@@ -82,7 +48,7 @@ def _uncut(r, claims, groups):
     """
     bad = set()
     for addrs in groups:
-        hit = {_which(claims, a - r.base) for a in addrs}
+        hit = {_which(claims, a - r.zero) for a in addrs}
         bad |= hit if len(hit) > 1 else set()
     return [c for i, c in enumerate(claims) if i not in bad]
 
@@ -90,18 +56,6 @@ def _uncut(r, claims, groups):
 def _which(claims, off):
     """The claim an offset falls in, or ``-1`` for the residue the parent keeps."""
     return next((i for i, (lo, hi) in enumerate(claims) if lo <= off <= hi), -1)
-
-
-# ---- accesses ----------------------------------------------------------------
-def refs(prog):
-    """``(procedure, region, envelope low, envelope high, address, is a store)``."""
-    for n, p in prog.procs.items():
-        for b in p.blocks.values():
-            for s in list(b.stmts) + [b.term]:
-                for x in node_loads(s):
-                    yield n, x.r, x.lo, x.hi, x.a, False
-                if type(s) is Store and s.r >= 0:
-                    yield n, s.r, s.lo, s.hi, s.a, True
 
 
 def _repoint(prog, pick):
@@ -128,9 +82,9 @@ def _repoint(prog, pick):
             apply_term(b.term, fn)
 
 
-def _refused(r, named):
-    """A region no partition applies to: a copymap, a record stride, or a named view."""
-    return r.id < 0 or r.id in named or r.stride != 1 or r.kind not in SPLITTABLE
+def _cuttable(r, named):
+    """A stride-1 region of splittable storage that no record view already names."""
+    return unclaimed(r, named, SPLITTABLE) and r.stride == 1
 
 
 # ---- the mirror: three extents of one array ----------------------------------
@@ -144,7 +98,7 @@ def _merge(prog, named):
     runs, remap = {}, {}
     for r in sorted(prog.storage, key=lambda r: (r.base, r.id)):
         # a byte merged into its neighbour prints as an index, not a name: +210 tokens
-        if _refused(r, named) or r.size < 2:
+        if not _cuttable(r, named) or r.size < 2:
             continue
         run = runs.setdefault((r.kind, r.zero), [[]])
         if run[-1] and r.base >= max(q.base + q.size for q in run[-1]):
@@ -159,7 +113,7 @@ def _merge(prog, named):
             was = zip(seen[o : o + k], image[o : o + k], r.init)
             assert all(not s or a == b for s, a, b in was), "one image, two initial values"
             image[o : o + k], seen[o : o + k] = r.init, b"\1" * k
-        keep.name = "%s_%04X" % (keep.kind, lo)
+        keep.name = rgn_name(keep.kind, lo)
         keep.base, keep.size, keep.init = lo, len(image), bytes(image)
         remap.update({r.id: keep.id for r in rs if r is not keep})
     if remap:
@@ -169,21 +123,20 @@ def _merge(prog, named):
 
 
 # ---- the partition -----------------------------------------------------------
-def _cover(r, lo, hi, a):
-    """``(shape, low, high)`` of one access inside ``r``, in base-relative bytes.
+def _cover(r, acc):
+    """``(shape, low, high)`` of one accessor inside ``r``, in bytes from its zero.
 
     ``array`` when the envelope starts at the access's own operand and spans more
     than one byte, so the span is the element count; ``scalar`` for a constant
-    address; ``''`` for a reach that starts inside the region, or a one-byte
-    observation of an index, neither of which claims an extent.
+    address; ``''`` for a reach starting inside the region or a one-byte index read.
     """
-    lo, hi = lo - r.base, hi - r.base
-    if lo < 0 or hi >= r.size or lo > hi:
+    e = r.extent(acc.lo, acc.hi)
+    if e is None:
         return None
-    base, idx = addr_split(a)
-    if idx is None:
+    lo, hi = e
+    if acc.idx is None:
         return "scalar", lo, hi
-    return ("array" if hi > lo and base == r.base + lo else "", lo, hi)
+    return ("array" if hi > lo and acc.base == r.zero + lo else "", lo, hi)
 
 
 def _claims(covers):
@@ -228,20 +181,21 @@ def _kind(r, lo, hi, stores, band):
     """A part no store's envelope reaches is read-only, whatever its neighbours are."""
     if r.kind not in ("state", "init_constant") or any(a <= hi and lo <= b for a, b in stores):
         return r.kind
-    return "const" if band[0] <= r.base + lo and r.base + hi < band[1] else "image"
+    return "const" if band[0] <= r.zero + lo and r.zero + hi < band[1] else "image"
 
 
 def _part(r, lo, hi, kind, rid):
     """One carved extent as a region of its own, indexed from its own base."""
+    lo, hi = r.zero + lo, r.zero + hi
     return Rgn(
         id=rid,
-        name="%s_%04X" % (kind, r.base + lo),
-        base=r.base + lo,
+        name=rgn_name(kind, lo),
+        base=lo,
         size=hi - lo + 1,
         kind=kind,
-        init=r.init[lo : hi + 1],
+        init=r.init[lo - r.base : hi - r.base + 1],
         fields=(0,),
-        origin=r.base + lo,
+        origin=lo,
     )
 
 
@@ -254,14 +208,14 @@ def _split(prog, named, fields):
     band = tuple(prog.meta.get("load") or (0, 0))
     tick = reachable(prog, prog.meta.get("tick_proc")) or set(prog.procs)
     byr = {}
-    for n, rid, lo, hi, a, w in refs(prog):
-        byr.setdefault(rid, []).append((lo, hi, a, w, n in tick))
+    for acc in accessors(prog):
+        byr.setdefault(acc.rid, []).append(acc)
     nid = max((r.id for r in prog.storage), default=0) + 1
     new, moved, span = [], {}, []
     for r in prog.storage:
-        if _refused(r, named):
+        if not _cuttable(r, named):
             continue
-        covers = [(_cover(r, lo, hi, a), w, t) for lo, hi, a, w, t in byr.get(r.id, ())]
+        covers = [(_cover(r, acc), acc.store, acc.proc in tick) for acc in byr.get(r.id, ())]
         claims = _claims([c for c, _w, t in covers if c and c[0] and t])
         if not claims:
             continue
@@ -272,11 +226,11 @@ def _split(prog, named, fields):
         ids = range(nid, nid + len(claims))
         for (lo, hi), pid in zip(claims, ids):
             new.append(_part(r, lo, hi, _kind(r, lo, hi, stores, band), pid))
-            span.append((r.id, r.base + lo, r.base + hi, pid))
-        for lo2, hi2, _a, _w, _t in byr[r.id]:
-            k = _which(claims, lo2 - r.base)
-            if k >= 0 and hi2 - r.base <= claims[k][1]:
-                moved[(r.id, lo2, hi2)] = ids[k]
+            span.append((r.id, r.zero + lo, r.zero + hi, pid))
+        for acc in byr[r.id]:
+            k = _which(claims, acc.lo - r.zero)
+            if k >= 0 and acc.hi - r.zero <= claims[k][1]:
+                moved[(r.id, acc.lo, acc.hi)] = ids[k]
         nid += len(claims)
     if not new:
         return [], []

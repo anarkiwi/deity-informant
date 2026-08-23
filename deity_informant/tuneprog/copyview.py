@@ -250,6 +250,42 @@ def expand(view):
     return out
 
 
+def remap_cells(prog, moves):
+    """Point the folds' per-copy cells at the region each ``moves`` entry now owns.
+
+    ``[(region, low, high, new region)]``. A slot is keyed by its first cell, which
+    only :func:`_folds` and this rekeying know (:func:`~.partition.repartition`).
+    """
+
+    def at(cell):
+        rid, addr = cell
+        return next(((n, addr) for o, lo, hi, n in moves if o == rid and lo <= addr <= hi), cell)
+
+    for f in prog.meta.get("copyviews") or () if moves else ():
+        cells = [[at(c) for c in v] for v in (f.get("slots") or {}).values()]
+        keys = [tuple(v[0]) for v in cells]
+        if len(set(keys)) != len(keys):
+            raise ValueError("repartition collapsed two slots onto one cell: %r" % (keys,))
+        f["slots"] = dict(zip(keys, cells))
+        f["columns"] = {k: at(c) for k, c in (f.get("columns") or {}).items()}
+
+
+def fold_fields(prog):
+    """``{region: [{the addresses one fold names as one field}]}`` -- a view not to cut.
+
+    The fold proved those cells one field of one record.
+    """
+    out = {}
+    for f in prog.meta.get("copyviews") or ():
+        for cells in (f.get("slots") or {}).values():
+            by = {}
+            for rid, addr in cells:
+                by.setdefault(rid, set()).add(addr)
+            for rid, addrs in by.items():
+                out.setdefault(rid, []).append(addrs)
+    return out
+
+
 def naming_facts(view):
     """The :class:`~.facts.Facts` the field names come from: every column substituted.
 

@@ -7,7 +7,7 @@ so they live apart from the pass that first needed them. The S6 word view
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, namedtuple
 
 from .ir import (
     Assert,
@@ -160,6 +160,27 @@ def node_exprs(node):
 def node_loads(node):
     """Every :class:`~.ir.Load` one statement or terminator reads."""
     return (x for e in node_exprs(node) for x in walk(e) if type(x) is Load)
+
+
+Acc = namedtuple("Acc", "proc rid store base idx lo hi")  # one accessor's shape
+
+
+def accessors(prog, procs=None):
+    """Every load and store of ``procs`` (all of them by default) as an :data:`Acc`.
+
+    ``base``/``idx`` are the address split, ``lo``/``hi`` the envelope it stays
+    inside: the one enumeration every region-shape question is asked of (the
+    partition's claims, the record views' fields, the data section's reach).
+    """
+    for name, p in prog.procs.items():
+        if procs is not None and name not in procs:
+            continue
+        for b in p.blocks.values():
+            for s in list(b.stmts) + [b.term]:
+                for x in node_loads(s):
+                    yield Acc(name, x.r, False, *addr_split(x.a), x.lo, x.hi)
+                if type(s) is Store and s.r >= 0:
+                    yield Acc(name, s.r, True, *addr_split(s.a), s.lo, s.hi)
 
 
 def apply_stmt(s, fn):

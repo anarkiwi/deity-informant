@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from math import gcd
 
 from ..lifter import OPS
-from .ir import IO_HI, IO_LO
+from .ir import IO_HI, IO_LO, rgn_name
 from .tracevm import IDX_REG
 
 
@@ -188,7 +188,7 @@ def build_regions(trace, lifted=None, init_kind="init_constant", unite=()):
         kind = _kind(addrs, trace, init_kind, ram_io)
         r = Region(
             id=n,
-            name="%s_%04X" % (kind, base),
+            name=rgn_name(kind, base),
             base=base,
             size=max(addrs) - base + 1,
             addrs=tuple(sorted(addrs)),

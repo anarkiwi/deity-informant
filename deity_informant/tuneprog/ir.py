@@ -248,6 +248,20 @@ class Rgn:
         """The address index 0 has: the recovered origin, or the base."""
         return self.origin or self.base
 
+    def extent(self, lo, hi):
+        """``(low, high)`` of an envelope inside the region, from its zero, or ``None``.
+
+        The one containment test every accessor-shape question asks.
+        """
+        if lo < self.base or hi > self.base + self.size - 1 or lo > hi:
+            return None
+        return lo - self.zero, hi - self.zero
+
+
+def rgn_name(kind, base):
+    """What a region with no recovered name is called."""
+    return "%s_%04X" % (kind, base)
+
 
 @dataclass(slots=True)
 class Tuneprog:
