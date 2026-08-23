@@ -1,0 +1,82 @@
+name: nightly
+
+# Reproduces every committed certificate and runs the three Ghidra oracles
+# (complexity, coverage, semantics) over the result. Four shards, every fourth
+# certificate each, because one headless Ghidra export is 13 s and its emulate
+# 9 s. Fails on a certificate that does not reproduce and on ours_bigger > 0;
+# the emulate verdict is reported, not enforced, the oracle emulating one entry.
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+jobs:
+  ghidra-oracles:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: docker/setup-buildx-action@v4
+      - name: Install
+        run: pip install -e ".[dev,oracle]"
+      - name: Cache HVSC tunes
+        uses: actions/cache@v6
+        with:
+          path: .oracle-cache/hvsc
+          key: hvsc-${{ hashFiles('deity_informant/tuneprog/tunes.py') }}
+      - name: Build Ghidra integration image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.ghidra
+          tags: di-ghidra:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Reproduce this shard's certificates
+        run: |
+          rc=2
+          while [ "$rc" -eq 2 ]; do
+            set +e
+            python3 tools/tuneprog_recert.py --out out/recert --resume --budget 50 \
+              --shard ${{ matrix.shard }}/4 --ghidra-dir out/gout
+            rc=$?
+            set -e
+          done
+          exit "$rc"
+      - name: Headless Ghidra export and emulate per certificate
+        run: |
+          for f in out/recert/*/ghidra/ghidra_facts.json; do
+            d=$(dirname "$f")
+            n=$(basename "$(dirname "$d")")
+            for mode in export emulate; do
+              docker run --rm -v "$PWD:/src" -e FACTS_DIR="/src/$d" \
+                -e OUT_DIR="/src/out/gout/$n" --entrypoint sh di-ghidra:ci \
+                -c "sh ghidra/6510/headless/run.sh $mode"
+            done
+          done
+          docker run --rm -v "$PWD:/src" --entrypoint chown di-ghidra:ci \
+            -R "$(id -u):$(id -g)" /src/out/gout
+      - name: The three oracles
+        # The two ours_bigger flags the oracle stands by are rows in the backlog
+        # (deflektor's copy fold costs two cross-copy gotos, alien3's residual
+        # stack keeps three register saves Ghidra's frame analysis removes); the
+        # gate is on a flag beside them.
+        run: |
+          python3 tools/tuneprog_recert.py --out out/recert --resume \
+            --shard ${{ matrix.shard }}/4 --ghidra-dir out/gout \
+            --known daglish-deflektor:C810 --known rodger-alien3:81BB
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: oracles-${{ matrix.shard }}
+          path: out/gout/*/comparison.json
+          if-no-files-found: warn

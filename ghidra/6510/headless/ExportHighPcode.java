@@ -409,6 +409,13 @@ public class ExportHighPcode extends GhidraScript {
         row.put("name", f.getName());
         row.put("entry", f.getEntryPoint().toString());
         row.put("sites", sites == null ? 0 : sites.size());
+        // the body's own executed addresses: our procedures are cloned per entry
+        // and Ghidra's bodies are disjoint, so only the sets align the two sides
+        List<String> pcs = new ArrayList<>();
+        for (Address a : new TreeSet<>(sites == null ? Set.<Address>of() : sites)) {
+            pcs.add(a.toString());
+        }
+        row.put("pcs", pcs);
         row.put("raw_pcode_ops", rawOps);
         row.put("pcode_ops", nops);
         row.put("uniques", uniques.size());

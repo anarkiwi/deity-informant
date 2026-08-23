@@ -70,18 +70,44 @@ def _per(d, k):
     return d[k] / max(1, d["sites"])
 
 
+def _body(theirs):
+    """The executed addresses one Ghidra function body owns."""
+    return {int(a, 16) for a in theirs.get("pcs", ())}
+
+
+def alignment(mine, theirs):
+    """How our clone-per-entry procedures sit inside Ghidra's disjoint bodies."""
+    merged = []
+    for entry, t in sorted(theirs.items()):
+        body = _body(t)
+        held = sorted(m["name"] for m in mine.values() if body & set(m["pcs"]))
+        if len(held) > 1:
+            merged.append({"entry": "%04X" % entry, "ghidra": t["name"], "merges": held})
+    by_pc = {}
+    for m in mine.values():
+        for p in m["pcs"]:
+            by_pc.setdefault(p, set()).add(m["name"])
+    clones = sorted({tuple(sorted(v)) for v in by_pc.values() if len(v) > 1})
+    return {"merged": merged, "clones": [list(c) for c in clones]}
+
+
 def _flag(mine, theirs, tol):
     """``(verdict, detail)`` for one procedure Ghidra decompiled cleanly."""
-    clean = theirs["unresolved"] == 0 and theirs["unreachable"] == 0
-    if not clean:
-        return "ghidra_incomplete", "unresolved=%d unreachable=%d" % (
+    # no high P-Code over a non-empty body is nothing to compare, not a lead
+    empty = theirs["sites"] and not theirs["pcode_ops"]
+    if theirs["unresolved"] or theirs["unreachable"] or theirs.get("error") or empty:
+        return "ghidra_incomplete", "unresolved=%d unreachable=%d %s" % (
             theirs["unresolved"],
             theirs["unreachable"],
+            theirs.get("error")
+            or ("no high P-Code over %d sites" % theirs["sites"] if empty else ""),
         )
-    if theirs["sites"] < mine["sites"]:
-        return "ghidra_partial", "ghidra body covers %d of %d executed sites" % (
-            theirs["sites"],
-            mine["sites"],
+    missed = sorted(set(mine["pcs"]) - _body(theirs))
+    if missed:
+        return "ghidra_partial", "body misses %d of %d executed sites (%s)" % (
+            len(missed),
+            len(mine["pcs"]),
+            " ".join("%04X" % a for a in missed[:4]),
         )
     if _per(mine, "stmts") > tol * _per(theirs, "pcode_ops"):
         return "ours_bigger", "%.2f stmts/site vs %.2f ops/site" % (
@@ -103,14 +129,11 @@ def compare(out_dir, ghidra_dir, tol=TOL):
     rows = []
     for entry in sorted(set(mine) | set(theirs)):
         m, t = mine.get(entry), theirs.get(entry)
-        row = {
-            "entry": "%04X" % entry,
-            "ours": m,
-            "ghidra": t,
-            "verdict": "unmatched" if not (m and t) else _flag(m, t, tol)[0],
-            "detail": "" if not (m and t) else _flag(m, t, tol)[1],
-        }
-        rows.append(row)
+        verdict, detail = ("unmatched", "") if not (m and t) else _flag(m, t, tol)
+        rows.append(
+            {"entry": "%04X" % entry, "ours": m, "ghidra": t, "verdict": verdict, "detail": detail}
+        )
+    align = alignment(mine, theirs)
     # procedures are cloned per entry, so distinct pcs -- not the per-proc sum
     union = {p for r in mine.values() for p in r.pop("pcs")}
     tot_m = {
@@ -122,6 +145,7 @@ def compare(out_dir, ghidra_dir, tol=TOL):
         "tolerance": tol,
         "totals": {"ours": tot_m, "ghidra": {k: g[k] for k in g if k != "per_function"}},
         "procs": rows,
+        "alignment": align,
         "flags": [r for r in rows if r["verdict"] == "ours_bigger"],
     }
     for name in ("coverage", "emulate"):
@@ -179,4 +203,11 @@ def markdown(doc):
             tm["gotos"],
         )
     )
+    align = doc.get("alignment") or {}
+    for row in align.get("merged", ()):
+        lines.append(
+            "\nghidra `%s` (%s) merges %s" % (row["ghidra"], row["entry"], ", ".join(row["merges"]))
+        )
+    for group in align.get("clones", ()):
+        lines.append("\nclone-per-entry: %s share executed sites" % ", ".join(group))
     return "\n".join(lines)

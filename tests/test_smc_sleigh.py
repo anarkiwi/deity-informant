@@ -7,6 +7,7 @@ self-modified ``STA $0400`` into a store through the operand bytes it modifies.
 
 import pytest
 
+from deity_informant import PcodeVM, lift
 from deity_informant.tuneprog.lift import lift_site
 
 from examples.hello_world import ORG, PROGRAM, STA_PC
@@ -38,7 +39,7 @@ def _ops(ctx, pc, **context):
     for k, v in context.items():
         ctx.setVariableDefault(k, v)
     try:
-        return list(ctx.translate(PROGRAM[pc - ORG :], pc, 0, 1).ops)
+        return list(ctx.translate(PROGRAM[pc - ORG :], pc, max_instructions=1).ops)
     finally:
         for k in context:
             ctx.setVariableDefault(k, 0)
@@ -113,11 +114,11 @@ def test_smc_var_guards_the_instruction_with_a_return(ctx6510):
 
 def test_jsr_rts_use_the_hardware_stack_convention(ctx6510):
     """A 6510 program can read its own return address, so it must be ``ret - 1``."""
-    ops = list(ctx6510.translate(bytes.fromhex("201234"), 0x2000, 0, 1).ops)
+    ops = list(ctx6510.translate(bytes.fromhex("201234"), 0x2000, max_instructions=1).ops)
     store = next(o for o in ops if o.opcode.name == "STORE")
     src = _defs(ops)[(store.inputs[2].space.name, store.inputs[2].offset)]
     assert src.opcode.name == "INT_SUB" and src.inputs[0].offset == 0x2003
-    rts = list(ctx6510.translate(bytes.fromhex("60"), 0x2000, 0, 1).ops)
+    rts = list(ctx6510.translate(bytes.fromhex("60"), 0x2000, max_instructions=1).ops)
     ret = next(o for o in rts if o.opcode.name == "RETURN")
     add = _defs(rts)[(ret.inputs[0].space.name, ret.inputs[0].offset)]
     assert add.opcode.name == "INT_ADD" and add.inputs[1].offset == 1
@@ -126,3 +127,83 @@ def test_jsr_rts_use_the_hardware_stack_convention(ctx6510):
 def test_default_context_decodes_the_whole_demo_unchanged(ctx6510):
     d = ctx6510.disassemble(PROGRAM, ORG, 0)
     assert [i.mnem for i in d.instructions][:6] == ["LDY", "LAX", "BEQ", "EOR", "STA", "ISC"]
+
+
+BIN = {
+    "INT_ADD": lambda a, b: a + b,
+    "INT_SUB": lambda a, b: a - b,
+    "INT_AND": lambda a, b: a & b,
+    "INT_OR": lambda a, b: a | b,
+    "INT_XOR": lambda a, b: a ^ b,
+    "INT_EQUAL": lambda a, b: int(a == b),
+    "INT_NOTEQUAL": lambda a, b: int(a != b),
+    "INT_LESS": lambda a, b: int(a < b),
+    "INT_LESSEQUAL": lambda a, b: int(a <= b),
+    "BOOL_AND": lambda a, b: a & b,
+    "BOOL_OR": lambda a, b: a | b,
+}
+UN = {"COPY": int, "INT_ZEXT": int, "INT_NEGATE": lambda a: ~a, "INT_2COMP": lambda a: -a}
+
+
+def _sext(v, size):
+    return v - (1 << (8 * size)) if v >> (8 * size - 1) else v
+
+
+def _run(ops, state):
+    """Evaluate raw P-Code over a ``{(space, offset): value}`` file, in place."""
+    for op in ops:
+        if op.output is None:
+            continue
+        name = op.opcode.name
+        a = [
+            v.offset if v.space.name == "const" else state.get((v.space.name, v.offset), 0)
+            for v in op.inputs
+        ]
+        if name in UN:
+            r = UN[name](a[0])
+        elif name == "INT_SEXT":
+            r = _sext(a[0], op.inputs[0].size)
+        elif name == "BOOL_NEGATE":
+            r = a[0] ^ 1
+        elif name in ("INT_SLESS", "INT_SLESSEQUAL"):
+            x, y = (_sext(a[i], op.inputs[i].size) for i in (0, 1))
+            r = int(x < y) if name == "INT_SLESS" else int(x <= y)
+        else:
+            r = BIN[name](a[0], a[1])
+        state[(op.output.space.name, op.output.offset)] = r & (1 << (8 * op.output.size)) - 1
+    return state
+
+
+def _sleigh_sbc(ctx, acc, imm, carry):
+    """``(A, C)`` the SLEIGH spec leaves after ``SBC #imm``."""
+    reg = {n: (v.space.name, v.offset) for n, v in ctx.registers.items()}
+    state = _run(
+        ctx.translate(bytes([0xE9, imm]), 0x2000, max_instructions=1).ops,
+        {reg["A"]: acc, reg["C"]: carry},
+    )
+    return state[reg["A"]], state[reg["C"]]
+
+
+def _lifter_sbc(acc, imm, carry):
+    """``(A, C)`` our own lifter leaves after the same instruction."""
+    vm = PcodeVM(bytearray(0x10000))
+    vm.mem[0x2000:0x2002] = bytes([0xE9, imm])
+    vm.reg[0], vm.reg[8] = acc, carry
+    vm.step(0x2000, {}, lift)
+    return vm.reg[0], vm.reg[8]
+
+
+# C clear exactly when the subtraction borrowed; the stock spec has the borrow
+@pytest.mark.parametrize(
+    "acc,imm,carry,want",
+    [
+        (0x00, 0x01, 1, (0xFF, 0)),
+        (0x05, 0x03, 1, (0x02, 1)),
+        (0x05, 0x05, 1, (0x00, 1)),
+        (0x00, 0x00, 0, (0xFF, 0)),
+        (0x80, 0x01, 1, (0x7F, 1)),
+    ],
+)
+def test_sbc_borrow_matches_the_hardware_and_the_lifter(ctx6510, acc, imm, carry, want):
+    assert _lifter_sbc(acc, imm, carry) == want
+    assert _sleigh_sbc(ctx6510, acc, imm, carry) == want

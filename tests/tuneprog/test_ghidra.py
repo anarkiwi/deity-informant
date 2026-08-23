@@ -79,6 +79,18 @@ def test_emulate_facts_record_each_call_s_sid_writes():
     assert e["calls"] == 3 and e["sid_base"] == 0xD400
     assert all(w == [[0, n]] for n, w in enumerate(e["writes"]))  # the cell increments
     assert e["unpinned_inputs"] == []
+    assert e["reads"] == [[], [], []]  # nothing volatile is read at play time
+
+
+def test_emulate_facts_carry_the_reads_of_each_call():
+    trace, _ = _smc_trace()
+    trace.inputs = [
+        (-1, 0x1000, 0, 0xD012, 9),
+        (1, 0x1002, 0, 0xD012, 7),
+        (1, 0x1002, 0, 0xD41B, 3),
+    ]
+    e = GF.emulate_facts(trace, calls=3)
+    assert e["reads"] == [[], [[0x1002, 0xD012, 7], [0x1002, 0xD41B, 3]], []]
 
 
 def _front_end(out):
@@ -123,10 +135,20 @@ def test_md_procs_reads_lines_and_gotos():
     assert GC.md_procs(MD) == {0x1000: (3, 1), 0x1020: (2, 0)}
 
 
-def _pair(stmts, ops, sites=10, gotos=0, unresolved=0, unreachable=0):
-    mine = {"name": "p", "sites": sites, "stmts": stmts, "gotos": gotos, "raw_pcode_ops": 0}
-    theirs = {
+def _pair(stmts, ops, sites=10, gotos=0, unresolved=0, unreachable=0, body=None):
+    pcs = list(range(sites))
+    mine = {
+        "name": "p",
         "sites": sites,
+        "pcs": pcs,
+        "stmts": stmts,
+        "gotos": gotos,
+        "raw_pcode_ops": 0,
+    }
+    theirs = {
+        "name": "g",
+        "sites": sites,
+        "pcs": ["%04x" % a for a in (pcs if body is None else body)],
         "pcode_ops": ops,
         "gotos": 0,
         "unresolved": unresolved,
@@ -140,10 +162,15 @@ def test_flag_verdicts():
     assert GC._flag(*_pair(200, 100), GC.TOL)[0] == "ours_bigger"
     assert GC._flag(*_pair(5, 100, unresolved=2), GC.TOL)[0] == "ghidra_incomplete"
     assert GC._flag(*_pair(5, 100, unreachable=1), GC.TOL)[0] == "ghidra_incomplete"
-    mine, theirs = _pair(5, 100)
-    theirs["sites"] = 2
+    mine, theirs = _pair(5, 100, body=range(2))
     assert GC._flag(mine, theirs, GC.TOL)[0] == "ghidra_partial"
+    assert "misses 8 of 10" in GC._flag(mine, theirs, GC.TOL)[1]
     assert GC._flag(*_pair(5, 4), GC.TOL)[0] == "ghidra_lead"
+    # a body Ghidra emitted no high P-Code for is nothing to compare, not a lead
+    assert GC._flag(*_pair(200, 0), GC.TOL)[0] == "ghidra_incomplete"
+    mine, theirs = _pair(200, 100)
+    theirs["error"] = "Decompiler process died"
+    assert GC._flag(mine, theirs, GC.TOL)[0] == "ghidra_incomplete"
     assert GC._flag(*_pair(1, 100, gotos=5), GC.TOL)[0] == "ours_bigger"
 
 
@@ -176,6 +203,7 @@ def test_compare_joins_both_sides(tmp_path):
                 "warnings": 0,
                 "uniques": 3,
                 "ms": 1,
+                "pcs": ["%04x" % b.src for b in prog.procs["tick"].blocks.values() if b.src],
             }
         ],
     }
@@ -185,4 +213,19 @@ def test_compare_joins_both_sides(tmp_path):
     doc = GC.compare(out, g)
     assert doc["totals"]["ours"]["sites"] > 0
     assert any(r["entry"] == "%04X" % entry for r in doc["procs"])
+    assert set(doc["alignment"]) == {"merged", "clones"}
     assert "| proc |" in GC.markdown(doc)
+
+
+def test_alignment_names_the_merge_and_the_clones():
+    mine = {
+        0x10: {"name": "tick", "pcs": [0x10, 0x12]},
+        0x20: {"name": "sub", "pcs": [0x20]},
+        0x21: {"name": "sub_0021", "pcs": [0x20]},
+    }
+    theirs = {0x10: {"name": "FUN_0010", "pcs": ["0010", "0012", "0020"]}}
+    a = GC.alignment(mine, theirs)
+    assert a["merged"] == [
+        {"entry": "0010", "ghidra": "FUN_0010", "merges": ["sub", "sub_0021", "tick"]}
+    ]
+    assert a["clones"] == [["sub", "sub_0021"]]

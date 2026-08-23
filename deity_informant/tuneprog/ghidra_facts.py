@@ -1,8 +1,7 @@
 """Export a finished pipeline output directory as facts for headless Ghidra.
 
-``ghidra_facts.json`` + ``image_post_init.bin`` carry everything the trace knows
-that a static tool cannot: the post-init image, entry procedures, SMC cell
-addresses with their kind, resolved computed-jump target sets, regions, inputs.
+``ghidra_facts.json`` + ``image_post_init.bin`` carry what a static tool cannot
+know: the post-init image, entries, SMC cells, jump targets, regions, inputs.
 """
 
 from __future__ import annotations
@@ -148,33 +147,42 @@ REG_IN = 0x10000
 
 
 def emulate_facts(trace, calls=8, base=0xD400, size=0x19):
-    """What each of the first ``calls`` play calls last wrote to each SID register.
+    """Each of the first ``calls`` play calls as the SID writes it made, in order.
 
-    Comparing last-writes rather than whole-register state keeps the oracle
-    independent of what the post-init image happens to hold at the I/O window.
+    ``pins`` are the entry registers a call read live-in and ``reads`` every
+    other volatile input it consumed, both in consumption order.
     """
     w = trace.wlog
     if not w or "call" not in w:
         return None
     call, addr, val = w["call"], w["addr"], w["val"]
-    writes = []
+    # register changes, the form the emulator side's memory diff also produces
+    sid, writes = bytearray(trace.image_post_init[base : base + size]), []
     for c in range(calls):
-        last = {}
-        for a, v in zip(addr[call == c], val[call == c]):
-            if base <= a < base + size:
-                last[int(a) - base] = int(v)
-        writes.append([[k, last[k]] for k in sorted(last)])
-    pins = [
-        [int(c), int(a) - REG_IN, int(v)]
-        for c, _site, _i, a, v in trace.inputs
-        if a >= REG_IN and 0 <= c < calls
-    ]
+        band = (call == c) & (addr >= base) & (addr < base + size)
+        seq = []
+        for a, v in zip(addr[band], val[band]):
+            off, v = int(a) - base, int(v)
+            if sid[off] != v:
+                sid[off] = v
+                seq.append([off, v])
+        writes.append(seq)
+    pins, reads = [], [[] for _ in range(calls)]
+    # init-phase inputs (call -1) are already baked into the post-init image
+    for c, site, _i, a, v in trace.inputs:
+        if not 0 <= c < calls:
+            continue
+        if a >= REG_IN:
+            pins.append([int(c), int(a) - REG_IN, int(v)])
+        else:
+            reads[c].append([int(site), int(a), int(v)])
     return {
         "calls": calls,
         "sid_base": base,
         "sid_len": size,
         "writes": writes,
         "pins": pins,
+        "reads": reads,
         "regs": trace.meta.get("post_init_regs") or {},
         "unpinned_inputs": [i for i in inputs(trace) if i["addr"] < REG_IN],
     }

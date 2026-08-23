@@ -2,7 +2,8 @@
 
 Ghidra is fed the same dynamic facts the tuneprog decompiler uses (post-init image, SMC cell set, entry
 procedures, resolved computed jumps, regions) and produces its own high P-Code and C. Three automated oracles
--- complexity, coverage, semantics -- compare the two sides and can fail with a reason.
+-- complexity, coverage, semantics -- compare the two sides and can fail with a reason; the nightly workflow
+runs all three over every committed certificate.
 
 ## 1. Mechanism: SLEIGH context constructors == `lift.py` residualisation
 
@@ -29,9 +30,13 @@ Build-time changes against the stock `6502.slaspec` (fetched at build time, neve
 * Operand subtables (`OP1`, `OP2`, `OP2LD`, `OP2ST`, illegal-RMW `OP3`) cover every legal memory instruction
   plus SLO/RLA/SRE/RRA/DCP/ISC in one constructor per addressing mode. Illegal opcodes that spell out their
   own operand get twins by rewriting `6510_illegal.sinc`; the SLEIGH compiler rejects a wrong operand size.
-* Stock `JSR`/`RTS` store and return to `inst_next`, one byte off the hardware, and a 6510 program can read
-  its own return address off the stack. `build.py` patches to `inst_next-1` / `return [tmp+1]`
-  (`tests/test_smc_sleigh.py` pins both).
+* Two hardware facts the stock 6502 spec has wrong, both patched in `smc.PATCHES` (`_in_ctor` replaces
+  inside one constructor or macro). `JSR`/`RTS` store and return to `inst_next`, one byte off, and a 6510
+  program can read its own return address off the stack: `inst_next-1` / `return [tmp+1]`. And
+  `subtraction_flags1` sets `C` to the *borrow*, the 6510's complement
+  ([#3189](https://github.com/NationalSecurityAgency/ghidra/issues/3189), open) — `SBC`, `ISC` and `SBX` are
+  its three users and the flip is one `!= 0` to `== 0`. `tests/test_smc_sleigh.py` pins the stack convention
+  at the P-Code shape level and the borrow by evaluating the raw P-Code against `lift.py`'s own `SBC`.
 
 ### What Ghidra needs on top of the SLEIGH change
 
@@ -64,6 +69,12 @@ python3 tools/tuneprog_ghidra.py OUT --compare OUT/gout    # the join + the flag
 the four CI smoke tests: illegal-opcode decode, hello-world SMC export, complexity/coverage oracle, semantic
 oracle.
 
+`.github/workflows/nightly.yml` runs the same three oracles over every committed certificate, four shards of
+`tools/tuneprog_recert.py --shard I/4 --ghidra-dir DIR`: the replay writes the facts (`--ghidra-dir` implies
+`--ghidra-facts`), the job runs `export` and `emulate` per certificate in the cached image, and the last
+recert invocation joins them and exits 1 on any `ours_bigger`. One certificate's export is 13 s and its
+emulate 9 s, so 51 are ~19 min of headless Ghidra, ~5 min a shard, against ~500 CPU-s for the whole replay.
+
 ## 3. The comparison
 
 Twenty seconds of music per tune, one certified pipeline run each (no divergence), against one headless Ghidra
@@ -73,23 +84,23 @@ function body); raw ops = `Instruction.getPcode()` summed over them vs `LiftedSi
 
 | tune | sites (G/us) | raw ops (G/us) | high ops / S4 stmts | C / md lines | gotos (G/us) | unresolved | dropped blocks | decompile |
 |---|---|---|---|---|---|---|---|---|
-| Automatas | 582/615 | 1995/2177 | 6112 / 958 | 839 / 221 | 0/0 | 0 | 0 | 575 ms |
-| Commando (song 1) | 320/353 | 1302/1501 | 3584 / 337 | 345 / 278 | 2/1 | 0 | 0 | 301 ms |
-| GoatTracker (Je suis Linus) | 304/422 | 1318/1725 | 435 / 541 | 258 / 155 | 0/0 | 0 | 105 | 397 ms + 1 crash |
-| Ghouls'n'Ghosts (song 1) | 664/718 | 2018/2743 | 3918 / 678 | 795 / 685 | 29/15 | 0 | 6 | 634 ms |
+| Automatas | 582/615 | 1995/2177 | 6112 / 736 | 837 / 146 | 0/0 | 0 | 0 | 645 ms |
+| Commando (song 1) | 320/353 | 1302/1501 | 3583 / 325 | 346 / 43 | 2/0 | 0 | 0 | 358 ms |
+| GoatTracker (Je suis Linus) | 304/422 | 1318/1725 | 435 / 493 | 258 / 144 | 0/0 | 0 | 105 | 490 ms + 1 crash |
+| Ghouls'n'Ghosts (song 1) | 664/718 | 2018/2743 | 8203 / 498 | 1054 / 481 | 76/21 | 0 | 6 | 1,089 ms |
 
-Pipeline wall time (trace + S2-S4 + verify + print + facts): 12 s, 3 s, 3 s, 3 s. Headless Ghidra wall time
-(JVM start, import, analysis, decompile, emulate): 18-19 s per tune; the decompile column is `DecompInterface`
-time only.
+Headless Ghidra wall time (JVM start, import, analysis, decompile): 13 s per tune, and 9 s for the emulate
+pass; the decompile column is `DecompInterface` time only. The md-lines column is a 20 s horizon, not the
+certificate's.
 
 ### A/B: the same run without the SMC facts (`SMC=0`)
 
 | tune | high ops (with/without) | C lines | dropped blocks | decompiler warnings |
 |---|---|---|---|---|
-| Automatas (73 cell sites) | 6112 / 2515 | 839 / 658 | 0 / 65 | 10 / 125 |
-| Commando (0 cell sites) | 3584 / 3584 | 345 / 345 | 0 / 0 | 0 / 0 |
+| Automatas (73 cell sites) | 6112 / 2515 | 837 / 656 | 0 / 65 | 10 / 125 |
+| Commando (0 cell sites) | 3583 / 3583 | 346 / 346 | 0 / 0 | 0 / 0 |
 | GoatTracker (14) | 435 / 204 | 258 / 275 | 105 / 128 | 113 / 130 |
-| Ghouls'n'Ghosts (22) | 3918 / 147 | 795 / 87 | 6 / 0 | 28 / 10 |
+| Ghouls'n'Ghosts (22) | 8203 / 147 | 1054 / 87 | 6 / 0 | 34 / 10 |
 
 Commando has no SMC cells and is bit-identical in both arms: the control works.
 
@@ -100,11 +111,11 @@ Commando has no SMC cells and is bit-identical in both arms: the control works.
   appear that way in the C, against 0 and 1 without the facts; GoatTracker's 3 of 14 is the crashed
   `row_apply`, where the rest live. The four `JumpTable.writeOverride` calls on GoatTracker and
   Ghouls'n'Ghosts become switches over our target sets; S6 region names carry over (`T1900[cursor_12CE]`).
-* **Bigger.** Ghidra's high P-Code is 6.4x (Automatas), 10.6x (Commando), 5.8x (Ghouls'n'Ghosts) our S4
-  statement count; its C is 1.2-3.8x our printed form. The tuneprog is trace-exact, not
+* **Bigger.** Ghidra's high P-Code is 8.3x (Automatas), 11.0x (Commando), 16.5x (Ghouls'n'Ghosts) our S4
+  statement count; its C is 1.8-8.0x our printed form. The tuneprog is trace-exact, not
   sound-for-all-inputs: untaken arms are `trap`, registers dead in the trace are gone, the per-call schedule
   and periodicity collapse whole loops.
-* **Smaller.** GoatTracker is the one row below ours (435 vs 541), classified rather than credited:
+* **Smaller.** GoatTracker is the one row below ours (435 vs 493), classified rather than credited:
   `row_apply` (264 executed sites) kills the decompiler process in *both* arms, so the SLEIGH spec is not the
   cause, and its tick drops 105 blocks as unreachable.
 * **Inexpressible.** Opcode cells beyond the `RTS` pair (Automatas' `$10B8`/`$10BF` `ADC`<->`SBC`) stay
@@ -120,10 +131,35 @@ All three run through the same Docker entry and write JSON next to the export.
 high P-Code ops vs S4 statements, C lines vs `tuneprog.md` lines, gotos, unique temporaries, plus Ghidra's
 diagnostics (`DecompileResults` errors, `halt_baddata`/`switchD`, "Removing unreachable block"). Where Ghidra
 reports clean flow *and* our certificate holds, our statements-per-site and gotos-per-site must not exceed
-Ghidra's by more than `--tol` (default 1.5x); a violation is `ours_bigger` and localised. Sole flag on the
-four exemplars: Automatas' `tick`, 2.88 statements/site against 1.62 ops/site over eight sites (ours carries
-the phase counter and the call marshalling). Every other procedure is `ok`, `ghidra_partial` (Ghidra's single
-function body does not cover the sites our clone-per-entry procedure does) or `ghidra_incomplete`.
+Ghidra's by more than `--tol` (default 1.5x); a violation is `ours_bigger` and localised. Every other
+procedure is `ok`, `ghidra_lead`, `ghidra_incomplete` or `ghidra_partial`. Clean flow means no unresolved
+control flow, no dropped block, no `DecompileResults` error *and* some high P-Code: a body over executed
+sites that produced none is nothing to compare, which is what "Decompiler process died" and "Low-level
+Error: Overlapping input varnodes" leave behind (GoatTracker's `row_apply`, *Playful Professor*'s `p_6200`,
+both SID Wizard tunes).
+
+No flag on the four exemplars. Over the 51 certificates two survive, both standing:
+
+* *Deflektor*'s `init`, 2 `goto` against Ghidra's 0 over the same 55 sites (51 printed lines to 35 C lines).
+  They are the copy fold's cross-copy edges inside `for v in 0, 1, 2`; Ghidra does not fold and writes the
+  three copies out flat. The measured refusal is [tuneprog-plan.md](tuneprog-plan.md) §2.8.
+* *Alien 3*'s `tick`, 0.80 statements/site against 0.47 ops/site over 15 sites. Our twelve statements keep
+  the three register saves to `$01FA`-`$01FC` that Ghidra's frame analysis folds into one `uStack0000 =
+  param_1`; the tune is `stack: residual` (§2.5's row). On the like-for-like measure we are the smaller
+  side, 8 printed lines to 15 C lines.
+
+`tuneprog_recert.py --known CERT:ENTRY` names a flag that is a recorded row, so the nightly gates on a flag
+beside those two rather than on their standing.
+
+Ghidra's bodies are disjoint and our procedures are cloned per entry, so the two sides align only as address
+sets: each `per_function` row carries the executed addresses its body owns (`pcs`), and `ghidra_partial` is a
+body that misses one of our executed sites, named, however the counts compare — a body holding *more* sites
+than ours is the merge case, not a cover. `comparison.json`'s `alignment` states both shapes: `merged` is a
+Ghidra body holding sites from more than one of our procedures, `clones` our procedures sharing a site.
+GoatTracker's `row_apply` (`$11A4`) merges `p_1130` and `p_11A4`, which are also its clone pair; Automatas'
+`p_1006`/`p_1022` and Commando's `p_500C`/`tick` are clone pairs Ghidra keeps apart; Ghouls'n'Ghosts has
+neither. Partial rows: 2 of 8 on Automatas, 2 of 3 on Commando, 3 of 13 on GoatTracker, 1 of 4 on
+Ghouls'n'Ghosts.
 
 **Coverage** (`coverage.json`). Ghidra's static reachability from our entries and jump-table references, minus
 the trace's executed sites: the code the horizon and subtune selection never exercised, i.e. the `trap` arms.
@@ -140,21 +176,39 @@ subtunes do (the `--songs all` case). No `table_arm` ranges remain on either pat
 static closure enumerated those targets and Ghidra reached exactly them.
 
 **Semantics** (`emulate.json`). Ghidra's P-Code emulator runs the post-init image for eight play calls with
-the entry registers the trace pinned and the post-init CPU state, recording every executed pc and every
-`$D400-$D418` write:
+the entry registers the trace pinned, the post-init CPU state and the per-call input sequence the trace
+recorded (`emulate.reads`: each volatile read's `(pc, address, value)`, written into memory at that pc before
+the step). It records every executed pc and the ordered sequence of `$D400-$D418` register *changes*, which
+is what the facts carry on our side too — both reduced by the same rule from the same post-init bytes, so a
+replay reaching the same end state by a different route is a disagreement:
 
-| tune | steps | pcs outside the trace | SID write mismatches | agree |
+| tune | steps | pcs outside the trace | SID change sequence | agree |
 |---|---|---|---|---|
-| Automatas | 1277 | 0 | 0 | yes |
-| Commando | 2127 | 0 | 0 | yes |
-| GoatTracker | 3006 | 0 | 8 (from call 2) | no |
-| Ghouls'n'Ghosts | 4154 | 64 (from call 2) | 7 | no |
+| Automatas | 1277 | 0 | matches | yes |
+| Commando | 2127 | 0 | matches | yes |
+| GoatTracker | 3006 | 0 | matches | yes |
+| Ghouls'n'Ghosts | 1475 | 0 | matches | yes |
 
-The two disagreements are open and localised: GoatTracker's `$D400/$D401` differ from call 2 with no pc ever
-leaving the traced site set; Ghouls'n'Ghosts leaves it at `$681C` on call 2. Entry registers, flags, stack
-pointer and pushed return address were all pinned and made no difference. Remaining candidates: per-call
-inputs the facts do not carry (both traces record only `entry_reg` inputs), and Ghidra's emulator over
-re-decoded self-modified bytes.
+The two disagreements the earlier run carried were one cause, and it was not the inputs. Over the 20 s traces
+GoatTracker and Ghouls'n'Ghosts consume exactly one volatile input each, an init-phase `entry_reg` read the
+post-init image already carries; Automatas' 2,227 `$D012` reads are all init's wait loop; only Commando reads
+anything at play time (1,002 `entry_reg`). Our own `PcodeVM`, run back to back from the post-init image
+exactly as `EmulateTrace` runs, reproduced all four change sequences, so the environment was not it either.
+The first differing step, register state included: Ghouls'n'Ghosts at call 0 step 631, `$680A` `BCS $6810`
+with `A = $FF` after `SEC; SBC $73` — the hardware clears `C` on a borrow, Ghidra set it, and the tick then
+took a branch the trace never did (`$681C`, the 64 unknown pcs) and wrote `$D416 = $3F` for `$1F` at `$684E`;
+GoatTracker at call 1 step 448, `$130C`, the second `SBC $1543,Y` of a 16-bit subtract, `A = $FF` for `$00`
+with the borrow inverted. Both are §1's `subtraction_flags1` patch (ghidra#3189); with it the emulator agrees
+with all four traces step for step, registers included (Ghouls'n'Ghosts' 4,154 steps become the 1,475 our own
+VM runs).
+
+Over all 51 certificates: 46 agree, 5 do not, and none of the 5 is a Ghidra defect. Four are the entry-frame
+limit below — the tick of *Jodler*, *Playful Professor*, *Alien 3* and *Easy Does It* is an installed handler
+whose frame is an interrupt frame, so it never returns to the sentinel a fake `JSR` pushed and walks into
+`$FFFF`, `$FF00` (the KERNAL stub) or `$0100` (the stack page it just popped). The fifth,
+*I Could Eat a Knob at Night*, is the oracle's model of a call: our own `PcodeVM`, run back to back from the
+post-init image under the same conditions, disagrees with the trace in the same way from call 0, so the cold
+call is not the machine's tick 0. Both are reported, not enforced.
 
 Scope limits of this oracle:
 
@@ -164,19 +218,30 @@ Scope limits of this oracle:
 * It does not validate the SMC constructors: Ghidra's emulator decodes from live memory with the flowing
   context, so `noflow` per-address database values never reach it, and the stock constructors read the
   modified bytes anyway. `tests/test_smc_sleigh.py` pins them at the P-Code shape level against `lift.py`.
+* `SBC`'s carry is no longer independent either, `smc.PATCHES` having brought it to the hardware's rule and
+  so to `lift.py`'s. The patch is justified by the 6510, not by agreement: our lifter is a separate table
+  (`jennings.opcodes`), the stock spec's own `CMP` uses the right rule two constructors away, and the defect
+  is upstream and open.
 
 ## 5. Limits
 
 * Opcode cells whose alternative is not `RTS` are residual; overlay address spaces are the other known route,
   at the price of manual control-flow resolution between overlays.
 * Ghidra function bodies are disjoint and our procedures are cloned per entry, so per-procedure rows only
-  compare where the entry addresses match and Ghidra's body covers our sites; the oracle labels the rest
-  `ghidra_partial` rather than scoring it.
+  compare where the entry addresses match and Ghidra's body covers our executed sites as a set; the oracle
+  labels the rest `ghidra_partial` and names where those sites went (`alignment`) rather than scoring them.
 * The export creates labels and comments, not structure data types for stride views: region bases can sit
   inside executed code, and defining data there breaks disassembly.
 * The decompiler inlines thunks and tail calls, so a Ghidra function's high P-Code can include a callee's;
   totals are the safer comparison.
-* `EmulateTrace` single-steps and caps at 400k steps per call.
+* `EmulateTrace` single-steps, enters the tick as a subroutine and stops at a pushed sentinel, and caps at
+  400k steps per call (a call that hits the cap ends the run rather than spending the cap on each of the
+  rest). A tick whose frame is an interrupt frame -- an installed CINV handler, which chains to the KERNAL
+  epilogue and returns by `RTI` -- never reaches that sentinel: 4 of the 51. A second entry (the CIA #2 NMI)
+  is not emulated at all, so a two-entry program's calls are the tick's alone.
+* Eight back-to-back calls from the post-init image is not the machine's first ticks on every tune: one of
+  the 51 diverges from call 0 under our own VM as well as Ghidra's, so the model of a call, not the
+  emulator, is the limit there.
 
 ## References
 
