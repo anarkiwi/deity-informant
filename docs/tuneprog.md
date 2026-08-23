@@ -46,7 +46,7 @@ Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 | S4 | SSA over registers/flags/uniques, DCE, copy/constant propagation, 6510 idiom peepholes, then stack elimination: frames are values and the machine stack goes | `ssa.py`, `idioms.py`, `frames.py`, `stack.py` |
 | S5 | structuring: loops, if/else, switch, counted `for` (over a recurrence's domain, or a family's copies where a latch steps the index or k prologues name it), the phase; a statically closed arm nests in its branch and owns no dominance | `structure.py`, `loops.py`, `graph.py` |
 | S6 | presentation over a view: value inlining, machine-texture removal, the three readings of one storage cell (mirrors, a slot stored once, the value a read-modify-write leaves), the rewrites the certified IR's intervals prove (masks, comparisons, the borrow a two-armed branch hides), naming a residual program's frames, region typing by accessor shape, 16-bit views, the per-copy columns as the operands they stand for, struct views (record and transpose splits) and roles, outlining, shared tails, then dead values and the copies a join leaves | `inline.py`, `texture.py`, `cells.py`, `gated.py`, `ranges.py`, `frame.py`, `partition.py`, `halves.py`, `word.py`, `copyview.py`, `recover.py`, `facts.py`, `views.py`, `fold.py`, `tails.py`, `unroll.py`, `live.py` |
-| S7 | Python code generation, the certificate document, the `tuneprog.md` text form | `emit.py`, `pseudocode.py`, `printer.py` |
+| S7 | Python code generation, the certificate document, the `tuneprog.md` text form -- `meta`, `state`, `data` (every table's bytes, reach and accessors), `inputs`, then one procedure each | `emit.py`, `pseudocode.py`, `printer.py`, `datablock.py` |
 | S8 | per-call differential verification against the trace, periodicity, chunked and resumable; a second entry replays at the traced schedule's store granularity | `verify.py` |
 | — | the facts a headless Ghidra needs from the trace, and the oracles that compare the two ([`ghidra-highpcode-export.md`](ghidra-highpcode-export.md)) | `ghidra_facts.py`, `ghidra_compare.py` |
 
@@ -69,10 +69,10 @@ presentation structure 383  loops 307  inline 192  texture 308  cells 275
              frame 51  partition 285  halves 224  word 197  fold 472
              tails 290  copyview 279  unroll 399  live 249  facts 284
              recover 415  views 295  gated 134  ranges 76
-text         pseudocode 485  printer 452
+text         pseudocode 495  printer 450  datablock 240
 driver       pipeline 489  resume 67  __init__ 138
 oracle       grid 157  tunes 60
-baseline     ghidra_facts 219  ghidra_compare 182   58 modules, 16,809 lines
+baseline     ghidra_facts 219  ghidra_compare 182   59 modules, 17,059 lines
 ```
 
 Stage entry points, which are also the module boundaries:
@@ -81,7 +81,7 @@ Stage entry points, which are also the module boundaries:
 `emit.emit_python`,
 `verify.verify`, `siblings.correspond`, `copymerge.plan`, `structure.structure`,
 `recover.recover`, `copyview.expand`, `partition.repartition`, `views.decorate`,
-`printer.render`.
+`printer.render`, `datablock.section`.
 
 ## Use
 
@@ -493,6 +493,27 @@ Every one has `divergences: 0` and `envelope_traps: 0`.
   the condition for cutting at all, is an access contained in no claim, and that access
   cannot move into a part -- so the parent keeps the fused range it asserts and its
   parts' ranges lie inside it, those bytes listed twice.
+- **Data prints as data** (`datablock.py`). `## data` replaces `## const`: every run
+  of storage the program reads prints its own bytes. A region's cells are its extent,
+  or the columns its stride marks off; its *reach* is the union of its accessors'
+  envelopes over them, and a cell some store's envelope reaches is state, not data --
+  `partition._kind`'s rule read per byte, which is why a frequency table a 25-note
+  overrun fused into a `state` region still prints (Commando's `FREQ`). Regions whose
+  extents overlap, or that one frequency layout names, are one block, so three extents
+  of one pattern array print once and a `lo|hi` table's two columns print as one entry
+  list. The layout is the S6 names' own: a note table as 16-bit entries, equal-stride
+  columns as one row per record under their field names, everything else as hex rows
+  of 32 bytes; then one line per distinct *printed* accessor (`FREQ[t7 << 1]` in
+  `oscillator`), which is why `render` renders the procedures before the header. Over
+  the 51 certificates it carries 189,194 bytes in 15,903 rows, and no tune's program
+  text moves; header rows fall 5,065 -> 4,737, one block naming what a row per region
+  named. Refused: an `init_constant` region, whose value init computes and the
+  *pre*-init `Tuneprog.image()` does not carry (15,249 bytes over the 51, 2,308 of them
+  SID Wizard's unpacked tables); and a region no accessor reaches, whose only read S4
+  folded to a literal. `datablock.reach_bytes` is that reach and
+  `tools/tuneprog_floor.py` now calls it, so the tool and the print count one thing:
+  Commando 1,941 bytes, against the 1,942 the region *extents* gave (the one byte is
+  `$5526`, read by nothing in the S4).
 - **Names are role-derived**: `timer_2`, `cursor_1490`, `b148D`. A per-family
   dictionary keyed on the player signature would name them from the original source.
 - **A 16-bit view is a pair of cells.** A cell is `(region, constant address)`, and a

@@ -137,11 +137,11 @@ def test_the_note_table_is_found_by_its_octave_ramp():
         f *= 2 ** (1 / 12)
     lo = bytes(v & 0xFF for v in tab)
     hi = bytes(v >> 8 for v in tab)
-    assert R._freq_layout(lo + hi).startswith("12-TET lo|hi")
-    assert R._freq_layout(hi + lo).startswith("12-TET hi|lo")
+    assert R._freq_layout(lo + hi) == ("lo|hi", 96, 0)
+    assert R._freq_layout(hi + lo) == ("hi|lo", 96, 0)
     inter = bytes(b for v in tab for b in (v & 0xFF, v >> 8))
-    assert R._freq_layout(inter).startswith("12-TET u16le")
-    assert R._freq_layout(bytes(range(256))) == ""
+    assert R._freq_layout(inter) == ("u16le", 96, 0)
+    assert R._freq_layout(bytes(range(256))) is None
 
 
 def test_names_are_unique_stable_and_serialisable():

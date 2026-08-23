@@ -1,13 +1,14 @@
 """S7 text form: the certified tuneprog as anatomy-style pseudocode (``tuneprog.md``).
 
 Prints the S5 node tree with the S6 names: ``meta``, ``state`` (regions, roles and
-struct views), ``const`` tables, ``inputs``, then one procedure each. Machine
-plumbing (stack frames, register copies nothing reads) is dropped for print only.
+struct views), ``data`` (:mod:`.datablock`), ``inputs``, then one procedure each.
+Machine plumbing (stack frames, register copies nothing reads) is dropped for print.
 """
 
 from __future__ import annotations
 
 from .closure import closed_blocks
+from .datablock import section
 from .ir import Bin, Let, REGVAR, Var
 from .irwalk import call_order, forwarder, walk as ewalk
 from .live import printable
@@ -403,14 +404,6 @@ def _paired(r, addrs):
     return addrs is not None and set(range(r.base, r.base + r.size)) <= addrs
 
 
-def _const(prog, names):
-    return [
-        _row(r, names)
-        for r in sorted(prog.storage, key=lambda x: x.base)
-        if r.id >= 0 and r.kind in ("const", "image") and r.id not in names.view
-    ]
-
-
 def _inputs(prog):
     return [
         "$%04X %-14s at $%04X, %d reads (%s)" % (addr, kind, pc, count, PHASES.get(phase, phase))
@@ -427,19 +420,24 @@ def _base(prog, rid):
 
 
 def render(prog, structured, names, cert=None, pcs=True):
-    """``tuneprog.md``: meta, state, const, inputs, then every procedure."""
+    """``tuneprog.md``: meta, state, data, inputs, then every procedure.
+
+    The procedures render first: the data section states each table's accessors in
+    the form the program prints them in, which is what rendering them collects.
+    """
     body = Body(prog, names, pcs)
+    procs = [body.render(name, structured[name]) for name in _procs_order(prog)]
     out = ["# tuneprog: %s" % prog.meta.get("name", "?"), ""]
     for title, lines in (
         ("meta", _meta(prog, names, cert, untaken(structured))),
         ("state", _state(prog, names)),
-        ("const", _const(prog, names)),
+        ("data", section(prog, names, body.sites)),
         ("inputs", _inputs(prog)),
     ):
         out += ["## %s" % title, "", "```"] + (lines or ["(none)"]) + ["```", ""]
     out += ["## program", ""]
-    for name in _procs_order(prog):
-        out += ["```"] + body.render(name, structured[name]) + ["```", ""]
+    for lines in procs:
+        out += ["```"] + lines + ["```", ""]
     return "\n".join(out) + "\n"
 
 

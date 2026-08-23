@@ -56,6 +56,7 @@ class Names:
     column: dict = field(default_factory=dict)
     split: dict = field(default_factory=dict)
     voicemap: set = field(default_factory=set)
+    freq: dict = field(default_factory=dict)
     copies: dict = None
 
     def of(self, rid):
@@ -116,7 +117,7 @@ def _layouts(data, n):
 
 
 def _freq_layout(data, least=48, most=256):
-    """A note-frequency layout of ``data`` (parallel columns or u16), or ``''``."""
+    """A note-frequency layout ``(columns, entries, entries below an octave)`` of ``data``."""
     for n in range(min(len(data) // 2, most), least - 1, -1):
         for name, lo, hi in _layouts(data, n):
             cut = next((i for i, v in enumerate(hi) if v), n)
@@ -124,8 +125,8 @@ def _freq_layout(data, least=48, most=256):
                 continue
             v = [(h << 8) | l for l, h in zip(lo[cut:], hi[cut:])]
             if _semitones(v) >= least:
-                return "12-TET %s, %d entries (%d below one octave)" % (name, n, cut)
-    return ""
+                return name, n, cut
+    return None
 
 
 def _semitones(v, lo=1.04, hi=1.08):
@@ -218,14 +219,15 @@ def _freq(prog, names):
                 continue
             note = _freq_layout(a.init + q.init)
             if note:
-                cols = ["FREQ_LO", "FREQ_HI"] if "lo|hi" in note else ["FREQ_HI", "FREQ_LO"]
+                cols = ["FREQ_LO", "FREQ_HI"] if note[0] == "lo|hi" else ["FREQ_HI", "FREQ_LO"]
                 _name_freq(names, [a, q], note, cols)
 
 
-def _name_freq(names, regions, note, cols):
+def _name_freq(names, regions, lay, cols):
+    names.freq[tuple(r.id for r in regions)] = lay
     for r, col in zip(regions, cols):
         names.role[r.id] = "freq_table"
-        names.notes[r.id] = note
+        names.notes[r.id] = "12-TET %s, %d entries (%d below one octave)" % lay
         _uniq(names, r.id, col)
 
 

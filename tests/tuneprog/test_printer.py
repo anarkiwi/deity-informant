@@ -20,7 +20,7 @@ def _text(code, calls=6, pcs=True):
 
 def test_the_document_has_the_five_sections_and_one_block_per_procedure():
     doc = _text(counter("LDA #$07", "STA $D400", "INC cnt"))
-    for head in ("# tuneprog:", "## meta", "## state", "## const", "## inputs", "## program"):
+    for head in ("# tuneprog:", "## meta", "## state", "## data", "## inputs", "## program"):
         assert head in doc
     assert "entry     sub $" in doc and "calls/frame" in doc
     assert "tick():" in doc and "init():" in doc
