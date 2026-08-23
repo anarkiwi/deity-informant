@@ -123,9 +123,8 @@ def cells(stmt):
 
 def _word(x):
     """The two halves of an already-folded 16-bit read or write."""
-    base, idx = addr_split(x.a)
-    span = (base or 0, base or 0)
-    return [(x.lo, base, repr(idx), span), (x.hi, base, repr(idx), span)]
+    idx = repr(addr_split(x.a)[1])
+    return [(r, a, idx, (a, a)) for r, a in (x.lo, x.hi)]
 
 
 def _cmp(e):

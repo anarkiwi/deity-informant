@@ -103,7 +103,7 @@ def loaded(s):
             if type(x) is Load:
                 out.add(x.r)
             elif type(x) is R16:
-                out |= {x.lo, x.hi}
+                out |= {x.lo[0], x.hi[0]}
     return out
 
 
@@ -116,7 +116,7 @@ class Roles:
         self.freq = {r for r, k in names.role.items() if k == "freq_table"}
         self.image = {r for r, k in names.role.items() if k == "sid_image"}
         self.step = {r for r, k in names.role.items() if k in ("timer", "cursor", "ptr")}
-        self.filt = {r for p, g in names.u16group.items() if g == "filter" for r in p}
+        self.filt = {c[0] for p, g in names.u16group.items() if g == "filter" for c in p}
         self.prog = prog
 
     def io(self, s):

@@ -330,19 +330,17 @@ def _state(prog, names):
                     names.notes.get(rids[0], ""),
                 )
             )
-    half = {r for p in names.u16 for r in p}
-    for (lo, hi), name in sorted(names.u16.items(), key=lambda kv: _base(prog, kv[0][0])):
+    half = {}
+    for pair in names.u16:
+        for rid, addr in pair:
+            half.setdefault(rid, set()).add(addr)
+    for pair, name in sorted(names.u16.items(), key=lambda kv: kv[0][0][1]):
+        (lo, la), (_hi, ha) = pair
         if lo in names.view:
             continue
         out.append(
             "%-16s $%04X %-14s %-10s %s"
-            % (
-                name,
-                _base(prog, lo),
-                "u16",
-                names.role.get(lo, ""),
-                "lo|hi $%04X" % _base(prog, hi),
-            )
+            % (name, la, "u16", names.role.get(lo, ""), "lo|hi $%04X" % ha)
         )
     # a scalar a local group names only inside its loop is still its own row
     cells = {rid for (rid, _a), hits in names.slots.items() if any(not h[3] for h in hits)}
@@ -351,9 +349,14 @@ def _state(prog, names):
             continue
         if r.id in cells and r.size <= 2:
             continue  # a scalar the group view already lists, address by address
-        if r.id not in half:
+        if not _paired(r, half.get(r.id)):
             out.append(_row(r, names, "init-only" if r.kind == "init_constant" else ""))
     return out
+
+
+def _paired(r, addrs):
+    """True when every cell of a region is a half of some named 16-bit pair."""
+    return addrs is not None and set(range(r.base, r.base + r.size)) <= addrs
 
 
 def _const(prog, names):

@@ -60,8 +60,8 @@ def _expr(e, c):
         tok, a = _addr(e.a, c, c.region(e.r))
         return ("l", e.cls, e.w, tok), Load(e.cls, a, e.w, e.lo, e.hi, e.r)
     if t is R16:
-        tag = c.region(e.lo)
-        c.region(e.hi)
+        tag = c.region(e.lo[0])
+        c.region(e.hi[0])
         tok, a = _addr(e.a, c, tag)
         return ("r16", tok), R16(e.lo, e.hi, a)
     if t is Bin:
@@ -96,8 +96,8 @@ def _stmt(s, c):
         tv, v = _expr(s.v, c)
         return ("st", s.cls, s.w, ta, tv), Store(s.cls, a, v, s.w, s.lo, s.hi, s.r, s.src)
     if t is W16:
-        tag = c.region(s.lo)
-        c.region(s.hi)
+        tag = c.region(s.lo[0])
+        c.region(s.hi[0])
         ta, a = _addr(s.a, c, tag)
         te, e = _expr(s.e, c)
         return ("w16", ta, te), W16(s.lo, s.hi, a, e, s.src)

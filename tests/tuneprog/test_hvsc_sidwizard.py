@@ -58,7 +58,7 @@ def test_emomyst_prints_its_relocation_as_a_loop_over_the_pointer_tables():
     text, prog = run.text, run.prog
     lines = "\n".join(body(text, "init"))
     assert "while True:" in lines  # the DataPtr/PtrValu loop, not 30 unrolled stores
-    assert re.search(r"ptr_\d\[\(\(ptr\[1\] << 8\) \| ptr\) \+ [12]\] = ", lines), lines
+    assert re.search(r"ptr_\d\[ptr \+ [12]\] = ", lines), lines  # through the folded pointer
     stores = [
         s
         for b in prog.procs["init"].blocks.values()

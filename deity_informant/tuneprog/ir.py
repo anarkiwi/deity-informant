@@ -93,10 +93,13 @@ class Bin:
 
 @dataclass(frozen=True, slots=True)
 class R16:
-    """S6 only -- a 16-bit read of the ``lo``/``hi`` region pair addressed by ``a``."""
+    """S6 only -- a 16-bit read of the ``lo``/``hi`` cells; ``a`` addresses the low one.
 
-    lo: int
-    hi: int
+    A cell is ``(region, constant address)``: one region can hold both halves.
+    """
+
+    lo: tuple
+    hi: tuple
     a: object
 
 
@@ -140,10 +143,10 @@ class Phi:
 
 @dataclass(slots=True)
 class W16:
-    """S6 only -- a 16-bit assignment of ``e`` to the ``lo``/``hi`` pair at ``a``."""
+    """S6 only -- a 16-bit assignment of ``e`` to the ``lo``/``hi`` cells at ``a``."""
 
-    lo: int
-    hi: int
+    lo: tuple
+    hi: tuple
     a: object
     e: object
     src: int = 0

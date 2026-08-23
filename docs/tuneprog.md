@@ -45,7 +45,7 @@ Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 | — | front end → IR: one procedure per CFG procedure, one block per node, every memory op typed | `build.py` |
 | S4 | SSA over registers/flags/uniques, DCE, copy/constant propagation, 6510 idiom peepholes, then stack elimination: frames are values and the machine stack goes | `ssa.py`, `idioms.py`, `frames.py`, `stack.py` |
 | S5 | structuring: loops, if/else, switch, counted `for` (over a recurrence's domain, or a family's copies where a latch steps the index or k prologues name it), the phase; a statically closed arm nests in its branch and owns no dominance | `structure.py`, `loops.py`, `graph.py` |
-| S6 | presentation over a view: value inlining, machine-texture removal, naming a residual program's frames, region typing by accessor shape, 16-bit views, the per-copy columns as the operands they stand for, struct views (record and transpose splits) and roles, outlining, shared tails | `inline.py`, `texture.py`, `frame.py`, `partition.py`, `word.py`, `copyview.py`, `recover.py`, `facts.py`, `views.py`, `fold.py`, `tails.py`, `unroll.py`, `live.py` |
+| S6 | presentation over a view: value inlining, machine-texture removal, naming a residual program's frames, region typing by accessor shape, 16-bit views, the per-copy columns as the operands they stand for, struct views (record and transpose splits) and roles, outlining, shared tails | `inline.py`, `texture.py`, `frame.py`, `partition.py`, `halves.py`, `word.py`, `copyview.py`, `recover.py`, `facts.py`, `views.py`, `fold.py`, `tails.py`, `unroll.py`, `live.py` |
 | S7 | Python code generation, the certificate document, the `tuneprog.md` text form | `emit.py`, `pseudocode.py`, `printer.py` |
 | S8 | per-call differential verification against the trace, periodicity, chunked and resumable; a second entry replays at the traced schedule's store granularity | `verify.py` |
 | — | the facts a headless Ghidra needs from the trace, and the oracles that compare the two ([`ghidra-highpcode-export.md`](ghidra-highpcode-export.md)) | `ghidra_facts.py`, `ghidra_compare.py` |
@@ -66,13 +66,13 @@ program      ir 440  interp 288  irwalk 319  graph 82  lower 264  build 482
              wire 78  ssa 431  frames 409  stack 218  idioms 401  emit 403
              verify 423  period 113
 presentation structure 356  loops 307  inline 199  texture 491  frame 51
-             partition 285  word 379  fold 472  tails 290  copyview 279
-             unroll 399  live 96  facts 284  recover 328  views 295
-             eqsat 284  eqrules 250  ranges 76
-text         pseudocode 481  printer 405
+             partition 285  halves 213  word 197  fold 472  tails 290
+             copyview 279  unroll 399  live 96  facts 284  recover 415
+             views 295  eqsat 284  eqrules 250  ranges 76
+text         pseudocode 478  printer 408
 driver       pipeline 513  resume 67  __init__ 138
 oracle       grid 157  tunes 60
-baseline     ghidra_facts 219  ghidra_compare 182   57 modules, 16,770 lines
+baseline     ghidra_facts 219  ghidra_compare 182   58 modules, 16,891 lines
 ```
 
 Stage entry points, which are also the module boundaries:
@@ -497,11 +497,23 @@ Every one has `divergences: 0` and `envelope_traps: 0`.
   parts' ranges lie inside it, those bytes listed twice.
 - **Names are role-derived**: `timer_2`, `cursor_1490`, `b148D`. A per-family
   dictionary keyed on the player signature would name them from the original source.
-- **16-bit views need one carry chain.** `word.fold16` proves a pair from the carry
-  the low byte hands the high byte; halves stored by unrelated instructions
-  (Follin's frequency shadow, the pulse width) stay two bytes. A word whose halves are
-  two fields of one record view prints explicitly as `(lo | hi << 8)`: `names.u16` is
-  keyed by region, so a name taken from either half would silently claim the other.
+- **A 16-bit view is a pair of cells.** A cell is `(region, constant address)`, and a
+  pair is two cells one index expression reaches at two constant bases — so one region
+  may hold both halves (Follin's zero page), and `names.u16` is keyed by the pair.
+  `halves.py` is the byte vocabulary: the carry chain `lo = x + y; hi = x' + y' +
+  carry(x + y)`, the borrow chain with its `1 - (a cmp b)` folded to the negated
+  compare, the rotate `(lo >> 1) | ((hi & 1) << 7)`, and the read `(hi << 8) | lo`.
+  `word.py` applies them to the statements of one block and to the `lo += 1;
+  if lo == 0: hi += 1` diamond, where `(x + 1) == 0` is the carry it is. A half that is
+  computed and not stored (its value handed to a callee that stores it) pairs through
+  the load it makes of the other cell, and a stored half wins over a computed one. A
+  pair with one half inside the I/O band and one outside is refused: a chip register is
+  not memory. The carry the chain hands a third byte keeps the flag's name. Two byte
+  writes of one 16-bit SID register do *not* print as one statement — refused, measured:
+  folding them shortens the per-voice run the register-file loop is built from and
+  `unroll` realigns it (*Automatas*' `writeout` 3 rows → 2 + 1, +2 printed lines and a
+  block; *Jodler* +2 blocks). Halves stored by unrelated instructions still stay two
+  bytes.
 - **A callee's return value does not print.** `ir.retval` recovers the tick's own
   return; a procedure computing a byte for its caller prints an empty body.
 - **Sign extension and flag algebra print as written**: a patched branch dispatcher
