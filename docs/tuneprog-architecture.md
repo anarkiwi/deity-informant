@@ -12,7 +12,7 @@ Records, linked and never duplicated here:
 `docs/prototype-*.md` (the certified exemplars), `docs/certificates/` (the evidence).
 
 Numbers are from the tree at this document's commit, measured 2026-08-23:
-60 modules, 17,400 lines, 51 certificates, 829 tests.
+60 modules, 17,439 lines, 51 certificates, 836 tests.
 
 Contents: 1 definitions · 2 pipeline · 3 the lift end to end · 4 the IR ·
 5 verification and the certificate · 6 presentation · 7 CLI and tools ·
@@ -814,7 +814,7 @@ belongs to:
 | certify at 15 s, not run to length | Blackbird (*Quintessence*), Galway (*Comic Bakery*), Walker (*Chameleon*) |
 | refused by design | a CIA #2 source with no schedule (TOD alarm, serial, FLAG, CNT timer): 6 of 7,023 |
 | survey | 7,023-tune stratified sample at 30 s: **91.2 % of HVSC by weight certifies** (76.7 % raw), 2.5 % diverges, 6.2 % refused with a diagnosis, 0.26 % crashes; `--until-period` over 1,338: 99.4 % of certified programs complete by weight ([survey-tuneprog.md](survey-tuneprog.md)) |
-| code | `deity_informant/tuneprog/`, 60 modules, 17,400 lines, none over 500; 756 hermetic + 63 HVSC + 10 oracle tests, 96 % coverage; SSA 1.0–1.6 statements per instruction |
+| code | `deity_informant/tuneprog/`, 60 modules, 17,439 lines, none over 500; 763 hermetic + 63 HVSC + 10 oracle tests, 96 % coverage; SSA 1.0–1.6 statements per instruction |
 | baseline | the Ghidra high-P-Code export with SMC context ([ghidra-highpcode-export.md](ghidra-highpcode-export.md)), 8.3–16.5× our S4 — a baseline, not core. The three Ghidra oracles run nightly over all 51 certificates: the emulator agrees step for step on all four exemplars, 5 of 51 disagree for reasons [tuneprog-backlog.md](tuneprog-backlog.md) §2.6 records, and the 2 standing `ours_bigger` flags are carried as `--known`, so the gate is clean. Beside it the `sidplayfp` grid oracle |
 | merged PRs | #225–#286, one stage each, every one on green CI with recert reproduced |
 
@@ -942,7 +942,7 @@ record — is [tuneprog-backlog.md](tuneprog-backlog.md) §3; the open work by l
 
 ## 10. Module map
 
-`deity_informant/tuneprog/`, 60 modules, 17,400 lines, none over 500
+`deity_informant/tuneprog/`, 60 modules, 17,439 lines, none over 500
 (`pipeline.py` is the longest at 491). Line counts from `wc -l` at this commit.
 
 **Front end — S0/S1, the traced machine**
@@ -1040,7 +1040,7 @@ Outside the package: `deity_informant/lifter.py` (1,007), `vm.py` (318),
 
 ### 10.1 Tests
 
-829 tests: **756 hermetic**, **63 `hvsc`**, **10 `oracle`**; coverage gate 85 %
+836 tests: **763 hermetic**, **63 `hvsc`**, **10 `oracle`**; coverage gate 85 %
 (`--cov-fail-under=85`), measured at 96 %.
 
 | path | contents |
