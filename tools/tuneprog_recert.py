@@ -261,7 +261,12 @@ def main(argv=None):
     ap.add_argument("--chunk", type=float, default=20.0, help="CPU seconds per pipeline call")
     ap.add_argument("--shard", help="I/N: reproduce every Nth certificate, offset I")
     ap.add_argument(
-        "--ghidra-dir", help="headless Ghidra exports per certificate; runs the oracles"
+        "--ghidra-facts", action="store_true", help="export OUT/CERT/ghidra as it replays"
+    )
+    ap.add_argument(
+        "--ghidra-dir",
+        help="headless Ghidra exports per certificate; exports the facts and runs the oracles"
+        " over what the headless run left there",
     )
     ap.add_argument("--tol", type=float, default=ghidra_compare.TOL, help="complexity tolerance")
     ap.add_argument(
@@ -285,15 +290,16 @@ def main(argv=None):
     statefile = out / "recert.json"
     state = json.loads(statefile.read_text()) if args.resume and statefile.is_file() else {}
     t0 = time.process_time()
+    want_facts = args.ghidra_facts or args.ghidra_dir
     for name, doc in certs:
         if name in state:
-            if args.ghidra_dir:
+            if want_facts:
                 facts(out / name)
             continue
         got, ds = replay(name, doc, args, t0)
         if ds is None:
             break
-        if args.ghidra_dir and got is not None:
+        if want_facts and got is not None:
             facts(out / name)
         note = []
         if args.update and got is not None and ds:

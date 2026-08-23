@@ -47,7 +47,7 @@ jobs:
           for _ in $(seq 1 60); do
             rc=0
             python3 tools/tuneprog_recert.py --out out/recert --resume --budget 50 \
-              --shard ${{ matrix.shard }}/4 --ghidra-dir out/gout || rc=$?
+              --shard ${{ matrix.shard }}/4 --ghidra-facts || rc=$?
             [ "$rc" -eq 3 ] || exit "$rc"
           done
           echo "certificates still pending after 60 invocations" >&2

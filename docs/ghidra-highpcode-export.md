@@ -175,12 +175,30 @@ Ghouls'n'Ghosts' largest hole is a function at `$7316` that Ghidra reaches but s
 subtunes do (the `--songs all` case). No `table_arm` ranges remain on either patched-dispatch tune: the S2
 static closure enumerated those targets and Ghidra reached exactly them.
 
-**Semantics** (`emulate.json`). Ghidra's P-Code emulator runs the post-init image for eight play calls with
-the entry registers the trace pinned, the post-init CPU state and the per-call input sequence the trace
-recorded (`emulate.reads`: each volatile read's `(pc, address, value)`, written into memory at that pc before
-the step). It records every executed pc and the ordered sequence of `$D400-$D418` register *changes*, which
-is what the facts carry on our side too — both reduced by the same rule from the same post-init bytes, so a
-replay reaching the same end state by a different route is a disagreement:
+**Semantics** (`emulate.json`). Ghidra's P-Code emulator runs the post-init image for as many play calls as
+the trace ran, up to eight, with the entry registers the trace pinned, the post-init CPU state and the
+per-call input sequence the trace recorded (`emulate.reads`: each volatile read's `(pc, address, value)`,
+written into memory at that pc before the step). Each call is entered on the frame the machine pushes, which
+the schedule's first entry decides (`meta.schedule`, `machine.entry_frame`): nothing for a header `play` the
+host calls by `JSR`, the status byte for an installed handler, and A/X/Y above it where the KERNAL's `$FF48`
+prologue dispatched. It is stepped until the stack pointer is back where the call started — `trace._one_call`'s
+own stop condition, which `RTS` and `RTI` reach alike. It records every executed pc and the ordered sequence
+of `$D400-$D418` register *changes*, which is what the facts carry on our side too — both reduced by the same
+rule from the same post-init bytes, so a replay reaching the same end state by a different route is a
+disagreement.
+
+Two rules decide what a register change is, and the two sides have to share them:
+
+* **the port.** A store to `$D400-$D418` reaches the chip only while `$01` maps I/O; banked out it is RAM
+  under the chip and no register moves. `tracevm` gates its write log on exactly that, so the emulator sees
+  the stores themselves (a `MemoryAccessFilter`) and applies `machine.port_bank`'s rule to each, following
+  `$00`/`$01` as the program writes them, rather than diffing those 25 bytes after every step.
+* **the entry.** This oracle runs the tick; a row the schedule's second entry (the CIA #2 NMI) made is that
+  entry's, and `verify.py` is where the two are replayed together. The write logs carry which entry made each
+  row (`wlog.nmi`, from `nmi.Separable`) and the reads are split by `nmi.sites`, the rule `verify.Reference`
+  already used. The facts declare the scope: `emulate.entry` is `tick`.
+
+Over the four exemplars:
 
 | tune | steps | pcs outside the trace | SID change sequence | agree |
 |---|---|---|---|---|
@@ -202,13 +220,17 @@ with the borrow inverted. Both are §1's `subtraction_flags1` patch (ghidra#3189
 with all four traces step for step, registers included (Ghouls'n'Ghosts' 4,154 steps become the 1,475 our own
 VM runs).
 
-Over all 51 certificates: 46 agree, 5 do not, and none of the 5 is a Ghidra defect. Four are the entry-frame
-limit below — the tick of *Jodler*, *Playful Professor*, *Alien 3* and *Easy Does It* is an installed handler
-whose frame is an interrupt frame, so it never returns to the sentinel a fake `JSR` pushed and walks into
-`$FFFF`, `$FF00` (the KERNAL stub) or `$0100` (the stack page it just popped). The fifth,
-*I Could Eat a Knob at Night*, is the oracle's model of a call: our own `PcodeVM`, run back to back from the
-post-init image under the same conditions, disagrees with the trace in the same way from call 0, so the cold
-call is not the machine's tick 0. Both are reported, not enforced.
+The five the earlier run reported as disagreements were all this oracle's own models, and all five are gone:
+
+* four were the frame. The tick of *Jodler*, *Playful Professor*, *Alien 3* and *Easy Does It* is an
+  installed handler that ends in `RTI`, so it never returned to the sentinel a fake `JSR` had pushed and
+  walked into `$FFFF`, `$FF00` (the KERNAL stub) or `$0100`; the `MAX_STEPS` guard turned that into the
+  verdict. On the machine's own frame all four compare, and agree.
+* *Easy Does It* also has a second entry, whose first write of every call the tick was scored against.
+* the fifth was the port. *I Could Eat a Knob at Night* banks I/O out and writes under `$D4xx` at play time,
+  and the memory diff scored those RAM stores as register changes. Gated, it agrees. It was reported as a
+  cold-call limit, which it is not: the trace's tick 0 is the first call after init on that tune like any
+  other.
 
 Scope limits of this oracle:
 
@@ -234,14 +256,13 @@ Scope limits of this oracle:
   inside executed code, and defining data there breaks disassembly.
 * The decompiler inlines thunks and tail calls, so a Ghidra function's high P-Code can include a callee's;
   totals are the safer comparison.
-* `EmulateTrace` single-steps, enters the tick as a subroutine and stops at a pushed sentinel, and caps at
-  400k steps per call (a call that hits the cap ends the run rather than spending the cap on each of the
-  rest). A tick whose frame is an interrupt frame -- an installed CINV handler, which chains to the KERNAL
-  epilogue and returns by `RTI` -- never reaches that sentinel: 4 of the 51. A second entry (the CIA #2 NMI)
-  is not emulated at all, so a two-entry program's calls are the tick's alone.
-* Eight back-to-back calls from the post-init image is not the machine's first ticks on every tune: one of
-  the 51 diverges from call 0 under our own VM as well as Ghidra's, so the model of a call, not the
-  emulator, is the limit there.
+* `EmulateTrace` single-steps and caps at 400k steps per call. A call that has not balanced its frame by
+  then is an error of this oracle -- `emulate.error`, an `ERROR` row in the recert table, ending the run
+  rather than spending the cap on each of the rest -- and not a disagreement.
+* A second entry (the CIA #2 NMI) is not emulated, so what is compared is the tick entry's own writes and
+  reads; the schedule as a whole is `verify.py`'s, which replays both entries in their traced order.
+* The comparison is the calls the trace ran, up to eight, from the post-init image. Both sides are clamped
+  to it, so a `want = end` is a real end of the tick's writes rather than the export's horizon.
 
 ## References
 

@@ -79,6 +79,16 @@ def test_the_summary_counts_the_exports_and_the_run_fails_without_them(tmp_path,
     assert "export missing" in out
 
 
+def test_the_two_ghidra_options_are_the_two_steps(tmp_path, monkeypatch):
+    """``--ghidra-facts`` exports as it replays; ``--ghidra-dir`` judges what came back."""
+    monkeypatch.setattr(R.ghidra_facts, "export", lambda _out: None)
+    certs = tmp_path / "certs"
+    certs.mkdir()
+    base = ["--certs", str(certs), "--out", str(tmp_path / "a")]
+    assert R.main(base + ["--ghidra-facts"]) == 0
+    assert R.main(base + ["--ghidra-dir", str(tmp_path / "g")]) == 0
+
+
 def test_the_facts_export_does_not_wait_for_the_pipeline_to_print(tmp_path, monkeypatch):
     """A resumed certificate prints nothing, so the oracle exports its facts here."""
     calls = []
