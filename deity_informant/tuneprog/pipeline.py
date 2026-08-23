@@ -441,7 +441,7 @@ def present(prog, eqsat=False):
         facts = copyview.naming_facts(view)
     names = recover.recover(view, structure.structure(view), facts)
     views.decorate(view, names, facts=facts)
-    word.fold16(view, names)
+    recover.name_u16(view, names, word.fold16(view))
     fold.outline(view, names, *L.needed(view))
     tails.promote_tails(view, names)
     views.decorate(view, names)

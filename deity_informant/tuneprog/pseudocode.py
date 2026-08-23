@@ -77,27 +77,20 @@ class Printer:
         return out
 
     def pair(self, lo, hi, a):
-        """A 16-bit view reference: the pair's name, indexed like its low half.
+        """A 16-bit view reference: the pair's own name, indexed like its low half.
 
-        Halves in two regions that a record view names are two of its *bytes*, and
-        a word written under either one would silently claim the other, so that
-        pair stays explicit until ``names.u16`` is keyed by cell (S6 open item).
+        The pair is named by its two cells, so the name is the word's -- not the low
+        half's, whose region a record view may already name by one of its fields.
         """
         name = self.names.u16.get((lo, hi))
-        named = lo != hi and (self._recname(lo, a) or self._recname(hi, a))
-        if name is not None and not named:
-            return self.colref(lo, a) or self.cell(
-                lo, *self.addr_of(a, self.rgn.get(lo)), name=name
-            )
-        return "(%s | %s << 8)" % (self.load16(lo, a), self.load16(hi, a))
-
-    def _recname(self, rid, a):
-        """True when a record view already names this half by its own field."""
-        addr = self.addr_of(a, self.rgn.get(rid))[0]
-        return (rid, addr) in self.names.slots or rid in self.names.split
-
-    def load16(self, rid, a):
-        return self.cell(rid, *self.addr_of(a, self.rgn.get(rid)))
+        rid = lo[0]
+        r = self.rgn.get(rid)
+        addr, idx = self.addr_of(a, r)
+        if name is None:
+            return self.colref(rid, a) or self.cell(rid, addr, idx)
+        if rid in self.names.view or rid in self.names.image:
+            return self.cell(rid, addr, idx, name=name)
+        return name if idx is None or r is None else "%s[%s]" % (name, self.index(r, addr, idx))
 
     def slot(self, hits, rid, addr, idx):
         """``voice[v].field`` for a cell a per-copy address table names, or ``None``.
@@ -373,8 +366,12 @@ class Printer:
     def word(self, s):
         """A folded 16-bit assignment, compound when the pair is its own operand."""
         lhs, e, out = self.pair(s.lo, s.hi, s.a), s.e, None
-        sides = ((e.a, e.b), (e.b, e.a)) if type(e) is Bin and e.op in COMM else ((e.a, e.b),)
-        for x, y in sides if type(e) is Bin else ():
+        sides = (
+            ()
+            if type(e) is not Bin
+            else (((e.a, e.b), (e.b, e.a)) if e.op in COMM else ((e.a, e.b),))
+        )
+        for x, y in sides:
             if (
                 type(x) is R16
                 and (x.lo, x.hi) == (s.lo, s.hi)
@@ -384,7 +381,7 @@ class Printer:
                 break
         if out is None:
             out = "%s = %s" % (lhs, self.expr(e))
-        self.forget(s.lo, s.hi)
+        self.forget(s.lo[0], s.hi[0])
         return out
 
     def call(self, s):
@@ -475,7 +472,7 @@ def _signbit(e):
 def _reads(e, rids):
     """True when the value of ``e`` reads one of ``rids``, through a byte or a pair."""
     return any(
-        (x.lo in rids or x.hi in rids) if type(x) is R16 else x.r in rids
+        (x.lo[0] in rids or x.hi[0] in rids) if type(x) is R16 else x.r in rids
         for x in walk(e)
         if type(x) in (Load, R16)
     )

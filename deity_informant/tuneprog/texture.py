@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from .frame import fresh, frames
 from .graph import idoms, preds_of
-from .idioms import CMP, negated, bitfields, fold
+from .halves import zerofold
+from .idioms import CMP, negated, bitfields
 from .ir import (
     Bin,
     Call,
@@ -126,14 +127,13 @@ def _not(c):
 
 
 def zerocarry(prog):
-    """``carry(x, 0)`` is zero: a byte value plus nothing never carries."""
+    """:func:`~.halves.zerofold` over the view: the carries a chain leaves that are zero."""
     n = [0]
 
     def fn(e):
-        if type(e) is Bin and e.op == "carry" and type(e.b) is Const and not e.b.v:
-            n[0] += 1
-            return Const(0, 1)
-        return fold(e)
+        out = zerofold(e)
+        n[0] += out is not e
+        return out
 
     for p in prog.procs.values():
         for b in p.blocks.values():

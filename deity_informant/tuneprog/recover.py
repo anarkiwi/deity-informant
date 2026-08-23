@@ -19,7 +19,8 @@ from .facts import (
     scales,
     voice_maps,
 )
-from .irwalk import forwarder, unique_name
+from .ir import Bin, Const, Let, Load, R16, Store, Var
+from .irwalk import forwarder, unique_name, walk
 from .structure import phase as _phase
 
 try:
@@ -326,3 +327,89 @@ def recover(prog, structured=None, facts=None):
     _unrolled(prog, facts, names)
     _procs(prog, facts, names, structured)
     return names
+
+
+# ---- 16-bit pairs ------------------------------------------------------------
+def _feeds(prog, want=range(0xD415, 0xD419)):
+    """The regions whose value reaches one of the filter registers."""
+    out = set()
+    for proc in prog.procs.values():
+        defs = {}
+        for b in proc.blocks.values():
+            for x in b.stmts:
+                if type(x) is Let:
+                    defs.setdefault(x.n, []).append(x.e)
+        for b in proc.blocks.values():
+            for x in b.stmts:
+                if type(x) is Store and x.cls == "io" and type(x.a) is Const and x.a.v in want:
+                    _sources(x.v, defs, out, set())
+    return out
+
+
+def _sources(e, defs, out, seen, depth=8):
+    for x in walk(e):
+        if type(x) is Load:
+            out.add(x.r)
+        elif type(x) is Var and x.n not in seen and depth:
+            seen.add(x.n)
+            for d in defs.get(x.n, ()):
+                _sources(d, defs, out, seen, depth - 1)
+    return out
+
+
+def _r16s(e):
+    if type(e) is R16:
+        return [e]
+    return _r16s(e.a) + _r16s(e.b) if type(e) is Bin else []
+
+
+def name_u16(prog, names, words):
+    """Name every folded pair, its halves, and the group its data flows to."""
+    rgn = prog.by_id()
+    filt, seen, kind = _feeds(prog), {}, {}
+    for w in words:
+        ops = [(x.lo, x.hi) for x in _r16s(w.e)]
+        for p in [(w.lo, w.hi)] + ops:
+            seen.setdefault(p, (w.lo, w.hi))
+            kind.setdefault(p, "operand" if p != (w.lo, w.hi) else "")
+        if (w.lo, w.hi) in ops:
+            kind[(w.lo, w.hi)] = "acc"
+    for p, dest in sorted(seen.items()):
+        if p == dest and {c[0] for c in p} & filt and not {c[0] for c in p} & set(names.view):
+            names.u16group[p] = "filter"
+    for p, dest in sorted(seen.items()):
+        if p in names.u16 or any(c[0] not in rgn for c in p):
+            continue
+        base = _u16name(names, rgn, p, kind.get(p, ""))
+        group = names.u16group.get(dest, "")
+        names.u16[p] = _uniqword(names, "%s.%s" % (group, base) if group else base, p)
+        names.u16group[p] = group
+        for (rid, _a), half in zip(p, ("lo", "hi")) if p[0][0] != p[1][0] else ():
+            cur = names.region.get(rid, "")
+            if rid not in names.view and cur[:-2].lower() != base.lower() + "_":
+                names.region[rid] = "%s_%s" % (names.u16[p], half)
+
+
+def _u16name(names, rgn, pair, kind):
+    """``freq`` from ``freq_lo``/``freq_hi``, the region a whole word fills, else the role."""
+    (lo, la), (hi, _ha) = pair
+    a, b = names.region.get(lo, ""), names.region.get(hi, "")
+    if lo == hi:
+        return a or "w%04X" % la
+    low = (a[:-2].lower(), b[:-2].lower(), a[-2:].lower(), b[-2:].lower())
+    if a and b and low[0] == low[1] and low[2:] == ("lo", "hi"):
+        return a[:-3] if a[-3] == "_" else a[:-2]
+    if kind == "acc" or names.role.get(lo) == "acc":
+        return "acc"
+    if kind == "operand" and rgn[lo].kind == "const":
+        return a or "T%04X" % rgn[lo].base
+    if kind == "operand" and rgn[lo].kind == "init_constant":
+        return "base"
+    return "step" if kind == "operand" else "w%04X" % la
+
+
+def _uniqword(names, want, own):
+    taken = (set(names.region.values()) | set(names.u16.values())) - {
+        names.region.get(r) for r, _a in own
+    }
+    return unique_name(want, taken)
