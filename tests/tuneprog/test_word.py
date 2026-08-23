@@ -246,8 +246,32 @@ def test_two_voices_low_halves_are_not_a_16_bit_register():
     assert halves.register(((9, 0xD400), (9, 0xD407))) is None
 
 
-def _sidwrite(order="lohi", src="tab"):
-    """A 16-bit table entry written to voice 0's frequency, in the given order."""
+def _sidwrite(order="lohi"):
+    """A word the program holds -- a 16-bit counter -- written to voice 0's frequency."""
+    hi = ["LDA hi", "STA $D401"]
+    lo = ["LDA lo", "STA $D400"]
+    return asm(
+        PLAY,
+        "init: LDA #$00",
+        "STA lo",
+        "STA hi",
+        "RTS",
+        "play: CLC",
+        "LDA lo",
+        "ADC #$01",
+        "STA lo",
+        "LDA hi",
+        "ADC #$00",
+        "STA hi",
+        *(lo + hi if order == "lohi" else hi + lo),
+        "RTS",
+        "lo: BRK",
+        "hi: BRK",
+    )
+
+
+def _sidbytes(order="lohi", src="tab"):
+    """Two cells one index reaches at two bases, written to voice 0's frequency."""
     hi = ["LDA %s+1,Y" % src, "STA $D401"]
     lo = ["LDA %s,Y" % src, "STA $D400"]
     return asm(
@@ -279,6 +303,12 @@ def test_the_write_order_is_stated_once_and_the_odd_one_marked():
     body = "\n".join(proc_body(doc, "tick"))
     assert body.count("sid[0].") == 1 and "# hi then lo" not in body, body
     assert "sid       16-bit registers written hi then lo" in doc, doc
+
+
+def test_two_bytes_of_no_word_the_program_holds_stay_two_writes():
+    """The two cells are a pair no fold named, so the print would have to join them."""
+    body = "\n".join(proc_body(printed(_sidbytes(), calls=3), "tick"))
+    assert "sid[0].freq_lo = " in body and "sid[0].freq_hi = " in body, body
 
 
 def test_two_bytes_that_are_no_word_stay_two_writes():

@@ -71,9 +71,11 @@ def test_automatas_folds_the_write_out_and_names_one_helper_per_role():
     # the write-out is one copy of the seven per-voice registers over the index
     out = body(text, "writeout")
     assert "    for v in 0, 1, 2:" in out
-    # five rows, the two 16-bit registers one write each under the header's convention
-    assert len([l for l in out if "sid[v]." in l]) == 5
-    assert "sid[v].freq = " in "\n".join(out) and "sid[v].pw = " in "\n".join(out)
+    # six rows: `freq` is a word the program holds, `pw` two cells no fold named
+    assert len([l for l in out if "sid[v]." in l]) == 6
+    text_out = "\n".join(out)
+    assert "sid[v].freq = " in text_out
+    assert "sid[v].pw_lo = " in text_out and "sid[v].pw_hi = " in text_out
     assert not any("sid[0]." in l or "sid[1]." in l for l in out)
 
     # main and sub call the helpers instead of holding a copy each

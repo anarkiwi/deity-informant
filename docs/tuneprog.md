@@ -66,13 +66,13 @@ program      ir 464  interp 288  irwalk 349  graph 88  lower 266  build 482
              wire 78  ssa 431  frames 409  stack 218  idioms 402  emit 403
              verify 423  period 113
 presentation structure 413  loops 393  inline 192  texture 308  cells 275
-             frame 51  partition 231  halves 240  word 259  fold 472
+             frame 51  partition 231  halves 240  word 264  fold 472
              tails 290  copyview 312  unroll 414  live 249  facts 302
              recover 419  views 272  gated 130  ranges 76
-text         cellref 311  pseudocode 233  printer 468  datablock 246
+text         cellref 340  pseudocode 233  printer 468  datablock 246
 driver       pipeline 491  resume 67  __init__ 138
 oracle       grid 157  tunes 60
-baseline     ghidra_facts 219  ghidra_compare 182   60 modules, 17,366 lines
+baseline     ghidra_facts 219  ghidra_compare 182   60 modules, 17,400 lines
 ```
 
 Stage entry points, which are also the module boundaries:
@@ -536,7 +536,10 @@ Every one has `divergences: 0` and `envelope_traps: 0`.
   the load it makes of the other cell, and a stored half wins over a computed one. A
   pair with one half inside the I/O band and one outside is refused: a chip register is
   not memory. The carry the chain hands a third byte keeps the flag's name. Halves
-  stored by unrelated instructions stay two bytes.
+  stored by unrelated instructions stay two bytes. A pair `recover.name_u16` did not
+  name has no one reference, so `cellref.pair` prints it over both cells as
+  `(lo | hi << 8)` — never the low half alone — unless the low half's own reference is
+  already the word's (a two-byte region's bare name, or a reference both halves share).
 - **The SID's own 16-bit registers print as one write, under a stated order**
   (`word.fold_sid`, `halves.register`). `freq`, `pw` and `cutoff` are one register the
   chip's 8-bit bus takes two writes to set, so `sid[v].freq = f` is a *print*
@@ -544,8 +547,9 @@ Every one has `divergences: 0` and `envelope_traps: 0`.
   ordered byte writes and is untouched. The `meta` block states the order once —
   `sid  16-bit registers written lo then hi` — and a write in the other order carries
   `# hi then lo` on its own line. Three conditions: the value must be a word the
-  program already holds (bytes the print would join with `|` and `<< 8` are two bytes
-  that happen to reach one register), both cells must be in an `io` region (the RAM
+  program already holds — a constant, or an expression every 16-bit leaf of which is a
+  pair `recover.name_u16` named, since only a named pair has one reference to print —
+  both cells must be in an `io` region (the RAM
   under the register file is memory — JCH's Puterman build writes `ghost[v].freq_lo`),
   and the fold runs *after* `unroll`, over the aligned rows: folding it earlier
   shortens the per-voice run the register-file loop is built from and the loop

@@ -308,12 +308,13 @@ def test_a_byte_subtracted_from_a_word_is_one_16_bit_statement():
     assert "freq -= $40" in body and "wD400 = " not in body
 
 
-def _pairprint(rs, pair, recorded=()):
+def _pairprint(rs, pair, recorded=(), named=True):
     """``pair(lo, hi, a)`` over a word named by its two cells.
 
-    ``recorded`` lists the cells a copy fold already names by their own field.
+    ``recorded`` lists the cells a copy fold already names by their own field;
+    ``named=False`` is a pair no fold named, which has no one reference.
     """
-    names = Names(region={r.id: r.name for r in rs}, u16={pair: "freq"})
+    names = Names(region={r.id: r.name for r in rs}, u16={pair: "freq"} if named else {})
     names.slots.update({c: [("voice", "f%d" % c[0], 0, False)] for c in recorded})
     return Printer(Tuneprog(storage=rs), names).pair(pair[0], pair[1], Const(pair[0][1], 2))
 
@@ -337,6 +338,16 @@ def test_a_word_whose_half_a_record_names_still_prints_by_its_own_name():
 def test_two_cells_of_one_region_are_one_word():
     rs = [Rgn(id=1, name="zp", base=BASE, size=16, kind="state", init=bytes(16), origin=BASE)]
     assert _pairprint(rs, ((1, BASE + 4), (1, BASE + 9))) == "freq"
+
+
+def test_a_word_no_fold_named_prints_over_both_of_its_halves():
+    got = _pairprint(_bytes(), ((1, BASE), (2, BASE + 1)), named=False)
+    assert got == "(lo | hi << 8)"
+
+
+def test_a_word_no_fold_named_inside_one_region_prints_over_both_of_its_halves():
+    rs = [Rgn(id=1, name="zp", base=BASE, size=16, kind="state", init=bytes(16), origin=BASE)]
+    assert _pairprint(rs, ((1, BASE + 4), (1, BASE + 9)), named=False) == "(zp[4] | zp[9] << 8)"
 
 
 def test_the_present_pass_is_stable_over_two_runs():
