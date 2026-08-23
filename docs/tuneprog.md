@@ -72,7 +72,7 @@ presentation structure 413  loops 393  inline 192  texture 308  cells 275
 text         cellref 340  pseudocode 233  printer 468  datablock 246
 driver       pipeline 491  resume 67  __init__ 138
 oracle       grid 157  tunes 60
-baseline     ghidra_facts 219  ghidra_compare 182   60 modules, 17,400 lines
+baseline     ghidra_facts 227  ghidra_compare 210   60 modules, 17,400 lines
 ```
 
 Stage entry points, which are also the module boundaries:
@@ -116,7 +116,13 @@ until python3 tools/tuneprog_period.py TUNE.sid --song 1 --calls 60000 \
 
 - `tuneprog_recert.py` reproduces every certificate under `docs/certificates/` from
   the run each records and diffs it field for field, ignoring the timestamp and the
-  two timing fields.
+  two timing fields. `--shard I/N` takes every Nth certificate; `--ghidra-dir DIR`
+  exports the headless-Ghidra facts as it replays and then runs the three oracles of
+  [ghidra-highpcode-export.md](ghidra-highpcode-export.md) against the export in
+  `DIR/<certificate>`, exiting 1 on any `ours_bigger`. That is what
+  `.github/workflows/nightly.yml` runs, four shards, over all 51.
+- `tuneprog_ghidra.py OUTDIR` writes one output directory's facts, and `--compare
+  GOUT` joins it with a finished headless run (`comparison.json`/`comparison.md`).
 - `tuneprog_period.py` says why a subtune has no state repeat (`period.py`): each
   footprint cell's smallest period, the loop the SID stream has, and the cells whose
   period does not divide it. Verdict `periodic`, `state only` (the blockers never

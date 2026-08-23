@@ -172,8 +172,8 @@ BORROW = "(result & complement_register)) & 0b10000000 ) %s 0;"
 PATCHES = (
     (":JSR", "inst_next;", "inst_next - 1;"),
     (":RTS", "return [tmp];", "return [tmp+1];"),
-    # stock leaves SBC's C the borrow, the 6510's complement (ghidra#3189);
-    ("macro subtraction_flags1", BORROW % "!=", BORROW % "=="),  # ISC/SBX share it
+    # and leaves SBC's C the borrow, the 6510's complement (ghidra#3189)
+    ("macro subtraction_flags1", BORROW % "!=", BORROW % "=="),  # ISC and SBX share it
 )
 
 

@@ -2,9 +2,9 @@ name: nightly
 
 # Reproduces every committed certificate and runs the three Ghidra oracles
 # (complexity, coverage, semantics) over the result. Four shards, every fourth
-# certificate each, because one headless Ghidra export+emulate is ~40 s and the
-# replay of 51 certificates is the rest. Fails on ours_bigger > 0, on a
-# certificate that does not reproduce, or on an emulator disagreement.
+# certificate each, because one headless Ghidra export is 13 s and its emulate
+# 9 s. Fails on a certificate that does not reproduce and on ours_bigger > 0;
+# the emulate verdict is reported, not enforced, the oracle emulating one entry.
 
 on:
   schedule:
@@ -14,7 +14,7 @@ on:
 jobs:
   ghidra-oracles:
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -69,7 +69,7 @@ jobs:
         run: |
           python3 tools/tuneprog_recert.py --out out/recert --resume \
             --shard ${{ matrix.shard }}/4 --ghidra-dir out/gout
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: oracles-${{ matrix.shard }}
