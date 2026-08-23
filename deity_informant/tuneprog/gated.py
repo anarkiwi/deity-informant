@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from .graph import preds_of
 from .halves import zerofold
-from .idioms import CMP
+from .idioms import CMP, is_one
 from .ir import Bin, Const, Goto, If, Let
 from .irwalk import apply_stmt, apply_term, single_defs
 from .ranges import expr_range
@@ -62,13 +62,9 @@ def _rule(e, rng):
     return Const(got, 1) if got is not None else zerofold(e)
 
 
-def _one(e):
-    return type(e) is Const and e.v == 1
-
-
 def _step(a, b):
     """``+1``/``-1`` when ``a`` is ``b`` bumped by one, else ``None``."""
-    if type(a) is not Bin or a.op not in ("+", "-") or not _one(a.b) or a.a != b:
+    if type(a) is not Bin or a.op not in ("+", "-") or not is_one(a.b) or a.a != b:
         return None
     return 1 if a.op == "+" else -1
 

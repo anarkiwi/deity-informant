@@ -330,7 +330,7 @@ def _lets(blocks):
     return {s.n: s.e for b in blocks for s in b.stmts if type(s) is Let}
 
 
-def _procs(body):
+def _called_procs(body):
     return [s.proc for n in walk(body) if type(n) is Blk for s in n.stmts if hasattr(s, "proc")]
 
 
@@ -352,7 +352,7 @@ def phase(body, storage):
         r = rgn.get(rs.pop())
         if r is None or r.kind != "state" or r.size != 1:
             return None
-        return (r.id, n.c, _procs(n.then), _procs(n.els))
+        return (r.id, n.c, _called_procs(n.then), _called_procs(n.els))
     return None
 
 

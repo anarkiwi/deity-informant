@@ -52,7 +52,7 @@ def entry_value(frame, pushes):
     return None if key is None else frame.contract[key[1]]
 
 
-def _delta(e, off, defs, seen=()):
+def _stack_delta(e, off, defs, seen=()):
     """The entry-relative stack offset ``e`` holds, ``None``, or :data:`UNSET`.
 
     ``seen`` are the names already walked: a definition chain that comes back to
@@ -63,17 +63,17 @@ def _delta(e, off, defs, seen=()):
         if e.n in off:
             return off[e.n]
         if e.n in defs and e.n not in seen:
-            return _delta(defs[e.n], off, defs, seen + (e.n,))
+            return _stack_delta(defs[e.n], off, defs, seen + (e.n,))
         return UNSET if e.n.split("#")[0] == SP else None
     if t is Bin and e.op in ("+", "-") and type(e.b) is Const:
-        d = _delta(e.a, off, defs, seen)
+        d = _stack_delta(e.a, off, defs, seen)
         if d is None or d is UNSET:
             return d
         return (d + (e.b.v if e.op == "+" else -e.b.v)) & 0xFF
     return None
 
 
-def _merge(vals):
+def _merge_offsets(vals):
     """The one offset a set of them agrees on; ``None`` if they disagree."""
     if len(vals) == 1:
         return next(iter(vals))
@@ -84,17 +84,17 @@ def _sp_defs(prog, s, off, defs, exits):
     """``(name, offset)`` for every stack-pointer value one statement defines."""
     t = type(s)
     if t is Let and s.n.split("#")[0] == SP:
-        yield s.n, _delta(s.e, off, defs)
+        yield s.n, _stack_delta(s.e, off, defs)
         return
     if t is Phi and s.n.split("#")[0] == SP:
-        yield s.n, _merge({off.get(v, UNSET) for v in s.args.values()})
+        yield s.n, _merge_offsets({off.get(v, UNSET) for v in s.args.values()})
         return
     q = prog.procs.get(s.proc) if t is Call else None
     if q is None:
         return
     a = next((x for i, x in zip(q.params, s.args) if i == SPREG), None)
     d = exits.get(s.proc)
-    base = None if a is None or d is None else _delta(a, off, defs)
+    base = None if a is None or d is None else _stack_delta(a, off, defs)
     for i, n in zip(q.rets, s.rets):
         if i == SPREG:
             yield n, base if base is None or base is UNSET else (base + d) & 0xFF
@@ -136,7 +136,7 @@ def exit_delta(prog, proc, off, defs, exits):
         term = proc.blocks[lbl].term
         if type(term) is Return:
             v = term.vals[i] if i is not None and len(term.vals) > i else None
-            seen.add(cur if v is None else _norm(_delta(v, off, defs)))
+            seen.add(cur if v is None else _norm(_stack_delta(v, off, defs)))
         for t in succs(proc.blocks[lbl].term):
             if t not in ins:
                 ins[t], _ = cur, work.append(t)
@@ -170,7 +170,7 @@ def _slot(e, off, defs):
         return None
     for k, x in ((e.a, e.b), (e.b, e.a)):
         if type(k) is Const and k.v == STACK_LO:
-            d = _norm(_delta(x, off, defs))
+            d = _norm(_stack_delta(x, off, defs))
             return None if d is None else d & 0xFF
     return None
 
@@ -251,7 +251,7 @@ def _find(par, x):
     return x
 
 
-def _plan(proc, evs, reach):
+def _value_plan(proc, evs, reach):
     """``([(pushes, loads)], unresolved loads)``: the pushes and pops of one value.
 
     Two pushes a load can both read are one value (the phi a branch left), so the
@@ -353,7 +353,7 @@ def analyse(prog, info=None):
             out[name] = Frame(off, None, {}, [], [None], True, con)
             continue
         reach = _reaching(proc, evs, con)
-        plan, bad = _plan(proc, evs, reach)
+        plan, bad = _value_plan(proc, evs, reach)
         out[name] = Frame(off, evs, reach, plan, bad, _foreign(evs, reach), con)
     return out
 
@@ -381,7 +381,7 @@ def fresh(prog, want=SLOT):
     return make
 
 
-def _reader(sub, lbl, i):
+def _sub_reader(sub, lbl, i):
     def fn(e):
         return sub.get((lbl, i, id(e)), e)
 
@@ -392,7 +392,7 @@ def apply_reads(proc, sub):
     """Replace every read a plan forwarded, at the statement that reads it."""
     for lbl, b in proc.blocks.items():
         for i, s in list(enumerate(b.stmts)) + [(len(b.stmts), b.term)]:
-            fn = _reader(sub, lbl, i)
+            fn = _sub_reader(sub, lbl, i)
             (apply_stmt if i < len(b.stmts) else apply_term)(s, fn)
 
 

@@ -70,7 +70,7 @@ def _partners(s, x, defs):
             yield Store(s.cls, y.a, x.e, 1, y.lo, y.hi, y.r, s.src)
 
 
-def _match(b, i, defs, taken):
+def _match_half(b, i, defs, taken):
     """``(index, store, word)`` of the half pairing with ``i``; a stored half wins over a value."""
     for want in (Store, Let):
         for j in range(i + 1, len(b.stmts)):
@@ -89,7 +89,7 @@ def _stores(b, defs, pairs, flags):
     at = [i for i, s in enumerate(b.stmts) if type(s) is Store and s.w == 1 and s.r >= 0]
     taken, put, dead = set(), {}, set()
     for i in at:
-        hit = None if i in taken else _match(b, i, defs, taken)
+        hit = None if i in taken else _match_half(b, i, defs, taken)
         if hit is None:
             continue
         j, other, got = hit

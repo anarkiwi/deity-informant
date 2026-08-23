@@ -7,10 +7,14 @@ instead: one field, one address per copy, listed once in the state header.
 
 from __future__ import annotations
 
+from collections import namedtuple
+
 from .facts import Facts, MAXOPS, MAXROLE, SID_VOICE, elem_count as elems, leaf_loads, ops
-from .facts import sid_name, sid_stores, update_role
-from .ir import Bin, Const, SID_REG_HI, SID_REG_LO, Store, Var
-from .irwalk import addr_split, node_loads, unique_name
+from .facts import per_region, sid_name, sid_stores, unclaimed, update_role
+from .ir import Bin, Const, SID_REG_HI, SID_REG_LO, Var
+from .irwalk import accessors, unique_name
+
+BLOCK = ("state", "init_constant")  # the kinds of storage a record view may split
 
 
 def indexed(rgn, rids, vals, k):
@@ -131,80 +135,89 @@ def decorate(prog, names, folds=None, facts=None):
     """Every group view the S6 passes add over the recovered names."""
     facts = facts or Facts(prog)
     copy_groups(prog, names, folds, facts)
-    field_split(prog, names, facts)
-    return transpose_split(prog, names, facts)
+    return record_split(prog, names, facts, shapes(prog, prog.by_id(), facts.tick))
 
 
-def _accesses(prog, procs=None):
-    """``[(region, address expression, envelope low, envelope high)]`` over ``procs``.
+Shape = namedtuple("Shape", "offsets spans play")  # what a region's accessors say of it
 
-    Byte accesses only. A split is decided once (:func:`_splittable` refuses a
-    region already split) and the S6 word view carries region ids, not addresses,
-    so a 16-bit access offers no envelope -- and one that offers none never prints
-    as a field (:meth:`~.pseudocode.Printer.one_field`), so it cannot be misnamed.
+
+def shapes(prog, rgn, tick):
+    """``{region: Shape}``: the offsets its accessors name and the spans they reach.
+
+    Both counted from the region's zero, ``play`` being the tick's own spans. A
+    16-bit access carries region ids and no envelope, and one that offers none
+    never prints as a field (:meth:`~.pseudocode.Printer.one_field`).
     """
-    for name, p in prog.procs.items():
-        if procs is not None and name not in procs:
+    out = {}
+    for acc in accessors(prog):
+        r = rgn.get(acc.rid)
+        if r is None:
             continue
-        for b in p.blocks.values():
-            for s in list(b.stmts) + [b.term]:
-                for x in node_loads(s):
-                    yield x.r, x.a, x.lo, x.hi
-                if type(s) is Store and s.r >= 0:
-                    yield s.r, s.a, s.lo, s.hi
-
-
-def _offsets(prog, rgn):
-    """``{region: {offset an access names}}`` over every load and store."""
-    out = {}
-    for rid, a, _lo, _hi in _accesses(prog):
-        r = rgn.get(rid)
-        base = addr_split(a)[0]
-        if r is not None and base is not None and r.base <= base <= r.base + r.size:
-            out.setdefault(rid, set()).add(base - r.zero)
+        sh = out.setdefault(acc.rid, Shape(set(), set(), set()))
+        named = None if acc.base is None else r.extent(acc.base, acc.base)
+        if named is not None:
+            sh.offsets.add(named[0])
+        span = r.extent(acc.lo, acc.hi)
+        if span is not None:
+            sh.spans.add(reach := (span[0], span[1] - span[0] + 1))
+            if acc.proc in tick:
+                sh.play.add(reach)
     return out
 
 
-def _spans(prog, rgn, procs=None):
-    """``{region: {(offset from zero, bytes reached)}}`` from each access's own envelope."""
+def _record(names, r, unit, n, fields, transposed):
+    """Register one split view of ``r``: its group, its ``n`` elements, its fields."""
+    g = unique_name("voice" if n == 3 else "rec", set(names.groups))
+    names.split[r.id] = (g, unit, fields, transposed)
+    names.groups[g] = {
+        "stride": 1 if transposed else unit,
+        "n": n,
+        "members": [],
+        "split": r.id,
+        "fields": fields,
+    }
+
+
+def _named_fields(facts, r, sidf, by):
+    """Name each field of a split from the role its own cells share."""
     out = {}
-    for rid, _a, lo, hi in _accesses(prog, procs):
-        r = rgn.get(rid)
-        if r is not None and r.base <= lo <= hi <= r.base + r.size - 1:
-            out.setdefault(rid, set()).add((lo - r.zero, hi - lo + 1))
+    for k in sorted(by):
+        cells = [(r.id, r.zero + o) for o in by[k]]
+        upd = set().union(set(), *(facts.cellupd.get(c, ()) for c in cells))
+        role = update_role(upd, any(c in facts.cellplain for c in cells), r.id)
+        out[k] = unique_name(role or sidf.get(r.zero + k) or "f%02X" % k, set(out.values()))
     return out
 
 
-def field_split(prog, names, facts):
-    """Split a block one init loop made one region into the fields play walks.
+def record_split(prog, names, facts, shape):
+    """Split a block one init loop made one region into the record play walks.
 
     ``init`` clears GoatTracker's blocks A+B and SID Wizard's VARIABLES with one
-    loop, so the access relation joins them; the tick walks them at the stride of
-    an index that reaches a record elsewhere, which is what names their fields.
+    loop, so the access relation joins them; a scaled index then walks s-byte
+    records, and an index selecting one of k elements walks the transpose.
     """
-    rgn, sidf = prog.by_id(), sid_fields(facts)
-    scales = {}
-    for n, rids in facts.idxvar.items():
-        for rid in rids if (names.scale.get(n) or 1) > 1 else ():
-            scales.setdefault(rid, set()).add(names.scale[n])
-    offsets = _offsets(prog, rgn)
+    sidf = sid_fields(facts)
+    taken = names.view.keys() | names.image.keys() | names.split.keys()
+    scale = per_region(facts, names.scale)
+    count = per_region(facts, _elem_index(names, facts))
     for r in prog.storage:
-        s = scales.get(r.id, set())
-        if len(s) != 1 or not _splittable(r, names):
+        s, k = _only(scale.get(r.id)), _only(count.get(r.id))
+        if not _splittable(r, taken):
             continue
-        s = s.pop()
-        n = r.size // s
-        if n < 2:
-            continue
-        fields = {}
-        for k in sorted({o % s for o in offsets.get(r.id, ())}):
-            same = [o for o in offsets[r.id] if o % s == k]
-            want = _field_role(facts, r, same) or sidf.get(r.zero + k, "")
-            fields[k] = unique_name(want or "f%02X" % k, set(fields.values()))
-        g = unique_name("voice" if n == 3 else "rec", set(names.groups))
-        names.split[r.id] = (g, s, fields, False)
-        names.groups[g] = {"stride": s, "n": n, "members": [], "split": r.id, "fields": fields}
+        sh = shape.get(r.id)
+        if s is not None and r.size // s > 1:
+            offs = sh.offsets if sh else ()
+            by = {j: [o for o in offs if o % s == j] for j in {o % s for o in offs}}
+            _record(names, r, s, r.size // s, _named_fields(facts, r, sidf, by), False)
+        elif k is not None and not r.size % k and r.size // k > 1 and _transposed(sh, k):
+            by = {o - o % k: [o - o % k] for o, w in sh.spans if o // k == (o + w - 1) // k}
+            _record(names, r, k, k, _named_fields(facts, r, sidf, by), True)
     return names
+
+
+def _only(xs):
+    """The one value of ``xs``, or ``None`` where they disagree or there are none."""
+    return next(iter(xs)) if xs and len(xs) == 1 else None
 
 
 def _elem_index(names, facts):
@@ -228,68 +241,18 @@ def _elem_index(names, facts):
     return out
 
 
-def transpose_split(prog, names, facts):
-    """Split a block walked ``base + n*k + v``: the field outside, the element inside.
+def _transposed(sh, k):
+    """True when every play-time access of ``sh`` stays inside one k-wide field.
 
-    The transpose of :func:`field_split` -- the same play-time accessor rule with
-    the two indices swapped, so the walking index has no scale and the *field* has
-    the stride. An index that selects one of a view's k elements makes every field
-    k wide, and every play-time access then confirms the layout by staying inside
-    one field (JCH V20's state block is struct-of-arrays, anatomy 3.5; the init
-    clear loop reaches the whole block and is not a play-time access).
+    The transpose is ``base + n*k + v``: the walking index has no scale and the
+    *field* has the stride (JCH V20's state block is struct-of-arrays, anatomy 3.5).
+    An index observed over some elements reaches fewer than k bytes and is still
+    that field; one that crosses a boundary, or walks the block, is not this layout.
     """
-    rgn, sidf = prog.by_id(), sid_fields(facts)
-    counts, want = _elem_index(names, facts), {}
-    for n, rids in facts.idxvar.items():
-        for rid in rids if n in counts else ():
-            want.setdefault(rid, set()).add(counts[n])
-    spans, every = _spans(prog, rgn, facts.tick), _spans(prog, rgn)
-    for r in prog.storage:
-        k = want.get(r.id, set())
-        if len(k) != 1 or not _splittable(r, names):
-            continue
-        k = k.pop()
-        seen = spans.get(r.id, set())
-        if r.size % k or r.size // k < 2 or not _transposed(seen, k):
-            continue
-        fields = {}
-        # a field is listed wherever an access stays inside it, in any phase: the
-        # play phase alone decides the layout, but any of them can print as one
-        for o in sorted({o - o % k for o, w in every[r.id] if o // k == (o + w - 1) // k}):
-            role = _field_role(facts, r, (o,)) or sidf.get(r.zero + o, "")
-            fields[o] = unique_name(role or "f%02X" % o, set(fields.values()))
-        g = unique_name("voice" if k == 3 else "rec", set(names.groups))
-        names.split[r.id] = (g, k, fields, True)
-        names.groups[g] = {"stride": 1, "n": k, "members": [], "split": r.id, "fields": fields}
-    return names
+    play = sh.play if sh else ()
+    return any(w > 1 for _o, w in play) and all(o // k == (o + w - 1) // k for o, w in play)
 
 
-def _transposed(spans, k):
-    """True when every play-time access stays inside one k-wide field.
-
-    An index observed over some of the elements reaches fewer than k bytes and is
-    still that field; one that crosses a field boundary, or walks the whole block,
-    is not this layout.
-    """
-    return any(w > 1 for _o, w in spans) and all(o // k == (o + w - 1) // k for o, w in spans)
-
-
-def _field_role(facts, r, offsets):
-    """The role every cell of one field shares."""
-    upd, plain = set(), False
-    for o in offsets:
-        upd |= facts.cellupd.get((r.id, r.zero + o), set())
-        plain = plain or (r.id, r.zero + o) in facts.cellplain
-    return update_role(upd, plain, r.id)
-
-
-def _splittable(r, names):
-    """True when a region is a block the stride view has not already named."""
-    return (
-        r.id >= 0
-        and r.kind in ("state", "init_constant")
-        and r.id not in names.view
-        and r.id not in names.image
-        and r.id not in names.split
-        and elems(r) > MAXROLE
-    )
+def _splittable(r, taken):
+    """True when a region is a block none of the ``taken`` views has named."""
+    return unclaimed(r, taken, BLOCK) and elems(r) > MAXROLE

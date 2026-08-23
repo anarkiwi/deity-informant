@@ -59,20 +59,20 @@ are the IR and CFG traversals every stage shares.
 
 ```
 front end    machine 305  cia 248  nmi 204  tracevm 488  tracesite 185
-             traceflow 101  trace 464  tracedata 448  lift 227  cfg 349
+             traceflow 101  trace 464  tracedata 448  lift 227  cfg 351
              regions 243  jumptab 373  siblings 476  closure 347
-             copyrows 453  copymerge 165
-program      ir 443  interp 288  irwalk 319  graph 82  lower 264  build 482
-             wire 78  ssa 431  frames 409  stack 218  idioms 401  emit 403
+             copyrows 452  copymerge 165
+program      ir 464  interp 288  irwalk 349  graph 88  lower 266  build 482
+             wire 78  ssa 431  frames 409  stack 218  idioms 402  emit 403
              verify 423  period 113
 presentation structure 383  loops 307  inline 192  texture 308  cells 275
-             frame 51  partition 285  halves 224  word 197  fold 472
-             tails 290  copyview 279  unroll 399  live 249  facts 284
-             recover 415  views 295  gated 134  ranges 76
-text         pseudocode 495  printer 450  datablock 240
+             frame 51  partition 231  halves 224  word 197  fold 472
+             tails 290  copyview 312  unroll 397  live 249  facts 302
+             recover 417  views 258  gated 130  ranges 76
+text         pseudocode 495  printer 450  datablock 246
 driver       pipeline 489  resume 67  __init__ 138
 oracle       grid 157  tunes 60
-baseline     ghidra_facts 219  ghidra_compare 182   59 modules, 17,059 lines
+baseline     ghidra_facts 219  ghidra_compare 182   59 modules, 17,065 lines
 ```
 
 Stage entry points, which are also the module boundaries:
@@ -477,6 +477,14 @@ Every one has `divergences: 0` and `envelope_traps: 0`.
   `unroll`, which has no column to keep, refuses a run outright where a cell every
   copy names equals one the run relocates. What no rule names keeps its table read
   with the address visible (two of Follin's 60 columns, two of *Automatas*' five).
+- **One accessor-shape enumeration** (`irwalk.accessors`): every load and store as
+  `Acc(proc, region, store, base, idx, lo, hi)`, the address split included. Beside it
+  sit `Rgn.extent` (the one containment test, in bytes from the region's zero),
+  `facts.per_region` (the one reading of what the indices walking a region carry),
+  `facts.unclaimed` (already named by some view), `ir.rgn_name`, `ir.overlaps` (regions
+  whose extents overlap, as runs) and `copyview.remap_cells`/`fold_fields` (the one
+  owner of a fold's cell keying). The partition's claims, `views.record_split`'s fields
+  and `datablock`'s reach are all read from them.
 - **Region typing is an S6 view, not the certified typing.** S3 unions the addresses
   one op touched, so one over-reaching accessor fuses unrelated storage into one region
   typed by the coarsest kind. `partition.repartition` re-types the *copy* the
@@ -485,8 +493,8 @@ Every one has `divergences: 0` and `envelope_traps: 0`.
   the region nothing; the narrow claim wins, and the overrunning access keeps the fused
   region, which is the bound its envelope asserts. A part no store's envelope reaches is
   `const` beside a `state` neighbour; stride-1 regions of one kind sharing an origin
-  whose extents overlap merge. A record view (`field_split`, `transpose_split`, a copy
-  fold's field, the register image) already partitions what it names, and claims of one
+  whose extents overlap merge. A record view (`views.record_split`, a copy fold's
+  field, the register image) already partitions what it names, and claims of one
   width at one spacing are a record, so both refuse. S4's ids and `regions.json` are
   untouched; the print gains the storage *named*, at one header row per part (2,894 →
   3,084 regions over the 51 certificates). A cut parent is never retired -- `_disagree`,
@@ -497,7 +505,7 @@ Every one has `divergences: 0` and `envelope_traps: 0`.
   of storage the program reads prints its own bytes. A region's cells are its extent,
   or the columns its stride marks off; its *reach* is the union of its accessors'
   envelopes over them, and a cell some store's envelope reaches is state, not data --
-  `partition._kind`'s rule read per byte, which is why a frequency table a 25-note
+  `partition._part_kind`'s rule read per byte, which is why a frequency table a 25-note
   overrun fused into a `state` region still prints (Commando's `FREQ`). Regions whose
   extents overlap, or that one frequency layout names, are one block, so three extents
   of one pattern array print once and a `lo|hi` table's two columns print as one entry

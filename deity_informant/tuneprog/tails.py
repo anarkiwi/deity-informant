@@ -63,7 +63,7 @@ def _promote_proc(prog, name, names, rounds):
     for _ in range(rounds):
         if not cur:
             break
-        hit = _one(prog, name, names, cur, needed(prog)[0].get(name))
+        hit = _one_tail(prog, name, names, cur, needed(prog)[0].get(name))
         if hit is None:
             break
         cur, hname, undo = hit
@@ -89,7 +89,7 @@ def _gotos(proc):
     return sum(1 for n in walk(structure_proc(proc)) if type(n) is Jump and n.kind == "goto")
 
 
-def _one(prog, name, names, cur, live):
+def _one_tail(prog, name, names, cur, live):
     """Promote the smallest tail that leaves the residue no worse; its undo record.
 
     An exit-free tail may break even, since it is what makes the next one exit
@@ -192,7 +192,7 @@ def _slots(crossers):
     return out
 
 
-def _defs(proc, labels):
+def _names_defined(proc, labels):
     return {n for l in labels for s in proc.blocks[l].stmts for n in defs_of(s)}
 
 
@@ -203,7 +203,7 @@ def _leaving(proc, region, entry, out, params):
     value (liveness decides what prints, never what an edit may drop), so the
     region must have it wherever it takes the edge to ``out``.
     """
-    inside, used = _defs(proc, region), set()
+    inside, used = _names_defined(proc, region), set()
     for lbl, b in proc.blocks.items():
         if lbl in region:
             continue
@@ -213,9 +213,9 @@ def _leaving(proc, region, entry, out, params):
     gives = sorted(inside & used)
     if any(n.startswith(COPYVAR) for n in gives):
         return None  # a copy index is the loop's own machinery, not a helper's work
-    have = params | _defs(proc, [entry])
+    have = params | _names_defined(proc, [entry])
     for lbl in region:
-        if out in succs(proc.blocks[lbl].term) and set(gives) - have - _defs(proc, [lbl]):
+        if out in succs(proc.blocks[lbl].term) and set(gives) - have - _names_defined(proc, [lbl]):
             return None
     return gives
 
@@ -246,7 +246,7 @@ def _promote(prog, name, lbl, region, out=None, live=None):
     rets = tuple(slots[n] for n in gives) if out is not None else proc.rets
     takes = sorted(params, key=lambda k: slots[k])
     helper = Proc(hname, tuple(slots[n] for n in takes), rets, blocks, lbl, "helper")
-    _rename(helper, {k: REGVAR[v] for k, v in slots.items()})
+    _rename_regs(helper, {k: REGVAR[v] for k, v in slots.items()})
     if out is not None:
         exit_returns(helper, out, tuple(Var(REGVAR[i]) for i in rets))
     prog.procs[hname] = helper
@@ -273,7 +273,7 @@ def _promote(prog, name, lbl, region, out=None, live=None):
     return hname, undo
 
 
-def _rename(proc, sub):
+def _rename_regs(proc, sub):
     """Every name the helper takes or hands back becomes its register, defs included."""
 
     def fn(e):

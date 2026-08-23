@@ -7,7 +7,9 @@ that one frequency layout names, are one block, printed in the layout S6 knows.
 
 from __future__ import annotations
 
-from .partition import SPLITTABLE, refs
+from .ir import overlaps
+from .irwalk import accessors
+from .partition import SPLITTABLE
 
 ROW = 32  # bytes one data row carries
 ENTRY = "entry"  # the record layout's index column, which its rows sit under
@@ -40,14 +42,14 @@ def spans(prog):
     """
     own = {r.id: cells(r) for r in prog.storage if r.id >= 0 and r.kind in SPLITTABLE}
     hits, wrote = {}, bytearray(0x10000)
-    for _p, rid, lo, hi, _a, w in refs(prog):
-        hits.setdefault(rid, []).append((lo, hi))
-        if not w:
+    for acc in accessors(prog):
+        hits.setdefault(acc.rid, []).append((acc.lo, acc.hi))
+        if not acc.store:
             continue
-        if rid not in own:
-            wrote[lo : hi + 1] = b"\1" * (hi - lo + 1)
-        for a in own.get(rid, ()):
-            if lo <= a <= hi:
+        if acc.rid not in own:
+            wrote[acc.lo : acc.hi + 1] = b"\1" * (acc.hi - acc.lo + 1)
+        for a in own.get(acc.rid, ()):
+            if acc.lo <= a <= acc.hi:
                 wrote[a] = 1
     reached = {}
     for rid, c in own.items():
@@ -83,13 +85,7 @@ def blocks(prog, names, reached, wrote):
     lists: it names no block and joins none.
     """
     reached = {i: c for i, c in reached.items() if any(not wrote[a] for a in c)}
-    rs = sorted((r for r in prog.storage if r.id in reached), key=lambda r: (r.base, r.id))
-    groups, end = [], -1
-    for r in rs:
-        if not groups or r.base > end:
-            groups.append([])
-        groups[-1].append(r)
-        end = max(end, r.base + r.size - 1)
+    groups = overlaps(r for r in prog.storage if r.id in reached)
     at = {r.id: i for i, g in enumerate(groups) for r in g}
     join = {}
 
@@ -134,7 +130,7 @@ def _fields(names, blk, k):
     return out
 
 
-def _name(names, blk, kind, arg):
+def _block_name(names, blk, kind, arg):
     """A block's name: the record view's group, or the region the block starts at."""
     r = blk.members[0]
     view = names.view.get(r.id) or names.split.get(r.id)
@@ -152,7 +148,7 @@ def _head(names, blk, kind, arg):
     return (
         "%-16s $%04X %-18s %-10s %s"
         % (
-            _name(names, blk, kind, arg),
+            _block_name(names, blk, kind, arg),
             blk.base,
             "%d bytes%s" % (len(blk.reach), " stride %d" % arg if kind == "record" else ""),
             names.role.get(blk.members[0].id, ""),
@@ -185,7 +181,7 @@ def _hexrows(img, addrs):
     return out
 
 
-def _entries(key, rgn, lay):
+def _note_entries(key, rgn, lay):
     """``[(low address, high address)]`` of a note table's entries, in entry order."""
     kind, n, _cut = lay
     addrs = [a for i in key for a in range(rgn[i].base, rgn[i].base + rgn[i].size)]
@@ -198,7 +194,7 @@ def _entries(key, rgn, lay):
 def _u16rows(rgn, img, blk, key, lay):
     """A note table as 16-bit entries, :data:`ROW` bytes to the row; the rest as hex."""
     out, left, row, at = [], set(blk.data), [], None
-    for lo, hi in _entries(key, rgn, lay):
+    for lo, hi in _note_entries(key, rgn, lay):
         at = min(lo, hi) if at is None else at  # a hi|lo table's low column is the upper one
         both = lo in blk.data and hi in blk.data
         left -= {lo, hi} if both else set()  # a half whose partner is state still prints, as hex

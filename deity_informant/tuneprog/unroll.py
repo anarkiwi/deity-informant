@@ -50,36 +50,32 @@ class _Ctx:
         return "@%d" % (len(self.holes) - 1 if not self.sub else 0)
 
 
-def _expr(e, c):
+def _expr_token(e, c):
     t = type(e)
     if t is Const:
         return ("k",), (c.hole("k", e.v, e.w) or e)
     if t is Var:
         return ("v", c.name(e.n)), e
     if t is Load:
-        tok, a = _addr(e.a, c, c.region(e.r))
+        tok, a = _tagged(e.a, c, c.region(e.r))
         return ("l", e.cls, e.w, tok), Load(e.cls, a, e.w, e.lo, e.hi, e.r)
     if t is R16:
         tag = c.region(e.lo[0])
         c.region(e.hi[0])
-        tok, a = _addr(e.a, c, tag)
+        tok, a = _tagged(e.a, c, tag)
         return ("r16", tok), R16(e.lo, e.hi, a)
     if t is Bin:
-        ta, a = _expr(e.a, c)
-        tb, b = _expr(e.b, c)
+        ta, a = _expr_token(e.a, c)
+        tb, b = _expr_token(e.b, c)
         return ("b", e.op, e.w, ta, tb), Bin(e.op, a, b, e.w)
     c.bad = True
     return ("?",), e
 
 
-def _addr(e, c, tag):
-    """Walk an address: its constants are that region's, so one stride serves it."""
-    return _tagged(e, c, tag)
-
-
 def _tagged(e, c, tag):
+    """Walk a value under ``tag``: an address's constants are that region's own."""
     keep, c.reg = c.reg, tag
-    out = _expr(e, c)
+    out = _expr_token(e, c)
     c.reg = keep
     return out
 
@@ -87,19 +83,19 @@ def _tagged(e, c, tag):
 def _stmt(s, c):
     t = type(s)
     if t is Let:
-        tok, e = _expr(s.e, c)
+        tok, e = _expr_token(s.e, c)
         return ("let", c.name(s.n), tok), Let(s.n, e)
     if t is Store and s.cls == "raw":
         return ("raw",), s
     if t is Store:
-        ta, a = _addr(s.a, c, c.region(s.r))
-        tv, v = _expr(s.v, c)
+        ta, a = _tagged(s.a, c, c.region(s.r))
+        tv, v = _expr_token(s.v, c)
         return ("st", s.cls, s.w, ta, tv), Store(s.cls, a, v, s.w, s.lo, s.hi, s.r, s.src)
     if t is W16:
         tag = c.region(s.lo[0])
         c.region(s.hi[0])
-        ta, a = _addr(s.a, c, tag)
-        te, e = _expr(s.e, c)
+        ta, a = _tagged(s.a, c, tag)
+        te, e = _expr_token(s.e, c)
         return ("w16", ta, te), W16(s.lo, s.hi, a, e, s.src)
     if t is Call:
         # Arguments the printer drops are machine plumbing: neither shape nor hole.
@@ -114,35 +110,35 @@ def _stmt(s, c):
             args.append(x)
         return ("call", s.proc, tuple(toks)), Call(s.proc, tuple(args), s.rets)
     if t is Assert:
-        tok, e = _expr(s.e, c)
+        tok, e = _expr_token(s.e, c)
         return ("assert", s.why, tok), Assert(e, s.why)
     c.bad = True
     return ("?",), s
 
 
-def _node(n, c):
+def _node_token(n, c):
     t = type(n)
     if t is Blk:
         toks, stmts = _many(n.stmts, c, _stmt)
         return ("blk", toks), Blk(n.label, stmts, n.src, n.count)
     if t is Cond:
-        tok, e = _expr(n.c, c)
-        tt, then = _many(n.then, c, _node)
-        tf, els = _many(n.els, c, _node)
+        tok, e = _expr_token(n.c, c)
+        tt, then = _many(n.then, c, _node_token)
+        tf, els = _many(n.els, c, _node_token)
         return ("cond", tok, tt, tf), Cond(e, then, els)
     if t is Case:
-        tok, e = _expr(n.e, c)
-        arms = [(v, _many(b, c, _node)) for v, b in n.cases]
+        tok, e = _expr_token(n.e, c)
+        arms = [(v, _many(b, c, _node_token)) for v, b in n.cases]
         toks = tuple((v, t) for v, (t, _b) in arms)
         return ("case", tok, toks), Case(e, tuple((v, b) for v, (_t, b) in arms), n.src)
     if t is For:
         # the induction test and the back edge print as the header, so they are
         # not part of the shape either
-        tb, body = _many(strip(n.body, n.label, n.hide), c, _node)
+        tb, body = _many(strip(n.body, n.label, n.hide), c, _node_token)
         node = For(n.var, n.values, body, n.scale, n.hide, n.label, n.count, n.group)
         return ("for", c.name(n.var), n.values, n.scale, tb), node
     if t is Loop:
-        tb, body = _many(n.body, c, _node)
+        tb, body = _many(n.body, c, _node_token)
         return ("loop", tb), Loop(body, n.label, n.count)
     if t is Jump:
         # a jump inside the segment names the segment's own loop; one that leaves
@@ -151,7 +147,7 @@ def _node(n, c):
     if t is Exit:
         if n.e is None:
             return ("exit", n.kind, n.why), n
-        tok, e = _expr(n.e, c)
+        tok, e = _expr_token(n.e, c)
         return ("exit", n.kind, n.why, tok), Exit(n.kind, n.why, e)
     c.bad = True
     return ("?",), n
@@ -198,7 +194,7 @@ def _rebuild(units):
 
 def _skeleton(units, defs, keep=None):
     c = _Ctx(defs, keep=keep, labels=_labels(units))
-    toks = [(_stmt if k == "s" else _node)(o, c)[0] for k, o, _b in units]
+    toks = [(_stmt if k == "s" else _node_token)(o, c)[0] for k, o, _b in units]
     return (None if c.bad else tuple(toks)), c.holes
 
 
@@ -214,7 +210,7 @@ def _labels(units):
     return out
 
 
-def _defined(units):
+def _defined_names(units):
     """The names a run defines: only those may be renamed between copies."""
     out = set()
     for kind, obj, _b in units:
@@ -275,7 +271,7 @@ def steps(runs, rgn=None):
         return None, None
     if slots.keys() & plain:
         return None, None  # copy 0's constant is all the body holds, slot or not
-    if slots and (len(slots) < MINSLOTS or len({_delta(c) for c in slots.values()}) > 1):
+    if slots and (len(slots) < MINSLOTS or len({_cell_delta(c) for c in slots.values()}) > 1):
         # without a static correspondence to appeal to, the only mapping a run
         # proves is one relocation: several cells, every one of copy i the same
         # distance on from copy 0's
@@ -283,7 +279,7 @@ def steps(runs, rgn=None):
     return out, slots
 
 
-def _delta(cells):
+def _cell_delta(cells):
     """Where copy ``j``'s cell sits relative to copy 0's, for one field."""
     return tuple(a - cells[0][1] for _r, a in cells)
 
@@ -292,18 +288,18 @@ def _run(units, i, minunits, keep=None, rgn=None):
     """``(length, copies, steps, cells)`` of the best isomorphic run starting at ``i``."""
     best, hit = None, None
     for length in range(1, (len(units) - i) // 2 + 1):
-        sk, holes = _skeleton(units[i : i + length], _defined(units[i : i + length]), keep)
+        sk, holes = _skeleton(units[i : i + length], _defined_names(units[i : i + length]), keep)
         if sk is None:
             continue
         runs, k = [holes], 1
         while i + (k + 1) * length <= len(units):
             seg = units[i + k * length : i + (k + 1) * length]
-            sk2, h2 = _skeleton(seg, _defined(seg), keep)
+            sk2, h2 = _skeleton(seg, _defined_names(seg), keep)
             if sk2 != sk or len(h2) != len(holes):
                 break
             runs.append(h2)
             k += 1
-        size = _size(units[i : i + length])
+        size = _run_size(units[i : i + length])
         for copies in range(k, 1, -1):
             deltas, slots = steps(runs[:copies], rgn)
             if deltas is None or copies * size < minunits:
@@ -315,12 +311,14 @@ def _run(units, i, minunits, keep=None, rgn=None):
     return hit
 
 
-def _size(units):
+def _run_size(units):
     """The statements a run of units prints; a call weighs the procedure it stands for."""
-    return sum(_stmts(o) if k == "n" else MINSTMT if type(o) is Call else 1 for k, o, _b in units)
+    return sum(
+        _node_stmts(o) if k == "n" else MINSTMT if type(o) is Call else 1 for k, o, _b in units
+    )
 
 
-def _stmts(n):
+def _node_stmts(n):
     """The statements a structured node prints, its children included."""
     return sum(len(x.stmts) for x in walk([n]) if type(x) is Blk)
 
@@ -328,7 +326,7 @@ def _stmts(n):
 def _abstract(units, deltas, var, keep=None):
     """Copy 0 with each stepping constant replaced by the loop index."""
     c = _Ctx(set(), deltas, var, keep, _labels(units))
-    return [(k, (_stmt if k == "s" else _node)(o, c)[1], b) for k, o, b in units]
+    return [(k, (_stmt if k == "s" else _node_token)(o, c)[1], b) for k, o, b in units]
 
 
 def unroll(structured, live=None, keep=None, minunits=MINSTMT, rgn=None):
@@ -366,7 +364,7 @@ def _body(body, minunits, n, live, keep, rgn=None, groups=None):
 
 def _escapes(units, i, span, live):
     """True when the run defines a live name a statement outside it reads."""
-    inside = _defined(units[i : i + span])
+    inside = _defined_names(units[i : i + span])
     after = set()
     for kind, obj, _b in units[:i] + units[i + span :]:
         (stmt_uses if kind == "s" else _node_uses)(obj, after)

@@ -241,6 +241,24 @@ def scales(facts):
     return out
 
 
+def per_region(facts, per_index):
+    """``{region: {value}}`` for every region an index of ``per_index`` walks.
+
+    One reading of :attr:`Facts.idxvar`: the record stride that reaches a region
+    (:func:`scales`), or how many elements of a view an index selects.
+    """
+    out = {}
+    for n, rids in facts.idxvar.items():
+        for rid in rids if (per_index.get(n) or 1) > 1 else ():
+            out.setdefault(rid, set()).add(per_index[n])
+    return out
+
+
+def unclaimed(r, taken, kinds):
+    """True when a region of one of ``kinds`` is not already some view's own."""
+    return r.id >= 0 and r.kind in kinds and r.id not in taken
+
+
 def image_copy(facts):
     """``{region: delta}`` for a region a loop copies byte-for-byte into the SID.
 

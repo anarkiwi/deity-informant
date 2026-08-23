@@ -285,7 +285,7 @@ def _order(proc, cand):
     return out
 
 
-def _name(n, ren):
+def _renamed(n, ren):
     return ren.setdefault(n, "$%d" % len(ren))
 
 
@@ -294,7 +294,7 @@ def _cexpr(e, ren):
     if t is Const:
         return ("k", e.v)
     if t is Var:
-        return ("v", _name(e.n, ren))
+        return ("v", _renamed(e.n, ren))
     if t is Load:
         return ("l", e.cls, e.r, e.w, _cexpr(e.a, ren))
     if t is R16:
@@ -305,7 +305,7 @@ def _cexpr(e, ren):
 def _cstmt(s, ren, params):
     t = type(s)
     if t is Let:
-        return ("let", _name(s.n, ren), _cexpr(s.e, ren))
+        return ("let", _renamed(s.n, ren), _cexpr(s.e, ren))
     if t is Store:
         return ("st", s.cls, s.r, s.w, s.src, _cexpr(s.a, ren), _cexpr(s.v, ren))
     if t is W16:
@@ -379,7 +379,7 @@ def outline(prog, names, live, params=None):
     for c in select(candidates(prog, names)):
         if crossing(prog, c, live):
             continue
-        groups.setdefault(_match(prog, c, groups, keep), []).append(c)
+        groups.setdefault(_match_group(prog, c, groups, keep), []).append(c)
     out, count = {}, Counter(c.proc for g in groups.values() for c in g)
     worth = [
         g
@@ -390,13 +390,13 @@ def outline(prog, names, live, params=None):
         group.sort(key=lambda c: (c.skip, c.proc))
         name = unique_name(group[0].role, prog.procs, sep="")
         for c in group:
-            _extract(prog, c, name, name in out)
+            _extract_run(prog, c, name, name in out)
             out[name] = group
         names.procs[name] = name
     return out
 
 
-def _match(prog, c, groups, keep):
+def _match_group(prog, c, groups, keep):
     """The group of an equal run; a prologue on either side is left behind."""
     for key, group in list(groups.items()):
         other = group[0]
@@ -441,7 +441,7 @@ def _whole(prog, c):
     return c.entry == p.entry and not c.skip and len(c.blocks) == len(p.blocks)
 
 
-def _extract(prog, cand, name, exists):
+def _extract_run(prog, cand, name, exists):
     """Move the run into ``name`` (once) and leave a call behind."""
     proc = prog.procs[cand.proc]
     entry = proc.blocks[cand.entry]

@@ -143,7 +143,7 @@ class Body(Printer):
     def forloop(self, n, proc, depth):
         pad = IND * depth
         vals = tuple(v // n.scale for v in n.values)
-        rng = _range(vals)
+        rng = _val_list(vals)
         alias, hide, fvars = dict(self.alias), set(self.hide), dict(self.fvars)
         var = _ivar(self.fors)
         self.alias[n.var] = (var, n.scale)
@@ -244,7 +244,7 @@ def _ivar(n):
     return "vwxyz"[min(n, 4)]
 
 
-def _range(vals):
+def _val_list(vals):
     if len(vals) > 3 and vals == tuple(
         range(
             vals[0], vals[-1] + (1 if vals[0] < vals[-1] else -1), 1 if vals[0] < vals[-1] else -1
@@ -394,12 +394,12 @@ def _state(prog, names):
             continue
         if r.id in cells and r.size <= 2:
             continue  # a scalar the group view already lists, address by address
-        if not _paired(r, half.get(r.id)):
+        if not _all_paired(r, half.get(r.id)):
             out.append(_row(r, names, "init-only" if r.kind == "init_constant" else ""))
     return out
 
 
-def _paired(r, addrs):
+def _all_paired(r, addrs):
     """True when every cell of a region is a half of some named 16-bit pair."""
     return addrs is not None and set(range(r.base, r.base + r.size)) <= addrs
 

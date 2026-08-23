@@ -83,7 +83,7 @@ def stack_temps(prog, make=None):
             continue
         name = make()
         blk.stmts[si] = Let(name, blk.stmts[si].v)
-        fn = _reader(rid, name)
+        fn = _cell_reader(rid, name)
         for b in proc.blocks.values():
             for s in b.stmts:
                 apply_stmt(s, fn)
@@ -134,7 +134,7 @@ def _same_addr(store, blk, li, rid):
     return bool(hit) and all(x.a == store.a and pure(x.a) for x in hit)
 
 
-def _reader(rid, name):
+def _cell_reader(rid, name):
     def fn(e):
         return Var(name) if type(e) is Load and e.r == rid else e
 
@@ -155,7 +155,7 @@ def mirrors(prog):
         for b in sorted(rgn):
             if b <= a or a in out or b in out or rgn[a].init != rgn[b].init:
                 continue
-            if _paired(prog, st.get(a, []), st.get(b, []), a, b):
+            if _paired_stores(prog, st.get(a, []), st.get(b, []), a, b):
                 out[b] = a
     if out:
         fn = _mirror_fn(out, rgn)
@@ -177,7 +177,7 @@ def _mirror_fn(out, rgn):
     return fn
 
 
-def _paired(prog, sa, sb, ra, rb):
+def _paired_stores(prog, sa, sb, ra, rb):
     if not sa or len(sa) != len(sb):
         return False
     for (pa, la, ia), (pb, lb, ib) in zip(sa, sb):
@@ -207,11 +207,11 @@ def forward(prog):
     for p in prog.procs.values():
         defs = single_defs(p)
         for b in p.blocks.values():
-            n += _forward(b, defs)
+            n += _forward_block(b, defs)
     return n
 
 
-def _forward(b, defs):
+def _forward_block(b, defs):
     """Forward within one block: the printer forgets a cell at every block head too."""
     held, n = {}, 0
 
@@ -219,11 +219,11 @@ def _forward(b, defs):
         return held.get(e, e)
 
     for s in b.stmts:
-        n += _rewrite(s, fn)
+        n += _rewrite_reads(s, fn)
         _invalidate(held, s)
         if _holdable(s) and _updates(s, defs, s.v):
             held.setdefault(s.v, Load(s.cls, s.a, s.w, s.lo, s.hi, s.r))
-    n += _rewrite(b.term, fn)
+    n += _rewrite_reads(b.term, fn)
     return n
 
 
@@ -238,7 +238,7 @@ def _updates(s, defs, e, seen=()):
     return False
 
 
-def _rewrite(node, fn):
+def _rewrite_reads(node, fn):
     """Substitute in what a node reads for its value; an address is a place, not a value."""
     t, before = type(node), repr(node)
     if t is Store:

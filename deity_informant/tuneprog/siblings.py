@@ -56,12 +56,12 @@ def _data(prog, band):
     }
 
 
-def _stop(stops, pc, band):
+def _stream_stop(stops, pc, band):
     """Where a stream that starts at ``pc`` must stop: the next base, or the band."""
     return min([s for s in stops if s > pc] + [band[1]])
 
 
-def _match(image, xs, ys, whole=True):
+def _align_streams(image, xs, ys, whole=True):
     """Aligned index pairs of two instruction streams, ``None`` over a replacement.
 
     Streams are compared byte for byte, so an alias opcode never matches the
@@ -87,9 +87,9 @@ def align(image, a, b, stops=frozenset(), band=(0, 0x10000), data=()):
     Either stream stops at the next base in ``stops``, so one copy never aligns
     with the next.
     """
-    xs = stream(image, a, _stop(stops, a, band), data=data)
-    ys = stream(image, b, _stop(stops, b, band), data=data)
-    rows = _match(image, xs, ys)
+    xs = stream(image, a, _stream_stop(stops, a, band), data=data)
+    ys = stream(image, b, _stream_stop(stops, b, band), data=data)
+    rows = _align_streams(image, xs, ys)
     return [(xs[i], ys[j]) for i, j in rows] if rows else []
 
 
@@ -251,7 +251,7 @@ def chained(node, image, fam):
     )
 
 
-def _copy(image, xs, b, hi, whole=True):
+def _copy_window(image, xs, b, hi, whole=True):
     """``(rows, end)`` -- the window at ``b`` the template ``xs`` aligns into, and its end.
 
     The window grows by the template it has not reached yet, while growing reaches
@@ -259,12 +259,12 @@ def _copy(image, xs, b, hi, whole=True):
     it from the start as far as the run goes, and ends at the last row.
     """
     ys = stream(image, b, hi, len(xs))
-    rows = _match(image, xs, ys, whole)
+    rows = _align_streams(image, xs, ys, whole)
     while whole and rows and rows[-1][0] < len(xs) - 1:
         more = stream(image, b, hi, len(ys) + len(xs) - 1 - rows[-1][0])
         if len(more) == len(ys):
             break
-        got = _match(image, xs, more)
+        got = _align_streams(image, xs, more)
         if not got or got[-1][0] <= rows[-1][0]:
             break
         ys, rows = more, got
@@ -274,7 +274,7 @@ def _copy(image, xs, b, hi, whole=True):
     return [(xs[i], ys[j]) for i, j in rows], ys[-1] + ilen(image, ys[-1])
 
 
-def _chain(image, code, band, first):
+def _run_chain(image, code, band, first):
     """``(bases, [pc map per step])`` of the run the pair ``first`` opens, or ``None``.
 
     Copy *j+1*'s extent comes out of the alignment, so the base after it is not
@@ -284,10 +284,10 @@ def _chain(image, code, band, first):
     bases, steps = list(first), []
     while True:
         xs = stream(image, bases[-2], bases[-1])
-        got = _copy(image, xs, bases[-1], band[1])
+        got = _copy_window(image, xs, bases[-1], band[1])
         last = got is None
         if last and steps:  # only the copy nothing follows may hold the template in part
-            got = _copy(image, xs, bases[-1], band[1], whole=False)
+            got = _copy_window(image, xs, bases[-1], band[1], whole=False)
         out = [] if got is None else code.enters(bases[-2], bases[-1], got[1])
         rows = dict(got[0]) if got is not None else {}
         if not out or (last and not any(u in rows for u in out)):
@@ -313,7 +313,7 @@ def _before(image, code, band, run):
         for a in [p for p in code.bounds if p < bases[0]][-n:]:
             if image[a] != image[bases[0]]:
                 continue
-            got = _copy(image, stream(image, a, bases[0]), bases[0], band[1])
+            got = _copy_window(image, stream(image, a, bases[0]), bases[0], band[1])
             if (
                 got is not None
                 and code.after(got[1]) == bases[1]
@@ -359,7 +359,7 @@ def _bases(image, code):
     return (out | (set(code.pcs) - fell)) & set(code.pcs)
 
 
-def _pairs(image, code):
+def _candidate_pairs(image, code):
     """The candidate pairs of one procedure: same opcode, same executions, in order.
 
     Two copies of one template open on the same byte, and a chain runs every copy
@@ -380,10 +380,10 @@ def chains(prog, image, band, procs):
     cands, bad = [], []
     for name in prog.procs:
         code, seen = _code(procs[name].nodes, image, band), set()
-        for a, b in _pairs(image, code):
+        for a, b in _candidate_pairs(image, code):
             if (a, b) in seen or not code.enters(a, b, band[1]):
                 continue
-            got = _chain(image, code, band, (a, b))
+            got = _run_chain(image, code, band, (a, b))
             if got is None:
                 continue
             seen.update(zip(got[0], got[0][1:]))

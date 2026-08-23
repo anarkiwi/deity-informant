@@ -4,8 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from deity_informant.tuneprog import partition, pipeline, printer
-from deity_informant.tuneprog.ir import Bin, Const, Rgn, Tuneprog, Var
+from deity_informant.tuneprog import copyview, partition, pipeline, printer
+from deity_informant.tuneprog.ir import Const, Rgn, Tuneprog
+from deity_informant.tuneprog.irwalk import Acc
 from deity_informant.tuneprog.pseudocode import Printer
 from deity_informant.tuneprog.recover import Names
 
@@ -16,28 +17,28 @@ BASE = 0x1000
 R = Rgn(id=7, name="state_1000", base=BASE, size=16, kind="state", init=bytes(16), origin=BASE)
 
 
-def _at(base, idx=True):
-    """An address expression: ``base + i``, or the bare constant."""
-    return Bin("+", Const(base, 2), Var("i", 1), 2) if idx else Const(base, 2)
+def _acc(lo, hi, base, idx=True):
+    """An accessor of ``R``: an envelope, and the address split it reads it through."""
+    return Acc("play", R.id, False, base, "i" if idx else None, lo, hi)
 
 
 # ---- the shapes --------------------------------------------------------------
 def test_a_span_starting_at_its_own_operand_names_an_array():
-    assert partition._cover(R, BASE + 4, BASE + 6, _at(BASE + 4)) == ("array", 4, 6)
+    assert partition._cover(R, _acc(BASE + 4, BASE + 6, BASE + 4)) == ("array", 4, 6)
 
 
 def test_a_constant_address_names_a_scalar():
-    assert partition._cover(R, BASE + 3, BASE + 3, _at(BASE + 3, idx=False)) == ("scalar", 3, 3)
+    assert partition._cover(R, _acc(BASE + 3, BASE + 3, BASE + 3, idx=False)) == ("scalar", 3, 3)
 
 
 def test_a_reach_that_starts_inside_the_region_claims_no_extent():
-    assert partition._cover(R, BASE + 2, BASE + 9, _at(BASE)) == ("", 2, 9)
-    assert partition._cover(R, BASE + 4, BASE + 4, _at(BASE + 4)) == ("", 4, 4)
+    assert partition._cover(R, _acc(BASE + 2, BASE + 9, BASE)) == ("", 2, 9)
+    assert partition._cover(R, _acc(BASE + 4, BASE + 4, BASE + 4)) == ("", 4, 4)
 
 
 def test_an_access_outside_the_region_is_no_cover():
-    assert partition._cover(R, BASE - 1, BASE + 2, _at(BASE)) is None
-    assert partition._cover(R, BASE, BASE + 99, _at(BASE)) is None
+    assert partition._cover(R, _acc(BASE - 1, BASE + 2, BASE)) is None
+    assert partition._cover(R, _acc(BASE, BASE + 99, BASE)) is None
 
 
 # ---- the partition -----------------------------------------------------------
@@ -77,22 +78,22 @@ def _fold(slots, columns=None):
 def test_a_folds_cells_follow_a_merge_and_then_a_split():
     prog = _fold({(3, 0x1000): [(3, 0x1000), (3, 0x1004)]}, {(9, 0): (3, 0x1000)})
     f = prog.meta["copyviews"][0]
-    partition._recell(prog, [(3, 0, 0xFFFF, 7)])  # a merge: region 3 is region 7 throughout
+    copyview.remap_cells(prog, [(3, 0, 0xFFFF, 7)])  # a merge: region 3 is region 7 throughout
     assert f["slots"] == {(7, 0x1000): [(7, 0x1000), (7, 0x1004)]}
     assert f["columns"] == {(9, 0): (7, 0x1000)}
-    partition._recell(prog, [(7, 0x1004, 0x1007, 8)])  # a split: the second copy moved out
+    copyview.remap_cells(prog, [(7, 0x1004, 0x1007, 8)])  # a split: the second copy moved out
     assert f["slots"] == {(7, 0x1000): [(7, 0x1000), (8, 0x1004)]}
 
 
 def test_a_merge_that_would_collapse_two_slots_onto_one_cell_is_refused():
     prog = _fold({(3, 0x1000): [(3, 0x1000)], (4, 0x1000): [(4, 0x1000)]})
     with pytest.raises(ValueError):
-        partition._recell(prog, [(4, 0, 0xFFFF, 3)])
+        copyview.remap_cells(prog, [(4, 0, 0xFFFF, 3)])
 
 
 def test_the_addresses_one_fold_names_as_one_field_are_a_group_per_region():
     prog = _fold({(3, 0x1000): [(3, 0x1000), (3, 0x1004), (5, 0x2000)]})
-    assert partition._fields(prog) == {3: [{0x1000, 0x1004}], 5: [{0x2000}]}
+    assert copyview.fold_fields(prog) == {3: [{0x1000, 0x1004}], 5: [{0x2000}]}
 
 
 def test_a_claim_that_cuts_a_fold_field_loses_and_the_rest_stands():
@@ -104,9 +105,9 @@ def test_a_claim_that_cuts_a_fold_field_loses_and_the_rest_stands():
 
 def test_a_part_no_store_reaches_is_const_beside_a_state_neighbour():
     band = (BASE, BASE + 0x100)
-    assert partition._kind(R, 4, 6, [(9, 9)], band) == "const"
-    assert partition._kind(R, 4, 6, [(5, 5)], band) == "state"
-    assert partition._kind(R, 4, 6, [], (0, 0)) == "image"
+    assert partition._part_kind(R, 4, 6, [(9, 9)], band) == "const"
+    assert partition._part_kind(R, 4, 6, [(5, 5)], band) == "state"
+    assert partition._part_kind(R, 4, 6, [], (0, 0)) == "image"
 
 
 # ---- the print ---------------------------------------------------------------
@@ -223,7 +224,7 @@ def test_a_gap_starts_a_new_run_and_only_the_overlapping_extents_merge():
     prog = SimpleNamespace(
         storage=[rgn(1, BASE, 2), rgn(2, BASE + 1, 2), rgn(3, BASE + 0x10, 2)], procs={}, meta={}
     )
-    assert partition._merge(prog, set()) == {2: 1}
+    assert partition._merge_extents(prog, set()) == {2: 1}
     assert [(r.id, r.base, r.size) for r in prog.storage] == [(1, BASE, 3), (3, BASE + 0x10, 2)]
 
 

@@ -232,7 +232,7 @@ class _Closure:
                 "pc": pc,
                 "opcode": op,
                 "count": 0,
-                "closed": True,  # what the image stated, not what ran: see cfg._node
+                "closed": True,  # what the image stated, not what ran: see cfg._cfg_node
                 "phases": PH_PLAY,
                 "variants": [b],
                 "idx": [],

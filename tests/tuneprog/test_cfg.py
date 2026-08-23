@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from deity_informant.tuneprog.cfg import _node, build_procs, procs_json
+from deity_informant.tuneprog.cfg import _cfg_node, build_procs, procs_json
 from deity_informant.tuneprog.lift import lift_trace
 from deity_informant.tuneprog.machine import Refusal
 from deity_informant.tuneprog.regions import build_regions
@@ -378,5 +378,5 @@ def test_the_idle_jmp_star_return_belongs_to_the_init_procedure_alone():
     pc, op, idle = 0x1000, 0xEA, 0x1001  # a NOP whose fall-through is the idle loop
     trace = SimpleNamespace(sites={(pc, op): {"count": 1}}, rets={}, calls={})
     keys = {(pc, op): [(pc, op)]}
-    assert _node(trace, pc, op, {}, keys, set(), None)["term"] == "trap"
-    assert _node(trace, pc, op, {}, keys, set(), None, idle)["term"] == "return"
+    assert _cfg_node(trace, pc, op, {}, keys, set(), None)["term"] == "trap"
+    assert _cfg_node(trace, pc, op, {}, keys, set(), None, idle)["term"] == "return"

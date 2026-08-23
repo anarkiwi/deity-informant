@@ -113,7 +113,7 @@ def test_every_affine_substitution_reproduces_each_copy_s_own_operand():
     _tabs, cols = _cols(view)
     hits = 0
     for col in cols.values():
-        plan, _cells = copyview._plan(col, view.by_id())
+        plan, _cells = copyview._col_plan(col, view.by_id())
         if plan is None or plan[0] != "index":
             continue
         e = copyview.step("v", plan[1], plan[2], plan[3])
@@ -127,7 +127,7 @@ def test_every_group_view_column_names_exactly_the_copies_own_cells():
     _tabs, cols = _cols(view)
     hits = 0
     for col in cols.values():
-        plan, cells = copyview._plan(col, view.by_id())
+        plan, cells = copyview._col_plan(col, view.by_id())
         if cells is None:
             continue
         # the read stays, so the printed index is the copy the access itself names
@@ -139,7 +139,7 @@ def test_every_group_view_column_names_exactly_the_copies_own_cells():
 def test_the_view_keeps_the_column_reads_a_group_view_names_and_no_others():
     _prog, view = _view(voices())
     tabs, cols = _cols(view)
-    plans = {k: copyview._plan(c, view.by_id())[0] for k, c in cols.items()}
+    plans = {k: copyview._col_plan(c, view.by_id())[0] for k, c in cols.items()}
     kept = {k for k, p in plans.items() if p is None or p[0] == "read"}
     assert kept and any(p is not None and p[0] == "index" for p in plans.values())
     copyview.expand(view)
@@ -174,9 +174,9 @@ def test_a_program_with_no_family_is_untouched():
 def test_a_column_whose_copies_name_different_fields_keeps_its_table_read():
     r = Rgn(0, "rec", 0x1000, 300, "state", 30, b"", ())
     apart = _col([0x1000, 0x1020, 0x104C], 2, 3)  # offsets 0, 2, 12 of three records
-    assert copyview._plan(apart, {0: r}) == (None, None)
+    assert copyview._col_plan(apart, {0: r}) == (None, None)
     same = _col([0x1000, 0x101E, 0x103C], 2, 3)  # one offset, three records
-    assert copyview._plan(same, {0: r})[1] is not None
+    assert copyview._col_plan(same, {0: r})[1] is not None
 
 
 def test_random_columns_either_reproduce_their_values_or_keep_the_read():
@@ -187,7 +187,7 @@ def test_random_columns_either_reproduce_their_values_or_keep_the_read():
     for _ in range(300):
         k = rng.randrange(2, 6)
         vals = sorted(rng.sample(range(0x0100, 0x0140), k))
-        plan, cells = copyview._plan(_col(vals, 1, k), {0: rng.choice([small, block])})
+        plan, cells = copyview._col_plan(_col(vals, 1, k), {0: rng.choice([small, block])})
         seen.add(plan and plan[0])
         if plan is not None and plan[0] == "index":
             e = copyview.step("v", plan[1], plan[2], plan[3])
