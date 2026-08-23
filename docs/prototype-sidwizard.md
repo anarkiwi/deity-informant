@@ -1,6 +1,6 @@
 # Prototype: the tuneprog decompiler on SID Wizard — results
 
-Fourth exemplar of [tuneprog-decompiler-design.md](tuneprog-decompiler-design.md), after
+Fourth exemplar of [tuneprog-architecture.md](tuneprog-architecture.md), after
 *Automatas* ([prototype-automatas.md](prototype-automatas.md)), *Ghouls'n'Ghosts*
 ([prototype-follin.md](prototype-follin.md)) and GoatTracker 2
 ([prototype-goattracker.md](prototype-goattracker.md)): `MUSICIANS/H/Hermit/Emomyst.sid`

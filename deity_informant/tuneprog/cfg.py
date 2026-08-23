@@ -221,7 +221,7 @@ def _cfg_node(trace, pc, op, out, keys, tails, lifted, idle=None):
     arms = branch_arms(ls, site, pc, op)
     if arms is not None:
         # Both directions of an executed branch are nodes; a direction the trace
-        # never took is a trap (the trace-closed product of design section 3). A
+        # never took is a trap (the trace-closed product of architecture section 2). A
         # branch whose offset byte is an SMC cell keeps its condition and dispatches
         # on the targets its observed offsets name and the trace reached.
         seen = {t for t, _k in flow}

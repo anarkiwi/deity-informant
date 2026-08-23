@@ -1,6 +1,6 @@
 # Prototype: the tuneprog decompiler on GoatTracker 2 — results
 
-Third exemplar of [tuneprog-decompiler-design.md](tuneprog-decompiler-design.md), after
+Third exemplar of [tuneprog-architecture.md](tuneprog-architecture.md), after
 *Automatas* ([prototype-automatas.md](prototype-automatas.md)) and *Ghouls'n'Ghosts*
 ([prototype-follin.md](prototype-follin.md)):
 `MUSICIANS/L/Linus/Je_suis_Linus_le_salaud.sid` and `MUSICIANS/L/Linus/Do_It_Again.sid`,

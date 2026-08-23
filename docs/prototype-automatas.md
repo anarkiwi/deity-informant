@@ -1,6 +1,6 @@
 # Prototype: the tuneprog decompiler on defMON's *Automatas*
 
-Vertical slice of [tuneprog-decompiler-design.md](tuneprog-decompiler-design.md)
+Vertical slice of [tuneprog-architecture.md](tuneprog-architecture.md)
 against `MUSICIANS/G/Goto80/Automatas.sid` (Goto80, defMON export, 2013; anatomy
 [§3.7](playroutine-anatomy.md)), the hardest of the nine anatomy exemplars for
 this design. Real code in its final place (`deity_informant/tuneprog/`), generic
@@ -32,7 +32,7 @@ Automatas exercises nearly all design mechanisms at once:
 
 Runner-up Blackbird (§3.9) has the nastiest CFG but is single-speed, tiny, with
 no play-time opcode cells, no volatile reads and no struct-of-code; second
-target ([tuneprog-plan.md](tuneprog-plan.md) §1).
+target ([tuneprog-architecture.md](tuneprog-architecture.md) §9.1).
 
 ---
 
@@ -87,7 +87,7 @@ with S5/S6 carried far enough to print Automatas readably.
 
 ## 4. Package layout, data structures, file formats
 
-Layout as planned; as built, with line counts, in [`tuneprog.md`](tuneprog.md).
+Layout as planned; as built, with line counts, in [tuneprog-architecture.md](tuneprog-architecture.md) §10.
 
 ```
 deity_informant/tuneprog/
@@ -123,7 +123,7 @@ Trace     = { image_pre, image_post_init, entries, schedule, sites, edges, calls
 Node      = (proc:int, pc:int, variant:int) ; Proc = { entry, nodes, edges, exits, summary(live_in, defs, regions) }
 Region    = { id, name, base, size, addrs:sorted, kind ∈ {state, init_constant, const, image, io},
               accessors: [(site, op_i, index_expr)], stride, fields, init_bytes }
-IR (design §4): Tuneprog{meta, storage, inputs, procs}; Proc{name, params, blocks}; Block{label, stmts, term}
+IR ([tuneprog-architecture.md](tuneprog-architecture.md) §4): Tuneprog{meta, storage, inputs, procs}; Proc{name, params, blocks}; Block{label, stmts, term}
 ```
 
 Files per tune (`--out DIR`): `trace.json` + `trace.npz`, `procs.json`,
@@ -246,7 +246,7 @@ detector rejects the 12 leading pseudo-entries; names by role and voice.
 
 **S7 `emit.py`** — `tuneprog.py` = one Python function per procedure over
 `mem: bytearray`, `sidw(addr, val)`, `iow(addr, val)`, `inp(name)`;
-`tuneprog.md` = the printer; `certificate.json` = design §7 schema, `compared`
+`tuneprog.md` = the printer; `certificate.json` = [tuneprog-architecture.md](tuneprog-architecture.md) §5 schema, `compared`
 including `init writes`, `tick sid writes`, `tick schedule effects`.
 
 **S8 `verify.py`** — `verify(tuneprog, trace, calls, resume)` runs `init(song)`
@@ -415,7 +415,7 @@ row_apply(a, x):                         # $168C, 103,249 calls
     ...                                  # the sidTAB column decoder
 ```
 
-Commando song 1 (`tuneprog.md`, verbatim), the design's section 4 illustration:
+Commando song 1 (`tuneprog.md`, verbatim), the illustration of [tuneprog-architecture.md](tuneprog-architecture.md) §4:
 
 ```
 tick():                                  # $5012, 11,780 calls

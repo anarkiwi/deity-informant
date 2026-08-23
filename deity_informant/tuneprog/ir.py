@@ -1,4 +1,4 @@
-"""The tuneprog IR (design section 4): node types, their JSON form, their algebra.
+"""The tuneprog IR (architecture section 4): node types, their JSON form, their algebra.
 
 A :class:`Tuneprog` is ``{meta, storage, inputs, procs}``. A :class:`Proc` takes
 its live-in 6510 registers as ``params`` and returns the ones it defines as
@@ -236,7 +236,7 @@ class Proc:
 
 @dataclass(slots=True)
 class Rgn:
-    """One storage region: a view of the flat image (design section 4 ``Region``)."""
+    """One storage region: a view of the flat image (architecture section 4 ``Rgn``)."""
 
     id: int
     name: str
