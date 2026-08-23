@@ -12,7 +12,7 @@ Records, linked and never duplicated here:
 `docs/prototype-*.md` (the certified exemplars), `docs/certificates/` (the evidence).
 
 Numbers are from the tree at this document's commit, measured 2026-08-23:
-60 modules, 17,439 lines, 51 certificates, 836 tests.
+60 modules, 17,542 lines, 51 certificates, 845 tests.
 
 Contents: 1 definitions · 2 pipeline · 3 the lift end to end · 4 the IR ·
 5 verification and the certificate · 6 presentation · 7 CLI and tools ·
@@ -34,7 +34,7 @@ Contents: 1 definitions · 2 pipeline · 3 the lift end to end · 4 the IR ·
 | **certified-equivalent** | for every tick of the horizon, on the recorded input stream and from the pre-init image, the emitted program's observable equals the trace's, byte for byte and in order. *Complete* adds a state repeat `(k, k+p)` consuming no input, so one period covers all later ticks |
 | **site** | one `(pc, opcode, fixed operand bytes)` the trace executed; operand bytes the program writes drop out of the key (`tracedata.site_key`) |
 | **cell** | an instruction byte some traced procedure writes — a self-modified operand or opcode |
-| **region** | a connected component of the op-level access relation: one storage object with `base`, `size`, `kind`, `stride`, `fields`, `origin` and its pre-init `init` bytes. Regions are disjoint by construction, so aliasing is exact |
+| **region** | a connected component of the op-level access relation: one storage object with `base`, `size`, `kind`, `stride`, `fields`, `origin`, its pre-init `init` bytes and, where init wrote them, the `post` runs init left. Regions are disjoint by construction, so aliasing is exact |
 | **accessor** | one load or store of one region, enumerated as `Acc(proc, region, store, base, idx, lo, hi)` — the address split included (`irwalk.accessors`) |
 | **envelope** | the `[lo, hi]` extent an indexed access was observed inside; outside it the run stops with an `envelope` trap |
 | **view** | a presentation copy of the certified program. S5/S6 rewrite the view; the certified IR is never edited |
@@ -317,7 +317,7 @@ flat 64 KiB image; a region is a *view* of it.
 | `Trap` | `why` | |
 | `Block` | `label, stmts, term, src, count, cover, closed` | `count` is the trace's execution count, `cover` the per-copy counts, `closed` the pass that added an unexecuted block |
 | `Proc` | `name, params, rets, blocks, entry, kind` | `kind ∈ {sub, tick, init, nmi}`; `order()` is reverse postorder |
-| `Rgn` | `id, name, base, size, kind, stride, init, fields, origin` | `zero` = `origin or base`; `extent(lo, hi)` is the one containment test |
+| `Rgn` | `id, name, base, size, kind, stride, init, fields, origin, post` | `init` is the *pre*-init image; `post` is `{address: bytes}`, the runs init wrote in the region (`regions.post_runs` over `trace.written_init`), and only an `init_constant` region carries any. `zero` = `origin or base`; `extent(lo, hi)` is the one containment test |
 
 Widths are explicit: `MASK = (0, 0xFF, 0xFFFF)`, so 1 = byte and 2 = word, and
 wraparound is a mask, never implicit. `Bin.op ∈ {+, -, &, |, ^, <<, >>, ==, !=,
@@ -332,6 +332,12 @@ Access classes mirror the tracer exactly:
 | `chk` | memory when the byte was ever written or lies inside the load image, else a pinned input |
 | `io` | `$D000–$DFFF`: a SID write, an `iow` schedule effect, or the RAM under the chip, as the 6510 port decides |
 | `raw` | memory without marks: the CPU's own JSR/RTS frames, which the write log and the footprint do not see either. `stack.eliminate` removes them unless the program is residual |
+
+`Tuneprog.image()` is the pre-init 64 KiB image rebuilt from every region's
+`init`, and what `emit` initialises the executable from. `Tuneprog.reads()` is that
+image with every region's `post` runs over it — what the tick actually reads, and
+what the `## data` section prints. The machine-image regions are last in `storage`
+and carry no `post`, so the overlay follows them.
 
 Region kinds: `state` (written at play time, or by init in a `--songs all` union
 build), `init_constant` (written by init only), `const` (read-only, inside the
@@ -378,8 +384,9 @@ in declaration order.
   // meta: name, sid_model, entry, schedule, stack, songs, song,
   //       tick_proc, init_proc, copies, static_closure
   {"$dict": [["name", "Automatas.sid"], ["sid_model", null], ...]},
-  // storage: id, name, base, size, kind, stride, init, fields, origin
-  [["$rgn", 0, "", 4384, 3, "state", 1, ["$hex", "000000"], [], 0], ...],
+  // storage: id, name, base, size, kind, stride, init, fields, origin, post
+  [["$rgn", 0, "", 4384, 3, "state", 1, ["$hex", "000000"], [], 0,
+    {"$dict": []}], ...],
   [ ... ],                                                        // inputs
   {"$dict": [["tick",
     // proc: name, params, rets, blocks, entry, kind
@@ -586,7 +593,7 @@ record view (a record stride, or its transpose).
 | --- | --- |
 | `## meta` | entry and cadence, subtunes and model, program size, `untaken` count, the SID write order, the phase, the copy families and refusals, the certificate line |
 | `## state` | struct views first (`voice[3]` with its fields), then named 16-bit pairs, then the scalar rows: name, base, size and stride, role, note |
-| `## data` | every run of storage the program reads that no store's envelope reaches, as its own bytes: a note table as 16-bit entries, equal-stride columns as one row per record, everything else as 32-byte hex rows; then one line per distinct printed accessor |
+| `## data` | every run of storage the program reads that no store's envelope reaches, printed from `Tuneprog.reads()`: a note table as 16-bit entries, equal-stride columns as one row per record, everything else as 32-byte hex rows; then one line per distinct printed accessor. A block whose bytes init wrote says `init-written`, the image file not holding them |
 | `## inputs` | the pinned input classes and their addresses |
 | `## program` | one fenced block per procedure, tick first, then what it calls, then `init` |
 
@@ -598,6 +605,14 @@ Two conventions the block states rather than hides. The SID's `freq`, `pw` and
 byte writes and is untouched. A branch whose one direction is a bare untaken trap
 prints as a `# untaken: <condition>` **mark** on the first line the covered
 direction reaches, counted in `meta`; a switch arm still prints its trap.
+
+Two rules decide what the data section may carry. `datablock.carried` is the cells
+a region carries post-init bytes for — a store of an `init_constant` region is
+init's own, so only the rest of its envelope types state, and a fused extent's
+other cells, which init never wrote, stay out. `datablock.paired` adds the cells of
+every folded 16-bit access: `irwalk.accessors` yields `Load`/`Store`, but a pair
+`word.fold16` joined is an `R16`/`W16` the walk never saw, and without it bytes the
+program writes at play time would print as data.
 
 The procedures render *before* the header, because the data section states each
 table's accessors in the form the program printed them in.
@@ -615,7 +630,7 @@ comments — and the six numbers are stated before and after:
 | statements | `sum(len(b.stmts))` over the view |
 | blocks | `sum(len(p.blocks))` over the view |
 | header rows | the `meta` + `state` + `data` + `inputs` rows |
-| data rows | the rows `datablock.section` emitted, and the bytes they carry |
+| data rows | the rows `datablock.section` emitted, and the bytes they carry — 19,343 rows carrying 246,267 bytes over the 51, of which 57,075 in 216 blocks are init-written |
 
 A presentation change leaves `tuneprog.py` byte-identical or explains the change,
 and `tools/tuneprog_recert.py` is green before and after.
@@ -796,7 +811,8 @@ belongs to:
 | the phase of a repeating cascade is a convention where two readings tie exactly (*Automatas* `p_168C` `$172C` vs `$1734`) | pinned by `slack` then lowest base; refusing ties also refuses the two real 5-copy cascades (`siblings`) |
 | a fold takes cells the naming plane had (the Knob's `$17B9`/`$17BC` → `b17B9[v + 3]`, Commando 2's `$54F8`) | measured in P1: the merged access's region does not keep the field names of the cells it unites (`copymerge`, `views`) |
 | a hex row costs about 1.4x, compressed, the bytes it prints | Commando's data section carries 1,867 B (1,100 B `xz`) and grows the print's `xz -9e` by 1,564; `gt2-je-suis-linus` 5,174 B / 1,896 → +3,136, `sw-emomyst` 1,858 / 1,080 → +1,428. Three ASCII characters a byte recover to ~1.4× the binary's compressed size; the accessor lines and the block headers are the rest. A denser encoding would not be a listing (`datablock`) |
-| a record block prints one row per record, whatever the stride | `jch-knob-at-night`'s stride-4 block is 8,576 records, 8,675 of the section's 15,903 rows over the 51. Packing records to a fixed row width was rejected: the column header then labels one group of several on the row (`datablock`) |
+| a record block prints one row per record, whatever the stride | `jch-knob-at-night`'s stride-4 block is 8,576 records, 8,675 of the section's 19,343 rows over the 51. Packing records to a fixed row width was rejected: the column header then labels one group of several on the row (`datablock`) |
+| an `R16`/`W16` keeps its two cell *bases*, not the envelope the pair of stores had | the node is the 16-bit view, and `word.fold16` builds it from two cells one index reaches; `datablock.paired` therefore fails closed over the store's own region and claims only the named cell for a read. Restoring the envelope means putting it on the node, which every S6 pass would then have to maintain (`ir`, `word`, `datablock`) |
 | the stack page is a second inexact direction of the store-granularity replay: an IR store wholly inside `$0100`–`$01FF` between the last counted store and the NMI instant replays the handler before it | needs the instruction index the trace records (the emitted program cannot count) or a shared stack store count (stack elimination removes); the no-hook converse was measured and rejected (JCH diverges at tick 6); narrow, undiagnosed in population (`nmi`, `interp`, `verify`) |
 | a write to `$D000`–`$DFFF` with I/O mapped also writes the RAM under it (`tracevm.write`, `interp.iostore`) where the hardware writes only the chip | the honest model is two planes, chip and RAM beneath; unobservable in every exemplar, 3 tunes of 7,023 discriminate |
 | the tracer counts CPU cycles where the sampler's clock also spends VIC DMA | 57–60 cycles per frame, +533 inside one Knob tick; free today, both sides framed by the interrupt, so a raster model is needed only if a comparison ever needs sub-frame time (`tracevm`, `machine`) |
@@ -814,7 +830,7 @@ belongs to:
 | certify at 15 s, not run to length | Blackbird (*Quintessence*), Galway (*Comic Bakery*), Walker (*Chameleon*) |
 | refused by design | a CIA #2 source with no schedule (TOD alarm, serial, FLAG, CNT timer): 6 of 7,023 |
 | survey | 7,023-tune stratified sample at 30 s: **91.2 % of HVSC by weight certifies** (76.7 % raw), 2.5 % diverges, 6.2 % refused with a diagnosis, 0.26 % crashes; `--until-period` over 1,338: 99.4 % of certified programs complete by weight ([survey-tuneprog.md](survey-tuneprog.md)) |
-| code | `deity_informant/tuneprog/`, 60 modules, 17,439 lines, none over 500; 763 hermetic + 63 HVSC + 10 oracle tests, 96 % coverage; SSA 1.0–1.6 statements per instruction |
+| code | `deity_informant/tuneprog/`, 60 modules, 17,542 lines, none over 500; 772 hermetic + 63 HVSC + 10 oracle tests, 96 % coverage; SSA 1.0–1.6 statements per instruction |
 | baseline | the Ghidra high-P-Code export with SMC context ([ghidra-highpcode-export.md](ghidra-highpcode-export.md)), 8.3–16.5× our S4 — a baseline, not core. The three Ghidra oracles run nightly over all 51 certificates: the emulator agrees step for step on all four exemplars, 5 of 51 disagree for reasons [tuneprog-backlog.md](tuneprog-backlog.md) §2.6 records, and the 2 standing `ours_bigger` flags are carried as `--known`, so the gate is clean. Beside it the `sidplayfp` grid oracle |
 | merged PRs | #225–#286, one stage each, every one on green CI with recert reproduced |
 
@@ -942,7 +958,7 @@ record — is [tuneprog-backlog.md](tuneprog-backlog.md) §3; the open work by l
 
 ## 10. Module map
 
-`deity_informant/tuneprog/`, 60 modules, 17,439 lines, none over 500
+`deity_informant/tuneprog/`, 60 modules, 17,542 lines, none over 500
 (`pipeline.py` is the longest at 491). Line counts from `wc -l` at this commit.
 
 **Front end — S0/S1, the traced machine**
@@ -969,18 +985,18 @@ record — is [tuneprog-backlog.md](tuneprog-backlog.md) §3; the open work by l
 | `siblings` | 476 | S2c: k static copies of one template, aligned pc by pc |
 | `copyrows` | 452 | S2c: what folds — the rows of one family, and what each copy holds |
 | `copymerge` | 165 | S2c: the copy index as a value — k chained copies plan down to one body |
-| `regions` | 243 | S3: storage typing from the exact op-level access relation |
+| `regions` | 263 | S3: storage typing from the exact op-level access relation |
 
 **The program — IR, S4, S8**
 
 | module | lines | role |
 | --- | ---: | --- |
-| `ir` | 469 | the IR: node types, their JSON form, their algebra |
+| `ir` | 482 | the IR: node types, their JSON form, their algebra |
 | `interp` | 288 | the machine state and the reference interpreter (the semantics) |
 | `irwalk` | 349 | traversal of the IR: sub-expressions, values read, names, call order |
 | `graph` | 88 | the CFG of one procedure: predecessors, dominators, natural loops |
 | `lower` | 266 | residualised P-Code → statements, the access typing, the machine's frames |
-| `build` | 482 | front end → IR: one `Proc` per CFG procedure, one block per node |
+| `build` | 484 | front end → IR: one `Proc` per CFG procedure, one block per node |
 | `wire` | 78 | the procedure interface: params, rets and call arguments, by liveness |
 | `ssa` | 431 | S4: SSA over registers/flags/uniques, then DCE and copy/const propagation |
 | `idioms` | 402 | S4: peepholes turning 6510 flag algebra back into ordinary expressions |
@@ -1002,7 +1018,7 @@ record — is [tuneprog-backlog.md](tuneprog-backlog.md) §3; the open work by l
 | `gated` | 130 | S6: the expression rewrites the certified IR's intervals prove |
 | `ranges` | 76 | what the certified IR proves about the value of a byte of memory |
 | `frame` | 51 | S6: naming the frames `frames` proves — a push and its pop are one value |
-| `partition` | 231 | S6: region typing by accessor-shape partition, and its mirror, the merge |
+| `partition` | 257 | S6: region typing by accessor-shape partition, and its mirror, the merge |
 | `halves` | 240 | S6: the two halves of a 16-bit value — the cell pair, and the byte shapes |
 | `word` | 264 | S6: where those byte shapes land in the program, and the SID's own pairs |
 | `facts` | 302 | S6: the facts the names are derived from — one pass over the IR, per cell |
@@ -1021,7 +1037,7 @@ record — is [tuneprog-backlog.md](tuneprog-backlog.md) §3; the open work by l
 | `printer` | 468 | the `tuneprog.md` document: `meta`, `state`, `data`, `inputs`, `program` |
 | `pseudocode` | 233 | one expression, one statement, one structured node |
 | `cellref` | 340 | how storage is spelled: a cell, a struct field, a copy's slot, a register |
-| `datablock` | 246 | the `data` section: the bytes the program reads and no store reaches |
+| `datablock` | 288 | the `data` section: the bytes the program reads and no store reaches |
 
 **Driver, oracles, baseline**
 
@@ -1040,7 +1056,7 @@ Outside the package: `deity_informant/lifter.py` (1,007), `vm.py` (318),
 
 ### 10.1 Tests
 
-836 tests: **763 hermetic**, **63 `hvsc`**, **10 `oracle`**; coverage gate 85 %
+845 tests: **772 hermetic**, **63 `hvsc`**, **10 `oracle`**; coverage gate 85 %
 (`--cov-fail-under=85`), measured at 96 %.
 
 | path | contents |
