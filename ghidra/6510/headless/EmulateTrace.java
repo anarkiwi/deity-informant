@@ -78,7 +78,7 @@ public class EmulateTrace extends GhidraScript {
             JsonObject o = i.getAsJsonObject();
             inputs.put(o.get("pc").getAsLong(), o.get("kind").getAsString());
         }
-        long play = facts.getAsJsonObject("meta").get("play").getAsLong();
+        long play = tickEntry(facts);
         int calls = Math.min(e.get("calls").getAsInt(), envInt("EMU_CALLS", 8));
         sidBase = e.get("sid_base").getAsInt();
 
@@ -139,6 +139,27 @@ public class EmulateTrace extends GhidraScript {
         doc.put("unpinned_inputs", e.get("unpinned_inputs"));
         doc.put("agree", unknown.isEmpty() && diverged == 0 && !doc.containsKey("error"));
         return doc;
+    }
+
+    /**
+     * The tick entry the trace settled on, which the header's play field need not be:
+     * an installed-handler tune carries play = $0000 and reaches its tick through CINV.
+     */
+    private static long tickEntry(JsonObject facts) {
+        long play = facts.getAsJsonObject("meta").get("play").getAsLong();
+        long first = -1;
+        for (JsonElement e : facts.getAsJsonArray("entries")) {
+            JsonObject o = e.getAsJsonObject();
+            if (!"tick".equals(o.get("kind").getAsString())) {
+                continue;
+            }
+            long a = o.get("addr").getAsLong();
+            if (a == play) {
+                return play;
+            }
+            first = first < 0 ? a : first;
+        }
+        return first < 0 ? play : first;
     }
 
     /** The first position where our change sequence and the trace's differ. */
