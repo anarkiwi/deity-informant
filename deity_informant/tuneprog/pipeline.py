@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 from . import (
+    cells,
     closure,
     copymerge,
     copyview,
@@ -413,6 +414,9 @@ def present(prog):
     names = recover.recover(view, structure.structure(view), facts)
     views.decorate(view, names, facts=facts)
     recover.name_u16(view, names, word.fold16(view))
+    cells.forward(view)  # after word: a carry term is one of the values a store holds
+    structure.inline(view, L.needed(view)[0], keep, dup=False)
+    L.dead(view)
     fold.outline(view, names, *L.needed(view))
     tails.promote_tails(view, names)
     views.decorate(view, names)

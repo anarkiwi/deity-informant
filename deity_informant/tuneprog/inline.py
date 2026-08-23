@@ -122,12 +122,11 @@ def _positions(proc):
     return where
 
 
-def values(proc, live=None, keep=()):
+def values(proc, live=None, keep=(), dup=True):
     """Fold a value into its uses, past statements that cannot alias it.
 
-    A use may sit in another block when that block is reachable only through the
-    definition's. ``keep`` names the return registers a reader wants: the host's,
-    and the ones a caller reads.
+    ``keep`` names the return registers a reader wants; ``dup=False`` folds only a
+    value with one use, so no expression is written twice.
     """
     if live is not None:
         want = {0} if retval(proc) is not None else set()
@@ -155,7 +154,7 @@ def values(proc, live=None, keep=()):
         if not pos or len(pos) != uses[n] or type(e) is Var or _feeds_copy(proc, pos, latches):
             continue
         ls = _loads(e, single, cache)
-        if len(pos) > 1 and (_cost(e) > 1 or any(_input(x) for x in ls)):
+        if len(pos) > 1 and (not dup or _cost(e) > 1 or any(_input(x) for x in ls)):
             continue
         own = owns.setdefault(lbl, _own(proc, preds, lbl))
         if not _blocked(proc, own, lbl, at, pos, ls):

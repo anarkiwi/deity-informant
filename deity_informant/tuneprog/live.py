@@ -8,7 +8,7 @@ the call graph and drops the rest. The certified program is never edited.
 from __future__ import annotations
 
 from .ir import Assert, Call, Let, REGVAR, Return, Store, W16, retval
-from .irwalk import call_order, pure, stmt_uses, term_uses, uses_of
+from .irwalk import call_order, pure, stmt_uses, term_uses, use_counts, uses_of
 
 
 def wants(prog, live):
@@ -86,6 +86,29 @@ def needed(prog, rounds=3):
             break
         rets = want
     return used, params
+
+
+def dead(prog):
+    """Delete every ``Let`` nothing reads whose value has no effect; returns the count.
+
+    :func:`needed` answers the same question over the call graph and from the roots
+    down; this is the same use relation (:func:`~.irwalk.use_counts`, which is
+    :func:`~.irwalk.stmt_uses` over every node) counted per name, which is what a
+    view already shaped for reading needs. A ``Call`` return is not a ``Let``, and a
+    load of a pinned input is not pure, so neither is ever dropped.
+    """
+    n = 0
+    for proc in prog.procs.values():
+        while True:
+            uses, gone = use_counts(proc), 0
+            for b in proc.blocks.values():
+                keep = [s for s in b.stmts if type(s) is not Let or uses[s.n] or not pure(s.e)]
+                gone += len(b.stmts) - len(keep)
+                b.stmts[:] = keep
+            n += gone
+            if not gone:
+                break
+    return n
 
 
 def printable(s, live):

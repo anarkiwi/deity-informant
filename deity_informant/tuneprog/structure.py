@@ -110,10 +110,10 @@ def view(prog, live=None, keep=None):
     return out
 
 
-def inline(prog, live, keep=None):
+def inline(prog, live, keep=None, dup=True):
     """Re-run the value folding after the texture passes reshaped the blocks."""
     for name, p in prog.procs.items():
-        inline_values(p, live[name], (keep or {}).get(name, ()))
+        inline_values(p, live[name], (keep or {}).get(name, ()), dup)
     return prog
 
 

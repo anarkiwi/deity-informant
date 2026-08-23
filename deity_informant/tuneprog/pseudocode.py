@@ -24,7 +24,7 @@ from .ir import (
     Var,
     W16,
 )
-from .irwalk import addr_split, walk
+from .irwalk import addr_split, reads_region, walk
 from .live import needed
 from .facts import GLOBAL_REG, SID_VOICE, SID_VOICES, VOICE_REG
 
@@ -445,7 +445,8 @@ class Printer:
 
     def forget(self, *rids):
         """Drop what a write to ``rids`` invalidates: their own cells, and values reading them."""
-        self.mem = {k: v for k, v in self.mem.items() if v[1] not in rids and not _reads(k, rids)}
+        keep = self.mem.items()
+        self.mem = {k: v for k, v in keep if v[1] not in rids and not reads_region(k, rids)}
 
 
 def _copyidx(e):
@@ -470,12 +471,3 @@ def _unoffset(idx, d):
 
 def _signbit(e):
     return type(e) is Bin and e.op == "&" and type(e.b) is Const and e.b.v == 0x80
-
-
-def _reads(e, rids):
-    """True when the value of ``e`` reads one of ``rids``, through a byte or a pair."""
-    return any(
-        (x.lo[0] in rids or x.hi[0] in rids) if type(x) is R16 else x.r in rids
-        for x in walk(e)
-        if type(x) in (Load, R16)
-    )

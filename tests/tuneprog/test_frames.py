@@ -304,8 +304,8 @@ def test_a_php_plp_round_trip_leaves_the_carry_and_drops_the_flag_byte():
     doc = _text(code)
     assert not re.search(r"\bsp\d*\b", doc), doc
     assert not re.search(r"\b[icdvnz]\d*\b = ", doc), doc  # no flag byte, no flag copies
-    assert re.search(r"\$?saved_b0 = carry\(", doc), doc
-    assert "cutoff_hi += saved_b0" in doc, doc
+    # the carry the low half left reaches the high half as a value, named or inline
+    assert re.search(r"cutoff_hi \+= (\$?saved_b0\b|carry\()", doc), doc
 
 
 def test_a_php_plp_pair_a_branch_apart_is_still_one_value():
