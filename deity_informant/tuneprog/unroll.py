@@ -141,8 +141,9 @@ def _node_token(n, c):
     if t is For:
         # the induction test and the back edge print as the header, so they are
         # not part of the shape either
-        tb, body = _many(strip(n.body, n.label, n.hide), c, _node_token)
-        node = For(n.var, n.values, body, n.scale, n.hide, n.label, n.count, n.group)
+        tb, body = _many(strip(n.body, n.label, n.hide, head=n.head), c, _node_token)
+        args = (n.scale, n.hide, n.label, n.count, n.group, n.bound, n.head)
+        node = For(n.var, n.values, body, *args)
         return ("for", c.name(n.var), n.values, n.scale, tb), node
     if t is Loop:
         tb, body = _many(n.body, c, _node_token)

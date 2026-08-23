@@ -24,6 +24,7 @@ from .ir import (
     evalbin,
     succs,
 )
+from .irwalk import expand, single_defs, stmt_uses, term_uses
 from .graph import preds_of
 
 CAP = 256  # how far a recurrence is iterated before its domain is refused
@@ -281,6 +282,91 @@ def stepping(proc, latches, var):
             if type(s) is Let and s.n == var and type(s.e) is Var
         }
     return out
+
+
+def repeats(proc, header, body, latches, preds=None, skip=()):
+    """``(index, bound, hide, test)`` when the loop is a repeat count, else ``None``.
+
+    :func:`induction` proves a domain by enumerating it, which needs a start the
+    folder can read. A loop whose index a latch copies, whose body steps it by one
+    and whose one exit tests the *stepped* value against zero runs ``bound + 1``
+    times whatever the start is; where nothing but that step and that test reads
+    the index, the count is the whole loop and the header states it.
+    """
+    tests = _exit_tests(proc, body, skip)
+    preds = preds_of(proc) if preds is None else preds
+    if len(tests) != 1:
+        return None
+    sign = _signtest(*tests[0][:2])
+    defs = single_defs(proc)
+    if sign is None:
+        return None
+    for latch in sorted(latches):
+        for s in proc.blocks[latch].stmts:
+            if type(s) is not Let or type(s.e) is not Var:
+                continue
+            step = defs.get(s.e.n)
+            if not _decrement(step, s.n) or expand(sign, defs, 4) != expand(s.e, defs, 4):
+                continue
+            hide = frozenset(stepping(proc, latches, s.n) | {s.e.n})
+            start = _entry_value(proc, header, body, preds, s.n)
+            if start is not None and not _elsewhere(proc, body, hide, header):
+                return s.n, start, hide, tests[0][0]
+    return None
+
+
+def _decrement(e, name):
+    """True when ``e`` is ``name - 1``: the body steps the index by one."""
+    return type(e) is Bin and e.op == "-" and type(e.a) is Var and e.a.n == name and _one(e.b)
+
+
+def _one(e, v=1):
+    return type(e) is Const and e.v == v
+
+
+def _signtest(cond, when):
+    """The value whose being negative leaves the loop, in either spelling of ``BPL``.
+
+    The 6510 branches on the sign bit, which the IR carries as the masked test or
+    as the comparison against zero; both say the same of the same value.
+    """
+    if type(cond) is not Bin or not _one(cond.b, 0):
+        return None
+    masked = type(cond.a) is Bin and cond.a.op == "&" and _one(cond.a.b, 0x80)
+    if masked and cond.op in ("!=", "=="):
+        return cond.a.a if (cond.op == "!=") == bool(when) else None
+    if cond.op in (">=", "<"):
+        return cond.a if (cond.op == "<") == bool(when) else None
+    return None
+
+
+def _entry_value(proc, header, body, preds, name):
+    """The one value the index enters the loop with, as an expression, or ``None``."""
+    out = set()
+    for p in preds[header]:
+        if p in body:
+            continue
+        hit = [x.e for x in proc.blocks[p].stmts if type(x) is Let and x.n == name]
+        if not hit:
+            return None
+        out.add(repr(hit[-1]))
+        last = hit[-1]
+    return last if len(out) == 1 else None
+
+
+def _elsewhere(proc, body, hide, header):
+    """True when anything but the header's own step and test reads the index."""
+    for lbl in body:
+        b = proc.blocks[lbl]
+        out = set()
+        for x in b.stmts:
+            if not (type(x) is Let and x.n in hide):
+                stmt_uses(x, out)
+        if lbl != header:
+            term_uses(b.term, out)
+        if out & hide:
+            return True
+    return False
 
 
 def induction(proc, header, body, latches, preds=None, skip=()):

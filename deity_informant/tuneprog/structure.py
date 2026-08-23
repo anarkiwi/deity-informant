@@ -25,7 +25,7 @@ from .ir import (
 )
 from .closure import closed_blocks
 from .graph import EXIT, cfg, idoms, natural_loops, postdoms, preds_of
-from .loops import copies, induction, leaves, stepping
+from .loops import copies, induction, leaves, repeats, stepping
 from .inline import values as inline_values
 from .ssa import merge_chains, prune
 
@@ -61,7 +61,10 @@ class For:
     """A counted loop: ``var`` takes ``values``; ``hide`` are its stepping lets.
 
     ``group`` names the struct view the index selects, when the loop runs over
-    sibling copies (:mod:`.copyview`).
+    sibling copies (:mod:`.copyview`). ``bound`` is the domain as an *expression*
+    where the folder cannot enumerate it: the loop repeats ``0..bound`` times and
+    nothing but its own step and test reads the index (:func:`~.loops.repeats`);
+    ``head`` is then the test itself, which the body no longer shows.
     """
 
     var: str
@@ -72,6 +75,8 @@ class For:
     label: str = ""
     count: int = 0
     group: str = ""
+    bound: object = None
+    head: object = None
 
 
 @dataclass
@@ -234,7 +239,10 @@ class _Structurer:
             hide = frozenset(stepping(self.proc, latches, hit[0]))
             return For(hit[0], tuple(range(hit[1])), inner, 1, hide, h, count), exit_lbl
         if ind is None:
-            return Loop(inner, h, count), exit_lbl
+            rep = repeats(self.proc, h, body, latches, self.preds, self.shut)
+            if rep is None:
+                return Loop(inner, h, count), exit_lbl
+            return For(rep[0], (), inner, 1, rep[2], h, count, "", rep[1], rep[3]), exit_lbl
         var, vals, scale, hide = ind
         return For(var, vals, inner, scale, hide, h, count), exit_lbl
 
@@ -258,7 +266,29 @@ def hidden(s, hide):
     return type(s) is Let and s.n in hide
 
 
-def strip(body, label, hide, top=True, tail=True):
+def _header_test(body, label, hide, head):
+    """Drop the loop's own test where it heads the body, as a tail test is dropped.
+
+    ``head`` is the condition :func:`~.loops.repeats` proved the header states, so
+    this drops that test and nothing else: everything past it leaves the loop, one
+    arm of it does the same, and what stays is the arm the header keeps running.
+    """
+    while body and type(body[0]) is Blk and all(hidden(s, hide) for s in body[0].stmts):
+        body = body[1:]
+    if not body or type(body[0]) is not Cond or body[0].c is not head:
+        return body
+    if not jumps_only(body[1:], hide, label):
+        return body
+    for arm, other in ((body[0].els, body[0].then), (body[0].then, body[0].els)):
+        if arm and not jumps_only(arm, hide, label):
+            continue
+        while other and type(other[-1]) is Jump and other[-1].label == label:
+            other = other[:-1]
+        return other
+    return body
+
+
+def strip(body, label, hide, top=True, tail=True, head=None):
     """Drop the induction test and the back edge a ``for`` header already states.
 
     A family's chain edge sits wherever the copy ended its own work, so the test
@@ -282,7 +312,7 @@ def strip(body, label, hide, top=True, tail=True):
         else:
             out.append(n)
         tail = False
-    return out[::-1]
+    return _header_test(out[::-1], label, hide, head) if top and head is not None else out[::-1]
 
 
 def jumps_only(nodes, hide, label=""):

@@ -75,8 +75,8 @@ def test_an_input_wait_collapses_to_a_while_over_the_input():
     assert "$D012 raster" in doc
 
 
-def test_a_delay_loop_keeps_its_body_instead_of_folding_into_a_wait():
-    """A value the body defines from itself is a recurrence: it cannot be substituted."""
+def test_a_delay_loop_prints_as_the_count_it_is():
+    """``DEY``/``BPL`` from a cell the folder cannot enumerate: the header is the loop."""
     code = asm(
         PLAY,
         "init: LDA #$05",
@@ -91,7 +91,26 @@ def test_a_delay_loop_keeps_its_body_instead_of_folding_into_a_wait():
         "dly: BRK",
     )
     doc = _text(code, calls=3)
-    assert "while True:" in doc and "pass" not in doc, doc
+    assert "for _ in 0..b" in doc and "while" not in doc, doc
+
+
+def test_a_loop_whose_body_reads_the_index_is_no_repeat_count():
+    """The count is the whole loop only where nothing but its step and test reads it."""
+    code = asm(
+        PLAY,
+        "init: LDA #$05",
+        "STA dly",
+        "RTS",
+        "play: LDY dly",
+        "lp: TYA",
+        "STA $D404",
+        "DEY",
+        "BPL lp",
+        "RTS",
+        "dly: BRK",
+    )
+    doc = _text(code, calls=3)
+    assert "for _ in" not in doc and "while True:" in doc, doc
 
 
 def test_a_ghost_image_prints_as_the_registers_it_mirrors():

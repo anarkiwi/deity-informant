@@ -13,7 +13,8 @@ from .ir import Bin, Let, REGVAR, Var
 from .irwalk import call_order, forwarder, walk as ewalk
 from .live import printable
 from .machine import PAL_FRAME
-from .pseudocode import IND, NEG, Printer, hexlit
+from .cellref import _bare, hexlit
+from .pseudocode import IND, NEG, Printer
 from .structure import Blk, Case, Cond, Exit, For, Jump, Loop, hidden, strip, walk
 
 PHASES = {1: "init", 2: "tick", 3: "init+tick"}
@@ -143,15 +144,16 @@ class Body(Printer):
     def forloop(self, n, proc, depth):
         pad = IND * depth
         vals = tuple(v // n.scale for v in n.values)
-        rng = _val_list(vals)
+        expr = n.bound is not None
+        rng = "0..%s" % _bare(self.expr(n.bound, False)) if expr else _val_list(vals)
         alias, hide, fvars = dict(self.alias), set(self.hide), dict(self.fvars)
-        var = _ivar(self.fors)
+        var = "_" if expr else _ivar(self.fors)
         self.alias[n.var] = (var, n.scale)
         self.hide |= n.hide
         self.fors += 1
         if n.group:
             self.fvars[n.group] = var
-        body = self.arms([strip(n.body, n.label, self.hide)], proc, depth + 1)[0]
+        body = self.arms([strip(n.body, n.label, self.hide, head=n.head)], proc, depth + 1)[0]
         self.alias, self.hide, self.fors = alias, hide, self.fors - 1
         self.fvars = fvars
         return ["%sfor %s in %s:%s" % (pad, var, rng, _times(n.count))] + body
