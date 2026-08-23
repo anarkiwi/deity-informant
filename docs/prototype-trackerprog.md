@@ -55,18 +55,28 @@ GT2 ghost flush emits 25 writes low-to-high; Hubbard writes freq, ctrl, pw, AD,
 SR per fetch; JCH's write-out is its own order), and a representation required to
 reproduce it would carry the player back in. The anatomy states the license
 ([playroutine-anatomy.md](playroutine-anatomy.md) §1.3): *write order matters
-only at the frame edge and for gate edges*.
+only at the frame edge and for gate edges* — and the envelope registers share
+the gate's sensitivity, the rate counter being state a write order can change.
 
-The trackerprog observable, per tick and per SID register:
+The trackerprog observable, per tick:
 
-1. the **last value written** in the tick (the state the chip holds until the
-   next tick), for every register written;
-2. the **full ordered change list** for the registers where edges are events:
-   `$D404/$D40B/$D412` (gate 1→0→1, TEST 1→0 inside one tick are real) and
-   `$D418` (sample streams — refused anyway, §8, but the rule is stated once);
-3. same-register multiple writes elsewhere reduce to (1) — Hubbard's
-   drum-then-arpeggio double write of `$D401` is last-wins by the chip's own
-   semantics, verified in the anatomy's SID log.
+1. per voice, the **ordered write list over the control and envelope
+   registers** — `ctrl` (`$D404/$D40B/$D412`), `AD`, `SR`. The envelope
+   generator is stateful and edge-triggered: gate edges are counted (1→0→1 and
+   TEST 1→0 inside one tick are real events), and the rate counter's
+   interaction with AD/SR is what the ADSR delay bug and every hard-restart
+   prelude ride, so these registers may be written more than once per tick and
+   **every write is kept, in tick order**;
+2. the **16-bit registers once per tick**: `freq`, `pw` and `cutoff` reduce to
+   the last value the tick left, one 16-bit value each. The oscillator and
+   filter DACs are level-sensitive — only the frame-edge value is audible — and
+   the two 8-bit-bus writes a pair takes are already a print convention in the
+   tuneprog (`sid  16-bit registers written lo then hi`, architecture §6.1);
+3. the remaining 8-bit registers (`res_route`, `mode_vol`) reduce the same way,
+   last value per tick — Hubbard's drum-then-arpeggio double write of `$D401`
+   is last-wins under rule 2, verified in the anatomy's SID log; a `mode_vol`
+   carrying a sample stream is refused outright (§8), so no edge list is needed
+   there.
 
 Precedents: `grid.py` already frames the `sidplayfp` comparison per interrupt
 period, and the Ghidra emulate oracle compares "the ordered sequence of SID
@@ -79,7 +89,8 @@ order inside a tick is dropped, and the certificate says so in `compared`.
 ```jsonc
 {
   "source": {"tune": "...", "certificate_digest": "..."},   // binds to the tuneprog cert
-  "compared": ["tick register state", "ctrl edge lists"],
+  "compared": ["ctrl/adsr write order", "freq/pw/cutoff tick values",
+               "res_route/mode_vol tick values"],
   "ticks": 8236,                       // the whole certified horizon, never less
   "divergence": null,                  // else {tick, register, expected, got}
   "refusals": [],                      // non-empty ⇒ no trackerprog is emitted
@@ -220,12 +231,12 @@ tick():
                                                   # before the *next* row boundary
         for s in active_streams(v): s.step_if_hold_elapsed()
         for a in active_accs(v):    a.step_if_rate()          # §5 semantics
-        commit(v):                                 # shadows -> register state
+        commit(v):                                 # shadows -> register writes
             freq  = pitch[clamp(note + transpose + pitch_stream_offset)] + Σ freq-target accs
-            pw    = pulse base + Σ pw-target accs              # 12-bit
-            ctrl  = wave & gate_mask                           # edges per §2.2
-            ad,sr = instrument / restart prelude
-    commit_global(): cutoff (+ tablestep term), res/route, mode|vol
+            pw    = pulse base + Σ pw-target accs   # freq/pw: one 16-bit write each per tick
+            emit ctrl/AD/SR events **in order**     # gate mask, restart prelude, note-on:
+                                                    # the ordered list §2 compares
+    commit_global(): cutoff one 16-bit write (+ tablestep term), res/route, mode|vol
 ```
 
 Everything a real player does beyond this — ghost register files and flush
@@ -316,7 +327,7 @@ Four extensions, backlog-style:
 
 | item | mechanism | owner | size |
 |---|---|---|---|
-| the grid as a first-class comparison | per-tick per-register change lists with the §2 reduction, shared by S8-style differential runs — `grid.py` already frames the `sidplayfp` CSV this way; factor the reduction out of the oracle so `verify` and T3 compare one thing | grid, verify | small |
+| the grid as a first-class comparison | the §2 reduction — ordered ctrl/AD/SR lists, 16-bit tick values —, shared by S8-style differential runs — `grid.py` already frames the `sidplayfp` CSV this way; factor the reduction out of the oracle so `verify` and T3 compare one thing | grid, verify | small |
 | cell histories without touching S1 | replay the *certified program* over the horizon on `interp`, recording the value sequence of each named `state` cell — no tracer change, no new log; the program is certified-equivalent, so the histories are the trace's | new `history.py` over interp | small |
 | per-register provenance export (T0) | the dataflow slice from each `io` store to named cells, serialised beside `tuneprog.S6.json` — the facts pass the print already computes, exported | facts, irwalk | medium |
 | accumulator recognition (T1) | the `(delta, bound, policy)` classifier over update shapes + `ranges` intervals | new `accum.py` (S6 family) | medium |
