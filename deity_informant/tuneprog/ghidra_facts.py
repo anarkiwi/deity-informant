@@ -161,8 +161,10 @@ def _tick_writes(trace, calls, base, size):
     comparison runs the tick alone.
     """
     w = trace.wlog
-    keep = (w["nmi"] == 0) & (w["addr"] >= base) & (w["addr"] < base + size)
-    call = np.asarray(w["call"], np.int64)[keep]  # init rows are 0xFFFFFFFF: they sort last
+    # call < calls drops the init rows too: they carry 0xFFFFFFFF, and what is left
+    # is the ascending column searchsorted needs
+    keep = (w["nmi"] == 0) & (w["call"] < calls) & (w["addr"] >= base) & (w["addr"] < base + size)
+    call = np.asarray(w["call"], np.int64)[keep]
     addr = (np.asarray(w["addr"], np.int64)[keep] - base).tolist()
     val = np.asarray(w["val"], np.int64)[keep].tolist()
     at = np.searchsorted(call, np.arange(calls + 1))

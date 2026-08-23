@@ -116,6 +116,15 @@ def test_emulate_facts_leave_out_the_store_the_port_banked_out():
     assert GF.emulate_facts(trace, calls=1)["writes"] == [[[0, 0x21]]]
 
 
+def test_the_init_phase_writes_are_no_call_s():
+    """Init rows carry call ``0xFFFFFFFF``; a play call's writes start at the tick."""
+    play = asm(PLAY, "LDA #$21", "STA $D404", "RTS")
+    init = asm(0x1020, "LDA #$0F", "STA $D418", "LDA #$77", "STA $D404", "RTS")
+    trace, _ = trace_prog({PLAY: play, 0x1020: init}, init=0x1020, play=PLAY, calls=2)
+    assert 0xFFFFFFFF in trace.wlog["call"].tolist()  # init wrote the chip
+    assert GF.emulate_facts(trace, calls=2)["writes"] == [[[4, 0x21]], []]
+
+
 def test_emulate_facts_clamp_to_the_calls_the_trace_ran():
     trace, _ = _smc_trace(calls=2)
     e = GF.emulate_facts(trace, calls=8)
