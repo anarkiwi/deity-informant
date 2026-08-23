@@ -38,6 +38,7 @@ from .ir import (
 )
 from .closure import static_resolver
 from .copymerge import Plan
+from .regions import post_runs
 from .lower import (
     PH_INIT,
     Storage,
@@ -470,6 +471,7 @@ def build_ir(trace, lifted, regions, procs, meta=None, plan=None):
                 r.init_bytes,
                 tuple(r.fields),
                 r.origin,
+                post_runs(trace, r),
             )
             for r in regions
         ]

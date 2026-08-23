@@ -3,16 +3,24 @@
 A region's cells are its extent, or the columns its stride marks off; its reach is
 the union of its accessors' envelopes over them. Regions whose extents overlap, or
 that one frequency layout names, are one block, printed in the layout S6 knows.
+
+``init_constant`` storage is data too, over the cells init *wrote*: the region
+carries them (:meth:`~.ir.Tuneprog.reads`), and a fused extent's other cells, which
+init never wrote, are the other regions' own.
 """
 
 from __future__ import annotations
 
-from .ir import overlaps
-from .irwalk import accessors
+from itertools import chain
+
+from .ir import R16, W16, overlaps
+from .irwalk import Acc, accessors, addr_split, node_exprs, walk
 from .partition import SPLITTABLE
 
 ROW = 32  # bytes one data row carries
 ENTRY = "entry"  # the record layout's index column, which its rows sit under
+INIT = "init_constant"  # storage init writes and the tick only reads
+WRITTEN = "init-written"  # the note that says so: the image file does not hold these bytes
 
 
 def cells(r):
@@ -34,21 +42,54 @@ def _runs(spans_):
     return [tuple(x) for x in out]
 
 
+def paired(prog):
+    """The cells of every folded 16-bit access, as accessors :func:`spans` can read.
+
+    :func:`~.irwalk.accessors` knows ``Load``/``Store``; a pair :mod:`.word` joined
+    is an ``R16``/``W16`` over two cells, and the bytes are read and written all the
+    same -- a store the walk cannot see would type its cell data. The node keeps the
+    two *bases*, not the envelope the pair of stores had, so an indexed store fails
+    closed over its region and an indexed read claims only the cell it names.
+    """
+    own = {r.id for r in prog.storage if r.id >= 0 and r.kind in SPLITTABLE}
+    rgn = prog.by_id()
+    for name, p in prog.procs.items():
+        for b in p.blocks.values():
+            for s in list(b.stmts) + [b.term]:
+                pairs = [(s, True)] if type(s) is W16 else []
+                pairs += [(x, False) for e in node_exprs(s) for x in walk(e) if type(x) is R16]
+                for x, w in pairs:
+                    idx = addr_split(x.a)[1]
+                    for rid, a in (x.lo, x.hi):
+                        r = rgn.get(rid)
+                        wide = w and idx is not None and r is not None and r.id in own
+                        hi = r.base + r.size - 1 if wide else a
+                        yield Acc(name, rid, w, a, idx, r.base if wide else a, hi)
+
+
+def carried(r):
+    """The cells a region carries the post-init bytes of: what init wrote there."""
+    return {a + i for a, b in r.post.items() for i in range(len(b))}
+
+
 def spans(prog):
     """``({region: the cells its accessors reach}, the bytes a store can write)``.
 
     A store reaches its own region's cells inside its envelope -- a column's store
     does not write the columns beside it -- and every byte of it where it has none.
+    The cells an ``init_constant`` region carries are its table: no store types them.
     """
     own = {r.id: cells(r) for r in prog.storage if r.id >= 0 and r.kind in SPLITTABLE}
+    keep = {r.id: carried(r) for r in prog.storage if r.kind == INIT and r.id in own}
+    mark = {i: c - keep[i] if i in keep else c for i, c in own.items()}
     hits, wrote = {}, bytearray(0x10000)
-    for acc in accessors(prog):
+    for acc in chain(accessors(prog), paired(prog)):
         hits.setdefault(acc.rid, []).append((acc.lo, acc.hi))
         if not acc.store:
             continue
         if acc.rid not in own:
             wrote[acc.lo : acc.hi + 1] = b"\1" * (acc.hi - acc.lo + 1)
-        for a in own.get(acc.rid, ()):
+        for a in mark.get(acc.rid, ()):
             if acc.lo <= a <= acc.hi:
                 wrote[a] = 1
     reached = {}
@@ -142,7 +183,8 @@ def _block_name(names, blk, kind, arg):
 
 def _head(names, blk, kind, arg):
     """A block's one header row: name, extent, role, note, and the regions over it."""
-    notes = list(dict.fromkeys(names.notes[m.id] for m in blk.members if names.notes.get(m.id)))
+    notes = [WRITTEN] if any(carried(m) & blk.data for m in blk.members) else []
+    notes += [n for n in dict.fromkeys(names.notes.get(m.id) for m in blk.members) if n]
     seen = blk.members[1:] if kind != "record" else []  # a record's columns are its header
     other = ["%s $%04X" % (names.region.get(m.id, m.name), m.base) for m in seen]
     return (
@@ -236,7 +278,7 @@ def rows(prog, names, img, blk, kind, arg):
 def section(prog, names, sites):
     """The ``## data`` section: every run of storage the program reads, with its bytes."""
     reached, wrote = spans(prog)
-    img, out = prog.image(), []
+    img, out = prog.reads(), []
     for blk in blocks(prog, names, reached, wrote):
         kind, arg = _layout(names, blk)
         out.append(_head(names, blk, kind, arg))

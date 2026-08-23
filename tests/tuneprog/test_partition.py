@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from deity_informant.tuneprog import copyview, partition, pipeline, printer
+from deity_informant.tuneprog import copyview, datablock, partition, pipeline, printer
 from deity_informant.tuneprog.ir import Const, Rgn, Tuneprog
 from deity_informant.tuneprog.irwalk import Acc
 from deity_informant.tuneprog.pseudocode import Printer
@@ -354,3 +354,29 @@ def test_the_present_pass_is_stable_over_two_runs():
     _T, prog = tuneprog(FUSED, calls=12, s4=True, data=FUSED_DATA)
     one = printer.render(*pipeline.present(prog), pcs=False)
     assert one == printer.render(*pipeline.present(prog), pcs=False)
+
+
+def test_a_nested_extents_shorter_run_does_not_clobber_the_arrays_own():
+    """One start, two lengths: coverage is the union, not whichever region came last."""
+
+    def rgn(i, base, size, post):
+        return Rgn(
+            id=i,
+            name="init_constant_%04X" % base,
+            base=base,
+            size=size,
+            kind="init_constant",
+            init=bytes(size),
+            origin=BASE,
+            post=post,
+        )
+
+    a, b = rgn(1, BASE, 0x20, {BASE + 4: bytes(28)}), rgn(2, BASE + 4, 12, {BASE + 4: bytes(12)})
+    prog = SimpleNamespace(storage=[a, b], procs={}, meta={})
+    assert partition._merge_extents(prog, set()) == {2: 1}
+    assert datablock.carried(a) == set(range(BASE + 4, BASE + 0x20))
+
+
+def test_two_runs_clamped_to_one_bound_keep_the_longer():
+    post = {BASE + 6: bytes(28), BASE + 4: bytes(12)}
+    assert partition._cut(post, BASE + 8, BASE + 0x30) == {BASE + 8: bytes(26)}

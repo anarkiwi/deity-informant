@@ -17,7 +17,7 @@ Independent baseline: [ghidra-highpcode-export.md](ghidra-highpcode-export.md).
 | --- | --- |
 | **site** | one `(pc, opcode, fixed operand bytes)` the trace executed; operand bytes the program writes drop out of the key |
 | **cell** | an instruction byte some traced procedure writes — a self-modified operand or opcode |
-| **region** | a connected component of the access relation: one storage object, with a base, extent, stride and initial bytes |
+| **region** | a connected component of the access relation: one storage object, with a base, extent, stride, initial bytes and, where init changed them, the bytes init left |
 | **view** | a presentation copy of the certified program; S5/S6 rewrite the view and never the program |
 | **sibling copies** | k static copies of one template an unrolled player wrote out (Follin's three voices, defMON's cascade blocks) |
 | **copy index** | the value `v` a merged family runs over: copy *j* executing a template row is that row executed with `v = j` |
@@ -60,19 +60,19 @@ are the IR and CFG traversals every stage shares.
 ```
 front end    machine 305  cia 248  nmi 204  tracevm 488  tracesite 185
              traceflow 101  trace 464  tracedata 448  lift 227  cfg 351
-             regions 243  jumptab 373  siblings 476  closure 347
+             regions 263  jumptab 373  siblings 476  closure 347
              copyrows 452  copymerge 165
-program      ir 464  interp 288  irwalk 349  graph 88  lower 266  build 482
+program      ir 482  interp 288  irwalk 349  graph 88  lower 266  build 484
              wire 78  ssa 431  frames 409  stack 218  idioms 402  emit 403
              verify 423  period 113
 presentation structure 413  loops 393  inline 192  texture 308  cells 275
-             frame 51  partition 231  halves 240  word 264  fold 472
+             frame 51  partition 257  halves 240  word 264  fold 472
              tails 290  copyview 312  unroll 414  live 249  facts 302
              recover 419  views 272  gated 130  ranges 76
-text         cellref 340  pseudocode 233  printer 468  datablock 246
+text         cellref 340  pseudocode 233  printer 468  datablock 288
 driver       pipeline 491  resume 67  __init__ 138
 oracle       grid 157  tunes 60
-baseline     ghidra_facts 227  ghidra_compare 210   60 modules, 17,400 lines
+baseline     ghidra_facts 227  ghidra_compare 210   60 modules, 17,542 lines
 ```
 
 Stage entry points, which are also the module boundaries:
@@ -520,15 +520,30 @@ Every one has `divergences: 0` and `envelope_traps: 0`.
   columns as one row per record under their field names, everything else as hex rows
   of 32 bytes; then one line per distinct *printed* accessor (`FREQ[t7 << 1]` in
   `oscillator`), which is why `render` renders the procedures before the header. Over
-  the 51 certificates it carries 189,194 bytes in 15,903 rows, and no tune's program
-  text moves; header rows fall 5,065 -> 4,737, one block naming what a row per region
-  named. Refused: an `init_constant` region, whose value init computes and the
-  *pre*-init `Tuneprog.image()` does not carry (15,249 bytes over the 51, 2,308 of them
-  SID Wizard's unpacked tables); and a region no accessor reaches, whose only read S4
-  folded to a literal. `datablock.reach_bytes` is that reach and
-  `tools/tuneprog_floor.py` now calls it, so the tool and the print count one thing:
-  Commando 1,941 bytes, against the 1,942 the region *extents* gave (the one byte is
-  `$5526`, read by nothing in the S4).
+  the 51 certificates it carries 246,267 bytes in 19,343 rows, and no tune's program
+  text moves. Refused: a region no accessor reaches, whose only read S4 folded to a
+  literal. `datablock.reach_bytes` is that reach and `tools/tuneprog_floor.py` calls
+  it, so the tool and the print count one thing: Commando 1,941 bytes, against the
+  1,942 the region *extents* gave (the one byte is `$5526`, read by nothing in the S4).
+- **An init-written table prints the bytes init left in it.** `Rgn.init` is the
+  *pre*-init image, so an `init_constant` region -- storage init writes and no tick
+  does -- would print the packed form; `Rgn.post` is `{address: bytes}`, the runs init
+  wrote in it (`regions.post_runs`, over `trace.written_init`), and `Tuneprog.reads()`
+  is `image()` with them over it. A store of such a region is init's own:
+  `datablock.carried` is the cells it carries, and only the rest of its envelope types
+  state, so a fused extent's other cells -- another region's, which init never wrote --
+  stay out. The block says `init-written`, since the image file does not hold those
+  bytes. A union build types init-written storage `state` (its bytes differ per
+  subtune) and so carries no `post`, which is the whole refusal. 57,075 bytes over the
+  51 in 216 blocks, `ghouls-song01` 6,996 and `sw-emomyst` 71; the `init_constant`
+  reach is 130,572, the rest of it bytes init never wrote inside a region one init
+  write typed, which need the region's own address set (§2.1).
+- **The data section reads the folded 16-bit accesses too** (`datablock.paired`).
+  `irwalk.accessors` yields `Load`/`Store`; a pair `word.fold16` joined is an
+  `R16`/`W16` over two cells, which the walk did not see -- 16 bytes over the 51 that
+  the program writes at play time printed as data (JCH V20 ×12, Ghouls 4). The node
+  keeps the two bases and not the envelope the pair of stores had, so an indexed store
+  fails closed over its region and an indexed read claims only the cell it names.
 - **Names are role-derived**: `timer_2`, `cursor_1490`, `b148D`. A per-family
   dictionary keyed on the player signature would name them from the original source.
 - **A 16-bit view is a pair of cells.** A cell is `(region, constant address)`, and a

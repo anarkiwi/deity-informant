@@ -247,6 +247,7 @@ class Rgn:
     init: bytes = b""
     fields: tuple = ()
     origin: int = 0
+    post: dict = field(default_factory=dict)  # {address: what init wrote} (:meth:`Tuneprog.reads`)
 
     @property
     def zero(self):
@@ -291,6 +292,18 @@ class Tuneprog:
         m = bytearray(0x10000)
         for r in self.storage:
             m[r.base : r.base + len(r.init)] = r.init
+        return m
+
+    def reads(self):
+        """The image the tick reads: :meth:`image` overlaid with what init wrote.
+
+        The machine image regions are last in ``storage`` and carry no ``post``, so
+        the overlay must follow them.
+        """
+        m = self.image()
+        for r in self.storage:
+            for a, b in r.post.items():
+                m[a : a + len(b)] = b
         return m
 
     def to_json(self):
