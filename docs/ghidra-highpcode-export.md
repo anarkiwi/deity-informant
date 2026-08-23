@@ -220,7 +220,9 @@ with the borrow inverted. Both are §1's `subtraction_flags1` patch (ghidra#3189
 with all four traces step for step, registers included (Ghouls'n'Ghosts' 4,154 steps become the 1,475 our own
 VM runs).
 
-The five the earlier run reported as disagreements were all this oracle's own models, and all five are gone:
+Over all 51 certificates the emulator now agrees with every one: 51 exports, 51 `agree`, no `ERROR` row,
+`ours_bigger` 0 beside the two recorded rows. The five the earlier run reported as disagreements were all
+this oracle's own models, and all five are gone:
 
 * four were the frame. The tick of *Jodler*, *Playful Professor*, *Alien 3* and *Easy Does It* is an
   installed handler that ends in `RTI`, so it never returned to the sentinel a fake `JSR` had pushed and
