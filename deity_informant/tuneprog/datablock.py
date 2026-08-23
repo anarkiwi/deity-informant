@@ -139,7 +139,7 @@ def _name(names, blk, kind, arg):
 
 def _head(names, blk, kind, arg):
     """A block's one header row: name, extent, role, note, and the regions over it."""
-    notes = [names.notes[m.id] for m in blk.members if names.notes.get(m.id)]
+    notes = list(dict.fromkeys(names.notes[m.id] for m in blk.members if names.notes.get(m.id)))
     seen = blk.members[1:] if kind != "record" else []  # a record's columns are its header
     other = ["%s $%04X" % (names.region.get(m.id, m.name), m.base) for m in seen]
     return "%-16s $%04X %-18s %-10s %s" % (
