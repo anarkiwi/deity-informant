@@ -66,7 +66,7 @@ region's cells, which the print's data section carries. The two differ by
 - The print is already at the tune's own compressed size (2,956 vs 2,548). It is
   verbose only in that a human reads it linearly and 48 % of the tune never
   appears in it as data. *Closed by the `## data` section*: the print now carries
-  1,867 of the 1,941 reached bytes and its `xz -9e` is 4,508.
+  1,875 of the 1,941 reached bytes and its `xz -9e` is 4,584.
 - The data floor is hard: 1,112 compressed bytes of pattern, track, instrument
   and frequency data are the tune. The frequency table is irreducible — 25 of
   its 84 octave pairs are off by one from exact doubling, so no formula
@@ -374,9 +374,9 @@ region, not three.
 The floor for Commando song 1 is 65 lines of player pseudocode plus 1,941 bytes
 (1,112 compressed) of data printed as data; the data half is irreducible. The
 print was at 252 lines and printed none of the data as data; the `## data`
-section now carries 1,867 of the 1,941 in 51 rows, the 74 left being cells a
-store's envelope reaches -- the voice array this section's pitch-104 overrun
-fuses with the table. The factored form
+section now carries 1,875 of the 1,941, the 66 left being cells a store's
+envelope reaches -- the voice array this section's pitch-104 overrun fuses with
+the table. The factored form
 reaches 115–126 lines and names all of it, closing 2.2x of the 3.9x by storage
 typing alone. Two thirds of the tune's live bytes are tables (1,941 of 2,877
 reached).

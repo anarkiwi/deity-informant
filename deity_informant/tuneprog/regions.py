@@ -19,7 +19,8 @@ base offsets modulo it, so a struct-of-arrays layout (stride 1) or a
 struct-of-code layout (stride 49) falls out of the trace. Each accessor keeps
 its observed extent (the envelope an indexed access must stay inside).
 
-Public API: :func:`build_regions`, :func:`index_regions`, :class:`Region`.
+Public API: :func:`build_regions`, :func:`post_runs`, :func:`index_regions`,
+:class:`Region`.
 """
 
 from __future__ import annotations
@@ -236,6 +237,25 @@ def _origin(r):
     """
     ops = [a["base"] - min(a["idx"]) for a in r.accessors if a["idx"]]
     return min(ops + [r.base])
+
+
+def post_runs(trace, r):
+    """``{address: bytes}``, the runs init wrote in a region -- what the tick reads.
+
+    Only ``init_constant`` storage qualifies: init writes it and no tick does, so
+    one post-init image states it. A union build types that storage ``state`` (its
+    bytes differ per subtune), so it carries none.
+    """
+    if r.kind != "init_constant":
+        return {}
+    img, out, at = trace.image_post_init, {}, None
+    for a in range(r.base, r.base + r.size):
+        if a not in trace.written_init:
+            at = None
+            continue
+        at = a if at is None else at
+        out.setdefault(at, bytearray()).append(img[a])
+    return {a: bytes(b) for a, b in out.items()}
 
 
 def index_regions(regions):

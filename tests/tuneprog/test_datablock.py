@@ -2,16 +2,17 @@
 
 from deity_informant.tuneprog import datablock as D
 from deity_informant.tuneprog.ir import Bin, Block, Const, Let, Load, Proc, Rgn, Store, Tuneprog
-from deity_informant.tuneprog.ir import Var
+from deity_informant.tuneprog.ir import Var, W16
+from deity_informant.tuneprog import pipeline
 from deity_informant.tuneprog.recover import Names
 
 from _asm import asm
-from _prog import PLAY, printed
+from _prog import PLAY, printed, tuneprog
 
 BASE = 0x1000
 
 
-def _rgn(rid, base, size, init, kind="const", stride=1):
+def _rgn(rid, base, size, init, kind="const", stride=1, post=None):
     return Rgn(
         id=rid,
         name="%s_%04X" % (kind, base),
@@ -22,6 +23,7 @@ def _rgn(rid, base, size, init, kind="const", stride=1):
         init=init,
         fields=(0,),
         origin=base,
+        post=post or {},
     )
 
 
@@ -178,3 +180,97 @@ def test_the_accessor_line_is_the_form_the_program_prints_and_the_bytes_are_its_
     acc = [l for l in doc.splitlines() if l.startswith("  ") and l.endswith("read in tick")]
     assert len(acc) == 1 and acc[0].strip().startswith("%s[" % head.split()[0])
     assert "  $%04X  40 41 42 43 44 45" % TABLE.labels["tab"] in doc
+
+
+# ---- the init-written table ---------------------------------------------------
+PACKED, UNPACKED = bytes([0x11, 0x22, 0x33, 0x44]), bytes([0xA1, 0xA2, 0x33, 0xA4])
+WROTE = {BASE: UNPACKED[:3]}  # init wrote three of the four, $1002 with the byte it found
+
+
+def _initrgn():
+    return _rgn(1, BASE, 4, PACKED, kind="init_constant", post=WROTE)
+
+
+def test_an_init_written_table_prints_the_bytes_init_left_not_the_packed_ones():
+    lines = _section(
+        [_initrgn()],
+        [_read(1, BASE, BASE, BASE + 3), _write(1, BASE, BASE, BASE + 3)],
+        Names(region={1: "T1000"}),
+    )
+    assert lines[0].startswith("T1000            $1000 4 bytes")
+    assert lines[0].endswith("init-written")
+    assert lines[1:2] == ["  $1000  A1 A2 33"]  # $1002 too: init wrote the byte it found
+
+
+def test_a_cell_of_a_fused_extent_init_never_wrote_is_not_the_tables():
+    """It is another region's, and the store that reaches it types it state."""
+    lines = _section(
+        [_initrgn()],
+        [_read(1, BASE, BASE, BASE + 3), _write(1, BASE, BASE + 3, BASE + 3)],
+        Names(region={1: "T1000"}),
+    )
+    assert lines[1:] == ["  $1000  A1 A2 33", "  1 bytes of it the program writes, not data"]
+
+
+def test_a_region_no_init_write_reached_still_prints_its_image_bytes():
+    lines = _section(
+        [_rgn(1, BASE, 4, PACKED)],
+        [_read(1, BASE, BASE, BASE + 3)],
+        Names(region={1: "T1000"}),
+    )
+    assert lines[0].endswith("4 bytes") and lines[1:] == ["  $1000  11 22 33 44"]
+
+
+def test_the_image_a_block_prints_from_is_the_one_the_tick_reads():
+    prog = _prog([_initrgn()], [])
+    assert prog.image()[BASE : BASE + 4] == PACKED
+    assert prog.reads()[BASE : BASE + 4] == UNPACKED[:3] + PACKED[3:]
+
+
+def test_a_folded_16_bit_store_types_its_cells_state():
+    """``accessors`` sees ``Store``; the pair :mod:`word` joined is a ``W16``."""
+    regions = [_rgn(1, BASE, 2, b"\x01\x02", kind="state")]
+    cell = ((1, BASE), (1, BASE + 1))
+    stmts = [_read(1, BASE, BASE, BASE + 1), W16(*cell, Const(BASE, 2), Var("v"))]
+    assert _section(regions, stmts, Names(region={1: "b1000"})) == []
+
+
+UNPACK = asm(
+    PLAY,
+    "init: LDX #$00",
+    "il: LDA src,X",
+    "EOR #$FF",
+    "STA tab,X",
+    "INX",
+    "CPX #$04",
+    "BNE il",
+    "RTS",
+    "play: LDX cnt",
+    "LDA tab,X",
+    "STA $D400",
+    "INC cnt",
+    "RTS",
+    "cnt: BRK",
+    "tab: BRK",
+    *["BRK"] * 3,
+    "src: BRK",
+    *["BRK"] * 3,
+)
+
+
+def test_an_unpacked_table_prints_what_init_left_in_it():
+    src = UNPACK.labels["src"]
+    doc = printed(UNPACK, calls=4, data={src + i: 0x40 + i for i in range(4)})
+    doc = doc.split("## data")[1].split("```")[1]
+    head = next(l for l in doc.splitlines() if " $%04X " % UNPACK.labels["tab"] in l)
+    assert head.endswith("init-written")
+    assert "  $%04X  BF BE BD BC" % UNPACK.labels["tab"] in doc
+
+
+def test_no_byte_the_trace_writes_at_play_time_prints_as_data():
+    """The section's invariant: what prints is the reach no tick writes."""
+    src = UNPACK.labels["src"]
+    T, prog = tuneprog(UNPACK, calls=4, s4=True, data={src + i: 0x40 + i for i in range(4)})
+    reached, wrote = D.spans(pipeline.present(prog)[0])
+    data = {a for cs in reached.values() for a in cs if not wrote[a]}
+    assert data and not data & T.written_play

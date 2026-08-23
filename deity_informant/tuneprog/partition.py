@@ -110,6 +110,7 @@ def _merge_extents(prog, named):
             image[o : o + k], seen[o : o + k] = r.init, b"\1" * k
         keep.name = rgn_name(keep.kind, lo)
         keep.base, keep.size, keep.init = lo, len(image), bytes(image)
+        keep.post = _post_union((a, b) for r in rs for a, b in r.post.items())
         remap.update({r.id: keep.id for r in rs if r is not keep})
     if remap:
         _repoint(prog, lambda rid, _lo, _hi: remap.get(rid))
@@ -188,7 +189,32 @@ def _part(r, lo, hi, kind, rid):
         init=r.init[lo - r.base : hi - r.base + 1],
         fields=(0,),
         origin=lo,
+        post=_cut(r.post, lo, hi),
     )
+
+
+def _post_union(runs):
+    """``{address: bytes}`` runs joined, the longest at each start winning.
+
+    Two extents of one array carry runs that nest, and clamping two runs to one
+    bound starts them together; the bytes agree, being one post-init image, so the
+    longest at a start covers every other and coverage is all that is at stake.
+    """
+    out = {}
+    for a, b in runs:
+        if len(b) > len(out.get(a, b"")):
+            out[a] = b
+    return out
+
+
+def _cut(post, lo, hi):
+    """The ``{address: bytes}`` init wrote, restricted to ``[lo, hi]``."""
+    out = []
+    for a, b in post.items():
+        s, e = max(a, lo), min(a + len(b), hi + 1)
+        if s < e:
+            out.append((s, b[s - a : e - a]))
+    return _post_union(out)
 
 
 def _split_regions(prog, named, fields):
