@@ -1,0 +1,517 @@
+"""T1: the section 5 accumulators of a recurrence, its bound, its policy, its replay."""
+
+import json
+from pathlib import Path
+from tempfile import mkdtemp
+
+import numpy as np
+import pytest
+
+from deity_informant.tuneprog import accum, accrule, accshape, pipeline, provenance
+from deity_informant.tuneprog.accdelta import delta_of
+from deity_informant.tuneprog.acchist import Cells, replay
+from deity_informant.tuneprog.accshape import canon, sext_split, step, terms
+from deity_informant.tuneprog.facts import Facts
+from deity_informant.tuneprog.history import history
+from deity_informant.tuneprog.ir import Bin, Const, Load, Tuneprog, Var
+from deity_informant.tuneprog.recover import Names
+from deity_informant.tuneprog.tracedata import Trace
+
+from _asm import asm
+from _hvsc import COMMANDO, EMOMYST, GULDKORN, LINUS, tune_file
+from _prog import PLAY, tuneprog
+
+CERT = {"subtunes": [{"complete": True, "period": 4}]}
+
+
+def t1(code, calls=64, cert=CERT, **kw):
+    """The T1 document of a snippet, over its own certified history."""
+    trace, prog = tuneprog(code, calls=calls, s4=True, **kw)
+    view, st, names = pipeline.present(prog)
+    t0 = provenance.document(view, st, names)
+    hist = history(prog, trace, names.to_dict(), calls=calls)[0]
+    return accum.document(view, names, t0, hist, cert)
+
+
+def one(doc, **want):
+    """The one Acc of a document matching ``want``; asserts there is exactly one."""
+    got = [a for a in doc["accs"] if all(_get(a, k) == v for k, v in want.items())]
+    assert len(got) == 1, json.dumps({"want": want, "got": doc["accs"]}, indent=1)
+    return got[0]
+
+
+def _get(a, key):
+    for part in key.split("."):
+        a = a.get(part) if isinstance(a, dict) else None
+    return a
+
+
+def clean(doc):
+    """Every Acc replayed and inside its interval, with no refusal left over."""
+    assert doc["refusals"] == [], json.dumps(doc["refusals"], indent=1)
+    for a in doc["accs"]:
+        assert a["verify"]["divergences"] == 0 and a["verify"]["escapes"] == 0, a
+    return doc
+
+
+# ---- the shapes, without a program -------------------------------------------
+def test_a_self_referential_add_reads_as_sign_delta_and_carry():
+    x = Load("ram", Const(0x10), 1, 0x10, 0x10, 1)
+    me = lambda e: e == x  # noqa: E731
+    assert step(Bin("+", Bin("+", x, Const(2)), Var("C")), me) == (1, Const(2), Var("C"), False)
+    assert step(Bin("+", x, Const(1)), me) == (1, Const(1), None, False)
+    borrow = Bin("+", Const(7), Bin("-", Const(1), Var("C")))
+    assert step(Bin("-", x, borrow), me) == (-1, Const(7), Var("C"), True)
+    assert step(Bin("&", x, Const(3)), me) is None
+
+
+def test_an_envelope_is_not_part_of_the_value_two_sites_read():
+    a = Load("ram", Const(9), 1, 9, 9, 3)
+    b = Load("ram", Const(9), 1, 9, 20, 3)
+    assert a != b and canon(a) == canon(b)
+
+
+def test_a_signed_byte_split_three_and_eight_is_one_table_read():
+    t = Load("ram", Const(0x2000), 1, 0x2000, 0x2000, 7)
+    up = sext_split(Bin("&", t, Const(7)), Bin(">>", t, Const(3)), 3)
+    neg = sext_split(
+        Bin("|", t, Const(0xF8)),
+        Bin("^", Bin(">>", Bin("^", t, Const(0xFF)), Const(3)), Const(0xFF)),
+        3,
+    )
+    assert up == t and neg == t
+    assert sext_split(Bin("&", t, Const(7)), Bin(">>", t, Const(4)), 3) is None
+
+
+def test_the_additive_spine_carries_the_sign_of_every_term():
+    x, y = Var("x"), Var("y")
+    assert terms(Bin("-", x, Bin("+", y, Const(1)))) == [(1, x), (-1, y), (-1, Const(1))]
+
+
+def test_a_move_no_clause_makes_is_the_replay_s_divergence():
+    cur = np.array([0, 2, 4, 9], np.int64)
+    plan = [
+        {
+            "when": np.ones(4, bool),
+            "kind": "step",
+            "sign": 1,
+            "delta": np.full(4, 2, np.int64),
+            "carry": np.zeros(4, np.int64),
+            "live": False,
+            "comp": False,
+        }
+    ]
+    prev = np.array([0, 0, 2, 4], np.int64)
+    assert (~replay(cur, prev, plan, 8)).sum() == 1
+
+
+# ---- one policy per snippet ---------------------------------------------------
+WRAP = asm(
+    PLAY,
+    "init: LDA #$00",
+    "STA acc",
+    "RTS",
+    "play: LDA acc",
+    "CLC",
+    "ADC #$03",
+    "STA acc",
+    "STA $D400",
+    "RTS",
+    "acc: BRK",
+)
+
+
+def test_a_free_running_add_is_one_wrapping_accumulator():
+    doc = clean(t1(WRAP))
+    a = one(doc, **{"target.register": "freq_lo"})
+    assert a["delta"] == {"kind": "const", "value": 3}
+    assert a["policy"] == "wrap" and a["width"] == 8 and a["scope"] == "global"
+    assert a["target"]["register"] == "freq_lo" and a["target"]["voices"] == [0]
+    assert a["verify"]["ticks"] and a["verify"]["copies"] == 1
+
+
+REFLECT = asm(
+    PLAY,
+    "init: LDA #$00",
+    "STA ph",
+    "STA freq",
+    "LDA #$08",
+    "STA depth",
+    "RTS",
+    "play: LDA ph",
+    "BMI dn",
+    "CMP depth",
+    "BCC up",
+    "BEQ dn",
+    "EOR #$FF",
+    "dn: CLC",
+    "up: ADC #$02",
+    "STA ph",
+    "LDA ph",
+    "AND #$01",
+    "BEQ pos",
+    "LDA freq",
+    "SEC",
+    "SBC #$04",
+    "STA freq",
+    "JMP out",
+    "pos: LDA freq",
+    "CLC",
+    "ADC #$04",
+    "STA freq",
+    "out: LDA freq",
+    "STA $D400",
+    "RTS",
+    "ph: BRK",
+    "depth: BRK",
+    "freq: BRK",
+)
+
+
+def test_a_ones_complement_arm_is_the_triangle_s_reflect():
+    doc = clean(t1(REFLECT))
+    ph = one(doc, policy="reflect-complement")
+    assert ph["delta"] == {"kind": "const", "value": 2} and ph["width"] == 8
+    got = one(doc, policy="reflect")
+    assert got["delta"] == {"kind": "const", "value": 4}
+    assert got["phase"]["kind"] == "acc" and got["phase"]["acc"] == ph["id"]
+    assert got["phase"]["bit"] == 0 and got["target"]["register"] == "freq_lo"
+
+
+BOUNCE = asm(
+    PLAY,
+    "init: LDA #$00",
+    "STA dir",
+    "STA pwl",
+    "LDA #$08",
+    "STA pwh",
+    "RTS",
+    "play: LDA dir",
+    "BNE dn",
+    "LDA pwl",
+    "CLC",
+    "ADC #$40",
+    "STA pwl",
+    "STA $D402",
+    "LDA pwh",
+    "ADC #$00",
+    "AND #$0F",
+    "STA pwh",
+    "STA $D403",
+    "CMP #$0E",
+    "BNE out",
+    "INC dir",
+    "RTS",
+    "dn: LDA pwl",
+    "SEC",
+    "SBC #$40",
+    "STA pwl",
+    "STA $D402",
+    "LDA pwh",
+    "SBC #$00",
+    "AND #$0F",
+    "STA pwh",
+    "STA $D403",
+    "CMP #$08",
+    "BNE out",
+    "DEC dir",
+    "out: RTS",
+    "pwl: BRK",
+    "dir: BRK",
+    "pwh: BRK",
+)
+
+
+def test_a_direction_cell_bounces_the_pulse_between_the_ends_it_tests():
+    doc = clean(t1(BOUNCE, calls=80))
+    a = one(doc, policy="reflect")
+    assert a["target"]["register"].startswith("pw") and a["width"] in (12, 16)
+    assert a["delta"] == {"kind": "const", "value": 0x40}
+    assert a["phase"]["kind"] in ("cell", "counter", "bit") and a["phase"]["cell"]
+    lo, hi = a["bound"]["interval"]
+    assert 0x800 <= lo <= hi <= 0xEFF and a["verify"]["copies"] == 1
+
+
+HALT = asm(
+    PLAY,
+    "init: LDA #$00",
+    "STA acc",
+    "RTS",
+    "play: LDA acc",
+    "CMP #$40",
+    "BCS out",
+    "CLC",
+    "ADC #$05",
+    "STA acc",
+    "STA $D400",
+    "out: RTS",
+    "acc: BRK",
+)
+
+CLAMP = asm(
+    PLAY,
+    "init: LDA #$00",
+    "STA ph",
+    "STA freq",
+    "LDA #$70",
+    "STA tgt",
+    "RTS",
+    "play: LDA ph",
+    "CLC",
+    "ADC #$02",
+    "STA ph",
+    "LDA freq",
+    "CLC",
+    "ADC #$10",
+    "STA freq",
+    "CMP tgt",
+    "BCC out",
+    "LDA tgt",
+    "STA freq",
+    "LDA #$00",
+    "STA ph",
+    "out: LDA freq",
+    "STA $D400",
+    "RTS",
+    "ph: BRK",
+    "tgt: BRK",
+    "freq: BRK",
+)
+
+CARRY = asm(
+    PLAY,
+    "init: LDA #$00",
+    "STA one",
+    "STA acc",
+    "RTS",
+    "play: LDA one",
+    "CLC",
+    "ADC #$80",
+    "STA one",
+    "STA $D401",
+    "LDA acc",
+    "ADC #$10",
+    "STA acc",
+    "STA $D400",
+    "RTS",
+    "acc: BRK",
+    "one: BRK",
+)
+
+OPAQUE = asm(
+    PLAY,
+    "init: LDA #$01",
+    "STA acc",
+    "RTS",
+    "play: LDA acc",
+    "ASL A",
+    "ORA #$01",
+    "STA acc",
+    "STA $D400",
+    "RTS",
+    "acc: BRK",
+)
+
+
+def test_a_guard_the_update_never_passes_is_the_halting_bound():
+    doc = clean(t1(HALT))
+    a = one(doc, policy="halt")
+    assert a["delta"] == {"kind": "const", "value": 5}
+    assert a["bound"]["interval"][1] <= 0x40 + 5  # the guard is read before the step
+
+
+def test_a_snap_to_the_cell_its_guard_compares_against_clamps_and_resets():
+    doc = clean(t1(CLAMP))
+    a = one(doc, policy="clamp")
+    assert a["delta"] == {"kind": "const", "value": 0x10}
+    other = one(doc, policy="wrap")
+    assert a["links"] == [{"reset": other["id"]}] and other["delta"]["value"] == 2
+
+
+def test_two_byte_adds_a_carry_joins_are_one_sixteen_bit_accumulator():
+    doc = clean(t1(CARRY))
+    a = one(doc, policy="wrap")
+    assert a["delta"] == {"kind": "const", "value": 0x1080} and a["width"] == 16
+    assert a["verify"]["divergences"] == 0
+
+
+def test_an_update_the_grammar_has_no_term_for_refuses_by_name():
+    doc = t1(OPAQUE)
+    assert doc["accs"] == []
+    assert [(r["why"], r["clause"]) for r in doc["refusals"]] == [("unclassified update", "delta")]
+    assert doc["refusals"][0]["cell"] and doc["refusals"][0]["site"]
+
+
+STEP = asm(
+    PLAY,
+    "init: LDA #$02",
+    "STA sh",
+    "LDA #$00",
+    "STA idx",
+    "STA acc",
+    "RTS",
+    "play: LDX idx",
+    "LDA tab+1,X",
+    "SEC",
+    "SBC tab,X",
+    "STA stp",
+    "LDY sh",
+    "shift: LSR stp",
+    "DEY",
+    "BNE shift",
+    "LDA acc",
+    "CLC",
+    "ADC stp",
+    "STA acc",
+    "STA $D400",
+    "INC idx",
+    "LDA idx",
+    "AND #$03",
+    "STA idx",
+    "RTS",
+    "idx: BRK",
+    "sh: BRK",
+    "stp: BRK",
+    "acc: BRK",
+    "tab: BRK",
+    "BRK",
+    "BRK",
+    "BRK",
+    "BRK",
+)
+TAB = {"tab": (4, 20, 44, 92, 188)}
+
+RELOAD = asm(
+    PLAY,
+    "init: LDA #$00",
+    "STA cur",
+    "STA pw",
+    "LDA #$02",
+    "STA tmr",
+    "RTS",
+    "play: DEC tmr",
+    "BPL go",
+    "LDX cur",
+    "INX",
+    "CPX #$03",
+    "BNE ok",
+    "LDX #$00",
+    "ok: STX cur",
+    "LDA len,X",
+    "STA tmr",
+    "LDA base,X",
+    "CMP #$FF",
+    "BEQ go",
+    "STA pw",
+    "go: LDX cur",
+    "LDA pw",
+    "CLC",
+    "ADC step,X",
+    "STA pw",
+    "STA $D402",
+    "RTS",
+    "cur: BRK",
+    "tmr: BRK",
+    "pw: BRK",
+    "len: BRK",
+    "BRK",
+    "BRK",
+    "base: BRK",
+    "BRK",
+    "BRK",
+    "step: BRK",
+    "BRK",
+    "BRK",
+)
+SEG = {"len": (3, 5, 2), "base": (0x10, 0xFF, 0x40), "step": (4, 2, 0xFC)}
+
+
+def _data(code, tables):
+    """``{address: byte}`` for the tables a snippet's labels name."""
+    return {code.labels[n] + i: v for n, vs in tables.items() for i, v in enumerate(vs)}
+
+
+def test_the_difference_of_two_entries_shifted_by_a_cell_is_a_tablestep():
+    doc = clean(t1(STEP, calls=48, data=_data(STEP, TAB)))
+    a = one(doc, **{"delta.kind": "tablestep"})
+    assert a["delta"]["shift"] and a["delta"]["span"] == 1 and a["delta"]["table"]
+    assert a["delta"]["index"]["role"] == "cursor"
+    assert a["policy"] == "wrap" and a["verify"]["divergences"] == 0
+
+
+def test_an_ff_sentinel_reloads_the_segment_a_countdown_paces():
+    doc = clean(t1(RELOAD, calls=48, data=_data(RELOAD, SEG)))
+    a = one(doc, policy="reload")
+    assert a["delta"]["kind"] == "tabcell" and a["delta"]["index"]["role"] == "cursor"
+    assert a["rate"]["kind"] == "countdown" and a["rate"]["counter"]
+
+
+# ---- the exemplars (marked ``hvsc``; short horizons) ---------------------------
+_T1 = {}
+
+
+def exemplar(rel, calls=1200):
+    """The T1 document of one HVSC exemplar through ``pipeline.main``, once."""
+    if rel not in _T1:
+        out = Path(mkdtemp()) / "t1"
+        assert pipeline.main([str(tune_file(rel)), "--out", str(out), "--calls", str(calls)]) == 0
+        prog = Tuneprog.load(out / "tuneprog.S4.json")
+        s6 = json.loads((out / "tuneprog.S6.json").read_text())
+        t0 = json.loads((out / "tuneprog.T0.json").read_text())
+        cert = json.loads((out / "certificate.json").read_text())
+        regions = json.loads((out / "regions.json").read_text())
+        hist = history(prog, Trace.load(out), s6, calls=calls, regions_doc=regions)[0]
+        view = pipeline.present(prog)[0]
+        _T1[rel] = accum.document(view, Names.from_dict(s6), t0, hist, cert)
+    return _T1[rel]
+
+
+@pytest.mark.hvsc
+@pytest.mark.parametrize("rel", (LINUS, GULDKORN, EMOMYST))
+def test_every_exemplar_accumulator_replays_and_every_residue_is_named(rel):
+    doc = exemplar(rel)
+    assert doc["accs"] and doc["horizon"]["ticks"] == 1200
+    for a in doc["accs"]:
+        assert a["verify"]["divergences"] == 0 and a["verify"]["escapes"] == 0
+        assert a["delta"]["kind"] in ("const", "field", "tabcell", "tablestep", "repeat")
+        assert a["bound"]["from"] in ("proved", "projected", "observed")
+        assert a["policy"] in accum.POLICIES and a["scope"] in ("voice", "instrument", "global")
+        assert a["target"]["register"] and a["cell"]["name"]
+    for r in doc["refusals"]:
+        assert r["why"] == accum.WHY and r["cell"] and r["clause"] in accum.CLAUSES
+
+
+@pytest.mark.hvsc
+def test_goattracker_s_vibrato_is_a_phase_accumulator_and_a_table_step():
+    doc = exemplar(LINUS)
+    ph = one(doc, policy="reflect-complement")
+    assert ph["delta"] == {"kind": "const", "value": 2} and ph["scope"] == "voice"
+    freq = one(doc, **{"phase.kind": "acc"})
+    assert (
+        freq["phase"]["acc"] == ph["id"] and freq["phase"]["cell"]["region"] == ph["cell"]["region"]
+    )
+    assert freq["delta"]["kind"] == "tablestep" and freq["width"] == 16
+    assert freq["target"]["register"] == "freq" and freq["target"]["voices"] == [0, 1, 2]
+
+
+@pytest.mark.hvsc
+def test_sid_wizard_s_filter_is_one_signed_step_across_a_three_and_eight_split():
+    doc = exemplar(EMOMYST)
+    got = [a for a in doc["accs"] if a["target"]["kind"] == "split"]
+    assert got and all(a["width"] == 11 and a["target"]["split"] == [3, 8] for a in got)
+    assert all(a["delta"]["kind"] == "tabcell" and a["delta"]["signed"] == 11 for a in got)
+    assert all(a["scope"] == "global" for a in got)
+
+
+@pytest.mark.hvsc
+def test_the_voice_stride_of_a_value_cell_is_the_scope_the_record_carries():
+    for rel, want in ((LINUS, "voice"), (GULDKORN, "voice"), (EMOMYST, "global")):
+        assert want in {a["scope"] for a in exemplar(rel)["accs"]}
+
+
+@pytest.mark.hvsc
+def test_hubbard_s_effects_are_named_or_refused_by_the_cell_they_move():
+    doc = exemplar(COMMANDO)
+    assert doc["refusals"] and not doc["accs"]  # fail-closed on the non-tracker exemplar
+    for r in doc["refusals"]:
+        assert r["why"] == accum.WHY and r["cell"] and r["site"]
