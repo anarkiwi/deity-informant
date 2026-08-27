@@ -55,7 +55,8 @@ def _word(s1, s2, defs):
         pair = cells(lo, hi)
         got = None if pair is None else value(pair, norm(lo.v, defs), norm(hi.v, defs))
         if got is not None:
-            return W16(pair[0], pair[1], lo.a, got[0], lo.src, lo is s2), got[1]
+            env = (lo.lo, lo.hi)
+            return W16(pair[0], pair[1], lo.a, got[0], lo.src, lo is s2, env), got[1]
     return None
 
 
@@ -219,7 +220,7 @@ def _sidword(s1, s2, defs, rgn, names):
             continue  # the RAM under the register file is memory, not the chip
         got = operand(norm(lo.v, defs), norm(hi.v, defs))
         if got is not None and _held(got, names):
-            return W16(pair[0], pair[1], lo.a, got, lo.src, lo is s2)
+            return W16(pair[0], pair[1], lo.a, got, lo.src, lo is s2, (lo.lo, lo.hi))
     return None
 
 
