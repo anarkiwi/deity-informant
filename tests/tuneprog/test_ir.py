@@ -11,18 +11,21 @@ from deity_informant.tuneprog import ir
 from deity_informant.tuneprog.lower import ops_to_stmts, straightline
 from deity_informant.tuneprog.interp import Interp, Machine
 from deity_informant.tuneprog.ir import (
+    Bin,
     Block,
     Const,
     Goto,
     Let,
     Load,
     Proc,
+    R16,
     Return,
     Store,
     Switch,
     Trap,
     TrapError,
     Var,
+    W16,
 )
 
 import _common as H
@@ -112,6 +115,16 @@ def test_json_round_trip_is_exact():
     assert back.to_json() == prog.to_json()
     assert bytes(back.image()) == bytes(prog.image())
     assert set(back.procs) == set(prog.procs)
+
+
+def test_the_sixteen_bit_view_round_trips_through_json():
+    """S6's own two nodes are tagged like the rest: T0 serialises expressions."""
+    pair = ((3, 0x14CA), (3, 0x14CB))
+    w = W16(*pair, Var("X"), Bin("+", R16(*pair, Var("X")), Const(1, 2), 2), 0x1234, True, (1, 2))
+    back = ir.dec(json.loads(json.dumps(ir.enc(w))))
+    assert type(back) is W16 and type(back.e.a) is R16
+    assert ir.enc(back) == ir.enc(w) and back.src == 0x1234 and back.hifirst
+    assert ir.enc(w)[0] == "$w16" and ir.enc(w.e.a)[0] == "$r16"
 
 
 def _tiny(stmts, term=None, params=()):

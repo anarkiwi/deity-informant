@@ -28,6 +28,7 @@ from . import (
     live as L,
     partition,
     printer,
+    provenance,
     recover,
     siblings,
     ssa,
@@ -447,6 +448,8 @@ def stage_print(args, out, prog=None):
     names.copies = copymerge.report(prog)
     (out / "tuneprog.S5.json").write_text(json.dumps(structure.structure_json(st, names)))
     (out / "tuneprog.S6.json").write_text(json.dumps(names.to_dict(), indent=1))
+    t0 = provenance.document(view, st, names)
+    (out / "tuneprog.T0.json").write_text(json.dumps(t0, indent=1))
     (out / "tuneprog.md").write_text(printer.render(view, st, names, doc))
     return view, st, names
 

@@ -444,7 +444,7 @@ def render(prog, structured, names, cert=None, pcs=True):
     the form the program prints them in, which is what rendering them collects.
     """
     body = Body(prog, names, pcs)
-    procs = [body.render(name, structured[name]) for name in _procs_order(prog)]
+    procs = [body.render(name, structured[name]) for name in procs_order(prog)]
     out = ["# tuneprog: %s" % prog.meta.get("name", "?"), ""]
     for title, lines in (
         ("meta", _meta(prog, names, cert, untaken(structured))),
@@ -459,7 +459,7 @@ def render(prog, structured, names, cert=None, pcs=True):
     return "\n".join(out) + "\n"
 
 
-def _procs_order(prog):
+def procs_order(prog):
     """The tick first, then what it calls, then init and the rest; forwarders elided."""
     tick, init = prog.meta.get("tick_proc"), prog.meta.get("init_proc")
     hot = [n for n in reversed(call_order(prog)) if n != init]

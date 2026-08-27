@@ -146,7 +146,8 @@ class W16:
     """S6 only -- a 16-bit assignment of ``e`` to the ``lo``/``hi`` cells at ``a``.
 
     ``hifirst`` is the order the executable wrote the two bytes in, which one
-    statement no longer shows (:func:`~.halves.register`).
+    statement no longer shows (:func:`~.halves.register`); ``env`` is the low
+    half's own observed extent, the two byte writes' one surviving envelope.
     """
 
     lo: tuple
@@ -155,6 +156,7 @@ class W16:
     e: object
     src: int = 0
     hifirst: bool = False
+    env: tuple = ()
 
 
 # ---- terminators -------------------------------------------------------------
@@ -328,6 +330,8 @@ class Tuneprog:
 _NODES = (
     Const,
     Var,
+    R16,
+    W16,
     Load,
     Bin,
     Let,

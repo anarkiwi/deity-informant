@@ -103,7 +103,7 @@ def _stmt(s, c):
         c.region(s.hi[0])
         ta, a = _tagged(s.a, c, tag)
         te, e = _expr_token(s.e, c)
-        return ("w16", ta, te), W16(s.lo, s.hi, a, e, s.src, s.hifirst)
+        return ("w16", ta, te), W16(s.lo, s.hi, a, e, s.src, s.hifirst, s.env)
     if t is Call:
         # Arguments the printer drops are machine plumbing: neither shape nor hole.
         keep = c.keep.get(s.proc)

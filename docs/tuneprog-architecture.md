@@ -68,7 +68,7 @@ resumed run may keep.
 | **S4** | IR | SSA, DCE, copy/const propagation, 6510 peepholes, stack elimination, then `jumptab.enumerate_targets` | `ssa`, `idioms`, `frames`, `stack`, `jumptab` | `tuneprog.S4.json`, `tuneprog.py` |
 | **S8** | S4 program + `Trace` | per-tick differential verification, periodicity, the certificate | `verify`, `interp`, `emit`, `period`, `grid` | `certificate.json` |
 | **S5** | a *copy* of the S4 IR | the structured node tree: loops, if/else, switch, `for`, phase | `structure`, `loops`, `graph` | `tuneprog.S5.json` |
-| **S6** | the same copy | inlining, texture removal, region typing, 16-bit views, roles and names | `inline`, `texture`, `cells`, `gated`, `ranges`, `frame`, `partition`, `halves`, `word`, `copyview`, `recover`, `facts`, `views`, `fold`, `tails`, `unroll`, `live`, `cellref` | `tuneprog.S6.json` |
+| **S6** | the same copy | inlining, texture removal, region typing, 16-bit views, roles and names, per-register provenance | `inline`, `texture`, `cells`, `gated`, `ranges`, `frame`, `partition`, `halves`, `word`, `copyview`, `recover`, `facts`, `views`, `fold`, `tails`, `unroll`, `live`, `cellref`, `provenance` | `tuneprog.S6.json`, `tuneprog.T0.json` |
 | **S7** | view + structure + names | Python code, the certificate document, the text form | `emit`, `pseudocode`, `printer`, `datablock` | `tuneprog.py`, `certificate.json`, `tuneprog.md` |
 | driver | — | stage state, resume records, Ghidra facts | `pipeline`, `resume`, `ghidra_facts`, `ghidra_compare` | `state.json`, `tracer.pkl` (`tracerNN.pkl` per subtune), `verify.pkl`, `ghidra/` |
 
@@ -77,7 +77,8 @@ Stage entry points, which are also the module boundaries: `machine.find_entries`
 `regions.build_regions`, `build.build_ir`, `ssa.simplify`, `stack.eliminate`,
 `emit.emit_python`, `verify.verify`, `siblings.correspond`, `copymerge.plan`,
 `structure.structure`, `recover.recover`, `copyview.expand`,
-`partition.repartition`, `views.decorate`, `printer.render`, `datablock.section`.
+`partition.repartition`, `views.decorate`, `provenance.document`, `printer.render`,
+`datablock.section`.
 
 `ir.py` and its reference interpreter `interp.py` are the semantics every other
 executor is checked against; `irwalk.py` and `graph.py` are the IR and CFG
@@ -197,7 +198,8 @@ traversals every stage shares.
                                  +----------------------------------------------+
                                         |
                                         v
-                                   tuneprog.md, tuneprog.S5.json, tuneprog.S6.json
+                                   tuneprog.md, tuneprog.S5.json, tuneprog.S6.json,
+                                   tuneprog.T0.json
 ```
 
 ### 3.2 One instruction, from bytes to a site record
@@ -619,6 +621,48 @@ index), `target` what it indexes, `base` how the address reached it (`const`,
 is loaded from, so a table reached through a pointer table is two records that
 join on `target`.
 
+### 6.0 Per-register provenance (T0)
+
+`provenance.document(view, structured, names)` emits `tuneprog.T0.json` beside
+S6: `{plane, voice_map, image, writes}`, one `writes` record per SID write site
+of the printed program, in print order. The roots are the `io` stores whose
+envelope lies in `$D400..$D418` and the stores into a `sid_image` region
+(`facts.image_copy`), rekeyed by the flush delta — a player that assembles its
+registers in RAM and flushes them writes its provenance there, so the two sets
+are one plane and each rekeyed record carries the flush site's pc.
+
+The register comes from the site's own base and its **envelope**, not from the
+printed index: an indexed write to a voice register reaches whole voice blocks
+from its base, so `provenance.regvoices` reads the register off the base and the
+voices off the span — the same fact whether the index is a loop variable, a
+voice-map entry (`sid[v]`) or a cell no name reaches (SID Wizard's
+`sid.reg[saved10] = freq_lo - saved9`, `$D400..$D40E`: `freq_lo`, voices 0–2,
+where `cellref.Cells.voiced` gives nothing). A span no voice stride makes reached
+more than one register, and is a `kind: file` record only when one value covers
+every register in it — the flush copy the image naming already proved, or a
+file-wide constant (`sid.reg[v] = 0`); otherwise it is a refusal.
+
+`expr` is the store's value with its names substituted (`provenance.expand`),
+stopping at every cell S6 names — a role, a struct view, a record split, a slot —
+so the slice bottoms out in named cells and not in address arithmetic; it is
+serialised with `ir.enc` (`R16`/`W16` are tagged nodes like the rest). `cells` is
+one entry per distinct leaf, named exactly as the print names it: the record
+re-enters the printer state its site printed in, so `print` is the very line of
+`tuneprog.md`, which is the acceptance the exemplars check. `self_update` marks a
+site that reads its own cell back — a recurrence, which is T1's to classify — and
+`refusal` is one of `index not a voice`, `smc target` (an address with no
+constant base at all: a patched operand `lift` residualised into a load) or
+`unresolved base`.
+
+Evidence over the 51 certified programs: 849 write sites, every one of them a
+named register or a stated refusal, and every one's `print` a line of its own
+`tuneprog.md`. Two families per rule, as §11 requires — the rekeyed image is
+GoatTracker 2's ghost and JCH V20's `knob-at-night` (and Daglish's), the
+constant `file` write is JCH's and SID Wizard's register clear, `index not a
+voice` is Follin's raw cross-voice register list and JCH's non-constant clear
+(36 sites), `smc target` is Baumrucker's and Follin's patched store operands
+(4 sites).
+
 ### 6.1 The print
 
 `printer.render(view, structured, names, cert, pcs=True)` emits `tuneprog.md`:
@@ -1025,7 +1069,7 @@ record — is [tuneprog-backlog.md](tuneprog-backlog.md) §3; the open work by l
 
 | module | lines | role |
 | --- | ---: | --- |
-| `ir` | 482 | the IR: node types, their JSON form, their algebra |
+| `ir` | 486 | the IR: node types, their JSON form, their algebra |
 | `interp` | 288 | the machine state and the reference interpreter (the semantics) |
 | `irwalk` | 349 | traversal of the IR: sub-expressions, values read, names, call order |
 | `graph` | 88 | the CFG of one procedure: predecessors, dominators, natural loops |
@@ -1055,7 +1099,7 @@ record — is [tuneprog-backlog.md](tuneprog-backlog.md) §3; the open work by l
 | `frame` | 51 | S6: naming the frames `frames` proves — a push and its pop are one value |
 | `partition` | 257 | S6: region typing by accessor-shape partition, and its mirror, the merge |
 | `halves` | 240 | S6: the two halves of a 16-bit value — the cell pair, and the byte shapes |
-| `word` | 264 | S6: where those byte shapes land in the program, and the SID's own pairs |
+| `word` | 265 | S6: where those byte shapes land in the program, and the SID's own pairs |
 | `facts` | 361 | S6: the facts the names are derived from — one pass over the IR, per cell |
 | `recover` | 477 | S6: stride views, roles, names — the naming plane |
 | `views` | 276 | S6: group views — struct fields that are a per-copy address table |
@@ -1064,6 +1108,7 @@ record — is [tuneprog-backlog.md](tuneprog-backlog.md) §3; the open work by l
 | `tails` | 290 | S6: shared tails become procedures |
 | `unroll` | 414 | S6: consecutive isomorphic siblings print once over an index |
 | `live` | 249 | S6/S7: what a reader must see — live values, arguments, return registers |
+| `provenance` | 315 | S6: T0 — one record per SID write site, `tuneprog.T0.json` |
 
 **Text — S7**
 
@@ -1078,7 +1123,7 @@ record — is [tuneprog-backlog.md](tuneprog-backlog.md) §3; the open work by l
 
 | module | lines | role |
 | --- | ---: | --- |
-| `pipeline` | 494 | the end-to-end driver, chunked against a CPU budget |
+| `pipeline` | 497 | the end-to-end driver, chunked against a CPU budget |
 | `resume` | 67 | what a resumed run may keep |
 | `__init__` | 138 | the package guide and its public API |
 | `grid` | 157 | per-frame SID register grids, every write framed by the interrupt |
