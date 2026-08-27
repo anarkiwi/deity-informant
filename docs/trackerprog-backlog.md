@@ -38,9 +38,9 @@ Commando aperiodicity, cert numbers, 51/51.
 | 2 | AD/SR share the gate's write-order sensitivity per anatomy §1.3 | §1.3 names gate 1→0→1 and TEST 1→0 only; the rate-counter point is about the ADSR delay bug across notes (anatomy:126-156). An extension, state it as one |
 | 3.2 | Blackbird = 4×-resolution table | two overlapped byte arrays, quarter-semitones by **summing two entries** (anatomy:146-149); not liftable as `[u16; 4N]` |
 | 3.2 | GT2 `FREQ_LO/HI` 91 entries | 96 (`$14E3`/`$1543`; anatomy:742) |
-| 3.3 | JCH `rec6` pulse `[init, Δ, dir\|frames, next]`, `rec7` filter | shapes swapped: `rec6` 4 columns, `rec7` 3 (prototype-jch:82,106-107) |
-| 3.3 | `timer_4` compare is the GT2 wavetable hold | `timer_4` is a field name with no role (prototype-goattracker:84); the print confirms the mechanism (`gt2…md:551`) but the cited doc does not |
-| 3.5 | hard restart is one fixed shape | SW 1.6 writes AD,SR and 1.9 SR,AD (anatomy:1232-1233); Blackbird has no TEST; Walker/Galway do intra-tick gate/TEST edges (anatomy:137-140,214) — observable under §2 rule 1, inexpressible in `{early, ad, sr, first_ctrl}` |
+| ~~3.3~~ | ~~JCH `rec6` pulse `[init, Δ, dir\|frames, next]`, `rec7` filter — shapes swapped~~ | **struck, the row was wrong**: `rec6` *is* the 4-column pulse program and `rec7` the 3-column filter one (prototype-jch:82, 106-107; `jch-guldkorn-intro/tuneprog.md:527-546` reads all seven columns). The doc's only fault was writing "four column programs" for two programs of 4 and 3 columns; W0 states both counts |
+| 3.3 | `timer_4` compare is the GT2 wavetable hold | `timer_4` is a field name with no role (prototype-goattracker:84); the print confirms the mechanism (`gt2-je-suis-linus/tuneprog.md:564-569`, not `:551`) but the cited doc does not |
+| 3.5 | hard restart is one fixed shape | SW 1.6 writes AD,SR and 1.9 SR,AD (anatomy:1232-1233); Blackbird has no TEST (anatomy:133-135); Walker/Galway do intra-tick gate/TEST edges (anatomy:138-140, 214) — observable under §2 rule 1, inexpressible in `{early, ad, sr, first_ctrl}` |
 | 3.7 | `CKBDTRK` is a `tablestep` term | it adds an **absolute** `FREQ[$E + idx]` entry (prototype-sidwizard:110-118), not a difference |
 | 5 | Commando pulse run = 16-bit wrap | 8-bit add on pw-lo (commando-floor:222-224); and its carry is **live from the vibrato block** (`commando-song1/tuneprog.md:394`) — `delta const(k)` refuses it |
 | 5 | GT2 depth `T1851[y] & $7F` | that is `speedcmp`; depth is the right byte (anatomy:876) |
@@ -49,7 +49,7 @@ Commando aperiodicity, cert numbers, 51/51.
 | 5 | pulse-sweep state is instrument-scoped | `pw` yes; `pwdir`/`pwdelay` are per-voice (commando-floor:226-228) |
 | 5 | skydive | dead in the exemplar (`trap 'untaken'`, commando-floor:247) |
 | 9.3 | "measured like §6.2" + `xz -9e` | §6.2's six are tokens/lines/statements/blocks/header rows/data rows; `xz` is §8.3. Architecture §11 requires §6.2's six verbatim |
-| 1 | 91.6 % "voice-stride state appears" | 91.6 % weighted of tunes with ≥ 50 % voice-like indexed sites (arch:940); the summary line says 90 % |
+| 1 | 91.6 % "voice-stride state appears" | 91.6 % weighted of tunes with ≥ 50 % voice-like indexed sites (arch:**1009**, not 940); the summary line at arch:1027 says 90 % |
 | 10 | note-95 overrun reads two bytes past the table | the certified case is pitch 104 ×25, reading `voice[].ctrl` and `pwdir` — **play-written state** (commando-floor:301-310), not materialisable as `pitch` |
 | 3–5 | Galway, Walker, Blackbird evidence | prose-only families; none certified (arch §9.2) |
 
@@ -74,13 +74,23 @@ Commando aperiodicity, cert numbers, 51/51.
 | I15 | GT2's ctrl/AD/SR order *is* the ghost flush order — the idiom §2 excludes; the trackerprog must state which order it emits |
 
 The schema decisions I1–I3, I6, I10–I11 gate T1/T2 below; the rest are doc
-edits.
+edits. **All fifteen settled by W0 (#295)**, each with a stated decision in
+[prototype-trackerprog.md](prototype-trackerprog.md): I1 an ordered producer list
+per 16-bit target (§4), I2/I15 a stated `commit(v)` order plus `meta.commit_order`
+(§3.1, §4), I3 `rate` is a divider everywhere (§3.3), I4 per-voice tempo (§3.6),
+I5 `play` gains `vol?`/`tempo?`, I6 `arm(acc_id, overrides)` + `set`/`set_register`
+/`set_stream`, I7 deltas are in the target register's units (§3.2), I8 tremolo
+targets the gate mask, I9 no `clamp(note)` — the overrun is a producer (§6), I10
+`period: 1` is `end.kind = fixed_point`, materialised to `first_repeat` (§2), I11
+the three-part `external input` rule (§8), I12 defMON added to §9, I13
+`gate.timer` folded into `early` and `set_tempo(stream)`/`scope` re-grounded, I14
+the certificate gains `dropped` (§2).
 
 ## 4. Work packages
 
 | # | item | mechanism | owner | size | acceptance |
 | --- | --- | --- | --- | --- | --- |
-| W0 | schema revision of the prototype doc | settle I1–I15 and §2's corrections: per-voice ordered edge list with a stated emit order; `Acc.delta` admits `+ carry(site)`, `repeat(Δ, n)`, `tabcell`, `sext11`; `Acc.phase` may name another `Acc` or a cell or `fn(global_counter)`; `Acc.bound` carries `proved\|projected\|observed` and a projection witness (Commando `hi & $F`); `Acc.target` admits `split(k, 8)` (SW cutoff); `links` for cross-Acc resets (GT2 snap zeroes the vibrato phase); one `rate` meaning; `set_register(reg, v)` or a Follin refusal; a horizon terminator in `Order`; `period: 1` handling; Commando's per-tick input | docs | small | every §2/§3 row cites two certified families or a survey count; the §2 table above empty |
+| ~~W0~~ | schema revision of the prototype doc | settle I1–I15 and §2's corrections: per-voice ordered edge list with a stated emit order; `Acc.delta` admits `+ carry(site)`, `repeat(Δ, n)`, `tabcell`, `sext11`; `Acc.phase` may name another `Acc` or a cell or `fn(global_counter)`; `Acc.bound` carries `proved\|projected\|observed` and a projection witness (Commando `hi & $F`); `Acc.target` admits `split(k, 8)` (SW cutoff); `links` for cross-Acc resets (GT2 snap zeroes the vibrato phase); one `rate` meaning; `set_register(reg, v)` or a Follin refusal; a horizon terminator in `Order`; `period: 1` handling; Commando's per-tick input | docs | small | every §2/§3 row cites two certified families or a survey count; the §2 table above empty |
 | ~~W1~~ | one observable reduction | `grid.reduce_tick(writes, prev) -> TickObs(edges, values)` + vectorised `reduce_run` over the existing `grid.grid`; constants `CTRL/AD/SR/PAIRS/LEVEL`; `grid.changes` factored out of `ghidra_facts._tick_writes`; `Verifier` gains an opt-in `obs` accumulator after `_compare` (`verify.py:336`). `verify._compare` stays raw — mirror folding, the PW nibble and the cutoff mask must not reach it | grid, verify, ghidra_facts | small (1.5–2 d) | recert 51/51 field-for-field (`compared`, `divergence` untouched); hermetic tests: gate 1→0→1 keeps three ctrl entries, `$D401` double write last-wins, `freq_lo`-only tick carries `prev` hi, PW nibble masked |
 | ~~W2~~ | `history.py` | `history(prog, trace, names_doc, calls) -> {name: ndarray(ticks)}` over `Verifier` (`run_init`, then `_one` per tick, promoted to `tick()`), `np.frombuffer(M.m)[idx]`, u16 widening from S6 `u16`; sparse-stride regions sampled by `Region.addrs`; library + `tools/`, **not** a pipeline artefact | history, verify | small (1 d) | hermetic: `counter("INC cnt")` history `[1..8]`, PERIODIC snippet periodic at the cert period, a u16 pair widens; all 51 recert dirs replay with 0 divergences |
 | ~~W3~~ | S6 exports T2 needs | serialise `facts.index`, `cellindex`, `idxvar` and the base-pointer relation; name record-split fields `cursor` where `cellindex` says so (`views._named_fields`); `Names.from_dict` | facts, recover, views | small (1.5 d) | the score cursors of GT2/JCH/SW/Commando named `cursor` in S6; recert prints listed line by line where they move |
@@ -88,6 +98,17 @@ edits.
 | W5 | T1 `accum.py` | candidates from `facts.cellupd` reaching an io store (W4); `Delta`/`Dir` parser (`idioms.bit`, new `sext11`); a diamond over `Store`/`Call` arms (new — not `gated.diamonds`); the variable-shift loop `x >> cell` recogniser `loops.py` lacks (`tablestep`, GT2 `p_12E5`, Commando `$51E4`); guard walk over dominators → policy; bound from guard (`proved`), projection (`projected`), or history under a period witness (`observed`); two verifiers — interval assertion and **recurrence replay** against W2's history, divergence ⇒ `unclassified update` | accum, idioms, loops | medium–large (5.5–7 d) | hermetic snippet per policy (`wrap reflect-complement reflect-dircell clamp halt reload rate tablestep split`), refusals named with the cell; exemplar regression: GT2 vibrato+porta, Commando bounce+run+porta, JCH pw/cutoff, SW cutoff classified as W0 states |
 | W6 | T2 `trackerprog/{cursors,streams,score,pitch,refuse}.py` | cursor × history: successor relation at a fixed base → step/jump edges, rows, loop row, terminator byte, holds; nest through `names.u16` bases (depth ≤ 2 else `score not cursor-shaped`); Follin call/ret/for from the dispatch arms + the depth-1 return slot; `pitch` from `names.freq` + per-accessor origin (Commando reads `FREQ` at two bases); materialise over the horizon. **Blocker**: SW's orderlist load is erased by the copy fold (`p_17C8` prints nothing, `T1C40/T1C4E/T1C5C` have no accessors) — either `copyview` keeps the load or SW refuses | trackerprog | large (8–10 d) | goldens on GT2 (33 pattern ptrs, 9×30 instruments, `T16F9`), JCH (26 ptrs, `rec8[19]`, 3 `$FF`s), Commando (`T576B`, `T5889`, `rec2`); the SW fold produces a named refusal until fixed; recert untouched |
 | W7 | universal player + T3 | `trackerprog/{player,emit,certify}.py`: §4 made exact per W0, rendered tick-for-tick; `certify` = W1's `TickObs` equality against `Verifier.obs` over the whole horizon; S4-style tagged JSON, `trackerprog.md`, the certificate with `refusals` and the loop claim | trackerprog | medium (3–4 d) | GT2 ×2, JCH ×2 0 divergences; every refusal names its cell; §6.2's six numbers + `xz -9e` against the source `tuneprog.md` |
+
+**W0 struck by #295**: §2's table settled row by row (two rows corrected here
+rather than in the doc — the JCH `rec6`/`rec7` row was wrong, and the 91.6 % row
+cited the wrong architecture line); I1–I15 each carry a stated decision; §5's
+table re-derived from the exemplar shapes with two-family evidence per row and two
+marked single-family exceptions; §7 rewritten as what landed (#291–#294) plus
+`accum.py` remaining; §9 gained defMON and separates §6.2's six numbers from `xz`.
+`sext(k, T[c])` was **not** added as a delta form — the only sign-extending
+accumulator delta over the certified set is SW's filter step, which is
+`tabcell(T[c], signed 11)`; `sext` in the IR is a jump offset only
+(`sw-emomyst/tuneprog.md:1205`).
 
 **W1 struck by #291**: `grid.regs/changes/reduce_tick/reduce_run` + `TickObs` and
 `Verifier(obs=True)` landed; `ghidra_facts._tick_writes` is filter plus
@@ -161,5 +182,10 @@ W4 depends on W3; W5 on W0, W2, W4; W6 on W0, W2, W3; W7 on all.
 4. **W7** on GT2 ×2, JCH ×2; then SW ×2 after the fold, Commando ×2 after
    W0 settles I1/I11, Follin after I6.
 
-Deliberately not now: defMON (no recert dir in `out/`; add one before it is
-accepted), Galway/Walker/Blackbird (uncertified), multispeed (§10).
+Deliberately not now: Galway/Walker/Blackbird (uncertified — the anatomy
+describes them, no certificate covers them), multispeed (§10). **Not** defMON:
+that line was wrong. defMON is certified four times over — `automatas`,
+`automatas-6581`, `automatas-8580` (149,025 ticks, period 129,024, `complete`)
+and `goto80-jazzpjazz` (1,799 ticks, `horizon`), architecture §9.2 — with recert
+dirs for all four and its own [prototype-automatas.md](prototype-automatas.md).
+W0 puts it in the acceptance list.
