@@ -7,15 +7,33 @@ cycle, and both frame by one rule: the interrupt period the cycle falls in.
 
 from __future__ import annotations
 
+from collections import namedtuple
 from pathlib import Path
 
 import numpy as np
 
 SID_REGS = 0x19  # $D400..$D418
 SID_BASE = 0xD400
+SID_BAND = 0x400  # $D400..$D7FF decodes to the register file, mirrored every 32
 PW_HI = (0x03, 0x0A, 0x11)  # the SID ignores the top nibble of pulse-width high
 WRAP = 1 << 32  # the write log's cycle column is uint32
 INIT_CALL = WRAP - 1  # and its call column holds this for the init phase
+
+CTRL = (0x04, 0x0B, 0x12)
+AD = (0x05, 0x0C, 0x13)
+SR = (0x06, 0x0D, 0x14)
+EDGE = frozenset(CTRL + AD + SR)  # stateful, edge-triggered: every write is kept
+# (lo, hi, shift, mask): a register pair as one value, ``(hi << shift) | lo``
+PAIRS = (
+    (0x00, 0x01, 8, 0xFFFF),
+    (0x07, 0x08, 8, 0xFFFF),
+    (0x0E, 0x0F, 8, 0xFFFF),
+    (0x02, 0x03, 8, 0x0FFF),
+    (0x09, 0x0A, 8, 0x0FFF),
+    (0x10, 0x11, 8, 0x0FFF),
+    (0x15, 0x16, 3, 0x07FF),  # cutoff is 11 bits: 8 high, 3 low
+)
+LEVEL = (0x17, 0x18)  # res_route, mode_vol
 
 
 def unwrap(cyc):
@@ -155,3 +173,87 @@ def differing(want, got, nframes=None):
     """The frames where two grids differ, over the frames both hold."""
     n = min(len(want), len(got)) if nframes is None else nframes
     return np.nonzero((np.asarray(want)[:n] != np.asarray(got)[:n]).any(axis=1))[0]
+
+
+def regs(addrs):
+    """Register indices of absolute addresses, mirrors folded; -1 outside the file.
+
+    The band is ``$D400..$D7FF`` (:data:`~.ir.SID_LO`/``SID_HI``), which decodes
+    every 32 bytes; ``$D419..$D41F`` are read-only and have no index here.
+    """
+    a = np.asarray(addrs, dtype=np.int64) - SID_BASE
+    r = a & 0x1F
+    return np.where((a >= 0) & (a < SID_BAND) & (r < SID_REGS), r, -1)
+
+
+def changes(reg, val, seed):
+    """Mask of the writes that changed the register file, ``seed`` being it before.
+
+    A write whose value the register already holds reaches no chip state, so the
+    two sides of a comparison must drop it by the same rule. The file after any
+    prefix holds each register's last written value, so the test is against the
+    previous write to the same register.
+    """
+    reg, val = np.asarray(reg, np.int64), np.asarray(val, np.int64)
+    keep = np.zeros(reg.shape, dtype=bool)
+    for r in np.unique(reg):
+        m = reg == r
+        v = val[m]
+        keep[m] = np.concatenate(([v[0] != seed[r]], v[1:] != v[:-1]))
+    return keep
+
+
+TickObs = namedtuple("TickObs", "edges values")
+
+
+def reduce_tick(writes, prev=None):
+    """One tick's ``(register, value)`` writes as the trackerprog observable.
+
+    Three rules (prototype-trackerprog §2): every write to a ctrl/AD/SR register
+    is kept in tick order, because the envelope generator is edge-triggered; each
+    :data:`PAIRS` register pair reduces to the one 16-bit value the tick left; each
+    :data:`LEVEL` register reduces to its last value the same way. A pair or level
+    the tick did not write carries ``prev``'s, or is ``None`` with no ``prev``.
+
+    Two boundaries: order *between* registers is dropped by rules 2 and 3, and
+    ``writes`` are already register indices, so mirrors are folded (:func:`regs`).
+    """
+    edges = tuple((r, v) for r, v in writes if r in EDGE)
+    last = dict(writes)
+    values = []
+    for i, (lo, hi, shift, mask) in enumerate(PAIRS):
+        p = None if prev is None else prev.values[i]
+        if lo not in last and hi not in last:
+            values.append(p)
+            continue
+        base = 0 if p is None else p
+        v = last.get(lo, base & ((1 << shift) - 1))
+        h = last.get(hi, base >> shift)
+        values.append(((h << shift) | (v & ((1 << shift) - 1))) & mask)
+    for i, r in enumerate(LEVEL):
+        values.append(last.get(r, None if prev is None else prev.values[len(PAIRS) + i]))
+    return TickObs(edges, tuple(values))
+
+
+def reduce_run(frame, reg, val, nframes=None):
+    """The same reduction over a whole run of already-framed writes.
+
+    ``(levels, edges)``: ``levels`` is ``nframes x (len(PAIRS) + len(LEVEL))``, the
+    forward-filled :func:`grid` composed pair by pair (an unwritten register is 0,
+    where :func:`reduce_tick` with no ``prev`` has ``None``); ``edges`` is one
+    ordered ``(register, value)`` tuple per frame.
+    """
+    frame, reg, val = (np.asarray(x) for x in (frame, reg, val))
+    if nframes is None:
+        nframes = int(frame[-1]) + 1 if frame.size else 0
+    nframes = max(nframes, 0)
+    rows = grid(frame, reg, val, nframes)
+    levels = np.zeros((nframes, len(PAIRS) + len(LEVEL)), dtype=np.uint16)
+    for i, (lo, hi, shift, mask) in enumerate(PAIRS):
+        lov = rows[:, lo].astype(np.uint16) & ((1 << shift) - 1)
+        levels[:, i] = ((rows[:, hi].astype(np.uint16) << shift) | lov) & mask
+    levels[:, len(PAIRS) :] = rows[:, LEVEL]
+    m = np.isin(reg, np.fromiter(EDGE, np.int64))
+    f, r, v = frame[m], reg[m].tolist(), val[m].tolist()
+    at = np.searchsorted(f, np.arange(nframes + 1))
+    return levels, [tuple(zip(r[a:b], v[a:b])) for a, b in zip(at[:-1], at[1:])]

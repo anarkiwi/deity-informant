@@ -231,3 +231,21 @@ def test_both_executors_run_the_same_program(backend):
     v = Verifier(prog, Reference(T, 8), backend=backend)
     v.run(8)
     assert v.div is None and v.call == 8
+
+
+def test_the_observable_accumulator_is_opt_in_and_survives_a_resume():
+    """A mirror store and two gate writes: folded to registers, both edges kept."""
+    code = counter(
+        "INC cnt", "LDA cnt", "STA $D420", "LDA #$11", "STA $D404", "LDA #$10", "STA $D404"
+    )
+    T, prog = tuneprog(code, calls=4, s4=True)
+    ref = Reference(T, 4)
+    assert Verifier(prog, ref).run(4) and Verifier(prog, ref).obs is None
+    v = Verifier(prog, ref, obs=True)
+    part = Verifier(prog, ref, obs=True)
+    part.run(2)
+    v.restore(pickle.loads(pickle.dumps(part.state(), protocol=pickle.HIGHEST_PROTOCOL)))
+    v.run(4)
+    assert v.div is None and len(v.obs) == 4
+    assert all(o.edges == ((4, 0x11), (4, 0x10)) for o in v.obs)
+    assert [o.values[0] for o in v.obs] == [1, 2, 3, 4]  # $D420 folds onto freq lo

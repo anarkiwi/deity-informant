@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
+from . import grid
 from . import ir
 from . import nmi as N
 from .lift import lift_trace
@@ -158,27 +159,20 @@ def _tick_writes(trace, calls, base, size):
     6510 port maps I/O, which is why :class:`~.tracevm.TraceVM` gates the log on
     it -- a store made with I/O banked out is RAM and no register change. And a
     row the schedule's second entry made (``nmi``) belongs to that entry: this
-    comparison runs the tick alone.
+    comparison runs the tick alone. The change rule itself is
+    :func:`~.grid.changes`, seeded from the post-init image both sides start from.
     """
     w = trace.wlog
     # call < calls drops the init rows too: they carry 0xFFFFFFFF, and what is left
     # is the ascending column searchsorted needs
     keep = (w["nmi"] == 0) & (w["call"] < calls) & (w["addr"] >= base) & (w["addr"] < base + size)
     call = np.asarray(w["call"], np.int64)[keep]
-    addr = (np.asarray(w["addr"], np.int64)[keep] - base).tolist()
-    val = np.asarray(w["val"], np.int64)[keep].tolist()
+    addr = np.asarray(w["addr"], np.int64)[keep] - base
+    val = np.asarray(w["val"], np.int64)[keep]
+    sel = grid.changes(addr, val, trace.image_post_init[base : base + size])
+    call, addr, val = call[sel], addr[sel].tolist(), val[sel].tolist()
     at = np.searchsorted(call, np.arange(calls + 1))
-    sid = bytearray(trace.image_post_init[base : base + size])
-    out = []
-    for c in range(calls):
-        seq = []
-        for i in range(at[c], at[c + 1]):
-            a, v = addr[i], val[i]
-            if sid[a] != v:
-                sid[a] = v
-                seq.append([a, v])
-        out.append(seq)
-    return out
+    return [[[addr[i], val[i]] for i in range(at[c], at[c + 1])] for c in range(calls)]
 
 
 def emulate_facts(trace, calls=EMU_CALLS, base=0xD400, size=0x19):
