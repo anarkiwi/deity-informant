@@ -356,10 +356,12 @@ def accumulators(prog, names, t0_doc, hist, facts=None, complete=False, period=N
     merged = _merge(raw)
     cands = candidates(merged, src)
     halves = {c for t in raw if t.kind == "pair" for c in t.cells}
+    stepped = {k[0][0] if isinstance(k[0], tuple) else k[0] for k in src}
     for tgt, cs in sorted(merged.items(), key=lambda kv: kv[0].cells):
         opaque = [c for c in cs if c.kind == "opaque"]
-        if tgt.kind == "byte" and tgt.cells[0] in halves:
-            continue
+        key = tgt.cells if tgt.kind == "pair" else tgt.cells[0]
+        if key in src or tgt.cells[0][0] in stepped or tgt.cells[0] in halves:
+            continue  # a delta producer and a pair's own half are not accumulators
         if opaque and (tgt in cands or any(r in regs for r, _a in tgt.cells)):
             refusals.append(_refuse(ctx, cells, tgt, opaque, "delta"))
     for tgt, cs in sorted(cands.items(), key=lambda kv: kv[0].cells):

@@ -498,11 +498,11 @@ and 4 `smc target`. Replay cost from #292, ticks / cells / seconds:
 
 Measured over the four exemplars at their certified horizons — GoatTracker 2
 12,000 ticks, JCH 4,000, SID Wizard 12,000, Hubbard 11,780 — **10 accumulators,
-0 replay divergences, 0 interval escapes, 17 stated refusals**, 24 s of CPU:
+0 replay divergences, 0 interval escapes, 15 stated refusals**, 24 s of CPU:
 
 | tune | accs (policy / `bound.from`) | refusals |
 | --- | --- | --- |
-| `gt2-je-suis-linus` | vibrato phase `reflect-complement`/`observed`, vibrato freq and portamento freq `reflect`/`observed` (`tablestep`, `phase acc(id)` on the first), filter `wrap`/`observed` (`tabcell`) | 5 `delta` (`ptr`, the wavetable gate cell), 1 `replay` (`ghost.pw_lo`) |
+| `gt2-je-suis-linus` | vibrato phase `reflect-complement`/`observed`, vibrato freq and portamento freq `reflect`/`observed` (`tablestep`, `phase acc(id)` on the first), filter `wrap`/`observed` (`tabcell`) | 3 `delta` (the wavetable gate cell), 1 `replay` (`ghost.pw_lo`) |
 | `jch-guldkorn-intro` | slide and vibrato freq `wrap`/`projected` (`field`, scope voice) | 3 `replay` (`voice[].pw`, `cutoff_hi`) |
 | `sw-emomyst` | filter `split(3, 8)` ×2 `wrap`/`observed` (`tabcell` signed 11), `sid.reg` `clamp`/`projected` and `wrap`/`observed` | 4 `delta`, 1 `replay` |
 | `commando-song1` | none | 3 `replay` (`acc_2`, `voice[].acc`, `rec2[].b5591`) |

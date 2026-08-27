@@ -1140,7 +1140,7 @@ record — is [tuneprog-backlog.md](tuneprog-backlog.md) §3; the open work by l
 | `accdelta` | 133 | T1: section 5's delta grammar and how a cell spells in a record |
 | `accrule` | 278 | T1: counters, bound, policy, rate, phase and scope of one recurrence |
 | `acchist` | 367 | T1: a named-cell expression over the horizon; the interval and the replay |
-| `accum` | 416 | T1: the accumulator plane, `tuneprog.T1.json` (library and tool, not a stage) |
+| `accum` | 418 | T1: the accumulator plane, `tuneprog.T1.json` (library and tool, not a stage) |
 
 **Text — S7**
 

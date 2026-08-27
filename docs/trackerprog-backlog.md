@@ -191,12 +191,12 @@ stable (verified over four runs per tune).
 
 | tune | ticks | accs (policy / `bound.from`) | refusals | s |
 | --- | ---: | --- | --- | ---: |
-| `gt2-je-suis-linus` | 12,000 | 4: vibrato phase `reflect-complement`/`observed`; vibrato and portamento freq `reflect`/`observed`, `tablestep`, the first `phase acc(id)`; filter `wrap`/`observed` `tabcell` | 5 `delta`, 1 `replay` | 7.3 |
+| `gt2-je-suis-linus` | 12,000 | 4: vibrato phase `reflect-complement`/`observed`; vibrato and portamento freq `reflect`/`observed`, `tablestep`, the first `phase acc(id)`; filter `wrap`/`observed` `tabcell` | 3 `delta`, 1 `replay` | 7.2 |
 | `jch-guldkorn-intro` | 4,000 | 2: slide and vibrato freq `wrap`/`projected`, `field`, scope voice | 3 `replay` | 2.2 |
 | `sw-emomyst` | 12,000 | 4: filter `split(3, 8)` ×2 `wrap`/`observed` `tabcell` signed 11; `sid.reg` `clamp`/`projected` and `wrap`/`observed` | 4 `delta`, 1 `replay` | 10.4 |
 | `commando-song1` | 11,780 | 0 | 3 `replay` | 3.9 |
 
-**10 accumulators, 0 replay divergences, 0 interval escapes, 17 refusals**, each
+**10 accumulators, 0 replay divergences, 0 interval escapes, 15 refusals**, each
 naming its cell, its site and the §5 clause it failed. Hubbard refuses at its
 full horizon: the tick that both reloads a segment and steps it, and the arms
 whose carry a call return supplies, leave moves the plane cannot make, and
