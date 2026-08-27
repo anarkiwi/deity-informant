@@ -9,17 +9,18 @@ from __future__ import annotations
 
 from collections import namedtuple
 
-from .graph import EXIT, cfg, idoms, natural_loops, postdoms, preds_of
+from .accguard import _domsets, cellof, guardpath, key_of, opened, propagate, reads
+from .accguard import scratch, valnames, EMPTY, _inloop
+from .graph import cfg, idoms, natural_loops, preds_of, rpo
 from .idioms import CMP, is_one
-from .ir import Bin, Call, Const, If, Let, Load, R16, REGVAR, Store, Var, W16, succs
+from .ir import Bin, Call, Const, Let, Load, R16, REGIDX, REGVAR, Store, Var, W16
 from .irwalk import addr_split, renamer, single_defs, sub_expr, walk
 from .loops import _entry_value, repeats
 from .provenance import stops
 
 DEPTH = 3  # call frames a value is chased through before it is left as it stands
 MAXARMS = 64
-Arm = namedtuple("Arm", "guards value proc block")
-Tgt = namedtuple("Tgt", "kind cells")
+Arm = namedtuple("Arm", "guards value addr proc block")
 Site = namedtuple("Site", "proc block idx stmt")
 
 
@@ -32,16 +33,13 @@ def selfread(tgt):
     return lambda e: cellof(e) == key
 
 
-def key_of(s):
-    """The cell a store writes: one byte, or the two of a 16-bit assignment."""
-    if type(s) is W16:
-        return Tgt("pair", (tuple(s.lo), tuple(s.hi)))
-    base = addr_split(s.a)[0]
-    return None if base is None else Tgt("byte", ((s.r, base),))
-
-
 def rank(prog, root="tick"):
-    """``{(proc, block, index): position}`` in the order one tick first executes them."""
+    """``{(proc, block, index): position}`` in the order one tick first executes them.
+
+    Reverse postorder, not :meth:`~.ir.Proc.order`: a reload that guards a segment
+    runs before the step that follows it in the same tick, and a preorder puts the
+    step's join first.
+    """
     out, n, done = {}, [0], set()
 
     def visit(name):
@@ -49,7 +47,7 @@ def rank(prog, root="tick"):
         if p is None or name in done:
             return
         done.add(name)
-        for lbl in p.order():
+        for lbl in rpo(p):
             for i, s in enumerate(p.blocks[lbl].stmts):
                 out[(name, lbl, i)] = n[0]
                 n[0] += 1
@@ -81,88 +79,6 @@ def sites(prog, facts, order):
     }
 
 
-# ---- dominating guards --------------------------------------------------------
-def _domsets(idom, blocks):
-    """``{label: its dominators, nearest first}``, from the immediate-dominator tree."""
-    out = {}
-    for lbl in blocks:
-        chain, cur = [], lbl
-        while cur is not None and cur not in chain:
-            chain.append(cur)
-            nxt = idom.get(cur)
-            cur = None if nxt == cur else nxt
-        out[lbl] = chain
-    return out
-
-
-def afterwrites(proc):
-    """``{label: the regions the blocks a branch leads to write}``.
-
-    What a condition read is what those writes had not yet changed, which is the
-    only epoch :mod:`.history` keeps of a cell its own tick moves.
-    """
-    here = {
-        lbl: frozenset(
-            r
-            for s in b.stmts
-            for r in ((s.lo[0], s.hi[0]) if type(s) is W16 else (s.r,) if type(s) is Store else ())
-            if r >= 0
-        )
-        for lbl, b in proc.blocks.items()
-    }
-    out = {lbl: here[lbl] for lbl in proc.blocks}
-    for _ in range(len(proc.blocks)):
-        moved = False
-        for lbl, b in proc.blocks.items():
-            got = out[lbl].union(*[out[s] for s in succs(b.term) if s in out] or [frozenset()])
-            moved = moved or got != out[lbl]
-            out[lbl] = got
-        if not moved:
-            break
-    return {
-        lbl: frozenset().union(*[out[s] for s in succs(b.term) if s in out] or [frozenset()])
-        - here[lbl]
-        for lbl, b in proc.blocks.items()
-    }
-
-
-def guardpath(proc):
-    """``{label: ((condition, its truth here, the regions written after it), ...)}``.
-
-    Control dependence, not dominance: a block a join carries is reached either
-    way, however the join itself is dominated. Outermost condition first.
-    """
-    g = cfg(proc)
-    after = afterwrites(proc)
-    ipd = postdoms(g, proc, EXIT)
-    pd = _domsets(ipd, [n for n in ipd if n in proc.blocks])
-    dom, out = _domsets(idoms(proc, g), proc.blocks), {lbl: [] for lbl in proc.blocks}
-    for d, b in proc.blocks.items():
-        t = b.term
-        if type(t) is not If or t.t == t.f or t.t not in pd or t.f not in pd:
-            continue
-        for lbl in proc.blocks:
-            if lbl in pd.get(d, ()):
-                continue
-            if lbl in pd[t.t]:
-                out[lbl].append((d, t.c, True))
-            elif lbl in pd[t.f]:
-                out[lbl].append((d, t.c, False))
-    for _ in range(len(proc.blocks)):
-        moved = False
-        for lbl, gs in out.items():
-            got = list(gs) + [x for d, _c, _v in gs for x in out[d] if x not in gs]
-            moved = moved or len(got) != len(gs)
-            out[lbl] = list(dict.fromkeys(got))
-        if not moved:
-            break
-    depth = {lbl: len(dom[lbl]) for lbl in proc.blocks}
-    return {
-        lbl: tuple((c, v, after[d]) for d, c, v in sorted(gs, key=lambda x: depth.get(x[0], 0)))
-        for lbl, gs in out.items()
-    }
-
-
 # ---- the context every reader of one program shares ---------------------------
 class Ctx:
     """One program's dominator guards, call sites and name-stopping expansion."""
@@ -172,6 +88,8 @@ class Ctx:
         self.names = names
         self.rgn = prog.by_id()
         self.keep = stops(names)
+        self.scratch = scratch(prog)
+        self.prop = propagate(prog, self.scratch)
         self.cache = {}
         self.callers = {}
         for n, p in prog.procs.items():
@@ -202,7 +120,9 @@ class Ctx:
         """:meth:`defs`, plus each many-times-defined name's one dominating value.
 
         SSA leaves a value one name and several ``Let`` s where the arms of a
-        branch each supply it; at a block only one of them can have run.
+        branch each supply it; at a block only one of them can have run -- unless
+        the block is inside a loop that carries one of them, where the preheader's
+        value dominates every iteration and is right for none but the first.
         """
         out = dict(self.defs(proc))
 
@@ -214,13 +134,48 @@ class Ctx:
                         hits.setdefault(s.n, []).append((lbl, s.e))
             return {n: v for n, v in hits.items() if len(v) > 1}
 
-        dom = self.dom(proc).get(label, ())
+        dom, here = self.dom(proc).get(label, ()), self.inloop(proc).get(label, EMPTY)
         for n, hits in self._memo(("multi", proc), make).items():
+            if any(here & self.inloop(proc).get(lbl, EMPTY) for lbl, _e in hits):
+                continue
             got = [(dom.index(lbl), e) for lbl, e in hits if lbl in dom]
             near = [e for d, e in got if d == min(d for d, _e in got)] if got else []
             if len(near) == 1:
                 out[n] = near[0]
         return out
+
+    def inloop(self, proc):
+        """``{label: the loop headers whose body holds it}``."""
+        return self._memo(("inloop", proc), lambda: _inloop(self.loops(proc)))
+
+    def parked(self, proc):
+        """``{name: the cell it advanced}``: a successor read is the cell it lands in.
+
+        ``t = T[cursor]; cursor = t`` names one value twice, and opening the name
+        back to its read puts the *previous* cursor in every value that follows it
+        this tick. The cell's own history is that value, at the epoch the tick left
+        it -- so a name a store parks in the cell its own definition *indexed* is
+        that cell. A name whose definition reads the cell as a term is the cell's
+        own recurrence, and opening it is the whole of what T1 reads.
+        """
+
+        def make():
+            defs, hits = self.defs(proc), {}
+            for b in self.prog.procs[proc].blocks.values():
+                for s in b.stmts:
+                    if type(s) is Store and s.r >= 0 and type(s.v) is Var:
+                        hits.setdefault(s.v.n, []).append(s)
+            out = {}
+            for n, ss in hits.items():
+                key = key_of(ss[0])
+                if len(ss) != 1 or key is None or n not in defs:
+                    continue
+                inner = set(walk(defs[n])) - set(reads(defs[n]))
+                if any(cellof(x) == key.cells[0] for x in inner):
+                    out[n] = Load("ram", ss[0].a, ss[0].w, ss[0].lo, ss[0].hi, ss[0].r)
+            return out
+
+        return self._memo(("parked", proc), make)
 
     def loops(self, proc):
         """``{header: (body, latches)}`` of one procedure's natural loops."""
@@ -233,46 +188,43 @@ class Ctx:
         return self._memo(("loops", proc), make)
 
 
-def opened(e, defs, depth=DEPTH):
-    """``e`` with every name ``defs`` maps substituted, addresses included.
+def external(e):
+    """True when a value reaches outside the tick: an entry register or an ``io`` read.
 
-    Not :func:`~.provenance.expand`, which stops at a named cell and so leaves a
-    table read's own index a register: T1 evaluates that index over the horizon.
+    The section 8 rule for a live bit: a carry another block of the tick defines is
+    section 5's ``+ carry(site)``; one the tick is *given* is an external input, and
+    the plane refuses rather than guess a bit it never saw.
     """
-    t = type(e)
-    if t is Var and depth > 0 and e.n in defs:
-        return opened(defs[e.n], defs, depth - 1)
-    if t is Bin:
-        return Bin(e.op, opened(e.a, defs, depth), opened(e.b, defs, depth), e.w)
-    if t is Load:
-        return Load(e.cls, opened(e.a, defs, depth), e.w, e.lo, e.hi, e.r)
-    return R16(e.lo, e.hi, opened(e.a, defs, depth)) if t is R16 else e
+    if any(type(x) is Load and x.cls == "io" for x in walk(e)):
+        return True
+    return type(e) is Var and e.n in REGIDX
 
 
-def valnames(e):
-    """Every name an expression reads, its addresses included."""
-    return {x.n for x in walk(e) if type(x) is Var}
-
-
-def arms(ctx, proc, block, value, skip=frozenset(), depth=DEPTH):
+def arms(ctx, proc, block, value, addr, skip=frozenset(), depth=DEPTH):
     """Every ``(guards, value)`` the callers of one store's procedure supply it.
 
-    A value whose free names are its procedure's parameters is not yet a value:
+    A value and the address it lands at, whose free names are the procedure's own
+    parameters, are not yet a value and an address:
     each call site substitutes its arguments and prepends its own guard path. The
-    store's own copy index is not one of them -- every copy shares the value.
+    store's own copy index is not one of them -- every copy shares the value, so
+    ``skip`` is left standing in the value and in the guards alike, and the replay
+    binds it per copy. A rerolled loop is the case: its index is one ``Let`` per
+    iteration, and the nearest dominating one is the first iteration's constant.
     """
-    return _arms(ctx, proc, block, value, (), skip, depth)
+    return _arms(ctx, proc, block, value, addr, (), skip, depth)
 
 
-def _arms(ctx, proc, block, value, extra, skip, depth):
+def _arms(ctx, proc, block, value, addr, extra, skip, depth):
     p = ctx.prog.procs[proc]
-    defs = ctx.defs_at(proc, block)
-    value = opened(value, defs)
+    defs = {**ctx.defs_at(proc, block), **ctx.parked(proc)}
+    defs = {n: e for n, e in defs.items() if n not in skip}
+    value, addr = opened(value, defs, DEPTH, ctx.prop), opened(addr, defs, DEPTH, ctx.prop)
     gs = tuple(
-        (opened(c, defs), t, w) for c, t, w in tuple(ctx.guards(proc).get(block, ())) + tuple(extra)
+        (opened(c, defs, DEPTH, ctx.prop), t, w)
+        for c, t, w in tuple(ctx.guards(proc).get(block, ())) + tuple(extra)
     )
-    here = [Arm(gs, value, proc, block)]
-    free = ({REGVAR[i] for i in p.params} & valnames(value)) - skip
+    here = [Arm(gs, value, addr, proc, block)]
+    free = ({REGVAR[i] for i in p.params} & (valnames(value) | valnames(addr))) - skip
     calls = ctx.callers.get(proc) or ()
     if not free or not depth or not calls:
         return here
@@ -284,6 +236,7 @@ def _arms(ctx, proc, block, value, extra, skip, depth):
             cproc,
             clbl,
             sub_expr(value, fn),
+            sub_expr(addr, fn),
             tuple((sub_expr(c, fn), t, w) for c, t, w in gs),
             skip,
             depth - 1,
@@ -379,14 +332,6 @@ def maskof(e):
     return e, None
 
 
-def cellof(e):
-    """``(region, constant address)`` of a byte read, or ``None``."""
-    if type(e) is Load and e.w == 1:
-        base = addr_split(e.a)[0]
-        return None if base is None else (e.r, base)
-    return None
-
-
 def lowbits(m):
     """The width of a low-bit mask, or ``None`` when ``m`` is not one."""
     return m.bit_length() if m and not m & (m + 1) else None
@@ -464,10 +409,3 @@ def _decrement(s, defs):
     if type(v) is not Bin or v.op != "-" or not is_one(v.b):
         return None
     return v.a if cellof(v.a) == (s.r, addr_split(s.a)[0]) else None
-
-
-def reads(e):
-    """Every byte or pair a value reads, addresses excluded."""
-    xs = [x for x in walk(e) if type(x) is Load or type(x) is R16]
-    inner = {id(y) for x in xs for y in walk(x.a)}
-    return [x for x in xs if id(x) not in inner]

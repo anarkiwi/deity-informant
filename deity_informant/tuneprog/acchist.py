@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from .accshape import cellof, reads
 from .facts import Facts, scales
 from .ir import Bin, Const, Load, MASK, R16, Var
 
@@ -40,6 +41,9 @@ def evalarr(op, a, b, w):
         return a >> b
     if op == "carry":
         return ((a + b) > m).astype(np.int64)
+    if op in ("or", "and"):  # the structurer's merged conditions, not lowered ops
+        got = (a != 0) | (b != 0) if op == "or" else (a != 0) & (b != 0)
+        return got.astype(np.int64)
     return _cmp(op, a, b).astype(np.int64) if op in ("==", "!=", "<", "<=") else None
 
 
@@ -63,7 +67,15 @@ class Cells:
         self.bad = np.zeros(self.ticks, bool)
         self.subst = {}
         self.counters = {}
+        self.scratch = frozenset()
         self._lag = {}
+        self._epochs = None
+
+    def epochs(self):
+        """:func:`counter_epoch`, computed once: it depends on no one accumulator."""
+        if self._epochs is None:
+            self._epochs = counter_epoch(self)
+        return self._epochs
 
     def lagged(self, rids):
         """Every sampled byte of ``rids`` one tick back: what a guard beside a store read.
@@ -139,6 +151,8 @@ class Cells:
         t = type(e)
         if t is Const:
             return np.full(self.ticks, e.v, np.int64)
+        if t is Var:
+            return self.index(e, env)
         if t is Load:
             return self.load(e.r, self.index(e.a, env), e.w, e.lo, e.hi)
         if t is R16:
@@ -167,21 +181,40 @@ def evaluate(cells, e, env):
 
 
 def truth(cells, guards, env):
-    """``(per-tick mask, how many conditions had no history)`` for one guard path.
+    """``(per-tick mask, index-only conditions dropped, cells with no history)``.
 
-    Index algebra and a flag no caller resolved are not conditions over cells; they
-    are counted, and a replay they falsify refuses.
+    A condition over no cell at all -- a copy index, a register a caller supplies --
+    does not say whether the tick ran the block, only which copy it ran it for, and
+    every copy runs; it is dropped and counted apart from a condition over a cell
+    the horizon has no column for, which leaves the mask an over-approximation.
+
+    :mod:`.history` samples once a tick, so a cell the tick moved has two values a
+    guard beside a store could have read -- the one the tick came in with, stepped
+    where a divider's own decrement ran, and the one it left with. Which of the two
+    depends on where in the tick each read sits, which the sampling cannot say, so
+    every condition is read under both and the record claims the move under either.
     """
-    out, gone, base = np.ones(cells.ticks, bool), 0, dict(cells.subst)
+    out, gone, blind, base = np.ones(cells.ticks, bool), 0, 0, dict(cells.subst)
     for g, t, wr in guards:
-        cells.subst = {**base, **cells.lagged(wr)}
-        v, bad = evaluate(cells, g, env)
-        cells.subst = base
-        if v is None or bad.any():
-            gone += 1
+        got = _held(cells, g, t, env, {**base, **cells.lagged(wr)})
+        if got is None:
+            gone, blind = gone + (not reads(g)), blind + bool(reads(g))
             continue
-        out &= (v != 0) if t else (v == 0)
-    return out, gone
+        alt = _held(cells, g, t, env, cells.lagged(wr))
+        out &= got if alt is None else (got | alt)
+    cells.subst = base
+    return out, gone, blind
+
+
+def _held(cells, g, t, env, subst):
+    """One condition under one epoch of the cells its own tick moved, or ``None``."""
+    if any(cellof(x) in cells.scratch for x in reads(g)):
+        return None
+    cells.subst = subst
+    v, bad = evaluate(cells, g, env)
+    if v is None or bad.any():
+        return None
+    return (v != 0) if t else (v == 0)
 
 
 def _lag(a):
@@ -197,7 +230,7 @@ def replay(cur, prev, plan, width):
     clause of the record produces is one.
     """
     m = (1 << width) - 1
-    ok = cur == prev
+    ok, half = cur == prev, prev
     for c in plan:
         if c["kind"] == "any":
             ok |= c["when"]
@@ -208,6 +241,10 @@ def replay(cur, prev, plan, width):
             alt = (base + c["sign"] * _lag(c["delta"]) + c["carry"]) & m
             if c["live"]:
                 ok |= c["when"] & (cur == ((got + 1) & m))
+        elif c["kind"] == "half":
+            half = _sethalf(half, c["value"], c["shift"], m)
+            ok |= c["when"] | (cur == half)
+            continue
         else:
             got, alt = c["value"] & m, _lag(c["value"]) & m
         ok |= c["when"] & ((cur == got) | (cur == alt))
@@ -224,7 +261,7 @@ def _sequence(prev, plan, m):
     """
     val = prev
     for c in plan:
-        if c["kind"] == "any":
+        if c["kind"] in ("any", "half"):
             continue
         if c["kind"] == "step":
             base = (val ^ m) if c["comp"] else val
@@ -233,6 +270,12 @@ def _sequence(prev, plan, m):
             got = c["value"] & m
         val = np.where(c["when"], got, val)
     return val
+
+
+def _sethalf(prev, value, shift, m):
+    """``prev`` with one byte replaced: the move an unnamed producer of a half makes."""
+    mask = (0xFF << shift) & m
+    return ((prev & ~mask) | ((value << shift) & mask)) & m
 
 
 def interval(cells, bound, env, elem):
@@ -254,12 +297,18 @@ def plan_of(cells, clauses, env):
 
     A step whose delta no name reaches is the ``unclassified update`` T1 refuses; a
     step whose carry no name reaches is section 5's ``+ carry(site)``, one live bit
-    either way; an absolute set is section 4's producer, and T1 states only when.
+    either way; an absolute set is section 4's producer, and T1 states only when. A
+    ``repeat`` step runs its own counted loop, so its delta is that many times over.
+
+    A half the record does not state -- the other byte of a pair, moved on its own --
+    carries the value it leaves that byte, which the replay chains in the order the
+    halves run: the record claims nothing about when an unnamed producer runs, and
+    the move it makes is the whole of what can be checked.
     """
     out, gone, blind = [], 0, 0
     for c in sorted(clauses, key=lambda c: c.rank):
-        when, miss = truth(cells, c.guards, env)
-        gone += miss
+        when, miss, blind_g = truth(cells, c.guards, env)
+        gone += miss + blind_g
         if c.kind == "step":
             d, bad = evaluate(cells, c.delta, env)
             k, kbad = (cells.zeros, bad) if c.carry is None else evaluate(cells, c.carry, env)
@@ -269,6 +318,11 @@ def plan_of(cells, clauses, env):
             borrow = -1 if _isborrow(c.carry) else 0
             blind += int((bad & when).any())
             when = when & ~bad
+            if c.times is not None:
+                n, nbad = evaluate(cells, c.times, env)
+                if n is None:
+                    return None, gone, blind
+                d, when = d * (n + 1), when & ~nbad
             out.append(
                 {
                     "when": when,
@@ -281,8 +335,12 @@ def plan_of(cells, clauses, env):
                 }
             )
         elif c.kind == "half":
-            out.append({"when": when, "kind": "any"})
+            v, bad = evaluate(cells, c.value, env)
             blind += 1
+            if v is None or bad.any():
+                out.append({"when": when, "kind": "any"})
+            else:
+                out.append({"when": when, "kind": "half", "value": v, "shift": c.shift})
         else:
             v, bad = evaluate(cells, c.value, env)
             if v is None or (bad & when).any():
@@ -331,24 +389,44 @@ def verify(cells, acc, clauses, bounds):
     return bounds[keep], dict(out, escapes=escapes[keep])
 
 
-def _epoch(cells, acc):
-    """The values one tick's own reads saw: last tick's, and a divider's own borrow.
+def counter_epoch(cells):
+    """``{cell: its value between its own step and the reload that step fires}``.
 
-    A countdown is read after it is stepped and before it is reloaded, and that
-    value is no post-tick observable: it is last tick's, minus one where the tick
-    ran the counter at all.
+    A divider is read after it is stepped and before it is reloaded, and that value
+    is no post-tick observable: it is last tick's, stepped on the ticks its own step
+    clauses ran. A guard every cell of which has a history says which those are; a
+    guard whose does not leaves only the observable, and a cell that did not move
+    did not step -- which misses the reload that lands back on the value it had, so
+    the two are read together, never one instead of the other.
     """
     out = {}
-    for rid, _base in cells.counters:
-        kind = cells.counters[(rid, _base)][0]
-        r = cells.rgn.get(rid)
-        for a in () if r is None else range(r.base, r.base + r.size):
-            col = cells.col(rid, a)
+    for (rid, base), ctr in sorted(cells.counters.items(), key=_first):
+        step = -1 if ctr.kind == "countdown" else 1
+        for elem in range(ctr.copies):
+            addr = base + elem * max(ctr.scale, 1)
+            col = cells.col(rid, addr)
             if col is None:
                 continue
-            was = np.concatenate(([col[0]], col[:-1]))
-            step = -1 if kind == "countdown" else 1
-            out[(rid, a)] = np.where(col == was, was, (was + step) & 0xFF)
+            env = {n: elem * max(ctr.scale, 1) for n in ctr.index}
+            was, ran = _lag(col), np.zeros(cells.ticks, bool)
+            for c in ctr.steps:
+                cells.subst = out
+                got, _gone, blind = truth(cells, c.guards, env)
+                cells.subst = {}
+                ran |= got if not blind else (got & (col != was))
+
+            out[(rid, addr)] = np.where(ran, (was + step) & 0xFF, was)
+    return out
+
+
+def _first(kv):
+    """A counter's place in the tick: where its own earliest step runs."""
+    return min(c.rank for c in kv[1].steps), kv[0]
+
+
+def _epoch(cells, acc):
+    """The values one tick's own reads saw: last tick's, and a divider's own borrow."""
+    out = dict(cells.epochs())
     for rid in acc["regions"]:
         r = cells.rgn.get(rid)
         for a in () if r is None else range(r.base, r.base + r.size):

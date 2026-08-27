@@ -7,13 +7,41 @@ scope those guards leave.
 
 from __future__ import annotations
 
+from collections import namedtuple
+
 from .accdelta import _cellref
 from .accshape import canon, lowbits, maskof, reads, selfread, sext_split
 from .facts import SID_VOICES
-from .ir import Bin, Const, Load
+from .ir import Bin, Const, Load, Var, W16
 from .irwalk import walk
 
 SENTINEL = 0xFF
+Counter = namedtuple("Counter", "kind reload steps index scale copies")
+
+
+def _addr(c):
+    """A clause's own address expression and the envelope its store stayed inside."""
+    s = c.site.stmt
+    if type(s) is W16:
+        return c.addr, (s.env or (s.lo[1], s.lo[1]))
+    return c.addr, (s.lo, s.hi)
+
+
+def copies_of(cells, clauses):
+    """``(index names, stride, copies)`` of the cell one store family writes.
+
+    Every clause's index, not the steps' alone: an action and a step reach the same
+    copy under names their own procedures give it.
+    """
+    names, lo, hi = set(), None, None
+    for c in clauses:
+        a, (l, h) = _addr(c)
+        names |= {x.n for x in walk(a) if type(x) is Var}
+        lo, hi = (l if lo is None else min(lo, l)), (h if hi is None else max(hi, h))
+    if not names or lo is None:
+        return [], 0, 1
+    scale = max(cells.scale.get(n, 1) for n in names)
+    return sorted(names), scale, max(1, -(-(hi - lo + 1) // scale))
 
 
 # ---- direction, bound, policy, rate --------------------------------------------
@@ -162,13 +190,14 @@ def rate_of(ctx, cells, steps, actions, counters):
                 key = (ref["region"], int(ref["addr"][1:], 16))
                 if key not in counters:
                     continue
-                kind, reload = counters[key]
+                ctr = counters[key]
+                reload = ctr.reload
                 k = _const(reload) if reload is not None else None
                 return {
                     "every": every if every is not None else (None if k is None else k + 1),
                     "counter": ref["name"],
                     "cell": ref,
-                    "kind": kind,
+                    "kind": ctr.kind,
                     "reload": None if reload is None else repr(reload),
                 }
     return {"every": 1, "counter": None, "cell": None, "kind": "none", "reload": None}
@@ -187,8 +216,13 @@ def scope_of(cells, rid, copies):
 
 
 # ---- the candidates, and the records they become -------------------------------
-def counters_of(byname):
-    """``{cell: (countdown|countup, reload)}`` for every cell whose steps are one."""
+def counters_of(byname, cells):
+    """``{cell: Counter}`` for every cell whose every step is one.
+
+    The steps come with it: a counter is read mid-tick, after its own decrement and
+    before the reload it fires, and the ticks that decrement it are the ticks its
+    own guards hold -- which is the only thing the once-per-tick history can say.
+    """
     out = {}
     for tgt, cs in sorted(byname.items()):
         steps = [c for c in cs if c.kind == "step"]
@@ -196,7 +230,15 @@ def counters_of(byname):
         if tgt.kind != "byte" or not steps or ks - {1, -1}:
             continue
         loads = [c.value for c in cs if c.kind == "action"]
-        out[tgt.cells[0]] = ("countdown" if -1 in ks else "countup", loads[0] if loads else None)
+        index, scale, copies = copies_of(cells, [c for c in cs if c.kind != "opaque"])
+        out[tgt.cells[0]] = Counter(
+            "countdown" if -1 in ks else "countup",
+            loads[0] if loads else None,
+            steps,
+            index,
+            scale,
+            copies,
+        )
     return out
 
 
@@ -215,7 +257,7 @@ def _merge(byname):
         halves = {}
         for other, ocs in sorted(byname.items()):
             if other.kind == "byte" and other.cells[0] in tgt.cells:
-                for c in (x for x in ocs if x.kind == "action"):
+                for c in (x for x in ocs if x.kind in ("action", "step")):
                     halves.setdefault((c.site.proc, c.site.block), {})[other.cells[0]] = c
         extra = [x for _k, g in sorted(halves.items()) for x in _halves(tgt, g)]
         out[tgt] = sorted(cs + extra, key=lambda c: (c.rank, c.site.stmt.src, repr(c.value)))
@@ -223,11 +265,16 @@ def _merge(byname):
 
 
 def _halves(tgt, got):
-    """One block's writes of a pair: both halves as one assignment, or an unnamed one."""
+    """One block's writes of a pair: both halves as one assignment, or an unnamed one.
+
+    A half a block sets outright pairs with the other half it sets; a half one
+    moves on its own -- Hubbard's drum drops the high byte alone -- is a producer of
+    the pair the record does not state, and the replay takes it as unnamed.
+    """
     lo, hi = got.get(tgt.cells[0]), got.get(tgt.cells[1])
-    if lo is not None and hi is not None:
+    if lo is not None and hi is not None and lo.kind == "action" and hi.kind == "action":
         return [lo._replace(value=Bin("|", lo.value, Bin("<<", hi.value, Const(8, 1), 2), 2))]
-    return [c._replace(kind="half") for c in got.values()]
+    return [c._replace(kind="half", shift=0 if k == tgt.cells[0] else 8) for k, c in got.items()]
 
 
 def candidates(byname, sources):
@@ -251,15 +298,24 @@ def _groups(steps):
     return out
 
 
-def _dirstore(ctx, cells, phase, byname):
-    """True when the cell a phase reads is itself stored under a test of the target."""
+def _dirstore(ctx, cells, phase, byname, regions=()):
+    """True when the play itself turns the cell a phase reads.
+
+    A bounce turns at its bound: it steps the direction cell (Hubbard's
+    ``FREQ[$E8 + x] -= 1``, GoatTracker 2's phase byte) or sets it under a test of
+    the accumulator's own value (GoatTracker 2's portamento compare chain). A cell
+    the score sets from a stream byte picks a direction and never turns -- that is
+    the free slide (Hubbard's ``b5520``), not a reflection.
+    """
     ref = phase.get("cell")
     if ref is None:
         return False
-    key = (ref["region"], int(ref["addr"][1:], 16))
+    key, rs = (ref["region"], int(ref["addr"][1:], 16)), set(regions)
     for tgt, cs in byname.items():
-        if tgt.kind == "byte" and tgt.cells[0] == key:
-            return any(c.kind == "step" or c.kind == "action" for c in cs)
+        if tgt.kind != "byte" or tgt.cells[0] != key:
+            continue
+        turns = any(x.r in rs for c in cs for g, _t, _w in c.guards for x in reads(g))
+        return turns or any(c.kind == "step" for c in cs)
     return False
 
 

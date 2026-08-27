@@ -7,13 +7,13 @@ from tempfile import mkdtemp
 import numpy as np
 import pytest
 
-from deity_informant.tuneprog import accum, accrule, accshape, pipeline, provenance
+from deity_informant.tuneprog import accum, accrule, accshape, graph, pipeline, provenance
 from deity_informant.tuneprog.accdelta import delta_of
 from deity_informant.tuneprog.acchist import Cells, replay
 from deity_informant.tuneprog.accshape import canon, sext_split, step, terms
 from deity_informant.tuneprog.facts import Facts
 from deity_informant.tuneprog.history import history
-from deity_informant.tuneprog.ir import Bin, Const, Load, Tuneprog, Var
+from deity_informant.tuneprog.ir import Bin, Const, Load, Tuneprog, Var, succs
 from deity_informant.tuneprog.recover import Names
 from deity_informant.tuneprog.tracedata import Trace
 
@@ -446,6 +446,138 @@ def test_an_ff_sentinel_reloads_the_segment_a_countdown_paces():
     assert a["rate"]["kind"] == "countdown" and a["rate"]["counter"]
 
 
+# ---- reload then step, and a carry another block supplies ----------------------
+SEGSTEP = asm(
+    PLAY,
+    "init: LDA #$00",
+    "STA cur",
+    "STA cut",
+    "LDA #$01",
+    "STA tmr",
+    "RTS",
+    "play: DEC tmr",
+    "BPL go",
+    "LDX cur",
+    "INX",
+    "CPX #$03",
+    "BNE ok",
+    "LDX #$00",
+    "ok: STX cur",
+    "LDA len,X",
+    "STA tmr",
+    "LDA base,X",
+    "CMP #$FF",
+    "BEQ go",
+    "STA cut",
+    "go: LDX cur",
+    "LDA cut",
+    "CLC",
+    "ADC step,X",
+    "STA cut",
+    "STA $D416",
+    "RTS",
+    "cur: BRK",
+    "tmr: BRK",
+    "cut: BRK",
+    "len: BRK",
+    "BRK",
+    "BRK",
+    "base: BRK",
+    "BRK",
+    "BRK",
+    "step: BRK",
+    "BRK",
+    "BRK",
+)
+SEGS = {"len": (1, 2, 1), "base": (0x20, 0xFF, 0x60), "step": (7, 3, 0x100 - 5)}
+
+
+def test_a_segment_reload_and_the_step_that_follows_it_are_one_tick():
+    """The tick that re-points a stream reloads *and* steps: the order the play does."""
+    doc = clean(t1(SEGSTEP, calls=48, data=_data(SEGSTEP, SEGS)))
+    a = one(doc, policy="reload")
+    assert a["delta"]["kind"] == "tabcell" and a["verify"]["divergences"] == 0
+    view = pipeline.present(tuneprog(SEGSTEP, calls=48, s4=True, data=_data(SEGSTEP, SEGS))[1])[0]
+    ss = _writes(view, SEGSTEP.labels["cut"])
+    srcs = [x.stmt.src for x in ss]
+    assert len(srcs) == 2 and srcs == sorted(srcs)  # the reload ranks before the step it precedes
+
+
+def _writes(view, addr):
+    """Every store into one cell, in the order :func:`~.accshape.rank` runs them."""
+    got = accshape.sites(view, Facts(view), accshape.rank(view))
+    return [x for k, v in got.items() if k.cells[0][1] == addr for x in v]
+
+
+def test_reverse_postorder_puts_an_arm_before_the_join_it_falls_into():
+    p = pipeline.present(tuneprog(SEGSTEP, calls=8, s4=True)[1])[0].procs["tick"]
+    order, back = graph.rpo(p), graph.latches(p)
+    assert sorted(order) == sorted(p.blocks) and order[0] == p.entry
+    for lbl, b in p.blocks.items():
+        for nxt in succs(b.term):
+            assert order.index(lbl) < order.index(nxt) or lbl in back
+
+
+JOINCARRY = asm(
+    PLAY,
+    "init: LDA #$00",
+    "STA sel",
+    "STA acc",
+    "LDA #$70",
+    "STA hic",
+    "LDA #$10",
+    "STA loc",
+    "RTS",
+    "play: LDA sel",
+    "BEQ lo",
+    "LDA hic",
+    "CMP #$40",
+    "JMP j",
+    "lo: LDA loc",
+    "CMP #$40",
+    "j: LDA acc",
+    "ADC #$10",
+    "STA acc",
+    "STA $D400",
+    "INC sel",
+    "LDA sel",
+    "AND #$01",
+    "STA sel",
+    "RTS",
+    "sel: BRK",
+    "acc: BRK",
+    "hic: BRK",
+    "loc: BRK",
+)
+
+PINNED = asm(
+    PLAY,
+    "init: LDA #$00",
+    "STA acc",
+    "RTS",
+    "play: LDA acc",
+    "ADC #$10",  # no CLC: the bit is whatever the caller entered with
+    "STA acc",
+    "STA $D400",
+    "RTS",
+    "acc: BRK",
+)
+
+
+def test_a_carry_another_block_of_the_tick_defines_is_carry_of_a_site():
+    doc = clean(t1(JOINCARRY))
+    a = one(doc, **{"target.register": "freq_lo"})
+    assert a["delta"]["kind"] == "const" and a["delta"]["value"] == 0x10
+    assert a["delta"]["carry"]["site"] and a["delta"]["carry"]["flag"]
+    assert a["verify"]["divergences"] == 0
+
+
+def test_a_carry_the_tick_is_given_is_an_external_input_and_refuses():
+    doc = t1(PINNED)
+    assert doc["accs"] == []
+    assert [(r["why"], r["clause"]) for r in doc["refusals"]] == [("unclassified update", "delta")]
+
+
 # ---- the exemplars (marked ``hvsc``; short horizons) ---------------------------
 _T1 = {}
 
@@ -512,6 +644,24 @@ def test_the_voice_stride_of_a_value_cell_is_the_scope_the_record_carries():
 @pytest.mark.hvsc
 def test_hubbard_s_effects_are_named_or_refused_by_the_cell_they_move():
     doc = exemplar(COMMANDO)
-    assert doc["refusals"] and not doc["accs"]  # fail-closed on the non-tracker exemplar
-    for r in doc["refusals"]:
+    vib = one(doc, **{"delta.kind": "repeat"})
+    assert vib["delta"]["step"]["kind"] == "tablestep" and vib["delta"]["n"]["name"]
+    assert vib["target"]["register"] == "freq" and vib["policy"] == "wrap"
+    run = one(doc, **{"delta.kind": "tabcell"})
+    assert run["policy"] == "wrap" and run["scope"] == "instrument"
+    assert run["delta"]["carry"]["site"] and run["delta"]["carry"]["flag"]
+    for a in doc["accs"]:
+        assert a["verify"]["divergences"] == 0 and a["verify"]["escapes"] == 0
+    for r in doc["refusals"]:  # fail-closed on what one column a tick cannot take apart
         assert r["why"] == accum.WHY and r["cell"] and r["site"]
+
+
+@pytest.mark.hvsc
+def test_jch_s_pulse_and_filter_are_reload_streams_of_segments():
+    doc = exemplar(GULDKORN)
+    assert doc["refusals"] == []
+    got = [a for a in doc["accs"] if a["policy"] == "reload"]
+    assert len(got) == 3 and {a["target"]["register"] for a in got} == {"pw", "cutoff_hi"}
+    for a in got:
+        assert a["delta"]["kind"] == "tabcell" and a["delta"]["index"]["role"] == "cursor"
+        assert a["rate"]["kind"] == "countdown" and a["verify"]["divergences"] == 0
