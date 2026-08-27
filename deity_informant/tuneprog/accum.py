@@ -17,8 +17,8 @@ from .accrule import counters_of, phase_of, policy_of, rate_of, scope_of
 from .accshape import Ctx, arms, complemented, key_of, lowbits, selfread
 from .accshape import maskof, rank, sites, step, terms
 from .facts import Facts
-from .loops import repeats
 from .ir import Bin, Const, Load, R16, Store, Var, W16
+from .loops import repeats
 from .irwalk import walk
 
 WHY = "unclassified update"
