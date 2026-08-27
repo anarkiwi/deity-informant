@@ -151,7 +151,7 @@ class Verifier:
         if self.nmi:
             self.M.alt = list(ref.nmi_inputs)
         self.exe = Interp(prog, self.M) if backend == "interp" else PyProgram(prog, self.M, src=src)
-        self.tick = prog.procs[prog.meta["tick_proc"]]
+        self.tickproc = prog.procs[prog.meta["tick_proc"]]
         self.init = prog.procs[prog.meta["init_proc"]]
         self.call = -1
         self.hashes = {}
@@ -313,7 +313,7 @@ class Verifier:
         t0 = time.process_time()
         while self.call < end and self.div is None:
             for _ in range(min(chunk, end - self.call)):
-                if not self._one():
+                if not self.tick():
                     break
             self.seconds += time.process_time() - t0
             t0 = time.process_time()
@@ -321,7 +321,8 @@ class Verifier:
                 break
         return self.call >= end or self.div is not None
 
-    def _one(self):
+    def tick(self):
+        """Run, compare and hash one tick; falsy on a divergence, which ``div`` states."""
         M, c = self.M, self.call
         for j, v in self.ref.regs.get(c, ()):
             self.nreg += 1
@@ -336,7 +337,7 @@ class Verifier:
             if self.nmi:
                 self.queue = list(self.ref.nmis(c))
                 M.stores, M.hook = 0, self._preempt
-            self._call_proc(self.tick)
+            self._call_proc(self.tickproc)
             if self.nmi:
                 self._drain()
         except TrapError as e:
@@ -363,6 +364,8 @@ class Verifier:
                 self.first_repeat = c
         self.call = c + 1
         return True
+
+    _one = tick
 
     # ---- certificate --------------------------------------------------------
     def subtune(self):
