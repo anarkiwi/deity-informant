@@ -199,7 +199,8 @@ traversals every stage shares.
                                         |
                                         v
                                    tuneprog.md, tuneprog.S5.json, tuneprog.S6.json,
-                                   tuneprog.T0.json
+                                   tuneprog.T0.json   (then T1: tuneprog.T1.json,
+                                   a library and a tool, not a pipeline stage)
 ```
 
 ### 3.2 One instruction, from bytes to a site record
@@ -663,6 +664,32 @@ voice` is Follin's raw cross-voice register list and JCH's non-constant clear
 (36 sites), `smc target` is Baumrucker's and Follin's patched store operands
 (4 sites).
 
+### 6.0.1 The accumulator plane (T1)
+
+`accum.document(view, names, t0_doc, history, certificate)` writes
+`tuneprog.T1.json` — `{plane, horizon, accs, refusals}` — beside T0, from a
+library and `tools/tuneprog_accum.py`, never from the pipeline: no artefact of
+the tuneprog moves. Candidates are the cells a store updates from themselves
+whose region a T0 record reads; a cell whose every step is ±1 is a counter (the
+divider `rate` names) and a cell whose own recurrence halves a table difference
+is a `tablestep` delta, so neither is an accumulator of its own.
+
+The guards a record carries are the *control dependences* of the store,
+transitively closed — not its dominators, which a join carries either way — with
+the callers' arguments substituted where a value's free names are its
+procedure's parameters (`accshape.arms`): GoatTracker 2's vibrato phase is
+stored in `p_109E` from a value four arms of `p_1082` supply. Two verifiers run
+over `history.py`: the interval the record claims, and the replay — every move
+the value made must be one the plane's own clauses make. What neither accepts is
+an `unclassified update` refusal naming the cell, the site and the clause.
+
+The epochs are stated, not guessed. A cell is read before it is written, so
+inside its own update an accumulator reads last tick's value; a countdown's own
+borrow is last tick's value minus one where the tick ran it; and a guard beside a
+store reads what the blocks after that branch had not yet changed. Where the
+value a producer sets is a table read no name indexes, T1 records *when* the
+producer ran and leaves the value to §4 — an absolute `set` is not a recurrence.
+
 ### 6.1 The print
 
 `printer.render(view, structured, names, cert, pcs=True)` emits `tuneprog.md`:
@@ -1109,6 +1136,11 @@ record — is [tuneprog-backlog.md](tuneprog-backlog.md) §3; the open work by l
 | `unroll` | 414 | S6: consecutive isomorphic siblings print once over an index |
 | `live` | 249 | S6/S7: what a reader must see — live values, arguments, return registers |
 | `provenance` | 315 | S6: T0 — one record per SID write site, `tuneprog.T0.json` |
+| `accshape` | 473 | T1: guards by control dependence, call arms, the additive spine, the shift loop |
+| `accdelta` | 133 | T1: section 5's delta grammar and how a cell spells in a record |
+| `accrule` | 278 | T1: counters, bound, policy, rate, phase and scope of one recurrence |
+| `acchist` | 367 | T1: a named-cell expression over the horizon; the interval and the replay |
+| `accum` | 418 | T1: the accumulator plane, `tuneprog.T1.json` (library and tool, not a stage) |
 
 **Text — S7**
 

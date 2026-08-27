@@ -95,7 +95,7 @@ the certificate gains `dropped` (§2).
 | ~~W2~~ | `history.py` | `history(prog, trace, names_doc, calls) -> {name: ndarray(ticks)}` over `Verifier` (`run_init`, then `_one` per tick, promoted to `tick()`), `np.frombuffer(M.m)[idx]`, u16 widening from S6 `u16`; sparse-stride regions sampled by `Region.addrs`; library + `tools/`, **not** a pipeline artefact | history, verify | small (1 d) | hermetic: `counter("INC cnt")` history `[1..8]`, PERIODIC snippet periodic at the cert period, a u16 pair widens; all 51 recert dirs replay with 0 divergences |
 | ~~W3~~ | S6 exports T2 needs | serialise `facts.index`, `cellindex`, `idxvar` and the base-pointer relation; name record-split fields `cursor` where `cellindex` says so (`views._named_fields`); `Names.from_dict` | facts, recover, views | small (1.5 d) | the score cursors of GT2/JCH/SW/Commando named `cursor` in S6; recert prints listed line by line where they move |
 | ~~W4~~ | T0 provenance | `provenance.py`: roots = `io` stores in `$D400..$D418` **and** stores into `names.image` regions (rekeyed by the flush delta); `(register, voices)` from the store's `lo/hi` envelope (more robust than `cellref.voiced`); backward substitution via `irwalk.single_defs`/`expand` stopping at a named role; leaves named through `cellref.Cells`; `ir.enc` for the expr (add `R16`/`W16` to `_NODES`); `tuneprog.T0.json` per write site with `direct`, `self_update`, `refusal`. Region ids are the presentation view's — carry `(base, size)` | provenance, ir, pipeline | medium (3 d) | every io/image write site of the 42 recert dirs is a named expr or a stated refusal; the record's `print` re-renders to the `tuneprog.md` line |
-| W5 | T1 `accum.py` | candidates from `facts.cellupd` reaching an io store (W4); `Delta`/`Dir` parser (`idioms.bit`, new `sext11`); a diamond over `Store`/`Call` arms (new — not `gated.diamonds`); the variable-shift loop `x >> cell` recogniser `loops.py` lacks (`tablestep`, GT2 `p_12E5`, Commando `$51E4`); guard walk over dominators → policy; bound from guard (`proved`), projection (`projected`), or history under a period witness (`observed`); two verifiers — interval assertion and **recurrence replay** against W2's history, divergence ⇒ `unclassified update` | accum, idioms, loops | medium–large (5.5–7 d) | hermetic snippet per policy (`wrap reflect-complement reflect-dircell clamp halt reload rate tablestep split`), refusals named with the cell; exemplar regression: GT2 vibrato+porta, Commando bounce+run+porta, JCH pw/cutoff, SW cutoff classified as W0 states |
+| ~~W5~~ | T1 `accum.py` | candidates from `facts.cellupd` reaching an io store (W4); `Delta`/`Dir` parser (`idioms.bit`, new `sext11`); a diamond over `Store`/`Call` arms (new — not `gated.diamonds`); the variable-shift loop `x >> cell` recogniser `loops.py` lacks (`tablestep`, GT2 `p_12E5`, Commando `$51E4`); guard walk over dominators → policy; bound from guard (`proved`), projection (`projected`), or history under a period witness (`observed`); two verifiers — interval assertion and **recurrence replay** against W2's history, divergence ⇒ `unclassified update` | accum, idioms, loops | medium–large (5.5–7 d) | hermetic snippet per policy (`wrap reflect-complement reflect-dircell clamp halt reload rate tablestep split`), refusals named with the cell; exemplar regression: GT2 vibrato+porta, Commando bounce+run+porta, JCH pw/cutoff, SW cutoff classified as W0 states |
 | W6 | T2 `trackerprog/{cursors,streams,score,pitch,refuse}.py` | cursor × history: successor relation at a fixed base → step/jump edges, rows, loop row, terminator byte, holds; nest through `names.u16` bases (depth ≤ 2 else `score not cursor-shaped`); Follin call/ret/for from the dispatch arms + the depth-1 return slot; `pitch` from `names.freq` + per-accessor origin (Commando reads `FREQ` at two bases); materialise over the horizon. **Blocker**: SW's orderlist load is erased by the copy fold (`p_17C8` prints nothing, `T1C40/T1C4E/T1C5C` have no accessors) — either `copyview` keeps the load or SW refuses | trackerprog | large (8–10 d) | goldens on GT2 (33 pattern ptrs, 9×30 instruments, `T16F9`), JCH (26 ptrs, `rec8[19]`, 3 `$FF`s), Commando (`T576B`, `T5889`, `rec2`); the SW fold produces a named refusal until fixed; recert untouched |
 | W7 | universal player + T3 | `trackerprog/{player,emit,certify}.py`: §4 made exact per W0, rendered tick-for-tick; `certify` = W1's `TickObs` equality against `Verifier.obs` over the whole horizon; S4-style tagged JSON, `trackerprog.md`, the certificate with `refusals` and the loop claim | trackerprog | medium (3–4 d) | GT2 ×2, JCH ×2 0 divergences; every refusal names its cell; §6.2's six numbers + `xz -9e` against the source `tuneprog.md` |
 
@@ -169,6 +169,43 @@ naming its own cell. Recert 4/4 field-for-field; S5/S6/`tuneprog.md` regenerate
 byte-identical to `main`'s over the same four S4 programs, and the T0 render
 leaves the view untouched for the print that follows it.
 
+**W5 struck by #296**: `accum.document` writes **`tuneprog.T1.json`** —
+`{plane, horizon, accs, refusals}` — beside T0, from a library and
+`tools/tuneprog_accum.py`; no pipeline artefact moves and recert reproduces 4/4.
+Five modules, each under 500 lines: `accshape` (a store's guards as its
+transitively closed **control dependences**, not its dominators — the bug that
+made a join's block look guarded — plus the callers' arguments where a value's
+free names are its procedure's parameters, the additive spine, and the
+variable-shift loop `loops.repeats` refuses), `accdelta` (§5's grammar),
+`accrule` (counters, bound candidates, policy, rate, phase, scope), `acchist`
+(a named-cell expression over `history.py`, the interval assertion and the
+recurrence replay) and `accum` (candidates, the split join, the records).
+
+Two seeds were widened where their own limits hid an exemplar: `facts.cellupd`
+is block-local and capped at two operators, which hides SID Wizard's
+`cutoff_lo = ((t3 & 7) + cutoff_lo) & 7` and Hubbard's saved-register store, so
+T1 scans the sites itself over proc-wide definitions; and `pipeline.present` is
+**not deterministic** — the view's block order varies run to run — so every
+enumeration T1 makes is sorted by tick rank and pc, which makes its output
+stable (verified over four runs per tune).
+
+| tune | ticks | accs (policy / `bound.from`) | refusals | s |
+| --- | ---: | --- | --- | ---: |
+| `gt2-je-suis-linus` | 12,000 | 4: vibrato phase `reflect-complement`/`observed`; vibrato and portamento freq `reflect`/`observed`, `tablestep`, the first `phase acc(id)`; filter `wrap`/`observed` `tabcell` | 3 `delta`, 1 `replay` | 7.2 |
+| `jch-guldkorn-intro` | 4,000 | 2: slide and vibrato freq `wrap`/`projected`, `field`, scope voice | 3 `replay` | 2.2 |
+| `sw-emomyst` | 12,000 | 4: filter `split(3, 8)` ×2 `wrap`/`observed` `tabcell` signed 11; `sid.reg` `clamp`/`projected` and `wrap`/`observed` | 4 `delta`, 1 `replay` | 10.4 |
+| `commando-song1` | 11,780 | 0 | 3 `replay` | 3.9 |
+
+**10 accumulators, 0 replay divergences, 0 interval escapes, 15 refusals**, each
+naming its cell, its site and the §5 clause it failed. Hubbard refuses at its
+full horizon: the tick that both reloads a segment and steps it, and the arms
+whose carry a call return supplies, leave moves the plane cannot make, and
+fail-closed is the design. Hermetic tests cover `wrap`, `reflect-complement`,
+`reflect` on a direction cell, `clamp` with a `links` reset, `halt`, `reload`
+with a `$FF` sentinel and a countdown `rate`, `tablestep`, the 16-bit carry join
+and the `unclassified update` refusal; the `hvsc` set runs T1 over
+`pipeline.main` tmpdirs for all four families.
+
 Total ≈ 24–30 agent-days. W1–W3 are independent of W0 and of each other;
 W4 depends on W3; W5 on W0, W2, W4; W6 on W0, W2, W3; W7 on all.
 
@@ -177,8 +214,8 @@ W4 depends on W3; W5 on W0, W2, W4; W6 on W0, W2, W3; W7 on all.
 1. **W1 + W2 + W3** in parallel — small, recert-neutral, each its own PR.
 2. **W0** — the doc revision, reviewed against §2/§3 above; it fixes the
    `Acc` and `Cmd` shapes W5/W6 build to.
-3. ~~**W4**~~, then **W5** and **W6** in parallel (W5 on GT2/Commando first,
-   W6 on GT2/JCH/Commando; SW gated on the fold fix).
+3. ~~**W4**~~, then ~~**W5**~~, and **W6** (W6 on GT2/JCH/Commando; SW gated on
+   the fold fix).
 4. **W7** on GT2 ×2, JCH ×2; then SW ×2 after the fold, Commando ×2 after
    W0 settles I1/I11, Follin after I6.
 

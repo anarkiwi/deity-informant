@@ -396,6 +396,42 @@ each with two certified families or a marked single-family exception:
 | arpeggio / chord | target note, a `pitch` stream, or an absolute producer where the phase is stateless | Hubbard octave arp: `f = FREQ[note + ($C if counter & 1 else 0)]` — an **absolute `set` producer** (§4), `phase fn(global_counter)` (commando-floor:249-251). GT2 wavetable note column (gt2.md:564-569); SW chords |
 | tremolo, LFOs | target **gate-mask**, `policy reflect` (triangle) or `halt` (one-shot), or a stream | Walker's gate-toggle tremolo and its four identical modulators per voice (anatomy:212) move the ctrl gate bit, not a volume. `$D418` is one global register, so `target vol, scope voice` does not exist and is removed; per-pattern volume is `set_vol` (§3.6), global, last-writer. Prose-only family, so both are projections |
 
+**What T1 recognises, and what the exemplars changed (#296).** Every rule below
+cites two certified families, as §1 requires; the four rows the classifier could
+not read as written are stated as changes to this section, not bent into it.
+
+| rule | how T1 reads it | two families |
+| --- | --- | --- |
+| a recurrence is not one statement | the guards are the store's transitively closed **control dependences** with the callers' arguments substituted; neither `gated.diamonds` nor a dominator walk sees either | GT2 `p_109E` from four arms of `p_1082`; SID Wizard `p_1611` from the two arms of `p_15D1` |
+| a counter is not an accumulator | every step ±1 ⇒ the divider `rate` names, not an `Acc` | GT2 `voice[].timer_3`, JCH `voice[].timer_4` |
+| `tablestep` | the delta cell's own recurrence halves a table difference in a loop; `loops.repeats` refuses both spellings, so the count is read off the decrement | GT2 `p_12E5` (`BNE`, an equality exit), Hubbard `$51E4` (a second recurrence), JCH `acc_5` (a `for`) |
+| `repeat(Δ, n)` | the step's own block is a counted loop whose bound is a cell | Hubbard `$520B`; the hermetic `for` snippet |
+| `split(lo, hi)` | a masked low half plus the high half its carry-out feeds | SID Wizard cutoff `(3, 8)`, Hubbard pw `(8, 4)` |
+| `reload` | an action guarded by an equality against a `$FF` sentinel | JCH `rec6[].b1893`, SID Wizard `saved4 < $FE` |
+| `clamp` | an action whose value reads a table a guard on the update path compares the target against | GT2 `p_1327` against `FREQ_LO[freq_lo_idx]`; JCH's slide against its own target |
+| `links` | the constants the clamp action's own block stores into another `Acc`'s cell | GT2 `p_1327` zeroing `b14A0`; the hermetic clamp snippet |
+| `scope` | the copies the value cell's stride makes: 3 is a voice, more is a record a cursor selects, one is the tune's | GT2 `voice[]`/`ghost[]`, Hubbard `rec2[]` |
+
+Four rows this section stated differently, corrected here rather than in the
+classifier:
+
+1. **The vibrato phase cell is not bounded by `speedcmp`.** The row above reads
+   `bound [0, speedcmp] proved`; `b14A0 < b1096` selects an arm, and the
+   complement arm puts the cell in the *upper* half of the byte, so over 12,000
+   certified ticks the cell leaves `[0, speedcmp]`. `[0, speedcmp]` is the
+   triangle's amplitude, not the cell's range. T1 offers the guard's interval
+   first and takes the first one the horizon keeps, which here is `observed` at
+   the byte's width — the record says which, and never widens silently.
+2. **`split(k, 8)` is `split(lo, hi)`.** One rule, two families: SID Wizard's
+   cutoff is `(3, 8)` and Hubbard's pw `(8, 4)`. The `8` was the cutoff case.
+3. **`tabcell(T[c], signed = k)`'s `k` is the width the byte is signed *into*.**
+   SID Wizard's filter step is an 8-bit table byte extended into the 11-bit
+   split, which is what "signed 11" says and what T1 records.
+4. **A guard on a masked projection of the target gives `projected`, not
+   `proved`.** Hubbard's bounce tests `(pw_hi ± borrow) & $F`, which bounds the
+   projection the chip sees, not the cell; SID Wizard's `cutoff_lo & 7` is the
+   same shape. `proved` is for a guard on the value itself.
+
 Two first-draft rows are struck. **Skydive** is dead in the only family that has
 it — `if ins.fx & 2 and (row & $1F) >= 3: trap 'untaken'` (commando-floor:247) —
 so there is no observation to fit. **Piecewise envelopes** are not a row: they
@@ -442,8 +478,8 @@ wrong on both the distance and the kind.
 ## 7. What landed, and what remains
 
 Nothing in the front end changed: the IR, the tracer and S8 are untouched and
-the trackerprog consumes certified artefacts. Four of the five enabling packages
-have merged.
+the trackerprog consumes certified artefacts. The five enabling packages and T1
+itself have merged.
 
 | item | what landed | modules / artefacts |
 | --- | --- | --- |
@@ -451,6 +487,7 @@ have merged.
 | cell histories without touching S1 (**#292**) | `history.cells`, `history.history`, `history.widen_u16`, `History`, over the verifier's own ticks (`Verifier._one` promoted to `tick()`), `np.frombuffer(M.m)` at a fixed index, sparse strides off `Region.addrs`; `tools/tuneprog_history.py` writes `tuneprog.history.npz`. A library and a tool, not a pipeline artefact | `history`, `verify` |
 | the S6 exports T2 needs (**#293**) | `facts.idxbase`/`cellsrc`/`leaf_reads` and one cell key put record fields into `cellindex`; `facts.cursor_cells` is one cursor rule for scalars, fold slots and split fields alike; `recover.index_relation` serialises the relation as `tuneprog.S6.json`'s **`index`** block; `Names.from_dict` reads the whole document back. Score cursors now carry the role — GT2 `rec[x/7].cursor`/`.cursor_2`/`.cursor_3`, JCH `voice_3[v].cursor`, SW `rec` `+0`…`+6` | `facts`, `recover`, `views` |
 | per-register provenance, T0 (**#294**) | `provenance.py` writes **`tuneprog.T0.json`** beside S6: `{plane, voice_map, image, writes}`, one record per SID write site. Roots are `io` stores whose envelope lies in `$D400..$D418` plus stores into a `sid_image` region rekeyed by the flush delta; `provenance.regvoices` reads the register off the site's base and the voices off its envelope; `expr` substitutes names stopping at every cell S6 names, serialised with `ir.enc` (`R16`/`W16` added to `_NODES`, `W16` gaining `env`); each record's `print` is the `tuneprog.md` line itself | `provenance`, `ir`, `pipeline` |
+| T1, the accumulator plane (**#296**) | `accum.document` writes **`tuneprog.T1.json`** — `{plane, horizon, accs, refusals}` — from a library and `tools/tuneprog_accum.py`, no pipeline artefact moved. `accshape` reads a store's guards as its transitively closed **control dependences** (not its dominators, which a join carries either way) and joins the callers' arguments where a value's free names are its procedure's parameters; `accdelta` is §5's grammar; `accrule` the counter, bound, policy, rate, phase and scope rules; `acchist` evaluates a named-cell expression over `history.py` and runs both verifiers | `accum`, `accshape`, `accdelta`, `accrule`, `acchist` |
 
 Measured over the 51 recert programs: **849 write sites, 849 prints re-rendering
 to their own line, 0 sites both unnamed and unrefused**; the 40 refusals are 36
@@ -459,15 +496,29 @@ and 4 `smc target`. Replay cost from #292, ticks / cells / seconds:
 `gt2-je-suis-linus` 12,000 / 120 / 5.4, `jch-guldkorn-intro` 4,000 / 146 / 1.6,
 `sw-emomyst` 12,000 / 129 / 8.0, `commando-song1` 11,780 / 206 / 3.4.
 
-**What remains before T1** is `accum.py` (backlog §4, W5): the `(delta, bound,
-policy, phase)` classifier of §5 over `facts.cellupd` candidates reaching a T0
-write site; a `Delta`/`Dir` parser; a diamond over `Store`/`Call` arms; the
-variable-shift loop recogniser `loops.py` lacks (GT2 `p_12E5`, gt2.md:665-680);
-a guard walk over dominators for `policy`; and two verifiers, an interval
-assertion and a recurrence replay against `history.py`, divergence ⇒
-`unclassified update`. Everything after it is the new `trackerprog/` package
-beside `tuneprog/`, under the same rules (≤ 500 lines per module, hermetic
-tests, the certificate).
+Measured over the four exemplars at their certified horizons — GoatTracker 2
+12,000 ticks, JCH 4,000, SID Wizard 12,000, Hubbard 11,780 — **10 accumulators,
+0 replay divergences, 0 interval escapes, 15 stated refusals**, 24 s of CPU:
+
+| tune | accs (policy / `bound.from`) | refusals |
+| --- | --- | --- |
+| `gt2-je-suis-linus` | vibrato phase `reflect-complement`/`observed`, vibrato freq and portamento freq `reflect`/`observed` (`tablestep`, `phase acc(id)` on the first), filter `wrap`/`observed` (`tabcell`) | 3 `delta` (the wavetable gate cell), 1 `replay` (`ghost.pw_lo`) |
+| `jch-guldkorn-intro` | slide and vibrato freq `wrap`/`projected` (`field`, scope voice) | 3 `replay` (`voice[].pw`, `cutoff_hi`) |
+| `sw-emomyst` | filter `split(3, 8)` ×2 `wrap`/`observed` (`tabcell` signed 11), `sid.reg` `clamp`/`projected` and `wrap`/`observed` | 4 `delta`, 1 `replay` |
+| `commando-song1` | none | 3 `replay` (`acc_2`, `voice[].acc`, `rec2[].b5591`) |
+
+**What T1 does not claim.** An `Acc` states what a producer does, not when the
+tick runs it — that is §4's `commit` order — so the replay accepts a tick the
+value did not move on and refuses every move the plane's own clauses cannot
+make. Where the value a producer *sets* is a table read no name indexes, the
+record states when the producer ran and leaves the value to §4's absolute `set`.
+Hubbard's four effects all replay their moves but not all of them: the tick that
+both reloads a segment and steps it, and the arms whose flags a call return
+supplies, leave moves the plane cannot make, so all three cells refuse rather
+than widen.
+
+Everything after this is the new `trackerprog/` package beside `tuneprog/`,
+under the same rules (≤ 500 lines per module, hermetic tests, the certificate).
 
 ## 8. Refusals and boundaries
 

@@ -1,0 +1,418 @@
+"""S6 -- T1: the bounded accumulators a certified tune moves its registers with.
+
+A state cell that updates from itself and reaches a SID write site (T0) is one
+``Acc`` of the prototype's section 5 schema, checked twice against :mod:`.history`
+-- the interval it claims and its recurrence replayed. What neither the grammar
+nor the replay accepts is a stated refusal, never an approximation.
+"""
+
+from __future__ import annotations
+
+from collections import namedtuple
+
+from .acchist import Cells, verify
+from .accdelta import _cellref, cellname, delta_of, tablestep_sources
+from .accrule import _const, _dirstore, _groups, _merge, _splitpair, bound_of, candidates
+from .accrule import counters_of, phase_of, policy_of, rate_of, scope_of
+from .accshape import Ctx, arms, complemented, key_of, lowbits, selfread
+from .accshape import maskof, rank, sites, step, terms
+from .facts import Facts
+from .ir import Bin, Const, Load, R16, Store, Var, W16
+from .loops import repeats
+from .irwalk import walk
+
+WHY = "unclassified update"
+CLAUSES = ("delta", "phase", "bound", "rate", "replay")
+POLICIES = ("wrap", "reflect", "reflect-complement", "clamp", "halt", "reload")
+Clause = namedtuple("Clause", "kind guards sign delta carry comp value mask site rank proc block")
+
+
+# ---- one store, read as a clause ----------------------------------------------
+def clauses(ctx, tgt, ss, extra=()):
+    """Every arm of every store into ``tgt`` as a step or an action."""
+    base = selfread(tgt)
+
+    def isself(e):
+        return base(e) or complemented(e, base)
+
+    out = []
+    for s in list(ss) + list(extra):
+        raw = s.stmt.e if type(s.stmt) is W16 else s.stmt.v
+        skip = frozenset(x.n for x in walk(s.stmt.a) if type(x) is Var)
+        for arm in arms(ctx, s.proc, s.block, raw, skip):
+            v, mask = maskof(arm.value)
+            got = step(v, isself)
+            comp = any(complemented(x, base) for _g, x in terms(v))
+            kind = "step" if got else ("action" if not _reads(arm.value, base) else "opaque")
+            sign, delta, carry, borrow = got or (0, None, None, False)
+            if borrow and carry is not None:
+                carry = Bin("-", carry, Const(1, 1), 1)
+            out.append(
+                Clause(
+                    kind,
+                    arm.guards,
+                    sign,
+                    delta,
+                    carry,
+                    comp,
+                    arm.value,
+                    mask,
+                    s,
+                    s.idx,
+                    *arm[2:],
+                )
+            )
+    return sorted(out, key=lambda c: (c.rank, c.site.stmt.src, c.proc, c.block, repr(c.value)))
+
+
+def _reads(e, base):
+    """True when a value reads the accumulator's own cell anywhere."""
+    return any(base(x) for x in walk(e))
+
+
+def registers(t0_doc):
+    """``{region: (register, voices)}``: the SID register every named cell reaches."""
+    out = {}
+    for w in t0_doc.get("writes") or ():
+        if not w.get("register"):
+            continue
+        for c in w["cells"]:
+            hit = out.get(c["region"])
+            if hit is None or (w["self_update"] and not hit[2]):
+                out[c["region"]] = (w["register"], list(w["voices"]), w["self_update"])
+    return out
+
+
+WIDTH = {"freq": 16, "pw": 12, "cutoff": 11}
+
+
+def _repeat(ctx, cells, c, delta):
+    """``repeat(delta, n)`` where a counted loop applies the same step ``n`` times.
+
+    Hubbard's triangle is the closed form every other family accumulates: the same
+    step added ``phase`` times inside one loop (``$520B``).
+    """
+    if delta is None:
+        return None
+    for header, (body, latches) in ctx.loops(c.site.proc).items():
+        if c.site.block not in body:
+            continue
+        got = repeats(ctx.prog.procs[c.site.proc], header, body, latches)
+        ref = None if got is None else _cellref(ctx, cells, got[1])
+        if ref is not None:
+            return {"kind": "repeat", "step": delta, "n": ref}
+    return delta
+
+
+def _read(tgt, s):
+    """The expression that reads the accumulator's own value at its own address."""
+    if tgt.kind == "pair":
+        return R16(tgt.cells[0], tgt.cells[1], s.a)
+    return Load("ram", s.a, 1, s.lo, s.hi, tgt.cells[0][0])
+
+
+def _addr(s):
+    """A store's address expression and the envelope it stayed inside."""
+    if type(s) is W16:
+        return s.a, (s.env or (s.lo[1], s.lo[1]))
+    return s.a, (s.lo, s.hi)
+
+
+def _copies(cells, steps):
+    """``(index names, stride, copies)`` of the cell one store family writes."""
+    names, lo, hi = set(), None, None
+    for c in steps:
+        a, (l, h) = _addr(c.site.stmt)
+        names |= {x.n for x in walk(a) if type(x) is Var}
+        lo, hi = (l if lo is None else min(lo, l)), (h if hi is None else max(hi, h))
+    if not names or lo is None:
+        return [], 0, 1
+    scale = max(cells.scale.get(n, 1) for n in names)
+    return sorted(names), scale, max(1, -(-(hi - lo + 1) // scale))
+
+
+def _one(ctx, cells, tgt, steps, cs, env):
+    """One provisional Acc: everything but the identifiers other Accs are known by."""
+    rid = tgt.cells[0][0]
+    actions = [c for c in cs if c.kind == "action"]
+    event = next((c.guards for c in steps if c.comp), ()) or next((c.guards for c in actions), ())
+    mask = next((c.mask for c in steps if c.mask is not None), None)
+    reg = env["regs"].get(rid) or (None, [], False)
+    index, scale, copies = _copies(cells, steps)
+    width = 16 if tgt.kind == "pair" else (lowbits(mask) or 8)
+    delta = _repeat(ctx, cells, steps[0], delta_of(ctx, cells, steps[0].delta, env["sources"]))
+    phase = phase_of(ctx, cells, tgt, steps, env["byacc"], env["counters"])
+    read = _read(tgt, steps[0].site.stmt)
+    tcol = cells.value(read, {n: 0 for n in index})
+    hold = steps[0].guards if len(steps) == 1 else ()
+    bounds = bound_of(
+        ctx, cells, tgt, width, event, hold, mask, None, tcol, env["complete"], env["period"]
+    )
+    policy, value = policy_of(
+        steps, actions, phase, bounds[0], _dirstore(ctx, cells, phase, env["all"])
+    )
+    return {
+        "target": {"register": reg[0], "voices": reg[1], "kind": "register", "split": None},
+        "cell": {
+            "region": rid,
+            "name": cellname(ctx, cells, rid),
+            "addr": "$%04X" % tgt.cells[0][1],
+            "copies": copies,
+            "role": ctx.names.role.get(rid, ""),
+        },
+        "width": WIDTH.get(reg[0], width) if tgt.kind == "pair" else width,
+        "delta": delta,
+        "bound": bounds[0],
+        "bounds": bounds,
+        "policy": policy,
+        "policy_value": value,
+        "rate": rate_of(ctx, cells, steps, actions, env["counters"]),
+        "phase": phase,
+        "links": [],
+        "scope": scope_of(cells, rid, copies),
+        "sites": sorted({"$%04X" % c.site.stmt.src for c in steps}),
+        "index": index,
+        "scale": scale,
+        "read": read,
+        "regions": sorted({r for r, _a in tgt.cells}),
+        "complete": env["complete"],
+        "period": env["period"],
+        "target_cells": tgt,
+        "steps": steps,
+        "actions": actions,
+        "clauses": [c for c in cs if c.kind != "opaque"],
+        "mask": mask,
+    }
+
+
+def _sext(e):
+    """``e`` as a signed byte: the ``$100`` bit 7 takes off, :func:`~.idioms.sext_of`."""
+    return Bin("-", e, Bin("<<", Bin("&", e, Const(0x80, 1), 1), Const(1, 1), 2), 2)
+
+
+def _join(lo, hi):
+    """Fold a carry-joined high half into the low one: one value across two registers."""
+    got = _splitpair(lo, hi)
+    if got is None:
+        return False
+    k, kh, byte = got
+    steps = hi["steps"] if byte is not None else lo["steps"]
+    if byte is None and any(_const(c.delta) != 0 for c in hi["steps"]):
+        return False
+    lo["target"] = dict(
+        lo["target"], kind="split", split=[k, kh], register=hi["target"]["register"]
+    )
+    lo["width"] = k + kh
+    lo["hi"] = dict(hi["cell"])
+    lo["regions"] = sorted(set(lo["regions"]) | set(hi["regions"]))
+    lo["read"] = Bin("|", lo["read"], Bin("<<", hi["read"], Const(k, 1), 2), 2)
+    lo["steps"] = steps
+    lo["actions"] = hi["actions"] if byte is not None else lo["actions"]
+    lo["clauses"] = hi["clauses"] if byte is not None else lo["clauses"]
+    lo["shift"] = k if byte is not None else 0
+    lo["delta"] = (
+        dict(delta_of(hi["ctx"], hi["cells"], byte, hi["sources"]), signed=k + kh)
+        if byte is not None
+        else lo["delta"]
+    )
+    lo["joined"] = byte
+    lo["sites"] = sorted(set(lo["sites"]) | set(hi["sites"]))
+    lo["bounds"] = _rebound(lo)
+    return True
+
+
+def _rebound(a):
+    """A joined target's intervals: a guard on it still holds, its halves' masks do not."""
+    cells, ok, wide = a["cells"], a["complete"], (1 << a["width"]) - 1
+    col = cells.value(a["read"], {n: 0 for n in a["index"]})
+    out = [b for b in a["bounds"] if b["from"] == "proved"]
+    if ok and col is not None and col.size:
+        out.append(
+            {
+                "interval": [int(col.min()), int(col.max())],
+                "from": "observed",
+                "witness": "period %s" % a["period"],
+            }
+        )
+    return out + [{"interval": [0, wide], "from": "projected", "witness": "width"}]
+
+
+def _pairs(accs):
+    """Every ``split(k, 8)`` join, the folded high halves dropped."""
+    gone = set()
+    for lo in accs:
+        for hi in accs:
+            if lo is hi or id(hi) in gone or lo["target"]["kind"] == "split":
+                continue
+            if _join(lo, hi):
+                gone.add(id(hi))
+    return [a for a in accs if id(a) not in gone]
+
+
+def _plan(acc):
+    """Every clause of the value cell, in the split's units where the target is one.
+
+    One Acc is one producer, and a cell has more than one: the plane's claim is that
+    the clauses of the cell together make every move it makes.
+    """
+    out, k, joined = [], acc.get("shift") or 0, acc.get("joined")
+    for c in acc["clauses"]:
+        if c.kind == "step":
+            d = _sext(joined) if joined is not None else c.delta
+            out.append(c._replace(delta=d, carry=None if k else c.carry))
+        else:
+            out.append(c._replace(value=Bin("<<", c.value, Const(k, 1), 2) if k else c.value))
+    return out
+
+
+def _identify(ctx, cells, accs):
+    """Give every Acc its id, then name the Accs its phase and its links reach."""
+    byacc = {}
+    for i, a in enumerate(accs):
+        a["id"] = "acc%d" % i
+        byacc[(a["cell"]["region"], int(a["cell"]["addr"][1:], 16))] = a["id"]
+    for a in accs:
+        for other in (byacc.get(k) for k in _linked(a)):
+            hit = next((x for x in accs if x["id"] == other), None)
+            if hit is not None and not hit["target"]["register"]:
+                hit["target"] = dict(a["target"], kind=hit["target"]["kind"])
+        ref = a["phase"].get("cell")
+        key = ref and (ref["region"], int(ref["addr"][1:], 16))
+        if key in byacc and byacc[key] != a["id"]:
+            a["phase"] = dict(a["phase"], kind="acc", acc=byacc[key])
+        a["links"] = sorted(
+            {byacc[k] for k in _resets(ctx, a["actions"]) if k in byacc and byacc[k] != a["id"]}
+        )
+        a["links"] = [{"reset": x} for x in a["links"]]
+    return byacc
+
+
+def _linked(a):
+    """The cells one Acc's phase and its actions' own block reach."""
+    ref = a["phase"].get("cell")
+    return [(ref["region"], int(ref["addr"][1:], 16))] if ref else []
+
+
+def _resets(ctx, actions):
+    """The cells an action's own block sets to a constant: what its event zeroes."""
+    out = set()
+    for c in actions:
+        for s in ctx.prog.procs[c.site.proc].blocks[c.site.block].stmts:
+            if type(s) is not Store or s.r < 0 or type(s.v) is not Const:
+                continue
+            k = key_of(s)
+            if k is not None:
+                out.add(k.cells[0])
+    return out
+
+
+def _refuse(ctx, cells, tgt, cs, clause):
+    """One stated refusal: the cell, the site and the clause of section 5 it failed."""
+    rid, addr = tgt.cells[0]
+    return {
+        "why": WHY,
+        "cell": cellname(ctx, cells, rid),
+        "region": rid,
+        "addr": "$%04X" % addr,
+        "site": sorted({"$%04X" % c.site.stmt.src for c in cs})[:4],
+        "clause": clause,
+    }
+
+
+def _reach(accs, regs):
+    """The Accs a SID write site reaches, and the Accs those reach through a phase."""
+    keep = {a["id"] for a in accs if a["cell"]["region"] in regs}
+    while True:
+        more = set(keep)
+        for a in accs:
+            if a["id"] not in keep:
+                continue
+            more |= {l["reset"] for l in a["links"]}
+            if a["phase"].get("kind") == "acc":
+                more.add(a["phase"]["acc"])
+        if more == keep:
+            return keep
+        keep = more
+
+
+def accumulators(prog, names, t0_doc, hist, facts=None, complete=False, period=None):
+    """``(accs, refusals)``: the section 5 records of one certified tune, both verified."""
+    facts = facts or Facts(prog)
+    ctx, cells = Ctx(prog, names), Cells(prog, names, hist, facts)
+    raw = {t: clauses(ctx, t, ss) for t, ss in sites(prog, facts, rank(prog)).items()}
+    src = tablestep_sources(ctx, cells, raw)
+    regs = registers(t0_doc)
+    cells.counters = counters_of(raw)
+    env = {
+        "regs": regs,
+        "sources": src,
+        "counters": cells.counters,
+        "byacc": {},
+        "all": raw,
+        "complete": complete,
+        "period": period,
+    }
+    accs, refusals = [], []
+    merged = _merge(raw)
+    cands = candidates(merged, src)
+    halves = {c for t in raw if t.kind == "pair" for c in t.cells}
+    stepped = {k[0][0] if isinstance(k[0], tuple) else k[0] for k in src}
+    for tgt, cs in sorted(merged.items(), key=lambda kv: kv[0].cells):
+        opaque = [c for c in cs if c.kind == "opaque"]
+        key = tgt.cells if tgt.kind == "pair" else tgt.cells[0]
+        if key in src or tgt.cells[0][0] in stepped or tgt.cells[0] in halves:
+            continue  # a delta producer and a pair's own half are not accumulators
+        if opaque and (tgt in cands or any(r in regs for r, _a in tgt.cells)):
+            refusals.append(_refuse(ctx, cells, tgt, opaque, "delta"))
+    for tgt, cs in sorted(cands.items(), key=lambda kv: kv[0].cells):
+        if any(c.kind == "opaque" for c in cs):
+            continue
+        for _k, steps in sorted(_groups([c for c in cs if c.kind == "step"]).items()):
+            a = _one(ctx, cells, tgt, steps, cs, env)
+            a.update(ctx=ctx, cells=cells, sources=src)
+            accs.append(a)
+    accs = _pairs(accs)
+    for a in [x for x in accs if x["delta"] is None]:
+        refusals.append(_refuse(ctx, cells, a["target_cells"], a["steps"], "delta"))
+    accs = [a for a in accs if a["delta"] not in (None, {"kind": "const", "value": 0})]
+    _identify(ctx, cells, accs)
+    keep = _reach(accs, regs)
+    out = []
+    for a in (x for x in accs if x["id"] in keep):
+        a["bound"], a["verify"] = verify(cells, a, _plan(a), a["bounds"])
+        rec = {k: v for k, v in a.items() if k in RECORD}
+        if a["verify"].get("why") or a["verify"]["divergences"] or a["verify"]["escapes"]:
+            refusals.append(
+                dict(
+                    _refuse(ctx, cells, a["target_cells"], a["steps"], "replay"),
+                    acc=a["id"],
+                    verify=a["verify"],
+                )
+            )
+            continue
+        out.append(rec)
+    return out, refusals
+
+
+RECORD = (
+    "id target cell width delta bound policy policy_value rate phase links scope"
+    " sites hi verify index scale regions"
+).split()
+
+
+def document(prog, names, t0_doc, hist, cert=None, facts=None):
+    """``tuneprog.T1.json``: the accumulator plane, its refusals and its horizon."""
+    sub = ((cert or {}).get("subtunes") or [{}])[0]
+    accs, refusals = accumulators(
+        prog, names, t0_doc, hist, facts, bool(sub.get("complete")), sub.get("period")
+    )
+    return {
+        "plane": "S6-view",
+        "horizon": {
+            "ticks": min((a.shape[0] for a in hist.values()), default=0),
+            "complete": bool(sub.get("complete")),
+            "period": sub.get("period"),
+        },
+        "accs": accs,
+        "refusals": refusals,
+    }
