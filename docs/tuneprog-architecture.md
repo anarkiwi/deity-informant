@@ -654,6 +654,15 @@ site that reads its own cell back — a recurrence, which is T1's to classify �
 constant base at all: a patched operand `lift` residualised into a load) or
 `unresolved base`.
 
+Evidence over the 51 certified programs: 849 write sites, every one of them a
+named register or a stated refusal, and every one's `print` a line of its own
+`tuneprog.md`. Two families per rule, as §11 requires — the rekeyed image is
+GoatTracker 2's ghost and JCH V20's `knob-at-night` (and Daglish's), the
+constant `file` write is JCH's and SID Wizard's register clear, `index not a
+voice` is Follin's raw cross-voice register list and JCH's non-constant clear
+(36 sites), `smc target` is Baumrucker's and Follin's patched store operands
+(4 sites).
+
 ### 6.1 The print
 
 `printer.render(view, structured, names, cert, pcs=True)` emits `tuneprog.md`:
