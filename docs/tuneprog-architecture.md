@@ -1136,11 +1136,11 @@ record — is [tuneprog-backlog.md](tuneprog-backlog.md) §3; the open work by l
 | `unroll` | 414 | S6: consecutive isomorphic siblings print once over an index |
 | `live` | 249 | S6/S7: what a reader must see — live values, arguments, return registers |
 | `provenance` | 315 | S6: T0 — one record per SID write site, `tuneprog.T0.json` |
-| `accshape` | 433 | T1: guards by control dependence, call arms, the additive spine, the shift loop |
+| `accshape` | 473 | T1: guards by control dependence, call arms, the additive spine, the shift loop |
 | `accdelta` | 133 | T1: section 5's delta grammar and how a cell spells in a record |
-| `accrule` | 274 | T1: counters, bound, policy, rate, phase and scope of one recurrence |
-| `acchist` | 243 | T1: a named-cell expression over the horizon; the interval and the replay |
-| `accum` | 231 | T1: the accumulator plane, `tuneprog.T1.json` (library and tool, not a stage) |
+| `accrule` | 278 | T1: counters, bound, policy, rate, phase and scope of one recurrence |
+| `acchist` | 367 | T1: a named-cell expression over the horizon; the interval and the replay |
+| `accum` | 416 | T1: the accumulator plane, `tuneprog.T1.json` (library and tool, not a stage) |
 
 **Text — S7**
 
