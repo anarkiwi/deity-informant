@@ -102,7 +102,7 @@ artefact moved and recert reproduces. Replayed with 0 divergences:
 4,000 / 146 / 1.6 s, `sw-emomyst` 12,000 / 129 / 8.0 s, `commando-song1`
 11,780 / 206 / 3.4 s.
 
-**W3 struck by #PR**: `facts.idxbase`/`cellsrc`/`leaf_reads` and one cell key
+**W3 struck by #293**: `facts.idxbase`/`cellsrc`/`leaf_reads` and one cell key
 (`Facts.cell`: the const base of an index address, dropped when the region does
 not contain it) put record fields into `cellindex`; `facts.cursor_cells` is the
 one cursor rule for scalars, fold slots and split fields alike, ahead of the
