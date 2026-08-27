@@ -1099,7 +1099,7 @@ record — is [tuneprog-backlog.md](tuneprog-backlog.md) §3; the open work by l
 | `ir` | 486 | the IR: node types, their JSON form, their algebra |
 | `interp` | 288 | the machine state and the reference interpreter (the semantics) |
 | `irwalk` | 349 | traversal of the IR: sub-expressions, values read, names, call order |
-| `graph` | 88 | the CFG of one procedure: predecessors, dominators, natural loops |
+| `graph` | 99 | the CFG of one procedure: predecessors, dominators, natural loops, reverse postorder |
 | `lower` | 266 | residualised P-Code → statements, the access typing, the machine's frames |
 | `build` | 484 | front end → IR: one `Proc` per CFG procedure, one block per node |
 | `wire` | 78 | the procedure interface: params, rets and call arguments, by liveness |
@@ -1136,11 +1136,12 @@ record — is [tuneprog-backlog.md](tuneprog-backlog.md) §3; the open work by l
 | `unroll` | 414 | S6: consecutive isomorphic siblings print once over an index |
 | `live` | 249 | S6/S7: what a reader must see — live values, arguments, return registers |
 | `provenance` | 315 | S6: T0 — one record per SID write site, `tuneprog.T0.json` |
-| `accshape` | 473 | T1: guards by control dependence, call arms, the additive spine, the shift loop |
+| `accguard` | 232 | T1: control dependence without the back edges, the copy loop's scratch, `opened` |
+| `accshape` | 411 | T1: the store's arms over its callers, the additive spine, the shift loop |
 | `accdelta` | 133 | T1: section 5's delta grammar and how a cell spells in a record |
-| `accrule` | 278 | T1: counters, bound, policy, rate, phase and scope of one recurrence |
-| `acchist` | 367 | T1: a named-cell expression over the horizon; the interval and the replay |
-| `accum` | 418 | T1: the accumulator plane, `tuneprog.T1.json` (library and tool, not a stage) |
+| `accrule` | 334 | T1: counters, bound, policy, rate, phase and scope of one recurrence |
+| `acchist` | 445 | T1: a named-cell expression over the horizon; the interval and the replay |
+| `accum` | 453 | T1: the accumulator plane, `tuneprog.T1.json` (library and tool, not a stage) |
 
 **Text — S7**
 

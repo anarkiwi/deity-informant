@@ -82,6 +82,17 @@ def natural_loops(g, idom, preds):
     return loops
 
 
+def rpo(proc, g=None):
+    """Blocks in reverse postorder: a block before every one only it reaches.
+
+    :meth:`~.ir.Proc.order` is a preorder, which puts a join ahead of the arm that
+    falls into it; the order a tick runs its statements in is this one.
+    """
+    order = list(nx.dfs_postorder_nodes(cfg(proc) if g is None else g, proc.entry))
+    order.reverse()
+    return order + [lbl for lbl in proc.blocks if lbl not in set(order)]
+
+
 def latches(proc):
     """The blocks that close a loop: their copies carry the induction variable."""
     c = cfg(proc)

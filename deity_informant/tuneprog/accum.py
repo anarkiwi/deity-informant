@@ -13,8 +13,8 @@ from collections import namedtuple
 from .acchist import Cells, verify
 from .accdelta import _cellref, cellname, delta_of, tablestep_sources
 from .accrule import _const, _dirstore, _groups, _merge, _splitpair, bound_of, candidates
-from .accrule import counters_of, phase_of, policy_of, rate_of, scope_of
-from .accshape import Ctx, arms, complemented, key_of, lowbits, selfread
+from .accrule import copies_of, counters_of, phase_of, policy_of, rate_of, scope_of
+from .accshape import Ctx, arms, complemented, external, key_of, lowbits, selfread
 from .accshape import maskof, rank, sites, step, terms
 from .facts import Facts
 from .ir import Bin, Const, Load, R16, Store, Var, W16
@@ -24,7 +24,8 @@ from .irwalk import walk
 WHY = "unclassified update"
 CLAUSES = ("delta", "phase", "bound", "rate", "replay")
 POLICIES = ("wrap", "reflect", "reflect-complement", "clamp", "halt", "reload")
-Clause = namedtuple("Clause", "kind guards sign delta carry comp value mask site rank proc block")
+FIELDS = "kind guards sign delta carry comp value mask addr site rank proc block shift times"
+Clause = namedtuple("Clause", FIELDS, defaults=(0, None))
 
 
 # ---- one store, read as a clause ----------------------------------------------
@@ -39,7 +40,7 @@ def clauses(ctx, tgt, ss, extra=()):
     for s in list(ss) + list(extra):
         raw = s.stmt.e if type(s.stmt) is W16 else s.stmt.v
         skip = frozenset(x.n for x in walk(s.stmt.a) if type(x) is Var)
-        for arm in arms(ctx, s.proc, s.block, raw, skip):
+        for arm in arms(ctx, s.proc, s.block, raw, s.stmt.a, skip):
             v, mask = maskof(arm.value)
             got = step(v, isself)
             comp = any(complemented(x, base) for _g, x in terms(v))
@@ -57,9 +58,10 @@ def clauses(ctx, tgt, ss, extra=()):
                     comp,
                     arm.value,
                     mask,
+                    arm.addr,
                     s,
                     s.idx,
-                    *arm[2:],
+                    *arm[3:],
                 )
             )
     return sorted(out, key=lambda c: (c.rank, c.site.stmt.src, c.proc, c.block, repr(c.value)))
@@ -100,35 +102,48 @@ def _repeat(ctx, cells, c, delta):
         got = repeats(ctx.prog.procs[c.site.proc], header, body, latches)
         ref = None if got is None else _cellref(ctx, cells, got[1])
         if ref is not None:
-            return {"kind": "repeat", "step": delta, "n": ref}
+            return {"kind": "repeat", "step": delta, "n": ref, "times": got[1]}
     return delta
 
 
-def _read(tgt, s):
+def _idx(c):
+    """The names one clause's own store addresses with: the copy it reaches."""
+    return {x.n for x in walk(c.addr) if type(x) is Var}
+
+
+def _withcarry(delta, steps):
+    """Section 5's ``delta + carry(site)``: a live bit another block of the tick made.
+
+    The carry a call returns is a flag in SSA, so the record names the site that
+    defines it, not a cell -- the one thing the tick's own dataflow can say.
+    """
+    got = [(c, _flag(c.carry)) for c in steps if _flag(c.carry) is not None]
+    if delta is None or not got:
+        return delta
+    if any(external(f) for _c, f in got):
+        return None  # the tick was given this bit; section 8 refuses an external input
+    c, flag = got[0]
+    return dict(delta, carry={"site": "$%04X" % c.site.stmt.src, "flag": flag.n})
+
+
+def _flag(e):
+    """The SSA flag a carry names, where the carry is one: ``C``, or its borrow.
+
+    A carry another block computes in place is part of the step's own arithmetic; a
+    carry that is only a *name* is a bit some other block of the tick left, which is
+    what section 5's ``+ carry(site)`` states and what ``ssa`` calls a flag.
+    """
+    if type(e) is Bin and e.op == "-" and type(e.b) is Const and e.b.v == 1:
+        e = e.a
+    return e if type(e) is Var else None
+
+
+def _read(tgt, c):
     """The expression that reads the accumulator's own value at its own address."""
+    s = c.site.stmt
     if tgt.kind == "pair":
-        return R16(tgt.cells[0], tgt.cells[1], s.a)
-    return Load("ram", s.a, 1, s.lo, s.hi, tgt.cells[0][0])
-
-
-def _addr(s):
-    """A store's address expression and the envelope it stayed inside."""
-    if type(s) is W16:
-        return s.a, (s.env or (s.lo[1], s.lo[1]))
-    return s.a, (s.lo, s.hi)
-
-
-def _copies(cells, steps):
-    """``(index names, stride, copies)`` of the cell one store family writes."""
-    names, lo, hi = set(), None, None
-    for c in steps:
-        a, (l, h) = _addr(c.site.stmt)
-        names |= {x.n for x in walk(a) if type(x) is Var}
-        lo, hi = (l if lo is None else min(lo, l)), (h if hi is None else max(hi, h))
-    if not names or lo is None:
-        return [], 0, 1
-    scale = max(cells.scale.get(n, 1) for n in names)
-    return sorted(names), scale, max(1, -(-(hi - lo + 1) // scale))
+        return R16(tgt.cells[0], tgt.cells[1], c.addr)
+    return Load("ram", c.addr, 1, s.lo, s.hi, tgt.cells[0][0])
 
 
 def _one(ctx, cells, tgt, steps, cs, env):
@@ -138,18 +153,25 @@ def _one(ctx, cells, tgt, steps, cs, env):
     event = next((c.guards for c in steps if c.comp), ()) or next((c.guards for c in actions), ())
     mask = next((c.mask for c in steps if c.mask is not None), None)
     reg = env["regs"].get(rid) or (None, [], False)
-    index, scale, copies = _copies(cells, steps)
+    own = [c for c in cs if c.kind not in ("opaque", "half")]
+    index, scale, copies = copies_of(cells, own or steps)
+    index = sorted(set(index) | {n for c in cs if c.kind == "half" for n in _idx(c)})
     width = 16 if tgt.kind == "pair" else (lowbits(mask) or 8)
     delta = _repeat(ctx, cells, steps[0], delta_of(ctx, cells, steps[0].delta, env["sources"]))
+    delta = _withcarry(delta, steps)
     phase = phase_of(ctx, cells, tgt, steps, env["byacc"], env["counters"])
-    read = _read(tgt, steps[0].site.stmt)
+    read = _read(tgt, steps[0])
     tcol = cells.value(read, {n: 0 for n in index})
     hold = steps[0].guards if len(steps) == 1 else ()
     bounds = bound_of(
         ctx, cells, tgt, width, event, hold, mask, None, tcol, env["complete"], env["period"]
     )
     policy, value = policy_of(
-        steps, actions, phase, bounds[0], _dirstore(ctx, cells, phase, env["all"])
+        steps,
+        actions,
+        phase,
+        bounds[0],
+        _dirstore(ctx, cells, phase, env["all"], sorted({r for r, _a in tgt.cells})),
     )
     return {
         "target": {"register": reg[0], "voices": reg[1], "kind": "register", "split": None},
@@ -256,10 +278,13 @@ def _plan(acc):
     the clauses of the cell together make every move it makes.
     """
     out, k, joined = [], acc.get("shift") or 0, acc.get("joined")
+    times = (
+        (acc["delta"] or {}).get("times") if (acc["delta"] or {}).get("kind") == "repeat" else None
+    )
     for c in acc["clauses"]:
         if c.kind == "step":
             d = _sext(joined) if joined is not None else c.delta
-            out.append(c._replace(delta=d, carry=None if k else c.carry))
+            out.append(c._replace(delta=d, carry=None if k else c.carry, times=times))
         else:
             out.append(c._replace(value=Bin("<<", c.value, Const(k, 1), 2) if k else c.value))
     return out
@@ -307,7 +332,11 @@ def _resets(ctx, actions):
 
 
 def _refuse(ctx, cells, tgt, cs, clause):
-    """One stated refusal: the cell, the site and the clause of section 5 it failed."""
+    """One stated refusal: the cell, the site and the clause of section 5 it failed.
+
+    ``scratch`` marks a value cell a copy loop rewrites: one column and one value
+    per copy in a tick, which no once-a-tick history can take apart.
+    """
     rid, addr = tgt.cells[0]
     return {
         "why": WHY,
@@ -316,6 +345,7 @@ def _refuse(ctx, cells, tgt, cs, clause):
         "addr": "$%04X" % addr,
         "site": sorted({"$%04X" % c.site.stmt.src for c in cs})[:4],
         "clause": clause,
+        "scratch": tgt.cells[0] in ctx.scratch,
     }
 
 
@@ -342,7 +372,8 @@ def accumulators(prog, names, t0_doc, hist, facts=None, complete=False, period=N
     raw = {t: clauses(ctx, t, ss) for t, ss in sites(prog, facts, rank(prog)).items()}
     src = tablestep_sources(ctx, cells, raw)
     regs = registers(t0_doc)
-    cells.counters = counters_of(raw)
+    cells.scratch = ctx.scratch
+    cells.counters = counters_of(raw, cells)
     env = {
         "regs": regs,
         "sources": src,
@@ -381,6 +412,7 @@ def accumulators(prog, names, t0_doc, hist, facts=None, complete=False, period=N
     for a in (x for x in accs if x["id"] in keep):
         a["bound"], a["verify"] = verify(cells, a, _plan(a), a["bounds"])
         rec = {k: v for k, v in a.items() if k in RECORD}
+        rec["delta"] = {k: v for k, v in (rec["delta"] or {}).items() if k not in DROP} or None
         if a["verify"].get("why") or a["verify"]["divergences"] or a["verify"]["escapes"]:
             refusals.append(
                 dict(
@@ -392,6 +424,9 @@ def accumulators(prog, names, t0_doc, hist, facts=None, complete=False, period=N
             continue
         out.append(rec)
     return out, refusals
+
+
+DROP = ("times",)
 
 
 RECORD = (

@@ -197,14 +197,55 @@ stable (verified over four runs per tune).
 | `commando-song1` | 11,780 | 0 | 3 `replay` | 3.9 |
 
 **10 accumulators, 0 replay divergences, 0 interval escapes, 15 refusals**, each
-naming its cell, its site and the §5 clause it failed. Hubbard refuses at its
+naming its cell, its site and the §5 clause it failed. Hubbard refused at its
 full horizon: the tick that both reloads a segment and steps it, and the arms
-whose carry a call return supplies, leave moves the plane cannot make, and
+whose carry a call return supplies, left moves the plane could not make, and
 fail-closed is the design. Hermetic tests cover `wrap`, `reflect-complement`,
 `reflect` on a direction cell, `clamp` with a `links` reset, `halt`, `reload`
 with a `$FF` sentinel and a countdown `rate`, `tablestep`, the 16-bit carry join
 and the `unclassified update` refusal; the `hvsc` set runs T1 over
 `pipeline.main` tmpdirs for all four families.
+
+**The W5 gap closed by #297.** Six rules, each with two families, land in
+[prototype-trackerprog.md](prototype-trackerprog.md) §5: reverse postorder as the
+tick's own statement order (so a reload and the step that follows it are one
+move, not two readings of one), `+ carry(site, flag)` for a bit another block of
+the tick leaves and a refusal for one the tick is *given*, a loop's exit test
+dropped from the guards of the body that precedes it, both epochs of a cell the
+tick moved read for every condition, and a copy loop's scratch opened to the one
+expression that fills it. `accshape` split at 500 lines: `accguard` now holds
+`key_of`, the control dependences, `opened`, the scratch set and its propagation;
+`graph.rpo` is the one reverse postorder. §5 also corrects a fifth row — a
+direction cell the *score* sets is the free slide (`wrap`), and only one the play
+turns is `reflect`.
+
+| tune | ticks | #296 accs (policy/`bound.from`) | #297 accs | #296 refusals | #297 refusals |
+| --- | ---: | --- | --- | --- | --- |
+| `gt2-je-suis-linus` | 12,000 | 4: `reflect-complement`/`observed` 1, `reflect`/`observed` 2, `wrap`/`observed` 1 | 4: `reflect-complement`/`observed` 1, **`reflect`/`observed` 1**, **`wrap`/`observed` 2** | 3 `delta`, 1 `replay` | 3 `delta`, 1 `replay` |
+| `jch-guldkorn-intro` | 4,000 | 2: `wrap`/`projected` 2 | **5**: `wrap`/`projected` 2, **`reload`/`projected` 2**, **`reload`/`observed` 1** | 3 `replay` | **none** |
+| `sw-emomyst` | 12,000 | 4: `clamp`/`projected` 1, `wrap`/`observed` 3 | 4: unchanged | 4 `delta`, 1 `replay` | 4 `delta`, 1 `replay` |
+| `commando-song1` | 11,780 | 0 | **2**: `wrap`/`projected` 2 | 3 `replay` | **1** `replay` |
+
+**15 accumulators, 0 replay divergences, 0 interval escapes, 10 refusals.**
+GoatTracker 2's only change is the policy correction (its slide's direction is
+the command byte the score writes, §5 row 5); SID Wizard is field-for-field.
+JCH's pulse and cutoff are `reload` streams of segments with a `tabcell` delta
+and a countdown `rate`, and nothing of that tune refuses. Hubbard's portamento is
+`wrap`, `field(b5520 & $7E)`, `phase bit(b5520, 0)`, scope voice; its pulse run is
+`wrap`, `tabcell(rec2[voice[].cursor_54FE].b5597) + carry($5240, C#41)`, scope
+instrument. Its one refusal is `acc_2_lo`, whose **value cell is copy-loop
+scratch**: `$550A` is one column that p_519B rewrites once per voice inside
+`oscillator`'s `for v in 2, 1, 0`, so a once-a-tick history holds the last voice's
+value and cannot take the three apart — the refusal carries `scratch: true` and
+its site. Over the certified 1,200-tick `hvsc` horizon the same cell *does*
+classify (`repeat(tablestep(FREQ, voice[].freq_idx, timer_3), b550C)`, 0
+divergences), which is what the exemplar test pins. The pulse **bounce** is not a
+second Acc: both arms park their result in one `saved` name that neither
+dominates, so the record carries it as an unnamed producer of the same cell.
+Hermetic tests added: reload-then-step in one tick with the rank order asserted,
+`graph.rpo` against the CFG, a carry another block defines (accepted, flag
+`C#1`) and one the tick is given (refused, flag `C`). Recert 4/4 reproduced, no
+artefact moved, T1 byte-stable over four runs under `PYTHONHASHSEED=random`.
 
 Total ≈ 24–30 agent-days. W1–W3 are independent of W0 and of each other;
 W4 depends on W3; W5 on W0, W2, W4; W6 on W0, W2, W3; W7 on all.
