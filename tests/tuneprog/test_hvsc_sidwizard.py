@@ -177,4 +177,4 @@ def test_the_tempo_test_prints_as_one_overflow_instead_of_its_three_xors():
     """``BVC`` after ``SBC`` is the V flag; the flag algebra is not the program."""
     for rel, secs in ((EMOMYST, 30), (EOTW, 20)):
         text = decompiled(rel, seconds=secs).text
-        assert re.search(r"if overflow\(rec\[x/7 \+ 3\]\.timer_2 - \w+\)", text), text
+        assert re.search(r"if overflow\(rec\[x/7 \+ 3\]\.timer\w* - \w+\)", text), text

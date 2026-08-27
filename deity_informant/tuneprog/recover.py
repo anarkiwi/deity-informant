@@ -60,11 +60,22 @@ class Names:
     freq: dict = field(default_factory=dict)
     sidwrite: tuple = None
     copies: dict = None
+    index: list = field(default_factory=list)
 
     def of(self, rid):
         return self.region.get(rid, "r%d" % rid)
 
     def to_dict(self):
+        """The serialised naming plane; :meth:`from_dict` is its inverse.
+
+        ``index`` is the index relation, one plain record per cell and target:
+        ``region``/``addr`` the index cell (``addr`` null when the whole region
+        is the index), ``target`` the region it indexes, ``base`` how the
+        address reaches that region -- ``const`` a constant, ``ptr`` a 16-bit
+        pair (``pair`` its name, ``tables`` the regions the pair's low byte is
+        loaded from, themselves ``target`` s of this relation where a cell
+        indexes them), ``other`` neither.
+        """
         return {
             "regions": [
                 {
@@ -82,7 +93,54 @@ class Names:
             "u16": [{"lo": lo, "hi": hi, "name": n} for (lo, hi), n in sorted(self.u16.items())],
             "procs": self.procs,
             "phase": None if self.phase is None else {"region": self.phase[0]},
+            "index": self.index,
         }
+
+    @classmethod
+    def from_dict(cls, doc):
+        """A :class:`Names` from :meth:`to_dict`: the serialised parts, unchanged."""
+        n = cls(copies=doc["copies"], procs=doc["procs"], index=doc.get("index") or [])
+        for r in doc["regions"]:
+            n.region[r["id"]] = r["name"]
+            for dst, key in ((n.role, "role"), (n.notes, "note")):
+                if r[key]:
+                    dst[r["id"]] = r[key]
+            if r["view"]:
+                n.view[r["id"]] = tuple(r["view"])
+        n.image = {x["region"]: x["delta"] for x in doc["image"]}
+        n.groups = {g: dict(v) for g, v in doc["groups"].items()}
+        n.u16 = {(tuple(x["lo"]), tuple(x["hi"])): x["name"] for x in doc["u16"]}
+        n.phase = None if doc["phase"] is None else (doc["phase"]["region"],)
+        return n
+
+
+def index_relation(facts, names):
+    """The index relation of :meth:`Names.to_dict`, as plain records.
+
+    One record per index cell and target region: what the cell indexes, and the
+    base its index is added to. A pointer base carries the pair's name and the
+    regions the pair's low byte is loaded from, so a table reached through a
+    pointer table is two joined records and not one opaque access.
+    """
+    out = []
+    for cell, uses in sorted(facts.idxbase.items(), key=lambda kv: _cellkey(kv[0])):
+        for target, kind, lo, hi in sorted(uses, key=lambda u: (u[0], u[1], str(u[2]))):
+            rec = {"region": cell[0], "addr": cell[1], "target": target, "base": kind}
+            if kind == "ptr":
+                rec["pair"] = _pairname(names, lo, hi)
+                rec["tables"] = sorted(facts.cellsrc.get(lo, ()))
+            out.append(rec)
+    return out
+
+
+def _cellkey(cell):
+    """Sort order for an index cell: by region, the whole-region index last."""
+    return cell[0], cell[1] is None, cell[1] or 0
+
+
+def _pairname(names, lo, hi):
+    """What the print spells a 16-bit base: the named pair, or the region holding both."""
+    return names.u16.get((lo, hi)) or (names.region.get(lo[0], "") if lo[0] == hi[0] else "")
 
 
 # ---- roles -------------------------------------------------------------------

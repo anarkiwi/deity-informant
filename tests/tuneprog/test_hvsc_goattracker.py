@@ -152,3 +152,21 @@ def test_the_filter_cursor_keeps_its_role_under_the_static_closure():
     prog = pipeline.build(trace, "Je_suis_Linus_le_salaud.sid", static=True)[0]
     view, st, names = pipeline.present(prog)
     assert "cursor_1141" in printer.render(view, st, names)
+
+
+def test_the_score_cursors_are_named_and_serialised_as_the_index_relation():
+    """``$1461``/``$1464`` walk the pattern data through the ``$15A9`` pointer table."""
+    run = decompiled(LINUS, seconds=30)
+    doc = run.names.to_dict()
+    base = {r.id: r.base for r in run.prog.storage}
+    rel = {(x["addr"], base.get(x["target"])): x for x in doc["index"]}
+    for cell, tgt in ((0x1461, 0x1875), (0x1464, 0x18B7)):
+        assert rel[(cell, tgt)]["base"] == "ptr" and rel[(cell, tgt)]["pair"] == "ptr"
+    # the pointer pair is loaded from $15A9/$15CA, themselves indexed by $148C
+    assert 0x15A9 in {base.get(t) for t in rel[(0x1464, 0x18B7)]["tables"]}
+    assert rel[(0x148C, 0x15A9)]["base"] == "const"
+
+    rid = next(r.id for r in run.prog.storage if r.base == 0x1461)
+    fields = run.names.split[rid][2]
+    assert fields[0] == "cursor" and fields[3] == "cursor_2", fields
+    assert "rec[x/7].cursor" in run.text and "T18B7[ptr + " in run.text
