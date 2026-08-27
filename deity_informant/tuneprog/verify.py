@@ -27,6 +27,7 @@ import numpy as np
 
 from ..lifter import STATUS_BITS
 from .emit import PyProgram, certificate
+from . import grid
 from .interp import Interp, Machine, NmiMachine
 from .ir import TrapError
 from . import nmi as N
@@ -36,7 +37,7 @@ from .tracevm import REG_IN
 PAL, NTSC = 985248, 1022730
 INIT_CALL = 0xFFFFFFFF
 NMI_ENTRY = {"kind": "nmi"}  # the frame the 6510 pushes taking an NMI
-STATE_VERSION = 2  # resume-state layout; an older pickle restarts rather than resumes
+STATE_VERSION = 3  # resume-state layout; an older pickle restarts rather than resumes
 
 
 def _nmis(log, calls):
@@ -138,7 +139,7 @@ def page_free(prog):
 class Verifier:
     """Runs a tuneprog against a :class:`Reference`, chunked and resumable."""
 
-    def __init__(self, prog, ref, backend="py", src=None):
+    def __init__(self, prog, ref, backend="py", src=None, obs=False):
         self.prog = prog
         self.ref = ref
         self.free = page_free(prog)
@@ -159,6 +160,9 @@ class Verifier:
         self.div = None
         self.nreg = 0
         self.seconds = 0.0
+        # opt-in: the trackerprog observable per verified tick, off the same writes
+        # the raw comparison just passed (:func:`~.grid.reduce_tick`)
+        self.obs = [] if obs else None
 
     # ---- state (chunked runs) ----------------------------------------------
     def state(self):
@@ -172,6 +176,7 @@ class Verifier:
             "div": self.div,
             "nreg": self.nreg,
             "seconds": self.seconds,
+            "obs": self.obs,
         }
 
     def restore(self, st):
@@ -180,7 +185,7 @@ class Verifier:
             return self
         self.M = st["M"]
         self.exe.M = self.M
-        for k in ("call", "hashes", "period", "first_repeat", "div", "nreg", "seconds"):
+        for k in ("call", "hashes", "period", "first_repeat", "div", "nreg", "seconds", "obs"):
             setattr(self, k, st[k])
         return self
 
@@ -278,6 +283,12 @@ class Verifier:
             return False
         return True
 
+    def _observe(self):
+        """Append this tick's :class:`~.grid.TickObs`, mirrors folded to registers."""
+        M = self.M
+        w = [(int(r), v) for r, (_a, v) in zip(grid.regs([a for a, _ in M.sid]), M.sid) if r >= 0]
+        self.obs.append(grid.reduce_tick(w, self.obs[-1] if self.obs else None))
+
     def _diff(self, call, got, want, what):
         i = next(
             (j for j in range(max(len(got), len(want))) if got[j : j + 1] != want[j : j + 1]), 0
@@ -335,6 +346,8 @@ class Verifier:
             return False
         if not self._compare(c, self.ref.sid(c), self.ref.io(c)):
             return False
+        if self.obs is not None:
+            self._observe()
         n, h = M.hash(self.free)
         sizes, digests = self.ref.hashes(self.free)
         if n != sizes[c] or h != digests[c]:

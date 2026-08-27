@@ -123,3 +123,67 @@ def test_a_write_a_whole_frame_after_its_raise_is_a_second_entry_writing():
 
     rows = [SidtraceRow(c + o, None, o, None, 0, 4, 1) for c, o in ((0, CPF + 1), (CPF, 10))]
     assert grid.sidtrace_clock(rows) == (0, CPF)
+
+
+def _obs(*writes, prev=None):
+    return grid.reduce_tick(list(writes), prev)
+
+
+def test_every_gate_edge_inside_one_tick_is_kept_in_order():
+    """1 -> 0 -> 1 is two edges the envelope generator counts, not one level."""
+    o = _obs((4, 0x11), (4, 0x10), (4, 0x11), (5, 0x0A), (0x18, 0x0F))
+    assert o.edges == ((4, 0x11), (4, 0x10), (4, 0x11), (5, 0x0A))
+    assert o.values[7:] == (None, 0x0F)  # res_route unwritten, mode_vol last-wins
+
+
+def test_a_sixteen_bit_register_written_twice_in_a_tick_is_last_wins():
+    """Hubbard's drum-then-arpeggio pair of ``$D401`` stores leaves one value."""
+    o = _obs((1, 0x10), (0, 0x20), (1, 0x30))
+    assert o.values[0] == 0x3020 and o.edges == ()
+
+
+def test_a_tick_that_writes_one_half_carries_the_other_from_the_tick_before():
+    prev = _obs((0, 0x20), (1, 0x10))
+    assert prev.values[0] == 0x1020
+    assert _obs((0, 0x30), prev=prev).values[0] == 0x1030
+    assert _obs((1, 0x40), prev=prev).values[0] == 0x4020
+    assert _obs((4, 0x11), prev=prev).values[0] == 0x1020  # neither half: carried whole
+    assert _obs((4, 0x11)).values[0] is None  # and no prev leaves it unknown
+
+
+def test_a_mirror_write_folds_onto_the_register_it_decodes_to():
+    assert list(grid.regs([0xD400, 0xD420, 0xD7E0, 0xD412])) == [0, 0, 0, 0x12]
+    assert list(grid.regs([0xD419, 0xD41F, 0xD3FF, 0xD800])) == [-1, -1, -1, -1]
+
+
+def test_the_pulse_width_high_nibble_and_the_cutoff_high_bits_are_masked():
+    assert _obs((2, 0xFF), (3, 0xF3)).values[3] == 0x3FF
+    assert _obs((0x15, 0xFF), (0x16, 0xFF)).values[6] == 0x7FF  # 11 bits, 8 high 3 low
+
+
+def test_folding_the_per_tick_reduction_over_a_run_equals_the_vectorised_one():
+    rng = np.random.default_rng(7)
+    n = 400
+    frame = np.sort(rng.integers(0, 16, n))
+    reg = rng.integers(0, grid.SID_REGS, n)
+    val = rng.integers(0, 256, n)
+    levels, edges = grid.reduce_run(frame, reg, val, 16)
+    prev, rows = None, []
+    for k in range(16):
+        m = frame == k
+        prev = grid.reduce_tick(list(zip(reg[m].tolist(), val[m].tolist())), prev)
+        rows.append([0 if v is None else v for v in prev.values])
+        assert prev.edges == edges[k]
+    assert rows == levels.tolist()
+
+
+def test_the_change_rule_keeps_exactly_the_writes_the_register_file_did_not_hold():
+    rng = np.random.default_rng(3)
+    reg = rng.integers(0, 4, 200)
+    val = rng.integers(0, 3, 200)
+    seed = bytes(rng.integers(0, 3, 4).tolist())
+    sid, want = bytearray(seed), []
+    for a, v in zip(reg.tolist(), val.tolist()):
+        want.append(sid[a] != v)
+        sid[a] = v
+    assert list(grid.changes(reg, val, seed)) == want
