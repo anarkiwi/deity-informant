@@ -115,6 +115,39 @@ SID Wizard `rec` `+0`/`+2`/`+3`/`+4`/`+5`/`+6`; Commando unchanged, its cursors
 were already scalars. Recert 4/4 field-for-field, `tuneprog.py` byte-identical;
 the only moved print lines are field names.
 
+**W4 struck by #294**: `provenance.py` writes `tuneprog.T0.json` beside S6 —
+`{plane, voice_map, image, writes}`, one record per SID write site of the printed
+program. Roots are the `io` stores whose envelope lies in `$D400..$D418` and the
+stores into a `sid_image` region rekeyed by the flush delta, each carrying the
+flush site's pc; `provenance.regvoices` reads the register off the site's base
+and the voices off its envelope, which names SID Wizard's opaque
+`sid.reg[saved10]` (`freq_lo`, voices 0–2) where `cellref.voiced` gives nothing.
+A span no voice stride makes is `kind: file` where one value covers every
+register in it (the GT2 flush `sid.reg[v] = ghost.reg[v]`, the JCH/SW
+`sid.reg[v] = 0` clears) and a refusal otherwise. `expr` substitutes names
+stopping at every cell S6 names, serialised with `ir.enc` — which gained
+`R16`/`W16` in `_NODES` — and `W16` gained `env`, the low half's own envelope,
+the one thing the 16-bit fold used to drop. Each record re-enters the printer
+state its site printed in, so `cells` spell as the print spells them and `print`
+is the line of `tuneprog.md` itself.
+
+| tune | sites | direct | image | file | refusals | `print` round-trip | registers |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| `gt2-je-suis-linus` | 22 | 1 | 21 | 1 | none | 22/22 | 11, `freq` pairs included; 7 self-updating |
+| `jch-guldkorn-intro` | 15 | 15 | 0 | 1 | none | 15/15 | 8, `freq`/`pw` as pairs |
+| `sw-emomyst` | 17 | 17 | 0 | 1 | none | 17/17 | 11 |
+| `commando-song1` | 27 | 27 | 0 | 0 | none | 27/27 | 9 |
+
+Over all 51 recert S4 programs: **849 write sites, 849 prints re-rendering to
+their own `tuneprog.md` line, 0 sites both unnamed and unrefused**. The 40
+refusals are the two shapes the envelope cannot read — 36 `index not a voice`
+(Follin's raw cross-voice register list `sid.reg[a75] = …` over `$D405..$D418`,
+JCH's `sid.reg[v] = t1` clear at a non-constant value) and 4 `smc target`
+(Baumrucker's and Follin's patched store operands, `io[b6200[5] + x2]`), each
+naming its own cell. Recert 4/4 field-for-field; S5/S6/`tuneprog.md` regenerate
+byte-identical to `main`'s over the same four S4 programs, and the T0 render
+leaves the view untouched for the print that follows it.
+
 Total ≈ 24–30 agent-days. W1–W3 are independent of W0 and of each other;
 W4 depends on W3; W5 on W0, W2, W4; W6 on W0, W2, W3; W7 on all.
 
