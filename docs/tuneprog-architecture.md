@@ -1013,7 +1013,8 @@ record — is [tuneprog-backlog.md](tuneprog-backlog.md) §3; the open work by l
 | `frames` | 409 | S4: the machine stack as frames — which pushes and pops are values |
 | `stack` | 218 | S4: eliminating the machine stack |
 | `emit` | 403 | S7: Python code generation, and the certificate writer |
-| `verify` | 423 | S8: differential verification against the trace, and the certificate |
+| `verify` | 439 | S8: differential verification against the trace, and the certificate |
+| `history` | 102 | S8: the per-tick history of every named cell, off the verified ticks (library only) |
 | `period` | 113 | why a subtune's state does not repeat: per-cell periods, drift, the observable |
 
 **Presentation — S5/S6**

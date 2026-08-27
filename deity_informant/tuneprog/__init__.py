@@ -28,7 +28,9 @@ Middle and back end (the executable program and its certificate):
 * :mod:`.emit` (S7) -- Python code generation and the certificate writer.
 * :mod:`.verify` (S8) -- per-call differential verification against the trace,
   periodicity, chunked and resumable; :mod:`.period` -- why a subtune that never
-  repeated does not (counter, drifting accumulator, or an aperiodic tune).
+  repeated does not (counter, drifting accumulator, or an aperiodic tune);
+  :mod:`.history` -- the per-tick history of every named cell, sampled off the
+  same verified ticks (a library, never an artefact).
 
 Presentation over the certified program (it is never edited):
 
