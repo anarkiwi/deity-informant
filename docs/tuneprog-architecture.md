@@ -39,7 +39,7 @@ Contents: 1 definitions · 2 pipeline · 3 the lift end to end · 4 the IR ·
 | **envelope** | the `[lo, hi]` extent an indexed access was observed inside; outside it the run stops with an `envelope` trap |
 | **view** | a presentation copy of the certified program. S5/S6 rewrite the view; the certified IR is never edited |
 | **copy / sibling** | k static copies of one template an unrolled player wrote out (Follin's three voices, defMON's cascade blocks). The **copy index** `v` is the value a merged family runs over; a **column** `T_x[v]` is the per-copy table an operand the copies disagree on is read from |
-| **naming plane** | `recover.Names`: `region`, `role`, `view`, `groups`, `u16`, `slots`, `column`, `split`, `freq`, `phase`, `elem`, `notes`, `procs`, `copies`, `sidwrite`. Names never change semantics; they are serialised to `tuneprog.S6.json` |
+| **naming plane** | `recover.Names`: `region`, `role`, `view`, `groups`, `u16`, `slots`, `column`, `split`, `freq`, `phase`, `elem`, `notes`, `procs`, `copies`, `sidwrite`, `index`. Names never change semantics; they are serialised to `tuneprog.S6.json`, and `Names.from_dict` reads that back |
 | **role** | what a region is used as: `sid_image`, `freq_table`, `counter`, `timer`, `cursor`, `ptr`, `acc`, `phase`, `table`, `voice_map`, `per_copy` |
 | **coverage** | a merged block's execution count per copy (`Block.cover`); a zero says no execution of that copy reached it, and the statement is unverified |
 | **input** | a read the program does not determine, classified by `tracedata.input_kind`: `raster`, `cia`, `sid_readback`, `ack`, `entry_reg`, `io`, `uninit_ram`. Equivalence is stated relative to the recorded stream |
@@ -578,7 +578,7 @@ S5 and S6 run over a deep copy of the certified program. The order is
 | 17 | `live.dead`, `live.coalesce` | dead values and the copies a join leaves |
 | 18 | `structure.structure` | the final node tree: `Blk`, `Cond`, `Loop`, `For`, `Case`, `Jump`, `Exit` |
 | 19 | `unroll.unroll` | consecutive isomorphic runs inside one body print once over an index |
-| 20 | `views.decorate` | with the groups `unroll` made |
+| 20 | `views.decorate` + `recover.index_relation` | with the groups `unroll` made, over one `Facts` of the final program — the same facts the `index` block is serialised from |
 | 21 | `word.fold_sid` + `word.sidorder` | the SID's own 16-bit registers as one write apiece, over the rows `unroll` aligned |
 | 22 | `copyview.mark` | the coverage marks on merged statements |
 
@@ -593,7 +593,31 @@ that applies it (masks, comparisons, the borrow a two-armed branch hides).
 `irwalk.accessors` is the one accessor enumeration; `Rgn.extent` the one containment
 test; `facts.per_region` the one reading of the indices that walk a region;
 `facts.unclaimed` the one "already named" predicate; `views.record_split` the one
-record view (a record stride, or its transpose).
+record view (a record stride, or its transpose); `facts.cursor_cells` the one
+cursor rule.
+
+That rule reads: a cell is a **`cursor`** when it is loaded as part of an address
+and some region that address reaches has more than `facts.MAXROLE` elements. One
+rule for all three kinds of cell — a scalar region, a per-copy slot
+(`views.cell_field`), a field of a record split (`views._named_fields`) — and the
+mirror of the scalar guard: a scalar must be a *variable* and not a block to earn
+any role, a field already is one, so what it must show instead is a *block* on the
+other side. It runs ahead of the role a cell's own updates give it, because a
+score cursor is also stepped by one. Evidence, four certified families: GoatTracker 2
+`rec[x/7]` `+0`/`+3` (the orderlist position into `T1875`, the row cursor into
+`T18B7`, both through the `$15A9` pointer table), JCH V20 `voice_3[v]` `+9`
+(the row cursor into `T19FE`, through the zero-page pair), SID Wizard `rec` `+0`
+(the pattern number into `T2478`), `+2` (the orderlist position) and `+3` (the row
+cursor into `T1C6A`) — every one of which printed as `fNN`, `timer` or `acc`
+before — and Commando, whose score cursors are scalars the same rule already named.
+
+The relation itself is serialised: `tuneprog.S6.json`'s `index` block
+(`recover.index_relation`) carries one plain record per index cell and target
+region — `region`/`addr` the cell (`addr` null when the whole region is the
+index), `target` what it indexes, `base` how the address reached it (`const`,
+`ptr`, `other`), and for `ptr` the pair's name and the regions the pair's low byte
+is loaded from, so a table reached through a pointer table is two records that
+join on `target`.
 
 ### 6.1 The print
 
@@ -968,8 +992,8 @@ record — is [tuneprog-backlog.md](tuneprog-backlog.md) §3; the open work by l
 
 ## 10. Module map
 
-`deity_informant/tuneprog/`, 60 modules, 17,582 lines, none over 500
-(`pipeline.py` is the longest at 491). Line counts from `wc -l` at this commit.
+`deity_informant/tuneprog/`, 61 modules, 17,922 lines, none over 500
+(`pipeline.py` is the longest at 494). Line counts from `wc -l` at this commit.
 
 **Front end — S0/S1, the traced machine**
 
@@ -1032,9 +1056,9 @@ record — is [tuneprog-backlog.md](tuneprog-backlog.md) §3; the open work by l
 | `partition` | 257 | S6: region typing by accessor-shape partition, and its mirror, the merge |
 | `halves` | 240 | S6: the two halves of a 16-bit value — the cell pair, and the byte shapes |
 | `word` | 264 | S6: where those byte shapes land in the program, and the SID's own pairs |
-| `facts` | 302 | S6: the facts the names are derived from — one pass over the IR, per cell |
-| `recover` | 419 | S6: stride views, roles, names — the naming plane |
-| `views` | 272 | S6: group views — struct fields that are a per-copy address table |
+| `facts` | 361 | S6: the facts the names are derived from — one pass over the IR, per cell |
+| `recover` | 477 | S6: stride views, roles, names — the naming plane |
+| `views` | 276 | S6: group views — struct fields that are a per-copy address table |
 | `copyview` | 312 | S6: a per-copy column read as the operand it stands for |
 | `fold` | 472 | S6: outlining — a run of blocks with one role, or shared by two procedures |
 | `tails` | 290 | S6: shared tails become procedures |
@@ -1054,7 +1078,7 @@ record — is [tuneprog-backlog.md](tuneprog-backlog.md) §3; the open work by l
 
 | module | lines | role |
 | --- | ---: | --- |
-| `pipeline` | 491 | the end-to-end driver, chunked against a CPU budget |
+| `pipeline` | 494 | the end-to-end driver, chunked against a CPU budget |
 | `resume` | 67 | what a resumed run may keep |
 | `__init__` | 138 | the package guide and its public API |
 | `grid` | 157 | per-frame SID register grids, every write framed by the interrupt |
@@ -1067,7 +1091,7 @@ Outside the package: `deity_informant/lifter.py` (1,007), `vm.py` (318),
 
 ### 10.1 Tests
 
-863 tests: **790 hermetic**, **63 `hvsc`**, **10 `oracle`**; coverage gate 85 %
+883 tests: **807 hermetic**, **66 `hvsc`**, **10 `oracle`**; coverage gate 85 %
 (`--cov-fail-under=85`), measured at 96 %.
 
 | path | contents |

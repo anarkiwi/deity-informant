@@ -1,5 +1,6 @@
 """S6 recovery: roles, struct views, tables and names from the IR alone."""
 
+from deity_informant.tuneprog import pipeline
 from deity_informant.tuneprog import recover as R
 from deity_informant.tuneprog import structure as S
 
@@ -155,12 +156,25 @@ def test_names_are_unique_stable_and_serialisable():
         "regions",
         "groups",
         "image",
+        "index",
         "procs",
         "phase",
         "u16",
         "copies",
     }
     assert names.of(-99) == "r-99"
+
+
+def test_the_serialised_naming_plane_round_trips_through_from_dict():
+    """``from_dict`` is the inverse of ``to_dict`` over the parts S6 writes out."""
+    _T, prog = tuneprog(counter("LDA img", "STA $D404", "RTS", "img: BRK"), calls=6, s4=True)
+    view, _st, names = pipeline.present(prog)
+    names.copies = {"families": []}
+    doc = names.to_dict()
+    back = R.Names.from_dict(doc)
+    assert back.to_dict() == doc
+    assert back.region == names.region and back.u16 == names.u16
+    assert R.Names.from_dict(R.recover(view, S.structure(view)).to_dict()).index == []
 
 
 def test_a_procedure_that_decodes_a_record_through_a_pointer_is_row_apply():

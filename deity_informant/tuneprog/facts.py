@@ -10,7 +10,7 @@ from __future__ import annotations
 from functools import reduce
 from math import gcd
 
-from .ir import Bin, Call, Const, Let, Load, SID_REG_LO, SID_REG_HI, Store, Var
+from .ir import Bin, Call, Const, Let, Load, R16, SID_REG_LO, SID_REG_HI, Store, Var, W16
 from .irwalk import addr_split, expand, loads, reachable, single_defs, walk
 
 VOICE_REG = ("freq_lo", "freq_hi", "pw_lo", "pw_hi", "ctrl", "ad", "sr")
@@ -55,6 +55,16 @@ def leaf_loads(e):
     return [x for x in ls if id(x) not in inner]
 
 
+def leaf_reads(e):
+    """The regions ``e`` reads for its value: addresses excluded, 16-bit pairs included."""
+    xs = [x for x in walk(e) if type(x) is Load or type(x) is R16]
+    inner = {id(y) for x in xs for y in walk(x.a)}
+    out = set()
+    for x in (x for x in xs if id(x) not in inner):
+        out.update((x.lo[0], x.hi[0]) if type(x) is R16 else (x.r,))
+    return {r for r in out if r >= 0}
+
+
 def same_cell(a, b):
     """True when two address expressions name the same cell."""
     return a.v == b.v if type(a) is Const and type(b) is Const else a == b
@@ -74,6 +84,8 @@ class Facts:
         self.cellplain = set()
         self.plain = set()
         self.index = {}
+        self.idxbase = {}
+        self.cellsrc = {}
         self.sididx = set()
         self.cellindex = set()
         self.addr = set()
@@ -107,6 +119,8 @@ class Facts:
                 if s.cls == "io":
                     self.sidaddr(addr)
                 self.store(name, s, expand(s.v, defs, DEPTH), expand(s.a, defs, DEPTH))
+            elif type(s) is W16:
+                self.source((s.lo, s.hi), expand(s.e, seen, DEPTH))
             elif type(s) is Call:
                 for a in s.args:
                     self.value(name, expand(a, seen, DEPTH))
@@ -116,12 +130,30 @@ class Facts:
         for x in loads(e):
             self.reads[name].add(x.r)
             self.walks(x.r, x.a)
+            base = index_base(x.a)
             for y in loads(x.a):
                 self.index.setdefault(y.r, set()).add(x.r)
-                if type(y.a) is Const:
-                    self.cellindex.add((y.r, y.a.v))
+                cell = self.cell(y.r, addr_split(y.a)[0])
+                self.idxbase.setdefault(cell, set()).add((x.r,) + base)
+                if cell[1] is not None:
+                    self.cellindex.add(cell)
                 if y.w == 2:
                     self.addr.add(y.r)
+
+    def cell(self, rid, a):
+        """``(region, address)`` for an access: the address, or ``None`` where it is not one.
+
+        A constant the address arithmetic leaves that the region does not contain
+        is a displacement, not the cell an index was loaded from.
+        """
+        r = self.rgn.get(rid)
+        return (rid, a if a is not None and r is not None and r.extent(a, a) else None)
+
+    def source(self, cells, v):
+        """Record the regions whose load supplies the value written to ``cells``."""
+        rids = leaf_reads(v)
+        for c in cells:
+            self.cellsrc.setdefault(c, set()).update(rids)
 
     def sidaddr(self, a):
         """Record the regions a SID-register access takes its index from."""
@@ -158,6 +190,33 @@ class Facts:
         else:
             self.plain.add(s.r)
             self.cellplain.add(cell)
+            self.source((cell,), v)
+
+
+def index_base(a):
+    """What an indexed address adds its index to: a constant, a 16-bit pair, or neither.
+
+    The pair is the two cells of a :class:`~.ir.R16`, so a table walked through a
+    loaded pointer names both the pointer and the cursor that walks it.
+    """
+    if addr_split(a)[0] is not None:
+        return ("const", None, None)
+    p = next((x for x in walk(a) if type(x) is R16), None)
+    return ("ptr", p.lo, p.hi) if p is not None else ("other", None, None)
+
+
+def cursor_cells(facts, cells):
+    """``cursor`` when the cells of one variable or field index a block.
+
+    The mirror of the scalar rule, which asks the region *holding* the index to
+    be a variable and not a block (:data:`MAXROLE`): a field is one byte per
+    record, so what it must show instead is a block on the other side -- a table
+    of more than :data:`MAXROLE` elements it walks. An index that only selects
+    one of a handful of elements is the element selector a view already names.
+    """
+    tgt = {t for c in cells if c in facts.cellindex for t, *_ in facts.idxbase.get(c, ())}
+    walks = any(elem_count(facts.rgn[t]) > MAXROLE for t in tgt if t in facts.rgn)
+    return "cursor" if walks else ""
 
 
 def sid_name(addr):

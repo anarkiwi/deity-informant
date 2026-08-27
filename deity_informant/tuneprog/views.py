@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from collections import namedtuple
 
-from .facts import Facts, MAXOPS, MAXROLE, SID_VOICE, elem_count as elems, leaf_loads, ops
-from .facts import per_region, sid_name, sid_stores, unclaimed, update_role
+from .facts import Facts, MAXOPS, MAXROLE, SID_VOICE, cursor_cells, elem_count as elems
+from .facts import leaf_loads, ops, per_region, sid_name, sid_stores, unclaimed, update_role
 from .ir import Bin, Const, SID_REG_HI, SID_REG_LO, Var
 from .irwalk import accessors, unique_name
 
@@ -82,12 +82,10 @@ def cell_field(prog, facts, names, cell, sidf):
         return names.of(rid)
     if addr in sidf:
         return sidf[addr]
-    role = update_role(facts.cellupd.get(cell, ()), cell in facts.cellplain, rid)
-    if role:
-        return role
-    if cell in facts.cellindex:
-        return "cursor"
-    return "b%04X" % addr
+    role = cursor_cells(facts, (cell,)) or update_role(
+        facts.cellupd.get(cell, ()), cell in facts.cellplain, rid
+    )
+    return role or "b%04X" % addr
 
 
 def copy_groups(prog, names, folds=None, facts=None):
@@ -193,12 +191,18 @@ def _record(names, r, unit, n, fields, transposed):
 
 
 def _named_fields(facts, r, sidf, by):
-    """Name each field of a split from the role its own cells share."""
+    """Name each field of a split from the role its own cells share.
+
+    A field whose cells index a block is that block's cursor, ahead of the role
+    its own updates give it: the score cursors of every family step by one.
+    """
     out = {}
     for k in sorted(by):
         cells = [(r.id, r.zero + o) for o in by[k]]
         upd = set().union(set(), *(facts.cellupd.get(c, ()) for c in cells))
-        role = update_role(upd, any(c in facts.cellplain for c in cells), r.id)
+        role = cursor_cells(facts, cells) or update_role(
+            upd, any(c in facts.cellplain for c in cells), r.id
+        )
         out[k] = unique_name(role or sidf.get(r.zero + k) or "f%02X" % k, set(out.values()))
     return out
 

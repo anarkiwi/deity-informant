@@ -42,6 +42,7 @@ from . import (
 )
 from .build import build_ir
 from .cfg import build_procs, procs_json
+from .facts import Facts
 from .idioms import rewrite
 from .lift import lift_trace
 from .machine import find_entries, shared_entry
@@ -424,7 +425,9 @@ def present(prog):
     live, params = L.needed(view)
     st = structure.structure(view, L.wants(view, live))
     _n, groups = unroll.unroll(st, live, fold.livearg(view, params), rgn=view.by_id())
-    views.decorate(view, names, groups)
+    final = Facts(view)  # the last shape of the program: the 16-bit views are in it
+    views.decorate(view, names, groups, final)
+    names.index = recover.index_relation(final, names)
     sid16 = word.fold_sid(st, view.by_id(), names)  # a convention over the aligned rows
     names.sidwrite = word.sidorder(sid16)
     copyview.mark(st, copies)

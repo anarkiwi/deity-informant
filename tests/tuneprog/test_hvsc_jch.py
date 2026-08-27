@@ -132,3 +132,16 @@ def test_the_register_offset_table_names_the_register_by_its_voice():
         for reg in ("ad", "sr") + pairs:
             assert "%s[v].%s" % (name, reg) in run.text or "%s[x].%s" % (name, reg) in run.text
         assert "%s.reg[5 + " % name not in run.text
+
+
+def test_the_row_cursor_of_the_state_block_is_a_pointer_indexed_cell():
+    """``$1751`` steps the pattern rows at ``$19FE`` through the zero-page pair."""
+    run = decompiled(GULDKORN, seconds=GULD_S)
+    base = {r.id: r.base for r in run.prog.storage}
+    rel = [x for x in run.names.to_dict()["index"] if x["addr"] == 0x1751]
+    assert rel and {base.get(x["target"]) for x in rel} == {0x19FE}
+    assert all(x["base"] == "ptr" and x["pair"] == "ptr" for x in rel), rel
+
+    rid = next(r.id for r in run.prog.storage if r.base == 0x1748)
+    assert run.names.split[rid][2][9] == "cursor"
+    assert "voice_3[v].cursor" in run.text
