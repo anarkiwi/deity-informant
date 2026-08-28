@@ -53,7 +53,7 @@ class Eval:
                 # the alternative's value, at the epoch its own guards were read in
                 lag = {}
                 for _c, _t, *w in gs:
-                    lag.update(self.cells.lagged(w[0]) if w else {})
+                    lag.update(self.lagged(w[0]) if w else {})
                 was, self.cells.subst = self.cells.subst, {**self.cells.subst, **lag}
                 try:
                     v = self.value(x, env)
@@ -66,6 +66,15 @@ class Eval:
             return out
         return None
 
+    def lagged(self, regions):
+        """Last tick's bytes of ``regions``; before tick 0, the post-init image's."""
+        out = {}
+        for cell, col in self.cells.lagged(regions).items():
+            col = col.copy()
+            col[0] = self.cells.img[cell[1]]
+            out[cell] = col
+        return out
+
     def truth(self, guards, env):
         """The ticks a guard path held, over-approximated where a condition is unread.
 
@@ -74,7 +83,7 @@ class Eval:
         """
         out = np.ones(self.ticks, bool)
         for c, t, *w in guards:
-            lag = self.cells.lagged(w[0]) if w else {}
+            lag = self.lagged(w[0]) if w else {}
             got = self._held(c, t, env, {**self.cells.subst, **lag})
             if got is None:
                 self.blind += 1

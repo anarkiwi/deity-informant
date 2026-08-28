@@ -97,7 +97,7 @@ the certificate gains `dropped` (§2).
 | ~~W4~~ | T0 provenance | `provenance.py`: roots = `io` stores in `$D400..$D418` **and** stores into `names.image` regions (rekeyed by the flush delta); `(register, voices)` from the store's `lo/hi` envelope (more robust than `cellref.voiced`); backward substitution via `irwalk.single_defs`/`expand` stopping at a named role; leaves named through `cellref.Cells`; `ir.enc` for the expr (add `R16`/`W16` to `_NODES`); `tuneprog.T0.json` per write site with `direct`, `self_update`, `refusal`. Region ids are the presentation view's — carry `(base, size)` | provenance, ir, pipeline | medium (3 d) | every io/image write site of the 42 recert dirs is a named expr or a stated refusal; the record's `print` re-renders to the `tuneprog.md` line |
 | ~~W5~~ | T1 `accum.py` | candidates from `facts.cellupd` reaching an io store (W4); `Delta`/`Dir` parser (`idioms.bit`, new `sext11`); a diamond over `Store`/`Call` arms (new — not `gated.diamonds`); the variable-shift loop `x >> cell` recogniser `loops.py` lacks (`tablestep`, GT2 `p_12E5`, Commando `$51E4`); guard walk over dominators → policy; bound from guard (`proved`), projection (`projected`), or history under a period witness (`observed`); two verifiers — interval assertion and **recurrence replay** against W2's history, divergence ⇒ `unclassified update` | accum, idioms, loops | medium–large (5.5–7 d) | hermetic snippet per policy (`wrap reflect-complement reflect-dircell clamp halt reload rate tablestep split`), refusals named with the cell; exemplar regression: GT2 vibrato+porta, Commando bounce+run+porta, JCH pw/cutoff, SW cutoff classified as W0 states |
 | ~~W6~~ | T2 `trackerprog/{cursors,streams,score,pitch,refuse}.py` | cursor × history: successor relation at a fixed base → step/jump edges, rows, loop row, terminator byte, holds; nest through `names.u16` bases (depth ≤ 2 else `score not cursor-shaped`); Follin call/ret/for from the dispatch arms + the depth-1 return slot; `pitch` from `names.freq` + per-accessor origin (Commando reads `FREQ` at two bases); materialise over the horizon. **Blocker**: SW's orderlist load is erased by the copy fold (`p_17C8` prints nothing, `T1C40/T1C4E/T1C5C` have no accessors) — either `copyview` keeps the load or SW refuses | trackerprog | large (8–10 d) | goldens on GT2 (33 pattern ptrs, 9×30 instruments, `T16F9`), JCH (26 ptrs, `rec8[19]`, 3 `$FF`s), Commando (`T576B`, `T5889`, `rec2`); the SW fold produces a named refusal until fixed; recert untouched |
-| W7 | universal player + T3 | `trackerprog/{player,emit,certify}.py`: §4 made exact per W0, rendered tick-for-tick; `certify` = W1's `TickObs` equality against `Verifier.obs` over the whole horizon; S4-style tagged JSON, `trackerprog.md`, the certificate with `refusals` and the loop claim | trackerprog | medium (3–4 d) | GT2 ×2, JCH ×2 0 divergences; every refusal names its cell; §6.2's six numbers + `xz -9e` against the source `tuneprog.md` |
+| ~~W7~~ | universal player + T3 | `trackerprog/{player,emit,certify}.py`: §4 made exact per W0, rendered tick-for-tick; `certify` = W1's `TickObs` equality against `Verifier.obs` over the whole horizon; S4-style tagged JSON, `trackerprog.md`, the certificate with `refusals` and the loop claim | trackerprog | medium (3–4 d) | GT2 ×2, JCH ×2 0 divergences; every refusal names its cell; §6.2's six numbers + `xz -9e` against the source `tuneprog.md` |
 
 **W0 struck by #295**: §2's table settled row by row (two rows corrected here
 rather than in the doc — the JCH `rec6`/`rec7` row was wrong, and the 91.6 % row
@@ -317,6 +317,62 @@ table, two `$FF`-ended patterns and a 12-TET table lifts to its order, its
 patterns and its pitch with every row's hold; depth 3 refuses; `decompose`,
 `successors`, `free`, `Refusal` and the JSON round trip.
 
+**W7 struck by #300 — the player and the certificate land; GT2 and JCH do not
+yet certify.** `trackerprog/player.py` is §4 made exact: per voice the row clock,
+the sequencer step consuming an event (`note`, `ins`, `cmds`), the armed
+accumulators, and `commit` — the pending `set`s of ad/sr/ctrl as edges in
+`meta.commit_order`, the `pitch[note] + Σ accs` freq producer and the other
+level registers as values — reduced by `grid.reduce_tick` into the same
+`TickObs` the verifier keeps. `certify.py` is §2's comparison over the whole
+horizon (per-voice edge order, pair and level values; voice and cross-class
+order dropped and listed), the certificate with `compared`, `dropped`,
+`refusals`, `emitted`, the loop claim re-checked on the render, and `rendered`
+(how far a partial render agrees) as a diagnostic. `emit.py` lifts T0's write
+sites into the schema — a constant or a pitch lookup on the row's note, committed
+at the row boundary or every tick — and refuses every other site as `command
+residue` naming its printed line and pc; T1's and T2's refusals are carried
+into the certificate. `tools/tuneprog_trackerprog.py` writes
+`trackerprog.certificate.json` always and `trackerprog.json` / `trackerprog.md`
+only with no refusal. The hermetic tune (an orderlist, a pointer table, two
+patterns, a 12-TET table, gate on at every row) lifts with no residue and
+**renders its observable exactly — 0 divergences over 64 ticks**, the loop claim
+re-checked; that is the universal player certified against `Verifier.obs` once.
+
+| tune | ticks | refusals | rendered equal | trackerprog six + `xz -9e` | source `tuneprog.md` six + `xz` |
+| --- | ---: | --- | ---: | --- | --- |
+| `jch-guldkorn-intro` | 4,000 | 14 `command residue`, 3 `unclassified update` | 0 | 1,844 / 454 / 424 / 31 / 8 / 200, 1,056 B | 3,154 / 361 / 207 / 152 / 292 / 182, 5,696 B |
+| `gt2-je-suis-linus` | 12,000 | 31 `command residue`, 4 `unclassified update` | 0 | 7,155 / 3,531 / 3,481 / 56 / 13 / 383, 2,344 B | 5,768 / 908 / 336 / 321 / 318 / 270, 8,380 B |
+| `commando-song1` | 11,780 | 29 `command residue`, 3 `unclassified update` | 0 | 7,575 / 1,885 / 1,839 / 44 / 5 / 93, 1,228 B | 2,129 / 271 / 161 / 107 / 182 / 127, 4,644 B |
+| `sw-emomyst` | 12,000 | T2's 7 `score not cursor-shaped` (`p_17C8`) + the write sites | 0 | — | — |
+
+(six = tokens / lines / statements / blocks / header rows / data rows; the
+trackerprog's statements are its score rows, its blocks the patterns, streams
+and instrument tables, its data rows the table and pitch entries — the score
+materialised over the horizon is what the sizes measure, so `xz` is the
+comparable number and it is 3.6–5.4× smaller than the program's.)
+
+**What the acceptance still lacks, by name.** The 0-divergence renders of GT2 ×2
+and JCH ×2 are *not* met: every residue is a T0 write site the schema's data
+forms do not yet carry — GoatTracker 2's `ghost[x/7].ctrl = …` wave-table
+column with its gate mask, its `ghost.freq` producers off the vibrato and
+portamento accumulators, the hard-restart `set(ad,$F)/set(sr,0)` two ticks early
+(`early`), commands 5/6/8/9/A; JCH's `sid[x].ad = voice[x].ad` shadow copies,
+`sid[v].ctrl = 9` at note-on beside `sid[x].ctrl = (b175D & f06)` every tick,
+`sid[x].pw = voice[x].pw` off the `reload` streams; Hubbard's `sid.reg[…]`
+per-fetch writes and the `rec2[…]` instrument columns. These are the
+**instrument, prelude and stream lift** — T0 expression → `Ins.adsr`,
+`prelude(stream, early)`, `streams.wave/pulse/filter` and `Producer` —
+which #299/#300 leave as a package of its own (W8 below). T1's own refusals
+(GT2 `ghost.pw_lo`, `b1461` ×2; JCH `voice[].pw_lo` ×2 and `cutoff_hi` at the
+1,200-tick test horizon; Commando `acc_2_lo`, `voice[].acc`, `rec2[].b5591` at
+the full one) are carried as `unclassified update`. Commando ×2 and SW ×2 are
+therefore not attempted beyond the certificate: Commando's I1/I11 are settled
+(W0) but its sites are residue like the trackers'; SW refuses at T2.
+
+| # | item | mechanism | size | acceptance |
+| --- | --- | --- | --- | --- |
+| W8 | instrument, prelude and stream lift | a T0 site whose value is an instrument column at the selector → `Ins.adsr`/`set(reg, ins.col)`; whose guards are a stream's step (a cursor's hold elapsing) → a `Step.sets` of that stream; whose guards are `k` ticks before the row boundary → the prelude's `early`; whose value reads a T1 acc cell → a `Producer` over that acc, with the acc's arming read off the note-on stores that reset it. Every other site stays `command residue` | large | JCH ×2, GT2 ×2 at 0 divergences on `tools/tuneprog_trackerprog.py`; the hermetic tune gains an instrument table and a wave stream |
+
 Total ≈ 24–30 agent-days. W1–W3 are independent of W0 and of each other;
 W4 depends on W3; W5 on W0, W2, W4; W6 on W0, W2, W3; W7 on all.
 
@@ -327,8 +383,9 @@ W4 depends on W3; W5 on W0, W2, W4; W6 on W0, W2, W3; W7 on all.
    `Acc` and `Cmd` shapes W5/W6 build to.
 3. ~~**W4**~~, then ~~**W5**~~, and ~~**W6**~~ (on GT2/JCH/Commando; SW refuses
    by name until the fold fix).
-4. **W7** on GT2 ×2, JCH ×2; then SW ×2 after the fold, Commando ×2 after
-   W0 settles I1/I11, Follin after I6.
+4. ~~**W7**~~ (the player, the certificate and the print land; GT2/JCH render
+   with named residue); then **W8** for GT2 ×2, JCH ×2 at 0 divergences; SW ×2
+   after the fold, Commando ×2 after W8, Follin after I6.
 
 Deliberately not now: Galway/Walker/Blackbird (uncertified — the anatomy
 describes them, no certificate covers them), multispeed (§10). **Not** defMON:
