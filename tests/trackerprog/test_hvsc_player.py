@@ -46,6 +46,7 @@ def exemplar(rel, calls=1200):
 @pytest.mark.parametrize("rel", (LINUS, GULDKORN, COMMANDO, EMOMYST))
 def test_the_render_is_bound_to_the_document_and_refuses_each_acc_by_name(rel):
     doc, tp, refusals, numbers, out = exemplar(rel)
+    walked = [r for r in refusals if r.why == "fetch not in IR" and "#" not in r.cell]
     assert doc["trap"] is None and doc["rendered_from"] == digest(tp)
     assert doc["divergence"]["register"] == "horizon" and doc["ticks"] == 1200
     assert not [r for r in refusals if r.why == "program residue"]
