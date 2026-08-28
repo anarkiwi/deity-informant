@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 
 from ..tuneprog.facts import SID_VOICE, SID_VOICES
+from .refuse import Refusal
 
 COMPARED = [
     "per-voice ctrl/AD/SR write order",
@@ -67,12 +69,69 @@ def equal_ticks(want, got):
     return len(want) if d is None else d["tick"]
 
 
-def certificate(tune, cert, want, got, refusals, end, trap=None):
+TEMP = re.compile(r"u\d+_L[0-9A-F]{4}_[0-9A-F]{2}#\d+|(?<![\w$])[A-Z]#\d+|\$saved\d*")
+ADDR = re.compile(r"\$[0-9A-F]{4}(?![0-9A-Za-z])")
+PROGRAM = ("block", "fetch", "let", "phi", "store")
+ADDRESSED = ("meta", "pitch")
+
+
+def _exempt(path):
+    """Where a bare address is data: meta, pitch, and a selector's cursor label."""
+    return path[0] in ADDRESSED or (path[0] in ("instruments", "streams") and path[-1] == "cursor")
+
+
+def schema_check(tp):
+    """The refusals a trackerprog object carries by its shape: no program residue.
+
+    A string holding an SSA temp or a bare address outside the addressed
+    sections, an item of the lowered tick, and a producer whose accumulator the
+    document does not define each refuse by name.
+    """
+    out = {}
+
+    def bad(path, detail):
+        cell = "/".join("*" if isinstance(k, int) else k for k in path)
+        out.setdefault((cell, detail), Refusal("program residue", cell, "", detail))
+
+    def walk(x, path):
+        if isinstance(x, dict):
+            if x.get("kind") in PROGRAM and "rank" in x:
+                bad(path, "program block %s" % x["kind"])
+                return
+            for k, v in x.items():
+                walk(k, path + (k,))
+                walk(v, path + (k,))
+        elif isinstance(x, (list, tuple)):
+            for i, v in enumerate(x):
+                walk(v, path + (i,))
+        elif isinstance(x, str):
+            m = TEMP.search(x)
+            if m:
+                bad(path, "temp %s in %r" % (m.group(0), x))
+            elif not _exempt(path):
+                m = ADDR.search(x)
+                if m:
+                    bad(path, "address %s in %r" % (m.group(0), x))
+
+    walk({k: v for k, v in tp.items() if k != "meta"}, ())
+    accs = tp.get("accs") or {}
+    for i, p in enumerate(tp.get("producers") or ()):
+        for a in p.get("accs") or ():
+            if a not in accs:
+                bad(("producers", i, "accs"), "acc %s not in accs" % a)
+        if not p.get("register") and p.get("kind") != "file":
+            bad(("producers", i, "register"), "no register")
+    return list(out.values())
+
+
+def certificate(tune, cert, want, got, refusals, end, trap=None, tp=None):
     """``trackerprog.certificate.json`` (section 2), with the loop claim re-checked.
 
-    Emitted only with no refusal, no divergence and no trap: a render that
-    differs from the source is not a trackerprog, however it is described.
+    Emitted only with no refusal, no divergence, no trap and, given ``tp``, a
+    clean :func:`schema_check`: a render that differs from the source, or an
+    object carrying program residue, is not a trackerprog however it is described.
     """
+    refusals = list(refusals) + (schema_check(tp) if tp is not None else [])
     sub = ((cert or {}).get("subtunes") or [{}])[0]
     digest = (
         hashlib.sha256(json.dumps(cert, sort_keys=True).encode()).hexdigest()[:16] if cert else None

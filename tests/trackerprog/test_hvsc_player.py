@@ -27,16 +27,19 @@ def exemplar(rel, calls=1200):
     if rel not in _T3:
         out = Path(mkdtemp()) / "t3"
         assert pipeline.main([str(tune_file(rel)), "--out", str(out), "--calls", str(calls)]) == 0
-        doc, tp, refusals, numbers, _secs = T3.run(out, calls)
-        _T3[rel] = doc, tp, refusals, numbers, out
-    return _T3[rel]
+        doc, tp, refusals, numbers, _secs, snd = T3.run(out, calls)
+        _T3[rel] = doc, tp, refusals, numbers, out, snd
+    return _T3[rel][:5]
 
 
 @pytest.mark.parametrize("rel", (LINUS, GULDKORN, COMMANDO, EMOMYST))
-def test_the_trackers_and_hubbard_certify_on_the_universal_player(rel):
+def test_the_trackers_and_hubbard_render_exactly_but_carry_program_residue(rel):
     doc, tp, refusals, numbers, out = exemplar(rel)
-    assert refusals == [] and doc["emitted"] and doc["divergence"] is None
+    assert doc["divergence"] is None and doc["trap"] is None
     assert doc["rendered"]["ticks_equal"] == doc["ticks"] == 1200
+    # the object still names SSA temps and addresses: refused by name, not emitted
+    assert refusals and {r.why for r in refusals} == {"program residue"}
+    assert not doc["emitted"] and not (out / "trackerprog.json").exists()
     assert doc["compared"] and doc["dropped"]
     assert doc["end"]["kind"] in ("loop", "fixed_point", "horizon")
     assert {"tokens", "lines", "statements", "blocks", "header_rows", "data_rows", "xz"} <= set(
@@ -50,7 +53,6 @@ def test_the_trackers_and_hubbard_certify_on_the_universal_player(rel):
         "data_rows",
         "xz",
     }
-    assert (out / "trackerprog.json").exists() and (out / "trackerprog.md").exists()
     assert len(tp["score"]["voices"]) == 3 and tp["score"]["regions"]
     assert all(v["order"] and v["patterns"] for v in tp["score"]["voices"])
 
@@ -75,14 +77,16 @@ def test_accumulators_annotate_the_producers_that_step_them():
 def test_the_certificate_names_its_refusals_by_reason(tmp_path):
     doc, _tp, _refusals, _numbers, out = exemplar(EMOMYST)
     cert = json.loads((out / "trackerprog.certificate.json").read_text())
-    assert cert["emitted"] and all(r["why"] in REASONS for r in cert["refusals"])
+    assert not cert["emitted"] and all(r["why"] in REASONS for r in cert["refusals"])
+    assert all(r["cell"] and r["detail"] for r in cert["refusals"])
     assert doc["source"]["tune"] and tmp_path
 
 
 def test_the_emitted_object_carries_no_program_and_the_universal_player_matches_the_oracle():
     _doc, tp, _refusals, _numbers, out = exemplar(GULDKORN)
-    assert "program" not in tp and tp["sound"]["items"]
+    snd = _T3[GULDKORN][5]
+    assert "program" not in tp and "sound" not in tp and snd["items"]
     prog = Tuneprog.load(out / "tuneprog.S4.json")
     want, _trap = emit.oracle(prog, tp, 300)
-    got, trap = emit.replay(tp, 300)
+    got, trap = emit.replay(tp, snd, 300)
     assert trap is None and certify.divergence(want, got) is None

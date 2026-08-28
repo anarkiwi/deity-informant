@@ -10,11 +10,15 @@ REASONS = (
     "unclassified update",
     "score not cursor-shaped",
     "command residue",
+    "guard not in IR",
+    "program residue",
 )
 
 
 @dataclass(frozen=True, slots=True)
-class Refusal:
+class Refusal(Exception):
+    """Named; raised where a lowering cannot go on, carried as data everywhere else."""
+
     why: str
     cell: str
     site: str = ""

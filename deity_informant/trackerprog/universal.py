@@ -2,7 +2,7 @@
 
 A tick runs the producer list in rank order over one memory image. A ``block``
 item sets its flag when one of its forward edges is taken -- each edge a branch
-condition over memory and temps, or an event of the score -- or a fetch resumed
+condition over memory and temps -- or a fetch resumed
 there; every other item runs when its block's flag is set. A ``let`` sets a
 temp, a ``phi`` picks by the predecessor that ran last, a ``store`` writes a
 cell or a register, a ``fetch`` applies the next recorded fetch of its region,
@@ -18,17 +18,14 @@ from .sound import _Unevaluable, evaldata, holds
 
 
 class DataPlayer:
-    """Render a trackerprog whose sound is a producer list (:mod:`.sound`)."""
+    """Render a trackerprog over its lowered tick ``snd`` (:mod:`.sound`)."""
 
-    def __init__(self, tp):
-        snd = tp["sound"]
+    def __init__(self, tp, snd):
         self.items = sorted(snd["items"], key=lambda x: tuple(x["rank"]))
         self.loops = snd["loops"]
-        self.order = snd["order"]
         self.voicevars = set(snd["voicevars"])
         self.rets = snd["rets"]
         self.regs = list(snd["regs"])
-        self.rows = {None if k == "" else int(k): set(v) for k, v in snd["rows"].items()}
         self.m = bytearray.fromhex(snd["image"])
         for a, v in tp["inputs"].items():
             self.m[int(a)] = v
@@ -44,7 +41,7 @@ class DataPlayer:
         self.sid = []
         self.obs = []
         self.tick_no = -1
-        self.env = {"voice": 0, "vi": None, "tick": 0, "rows": self.rows}
+        self.env = {"voice": 0, "tick": 0}
         self.first = {}
         self.entries = {it["uid"]: it for it in self.items if it["kind"] == "fetch"}
         for n, it in enumerate(self.items):
@@ -154,7 +151,6 @@ class DataPlayer:
                 self.tmps[item["name"]] = v
                 if item["name"] in self.voicevars:
                     self.env["voice"] = v
-                    self.env["vi"] = self.order.index(v) if v in self.order else None
             elif k == "phi":
                 best = max(item["alts"], key=lambda alt: self.taken.get(alt[0], -1))
                 if self.taken.get(best[0], -1) < 0:
@@ -171,7 +167,6 @@ class DataPlayer:
     def tick(self):
         self.tick_no += 1
         self.env["tick"] = self.tick_no
-        self.env["vi"] = None
         self.sid = []
         self.skip = None
         self.pass_step = self.step + 1

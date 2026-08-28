@@ -54,7 +54,7 @@ class Player:
         self.prog, self.fetch = prog, fetch
         self.envvars = envvars or {}
         self.watch = watch  # {proc: the name whose value says the voice}; logs block runs
-        self.log = []  # (tick, proc, label, voice value, branch outcome)
+        self.log = []  # (tick, proc, label, voice value)
         self.voice = -1
         self.m = bytearray(prog.image())
         lo, hi = prog.meta.get("load") or (0, 0)
@@ -232,7 +232,7 @@ class Player:
                     n = self.watch.get(name)
                     if n is not None and n in F:
                         self.voice = (name, F[n])
-                    self.log.append([self.tick_no, name, lbl, self.voice, -1])
+                    self.log.append((self.tick_no, name, lbl, self.voice))
                 for s in blk.stmts:
                     t = type(s)
                     if t is Let:
@@ -254,12 +254,8 @@ class Player:
                 elif k is If:
                     taken = self.ev(term.c, F)
                     lbl = term.t if taken else term.f
-                    if self.watch is not None:
-                        self.log[-1][4] = 1 if taken else 0
                 elif k is Switch:
                     v = self.ev(term.e, F)
-                    if self.watch is not None:
-                        self.log[-1][4] = v
                     lbl = next((l for c, l in term.cases if c == v), None)
                     if lbl is None:
                         raise TrapError("switch", "$%04X value %d" % (blk.src, v))

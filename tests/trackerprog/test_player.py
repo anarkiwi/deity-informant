@@ -4,11 +4,14 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tuneprog"))
 
-from deity_informant.trackerprog import certify, emit, lift, player, region  # noqa: E402
+from deity_informant.trackerprog import certify, emit, lift, player, region, sound  # noqa: E402
 from deity_informant.trackerprog.refuse import Refusal  # noqa: E402
 from deity_informant.tuneprog import pipeline, provenance  # noqa: E402
+from deity_informant.tuneprog.ir import Const, If, Load  # noqa: E402
 from deity_informant.tuneprog.history import history  # noqa: E402
 from deity_informant.tuneprog.verify import certify as certified  # noqa: E402
 
@@ -127,15 +130,15 @@ def t3(code=TUNE, calls=64, cert=None, data=None):
     cert = cert or certified(prog, ver)
     t0 = provenance.document(view, st, names)
     t2 = lift.document(view, names, hist, cert)
-    tp, refusals, rec = emit.lift(prog, view, names, t0, None, t2, cert, trace.inputs)
-    return tp, refusals, rec, ver, prog
+    tp, refusals, rec, snd = emit.lift(prog, view, names, t0, None, t2, cert, trace.inputs)
+    return tp, refusals, rec, ver, prog, snd
 
 
 def test_the_snippet_lifts_its_fetch_as_data_and_renders_its_observable_exactly():
-    tp, refusals, rec, ver, _prog = t3()
+    tp, refusals, rec, ver, _prog, snd = t3()
     assert refusals == []
     assert certify.divergence(ver.obs, rec) is None
-    got, trap = emit.replay(tp)
+    got, trap = emit.replay(tp, snd)
     assert trap is None and certify.divergence(ver.obs, got) is None
     (voice,) = tp["score"]["voices"]
     assert voice["order"] and voice["patterns"]
@@ -147,7 +150,7 @@ def test_the_snippet_lifts_its_fetch_as_data_and_renders_its_observable_exactly(
 
 
 def test_an_instrument_table_is_the_selector_the_envelope_writes_index():
-    tp, refusals, _rec, ver, _prog = t3(INS_TUNE, data=ins_blocks())
+    tp, refusals, _rec, ver, _prog, snd = t3(INS_TUNE, data=ins_blocks())
     assert refusals == []
     ins = tp["instruments"]
     assert ins["entries"] == INSTRUMENTS == ins["used"] and sorted(ins["rows"]) == [1, 2, 3]
@@ -159,23 +162,28 @@ def test_an_instrument_table_is_the_selector_the_envelope_writes_index():
     # the instrument and note cells under S6's names, and the row clock a pattern end resets
     assert {c[0] for c in sets} == {"ad_idx", "freq_lo_idx", "phase"}
     assert {c[1] for c in sets if c[0] == "ad_idx"} == {1, 2, 3}
-    got, _trap = emit.replay(tp)
+    got, _trap = emit.replay(tp, snd)
     assert certify.divergence(ver.obs, got) is None
 
 
 def test_the_certificate_binds_the_source_and_states_both_halves():
-    tp, refusals, _rec, ver, _prog = t3()
-    got, _trap = emit.replay(tp)
+    tp, refusals, _rec, ver, _prog, snd = t3()
+    got, _trap = emit.replay(tp, snd)
     doc = certify.certificate("snippet", CERT, ver.obs, got, refusals, tp["score"]["end"])
     assert doc["divergence"] is None and doc["emitted"] and doc["ticks"] == 64
+    checked = certify.certificate(
+        "snippet", CERT, ver.obs, got, refusals, tp["score"]["end"], tp=tp
+    )
+    assert not checked["emitted"] and checked["divergence"] is None
+    assert {r["why"] for r in checked["refusals"]} == {"program residue"}
     assert doc["compared"] and doc["dropped"] and doc["loop"]["period"] == 40
     assert doc["end"]["kind"] == "loop"
     assert json.loads(json.dumps(doc)) == doc
 
 
 def test_a_refusal_or_a_divergence_means_no_emit_but_a_stated_render():
-    tp, _refusals, _rec, ver, _prog = t3()
-    got, _trap = emit.replay(tp)
+    tp, _refusals, _rec, ver, _prog, snd = t3()
+    got, _trap = emit.replay(tp, snd)
     bad = [Refusal("command residue", "sid[0].ctrl = x", "$1000")]
     doc = certify.certificate("snippet", CERT, ver.obs, got, bad, tp["score"]["end"])
     assert not doc["emitted"] and doc["divergence"] is None and doc["refusals"][0]["cell"]
@@ -190,42 +198,45 @@ def test_a_refusal_or_a_divergence_means_no_emit_but_a_stated_render():
 
 
 def test_a_changed_fetch_is_a_named_divergence():
-    tp, _refusals, _rec, ver, _prog = t3()
+    tp, _refusals, _rec, ver, _prog, snd = t3()
     key = next(iter(tp["score"]["fetches"]))
     f = next(f for f in tp["score"]["fetches"][key] if f["cmds"])
     f["cmds"][0][2] ^= 1
-    got, _trap = emit.replay(tp)
+    got, _trap = emit.replay(tp, snd)
     assert certify.divergence(ver.obs, got) is not None
 
 
 def test_the_print_measures_and_the_document_round_trips():
-    tp, _refusals, _rec, ver, _prog = t3()
+    tp, _refusals, _rec, ver, _prog, snd = t3()
     md = emit.render(tp)
+    assert "## sound" not in md and "## producers" in md
     n = emit.numbers(tp, md)
     assert set(n) >= {"tokens", "lines", "statements", "blocks", "header_rows", "data_rows", "xz"}
     assert n["statements"] > 0 and n["tokens"] > n["lines"] > 0 and n["xz"] > 0
-    back = emit.from_json(json.loads(json.dumps(emit.to_json(tp))))
-    got, trap = emit.replay(back)
+    doc = json.loads(json.dumps(emit.to_json(tp)))
+    assert "sound" not in tp and len(doc) == len(emit.KEYS) + 1
+    back = emit.from_json(doc)
+    got, trap = emit.replay(back, snd)
     assert trap is None and certify.divergence(ver.obs, got) is None
     assert back["score"]["fetches"].keys() == tp["score"]["fetches"].keys()
 
 
 def test_a_second_entry_is_a_sample_stream_and_a_varying_input_is_external():
-    _tp, _refusals, _rec, _ver, prog = t3()
+    _tp, _refusals, _rec, _ver, prog, _snd = t3()
     prog.meta["schedule"] = [prog.meta["entry"], {"kind": "nmi", "addr": 0x1234}]
     view, st, names = pipeline.present(prog)
     t0 = provenance.document(view, st, names)
     t2 = {"pitch": None, "score": [], "refusals": [], "selectors": [], "streams": []}
     t2["horizon"] = {"ticks": 4}
     inputs = [(0, 0x1000, 0, 0xD012, 1), (1, 0x1000, 0, 0xD012, 2)]
-    _tp2, refusals, _rec = emit.lift(prog, view, names, t0, None, t2, CERT, inputs)
+    _tp2, refusals, _rec, _snd = emit.lift(prog, view, names, t0, None, t2, CERT, inputs)
     got = {(r.why, r.cell, r.site) for r in refusals}
     assert ("sample stream", "mode_vol", "$1234") in got
     assert ("external input", "$D012", "") in got
 
 
 def test_a_fetch_region_is_single_entry_and_its_cursors_are_its_own():
-    _tp, _refusals, _rec, _ver, prog = t3()
+    _tp, _refusals, _rec, _ver, prog, _snd = t3()
     tables = {(PAT0, PAT0 + 3), (PAT1, PAT1 + 2), (ORDER, ORDER + 2)}
     F, bad = region.fetch(prog, tables)
     assert bad == [] and len(F.regions) >= 1
@@ -235,22 +246,35 @@ def test_a_fetch_region_is_single_entry_and_its_cursors_are_its_own():
 
 
 def test_the_player_refuses_a_score_it_has_run_out_of():
-    tp, _refusals, _rec, _ver, _prog = t3()
+    tp, _refusals, _rec, _ver, _prog, snd = t3()
     for key in tp["score"]["fetches"]:
         tp["score"]["fetches"][key] = tp["score"]["fetches"][key][:1]
-    _got, trap = emit.replay(tp)
+    _got, trap = emit.replay(tp, snd)
     assert trap and trap["trap"] == "score exhausted"
     assert player.DEFAULT_ORDER == ("ad", "sr", "ctrl")
 
 
 def test_the_universal_player_carries_no_program_and_matches_the_oracle():
-    tp, refusals, _rec, ver, prog = t3(INS_TUNE, data=ins_blocks())
-    assert refusals == [] and "program" not in tp
-    snd = tp["sound"]
+    tp, refusals, _rec, ver, prog, snd = t3(INS_TUNE, data=ins_blocks())
+    assert refusals == [] and "program" not in tp and "sound" not in tp
     kinds = {it["kind"] for it in snd["items"]}
     assert {"block", "let", "store", "fetch"} <= kinds
-    assert all(it["kind"] != "store" or it["cls"] != "io" or it["pc"] for it in snd["items"])
     want, _trap = emit.oracle(prog, tp)
-    got, trap = emit.replay(tp)
+    got, trap = emit.replay(tp, snd)
     assert trap is None and certify.divergence(want, got) is None
     assert certify.divergence(ver.obs, got) is None
+
+
+def test_a_guard_the_data_cannot_express_is_a_named_refusal():
+    tp, _refusals, _rec, _ver, prog, snd = t3()
+    assert all(it["kind"] != "store" or it["cls"] != "io" or it["pc"] for it in snd["items"])
+    F, _bad = region.fetch(prog, {tuple(t) for t in tp["score"]["tables"]})
+    unit = sound.Unit(prog, F)
+    L = sound.Lowering(prog, F, unit, (None, []))
+    p = next(u for u in unit.blocks if type(u.term) is If)
+    p.term = If(Load("io", Const(0xD012, 2), 1, 0xD012, 0xD012, -1), p.term.t, p.term.f)
+    with pytest.raises(Refusal) as info:
+        L.edge(p, 0)
+    r = info.value
+    assert r.why == "guard not in IR" and r.cell == "%s:%s" % (p.proc, p.label)
+    assert r.site.startswith("$") and "input" in r.detail

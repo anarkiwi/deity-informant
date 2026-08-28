@@ -2,9 +2,8 @@
 
 The certified tick outside the fetch regions is inlined into one ranked list of
 stores. Each store becomes a *producer* -- a register or cell written under its
-control dependences -- when every guard is an event of the score (a row, or
-``k`` ticks after or before one, read off the oracle's branch outcomes) or a
-condition over cells the data alone sets, and its value reads only such cells,
+control dependences -- when every guard is a condition over cells the data alone sets, and its value
+reads only such cells,
 the image's tables, the voice index or a fetch's temps. A cell every store
 into which reduces is *latched*; a cell only the fetches set is a *command*
 cell; a cell the tick steps from a guard the data cannot express -- a counter,
@@ -24,10 +23,7 @@ from ..tuneprog.irwalk import walk
 from .refuse import Refusal
 from .region import _control
 
-TABLE = ("const", "init_constant")
-MAXK = 4
 DEPTH = 24
-EVENTS = ("row", "after", "before")
 
 Guard = namedtuple("Guard", "uid edge")  # a control dependence: decider block, edge index
 
@@ -201,25 +197,7 @@ class Unit:
         return out
 
 
-# ---- the oracle's branch outcomes -------------------------------------------------
-def voices_of(log):
-    """``{(proc, raw): index}``: the voice a logged value of a watched name means."""
-    seen = {}
-    for _t, _p, _l, v, _o in log:
-        if v is not None and v != -1:
-            seen.setdefault(v[0], set()).add(v[1])
-    return {(p, raw): i for p, vals in seen.items() for i, raw in enumerate(sorted(vals))}
-
-
-def outcomes(log, index):
-    """``{(proc, label): {(tick, voice): outcome}}`` over the run."""
-    out = {}
-    for t, p, l, v, o in log:
-        vi = index.get(v) if v not in (None, -1) else None
-        out.setdefault((p, l), {})[(t, vi)] = o
-    return out
-
-
+# ---- the copy index ---------------------------------------------------------------
 def _index_names(s, rgn):
     """The names a statement's state-cell addresses read."""
     exprs = [s.e] if type(s) is Let else [s.a] if type(s) is Store else []
@@ -246,54 +224,19 @@ def watch_vars(prog):
     return out
 
 
-def event_series(rows, kind, k):
-    """The ticks a predicate holds for each voice: ``{voice: set}``."""
-    if kind == "row":
-        return {v: set(ts) for v, ts in rows.items()}
-    if kind == "after":
-        return {v: {t + k for t in ts} for v, ts in rows.items()}
-    return {v: {t - k for t in ts} for v, ts in rows.items()}
-
-
-def classify(series, rows):
-    """The event whose truth equals a decider's outcomes on the ticks it ran, or ``None``.
-
-    ``series`` is ``{(tick, voice): outcome}``; a decider outside the voice loop
-    is checked against any voice's rows.
-    """
-    if all(o in (0, 1) for o in series.values()):
-        for kind in EVENTS:
-            for k in range(1, MAXK + 1) if kind != "row" else (0,):
-                ev = event_series(rows, kind, k)
-                any_ = set().union(*ev.values()) if ev else set()
-                if all(
-                    o == int(t in (ev.get(v, ()) if v is not None else any_))
-                    for (t, v), o in series.items()
-                ):
-                    return ["ev", kind, k]
-        if all(o == 1 for o in series.values()):
-            return ["k", 1]
-        if all(o == 0 for o in series.values()):
-            return ["k", 0]
-    return None
-
-
 # ---- the reduction --------------------------------------------------------------
 class Lowering:
     """Producers out of the inlined tick: what reduces, and what refuses by name.
 
-    A block runs when one of its forward edges is taken (:func:`~.universal`
+    A block runs when one of its forward edges is taken (:mod:`.universal`
     keeps the flag per pass); a ``Let`` is a temp set at its own rank, so a
     value read before a store in the same block stays the value read; a ``Phi``
     picks the argument of the predecessor that ran last; a call's parameters and
     returns are temps at the call and at each exit; a loop is its latch edge.
     """
 
-    def __init__(self, prog, fetch, unit, log, rows, order):
+    def __init__(self, prog, fetch, unit, order):
         self.prog, self.fetch, self.unit = prog, fetch, unit
-        self.index = voices_of(log)
-        self.outcomes = outcomes(log, self.index)
-        self.rows = rows
         self.voice_loop, self.order = order
         self.voicevars = self._voicevars()
         self.refusals = []
@@ -349,13 +292,18 @@ class Lowering:
 
     # ---- edges ------------------------------------------------------------------
     def edge(self, p, k):
-        """The guard on edge ``k`` out of block ``p``: its branch, as data or an event."""
+        """The guard on edge ``k`` out of block ``p``: its branch as data, or a refusal."""
         if k < 0:
             return []
         if type(p.term) is If:
             cond, truth = self.expr(p.term.c), 1 if k == 0 else 0
             if isinstance(cond, str):
-                return self.event(p, truth, cond)
+                raise Refusal(
+                    "guard not in IR",
+                    "%s:%s" % (p.proc, p.label),
+                    "$%04X" % self.prog.procs[p.proc].blocks[p.label].src,
+                    cond,
+                )
             return [["cond", cond, truth]]
         if type(p.term) is Switch:
             cond = self.expr(p.term.e)
@@ -363,15 +311,6 @@ class Lowering:
                 return "a dispatch the data cannot decide at %s:%s" % (p.proc, p.label)
             return [["cond", ["bin", "==", cond, ["k", p.term.cases[k][0]], 1], 1]]
         return []
-
-    def event(self, d, truth, why):
-        """A branch the data cannot express, as the score event its outcomes equal."""
-        series = self.outcomes.get((d.proc, d.label))
-        multi = sum((b.proc, b.label) == (d.proc, d.label) for b in self.unit.blocks) > 1
-        ev = classify(series, self.rows) if series and not multi else None
-        if ev is None:
-            return "branch at %s:%s reduces to no event (%s)" % (d.proc, d.label, why)
-        return [["cond", ev, truth]]
 
     def block(self, u):
         """The block item: one alternative per forward edge in, and the fetches resuming here."""
@@ -382,7 +321,10 @@ class Lowering:
                 continue
             if puid in self.unbound:
                 return None, "reached only through a refused block"
-            g = self.edge(p, k)
+            try:
+                g = self.edge(p, k)
+            except Refusal as r:
+                return None, r
             if isinstance(g, str):
                 return None, g
             alts.append([puid, g])
@@ -455,7 +397,10 @@ class Lowering:
                 p = self.unit.blocks[puid]
                 if puid in self.unbound:
                     return None, "reached only through a refused block"
-                g = self.edge(p, k)
+                try:
+                    g = self.edge(p, k)
+                except Refusal as r:
+                    return None, r
                 if isinstance(g, str):
                     return None, g
                 alts.append([puid, g])
@@ -543,7 +488,9 @@ class Lowering:
             self.unbound |= unbound
         for u, i, kind, s, item, why in got:
             if item is None:
-                if type(s) is Store:
+                if isinstance(why, Refusal):
+                    self.refusals.append(why)
+                elif type(s) is Store:
                     what = "sid[$%04X]" % s.lo if s.cls == "io" else "$%04X" % s.lo
                     self.refusals.append(
                         Refusal(
@@ -582,7 +529,10 @@ class Lowering:
             edges = []
             for l in latches:
                 p = self.unit.blocks[l]
-                g = self.edge(p, succs(p.term).index(hl))
+                try:
+                    g = self.edge(p, succs(p.term).index(hl))
+                except Refusal:
+                    g = []
                 edges.append([l, [] if isinstance(g, str) else g])
             out.append(
                 {
@@ -627,23 +577,15 @@ def evaldata(e, env, mem=None, tmps=None):
 
 
 def holds(g, env, mem=None, tmps=None):
-    """One guard: ``["cond", expr | event, truth]``."""
+    """One guard: ``["cond", expr, truth]``."""
     _c, x, truth = g
-    if x[0] == "ev":
-        rows = env.get("rows")
-        v = env.get("vi")
-        ts = rows.get(v, ()) if v is not None else set().union(*rows.values())
-        t = env["tick"] - (x[2] if x[1] == "after" else -x[2] if x[1] == "before" else 0)
-        got = t in ts
-    else:
-        got = evaldata(x, env, mem, tmps) != 0
-    return got == bool(truth)
+    return (evaldata(x, env, mem, tmps) != 0) == bool(truth)
 
 
-def voice_loop(unit, log, index):
+def voice_loop(unit, log):
     """``(loop id, raw index values in iteration order)`` of the loop that runs the voices."""
     per = {}
-    for t, p, l, v, _o in log:
+    for t, p, l, v in log:
         if t != 0:
             break
         per.setdefault((p, l), []).append(v)
@@ -654,14 +596,3 @@ def voice_loop(unit, log, index):
         if len(vals) == 3 and len(set(raws)) == 3:
             return lid, raws
     return None, []
-
-
-def rows_of(fetches, copyvar):
-    """``{voice index: fetch ticks}`` from the recorded fetches."""
-    out = {}
-    for key, got in fetches.items():
-        var, vals = copyvar.get(key, (None, []))
-        for f in got:
-            v = vals.index(f["env"][var]) if var else None
-            out.setdefault(v, set()).add(f["tick"])
-    return out

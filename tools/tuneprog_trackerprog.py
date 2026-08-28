@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # pylint: disable=wrong-import-position
 from deity_informant.trackerprog import certify, emit, lift  # noqa: E402
+from deity_informant.trackerprog.refuse import Refusal  # noqa: E402
 from deity_informant.tuneprog import accum, pipeline, provenance  # noqa: E402
 from deity_informant.tuneprog.history import history  # noqa: E402
 from deity_informant.tuneprog.ir import Tuneprog  # noqa: E402
@@ -42,7 +43,7 @@ def documents(out, prog, view, st, names, hist, ver, cert):
 
 
 def run(out, calls=None):
-    """``(certificate, trackerprog, refusals, numbers, seconds)`` of one output directory."""
+    """``(certificate, trackerprog, refusals, numbers, seconds, lowered tick)`` of one directory."""
     t0s = time.process_time()
     prog = Tuneprog.load(out / "tuneprog.S4.json")
     s6 = json.loads((out / "tuneprog.S6.json").read_text())
@@ -53,11 +54,12 @@ def run(out, calls=None):
     view, st, _n = pipeline.present(prog)
     names = Names.from_dict(s6)
     t0, t1, t2 = documents(out, prog, view, st, names, hist, ver, cert)
-    tp, refusals, _rec = emit.lift(prog, view, names, t0, t1, t2, cert, trace.inputs)
-    got, trap = emit.replay(tp, len(ver.obs))
+    tp, refusals, _rec, snd = emit.lift(prog, view, names, t0, t1, t2, cert, trace.inputs)
+    got, trap = emit.replay(tp, snd, len(ver.obs))
     doc = certify.certificate(
-        prog.meta.get("name"), cert, ver.obs, got, refusals, tp["score"]["end"], trap
+        prog.meta.get("name"), cert, ver.obs, got, refusals, tp["score"]["end"], trap, tp
     )
+    refusals = [Refusal(**r) for r in doc["refusals"]]
     md = emit.render(tp)
     n = emit.numbers(tp, md)
     src = out / "tuneprog.md"
@@ -68,7 +70,7 @@ def run(out, calls=None):
     if doc["emitted"]:
         (out / "trackerprog.json").write_text(json.dumps(emit.to_json(tp)))
         (out / "trackerprog.md").write_text(md)
-    return doc, tp, refusals, n, time.process_time() - t0s
+    return doc, tp, refusals, n, time.process_time() - t0s, snd
 
 
 def main(argv=None):
@@ -81,7 +83,7 @@ def main(argv=None):
     rc = 0
     for name in args.out:
         out = Path(name)
-        doc, tp, refusals, n, secs = run(out, args.calls)
+        doc, tp, refusals, n, secs, _snd = run(out, args.calls)
         for r in doc["refusals"]:
             print("  refusal %-22s %-40s %s" % (r["why"], r["cell"][:40], r["site"]))
         ins = tp["instruments"]

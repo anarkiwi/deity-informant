@@ -6,8 +6,10 @@ cells it set. The sounds are the tables and recurrences the rest of the tick
 reads -- the instrument records the envelope writes index (T2's selector, or the
 pointer table a record base goes through), the streams T2 walked, T1's
 accumulators -- and the tick outside the regions is the producer list: every
-SID write site of T0 with the guards it stands under. Nothing here reads the
-observable; :mod:`.certify` compares the replay with it.
+SID write site of T0 with the guards it stands under. The lowered tick
+(:mod:`.sound`) the universal player replays is returned beside the trackerprog,
+never inside it. Nothing here reads the observable; :mod:`.certify` compares
+the replay with it.
 """
 
 from __future__ import annotations
@@ -439,7 +441,7 @@ def _envvars(fetch, prog):
 
 
 def lift(prog, view, names, t0, t1, t2, cert, inputs=()):
-    """``(trackerprog, refusals, recorded observable)``: the lift, from the data alone."""
+    """``(trackerprog, refusals, recorded observable, lowered tick)``: the lift, from the data."""
     refusals = [Refusal(**r) if isinstance(r, dict) else r for r in t2.get("refusals") or ()]
     refusals = [r for r in refusals if isinstance(r, Refusal)]
     for entry in (prog.meta.get("schedule") or [])[1:]:
@@ -504,32 +506,27 @@ def lift(prog, view, names, t0, t1, t2, cert, inputs=()):
             "fetches": {"%s:%s" % k: v for k, v in P.fetches.items()},
         },
         "globals": {},
-        "sound": snd,
         "inputs": pins,
     }
-    return tp, list({(r.why, r.cell, r.site): r for r in refusals}.values()), obs
+    return tp, list({(r.why, r.cell, r.site): r for r in refusals}.values()), obs, snd
 
 
 def sound_of(prog, fetch, P, t0, image, regs):
     """The producer list (:mod:`.sound`) off the recording run's block log."""
     unit = sound.Unit(prog, fetch)
-    index = sound.voices_of(P.log)
-    order = sound.voice_loop(unit, P.log, index)
-    rows = sound.rows_of(P.fetches, _copyvar(P.fetches))
-    L = sound.Lowering(prog, fetch, unit, P.log, rows, order)
+    order = sound.voice_loop(unit, P.log)
+    L = sound.Lowering(prog, fetch, unit, order)
     items, refusals = L.run()
     tick = prog.procs[prog.meta["tick_proc"]]
     return {
         "items": items,
         "loops": L.loops(),
-        "order": order[1],
         "voicevars": sorted(L.voicevars),
         "rets": {
             "params": [[i, REGVAR[i]] for i in tick.params],
             "rets": [[i, "$ret%d" % j] for j, i in enumerate(tick.rets)],
         },
         "regs": regs,
-        "rows": {"" if v is None else str(v): sorted(ts) for v, ts in rows.items()},
         "image": image.hex(),
     }, refusals
 
@@ -560,9 +557,9 @@ def fetch_of(tp):
     return F
 
 
-def replay(tp, ticks=None):
-    """``(observable, trap)``: the trackerprog rendered on the universal player."""
-    return universal.DataPlayer(tp).render(ticks or tp["meta"]["horizon"])
+def replay(tp, snd, ticks=None):
+    """``(observable, trap)``: the trackerprog rendered on the universal player over ``snd``."""
+    return universal.DataPlayer(tp, snd).render(ticks or tp["meta"]["horizon"])
 
 
 def oracle(prog, tp, ticks=None):
@@ -577,7 +574,7 @@ def oracle(prog, tp, ticks=None):
 
 # ---- the print and its measure -----------------------------------------------------
 def render(tp):
-    """``trackerprog.md``: meta, pitch, instruments, streams, accumulators, producers, score."""
+    """``trackerprog.md``: meta, pitch, instruments, streams, accs, producers, score."""
     m = tp["meta"]
     ins = tp["instruments"]
     out = [
@@ -645,17 +642,6 @@ def render(tp):
         tags = "".join(" [%s]" % a for a in p["accs"])
         when = (" if " + " and ".join(p["when"])) if p["when"] else ""
         out.append("%s%s%s" % (p["print"], tags, when))
-    out += ["```", "", "## sound", "", "```"]
-    snd = tp.get("sound") or {"items": []}
-    kinds = {}
-    for it in snd["items"]:
-        kinds[it["kind"]] = kinds.get(it["kind"], 0) + 1
-    out.append(" ".join("%s %d" % kv for kv in sorted(kinds.items())))
-    for it in snd["items"]:
-        if it["kind"] == "store" and it["cls"] == "io":
-            out.append("%s sid[%s] = %s" % (it["pc"], fmt(it["addr"]), fmt(it["value"])))
-        elif it["kind"] == "fetch":
-            out.append("fetch %s" % it["region"])
     out += ["```", "", "## score", ""]
     for v in tp["score"]["voices"]:
         name = "global" if v["copy"] is None else "voice %d" % v["copy"]
@@ -673,26 +659,6 @@ def render(tp):
                 )
         out += ["```", ""]
     return "\n".join(out)
-
-
-def fmt(e):
-    """A data expression, compactly."""
-    k = e[0]
-    if k == "k":
-        return "$%X" % e[1] if e[1] > 9 else str(e[1])
-    if k == "tmp":
-        return e[1]
-    if k == "voice":
-        return "v"
-    if k == "mem":
-        return "m%d[%s]" % (e[2], fmt(e[1])) if e[2] != 1 else "m[%s]" % fmt(e[1])
-    if k == "bin":
-        return "(%s %s %s)" % (fmt(e[2]), e[1], fmt(e[3]))
-    if k == "sel":
-        return "sel(%s)" % ", ".join(fmt(v) for _w, v in e[1])
-    if k == "ev":
-        return "%s%s" % (e[1], e[2] or "")
-    return repr(e)
 
 
 TOKEN = re.compile(r"\$?\w+|\S")
@@ -722,7 +688,7 @@ def numbers(tp, md):
     voices = tp["score"]["voices"]
     ins = tp["instruments"]
     got["statements"] = sum(len(r) for v in voices for r in v["patterns"].values()) + len(
-        (tp.get("sound") or {}).get("items") or ()
+        tp["producers"]
     )
     got["blocks"] = (
         sum(len(v["patterns"]) for v in voices)
@@ -757,7 +723,6 @@ KEYS = (
     "producers",
     "score",
     "globals",
-    "sound",
     "inputs",
 )
 
