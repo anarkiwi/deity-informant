@@ -84,12 +84,14 @@ def guardpath(proc, sites=False):
     A loop's exit test is not a guard on the body that precedes it: that block ran
     before the test, and its dependence on it runs through the back edge -- one
     more iteration, not this one. Keeping it puts the last iteration's own index in
-    the guards of every store a rerolled loop makes.
+    the guards of every store a rerolled loop makes. A test that leaves the
+    procedure outright (``if c: return``) guards every block after it.
     """
     g = cfg(proc)
     after = afterwrites(proc)
     ipd = postdoms(g, proc, EXIT)
     pd = _domsets(ipd, [n for n in ipd if n in proc.blocks])
+    pd[EXIT] = [EXIT]  # a branch straight out of the procedure guards all that follows it
     idom = idoms(proc, g)
     inloop = _inloop(natural_loops(g, idom, preds_of(proc)))
     dom, out = _domsets(idom, proc.blocks), {lbl: [] for lbl in proc.blocks}

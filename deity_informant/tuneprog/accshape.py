@@ -11,6 +11,8 @@ from collections import namedtuple
 
 from .accguard import _domsets, cellof, guardpath, key_of, opened, propagate, reads, unpin
 from .accguard import scratch, valnames, EMPTY, _inloop
+import networkx as nx
+
 from .graph import cfg, idoms, natural_loops, preds_of, rpo
 from .idioms import CMP, is_one
 from .ir import Bin, Call, Const, Let, Load, R16, REGIDX, REGVAR, Store, Var, W16
@@ -134,6 +136,34 @@ class Ctx:
         return tuple(
             (proc, d, len(p.blocks[d].stmts)) for d, *_g in self.guardsites(proc).get(block, ())
         )
+
+    def reach(self, proc):
+        """``{label: the labels a forward path (no back edge) leads to}`` of one procedure."""
+
+        def make():
+            p = self.prog.procs[proc]
+            g = cfg(p).copy()
+            g.remove_edges_from((l, h) for h, (_b, ls) in self.loops(proc).items() for l in ls)
+            return {lbl: set(nx.descendants(g, lbl)) for lbl in p.blocks}
+
+        return self._memo(("reach", proc), make)
+
+    def exclusive(self, one, two):
+        """True when two call chains cannot both run in one tick: they part at a branch.
+
+        Walked from the root; where the hops first differ inside one procedure,
+        neither block reaches the other forward and no loop holds both.
+        """
+        for (pa, la, _i), (pb, lb, _j) in zip(reversed(one), reversed(two)):
+            if (pa, la) == (pb, lb):
+                continue
+            if pa != pb:
+                return False
+            reach, loops = self.reach(pa), self.inloop(pa)
+            if lb in reach.get(la, ()) or la in reach.get(lb, ()):
+                return False
+            return not (loops.get(la, EMPTY) & loops.get(lb, EMPTY))
+        return False
 
     def chain(self, proc, path):
         """A call chain to the root, innermost hop first: the arm's, completed by the first."""

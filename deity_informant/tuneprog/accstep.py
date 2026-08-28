@@ -26,6 +26,7 @@ from .nodes import At, Sel
 
 State = namedtuple("State", "env parts snaps prev site disp where")
 COPY = "#copy"  # the target's own copy index, bound per copy by :func:`prove`
+END = (float("inf"),)  # a rank past every clause of the tick
 
 
 class Inexact(Exception):
@@ -87,13 +88,14 @@ class Stepper:
                 _n, scale, copies = copies_of(cells, [c])
                 for rid, a in tgt.cells:
                     for k in range(copies):
-                        ranks.setdefault((rid, a + k * max(scale, 1)), set()).add(c.rank)
+                        ranks.setdefault((rid, a + k * max(scale, 1)), set()).add((c.rank, c.chain))
         self.writes = {k: sorted(v) for k, v in ranks.items()}
         self.memo, self.busy, self.inputs = {}, set(), {}
         self.bad, self.unnamed = np.zeros(cells.ticks, bool), {}
 
-    def epoch(self, cell, at):
-        ws = self.writes.get(cell) or ()
+    def epoch(self, cell, at, chain):
+        """``pre``/``post``/``mid``: the read against the writes a tick can make beside it."""
+        ws = [r for r, ch in self.writes.get(cell) or () if not self.ctx.exclusive(chain, ch)]
         if not ws or ws[0] > at:
             return "pre"
         return "post" if ws[-1] < at else "mid"
@@ -123,8 +125,12 @@ class Stepper:
                 raise Inexact("operator %s" % e.op, st.site)
             return got, {"op": e.op, "a": ja, "b": jb, "w": e.w}
         if t is Load:
+            if e.w == 2:  # a pointer held in data: its two bytes
+                lo = Load(e.cls, e.a, 1, e.lo, e.hi, e.r)
+                hi = Load(e.cls, Bin("+", e.a, Const(1, 1), 2), 1, e.lo, e.hi + 1, e.r)
+                return self.value(Bin("|", lo, Bin("<<", hi, Const(8, 1), 2), 2), at, st)
             if e.w != 1:
-                raise Inexact("wide load", st.site)
+                raise Inexact("load of %d bytes" % e.w, st.site)
             if cellof(e) in self.ctx.scratch:
                 x = self.unscratch(e, st)
                 if x is not None:
@@ -250,7 +256,7 @@ class Stepper:
                     continue
                 kinds[x] = "image"
             else:
-                ep, col = self.epoch((rid, x), at), self.cells.col(rid, x)
+                ep, col = self.epoch((rid, x), at, st.where[3]), self.cells.col(rid, x)
                 v = _lag(col) if ep == "pre" else col if ep == "post" else self.prefix(rid, x, at, st)
                 kinds[x] = ep
             out = np.where(here, v, out)
@@ -275,8 +281,15 @@ class Stepper:
 
     # ---- the epoch between a cell's own writes ------------------------------------
     def prefix(self, rid, x, at, st):
-        """``(rid, x)`` after its clauses of rank below ``at``, from last tick's value."""
-        key = (rid, x, at, tuple(sorted(st.env.items())))
+        """``(rid, x)`` after its clauses of rank below ``at``, from last tick's value.
+
+        The record carries those clauses as the input's own recurrence, and
+        ``complete`` says whether the cell's whole clause set reproduces its column
+        -- a cell the score decoder moves per pattern byte does not, and the acc's
+        own proof is what covers the part it reads.
+        """
+        env = tuple(sorted(st.env.items()))
+        key = (rid, x, at, env)
         if key in self.memo:
             got, entry = self.memo[key]
             self.inputs[entry[0]] = entry[1]
@@ -292,8 +305,21 @@ class Stepper:
             self.bad = was
         entry = ("%s@%s" % (self.ref(rid, x)["name"], _key(at)), {"before": at, "clauses": out})
         self.memo[key] = (val, entry)
-        self.inputs[entry[0]] = entry[1]
+        if at != END:
+            entry[1]["complete"] = self.complete(rid, x, st)
+            self.inputs[entry[0]] = entry[1]
         return val
+
+    def complete(self, rid, x, st):
+        """True when a cell's whole clause set reproduces its column, ``None`` if unreadable."""
+        env = tuple(sorted(st.env.items()))
+        if (rid, x, END, env) in self.busy:
+            return None
+        try:
+            full = self.prefix(rid, x, END, st)
+        except Inexact:
+            return None
+        return bool((full[1:] == self.cells.col(rid, x)[1:]).all())
 
     def _prefix(self, rid, x, at, st):
         prev = _lag(self.cells.col(rid, x))
@@ -301,7 +327,7 @@ class Stepper:
         val, out = prev, []
         for tgt, c in sorted(self.by[rid], key=lambda tc: (tc[1].rank, _pc(tc[1]))):
             cell = self._cellof(tgt, c, rid, x) if c.rank < at else None
-            if cell is None:
+            if cell is None or self.ctx.exclusive(st.where[3], c.chain):
                 continue
             here = sub._replace(env=self._bind(c, x, sub.env), site=_pc(c), where=_where(c))
             self.bad[:] = False
@@ -372,7 +398,7 @@ class Stepper:
         if want is None:
             cell = key_of(c.site.stmt).cells[0]
             if cell not in st.parts:
-                raise Inexact("clause off its target", st.site)
+                raise Inexact("clause writes $%04X, off its target" % cell[1], st.site)
             want = cell[1] + st.disp
         addr, ja = (self.full(0), {"const": 0}) if idx is None else self.value(idx, c.rank, st)
         when &= addr + base == want
