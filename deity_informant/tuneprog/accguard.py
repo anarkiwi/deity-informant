@@ -71,8 +71,11 @@ def afterwrites(proc):
     }
 
 
-def guardpath(proc):
+def guardpath(proc, sites=False):
     """``{label: ((condition, its truth here, the regions written after it), ...)}``.
+
+    With ``sites`` each entry also carries the label of the block whose branch
+    decides it, first.
 
     Control dependence, not dominance: a block a join carries is reached either
     way, however the join itself is dominated. Outermost condition first.
@@ -110,7 +113,10 @@ def guardpath(proc):
             break
     depth = {lbl: len(dom[lbl]) for lbl in proc.blocks}
     return {
-        lbl: tuple((c, v, after[d]) for d, c, v in sorted(gs, key=lambda x: depth.get(x[0], 0)))
+        lbl: tuple(
+            ((d, c, v, after[d]) if sites else (c, v, after[d]))
+            for d, c, v in sorted(gs, key=lambda x: depth.get(x[0], 0))
+        )
         for lbl, gs in out.items()
     }
 
