@@ -393,7 +393,11 @@ the access's own guards over the copy index admit it (`x == 7` picks `T1C4E`).
 T2 then lifts SID Wizard's score — three per-voice orderlists, one pattern channel
 `T1C6A` through `T2478[rec.cursor] + base`, terminator `$FF` — with no refusal,
 and T3 certifies both tunes (table below). The recert of the four exemplars
-reproduces; the presentation change is measured in §6.2's six numbers below.
+reproduces 4/4. The presentation change, measured over the 51 recert programs
+with architecture §6.2's harness: **+54 tokens** (166,945 → 166,999), all in
+the two SID Wizard prints (+27 each, the three `return T1C4E[ptr_4[1406] + y]`
+arms); lines, statements and blocks unchanged (18,258 / 10,211 / 8,358); the
+other 49 prints byte-identical.
 
 **W8 struck by #302 — six tunes certify on the universal player at 0
 divergences.** The lift changed shape rather than growing rules: a row's sound is
