@@ -386,7 +386,7 @@ each with two certified families or a marked single-family exception:
 | effect | Acc | evidence |
 | --- | --- | --- |
 | vibrato (triangle) | **two coupled Accs**: a phase Acc `delta const(+2)`, `bound [0, speedcmp] proved`, `policy reflect-complement`; and a freq Acc whose `phase` is `acc(phase_id)` bit 0 and whose `delta` is `tablestep` or `const` | GT2: `voice[x/7].b14A0 = (a + 2) + c`, `t4 = b14A0 & 1`, then `ghost.freq += ptr` or `-= ptr` (gt2.md:852-862); the bound is the SMC cell `b1096 = T1851[y] & $7F` (gt2.md:812 — speedcmp, **not** the depth) and the complement is `a57 = ~b14A0` (gt2.md:835); `ptr` is either the 16-bit const `(T1851[y] << 8) \| T1863[y]` or `tablestep(FREQ, freq_lo_idx_2, T1863[y])` through the variable-shift loop `p_12E5` (gt2.md:653-684). JCH: the same two-cell shape on its slide/vibrato (jch:82) |
-| vibrato, stateless phase | one freq producer, `delta repeat(tablestep(FREQ, note, ins.vib + 1), n)`, `phase fn(global_counter)` | **single-family exception (Hubbard)**: `phase = counter & 7; if phase >= 4: phase ^= 7`, then `for _ in 0..phase-1: f += step` (commando-floor:215-221). It is the closed form of the triangle every other family accumulates, not a new mechanism; admitted because Hubbard is §9's certified non-tracker exemplar and nothing else makes its `freq` exact |
+| vibrato, stateless phase | one freq producer, `delta repeat(tablestep(FREQ, note, ins.vib + 1), n)`, `phase fn(global_counter)` | **single-family exception (Hubbard)**: `phase = counter & 7; if phase >= 4: phase ^= 7`, then `for _ in 0..phase-1: f += step` (commando-floor:215-221). It is the closed form of the triangle every other family accumulates, not a new mechanism; admitted because Hubbard is §9's certified non-tracker exemplar and nothing else makes its `freq` exact. T1 reads the `phase` off the counter that decides the count (`accrule.fn_phase`) and verifies the producer against the register, not the cell (#298) |
 | tone portamento | target freq, `policy clamp(pitch[target])`, `delta const`, `links [reset(vibrato phase)]` | GT2 `p_10AB` case 3: the 16-bit compare chain against `FREQ[freq_lo_idx]`, snapping in `p_1327` (gt2.md:798-801). JCH's slide is the same shape with the compare on its own target |
 | free slide | target freq, `policy halt` or `wrap` at width, `delta field(cell, mask)`, `phase bit(cell, 0)` | Hubbard: `d = voice[v].porta & $7E; freq += -d if porta & 1 else d` — a free ±step ramp with **no target**, so this row and not the portamento row (commando-floor:236-238). JCH slide acc (jch:82) |
 | pulse sweep (bounce) | target pw, `policy reflect`, `bound [$8xx, $Exx] proved`, `rate` a divider, `phase cell != 0` | Hubbard: `pw += d` until `pw_hi == $E`, down until `$8`; `pwdir` the phase, `pwdelay` the divider, `ins.pw` the instrument-scoped value (commando-floor:222-233). JCH `rec6` segments, direction column `& $80` (jch.md:527) |
@@ -424,6 +424,27 @@ pulse run:
 | **a loop's exit test is not a guard on its body** | control dependence through a **back edge** says one more iteration follows, not that this block ran. Dropped when the test does not dominate the block and both sit in one loop body; kept for a real `break`, which does dominate what follows it | JCH `p_10E9`'s `for v in 2, 1, 0` (`(X#2 - 1) & $80` was landing in every store's guards), Hubbard `oscillator`'s |
 | **the epoch of a cell the tick moved** | `history` samples once a tick, so a condition beside a store read either the value the tick came in with — stepped, where a divider's own step clause ran — or the one it left with; which one depends on where the read sits, so every condition is read under **both**. A divider's step ran on the ticks its own guards hold, and where those have no history the observable decides | GT2 `voice[].timer_3`, where a reload back onto the value it had moves nothing a post-tick compare can see; Hubbard `timer_5`, read *after* its own reload and not before |
 | **a copy loop's scratch is not one cell** | a cell a copy loop stores at a constant address — its body and everything it calls — holds each copy's value in turn and keeps only the last. A condition on it says *which copy*, so it is dropped like an index; a value on it is opened to the one expression that fills it, whose own reads are indexed by the copy | Hubbard `b5507`/`cursor_5518`, per voice through `p_519B`; JCH `t2`/`t3`, parked in the cursor their own read indexed |
+
+**What #298 added.** Six rules that make a producer no cell column can carry
+readable — the last T1 refusal #297 left, Hubbard's vibrato:
+
+| rule | how T1 reads it | families |
+| --- | --- | --- |
+| **a scratch producer is verified against its register** | a value cell a copy loop reloads before every use carries nothing across ticks, and one column holds the last copy — so the claim is not the cell's history but the SID register T0 says the value lands in, one series per voice out of W1's `TickObs` over the same replay (`accreg`). The record's clauses are evaluated with the copy index bound per voice, and the ticks another T0 site writes any of the same bits are ticks the value the tick left is not this producer's | **single-family exception (Hubbard)**: `acc_2` (`$550A`, site `$5212`), one column three voices a tick through `oscillator`'s `for v in 2, 1, 0`; the hermetic pair is the second half of the rule — the same loop writing `$D400+7v` classifies, and writing `$D404+7v` (an edge, not a level, so no column) refuses |
+| **a register is no one producer's** | the observable's value is what the tick's *last* write left, so a producer's claim holds on the ticks no other site of the same field wrote. `grid.value_index` names the field a register sits in and a pair's halves are two fields of one column, so a site that moves only the other half does not shadow it | Hubbard's freq: the arpeggio `$5386`/`$538C`, the portamento `$52C7`/`$52E2` and the `freq_hi` bounce `$5321`/`$532E` all reach voice `v`'s pair beside `$5227`; SID Wizard's `cutoff_lo`/`cutoff_hi`, one column and two fields |
+| **a counted loop's passes are its bound, or one more** | `loops.repeats` reads a loop tested *after* its body, which runs `bound + 1` times. A loop whose exit test *precedes* the body has already dropped the last pass, and what says so is that test standing in the body's own guards, where #297's back-edge rule would have taken it out | Hubbard `$520B` (`(Y - 1) & $80` guards the add: `b550C` passes); the hermetic `inner:` loop (`DEY`/`BPL`, `dep[v] + 1` passes) |
+| **a shift loop's count is the value it entered with** | the loop counts its cell down to the floor, so the column holds the floor and not the count; the one store that fills the cell outside the loop is what the shift is | Hubbard `$51E4` counts `timer_3` down to `$FF`, so the shift is `rec2[…].b5596`, the instrument byte that filled it; GoatTracker 2 `p_12E5` shifts by `T1863[y]`, a read its loop does not consume, and keeps it |
+| **the counted loop is the innermost one** | a block of a nested loop belongs to every loop around it, and a dictionary of headers fixes no order between them: `accshape.enclosing` takes the smallest body that holds the block, which is both the counted loop and the one order a rerun cannot change | Hubbard's shift loop inside `oscillator`'s voice loop once `p_519B` inlines (the count read `voice[].timer` on some runs and `rec2[…].b5596` on others); the same shape for `$520B` |
+| **an index is a copy selector whether a register or a cell carries it** | #297 read a store at a *constant base* as a copy loop's scratch, which a record a cursor picks is not: it keeps its own column. Only a store with no index at all writes the one cell every copy shares | Hubbard `rec2[…].b5591` and the `sid.reg[b54EB]` writes left the scratch set (29 cells to 21); SID Wizard's `ptr_4` (`$0001`/`$0002`, written at `ptr + 1`) left it too |
+
+One row this section stated differently, corrected here rather than in the
+classifier: **each caller's arm of a pair's half is its own clause.** `_merge`
+keyed a pair's byte stores by their `(procedure, block)`, so a half written from
+three call sites kept one arm and dropped two — the guards of whichever the view
+enumerated last. The arm is its guard path, not its block, and #298 keys it that
+way; Hubbard's `acc_2` reload is the family (three calls of `p_519B` from
+`oscillator`), and it is why the record's `reload` holds on 564 of 1,200 ticks
+rather than none.
 
 Four rows this section stated differently, corrected here rather than in the
 classifier:
@@ -511,6 +532,7 @@ itself have merged.
 | the S6 exports T2 needs (**#293**) | `facts.idxbase`/`cellsrc`/`leaf_reads` and one cell key put record fields into `cellindex`; `facts.cursor_cells` is one cursor rule for scalars, fold slots and split fields alike; `recover.index_relation` serialises the relation as `tuneprog.S6.json`'s **`index`** block; `Names.from_dict` reads the whole document back. Score cursors now carry the role — GT2 `rec[x/7].cursor`/`.cursor_2`/`.cursor_3`, JCH `voice_3[v].cursor`, SW `rec` `+0`…`+6` | `facts`, `recover`, `views` |
 | per-register provenance, T0 (**#294**) | `provenance.py` writes **`tuneprog.T0.json`** beside S6: `{plane, voice_map, image, writes}`, one record per SID write site. Roots are `io` stores whose envelope lies in `$D400..$D418` plus stores into a `sid_image` region rekeyed by the flush delta; `provenance.regvoices` reads the register off the site's base and the voices off its envelope; `expr` substitutes names stopping at every cell S6 names, serialised with `ir.enc` (`R16`/`W16` added to `_NODES`, `W16` gaining `env`); each record's `print` is the `tuneprog.md` line itself | `provenance`, `ir`, `pipeline` |
 | T1, the accumulator plane (**#296**) | `accum.document` writes **`tuneprog.T1.json`** — `{plane, horizon, accs, refusals}` — from a library and `tools/tuneprog_accum.py`, no pipeline artefact moved. `accshape` reads a store's guards as its transitively closed **control dependences** (not its dominators, which a join carries either way) and joins the callers' arguments where a value's free names are its procedure's parameters; `accdelta` is §5's grammar; `accrule` the counter, bound, policy, rate, phase and scope rules; `acchist` evaluates a named-cell expression over `history.py` and runs both verifiers | `accum`, `accshape`, `accdelta`, `accrule`, `acchist` |
+| T1 against the register, not the cell (**#298**) | `accreg.py`: a producer whose value cell is copy-loop **scratch** is replayed against the SID register T0 names, one series per voice out of `Verifier(obs=True)`'s `TickObs` (`grid.value_index` gives the field a register sits in), with the other T0 sites of the same field as the ticks the value is another producer's; `history.History` resolves a byte by its address, since the presentation view's region ids are not the sampled program's; `accdelta.tablestep_exprs`/`unscratch` put the table difference in place of a cell one column cannot carry; `accshape.enclosing`/`onepass` make the counted loop the innermost one and its passes the bound or one more; `accguard._consts` drops an indexed store from the scratch set; `accrule` gains `reload` for a scratch cell, `fn_phase`, and one clause per caller's arm of a pair's half | `accreg`, `acchist`, `accdelta`, `accguard`, `accrule`, `accshape`, `accum`, `grid`, `history` |
 | T1's tick order and its epochs (**#297**) | `graph.rpo` makes the tick's statement order the CFG's reverse postorder, so a reload and the step that follows it compose in one tick; `accguard` splits out of `accshape` at the 500-line rule and holds `key_of`, the control dependences (now with a loop's own back edges taken out), `opened`, the copy-loop `scratch` set and the `propagate` that opens it to the one expression that fills it; `acchist.truth` reads every condition under **both** epochs of a cell the tick moved and `counter_epoch` steps a divider by its own step clauses' guards; `accum` emits `delta.carry` for a named flag and refuses one the tick was given | `accguard`, `accshape`, `acchist`, `accrule`, `accum`, `graph` |
 
 Measured over the 51 recert programs: **849 write sites, 849 prints re-rendering
@@ -521,26 +543,28 @@ and 4 `smc target`. Replay cost from #292, ticks / cells / seconds:
 `sw-emomyst` 12,000 / 129 / 8.0, `commando-song1` 11,780 / 206 / 3.4.
 
 Measured over the four exemplars at their certified horizons — GoatTracker 2
-12,000 ticks, JCH 4,000, SID Wizard 12,000, Hubbard 11,780 — **15 accumulators,
-0 replay divergences, 0 interval escapes, 10 stated refusals** after #297 (10 and
-15 before it), 27 s of CPU:
+12,000 ticks, JCH 4,000, SID Wizard 12,000, Hubbard 11,780 — **16 accumulators,
+0 replay divergences, 0 interval escapes, 9 stated refusals** after #298 (15 and
+10 after #297, 10 and 15 before it), 31 s of CPU:
 
 | tune | accs (policy / `bound.from`) | refusals |
 | --- | --- | --- |
 | `gt2-je-suis-linus` | vibrato phase `reflect-complement`/`observed`, vibrato freq `reflect`/`observed` and the free slide `wrap`/`observed` (both `tablestep`, `phase acc(id)` on the first), filter `wrap`/`observed` (`tabcell`) | 3 `delta` (the wavetable gate cell), 1 `replay` (`ghost.pw_lo`) |
 | `jch-guldkorn-intro` | slide and vibrato freq `wrap`/`projected` (`field`, scope voice); pulse ×2 `reload`/`projected` and cutoff `reload`/`observed`, all three `tabcell` off a `cursor` with a countdown `rate` | none |
 | `sw-emomyst` | filter `split(3, 8)` ×2 `wrap`/`observed` (`tabcell` signed 11), `sid.reg` `clamp`/`projected` and `wrap`/`observed` | 4 `delta`, 1 `replay` |
-| `commando-song1` | portamento `wrap`/`projected` (`field(b5520 & $7E)`, `phase bit(b5520, 0)`, scope voice) and the pulse run `wrap`/`projected` (`tabcell(rec2[…].b5597) + carry($5240, C#41)`, scope instrument) | 1 `replay` (`acc_2`, whose value cell is copy-loop scratch — one column, three voices a tick; it classifies as `repeat(tablestep(…), b550C)` at the 1,200-tick `hvsc` horizon) |
+| `commando-song1` | the vibrato `reload`/`observed` (`repeat(tablestep(FREQ, voice[].freq_idx, timer_3), b550C)`, `phase fn(timer_6)`, scope voice, replayed against each voice's `freq` pair); portamento `wrap`/`projected` (`field(b5520 & $7E)`, `phase bit(b5520, 0)`, scope voice) and the pulse run `wrap`/`projected` (`tabcell(rec2[…].b5597) + carry($5240, C#41)`, scope instrument) | none |
 
 **What T1 does not claim.** An `Acc` states what a producer does, not when the
 tick runs it — that is §4's `commit` order — so the replay accepts a tick the
 value did not move on and refuses every move the plane's own clauses cannot
 make. Where the value a producer *sets* is a table read no name indexes, the
 record states when the producer ran and leaves the value to §4's absolute `set`.
-Hubbard's four effects all replay their moves but not all of them: the tick that
-both reloads a segment and steps it, and the arms whose flags a call return
-supplies, leave moves the plane cannot make, so all three cells refuse rather
-than widen.
+A producer checked against a register claims less again: the register is no one
+producer's, so the record holds on the ticks no other T0 site of the same field
+wrote, and where a competing site's own guard reads a cell the horizon has no
+column for the record leaves that tick to it and says how often (`verify.alien`).
+Hubbard's horizon now carries no refusal; GoatTracker 2's `ghost.pw_lo` and SID
+Wizard's `b1024` still refuse, and their cells are not scratch.
 
 Everything after this is the new `trackerprog/` package beside `tuneprog/`,
 under the same rules (≤ 500 lines per module, hermetic tests, the certificate).

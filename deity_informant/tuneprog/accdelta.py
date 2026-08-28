@@ -6,7 +6,8 @@ One additive term of a recurrence as ``const``, ``field``, ``tabcell`` or
 
 from __future__ import annotations
 
-from .accshape import cellof, maskof, reads, selfread, shift_loop
+from .accguard import opened
+from .accshape import canon, cellof, maskof, onepass, reads, selfread, shift_loop
 from .facts import elem_count
 from .ir import Bin, Const, Load, MASK, R16
 from .irwalk import addr_split, walk
@@ -105,6 +106,69 @@ def tablestep_sources(ctx, cells, byname):
         for k in ((tgt.cells, tgt.cells[0]) if tgt.kind == "pair" else (tgt.cells[0],)):
             out[k] = got
     return out
+
+
+def tablestep_exprs(ctx, byname):
+    """``{cell: (high entry, low entry, the passes its own loop shifts by)}``.
+
+    A cell a copy loop rewrites holds one copy's step at a time, so no column of it
+    replays per copy. The table difference and the count the loop halves it by do:
+    they are the ``tablestep`` itself, read for whichever copy the index names.
+    """
+    out = {}
+    for tgt, cs in sorted(byname.items()):
+        diff = next((c for c in cs if c.kind == "action" and _difference(c.value)), None)
+        shifts = [c for c in cs if c.kind == "opaque" and _halved(c.value, selfread(tgt))]
+        got = (
+            None if diff is None or not shifts else shift_loop(ctx, shifts[0].proc, shifts[0].block)
+        )
+        defs = None if got is None else ctx.defs(shifts[0].proc)
+        n = None if got is None else (_entry(byname, got) or opened(got, defs, prop=ctx.prop))
+        if n is None:
+            continue
+        c = shifts[0]
+        k = Const(0, 1) if onepass(ctx, c.proc, c.block, c.guards) else Const(1, 1)
+        out[tgt.cells[0]] = _difference(diff.value) + (Bin("+", n, k, 2),)
+    return out
+
+
+def _entry(byname, e):
+    """The value a shift loop's count cell is filled with before the loop runs.
+
+    The loop counts the cell down to its floor, so the column holds the floor and
+    not the count; the one store that fills the cell outside the loop does.
+    """
+    key = cellof(e)
+    for tgt, cs in sorted(byname.items()) if key else ():
+        if tgt.kind != "byte" or tgt.cells[0] != key:
+            continue
+        got = [c for c in cs if c.kind == "action"]
+        return got[0].value if got and len({repr(canon(c.value)) for c in got}) == 1 else None
+    return None
+
+
+def unscratch(e, tab):
+    """``e`` with a table-step cell's read replaced by the difference the table states."""
+    t = type(e)
+    key = tuple(e.lo) if t is R16 else (cellof(e) if t is Load else None)
+    got = tab.get(key) if key is not None else None
+    if got is not None:
+        a, b, k = got
+        w = 2 if t is R16 else 1
+        return Bin(">>", Bin("-", _wide(a, w), _wide(b, w), w), k, w)
+    if t is Bin:
+        return Bin(e.op, unscratch(e.a, tab), unscratch(e.b, tab), e.w)
+    if t is Load:
+        return Load(e.cls, unscratch(e.a, tab), e.w, e.lo, e.hi, e.r)
+    return R16(e.lo, e.hi, unscratch(e.a, tab)) if t is R16 else e
+
+
+def _wide(x, w):
+    """A table entry as one byte, or as the little-endian pair that starts at it."""
+    if w == 1:
+        return x
+    hi = Load(x.cls, Bin("+", x.a, Const(1, 1), 2), 1, x.lo, x.hi + 1, x.r)
+    return Bin("|", x, Bin("<<", hi, Const(8, 1), 2), 2)
 
 
 def _difference(e):

@@ -15,7 +15,7 @@ from .graph import cfg, idoms, natural_loops, preds_of, rpo
 from .idioms import CMP, is_one
 from .ir import Bin, Call, Const, Let, Load, R16, REGIDX, REGVAR, Store, Var, W16
 from .irwalk import addr_split, renamer, single_defs, sub_expr, walk
-from .loops import _entry_value, repeats
+from .loops import _entry_value, _exit_tests, repeats
 from .provenance import stops
 
 DEPTH = 3  # call frames a value is chased through before it is left as it stands
@@ -377,9 +377,7 @@ def shift_loop(ctx, proc, block):
     Hubbard's (a second recurrence), so the count is read off the decrement.
     """
     p = ctx.prog.procs[proc]
-    for header, (body, latches) in ctx.loops(proc).items():
-        if block not in body:
-            continue
+    for header, body, latches in enclosing(ctx, proc, block):
         got = repeats(p, header, body, latches)
         if got is not None:
             return got[1]
@@ -394,6 +392,31 @@ def shift_loop(ctx, proc, block):
                     if v is not None:
                         return opened(v, defs)
     return None
+
+
+def enclosing(ctx, proc, block):
+    """The loops whose body holds ``block``, innermost first.
+
+    A block of a nested loop belongs to every loop around it, and the counted one
+    is the nearest: the smallest body that holds it, which is also the one order a
+    dictionary of headers does not fix.
+    """
+    got = sorted((len(b), h, b, l) for h, (b, l) in ctx.loops(proc).items() if block in b)
+    return [(h, b, l) for _n, h, b, l in got]
+
+
+def onepass(ctx, proc, block, guards):
+    """True when a counted loop runs its bound's own value of passes, not one more.
+
+    :func:`~.loops.repeats` reads a loop tested after its body, which runs
+    ``bound + 1`` times whatever the start is. A loop whose exit test *precedes*
+    the body has already dropped the last pass, and what says so is that test
+    standing in the body's own guards -- where a back edge would have taken it out.
+    """
+    p = ctx.prog.procs[proc]
+    got = enclosing(ctx, proc, block)
+    tests = {repr(canon(c)) for c, _t, _at in _exit_tests(p, got[0][1])} if got else set()
+    return any(repr(canon(g)) in tests for g, _t, _w in guards)
 
 
 def _steps_down(e, name):

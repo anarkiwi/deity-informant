@@ -12,7 +12,7 @@ from collections import namedtuple
 from .accdelta import _cellref
 from .accshape import canon, lowbits, maskof, reads, selfread, sext_split
 from .facts import SID_VOICES
-from .ir import Bin, Const, Load, Var, W16
+from .ir import Bin, Const, Let, Load, Var, W16
 from .irwalk import walk
 
 SENTINEL = 0xFF
@@ -96,6 +96,38 @@ def phase_of(ctx, cells, tgt, steps, byacc, counters):
     return {"kind": "bit" if k is not None else "cell", "cell": ref, "bit": k}
 
 
+def fn_phase(ctx, cells, delta, counters, byname):
+    """``fn(counter)``: a repeat count a free-running counter alone decides.
+
+    Section 5's stateless triangle keeps no phase cell -- the passes its loop runs
+    are the folded low bits of the tick counter, and what says so is the counter
+    standing in the test that picks the arm the count's own value comes from.
+    """
+    n = (delta or {}).get("n") if (delta or {}).get("kind") == "repeat" else None
+    key = n and (n["region"], int(n["addr"][1:], 16))
+    for tgt, cs in sorted(byname.items()) if key else ():
+        if tgt.kind != "byte" or tgt.cells[0] != key:
+            continue
+        for c in cs:
+            for g in _decides(ctx, c):
+                ref, _m = _cmpcell(ctx, cells, g)
+                k = ref and (ref["region"], int(ref["addr"][1:], 16))
+                if k in counters and counters[k].copies == 1:
+                    return {"kind": "fn", "cell": ref, "bit": None}
+    return None
+
+
+def _decides(ctx, c):
+    """The conditions on one clause, and on every block that defines a name it reads."""
+    p = ctx.prog.procs[c.site.proc]
+    want = {x.n for x in walk(c.value) if type(x) is Var}
+    out = [g for g, _t, _w in c.guards]
+    for lbl, b in sorted(p.blocks.items()):
+        if any(type(s) is Let and s.n in want for s in b.stmts):
+            out += [g for g, _t, _w in ctx.guards(c.site.proc).get(lbl, ())]
+    return out
+
+
 def _const(e):
     return e.v if type(e) is Const else None
 
@@ -149,10 +181,18 @@ def _hiunit(base, x, unit):
     return unit if unit > 1 and any(base(z) for z in walk(x)) else 1
 
 
-def policy_of(steps, actions, phase, bound, dirstore):
-    """``wrap``/``reflect``/``reflect-complement``/``clamp``/``halt``/``reload``."""
+def policy_of(steps, actions, phase, bound, dirstore, scratch=False):
+    """``wrap``/``reflect``/``reflect-complement``/``clamp``/``halt``/``reload``.
+
+    A value cell a copy loop rewrites is reloaded before every use by definition,
+    so its policy is ``reload`` whatever guards the action that fills it: nothing
+    of the value crosses a tick, and the base it starts each one from is the whole
+    of what the record has to state.
+    """
     if any(c.comp for c in steps):
         return "reflect-complement", None
+    if scratch and actions:
+        return "reload", repr(actions[0].value)
     seen = {
         x.r
         for c in list(steps) + list(actions)
@@ -247,7 +287,8 @@ def _merge(byname):
 
     A snap writes the pair as two byte stores, which is the same convention
     :func:`~.word.fold16` reads elsewhere; a half no block pairs is a write the
-    record cannot state, and the replay takes it as an unnamed producer.
+    record cannot state, and the replay takes it as an unnamed producer. One block
+    has as many halves as the callers' arms give it, and each arm is its own clause.
     """
     out = {}
     for tgt, cs in sorted(byname.items()):
@@ -258,10 +299,16 @@ def _merge(byname):
         for other, ocs in sorted(byname.items()):
             if other.kind == "byte" and other.cells[0] in tgt.cells:
                 for c in (x for x in ocs if x.kind in ("action", "step")):
-                    halves.setdefault((c.site.proc, c.site.block), {})[other.cells[0]] = c
+                    at = (c.site.proc, c.site.block, _gkey(c))
+                    halves.setdefault(at, {})[other.cells[0]] = c
         extra = [x for _k, g in sorted(halves.items()) for x in _halves(tgt, g)]
         out[tgt] = sorted(cs + extra, key=lambda c: (c.rank, c.site.stmt.src, repr(c.value)))
     return out
+
+
+def _gkey(c):
+    """A clause's guard path as a sortable key: which arm of its callers it is."""
+    return tuple(sorted((repr(canon(g)), t) for g, t, _w in c.guards))
 
 
 def _halves(tgt, got):
