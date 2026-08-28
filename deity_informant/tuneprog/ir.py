@@ -386,12 +386,37 @@ def dec(j):
 
 
 def retexpr(proc, term, want):
-    """The value one ``Return`` hands back, when a caller reads exactly one register."""
-    regs = [i for i in want if i in proc.rets]
+    """The value one ``Return`` hands back, when a caller reads one value.
+
+    A flag a caller reads beside a value is that value's own test -- ``Z`` its
+    ``== 0``, ``N`` its bit 7 -- and not a second value; a return that hands back
+    one value and its flags shows the value.
+    """
+    vals = {
+        i: term.vals[proc.rets.index(i)]
+        for i in want
+        if i in proc.rets and len(term.vals) > proc.rets.index(i)
+    }
+    regs = [i for i in vals if not (REGVAR[i] in FLAGVAR and _flagof(vals[i], vals))]
     if len(regs) != 1:
         return None
-    v = term.vals[proc.rets.index(regs[0])] if len(term.vals) > proc.rets.index(regs[0]) else None
-    return None if v is None or type(v) is Var else v
+    v = vals[regs[0]]
+    return None if type(v) is Var else v
+
+
+FLAGVAR = ("C", "Z", "N")
+
+
+def _flagof(f, vals):
+    """True when a flag's value is a test of another returned value."""
+    if type(f) is not Bin or type(f.b) is not Const or f.b.v != 0:
+        return False
+    x = (
+        f.a.a
+        if f.op == "!=" and type(f.a) is Bin and f.a.op == "&"
+        else f.a if f.op == "==" else None
+    )
+    return x is not None and any(x == v and v is not f for v in vals.values())
 
 
 def retval(proc):

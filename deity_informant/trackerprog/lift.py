@@ -6,7 +6,7 @@ from collections import Counter
 
 from ..tuneprog.acchist import Cells
 from ..tuneprog.accshape import Ctx
-from ..tuneprog.ir import Const
+from ..tuneprog.ir import Bin, Const, Var, evalbin
 from . import pitch, score, streams
 from .cursors import accesses, copies, strides
 from .resolve import Program
@@ -14,37 +14,72 @@ from .hist import Eval
 from .refuse import Refusal
 
 
-def _copy_shifts(chan, stride):
+def _stride_of(names, rid):
+    """The copy stride of a cell's region: its group's, or its own."""
+    for g in (names.groups or {}).values():
+        if rid in g.get("members", ()) or g.get("split") == rid:
+            return max(int(g.get("stride", 1)), 1)
+    return 1
+
+
+def _static(e, env):
+    """A guard over the copy index alone, evaluated; ``None`` where it reads more."""
+    t = type(e)
+    if t is Const:
+        return e.v
+    if t is Var:
+        return env.get(e.n)
+    if t is Bin:
+        a, b = _static(e.a, env), _static(e.b, env)
+        return None if a is None or b is None else evalbin(e.op, a, b, e.w or 1)
+    return None
+
+
+def _holds(acc, env):
+    """False when one of the access's guards over the copy index alone is false."""
+    for c, t, *_w in acc.guards:
+        v = _static(c, env)
+        if v is not None and bool(v) != bool(t):
+            return False
+    return True
+
+
+def _copy_shifts(chan, stride, names):
     """``[(copy, env, displacement)]``: each copy of a channel's cursor cell.
 
-    A copy is bound by an index name (``env``) or, where the callers unrolled the
-    loop, by the constant displacement each arm reads the cell at.
+    A copy is bound by an index name (``env``), kept where the access's own guards
+    admit it, or, where the callers unrolled the loop, by the constant displacement
+    each arm reads the cell at.
     """
-    a = chan.accs[0]
     if chan.cursor[0] != "cell":
-        return [(i, env, 0) for i, env in enumerate(copies(a, stride))]
-    idx = a.cursor.index
-    if idx is None:
+        return [(i, env, 0) for i, env in enumerate(copies(chan.accs[0], stride))]
+    consts = sorted(
+        {
+            a.cursor.index.v
+            for a in chan.accs
+            if a.cursor and type(a.cursor.index) is Const and _holds(a, {})
+        }
+    )
+    if consts:
+        k = _stride_of(names, chan.cursor[1])
+        return [(d // k, {}, d) for d in consts]
+    if any(a.cursor and a.cursor.index is None for a in chan.accs):
         return [(0, {}, 0)]
-    if type(idx) is Const:
-        ds = sorted(
-            {
-                acc.cursor.index.v
-                for acc in chan.accs
-                if acc.cursor and type(acc.cursor.index) is Const
-            }
-        )
-        return [(i, {}, d) for i, d in enumerate(ds)]
-    return [(i, env, sum(env.values())) for i, env in enumerate(copies(a, stride))]
+    out = {}
+    for a in chan.accs:
+        for i, env in enumerate(copies(a, stride)):
+            if _holds(a, env):
+                out.setdefault(i, (i, env, sum(env.values())))
+    return [out[i] for i in sorted(out)]
 
 
-def _score(ev, cells, chans, rgn, names, stride, P):
-    order, pattern, refused = score.classify(chans, rgn, names, P)
+def _score(ev, cells, chans, rgn, names, stride, P, prid=frozenset()):
+    order, pattern, refused = score.classify(chans, rgn, names, P, prid)
     voices = {}
     img = cells.img
     for role, group in (("order", order), ("pattern", pattern)):
         for chan in group:
-            bound = _copy_shifts(chan, stride)
+            bound = _copy_shifts(chan, stride, names)
             if not bound:
                 refused.append(
                     Refusal(
@@ -114,16 +149,16 @@ def document(view, names, hist, cert=None):
     P = Program(ctx)
     accs = accesses(ctx, names, P)
     stride = strides(view, names)
-    chans = score.channels(accs, rgn)
+    chans = score.channels(accs, rgn, frozenset(stride))
     ptab = pitch.table(view, names)
     prid = set(ptab["regions"]) if ptab else set()
     strm, sel = [], []
-    voices, refused, orders = _score(ev, cells, chans, rgn, names, stride, P)
+    voices, refused, orders = _score(ev, cells, chans, rgn, names, stride, P, prid)
     for key, group in streams.group(chans).items():
         group = [c for c in group if c.table not in prid and c not in orders]
         if not group:
             continue
-        shifts = sorted({s for c in group for _i, _e, s in _copy_shifts(c, stride)})
+        shifts = sorted({s for c in group for _i, _e, s in _copy_shifts(c, stride, names)})
         got = streams.table(cells, key, group, rgn, names, shifts, score.stepping(P, rgn, key[1:]))
         if got is not None:
             (strm if got["kind"] == "stream" else sel).append(got)

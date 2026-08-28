@@ -85,15 +85,16 @@ def test_hubbard_s_score_is_an_orderlist_of_pattern_pointers_and_a_record_table(
     assert {ch["terminator"] for ch in pattern} == {0xFF} and {ch["depth"] for ch in pattern} == {2}
 
 
-def test_sid_wizard_s_erased_orderlist_load_is_a_named_refusal():
+def test_sid_wizard_s_orderlists_come_back_through_the_returned_value():
     doc = exemplar(EMOMYST)
-    got = [r for r in doc["refusals"] if r["site"] == "p_17C8"]
-    assert got and {r["why"] for r in got} == {"score not cursor-shaped"}
-    assert all(r["cell"] for r in doc["refusals"])
+    assert doc["refusals"] == []
+    order, pattern = channels(doc, "order"), channels(doc, "pattern")
+    assert {ch["table"] for ch in order} == {"T1C40", "T1C4E", "T1C5C"}
+    assert {ch["table"] for ch in pattern} == {"T1C6A"} and len(pattern) == 3
 
 
 def test_every_event_accounts_for_the_whole_horizon():
-    for rel in (LINUS, GULDKORN, COMMANDO):
+    for rel in (LINUS, GULDKORN, COMMANDO, EMOMYST):
         doc = exemplar(rel)
         for ch in channels(doc, "order") + channels(doc, "pattern"):
             assert sum(e["ticks"] for e in ch["events"]) == doc["horizon"]["ticks"]

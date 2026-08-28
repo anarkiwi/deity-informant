@@ -16,7 +16,7 @@ import networkx as nx
 
 from ..tuneprog.accguard import _domsets, guardpath
 from ..tuneprog.graph import cfg, idoms
-from ..tuneprog.ir import Bin, Call, Const, Let, Load, Phi, R16, REGVAR, Store, Var, W16
+from ..tuneprog.ir import Bin, Call, Const, Let, Load, Phi, R16, REGVAR, Return, Store, Var, W16
 
 DEPTH = 6
 MAXALTS = 16
@@ -33,11 +33,14 @@ Site = tuple  # (proc, label, statement index)
 
 
 def _defs(proc):
-    """``(lets, mem)``: every definition of a name and of a constant-address cell."""
-    lets, mem = {}, {}
+    """``(lets, mem, rets)``: every definition of a name, a constant-address cell, a call return."""
+    lets, mem, rets = {}, {}, {}
     for lbl, b in proc.blocks.items():
         for i, s in enumerate(b.stmts):
-            if type(s) is Let:
+            if type(s) is Call:
+                for k, n in enumerate(s.rets):
+                    rets[n] = (lbl, i, s, k)
+            elif type(s) is Let:
                 lets.setdefault(s.n, []).append((lbl, i, s.e))
             elif type(s) is Phi:
                 lets.setdefault(s.n, []).append((lbl, i, s))
@@ -51,7 +54,7 @@ def _defs(proc):
                         else Bin("&", s.e, Const(255), 1)
                     )
                     mem.setdefault(cell, []).append((lbl, i, half))
-    return lets, mem
+    return lets, mem, rets
 
 
 class Resolver:
@@ -64,10 +67,9 @@ class Resolver:
         self.dom = _domsets(idoms(self.proc, self.g), self.proc.blocks)
         self.sites = guardpath(self.proc, sites=True)
         self.inloop = ctx.inloop(proc)
-        self.lets, self.mem = _defs(self.proc)
-        self.rets = {
-            n for b in self.proc.blocks.values() for s in b.stmts if type(s) is Call for n in s.rets
-        }
+        self.lets, self.mem, self.calls = _defs(self.proc)
+        self.rets = set(self.calls)
+        self.program = None
         fwd = self.g.copy()  # a definition reaches a use forward, never round a back edge
         fwd.remove_edges_from((l, h) for h, (_b, ls) in ctx.loops(proc).items() for l in ls)
         self.reach = {lbl: set(nx.descendants(fwd, lbl)) for lbl in self.proc.blocks}
@@ -133,14 +135,37 @@ class Resolver:
                 return True
         return False
 
+    def entry(self, e, lbl, depth, seen):
+        """A loop-carried name as the value it entered the loop with, or the name.
+
+        A counter whose entry value is a constant is the loop's own index and stays
+        free, to be bound per copy; a value the loop refines from a cell's reading
+        (a cursor stepped past skipped entries) is that reading.
+        """
+        here = self.inloop.get(lbl, frozenset())
+        for l in self.dom[lbl]:
+            if here & self.inloop.get(l, frozenset()):
+                continue
+            got = [(i, x) for d, i, x in self.lets[e.n] if d == l and type(x) is not Phi]
+            if got:
+                i, x = max(got)
+                if type(x) is Const or x is None:
+                    return e
+                return self.open(x, l, i, depth - 1, seen | {(e.n, (l, i))})
+        return e
+
     def open(self, e, lbl, idx, depth=DEPTH, seen=frozenset()):
         """``e`` with every reaching name and scratch cell substituted, ``depth`` deep."""
         t = type(e)
         if depth <= 0:
             return e
         if t is Var:
-            if e.n not in self.lets or self.loopvar(e.n, lbl, idx):
+            if e.n in self.calls and self.program is not None and e.n not in seen:
+                return self.program.returned(self, *self.calls[e.n], depth - 1, seen | {e.n})
+            if e.n not in self.lets:
                 return e
+            if self.loopvar(e.n, lbl, idx):
+                return self.entry(e, lbl, depth, seen)
             return self.select(self.lets[e.n], lbl, idx, depth, seen, e.n, e)
         if t is Bin:
             return Bin(
@@ -280,7 +305,32 @@ class Program:
     def of(self, proc):
         if proc not in self.res:
             self.res[proc] = Resolver(self.ctx, proc)
+            self.res[proc].program = self
         return self.res[proc]
+
+    def returned(self, r, lbl, idx, call, k, depth, seen):
+        """A call's ``k``-th return: the callee's return values, one alternative per exit.
+
+        The callee's parameters are the call's arguments, opened at the call site;
+        each exit's value is opened at its own block under that block's guards.
+        """
+        q = self.ctx.prog.procs.get(call.proc)
+        if q is None or depth <= 0 or k >= len(q.rets):
+            return Var(call.rets[k])
+        i = q.rets[k]
+        args = {REGVAR[p]: r.open(a, lbl, idx, depth, seen) for p, a in zip(q.params, call.args)}
+        fn = _renamer(args)
+        qr, out = self.of(call.proc), []
+        for qlbl, b in q.blocks.items():
+            if type(b.term) is not Return or len(b.term.vals) <= q.rets.index(i):
+                continue
+            n = len(b.stmts)
+            x = qr.open(b.term.vals[q.rets.index(i)], qlbl, n, depth - 1, seen)
+            gs = () if not out else qr.guards(qlbl, depth - 2)
+            out.append((tuple((_subst(c, fn), t, w) for c, t, w in gs), _subst(x, fn)))
+        if not out:
+            return Var(call.rets[k])
+        return out[0][1] if len(out) == 1 else Sel(tuple(out))
 
     def resolve(self, proc, lbl, idx, e, depth=3):
         """``[(guards, expr)]``: ``e`` at a site, once per caller path that binds its parameters."""

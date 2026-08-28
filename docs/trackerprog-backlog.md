@@ -373,6 +373,28 @@ therefore not attempted beyond the certificate: Commando's I1/I11 are settled
 | --- | --- | --- | --- | --- |
 | ~~W8~~ | instrument, prelude and stream lift | a T0 site whose value is an instrument column at the selector → `Ins.adsr`/`set(reg, ins.col)`; whose guards are a stream's step (a cursor's hold elapsing) → a `Step.sets` of that stream; whose guards are `k` ticks before the row boundary → the prelude's `early`; whose value reads a T1 acc cell → a `Producer` over that acc, with the acc's arming read off the note-on stores that reset it. Every other site stays `command residue` | large | JCH ×2, GT2 ×2 at 0 divergences on `tools/tuneprog_trackerprog.py`; the hermetic tune gains an instrument table and a wave stream |
 
+**The SID Wizard blocker closed by #303 — it was never the copy fold.** The
+erased body of `p_17C8` was the printer's: `ir.retexpr` shows a `return` value
+only when a caller reads *exactly one* register, and `p_17C8`'s callers read `A`
+and `N` — the orderlist byte and its own sign test. The general rule now: a flag
+returned beside a value is that value's own test (`Z` its `== 0`, `N` its bit 7)
+and not a second value, so a return of one value and its flags shows the value.
+`p_17C8` prints its three arms (`return T1C4E[ptr_4[1406] + y]` …) and
+`T1C40/T1C4E/T1C5C` regain their accessors. Four resolver rules followed, each
+general: a name a call returns opens to the callee's exits (one alternative per
+`Return`, the parameters the call's arguments); a loop-carried name whose entry
+value is a cell's reading opens to that reading (a cursor stepped past skipped
+entries), while one whose entry value is a constant is the loop's own index and
+stays free; a pointer held in data (`ptr_4[$17CF]`, a 16-bit read of an
+init-written cell) and a pair read of a table (`R16[$2477 + …]`, a lo|hi pointer
+table) are pointer bases, and a base is any expression over them — a table entry
+plus a relocation base with its carry spelt out included; a copy is bound where
+the access's own guards over the copy index admit it (`x == 7` picks `T1C4E`).
+T2 then lifts SID Wizard's score — three per-voice orderlists, one pattern channel
+`T1C6A` through `T2478[rec.cursor] + base`, terminator `$FF` — with no refusal,
+and T3 certifies both tunes (table below). The recert of the four exemplars
+reproduces; the presentation change is measured in §6.2's six numbers below.
+
 **W8 struck by #302 — six tunes certify on the universal player at 0
 divergences.** The lift changed shape rather than growing rules: a row's sound is
 lifted as a **stream** (§3.3) from the observable itself — per tick of the row,
@@ -400,7 +422,8 @@ refused at T2 (`p_17C8`).
 | `gt2-do-it-again` | 12,000 | yes | none | 0 | 9,808 / 3,260 / 13,320 / 760 / 4 / 10,174, 13,904 B | — |
 | `commando-song1` | 11,780 | yes | none | 0 | 9,775 / 3,256 / 15,419 / 1,263 / 4 / 12,363, 17,992 B | 2,129 / 271 / 161 / 107 / 182 / 127, 4,644 B |
 | `commando-song2` | 11,780 | yes | none | 0 | 5,046 / 1,681 / 15,958 / 486 / 4 / 14,383, 13,968 B | — |
-| `sw-emomyst`, `sw-end-of-the-world` | 12,000 / 16,000 | **no** | — | 7 / 8 `score not cursor-shaped` (`p_17C8`) | — | — |
+| `sw-emomyst` (#303) | 12,000 | yes | none | 0 | 8,232 / 2,724 / 15,769 / 567 / 4 / 13,179, 14,112 B | 8,102 / 1,055 / 422 / 426 / 7 / 265, 8,888 B |
+| `sw-end-of-the-world` (#303) | 16,000 | yes | none | 0 | 6,693 / 2,219 / 22,729 / 1,415 / 4 / 20,648, 29,944 B | 7,596 / 1,028 / 407 / 423 / 7 / 326, 9,652 B |
 
 (six = tokens / lines / statements / blocks / header rows / data rows over the
 trackerprog print: statements are score rows plus stream steps, blocks patterns
@@ -434,7 +457,7 @@ W4 depends on W3; W5 on W0, W2, W4; W6 on W0, W2, W3; W7 on all.
 3. ~~**W4**~~, then ~~**W5**~~, and ~~**W6**~~ (on GT2/JCH/Commando; SW refuses
    by name until the fold fix).
 4. ~~**W7**~~, ~~**W8**~~ (JCH ×2, GT2 ×2, Commando ×2 certified at 0
-   divergences); then **W9** for the compression claim; SW ×2 after the fold,
+   divergences), SW ×2 after #303; then **W9** for the compression claim;
    Follin after I6.
 
 Deliberately not now: Galway/Walker/Blackbird (uncertified — the anatomy

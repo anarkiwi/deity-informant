@@ -16,7 +16,7 @@ import numpy as np
 from ..tuneprog.ir import Bin, Const, Load, R16, Store, Var, W16, overlaps
 from ..tuneprog.irwalk import addr_split
 from ..tuneprog.accshape import terms
-from .cursors import TABLE, _halves, basekind, decompose, selector
+from .cursors import TABLE, _halves, basekind, decompose, istable, selector
 from .resolve import Sel, free, walkx
 from .refuse import Refusal
 
@@ -27,20 +27,20 @@ Channel = namedtuple("Channel", "table cursor accs kind depth")
 Event = namedtuple("Event", "tick ticks base pos end")
 
 
-def depth(base, rgn, seen=0):
+def depth(base, rgn, seen=0, bound=frozenset()):
     """How many pointer bases a base goes through; ``None`` for a shape no nest has."""
-    kind = basekind(base, rgn)
+    kind = basekind(base, rgn, bound)
     if kind == "const":
         return 0
     if kind == "pair":
         return 1
     if kind != "ptrtab" or seen > MAXDEPTH:
         return None
-    sel = selector(base)
+    sel = selector(base, rgn)
     got = []
     for x in leaf_tables(sel, rgn):
         d = decompose(x.a, rgn)
-        got.append(None if d is None else depth(d[0], rgn, seen + 1))
+        got.append(None if d is None else depth(d[0], rgn, seen + 1, bound))
     if any(d is None for d in got):
         return None
     return 1 + max(got, default=0)
@@ -50,7 +50,7 @@ def leaf_tables(e, rgn):
     """The table reads of ``e`` that are values, not parts of another read's address."""
     if e is None:
         return []
-    ls = [x for x in walkx(e) if type(x) is Load and x.r in rgn and rgn[x.r].kind in TABLE]
+    ls = [x for x in walkx(e) if istable(x, rgn)]
     inner = {id(y) for x in ls for y in walkx(x.a)}
     return [x for x in ls if id(x) not in inner]
 
@@ -70,7 +70,7 @@ def _key(a):
     return None
 
 
-def channels(accs, rgn):
+def channels(accs, rgn, bound=frozenset()):
     """Every table a cursor reads through, with its base kind and depth.
 
     One channel per cursor and table -- where two table regions overlap (a 1-based
@@ -88,9 +88,11 @@ def channels(accs, rgn):
         for run in overlaps([rgn[t] for t in {a.table for a in group}]):
             ids = {r.id for r in run}
             accs_ = [a for a in group if a.table in ids]
-            kinds = {basekind(a.base, rgn) for a in accs_}
+            kinds = {basekind(a.base, rgn, bound) for a in accs_}
             kind = "other" if len(kinds) > 1 else kinds.pop()
-            d = max((depth(a.base, rgn) for a in accs_), key=lambda x: -1 if x is None else x)
+            d = max(
+                (depth(a.base, rgn, 0, bound) for a in accs_), key=lambda x: -1 if x is None else x
+            )
             out.append(Channel(run[0].id, k, accs_, kind, d))
     return out
 
@@ -222,7 +224,7 @@ def fed(chan, P, rgn):
     value no table supplies (a call's return the fold erased), which is a score
     that is not cursor-shaped.
     """
-    sel = selector(chan.accs[0].base)
+    sel = selector(chan.accs[0].base, rgn)
     cells = set()
     for x in walkx(sel, False) if sel is not None else ():
         if type(x) is Load and x.r in rgn and rgn[x.r].kind == "state":
@@ -341,34 +343,39 @@ def materialise(ev, cells, chan, env, shift_col=None, term=None):
     return events, byte, ev.bad.copy()
 
 
-def classify(chans, rgn, names, P):
+def classify(chans, rgn, names, P, skip=frozenset()):
     """``(order channels, pattern channels, refusals)`` among the score channels.
 
-    A pattern channel reads through a pointer base its selector picks; its order
-    channels are the ones whose bytes the selector reads, directly or through the
-    state cells the selector's stores fill from them.
+    A pattern channel steps its cursor through a pointer base an order picks: its
+    order channels are the tables its selector reads, directly or through the
+    state cells the selector's stores fill from them. A pointer-based channel no
+    order feeds is a stream, one whose cursor never steps a selector; neither is
+    the score. ``skip`` holds the pitch table's regions.
     """
     order, pattern, refused = [], [], []
     bytable = {}
     for c in chans:
         bytable.setdefault(c.table, []).append(c)
     for c in chans:
-        if c.kind == "const":
+        if c.kind == "const" or c.table in skip or c.cursor[0] != "cell":
             continue
-        cell = _cellname(c, names)
+        if not stepping(P, rgn, c.cursor[1:]):
+            continue
+        feeds = feeders(c, P, rgn)
+        if not feeds:
+            continue
         if c.kind == "other" or c.depth is None or c.depth > MAXDEPTH:
             refused.append(
                 Refusal(
                     "score not cursor-shaped",
-                    cell,
+                    _cellname(c, names),
                     c.accs[0].site[0],
                     "base %s, depth %s" % (c.kind, c.depth),
                 )
             )
             continue
         pattern.append(c)
-    for c in list(pattern):
-        for t in feeders(c, P, rgn):
+        for t in feeds:
             order += [o for o in bytable.get(t, ()) if o not in order]
     pattern = [c for c in pattern if c not in order]
     return order, pattern, refused
@@ -376,7 +383,7 @@ def classify(chans, rgn, names, P):
 
 def feeders(chan, P, rgn):
     """The table regions a channel's selector reads, itself or through a state cell."""
-    sel = selector(chan.accs[0].base)
+    sel = selector(chan.accs[0].base, rgn)
     if sel is None:
         return set()
     out = {x.r for x in leaf_tables(sel, rgn)}

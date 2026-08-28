@@ -29,7 +29,7 @@ def exemplar(rel, calls=1200):
     return _T3[rel]
 
 
-@pytest.mark.parametrize("rel", (LINUS, GULDKORN, COMMANDO))
+@pytest.mark.parametrize("rel", (LINUS, GULDKORN, COMMANDO, EMOMYST))
 def test_the_trackers_and_hubbard_certify_on_the_universal_player(rel):
     doc, tp, refusals, numbers, out = exemplar(rel)
     assert refusals == [] and doc["emitted"] and doc["divergence"] is None
@@ -54,13 +54,8 @@ def test_the_trackers_and_hubbard_certify_on_the_universal_player(rel):
     assert len(tp["score"]["voices"]) == 3 and tp["streams"] and tp["globals"]["stream"]
 
 
-def test_sid_wizard_s_score_refusal_reaches_the_certificate_and_nothing_is_emitted():
-    doc, _tp, refusals, _numbers, out = exemplar(EMOMYST)
-    assert refusals and not doc["emitted"] and doc["divergence"] is None
-    assert any(
-        r["why"] == "score not cursor-shaped" and r["site"] == "p_17C8" for r in doc["refusals"]
-    )
-    assert all(r["why"] in REASONS and r["cell"] for r in doc["refusals"])
-    assert (
-        not (out / "trackerprog.json").exists() and (out / "trackerprog.certificate.json").exists()
-    )
+def test_a_refusal_keeps_the_certificate_and_withholds_the_object(tmp_path):
+    doc, _tp, _refusals, _numbers, out = exemplar(EMOMYST)
+    cert = json.loads((out / "trackerprog.certificate.json").read_text())
+    assert cert["emitted"] and all(r["why"] in REASONS for r in cert["refusals"])
+    assert doc["source"]["tune"] and tmp_path

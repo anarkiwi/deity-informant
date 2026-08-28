@@ -18,7 +18,7 @@ def group(chans):
     """``{cursor key: [channels]}`` for the const-based cell cursors."""
     out = {}
     for c in chans:
-        if c.kind == "const" and c.cursor[0] == "cell":
+        if c.cursor[0] == "cell":
             out.setdefault(c.cursor, []).append(c)
     return out
 

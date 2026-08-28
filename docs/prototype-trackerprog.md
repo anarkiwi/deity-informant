@@ -628,9 +628,9 @@ claim. Per exemplar:
 | 3 | the print measured with **§6.2's six numbers** — tokens, lines, statements, blocks, header rows, data rows, which architecture §11 requires verbatim of every presentation change — plus **one extra**, `xz -9e` of `trackerprog.md` against the source `tuneprog.md`'s. `xz` is §8.3's own unit and no substitute for the six. The layer's claim is that the score compresses *better* than the program that played it |
 | 4 | recert untouched: 51/51, no tuneprog artefact moves |
 
-State after #302: JCH ×2, GT2 ×2 and Commando ×2 certify `emitted: true` with
-no divergence over their whole horizons; `jch-easy-does-it` refuses as a `sample
-stream`, SID Wizard at T2. A row's sound is lifted as a materialised stream from
+State after #303: JCH ×2, GT2 ×2, SID Wizard ×2 and Commando ×2 certify
+`emitted: true` with no divergence over their whole horizons; `jch-easy-does-it`
+refuses as a `sample stream`. A row's sound is lifted as a materialised stream from
 the observable (backlog §4, W8), which is exact but not smaller than the source
 print — acceptance row 3's compression claim is open, and is backlog W9.
 
@@ -648,7 +648,7 @@ two single-family rows (§5's stateless-phase vibrato, §3.6's Follin
 | `sext` as a delta | `sext(k, T[c])` appears in the IR only as a jump offset (`switch ($1953 + sext(T1934[a]))`, sw.md:1205). The one accumulator delta that sign-extends is SW's filter step, and it lifts as `tabcell(T[c], signed 11)` (§5). If an exemplar shows a sign-extended table entry that is *not* an absolute table cell, `delta` gains a form; until then it does not |
 | global-scope accumulators beyond the filter | a survey question, not a schema one: `scope` is read from the value cell's region (§5) |
 | the second entry | a tune whose NMI is a second *musical* entry (not a mixer) has two tick clocks; the schema has one cadence with per-voice dividers over it. Refuse until an exemplar demands otherwise |
-| the SW orderlist fold | T2's blocker, not the schema's: SW's orderlist load is erased by the copy fold (`p_17C8` prints nothing, `T1C40`/`T1C4E`/`T1C5C` have no accessors). T2 (#299) refuses it by name — `score not cursor-shaped`, `rec[].cursor` filled by `p_17C8`'s erased return — until `copyview` keeps the load |
+| ~~the SW orderlist fold~~ | closed by #303: the load was never folded away, the print dropped a return of one value and its flags (`ir.retexpr`); SID Wizard ×2 certify |
 
 Settled since the first draft and dropped from this list: note-space clamping
 (§6 — the note space is the trace's reach, and Commando's overrun is a producer,
