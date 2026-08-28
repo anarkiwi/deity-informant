@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..tuneprog.accshape import Ctx, terms
+from ..tuneprog.cellref import INDEX_MAX
 from ..tuneprog.graph import cfg, rpo
 from ..tuneprog.ir import Bin, Call, Const, If, Load, R16, REGVAR, Return, Store, Switch, Var
 from ..tuneprog.ir import evalbin, succs
@@ -532,39 +533,73 @@ def guarddata(when, path=""):
     return [["cond", todata(c, path), 1 if t else 0] for c, t in when]
 
 
+def _plus(i, k):
+    return i if not k else "%s %s %d" % (i, "+" if k > 0 else "-", abs(k))
+
+
+def _copy(idx, stride):
+    """An index over a group of ``stride``-byte copies as the copy number."""
+    if stride == 1:
+        return idx
+    return "v" if idx == "v*%d" % stride else "%s/%d" % (idx, stride)
+
+
 class Printer:
     """An entry-relative expression under the presentation view's names."""
 
     def __init__(self, namer, chans, copyvars=frozenset()):
-        self.namer, self.chans, self.copyvars = namer, chans, copyvars
+        self.namer, self.chans = namer, chans
+        self.copyvars = copyvars if isinstance(copyvars, dict) else dict.fromkeys(copyvars, 1)
 
     def var(self, n):
-        return "v" if n in self.copyvars else n.lower() if n in REGVAR.values() else n
+        """The copy index as the voice, scaled by the stride it steps by."""
+        k = self.copyvars.get(n)
+        if k is not None:
+            return "v" if k == 1 else "v*%d" % k
+        return n.lower() if n in REGVAR.values() else n
 
-    def ref(self, base, idx, lo):
-        """``group[idx].field`` for a cell of a per-copy group, else ``name[idx]``."""
+    def ref(self, base, idx, lo, field=None):
+        """``group[idx].field`` for a cell of a per-copy group, else ``name[idx]``.
+
+        The copy index steps by the group's stride, so as ``v`` it is the copy itself;
+        ``field`` names a pair over the low half's cell.
+        """
         namer = self.namer
         r = next((r for r in namer.rgn if r.base == base), None) or namer.region(base)
         r = r or namer.region(lo)
         if r is None:
             return "mem[$%04X + %s]" % (base, idx)
+        if not r.base - INDEX_MAX <= base < r.base + r.size:  # a pointer plus an offset
+            return "%s[%s]" % (namer.names.of(r.id), _plus(idx, base))
         off = base - r.base
+        slot = namer.names.slots.get((r.id, base))
+        if slot:
+            return "%s[%s].%s" % (slot[0][0], idx, field or slot[0][1])
         if r.id in namer.split:
             g, d = namer.split[r.id]
             fields = {int(k): f for k, f in d["fields"].items()}
             f = max((k for k in fields if k <= off), default=None)
             if f is not None:
                 stride = max(int(d["stride"]), 1)
-                i = idx if stride == 1 else "%s/%d" % (idx, stride)
+                i = _copy(idx, stride)
                 copy = (off - f) // stride
-                return "%s[%s].%s" % (g, i if not copy else "%s + %d" % (i, copy), fields[f])
+                fld = field or fields[f]
+                return "%s[%s].%s" % (g, _plus(i, copy), fld)
         hit = namer.names.view.get(r.id)
         if hit is not None and int((namer.names.groups.get(hit[0]) or {}).get("n", 1)) > 1:
             stride = max(int(namer.names.groups[hit[0]].get("stride", 1)), 1)
-            i = idx if stride == 1 else "%s/%d" % (idx, stride)
-            return "%s[%s].%s" % (hit[0], i if not off else "%s + %d" % (i, off), hit[1])
-        name = namer.names.of(r.id)
-        return "%s[%s]" % (name, idx if base == r.zero else "%s + %d" % (idx, base - r.zero))
+            copy, rem = divmod(off, stride)
+            if not rem:
+                return "%s[%s].%s" % (hit[0], _plus(_copy(idx, stride), copy), field or hit[1])
+        return "%s[%s]" % (field or namer.names.of(r.id), _plus(idx, base - r.zero))
+
+    def pair(self, e):
+        """A 16-bit view by the pair's own name, indexed like its low half."""
+        name = self.namer.names.u16.get((tuple(e.lo), tuple(e.hi)))
+        idx = addr_split(e.a)[1]
+        if idx is None:
+            return name or self.namer.cell(e.lo[1])
+        return self.ref(e.lo[1], self.expr(idx), e.lo[1], name)
 
     def expr(self, e):
         t = type(e)
@@ -590,10 +625,14 @@ class Printer:
         if t is Load:
             base, idx = addr_split(e.a)
             if base is None:
-                return "mem[%s]" % self.expr(e.a)
+                r = self.namer.region(e.lo)
+                name = "mem" if r is None else self.namer.names.of(r.id)
+                return "%s[%s]" % (name, self.expr(e.a))
             if idx is None:
                 return self.namer.cell(base) if e.w == 1 else self.namer.expr(e)
             return self.ref(base, self.expr(idx), e.lo)
+        if t is R16:
+            return self.pair(e)
         if t is Sel:
             out = self.expr(e.alts[0][1])
             for gs, x in e.alts[1:]:
@@ -607,7 +646,13 @@ class Printer:
         return [self.expr(e)]
 
     def guards(self, gs):
-        return " and ".join("%s%s" % ("" if t else "not ", self.expr(c)) for c, t, *_w in gs)
+        return " and ".join(self.guard(c, t) for c, t, *_w in gs)
+
+    def guard(self, c, t):
+        s = self.expr(c)
+        if t:
+            return s
+        return s[4:] if s.startswith("not ") else "not " + s
 
     def store(self, it):
         cell = self.expr(Load("ram", it["addr"], it["w"], it["lo"], it["hi"], -1))

@@ -21,6 +21,9 @@ from _hvsc import COMMANDO, EMOMYST, GULDKORN, LINUS, tune_file  # noqa: E402
 pytestmark = pytest.mark.hvsc
 _T3 = {}
 INSTRUMENTS = {LINUS: 30, GULDKORN: 19, COMMANDO: 13, EMOMYST: 11}
+# what does not open at 1,200 ticks: GT2's vibrato freq is a counted shift loop's
+# result; Commando's gate-off reads a pointer page S6 names no cell in yet
+REFUSED_PRODUCERS = {LINUS: 2, GULDKORN: 0, COMMANDO: 1, EMOMYST: 0}
 
 
 def exemplar(rel, calls=1200):
@@ -41,10 +44,13 @@ def test_a_derived_fetch_renders_exactly_and_a_walked_one_refuses_by_name(rel):
     else:
         assert doc["divergence"] is None and doc["trap"] is None
         assert doc["rendered"]["ticks_equal"] == doc["ticks"] == 1200
-    # the sound half still names SSA temps and addresses: refused by name, not emitted
-    residue = [r for r in refusals if r.why == "program residue"]
-    assert residue and all(r.cell.split("/")[0] in ("producers", "accs") for r in residue)
-    assert not doc["emitted"] and not (out / "trackerprog.json").exists()
+    assert not [r for r in refusals if r.why == "program residue"]
+    refused = [r for r in refusals if r.why == "producer not in IR"]
+    assert len(refused) == REFUSED_PRODUCERS[rel] and all(
+        r.cell.startswith("sid[v].") for r in refused
+    )
+    emitted = not walked and not refused
+    assert doc["emitted"] == emitted and (out / "trackerprog.json").exists() == emitted
     assert doc["compared"] and doc["dropped"]
     assert doc["end"]["kind"] in ("loop", "fixed_point", "horizon")
     assert {"tokens", "lines", "statements", "blocks", "header_rows", "data_rows", "xz"} <= set(
@@ -82,6 +88,11 @@ def test_hubbard_s_fetch_derives_whole_and_its_patterns_are_reused():
         any(p.endswith("= (byte[0] & $1F)") for p in prints) and "ptr_2 = T5712[T576B[0]]" in prints
     )
     assert not any(f["refusals"] for f in tp["score"]["fetch"])
+    freq = next(p for p in tp["producers"] if p["target"] == "sid[v].freq")
+    assert freq["value"].startswith("acc") and freq["accs"] == ["acc0"] and freq["when"]
+    lines = emit.render(tp).splitlines()
+    assert any(l.startswith("sid[v].freq = acc") and " [acc0] if " in l for l in lines)
+    assert certify.schema_check(tp) == []
     for v in tp["score"]["voices"]:
         assert 1 < len(v["patterns"]) < len(v["order"]) < len(v["rows"])
     assert "   12 13 | 83 07 58 03" in emit.render(tp)
@@ -90,13 +101,15 @@ def test_hubbard_s_fetch_derives_whole_and_its_patterns_are_reused():
 def test_accumulators_annotate_the_producers_that_step_them():
     _doc, tp, _refusals, _numbers, _out = exemplar(GULDKORN)
     assert tp["accs"] and any(p["accs"] for p in tp["producers"])
+    assert all(isinstance(a["cell"], str) and a["site"]["sites"] for a in tp["accs"].values())
+    assert "sid[v].pw = voice[v].pw [acc4] [acc5]" in emit.render(tp)
 
 
 def test_the_certificate_names_its_refusals_by_reason(tmp_path):
     doc, _tp, _refusals, _numbers, out = exemplar(EMOMYST)
     cert = json.loads((out / "trackerprog.certificate.json").read_text())
-    assert not cert["emitted"] and all(r["why"] in REASONS for r in cert["refusals"])
-    assert all(r["cell"] and r["detail"] for r in cert["refusals"])
+    assert cert["emitted"] == (not cert["refusals"] and cert["divergence"] is None)
+    assert all(r["why"] in REASONS and r["cell"] and r["detail"] for r in cert["refusals"])
     assert doc["source"]["tune"] and tmp_path
 
 

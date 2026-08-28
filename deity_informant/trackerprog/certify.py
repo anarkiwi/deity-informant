@@ -73,6 +73,7 @@ TEMP = re.compile(r"u\d+_L[0-9A-F]{4}_[0-9A-F]{2}#\d+|(?<![\w$])[A-Z]#\d+|\$save
 ADDR = re.compile(r"\$[0-9A-F]{4}(?![0-9A-Za-z])")
 PROGRAM = ("block", "fetch", "let", "phi", "store")
 ADDRESSED = ("meta", "pitch")
+PROVENANCE = ("meta", "site")  # keys holding where a datum came from: not the datum
 
 
 def _exempt(path):
@@ -89,7 +90,8 @@ def schema_check(tp):
 
     A string holding an SSA temp or a bare address outside the addressed
     sections, an item of the lowered tick, and a producer whose accumulator the
-    document does not define each refuse by name.
+    document does not define each refuse by name; ``meta`` and a ``site`` are
+    provenance, read past.
     """
     out = {}
 
@@ -103,6 +105,8 @@ def schema_check(tp):
                 bad(path, "program block %s" % x["kind"])
                 return
             for k, v in x.items():
+                if k in PROVENANCE:
+                    continue
                 walk(k, path + (k,))
                 walk(v, path + (k,))
         elif isinstance(x, (list, tuple)):
@@ -117,7 +121,7 @@ def schema_check(tp):
                 if m:
                     bad(path, "address %s in %r" % (m.group(0), x))
 
-    walk({k: v for k, v in tp.items() if k != "meta"}, ())
+    walk(tp, ())
     accs = tp.get("accs") or {}
     for i, p in enumerate(tp.get("producers") or ()):
         for a in p.get("accs") or ():

@@ -12,7 +12,7 @@ from collections import namedtuple
 from .accdelta import _cellref
 from .accshape import canon, lowbits, maskof, reads, selfread, sext_split
 from .facts import SID_VOICES
-from .ir import Bin, Const, Let, Load, Var, W16
+from .ir import Bin, Const, Let, Load, Var, W16, enc
 from .irwalk import walk
 
 SENTINEL = 0xFF
@@ -79,7 +79,7 @@ def phase_of(ctx, cells, tgt, steps, byacc, counters):
         return {"kind": "none", "cell": None, "bit": None}
     ref, mask = _cmpcell(ctx, cells, pick)
     if ref is None:
-        return {"kind": "unnamed", "cell": None, "bit": None, "test": repr(pick)}
+        return {"kind": "unnamed", "cell": None, "bit": None, "test": enc(pick)}
     key = (ref["region"], int(ref["addr"][1:], 16))
     k = (
         None
@@ -154,11 +154,11 @@ def bound_of(ctx, cells, tgt, width, event, hold, mask, split, target, complete,
         top = _hiunit(base, x, unit)
         masked = maskof(x)[1] is not None
         if op in ("<", "<=") and not t:
-            hi, cell, why, proj = (v * top + top - 1 if v is not None else hi), ref, repr(g), masked
+            hi, cell, why, proj = (v * top + top - 1 if v is not None else hi), ref, enc(g), masked
         elif op == "==" and not t and v is not None:
-            hi, why, proj = max(hi if cell is None else 0, v * top + top - 1), repr(g), masked
+            hi, why, proj = max(hi if cell is None else 0, v * top + top - 1), enc(g), masked
         elif op in ("<", "<=") and t and v is not None:
-            lo, why, proj = v * top, repr(g), masked
+            lo, why, proj = v * top, enc(g), masked
     if why is not None:
         got = "projected" if proj else "proved"
         out.append({"interval": [lo, hi if cell is None else cell], "from": got, "witness": why})
@@ -192,7 +192,7 @@ def policy_of(steps, actions, phase, bound, dirstore, scratch=False):
     if any(c.comp for c in steps):
         return "reflect-complement", None
     if scratch and actions:
-        return "reload", repr(actions[0].value)
+        return "reload", enc(actions[0].value)
     seen = {
         x.r
         for c in list(steps) + list(actions)
@@ -202,9 +202,9 @@ def policy_of(steps, actions, phase, bound, dirstore, scratch=False):
     }
     for c in actions:
         if any(_sentinel(g) for g, _t, _w in c.guards):
-            return "reload", repr(c.value)
+            return "reload", enc(c.value)
         if seen & {x.r for x in reads(c.value) if type(x) is Load}:
-            return "clamp", repr(c.value)
+            return "clamp", enc(c.value)
     if dirstore:
         return "reflect", None
     if bound["from"] == "proved" and not actions:
@@ -238,7 +238,7 @@ def rate_of(ctx, cells, steps, actions, counters):
                     "counter": ref["name"],
                     "cell": ref,
                     "kind": ctr.kind,
-                    "reload": None if reload is None else repr(reload),
+                    "reload": None if reload is None else enc(reload),
                 }
     return {"every": 1, "counter": None, "cell": None, "kind": "none", "reload": None}
 

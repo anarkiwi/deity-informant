@@ -6,7 +6,7 @@ cells it set. The sounds are the tables and recurrences the rest of the tick
 reads -- the instrument records the envelope writes index (T2's selector, or the
 pointer table a record base goes through), the streams T2 walked, T1's
 accumulators -- and the tick outside the regions is the producer list: every
-SID write site of T0 with the guards it stands under. The lowered tick
+SID write site of T0 opened over named cells (:mod:`.producers`). The lowered tick
 (:mod:`.sound`) the universal player replays is returned beside the trackerprog,
 never inside it. Nothing here reads the observable; :mod:`.certify` compares
 the replay with it.
@@ -17,12 +17,11 @@ from __future__ import annotations
 import lzma
 import re
 
-from ..tuneprog.accguard import guardpath
 from ..tuneprog.accshape import Ctx
 from ..tuneprog.ir import REGVAR, R16, dec, enc
 from ..tuneprog.irwalk import addr_split
 from ..tuneprog.tracedata import input_kind
-from . import cursors, player, region, rows, sound, universal
+from . import cursors, player, producers, region, rows, sound, universal
 from . import fetch as fetchmod
 from .namer import Namer, by_name
 from .refuse import Refusal
@@ -177,44 +176,6 @@ def streams_of(view, names, t2, tables):
     return out
 
 
-# ---- the producers ---------------------------------------------------------------
-def producers_of(view, names, t0, t1, fetch):
-    """Every T0 write site outside the fetch regions, with the guards it stands under
-    and the accumulators whose value cell it reads."""
-    namer = Namer(view, names)
-    guards = {}
-    by_region = {}
-    for a in (t1 or {}).get("accs") or ():
-        for rid in a.get("regions") or [a["cell"]["region"]]:
-            by_region.setdefault(rid, []).append(a["id"])
-    out = []
-    for w in t0.get("writes") or ():
-        site = w["site"]
-        pc = int(site["pc"][1:], 16)
-        if pc in fetch.pcs:
-            continue
-        proc = site["proc"]
-        if proc not in guards and proc in view.procs:
-            guards[proc] = guardpath(view.procs[proc])
-        gs = (guards.get(proc) or {}).get(site["block"], ())
-        out.append(
-            {
-                "register": w.get("register"),
-                "voices": w.get("voices"),
-                "kind": w.get("kind"),
-                "print": w.get("print"),
-                "site": {"proc": proc, "block": site["block"], "pc": site["pc"]},
-                "when": ["%s%s" % ("" if t else "not ", namer.expr(c)) for c, t, _w in gs],
-                "cells": [c["name"] for c in w.get("cells") or ()],
-                "accs": sorted(
-                    {x for c in w.get("cells") or () for x in by_region.get(c["region"], ())}
-                ),
-                "refusal": w.get("refusal"),
-            }
-        )
-    return out
-
-
 # ---- the lift ----------------------------------------------------------------------
 def horizon(cert, t2):
     sub = ((cert or {}).get("subtunes") or [{}])[0]
@@ -265,6 +226,9 @@ def lift(prog, view, names, t0, t1, t2, cert, inputs=()):
         refusals.append(Refusal(why, trap["detail"], "", trap["trap"]))
     snd, bad = sound_of(prog, fetch, P, t0, image, regs, FS, chans)
     refusals += bad
+    PR = producers.Producers(view, names, fetch, chans)
+    prods, bad = PR.producers(t0, t1)
+    refusals += bad
     voices, bad = rows.voices(P.fetches, chans, prog.reads(), ticks)
     refusals += bad
     pointers = rows.pointer_table(t2, view, names, prog.reads())
@@ -286,8 +250,8 @@ def lift(prog, view, names, t0, t1, t2, cert, inputs=()):
         "pitch": list((t2.get("pitch") or {}).get("entries") or []),
         "instruments": instruments_of(view, names, t2, t0),
         "streams": streams_of(view, names, t2, tables),
-        "accs": {a["id"]: a for a in (t1 or {}).get("accs") or ()},
-        "producers": producers_of(view, names, t0, t1, fetch),
+        "accs": producers.accs_of(t1, PR.pr),
+        "producers": prods,
         "score": {
             "voices": [rows.emitted(v) for v in voices],
             "end": end,
@@ -428,9 +392,9 @@ def render(tp):
             "%s %s <- %s: %s %s, delta %s, policy %s, rate %s, phase %s, scope %s"
             % (
                 a["id"],
-                a["target"].get("register"),
-                a["cell"]["name"],
-                a["target"].get("kind"),
+                a["register"],
+                a["cell"],
+                a["kind"],
                 a["width"],
                 (a.get("delta") or {}).get("kind"),
                 a.get("policy"),
@@ -443,7 +407,7 @@ def render(tp):
     for p in tp["producers"]:
         tags = "".join(" [%s]" % a for a in p["accs"])
         when = (" if " + " and ".join(p["when"])) if p["when"] else ""
-        out.append("%s%s%s" % (p["print"], tags, when))
+        out.append("%s = %s%s%s" % (p["target"], p["value"], tags, when))
     for f in tp["score"]["fetch"]:
         out += ["", "fetch %s:" % f["region"]]
         out += ["  " + p["print"] for p in f["producers"]]

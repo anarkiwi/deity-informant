@@ -90,16 +90,19 @@ def test_what_does_not_open_is_a_named_refusal_and_the_player_traps_on_it():
     assert all(not D["refusals"] for D in fs.out.values())
     blk = next(
         prog.procs[r.proc].blocks[l]
-        for l in r.blocks
+        for l in sorted(r.blocks)
         if any(type(s) is Store for s in prog.procs[r.proc].blocks[l].stmts)
     )
     st = next(s for s in blk.stmts if type(s) is Store)
     st.v = Bin("+", st.v, Load("io", Const(0xD012, 2), 1, 0xD012, 0xD012, -1), 1)
     again = fetch.Fetches(prog, fs.ctx.names, fs.F, chans, fs.namer)
-    (bad,) = [x for D in again.out.values() for x in D["refusals"]]
-    assert bad.why == "fetch not in IR" and "input" in bad.detail and bad.site.startswith(r.proc)
+    bad = [x for D in again.out.values() for x in D["refusals"]]
+    assert bad and all(
+        x.why == "fetch not in IR" and "input" in x.detail and x.site.startswith(r.proc)
+        for x in bad
+    )
     doc = fetch.document(again, chans)
-    assert doc[0]["refusals"][0]["cell"] == bad.cell
+    assert doc[0]["refusals"][0]["cell"] == bad[0].cell
 
 
 def test_evaluate_and_the_data_form_agree_on_selections_and_bytes():

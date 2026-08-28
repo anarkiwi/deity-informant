@@ -42,8 +42,10 @@ def test_a_bare_address_outside_the_addressed_sections_refuses():
     bad = _with(score={"voices": [{"rows": [{"sets": [["$10A0", 1, 1], ["sid[$D404]", 65, 1]]}]}]})
     got = _details(bad)
     assert got == ["address $10A0 in '$10A0'", "address $D404 in 'sid[$D404]'"]
-    assert schema_check(_with(producers=[{"register": "ad", "site": {"pc": "$1234"}}]))
+    assert schema_check(_with(producers=[{"register": "ad", "site": {"pc": "$1234"}}])) == []
     assert schema_check(_with(meta={"pc": "$1234"}, pitch=["$1234"])) == []
+    assert schema_check(_with(accs={"a0": {"id": "a0", "site": {"sites": ["$1234"]}}})) == []
+    assert schema_check(_with(producers=[{"register": "ad", "pc": "$1234"}]))
 
 
 def test_a_program_block_refuses_once_by_kind():
