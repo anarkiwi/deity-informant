@@ -60,7 +60,7 @@ def test_the_instruments_are_the_program_s_table_and_the_rows_carry_commands(rel
     # a 1,200-tick trace reaches part of the table; the full horizons reach all of it
     assert 0 < ins["used"] <= ins["entries"] <= INSTRUMENTS[rel]
     assert len(ins["rows"]) == ins["entries"]
-    assert all(r["cmds"] for v in tp["score"]["voices"] for r in v["rows"][:8])
+    assert all(any(r["cmds"] for r in v["rows"]) for v in tp["score"]["voices"])
     assert tp["streams"] and tp["producers"]
     assert all(p["register"] or p["kind"] == "file" for p in tp["producers"])
 

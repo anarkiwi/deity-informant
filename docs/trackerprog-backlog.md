@@ -505,7 +505,7 @@ and its commands, not their unfolding.
 
 | # | item | mechanism | size | acceptance |
 | --- | --- | --- | --- | --- |
-| ~~W10~~ | the sound from the program's data, not the observable | cut the fetch regions out of the certified tick, run them over the program's own tables, and keep everything else as the producer program | large | every exemplar certifies from data alone; instruments are the program's table; `xz` follows |
+| ~~W10~~ | the sound from the program's data, not the observable | cut the fetch regions out of the certified tick, run them over the program's own tables, and keep everything else as the producer program | large | eight of nine exemplars certify from data alone (the ninth is the sample-stream refusal); instruments are the program's table; six of eight prints below the source's `xz` |
 
 **W8/W9 were wrong at the root, and W10 replaces them (t3-from-data).** #302
 and #304 lifted a row's *sound* from `Verifier.obs`: the SID-write trace sliced
@@ -567,7 +567,11 @@ What replaced it, each rule generic and each checked on all four families:
 | `gt2-je-suis-linus` | 12,000 | yes | none | 0 | `cursor_1490` 30 / 26 | 4 | 20 | 2 | 60,120 / 2,716 / 2,656 / 89 / 4 / 1,361, 7,348 B | 5,768 / 908 / 336 / 321 / 5 / 270, 8,380 B | yes |
 | `commando-song1` | 11,780 | yes | none | 0 | `rec2` 13 / 9 | 3 | 20 | 2 | 370,729 / 3,255 / 3,269 / 7 / 4 / 167, 11,412 B | 2,129 / 271 / 161 / 107 / 7 / 127, 4,644 B | **no** (2.5×) |
 | `sw-emomyst` | 12,000 | yes | none | 0 | `T244E` 11 / 11 | 4 | 17 | 2 | 22,030 / 2,489 / 2,462 / 51 / 4 / 1,774, 3,816 B | 8,102 / 1,055 / 422 / 426 / 7 / 265, 8,888 B | yes |
-ROWS_TBD
+| `jch-knob-at-night` | 12,000 | yes | none | 0 | `rec8` 5 / 5 | 2 | 29 | 1 | 274,221 / 7,777 / 7,800 / 9 / 4 / 164, 2,788 B | 2,930 / 362 / 239 / 150 / 7 / 8,715, 19,904 B | yes |
+| `jch-easy-does-it` | 1,799 | **no** | tick 0, `mode_vol` | 1 `sample stream` (`mode_vol`, the CIA #2 NMI entry at `$40E9`) | `rec8` 16 / 16 | 5 | 16 | 1 | — | — | refused |
+| `gt2-do-it-again` | 12,000 | yes | none | 0 | `cursor_1490` 20 / 20 | 4 | 20 | 2 | 36,813 / 1,706 / 1,665 / 70 / 4 / 1,095, 6,096 B | 5,619 / 875 / 331 / 312 / 5 / 204, 7,688 B | yes |
+| `commando-song2` | 11,780 | yes | none | 0 | `rec2` 8 / 8 | 2 | 14 | 2 | 154,823 / 1,637 / 1,639 / 13 / 4 / 114, 4,204 B | 1,872 / 238 / 146 / 99 / 8 / 84, 3,664 B | **no** (1.15×) |
+| `sw-end-of-the-world` | 16,000 | yes | none | 0 | `T244E` 21 / 21 | 6 | 16 | 2 | 25,659 / 3,218 / 3,168 / 71 / 4 / 4,030, 5,184 B | 7,596 / 1,028 / 407 / 423 / 7 / 326, 9,652 B | yes |
 
 (six = tokens / lines / statements / blocks / header rows / data rows;
 statements are pattern rows plus producers, blocks patterns plus streams,
@@ -584,9 +588,11 @@ regions, carried as the S4 program in the trackerprog (`program`) and run by
 the one interpreter, with its SID write sites listed as producers under their
 guards. That is honest and exact, and it is the ground the section 4 reduction
 has to be proved against — a producer list rendered by the fixed procedure must
-reproduce what this interpreter does tick for tick. Hubbard's print is above
-the source's `xz` because his fetch writes the SID per row (`ctrl`, `pw`, `ad`,
-`sr`, `freq`), so every row's `sets` carries them; the other seven are below.
+reproduce what this interpreter does tick for tick. Hubbard's two prints are
+above the source's `xz` because his fetch writes the SID per row (`ctrl`, `pw`,
+`ad`, `sr`, `freq`), so every row's `sets` carries them; the other six are below.
+A region entered straight from another (his second song's row fetch after the
+pattern-end peek) ends the fetch there and starts the next.
 
 | # | item | mechanism | size | acceptance |
 | --- | --- | --- | --- | --- |

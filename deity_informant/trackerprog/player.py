@@ -210,9 +210,13 @@ class Player:
                 region = regions.get(key)
                 if region is not None:
                     if self.record:
-                        if self.rec is not None:
-                            raise TrapError("nested fetch", "%s:%s" % key)
-                        self._begin(key, region, F)
+                        # a region entered straight from another ends that fetch here;
+                        # one entered inside a fetch's callee is that fetch's own
+                        if self.rec is None:
+                            self._begin(key, region, F)
+                        elif self.rec["depth"] == self.depth:
+                            self._end(F, prev, lbl)
+                            self._begin(key, region, F)
                     else:
                         f = self.apply(key, F)
                         if f["to"] == EXIT:

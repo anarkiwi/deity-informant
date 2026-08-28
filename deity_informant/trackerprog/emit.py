@@ -461,7 +461,8 @@ def lift(prog, view, names, t0, t1, t2, cert, inputs=()):
     P = player.Player(prog, fetch, pins, envvars=envvars).run_init()
     obs, trap = P.render(ticks)
     if trap is not None:
-        refusals.append(Refusal("external input", trap["detail"], "", trap["trap"]))
+        why = "external input" if trap["trap"] == "external input" else "score not cursor-shaped"
+        refusals.append(Refusal(why, trap["detail"], "", trap["trap"]))
     namer = Namer(view, names)
     tp = {
         "meta": {
