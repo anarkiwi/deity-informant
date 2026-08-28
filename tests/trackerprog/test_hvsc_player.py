@@ -30,9 +30,9 @@ def exemplar(rel, calls=1200):
     if rel not in _T3:
         out = Path(mkdtemp()) / "t3"
         assert pipeline.main([str(tune_file(rel)), "--out", str(out), "--calls", str(calls)]) == 0
-        doc, tp, refusals, numbers, _secs = T3.run(out, calls)
-        _T3[rel] = doc, tp, refusals, numbers, out
-    return _T3[rel]
+        doc, tp, refusals, numbers, _secs, snd = T3.run(out, calls)
+        _T3[rel] = doc, tp, refusals, numbers, out, snd
+    return _T3[rel][:5]
 
 
 @pytest.mark.parametrize("rel", (LINUS, GULDKORN, COMMANDO, EMOMYST))
@@ -78,18 +78,17 @@ def test_the_instruments_are_the_program_s_table_and_the_rows_are_bytes(rel):
     assert all(any(r["bytes"] for r in v["rows"]) for v in tp["score"]["voices"])
     assert all(set(r) == {"dur", "bytes", "at"} for v in tp["score"]["voices"] for r in v["rows"])
     assert tp["streams"] and tp["producers"] and tp["score"]["fetch"]
-    sites = [p for p in tp["producers"] if "target" in p]
-    assert sites and all(p["register"] or p["envelope"] == "file" for p in sites)
+    assert all(p["register"] or p["kind"] == "file" for p in tp["producers"])
 
 
 def test_hubbard_s_fetch_derives_whole_and_its_patterns_are_reused():
     _doc, tp, _refusals, _numbers, _out = exemplar(COMMANDO)
-    prints = [p.get("print", "") for f in tp["score"]["fetch"] for p in f["producers"]]
+    prints = [p["print"] for f in tp["score"]["fetch"] for p in f["producers"]]
     assert (
         any(p.endswith("= (byte[0] & $1F)") for p in prints) and "ptr_2 = T5712[T576B[0]]" in prints
     )
     assert not any(f["refusals"] for f in tp["score"]["fetch"])
-    freq = next(p for p in tp["producers"] if p.get("target") == "sid[v].freq")
+    freq = next(p for p in tp["producers"] if p["target"] == "sid[v].freq")
     assert freq["value"].startswith("acc") and freq["accs"] == ["acc0"] and freq["when"]
     lines = emit.render(tp).splitlines()
     assert any(l.startswith("sid[v].freq = acc") and " [acc0] if " in l for l in lines)
@@ -101,7 +100,7 @@ def test_hubbard_s_fetch_derives_whole_and_its_patterns_are_reused():
 
 def test_accumulators_annotate_the_producers_that_step_them():
     _doc, tp, _refusals, _numbers, _out = exemplar(GULDKORN)
-    assert tp["accs"] and any(p.get("accs") for p in tp["producers"])
+    assert tp["accs"] and any(p["accs"] for p in tp["producers"])
     assert all(isinstance(a["cell"], str) and a["site"]["sites"] for a in tp["accs"].values())
     assert "sid[v].pw = voice[v].pw [acc4] [acc5]" in emit.render(tp)
 
@@ -115,10 +114,10 @@ def test_the_certificate_names_its_refusals_by_reason(tmp_path):
 
 
 def test_the_emitted_object_carries_no_program_and_the_universal_player_matches_the_oracle():
-    doc, tp, _refusals, _numbers, out = exemplar(COMMANDO)
-    assert "program" not in tp and "sound" not in tp and certify.schema_check(tp) == []
+    _doc, tp, _refusals, _numbers, out = exemplar(COMMANDO)
+    snd = _T3[COMMANDO][5]
+    assert "program" not in tp and "sound" not in tp and snd["items"]
     prog = Tuneprog.load(out / "tuneprog.S4.json")
     want, _trap = emit.oracle(prog, tp, 300)
-    got, trap, rendered = emit.replay(tp, 300)
+    got, trap = emit.replay(tp, snd, 300)
     assert trap is None and certify.divergence(want, got) is None
-    assert rendered == emit.digest(tp) == doc["rendered_from"]

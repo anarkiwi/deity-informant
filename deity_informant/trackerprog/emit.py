@@ -5,26 +5,24 @@ tables (:mod:`.region`, :mod:`.player`): one row per fetch, its bytes and the
 cells it set. The sounds are the tables and recurrences the rest of the tick
 reads -- the instrument records the envelope writes index (T2's selector, or the
 pointer table a record base goes through), the streams T2 walked, T1's
-accumulators -- and the tick outside the regions is the producer list: the
-certified tick lowered (:mod:`.sound`) and flattened to guarded producers over a
-temp table (:mod:`.tick`), each SID site annotated with T0's record over named
-cells (:mod:`.producers`). Nothing here reads the observable; :mod:`.certify`
-compares the replay with it.
+accumulators -- and the tick outside the regions is the producer list: every
+SID write site of T0 opened over named cells (:mod:`.producers`). The lowered tick
+(:mod:`.sound`) the universal player replays is returned beside the trackerprog,
+never inside it. Nothing here reads the observable; :mod:`.certify` compares
+the replay with it.
 """
 
 from __future__ import annotations
 
-import json
 import lzma
 import re
 
 from ..tuneprog.accshape import Ctx
-from ..tuneprog.ir import REGVAR, R16
+from ..tuneprog.ir import REGVAR, R16, dec, enc
 from ..tuneprog.irwalk import addr_split
 from ..tuneprog.tracedata import input_kind
-from . import cursors, player, producers, region, rows, sound, tick, universal
+from . import cursors, player, producers, region, rows, sound, universal
 from . import fetch as fetchmod
-from .document import KEYS, digest, from_json, to_json
 from .namer import Namer, by_name
 from .refuse import Refusal
 from .resolve import Program
@@ -190,7 +188,7 @@ def horizon(cert, t2):
 
 
 def lift(prog, view, names, t0, t1, t2, cert, inputs=()):
-    """``(trackerprog, refusals, recorded observable)``: the lift, from the data."""
+    """``(trackerprog, refusals, recorded observable, lowered tick)``: the lift, from the data."""
     refusals = [Refusal(**r) if isinstance(r, dict) else r for r in t2.get("refusals") or ()]
     refusals = [r for r in refusals if isinstance(r, Refusal)]
     for entry in (prog.meta.get("schedule") or [])[1:]:
@@ -219,19 +217,18 @@ def lift(prog, view, names, t0, t1, t2, cert, inputs=()):
         for key, D in FS.out.items()
     }
     tabs = [(c["lo"], c["hi"], t) for t, c in chans.items()]
-    P = player.Player(prog, fetch, pins, chans=entries, tables=tabs).run_init()
+    watch = sound.watch_vars(prog)
+    P = player.Player(prog, fetch, pins, chans=entries, tables=tabs, watch=watch).run_init()
     image, regs = bytes(P.m), list(P.regs)
     obs, trap = P.render(ticks)
     if trap is not None:
         why = "external input" if trap["trap"] == "external input" else "score not cursor-shaped"
         refusals.append(Refusal(why, trap["detail"], "", trap["trap"]))
+    snd, bad = sound_of(prog, fetch, P, t0, image, regs, FS, chans)
+    refusals += bad
     PR = producers.Producers(view, names, fetch, chans)
     prods, bad = PR.producers(t0, t1)
     refusals += bad
-    score_fetch, local = fetchmod.document(FS, chans)
-    prods, loops, registers, spans, bad = tick_of(prog, fetch, score_fetch, local, prods)
-    refusals += bad
-    spans |= fetchmod.spans(FS)
     voices, bad = rows.voices(P.fetches, chans, prog.reads(), ticks)
     refusals += bad
     pointers = rows.pointer_table(t2, view, names, prog.reads())
@@ -255,9 +252,6 @@ def lift(prog, view, names, t0, t1, t2, cert, inputs=()):
         "streams": streams_of(view, names, t2, tables),
         "accs": producers.accs_of(t1, PR.pr),
         "producers": prods,
-        "loops": loops,
-        "registers": dict(registers, values=regs),
-        "memory": memory_of(image, spans),
         "score": {
             "voices": [rows.emitted(v) for v in voices],
             "end": end,
@@ -265,7 +259,7 @@ def lift(prog, view, names, t0, t1, t2, cert, inputs=()):
                 {"table": t, "cursor": c["cursor"], "role": c["role"], "stride": c["stride"]}
                 for t, c in sorted(chans.items(), key=lambda kv: kv[1]["role"] != "order")
             ],
-            "fetch": score_fetch,
+            "fetch": fetchmod.document(FS, chans),
             "regions": [
                 {
                     "proc": r.proc,
@@ -282,61 +276,30 @@ def lift(prog, view, names, t0, t1, t2, cert, inputs=()):
         "globals": {},
         "inputs": pins,
     }
-    return tp, list({(r.why, r.cell, r.site): r for r in refusals}.values()), obs
+    return tp, list({(r.why, r.cell, r.site): r for r in refusals}.values()), obs, snd
 
 
-def tick_of(prog, fetch, score_fetch, local, named):
-    """``(producers, loops, registers, spans, refusals)``: the tick outside the regions as data.
-
-    The lowering's items flatten to a producer list (:mod:`.tick`); a fetch binds
-    its region's own temps (``local``) to its call path's; each SID store takes
-    T0's record for its site, one per caller path in order.
-    """
+def sound_of(prog, fetch, P, t0, image, regs, FS, chans):
+    """The producer list (:mod:`.sound`) off the recording run's block log, the fetches' inside."""
     unit = sound.Unit(prog, fetch)
-    L = sound.Lowering(prog, fetch, unit)
+    order = sound.voice_loop(unit, P.log)
+    L = sound.Lowering(prog, fetch, unit, order)
     items, refusals = L.run()
     for it in items:
         if it["kind"] == "fetch":
-            rgn = next(f for f in score_fetch if f["region"] == it["region"])
-            it["exits"] = rgn["exits"]
-            it["tmps"] = {
-                new: it["tmps"][old]
-                for new, old in local[it["region"]].items()
-                if old in it["tmps"]
-            }
-    proc = prog.procs[prog.meta["tick_proc"]]
-    rets = {
-        "params": [[i, REGVAR[i]] for i in proc.params],
-        "rets": [[i, "$ret%d" % j] for j, i in enumerate(proc.rets)],
-    }
-    reads = {f["region"]: {n: local[f["region"]][n] for n in f["reads"]} for f in score_fetch}
-    prods, loops, registers = tick.flatten(items, L.loops(), rets, reads)
-    prods = tick.rename(tick.reduce(prods, loops, registers), loops, registers)
-    loops = tick.index(prods, loops)
-    by_pc = {}
-    for p in named:
-        by_pc.setdefault(p["site"]["pc"], []).append(p)
-    seen = {}
-    for it in prods:
-        if it["kind"] == "store" and it["cls"] == "io":
-            pc = it["site"]["pc"]
-            got = by_pc.get(pc)
-            if got:
-                k = seen.get(pc, 0)
-                seen[pc] = k + 1
-                it.update(got[min(k, len(got) - 1)])
-    return prods, loops, registers, L.spans, refusals
-
-
-def memory_of(image, spans):
-    """The post-init bytes of every envelope the producers read or write, spans merged."""
-    out = []
-    for lo, hi in sorted(spans):
-        if out and lo <= out[-1][1] + 1:
-            out[-1][1] = max(out[-1][1], hi)
-        else:
-            out.append([lo, hi])
-    return [{"base": lo, "bytes": image[lo : hi + 1].hex()} for lo, hi in out]
+            it.update(fetchmod.data(FS.out[tuple(it["region"].split(":", 1))], it["path"], chans))
+    tick = prog.procs[prog.meta["tick_proc"]]
+    return {
+        "items": items,
+        "loops": L.loops(),
+        "voicevars": sorted(L.voicevars),
+        "rets": {
+            "params": [[i, REGVAR[i]] for i in tick.params],
+            "rets": [[i, "$ret%d" % j] for j, i in enumerate(tick.rets)],
+        },
+        "regs": regs,
+        "image": image.hex(),
+    }, refusals
 
 
 def commit_order(t0):
@@ -364,17 +327,9 @@ def fetch_of(tp):
     return F
 
 
-def replay(tp, ticks=None):
-    """``(observable, trap, digest)``: the universal player over the trackerprog's own document.
-
-    The player reads the document text and nothing else; ``digest`` names that
-    text, and :func:`~.certify.certificate` binds the render to it.
-    """
-    doc = json.loads(json.dumps(to_json(tp)))
-    P = universal.DataPlayer(doc)
-    assert P.digest == digest(tp)
-    obs, trap = P.render(ticks or tp["meta"]["horizon"])
-    return obs, trap, P.digest
+def replay(tp, snd, ticks=None):
+    """``(observable, trap)``: the trackerprog rendered on the universal player over ``snd``."""
+    return universal.DataPlayer(tp, snd).render(ticks or tp["meta"]["horizon"])
 
 
 def oracle(prog, tp, ticks=None):
@@ -398,13 +353,12 @@ def render(tp):
         % (m["cadence"]["cycles_per_tick"], m["cadence"]["source"]),
         "player    %s, commit order %s" % (m["player"], "/".join(m["commit_order"])),
         "end       %s over %d ticks" % (tp["score"]["end"]["kind"], m["horizon"]),
-        "instruments %d, streams %d, accs %d, producers %d, temps %d, regions %d"
+        "instruments %d, streams %d, accs %d, producers %d, regions %d"
         % (
             ins["entries"] if ins else 0,
             len(tp["streams"]),
             len(tp["accs"]),
-            len(stores(tp)),
-            sum(1 for p in tp["producers"] if p["kind"] == "let"),
+            len(tp["producers"]),
             len(tp["score"]["regions"]),
         ),
         "```",
@@ -451,13 +405,12 @@ def render(tp):
         )
     out += ["```", "", "## producers", "", "```"]
     for p in tp["producers"]:
-        if "target" in p:
-            tags = "".join(" [%s]" % a for a in p["accs"])
-            when = (" if " + " and ".join(p["when"])) if p["when"] else ""
-            out.append("%s = %s%s%s" % (p["target"], p["value"], tags, when))
+        tags = "".join(" [%s]" % a for a in p["accs"])
+        when = (" if " + " and ".join(p["when"])) if p["when"] else ""
+        out.append("%s = %s%s%s" % (p["target"], p["value"], tags, when))
     for f in tp["score"]["fetch"]:
         out += ["", "fetch %s:" % f["region"]]
-        out += ["  " + p["print"] for p in f["producers"] if "print" in p]
+        out += ["  " + p["print"] for p in f["producers"]]
         out += ["  refused %s: %s" % (r["cell"], r["detail"]) for r in f["refusals"]]
     out += ["```", "", "## score", ""]
     tables = [c["table"] for c in tp["score"]["channels"]]
@@ -500,13 +453,6 @@ def measure(md, section):
     }
 
 
-def stores(tp):
-    """The producers that write: the tick's and the fetches' stores."""
-    return [p for p in tp["producers"] if p["kind"] == "store"] + [
-        p for f in tp["score"]["fetch"] for p in f["producers"] if p["kind"] == "store"
-    ]
-
-
 def numbers(tp, md):
     """The six numbers of a trackerprog print plus its ``xz -9e`` size.
 
@@ -516,8 +462,10 @@ def numbers(tp, md):
     got = measure(md, "score")
     voices = tp["score"]["voices"]
     ins = tp["instruments"]
-    got["statements"] = sum(len(r) for v in voices for r in v["patterns"].values()) + len(
-        stores(tp)
+    got["statements"] = (
+        sum(len(r) for v in voices for r in v["patterns"].values())
+        + len(tp["producers"])
+        + sum(len(f["producers"]) for f in tp["score"]["fetch"])
     )
     got["blocks"] = (
         sum(len(v["patterns"]) for v in voices)
@@ -543,4 +491,28 @@ def numbers_tuneprog(md, view):
     return got
 
 
-__all__ = ["KEYS", "to_json", "from_json", "digest"]
+KEYS = (
+    "meta",
+    "pitch",
+    "streams",
+    "accs",
+    "instruments",
+    "producers",
+    "score",
+    "globals",
+    "inputs",
+)
+
+
+def to_json(tp):
+    """S4-style tagged: ``["$trackerprog", *KEYS]`` with every IR node and dict encoded."""
+    return ["$trackerprog"] + [enc(tp[k]) for k in KEYS]
+
+
+def from_json(doc):
+    assert doc[0] == "$trackerprog"
+    out = {k: dec(v) for k, v in zip(KEYS, doc[1:])}
+    out["inputs"] = {int(k): v for k, v in out["inputs"].items()}
+    if out["instruments"]:
+        out["instruments"]["rows"] = {int(k): v for k, v in out["instruments"]["rows"].items()}
+    return out

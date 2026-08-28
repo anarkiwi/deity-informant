@@ -171,7 +171,7 @@ class Producers:
                 {
                     "register": w["register"],
                     "voices": w["voices"],
-                    "envelope": w["kind"],
+                    "kind": w["kind"],
                     "target": target,
                     "value": text,
                     "when": when,

@@ -500,34 +500,37 @@ class Fetches:
 
 
 # ---- the two encodings -------------------------------------------------------------
-def todata(e):
+def todata(e, path=""):
     """An entry-relative expression as the universal player's data."""
     t = type(e)
     if t is Const:
         return ["k", e.v]
     if t is Var:
-        return ["tmp", e.n]
-    if t is Bin and e.op == "and":  # a selection: the second conjunct read only under the first
-        both = [["cond", todata(e.a), 1], ["cond", todata(e.b), 1]]
+        return ["tmp", path + e.n]
+    if (
+        t is Bin and e.op == "and"
+    ):  # a selection, so the second conjunct is read only when the first holds
+        both = [["cond", todata(e.a, path), 1], ["cond", todata(e.b, path), 1]]
         return ["sel", [[both, ["k", 1]], [[], ["k", 0]]]]
     if t is Bin and e.op == "or":
-        alts = [[[["cond", todata(x), 1]], ["k", 1]] for x in (e.a, e.b)]
+        alts = [[[["cond", todata(x, path), 1]], ["k", 1]] for x in (e.a, e.b)]
         return ["sel", alts + [[[], ["k", 0]]]]
     if t is Bin:
-        return ["bin", e.op, todata(e.a), todata(e.b), e.w or 1]
+        return ["bin", e.op, todata(e.a, path), todata(e.b, path), e.w or 1]
     if t is Load:
-        return ["mem", todata(e.a), e.w]
+        return ["mem", todata(e.a, path), e.w]
     if t is R16:
-        return ["mem", todata(e.a), 2]
+        return ["mem", todata(e.a, path), 2]
     if t is Byte:
-        return ["byte", e.chan, todata(e.cursor), e.origin]
+        return ["byte", e.chan, todata(e.cursor, path), e.origin]
     if t is Sel:
-        return ["sel", [[guarddata([g[:2] for g in gs]), todata(x)] for gs, x in e.alts][::-1]]
+        alts = [[guarddata([g[:2] for g in gs], path), todata(x, path)] for gs, x in e.alts]
+        return ["sel", alts[::-1]]
     raise TypeError(t.__name__)
 
 
-def guarddata(when):
-    return [["cond", todata(c), 1 if t else 0] for c, t in when]
+def guarddata(when, path=""):
+    return [["cond", todata(c, path), 1 if t else 0] for c, t in when]
 
 
 def _plus(i, k):
@@ -671,98 +674,54 @@ class Printer:
         }
 
 
-def _reads(x, out):
-    if isinstance(x, list) and x and x[0] == "tmp":
-        out.add(x[1])
-    elif isinstance(x, (list, dict)):
-        for y in x.values() if isinstance(x, dict) else x:
-            _reads(y, out)
-    return out
-
-
-def _renamed(x, by):
-    if isinstance(x, list):
-        if x and x[0] == "tmp":
-            return ["tmp", by[x[1]]]
-        return [_renamed(y, by) for y in x]
-    if isinstance(x, dict):
-        return {k: _renamed(v, by) for k, v in x.items()}
-    return x
-
-
 def document(fetches, chans):
-    """``(score.fetch, names)``: per region its producers -- printed and as data -- exits, channels.
-
-    A region's temps are its own, ``r<k>``; ``names`` maps each back to the program's.
-    """
-    out, names = [], {}
+    """``score.fetch``: per region the producers as printed, and what refused."""
+    out = []
     for key, D in fetches.out.items():
         pr = Printer(fetches.namer, chans, fetches.copyvars)
-        items = []
-        for it in D["items"]:
-            got = {"kind": it["kind"], "guards": guarddata(it["when"])}
-            if it["kind"] == "store":
-                got.update(pr.store(it))
-                got.update(cls=it["cls"], w=it["w"], lo=it["lo"], hi=it["hi"])
-                got.update(addr=todata(it["addr"]), expr=todata(it["value"]))
-            else:
-                got.update(name=it["name"], expr=todata(it["value"]))
-            items.append(got)
-        rgn = {
-            "region": "%s:%s" % key,
-            "producers": items,
-            "exits": [
-                {
-                    "from": x["from"],
-                    "to": x["to"],
-                    "guards": guarddata(x["when"]),
-                    "rets": [todata(v) for v in x["rets"]],
-                }
-                for x in D["exits"]
-            ],
-            "chans": [
-                {
-                    "table": t,
-                    "cursor": todata(D["chans"][t]["cursor"]),
-                    "addr": todata(D["chans"][t]["addr"]),
-                    "base": todata(D["chans"][t]["base"]),
-                    "cell": chans[t]["addr"],
-                    "stride": chans[t]["stride"],
-                }
-                for t in D["order"]
-            ],
-            "refusals": [{"cell": r.cell, "detail": r.detail} for r in D["refusals"]],
-        }
-        reads = sorted(_reads([rgn["producers"], rgn["exits"], rgn["chans"]], set()))
-        old = reads + sorted({it["name"] for it in items if it["kind"] == "let"} - set(reads))
-        by = {n: "r%d" % i for i, n in enumerate(old)}
-        for it in items:
-            if it["kind"] == "let":
-                it["name"] = by[it["name"]]
-        for k in ("producers", "exits", "chans"):
-            rgn[k] = _renamed(rgn[k], by)
-        rgn["reads"] = [by[n] for n in reads]
-        names[rgn["region"]] = {new: n for n, new in by.items()}
-        out.append(rgn)
-    return out, names
-
-
-def spans(fetches):
-    """The memory envelopes the regions' derivations read."""
-    out = set()
-    for D in fetches.out.values():
-        exprs = [it["value"] for it in D["items"]] + [
-            it["addr"] for it in D["items"] if "addr" in it
-        ]
-        exprs += [c for x in D["exits"] for c, _t in x["when"]] + [
-            v for x in D["exits"] for v in x["rets"]
-        ]
-        exprs += [c for it in D["items"] for c, _t in it["when"]]
-        exprs += [v for c in D["chans"].values() for v in c.values()]
-        for e in exprs:
-            for y in _walk(e):
-                if type(y) is Load:
-                    out.add((y.lo, y.hi))
-                elif type(y) is R16:
-                    out.update({(y.lo[1], y.lo[1]), (y.hi[1], y.hi[1])})
+        out.append(
+            {
+                "region": "%s:%s" % key,
+                "producers": [pr.store(it) for it in D["items"] if it["kind"] == "store"],
+                "refusals": [{"cell": r.cell, "detail": r.detail} for r in D["refusals"]],
+            }
+        )
     return out
+
+
+def data(D, path, chans):
+    """One region's derivation as the universal player's fetch item fields."""
+    items = []
+    for it in D["items"]:
+        got = {"kind": it["kind"], "when": guarddata(it["when"], path)}
+        if it["kind"] == "store":
+            got.update(cls=it["cls"], w=it["w"], lo=it["lo"], hi=it["hi"])
+            got.update(addr=todata(it["addr"], path), value=todata(it["value"], path))
+        else:
+            got.update(name=path + it["name"], value=todata(it["value"], path))
+        items.append(got)
+
+    return {
+        "items": items,
+        "exits": [
+            {
+                "from": x["from"],
+                "to": x["to"],
+                "when": guarddata(x["when"], path),
+                "rets": [todata(v, path) for v in x["rets"]],
+            }
+            for x in D["exits"]
+        ],
+        "chans": [
+            {
+                "table": t,
+                "cursor": todata(D["chans"][t]["cursor"], path),
+                "addr": todata(D["chans"][t]["addr"], path),
+                "base": todata(D["chans"][t]["base"], path),
+                "cell": chans[t]["addr"],
+                "stride": chans[t]["stride"],
+            }
+            for t in D["order"]
+        ],
+        "refused": [r.cell for r in D["refusals"]],
+    }

@@ -1,207 +1,225 @@
-"""T3 -- the universal player over the trackerprog document: no program, one procedure.
+"""T3 -- the universal player over the sound as data: no program, one procedure.
 
-A tick runs the producer list in order over one memory image: a ``let`` sets a
-temp, a ``store`` writes a cell or a register, a ``fetch`` applies its region's
-producers to the row it stands on; a loop re-runs its span while a latch holds.
+A tick runs the producer list in rank order over one memory image: a ``block``
+runs when a forward edge in is taken or a fetch resumed there, a ``let`` sets a
+temp, a ``phi`` picks by the predecessor that ran last, a ``store`` writes a cell
+or a register, a ``fetch`` applies its region's producers to the row it stands on.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
-
 from ..tuneprog import grid
 from ..tuneprog.ir import SID_HI, SID_LO, TrapError
-from .document import from_json, text
 from .sound import _Unevaluable, evaldata, holds
-
-LOOP_BOUND = 1 << 16
 
 
 class DataPlayer:
-    """Render a trackerprog from its document alone; :attr:`digest` names the text read."""
+    """Render a trackerprog over its lowered tick ``snd`` (:mod:`.sound`)."""
 
-    def __init__(self, doc):
-        self.digest = hashlib.sha256(text(doc).encode()).hexdigest()
-        tp = from_json(json.loads(text(doc)))
-        self.items = tp["producers"]
-        self.loops = tp["loops"]
-        self.registers = tp["registers"]
-        self.regs = list(self.registers["values"])
-        self.m = bytearray(0x10000)
-        for span in tp["memory"]:
-            b = bytes.fromhex(span["bytes"])
-            self.m[span["base"] : span["base"] + len(b)] = b
+    def __init__(self, tp, snd):
+        self.items = sorted(snd["items"], key=lambda x: tuple(x["rank"]))
+        self.loops = snd["loops"]
+        self.voicevars = set(snd["voicevars"])
+        self.rets = snd["rets"]
+        self.regs = list(snd["regs"])
+        self.m = bytearray.fromhex(snd["image"])
         for a, v in tp["inputs"].items():
             self.m[int(a)] = v
-        self.regions = {f["region"]: f for f in tp["score"]["fetch"]}
-        self.fetches = {it["exit"]: it for it in self.items if it["kind"] == "fetch"}
-        self.ends = {}
-        for n, l in enumerate(self.loops):
-            self.ends.setdefault(l["end"], []).append(n)
-        self.again = {l["header"]: l["again"] for l in self.loops}
-        for it in self.items:  # a guard that is one path temp: read it directly
-            g = it.get("guards")
-            it["gate"] = (
-                g[0][1][1] if g and len(g) == 1 and g[0][1][0] == "tmp" and g[0][2] else None
-            )
         self.score = Score(tp["score"]["voices"])
         self.tmps = {}
-        self.chained = set()
-        self.env = {"tick": 0}
+        self.taken = {}  # block uid -> step it last ran
+        self.resumed = {}
+        self.skip = None
+        self.pending = None
+        self.pass_step = 0
+        self.step = 0
         self.sid = []
         self.obs = []
         self.tick_no = -1
+        self.env = {"voice": 0, "tick": 0}
+        self.first = {}
+        self.entries = {it["uid"]: it for it in self.items if it["kind"] == "fetch"}
+        for n, it in enumerate(self.items):
+            self.first.setdefault(it["block"], n)
+        # a block not entered skips its whole extent: every item ranked under it
+        self.extent = {}
+        ranks = [tuple(it["rank"]) for it in self.items]
+        for n, it in enumerate(self.items):
+            if it["kind"] in ("block", "fetch"):
+                pre = ranks[n][:-1]
+                m = n + 1
+                while m < len(ranks) and ranks[m][: len(pre)] == pre:
+                    m += 1
+                self.extent[n] = m
 
-    def ev(self, e, tmps=None):
-        return evaldata(e, self.env, self.m, self.tmps if tmps is None else tmps)
+    def ev(self, e):
+        return evaldata(e, self.env, self.m, self.tmps)
 
-    def write(self, it, a, v):
-        if not it["lo"] <= a <= it["hi"]:
-            raise TrapError("envelope", "$%04X outside [$%04X,$%04X]" % (a, it["lo"], it["hi"]))
-        if it["cls"] == "io":
+    def store(self, item):
+        a = self.ev(item["addr"])
+        if not item["lo"] <= a <= item["hi"]:
+            raise TrapError("envelope", "$%04X outside [$%04X,$%04X]" % (a, item["lo"], item["hi"]))
+        v = self.ev(item["value"])
+        if item["cls"] == "io":
             if SID_LO <= a <= SID_HI:
                 self.sid.append((a, v & 0xFF))
             self.m[a] = v & 0xFF
             return
-        for i in range(it["w"]):
+        for i in range(item["w"]):
             self.m[(a + i) & 0xFFFF] = (v >> (8 * i)) & 0xFF
 
-    def fetch(self, it):
+    def fetch(self, item):
         """Apply a region's producers to the row it stands on, all read from the entry state."""
-        rgn = self.regions[it["region"]]
-        if rgn["refusals"]:
-            raise TrapError("fetch not in IR", ", ".join(r["cell"] for r in rgn["refusals"]))
-        env, m = self.env, self.m
-        local = {}
-        for n, e in it["bind"].items():
-            try:
-                local[n] = self.ev(e)
-            except _Unevaluable:
-                pass
+        if item.get("refused"):
+            raise TrapError("fetch not in IR", ", ".join(item["refused"]))
+        env, m, tmps = self.env, self.m, self.tmps
         c0s, bases, copy = {}, {}, None
-        for ch in rgn["chans"]:
+        for ch in item["chans"]:
             t = ch["table"]
-            c0s[t] = evaldata(ch["cursor"], env, m, local)
+            c0s[t] = evaldata(ch["cursor"], env, m, tmps)
             if copy is None:
-                copy = (evaldata(ch["addr"], env, m, local) - ch["cell"]) // ch["stride"]
+                copy = (evaldata(ch["addr"], env, m, tmps) - ch["cell"]) // ch["stride"]
             env["byte"] = self.score.probe(copy, self.tick_no, c0s)
-            bases[t] = evaldata(ch["base"], env, m, local)
+            bases[t] = evaldata(ch["base"], env, m, tmps)
         self.score.begin(copy, self.tick_no, c0s, bases)
         env["byte"] = self.score.lookup(copy)
         fired = []
-        for p in rgn["producers"]:
-            if not all(holds(g, env, m, local) for g in p["guards"]):
+        for it in item["items"]:
+            if not all(holds(g, env, m, tmps) for g in it["when"]):
                 continue
-            if p["kind"] == "store":
-                a = evaldata(p["addr"], env, m, local)
-                if not p["lo"] <= a <= p["hi"]:
+            if it["kind"] == "store":
+                a = evaldata(it["addr"], env, m, tmps)
+                if not it["lo"] <= a <= it["hi"]:
                     raise TrapError(
-                        "envelope", "$%04X outside [$%04X,$%04X]" % (a, p["lo"], p["hi"])
+                        "envelope", "$%04X outside [$%04X,$%04X]" % (a, it["lo"], it["hi"])
                     )
-                fired.append((p, a, evaldata(p["expr"], env, m, local)))
+                fired.append((it, a, evaldata(it["value"], env, m, tmps)))
             else:
                 try:
-                    fired.append((p, None, evaldata(p["expr"], env, m, local)))
+                    fired.append((it, None, evaldata(it["value"], env, m, tmps)))
                 except _Unevaluable:
                     pass
-        k = next(
-            (
-                i
-                for i, x in enumerate(rgn["exits"])
-                if all(holds(g, env, m, local) for g in x["guards"])
-            ),
-            None,
+        exit_ = next(
+            (x for x in item["exits"] if all(holds(g, env, m, tmps) for g in x["when"])), None
         )
-        if k is None:
+        if exit_ is None:
             raise TrapError(
                 "score out of step",
-                "%s leaves by no exit at tick %d" % (it["region"], self.tick_no),
+                "%s leaves by no exit at tick %d" % (item["region"], self.tick_no),
             )
-        exit_ = rgn["exits"][k]
-        rets = [evaldata(v, env, m, local) for v in exit_["rets"]]
-        for p, a, v in fired:
-            if p["kind"] == "let":
-                self.tmps[it["tmps"][p["name"]]] = v
+        rets = [evaldata(v, env, m, tmps) for v in exit_["rets"]]
+        for it, a, v in fired:
+            if it["kind"] == "let":
+                tmps[it["name"]] = v
+            elif it["cls"] == "io":
+                if SID_LO <= a <= SID_HI:
+                    self.sid.append((a, v & 0xFF))
+                m[a] = v & 0xFF
             else:
-                self.write(p, a, v)
-        self.tmps[it["exit"]] = k
+                for k in range(it["w"]):
+                    m[(a + k) & 0xFFFF] = (v >> (8 * k)) & 0xFF
+        uid = item["tos"].get(exit_["from"])
+        if uid is not None:
+            self.taken[uid] = self.step
+        to = item["tos"].get(exit_["to"])
+        if to in self.entries:  # a fetch that ran straight into a region: its fetch, now
+            self.taken[to] = self.step
+            self.fetch(self.entries[to])
+        elif to is not None:
+            self.resumed[to] = self.step
         if exit_["to"] == "$exit":
-            for name, v in zip(it["rets"], rets):
-                self.tmps[name] = v
-        to = it["chain"].get(str(k))
-        if to is not None:
-            self.chained.add(to)
-            self.fetch(self.fetches[to])
+            self.skip = item["path"]
+            names = item["rets"] if item["path"] else [n for _i, n in self.rets["rets"]]
+            for name, v in zip(names, rets):
+                tmps[name] = v
 
-    def one(self, it):
-        """Run one item; returns the index to go on at, ``None`` for the next."""
-        k = it["kind"]
+    def entered(self, item):
+        """Whether one of the block's edges in was taken this pass, or a fetch resumed here."""
+        if item.get("entry"):
+            return True
+        for puid, guards in item["exec"]:
+            if self.taken.get(puid, -1) >= self.pass_step and all(
+                holds(g, self.env, self.m, self.tmps) for g in guards
+            ):
+                return True
+        return self.resumed.pop(item["uid"], -1) >= self.pass_step
+
+    def one(self, item):
+        """Run one item; returns False for a block not entered, whose extent is skipped."""
+        self.step += 1
+        if self.skip is not None and item["path"].startswith(self.skip):
+            return True
+        self.skip = None
+        k = item["kind"]
         try:
-            if k == "let" and "guards" not in it:
-                v = self.tmps[it["name"]] = self.ev(it["expr"])
-                again = self.again.get(it["name"])
-                if again is not None:
-                    self.tmps[again] = 0
-                return None if v else it.get("skip")
-            gate = it["gate"]
-            if gate is not None:
-                on = bool(self.tmps.get(gate))
-            else:
-                on = all(holds(g, self.env, self.m, self.tmps) for g in it["guards"])
+            if k in ("block", "fetch"):
+                if self.pending == item["uid"] or self.entered(item):
+                    self.pending = None
+                    self.taken[item["uid"]] = self.step
+                    if k == "fetch":
+                        self.fetch(item)
+                    return True
+                self.taken.pop(item["uid"], None)
+                return False
+            if self.taken.get(item["block"], -1) < self.pass_step:
+                return True
             if k == "let":
-                if on:
-                    self.tmps[it["name"]] = self.ev(it["expr"])
+                v = self.ev(item["value"])
+                self.tmps[item["name"]] = v
+                if item["name"] in self.voicevars:
+                    self.env["voice"] = v
+            elif k == "phi":
+                best = max(item["alts"], key=lambda alt: self.taken.get(alt[0], -1))
+                if self.taken.get(best[0], -1) < 0:
+                    raise TrapError("join without a predecessor", item["name"])
+                self.tmps[item["name"]] = self.ev(best[1])
             elif k == "store":
-                if on:
-                    self.write(it, self.ev(it["addr"]), self.ev(it["expr"]))
-            elif it["exit"] in self.chained:  # a fetch another's exit ran into: done this pass
-                self.chained.discard(it["exit"])
-            elif on:
-                self.fetch(it)
-            else:
-                self.tmps[it["exit"]] = -1
+                self.store(item)
         except _Unevaluable as e:
             raise TrapError(
-                "unevaluable",
-                "%s reads %s" % (it.get("name") or it.get("site", {}).get("pc", ""), e),
+                "unevaluable", "%s reads %s" % (item.get("pc") or item.get("name", ""), e)
             ) from e
-        return None
+        return True
 
     def tick(self):
         self.tick_no += 1
         self.env["tick"] = self.tick_no
         self.sid = []
-        self.chained = set()
-        tmps = self.tmps
-        for i, name in self.registers["in"]:
-            tmps[name] = self.regs[i]
-        for l in self.loops:
-            tmps[l["again"]] = 0
+        self.skip = None
+        self.pass_step = self.step + 1
+        for i, name in self.rets["params"]:
+            self.tmps[name] = self.regs[i]
         n, guard = 0, 0
         while n < len(self.items):
-            to = self.one(self.items[n])
-            if to is not None:
-                n = to
-                continue
-            for k in self.ends.get(n, ()):
-                l = self.loops[k]
-                if any(
-                    tmps.get(name) and all(holds(g, self.env, self.m, tmps) for g in gs)
-                    for name, gs in l["latches"]
-                ):
+            it = self.items[n]
+            if self.one(it) is False:
+                m = self.extent[n]
+                if not any(n <= loop["end"] < m for loop in self.loops):
+                    n = m
+                    continue
+            for loop in self.loops:
+                if loop["end"] != n:
+                    continue
+                back = None
+                for l, e in loop["latches"]:
+                    if self.taken.get(l, -1) >= self.pass_step and self.latch(l, e):
+                        back = l
+                if back is not None:
                     guard += 1
-                    if guard > LOOP_BOUND:
-                        raise TrapError("loop bound", l["header"])
-                    tmps[l["header"]] = tmps[l["again"]] = 1
-                    n = l["first"]
+                    if guard > 1 << 16:
+                        raise TrapError("loop bound", str(loop["header"]))
+                    for b in loop["body"]:
+                        if b != back:
+                            self.taken.pop(b, None)
+                    self.step += 1
+                    self.pending = loop["header"]
+                    n = self.first[loop["header"]]
                     break
-            n += 1
-        for j, e in self.registers["out"]:
-            try:
-                self.regs[j] = self.ev(e)
-            except _Unevaluable:
-                pass
+            else:
+                n += 1
+        for j, name in self.rets["rets"]:
+            if name in self.tmps:
+                self.regs[j] = self.tmps[name]
         w = [
             (int(r), v)
             for r, (_a, v) in zip(grid.regs([a for a, _v in self.sid]), self.sid)
@@ -209,6 +227,9 @@ class DataPlayer:
         ]
         self.obs.append(grid.reduce_tick(w, self.obs[-1] if self.obs else None))
         return self.obs[-1]
+
+    def latch(self, _uid, guards):
+        return all(holds(g, self.env, self.m, self.tmps) for g in guards)
 
     def render(self, ticks):
         try:

@@ -607,38 +607,22 @@ universal player is proved against. What replaced it:
   its parameters and returns as temps at the call and at each exit) and
   lowered to one ranked list of *items*: a `block` entered when one of its
   forward edges is taken — each edge the predecessor's branch as a condition
-  over memory and temps — a `let` at its own rank (so a value read before a
-  store in the same block stays the value read), a `phi` picking the
-  predecessor that ran last, a `store` to a cell or a register under its block,
-  a `fetch` applying its region's producers where it resumes. Ranks are tuples,
-  a callee's items inside its call; a loop is its latch edges, re-entered while
-  one holds. What does not lower is a named refusal: a temp no producer sets, a
-  read of a cell a refused producer steps, a branch the data cannot decide.
-* **`tick.py`.** The ranked items flattened into the object's `producers`: a
-  block is a *path* temp (`p<k>`: an edge in taken, or a fetch's exit temp
-  `x<k>` naming the block it resumed), a phi a selection by the edge taken, a
-  loop its latch temps that re-run its span (`loops`, by item index), a store
-  a producer guarded by its block's path, a fetch a binding of its region's own
-  temps (`score.fetch[].reads`, `r<k>`) to its call path's. Copies are
-  substituted and temps nothing reads dropped; every temp is renamed to its
-  place (`t<k>`), so `certify.schema_check` finds no SSA name. `memory` is the
-  post-init bytes of every envelope a producer reads or writes, `registers` the
-  tick's carried machine registers. A SID store carries T0's record for its
-  site (`producers.py`, one per caller path), a fetch's stores their prints.
-* **`universal.py`.** `DataPlayer(document)`: the tagged JSON text and nothing
-  else — its sha256 is the player's `digest`, `certify.certificate` requires
-  it to equal `document.digest(tp)` (`rendered_from`) before `emitted`. One
-  procedure over one memory image: the producers in order, a path of 0 skipping
-  what is ranked under it, a loop re-run from its header while a latch holds,
-  fetches checked against the rows' own ticks (`score out of step` otherwise).
-  T1's `accs` stay the record over the cell producers that step them; the
-  render evaluates the producers, never a recurrence restated from the record
-  (`acchist.replay` accepts either epoch of a guard, so the record is a claim
-  checked against history, not a generator).
-
-At 1,200 ticks: GT2 1,198 temps / 274 stores, 0 divergences, 6.5 s CPU
-replay; Commando 245 / 54, 0 divergences, 1.7 s; SID Wizard 3,791 / 858, 0
-divergences, 5.0 s; JCH traps `fetch not in IR` as before.
+  over memory and temps, or, where the condition reads what the data cannot
+  express, the score event its outcomes equal (`classify`: a row, or ``k``
+  ticks after or before one, per voice, off the oracle's branch log) — a `let`
+  at its own rank (so a value read before a store in the same block stays the
+  value read), a `phi` picking the predecessor that ran last, a `store` to a
+  cell or a register under its block, a `fetch` applying the next recorded fetch
+  of its region where it resumes. Ranks are tuples, a callee's items inside its
+  call; a loop is its latch edges, re-entered while one holds. What does not
+  lower is a named refusal: a temp no producer sets, a read of a cell a refused
+  producer steps, a branch that reduces to no event.
+* **`universal.py`.** One procedure over one memory image: the items in rank
+  order, a block not entered skipping its whole extent, temps, the voice index
+  read off the voice loop's own variable, fetches checked against their
+  recorded tick (`score out of step` otherwise), the tick's registers carried
+  across ticks. It reads no program: the object it renders is memory, the
+  producer list, the fetches and the tables.
 
 | tune | ticks | emitted | divergence | refusals | items (stores to registers) | trackerprog six + `xz -9e` | source six + `xz` | below |
 | --- | ---: | --- | --- | --- | --- | --- | --- | --- |

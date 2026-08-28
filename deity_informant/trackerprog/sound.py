@@ -4,7 +4,7 @@ The certified tick outside the fetch regions is inlined into one ranked list of
 stores. Each store becomes a *producer* -- a register or cell written under its
 control dependences -- when every guard is a condition over cells the data alone sets, and its value
 reads only such cells,
-the image's tables or a fetch's temps. A cell every store
+the image's tables, the voice index or a fetch's temps. A cell every store
 into which reduces is *latched*; a cell only the fetches set is a *command*
 cell; a cell the tick steps from a guard the data cannot express -- a counter,
 an accumulator's own recurrence -- is neither, and every producer through it is
@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from ..tuneprog.graph import cfg, idoms, natural_loops, preds_of, rpo
 from ..tuneprog.ir import Bin, Call, Const, If, Let, Load, Phi, REGVAR, Return, Store, Switch, Var
 from ..tuneprog.ir import evalbin, succs
+from ..tuneprog.irwalk import walk
 from .refuse import Refusal
 from .region import _control
 
@@ -196,6 +197,33 @@ class Unit:
         return out
 
 
+# ---- the copy index ---------------------------------------------------------------
+def _index_names(s, rgn):
+    """The names a statement's state-cell addresses read."""
+    exprs = [s.e] if type(s) is Let else [s.a] if type(s) is Store else []
+    for e in exprs:
+        for x in walk(e):
+            if type(x) is Load and x.r in rgn and rgn[x.r].kind == "state":
+                yield from (y.n for y in walk(x.a) if type(y) is Var)
+    if type(s) is Store:
+        yield from (x.n for x in walk(s.a) if type(x) is Var)
+
+
+def watch_vars(prog):
+    """Per proc, the name most of its state-cell addresses read: the copy index."""
+    rgn = prog.by_id()
+    out = {}
+    for name, p in prog.procs.items():
+        count = {}
+        for b in p.blocks.values():
+            for s in b.stmts:
+                for n in _index_names(s, rgn):
+                    count[n] = count.get(n, 0) + 1
+        if count:
+            out[name] = max(count, key=count.get)
+    return out
+
+
 # ---- the reduction --------------------------------------------------------------
 class Lowering:
     """Producers out of the inlined tick: what reduces, and what refuses by name.
@@ -207,14 +235,21 @@ class Lowering:
     returns are temps at the call and at each exit; a loop is its latch edge.
     """
 
-    def __init__(self, prog, fetch, unit):
+    def __init__(self, prog, fetch, unit, order):
         self.prog, self.fetch, self.unit = prog, fetch, unit
+        self.voice_loop, self.order = order
+        self.voicevars = self._voicevars()
         self.refusals = []
         self.items = []
         self.bad = set()  # cell addresses a refused store writes
         self.unbound = set()  # temps a refused let defines, blocks refused
-        self.spans = set()  # (lo, hi) envelopes the items read and write
         self.walk = unit.walk()
+
+    def _voicevars(self):
+        if self.voice_loop is None:
+            return set()
+        header = self.unit.loops[self.voice_loop][0]
+        return {s.n for s in self.unit.blocks[header].stmts if type(s) is Phi}
 
     # ---- expressions ----------------------------------------------------------
     def expr(self, e, depth=DEPTH):
@@ -242,18 +277,16 @@ class Lowering:
             if isinstance(a, str):
                 return a
             if any(e.lo <= x <= e.hi for x in self.bad):
-                addr = self.concrete(a)
-                if addr is None or any(addr + k in self.bad for k in range(e.w)):
+                addrs = self.concrete(a)
+                if addrs is None or any(x + k in self.bad for x in addrs for k in range(e.w)):
                     return "a read of a cell a refused producer steps ($%04X..$%04X)" % (e.lo, e.hi)
-            self.spans.add((e.lo, e.hi))
             return ["mem", a, e.w]
         return "unsupported %s" % t.__name__
 
-    @staticmethod
-    def concrete(a):
-        """The one address a constant expression reads, or ``None``."""
+    def concrete(self, a):
+        """The addresses an expression takes over the voices, or ``None`` if it reads more."""
         try:
-            return evaldata(a, {})
+            return sorted({evaldata(a, {"voice": v}) for v in (self.order or [0])})
         except _Unevaluable:
             return None
 
@@ -418,7 +451,6 @@ class Lowering:
             return None, a
         if isinstance(v, str):
             return None, v
-        self.spans.add((s.lo, s.hi))
         return {
             "kind": "store",
             "pc": "$%04X" % s.src,
@@ -523,6 +555,8 @@ def evaldata(e, env, mem=None, tmps=None):
     k = e[0]
     if k == "k":
         return e[1]
+    if k == "voice":
+        return env["voice"]
     if k == "bin":
         return evalbin(e[1], evaldata(e[2], env, mem, tmps), evaldata(e[3], env, mem, tmps), e[4])
     if k == "mem":
@@ -548,3 +582,19 @@ def holds(g, env, mem=None, tmps=None):
     """One guard: ``["cond", expr, truth]``."""
     _c, x, truth = g
     return (evaldata(x, env, mem, tmps) != 0) == bool(truth)
+
+
+def voice_loop(unit, log):
+    """``(loop id, raw index values in iteration order)`` of the loop that runs the voices."""
+    per = {}
+    for t, p, l, v in log:
+        if t != 0:
+            break
+        per.setdefault((p, l), []).append(v)
+    for lid, (h, _latches, _body) in unit.loops.items():
+        u = unit.blocks[h]
+        vals = per.get((u.proc, u.label), [])
+        raws = [v[1] for v in vals if v not in (None, -1)]
+        if len(vals) == 3 and len(set(raws)) == 3:
+            return lid, raws
+    return None, []

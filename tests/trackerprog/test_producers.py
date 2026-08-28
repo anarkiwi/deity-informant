@@ -37,9 +37,9 @@ def _write(t0, pc):
 
 
 def test_a_producer_is_a_target_by_envelope_and_a_value_over_named_cells():
-    tp, refusals, _rec, _ver, _prog = t3(INS_TUNE, data=ins_blocks())
+    tp, refusals, _rec, _ver, _prog, _snd = t3(INS_TUNE, data=ins_blocks())
     assert refusals == []
-    got = {p["target"]: p for p in tp["producers"] if "target" in p}
+    got = {p["target"]: p for p in tp["producers"]}
     assert (
         got["sid[0].ad"]["value"] == "voice[ad_idx - 1].ad" and got["sid[0].ctrl"]["value"] == "$41"
     )
@@ -61,7 +61,6 @@ def test_the_target_is_the_register_of_the_envelope_and_the_voice_its_copy_index
         == "sid.mode_vol"
     )
     assert PR.target({"register": None, "voices": [0], "kind": "file"}, indexed) == "sid"
-    assert {p["envelope"] for p in PR.producers(derive()[1], None)[0]} == {"register"}
 
 
 def test_a_term_that_does_not_open_is_a_named_refusal_and_not_a_producer():

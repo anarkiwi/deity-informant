@@ -47,10 +47,13 @@ class Player:
     expressions :class:`~.fetch.Fetches` derived, evaluated at each entry.
     """
 
-    def __init__(self, prog, fetch, inputs=None, chans=None, tables=()):
+    def __init__(self, prog, fetch, inputs=None, chans=None, tables=(), watch=None):
         self.prog, self.fetch = prog, fetch
         self.chans = chans or {}
         self.tables = tables or ()  # [(lo, hi, table)]: the score reads a fetch logs
+        self.watch = watch  # {proc: the name whose value says the voice}; logs block runs
+        self.log = []  # (tick, proc, label, voice value)
+        self.voice = -1
         self.m = bytearray(prog.image())
         lo, hi = prog.meta.get("load") or (0, 0)
         self.k = bytearray(0x10000)
@@ -205,6 +208,11 @@ class Player:
                         self._begin(key, region, F)
                 blk = proc.blocks[lbl]
                 self.steps += 1
+                if self.watch is not None:
+                    n = self.watch.get(name)
+                    if n is not None and n in F:
+                        self.voice = (name, F[n])
+                    self.log.append((self.tick_no, name, lbl, self.voice))
                 for s in blk.stmts:
                     t = type(s)
                     if t is Let:
