@@ -566,8 +566,10 @@ column for the record leaves that tick to it and says how often (`verify.alien`)
 Hubbard's horizon now carries no refusal; GoatTracker 2's `ghost.pw_lo` and SID
 Wizard's `b1024` still refuse, and their cells are not scratch.
 
-Everything after this is the new `trackerprog/` package beside `tuneprog/`,
-under the same rules (≤ 500 lines per module, hermetic tests, the certificate).
+| T2, the score as a cursor nest (**#299**) | `trackerprog/` beside `tuneprog/`: `resolve` opens a table read's address to one expression over named cells and copy indices (reaching definitions with guarded alternatives, scratch pointer stores, joins, callers' arguments), `cursors` decomposes it into base, origin, cursor and shift, `score` nests pointer bases to depth 2, names the order channels a pattern's selector reads, takes terminator bytes off the cursor's own reset stores and materialises every voice's fetch events over the horizon, `streams` tells a self-stepped cursor from a selector, `pitch` materialises the values read; `tools/tuneprog_score.py` writes **`tuneprog.T2.json`**. GT2 (33 pointers, 9 × 30 instruments, `T16F9`), JCH (26 pointers, `rec8[19]`, three `$FF`s), Commando (`T576B`, `T5889`, `rec2`) lift with no refusal; SID Wizard refuses by name at `p_17C8` | `trackerprog.resolve`, `hist`, `cursors`, `score`, `streams`, `pitch`, `refuse`, `lift` |
+
+Everything after this is the rest of the `trackerprog/` package, under the same
+rules (≤ 500 lines per module, hermetic tests, the certificate).
 
 ## 8. Refusals and boundaries
 
@@ -637,7 +639,7 @@ two single-family rows (§5's stateless-phase vibrato, §3.6's Follin
 | `sext` as a delta | `sext(k, T[c])` appears in the IR only as a jump offset (`switch ($1953 + sext(T1934[a]))`, sw.md:1205). The one accumulator delta that sign-extends is SW's filter step, and it lifts as `tabcell(T[c], signed 11)` (§5). If an exemplar shows a sign-extended table entry that is *not* an absolute table cell, `delta` gains a form; until then it does not |
 | global-scope accumulators beyond the filter | a survey question, not a schema one: `scope` is read from the value cell's region (§5) |
 | the second entry | a tune whose NMI is a second *musical* entry (not a mixer) has two tick clocks; the schema has one cadence with per-voice dividers over it. Refuse until an exemplar demands otherwise |
-| the SW orderlist fold | T2's blocker, not the schema's: SW's orderlist load is erased by the copy fold (`p_17C8` prints nothing, `T1C40`/`T1C4E`/`T1C5C` have no accessors), so either `copyview` keeps the load or SW's score refuses (backlog §4, W6) |
+| the SW orderlist fold | T2's blocker, not the schema's: SW's orderlist load is erased by the copy fold (`p_17C8` prints nothing, `T1C40`/`T1C4E`/`T1C5C` have no accessors). T2 (#299) refuses it by name — `score not cursor-shaped`, `rec[].cursor` filled by `p_17C8`'s erased return — until `copyview` keeps the load |
 
 Settled since the first draft and dropped from this list: note-space clamping
 (§6 — the note space is the trace's reach, and Commando's overrun is a producer,

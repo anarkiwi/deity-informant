@@ -96,7 +96,7 @@ the certificate gains `dropped` (§2).
 | ~~W3~~ | S6 exports T2 needs | serialise `facts.index`, `cellindex`, `idxvar` and the base-pointer relation; name record-split fields `cursor` where `cellindex` says so (`views._named_fields`); `Names.from_dict` | facts, recover, views | small (1.5 d) | the score cursors of GT2/JCH/SW/Commando named `cursor` in S6; recert prints listed line by line where they move |
 | ~~W4~~ | T0 provenance | `provenance.py`: roots = `io` stores in `$D400..$D418` **and** stores into `names.image` regions (rekeyed by the flush delta); `(register, voices)` from the store's `lo/hi` envelope (more robust than `cellref.voiced`); backward substitution via `irwalk.single_defs`/`expand` stopping at a named role; leaves named through `cellref.Cells`; `ir.enc` for the expr (add `R16`/`W16` to `_NODES`); `tuneprog.T0.json` per write site with `direct`, `self_update`, `refusal`. Region ids are the presentation view's — carry `(base, size)` | provenance, ir, pipeline | medium (3 d) | every io/image write site of the 42 recert dirs is a named expr or a stated refusal; the record's `print` re-renders to the `tuneprog.md` line |
 | ~~W5~~ | T1 `accum.py` | candidates from `facts.cellupd` reaching an io store (W4); `Delta`/`Dir` parser (`idioms.bit`, new `sext11`); a diamond over `Store`/`Call` arms (new — not `gated.diamonds`); the variable-shift loop `x >> cell` recogniser `loops.py` lacks (`tablestep`, GT2 `p_12E5`, Commando `$51E4`); guard walk over dominators → policy; bound from guard (`proved`), projection (`projected`), or history under a period witness (`observed`); two verifiers — interval assertion and **recurrence replay** against W2's history, divergence ⇒ `unclassified update` | accum, idioms, loops | medium–large (5.5–7 d) | hermetic snippet per policy (`wrap reflect-complement reflect-dircell clamp halt reload rate tablestep split`), refusals named with the cell; exemplar regression: GT2 vibrato+porta, Commando bounce+run+porta, JCH pw/cutoff, SW cutoff classified as W0 states |
-| W6 | T2 `trackerprog/{cursors,streams,score,pitch,refuse}.py` | cursor × history: successor relation at a fixed base → step/jump edges, rows, loop row, terminator byte, holds; nest through `names.u16` bases (depth ≤ 2 else `score not cursor-shaped`); Follin call/ret/for from the dispatch arms + the depth-1 return slot; `pitch` from `names.freq` + per-accessor origin (Commando reads `FREQ` at two bases); materialise over the horizon. **Blocker**: SW's orderlist load is erased by the copy fold (`p_17C8` prints nothing, `T1C40/T1C4E/T1C5C` have no accessors) — either `copyview` keeps the load or SW refuses | trackerprog | large (8–10 d) | goldens on GT2 (33 pattern ptrs, 9×30 instruments, `T16F9`), JCH (26 ptrs, `rec8[19]`, 3 `$FF`s), Commando (`T576B`, `T5889`, `rec2`); the SW fold produces a named refusal until fixed; recert untouched |
+| ~~W6~~ | T2 `trackerprog/{cursors,streams,score,pitch,refuse}.py` | cursor × history: successor relation at a fixed base → step/jump edges, rows, loop row, terminator byte, holds; nest through `names.u16` bases (depth ≤ 2 else `score not cursor-shaped`); Follin call/ret/for from the dispatch arms + the depth-1 return slot; `pitch` from `names.freq` + per-accessor origin (Commando reads `FREQ` at two bases); materialise over the horizon. **Blocker**: SW's orderlist load is erased by the copy fold (`p_17C8` prints nothing, `T1C40/T1C4E/T1C5C` have no accessors) — either `copyview` keeps the load or SW refuses | trackerprog | large (8–10 d) | goldens on GT2 (33 pattern ptrs, 9×30 instruments, `T16F9`), JCH (26 ptrs, `rec8[19]`, 3 `$FF`s), Commando (`T576B`, `T5889`, `rec2`); the SW fold produces a named refusal until fixed; recert untouched |
 | W7 | universal player + T3 | `trackerprog/{player,emit,certify}.py`: §4 made exact per W0, rendered tick-for-tick; `certify` = W1's `TickObs` equality against `Verifier.obs` over the whole horizon; S4-style tagged JSON, `trackerprog.md`, the certificate with `refusals` and the loop claim | trackerprog | medium (3–4 d) | GT2 ×2, JCH ×2 0 divergences; every refusal names its cell; §6.2's six numbers + `xz -9e` against the source `tuneprog.md` |
 
 **W0 struck by #295**: §2's table settled row by row (two rows corrected here
@@ -285,6 +285,38 @@ and written to `$D400 + 7v` classifies per voice, the same loop writing
 and the register bound's two witnesses. Recert 4/4 reproduced, T1 byte-stable
 over four runs under `PYTHONHASHSEED=random`.
 
+**W6 struck by #299**: `trackerprog/` lands beside `tuneprog/` — `resolve`
+(a table read's address as one expression: reaching definitions with guarded
+alternatives (`Sel`), scratch pointer stores, joins, callers' arguments; a
+definition reaches forward only, a name a loop carries round stays free and
+binds per copy), `hist` (the expression over `history.py`, alternatives chosen
+by their guards at the epoch the guard read), `cursors` (base / origin / cursor
+/ shift of every read, the successor relation of a cursor's history), `score`
+(pointer-base nests to depth 2, else `score not cursor-shaped`; the order
+channels are the tables a pattern channel's selector reads, directly or through
+the state cells its stores fill; terminator bytes from the cursor's own reset
+stores; materialisation per voice as fetch events from the post-init sample on),
+`streams` (a self-stepped cursor is a stream, one only the score sets a
+selector; both carry their table's columns), `pitch`, `refuse`, `lift`, and
+`tools/tuneprog_score.py` writing **`tuneprog.T2.json`**. No pipeline artefact
+moves; recert reproduces.
+
+| tune | ticks | pitch | streams / selectors | score | refusals | s |
+| --- | ---: | --- | --- | --- | --- | ---: |
+| `gt2-je-suis-linus` | 12,000 | `lo\|hi` 91 | wavetable `T16F9` (100 rows, 4 columns), pulse `T17C1` (29), filter `T17FB` (43, 8 columns); pattern pointers `T15A9/T15CA` **33**, instruments **9 × 30** | order `T1875` per voice through `b15A3/b15A6`, `$FF`; patterns `T18B7` through the 33 pointers, terminator `0`, depth 1 | none | 6.5 |
+| `jch-guldkorn-intro` | 4,000 | `u16le` 95 | pulse `rec6` (11 rows, 5 columns), filter `rec7`, wave `T17DB/T181B` (64); instruments `rec8` **19** × 8 | order `T199D` walked by the `timer:acc` pointer pair, **three `$FF` ends**; patterns `T19FE` through `T19C6/T19E1` **[26]**, terminator `$7F`, depth 2 | none | 2.2 |
+| `commando-song1` | 11,780 | `u16le` 80 | instruments `rec2` 13 × 6 | order `T576B` through `b56F9`; patterns `T5889` through `T5712/T573F` [31], terminator `$FF`, depth 2 | none | 3.9 |
+| `sw-emomyst` | 12,000 | `hi\|lo` 104 | — | two ptr-based channels, no order | 7 × `score not cursor-shaped`: `rec[].cursor` (`b1024@$103B`) filled by `p_17C8`'s erased return, and the cells `p_124D`/`p_16D6`/`p_1665`/`p_1537`/`p_16BA` fill the same way | 9.5 |
+
+The SW blocker stands as a **named refusal**: the copy fold leaves `p_17C8` an
+empty body returning the pattern number, so no table read fills `rec[].cursor`
+and the pattern channel's selector is opaque (§4 W6, §5). The fold fix is not
+small — it is `copyview`'s treatment of a per-voice orderlist load — and is not
+attempted here. Hermetic tests: a one-voice tune with an orderlist, a pointer
+table, two `$FF`-ended patterns and a 12-TET table lifts to its order, its
+patterns and its pitch with every row's hold; depth 3 refuses; `decompose`,
+`successors`, `free`, `Refusal` and the JSON round trip.
+
 Total ≈ 24–30 agent-days. W1–W3 are independent of W0 and of each other;
 W4 depends on W3; W5 on W0, W2, W4; W6 on W0, W2, W3; W7 on all.
 
@@ -293,8 +325,8 @@ W4 depends on W3; W5 on W0, W2, W4; W6 on W0, W2, W3; W7 on all.
 1. **W1 + W2 + W3** in parallel — small, recert-neutral, each its own PR.
 2. **W0** — the doc revision, reviewed against §2/§3 above; it fixes the
    `Acc` and `Cmd` shapes W5/W6 build to.
-3. ~~**W4**~~, then ~~**W5**~~, and **W6** (W6 on GT2/JCH/Commando; SW gated on
-   the fold fix).
+3. ~~**W4**~~, then ~~**W5**~~, and ~~**W6**~~ (on GT2/JCH/Commando; SW refuses
+   by name until the fold fix).
 4. **W7** on GT2 ×2, JCH ×2; then SW ×2 after the fold, Commando ×2 after
    W0 settles I1/I11, Follin after I6.
 
