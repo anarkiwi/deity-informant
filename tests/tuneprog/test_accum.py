@@ -7,7 +7,8 @@ from tempfile import mkdtemp
 import numpy as np
 import pytest
 
-from deity_informant.tuneprog import accum, accrule, accshape, graph, pipeline, provenance
+from deity_informant.tuneprog import accreg, accum, accrule, accshape, graph, pipeline
+from deity_informant.tuneprog import provenance
 from deity_informant.tuneprog.accdelta import delta_of
 from deity_informant.tuneprog.acchist import Cells, replay
 from deity_informant.tuneprog.accshape import canon, sext_split, step, terms
@@ -25,12 +26,12 @@ CERT = {"subtunes": [{"complete": True, "period": 4}]}
 
 
 def t1(code, calls=64, cert=CERT, **kw):
-    """The T1 document of a snippet, over its own certified history."""
+    """The T1 document of a snippet, over its own certified history and observable."""
     trace, prog = tuneprog(code, calls=calls, s4=True, **kw)
     view, st, names = pipeline.present(prog)
     t0 = provenance.document(view, st, names)
-    hist = history(prog, trace, names.to_dict(), calls=calls)[0]
-    return accum.document(view, names, t0, hist, cert)
+    hist, ver = history(prog, trace, names.to_dict(), calls=calls, obs=True)
+    return accum.document(view, names, t0, hist, cert, obs=ver.obs)
 
 
 def one(doc, **want):
@@ -578,6 +579,102 @@ def test_a_carry_the_tick_is_given_is_an_external_input_and_refuses():
     assert [(r["why"], r["clause"]) for r in doc["refusals"]] == [("unclassified update", "delta")]
 
 
+# ---- a copy loop's scratch, read off the register it lands in -------------------
+def _voiceloop(sink):
+    """A per-voice loop whose one scratch cell is reloaded from a table each pass."""
+    return asm(
+        PLAY,
+        "init: LDX #$02",
+        "iz: LDA #$00",
+        "STA cur,X",
+        "DEX",
+        "BPL iz",
+        "RTS",
+        "play: LDX #$02",
+        "loop: LDA cur,X",
+        "CLC",
+        "ADC #$01",
+        "AND #$03",
+        "STA cur,X",
+        "TAY",
+        "LDA tab,Y",
+        "STA sc",
+        "LDY dep,X",
+        "inner: LDA sc",
+        "CLC",
+        "ADC #$05",
+        "STA sc",
+        "DEY",
+        "BPL inner",
+        "LDY vmap,X",
+        "LDA sc",
+        sink,
+        "DEX",
+        "BPL loop",
+        "RTS",
+        "sc: BRK",
+        "cur: BRK",
+        "BRK",
+        "BRK",
+        "dep: BRK",
+        "BRK",
+        "BRK",
+        "vmap: BRK",
+        "BRK",
+        "BRK",
+        "tab: BRK",
+        "BRK",
+        "BRK",
+        "BRK",
+    )
+
+
+VOICED = _voiceloop("STA $D400,Y")
+PARKED = _voiceloop("STA $D404,Y")
+LOOPTAB = {"dep": (0, 1, 2), "vmap": (0, 7, 14), "tab": (0x10, 0x20, 0x30, 0x40)}
+
+
+def test_a_register_name_and_a_voice_are_one_field_of_the_observable():
+    assert accreg.column("freq", 1) == (1, 0, 16) and accreg.column("freq_hi", 1) == (1, 8, 16)
+    assert accreg.column("cutoff_lo", 0) == (6, 0, 3) and accreg.column("cutoff_hi", 0) == (
+        6,
+        3,
+        11,
+    )
+    assert accreg.column("mode_vol", 0) == (8, 0, 8) and accreg.column("ctrl", 0) is None
+    assert accreg._overlaps(accreg.column("freq", 2), accreg.column("freq_hi", 2))
+    assert not accreg._overlaps(accreg.column("freq_lo", 2), accreg.column("freq_hi", 2))
+    assert not accreg._overlaps(accreg.column("freq_lo", 0), accreg.column("freq_lo", 1))
+
+
+def test_the_register_bound_names_the_horizon_where_the_tune_does_not_repeat():
+    per = [(0, {}, np.array([4, 9]), None), (1, {}, np.array([2, 7]), None)]
+    assert accreg.bound(per, False, None, 48) == [
+        {"interval": [2, 9], "from": "observed", "witness": "horizon 48 ticks"}
+    ]
+    assert accreg.bound(per, True, 4, 48)[0]["witness"] == "period 4"
+    assert accreg.bound([], True, 4, 48) == []
+
+
+def test_a_copy_loops_scratch_is_read_off_the_register_it_lands_in_per_voice():
+    """One column, three voices: the claim is the register the value lands in."""
+    doc = clean(t1(VOICED, calls=48, data=_data(VOICED, LOOPTAB)))
+    a = one(doc, **{"delta.kind": "repeat"})
+    assert a["target"]["register"] == "freq_lo" and a["target"]["voices"] == [0, 1, 2]
+    assert a["policy"] == "reload" and a["scope"] == "voice" and a["cell"]["copies"] == 1
+    assert a["verify"]["copies"] == 3 and a["verify"]["divergences"] == 0
+    assert a["bound"]["from"] == "observed" and a["delta"]["n"]["name"]
+
+
+def test_the_same_scratch_with_no_register_column_refuses():
+    """``ctrl`` is an edge, not a level: no column, so no series per voice and no claim."""
+    doc = t1(PARKED, calls=48, data=_data(PARKED, LOOPTAB))
+    assert doc["accs"] == []
+    assert [(r["clause"], r["scratch"], r["why"]) for r in doc["refusals"]] == [
+        ("replay", True, accum.WHY)
+    ]
+
+
 # ---- the exemplars (marked ``hvsc``; short horizons) ---------------------------
 _T1 = {}
 
@@ -592,9 +689,9 @@ def exemplar(rel, calls=1200):
         t0 = json.loads((out / "tuneprog.T0.json").read_text())
         cert = json.loads((out / "certificate.json").read_text())
         regions = json.loads((out / "regions.json").read_text())
-        hist = history(prog, Trace.load(out), s6, calls=calls, regions_doc=regions)[0]
+        hist, ver = history(prog, Trace.load(out), s6, calls=calls, regions_doc=regions, obs=True)
         view = pipeline.present(prog)[0]
-        _T1[rel] = accum.document(view, Names.from_dict(s6), t0, hist, cert)
+        _T1[rel] = accum.document(view, Names.from_dict(s6), t0, hist, cert, obs=ver.obs)
     return _T1[rel]
 
 
@@ -646,7 +743,12 @@ def test_hubbard_s_effects_are_named_or_refused_by_the_cell_they_move():
     doc = exemplar(COMMANDO)
     vib = one(doc, **{"delta.kind": "repeat"})
     assert vib["delta"]["step"]["kind"] == "tablestep" and vib["delta"]["n"]["name"]
-    assert vib["target"]["register"] == "freq" and vib["policy"] == "wrap"
+    assert vib["target"]["register"] == "freq" and vib["policy"] == "reload"
+    voices = vib["target"]["voices"]  # the scope a scratch cell has is the site's voices
+    assert vib["scope"] == ("voice" if len(voices) > 1 else "global")
+    assert vib["phase"]["kind"] == "fn"
+    assert vib["verify"]["copies"] == len(voices)
+    assert vib["bound"]["from"] == "observed"
     run = one(doc, **{"delta.kind": "tabcell"})
     assert run["policy"] == "wrap" and run["scope"] == "instrument"
     assert run["delta"]["carry"]["site"] and run["delta"]["carry"]["flag"]

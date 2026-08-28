@@ -247,6 +247,44 @@ Hermetic tests added: reload-then-step in one tick with the rank order asserted,
 `C#1`) and one the tick is given (refused, flag `C`). Recert 4/4 reproduced, no
 artefact moved, T1 byte-stable over four runs under `PYTHONHASHSEED=random`.
 
+**The last W5 refusal closed by #298.** Hubbard's vibrato keeps its value in
+`acc_2` (`$550A`), one column that `p_519B` rewrites once per voice inside
+`oscillator`'s `for v in 2, 1, 0`: it carries no state across ticks and a
+once-a-tick history holds only the last voice, so no recurrence over the cell can
+be replayed. T1 now replays such a producer against the **register** T0 says the
+value lands in — one series per voice out of `Verifier(obs=True)`'s `TickObs`
+(W1) over the same replay `history.py` runs — with the other T0 sites of the same
+register field as the ticks what the tick left there is another producer's. Six
+rules land in [prototype-trackerprog.md](prototype-trackerprog.md) §5 and one new
+module, `accreg.py` (155 lines), holds the reading; `history.History` resolves a
+byte by its address, because the presentation view splits regions the sampled
+program does not carry.
+
+| tune | ticks | #297 accs (policy/`bound.from`) | #298 accs | #297 refusals | #298 refusals |
+| --- | ---: | --- | --- | --- | --- |
+| `gt2-je-suis-linus` | 12,000 | 4: `reflect-complement`/`observed` 1, `reflect`/`observed` 1, `wrap`/`observed` 2 | 4: unchanged | 3 `delta`, 1 `replay` | 3 `delta`, 1 `replay` |
+| `jch-guldkorn-intro` | 4,000 | 5: `wrap`/`projected` 2, `reload`/`projected` 2, `reload`/`observed` 1 | 5: unchanged | none | none |
+| `sw-emomyst` | 12,000 | 4: `clamp`/`projected` 1, `wrap`/`observed` 3 | 4: unchanged | 4 `delta`, 1 `replay` | 4 `delta`, 1 `replay` |
+| `commando-song1` | 11,780 | 2: `wrap`/`projected` 2 | **3**: `wrap`/`projected` 2, **`reload`/`observed` 1** | 1 `replay` | **none** |
+
+**16 accumulators, 0 replay divergences, 0 interval escapes, 9 refusals**, 31 s
+of CPU. The vibrato records `repeat(tablestep(FREQ, voice[].freq_idx, timer_3),
+b550C)`, `phase fn(timer_6)`, `policy reload` (base `FREQ[voice[].freq_idx]`),
+scope voice, `bound.from observed` over the register's own tick values with the
+horizon as its witness — Commando is aperiodic (architecture §5.2), so no period
+witness exists for it and the record says which. Three seeds were corrected where
+they hid or crossed an exemplar: a store a *cursor* indexes is not a copy loop's
+scratch (Hubbard's `rec2[].b5591`, SID Wizard's `ptr_4`), a counted loop whose
+exit test guards its body runs its bound's own value of passes and not one more
+(Hubbard `$520B`), and a pair's half written from several call sites is one
+clause per arm, not per block. `accshape.enclosing` makes the counted loop the
+innermost one, which is also what makes the shift count deterministic. Hermetic
+tests: a per-voice loop reusing one scratch cell reloaded from a table each pass
+and written to `$D400 + 7v` classifies per voice, the same loop writing
+`$D404 + 7v` (an edge, not a level) refuses, plus `accreg.column` field algebra
+and the register bound's two witnesses. Recert 4/4 reproduced, T1 byte-stable
+over four runs under `PYTHONHASHSEED=random`.
+
 Total ≈ 24–30 agent-days. W1–W3 are independent of W0 and of each other;
 W4 depends on W3; W5 on W0, W2, W4; W6 on W0, W2, W3; W7 on all.
 

@@ -235,6 +235,14 @@ def reduce_tick(writes, prev=None):
     return TickObs(edges, tuple(values))
 
 
+def value_index(reg):
+    """The :func:`reduce_tick` value column a register index folds into, or ``None``."""
+    for i, (lo, hi, _shift, _mask) in enumerate(PAIRS):
+        if reg in (lo, hi):
+            return i
+    return len(PAIRS) + LEVEL.index(reg) if reg in LEVEL else None
+
+
 def reduce_run(frame, reg, val, nframes=None):
     """The same reduction over a whole run of already-framed writes.
 

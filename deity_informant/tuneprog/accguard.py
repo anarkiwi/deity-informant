@@ -178,11 +178,16 @@ def scratch(prog):
 
 
 def _consts(blk):
-    """The cells one block stores at an address no copy index moves."""
+    """The cells one block stores at an address nothing indexes: one column, every copy.
+
+    An index is a copy selector whether a register or a cell carries it -- a record
+    a cursor picks is a copy of its own and keeps its own column, so only a store
+    with no index at all writes the one cell every copy shares.
+    """
     out = set()
     for st in blk.stmts:
         k = key_of(st) if type(st) is Store and st.r >= 0 else None
-        if k is not None and not valnames(st.a):
+        if k is not None and not valnames(st.a) and addr_split(st.a)[1] is None:
             out.add(k.cells[0])
     return out
 

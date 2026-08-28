@@ -68,6 +68,8 @@ class Cells:
         self.subst = {}
         self.counters = {}
         self.scratch = frozenset()
+        self.tabstep = {}
+        self.obs = None
         self._lag = {}
         self._epochs = None
 
@@ -322,7 +324,7 @@ def plan_of(cells, clauses, env):
                 n, nbad = evaluate(cells, c.times, env)
                 if n is None:
                     return None, gone, blind
-                d, when = d * (n + 1), when & ~nbad
+                d, when = d * n, when & ~nbad
             out.append(
                 {
                     "when": when,
@@ -356,23 +358,27 @@ def _isborrow(e):
     return type(e) is Bin and e.op == "-" and type(e.b) is Const and e.b.v == 1
 
 
-def verify(cells, acc, clauses, bounds):
+def verify(cells, acc, clauses, bounds, per=None):
     """The recurrence replay and the first interval of ``bounds`` the horizon keeps.
 
     A cell is read before it is written, so inside its own update the accumulator
-    reads last tick's value: :attr:`Cells.subst` is that epoch, and it also gives
-    the previous value of whichever record a cursor selected this tick.
+    reads last tick's value: :attr:`Cells.subst` is that epoch. ``per`` replaces the
+    cell's own column with the register series a scratch producer is read off.
     """
     c, width, scale = acc["cell"], acc["width"], acc["scale"]
     out = {"ticks": cells.ticks, "copies": 0, "divergences": 0, "dropped": 0, "unnamed": 0}
     escapes = [0] * len(bounds)
-    for elem in range(c["copies"]):
-        env = {n: elem * scale for n in acc["index"]}
-        cur = cells.value(acc["read"], env)
+    rows = per or [
+        (e, {n: e * scale for n in acc["index"]}, None, None) for e in range(c["copies"])
+    ]
+    for elem, env, col, alien in rows:
+        cur = col if col is not None else cells.value(acc["read"], env)
         cells.subst = _epoch(cells, acc)
-        prev = cells.value(acc["read"], env)
+        prev = _lag(col) if col is not None else cells.value(acc["read"], env)
         plan, gone, blind = plan_of(cells, clauses, env)
         cells.subst = {}
+        if plan is not None and alien is not None:
+            plan = plan + [{"kind": "any", "when": alien}]
         spans = [interval(cells, b, env, elem) for b in bounds]
         out["dropped"] += gone
         out["unnamed"] = max(out["unnamed"], blind)

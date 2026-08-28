@@ -40,20 +40,25 @@ class History(dict):
 
     ``cells`` is the sampled order and ``at`` maps one byte to its column, so a
     16-bit view (:func:`widen_u16`) resolves an S6 ``(region id, address)`` pair.
+
+    ``by`` maps the address alone: the presentation view splits a region into the
+    fields its accessors reach, and those ids are the naming plane's, not the ones
+    the sampled program carries. Regions do not overlap, so one byte is one column
+    however the plane that asks for it names the region around it.
     """
 
     def __init__(self, arrays, order):
         super().__init__(arrays)
         self.cells = order
         n, seen = Counter(r for r, _n, _a in order), Counter()
-        self.at = {}
+        self.at, self.by = {}, {}
         for rid, name, a in order:
-            self.at[(rid, a)] = (name, seen[rid] if n[rid] > 1 else None)
+            self.at[(rid, a)] = self.by[a] = (name, seen[rid] if n[rid] > 1 else None)
             seen[rid] += 1
 
     def cell(self, rid, addr):
         """The per-tick values of one byte, or ``None`` where it was not sampled."""
-        hit = self.at.get((rid, addr))
+        hit = self.at.get((rid, addr)) or self.by.get(addr)
         if hit is None:
             return None
         name, col = hit
@@ -71,16 +76,26 @@ def _split(out, order):
 
 
 def history(
-    prog, trace, names_doc, calls=None, backend="interp", kinds=("state",), regions_doc=None
+    prog,
+    trace,
+    names_doc,
+    calls=None,
+    backend="interp",
+    kinds=("state",),
+    regions_doc=None,
+    obs=False,
 ):
     """``(History, Verifier)``: post-tick values of every named cell, tick by tick.
 
-    Truncated at a divergence, which the returned verifier's ``div`` states.
+    Truncated at a divergence, which the returned verifier's ``div`` states. ``obs``
+    accumulates the trackerprog observable of the same ticks on the verifier
+    (:class:`~.grid.TickObs`), which is what a producer no cell column can carry is
+    checked against.
     """
     order = cells(prog, names_doc, kinds, regions_doc)
     idx = np.array([a for _r, _n, a in order], np.intp)
     ref = Reference(trace, calls)
-    v = Verifier(prog, ref, backend=backend)
+    v = Verifier(prog, ref, backend=backend, obs=obs)
     v.run_init()
     n = ref.calls if calls is None else min(int(calls), ref.calls)
     out = np.zeros((n if v.div is None else 0, idx.size), np.uint8)

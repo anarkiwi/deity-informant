@@ -11,10 +11,12 @@ from __future__ import annotations
 from collections import namedtuple
 
 from .acchist import Cells, verify
-from .accdelta import _cellref, cellname, delta_of, tablestep_sources
+from .accdelta import _cellref, cellname, delta_of, tablestep_exprs, tablestep_sources, unscratch
 from .accrule import _const, _dirstore, _groups, _merge, _splitpair, bound_of, candidates
-from .accrule import copies_of, counters_of, phase_of, policy_of, rate_of, scope_of
-from .accshape import Ctx, arms, complemented, external, key_of, lowbits, selfread
+from .accrule import copies_of, counters_of, fn_phase, phase_of, policy_of, rate_of, scope_of
+from . import accreg
+from .accshape import Ctx, arms, complemented, enclosing, external, key_of, lowbits
+from .accshape import onepass, selfread
 from .accshape import maskof, rank, sites, step, terms
 from .facts import Facts
 from .ir import Bin, Const, Load, R16, Store, Var, W16
@@ -64,7 +66,10 @@ def clauses(ctx, tgt, ss, extra=()):
                     *arm[3:],
                 )
             )
-    return sorted(out, key=lambda c: (c.rank, c.site.stmt.src, c.proc, c.block, repr(c.value)))
+    return sorted(
+        out,
+        key=lambda c: (c.rank, c.site.stmt.src, c.proc, c.block, repr(c.value), repr(c.guards)),
+    )
 
 
 def _reads(e, base):
@@ -92,17 +97,17 @@ def _repeat(ctx, cells, c, delta):
     """``repeat(delta, n)`` where a counted loop applies the same step ``n`` times.
 
     Hubbard's triangle is the closed form every other family accumulates: the same
-    step added ``phase`` times inside one loop (``$520B``).
+    step added ``phase`` times inside one loop (``$520B``). ``times`` is the passes
+    the loop runs, one more than its bound where the test follows the body.
     """
     if delta is None:
         return None
-    for header, (body, latches) in ctx.loops(c.site.proc).items():
-        if c.site.block not in body:
-            continue
+    for header, body, latches in enclosing(ctx, c.site.proc, c.site.block):
         got = repeats(ctx.prog.procs[c.site.proc], header, body, latches)
         ref = None if got is None else _cellref(ctx, cells, got[1])
         if ref is not None:
-            return {"kind": "repeat", "step": delta, "n": ref, "times": got[1]}
+            k = Const(0 if onepass(ctx, c.site.proc, c.site.block, c.guards) else 1, 1)
+            return {"kind": "repeat", "step": delta, "n": ref, "times": Bin("+", got[1], k, 2)}
     return delta
 
 
@@ -149,6 +154,7 @@ def _read(tgt, c):
 def _one(ctx, cells, tgt, steps, cs, env):
     """One provisional Acc: everything but the identifiers other Accs are known by."""
     rid = tgt.cells[0][0]
+    scratch = tgt.cells[0] in ctx.scratch
     actions = [c for c in cs if c.kind == "action"]
     event = next((c.guards for c in steps if c.comp), ()) or next((c.guards for c in actions), ())
     mask = next((c.mask for c in steps if c.mask is not None), None)
@@ -160,6 +166,8 @@ def _one(ctx, cells, tgt, steps, cs, env):
     delta = _repeat(ctx, cells, steps[0], delta_of(ctx, cells, steps[0].delta, env["sources"]))
     delta = _withcarry(delta, steps)
     phase = phase_of(ctx, cells, tgt, steps, env["byacc"], env["counters"])
+    if phase["kind"] == "none":
+        phase = fn_phase(ctx, cells, delta, env["counters"], env["all"]) or phase
     read = _read(tgt, steps[0])
     tcol = cells.value(read, {n: 0 for n in index})
     hold = steps[0].guards if len(steps) == 1 else ()
@@ -172,6 +180,7 @@ def _one(ctx, cells, tgt, steps, cs, env):
         phase,
         bounds[0],
         _dirstore(ctx, cells, phase, env["all"], sorted({r for r, _a in tgt.cells})),
+        scratch,
     )
     return {
         "target": {"register": reg[0], "voices": reg[1], "kind": "register", "split": None},
@@ -191,7 +200,7 @@ def _one(ctx, cells, tgt, steps, cs, env):
         "rate": rate_of(ctx, cells, steps, actions, env["counters"]),
         "phase": phase,
         "links": [],
-        "scope": scope_of(cells, rid, copies),
+        "scope": scope_of(cells, rid, len(reg[1]) if scratch and reg[1] else copies),
         "sites": sorted({"$%04X" % c.site.stmt.src for c in steps}),
         "index": index,
         "scale": scale,
@@ -204,6 +213,7 @@ def _one(ctx, cells, tgt, steps, cs, env):
         "actions": actions,
         "clauses": [c for c in cs if c.kind != "opaque"],
         "mask": mask,
+        "scratch": scratch,
     }
 
 
@@ -281,12 +291,16 @@ def _plan(acc):
     times = (
         (acc["delta"] or {}).get("times") if (acc["delta"] or {}).get("kind") == "repeat" else None
     )
+    tab = acc["cells"].tabstep if acc["scratch"] else {}
     for c in acc["clauses"]:
         if c.kind == "step":
             d = _sext(joined) if joined is not None else c.delta
-            out.append(c._replace(delta=d, carry=None if k else c.carry, times=times))
+            out.append(
+                c._replace(delta=unscratch(d, tab), carry=None if k else c.carry, times=times)
+            )
         else:
-            out.append(c._replace(value=Bin("<<", c.value, Const(k, 1), 2) if k else c.value))
+            v = Bin("<<", c.value, Const(k, 1), 2) if k else c.value
+            out.append(c._replace(value=unscratch(v, tab)))
     return out
 
 
@@ -365,7 +379,7 @@ def _reach(accs, regs):
         keep = more
 
 
-def accumulators(prog, names, t0_doc, hist, facts=None, complete=False, period=None):
+def accumulators(prog, names, t0_doc, hist, facts=None, complete=False, period=None, obs=None):
     """``(accs, refusals)``: the section 5 records of one certified tune, both verified."""
     facts = facts or Facts(prog)
     ctx, cells = Ctx(prog, names), Cells(prog, names, hist, facts)
@@ -373,6 +387,8 @@ def accumulators(prog, names, t0_doc, hist, facts=None, complete=False, period=N
     src = tablestep_sources(ctx, cells, raw)
     regs = registers(t0_doc)
     cells.scratch = ctx.scratch
+    cells.tabstep = tablestep_exprs(ctx, raw)
+    cells.obs = accreg.observable(obs) if obs else None
     cells.counters = counters_of(raw, cells)
     env = {
         "regs": regs,
@@ -410,7 +426,13 @@ def accumulators(prog, names, t0_doc, hist, facts=None, complete=False, period=N
     keep = _reach(accs, regs)
     out = []
     for a in (x for x in accs if x["id"] in keep):
-        a["bound"], a["verify"] = verify(cells, a, _plan(a), a["bounds"])
+        plan = _plan(a)
+        per, alien = accreg.series(cells, a, plan, ctx, t0_doc) if a["scratch"] else (None, 0)
+        if per:
+            a["bounds"] = accreg.bound(per, complete, period, cells.ticks) + a["bounds"]
+        a["bound"], a["verify"] = verify(cells, a, plan, a["bounds"], per)
+        if per:
+            a["verify"]["alien"] = alien
         rec = {k: v for k, v in a.items() if k in RECORD}
         rec["delta"] = {k: v for k, v in (rec["delta"] or {}).items() if k not in DROP} or None
         if a["verify"].get("why") or a["verify"]["divergences"] or a["verify"]["escapes"]:
@@ -435,11 +457,11 @@ RECORD = (
 ).split()
 
 
-def document(prog, names, t0_doc, hist, cert=None, facts=None):
+def document(prog, names, t0_doc, hist, cert=None, facts=None, obs=None):
     """``tuneprog.T1.json``: the accumulator plane, its refusals and its horizon."""
     sub = ((cert or {}).get("subtunes") or [{}])[0]
     accs, refusals = accumulators(
-        prog, names, t0_doc, hist, facts, bool(sub.get("complete")), sub.get("period")
+        prog, names, t0_doc, hist, facts, bool(sub.get("complete")), sub.get("period"), obs
     )
     return {
         "plane": "S6-view",

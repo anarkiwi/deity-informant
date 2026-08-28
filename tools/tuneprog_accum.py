@@ -45,9 +45,11 @@ def main(argv=None):
         t0doc = json.loads((out / "tuneprog.T0.json").read_text())
         cert = out / "certificate.json"
         doc = json.loads(cert.read_text()) if cert.exists() else None
-        hist = history(prog, Trace.load(out), s6, calls=args.calls, regions_doc=regions)[0]
+        hist, ver = history(
+            prog, Trace.load(out), s6, calls=args.calls, regions_doc=regions, obs=True
+        )
         view = pipeline.present(prog)[0]
-        got = accum.document(view, Names.from_dict(s6), t0doc, hist, doc)
+        got = accum.document(view, Names.from_dict(s6), t0doc, hist, doc, obs=ver.obs)
         secs = time.process_time() - t0
         (out / "tuneprog.T1.json").write_text(json.dumps(got, indent=1))
         for a in got["accs"]:
