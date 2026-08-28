@@ -35,7 +35,6 @@ def run(out, calls=None):
     s6 = json.loads((out / "tuneprog.S6.json").read_text())
     regions = json.loads((out / "regions.json").read_text())
     cert = json.loads((out / "certificate.json").read_text())
-    t0 = json.loads((out / "tuneprog.T0.json").read_text())
     t1p = out / "tuneprog.T1.json"
     t1 = json.loads(t1p.read_text()) if t1p.exists() else None
     hist, ver = history(prog, Trace.load(out), s6, calls=calls, regions_doc=regions, obs=True)
@@ -43,11 +42,7 @@ def run(out, calls=None):
     names = Names.from_dict(s6)
     t2 = lift.document(view, names, hist, cert)
     (out / "tuneprog.T2.json").write_text(json.dumps(t2, indent=1))
-    tp, refusals = emit.document(view, names, t0, t1, t2, hist, cert, ver.obs)
-    refusals += list(t2["refusals"]) + [
-        {"why": "unclassified update", "cell": r["cell"], "site": r["site"], "detail": r["clause"]}
-        for r in (t1 or {}).get("refusals", ())
-    ]
+    tp, refusals = emit.document(view, t2, cert, ver.obs, t1)
     got = player.Player(tp).render(len(ver.obs))
     doc = certify.certificate(
         prog.meta.get("name"), cert, ver.obs, got, refusals, tp["score"]["end"]

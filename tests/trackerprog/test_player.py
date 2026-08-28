@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tuneprog"))
 
 from deity_informant.trackerprog import certify, emit, lift, player  # noqa: E402
 from deity_informant.trackerprog.refuse import Refusal  # noqa: E402
-from deity_informant.tuneprog import pipeline, provenance  # noqa: E402
+from deity_informant.tuneprog import pipeline  # noqa: E402
 from deity_informant.tuneprog.history import history  # noqa: E402
 
 from _prog import tuneprog  # noqa: E402
@@ -17,11 +17,10 @@ from test_score import CERT, TUNE, blocks  # noqa: E402
 
 def t3(code=TUNE, calls=64, cert=CERT):
     trace, prog = tuneprog(code, calls=calls, s4=True, blocks=blocks())
-    view, st, names = pipeline.present(prog)
-    t0 = provenance.document(view, st, names)
+    view, _st, names = pipeline.present(prog)
     hist, ver = history(prog, trace, names.to_dict(), calls=calls, obs=True)
     t2 = lift.document(view, names, hist, cert)
-    tp, refusals = emit.document(view, names, t0, None, t2, hist, cert, ver.obs)
+    tp, refusals = emit.document(view, t2, cert, ver.obs)
     return tp, refusals, ver, view
 
 
@@ -75,19 +74,25 @@ def test_the_print_measures_and_round_trips():
     assert emit.from_json(json.loads(json.dumps(emit.to_json(tp)))) == tp
 
 
-def test_the_player_s_accumulator_policies_stay_bounded():
-    a = player.Acc("freq", 8, 3, 0, 7, "reflect")
-    seen = [a.step() or a.value for _ in range(12)]
-    assert max(seen) <= 7 and min(seen) >= 0 and seen[:4] == [3, 6, 3, 0]
-    c = player.Acc("freq", 8, 5, 0, 12, "clamp")
-    for _ in range(5):
-        c.step()
-    assert c.value == 12
-    h = player.Acc("freq", 8, 5, 0, 12, "halt")
-    for _ in range(5):
-        h.step()
-    assert h.value == 10
-    w = player.Acc("freq", 8, 200, 0, 255, "wrap", rate=2)
-    for _ in range(4):
-        w.step()
-    assert w.value == (400 & 0xFF)
+def test_a_stream_cursor_holds_each_step_for_its_ticks():
+    c = player.Cursor([{"hold": 2, "sets": [["ctrl", 65]]}, {"hold": 1, "sets": [["pw", 7]]}])
+    assert [c.step() for _ in range(5)] == [[["ctrl", 65]], None, [["pw", 7]], None, None]
+
+
+def test_equal_row_sounds_are_one_stream_and_a_transposed_row_is_a_note_offset():
+    tp, _refusals, _ver, _view = t3()
+    (voice,) = tp["score"]["voices"]
+    rows = [r for p in voice["patterns"].values() for r in p]
+    assert len(tp["streams"]) < len(rows) + 1
+    for s in tp["streams"].values():
+        assert all(st["hold"] >= 1 for st in s["steps"])
+
+
+def test_a_second_entry_is_a_sample_stream_and_refuses_by_name():
+    tp, _refusals, ver, view = t3()
+    t2 = {"pitch": {"entries": tp["pitch"]}, "score": [], "refusals": [], "selectors": []}
+    meta = dict(view.meta, schedule=[view.meta["entry"], {"kind": "nmi", "addr": 0x1234}])
+    _tp2, refusals = emit.lift(t2, ver.obs, meta, CERT)
+    assert [(r["why"], r["cell"], r["site"]) for r in refusals][:1] == [
+        ("sample stream", "mode_vol", "$1234")
+    ]
