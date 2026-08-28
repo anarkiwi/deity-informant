@@ -42,7 +42,7 @@ def _stmt(view, site):
 
 
 def _value_kind(v, rgn, prid, selectors):
-    """``("const", k)``, ``("pitch", index, region)``, ``("column", region, selector)`` or ``None``."""
+    """``("const", k)``, ``("pitch", index, region)``, ``("column", region, sel)`` or ``None``."""
     if type(v) is Const:
         return ("const", v.v)
     if type(v) is Load and v.r in prid:
@@ -388,7 +388,7 @@ def numbers_tuneprog(md, view):
 
 
 def to_json(tp):
-    """The S4-style tagged form, ``["$trackerprog", meta, pitch, streams, accs, ins, score, globals]``."""
+    """S4-style tagged: ``["$trackerprog", meta, pitch, streams, accs, ins, score, globals]``."""
 
     def enc(x):
         if isinstance(x, dict):
