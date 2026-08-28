@@ -248,3 +248,18 @@ def test_ram_under_io_is_read_from_memory_not_the_input_stream():
     m.m[1] = 0x34  # I/O banked out
     m.setbank()
     assert m.ioload(0xD400) == 0x5A
+
+
+def test_a_return_of_one_value_and_its_flags_shows_the_value():
+    from deity_informant.tuneprog.ir import Bin, Const, Load, Proc, REGIDX, Return, retexpr
+
+    v = Load("ram", Const(0x1000, 2), 1, 0x1000, 0x1000, 1)
+    z = Bin("==", v, Const(0, 1), 1)
+    n = Bin("!=", Bin("&", v, Const(128, 1), 1), Const(0, 1), 1)
+    proc = Proc("p", params=(), rets=(REGIDX["A"], REGIDX["Z"], REGIDX["N"]))
+    term = Return(vals=(v, z, n))
+    assert retexpr(proc, term, {REGIDX["A"], REGIDX["N"]}) == v
+    assert retexpr(proc, term, {REGIDX["A"], REGIDX["Z"], REGIDX["N"]}) == v
+    assert retexpr(proc, term, {REGIDX["N"]}) == n  # a flag alone is a value of its own
+    other = Return(vals=(v, z, Const(1, 1)))
+    assert retexpr(proc, other, {REGIDX["A"], REGIDX["N"]}) is None  # two unrelated values

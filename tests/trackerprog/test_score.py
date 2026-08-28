@@ -25,8 +25,7 @@ CERT = {"subtunes": [{"complete": True, "period": 40}]}
 
 # one voice: an orderlist of pattern numbers ($FF loops), pattern pointers lo/hi,
 # patterns of note bytes ($FF ends one), a 12-TET table split lo|hi
-TUNE = asm(
-    PLAY,
+TUNE_LINES = [
     "init: LDA #$00",
     "STA row",
     "STA ord",
@@ -78,6 +77,24 @@ TUNE = asm(
     "row: BRK",
     "ord: BRK",
     "hold: BRK",
+]
+TUNE = asm(PLAY, *TUNE_LINES)
+
+
+# the same tune with the orderlist byte fetched by a subroutine returning A and its flags
+TUNE_CALL = asm(
+    PLAY,
+    *[l for l in TUNE_LINES[: TUNE_LINES.index("LDX ord")]],
+    "LDX ord",
+    "JSR fetch",
+    *[l for l in TUNE_LINES[TUNE_LINES.index("ok: TAY") :]],
+    "fetch: LDA $2000,X",
+    "CMP #$FF",
+    "BNE back",
+    "LDX #$00",
+    "STX ord",
+    "LDA $2000,X",
+    "back: RTS",
 )
 
 
@@ -108,9 +125,9 @@ def t2(code=TUNE, calls=64, cert=CERT, **kw):
     return lift.document(view, names, hist, cert)
 
 
-@pytest.fixture(scope="module")
-def doc():
-    return t2()
+@pytest.fixture(scope="module", params=("inline", "call"))
+def doc(request):
+    return t2(TUNE if request.param == "inline" else TUNE_CALL)
 
 
 def test_the_pitch_table_is_materialised_as_the_values_read(doc):
@@ -167,7 +184,8 @@ def test_a_nest_deeper_than_two_pointer_bases_is_not_cursor_shaped():
     assert score.depth(two, rgn) == 2
     three = ptrtab(Load("ram", Bin("+", two, cur, 2), 1, 0, 0xFFFF, 1))
     assert score.depth(three, rgn) == 3
-    assert score.depth(Bin("+", cur, cur, 2), rgn) is None
+    assert score.depth(Bin("+", cur, cur, 2), rgn) == 1  # state only: a pointer pair
+    assert score.depth(Bin("+", cur, Var("x"), 2), rgn) is None
 
 
 def test_decompose_reads_origin_cursor_shift_and_base():

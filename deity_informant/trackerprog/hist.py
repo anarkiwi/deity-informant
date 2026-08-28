@@ -34,6 +34,10 @@ class Eval:
         if t is Bin:
             a, b = self.value(e.a, env), self.value(e.b, env)
             return None if a is None or b is None else evalarr(e.op, a, b, e.w if e.w else 2)
+        if t is Load and e.w == 2:  # a pointer held in data: its two bytes
+            lo = self.value(Load(e.cls, e.a, 1, e.lo, e.hi, e.r), env)
+            hi = self.value(Load(e.cls, Bin("+", e.a, Const(1, 1), 2), 1, e.lo, e.hi + 1, e.r), env)
+            return None if lo is None or hi is None else lo | (hi << 8)
         if t is Load:
             a = self.value(e.a, env)
             was = self.cells.bad

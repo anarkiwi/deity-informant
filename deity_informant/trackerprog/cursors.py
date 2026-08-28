@@ -17,7 +17,7 @@ from ..tuneprog.accshape import terms
 from ..tuneprog.facts import elem_count
 from ..tuneprog.ir import Bin, Const, Load, R16, Var
 from ..tuneprog.irwalk import addr_split, node_exprs, reachable, walk
-from .resolve import Program, free
+from .resolve import Program, free, walkx
 
 TABLE = ("const", "init_constant")
 Access = namedtuple("Access", "site table base origin cursor shift guards expr copyvars")
@@ -61,19 +61,30 @@ def decompose(addr, rgn):
     return base, origin, cursor, shift
 
 
-def basekind(base, rgn):
-    """``const``, ``pair`` (a state pointer), ``ptrtab`` (a pointer table's entry), or ``other``."""
+def leaf_loads(e):
+    """The reads of ``e`` that are values, not parts of another read's address."""
+    xs = [x for x in walkx(e) if type(x) in (Load, R16)]
+    inner = {id(y) for x in xs for y in walkx(x.a)}
+    return [x for x in xs if id(x) not in inner]
+
+
+def basekind(base, rgn, bound=frozenset()):
+    """``const``, ``pair`` (state pointers only), ``ptrtab`` (a table entry among them), ``other``.
+
+    A base is any expression over table entries and state pairs -- a pointer-table
+    entry plus a relocation base, with its carry spelt out, is still a ``ptrtab``.
+    """
     if base is None:
         return "const"
-    if type(base) is R16 and base.lo[0] in rgn and rgn[base.lo[0]].kind == "state":
-        return "pair"
-    halves = _halves(base)
-    if halves is None:
+    if any(type(x) is Var and x.n not in bound for x in walkx(base, False)):
         return "other"
-    kinds = {rgn[x.r].kind if type(x) is Load and x.r in rgn else None for x in halves}
-    if kinds <= set(TABLE):
-        return "ptrtab"
-    return "pair" if kinds == {"state"} else "other"
+    return "ptrtab" if any(istable(x, rgn) for x in leaf_loads(base)) else "pair"
+
+
+def istable(x, rgn):
+    """True for a byte, word or pair read of a table region."""
+    r = x.lo[0] if type(x) is R16 else x.r if type(x) is Load else None
+    return r in rgn and rgn[r].kind in TABLE
 
 
 def _halves(base):
@@ -86,12 +97,12 @@ def _halves(base):
     return None
 
 
-def selector(base):
-    """The index expression a pointer-table base is read at, or ``None``."""
-    halves = _halves(base)
-    if halves is None:
-        return None
-    return addr_split(halves[0].a)[1]
+def selector(base, rgn):
+    """The index expression the base's first table entry is read at, or ``None``."""
+    for x in leaf_loads(base):
+        if istable(x, rgn) and addr_split(x.a)[1] is not None:
+            return addr_split(x.a)[1]
+    return None
 
 
 def table_reads(prog, procs):
@@ -128,9 +139,20 @@ def accesses(ctx, names, P=None):
 
 
 def strides(prog, names):
-    """``{copy index name: stride}`` for names indexing a voice-count region."""
+    """``{copy index name: stride}`` for names indexing a voice-count region.
+
+    A region of three elements, or a member of a group the view names with three
+    copies (a split record's fields included), is one copy per voice.
+    """
     out = {}
     rgn = prog.by_id()
+    voiced = {}
+    for g in (names.groups or {}).values():
+        if int(g.get("n", 0)) == 3:
+            for rid in list(g.get("members", ())) + (
+                [g["split"]] if g.get("split") is not None else []
+            ):
+                voiced[rid] = max(int(g.get("stride", 1)), 1)
     loads = (
         x
         for p in prog.procs.values()
@@ -142,9 +164,12 @@ def strides(prog, names):
     )
     for x in loads:
         r = rgn.get(x.r)
-        if r is not None and r.id >= 0 and r.kind == "state" and elem_count(r) == 3:
+        if r is None or r.id < 0:
+            continue
+        k = voiced.get(r.id) or (r.stride if r.kind == "state" and elem_count(r) == 3 else None)
+        if k is not None:
             for n in {y.n for y in walk(x.a) if type(y) is Var}:
-                out[n] = max(out.get(n, 0), r.stride, 1)
+                out[n] = max(out.get(n, 0), k, 1)
     return out
 
 
