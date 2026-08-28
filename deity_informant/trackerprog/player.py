@@ -50,9 +50,12 @@ class Player:
     or ``{region key: [fetch, ...]}`` to *replay* them.
     """
 
-    def __init__(self, prog, fetch, inputs=None, fetches=None, envvars=None):
+    def __init__(self, prog, fetch, inputs=None, fetches=None, envvars=None, watch=None):
         self.prog, self.fetch = prog, fetch
         self.envvars = envvars or {}
+        self.watch = watch  # {proc: the name whose value says the voice}; logs block runs
+        self.log = []  # (tick, proc, label, voice value, branch outcome)
+        self.voice = -1
         self.m = bytearray(prog.image())
         lo, hi = prog.meta.get("load") or (0, 0)
         self.k = bytearray(0x10000)
@@ -225,6 +228,11 @@ class Player:
                         continue
                 blk = proc.blocks[lbl]
                 self.steps += 1
+                if self.watch is not None:
+                    n = self.watch.get(name)
+                    if n is not None and n in F:
+                        self.voice = (name, F[n])
+                    self.log.append([self.tick_no, name, lbl, self.voice, -1])
                 for s in blk.stmts:
                     t = type(s)
                     if t is Let:
@@ -244,9 +252,14 @@ class Player:
                 if k is Goto:
                     lbl = term.to
                 elif k is If:
-                    lbl = term.t if self.ev(term.c, F) else term.f
+                    taken = self.ev(term.c, F)
+                    lbl = term.t if taken else term.f
+                    if self.watch is not None:
+                        self.log[-1][4] = 1 if taken else 0
                 elif k is Switch:
                     v = self.ev(term.e, F)
+                    if self.watch is not None:
+                        self.log[-1][4] = v
                     lbl = next((l for c, l in term.cases if c == v), None)
                     if lbl is None:
                         raise TrapError("switch", "$%04X value %d" % (blk.src, v))

@@ -241,3 +241,16 @@ def test_the_player_refuses_a_score_it_has_run_out_of():
     _got, trap = emit.replay(tp)
     assert trap and trap["trap"] == "score exhausted"
     assert player.DEFAULT_ORDER == ("ad", "sr", "ctrl")
+
+
+def test_the_universal_player_carries_no_program_and_matches_the_oracle():
+    tp, refusals, _rec, ver, prog = t3(INS_TUNE, data=ins_blocks())
+    assert refusals == [] and "program" not in tp
+    snd = tp["sound"]
+    kinds = {it["kind"] for it in snd["items"]}
+    assert {"block", "let", "store", "fetch"} <= kinds
+    assert all(it["kind"] != "store" or it["cls"] != "io" or it["pc"] for it in snd["items"])
+    want, _trap = emit.oracle(prog, tp)
+    got, trap = emit.replay(tp)
+    assert trap is None and certify.divergence(want, got) is None
+    assert certify.divergence(ver.obs, got) is None

@@ -10,7 +10,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tuneprog"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "tools"))
 
+from deity_informant.trackerprog import certify, emit  # noqa: E402
 from deity_informant.trackerprog.refuse import REASONS  # noqa: E402
+from deity_informant.tuneprog.ir import Tuneprog  # noqa: E402
 from deity_informant.tuneprog import pipeline  # noqa: E402
 
 import tuneprog_trackerprog as T3  # noqa: E402
@@ -75,3 +77,12 @@ def test_the_certificate_names_its_refusals_by_reason(tmp_path):
     cert = json.loads((out / "trackerprog.certificate.json").read_text())
     assert cert["emitted"] and all(r["why"] in REASONS for r in cert["refusals"])
     assert doc["source"]["tune"] and tmp_path
+
+
+def test_the_emitted_object_carries_no_program_and_the_universal_player_matches_the_oracle():
+    _doc, tp, _refusals, _numbers, out = exemplar(GULDKORN)
+    assert "program" not in tp and tp["sound"]["items"]
+    prog = Tuneprog.load(out / "tuneprog.S4.json")
+    want, _trap = emit.oracle(prog, tp, 300)
+    got, trap = emit.replay(tp, 300)
+    assert trap is None and certify.divergence(want, got) is None
