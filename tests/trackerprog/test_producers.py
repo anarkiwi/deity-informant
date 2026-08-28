@@ -37,7 +37,7 @@ def _write(t0, pc):
 
 
 def test_a_producer_is_a_target_by_envelope_and_a_value_over_named_cells():
-    tp, refusals, _rec, _ver, _prog, _snd = t3(INS_TUNE, data=ins_blocks())
+    tp, refusals, _rec, _ver, _prog = t3(INS_TUNE, data=ins_blocks())
     assert refusals == []
     got = {p["target"]: p for p in tp["producers"]}
     assert (

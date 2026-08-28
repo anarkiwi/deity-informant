@@ -43,7 +43,7 @@ def documents(out, prog, view, st, names, hist, ver, cert):
 
 
 def run(out, calls=None):
-    """``(certificate, trackerprog, refusals, numbers, seconds, lowered tick)`` of one directory."""
+    """``(certificate, trackerprog, refusals, numbers, seconds)`` of one directory."""
     t0s = time.process_time()
     prog = Tuneprog.load(out / "tuneprog.S4.json")
     s6 = json.loads((out / "tuneprog.S6.json").read_text())
@@ -54,10 +54,18 @@ def run(out, calls=None):
     view, st, _n = pipeline.present(prog)
     names = Names.from_dict(s6)
     t0, t1, t2 = documents(out, prog, view, st, names, hist, ver, cert)
-    tp, refusals, _rec, snd = emit.lift(prog, view, names, t0, t1, t2, cert, trace.inputs)
-    got, trap = emit.replay(tp, snd, len(ver.obs))
+    tp, refusals, _rec = emit.lift(prog, view, names, t0, t1, t2, cert, trace.inputs)
+    got, trap, rendered, bad = emit.replay(tp, len(ver.obs))
     doc = certify.certificate(
-        prog.meta.get("name"), cert, ver.obs, got, refusals, tp["score"]["end"], trap, tp
+        prog.meta.get("name"),
+        cert,
+        ver.obs,
+        got,
+        refusals + bad,
+        tp["score"]["end"],
+        trap,
+        tp,
+        rendered,
     )
     refusals = [Refusal(**r) for r in doc["refusals"]]
     md = emit.render(tp)
@@ -70,7 +78,7 @@ def run(out, calls=None):
     if doc["emitted"]:
         (out / "trackerprog.json").write_text(json.dumps(emit.to_json(tp)))
         (out / "trackerprog.md").write_text(md)
-    return doc, tp, refusals, n, time.process_time() - t0s, snd
+    return doc, tp, refusals, n, time.process_time() - t0s
 
 
 def main(argv=None):
@@ -83,7 +91,7 @@ def main(argv=None):
     rc = 0
     for name in args.out:
         out = Path(name)
-        doc, tp, refusals, n, secs, _snd = run(out, args.calls)
+        doc, tp, refusals, n, secs = run(out, args.calls)
         for r in doc["refusals"]:
             print("  refusal %-22s %-40s %s" % (r["why"], r["cell"][:40], r["site"]))
         ins = tp["instruments"]

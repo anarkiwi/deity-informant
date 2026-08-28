@@ -14,6 +14,7 @@ REASONS = (
     "program residue",
     "fetch not in IR",
     "producer not in IR",
+    "acc not executable",
 )
 
 

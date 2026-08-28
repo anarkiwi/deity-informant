@@ -12,6 +12,7 @@ import json
 import re
 
 from ..tuneprog.facts import SID_VOICE, SID_VOICES
+from .document import digest
 from .refuse import Refusal
 
 COMPARED = [
@@ -72,6 +73,8 @@ def equal_ticks(want, got):
 TEMP = re.compile(r"u\d+_L[0-9A-F]{4}_[0-9A-F]{2}#\d+|(?<![\w$])[A-Z]#\d+|\$saved\d*")
 ADDR = re.compile(r"\$[0-9A-F]{4}(?![0-9A-Za-z])")
 PROGRAM = ("block", "fetch", "let", "phi", "store")
+EMBEDDED = ("memory", "registers", "loops")  # the program as data: never a section
+TEMP_ID = re.compile(r"(?<![\w\[.$])(?:[pt]\d+|sel)(?![\w(])")  # a path, phi or renamed temp
 ADDRESSED = ("meta", "pitch")
 PROVENANCE = ("meta", "site")  # keys holding where a datum came from: not the datum
 
@@ -122,26 +125,44 @@ def schema_check(tp):
                     bad(path, "address %s in %r" % (m.group(0), x))
 
     walk(tp, ())
+    for k in EMBEDDED:
+        if k in tp:
+            bad((k,), "section %s" % k)
     accs = tp.get("accs") or {}
-    for i, p in enumerate(tp.get("producers") or ()):
+    lists = [(("producers", i), p) for i, p in enumerate(tp.get("producers") or ())]
+    for j, f in enumerate((tp.get("score") or {}).get("fetch") or ()):
+        lists += [(("score", "fetch", j, "producers", i), p) for i, p in enumerate(f["producers"])]
+    for path, p in lists:
+        if p.get("kind") in PROGRAM or "name" in p:
+            bad(path, "program item %s" % p.get("kind"))
+        for k in ("value", "when"):
+            for s in [p.get(k)] if k == "value" else p.get(k) or ():
+                m = TEMP_ID.search(s or "")
+                if m:
+                    bad(path + (k,), "temp %s in %r" % (m.group(0), s))
+        if path[0] != "producers":
+            continue
         for a in p.get("accs") or ():
             if a not in accs:
-                bad(("producers", i, "accs"), "acc %s not in accs" % a)
+                bad(path + ("accs",), "acc %s not in accs" % a)
         if not p.get("register") and p.get("kind") != "file":
-            bad(("producers", i, "register"), "no register")
+            bad(path + ("register",), "no register")
     return list(out.values())
 
 
-def certificate(tune, cert, want, got, refusals, end, trap=None, tp=None):
+def certificate(tune, cert, want, got, refusals, end, trap=None, tp=None, rendered=None):
     """``trackerprog.certificate.json`` (section 2), with the loop claim re-checked.
 
-    Emitted only with no refusal, no divergence, no trap and, given ``tp``, a
-    clean :func:`schema_check`: a render that differs from the source, or an
-    object carrying program residue, is not a trackerprog however it is described.
+    Emitted only with no refusal, no divergence, no trap, a clean
+    :func:`schema_check` of ``tp`` and ``rendered`` the digest of the document
+    the render read (:func:`~.document.digest`): a render that differs from the
+    source, an object carrying program residue, or a render of anything but the
+    object's own text is not a trackerprog however it is described.
     """
     refusals = list(refusals) + (schema_check(tp) if tp is not None else [])
+    bound = tp is not None and rendered == digest(tp)
     sub = ((cert or {}).get("subtunes") or [{}])[0]
-    digest = (
+    src = (
         hashlib.sha256(json.dumps(cert, sort_keys=True).encode()).hexdigest()[:16] if cert else None
     )
     loop = None
@@ -154,7 +175,7 @@ def certificate(tune, cert, want, got, refusals, end, trap=None, tp=None):
             loop["rechecked"] = got[f - p : f] == got[f : f + p]
     div = divergence(want, got)
     return {
-        "source": {"tune": tune, "certificate_digest": digest},
+        "source": {"tune": tune, "certificate_digest": src},
         "compared": COMPARED,
         "dropped": DROPPED,
         "ticks": len(want),
@@ -162,7 +183,8 @@ def certificate(tune, cert, want, got, refusals, end, trap=None, tp=None):
         "trap": trap,
         "rendered": {"ticks_equal": equal_ticks(want, got), "divergence": div},
         "refusals": [r.to_dict() if hasattr(r, "to_dict") else r for r in refusals],
-        "emitted": not refusals and div is None and trap is None,
+        "rendered_from": rendered,
+        "emitted": bound and not refusals and div is None and trap is None,
         "loop": loop,
         "end": end,
     }

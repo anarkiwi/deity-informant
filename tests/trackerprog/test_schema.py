@@ -58,9 +58,42 @@ def test_a_program_block_refuses_once_by_kind():
 
 def test_a_producer_refers_to_a_defined_acc_and_names_its_register():
     bad = _with(producers=[{"register": "ad", "accs": ["a9"]}, {"kind": "let", "accs": []}])
-    assert _details(bad) == ["acc a9 not in accs", "no register"]
+    assert _details(bad) == ["acc a9 not in accs", "program item let", "no register"]
 
 
 def test_refusals_are_one_per_offending_string_however_many_rows_carry_it():
     rows = [{"sets": [["sid[$D404]", 1, 1]]} for _ in range(50)]
     assert len(schema_check(_with(score={"voices": [{"rows": rows}]}))) == 1
+
+
+def test_an_embedded_program_section_refuses():
+    got = _details(_with(memory=[{"base": 0, "bytes": "00"}], registers={}, loops=[]))
+    assert got == ["section memory", "section registers", "section loops"]
+
+
+def test_a_path_or_phi_temp_or_a_program_item_in_a_producer_list_refuses():
+    bad = _with(
+        producers=[
+            {"register": "freq", "accs": [], "value": "p3 + 1", "when": ["(t12 == 0)"]},
+            {"register": "freq", "accs": [], "value": "sel(p0, x, y)", "when": []},
+            {"kind": "let", "name": "t1", "value": "3", "when": []},
+            {
+                "register": "pw",
+                "accs": [],
+                "value": "T5712[T576B[0]] + byte[1] + ptr_2",
+                "when": [],
+            },
+        ],
+        score={
+            "fetch": [{"producers": [{"cell": "p1", "value": "p1 + 1", "when": ["(p4 == 0)"]}]}]
+        },
+    )
+    assert _details(bad) == [
+        "temp p3 in 'p3 + 1'",
+        "temp t12 in '(t12 == 0)'",
+        "temp p0 in 'sel(p0, x, y)'",
+        "program item let",
+        "no register",
+        "temp p1 in 'p1 + 1'",
+        "temp p4 in '(p4 == 0)'",
+    ]

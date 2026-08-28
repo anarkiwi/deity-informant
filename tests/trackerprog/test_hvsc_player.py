@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tuneprog"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "tools"))
 
 from deity_informant.trackerprog import certify, emit  # noqa: E402
+from deity_informant.trackerprog.document import digest  # noqa: E402
 from deity_informant.trackerprog.refuse import REASONS  # noqa: E402
 from deity_informant.tuneprog.ir import Tuneprog  # noqa: E402
 from deity_informant.tuneprog import pipeline  # noqa: E402
@@ -24,33 +25,39 @@ INSTRUMENTS = {LINUS: 30, GULDKORN: 19, COMMANDO: 13, EMOMYST: 11}
 # what does not open at 1,200 ticks: GT2's vibrato freq is a counted shift loop's
 # result; Commando's gate-off reads a pointer page S6 names no cell in yet
 REFUSED_PRODUCERS = {LINUS: 2, GULDKORN: 0, COMMANDO: 1, EMOMYST: 0}
+# the accumulators the render would step: T1 records, not yet executable
+REFUSED_ACCS = {
+    LINUS: ["acc0", "acc2", "acc3"],
+    GULDKORN: ["acc0", "acc1", "acc4", "acc5", "acc6"],
+    COMMANDO: ["acc0", "acc1"],
+    EMOMYST: ["acc0", "acc1", "acc3", "acc4"],
+}
 
 
 def exemplar(rel, calls=1200):
     if rel not in _T3:
         out = Path(mkdtemp()) / "t3"
         assert pipeline.main([str(tune_file(rel)), "--out", str(out), "--calls", str(calls)]) == 0
-        doc, tp, refusals, numbers, _secs, snd = T3.run(out, calls)
-        _T3[rel] = doc, tp, refusals, numbers, out, snd
-    return _T3[rel][:5]
+        doc, tp, refusals, numbers, _secs = T3.run(out, calls)
+        _T3[rel] = doc, tp, refusals, numbers, out
+    return _T3[rel]
 
 
 @pytest.mark.parametrize("rel", (LINUS, GULDKORN, COMMANDO, EMOMYST))
-def test_a_derived_fetch_renders_exactly_and_a_walked_one_refuses_by_name(rel):
+def test_the_render_is_bound_to_the_document_and_refuses_each_acc_by_name(rel):
     doc, tp, refusals, numbers, out = exemplar(rel)
-    walked = [r for r in refusals if r.why == "fetch not in IR" and "#" not in r.cell]
-    if walked:
-        assert doc["trap"]["trap"] == "fetch not in IR" and doc["divergence"]
-    else:
-        assert doc["divergence"] is None and doc["trap"] is None
-        assert doc["rendered"]["ticks_equal"] == doc["ticks"] == 1200
+    assert doc["trap"] is None and doc["rendered_from"] == digest(tp)
+    assert doc["divergence"]["register"] == "horizon" and doc["ticks"] == 1200
     assert not [r for r in refusals if r.why == "program residue"]
     refused = [r for r in refusals if r.why == "producer not in IR"]
     assert len(refused) == REFUSED_PRODUCERS[rel] and all(
         r.cell.startswith("sid[v].") for r in refused
     )
-    emitted = not walked and not refused
-    assert doc["emitted"] == emitted and (out / "trackerprog.json").exists() == emitted
+    accs = [r for r in refusals if r.why == "acc not executable"]
+    assert sorted(r.cell for r in accs) == REFUSED_ACCS[rel]
+    assert all(r.site.startswith("$") and r.detail for r in accs)
+    assert set(REFUSED_ACCS[rel]) <= set(tp["accs"])
+    assert not doc["emitted"] and not (out / "trackerprog.json").exists()
     assert doc["compared"] and doc["dropped"]
     assert doc["end"]["kind"] in ("loop", "fixed_point", "horizon")
     assert {"tokens", "lines", "statements", "blocks", "header_rows", "data_rows", "xz"} <= set(
@@ -113,11 +120,13 @@ def test_the_certificate_names_its_refusals_by_reason(tmp_path):
     assert doc["source"]["tune"] and tmp_path
 
 
-def test_the_emitted_object_carries_no_program_and_the_universal_player_matches_the_oracle():
+def test_the_object_carries_no_program_and_the_player_reads_its_document_alone():
     _doc, tp, _refusals, _numbers, out = exemplar(COMMANDO)
-    snd = _T3[COMMANDO][5]
-    assert "program" not in tp and "sound" not in tp and snd["items"]
+    assert "program" not in tp and "sound" not in tp and certify.schema_check(tp) == []
+    assert not {"memory", "registers", "loops"} & set(tp)
     prog = Tuneprog.load(out / "tuneprog.S4.json")
-    want, _trap = emit.oracle(prog, tp, 300)
-    got, trap = emit.replay(tp, snd, 300)
-    assert trap is None and certify.divergence(want, got) is None
+    want, trap = emit.oracle(prog, tp, 300)
+    assert trap is None and len(want) == 300
+    got, trap, rendered, bad = emit.replay(tp, 300)
+    assert got == [] and trap is None and rendered == digest(tp)
+    assert [(r.cell, r.site) for r in bad] == [("acc0", "$5227"), ("acc1", "$5246")]

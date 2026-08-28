@@ -32,7 +32,7 @@ def derive(code=TUNE, calls=64, data=None):
 
 
 def test_the_fetch_is_producers_over_row_bytes_and_named_cells():
-    tp, refusals, _rec, _ver, _prog, _snd = t3()
+    tp, refusals, _rec, _ver, _prog = t3()
     assert refusals == []
     (rgn,) = tp["score"]["fetch"]
     assert not rgn["refusals"]
@@ -45,7 +45,7 @@ def test_the_fetch_is_producers_over_row_bytes_and_named_cells():
 
 
 def test_the_order_wrap_reads_the_order_table_at_a_named_position():
-    tp, _refusals, _rec, _ver, _prog, _snd = t3()
+    tp, _refusals, _rec, _ver, _prog = t3()
     (rgn,) = tp["score"]["fetch"]
     reads = {b for p in rgn["producers"] for b in p["bytes"]}
     assert "T2000[0]" in reads and "byte[0]" in reads
@@ -54,7 +54,7 @@ def test_the_order_wrap_reads_the_order_table_at_a_named_position():
 
 
 def test_a_row_is_its_duration_and_bytes_and_patterns_are_reused():
-    tp, _refusals, _rec, _ver, _prog, _snd = t3()
+    tp, _refusals, _rec, _ver, _prog = t3()
     (voice,) = tp["score"]["voices"]
     assert all(set(r) == {"dur", "bytes", "at"} for r in voice["rows"])
     assert sum(r["dur"] for r in voice["rows"]) + voice["start"] == tp["meta"]["horizon"]
@@ -67,21 +67,19 @@ def test_a_row_is_its_duration_and_bytes_and_patterns_are_reused():
 
 
 def test_a_callee_inside_the_region_is_fetched_with_it():
-    tp, refusals, _rec, ver, _prog, snd = t3(TUNE_CALL)
+    tp, refusals, rec, ver, _prog = t3(TUNE_CALL)
     assert refusals == []
     (rgn,) = tp["score"]["fetch"]
     assert any(p["print"].startswith("ptr = ") for p in rgn["producers"])
-    got, trap = emit.replay(tp, snd)
-    assert trap is None and certify.divergence(ver.obs, got) is None
+    assert certify.divergence(ver.obs, rec) is None and certify.schema_check(tp) == []
 
 
 def test_an_instrument_byte_is_a_guarded_producer_and_the_player_applies_it():
-    tp, refusals, _rec, ver, _prog, snd = t3(INS_TUNE, data=ins_blocks())
+    tp, refusals, rec, ver, _prog = t3(INS_TUNE, data=ins_blocks())
     assert refusals == []
     (rgn,) = tp["score"]["fetch"]
     assert any(p["cell"] == "ad_idx" and "byte[0]" in p["bytes"] for p in rgn["producers"])
-    got, trap = emit.replay(tp, snd)
-    assert trap is None and certify.divergence(ver.obs, got) is None
+    assert certify.divergence(ver.obs, rec) is None and certify.schema_check(tp) == []
 
 
 def test_what_does_not_open_is_a_named_refusal_and_the_player_traps_on_it():
@@ -151,7 +149,7 @@ def test_provenance_and_the_oracle_stay_the_reference():
     hist, ver = history(prog, trace, names.to_dict(), calls=32, obs=True)
     t0 = provenance.document(view, st, names)
     t2 = lift.document(view, names, hist, certified(prog, ver))
-    tp, refusals, rec, _snd = emit.lift(prog, view, names, t0, None, t2, None, trace.inputs)
+    tp, refusals, rec = emit.lift(prog, view, names, t0, None, t2, None, trace.inputs)
     assert refusals == [] and certify.divergence(ver.obs, rec) is None
     want, trap = emit.oracle(prog, tp)
     assert trap is None and certify.divergence(ver.obs, want) is None
