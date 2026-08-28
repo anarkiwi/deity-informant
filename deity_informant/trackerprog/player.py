@@ -28,21 +28,34 @@ def regindex(name, voice):
 
 @dataclass
 class Cursor:
-    """One armed stream: its steps, the step due next and the ticks left on the current one."""
+    """One armed stream: the step due next, the ticks left on it, the cycle it is in."""
 
     steps: list
     at: int = 0
     left: int = 0
+    cycle: list | None = None
+    phase: int = 0
+    loop: int | None = None
 
     def step(self):
-        """The sets due this tick, or ``None`` while the current step's hold runs."""
+        """The sets due this tick: a held step's on its tick, a cycle's each tick round."""
         if self.left > 0:
             self.left -= 1
+            if self.cycle is not None:
+                self.phase += 1
+                return self.cycle[self.phase % len(self.cycle)]
             return None
         if self.at >= len(self.steps):
-            return None
+            if self.loop is None:
+                return None
+            self.at = self.loop
         s = self.steps[self.at]
         self.at += 1
+        if "cycle" in s:
+            self.cycle, self.phase = s["cycle"], 0
+            self.left = len(s["cycle"]) * int(s["times"]) - 1
+            return s["cycle"][0]
+        self.cycle = None
         self.left = int(s["hold"]) - 1
         return s["sets"]
 
@@ -55,11 +68,12 @@ class Voice:
     row: int = 0
     hold: int = 0
     note: int | None = None
-    off: int = 0
+    index: int | None = None
     freq_off: int | None = 0
     freq: int = 0
     levels: dict = field(default_factory=dict)
-    stream: Cursor | None = None
+    streams: dict = field(default_factory=dict)
+    loop: dict | None = None
     ended: bool = False
 
     def pattern(self):
@@ -68,14 +82,14 @@ class Voice:
         return None
 
     def advance(self, end):
-        """The next row, across patterns, honouring the order's terminator."""
+        """The next row, across patterns, honouring the voice's loop or the terminator."""
         pat = self.pattern()
         if pat is None or self.row >= len(pat):
             self.pos += 1
             self.row = 0
             if self.pos >= len(self.order):
-                if end.get("kind") == "loop":
-                    self.pos = int(end.get("row", 0))
+                if end.get("kind") == "loop" and self.loop:
+                    self.pos, self.row = int(self.loop["pos"]), int(self.loop["row"])
                 else:
                     self.ended = True
                     return None
@@ -91,34 +105,70 @@ class Player:
         self.tp = tp
         self.pitch = list(tp["pitch"] or [])
         self.streams = tp["streams"]
-        self.voices = [Voice(v["order"], v["patterns"]) for v in tp["score"]["voices"]]
+        self.instruments = tp["instruments"]
+        self.voices = [
+            Voice(v["order"], v["patterns"], loop=v.get("loop")) for v in tp["score"]["voices"]
+        ]
         self.end = tp["score"].get("end") or {}
-        g = tp["globals"].get("stream")
-        self.glob = Cursor(self.streams[g]["steps"]) if g else None
+        g = tp["score"].get("global")
+        self.glob = Voice(g["order"], g["patterns"], loop=g.get("loop")) if g else None
         self.levels = {}
         self.prev = None
+        self.transpose = 0
+        self.order = tuple(tp["meta"].get("commit_order") or DEFAULT_ORDER)
 
     def sequencer_step(self, vs):
         ev = vs.advance(self.end)
+        self.transpose = vs.order[vs.pos].get("transpose", 0) if ev is not None else 0
         if ev is None:
             vs.hold = 1 << 30
             return
         vs.hold = int(ev["dur"])
         if ev.get("note") is not None:
-            vs.note = int(ev["note"])
-        vs.off, vs.freq_off = 0, 0
-        vs.stream = Cursor(self.streams[ev["ins"]]["steps"]) if ev.get("ins") else None
+            vs.note = int(ev["note"]) + int(self.transpose)
+        for reg, val in ev.get("enter", ()):  # the levels a loop re-enters with, silently
+            if reg == "freq":
+                vs.freq_off, vs.freq = None, int(val)
+            elif reg in ("cutoff", "res_route", "mode_vol"):
+                self.levels[reg] = int(val)
+            else:
+                vs.levels[reg] = int(val)
+        ref = self.instruments.get(ev.get("ins")) or {}
+        vs.streams = {
+            lane: self.cursor(sid) for lane, sid in ref.items() if not lane.startswith("pre_")
+        }
+
+    def lanes(self, vs):
+        """A voice's lanes in the order the edges commit: ``meta.commit_order`` first."""
+        first = [l for l in self.order if l in vs.streams]
+        return first + [l for l in vs.streams if l not in first]
+
+    def cursor(self, sid):
+        st = self.streams[sid]
+        return Cursor(st["steps"], loop=st.get("loop"))
 
     def apply(self, v, vs, sets, edges):
         """One step's sets: edges in their own order, level and pitch operands as state."""
-        for reg, val in sets:
+        for reg, val, *rest in sets:
             if reg == "note_abs":
-                vs.note, vs.off, vs.freq_off = int(val), 0, 0
+                vs.note, vs.index, vs.freq_off = int(val), int(val), 0
             elif reg == "note_off":
-                vs.off, vs.freq_off = int(val), 0
+                vs.index, vs.freq_off = (vs.note or 0) + int(val), 0
             elif reg == "freq":
-                vs.freq_off = None
-                vs.freq = int(val)
+                vs.freq_off, vs.freq = None, int(val)
+            elif reg == "freq_delta":
+                vs.freq_off, vs.freq = None, (self.freq_of(vs) + int(val)) & 0xFFFF
+            elif reg == "freq_ts":
+                m, shift = int(val), int(rest[0])
+                i = vs.index if vs.index is not None else vs.note or 0
+                semi = (self.pitch[i + 1] - self.pitch[i]) >> shift
+                vs.freq_off, vs.freq = None, (self.freq_of(vs) + m * semi) & 0xFFFF
+            elif reg == "pw_delta":
+                vs.levels["pw"] = (vs.levels.get("pw", 0) + int(val)) & 0xFFF
+            elif reg in ("cutoff_delta", "res_route_delta", "mode_vol_delta"):
+                base_ = reg[: -len("_delta")]
+                m = 0x7FF if base_ == "cutoff" else 0xFF
+                self.levels[base_] = (self.levels.get(base_, 0) + int(val)) & m
             elif reg in grid_edges():
                 edges.append((regindex(reg, v), int(val)))
             elif reg in ("cutoff", "res_route", "mode_vol"):
@@ -126,10 +176,16 @@ class Player:
             else:
                 vs.levels[reg] = int(val)
 
+    def freq_of(self, vs):
+        """The voice's frequency: its pitch entry at the note and offset, or the value set."""
+        if vs.freq_off is None:
+            return vs.freq
+        n = vs.index if vs.index is not None else vs.note or 0
+        return self.pitch[n] if 0 <= n < len(self.pitch) else 0
+
     def commit(self, v, vs, levels):
         if vs.note is not None:
-            n = vs.note + vs.off
-            f = vs.freq if vs.freq_off is None else self.pitch[n] if 0 <= n < len(self.pitch) else 0
+            f = self.freq_of(vs)
             levels[regindex("freq_lo", v)] = f & 0xFF
             levels[regindex("freq_hi", v)] = (f >> 8) & 0xFF
         if "pw" in vs.levels:
@@ -142,14 +198,19 @@ class Player:
             vs.hold -= 1
             if vs.hold <= 0 and not vs.ended:
                 self.sequencer_step(vs)
-            sets = vs.stream.step() if vs.stream else None
-            if sets:
-                self.apply(v, vs, sets, edges)
+            for lane in self.lanes(vs):
+                sets = vs.streams[lane].step()
+                if sets:
+                    self.apply(v, vs, sets, edges)
             self.commit(v, vs, levels)
-        if self.glob:
-            sets = self.glob.step()
-            if sets:
-                self.apply(0, self.voices[0], sets, edges)
+        if self.glob is not None:
+            self.glob.hold -= 1
+            if self.glob.hold <= 0 and not self.glob.ended:
+                self.sequencer_step(self.glob)
+            for cur in self.glob.streams.values():
+                sets = cur.step()
+                if sets:
+                    self.apply(0, self.glob, sets, edges)
         if "cutoff" in self.levels:
             levels[regindex("cutoff_lo", 0)] = self.levels["cutoff"] & 7
             levels[regindex("cutoff_hi", 0)] = self.levels["cutoff"] >> 3

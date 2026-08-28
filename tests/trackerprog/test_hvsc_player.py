@@ -51,7 +51,7 @@ def test_the_trackers_and_hubbard_certify_on_the_universal_player(rel):
         "xz",
     }
     assert (out / "trackerprog.json").exists() and (out / "trackerprog.md").exists()
-    assert len(tp["score"]["voices"]) == 3 and tp["streams"] and tp["globals"]["stream"]
+    assert len(tp["score"]["voices"]) == 3 and tp["streams"] and tp["score"]["global"]
 
 
 def test_a_refusal_keeps_the_certificate_and_withholds_the_object(tmp_path):
