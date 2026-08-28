@@ -95,8 +95,19 @@ class Resolver:
         return out
 
     def guard(self, d, c, t, w, depth, seen=frozenset()):
-        """One condition opened where its branch decided it: the end of block ``d``."""
-        return self.open(c, d, len(self.proc.blocks[d].stmts), depth, seen), t, w
+        """One condition opened where its branch decided it: the end of block ``d``.
+
+        The deciding block's own stores are opened into the condition, so the cells
+        they read are last tick's too: those regions join the ones written after.
+        """
+        b = self.proc.blocks[d]
+        here = frozenset(
+            r
+            for s in b.stmts
+            for r in ((s.lo[0], s.hi[0]) if type(s) is W16 else (s.r,) if type(s) is Store else ())
+            if r >= 0
+        )
+        return self.open(c, d, len(b.stmts), depth, seen), t, frozenset(w) | here
 
     def guards(self, lbl, depth=DEPTH):
         """The site's own guard path, each condition opened at its deciding block."""

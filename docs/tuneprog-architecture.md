@@ -664,6 +664,16 @@ voice` is Follin's raw cross-voice register list and JCH's non-constant clear
 (36 sites), `smc target` is Baumrucker's and Follin's patched store operands
 (4 sites).
 
+### 6.0.0 The trackerprog layer (T2, T3)
+
+`deity_informant/trackerprog/` lifts the certified artefacts one layer up
+([prototype-trackerprog.md](prototype-trackerprog.md)): `tools/tuneprog_score.py`
+writes `tuneprog.T2.json` (cursors, streams, selectors, the pitch table and the
+score materialised over the horizon) and `tools/tuneprog_trackerprog.py` renders
+the lifted object on the universal player and writes
+`trackerprog.certificate.json`, plus `trackerprog.json`/`trackerprog.md` when no
+refusal remains. Neither is a pipeline stage.
+
 ### 6.0.1 The accumulator plane (T1)
 
 `accum.document(view, names, t0_doc, history, certificate)` writes
