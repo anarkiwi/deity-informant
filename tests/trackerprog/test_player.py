@@ -10,15 +10,17 @@ from deity_informant.trackerprog import certify, emit, lift, player  # noqa: E40
 from deity_informant.trackerprog.refuse import Refusal  # noqa: E402
 from deity_informant.tuneprog import pipeline  # noqa: E402
 from deity_informant.tuneprog.history import history  # noqa: E402
+from deity_informant.tuneprog.verify import certify as certified  # noqa: E402
 
 from _prog import tuneprog  # noqa: E402
 from test_score import CERT, TUNE, blocks  # noqa: E402
 
 
-def t3(code=TUNE, calls=64, cert=CERT):
+def t3(code=TUNE, calls=64, cert=None):
     trace, prog = tuneprog(code, calls=calls, s4=True, blocks=blocks())
     view, _st, names = pipeline.present(prog)
     hist, ver = history(prog, trace, names.to_dict(), calls=calls, obs=True)
+    cert = cert or certified(prog, ver)
     t2 = lift.document(view, names, hist, cert)
     tp, refusals = emit.document(view, t2, cert, ver.obs)
     return tp, refusals, ver, view
@@ -29,8 +31,13 @@ def test_the_snippet_lifts_with_no_residue_and_renders_its_observable_exactly():
     assert refusals == []
     (voice,) = tp["score"]["voices"]
     assert voice["order"] and all(r["dur"] >= 1 for p in voice["patterns"].values() for r in p)
-    notes = [r["note"] for p in voice["patterns"].values() for r in p]
-    assert {n for n in notes if n is not None} <= {12, 14, 16, 24}
+    notes = [
+        r["note"] + o["transpose"]
+        for o in voice["order"]
+        for r in voice["patterns"][o["pattern"]]
+        if r["note"] is not None
+    ]
+    assert set(notes) <= {12, 14, 16, 24}
     got = player.Player(tp).render(len(ver.obs))
     assert certify.divergence(ver.obs, got) is None
 
@@ -41,7 +48,7 @@ def test_the_certificate_binds_the_source_and_states_both_halves():
     doc = certify.certificate("snippet", CERT, ver.obs, got, refusals, tp["score"]["end"])
     assert doc["divergence"] is None and doc["emitted"] and doc["ticks"] == 64
     assert doc["compared"] and doc["dropped"] and doc["loop"]["period"] == 40
-    assert doc["end"]["kind"] == "loop"
+    assert doc["end"]["kind"] == "loop" and doc["end"]["span"] > doc["end"]["tick"] > 0
     assert json.loads(json.dumps(doc)) == doc
 
 
@@ -77,15 +84,21 @@ def test_the_print_measures_and_round_trips():
 def test_a_stream_cursor_holds_each_step_for_its_ticks():
     c = player.Cursor([{"hold": 2, "sets": [["ctrl", 65]]}, {"hold": 1, "sets": [["pw", 7]]}])
     assert [c.step() for _ in range(5)] == [[["ctrl", 65]], None, [["pw", 7]], None, None]
+    c = player.Cursor([{"cycle": [[["a", 1]], []], "times": 2}, {"hold": 1, "sets": [["b", 2]]}])
+    assert [c.step() for _ in range(6)] == [[["a", 1]], [], [["a", 1]], [], [["b", 2]], None]
+    assert emit.steps_of([[["a", 1]], [], [["a", 1]], [], [["b", 2]], [], []]) == [
+        {"cycle": [[["a", 1]], []], "times": 2},
+        {"hold": 3, "sets": [["b", 2]]},
+    ]
 
 
 def test_equal_row_sounds_are_one_stream_and_a_transposed_row_is_a_note_offset():
     tp, _refusals, _ver, _view = t3()
     (voice,) = tp["score"]["voices"]
     rows = [r for p in voice["patterns"].values() for r in p]
-    assert len(tp["streams"]) < len(rows) + 1
+    assert len(tp["instruments"]) < len(rows) and tp["streams"]
     for s in tp["streams"].values():
-        assert all(st["hold"] >= 1 for st in s["steps"])
+        assert all(st.get("hold", 1) >= 1 and st.get("times", 2) >= 2 for st in s["steps"])
 
 
 def test_a_second_entry_is_a_sample_stream_and_refuses_by_name():

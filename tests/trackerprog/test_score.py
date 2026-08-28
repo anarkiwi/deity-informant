@@ -21,7 +21,7 @@ from _prog import PLAY, tuneprog  # noqa: E402
 
 ORDER, PLO, PHI, PAT0, PAT1, FLO, FHI = 0x2000, 0x2010, 0x2020, 0x2100, 0x2140, 0x2200, 0x2240
 NOTES = 60
-CERT = {"subtunes": [{"complete": True, "period": 40}]}
+CERT = {"subtunes": [{"complete": True, "period": 40, "first_repeat": 44}]}
 
 # one voice: an orderlist of pattern numbers ($FF loops), pattern pointers lo/hi,
 # patterns of note bytes ($FF ends one), a 12-TET table split lo|hi

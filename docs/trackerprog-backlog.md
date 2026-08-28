@@ -448,7 +448,64 @@ rule it needs is now checkable against a certified render.
 
 | # | item | mechanism | size | acceptance |
 | --- | --- | --- | --- | --- |
-| W9 | streams back into instruments and accumulators | factor each row stream into `Ins.adsr` + a shared wave/pulse/filter stream (the T2 stream tables, aligned to the row's steps) + a `Producer` over a T1 `Acc` for the `freq(v)` runs a bounded recurrence regenerates; a stream that factors nowhere stays a stream | large | the same six tunes at 0 divergences with `xz` below the source's |
+| ~~W9~~ | streams back into instruments and accumulators | factor each row stream into `Ins.adsr` + a shared wave/pulse/filter stream (the T2 stream tables, aligned to the row's steps) + a `Producer` over a T1 `Acc` for the `freq(v)` runs a bounded recurrence regenerates; a stream that factors nowhere stays a stream | large | the same six tunes at 0 divergences with `xz` below the source's |
+
+**W9 struck by #304 — half met.** The lift gained, each rule generic and each
+render still exact: levels as **deltas** from the last tick (`pw_delta`,
+`cutoff_delta`, `freq_delta`), a vibrato or slide as **`freq_ts(m, shift)`** —
+§5's `tablestep`, `m` semitone-steps above the row's note shifted down, the same
+stream at every note; a run of equal set lists or a short **cycle** repeated as
+one step (`x6 a | b`); rows with the same note whose first tick only repeats the
+previous tick's writes **merged** into the row they hold; each row's sound as
+**lanes** (edge registers apart where the tune keeps one order between them,
+which is `meta.commit_order`; note, pitch, pulse), a row's instrument the tuple
+of its lane streams and a shorter note the same stream **cut** at its length
+(prefix merging); patterns keyed on note offsets with the **transpose** in the
+order; the global channel one row per register, cut at the loop; and a complete
+source materialised over **its period** (span `first_repeat + 1`, the loop
+re-entering the row the period starts in, with the levels the first pass
+carried into it stated as `enter`). Every one of the eight certifies as before.
+
+| tune | ticks | emitted | divergence | trackerprog six + `xz -9e` | source six + `xz` | below |
+| --- | ---: | --- | --- | --- | --- | --- |
+| `jch-guldkorn-intro` | 4,000 | yes | none | 1,539 / 450 / 2,631 / 662 / 4 / 2,315, 5,524 B | 3,154 / 361 / 207 / 152 / 7 / 182, 5,696 B | yes |
+| `jch-knob-at-night` | 12,000 | yes | none | 24,681 / 7,746 / 13,195 / 1,572 / 4 / 5,558, 13,624 B | 2,930 / 362 / 239 / 150 / 7 / 8,715, 19,904 B | yes |
+| `sw-emomyst` | 12,000 | yes | none | 8,768 / 2,464 / 10,234 / 972 / 4 / 7,911, 8,452 B | 8,102 / 1,055 / 422 / 426 / 7 / 265, 8,888 B | yes |
+| `commando-song2` | 11,780 | yes | none | 5,282 / 1,684 / 2,732 / 631 / 4 / 1,157, 3,612 B | 1,872 / 238 / 146 / 99 / 8 / 84, 3,664 B | yes |
+| `gt2-je-suis-linus` | 12,000 | yes | none | 10,213 / 3,011 / 10,227 / 1,212 / 4 / 7,362, 9,964 B | 5,768 / 908 / 336 / 321 / 5 / 270, 8,380 B | **no** (1.19×) |
+| `gt2-do-it-again` | 12,000 | yes | none | 5,864 / 1,723 / 7,768 / 1,129 / 4 / 6,160, 8,080 B | 5,619 / 875 / 331 / 312 / 5 / 204, 7,688 B | **no** (1.05×) |
+| `commando-song1` | 11,780 | yes | none | 11,208 / 3,342 / 4,572 / 1,250 / 4 / 1,436, 6,732 B | 2,129 / 271 / 161 / 107 / 7 / 127, 4,644 B | **no** (1.45×) |
+| `sw-end-of-the-world` | 16,000 | yes | none | 4,764 / 1,390 / 9,787 / 1,629 / 4 / 8,539, 14,156 B | 7,596 / 1,028 / 407 / 423 / 7 / 326, 9,652 B | **no** (1.47×) |
+| `jch-easy-does-it` | 1,799 | **no** | — | — | — | refused: `sample stream` (`mode_vol`, the CIA #2 NMI entry) |
+
+(six = tokens / lines / statements / blocks / header rows / data rows; the source
+`tuneprog.md` measured by the same harness — its data rows are the `## data`
+lines, its header rows the `## meta` block.)
+
+**What stays open, by name.** Four of eight prints are still larger than the
+program that played them. The residue is in two places: GoatTracker 2's per-row
+**instrument variety** — a row's lanes fold the instrument *and* the row's
+commands (vibrato and portamento parameters, `set_stream` re-points) into one
+sound, so `gt2-je-suis-linus` carries 515 instruments for 30 in the table — and
+the **global filter program** re-triggered per note, materialised once over the
+period (3,500 `cutoff_delta` steps); Hubbard's **pulse run with a carry**
+(`pw += pspeed + C`, `C` the vibrato add's own carry, §5) and its aperiodic
+horizon, so no two rows' pulse lanes agree and no period cuts the score. Two
+folds were tried and taken out again because they broke exactness or bought
+nothing: lanes as *table walks* (a lane whose sets are a function of a T2 stream
+cursor's position — it fails at the lead-in, where the cursor stands at 0 before
+any note, and at the hard-restart gate-off, written at a held wave-table
+position) and a *tail* of `early` ticks split off each row (the restart's, but
+the trigger from a merged prefix stream is not the row's own length). The next
+package (W10) is the one §5 always named: the **producer over T1's `Acc`** —
+GT2's vibrato/portamento off `acc0..3` with the row command as `arm(acc,
+overrides)`, Hubbard's pulse run with `carry(site)` from the vibrato add, and the
+filter as a stream the instrument arms — so that a row's sound is its instrument
+and its commands, not their unfolding.
+
+| # | item | mechanism | size | acceptance |
+| --- | --- | --- | --- | --- |
+| W10 | producers over T1's accumulators | replace a row's pitch and pulse lanes by `Producer`s the player steps from T1's `Acc` records (delta, bound, policy, rate, phase, `carry(site)`), armed by the row (`arm(acc, overrides)` for the command parameters) and reset by note-on; the filter as an instrument-armed stream | large | GT2 ×2, Commando ×2, SW ×2 at 0 divergences with `xz` below the source's |
 
 Total ≈ 24–30 agent-days. W1–W3 are independent of W0 and of each other;
 W4 depends on W3; W5 on W0, W2, W4; W6 on W0, W2, W3; W7 on all.
@@ -461,8 +518,9 @@ W4 depends on W3; W5 on W0, W2, W4; W6 on W0, W2, W3; W7 on all.
 3. ~~**W4**~~, then ~~**W5**~~, and ~~**W6**~~ (on GT2/JCH/Commando; SW refuses
    by name until the fold fix).
 4. ~~**W7**~~, ~~**W8**~~ (JCH ×2, GT2 ×2, Commando ×2 certified at 0
-   divergences), SW ×2 after #303; then **W9** for the compression claim;
-   Follin after I6.
+   divergences), SW ×2 after #303; ~~**W9**~~ (four of eight prints below
+   the source's); then **W10** for the rest of the compression claim; Follin
+   after I6.
 
 Deliberately not now: Galway/Walker/Blackbird (uncertified — the anatomy
 describes them, no certificate covers them), multispeed (§10). **Not** defMON:
