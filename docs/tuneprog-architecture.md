@@ -672,8 +672,9 @@ writes `tuneprog.T2.json` (cursors, streams, selectors, the pitch table and the
 score materialised over the horizon) and `tools/tuneprog_trackerprog.py` lifts
 the trackerprog from the program's data — the fetch regions cut out of the
 certified tick and recorded as fetches, the instrument table, T2's streams,
-T1's accumulators, T0's write sites as producers — replays it with the score
-tables never read and writes `trackerprog.certificate.json`, plus
+T1's accumulators, the tick outside the regions as a ranked producer list
+(`trackerprog.sound`) — renders it on `trackerprog.universal`, which reads no
+program, and writes `trackerprog.certificate.json`, plus
 `trackerprog.json`/`trackerprog.md` when it certifies. Neither is a pipeline
 stage.
 

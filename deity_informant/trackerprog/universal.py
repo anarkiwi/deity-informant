@@ -46,8 +46,19 @@ class DataPlayer:
         self.tick_no = -1
         self.env = {"voice": 0, "vi": None, "tick": 0, "rows": self.rows}
         self.first = {}
+        self.entries = {it["uid"]: it for it in self.items if it["kind"] == "fetch"}
         for n, it in enumerate(self.items):
             self.first.setdefault(it["block"], n)
+        # a block not entered skips its whole extent: every item ranked under it
+        self.extent = {}
+        ranks = [tuple(it["rank"]) for it in self.items]
+        for n, it in enumerate(self.items):
+            if it["kind"] in ("block", "fetch"):
+                pre = ranks[n][:-1]
+                m = n + 1
+                while m < len(ranks) and ranks[m][: len(pre)] == pre:
+                    m += 1
+                self.extent[n] = m
 
     def ev(self, e):
         return evaldata(e, self.env, self.m, self.tmps)
@@ -92,7 +103,12 @@ class DataPlayer:
         uid = item["froms"].get(f["from"])
         if uid is not None:
             self.taken[uid] = self.step
-        self.resumed[key] = self.step
+        to = item["tos"].get(f["to"])
+        if to in self.entries:  # a fetch that ran straight into a region: its fetch, now
+            self.taken[to] = self.step
+            self.fetch(self.entries[to])
+        elif to is not None:
+            self.resumed[to] = self.step
         if f["to"] == "$exit":
             self.skip = item["path"]
             if item["path"]:
@@ -112,17 +128,14 @@ class DataPlayer:
                 holds(g, self.env, self.m, self.tmps) for g in guards
             ):
                 return True
-        for r in item.get("resume", ()):
-            if self.resumed.pop(r, -1) >= self.pass_step:
-                return True
-        return False
+        return self.resumed.pop(item["uid"], -1) >= self.pass_step
 
     def one(self, item):
+        """Run one item; returns False for a block not entered, whose extent is skipped."""
         self.step += 1
-        if self.skip is not None:
-            if item["path"].startswith(self.skip):
-                return
-            self.skip = None
+        if self.skip is not None and item["path"].startswith(self.skip):
+            return True
+        self.skip = None
         k = item["kind"]
         try:
             if k in ("block", "fetch"):
@@ -131,11 +144,11 @@ class DataPlayer:
                     self.taken[item["uid"]] = self.step
                     if k == "fetch":
                         self.fetch(item)
-                else:
-                    self.taken.pop(item["uid"], None)
-                return
+                    return True
+                self.taken.pop(item["uid"], None)
+                return False
             if self.taken.get(item["block"], -1) < self.pass_step:
-                return
+                return True
             if k == "let":
                 v = self.ev(item["value"])
                 self.tmps[item["name"]] = v
@@ -153,6 +166,7 @@ class DataPlayer:
             raise TrapError(
                 "unevaluable", "%s reads %s" % (item.get("pc") or item.get("name", ""), e)
             ) from e
+        return True
 
     def tick(self):
         self.tick_no += 1
@@ -166,7 +180,11 @@ class DataPlayer:
         n, guard = 0, 0
         while n < len(self.items):
             it = self.items[n]
-            self.one(it)
+            if self.one(it) is False:
+                m = self.extent[n]
+                if not any(n <= loop["end"] < m for loop in self.loops):
+                    n = m
+                    continue
             for loop in self.loops:
                 if loop["end"] != n:
                     continue

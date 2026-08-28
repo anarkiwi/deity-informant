@@ -386,22 +386,25 @@ class Lowering:
             if isinstance(g, str):
                 return None, g
             alts.append([puid, g])
-        resumes = [
-            "%s:%s" % (r.proc, r.entry)
-            for r in self.fetch.regions.values()
-            if u.proc == r.proc
-            and u.label in r.exits
-            and any(b.region == (r.proc, r.entry) and b.path == u.path for b in self.unit.blocks)
-        ]
+        resumes = self.resumes(u)
         if not alts and not resumes and u.uid != self.unit.entry:
             return None, "no edge in"
         return {
             "kind": "block",
             "uid": u.uid,
             "exec": alts,
-            "resume": resumes,
             "entry": u.uid == self.unit.entry,
         }, None
+
+    def resumes(self, u):
+        """The regions a fetch of which resumes at this block."""
+        return [
+            "%s:%s" % (r.proc, r.entry)
+            for r in self.fetch.regions.values()
+            if u.proc == r.proc
+            and u.label in r.exits
+            and any(b.region == (r.proc, r.entry) and b.path == u.path for b in self.unit.blocks)
+        ]
 
     # ---- the pass -----------------------------------------------------------------
     def candidates(self):
@@ -456,11 +459,10 @@ class Lowering:
                 if isinstance(g, str):
                     return None, g
                 alts.append([puid, g])
-            froms = {
-                b.label: b.uid
-                for b in self.unit.blocks
-                if b.path == u.path and b.proc == u.proc and b.label in r.blocks
+            labels = {
+                b.label: b.uid for b in self.unit.blocks if b.path == u.path and b.proc == u.proc
             }
+            froms = {l: uid for l, uid in labels.items() if l in r.blocks}
             rets = []
             for b in self.unit.blocks:
                 for entry, names in b.calls.values():
@@ -470,6 +472,7 @@ class Lowering:
                 "kind": "fetch",
                 "uid": u.uid,
                 "exec": alts,
+                "tos": labels,
                 "region": "%s:%s" % u.region,
                 "tmps": {n: u.path + n for n in r.liveout},
                 "froms": froms,
@@ -573,8 +576,8 @@ class Lowering:
         out = []
         for _lid, (h, latches, body) in self.unit.loops.items():
             ends = [pos[b] for b in body if b in pos]
-            if not ends:
-                continue
+            if not ends or self.unit.blocks[h].inregion:
+                continue  # a loop inside a fetch region is the fetches it recorded
             hl = self.unit.blocks[h].label
             edges = []
             for l in latches:

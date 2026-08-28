@@ -596,7 +596,59 @@ pattern-end peek) ends the fetch there and starts the next.
 
 | # | item | mechanism | size | acceptance |
 | --- | --- | --- | --- | --- |
-| W11 | the producer program as section 4 | classify each producer's guards against the events the fixed procedure has (row, note-on, `early`, a stream's step, an accumulator's rate) and its value against the data forms (an instrument column, a stream column, a pitch lookup, an `Acc`), exact over the horizon or a named refusal; then `player` is section 4 and `program` leaves the trackerprog | large | the same nine tunes at 0 divergences with no `program` block |
+| ~~W11~~ | the sound half as data, the program gone | inline the tick outside the fetch regions into a ranked producer list whose every branch is a condition over memory and temps or a score event; one fixed procedure renders it | large | the same nine tunes at 0 divergences with no `program` block |
+
+**W11 struck (w11-producers) — the trackerprog carries no program.** The
+S4 program leaves the object: `emit.oracle` keeps it only as the reference the
+universal player is proved against. What replaced it:
+
+* **`sound.py`.** The certified tick outside the fetch regions is inlined once
+  per call path (`Unit`: a callee's blocks under its caller's, renamed by path,
+  its parameters and returns as temps at the call and at each exit) and
+  lowered to one ranked list of *items*: a `block` entered when one of its
+  forward edges is taken — each edge the predecessor's branch as a condition
+  over memory and temps, or, where the condition reads what the data cannot
+  express, the score event its outcomes equal (`classify`: a row, or ``k``
+  ticks after or before one, per voice, off the oracle's branch log) — a `let`
+  at its own rank (so a value read before a store in the same block stays the
+  value read), a `phi` picking the predecessor that ran last, a `store` to a
+  cell or a register under its block, a `fetch` applying the next recorded fetch
+  of its region where it resumes. Ranks are tuples, a callee's items inside its
+  call; a loop is its latch edges, re-entered while one holds. What does not
+  lower is a named refusal: a temp no producer sets, a read of a cell a refused
+  producer steps, a branch that reduces to no event.
+* **`universal.py`.** One procedure over one memory image: the items in rank
+  order, a block not entered skipping its whole extent, temps, the voice index
+  read off the voice loop's own variable, fetches checked against their
+  recorded tick (`score out of step` otherwise), the tick's registers carried
+  across ticks. It reads no program: the object it renders is memory, the
+  producer list, the fetches and the tables.
+
+| tune | ticks | emitted | divergence | refusals | items (stores to registers) | trackerprog six + `xz -9e` | source six + `xz` | below |
+| --- | ---: | --- | --- | --- | --- | --- | --- | --- |
+| `jch-guldkorn-intro` | 4,000 | yes | none | 0 | 398 (15) | 57,525 / 992 / 1,380 / 13 / 4 / 450, 4,932 B | 3,154 / 361 / 207 / 152 / 7 / 182, 5,696 B | yes |
+| `gt2-je-suis-linus` | 12,000 | yes | none | 0 | — (20) | 60,120 / 2,716 / 4,692 / 89 / 4 / 1,361, 7,436 B | 5,768 / 908 / 336 / 321 / 5 / 270, 8,380 B | yes |
+| `commando-song1` | 11,780 | yes | none | 0 | — (20) | 370,729 / 3,255 / 3,588 / 7 / 4 / 167, 11,740 B | 2,129 / 271 / 161 / 107 / 7 / 127, 4,644 B | **no** |
+| `sw-emomyst` | 12,000 | yes | none | 0 | — (17) | 22,030 / 2,489 / 14,495 / 51 / 4 / 1,774, 4,868 B | 8,102 / 1,055 / 422 / 426 / 7 / 265, 8,888 B | yes |
+ROWS_W11
+
+(six = tokens / lines / statements / blocks / header rows / data rows;
+statements are now pattern rows plus producer items.)
+
+**What this is, and what it is not.** Every producer reduces — none of the
+nine tunes refuses one — because the reduction is exact by construction: it is
+if-conversion of the certified tick, with the score cut out and the fetches
+recorded. The guards that classify as section 4 events are the ones whose
+conditions the data cannot express; the rest are conditions over cells the
+data itself sets (a row length, a gate flag, a counter the producers step),
+which is what the tunes' counters, streams and accumulators are once written
+as data. The object is therefore not yet section 4's `Ins{adsr, prelude,
+streams}` and `Producer`s over `Acc`s: those are the *shapes* the producer
+list contains, and reading them out — an instrument as the producers that
+latch its fields at note-on, a stream as the cursor producers and their hold
+counter, an accumulator as T1's record over the producer that steps its cell
+— is the remaining classification, over an object that is now data and
+certified.
 
 Total ≈ 24–30 agent-days. W1–W3 are independent of W0 and of each other;
 W4 depends on W3; W5 on W0, W2, W4; W6 on W0, W2, W3; W7 on all.
@@ -610,8 +662,9 @@ W4 depends on W3; W5 on W0, W2, W4; W6 on W0, W2, W3; W7 on all.
    by name until the fold fix).
 4. ~~**W7**~~, ~~**W8**~~, ~~**W9**~~ (superseded: they read the
    observable), ~~**W10**~~ (the lift from data: nine tunes certified from
-   their programs' tables); then **W11** for the section 4 reduction; Follin
-   after I6.
+   their programs' tables); ~~**W11**~~ (the sound half as data, no
+   program); then the section 4 read-out of the producer list; Follin after
+   I6.
 
 Deliberately not now: Galway/Walker/Blackbird (uncertified — the anatomy
 describes them, no certificate covers them), multispeed (§10). **Not** defMON:
