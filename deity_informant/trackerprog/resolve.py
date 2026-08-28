@@ -17,6 +17,7 @@ import networkx as nx
 from ..tuneprog.accguard import _domsets, guardpath
 from ..tuneprog.graph import cfg, idoms
 from ..tuneprog.ir import Bin, Call, Const, Let, Load, Phi, R16, REGVAR, Return, Store, Var, W16
+from ..tuneprog.irwalk import addr_split
 
 DEPTH = 6
 MAXALTS = 16
@@ -32,8 +33,23 @@ class Sel:
 Site = tuple  # (proc, label, statement index)
 
 
-def _defs(proc):
-    """``(lets, mem, rets)``: every definition of a name, a constant-address cell, a call return."""
+def cellkey(r, a, indexed=False):
+    """The definition key of a cell: ``(region, address)``, or with the index it is read at."""
+    base, idx = addr_split(a)
+    if base is None:
+        return None
+    if idx is None:
+        return (r, base)
+    return (r, base, repr(idx)) if indexed else None
+
+
+def _defs(proc, indexed=False, blocks=None):
+    """``(lets, mem, rets)``: every definition of a name, a cell, a call return.
+
+    A cell's definitions are the stores at a constant address, and with ``indexed``
+    those at a constant base plus an index too, keyed by the index expression; with
+    ``blocks`` only the stores inside those blocks define a cell.
+    """
     lets, mem, rets = {}, {}, {}
     for lbl, b in proc.blocks.items():
         for i, s in enumerate(b.stmts):
@@ -44,8 +60,12 @@ def _defs(proc):
                 lets.setdefault(s.n, []).append((lbl, i, s.e))
             elif type(s) is Phi:
                 lets.setdefault(s.n, []).append((lbl, i, s))
-            elif type(s) is Store and s.r >= 0 and s.w == 1 and type(s.a) is Const:
-                mem.setdefault((s.r, s.a.v), []).append((lbl, i, s.v))
+            elif blocks is not None and lbl not in blocks:
+                continue
+            elif type(s) is Store and s.r >= 0 and s.w == 1:
+                key = cellkey(s.r, s.a, indexed)
+                if key is not None:
+                    mem.setdefault(key, []).append((lbl, i, s.v))
             elif type(s) is W16 and type(s.a) is Const:
                 for cell, shift in ((tuple(s.lo), 0), (tuple(s.hi), 8)):
                     half = (
@@ -60,16 +80,20 @@ def _defs(proc):
 class Resolver:
     """Reaching definitions of one procedure, with guarded alternatives."""
 
-    def __init__(self, ctx, proc):
+    def __init__(self, ctx, proc, indexed=False, blocks=None):
         self.ctx, self.name = ctx, proc
         self.proc = ctx.prog.procs[proc]
+        self.indexed = indexed
         self.g = cfg(self.proc)
         self.dom = _domsets(idoms(self.proc, self.g), self.proc.blocks)
         self.sites = guardpath(self.proc, sites=True)
+        if blocks is not None:  # a region's own deciders and stores: the rest is its entry state
+            self.sites = {l: tuple(g for g in gs if g[0] in blocks) for l, gs in self.sites.items()}
         self.inloop = ctx.inloop(proc)
-        self.lets, self.mem, self.calls = _defs(self.proc)
+        self.lets, self.mem, self.calls = _defs(self.proc, indexed, blocks)
         self.rets = set(self.calls)
         self.program = None
+        self.mark = None  # a hook rewriting a load before its address opens
         fwd = self.g.copy()  # a definition reaches a use forward, never round a back edge
         fwd.remove_edges_from((l, h) for h, (_b, ls) in ctx.loops(proc).items() for l in ls)
         self.reach = {lbl: set(nx.descendants(fwd, lbl)) for lbl in self.proc.blocks}
@@ -175,10 +199,13 @@ class Resolver:
                 e.w,
             )
         if t is Load:
-            cell = (e.r, e.a.v) if type(e.a) is Const else None
-            if e.w == 1 and cell in self.mem:
-                return self.select(self.mem[cell], lbl, idx, depth, seen, cell, e)
-            return Load(e.cls, self.open(e.a, lbl, idx, depth, seen), e.w, e.lo, e.hi, e.r)
+            if self.mark is not None:
+                e = self.mark(e, lbl, idx)
+            orig = Load(e.cls, self.open(e.a, lbl, idx, depth, seen), e.w, e.lo, e.hi, e.r)
+            cell = cellkey(e.r, e.a, self.indexed) if e.w == 1 else None
+            if cell in self.mem:
+                return self.select(self.mem[cell], lbl, idx, depth, seen, cell, orig)
+            return orig
         if t is R16:
             lo, hi = tuple(e.lo), tuple(e.hi)
             if lo in self.mem and hi in self.mem:
@@ -292,8 +319,9 @@ def _subst(e, fn):
 class Program:
     """Every procedure's :class:`Resolver`, and the callers' substitution across them."""
 
-    def __init__(self, ctx):
+    def __init__(self, ctx, indexed=False, only=None):
         self.ctx = ctx
+        self.indexed, self.only = indexed, only or (None, None)
         self.res = {}
         self.callers = {}
         for n, p in ctx.prog.procs.items():
@@ -304,7 +332,8 @@ class Program:
 
     def of(self, proc):
         if proc not in self.res:
-            self.res[proc] = Resolver(self.ctx, proc)
+            blocks = self.only[1] if proc == self.only[0] else None
+            self.res[proc] = Resolver(self.ctx, proc, self.indexed, blocks)
             self.res[proc].program = self
         return self.res[proc]
 

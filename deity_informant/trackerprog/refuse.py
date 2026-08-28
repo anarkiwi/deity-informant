@@ -12,6 +12,7 @@ REASONS = (
     "command residue",
     "guard not in IR",
     "program residue",
+    "fetch not in IR",
 )
 
 

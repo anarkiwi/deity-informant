@@ -568,6 +568,8 @@ def evaldata(e, env, mem=None, tmps=None):
         if tmps is None or e[1] not in tmps:
             raise _Unevaluable(e[1])
         return tmps[e[1]]
+    if k == "byte":  # a score byte: the row's, at the cursor's position plus an offset
+        return env["byte"](e[1], evaldata(e[2], env, mem, tmps) + e[3])
     if k == "sel":
         for when, v in e[1]:
             if all(holds(g, env, mem, tmps) for g in when):

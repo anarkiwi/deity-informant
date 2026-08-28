@@ -143,10 +143,12 @@ def test_the_snippet_lifts_its_fetch_as_data_and_renders_its_observable_exactly(
     (voice,) = tp["score"]["voices"]
     assert voice["order"] and voice["patterns"]
     assert all(r["dur"] >= 1 for p in voice["patterns"].values() for r in p)
-    # the pattern bytes are the rows the fetch read: notes 12, 14, 16 and 24, 12
-    notes = [b for r in voice["rows"] for a, b in r["bytes"] if a >= PAT0 and b != 0xFF]
+    # a row is its duration and the bytes each channel read: notes 12, 14, 16 and 24, 12
+    assert all(set(r) == {"dur", "bytes", "at"} for r in voice["rows"])
+    notes = [b for r in voice["rows"] for b in r["bytes"].get("T2100", ()) if b != 0xFF]
     assert set(notes) == {12, 14, 16, 24}
-    assert tp["score"]["regions"] and tp["score"]["fetches"]
+    assert tp["score"]["regions"] and tp["score"]["fetch"] and "fetches" not in tp["score"]
+    assert certify.schema_check({**tp, "producers": [], "accs": {}}) == []
 
 
 def test_an_instrument_table_is_the_selector_the_envelope_writes_index():
@@ -157,11 +159,12 @@ def test_an_instrument_table_is_the_selector_the_envelope_writes_index():
     assert [r["ad"] for _i, r in sorted(ins["rows"].items())] == [0x48, 0x22, 0x09]
     regs = {p["register"] for p in tp["producers"]}
     assert {"ad", "sr", "ctrl", "freq_lo", "freq_hi"} <= regs
-    (voice,) = tp["score"]["voices"]
-    sets = [c for p in voice["patterns"].values() for r in p for c in r["sets"]]
     # the instrument and note cells under S6's names, and the row clock a pattern end resets
-    assert {c[0] for c in sets} == {"ad_idx", "freq_lo_idx", "phase"}
-    assert {c[1] for c in sets if c[0] == "ad_idx"} == {1, 2, 3}
+    (region,) = tp["score"]["fetch"]
+    cells = {p["cell"] for p in region["producers"]}
+    assert {"ad_idx", "freq_lo_idx", "phase"} <= cells and not region["refusals"]
+    ad = next(p for p in region["producers"] if p["cell"] == "ad_idx")
+    assert ad["print"] == "ad_idx = (byte[0] & $7F) if ((byte[0] != $FF) and not (byte[0] < $80))"
     got, _trap = emit.replay(tp, snd)
     assert certify.divergence(ver.obs, got) is None
 
@@ -174,8 +177,7 @@ def test_the_certificate_binds_the_source_and_states_both_halves():
     checked = certify.certificate(
         "snippet", CERT, ver.obs, got, refusals, tp["score"]["end"], tp=tp
     )
-    assert not checked["emitted"] and checked["divergence"] is None
-    assert {r["why"] for r in checked["refusals"]} == {"program residue"}
+    assert checked["emitted"] and checked["divergence"] is None and not checked["refusals"]
     assert doc["compared"] and doc["dropped"] and doc["loop"]["period"] == 40
     assert doc["end"]["kind"] == "loop"
     assert json.loads(json.dumps(doc)) == doc
@@ -197,11 +199,11 @@ def test_a_refusal_or_a_divergence_means_no_emit_but_a_stated_render():
     assert short["register"] == "horizon" and short["tick"] == 10
 
 
-def test_a_changed_fetch_is_a_named_divergence():
+def test_a_changed_row_byte_is_a_named_divergence():
     tp, _refusals, _rec, ver, _prog, snd = t3()
-    key = next(iter(tp["score"]["fetches"]))
-    f = next(f for f in tp["score"]["fetches"][key] if f["cmds"])
-    f["cmds"][0][2] ^= 1
+    (voice,) = tp["score"]["voices"]
+    row = next(r for r in voice["rows"] if r["bytes"].get("T2100") == [12])
+    row["bytes"]["T2100"][0] = 13
     got, _trap = emit.replay(tp, snd)
     assert certify.divergence(ver.obs, got) is not None
 
@@ -218,7 +220,7 @@ def test_the_print_measures_and_the_document_round_trips():
     back = emit.from_json(doc)
     got, trap = emit.replay(back, snd)
     assert trap is None and certify.divergence(ver.obs, got) is None
-    assert back["score"]["fetches"].keys() == tp["score"]["fetches"].keys()
+    assert back["score"]["fetch"] == tp["score"]["fetch"]
 
 
 def test_a_second_entry_is_a_sample_stream_and_a_varying_input_is_external():
@@ -247,8 +249,8 @@ def test_a_fetch_region_is_single_entry_and_its_cursors_are_its_own():
 
 def test_the_player_refuses_a_score_it_has_run_out_of():
     tp, _refusals, _rec, _ver, _prog, snd = t3()
-    for key in tp["score"]["fetches"]:
-        tp["score"]["fetches"][key] = tp["score"]["fetches"][key][:1]
+    (voice,) = tp["score"]["voices"]
+    voice["rows"] = voice["rows"][:1]
     _got, trap = emit.replay(tp, snd)
     assert trap and trap["trap"] == "score exhausted"
     assert player.DEFAULT_ORDER == ("ad", "sr", "ctrl")

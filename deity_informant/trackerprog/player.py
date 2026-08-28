@@ -1,19 +1,15 @@
-"""T3 -- the universal player: one fixed interpreter over a trackerprog's data.
+"""T3 -- the recording interpreter: the certified program from the post-init image.
 
-The trackerprog carries the certified tick with its fetch regions cut out
-(:mod:`.region`) and, in their place, the score as data: one *fetch* per entry of
-a region -- the cells and registers it set, the temps it left, the block it
-resumed at. The player runs the tick from the post-init image and, at a region's
-entry, applies the next fetch instead of reading the score tables. Lifting is the
-same run with the regions executed and their effects recorded; certification is
-the replay compared with :attr:`~.tuneprog.verify.Verifier.obs` tick for tick.
+The fetch regions (:mod:`.region`) run over the program's own tables and each
+entry is logged as one *fetch*: the tick, the copy, each channel's cursor and base
+at entry, and the score positions read -- the rows :mod:`.rows` cuts. Nothing of
+what the fetch stored is kept: that is :mod:`.fetch`'s, derived from the program.
 """
 
 from __future__ import annotations
 
 from ..lifter import STATUS_BITS
 from ..tuneprog import grid
-from ..tuneprog.graph import EXIT
 from ..tuneprog.ir import (
     Bin,
     Call,
@@ -35,6 +31,7 @@ from ..tuneprog.ir import (
     hits_band,
 )
 from ..tuneprog.machine import STATUS, entry_frame
+from .fetch import evaluate
 
 DEFAULT_ORDER = ("ad", "sr", "ctrl")
 
@@ -44,15 +41,16 @@ def _status(regs):
 
 
 class Player:
-    """Render a tuneprog whose score is data.
+    """Run a tuneprog, its fetch regions executed and each entry logged as a fetch.
 
-    ``fetches`` is ``None`` to *record* (the regions run and each entry is logged)
-    or ``{region key: [fetch, ...]}`` to *replay* them.
+    ``chans`` is ``{region key: {table: (cursor, addr, base)}}`` -- the entry-relative
+    expressions :class:`~.fetch.Fetches` derived, evaluated at each entry.
     """
 
-    def __init__(self, prog, fetch, inputs=None, fetches=None, envvars=None, watch=None):
+    def __init__(self, prog, fetch, inputs=None, chans=None, tables=(), watch=None):
         self.prog, self.fetch = prog, fetch
-        self.envvars = envvars or {}
+        self.chans = chans or {}
+        self.tables = tables or ()  # [(lo, hi, table)]: the score reads a fetch logs
         self.watch = watch  # {proc: the name whose value says the voice}; logs block runs
         self.log = []  # (tick, proc, label, voice value)
         self.voice = -1
@@ -67,9 +65,8 @@ class Player:
         self.bank = 2
         self.inputs = dict(inputs or {})
         self.ro = copymap_bands(prog.storage)
-        self.record = fetches is None
-        self.fetches = {} if self.record else fetches
-        self.pos = {}
+        self.fetches = {}
+        self.seq = 0
         self.rec = None
         self.depth = 0
         self.sid = []
@@ -138,8 +135,11 @@ class Player:
         a = self.ev(e.a, F)
         if not e.lo <= a <= e.hi or a + e.w - 1 > e.hi:
             raise TrapError("envelope", "$%04X outside [$%04X,$%04X]" % (a, e.lo, e.hi))
-        if self.rec is not None and any(lo <= e.lo and e.hi <= hi for lo, hi in self.fetch.tables):
-            self.rec["reads"].append(a)
+        if self.rec is not None:
+            for lo, hi, t in self.tables:
+                if lo <= e.lo and e.hi <= hi:
+                    self.rec["reads"].append((a, t))
+                    break
         return self.rd(a, e.w, e.cls)
 
     def _store(self, s, F):
@@ -149,8 +149,6 @@ class Player:
         v = self.ev(s.v, F)
         if self.ro and hits_band(self.ro, a, s.w):
             raise TrapError("copymap", "$%04X at $%04X" % (a, s.src))
-        if self.rec is not None:
-            self.rec["cmds"].append([s.cls, a, v & ((1 << (8 * s.w)) - 1), s.w, s.src])
         if s.cls == "io":
             self.iostore(a, v & 0xFF, s.src)
         elif s.cls == "raw":
@@ -158,44 +156,33 @@ class Player:
         else:
             self.wr(a, v, s.w)
 
-    def apply(self, key, F):
-        """Replay the next fetch of a region: its effects, its temps, where it resumed."""
-        got = self.fetches.get(key) or ()
-        i = self.pos.get(key, 0)
-        if i >= len(got):
-            raise TrapError("score exhausted", "%s:%s at tick %d" % (key[0], key[1], self.tick_no))
-        self.pos[key] = i + 1
-        f = got[i]
-        for cls, a, v, w, src in f["cmds"]:
-            if cls == "io":
-                self.iostore(a, v & 0xFF, src)
-            elif cls == "raw":
-                self.m[a] = v & 0xFF
-            else:
-                self.wr(a, v, w)
-        F.update(f["temps"])
-        return f
-
     def _begin(self, key, region, F):
+        """Log a region's entry: per channel the cursor, its cell and the base, then its reads."""
+        entry, bases = {}, {}
+
+        def byte(table, pos):
+            return self.rd(bases[table] + pos, 1, "ram")
+
+        for table, (cursor, addr, base) in self.chans.get(key, {}).items():
+            try:
+                bases[table] = evaluate(base, F, self.rd, byte)
+                c, a = evaluate(cursor, F, self.rd, byte), evaluate(addr, F, self.rd, byte)
+                entry[table] = (c, a, bases[table])
+            except (KeyError, TrapError):
+                entry[table] = None
+        self.seq += 1
         self.rec = {
+            "n": self.seq,
             "tick": self.tick_no,
             "key": key,
-            "env": {n: F[n] for n in self.envvars.get(key, ()) if n in F},
-            "cmds": [],
+            "entry": entry,
             "reads": [],
-            "temps": {},
-            "from": None,
-            "to": None,
             "depth": self.depth,
             "region": region,
         }
 
-    def _end(self, F, prev, to, rets=None):
+    def _end(self):
         r = self.rec
-        r["temps"] = {n: F[n] for n in r["region"].liveout if n in F}
-        r["from"], r["to"] = prev, to
-        if rets is not None:
-            r["rets"] = list(rets)
         del r["depth"], r["region"]
         self.fetches.setdefault(r["key"], []).append(r)
         self.rec = None
@@ -212,20 +199,13 @@ class Player:
                 key = (name, lbl)
                 region = regions.get(key)
                 if region is not None:
-                    if self.record:
-                        # a region entered straight from another ends that fetch here;
-                        # one entered inside a fetch's callee is that fetch's own
-                        if self.rec is None:
-                            self._begin(key, region, F)
-                        elif self.rec["depth"] == self.depth:
-                            self._end(F, prev, lbl)
-                            self._begin(key, region, F)
-                    else:
-                        f = self.apply(key, F)
-                        if f["to"] == EXIT:
-                            return tuple(f["rets"])
-                        lbl, prev = f["to"], f["from"]
-                        continue
+                    # a region entered straight from another ends that fetch here;
+                    # one entered inside a fetch's callee is that fetch's own
+                    if self.rec is None:
+                        self._begin(key, region, F)
+                    elif self.rec["depth"] == self.depth:
+                        self._end()
+                        self._begin(key, region, F)
                 blk = proc.blocks[lbl]
                 self.steps += 1
                 if self.watch is not None:
@@ -264,11 +244,11 @@ class Player:
                         raise TrapError(term.why, "$%04X %s" % (blk.src, blk.label))
                     vals = tuple(self.ev(v, F) for v in term.vals)
                     if self.rec is not None and self.rec["depth"] == self.depth:
-                        self._end(F, prev, EXIT, vals)
+                        self._end()
                     return vals
                 if self.rec is not None and self.rec["depth"] == self.depth:
                     if lbl in self.rec["region"].exits:
-                        self._end(F, prev, lbl)
+                        self._end()
         finally:
             self.depth -= 1
 

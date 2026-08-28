@@ -76,8 +76,12 @@ ADDRESSED = ("meta", "pitch")
 
 
 def _exempt(path):
-    """Where a bare address is data: meta, pitch, and a selector's cursor label."""
-    return path[0] in ADDRESSED or (path[0] in ("instruments", "streams") and path[-1] == "cursor")
+    """Where a bare address is data: meta, pitch, and a selector's or channel's cursor label."""
+    if path[0] in ADDRESSED:
+        return True
+    return path[-1] == "cursor" and (
+        path[0] in ("instruments", "streams") or path[:2] == ("score", "channels")
+    )
 
 
 def schema_check(tp):
