@@ -1,229 +1,302 @@
-"""T3 -- the universal player: prototype-trackerprog section 4, tick for tick.
+"""T3 -- the universal player: one fixed interpreter over a trackerprog's data.
 
-One fixed procedure over one data object. Per tick, per voice: the row clock,
-the sequencer step that consumes an event and arms its stream, the armed
-stream's step whose hold elapsed, then ``commit`` -- the step's edge writes in
-their own order and the voice's level values. The global channel is one stream
-of its own. The output is one :class:`~.tuneprog.grid.TickObs` per tick, the
-reduction the certificate compares.
+The trackerprog carries the certified tick with its fetch regions cut out
+(:mod:`.region`) and, in their place, the score as data: one *fetch* per entry of
+a region -- the cells and registers it set, the temps it left, the block it
+resumed at. The player runs the tick from the post-init image and, at a region's
+entry, applies the next fetch instead of reading the score tables. Lifting is the
+same run with the regions executed and their effects recorded; certification is
+the replay compared with :attr:`~.tuneprog.verify.Verifier.obs` tick for tick.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
+from ..lifter import STATUS_BITS
 from ..tuneprog import grid
-from ..tuneprog.facts import GLOBAL_REG, SID_REG_LO, SID_VOICE, VOICE_REG
+from ..tuneprog.graph import EXIT
+from ..tuneprog.ir import (
+    Bin,
+    Call,
+    Const,
+    Goto,
+    If,
+    Let,
+    Phi,
+    REGVAR,
+    Return,
+    SID_HI,
+    SID_LO,
+    Store,
+    Switch,
+    TrapError,
+    Var,
+    copymap_bands,
+    evalbin,
+    hits_band,
+)
+from ..tuneprog.machine import STATUS, entry_frame
 
 DEFAULT_ORDER = ("ad", "sr", "ctrl")
-LEVEL = ("pw", "cutoff", "res_route", "mode_vol")
 
 
-def regindex(name, voice):
-    """The SID register index of a per-voice or global register name."""
-    if name in VOICE_REG:
-        return SID_VOICE * voice + VOICE_REG.index(name)
-    return next(a - SID_REG_LO for a, g in GLOBAL_REG.items() if g == name)
-
-
-@dataclass
-class Cursor:
-    """One armed stream: the step due next, the ticks left on it, the cycle it is in."""
-
-    steps: list
-    at: int = 0
-    left: int = 0
-    cycle: list | None = None
-    phase: int = 0
-    loop: int | None = None
-
-    def step(self):
-        """The sets due this tick: a held step's on its tick, a cycle's each tick round."""
-        if self.left > 0:
-            self.left -= 1
-            if self.cycle is not None:
-                self.phase += 1
-                return self.cycle[self.phase % len(self.cycle)]
-            return None
-        if self.at >= len(self.steps):
-            if self.loop is None:
-                return None
-            self.at = self.loop
-        s = self.steps[self.at]
-        self.at += 1
-        if "cycle" in s:
-            self.cycle, self.phase = s["cycle"], 0
-            self.left = len(s["cycle"]) * int(s["times"]) - 1
-            return s["cycle"][0]
-        self.cycle = None
-        self.left = int(s["hold"]) - 1
-        return s["sets"]
-
-
-@dataclass
-class Voice:
-    order: list
-    patterns: dict
-    pos: int = -1
-    row: int = 0
-    hold: int = 0
-    note: int | None = None
-    index: int | None = None
-    freq_off: int | None = 0
-    freq: int = 0
-    levels: dict = field(default_factory=dict)
-    streams: dict = field(default_factory=dict)
-    loop: dict | None = None
-    ended: bool = False
-
-    def pattern(self):
-        if 0 <= self.pos < len(self.order):
-            return self.patterns[self.order[self.pos]["pattern"]]
-        return None
-
-    def advance(self, end):
-        """The next row, across patterns, honouring the voice's loop or the terminator."""
-        pat = self.pattern()
-        if pat is None or self.row >= len(pat):
-            self.pos += 1
-            self.row = 0
-            if self.pos >= len(self.order):
-                if end.get("kind") == "loop" and self.loop:
-                    self.pos, self.row = int(self.loop["pos"]), int(self.loop["row"])
-                else:
-                    self.ended = True
-                    return None
-        ev = self.pattern()[self.row]
-        self.row += 1
-        return ev
+def _status(regs):
+    return sum(regs[i] << s for i, s in STATUS_BITS) | 0x20
 
 
 class Player:
-    """Render a trackerprog: :meth:`tick` returns the tick's :class:`~.tuneprog.grid.TickObs`."""
+    """Render a tuneprog whose score is data.
 
-    def __init__(self, tp):
-        self.tp = tp
-        self.pitch = list(tp["pitch"] or [])
-        self.streams = tp["streams"]
-        self.instruments = tp["instruments"]
-        self.voices = [
-            Voice(v["order"], v["patterns"], loop=v.get("loop")) for v in tp["score"]["voices"]
-        ]
-        self.end = tp["score"].get("end") or {}
-        g = tp["score"].get("global")
-        self.glob = Voice(g["order"], g["patterns"], loop=g.get("loop")) if g else None
-        self.levels = {}
-        self.prev = None
-        self.transpose = 0
-        self.order = tuple(tp["meta"].get("commit_order") or DEFAULT_ORDER)
+    ``fetches`` is ``None`` to *record* (the regions run and each entry is logged)
+    or ``{region key: [fetch, ...]}`` to *replay* them.
+    """
 
-    def sequencer_step(self, vs):
-        ev = vs.advance(self.end)
-        self.transpose = vs.order[vs.pos].get("transpose", 0) if ev is not None else 0
-        if ev is None:
-            vs.hold = 1 << 30
-            return
-        vs.hold = int(ev["dur"])
-        if ev.get("note") is not None:
-            vs.note = int(ev["note"]) + int(self.transpose)
-        for reg, val in ev.get("enter", ()):  # the levels a loop re-enters with, silently
-            if reg == "freq":
-                vs.freq_off, vs.freq = None, int(val)
-            elif reg in ("cutoff", "res_route", "mode_vol"):
-                self.levels[reg] = int(val)
+    def __init__(self, prog, fetch, inputs=None, fetches=None, envvars=None):
+        self.prog, self.fetch = prog, fetch
+        self.envvars = envvars or {}
+        self.m = bytearray(prog.image())
+        lo, hi = prog.meta.get("load") or (0, 0)
+        self.k = bytearray(0x10000)
+        self.k[lo:hi] = b"\1" * (hi - lo)
+        self.k[0x100:0x200] = b"\1" * 0x100
+        self.k[0xD000:0xE000] = b"\1" * 0x1000
+        self.regs = [0] * 16
+        self.regs[3] = 0xFF
+        self.bank = 2
+        self.inputs = dict(inputs or {})
+        self.ro = copymap_bands(prog.storage)
+        self.record = fetches is None
+        self.fetches = {} if self.record else fetches
+        self.pos = {}
+        self.rec = None
+        self.depth = 0
+        self.sid = []
+        self.obs = []
+        self.tick_no = -1
+        self.steps = 0
+        self.setbank()
+
+    # ---- the machine ----------------------------------------------------------
+    def setbank(self):
+        p = (self.m[1] | ~self.m[0]) & 7
+        self.bank = 0 if not p & 3 else (1 if not p & 4 else 2)
+
+    def rd(self, a, w, cls):
+        v = 0
+        for i in range(w):
+            b = (a + i) & 0xFFFF
+            if cls == "ram" or (cls != "io" and self.k[b]):
+                x = self.m[b]
+            elif cls == "io" and self.bank != 2:
+                x = self.m[b]
+            elif b in self.inputs:
+                x = self.inputs[b]
             else:
-                vs.levels[reg] = int(val)
-        ref = self.instruments.get(ev.get("ins")) or {}
-        vs.streams = {
-            lane: self.cursor(sid) for lane, sid in ref.items() if not lane.startswith("pre_")
+                raise TrapError("external input", "$%04X" % b)
+            v |= x << (8 * i)
+        return v
+
+    def wr(self, a, v, w):
+        for i in range(w):
+            b = (a + i) & 0xFFFF
+            self.m[b] = (v >> (8 * i)) & 0xFF
+            self.k[b] = 1
+        if a <= 1:
+            self.setbank()
+
+    def iostore(self, a, v, src):
+        if self.bank == 2 and SID_LO <= a <= SID_HI:
+            self.sid.append((a, v))
+        else:
+            self.k[a] = 1
+        self.m[a] = v
+        del src
+
+    def push(self, v):
+        self.m[0x100 + self.regs[3]] = v & 0xFF
+        self.regs[3] = (self.regs[3] - 1) & 0xFF
+
+    def enter(self, entry=None):
+        frame = entry_frame(entry or {"kind": "sub"})
+        ret = 0x0000 if frame else 0x0001
+        self.push(ret >> 8)
+        self.push(ret & 0xFF)
+        for what in frame:
+            self.push(_status(self.regs) if what is STATUS else self.regs[what])
+
+    # ---- the interpreter ------------------------------------------------------
+    def ev(self, e, F):
+        t = type(e)
+        if t is Var:
+            return F[e.n]
+        if t is Const:
+            return e.v
+        if t is Bin:
+            return evalbin(e.op, self.ev(e.a, F), self.ev(e.b, F), e.w)
+        a = self.ev(e.a, F)
+        if not e.lo <= a <= e.hi or a + e.w - 1 > e.hi:
+            raise TrapError("envelope", "$%04X outside [$%04X,$%04X]" % (a, e.lo, e.hi))
+        if self.rec is not None and any(lo <= e.lo and e.hi <= hi for lo, hi in self.fetch.tables):
+            self.rec["reads"].append(a)
+        return self.rd(a, e.w, e.cls)
+
+    def _store(self, s, F):
+        a = self.ev(s.a, F)
+        if not s.lo <= a <= s.hi or a + s.w - 1 > s.hi:
+            raise TrapError("envelope", "$%04X outside [$%04X,$%04X]" % (a, s.lo, s.hi))
+        v = self.ev(s.v, F)
+        if self.ro and hits_band(self.ro, a, s.w):
+            raise TrapError("copymap", "$%04X at $%04X" % (a, s.src))
+        if self.rec is not None:
+            self.rec["cmds"].append([s.cls, a, v & ((1 << (8 * s.w)) - 1), s.w, s.src])
+        if s.cls == "io":
+            self.iostore(a, v & 0xFF, s.src)
+        elif s.cls == "raw":
+            self.m[a] = v & 0xFF
+        else:
+            self.wr(a, v, s.w)
+
+    def apply(self, key, F):
+        """Replay the next fetch of a region: its effects, its temps, where it resumed."""
+        got = self.fetches.get(key) or ()
+        i = self.pos.get(key, 0)
+        if i >= len(got):
+            raise TrapError("score exhausted", "%s:%s at tick %d" % (key[0], key[1], self.tick_no))
+        self.pos[key] = i + 1
+        f = got[i]
+        for cls, a, v, w, src in f["cmds"]:
+            if cls == "io":
+                self.iostore(a, v & 0xFF, src)
+            elif cls == "raw":
+                self.m[a] = v & 0xFF
+            else:
+                self.wr(a, v, w)
+        F.update(f["temps"])
+        return f
+
+    def _begin(self, key, region, F):
+        self.rec = {
+            "tick": self.tick_no,
+            "key": key,
+            "env": {n: F[n] for n in self.envvars.get(key, ()) if n in F},
+            "cmds": [],
+            "reads": [],
+            "temps": {},
+            "from": None,
+            "to": None,
+            "depth": self.depth,
+            "region": region,
         }
 
-    def lanes(self, vs):
-        """A voice's lanes in the order the edges commit: ``meta.commit_order`` first."""
-        first = [l for l in self.order if l in vs.streams]
-        return first + [l for l in vs.streams if l not in first]
+    def _end(self, F, prev, to, rets=None):
+        r = self.rec
+        r["temps"] = {n: F[n] for n in r["region"].liveout if n in F}
+        r["from"], r["to"] = prev, to
+        if rets is not None:
+            r["rets"] = list(rets)
+        del r["depth"], r["region"]
+        self.fetches.setdefault(r["key"], []).append(r)
+        self.rec = None
 
-    def cursor(self, sid):
-        st = self.streams[sid]
-        return Cursor(st["steps"], loop=st.get("loop"))
+    def run(self, name, args=()):
+        """Run procedure ``name``; returns the values of its ``rets``."""
+        proc = self.prog.procs[name]
+        F = dict(zip((REGVAR[i] for i in proc.params), args))
+        lbl, prev = proc.entry, None
+        self.depth += 1
+        regions = self.fetch.regions
+        try:
+            while True:
+                key = (name, lbl)
+                region = regions.get(key)
+                if region is not None:
+                    if self.record:
+                        # a region entered straight from another ends that fetch here;
+                        # one entered inside a fetch's callee is that fetch's own
+                        if self.rec is None:
+                            self._begin(key, region, F)
+                        elif self.rec["depth"] == self.depth:
+                            self._end(F, prev, lbl)
+                            self._begin(key, region, F)
+                    else:
+                        f = self.apply(key, F)
+                        if f["to"] == EXIT:
+                            return tuple(f["rets"])
+                        lbl, prev = f["to"], f["from"]
+                        continue
+                blk = proc.blocks[lbl]
+                self.steps += 1
+                for s in blk.stmts:
+                    t = type(s)
+                    if t is Let:
+                        F[s.n] = self.ev(s.e, F)
+                    elif t is Store:
+                        self._store(s, F)
+                    elif t is Call:
+                        vals = self.run(s.proc, [self.ev(a, F) for a in s.args])
+                        F.update(zip(s.rets, vals))
+                    elif t is Phi:
+                        F[s.n] = F[s.args[prev]]
+                    elif not self.ev(s.e, F):
+                        raise TrapError(s.why, blk.label)
+                term = blk.term
+                k = type(term)
+                prev = lbl
+                if k is Goto:
+                    lbl = term.to
+                elif k is If:
+                    lbl = term.t if self.ev(term.c, F) else term.f
+                elif k is Switch:
+                    v = self.ev(term.e, F)
+                    lbl = next((l for c, l in term.cases if c == v), None)
+                    if lbl is None:
+                        raise TrapError("switch", "$%04X value %d" % (blk.src, v))
+                else:
+                    if k is not Return:
+                        raise TrapError(term.why, "$%04X %s" % (blk.src, blk.label))
+                    vals = tuple(self.ev(v, F) for v in term.vals)
+                    if self.rec is not None and self.rec["depth"] == self.depth:
+                        self._end(F, prev, EXIT, vals)
+                    return vals
+                if self.rec is not None and self.rec["depth"] == self.depth:
+                    if lbl in self.rec["region"].exits:
+                        self._end(F, prev, lbl)
+        finally:
+            self.depth -= 1
 
-    def apply(self, v, vs, sets, edges):
-        """One step's sets: edges in their own order, level and pitch operands as state."""
-        for reg, val, *rest in sets:
-            if reg == "note_abs":
-                vs.note, vs.index, vs.freq_off = int(val), int(val), 0
-            elif reg == "note_off":
-                vs.index, vs.freq_off = (vs.note or 0) + int(val), 0
-            elif reg == "freq":
-                vs.freq_off, vs.freq = None, int(val)
-            elif reg == "freq_delta":
-                vs.freq_off, vs.freq = None, (self.freq_of(vs) + int(val)) & 0xFFFF
-            elif reg == "freq_ts":
-                m, shift = int(val), int(rest[0])
-                i = vs.index if vs.index is not None else vs.note or 0
-                semi = (self.pitch[i + 1] - self.pitch[i]) >> shift
-                vs.freq_off, vs.freq = None, (self.freq_of(vs) + m * semi) & 0xFFFF
-            elif reg == "pw_delta":
-                vs.levels["pw"] = (vs.levels.get("pw", 0) + int(val)) & 0xFFF
-            elif reg in ("cutoff_delta", "res_route_delta", "mode_vol_delta"):
-                base_ = reg[: -len("_delta")]
-                m = 0x7FF if base_ == "cutoff" else 0xFF
-                self.levels[base_] = (self.levels.get(base_, 0) + int(val)) & m
-            elif reg in grid_edges():
-                edges.append((regindex(reg, v), int(val)))
-            elif reg in ("cutoff", "res_route", "mode_vol"):
-                self.levels[reg] = int(val)
-            else:
-                vs.levels[reg] = int(val)
+    # ---- ticks -----------------------------------------------------------------
+    def _call(self, name):
+        proc = self.prog.procs[name]
+        vals = self.run(name, [self.regs[i] for i in proc.params])
+        for i, v in zip(proc.rets, vals):
+            self.regs[i] = v
 
-    def freq_of(self, vs):
-        """The voice's frequency: its pitch entry at the note and offset, or the value set."""
-        if vs.freq_off is None:
-            return vs.freq
-        n = vs.index if vs.index is not None else vs.note or 0
-        return self.pitch[n] if 0 <= n < len(self.pitch) else 0
-
-    def commit(self, v, vs, levels):
-        if vs.note is not None:
-            f = self.freq_of(vs)
-            levels[regindex("freq_lo", v)] = f & 0xFF
-            levels[regindex("freq_hi", v)] = (f >> 8) & 0xFF
-        if "pw" in vs.levels:
-            levels[regindex("pw_lo", v)] = vs.levels["pw"] & 0xFF
-            levels[regindex("pw_hi", v)] = (vs.levels["pw"] >> 8) & 0x0F
+    def run_init(self):
+        meta = self.prog.meta
+        self.regs[0] = int(meta.get("song") or 0)
+        self.enter()
+        self._call(meta["init_proc"])
+        self.sid = []
+        return self
 
     def tick(self):
-        edges, levels = [], {}
-        for v, vs in enumerate(self.voices):
-            vs.hold -= 1
-            if vs.hold <= 0 and not vs.ended:
-                self.sequencer_step(vs)
-            for lane in self.lanes(vs):
-                sets = vs.streams[lane].step()
-                if sets:
-                    self.apply(v, vs, sets, edges)
-            self.commit(v, vs, levels)
-        if self.glob is not None:
-            self.glob.hold -= 1
-            if self.glob.hold <= 0 and not self.glob.ended:
-                self.sequencer_step(self.glob)
-            for cur in self.glob.streams.values():
-                sets = cur.step()
-                if sets:
-                    self.apply(0, self.glob, sets, edges)
-        if "cutoff" in self.levels:
-            levels[regindex("cutoff_lo", 0)] = self.levels["cutoff"] & 7
-            levels[regindex("cutoff_hi", 0)] = self.levels["cutoff"] >> 3
-        for reg in ("res_route", "mode_vol"):
-            if reg in self.levels:
-                levels[regindex(reg, 0)] = self.levels[reg]
-        self.prev = grid.reduce_tick(edges + sorted(levels.items()), self.prev)
-        return self.prev
+        """One tick: its :class:`~.tuneprog.grid.TickObs`, appended to :attr:`obs`."""
+        self.tick_no += 1
+        self.sid = []
+        self.enter(self.prog.meta["entry"])
+        self._call(self.prog.meta["tick_proc"])
+        w = [
+            (int(r), v)
+            for r, (_a, v) in zip(grid.regs([a for a, _v in self.sid]), self.sid)
+            if r >= 0
+        ]
+        self.obs.append(grid.reduce_tick(w, self.obs[-1] if self.obs else None))
+        return self.obs[-1]
 
     def render(self, ticks):
-        return [self.tick() for _ in range(ticks)]
-
-
-def grid_edges():
-    """The register names whose writes are edges (ctrl, ad, sr)."""
-    return ("ctrl", "ad", "sr")
+        """``(obs, trap)``: the observable over ``ticks``, and what stopped it, if anything."""
+        try:
+            for _ in range(ticks):
+                self.tick()
+        except TrapError as e:
+            return self.obs, {"tick": self.tick_no, "trap": e.why, "detail": e.detail}
+        return self.obs, None

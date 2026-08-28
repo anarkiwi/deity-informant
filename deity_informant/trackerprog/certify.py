@@ -67,8 +67,12 @@ def equal_ticks(want, got):
     return len(want) if d is None else d["tick"]
 
 
-def certificate(tune, cert, want, got, refusals, end):
-    """``trackerprog.certificate.json`` (section 2), with the loop claim re-checked."""
+def certificate(tune, cert, want, got, refusals, end, trap=None):
+    """``trackerprog.certificate.json`` (section 2), with the loop claim re-checked.
+
+    Emitted only with no refusal, no divergence and no trap: a render that
+    differs from the source is not a trackerprog, however it is described.
+    """
     sub = ((cert or {}).get("subtunes") or [{}])[0]
     digest = (
         hashlib.sha256(json.dumps(cert, sort_keys=True).encode()).hexdigest()[:16] if cert else None
@@ -81,15 +85,17 @@ def certificate(tune, cert, want, got, refusals, end):
             f is not None and f >= p and f + p <= len(got)
         ):  # the render repeats where the source did
             loop["rechecked"] = got[f - p : f] == got[f : f + p]
+    div = divergence(want, got)
     return {
         "source": {"tune": tune, "certificate_digest": digest},
         "compared": COMPARED,
         "dropped": DROPPED,
         "ticks": len(want),
-        "divergence": None if refusals else divergence(want, got),
-        "rendered": {"ticks_equal": equal_ticks(want, got), "divergence": divergence(want, got)},
+        "divergence": div,
+        "trap": trap,
+        "rendered": {"ticks_equal": equal_ticks(want, got), "divergence": div},
         "refusals": [r.to_dict() if hasattr(r, "to_dict") else r for r in refusals],
-        "emitted": not refusals,
+        "emitted": not refusals and div is None and trap is None,
         "loop": loop,
         "end": end,
     }

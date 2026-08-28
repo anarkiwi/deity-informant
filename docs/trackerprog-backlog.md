@@ -505,7 +505,98 @@ and its commands, not their unfolding.
 
 | # | item | mechanism | size | acceptance |
 | --- | --- | --- | --- | --- |
-| W10 | producers over T1's accumulators | replace a row's pitch and pulse lanes by `Producer`s the player steps from T1's `Acc` records (delta, bound, policy, rate, phase, `carry(site)`), armed by the row (`arm(acc, overrides)` for the command parameters) and reset by note-on; the filter as an instrument-armed stream | large | GT2 ×2, Commando ×2, SW ×2 at 0 divergences with `xz` below the source's |
+| ~~W10~~ | the sound from the program's data, not the observable | cut the fetch regions out of the certified tick, run them over the program's own tables, and keep everything else as the producer program | large | eight of nine exemplars certify from data alone (the ninth is the sample-stream refusal); instruments are the program's table; six of eight prints below the source's `xz` |
+
+**W8/W9 were wrong at the root, and W10 replaces them (t3-from-data).** #302
+and #304 lifted a row's *sound* from `Verifier.obs`: the SID-write trace sliced
+per row and re-encoded as streams (deltas, cycles, prefix-shared lanes), so
+`certify` compared an encoding of the observable with the observable — 0
+divergences was tautological — and the "instruments" were the distinct
+slices (515 for GoatTracker 2's 30, 634 for Commando's 13), `accs` were unused
+annotations, every row had `cmds: []`, and the four prints still above the
+source's `xz` were exactly the tunes with generative structure the lift never
+read. All of that is gone: `emit.py` no longer imports the observable, and
+`Streams`/`row_stream`/`steps_of`/`lanes`/`_cycle`/`_delta`/`_nearest` with
+W9's compression layer are deleted.
+
+What replaced it, each rule generic and each checked on all four families:
+
+* **The fetch region** (`region.py`). On the certified S4 program, the blocks
+  that read a score byte — a load of an order or pattern table T2 named, or a
+  name derived from one through `Let`/`Call` (not through a `Phi`: the value
+  after a join is the player's) — seed a region; a loop whose back edge a score
+  byte decides (the loop that walks a row) is seeded whole. Each seed cluster
+  grows to the smallest single-entry region whose exit post-dominates it
+  (`sese`), side doors allowed where the exit still post-dominates them
+  (Hubbard's fetch either falls into the play code or skips it), clusters that
+  touch merge, and a proc called only from inside a region gets no regions of
+  its own. JCH: one region of 40 blocks; GoatTracker 2: the orderlist fetch (9)
+  and the pattern fetch (40); Hubbard: the row fetch (16) and the pattern-end
+  peek (3); SID Wizard: the pattern read (19) and the orderlist read (12, with
+  `p_17C8` inside).
+* **The score as data** (`player.py`, recording). The player is one interpreter
+  over the S4 program from the post-init image (init run by the player itself;
+  the pinned uninitialised-RAM values are data, an input whose values vary is
+  the section 8 `external input` refusal). Lifting runs the tick with the
+  regions executed and records, per entry, one *fetch*: the stores it made (cells
+  and registers, in order), the score bytes it read, the temps it left live,
+  the block it resumed at. Certification replays the same interpreter with the
+  regions skipped and the fetches applied — the score tables are never read —
+  and compares with `Verifier.obs`. A fetch changed by hand is a named
+  divergence; a score run out of is a trap.
+* **Rows, patterns, order.** A row is every fetch one voice made in one tick
+  (the voice read off the index the region's addresses bind at entry); its
+  `dur` is the ticks to the voice's next fetch, its `bytes` the score bytes,
+  its `cmds` every store, its `sets` the cells the print shows (the score's
+  own cursors and pointers left out). A visit ends where the bytes stop
+  continuing the last row's; a pattern is keyed on its rows' `(dur, bytes,
+  sets)`, so a second visit that decodes the same way is the same pattern.
+* **Instruments** (`emit.instruments_of`). The table the `ad`/`sr` write sites
+  index, through T2's resolver: the selector under their reads (JCH `rec8`,
+  GoatTracker 2 `cursor_1490`, Hubbard `rec2`) or the pointer table a record
+  base goes through (SID Wizard `T244E`, 11 pointers); rows are the entries
+  read off the image, keyed by cursor value, `used` the ones the score reached.
+* **Producers.** Every T0 write site outside the regions, with its control
+  dependences as `when`, its cells, and the T1 accumulators whose `sites` it is
+  (`[acc0]` tags). **Streams** are T2's cursor tables with their column bytes.
+  **`accs`** are T1's records.
+
+| tune | ticks | emitted | divergence | refusals | instruments (table / used) | accs | producers | regions | trackerprog six + `xz -9e` | source six + `xz` | below |
+| --- | ---: | --- | --- | --- | --- | ---: | ---: | ---: | --- | --- | --- |
+| `jch-guldkorn-intro` | 4,000 | yes | none | 0 | `rec8` 19 / 19 | 5 | 15 | 1 | 57,525 / 992 / 997 / 13 / 4 / 450, 4,704 B | 3,154 / 361 / 207 / 152 / 7 / 182, 5,696 B | yes |
+| `gt2-je-suis-linus` | 12,000 | yes | none | 0 | `cursor_1490` 30 / 26 | 4 | 20 | 2 | 60,120 / 2,716 / 2,656 / 89 / 4 / 1,361, 7,348 B | 5,768 / 908 / 336 / 321 / 5 / 270, 8,380 B | yes |
+| `commando-song1` | 11,780 | yes | none | 0 | `rec2` 13 / 9 | 3 | 20 | 2 | 370,729 / 3,255 / 3,269 / 7 / 4 / 167, 11,412 B | 2,129 / 271 / 161 / 107 / 7 / 127, 4,644 B | **no** (2.5×) |
+| `sw-emomyst` | 12,000 | yes | none | 0 | `T244E` 11 / 11 | 4 | 17 | 2 | 22,030 / 2,489 / 2,462 / 51 / 4 / 1,774, 3,816 B | 8,102 / 1,055 / 422 / 426 / 7 / 265, 8,888 B | yes |
+| `jch-knob-at-night` | 12,000 | yes | none | 0 | `rec8` 5 / 5 | 2 | 29 | 1 | 274,221 / 7,777 / 7,800 / 9 / 4 / 164, 2,788 B | 2,930 / 362 / 239 / 150 / 7 / 8,715, 19,904 B | yes |
+| `jch-easy-does-it` | 1,799 | **no** | tick 0, `mode_vol` | 1 `sample stream` (`mode_vol`, the CIA #2 NMI entry at `$40E9`) | `rec8` 16 / 16 | 5 | 16 | 1 | — | — | refused |
+| `gt2-do-it-again` | 12,000 | yes | none | 0 | `cursor_1490` 20 / 20 | 4 | 20 | 2 | 36,813 / 1,706 / 1,665 / 70 / 4 / 1,095, 6,096 B | 5,619 / 875 / 331 / 312 / 5 / 204, 7,688 B | yes |
+| `commando-song2` | 11,780 | yes | none | 0 | `rec2` 8 / 8 | 2 | 14 | 2 | 154,823 / 1,637 / 1,639 / 13 / 4 / 114, 4,204 B | 1,872 / 238 / 146 / 99 / 8 / 84, 3,664 B | **no** (1.15×) |
+| `sw-end-of-the-world` | 16,000 | yes | none | 0 | `T244E` 21 / 21 | 6 | 16 | 2 | 25,659 / 3,218 / 3,168 / 71 / 4 / 4,030, 5,184 B | 7,596 / 1,028 / 407 / 423 / 7 / 326, 9,652 B | yes |
+
+(six = tokens / lines / statements / blocks / header rows / data rows;
+statements are pattern rows plus producers, blocks patterns plus streams,
+regions and the instrument table, data rows pitch plus instrument and stream
+entries. The T3 tool's whole run — history replay, T2, the lift and the
+certified replay — is 8 s for JCH and 34 s for SID Wizard.)
+
+**What this does and does not claim.** The score is data: the fetch never runs
+at certification and the tables it read are not read. The instrument table,
+the streams and the accumulators are the program's, named and printed. The
+sound half is *not yet* section 4's fixed procedure over `Ins{adsr, prelude,
+streams}` and `Producer`s over `Acc`s: it is the certified tick outside the
+regions, carried as the S4 program in the trackerprog (`program`) and run by
+the one interpreter, with its SID write sites listed as producers under their
+guards. That is honest and exact, and it is the ground the section 4 reduction
+has to be proved against — a producer list rendered by the fixed procedure must
+reproduce what this interpreter does tick for tick. Hubbard's two prints are
+above the source's `xz` because his fetch writes the SID per row (`ctrl`, `pw`,
+`ad`, `sr`, `freq`), so every row's `sets` carries them; the other six are below.
+A region entered straight from another (his second song's row fetch after the
+pattern-end peek) ends the fetch there and starts the next.
+
+| # | item | mechanism | size | acceptance |
+| --- | --- | --- | --- | --- |
+| W11 | the producer program as section 4 | classify each producer's guards against the events the fixed procedure has (row, note-on, `early`, a stream's step, an accumulator's rate) and its value against the data forms (an instrument column, a stream column, a pitch lookup, an `Acc`), exact over the horizon or a named refusal; then `player` is section 4 and `program` leaves the trackerprog | large | the same nine tunes at 0 divergences with no `program` block |
 
 Total ≈ 24–30 agent-days. W1–W3 are independent of W0 and of each other;
 W4 depends on W3; W5 on W0, W2, W4; W6 on W0, W2, W3; W7 on all.
@@ -517,9 +608,9 @@ W4 depends on W3; W5 on W0, W2, W4; W6 on W0, W2, W3; W7 on all.
    `Acc` and `Cmd` shapes W5/W6 build to.
 3. ~~**W4**~~, then ~~**W5**~~, and ~~**W6**~~ (on GT2/JCH/Commando; SW refuses
    by name until the fold fix).
-4. ~~**W7**~~, ~~**W8**~~ (JCH ×2, GT2 ×2, Commando ×2 certified at 0
-   divergences), SW ×2 after #303; ~~**W9**~~ (four of eight prints below
-   the source's); then **W10** for the rest of the compression claim; Follin
+4. ~~**W7**~~, ~~**W8**~~, ~~**W9**~~ (superseded: they read the
+   observable), ~~**W10**~~ (the lift from data: nine tunes certified from
+   their programs' tables); then **W11** for the section 4 reduction; Follin
    after I6.
 
 Deliberately not now: Galway/Walker/Blackbird (uncertified — the anatomy

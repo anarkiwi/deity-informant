@@ -1,496 +1,555 @@
-"""T3 -- the trackerprog lifted from T2 and the observable, and its print.
+"""T3 -- the trackerprog lifted from the program's data, and its print.
 
-The score is T2's: an order of patterns whose rows hold for the ticks the cursor
-did. What a row *sounds* like is lifted as a stream (section 3.3): the ordered
-edge writes and the level values each tick of the row left in the observable,
-as steps with holds, relative to the row's note where a value is a pitch entry.
-Equal streams are one stream, and a row's instrument is the stream it arms. The
-global channel -- cutoff, resonance, volume -- is one stream over the horizon.
-Nothing here reads a tune's code: a residue can only come from T2 (a voice with
-no cursor-shaped score), and it is refused by name.
+The score is the certified tick's fetch regions run over the program's own
+tables (:mod:`.region`, :mod:`.player`): one row per fetch, its bytes and the
+cells it set. The sounds are the tables and recurrences the rest of the tick
+reads -- the instrument records the envelope writes index (T2's selector, or the
+pointer table a record base goes through), the streams T2 walked, T1's
+accumulators -- and the tick outside the regions is the producer list: every
+SID write site of T0 with the guards it stands under. Nothing here reads the
+observable; :mod:`.certify` compares the replay with it.
 """
 
 from __future__ import annotations
 
-import json
 import lzma
 import re
 
-from ..tuneprog import grid
-from ..tuneprog.facts import SID_VOICE, SID_VOICES, VOICE_REG
-from . import player
+from ..tuneprog.accguard import guardpath
+from ..tuneprog.accshape import Ctx
+from ..tuneprog.facts import SID_VOICES
+from ..tuneprog.ir import Bin, Const, Load, R16, Tuneprog, Var, dec, enc
+from ..tuneprog.irwalk import addr_split, walk
+from ..tuneprog.tracedata import input_kind
+from . import cursors, player, region
 from .refuse import Refusal
+from .resolve import Program
 
-PW_MASK = grid.PAIRS[3][3]
+TABLE = ("const", "init_constant")
+ENVELOPE = ("ad", "sr")
 
 
-def fetch_ticks(t2, voice):
-    """The ticks a voice's pattern channel fetched a row, from T2's events."""
+# ---- naming by address --------------------------------------------------------
+class Namer:
+    """A cell's printed name from its address, off the presentation view."""
+
+    def __init__(self, view, names):
+        self.names = names
+        self.rgn = sorted((r for r in view.storage if r.id >= 0), key=lambda r: r.base)
+        self.split = {
+            d["split"]: (g, d) for g, d in names.groups.items() if d.get("split") is not None
+        }
+
+    def region(self, addr):
+        """The region holding ``addr``: a state cell before a table that overlaps it."""
+        hits = [r for r in self.rgn if r.base <= addr < r.base + r.size]
+        return min(hits, key=lambda r: (r.kind != "state", r.size), default=None)
+
+    def role(self, addr):
+        r = self.region(addr)
+        return None if r is None else self.names.role.get(r.id)
+
+    def cell(self, addr):
+        r = self.region(addr)
+        if r is None:
+            return "$%04X" % addr
+        off = addr - r.base
+        if r.id in self.split:
+            g, d = self.split[r.id]
+            stride, n = max(int(d["stride"]), 1), int(d["n"])
+            fields = {int(k): f for k, f in d["fields"].items()}
+            f = max((k for k in fields if k <= off and (off - k) // stride < n), default=None)
+            if f is not None:
+                return "%s[%d].%s" % (g, (off - f) // stride, fields[f])
+        hit = self.names.view.get(r.id)
+        if hit is not None:
+            g, field = hit
+            grp = self.names.groups.get(g) or {}
+            k = off // max(int(grp.get("stride", 1)), 1)
+            return "%s[%d].%s" % (g, k, field) if int(grp.get("n", 1)) > 1 else "%s.%s" % (g, field)
+        name = self.names.of(r.id)
+        return name if r.size == 1 or off == 0 else "%s[%d]" % (name, off)
+
+    def expr(self, e):
+        """A view expression, compactly."""
+        t = type(e)
+        if t is Const:
+            return "$%X" % e.v if e.v > 9 else str(e.v)
+        if t is Var:
+            return e.n
+        if t is Bin:
+            return "(%s %s %s)" % (self.expr(e.a), e.op, self.expr(e.b))
+        if t is R16:
+            return self.names.of(e.lo[0])
+        if t is Load:
+            base, idx = addr_split(e.a)
+            if base is not None and idx is None:
+                return self.cell(base)
+            r = self.rgn and next((r for r in self.rgn if r.id == e.r), None)
+            name = self.names.of(e.r) if r is not None else "mem"
+            return "%s[%s]" % (name, self.expr(e.a))
+        return repr(e)
+
+
+def by_name(view, names):
+    """``{name: region}`` over the view's regions."""
+    return {names.of(r.id): r for r in view.storage if r.id >= 0}
+
+
+# ---- the score tables and the pinned inputs ----------------------------------
+def tables_of(t2, view, names):
+    """The address envelopes of the order and pattern tables T2's score reads."""
+    regs = by_name(view, names)
     out = set()
     for v in t2["score"]:
-        if v["copy"] != voice:
-            continue
-        for ch in v.get("pattern", ()):
-            out |= {e["tick"] for e in ch["events"] if e["bytes"]}
+        for role in ("order", "pattern"):
+            for ch in v.get(role, ()):
+                r = regs.get(ch["table"])
+                if r is not None:
+                    out.add((r.base, r.base + r.size - 1))
     return out
 
 
-def commit_order(obs):
-    """The per-voice ad/sr/ctrl order the source writes: the first tick writing all three."""
-    for o in obs or ():
-        for v in range(SID_VOICES):
-            got = [VOICE_REG[r % SID_VOICE] for r, _val in o.edges if r // SID_VOICE == v]
-            names = [n for n in dict.fromkeys(got) if n in ("ad", "sr", "ctrl")]
-            if len(names) == 3:
-                return tuple(names)
-    return player.DEFAULT_ORDER
-
-
-def _note(pitch, value, index):
-    """The pitch index ``value`` is an entry at, nearest ``index`` first, or ``None``."""
-    if value is None or not pitch:
-        return None
-    hits = index.get(value)
-    return None if not hits else min(hits, key=lambda i: abs(i - (index.get("row") or 0)))
-
-
-def _nearest(pitch, value):
-    """The pitch index closest to a value that is no entry."""
-    return min(range(len(pitch)), key=lambda i: abs(pitch[i] - value))
-
-
-def _key(x):
-    return json.dumps(x, sort_keys=True)
-
-
-def _stream(ticks):
-    """A lane stream: its per-tick set lists as steps."""
-    return {"rate": 1, "steps": steps_of(ticks), "loop": None}
-
-
-class Streams:
-    """Streams and instruments deduplicated by content, a prefix being its stream cut short."""
-
-    def __init__(self):
-        self.ids, self.out = {}, {}
-        self.ins, self.instruments = {}, {}
-        self.ticks = {}  # lane stream id -> its per-tick lists, the longest seen
-
-    def add(self, steps, loop=None):
-        key = _key([steps, loop])
-        if key not in self.ids:
-            self.ids[key] = "s%d" % len(self.ids)
-            self.out[self.ids[key]] = {"rate": 1, "steps": steps, "loop": loop}
-        return self.ids[key]
-
-    def lane(self, ticks):
-        """The stream these per-tick lists are a prefix of, extended where they reach further.
-
-        A row cuts its instrument's stream at its own length, so the sound of a
-        short note is the sound of a long one stopped early: one stream serves both.
-        """
-        key = _key(ticks)
-        if key in self.ids:
-            return self.ids[key]
-        for sid, have in self.ticks.items():
-            n = min(len(have), len(ticks))
-            if have[:n] == ticks[:n]:
-                if len(ticks) > len(have):
-                    self.ticks[sid] = ticks
-                    self.out[sid] = _stream(ticks)
-                self.ids[key] = sid
-                return sid
-        sid = self.ids[key] = "s%d" % len(self.ids)
-        self.ticks[sid] = ticks
-        self.out[sid] = _stream(ticks)
-        return sid
-
-    def instrument(self, by_lane):
-        """One instrument per distinct tuple of lane streams."""
-        ref = {lane: self.lane(ticks) for lane, ticks in by_lane.items()}
-        key = _key(ref)
-        if key not in self.ins:
-            self.ins[key] = "i%d" % len(self.ins)
-            self.instruments[self.ins[key]] = ref
-        return self.ins[key]
-
-
-MAXSTEP, MAXSHIFT = 32, 7
-
-
-def tablestep(pitch, idx, d):
-    """``(m, shift)`` with ``d == m * ((pitch[idx+1] - pitch[idx]) >> shift)``, or ``None``.
-
-    Section 5's ``tablestep``: a vibrato or slide in units of the semitone above
-    the note, which is the same stream at every note.
-    """
-    if idx is None or not 0 <= idx + 1 < len(pitch):
-        return None
-    semi = pitch[idx + 1] - pitch[idx]
-    hits = []
-    for shift in range(MAXSHIFT + 1):
-        unit = semi >> shift
-        if unit > 0 and d % unit == 0 and 0 < abs(d // unit) <= MAXSTEP:
-            hits.append((abs(d // unit), shift, d // unit))
-    return None if not hits else (min(hits)[2], min(hits)[1])
-
-
-def _delta(prev, val, key, width):
-    """A level as its step from the previous tick where one is known, else absolute."""
-    if prev is None:
-        return (key, val)
-    d = (val - prev) % (1 << width)
-    return (key + "_delta", d - (1 << width) if d >= 1 << (width - 1) else d)
-
-
-MAXCYCLE = 8
-
-
-def _cycle(ticks, i):
-    """``(length, times)`` of the longest run of a repeated cycle starting at ``i``."""
-    best = (0, 0, 0)
-    for n in range(1, MAXCYCLE + 1):
-        if i + 2 * n > len(ticks):
-            break
-        unit = ticks[i : i + n]
-        k = 1
-        while ticks[i + k * n : i + (k + 1) * n] == unit:
-            k += 1
-        if k >= 2 and n * k > best[0]:
-            best = (n * k, n, k)
-    return best[1], best[2]
-
-
-def steps_of(ticks):
-    """Per-tick set lists as steps: a cycle repeated ``times``, or sets held ``hold`` ticks.
-
-    A run of one set list every tick is a cycle of length one; a set list followed
-    by empty ticks is that step with a hold. The closed form of what a table walk
-    with holds, a repeated write and a periodic modulation each leave.
-    """
-    steps, i = [], 0
-    while i < len(ticks):
-        n, k = _cycle(ticks, i)
-        if n and not (n == 1 and not ticks[i]):
-            steps.append({"cycle": ticks[i : i + n], "times": k})
-            i += n * k
+def pinned(inputs):
+    """``(values by address, refusals)``: the tick's pinned reads as data (section 8)."""
+    seen, out, bad = {}, {}, []
+    for _c, _site, _op, addr, val in inputs:
+        if addr >= 0x10000:
             continue
-        sets = ticks[i]
-        hold = 1
-        while i + hold < len(ticks) and not ticks[i + hold]:
-            hold += 1
-        steps.append({"hold": hold, "sets": sets})
-        i += hold
-    return steps
+        seen.setdefault(addr, set()).add(int(val))
+    for addr, vals in sorted(seen.items()):
+        kind = input_kind(addr)
+        if kind in ("raster", "cia", "sid_readback", "io") and len(vals) > 1:
+            bad.append(Refusal("external input", "$%04X" % addr, "", kind))
+            continue
+        out[addr] = min(vals)
+    return out, bad
 
 
-LANES = {
-    "ad": "ad",
-    "sr": "sr",
-    "ctrl": "ctrl",
-    "pw": "pulse",
-    "pw_delta": "pulse",
-    "note_off": "note",
-    "note_abs": "note",
-}
-EDGES = ("ad", "sr", "ctrl")
+# ---- instruments ---------------------------------------------------------------
+def _sites(t0, registers):
+    """``{(proc, block)}`` of the T0 write sites of ``registers``."""
+    return {
+        (w["site"]["proc"], w["site"]["block"])
+        for w in t0.get("writes") or ()
+        if w.get("register") in registers
+    }
 
 
-def lanes(ticks, split=True):
-    """The per-tick set lists split into lanes: one per edge register where the tune
-    keeps one order between them (``meta.commit_order``), else one wave lane; note,
-    pitch and pulse."""
-    names = ("ad", "sr", "ctrl") if split else ("wave",)
-    out = {n: [] for n in names + ("note", "pitch", "pulse")}
-    for sets in ticks:
-        for lane, got in out.items():
-            got.append(
-                [s for s in sets if (LANES.get(s[0], "pitch") if split else _wave(s[0])) == lane]
+def instruments_of(view, names, t2, t0):
+    """The instrument table the envelope writes index, its rows read off the image.
+
+    The table is the selector T2 found under the ``ad``/``sr`` sites' reads, or
+    the pointer table a record base goes through; a row is one entry's fields.
+    """
+    rgn = view.by_id()
+    ctx = Ctx(view, names)
+    P = Program(ctx)
+    accs = cursors.accesses(ctx, names, P)
+    sites = _sites(t0, ENVELOPE)
+    cells = {
+        c["region"]
+        for w in t0.get("writes") or ()
+        if w.get("register") in ENVELOPE
+        for c in w.get("cells") or ()
+    }
+    img = view.reads()
+    hits = [
+        a for a in accs if a.site[:2] in sites and a.table in cells and rgn[a.table].kind in TABLE
+    ]
+    if not hits:
+        return None
+    a = hits[0]
+    if a.cursor is not None:
+        key = "%s@$%04X" % (names.of(a.cursor.region), a.cursor.addr)
+        sel = next((s for s in t2["selectors"] + t2["streams"] if s["cursor"] == key), None)
+        if sel is None:
+            return None
+        regs = by_name(view, names)
+        cols = [(c["table"], regs[c["table"]].base + c["origin"]) for c in sel["columns"]]
+        shift, stride = sel.get("shift") or 0, max(sel["columns"][0]["stride"], 1)
+        first = min(sel["visited"], default=0)
+        rows = {
+            int(v): {name: int(img[(base + (v << shift)) & 0xFFFF]) for name, base in cols}
+            for v in (first + i * stride for i in range(sel["entries"]))
+        }
+        return {
+            "kind": "selector",
+            "cursor": key,
+            "entries": len(rows),
+            "used": len(sel["visited"]),
+            "rows": rows,
+        }
+    base = a.base
+    ptr = next(
+        (
+            x
+            for x in cursors.leaf_loads(base)
+            if cursors.istable(x, rgn) and addr_split(x.a)[1] is not None
+        ),
+        None,
+    )
+    if ptr is None:
+        return None
+    lo = rgn[ptr.lo[0]] if type(ptr) is R16 else rgn[ptr.r]
+    hi = rgn[ptr.hi[0]] if type(ptr) is R16 else None
+    n = lo.size // max(lo.stride, 1)
+    origins = sorted({x.origin for x in hits})
+    rows = {}
+    for i in range(n):
+        p = int(img[lo.base + i * max(lo.stride, 1)])
+        if hi is not None:
+            p |= int(img[hi.base + i * max(hi.stride, 1)]) << 8
+        rows[i] = {"+%X" % o: int(img[(p + o) & 0xFFFF]) for o in origins}
+    return {"kind": "pointers", "cursor": names.of(lo.id), "entries": n, "used": n, "rows": rows}
+
+
+# ---- streams and accumulators ---------------------------------------------------
+def streams_of(view, names, t2, tables):
+    """T2's streams with their column bytes, the score's own tables left out."""
+    regs = by_name(view, names)
+    img = view.reads()
+    out = []
+    for s in t2["streams"] + t2["selectors"]:
+        cols = []
+        for c in s["columns"]:
+            r = regs.get(c["table"])
+            if r is None or any(lo <= r.base <= hi for lo, hi in tables):
+                continue
+            base, stride = r.base + c["origin"], max(c["stride"], 1)
+            n = min(s["entries"], (r.base + r.size - base + stride - 1) // stride)
+            cols.append(
+                {
+                    "table": c["table"],
+                    "origin": c["origin"],
+                    "stride": stride,
+                    "bytes": [int(img[(base + i * stride) & 0xFFFF]) for i in range(max(n, 0))],
+                }
+            )
+        if cols:
+            out.append(
+                {
+                    "cursor": s["cursor"],
+                    "kind": s["kind"],
+                    "step": s["step"],
+                    "entries": s["entries"],
+                    "visited": s["visited"],
+                    "terminator": s["terminator"],
+                    "columns": cols,
+                }
             )
     return out
 
 
-def _wave(reg):
-    return "wave" if reg in EDGES else LANES.get(reg, "pitch")
-
-
-def ordered(obs):
-    """The one order the edge registers keep inside every tick of every voice, or ``None``.
-
-    Every tick's writes to a voice must be sorted by it, with no register written
-    twice around another (``ad, sr, ad, sr`` keeps no such order).
-    """
-    seen = set()
-    for ob in obs:
-        per = {}
-        for r, _v in ob.edges:
-            per.setdefault(r // SID_VOICE, []).append(VOICE_REG[r % SID_VOICE])
-        seen.update(tuple(regs) for regs in per.values())
-    order = tuple(dict.fromkeys(max(seen, key=lambda s: len(set(s)), default=())))
-    for got in seen:
-        ranks = [order.index(r) if r in order else -1 for r in got]
-        if -1 in ranks or ranks != sorted(ranks):
-            return None
-    return order
-
-
-def row_stream(obs, voice, start, dur, pitch, index, note, state):
-    """One row's observable as steps: edges in order, levels as steps from the last tick.
-
-    ``state`` carries the voice's last frequency and pulse across rows, so a sweep
-    continuing into the next row is the same delta step there.
-    """
-    ticks = []
-    for o in range(dur):
-        t = start + o
-        if t >= len(obs):
-            break
-        ob = obs[t]
-        sets = [[VOICE_REG[r % SID_VOICE], val] for r, val in ob.edges if r // SID_VOICE == voice]
-        f = ob.values[voice]
-        if f is not None and note is None:  # the voice's first frequency, inside this row
-            note = _note(pitch, f, {**index, "row": 0})
-            note = _nearest(pitch, f) if note is None else note
-            sets.append(["note_abs", note])
-        if f is not None:
-            want = _note(pitch, f, {**index, "row": note})
-            mode = ("pitch", want) if want is not None else "abs"
-            if mode != state.get("mode") or (mode == "abs" and f != state.get("freq")):
-                if want is not None:
-                    sets.append(["note_off", want - note])
-                    state["index"] = want
-                else:
-                    prev = state.get("freq")
-                    ts = (
-                        tablestep(pitch, state.get("index"), f - prev) if prev is not None else None
-                    )
-                    sets.append(["freq_ts", *ts] if ts else list(_delta(prev, f, "freq", 16)))
-            state["mode"], state["freq"] = mode, f
-        pw = ob.values[SID_VOICES + voice]
-        if pw is not None and pw != state.get("pw"):
-            sets.append(list(_delta(state.get("pw"), pw, "pw", 12)))
-            state["pw"] = pw
-        ticks.append(sets)
-    state["note"] = note
-    return lanes(ticks, state.get("split", True)), note
-
-
-GLOBAL = (("cutoff", 6, 11), ("res_route", 7, 8), ("mode_vol", 8, 8))
-
-
-def global_rows(obs, span, loop):
-    """The global channel over ``span`` ticks as one row, cut at the loop."""
-    cuts = sorted({0, span} | ({loop} if loop else set()))
-    out, prev = [], {}
-    for a, b in zip(cuts, cuts[1:]):
-        lanes_ = {name: [] for name, _i, _w in GLOBAL}
-        for ob in obs[a:b]:
-            for name, i, w in GLOBAL:
-                val, sets = ob.values[i], []
-                if val is not None and prev.get(name) != val:
-                    sets.append(list(_delta(prev.get(name), val, name, w)))
-                    prev[name] = val
-                lanes_[name].append(sets)
-        out.append((a, b - a, lanes_))
+# ---- the producers ---------------------------------------------------------------
+def producers_of(view, names, t0, t1, fetch):
+    """Every T0 write site outside the fetch regions, with the guards it stands under
+    and the accumulators whose value cell it reads."""
+    namer = Namer(view, names)
+    guards = {}
+    by_region = {}
+    for a in (t1 or {}).get("accs") or ():
+        for rid in a.get("regions") or [a["cell"]["region"]]:
+            by_region.setdefault(rid, []).append(a["id"])
+    out = []
+    for w in t0.get("writes") or ():
+        site = w["site"]
+        pc = int(site["pc"][1:], 16)
+        if pc in fetch.pcs:
+            continue
+        proc = site["proc"]
+        if proc not in guards and proc in view.procs:
+            guards[proc] = guardpath(view.procs[proc])
+        gs = (guards.get(proc) or {}).get(site["block"], ())
+        out.append(
+            {
+                "register": w.get("register"),
+                "voices": w.get("voices"),
+                "kind": w.get("kind"),
+                "print": w.get("print"),
+                "site": {"proc": proc, "block": site["block"], "pc": site["pc"]},
+                "when": ["%s%s" % ("" if t else "not ", namer.expr(c)) for c, t, _w in gs],
+                "cells": [c["name"] for c in w.get("cells") or ()],
+                "accs": sorted(
+                    {x for c in w.get("cells") or () for x in by_region.get(c["region"], ())}
+                ),
+                "refusal": w.get("refusal"),
+            }
+        )
     return out
 
 
-def horizon(cert, obs):
-    """``(span, loop tick)``: the period a complete source is materialised over (section 6).
+# ---- the score -------------------------------------------------------------------
+def _copyvar(fetches):
+    """``{region key: (var, sorted values)}``: the index a region's fetch runs under."""
+    out = {}
+    for key, got in fetches.items():
+        vals = {}
+        for f in got:
+            for n, v in f.get("env", {}).items():
+                vals.setdefault(n, set()).add(v)
+        hit = next((n for n, vs in vals.items() if len(vs) == SID_VOICES), None)
+        out[key] = (hit, sorted(vals[hit])) if hit else (None, [])
+    return out
 
-    ``first_repeat`` is the tick whose post-state first repeats one a period back,
-    so the tick after it plays as the tick after that one did.
-    """
-    sub = ((cert or {}).get("subtunes") or [{}])[0]
-    p, f = sub.get("period") or 0, sub.get("first_repeat")
-    span = f + 1 if f is not None and sub.get("complete") and p > 1 else None
-    if span is not None and p <= span <= len(obs):
-        return span, span - p
-    return len(obs), None
 
-
-def _rows(t2, voice, span, loop=None):
-    """``[(tick, dur, base, pos, bytes)]`` of a voice's pattern channel over ``span`` ticks.
-
-    A row the loop tick falls inside is cut there: its remainder is the row the
-    loop re-enters, and by the period it is the same remainder the span ends on.
-    """
+def cursor_cells(t2, view, names):
+    """Every copy of every score channel's cursor cell: the bookkeeping a row sets."""
+    regs = by_name(view, names)
+    out = set()
     for v in t2["score"]:
-        if v["copy"] == voice and v.get("pattern"):
-            out = []
-            for e in v["pattern"][0]["events"]:
-                t, n = e["tick"], min(e["ticks"], span - e["tick"])
-                if n <= 0 or t >= span:
-                    continue
-                if loop is not None and t < loop < t + n:
-                    out.append((t, loop - t, e["base"], e["pos"], e["bytes"]))
-                    t, n = loop, t + n - loop
-                out.append((t, n, e["base"], e["pos"], e["bytes"]))
-            return out
-    return None
+        for role in ("order", "pattern"):
+            for ch in v.get(role, ()):
+                for part in ch["cursor"].split(":"):
+                    name, _at, addr = part.partition("@$")
+                    r = regs.get(name)
+                    if r is None:
+                        continue
+                    g = next(
+                        (
+                            d
+                            for d in names.groups.values()
+                            if r.id in d.get("members", ()) or d.get("split") == r.id
+                        ),
+                        {},
+                    )
+                    stride, n = max(int(g.get("stride", 1)), 1), int(g.get("n", 1))
+                    base = int(addr, 16) if addr else r.base
+                    out |= {base + k * stride for k in range(n)}
+    return out
 
 
-def _continues(prev, row, loop):
-    """True when a row only holds the one before: same pattern and note, and its first tick's
-    writes are the previous tick's again -- a flush repeating, not an event."""
-    if row["tick"] == loop or row["base"] != prev["base"] or row["note"] != prev["note"]:
-        return False
-    edges = [l for l in row["lanes"] if l in EDGES or l == "wave"]
-    same = all(row["lanes"][l][0] in ([], prev["lanes"][l][-1]) for l in edges)
-    return same and not row["lanes"]["note"][0]
+def score_of(fetches, prog, namer, ticks, fetch, bookkeeping=frozenset()):
+    """The fetches as per-voice rows: bytes read, cells and registers set, temps left.
 
-
-def _visits(rows):
+    A row is every fetch one voice made in one tick. ``cmds`` names every store;
+    ``sets`` is the part the print shows -- the score's own cursors and pointers
+    (``bookkeeping``, the regions' own cells) left out.
+    """
+    copies = _copyvar(fetches)
+    img = prog.reads()
+    tables = fetch.tables
+    own = [c for r in fetch.regions.values() for c in r.cells]
+    voices = {}
+    for key, got in fetches.items():
+        var, vals = copies[key]
+        for f in got:
+            v = vals.index(f["env"][var]) if var else None
+            cmds = [
+                [namer.cell(a) if cls != "io" else "sid[$%04X]" % a, v_, w]
+                for cls, a, v_, w, _src in f["cmds"]
+            ]
+            keep = [
+                cls == "io"
+                or not (
+                    a in bookkeeping
+                    or any(lo <= a <= hi for lo, hi in own)
+                    or namer.role(a) == "ptr"
+                )
+                for cls, a, _v, _w, _src in f["cmds"]
+            ]
+            row = voices.setdefault(v, {}).setdefault(
+                f["tick"],
+                {
+                    "tick": f["tick"],
+                    "regions": [],
+                    "bytes": [],
+                    "cmds": [],
+                    "sets": [],
+                    "temps": {},
+                },
+            )
+            row["regions"].append("%s:%s" % key)
+            row["bytes"] += [
+                [a, int(img[a])] for a in f["reads"] if any(lo <= a <= hi for lo, hi in tables)
+            ]
+            row["cmds"] += cmds
+            row["sets"] += [c for c, k in zip(cmds, keep) if k]
+            row["temps"].update(f["temps"])
     out = []
+    for v in sorted(voices, key=lambda x: (x is None, x)):
+        rows = [voices[v][t] for t in sorted(voices[v])]
+        for r, nxt in zip(rows, rows[1:] + [None]):
+            r["dur"] = (nxt["tick"] if nxt else ticks) - r["tick"]
+        out.append({"copy": v, "rows": rows, **patterns(rows)})
+    return out
+
+
+def patterns(rows):
+    """Rows grouped into patterns at the fetches that read the order: ``(order, patterns)``.
+
+    A visit ends where the bytes read stop continuing the last row's; a pattern is
+    keyed on its rows' bytes, holds and sets, so a second visit that decodes the
+    same way is the same pattern, and the order lists the visits.
+    """
+    visits, cur, lo, hi = [], [], None, None
     for r in rows:
-        if out and out[-1][-1]["base"] == r["base"]:
-            out[-1].append(r)
-        else:
-            out.append([r])
+        addrs = [a for a, _b in r["bytes"]]
+        if addrs and lo is not None and not lo <= min(addrs) <= hi + 1:
+            visits.append(cur)
+            cur = []
+        if addrs:
+            lo, hi = min(addrs), max(addrs)
+        cur.append(r)
+    if cur:
+        visits.append(cur)
+    pats, order = {}, []
+    for visit in visits:
+        key = tuple(
+            (r["dur"], tuple(b for _a, b in r["bytes"]), tuple(tuple(c) for c in r["sets"]))
+            for r in visit
+        )
+        if key not in pats:
+            pats[key] = "p%d" % len(pats)
+        order.append({"pattern": pats[key], "tick": visit[0]["tick"], "rows": len(visit)})
+    return {
+        "order": order,
+        "patterns": {
+            pid: [
+                {"dur": d, "bytes": list(b), "sets": [list(c) for c in sets]} for d, b, sets in key
+            ]
+            for key, pid in pats.items()
+        },
+    }
+
+
+# ---- the lift ----------------------------------------------------------------------
+def horizon(cert, t2):
+    sub = ((cert or {}).get("subtunes") or [{}])[0]
+    ticks = int(t2["horizon"]["ticks"])
+    if sub.get("complete"):
+        kind = "loop" if (sub.get("period") or 0) > 1 else "fixed_point"
+    else:
+        kind = "horizon"
+    return ticks, {"kind": kind, "ticks": ticks, "period": sub.get("period")}
+
+
+def _envvars(fetch, prog):
+    """The index names a region's addresses read: bound at entry, they say the copy."""
+    out = {}
+    for key, r in fetch.regions.items():
+        names = set()
+        for l in r.blocks:
+            for s in prog.procs[r.proc].blocks[l].stmts:
+                for e in (getattr(s, "a", None),):
+                    if e is not None:
+                        names |= {x.n for x in walk(e) if type(x) is Var}
+        out[key] = sorted(names)
     return out
 
 
-def _levels(ob, voice):
-    """The absolute levels a voice carries into a tick: what ``enter`` restores at a loop."""
-    out = []
-    if ob.values[voice] is not None:
-        out.append(["freq", ob.values[voice]])
-    if ob.values[SID_VOICES + voice] is not None:
-        out.append(["pw", ob.values[SID_VOICES + voice]])
-    return out
-
-
-def lift(t2, obs, meta, cert):
-    """``(trackerprog, refusals)``: the score from T2, the sounds from the observable."""
-    pitch = list((t2.get("pitch") or {}).get("entries") or [])
-    index = {}
-    for i, p in enumerate(pitch):
-        index.setdefault(p, []).append(i)
-    streams, voices, refusals = Streams(), [], list(t2["refusals"])
-    span, loop = horizon(cert, obs)
-    order = ordered(obs)
-    for entry in (meta.get("schedule") or [])[1:]:  # a second entry is a mixer: digis are no score
+def lift(prog, view, names, t0, t1, t2, cert, inputs=()):
+    """``(trackerprog, refusals, recorded observable)``: the lift, from the data alone."""
+    refusals = [Refusal(**r) if isinstance(r, dict) else r for r in t2.get("refusals") or ()]
+    refusals = [r for r in refusals if isinstance(r, Refusal)]
+    for entry in (prog.meta.get("schedule") or [])[1:]:
         refusals.append(
             Refusal(
                 "sample stream",
                 "mode_vol",
                 "$%04X" % entry.get("addr", 0),
                 "second entry %s" % entry.get("kind"),
-            ).to_dict()
+            )
         )
-    for voice in range(SID_VOICES):
-        rows = _rows(t2, voice, span, loop)
-        if rows is None:
-            if any(r // SID_VOICE == voice for o in obs for r, _v in o.edges):
-                refusals.append(
-                    Refusal(
-                        "score not cursor-shaped", "voice %d" % voice, "", "no pattern channel"
-                    ).to_dict()
-                )
-            continue
-        decoded, state = [], {"split": order is not None}
-        for tick, dur, base, pos, _bytes in rows:
-            f0 = obs[tick].values[voice] if tick < len(obs) else None
-            last = decoded[-1]["note"] if decoded and decoded[-1]["note"] is not None else 0
-            note = _note(pitch, f0, {**index, "row": last})
-            if note is None and f0 is not None and pitch:
-                note = _nearest(pitch, f0)
-            steps, note = row_stream(obs, voice, tick, dur, pitch, index, note, state)
-            row = {"dur": dur, "note": note, "lanes": steps, "base": base, "pos": pos, "tick": tick}
-            if decoded and _continues(decoded[-1], row, loop):
-                decoded[-1]["dur"] += dur
-                for lane, ticks in steps.items():
-                    decoded[-1]["lanes"][lane] += ticks
-            else:
-                decoded.append(row)
-        for row in decoded:
-            row["ins"] = streams.instrument(row.pop("lanes"))
-            row["cmds"] = []
-            if row["tick"] == loop and loop > 0:
-                row["enter"] = _levels(obs[loop - 1], voice)
-        voices.append(_score(decoded, loop))
-    sub = ((cert or {}).get("subtunes") or [{}])[0]
-    if loop is not None:
-        end = {"kind": "loop", "tick": loop, "span": span}
-    elif sub.get("complete"):
-        end = {"kind": "fixed_point"}
-    else:
-        end = {"kind": "horizon"}
-    glob = None
-    if obs:
-        rows = []
-        for tick, dur, lanes_ in global_rows(obs, span, loop):
-            rows.append({"dur": dur, "note": None, "lanes": lanes_, "tick": tick, "base": 0})
-        for row in rows:
-            row["ins"] = streams.instrument(row.pop("lanes"))
-            row["cmds"] = []
-            if row["tick"] == loop and loop > 0:
-                ob = obs[loop - 1]
-                row["enter"] = [
-                    [n, ob.values[i]] for n, i, _w in GLOBAL if ob.values[i] is not None
-                ]
-        glob = _score(rows, loop)
+    pins, bad = pinned(inputs)
+    refusals += bad
+    tables = tables_of(t2, view, names)
+    fetch, bad = region.fetch(prog, tables)
+    refusals += bad
+    ticks, end = horizon(cert, t2)
+    envvars = _envvars(fetch, prog)
+    P = player.Player(prog, fetch, pins, envvars=envvars).run_init()
+    obs, trap = P.render(ticks)
+    if trap is not None:
+        why = "external input" if trap["trap"] == "external input" else "score not cursor-shaped"
+        refusals.append(Refusal(why, trap["detail"], "", trap["trap"]))
+    namer = Namer(view, names)
     tp = {
         "meta": {
             "cadence": {
-                "cycles_per_tick": meta["entry"]["cycles_per_tick"],
-                "source": meta["entry"]["source"],
+                "cycles_per_tick": prog.meta["entry"]["cycles_per_tick"],
+                "source": prog.meta["entry"]["source"],
             },
-            "source": {"tune": meta.get("name"), "song": meta.get("song"), "family": None},
-            "sid_model": meta.get("sid_model"),
-            "player": "universal/2",
-            "commit_order": list(order or commit_order(obs)),
+            "source": {"tune": prog.meta.get("name"), "song": prog.meta.get("song")},
+            "sid_model": prog.meta.get("sid_model"),
+            "player": "universal/3",
+            "commit_order": list(commit_order(t0)),
+            "horizon": ticks,
         },
-        "pitch": pitch,
-        "streams": streams.out,
-        "accs": {},
-        "instruments": streams.instruments,
-        "score": {"voices": voices, "end": end, "global": glob},
+        "pitch": list((t2.get("pitch") or {}).get("entries") or []),
+        "instruments": instruments_of(view, names, t2, t0),
+        "streams": streams_of(view, names, t2, tables),
+        "accs": {a["id"]: a for a in (t1 or {}).get("accs") or ()},
+        "producers": producers_of(view, names, t0, t1, fetch),
+        "score": {
+            "voices": score_of(P.fetches, prog, namer, ticks, fetch, cursor_cells(t2, view, names)),
+            "end": end,
+            "regions": [
+                {
+                    "proc": r.proc,
+                    "entry": r.entry,
+                    "exit": r.exit,
+                    "exits": sorted(r.exits),
+                    "blocks": sorted(r.blocks),
+                    "liveout": list(r.liveout),
+                    "cells": sorted(r.cells),
+                }
+                for r in fetch.regions.values()
+            ],
+            "tables": sorted(tables),
+            "fetches": {"%s:%s" % k: v for k, v in P.fetches.items()},
+        },
         "globals": {},
+        "program": prog,
+        "inputs": pins,
     }
-    return tp, list({(r["why"], r["cell"], r["site"]): r for r in refusals}.values())
+    return tp, list({(r.why, r.cell, r.site): r for r in refusals}.values()), obs
 
 
-def _score(decoded, loop):
-    """A voice's rows as an order of patterns, one per visit of a base, transposed."""
-    patterns, order, pats, target = {}, [], {}, None
-    for visit in _visits(decoded):
-        if loop is not None and target is None:
-            hit = next((j for j, r in enumerate(visit) if r["tick"] == loop), None)
-            if hit is not None:
-                target = {"pos": len(order), "row": hit}
-        first = next((r["note"] for r in visit if r["note"] is not None), 0)
-        key = tuple(
-            (
-                r["dur"],
-                None if r["note"] is None else r["note"] - first,
-                r["ins"],
-                _key(r.get("enter")),
-            )
-            for r in visit
+def commit_order(t0):
+    """The per-voice ad/sr/ctrl order the program's own write sites keep, by pc."""
+    pcs = {}
+    for w in t0.get("writes") or ():
+        if w.get("register") in ("ad", "sr", "ctrl"):
+            pcs.setdefault(w["register"], []).append(int(w["site"]["pc"][1:], 16))
+    got = sorted(pcs, key=lambda r: min(pcs[r]))
+    return tuple(got) if len(got) == 3 else player.DEFAULT_ORDER
+
+
+def fetch_of(tp):
+    """The :class:`~.region.Fetch` a trackerprog carries."""
+    F = region.Fetch(tables=tuple(tuple(t) for t in tp["score"]["tables"]))
+    for r in tp["score"]["regions"]:
+        F.regions[(r["proc"], r["entry"])] = region.Region(
+            r["proc"],
+            frozenset(r["blocks"]),
+            r["entry"],
+            r["exit"],
+            frozenset(r["exits"]),
+            frozenset(tuple(c) for c in r["cells"]),
+            tuple(r["liveout"]),
         )
-        if key not in patterns:
-            patterns[key] = "p%d" % len(patterns)
-            pats[patterns[key]] = [
-                {k: r[k] for k in ("dur", "note", "ins", "cmds", "enter") if k in r} for r in visit
-            ]
-            for row, r in zip(pats[patterns[key]], visit):
-                row["note"] = None if r["note"] is None else r["note"] - first
-        order.append({"pattern": patterns[key], "transpose": first})
-    return {"order": order, "patterns": pats, "loop": target}
+    return F
 
 
-def document(view, t2, cert, obs, t1=None):
-    """``(trackerprog, refusals)``, T1's accumulators carried as annotations."""
-    tp, refusals = lift(t2, obs, view.meta, cert)
-    tp["accs"] = {a["id"]: a for a in (t1 or {}).get("accs", ())}
-    return tp, refusals
+def replay(tp, ticks=None):
+    """``(observable, trap)``: the trackerprog rendered on the player from its data."""
+    prog = (
+        tp["program"] if isinstance(tp["program"], Tuneprog) else Tuneprog.from_json(tp["program"])
+    )
+    fetches = {}
+    for k, v in tp["score"]["fetches"].items():
+        proc, entry = k.split(":", 1)
+        fetches[(proc, entry)] = v
+    P = player.Player(prog, fetch_of(tp), tp["inputs"], fetches=fetches).run_init()
+    return P.render(ticks or tp["meta"]["horizon"])
 
 
 # ---- the print and its measure -----------------------------------------------------
 def render(tp):
-    """``trackerprog.md``: meta, pitch, streams, then the score."""
+    """``trackerprog.md``: meta, pitch, instruments, streams, accumulators, producers, score."""
     m = tp["meta"]
+    ins = tp["instruments"]
     out = [
         "# trackerprog: %s" % m["source"]["tune"],
         "",
@@ -500,8 +559,15 @@ def render(tp):
         "cadence   every %d cycles (%s)"
         % (m["cadence"]["cycles_per_tick"], m["cadence"]["source"]),
         "player    %s, commit order %s" % (m["player"], "/".join(m["commit_order"])),
-        "end       %s" % tp["score"]["end"]["kind"],
-        "streams   %d, instruments %d" % (len(tp["streams"]), len(tp["instruments"])),
+        "end       %s over %d ticks" % (tp["score"]["end"]["kind"], m["horizon"]),
+        "instruments %d, streams %d, accs %d, producers %d, regions %d"
+        % (
+            ins["entries"] if ins else 0,
+            len(tp["streams"]),
+            len(tp["accs"]),
+            len(tp["producers"]),
+            len(tp["score"]["regions"]),
+        ),
         "```",
         "",
         "## pitch",
@@ -510,36 +576,62 @@ def render(tp):
         " ".join("%04X" % x for x in tp["pitch"] or ()),
         "```",
         "",
-        "## streams",
+        "## instruments",
         "",
         "```",
     ]
-    for sid, s in tp["streams"].items():
-        out.append("%s:" % sid)
-        for st in s["steps"]:
-            if "cycle" in st:
-                body = " | ".join(" ".join(_set(x) for x in sets) for sets in st["cycle"])
-                out.append("  x%d %s" % (st["times"], body))
-            else:
-                out.append("  %3d %s" % (st["hold"], " ".join(_set(x) for x in st["sets"])))
+    if ins:
+        fields = list(next(iter(ins["rows"].values()))) if ins["rows"] else []
+        out.append("%s via %s: %s" % (ins["kind"], ins["cursor"], " ".join(fields)))
+        for i, row in sorted(ins["rows"].items()):
+            out.append("  [%3d] %s" % (i, " ".join("%02X" % row[f] for f in fields)))
+    out += ["```", "", "## streams", "", "```"]
+    for s in tp["streams"]:
+        out.append(
+            "%s %s step %s, %d entries, terminator %s"
+            % (s["kind"], s["cursor"], s["step"], s["entries"], s["terminator"])
+        )
+        for c in s["columns"]:
+            out.append("  %-8s %s" % (c["table"], " ".join("%02X" % b for b in c["bytes"])))
+    out += ["```", "", "## accs", "", "```"]
+    for a in tp["accs"].values():
+        out.append(
+            "%s %s <- %s: %s %s, delta %s, policy %s, rate %s, phase %s, scope %s"
+            % (
+                a["id"],
+                a["target"].get("register"),
+                a["cell"]["name"],
+                a["target"].get("kind"),
+                a["width"],
+                (a.get("delta") or {}).get("kind"),
+                a.get("policy"),
+                (a.get("rate") or {}).get("kind"),
+                (a.get("phase") or {}).get("kind"),
+                a.get("scope"),
+            )
+        )
+    out += ["```", "", "## producers", "", "```"]
+    for p in tp["producers"]:
+        tags = "".join(" [%s]" % a for a in p["accs"])
+        when = (" if " + " and ".join(p["when"])) if p["when"] else ""
+        out.append("%s%s%s" % (p["print"], tags, when))
     out += ["```", "", "## score", ""]
-    glob = tp["score"].get("global")
-    for v, voice in enumerate(tp["score"]["voices"] + ([glob] if glob else [])):
-        name = "global" if voice is glob else "voice %d" % v
-        out += ["```", "%s: order %s" % (name, " ".join(o["pattern"] for o in voice["order"]))]
-        for pid, rows in voice["patterns"].items():
+    for v in tp["score"]["voices"]:
+        name = "global" if v["copy"] is None else "voice %d" % v["copy"]
+        out += ["```", "%s: order %s" % (name, " ".join(o["pattern"] for o in v["order"]))]
+        for pid, rows in v["patterns"].items():
             out.append("%s:" % pid)
             for r in rows:
                 out.append(
-                    "  %-4s %-5s %3d"
-                    % ("---" if r["note"] is None else r["note"], r["ins"] or "", r["dur"])
+                    "  %3d %-12s %s"
+                    % (
+                        r["dur"],
+                        " ".join("%02X" % b for b in r["bytes"]),
+                        " ".join("%s=%d" % (c[0], c[1]) for c in r["sets"]),
+                    )
                 )
         out += ["```", ""]
     return "\n".join(out)
-
-
-def _set(x):
-    return "%s=%s" % (x[0], ",".join(str(v) for v in x[1:]))
 
 
 TOKEN = re.compile(r"\$?\w+|\S")
@@ -562,17 +654,26 @@ def measure(md, section):
 def numbers(tp, md):
     """The six numbers of a trackerprog print plus its ``xz -9e`` size.
 
-    Statements are the score's rows and the streams' steps; blocks the patterns and
-    streams; data rows the pitch entries and the streams' steps.
+    Statements are the score's rows and the producers; blocks the patterns, streams,
+    regions and the instrument table; data rows the pitch, instrument and stream entries.
     """
     got = measure(md, "score")
     voices = tp["score"]["voices"]
-    steps = sum(len(s["steps"]) for s in tp["streams"].values())
-    got["statements"] = sum(len(r) for v in voices for r in v["patterns"].values()) + steps
-    got["blocks"] = (
-        sum(len(v["patterns"]) for v in voices) + len(tp["streams"]) + len(tp["instruments"])
+    ins = tp["instruments"]
+    got["statements"] = sum(len(r) for v in voices for r in v["patterns"].values()) + len(
+        tp["producers"]
     )
-    got["data_rows"] = steps + len(tp["pitch"] or ())
+    got["blocks"] = (
+        sum(len(v["patterns"]) for v in voices)
+        + len(tp["streams"])
+        + len(tp["score"]["regions"])
+        + (1 if ins else 0)
+    )
+    got["data_rows"] = (
+        len(tp["pitch"] or ())
+        + (ins["entries"] if ins else 0)
+        + sum(len(c["bytes"]) for s in tp["streams"] for c in s["columns"])
+    )
     return got
 
 
@@ -586,43 +687,29 @@ def numbers_tuneprog(md, view):
     return got
 
 
+KEYS = (
+    "meta",
+    "pitch",
+    "streams",
+    "accs",
+    "instruments",
+    "producers",
+    "score",
+    "globals",
+    "program",
+    "inputs",
+)
+
+
 def to_json(tp):
-    """S4-style tagged: ``["$trackerprog", meta, pitch, streams, accs, ins, score, globals]``."""
-
-    def enc(x):
-        if isinstance(x, dict):
-            return {"$dict": [[k, enc(v)] for k, v in x.items()]}
-        if isinstance(x, list):
-            return [enc(v) for v in x]
-        return x
-
-    return [
-        "$trackerprog",
-        enc(tp["meta"]),
-        tp["pitch"],
-        enc(tp["streams"]),
-        enc(tp["accs"]),
-        enc(tp["instruments"]),
-        ["$score", enc(tp["score"])],
-        enc(tp["globals"]),
-    ]
+    """S4-style tagged: ``["$trackerprog", *KEYS]`` with every IR node and dict encoded."""
+    return ["$trackerprog"] + [enc(tp[k]) for k in KEYS]
 
 
 def from_json(doc):
-    def dec(x):
-        if isinstance(x, dict) and "$dict" in x:
-            return {k: dec(v) for k, v in x["$dict"]}
-        if isinstance(x, list):
-            return [dec(v) for v in x]
-        return x
-
     assert doc[0] == "$trackerprog"
-    return {
-        "meta": dec(doc[1]),
-        "pitch": doc[2],
-        "streams": dec(doc[3]),
-        "accs": dec(doc[4]),
-        "instruments": dec(doc[5]),
-        "score": dec(doc[6][1]),
-        "globals": dec(doc[7]),
-    }
+    out = {k: dec(v) for k, v in zip(KEYS, doc[1:])}
+    out["inputs"] = {int(k): v for k, v in out["inputs"].items()}
+    if out["instruments"]:
+        out["instruments"]["rows"] = {int(k): v for k, v in out["instruments"]["rows"].items()}
+    return out

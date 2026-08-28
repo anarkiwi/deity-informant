@@ -1,4 +1,4 @@
-"""T3 on the exemplars (marked ``hvsc``; short horizons): certificates that name their residue."""
+"""T3 on the exemplars (marked ``hvsc``; short horizons): lifted from their data, certified."""
 
 import json
 import sys
@@ -18,6 +18,7 @@ from _hvsc import COMMANDO, EMOMYST, GULDKORN, LINUS, tune_file  # noqa: E402
 
 pytestmark = pytest.mark.hvsc
 _T3 = {}
+INSTRUMENTS = {LINUS: 30, GULDKORN: 19, COMMANDO: 13, EMOMYST: 11}
 
 
 def exemplar(rel, calls=1200):
@@ -34,11 +35,8 @@ def test_the_trackers_and_hubbard_certify_on_the_universal_player(rel):
     doc, tp, refusals, numbers, out = exemplar(rel)
     assert refusals == [] and doc["emitted"] and doc["divergence"] is None
     assert doc["rendered"]["ticks_equal"] == doc["ticks"] == 1200
-    assert (
-        doc["compared"]
-        and doc["dropped"]
-        and doc["end"]["kind"] in ("loop", "fixed_point", "horizon")
-    )
+    assert doc["compared"] and doc["dropped"]
+    assert doc["end"]["kind"] in ("loop", "fixed_point", "horizon")
     assert {"tokens", "lines", "statements", "blocks", "header_rows", "data_rows", "xz"} <= set(
         numbers
     )
@@ -51,10 +49,28 @@ def test_the_trackers_and_hubbard_certify_on_the_universal_player(rel):
         "xz",
     }
     assert (out / "trackerprog.json").exists() and (out / "trackerprog.md").exists()
-    assert len(tp["score"]["voices"]) == 3 and tp["streams"] and tp["score"]["global"]
+    assert len(tp["score"]["voices"]) == 3 and tp["score"]["regions"]
+    assert all(v["order"] and v["patterns"] for v in tp["score"]["voices"])
 
 
-def test_a_refusal_keeps_the_certificate_and_withholds_the_object(tmp_path):
+@pytest.mark.parametrize("rel", (LINUS, GULDKORN, COMMANDO, EMOMYST))
+def test_the_instruments_are_the_program_s_table_and_the_rows_carry_commands(rel):
+    _doc, tp, _refusals, _numbers, _out = exemplar(rel)
+    ins = tp["instruments"]
+    # a 1,200-tick trace reaches part of the table; the full horizons reach all of it
+    assert 0 < ins["used"] <= ins["entries"] <= INSTRUMENTS[rel]
+    assert len(ins["rows"]) == ins["entries"]
+    assert all(any(r["cmds"] for r in v["rows"]) for v in tp["score"]["voices"])
+    assert tp["streams"] and tp["producers"]
+    assert all(p["register"] or p["kind"] == "file" for p in tp["producers"])
+
+
+def test_accumulators_annotate_the_producers_that_step_them():
+    _doc, tp, _refusals, _numbers, _out = exemplar(GULDKORN)
+    assert tp["accs"] and any(p["accs"] for p in tp["producers"])
+
+
+def test_the_certificate_names_its_refusals_by_reason(tmp_path):
     doc, _tp, _refusals, _numbers, out = exemplar(EMOMYST)
     cert = json.loads((out / "trackerprog.certificate.json").read_text())
     assert cert["emitted"] and all(r["why"] in REASONS for r in cert["refusals"])
