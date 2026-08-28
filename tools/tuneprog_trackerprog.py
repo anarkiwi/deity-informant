@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""T3: the trackerprog of a decompiled tune, rendered on the universal player and certified.
+"""T3: the trackerprog of a decompiled tune, lifted from its data, rendered and certified.
 
-Reads the certified program and its T0/T1 documents from the output directory,
-lifts T2 and T3, renders the trackerprog tick for tick and compares the section 2
-observable against the verifier's over the whole horizon. Writes
-``trackerprog.json`` and ``trackerprog.md`` only with no refusal;
-``trackerprog.certificate.json`` always, its refusals each naming a cell.
+Reads the certified program and its T0/T1/T2 documents from the output directory,
+lifts the trackerprog from the program's tables and its fetch regions, replays it
+on the universal player and compares the section 2 observable against the
+verifier's over the whole horizon. Writes ``trackerprog.json`` and
+``trackerprog.md`` only when emitted; ``trackerprog.certificate.json`` always.
 """
 
 import argparse
@@ -20,12 +20,25 @@ for _v in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # pylint: disable=wrong-import-position
-from deity_informant.trackerprog import certify, emit, lift, player  # noqa: E402
-from deity_informant.tuneprog import pipeline  # noqa: E402
+from deity_informant.trackerprog import certify, emit, lift  # noqa: E402
+from deity_informant.tuneprog import accum, pipeline, provenance  # noqa: E402
 from deity_informant.tuneprog.history import history  # noqa: E402
 from deity_informant.tuneprog.ir import Tuneprog  # noqa: E402
 from deity_informant.tuneprog.recover import Names  # noqa: E402
 from deity_informant.tuneprog.tracedata import Trace  # noqa: E402
+
+
+def documents(out, prog, view, st, names, hist, ver, cert):
+    """T0, T1 and T2, read beside S6 or lifted now."""
+    t0p, t1p = out / "tuneprog.T0.json", out / "tuneprog.T1.json"
+    t0 = json.loads(t0p.read_text()) if t0p.exists() else provenance.document(view, st, names)
+    if t1p.exists():
+        t1 = json.loads(t1p.read_text())
+    else:
+        t1 = accum.document(view, names, t0, hist, cert, obs=ver.obs)
+    t2 = lift.document(view, names, hist, cert)
+    (out / "tuneprog.T2.json").write_text(json.dumps(t2, indent=1))
+    return t0, t1, t2
 
 
 def run(out, calls=None):
@@ -35,17 +48,15 @@ def run(out, calls=None):
     s6 = json.loads((out / "tuneprog.S6.json").read_text())
     regions = json.loads((out / "regions.json").read_text())
     cert = json.loads((out / "certificate.json").read_text())
-    t1p = out / "tuneprog.T1.json"
-    t1 = json.loads(t1p.read_text()) if t1p.exists() else None
-    hist, ver = history(prog, Trace.load(out), s6, calls=calls, regions_doc=regions, obs=True)
-    view = pipeline.present(prog)[0]
+    trace = Trace.load(out)
+    hist, ver = history(prog, trace, s6, calls=calls, regions_doc=regions, obs=True)
+    view, st, _n = pipeline.present(prog)
     names = Names.from_dict(s6)
-    t2 = lift.document(view, names, hist, cert)
-    (out / "tuneprog.T2.json").write_text(json.dumps(t2, indent=1))
-    tp, refusals = emit.document(view, t2, cert, ver.obs, t1)
-    got = player.Player(tp).render(len(ver.obs))
+    t0, t1, t2 = documents(out, prog, view, st, names, hist, ver, cert)
+    tp, refusals, _rec = emit.lift(prog, view, names, t0, t1, t2, cert, trace.inputs)
+    got, trap = emit.replay(tp, len(ver.obs))
     doc = certify.certificate(
-        prog.meta.get("name"), cert, ver.obs, got, refusals, tp["score"]["end"]
+        prog.meta.get("name"), cert, ver.obs, got, refusals, tp["score"]["end"], trap
     )
     md = emit.render(tp)
     n = emit.numbers(tp, md)
@@ -70,23 +81,27 @@ def main(argv=None):
     rc = 0
     for name in args.out:
         out = Path(name)
-        doc, _tp, refusals, n, secs = run(out, args.calls)
+        doc, tp, refusals, n, secs = run(out, args.calls)
         for r in doc["refusals"]:
             print("  refusal %-22s %-40s %s" % (r["why"], r["cell"][:40], r["site"]))
+        ins = tp["instruments"]
         print(
-            "%s: %d ticks, emitted %s, rendered equal %d/%d, %d refusals, %s, %.1f s"
+            "%s: %d ticks, emitted %s, divergence %s, %d refusals, instruments %s, "
+            "accs %d, producers %d, %s, %.1f s"
             % (
                 out.name,
                 doc["ticks"],
                 doc["emitted"],
-                doc["rendered"]["ticks_equal"],
-                doc["ticks"],
+                doc["divergence"],
                 len(refusals),
+                ins and ins["entries"],
+                len(tp["accs"]),
+                len(tp["producers"]),
                 {k: v for k, v in n.items() if k != "tuneprog"},
                 secs,
             )
         )
-        rc |= 1 if refusals or doc["divergence"] else 0
+        rc |= 0 if doc["emitted"] else 1
     return rc
 
 

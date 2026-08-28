@@ -568,8 +568,9 @@ Wizard's `b1024` still refuse, and their cells are not scratch.
 
 | T2, the score as a cursor nest (**#299**) | `trackerprog/` beside `tuneprog/`: `resolve` opens a table read's address to one expression over named cells and copy indices (reaching definitions with guarded alternatives, scratch pointer stores, joins, callers' arguments), `cursors` decomposes it into base, origin, cursor and shift, `score` nests pointer bases to depth 2, names the order channels a pattern's selector reads, takes terminator bytes off the cursor's own reset stores and materialises every voice's fetch events over the horizon, `streams` tells a self-stepped cursor from a selector, `pitch` materialises the values read; `tools/tuneprog_score.py` writes **`tuneprog.T2.json`**. GT2 (33 pointers, 9 × 30 instruments, `T16F9`), JCH (26 pointers, `rec8[19]`, three `$FF`s), Commando (`T576B`, `T5889`, `rec2`) lift with no refusal; SID Wizard refuses by name at `p_17C8` | `trackerprog.resolve`, `hist`, `cursors`, `score`, `streams`, `pitch`, `refuse`, `lift` |
 
-| lanes, deltas, `tablestep`, cycles, the period with a loop (**#304**) | `emit.lift` encodes levels as deltas and vibrato as `freq_ts(m, shift)`, folds runs and short cycles into one step, splits a row's sound into lanes (edge registers apart under one `commit_order`), shares a stream between a note and a shorter one, keys patterns on note offsets with the transpose in the order, and materialises a complete source over its period with the loop's `enter` levels; `player.py` steps cycles and lanes in commit order. Four of eight prints below the source's `xz` | `trackerprog.emit`, `player` |
-| rows as streams, six tunes certified (**#302**) | `emit.lift` reads T2's rows and the observable: per row a stream of steps with holds (the voice's ordered edges, `note_off`/`freq`/`pw` sets), deduplicated, the row's instrument the stream it arms; the global channel one stream; a second schedule entry refuses as `sample stream`. JCH ×2, GT2 ×2, Commando ×2 render at 0 divergences | `trackerprog.emit`, `player` |
+| the lift from data (**t3-from-data**) | `region.fetch` cuts the certified S4 tick's fetch regions out (score-byte taint, minimal single-entry regions with side doors, tainted-latch loops); `player.Player` is one interpreter over the program from the post-init image, recording each region entry as a fetch (stores, bytes, temps, resume block) and replaying fetches with the regions skipped; `emit.lift` builds the object — instruments as the table the `ad`/`sr` sites index (a selector or a pointer table), streams as T2's cursor tables with their bytes, `accs` as T1's, producers as T0's sites outside the regions under their guards, rows/patterns/order from the fetches — and never reads the observable. JCH ×2, GT2 ×2, Commando ×2, SW ×2 certify from data; seven of eight prints below the source's `xz` | `trackerprog.region`, `player`, `emit`, `certify` |
+| ~~lanes, deltas, `tablestep`, cycles, the period with a loop (**#304**)~~ — superseded, it encoded the observable | `emit.lift` encodes levels as deltas and vibrato as `freq_ts(m, shift)`, folds runs and short cycles into one step, splits a row's sound into lanes (edge registers apart under one `commit_order`), shares a stream between a note and a shorter one, keys patterns on note offsets with the transpose in the order, and materialises a complete source over its period with the loop's `enter` levels; `player.py` steps cycles and lanes in commit order. Four of eight prints below the source's `xz` | `trackerprog.emit`, `player` |
+| ~~rows as streams, six tunes certified (**#302**)~~ — superseded, it encoded the observable | `emit.lift` reads T2's rows and the observable: per row a stream of steps with holds (the voice's ordered edges, `note_off`/`freq`/`pw` sets), deduplicated, the row's instrument the stream it arms; the global channel one stream; a second schedule entry refuses as `sample stream`. JCH ×2, GT2 ×2, Commando ×2 render at 0 divergences | `trackerprog.emit`, `player` |
 | the universal player, the certificate and the print (**#300**) | `trackerprog/player.py` is §4 tick for tick (row clock, sequencer step, armed accumulators, `commit` in `meta.commit_order`, `grid.reduce_tick`); `certify.py` is §2's comparison over the whole horizon with `compared`, `dropped`, `refusals`, `emitted`, the loop claim re-checked on the render; `emit.py` lifts T0's sites that are a constant or a pitch lookup at the row boundary or every tick and refuses the rest as `command residue`, prints `trackerprog.md` and measures §6.2's six plus `xz -9e`; `tools/tuneprog_trackerprog.py`. The hermetic tune renders at 0 divergences; GT2, JCH and Commando carry named residue (backlog §4, W8) | `trackerprog.player`, `certify`, `emit` |
 
 Everything after this is the rest of the `trackerprog/` package, under the same
@@ -629,11 +630,17 @@ claim. Per exemplar:
 | 3 | the print measured with **§6.2's six numbers** — tokens, lines, statements, blocks, header rows, data rows, which architecture §11 requires verbatim of every presentation change — plus **one extra**, `xz -9e` of `trackerprog.md` against the source `tuneprog.md`'s. `xz` is §8.3's own unit and no substitute for the six. The layer's claim is that the score compresses *better* than the program that played it |
 | 4 | recert untouched: 51/51, no tuneprog artefact moves |
 
-State after #303: JCH ×2, GT2 ×2, SID Wizard ×2 and Commando ×2 certify
-`emitted: true` with no divergence over their whole horizons; `jch-easy-does-it`
-refuses as a `sample stream`. A row's sound is lifted as a materialised stream from
-the observable (backlog §4, W8), which is exact but not smaller than the source
-print — acceptance row 3's compression claim is open, and is backlog W9.
+State after t3-from-data: JCH ×2, GT2 ×2, SID Wizard ×2 and Commando ×2
+certify `emitted: true` with no divergence over their whole horizons, lifted
+from their programs' data alone — the score as recorded fetches replayed with
+the score tables never read, the instruments as the program's own table (30,
+19, 13, 11), T1's accumulators and T2's streams named; `jch-easy-does-it`
+refuses as a `sample stream`. Seven of eight prints are below the source's
+`xz` (Hubbard's per-row SID writes keep his above). The sound half is still
+the certified tick outside the fetch regions, carried as the program and run by
+the interpreter, not §4's fixed procedure over instruments, streams and
+accumulators — that reduction is backlog W11, and the exact replay is what it
+must be proved against.
 
 The genericity gate: the six tracker exemplars must lift with zero
 family-conditioned code in `trackerprog/` — the same modules, hermetic snippet

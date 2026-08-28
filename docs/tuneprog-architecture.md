@@ -669,10 +669,13 @@ voice` is Follin's raw cross-voice register list and JCH's non-constant clear
 `deity_informant/trackerprog/` lifts the certified artefacts one layer up
 ([prototype-trackerprog.md](prototype-trackerprog.md)): `tools/tuneprog_score.py`
 writes `tuneprog.T2.json` (cursors, streams, selectors, the pitch table and the
-score materialised over the horizon) and `tools/tuneprog_trackerprog.py` renders
-the lifted object on the universal player and writes
-`trackerprog.certificate.json`, plus `trackerprog.json`/`trackerprog.md` when no
-refusal remains. Neither is a pipeline stage.
+score materialised over the horizon) and `tools/tuneprog_trackerprog.py` lifts
+the trackerprog from the program's data — the fetch regions cut out of the
+certified tick and recorded as fetches, the instrument table, T2's streams,
+T1's accumulators, T0's write sites as producers — replays it with the score
+tables never read and writes `trackerprog.certificate.json`, plus
+`trackerprog.json`/`trackerprog.md` when it certifies. Neither is a pipeline
+stage.
 
 ### 6.0.1 The accumulator plane (T1)
 
