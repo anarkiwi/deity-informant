@@ -29,14 +29,16 @@ def exemplar(rel, calls=1200):
     return _T3[rel]
 
 
-@pytest.mark.parametrize("rel", (LINUS, GULDKORN, COMMANDO, EMOMYST))
-def test_every_residue_is_a_named_refusal_and_nothing_partial_is_emitted(rel):
-    doc, _tp, refusals, numbers, out = exemplar(rel)
-    assert refusals and not doc["emitted"] and doc["divergence"] is None
-    for r in doc["refusals"]:
-        assert r["why"] in REASONS and r["cell"]
-    assert doc["compared"] and doc["dropped"] and doc["ticks"] == 1200
-    assert 0 <= doc["rendered"]["ticks_equal"] <= doc["ticks"]
+@pytest.mark.parametrize("rel", (LINUS, GULDKORN, COMMANDO))
+def test_the_trackers_and_hubbard_certify_on_the_universal_player(rel):
+    doc, tp, refusals, numbers, out = exemplar(rel)
+    assert refusals == [] and doc["emitted"] and doc["divergence"] is None
+    assert doc["rendered"]["ticks_equal"] == doc["ticks"] == 1200
+    assert (
+        doc["compared"]
+        and doc["dropped"]
+        and doc["end"]["kind"] in ("loop", "fixed_point", "horizon")
+    )
     assert {"tokens", "lines", "statements", "blocks", "header_rows", "data_rows", "xz"} <= set(
         numbers
     )
@@ -48,20 +50,17 @@ def test_every_residue_is_a_named_refusal_and_nothing_partial_is_emitted(rel):
         "data_rows",
         "xz",
     }
-    assert (
-        not (out / "trackerprog.json").exists() and (out / "trackerprog.certificate.json").exists()
-    )
-    assert json.loads((out / "trackerprog.certificate.json").read_text())["refusals"]
+    assert (out / "trackerprog.json").exists() and (out / "trackerprog.md").exists()
+    assert len(tp["score"]["voices"]) == 3 and tp["streams"] and tp["globals"]["stream"]
 
 
-def test_sid_wizard_s_score_refusal_reaches_the_certificate():
-    doc, _tp, _refusals, _numbers, _out = exemplar(EMOMYST)
+def test_sid_wizard_s_score_refusal_reaches_the_certificate_and_nothing_is_emitted():
+    doc, _tp, refusals, _numbers, out = exemplar(EMOMYST)
+    assert refusals and not doc["emitted"] and doc["divergence"] is None
     assert any(
         r["why"] == "score not cursor-shaped" and r["site"] == "p_17C8" for r in doc["refusals"]
     )
-
-
-def test_the_residue_of_a_tracker_is_command_residue_on_its_own_write_sites():
-    doc, _tp, _refusals, _numbers, _out = exemplar(GULDKORN)
-    got = [r for r in doc["refusals"] if r["why"] == "command residue"]
-    assert got and all(r["site"].startswith("$") for r in got)
+    assert all(r["why"] in REASONS and r["cell"] for r in doc["refusals"])
+    assert (
+        not (out / "trackerprog.json").exists() and (out / "trackerprog.certificate.json").exists()
+    )

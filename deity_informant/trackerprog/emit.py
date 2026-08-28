@@ -1,11 +1,13 @@
-"""T3 -- the trackerprog lifted from T0, T1 and T2, and its print.
+"""T3 -- the trackerprog lifted from T2 and the observable, and its print.
 
-Every SID write site (T0) must be one of the schema's forms -- a pitch lookup
-on the score's note, a constant or an instrument column set at the row, a T1
-accumulator on a level register -- committed at a moment the universal player
-has: the row boundary or every tick. What is not is a named refusal
-(``command residue``), and a trackerprog with a refusal is not emitted
-(prototype section 8).
+The score is T2's: an order of patterns whose rows hold for the ticks the cursor
+did. What a row *sounds* like is lifted as a stream (section 3.3): the ordered
+edge writes and the level values each tick of the row left in the observable,
+as steps with holds, relative to the row's note where a value is a pitch entry.
+Equal streams are one stream, and a row's instrument is the stream it arms. The
+global channel -- cutoff, resonance, volume -- is one stream over the horizon.
+Nothing here reads a tune's code: a residue can only come from T2 (a voice with
+no cursor-shaped score), and it is refused by name.
 """
 
 from __future__ import annotations
@@ -13,57 +15,12 @@ from __future__ import annotations
 import lzma
 import re
 
-import numpy as np
-
-from ..tuneprog.acchist import Cells
-from ..tuneprog.accshape import Ctx
-from ..tuneprog.facts import VOICE_REG
-from ..tuneprog.accguard import afterwrites
-from ..tuneprog.ir import Const, Load, Store, W16
-from ..tuneprog.irwalk import addr_split
+from ..tuneprog import grid
+from ..tuneprog.facts import SID_VOICE, SID_VOICES, VOICE_REG
 from . import player
-from .cursors import TABLE, strides
-from .hist import Eval
 from .refuse import Refusal
-from .resolve import Program, walkx
 
-PAIRS = {
-    "freq": ("freq_lo", "freq_hi"),
-    "pw": ("pw_lo", "pw_hi"),
-    "cutoff": ("cutoff_lo", "cutoff_hi"),
-}
-
-
-# ---- the sites -------------------------------------------------------------------
-def _stmt(view, site):
-    b = view.procs[site["proc"]].blocks[site["block"]]
-    pc = int(site["pc"][1:], 16)
-    return next((i, s) for i, s in enumerate(b.stmts) if getattr(s, "src", None) == pc)
-
-
-def _value_kind(v, rgn, prid, selectors):
-    """``("const", k)``, ``("pitch", index, region)``, ``("column", region, sel)`` or ``None``."""
-    if type(v) is Const:
-        return ("const", v.v)
-    if type(v) is Load and v.r in prid:
-        return ("pitch", addr_split(v.a)[1], v.r)
-    if type(v) is Load and v.r in rgn and rgn[v.r].kind in TABLE:
-        for sel in selectors:
-            if any(names_match(v.a, sel) for _ in (0,)):
-                return ("column", v.r, sel)
-    return None
-
-
-def names_match(addr, sel):
-    """True when an address indexes by the selector cell ``(region, address)``."""
-    return any(
-        type(x) is Load
-        and (x.r, addr_split(x.a)[0]) == sel
-        and addr_split(x.a)[1] is not None
-        or type(x) is Load
-        and (x.r, addr_split(x.a)[0]) == sel
-        for x in walkx(addr)
-    )
+PW_MASK = grid.PAIRS[3][3]
 
 
 def fetch_ticks(t2, voice):
@@ -77,192 +34,104 @@ def fetch_ticks(t2, voice):
     return out
 
 
-class Lift:
-    """One tune's T3: the sites classified, the score's events decoded, the object built."""
+def commit_order(obs):
+    """The per-voice ad/sr/ctrl order the source writes: the first tick writing all three."""
+    for o in obs or ():
+        for v in range(SID_VOICES):
+            got = [VOICE_REG[r % SID_VOICE] for r, _val in o.edges if r // SID_VOICE == v]
+            names = [n for n in dict.fromkeys(got) if n in ("ad", "sr", "ctrl")]
+            if len(names) == 3:
+                return tuple(names)
+    return player.DEFAULT_ORDER
 
-    def __init__(self, view, names, t0, t1, t2, hist, cert, obs=None):
-        self.view, self.names, self.t0, self.t1, self.t2, self.cert = view, names, t0, t1, t2, cert
-        self.rgn = view.by_id()
-        self.ctx = Ctx(view, names)
-        self.P = Program(self.ctx)
-        self.cells = Cells(view, names, hist)
-        self.ev = Eval(self.cells)
-        self.stride = strides(view, names)
-        self.prid = set((t2.get("pitch") or {}).get("regions") or ())
-        self.selectors = {self._selcell(s) for s in t2.get("selectors", ())}
-        self.refusals = []
-        self.obs = obs
-        self.events = {}  # (voice, tick) -> {note, ins, cmds}
-        self.rows = {v: set() for v in range(3)}
 
-    def _selcell(self, s):
-        name, addr = s["cursor"].split("@$")
-        rid = next(r for r, n in self.names.region.items() if n == name)
-        return (rid, int(addr, 16))
+def _note(pitch, value, index):
+    """The pitch index ``value`` is an entry at, nearest ``index`` first, or ``None``."""
+    if value is None or not pitch:
+        return None
+    hits = index.get(value)
+    return None if not hits else min(hits, key=lambda i: abs(i - (index.get("row") or 0)))
 
-    def refuse(self, why, cell, site, detail=""):
-        self.refusals.append(Refusal(why, cell, site, detail))
 
-    def classify_sites(self):
-        for w in self.t0["writes"]:
-            if w.get("refusal"):
-                self.refuse("command residue", w["print"], w["site"]["pc"], w["refusal"]["why"])
-                continue
-            if w["kind"] == "file":
-                continue
-            i, s = _stmt(self.view, w["site"])
-            raw = s.e if type(s) is W16 else s.v
-            for gs, v in self.P.resolve(w["site"]["proc"], w["site"]["block"], i, raw):
-                self._site(w, gs, v)
+def _nearest(pitch, value):
+    """The pitch index closest to a value that is no entry."""
+    return min(range(len(pitch)), key=lambda i: abs(pitch[i] - value))
 
-    def _site(self, w, gs, v):
-        reg = w["register"]
-        kind = _value_kind(v, self.rgn, self.prid, self.selectors)
-        if kind is None:
-            self.refuse("command residue", w["print"], w["site"]["pc"], "value is no schema form")
-            return
-        voices = w["voices"] or [None]
-        for voice in voices:
-            env = {n: (voice or 0) * st for n, st in self.stride.items()}
-            ran = self.ev.truth(gs, env)
-            fetched = fetch_ticks(self.t2, voice or 0)
-            at = set(np.nonzero(ran)[0].tolist())
-            if at == fetched:
-                when = "row"
-            elif ran.all():
-                when = "tick"
-            else:
-                self.refuse(
-                    "command residue",
-                    w["print"],
-                    w["site"]["pc"],
-                    "written on %d ticks, neither every tick nor the %d row fetches"
-                    % (len(at), len(fetched)),
-                )
-                return
-            self._apply(w, reg, voice, kind, when, env, at)
 
-    def epoch(self, site):
-        """The cells a site's value read at last tick's value: those the tick writes after it."""
-        p = self.view.procs[site["proc"]]
-        i, _s = _stmt(self.view, site)
-        after = set(afterwrites(p).get(site["block"], ()))
-        for s in p.blocks[site["block"]].stmts[i + 1 :]:
-            after |= {
-                r
-                for r in (
-                    (s.lo[0], s.hi[0]) if type(s) is W16 else (s.r,) if type(s) is Store else ()
-                )
-                if r >= 0
-            }
-        return self.ev.lagged(after)
+class Streams:
+    """Streams deduplicated by content; ``ids`` map a step list to its id."""
 
-    def value_at(self, e, env, site):
-        """``e`` over the horizon, read at the site's own epoch."""
-        was, self.cells.subst = self.cells.subst, {**self.cells.subst, **self.epoch(site)}
-        try:
-            return self.ev.value(e, env)
-        finally:
-            self.cells.subst = was
+    def __init__(self):
+        self.ids = {}
+        self.out = {}
 
-    def _apply(self, w, reg, voice, kind, when, env, at):
-        v = voice or 0
-        if kind[0] == "pitch":
-            idx = self.value_at(kind[1], env, w["site"])
-            if idx is None:
-                self.refuse("command residue", w["print"], w["site"]["pc"], "pitch index unread")
-                return
-            p = self.t2["pitch"]
-            r = self.rgn[kind[2]]
-            shift = 1 if p["layout"] == "u16le" else 0
-            base = min(self.rgn[x].base for x in p["regions"])
-            for t in sorted(at):
-                note = (
-                    int((idx[t] + r.base - base) >> shift) if shift else int(idx[t] + r.base - base)
-                )
-                if p["layout"] in ("lo|hi", "hi|lo") and kind[2] != p["regions"][0]:
-                    note = int(idx[t])
-                self.events.setdefault((v, t), {})["note"] = note
-        elif kind[0] == "const" and when == "row":
-            for t in sorted(at):
-                self.events.setdefault((v, t), {}).setdefault("cmds", []).append(
-                    ["set", reg, kind[1]]
-                )
-        elif kind[0] == "const":
-            self.events.setdefault((v, -1), {}).setdefault("cmds", []).append(["set", reg, kind[1]])
+    def add(self, steps):
+        key = tuple((s["hold"], tuple(map(tuple, s["sets"]))) for s in steps)
+        if key not in self.ids:
+            self.ids[key] = "s%d" % len(self.ids)
+            self.out[self.ids[key]] = {"rate": 1, "steps": steps, "end": "halt"}
+        return self.ids[key]
+
+
+def row_stream(obs, voice, start, dur, pitch, index, note):
+    """One row's observable as steps: edges in order, levels and pitch operands as sets."""
+    steps, prev = [], {}
+    for o in range(dur):
+        t = start + o
+        if t >= len(obs):
+            break
+        ob = obs[t]
+        sets = [(VOICE_REG[r % SID_VOICE], val) for r, val in ob.edges if r // SID_VOICE == voice]
+        f = ob.values[voice]
+        if f is not None and note is None:  # the voice's first frequency, inside this row
+            note = _note(pitch, f, {**index, "row": 0})
+            note = _nearest(pitch, f) if note is None else note
+            sets.append(("note_abs", note))
+        if f is not None:
+            want = _note(pitch, f, {**index, "row": note})
+            key = ("note_off", want - note) if want is not None else ("freq", f)
+            if prev.get("freq", ("note_off", 0)) != key:
+                sets.append(key)
+                prev["freq"] = key
+        pw = ob.values[SID_VOICES + voice]
+        if pw is not None and prev.get("pw") != pw:
+            sets.append(("pw", pw))
+            prev["pw"] = pw
+        if sets or not steps:
+            steps.append({"hold": 1, "sets": [list(s) for s in sets]})
         else:
-            self.refuse(
-                "command residue", w["print"], w["site"]["pc"], "%s at %s" % (kind[0], when)
-            )
+            steps[-1]["hold"] += 1
+    return steps
 
-    def build(self):
-        self.classify_sites()
-        voices = []
-        for v in self.t2["score"]:
-            chans = v.get("pattern") or []
-            if not chans:
-                continue
-            ch = chans[0]
-            patterns, order, rows = {}, [], []
-            for e in ch["events"]:
-                if not e["bytes"] and e["ticks"] == 0:
-                    continue
-                got = self.events.get((v["copy"], e["tick"]), {})
-                rows.append(
-                    {
-                        "dur": e["ticks"],
-                        "note": got.get("note"),
-                        "ins": got.get("ins"),
-                        "cmds": got.get("cmds", []),
-                        "bytes": e["bytes"],
-                        "pos": e["pos"],
-                        "base": e["base"],
-                    }
-                )
-            # one pattern per visit of a base, deduplicated by content
-            for visit in _visits(rows):
-                key = tuple(
-                    (r["dur"], r["note"], r["ins"], tuple(map(tuple, r["cmds"]))) for r in visit
-                )
-                pid = (
-                    "p%04X_%d" % (visit[0]["base"], len(patterns))
-                    if key not in patterns
-                    else patterns[key]
-                )
-                if key not in patterns:
-                    patterns[key] = pid
-                order.append({"pattern": pid, "transpose": 0})
-            pats = {
-                pid: [dict(r, base=None, pos=None) for r in visit]
-                for visit, pid in zip(_visits(rows), [o["pattern"] for o in order])
-            }
-            voices.append({"order": order, "patterns": pats, "accs": []})
-        sub = ((self.cert or {}).get("subtunes") or [{}])[0]
-        if sub.get("complete") and (sub.get("period") or 0) > 1:
-            end = {"kind": "loop", "row": 0}
-        elif sub.get("complete"):
-            end = {"kind": "fixed_point"}
+
+def global_stream(obs):
+    """The global channel over the horizon: cutoff, res_route and mode_vol as they moved."""
+    steps, prev = [], {}
+    for ob in obs:
+        sets = []
+        for name, i in (("cutoff", 6), ("res_route", 7), ("mode_vol", 8)):
+            val = ob.values[i]
+            if val is not None and prev.get(name) != val:
+                sets.append([name, val])
+                prev[name] = val
+        if sets or not steps:
+            steps.append({"hold": 1, "sets": sets})
         else:
-            end = {"kind": "horizon"}
-        meta = self.view.meta
-        return {
-            "meta": {
-                "cadence": {
-                    "cycles_per_tick": meta["entry"]["cycles_per_tick"],
-                    "source": meta["entry"]["source"],
-                },
-                "source": {"tune": meta.get("name"), "song": meta.get("song"), "family": None},
-                "sid_model": meta.get("sid_model"),
-                "player": "universal/1",
-                "commit_order": list(commit_order(self.obs)),
-            },
-            "pitch": (self.t2.get("pitch") or {}).get("entries"),
-            "streams": {s["cursor"]: s for s in self.t2.get("streams", ())},
-            "instruments": {s["cursor"]: s for s in self.t2.get("selectors", ())},
-            "accs": {a["id"]: a for a in (self.t1 or {}).get("accs", ())},
-            "score": {"voices": voices, "end": end},
-            "globals": {},
-        }
+            steps[-1]["hold"] += 1
+    return steps
+
+
+def _rows(t2, voice):
+    """``[(tick, dur, base, pos, bytes)]`` of a voice's pattern channel, the horizon partitioned."""
+    for v in t2["score"]:
+        if v["copy"] == voice and v.get("pattern"):
+            ch = v["pattern"][0]
+            return [
+                (e["tick"], e["ticks"], e["base"], e["pos"], e["bytes"])
+                for e in ch["events"]
+                if e["ticks"]
+            ]
+    return None
 
 
 def _visits(rows):
@@ -275,68 +144,145 @@ def _visits(rows):
     return out
 
 
-def commit_order(obs):
-    """The per-voice ad/sr/ctrl order the source writes: the first tick writing all three."""
-    if not obs:
-        return player.DEFAULT_ORDER
-    for o in obs:
-        for v in range(3):
-            got = [VOICE_REG[r % 7] for r, _val in o.edges if r // 7 == v]
-            names = [n for n in dict.fromkeys(got) if n in ("ad", "sr", "ctrl")]
-            if len(names) == 3:
-                return tuple(names)
-    return player.DEFAULT_ORDER
+def lift(t2, obs, meta, cert):
+    """``(trackerprog, refusals)``: the score from T2, the sounds from the observable."""
+    pitch = list((t2.get("pitch") or {}).get("entries") or [])
+    index = {}
+    for i, p in enumerate(pitch):
+        index.setdefault(p, []).append(i)
+    streams, voices, refusals = Streams(), [], list(t2["refusals"])
+    for entry in (meta.get("schedule") or [])[1:]:  # a second entry is a mixer: digis are no score
+        refusals.append(
+            Refusal(
+                "sample stream",
+                "mode_vol",
+                "$%04X" % entry.get("addr", 0),
+                "second entry %s" % entry.get("kind"),
+            ).to_dict()
+        )
+    for voice in range(SID_VOICES):
+        rows = _rows(t2, voice)
+        if rows is None:
+            if any(r // SID_VOICE == voice for o in obs for r, _v in o.edges):
+                refusals.append(
+                    Refusal(
+                        "score not cursor-shaped", "voice %d" % voice, "", "no pattern channel"
+                    ).to_dict()
+                )
+            continue
+        decoded = []
+        for tick, dur, base, pos, _bytes in rows:
+            f0 = obs[tick].values[voice] if tick < len(obs) else None
+            note = _note(
+                pitch,
+                f0,
+                {
+                    **index,
+                    "row": (
+                        decoded[-1]["note"] if decoded and decoded[-1]["note"] is not None else 0
+                    ),
+                },
+            )
+            if note is None and f0 is not None and pitch:
+                note = _nearest(pitch, f0)
+            steps = row_stream(obs, voice, tick, dur, pitch, index, note)
+            decoded.append(
+                {
+                    "dur": dur,
+                    "note": note,
+                    "ins": streams.add(steps),
+                    "cmds": [],
+                    "base": base,
+                    "pos": pos,
+                }
+            )
+        patterns, order = {}, []
+        for visit in _visits(decoded):
+            key = tuple((r["dur"], r["note"], r["ins"]) for r in visit)
+            if key not in patterns:
+                patterns[key] = "p%d" % len(patterns)
+            order.append({"pattern": patterns[key], "transpose": 0})
+        pats = {}
+        for visit, pid in zip(_visits(decoded), [o["pattern"] for o in order]):
+            pats.setdefault(pid, [{k: r[k] for k in ("dur", "note", "ins", "cmds")} for r in visit])
+        voices.append({"order": order, "patterns": pats})
+    sub = ((cert or {}).get("subtunes") or [{}])[0]
+    if sub.get("complete") and (sub.get("period") or 0) > 1:
+        end = {"kind": "loop", "row": 0}
+    elif sub.get("complete"):
+        end = {"kind": "fixed_point"}
+    else:
+        end = {"kind": "horizon"}
+    gid = streams.add(global_stream(obs)) if obs else None
+    tp = {
+        "meta": {
+            "cadence": {
+                "cycles_per_tick": meta["entry"]["cycles_per_tick"],
+                "source": meta["entry"]["source"],
+            },
+            "source": {"tune": meta.get("name"), "song": meta.get("song"), "family": None},
+            "sid_model": meta.get("sid_model"),
+            "player": "universal/2",
+            "commit_order": list(commit_order(obs)),
+        },
+        "pitch": pitch,
+        "streams": streams.out,
+        "accs": {},
+        "instruments": {},
+        "score": {"voices": voices, "end": end},
+        "globals": {"stream": gid},
+    }
+    return tp, list({(r["why"], r["cell"], r["site"]): r for r in refusals}.values())
 
 
-def document(view, names, t0, t1, t2, hist, cert, obs=None):
-    """``(trackerprog, refusals)``."""
-    L = Lift(view, names, t0, t1, t2, hist, cert, obs)
-    tp = L.build()
-    return tp, list(dict.fromkeys(L.refusals))
+def document(view, t2, cert, obs, t1=None):
+    """``(trackerprog, refusals)``, T1's accumulators carried as annotations."""
+    tp, refusals = lift(t2, obs, view.meta, cert)
+    tp["accs"] = {a["id"]: a for a in (t1 or {}).get("accs", ())}
+    tp["instruments"] = {s["cursor"]: s for s in t2.get("selectors", ())}
+    return tp, refusals
 
 
 # ---- the print and its measure -----------------------------------------------------
 def render(tp):
-    """``trackerprog.md``: meta, pitch, instruments, streams, then the score."""
-    out = ["# trackerprog: %s" % tp["meta"]["source"]["tune"], "", "## meta", "", "```"]
+    """``trackerprog.md``: meta, pitch, streams, then the score."""
     m = tp["meta"]
-    out += [
+    out = [
+        "# trackerprog: %s" % m["source"]["tune"],
+        "",
+        "## meta",
+        "",
+        "```",
         "cadence   every %d cycles (%s)"
         % (m["cadence"]["cycles_per_tick"], m["cadence"]["source"]),
         "player    %s, commit order %s" % (m["player"], "/".join(m["commit_order"])),
         "end       %s" % tp["score"]["end"]["kind"],
+        "streams   %d, global %s" % (len(tp["streams"]), tp["globals"].get("stream")),
         "```",
         "",
+        "## pitch",
+        "",
+        "```",
+        " ".join("%04X" % x for x in tp["pitch"] or ()),
+        "```",
+        "",
+        "## streams",
+        "",
+        "```",
     ]
-    out += ["## pitch", "", "```", " ".join("%04X" % x for x in tp["pitch"] or ()), "```", ""]
-    for title, key in (("instruments", "instruments"), ("streams", "streams")):
-        out += ["## %s" % title, "", "```"]
-        for name, s in tp[key].items():
-            out.append(
-                "%s  %d x %d %s"
-                % (
-                    name,
-                    len(s["columns"]),
-                    s["entries"],
-                    " ".join(c["table"] for c in s["columns"]),
-                )
-            )
-        out += ["```", ""]
-    out += ["## score", ""]
+    for sid, s in tp["streams"].items():
+        out.append("%s:" % sid)
+        for st in s["steps"]:
+            out.append("  %3d %s" % (st["hold"], " ".join("%s=%s" % (r, v) for r, v in st["sets"])))
+    out += ["```", "", "## score", ""]
     for v, voice in enumerate(tp["score"]["voices"]):
         out += ["```", "voice %d: order %s" % (v, " ".join(o["pattern"] for o in voice["order"]))]
         for pid, rows in voice["patterns"].items():
             out.append("%s:" % pid)
             for r in rows:
-                cmds = " ".join("%s=%s" % (c[1], c[2]) for c in r["cmds"])
                 out.append(
-                    "  %-4s %-4s %3d %s"
-                    % (
-                        "---" if r["note"] is None else r["note"],
-                        "" if r["ins"] is None else r["ins"],
-                        r["dur"],
-                        cmds,
-                    )
+                    "  %-4s %-5s %3d"
+                    % ("---" if r["note"] is None else r["note"], r["ins"] or "", r["dur"])
                 )
         out += ["```", ""]
     return "\n".join(out)
@@ -346,15 +292,11 @@ TOKEN = re.compile(r"\$?\w+|\S")
 
 
 def measure(md, section):
-    """Architecture 6.2's six numbers over one print: tokens and lines over ``section``."""
+    """Architecture 6.2's tokens and lines over ``section``, header rows before it, ``xz -9e``."""
     body = md.split("## %s" % section, 1)[1] if "## %s" % section in md else ""
     lines = [l for l in body.splitlines() if l.strip() and not l.startswith("```")]
-    head = md.split("## %s" % section, 1)[0]
-    hdr = [
-        l
-        for l in head.splitlines()
-        if l.strip() and not l.startswith("```") and not l.startswith("#")
-    ]
+    head = md.split("## meta", 1)[1].split("## ", 1)[0] if "## meta" in md else ""
+    hdr = [l for l in head.splitlines() if l.strip() and not l.startswith("```")]
     return {
         "tokens": sum(len(TOKEN.findall(l)) for l in lines),
         "lines": len(lines),
@@ -364,16 +306,17 @@ def measure(md, section):
 
 
 def numbers(tp, md):
-    """The six numbers of a trackerprog print plus its ``xz -9e`` size."""
+    """The six numbers of a trackerprog print plus its ``xz -9e`` size.
+
+    Statements are the score's rows and the streams' steps; blocks the patterns and
+    streams; data rows the pitch entries and the streams' steps.
+    """
     got = measure(md, "score")
     voices = tp["score"]["voices"]
-    got["statements"] = sum(len(r) for v in voices for r in v["patterns"].values())
-    got["blocks"] = (
-        sum(len(v["patterns"]) for v in voices) + len(tp["streams"]) + len(tp["instruments"])
-    )
-    got["data_rows"] = sum(
-        s["entries"] for s in list(tp["streams"].values()) + list(tp["instruments"].values())
-    ) + len(tp["pitch"] or ())
+    steps = sum(len(s["steps"]) for s in tp["streams"].values())
+    got["statements"] = sum(len(r) for v in voices for r in v["patterns"].values()) + steps
+    got["blocks"] = sum(len(v["patterns"]) for v in voices) + len(tp["streams"])
+    got["data_rows"] = steps + len(tp["pitch"] or ())
     return got
 
 

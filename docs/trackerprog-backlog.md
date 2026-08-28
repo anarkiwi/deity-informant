@@ -371,7 +371,57 @@ therefore not attempted beyond the certificate: Commando's I1/I11 are settled
 
 | # | item | mechanism | size | acceptance |
 | --- | --- | --- | --- | --- |
-| W8 | instrument, prelude and stream lift | a T0 site whose value is an instrument column at the selector → `Ins.adsr`/`set(reg, ins.col)`; whose guards are a stream's step (a cursor's hold elapsing) → a `Step.sets` of that stream; whose guards are `k` ticks before the row boundary → the prelude's `early`; whose value reads a T1 acc cell → a `Producer` over that acc, with the acc's arming read off the note-on stores that reset it. Every other site stays `command residue` | large | JCH ×2, GT2 ×2 at 0 divergences on `tools/tuneprog_trackerprog.py`; the hermetic tune gains an instrument table and a wave stream |
+| ~~W8~~ | instrument, prelude and stream lift | a T0 site whose value is an instrument column at the selector → `Ins.adsr`/`set(reg, ins.col)`; whose guards are a stream's step (a cursor's hold elapsing) → a `Step.sets` of that stream; whose guards are `k` ticks before the row boundary → the prelude's `early`; whose value reads a T1 acc cell → a `Producer` over that acc, with the acc's arming read off the note-on stores that reset it. Every other site stays `command residue` | large | JCH ×2, GT2 ×2 at 0 divergences on `tools/tuneprog_trackerprog.py`; the hermetic tune gains an instrument table and a wave stream |
+
+**W8 struck by #302 — six tunes certify on the universal player at 0
+divergences.** The lift changed shape rather than growing rules: a row's sound is
+lifted as a **stream** (§3.3) from the observable itself — per tick of the row,
+the voice's ordered ctrl/AD/SR edges and the level values it left, as steps with
+holds; a frequency that is a pitch entry is `note_off(d)` from the row's note,
+any other is `freq(v)`, pulse is `pw(v)`; the first frequency a voice ever
+writes is `note_abs(n)`. Equal streams are one stream and a row's instrument is
+the stream it arms; the global channel (cutoff, res_route, mode_vol) is one
+stream over the horizon. Nothing in `emit` reads a tune's code any more, so the
+only residues are T2's (a voice with no cursor-shaped score) and §8's `sample
+stream` (a second schedule entry, refused by name at `mode_vol`); T1's
+accumulators ride along as annotations (`accs`), the player does not step them.
+`player.py` steps armed streams by their holds and commits a step's sets in the
+step's own order. The hermetic tune, JCH ×3, GT2 ×2 and Commando ×2 render
+`emitted: true` with `divergence: null` over their whole horizons and the loop
+claim re-checked where the horizon reaches a second period; SID Wizard ×2 stay
+refused at T2 (`p_17C8`).
+
+| tune | ticks | emitted | divergence | refusals | trackerprog six + `xz -9e` | source `tuneprog.md` six + `xz` |
+| --- | ---: | --- | --- | --- | --- | --- |
+| `jch-guldkorn-intro` | 4,000 | yes | none | 0 | 1,568 / 505 / 5,729 / 367 / 4 / 5,354, 6,916 B | 3,154 / 361 / 207 / 152 / 292 / 182, 5,696 B |
+| `jch-knob-at-night` | 12,000 | yes | none | 0 | 23,397 / 7,798 / 18,416 / 1,791 / 4 / 10,724, 23,916 B | — |
+| `jch-easy-does-it` | 1,799 | **no** | — | 1 `sample stream` (`mode_vol`, the CIA #2 NMI entry) | — | — |
+| `gt2-je-suis-linus` | 12,000 | yes | none | 0 | 10,636 / 3,531 / 14,988 / 1,085 / 4 / 11,598, 16,000 B | 5,768 / 908 / 336 / 321 / 318 / 270, 8,380 B |
+| `gt2-do-it-again` | 12,000 | yes | none | 0 | 9,808 / 3,260 / 13,320 / 760 / 4 / 10,174, 13,904 B | — |
+| `commando-song1` | 11,780 | yes | none | 0 | 9,775 / 3,256 / 15,419 / 1,263 / 4 / 12,363, 17,992 B | 2,129 / 271 / 161 / 107 / 182 / 127, 4,644 B |
+| `commando-song2` | 11,780 | yes | none | 0 | 5,046 / 1,681 / 15,958 / 486 / 4 / 14,383, 13,968 B | — |
+| `sw-emomyst`, `sw-end-of-the-world` | 12,000 / 16,000 | **no** | — | 7 / 8 `score not cursor-shaped` (`p_17C8`) | — | — |
+
+(six = tokens / lines / statements / blocks / header rows / data rows over the
+trackerprog print: statements are score rows plus stream steps, blocks patterns
+plus streams, data rows stream steps plus pitch entries.)
+
+**What this says, plainly.** The layer's claim in §9 — that the score compresses
+*better* than the program that played it — is **not** met by this lift: `xz`
+of the trackerprog print is 1.2× (JCH) to 3.9× (Commando) the source
+`tuneprog.md`'s, because a row's sound is materialised per row rather than
+generated from an instrument table, a wave/pulse/filter stream and the
+accumulators. The certificate is exact and family-free, and the score half is
+lifted (T2's order, patterns, rows and holds); the sound half is a closed form
+of what the tuneprog's tables and accumulators generate. Folding those streams
+back into `Ins{adsr, prelude, streams}` and `Producer`s over T1's `Acc`s — so
+that equal instruments share one table row and vibrato is an `Acc` again — is
+the remaining package (W9): it is the one that makes `xz` smaller, and every
+rule it needs is now checkable against a certified render.
+
+| # | item | mechanism | size | acceptance |
+| --- | --- | --- | --- | --- |
+| W9 | streams back into instruments and accumulators | factor each row stream into `Ins.adsr` + a shared wave/pulse/filter stream (the T2 stream tables, aligned to the row's steps) + a `Producer` over a T1 `Acc` for the `freq(v)` runs a bounded recurrence regenerates; a stream that factors nowhere stays a stream | large | the same six tunes at 0 divergences with `xz` below the source's |
 
 Total ≈ 24–30 agent-days. W1–W3 are independent of W0 and of each other;
 W4 depends on W3; W5 on W0, W2, W4; W6 on W0, W2, W3; W7 on all.
@@ -383,9 +433,9 @@ W4 depends on W3; W5 on W0, W2, W4; W6 on W0, W2, W3; W7 on all.
    `Acc` and `Cmd` shapes W5/W6 build to.
 3. ~~**W4**~~, then ~~**W5**~~, and ~~**W6**~~ (on GT2/JCH/Commando; SW refuses
    by name until the fold fix).
-4. ~~**W7**~~ (the player, the certificate and the print land; GT2/JCH render
-   with named residue); then **W8** for GT2 ×2, JCH ×2 at 0 divergences; SW ×2
-   after the fold, Commando ×2 after W8, Follin after I6.
+4. ~~**W7**~~, ~~**W8**~~ (JCH ×2, GT2 ×2, Commando ×2 certified at 0
+   divergences); then **W9** for the compression claim; SW ×2 after the fold,
+   Follin after I6.
 
 Deliberately not now: Galway/Walker/Blackbird (uncertified — the anatomy
 describes them, no certificate covers them), multispeed (§10). **Not** defMON:
