@@ -2,32 +2,40 @@
 
 A state cell that updates from itself and reaches a SID write site (T0) is one
 ``Acc`` of the prototype's section 5 schema, checked twice against :mod:`.history`
--- the interval it claims and its recurrence replayed. What neither the grammar
-nor the replay accepts is a stated refusal, never an approximation.
+-- the interval it claims and its ``step`` replayed exactly (:mod:`.accstep`). What
+neither the grammar nor the replay accepts is a stated refusal, never an approximation.
 """
 
 from __future__ import annotations
 
 from collections import namedtuple
 
-from .acchist import Cells, verify
+from .accguard import unpin
+from .acchist import Cells
+from .accstep import COPY, Inexact, Stepper, prove
 from .accdelta import _cellref, cellname, delta_of, tablestep_exprs, tablestep_sources, unscratch
 from .accrule import _const, _dirstore, _groups, _merge, _splitpair, bound_of, candidates
 from .accrule import copies_of, counters_of, fn_phase, phase_of, policy_of, rate_of, scope_of
 from . import accreg
 from .accshape import Ctx, arms, complemented, enclosing, external, key_of, lowbits
 from .accshape import onepass, selfread
-from .accshape import maskof, rank, sites, step, terms
+from .accshape import maskof, sites, step, terms
 from .facts import Facts
 from .ir import Bin, Const, Load, R16, Store, Var, W16
 from .loops import repeats
 from .irwalk import walk
 
 WHY = "unclassified update"
+INEXACT = "inexact recurrence"
+DIVERGES = "divergent recurrence"
+WHYS = (WHY, INEXACT, DIVERGES)
 CLAUSES = ("delta", "phase", "bound", "rate", "replay")
 POLICIES = ("wrap", "reflect", "reflect-complement", "clamp", "halt", "reload")
-FIELDS = "kind guards sign delta carry comp value mask addr site rank proc block shift times"
-Clause = namedtuple("Clause", FIELDS, defaults=(0, None))
+FIELDS = (
+    "kind guards sign delta carry comp value mask addr site rank proc block at exact chain"
+    " dexact cexact shift times"
+)
+Clause = namedtuple("Clause", FIELDS, defaults=((), None, (), None, None, 0, None))
 
 
 # ---- one store, read as a clause ----------------------------------------------
@@ -42,7 +50,8 @@ def clauses(ctx, tgt, ss, extra=()):
     for s in list(ss) + list(extra):
         raw = s.stmt.e if type(s.stmt) is W16 else s.stmt.v
         skip = frozenset(x.n for x in walk(s.stmt.a) if type(x) is Var)
-        for arm in arms(ctx, s.proc, s.block, raw, s.stmt.a, skip):
+        arms_ = arms(ctx, s.proc, s.block, raw, s.stmt.a, skip)
+        for arm, rank, at in ctx.ranked(s.proc, s.block, s.at, arms_):
             v, mask = maskof(arm.value)
             got = step(v, isself)
             comp = any(complemented(x, base) for _g, x in terms(v))
@@ -50,6 +59,7 @@ def clauses(ctx, tgt, ss, extra=()):
             sign, delta, carry, borrow = got or (0, None, None, False)
             if borrow and carry is not None:
                 carry = Bin("-", carry, Const(1, 1), 1)
+            dexact, cexact = _exactstep(arm.exact, isself, borrow) if got else (None, None)
             out.append(
                 Clause(
                     kind,
@@ -62,14 +72,31 @@ def clauses(ctx, tgt, ss, extra=()):
                     mask,
                     arm.addr,
                     s,
-                    s.idx,
-                    *arm[3:],
+                    rank,
+                    arm.proc,
+                    arm.block,
+                    at,
+                    arm.exact,
+                    ctx.chain(s.proc, arm.path),
+                    dexact,
+                    cexact,
                 )
             )
     return sorted(
         out,
         key=lambda c: (c.rank, c.site.stmt.src, c.proc, c.block, repr(c.value), repr(c.guards)),
     )
+
+
+def _exactstep(exact, isself, borrow):
+    """The delta and carry of the site-pinned value, where it spells the same step."""
+    got = step(unpin(exact, isself), isself)
+    if got is None or bool(got[3]) != borrow:
+        return None, None
+    carry = got[2]
+    if borrow and carry is not None:
+        carry = Bin("-", carry, Const(1, 1), 1)
+    return got[1], carry
 
 
 def _reads(e, base):
@@ -144,11 +171,12 @@ def _flag(e):
 
 
 def _read(tgt, c):
-    """The expression that reads the accumulator's own value at its own address."""
+    """The accumulator's own value at its own address: the base plus the copy's displacement."""
     s = c.site.stmt
+    addr = Bin("+", Const(tgt.cells[0][1], 2), Var(COPY, 1), 2)
     if tgt.kind == "pair":
-        return R16(tgt.cells[0], tgt.cells[1], c.addr)
-    return Load("ram", c.addr, 1, s.lo, s.hi, tgt.cells[0][0])
+        return R16(tgt.cells[0], tgt.cells[1], addr)
+    return Load("ram", addr, 1, s.lo, s.hi, tgt.cells[0][0])
 
 
 def _one(ctx, cells, tgt, steps, cs, env):
@@ -169,7 +197,7 @@ def _one(ctx, cells, tgt, steps, cs, env):
     if phase["kind"] == "none":
         phase = fn_phase(ctx, cells, delta, env["counters"], env["all"]) or phase
     read = _read(tgt, steps[0])
-    tcol = cells.value(read, {n: 0 for n in index})
+    tcol = cells.value(read, {n: 0 for n in index + [COPY]})
     hold = steps[0].guards if len(steps) == 1 else ()
     bounds = bound_of(
         ctx, cells, tgt, width, event, hold, mask, None, tcol, env["complete"], env["period"]
@@ -256,7 +284,7 @@ def _join(lo, hi):
 def _rebound(a):
     """A joined target's intervals: a guard on it still holds, its halves' masks do not."""
     cells, ok, wide = a["cells"], a["complete"], (1 << a["width"]) - 1
-    col = cells.value(a["read"], {n: 0 for n in a["index"]})
+    col = cells.value(a["read"], {n: 0 for n in a["index"] + [COPY]})
     out = [b for b in a["bounds"] if b["from"] == "proved"]
     if ok and col is not None and col.size:
         out.append(
@@ -295,12 +323,21 @@ def _plan(acc):
     for c in acc["clauses"]:
         if c.kind == "step":
             d = _sext(joined) if joined is not None else c.delta
+            dx = _sext(joined) if joined is not None else c.dexact
             out.append(
-                c._replace(delta=unscratch(d, tab), carry=None if k else c.carry, times=times)
+                c._replace(
+                    delta=unscratch(d, tab),
+                    dexact=None if dx is None else unscratch(dx, tab),
+                    carry=None if k else c.carry,
+                    cexact=None if k else c.cexact,
+                    times=times,
+                )
             )
         else:
             v = Bin("<<", c.value, Const(k, 1), 2) if k else c.value
-            out.append(c._replace(value=unscratch(v, tab)))
+            x = c.exact if c.exact is not None else c.value
+            x = Bin("<<", x, Const(k, 1), 2) if k else x
+            out.append(c._replace(value=unscratch(v, tab), exact=unscratch(x, tab)))
     return out
 
 
@@ -345,7 +382,7 @@ def _resets(ctx, actions):
     return out
 
 
-def _refuse(ctx, cells, tgt, cs, clause):
+def _refuse(ctx, cells, tgt, cs, clause, why=WHY):
     """One stated refusal: the cell, the site and the clause of section 5 it failed.
 
     ``scratch`` marks a value cell a copy loop rewrites: one column and one value
@@ -353,7 +390,7 @@ def _refuse(ctx, cells, tgt, cs, clause):
     """
     rid, addr = tgt.cells[0]
     return {
-        "why": WHY,
+        "why": why,
         "cell": cellname(ctx, cells, rid),
         "region": rid,
         "addr": "$%04X" % addr,
@@ -383,9 +420,10 @@ def accumulators(prog, names, t0_doc, hist, facts=None, complete=False, period=N
     """``(accs, refusals)``: the section 5 records of one certified tune, both verified."""
     facts = facts or Facts(prog)
     ctx, cells = Ctx(prog, names), Cells(prog, names, hist, facts)
-    raw = {t: clauses(ctx, t, ss) for t, ss in sites(prog, facts, rank(prog)).items()}
+    raw = {t: clauses(ctx, t, ss) for t, ss in sites(prog, facts, ctx.rank).items()}
     src = tablestep_sources(ctx, cells, raw)
     regs = registers(t0_doc)
+    stepper = Stepper(ctx, cells, raw)
     cells.scratch = ctx.scratch
     cells.tabstep = tablestep_exprs(ctx, raw)
     cells.obs = accreg.observable(obs) if obs else None
@@ -427,20 +465,27 @@ def accumulators(prog, names, t0_doc, hist, facts=None, complete=False, period=N
     out = []
     for a in (x for x in accs if x["id"] in keep):
         plan = _plan(a)
-        per, alien = accreg.series(cells, a, plan, ctx, t0_doc) if a["scratch"] else (None, 0)
+        try:
+            per = accreg.series(cells, a, plan, ctx, t0_doc, stepper) if a["scratch"] else None
+        except Inexact as x:
+            per, a["verify"] = None, {"why": x.why, "site": x.site, "divergences": 0}
         if per:
             a["bounds"] = accreg.bound(per, complete, period, cells.ticks) + a["bounds"]
-        a["bound"], a["verify"] = verify(cells, a, plan, a["bounds"], per)
-        if per:
-            a["verify"]["alien"] = alien
+        if "verify" not in a:
+            a["bound"], a["verify"], a["step"] = prove(cells, a, plan, a["bounds"], stepper, per)
         rec = {k: v for k, v in a.items() if k in RECORD}
         rec["delta"] = {k: v for k, v in (rec["delta"] or {}).items() if k not in DROP} or None
-        if a["verify"].get("why") or a["verify"]["divergences"] or a["verify"]["escapes"]:
+        v = a["verify"]
+        if v.get("why") or v["divergences"] or v.get("escapes"):
+            why = DIVERGES if v.get("why") is None else (WHY if v["why"] == "read" else INEXACT)
             refusals.append(
                 dict(
-                    _refuse(ctx, cells, a["target_cells"], a["steps"], "replay"),
+                    _refuse(ctx, cells, a["target_cells"], a["steps"], "replay", why),
                     acc=a["id"],
-                    verify=a["verify"],
+                    detail=v.get("why") or "diverges at tick %s" % v.get("tick"),
+                    at=v.get("site"),
+                    tick=v.get("tick"),
+                    verify=v,
                 )
             )
             continue
@@ -453,7 +498,7 @@ DROP = ("times",)
 
 RECORD = (
     "id target cell width delta bound policy policy_value rate phase links scope"
-    " sites hi verify index scale regions"
+    " sites hi verify index scale regions step"
 ).split()
 
 

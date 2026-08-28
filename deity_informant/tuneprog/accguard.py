@@ -12,6 +12,7 @@ from collections import namedtuple
 from .graph import EXIT, cfg, idoms, natural_loops, postdoms, preds_of
 from .ir import Bin, Call, If, Load, R16, Store, Var, W16, succs
 from .irwalk import addr_split, single_defs, walk
+from .nodes import At
 
 DEPTH = 3  # call frames a value is chased through before it is left as it stands
 EMPTY = frozenset()
@@ -222,22 +223,51 @@ def propagate(prog, cells):
     return out
 
 
-def opened(e, defs, depth=DEPTH, prop=EMPTY):
+def opened(e, defs, depth=DEPTH, prop=EMPTY, sites=None):
     """``e`` with every name ``defs`` maps substituted, addresses included.
 
     Not :func:`~.provenance.expand`, which stops at a named cell and so leaves a
     table read's own index a register: T1 evaluates that index over the horizon.
     ``prop`` are the scratch cells :func:`~.accguard.propagate` reads as the one
     expression that fills them, which is the only reading their column supports.
+    ``sites`` maps a name to its definition's site, and pins every read of the
+    substituted definition to it (:class:`~.nodes.At`): the epoch an exact reader
+    gives the read is the definition's, not the use's.
     """
     t = type(e)
     if t is Var and depth > 0 and e.n in defs:
-        return opened(defs[e.n], defs, depth - 1, prop)
+        got = opened(defs[e.n], defs, depth - 1, prop, sites)
+        return pin(got, sites[e.n]) if sites and e.n in sites else got
     if t is Bin:
-        return Bin(e.op, opened(e.a, defs, depth, prop), opened(e.b, defs, depth, prop), e.w)
+        a, b = opened(e.a, defs, depth, prop, sites), opened(e.b, defs, depth, prop, sites)
+        return Bin(e.op, a, b, e.w)
     if t is Load:
         got = prop.get(cellof(e)) if prop and depth > 0 else None
         if got is not None:
-            return opened(got, defs, depth - 1, prop)
-        return Load(e.cls, opened(e.a, defs, depth, prop), e.w, e.lo, e.hi, e.r)
-    return R16(e.lo, e.hi, opened(e.a, defs, depth, prop)) if t is R16 else e
+            return opened(got, defs, depth - 1, prop, sites)
+        return Load(e.cls, opened(e.a, defs, depth, prop, sites), e.w, e.lo, e.hi, e.r)
+    if t is At:
+        return At(opened(e.e, defs, depth, prop, sites), e.site, e.via)
+    return R16(e.lo, e.hi, opened(e.a, defs, depth, prop, sites)) if t is R16 else e
+
+
+def pin(e, site):
+    """Every memory read of ``e`` marked as read at ``site``, reads already placed kept."""
+    t = type(e)
+    if t is Load or t is R16:
+        return At(e, site)
+    if t is Bin:
+        return Bin(e.op, pin(e.a, site), pin(e.b, site), e.w)
+    return e
+
+
+def unpin(e, keep):
+    """``e`` with the placed reads ``keep`` admits unplaced: the target's own, for :func:`~.accshape.step`."""
+    t = type(e)
+    if t is At:
+        return e.e if keep(e.e) else At(unpin(e.e, keep), e.site, e.via)
+    if t is Bin:
+        return Bin(e.op, unpin(e.a, keep), unpin(e.b, keep), e.w)
+    if t is Load:
+        return Load(e.cls, unpin(e.a, keep), e.w, e.lo, e.hi, e.r)
+    return R16(e.lo, e.hi, unpin(e.a, keep)) if t is R16 else e

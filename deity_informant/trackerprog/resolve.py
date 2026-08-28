@@ -10,36 +10,33 @@ arguments the way :func:`~.tuneprog.accshape.arms` does.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import networkx as nx
 
 from ..tuneprog.accguard import _domsets, guardpath
 from ..tuneprog.graph import cfg, idoms
 from ..tuneprog.ir import Bin, Call, Const, Let, Load, Phi, R16, REGVAR, Return, Store, Var, W16
+from ..tuneprog.nodes import At, Ret, Sel  # noqa: F401 -- re-exported
 
 DEPTH = 6
 MAXALTS = 16
-
-
-@dataclass(frozen=True, slots=True)
-class Sel:
-    """``alts[0]`` unless a later alternative's guards hold: ``((guards, expr), ...)``."""
-
-    alts: tuple
 
 
 Site = tuple  # (proc, label, statement index)
 
 
 def _defs(proc):
-    """``(lets, mem, rets)``: every definition of a name, a constant-address cell, a call return."""
-    lets, mem, rets = {}, {}, {}
+    """``(lets, mem, rets)``: every definition of a name or a constant-address cell.
+
+    A call's returns are definitions like any other, one per call site, so a name
+    two calls return reaches a use as the alternative its own path made.
+    """
+    lets, mem, rets = {}, {}, set()
     for lbl, b in proc.blocks.items():
         for i, s in enumerate(b.stmts):
             if type(s) is Call:
                 for k, n in enumerate(s.rets):
-                    rets[n] = (lbl, i, s, k)
+                    lets.setdefault(n, []).append((lbl, i, Ret(lbl, i, s, k)))
+                    rets.add(n)
             elif type(s) is Let:
                 lets.setdefault(s.n, []).append((lbl, i, s.e))
             elif type(s) is Phi:
@@ -60,15 +57,14 @@ def _defs(proc):
 class Resolver:
     """Reaching definitions of one procedure, with guarded alternatives."""
 
-    def __init__(self, ctx, proc):
-        self.ctx, self.name = ctx, proc
+    def __init__(self, ctx, proc, mark=False):
+        self.ctx, self.name, self.mark = ctx, proc, mark
         self.proc = ctx.prog.procs[proc]
         self.g = cfg(self.proc)
         self.dom = _domsets(idoms(self.proc, self.g), self.proc.blocks)
         self.sites = guardpath(self.proc, sites=True)
         self.inloop = ctx.inloop(proc)
-        self.lets, self.mem, self.calls = _defs(self.proc)
-        self.rets = set(self.calls)
+        self.lets, self.mem, self.rets = _defs(self.proc)
         self.program = None
         fwd = self.g.copy()  # a definition reaches a use forward, never round a back edge
         fwd.remove_edges_from((l, h) for h, (_b, ls) in ctx.loops(proc).items() for l in ls)
@@ -101,6 +97,7 @@ class Resolver:
 
         The deciding block's own stores are opened into the condition, so the cells
         they read are last tick's too: those regions join the ones written after.
+        The fourth element names the decider, for a reader that ranks it in the tick.
         """
         b = self.proc.blocks[d]
         here = frozenset(
@@ -109,7 +106,7 @@ class Resolver:
             for r in ((s.lo[0], s.hi[0]) if type(s) is W16 else (s.r,) if type(s) is Store else ())
             if r >= 0
         )
-        return self.open(c, d, len(b.stmts), depth, seen), t, frozenset(w) | here
+        return self.open(c, d, len(b.stmts), depth, seen), t, frozenset(w) | here, (self.name, d)
 
     def guards(self, lbl, depth=DEPTH):
         """The site's own guard path, each condition opened at its deciding block."""
@@ -157,11 +154,13 @@ class Resolver:
     def open(self, e, lbl, idx, depth=DEPTH, seen=frozenset()):
         """``e`` with every reaching name and scratch cell substituted, ``depth`` deep."""
         t = type(e)
+        if t is Ret:
+            if self.program is None:
+                return Var(e.call.rets[e.k])
+            return self.program.returned(self, e.lbl, e.i, e.call, e.k, depth - 1, seen)
         if depth <= 0:
             return e
         if t is Var:
-            if e.n in self.calls and self.program is not None and e.n not in seen:
-                return self.program.returned(self, *self.calls[e.n], depth - 1, seen | {e.n})
             if e.n not in self.lets:
                 return e
             if self.loopvar(e.n, lbl, idx):
@@ -188,7 +187,13 @@ class Resolver:
             return R16(e.lo, e.hi, self.open(e.a, lbl, idx, depth, seen))
         if t is Sel:
             return Sel(tuple((gs, self.open(x, lbl, idx, depth, seen)) for gs, x in e.alts))
+        if t is At:
+            return At(self.open(e.e, e.site[1], e.site[2], depth, seen), e.site, e.via)
         return e
+
+    def at(self, x, lbl, idx):
+        """``x`` marked with the site it was opened at, when the resolver marks sites."""
+        return At(x, (self.name, lbl, idx)) if self.mark else x
 
     def select(self, defs, lbl, idx, depth, seen, key, orig):
         """One name's reaching definitions, each opened at its own block.
@@ -218,7 +223,7 @@ class Resolver:
             if type(e) is Phi:
                 opened += self.phi(e, at, gs, depth, inner)
                 continue
-            x = self.open(e, at[0], at[1], depth - 1, inner)
+            x = self.at(self.open(e, at[0], at[1], depth - 1, inner), *at)
             gs = tuple(self.guard(d, c, t, w, depth - 2, inner) for d, c, t, w in gs)
             opened.append((gs, x))
         return opened[0][1] if len(opened) == 1 else Sel(tuple(opened))
@@ -231,7 +236,7 @@ class Resolver:
             if b is None:
                 return [((), Var(e.n))]
             n = len(b.stmts)
-            x = self.open(arg, pred, n, depth - 1, seen)
+            x = self.at(self.open(arg, pred, n, depth - 1, seen), pred, n)
             pg = () if not out else gs + tuple(self.sites.get(pred, ()))
             pg = tuple(self.guard(d, c, t, w, depth - 2, seen) for d, c, t, w in pg)
             out.append((pg, x))
@@ -263,6 +268,8 @@ def walkx(e, guards=True):
             stack += [x.a, x.b]
         elif t is Load or t is R16:
             stack.append(x.a)
+        elif t is At:
+            stack.append(x.e)
 
 
 def free(e, guards=True):
@@ -280,6 +287,8 @@ def _subst(e, fn):
         return Sel(
             tuple((tuple((_subst(c, fn), *r) for c, *r in gs), _subst(x, fn)) for gs, x in e.alts)
         )
+    if type(e) is At:
+        return At(_subst(e.e, fn), e.site, e.via)
     if type(e) is Bin:
         return fn(Bin(e.op, _subst(e.a, fn), _subst(e.b, fn), e.w))
     if type(e) is Load:
@@ -292,8 +301,8 @@ def _subst(e, fn):
 class Program:
     """Every procedure's :class:`Resolver`, and the callers' substitution across them."""
 
-    def __init__(self, ctx):
-        self.ctx = ctx
+    def __init__(self, ctx, mark=False):
+        self.ctx, self.mark = ctx, mark
         self.res = {}
         self.callers = {}
         for n, p in ctx.prog.procs.items():
@@ -304,7 +313,7 @@ class Program:
 
     def of(self, proc):
         if proc not in self.res:
-            self.res[proc] = Resolver(self.ctx, proc)
+            self.res[proc] = Resolver(self.ctx, proc, self.mark)
             self.res[proc].program = self
         return self.res[proc]
 
@@ -326,8 +335,10 @@ class Program:
                 continue
             n = len(b.stmts)
             x = qr.open(b.term.vals[q.rets.index(i)], qlbl, n, depth - 1, seen)
+            if self.mark:
+                x = At(x, (call.proc, qlbl, n), (r.name, lbl, idx))
             gs = () if not out else qr.guards(qlbl, depth - 2)
-            out.append((tuple((_subst(c, fn), t, w) for c, t, w in gs), _subst(x, fn)))
+            out.append((tuple((_subst(c, fn), t, w, *d) for c, t, w, *d in gs), _subst(x, fn)))
         if not out:
             return Var(call.rets[k])
         return out[0][1] if len(out) == 1 else Sel(tuple(out))
@@ -351,7 +362,8 @@ class Program:
                     (
                         cgs
                         + tuple(
-                            (self._open_g(cproc, clbl, cidx, _subst(c, fn)), t, w) for c, t, w in gs
+                            (self._open_g(cproc, clbl, cidx, _subst(c, fn)), t, w, *d)
+                            for c, t, w, *d in gs
                         ),
                         cx,
                     )

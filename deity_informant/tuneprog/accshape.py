@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections import namedtuple
 
-from .accguard import _domsets, cellof, guardpath, key_of, opened, propagate, reads
+from .accguard import _domsets, cellof, guardpath, key_of, opened, propagate, reads, unpin
 from .accguard import scratch, valnames, EMPTY, _inloop
 from .graph import cfg, idoms, natural_loops, preds_of, rpo
 from .idioms import CMP, is_one
@@ -18,10 +18,10 @@ from .irwalk import addr_split, renamer, single_defs, sub_expr, walk
 from .loops import _entry_value, _exit_tests, repeats
 from .provenance import stops
 
-DEPTH = 3  # call frames a value is chased through before it is left as it stands
-MAXARMS = 64
-Arm = namedtuple("Arm", "guards value addr proc block")
-Site = namedtuple("Site", "proc block idx stmt")
+DEPTH = 4  # call frames a value is chased through before it is left as it stands
+MAXARMS = 256
+Arm = namedtuple("Arm", "guards value addr proc block path exact")
+Site = namedtuple("Site", "proc block idx stmt at")
 
 
 def selfread(tgt):
@@ -34,30 +34,39 @@ def selfread(tgt):
 
 
 def rank(prog, root="tick"):
-    """``{(proc, block, index): position}`` in the order one tick first executes them.
+    """``({key: position}, {proc: first call chain})``: where a statement sits in its procedure.
 
     Reverse postorder, not :meth:`~.ir.Proc.order`: a reload that guards a segment
     runs before the step that follows it in the same tick, and a preorder puts the
-    step's join first.
+    step's join first. ``(proc, block)`` is the block's terminator, where a branch
+    reads its condition. A tick position is the tuple of positions along a call
+    chain (:meth:`Ctx.at`); ``first`` completes a chain no arm climbed, innermost
+    hop first.
     """
-    out, n, done = {}, [0], set()
-
-    def visit(name):
+    out, first = {}, {}
+    for name, p in prog.procs.items():
+        n = 0
+        for lbl in rpo(p):
+            for i in range(len(p.blocks[lbl].stmts)):
+                out[(name, lbl, i)] = n
+                n += 1
+            out[(name, lbl)] = n
+            n += 1
+    todo, order = [(root, ())], [root]
+    while todo:
+        name, chain = todo.pop(0)
         p = prog.procs.get(name)
-        if p is None or name in done:
-            return
-        done.add(name)
+        if p is None or name in first:
+            continue
+        first[name] = chain
         for lbl in rpo(p):
             for i, s in enumerate(p.blocks[lbl].stmts):
-                out[(name, lbl, i)] = n[0]
-                n[0] += 1
-                if type(s) is Call:
-                    visit(s.proc)
-
-    visit(root)
+                if type(s) is Call and s.proc not in first:
+                    todo.append((s.proc, ((name, lbl, i),) + chain))
+        order += [n for n, _c in todo if n not in order]
     for name in prog.procs:
-        visit(name)
-    return out
+        first.setdefault(name, ())
+    return out, first
 
 
 def sites(prog, facts, order):
@@ -73,7 +82,7 @@ def sites(prog, facts, order):
                     continue
                 k = key_of(s)
                 if k is not None:
-                    out.setdefault(k, []).append(Site(name, lbl, order.get((name, lbl, i), 0), s))
+                    out.setdefault(k, []).append(Site(name, lbl, order.get((name, lbl, i), 0), s, i))
     return {
         k: sorted(v, key=lambda x: (x.idx, x.stmt.src, x.block)) for k, v in sorted(out.items())
     }
@@ -88,15 +97,16 @@ class Ctx:
         self.names = names
         self.rgn = prog.by_id()
         self.keep = stops(names)
+        self.rank, self.first = rank(prog)
         self.scratch = scratch(prog)
         self.prop = propagate(prog, self.scratch)
         self.cache = {}
         self.callers = {}
         for n, p in prog.procs.items():
             for lbl, b in p.blocks.items():
-                for s in b.stmts:
+                for i, s in enumerate(b.stmts):
                     if type(s) is Call:
-                        self.callers.setdefault(s.proc, []).append((n, lbl, s))
+                        self.callers.setdefault(s.proc, []).append((n, lbl, i, s))
 
     def _memo(self, key, make):
         if key not in self.cache:
@@ -107,9 +117,51 @@ class Ctx:
         """``{name: expression}`` over the whole procedure, not one block."""
         return self._memo(("defs", proc), lambda: single_defs(self.prog.procs[proc]))
 
+    def guardsites(self, proc):
+        """:func:`guardpath` of one procedure, each guard with its deciding block first."""
+        return self._memo(("guardsites", proc), lambda: guardpath(self.prog.procs[proc], True))
+
     def guards(self, proc):
         """:func:`guardpath` of one procedure."""
-        return self._memo(("guards", proc), lambda: guardpath(self.prog.procs[proc]))
+        return self._memo(
+            ("guards", proc),
+            lambda: {l: tuple(g[1:] for g in gs) for l, gs in self.guardsites(proc).items()},
+        )
+
+    def deciders(self, proc, block):
+        """``(proc, block, index)`` where each guard of a block is read: its decider's end."""
+        p = self.prog.procs[proc]
+        return tuple(
+            (proc, d, len(p.blocks[d].stmts)) for d, *_g in self.guardsites(proc).get(block, ())
+        )
+
+    def chain(self, proc, path):
+        """A call chain to the root, innermost hop first: the arm's, completed by the first."""
+        top = path[-1][0] if path else proc
+        return tuple(path) + self.first.get(top, ())
+
+    def at(self, chain, key):
+        """The tick position of ``key`` (a statement or a terminator) on a call chain."""
+        return tuple(self.rank[h] for h in reversed(chain)) + (self.rank[key],)
+
+    def ranked(self, proc, block, idx, arms_):
+        """``[(arm, its rank, ((rank, where), ...) per guard)]`` on each arm's own chain.
+
+        Each guard is ranked at its deciding block's end in the procedure of its own
+        level of the chain; a chain completed past what the arm climbed carries no
+        guards from those levels.
+        """
+        out = []
+        for a in arms_:
+            chain = self.chain(proc, a.path)
+            levels = [(proc, block)] + [(h[0], h[1]) for h in a.path]
+            at = []
+            for j, (name, lbl) in reversed(list(enumerate(levels))):
+                rest = chain[j:]
+                for _p, d, i in self.deciders(name, lbl):
+                    at.append((self.at(rest, (name, d)), (name, d, i, rest)))
+            out.append((a, self.at(chain, (proc, block, idx)), tuple(at)))
+        return out
 
     def dom(self, proc):
         """``{label: its dominators, nearest first}`` of one procedure."""
@@ -124,25 +176,31 @@ class Ctx:
         the block is inside a loop that carries one of them, where the preheader's
         value dominates every iteration and is right for none but the first.
         """
-        out = dict(self.defs(proc))
+        return self.placed(proc, label)[0]
+
+    def placed(self, proc, label):
+        """``(defs, {name: its definition's site})`` of :meth:`defs_at`."""
 
         def make():
             hits = {}
             for lbl, b in self.prog.procs[proc].blocks.items():
-                for s in b.stmts:
+                for i, s in enumerate(b.stmts):
                     if type(s) is Let:
-                        hits.setdefault(s.n, []).append((lbl, s.e))
-            return {n: v for n, v in hits.items() if len(v) > 1}
+                        hits.setdefault(s.n, []).append((lbl, i, s.e))
+            return hits
 
+        hits = self._memo(("lets", proc), make)
+        out = dict(self.defs(proc))
+        sites = {n: (proc, v[0][0], v[0][1]) for n, v in hits.items() if n in out}
         dom, here = self.dom(proc).get(label, ()), self.inloop(proc).get(label, EMPTY)
-        for n, hits in self._memo(("multi", proc), make).items():
-            if any(here & self.inloop(proc).get(lbl, EMPTY) for lbl, _e in hits):
+        for n, v in hits.items():
+            if len(v) < 2 or any(here & self.inloop(proc).get(lbl, EMPTY) for lbl, _i, _e in v):
                 continue
-            got = [(dom.index(lbl), e) for lbl, e in hits if lbl in dom]
-            near = [e for d, e in got if d == min(d for d, _e in got)] if got else []
+            got = [(dom.index(lbl), lbl, i, e) for lbl, i, e in v if lbl in dom]
+            near = [x for x in got if x[0] == min(d for d, *_r in got)] if got else []
             if len(near) == 1:
-                out[n] = near[0]
-        return out
+                out[n], sites[n] = near[0][3], (proc, near[0][1], near[0][2])
+        return out, sites
 
     def inloop(self, proc):
         """``{label: the loop headers whose body holds it}``."""
@@ -210,34 +268,41 @@ def arms(ctx, proc, block, value, addr, skip=frozenset(), depth=DEPTH):
     ``skip`` is left standing in the value and in the guards alike, and the replay
     binds it per copy. A rerolled loop is the case: its index is one ``Let`` per
     iteration, and the nearest dominating one is the first iteration's constant.
+    Every caller is climbed: which of a procedure's visits ran is its callers' guards.
     """
-    return _arms(ctx, proc, block, value, addr, (), skip, depth)
+    return _arms(ctx, proc, block, value, value, addr, (), (), skip, depth)
 
 
-def _arms(ctx, proc, block, value, addr, extra, skip, depth):
+def _arms(ctx, proc, block, value, exact, addr, extra, path, skip, depth):
+    """``exact`` is the value with no :meth:`Ctx.parked` name read as its cell: what
+    an epoch-exact reader (:mod:`.accstep`) evaluates, since a parked successor read
+    stands for the cell's own next value and is a no-op as a store of it."""
     p = ctx.prog.procs[proc]
-    defs = {**ctx.defs_at(proc, block), **ctx.parked(proc)}
-    defs = {n: e for n, e in defs.items() if n not in skip}
+    plain, sites = ctx.placed(proc, block)
+    plain = {n: e for n, e in plain.items() if n not in skip}
+    defs = {**plain, **{n: e for n, e in ctx.parked(proc).items() if n not in skip}}
     value, addr = opened(value, defs, DEPTH, ctx.prop), opened(addr, defs, DEPTH, ctx.prop)
+    exact = opened(exact, plain, DEPTH, ctx.prop, sites)
     gs = tuple(
         (opened(c, defs, DEPTH, ctx.prop), t, w)
         for c, t, w in tuple(ctx.guards(proc).get(block, ())) + tuple(extra)
     )
-    here = [Arm(gs, value, addr, proc, block)]
-    free = ({REGVAR[i] for i in p.params} & (valnames(value) | valnames(addr))) - skip
+    here = [Arm(gs, value, addr, proc, block, path, exact)]
     calls = ctx.callers.get(proc) or ()
-    if not free or not depth or not calls:
+    if not depth or not calls:
         return here
     out = []
-    for cproc, clbl, call in calls:
+    for cproc, clbl, ci, call in calls:
         fn = renamer(dict(zip([REGVAR[i] for i in p.params], call.args)))
         out += _arms(
             ctx,
             cproc,
             clbl,
             sub_expr(value, fn),
+            sub_expr(exact, fn),
             sub_expr(addr, fn),
             tuple((sub_expr(c, fn), t, w) for c, t, w in gs),
+            tuple(path) + ((cproc, clbl, ci),),
             skip,
             depth - 1,
         )
