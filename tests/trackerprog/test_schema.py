@@ -10,7 +10,8 @@ CLEAN = {
     "accs": {"a0": {"id": "a0", "cell": {"name": "vib_phase"}}},
     "producers": [
         {"register": "freq_lo", "when": ["(phase == 2)", "not (hold == 0)"], "accs": ["a0"]},
-        {"register": None, "kind": "file", "when": [], "accs": []},
+        {"target": "sid", "register": None, "envelope": "file", "when": [], "accs": []},
+        {"kind": "let", "name": "t3", "expr": ["mem", ["k", 0x1020], 1], "guards": []},
     ],
     "score": {"voices": [{"rows": [{"sets": [["phase", 3, 1], ["sid[0].ctrl", 65, 1]]}]}]},
     "globals": {},
@@ -57,8 +58,9 @@ def test_a_program_block_refuses_once_by_kind():
 
 
 def test_a_producer_refers_to_a_defined_acc_and_names_its_register():
-    bad = _with(producers=[{"register": "ad", "accs": ["a9"]}, {"kind": "let", "accs": []}])
+    bad = _with(producers=[{"register": "ad", "accs": ["a9"]}, {"target": "sid[0].ad", "accs": []}])
     assert _details(bad) == ["acc a9 not in accs", "no register"]
+    assert _details(_with(producers=[{"kind": "phi", "name": "t1"}])) == ["program block phi"]
 
 
 def test_refusals_are_one_per_offending_string_however_many_rows_carry_it():
