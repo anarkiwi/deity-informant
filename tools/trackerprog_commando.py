@@ -44,6 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # pylint: disable=wrong-import-position
 from deity_informant.lifter import lift  # noqa: E402
+from deity_informant.trackerprog import printer  # noqa: E402
 from deity_informant.trackerprog.attest import attest  # noqa: E402
 from deity_informant.trackerprog.universal import render  # noqa: E402
 from deity_informant.vm import PcodeVM, run_sub  # noqa: E402
@@ -517,6 +518,9 @@ def main(argv=None):
         d = Path(a.out)
         d.mkdir(parents=True, exist_ok=True)
         (d / "trackerprog.json").write_text(json.dumps(obj, indent=1))
+        text = printer.render(obj)
+        (d / "trackerprog.md").write_text(text)
+        print("print: " + "  ".join("%s %s" % kv for kv in printer.numbers(text).items()))
     print(
         "instruments %d  patterns %d  events %d  notes %d  generators %d  accs %d"
         % (

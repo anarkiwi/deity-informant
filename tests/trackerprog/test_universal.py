@@ -13,6 +13,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "tools"))
 
+from deity_informant.trackerprog import printer  # noqa: E402
 from deity_informant.trackerprog.attest import attest, subsequences_agree  # noqa: E402
 from deity_informant.trackerprog.universal import Player, render  # noqa: E402
 
@@ -63,6 +64,7 @@ def obj(patterns, orders, instruments, pitch=None, rate=2, generators=None):
             "row_consumes_tick": True,
             "note_row": "note_on",
             "score_acc": "slide",
+            "player": "hermetic",
         },
         "globals": {
             "mode_vol": 0x0F,
@@ -329,3 +331,66 @@ def test_the_attestation_names_what_it_compares_and_what_it_drops():
     d = attest(o, bent)
     assert d["divergence"]["tick"] == 0 and "edges" in d["divergence"]
     assert not subsequences_agree(bent, ref)
+
+
+def test_the_flattened_print_carries_every_section_and_measures_itself():
+    t = tuning()
+    t["octave"][1] = {"gen": "wave01"}
+    g = {
+        "wave01": {
+            "state": {"lo": 0, "hi": 0},
+            "on": [{"event": "sound", "voice": 0, "set": {"lo": {"payload": "wave"}}}],
+            "value": {"u16": [{"own": "lo"}, {"own": "hi"}]},
+        }
+    }
+    o = obj(
+        {"1": [event(9, note=2, ins=0, porta=0x85, nbytes=3), event(0, gate="off", nbytes=1)]},
+        [{"play": [1], "end": "jump"}],
+        {"0": ins(accs=[{"acc": "vibrato", "shift": 1}, {"acc": "drum"}])},
+        pitch=t,
+        generators=g,
+    )
+    text = printer.render(o)
+    for section in (
+        "## meta",
+        "## pitch",
+        "## generators",
+        "## streams",
+        "## accumulators",
+        "## instruments",
+        "## score",
+        "## initial state",
+    ):
+        assert section in text
+    assert "wave01 = u16(own.lo, own.hi)   [lo=$00 hi=$00]" in text
+    assert "on sound(voice 0): lo := wave" in text
+    assert "repeat(step[noteidx] >> <shift>, fold(counter, 7))" in text  # the override, named
+    assert "(dur - 1) & $FF >= rowsleft" in text  # nested binaries parenthesised
+    assert "emits   the value the tick came in with" in text
+    assert "--" in text.split("## generators")[0]  # an octave-target-only row
+    assert "     dur  tie  gate   ins  note  porta" in text
+    assert "$85" in text  # the porta byte the row carries
+    n = printer.numbers(text)
+    assert set(n) == {"lines", "tokens", "statements", "blocks", "header_rows", "data_rows", "xz"}
+    assert n["blocks"] == 8 and n["data_rows"] == n["statements"] > 0
+    assert n["lines"] == n["header_rows"] + n["data_rows"]
+
+
+def test_the_print_states_a_stateless_generator_as_such():
+    t = tuning()
+    t["octave"][1] = {"gen": "bases"}
+    o = obj(
+        {"1": [event(3, note=2, ins=0)]},
+        [{"play": [1], "end": "jump"}],
+        {"0": ins()},
+        pitch=t,
+        generators={
+            "bases": {
+                "state": {},
+                "on": [],
+                "value": {"u16": [{"sid_base": 2}, {"sid_base": "reader"}]},
+            }
+        },
+    )
+    text = printer.render(o)
+    assert "bases = u16(sid_base(2), sid_base(reader))   [stateless]" in text

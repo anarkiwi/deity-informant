@@ -322,7 +322,23 @@ sign-extended table entry (§10's open question). Neither is missing.
 
 ## 6. Measurements
 
-`xz -9e`, the extra number §9's acceptance #3 asks for:
+The print, `trackerprog.md`, is the flattened form — one fact per line, eight
+sections, no JSON — measured the way architecture §11 asks of a presentation:
+
+| subtune | lines | tokens | statements | blocks | header rows | data rows | `xz -9e` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 830 | 5,073 | 788 | 8 | 42 | 788 | 3,644 |
+| 2 | 259 | 1,508 | 239 | 7 | 20 | 239 | 2,056 |
+| 3 | 179 | 1,022 | 165 | 7 | 14 | 165 | 1,796 |
+
+Statements equal data rows by construction: the print carries one datum per
+line. Song 1's 830 lines against the source `tuneprog.md`'s 414 is the trade the
+layer makes — the program's 252 code lines become 60 lines of instruments,
+accumulators and generators, and the 578 lines that replace them are the score
+and the tuning printed *as data*, which the tuneprog never printed at all.
+
+`xz -9e` of the serialised object, the extra number §9's acceptance #3 asks
+for:
 
 | artefact | raw | `xz -9e` |
 | --- | --- | --- |
@@ -348,6 +364,7 @@ Code, all new, no existing module touched:
 | --- | --- | --- |
 | `deity_informant/trackerprog/universal.py` | 391 | §4 + §5, one procedure over the object; publishes the seven events |
 | `deity_informant/trackerprog/attest.py` | 81 | §2's comparison |
+| `deity_informant/trackerprog/printer.py` | 212 | the flattened form: one fact per line, and §6.2's numbers |
 | `tools/trackerprog_commando.py` | 547 | the transliteration and the PcodeVM reference |
 | `tests/trackerprog/test_commando_oracle.py` | 134 | the three certificates and six claims |
 | `tests/trackerprog/test_universal.py` | 331 | hermetic snippets, one per section 5 mechanism |

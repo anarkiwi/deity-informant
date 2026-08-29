@@ -16,6 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tuneprog"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "tools"))
 
+from deity_informant.trackerprog import printer  # noqa: E402
 from deity_informant.trackerprog.attest import attest  # noqa: E402
 from deity_informant.trackerprog.universal import render  # noqa: E402
 
@@ -132,3 +133,14 @@ def test_the_skydive_arm_is_never_taken():
     assert obj["accs"]["skydive"]["trap"] is True
     assert any(a["acc"] == "skydive" for i in obj["instruments"].values() for a in i["accs"])
     render(obj, 2000)  # the trap raises where the arm is taken
+
+
+@pytest.mark.parametrize("song", (0, 1, 2))
+def test_the_print_is_flat_and_round_trips_the_object_by_eye(song):
+    """The flattened form: one fact per line, every section, no JSON."""
+    text = printer.render(built(song))
+    assert "{" not in text and '"' not in text  # nothing of the serialisation shows
+    n = printer.numbers(text)
+    assert n["lines"] == n["header_rows"] + n["data_rows"]
+    assert n["blocks"] == 8 - (0 if built(song)["generators"] else 1)
+    assert n["xz"] < 4644  # the source tuneprog.md's own xz -9e
