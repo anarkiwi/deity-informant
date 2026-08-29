@@ -14,7 +14,7 @@ class Sel:
 
 @dataclass(frozen=True, slots=True)
 class At:
-    """``e`` as read at ``site`` ``(proc, label, index)``; ``via`` the call a return came through."""
+    """``e`` read at ``site`` ``(proc, label, index)``; ``via`` the call a return came through."""
 
     e: object
     site: tuple

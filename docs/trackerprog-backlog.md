@@ -596,6 +596,7 @@ pattern-end peek) ends the fetch there and starts the next.
 
 | # | item | mechanism | size | acceptance |
 | --- | --- | --- | --- | --- |
+| ~~W12~~ | T1 `Acc.step`: an exact recurrence, not a verified claim | every acc carries `step` — clauses in call-chain rank order, each guard the branch's own condition resolved at its decider, each read a named cell at one epoch (`pre`/`post`/`mid`, the last through the cell's own clauses in `inputs`), scratch through its reaching stores, call returns as alternatives; `acchist` replays it from `cell(t-1)` and requires equality at every tick; what it cannot state or reproduce refuses by name | accstep, accshape, accguard, resolve | medium–large | JCH pw ×2 and cutoff, GT2 filter, Commando portamento exact over their horizons; every other acc a named refusal (`inexact recurrence` with term and site, `divergent recurrence` with its first tick); hermetic snippets per policy replay exactly |
 | W11 | the producer program as section 4 | classify each producer's guards against the events the fixed procedure has (row, note-on, `early`, a stream's step, an accumulator's rate) and its value against the data forms (an instrument column, a stream column, a pitch lookup, an `Acc`), exact over the horizon or a named refusal; then `player` is section 4 and `program` leaves the trackerprog | large | the same nine tunes at 0 divergences with no `program` block |
 
 Total ≈ 24–30 agent-days. W1–W3 are independent of W0 and of each other;

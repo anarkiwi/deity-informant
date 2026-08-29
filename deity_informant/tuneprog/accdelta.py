@@ -7,7 +7,7 @@ One additive term of a recurrence as ``const``, ``field``, ``tabcell`` or
 from __future__ import annotations
 
 from .accguard import opened
-from .accshape import canon, cellof, maskof, onepass, reads, selfread, shift_loop
+from .accshape import canon, cellof, maskof, onepass, reads, selfread, shift_loop, zeroexit
 from .facts import elem_count
 from .ir import Bin, Const, Load, MASK, R16
 from .irwalk import addr_split, walk
@@ -128,7 +128,8 @@ def tablestep_exprs(ctx, byname):
         if n is None:
             continue
         c = shifts[0]
-        k = Const(0, 1) if onepass(ctx, c.proc, c.block, c.guards) else Const(1, 1)
+        once = onepass(ctx, c.proc, c.block, c.guards) or zeroexit(ctx, c.proc, c.block)
+        k = Const(0, 1) if once else Const(1, 1)
         out[tgt.cells[0]] = _difference(diff.value) + (Bin("+", n, k, 2),)
     return out
 

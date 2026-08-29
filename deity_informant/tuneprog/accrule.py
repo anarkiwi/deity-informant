@@ -322,10 +322,13 @@ def _halves(tgt, got):
     """
     lo, hi = got.get(tgt.cells[0]), got.get(tgt.cells[1])
     if lo is not None and hi is not None and lo.kind == "action" and hi.kind == "action":
-        pair = lambda a, b: Bin("|", a, Bin("<<", b, Const(8, 1), 2), 2)  # noqa: E731
-        exact = pair(_exact(lo), _exact(hi))
-        return [lo._replace(value=pair(lo.value, hi.value), exact=exact)]
+        exact = _pair(_exact(lo), _exact(hi))
+        return [lo._replace(value=_pair(lo.value, hi.value), exact=exact)]
     return [c._replace(kind="half", shift=0 if k == tgt.cells[0] else 8) for k, c in got.items()]
+
+
+def _pair(a, b):
+    return Bin("|", a, Bin("<<", b, Const(8, 1), 2), 2)
 
 
 def _exact(c):

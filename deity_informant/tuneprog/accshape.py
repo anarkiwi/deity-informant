@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from collections import namedtuple
 
-from .accguard import _domsets, cellof, guardpath, key_of, opened, propagate, reads, unpin
-from .accguard import scratch, valnames, EMPTY, _inloop
 import networkx as nx
 
+from .accguard import _domsets, cellof, guardpath, key_of, opened, propagate, reads
+from .accguard import scratch, EMPTY, _inloop
 from .graph import cfg, idoms, natural_loops, preds_of, rpo
 from .idioms import CMP, is_one
 from .ir import Bin, Call, Const, Let, Load, R16, REGIDX, REGVAR, Store, Var, W16
@@ -20,7 +20,7 @@ from .irwalk import addr_split, renamer, single_defs, sub_expr, walk
 from .loops import _entry_value, _exit_tests, repeats
 from .provenance import stops
 
-DEPTH = 4  # call frames a value is chased through before it is left as it stands
+DEPTH = 16  # call frames a value is chased through before it is left as it stands
 MAXARMS = 256
 Arm = namedtuple("Arm", "guards value addr proc block path exact")
 Site = namedtuple("Site", "proc block idx stmt at")
@@ -84,7 +84,9 @@ def sites(prog, facts, order):
                     continue
                 k = key_of(s)
                 if k is not None:
-                    out.setdefault(k, []).append(Site(name, lbl, order.get((name, lbl, i), 0), s, i))
+                    out.setdefault(k, []).append(
+                        Site(name, lbl, order.get((name, lbl, i), 0), s, i)
+                    )
     return {
         k: sorted(v, key=lambda x: (x.idx, x.stmt.src, x.block)) for k, v in sorted(out.items())
     }
@@ -162,7 +164,7 @@ class Ctx:
             reach, loops = self.reach(pa), self.inloop(pa)
             if lb in reach.get(la, ()) or la in reach.get(lb, ()):
                 return False
-            return not (loops.get(la, EMPTY) & loops.get(lb, EMPTY))
+            return not loops.get(la, EMPTY) & loops.get(lb, EMPTY)
         return False
 
     def chain(self, proc, path):
@@ -221,7 +223,7 @@ class Ctx:
 
         hits = self._memo(("lets", proc), make)
         out = dict(self.defs(proc))
-        sites = {n: (proc, v[0][0], v[0][1]) for n, v in hits.items() if n in out}
+        where = {n: (proc, v[0][0], v[0][1]) for n, v in hits.items() if n in out}
         dom, here = self.dom(proc).get(label, ()), self.inloop(proc).get(label, EMPTY)
         for n, v in hits.items():
             if len(v) < 2 or any(here & self.inloop(proc).get(lbl, EMPTY) for lbl, _i, _e in v):
@@ -229,8 +231,8 @@ class Ctx:
             got = [(dom.index(lbl), lbl, i, e) for lbl, i, e in v if lbl in dom]
             near = [x for x in got if x[0] == min(d for d, *_r in got)] if got else []
             if len(near) == 1:
-                out[n], sites[n] = near[0][3], (proc, near[0][1], near[0][2])
-        return out, sites
+                out[n], where[n] = near[0][3], (proc, near[0][1], near[0][2])
+        return out, where
 
     def inloop(self, proc):
         """``{label: the loop headers whose body holds it}``."""
@@ -300,26 +302,26 @@ def arms(ctx, proc, block, value, addr, skip=frozenset(), depth=DEPTH):
     iteration, and the nearest dominating one is the first iteration's constant.
     Every caller is climbed: which of a procedure's visits ran is its callers' guards.
     """
-    return _arms(ctx, proc, block, value, value, addr, (), (), skip, depth)
+    return _arms(ctx, proc, block, value, value, addr, (), (), skip, depth, MAXARMS)
 
 
-def _arms(ctx, proc, block, value, exact, addr, extra, path, skip, depth):
+def _arms(ctx, proc, block, value, exact, addr, extra, path, skip, depth, budget):
     """``exact`` is the value with no :meth:`Ctx.parked` name read as its cell: what
     an epoch-exact reader (:mod:`.accstep`) evaluates, since a parked successor read
     stands for the cell's own next value and is a no-op as a store of it."""
     p = ctx.prog.procs[proc]
-    plain, sites = ctx.placed(proc, block)
+    plain, where = ctx.placed(proc, block)
     plain = {n: e for n, e in plain.items() if n not in skip}
     defs = {**plain, **{n: e for n, e in ctx.parked(proc).items() if n not in skip}}
     value, addr = opened(value, defs, DEPTH, ctx.prop), opened(addr, defs, DEPTH, ctx.prop)
-    exact = opened(exact, plain, DEPTH, ctx.prop, sites)
+    exact = opened(exact, plain, DEPTH, ctx.prop, where)
     gs = tuple(
         (opened(c, defs, DEPTH, ctx.prop), t, w)
         for c, t, w in tuple(ctx.guards(proc).get(block, ())) + tuple(extra)
     )
     here = [Arm(gs, value, addr, proc, block, path, exact)]
     calls = ctx.callers.get(proc) or ()
-    if not depth or not calls:
+    if not depth or not calls or budget < len(calls):
         return here
     out = []
     for cproc, clbl, ci, call in calls:
@@ -335,9 +337,8 @@ def _arms(ctx, proc, block, value, exact, addr, extra, path, skip, depth):
             tuple(path) + ((cproc, clbl, ci),),
             skip,
             depth - 1,
+            budget // len(calls),
         )
-        if len(out) > MAXARMS:
-            return here
     return out or here
 
 
@@ -512,6 +513,25 @@ def onepass(ctx, proc, block, guards):
     got = enclosing(ctx, proc, block)
     tests = {repr(canon(c)) for c, _t, _at in _exit_tests(p, got[0][1])} if got else set()
     return any(repr(canon(g)) in tests for g, _t, _w in guards)
+
+
+def zeroexit(ctx, proc, block):
+    """True when the counted loop holding ``block`` leaves on its count hitting a value.
+
+    A ``DEY; BNE`` loop runs its count's own value of passes; one that leaves on
+    the sign (``BPL``) runs one more, which :func:`~.accdelta.tablestep_exprs` adds.
+    """
+    p = ctx.prog.procs[proc]
+    got = enclosing(ctx, proc, block)
+    for c, _t, _at in _exit_tests(p, got[0][1]) if got else ():
+        eq = type(c) is Bin and c.op in ("==", "!=") and any(type(x) is Const for x in (c.a, c.b))
+        if eq and not any(type(x) is Bin and x.op == "&" and _const(x.b) == 0x80 for x in walk(c)):
+            return True
+    return False
+
+
+def _const(e):
+    return e.v if type(e) is Const else None
 
 
 def _steps_down(e, name):

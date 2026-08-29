@@ -264,7 +264,7 @@ def pin(e, site):
 
 
 def unpin(e, keep):
-    """``e`` with the placed reads ``keep`` admits unplaced: the target's own, for :func:`~.accshape.step`."""
+    """``e`` with the placed reads ``keep`` admits unplaced: the target's own reads."""
     t = type(e)
     if t is At:
         return e.e if keep(e.e) else At(unpin(e.e, keep), e.site, e.via)

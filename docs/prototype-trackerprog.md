@@ -186,7 +186,31 @@ holds, one terminator*.
 ### 3.4 accumulators
 
 Declared once in `accs`, referenced by streams, instruments, preludes and
-commands. The full object is §5.
+commands. The full object is §5. Each carries **`step`**, the exact per-tick
+recurrence a player computes `cell(t+1)` with:
+
+```
+step = { width   : bits of the value
+       , value   : [{cell, shift, bits}, …]          # the bytes the value is made of
+       , clauses : [ {site, rank, kind, when, copy, …}, … ]   # in tick order
+       , inputs  : { "cell@rank": {before, clauses, complete}, … } }
+clause = step: {sign, delta, carry, comp, times} | action | opaque: {value} | half: {value, shift}
+when   = [{test, truth, at}, …]                     # the branch's own condition, at its decider
+term   = {const} | {index} | {self, shift, bits} | {table, region, addr}
+       | {cell, addr, epoch: pre | post | mid, before?} | {pair: [term, term]}
+       | {op, a, b, w} | {sel: [{when, value}, …]}
+```
+
+`rank` is the statement's position on its call chain (a tuple, compared
+lexicographically), and every read's `epoch` is decided by that rank against the
+writes of its cell: `pre` (last tick's value) before them all, `post` after them
+all, `mid` between — the cell's own clauses up to `before`, carried in `inputs`.
+A `mid` input's `complete` says whether its whole clause set reproduces its
+column; the acc's own proof covers the part it reads. The replay
+(`accstep.prove`) applies the clauses in rank order from `cell(t-1)` and requires
+`cell(t)` at every tick; an acc it cannot state (`inexact recurrence`, with the
+term and site) or reproduce (`divergent recurrence`, with the first tick) is a
+refusal, never a record.
 
 ### 3.5 instruments
 

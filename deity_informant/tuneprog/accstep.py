@@ -8,7 +8,6 @@ clauses so far applied to last tick's. What no named cell states is :class:`Inex
 from __future__ import annotations
 
 from collections import namedtuple
-from itertools import product
 
 import numpy as np
 
@@ -164,7 +163,7 @@ class Stepper:
         elif proc != st.where[0]:
             if proc not in levels:
                 raise Inexact("definition of %s off the chain" % proc, st.site)
-            chain = chain[levels.index(proc):]
+            chain = chain[levels.index(proc) :]
         n = len(self.ctx.prog.procs[proc].blocks[lbl].stmts)
         key = (proc, lbl) if idx >= n else (proc, lbl, idx)
         return self.ctx.at(chain, key), st._replace(where=(proc, lbl, idx, chain))
@@ -240,7 +239,9 @@ class Stepper:
             x, here = int(x), addr == x
             base = x if base is None else min(base, x)
             part = st.parts.get((rid, x))
-            inside = r is None or r.base <= x < r.base + r.size or (lo is not None and lo <= x <= hi)
+            inside = (
+                r is None or r.base <= x < r.base + r.size or (lo is not None and lo <= x <= hi)
+            )
             if not inside:
                 self.bad |= here
                 self.unnamed[(rid, x)] = here
@@ -257,7 +258,11 @@ class Stepper:
                 kinds[x] = "image"
             else:
                 ep, col = self.epoch((rid, x), at, st.where[3]), self.cells.col(rid, x)
-                v = _lag(col) if ep == "pre" else col if ep == "post" else self.prefix(rid, x, at, st)
+                v = (
+                    _lag(col)
+                    if ep == "pre"
+                    else col if ep == "post" else self.prefix(rid, x, at, st)
+                )
                 kinds[x] = ep
             out = np.where(here, v, out)
         if not kinds:
@@ -370,7 +375,9 @@ class Stepper:
         bad = bad[bad > 0]
         if bad.size:
             hit = next((k for k, m in self.unnamed.items() if m[bad[0]]), (0, 0))
-            raise Inexact("unnamed address $%04X (region %d) on tick %d" % (hit[1], hit[0], bad[0]), st.site)
+            raise Inexact(
+                "unnamed address $%04X (region %d) on tick %d" % (hit[1], hit[0], bad[0]), st.site
+            )
         self.unnamed = {}
 
     def guards(self, guards, at, st):
@@ -421,7 +428,9 @@ class Stepper:
                 n, jc["times"] = self.value(c.times, c.rank, st)
                 d = d * n
             return (((val ^ m) if c.comp else val) + c.sign * d + k) & m
-        v, jc["value"] = self.value(tabfree(c.value if c.exact is None else c.exact, tab), c.rank, st)
+        v, jc["value"] = self.value(
+            tabfree(c.value if c.exact is None else c.exact, tab), c.rank, st
+        )
         if c.kind == "half":
             jc["shift"] = c.shift
             mask = (0xFF << c.shift) & m
@@ -439,15 +448,9 @@ class Stepper:
         val, out, m = prev, [], (1 << acc["width"]) - 1
         loops = indexes(self.cells, [x for c in plan for x in exprs_of(c)])
         for c in sorted(plan, key=lambda c: (c.rank, _pc(c))):
-            free = sorted(set(loops) & {v.n for e in exprs_of(c) for v in walk(e) if type(v) is Var})
-            free = [n for n in free if n not in env]
-            for binding in product(*[[k * loops[n] for k in range(SID_VOICES)] for n in free]):
-                bound = dict(zip(free, binding))
-                here = st._replace(env={**env, **bound}, site=_pc(c), where=_where(c))
-                self.bad[:] = False
-                when, jc = self.clause(c, here, None)
-                got = self.apply(c, val, here, jc, m)
-                self.check(when, here)
+            for when, got, bound, jc in self.instances(
+                c, st._replace(site=_pc(c), where=_where(c)), m, loops
+            ):
                 val = np.where(when, got, val)
                 st.snaps.append((c.rank, val))
                 out.append(dict(jc, bind=bound) if bound else jc)
@@ -461,6 +464,29 @@ class Stepper:
             "inputs": dict(sorted(self.inputs.items())),
         }
         return val, step
+
+    def instances(self, c, st, m, loops, bound=None):
+        """One clause per value of each copy index left free in it, in loop order.
+
+        A name is a copy index only when nothing resolves it: a cursor a register
+        carries opens to its cell, and binding it per voice would read three cells.
+        """
+        bound = bound or {}
+        try:
+            self.bad[:] = False
+            when, jc = self.clause(c, st, None)
+            got = self.apply(c, st.prev if not st.snaps else st.snaps[-1][1], st, jc, m)
+            self.check(when, st)
+            return [(when, got, bound, jc)]
+        except Inexact as x:
+            name = x.why[len("free name ") :] if x.why.startswith("free name ") else None
+            if name not in loops or name in bound:
+                raise
+        out = []
+        for k in range(SID_VOICES):
+            here = {**bound, name: k * loops[name]}
+            out += self.instances(c, st._replace(env={**st.env, name: here[name]}), m, loops, here)
+        return out
 
 
 def exprs_of(c):
