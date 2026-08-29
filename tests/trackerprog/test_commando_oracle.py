@@ -65,49 +65,65 @@ def test_the_object_is_the_tune_and_no_more(song):
 
 
 def test_the_pitch_table_is_only_a_pitch_table():
-    """Note numbers and frequencies, nothing else, and every entry a constant."""
+    """A base note and a contiguous run of frequencies: the tune's whole tuning."""
+    for song in (0, 1, 2):
+        p = built(song)["pitch"]
+        assert set(p) == {"base", "freq"}
+        assert p["base"] == 16 and len(p["freq"]) == 80  # notes 16..95, every subtune
+        assert all(isinstance(f, int) for f in p["freq"])
+
+
+def test_the_modulators_are_expressions_not_tables():
+    """The vibrato's interval and the arpeggio's octave are read, not tabulated."""
     obj = built(0)
-    p = obj["pitch"]
-    assert set(p) == {"notes", "index", "freq"}
-    assert len(p["freq"]) == len(p["notes"]) == 69
-    assert all(isinstance(f, int) for f in p["freq"])
-    assert max(p["notes"]) == 95 and min(p["notes"]) == 16  # 104 is no note
+    vib, arp = obj["accs"]["vibrato"], obj["accs"]["arpeggio"]
+    assert "interval" not in vib and "octave" not in arp
+    assert vib["delta"]["repeat"][0]["shr"][0]["sub"] == [
+        {"noteword": {"add": [{"cell": "note"}, 1]}},
+        {"noteword": {"cell": "note"}},
+    ]
+    assert arp["policy"]["reload"]["noteword"]["add"][0] == {"cell": "note"}
+    assert obj["streams"]["arp"]["rows"] == [0, 12]  # semitone offsets, not note rows
+    # no instrument carries a per-note record of any kind
+    assert all(
+        set(i) == {"adsr", "wave", "pw", "prelude", "accs"} for i in obj["instruments"].values()
+    )
 
 
-def test_the_modulators_keep_their_own_tables_over_the_tuning():
+def test_one_source_covers_every_index_past_the_tuning():
     """commando-floor section 5: the overrun is load-bearing, 25 notes' worth.
 
-    It is not in the tuning.  The vibrato's interval and the arpeggio's octave
-    are each that accumulator's own table, and where the tune's own arithmetic
-    left the tuning the entry names a generator.
+    It is one generator indexed by position -- not by note -- so the same source
+    serves every subtune and a different melody reads it unchanged.
     """
-    obj = built(0)
-    n = len(obj["pitch"]["notes"])
-    vib, arp = obj["accs"]["vibrato"], obj["accs"]["arpeggio"]
-    assert len(vib["interval"]) == len(arp["octave"]) == n
-    assert all(x is None or isinstance(x, int) for x in vib["interval"])  # all constants
-    escapes = {
-        obj["pitch"]["notes"][i]: e["gen"]
-        for i, e in enumerate(arp["octave"])
-        if isinstance(e, dict) and "gen" in e
-    }
-    assert set(escapes) == {85, 86, 88, 93, 95}
-    assert set(escapes.values()) <= set(obj["generators"])
-    assert built(1)["generators"] == {} and built(2)["generators"] == {}
+    for song in (0, 1, 2):
+        obj = built(song)
+        assert set(obj["generators"]) == {"past_tuning"}
+        g = obj["generators"]["past_tuning"]
+        assert g["base"] == 96 and len(g["words"]) == 21  # indices 96..116
+        assert all("u16" in w or "trap" in w for w in g["words"])
+        assert all(w["trap"] for w in g["words"] if "trap" in w)  # every trap says why
+        assert {s["event"] for s in g["on"]} <= {
+            "sound",
+            "note",
+            "instrument",
+            "order",
+            "row",
+            "turn",
+        }
+        assert all("set" in s for s in g["on"])  # a source mirrors; it never counts
+    # every subtune carries the same source: it is the tune's, not the melody's
+    assert built(0)["generators"] == built(1)["generators"] == built(2)["generators"]
 
 
-def test_a_played_index_that_is_not_a_note_lives_on_its_instrument():
-    """104 is the drum's seed, not a pitch: it is a record on instruments 4 and 7."""
+def test_the_score_carries_note_numbers_and_the_drum_index_is_one_of_them():
+    """104 is no pitch, and the tuning does not pretend otherwise: it stops at 95."""
     obj = built(0)
-    seeded = {k: i["seed"] for k, i in obj["instruments"].items() if "seed" in i}
-    assert set(seeded) == {"4", "7"}
-    assert all(s["number"] == 104 for s in seeded.values())
-    assert set(seeded["4"]) == {"number", "freq"}  # no vibrato, no arpeggio
-    assert set(seeded["7"]) == {"number", "freq", "interval", "octave"}
-    assert "104" not in obj["pitch"]["index"]
     events = [e for p in obj["score"]["patterns"].values() for e in p["events"]]
+    notes = {e["note"] for e in events if e["note"] is not None}
+    assert max(notes) == 104 and 104 > obj["pitch"]["base"] + len(obj["pitch"]["freq"]) - 1
     # commando-floor section 5: "song 1 plays pitch 104 twenty-five times"
-    assert sum(1 for e in events if e["note"] == "seed") == 25
+    assert sum(1 for e in events if e["note"] == 104) == 25
 
 
 def test_no_expression_reads_another_voices_state():

@@ -62,9 +62,8 @@ class Player:
             "rowsleft": [0] * n,
             "dur": [0] * n,
             "freq": [0] * n,
+            "note": [0] * n,
         }
-        self.noteref = [0] * n
-        self.cur = None  # the accumulator stepping, for its own per-note table
         self.evrow = [0] * n
         self.tie = [False] * n
         self.armed = [[] for _ in range(n)]  # the accs the score armed
@@ -96,30 +95,34 @@ class Player:
             return p if name == "pw" else (p & 0xFF if name == "pw_lo" else p >> 8)
         return self.c[name][v] & 0xFFFF
 
-    # ---- the tuning, and the tables the modulators keep over it ----------------
-    def noteval(self, field):
-        """``field`` of the voice's current note: the tuning, or a modulator's table.
+    # ---- the tuning, total by construction ------------------------------------
+    def noteword(self, i):
+        """The word a note index carries: the tuning, or the source past its end.
 
-        A pitch table is a pitch table -- ``freq`` and nothing else.  Any other
-        field belongs to the accumulator asking for it, over the same rows.  A
-        note the tuning does not have is the instrument's seed, which carries
-        the same fields for itself.
+        A pitch table is a pitch table -- a base and a contiguous run of
+        frequencies -- so the modulators are expressions over it and keep no
+        tables of their own.  An index past the tuning resolves against a
+        source: a generator indexed by position, not by note, so the melody may
+        change without the object changing.  A position the object publishes
+        nothing for is a stated trap, never a hole.
         """
-        ref = self.noteref[self.v]
-        if ref == "seed":
-            e = self.instr()["seed"][field]
-        elif field == "freq":
-            e = self.o["pitch"]["freq"][ref]
-        else:
-            t = self.cur.get(field)
-            e = None if t is None or not 0 <= ref < len(t) else t[ref]
-        if e is None:
-            raise AssertionError("no %s for this note: it is never modulated that way" % field)
-        if isinstance(e, int):
-            return e & 0xFFFF
-        if "row" in e:
-            return self.o["pitch"]["freq"][e["row"]]
-        return self.ev(e) & 0xFFFF
+        p = self.o["pitch"]
+        k = i - p["base"]
+        if 0 <= k < len(p["freq"]):
+            return p["freq"][k]
+        for name, g in self.o.get("generators", {}).items():
+            j = i - g["base"]
+            if not 0 <= j < len(g["words"]):
+                continue
+            w = g["words"][j]
+            if "trap" in w:
+                raise AssertionError("index %d in %s: %s" % (i, name, w["trap"]))
+            keep, self.own = self.own, self.gen[name]
+            try:
+                return self.ev(w) & 0xFFFF
+            finally:
+                self.own = keep
+        raise AssertionError("note index %d is outside the tuning and every source" % i)
 
     def ev(self, e, ov=None):
         """Evaluate one section 5 expression node."""
@@ -145,8 +148,8 @@ class Player:
                 return self.ev(g["value"], ov)
             finally:
                 self.own = keep
-        if k == "note":
-            return self.noteval(a if isinstance(a, str) else self.ev(a, ov))
+        if k == "noteword":
+            return self.noteword(self.ev(a, ov))
         if k == "shr":
             return self.ev(a[0], ov) >> self.ev(a[1], ov)
         if k == "flag":
@@ -185,11 +188,6 @@ class Player:
                 own = self.gen[name]
                 for k, e in sub["set"].items():  # a generator mirrors; it never counts
                     own[k] = self.ev(e, payload) & 0xFF
-
-    def notenumber(self, v):
-        """The number the voice's note carries in the tune's own numbering."""
-        ref = self.noteref[v]
-        return self.instr(v)["seed"]["number"] if ref == "seed" else self.o["pitch"]["notes"][ref]
 
     def instr(self, v=None):
         return self.o["instruments"][str(self.c["ins"][self.v if v is None else v])]
@@ -271,12 +269,9 @@ class Player:
                 self.publish("instrument", v, {"ins": e["ins"]})
             if e["arm"] is not None:
                 self.armed[v].append(e["arm"])
-            ref = e["note"]
-            if isinstance(ref, int) and not 0 <= ref < len(self.o["pitch"]["freq"]):
-                raise AssertionError("row %d is outside the tuning" % ref)
-            self.noteref[v] = ref
-            self.publish("note", v, {"note": self.notenumber(v)})
-            f = self.noteval("freq")
+            self.c["note"][v] = e["note"]
+            self.publish("note", v, {"note": e["note"]})
+            f = self.noteword(e["note"])
             self.c["freq"][v] = f
             prod += [("freq_hi", f >> 8), ("freq_lo", f & 0xFF)]
         self.c["wave"][v] = self.instr()["wave"]
@@ -297,8 +292,7 @@ class Player:
         for name, d in self.o["globals"]["flags"].items():
             self.flags[name] = self.ev(d["default"])
         for arm in sorted(arms, key=lambda a: self.o["accs"][a["acc"]]["rank"]):
-            self.cur = self.o["accs"][arm["acc"]]
-            self.step(self.cur, arm, prod, edge)
+            self.step(self.o["accs"][arm["acc"]], arm, prod, edge)
 
     def step(self, a, ov, prod, edge):
         v = self.v

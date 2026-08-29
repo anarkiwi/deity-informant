@@ -16,11 +16,10 @@ Two results:
    sequence of values identical. The only difference is the interleave §2 drops.
 2. **The schema needs twelve additions**, listed in §4. Nine are one datum
    each. The other three are the layer's own discipline made explicit: a pitch
-   table holds pitch and nothing else, with each modulator keeping its own table
-   over the same rows; a played index that is not a note belongs to the
-   instrument that plays it; and where a value is not a table read it is a
-   **generator**, a self-contained machine with private state fed by the
-   player's published events. Nothing in the tune needed a new *mechanism*: every §5 row
+   table holds the tune's whole tuning and nothing else, with the modulators as
+   **expressions** over it; the lookup is **total**, and past the tuning it
+   resolves against one **source** indexed by position; and a source is
+   self-contained, with private state fed by the player's published events. Nothing in the tune needed a new *mechanism*: every §5 row
    Hubbard is cited for held exactly as written.
 
 Reproduce:
@@ -38,15 +37,14 @@ needed · 5 what the spec got right · 6 measurements.
 ## 1. The object
 
 `tools/trackerprog_commando.py` writes `trackerprog.json`;
-`deity_informant/trackerprog/universal.py` (396 lines, no tune, no family, no
+`deity_informant/trackerprog/universal.py` (390 lines, no tune, no family, no
 table of its own) renders it. The object is §3's seven sections:
 
 | section | Commando song 1 |
 | --- | --- |
 | `meta` | 3 voices in order 2,1,0; `commit_order (ctrl, ad, sr)`; `tempo` a divider, `rate = speed + 1 = 3`; `cycles_per_tick 19656` |
-| `pitch` | **69 notes**: a note number and its frequency, all constants. The vibrato's `interval` and the arpeggio's `octave` are those accumulators' own tables (§4.1) |
-| `generators` | **8**, each with private state, its event subscriptions and a value; subtunes 2 and 3 need **none** (§4.3) |
-| seeds | instruments 4 and 7 carry one: a played index that is no note (§4.2) |
+| `pitch` | `base 16` and **80** contiguous frequencies — the tune's whole tuning, the same in every subtune. The vibrato and the arpeggio are expressions over it (§4.1) |
+| `generators` | **one** source, `past_tuning`, indices 96..116: 12 words and 9 stated traps, 17 private bytes, 17 subscriptions — the same in every subtune (§4.2, §4.3) |
 | `streams` | three: `note_on` (the note row's five sets), `note_off` (the prelude), `arp` (a two-row pitch stream `[0, 12]`) |
 | `accs` | seven declared forms, 18 arms across the 9 instruments (§2) |
 | `instruments` | **9** — the subtune's reach; the file carries 13 |
@@ -67,11 +65,10 @@ factored form — the certified program. Right column is the object.
 
 | the tuneprog says | the trackerprog says | §5 row |
 | --- | --- | --- |
-| `FREQ[n]`, the u16 at `$5428 + 2n` | `pitch.freq[i]`, `i` a row of the tuning | §3.2 |
-| `FREQ[n+1] - FREQ[n]` (the vibrato's interval) | `vibrato.interval[i]` — the accumulator's own table | new (§4.1) |
-| `FREQ[n+12]` (the arpeggio's octave) | `arpeggio.octave[i]` — the accumulator's own table | new (§4.1) |
-| a played index outside the tuning | the instrument's `seed` | new (§4.2) |
-| the value such an index carried | a **generator**: private state, published events, a value | new (§4.3) |
+| `FREQ[n]`, the u16 at `$5428 + 2n` | `pitch(n)` — the tuning, total by construction | §3.2 |
+| `FREQ[n+1] - FREQ[n]` (the vibrato's interval) | `pitch(n+1) - pitch(n)` — an expression | §5 `tablestep` |
+| `FREQ[n+12]` (the arpeggio's octave) | `pitch(n + arp[counter & 1])`, `arp = [0, 12]` | §5 arpeggio |
+| an index past the tuning | one **source**, indexed by position, with private state | new (§4.2, §4.3) |
 | `INS[i]`, 8 columns | `Ins{adsr, wave, pw, prelude, accs}` | §3.5 |
 | `TRACK[v]` / `PAT[p]` | `score.orders` / `score.patterns` of events | §3.6 |
 | `speedctr`, `speed` | `meta.tempo` — a divider, `rate = 3` | §3.3 |
@@ -104,11 +101,14 @@ them entirely: not one byte of the object names a memory location.
 the reference being the tune's own player on `deity_informant.PcodeVM` — the
 same interpreter the tuneprog certificate is verified against.
 
-| subtune | ins | patterns | events | notes | gens | acc arms | ticks | SID writes | divergences | identical ticks | permuted ticks |
+| subtune | ins | patterns | events | tuning | source | acc arms | ticks | SID writes | divergences | identical ticks | permuted ticks |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | 9 | 31 | 570 | 69 | 8 | 18 | 11,780 | 133,109 | **0** | 3,410 | 8,370 |
-| 2 | 4 | 10 | 118 | 30 | 0 | 8 | 11,780 | 128,953 | **0** | 2,944 | 8,836 |
-| 3 | 1 | 4 | 61 | 22 | 0 | 4 | 11,780 | 7,219 | **0** | 11,561 | 219 |
+| 1 | 9 | 31 | 570 | 80 | 21 | 18 | 11,780 | 133,109 | **0** | 3,410 | 8,370 |
+| 2 | 4 | 10 | 118 | 80 | 21 | 8 | 11,780 | 128,953 | **0** | 2,944 | 8,836 |
+| 3 | 1 | 4 | 61 | 80 | 21 | 4 | 11,780 | 7,219 | **0** | 11,561 | 219 |
+
+The tuning and the source are the same object in all three rows: they belong to
+the tune, and only the score and the instruments change with the subtune.
 
 133,109 is the write count [prototype-commando-floor.md](prototype-commando-floor.md)
 §2.2 measures on the trace, to the write.
@@ -131,142 +131,128 @@ program ends in `stop`, which subtunes 1 and 2 never reach inside the horizon.
 Twelve additions. Nine are one datum each; §4.1, §4.2 and §4.3 are the layer's
 own discipline made explicit. None is a player branch and none is a new mechanism.
 
-### 4.1 A pitch table is a pitch table
+### 4.1 A pitch table is a pitch table, and the modulators are expressions
 
 §3.2 says `pitch: [u16; N]` and "every *note* elsewhere is an index into this
-table or a signed index offset". The offset is the problem. Commando's table is
-the frequency table **fused with the six per-voice arrays** — `$5448`'s 202
-bytes tune notes 16..95 and then become state — and the tune's own arithmetic
-walks off the end (commando-floor §5, "const is refuted by the tune"). Two
-producers do the walking: the vibrato's `FREQ[n+1] - FREQ[n]` and the
-arpeggio's `FREQ[n+12]`.
-
-Neither belongs in the tuning. They are **transformations that sit on top of
-pitch**, so each accumulator keeps its own table over the same rows:
+table or a signed index offset". Both halves are right, and the object should
+say no more than that:
 
 ```jsonc
-"pitch": {"notes": [16, 18, …, 95],       // 69 note numbers
-          "freq":  [$02BD, $0313, …],     // and their frequencies. Nothing else.
-          "index": {"16": 0, …}}
-
-"accs": {"vibrato":  {…, "interval": [$2A, $2F, …]},    // the interval above a note
-         "arpeggio": {…, "octave":   [{"row": 8}, …]}}  // the note an octave up
+"pitch": {"base": 16, "freq": [$02BD, $02E7, …, $FD2E]}   // notes 16..95, constants
 ```
 
-Every `freq` is a constant; every `interval` is a constant, including note 95's
-`$09D2`, which is the interval above the tuning's last note and therefore not
-musical — a number the vibrato owns, not a magic entry in the pitch table.
-`octave` holds a row of the tuning, or a generator (§4.2) where the tune's own
-`+12` left it: five notes, 85 86 88 93 95. A row absent from a modulator's table
-is a note that modulator never touches, which is a fact worth stating and the
-table states it.
-
-Nothing anywhere adds to a pitch index. The tuning is bounded by construction:
-`freq` is subscripted by a row of the score and by nothing else.
-
-### 4.2 A played index that is not a note is the instrument's seed
-
-"Note 104" is no note. Instruments 4 and 7 play it twenty-five times
-(commando-floor §5) and what it means is *start from the waveform the other two
-voices are sounding* — the drum's own starting value. So it is not in the
-tuning; it is a record on the instruments that use it, carrying exactly the
-columns their armed accumulators ask of a note:
+That is the tune's **whole tuning** — 80 contiguous entries, the same in every
+subtune — not the notes some melody happens to play. The vibrato and the
+arpeggio then keep no tables at all; they are expressions over it:
 
 ```
-instrument 4  seed  no note: number 104, freq wave0_wave1
-instrument 7  seed  no note: number 104, freq wave0_wave1,
-                    interval wave0_wave1_wave2_note0_difference,
-                    octave pwdir0_pwdir1
+vibrato   delta   repeat((pitch(note + 1) - pitch(note)) >> <shift>, fold(counter, 7))
+arpeggio  policy  reload pitch(note + arp[counter & 1])        with arp = [0, 12]
 ```
 
-Instrument 4 has neither vibrato nor arpeggio, so its seed carries neither
-column. The event says `note: seed`; every other event says a row of the tuning.
-`number` is the seed's place in the tune's own note numbering, which another
-voice's generator observes — the one thing about the seed that is not private
-to its instrument, and it is on the instrument all the same.
+An earlier draft gave each modulator a table indexed by the notes this melody
+plays. That was wrong twice over: it put transformation data in the tuning's
+shape, and a different melody over the same tune would have shattered it —
+a new note meant a new table row that did not exist. Expressions over a total
+lookup have neither problem.
 
-### 4.3 `generators`: a self-contained source, with private state
+### 4.2 One source, indexed by position, for what lies past the tuning
 
-The values those escapes carry are not tuning at all. §6 says so in prose — "a
-read landing on a play-written cell is not a pitch entry at all" — and this is
-that, given a home. A generator is declared once and named by a modulator's
-table or an instrument's seed:
+`pitch(n)` has to be **total**, because Hubbard's own arithmetic walks off the
+end of his tuning: `$5448`'s 202 bytes tune notes 16..95 and then become the
+six per-voice arrays (commando-floor §5, "const is refuted by the tune"). The
+vibrato's `n+1` and the arpeggio's `n+12` reach indices 96..116.
+
+So past the tuning the lookup resolves against a **source**: one generator,
+indexed by position and never by note.
+
+```
+past_tuning -- indices 96..116
+     96  u16(0, 7)
+     97  u16(14, sid_base(reader))
+     98  u16(own.orderpos0, own.orderpos1)
+     99  u16(own.orderpos2, own.patrow0)
+    100  u16(own.patrow1, own.patrow2)
+    101  trap: no event publishes rowsleft
+    102  trap: no event publishes rowsleft
+    103  trap: no event publishes rowbyte
+    104  u16(own.wave0, own.wave1)
+    105  u16(own.wave2, own.note0)
+    106  u16(own.note1, own.note2)
+    107  u16(own.ins0, own.ins1)
+    108  trap: a cell the tick recomputes; nothing carries it between ticks
+    …
+    116  u16(own.pwdir0, own.pwdir1)
+```
+
+Because it is positional, **every subtune carries the same source** — it is a
+property of the tune, not of a melody — and a melody that reached index 99 or
+106, which song 1 never does, would simply work. A position the object cannot
+publish is a stated trap with its reason, never a hole and never silence: nine
+of the twenty-one are traps, seven because the cells are tick scratch that
+nothing carries between ticks, two because the object unpacked the row byte and
+one because it does not publish the row countdown. Those are the boundary, said
+out loud.
+
+"Note 104" is no pitch, and nothing pretends otherwise: the tuning stops at 95,
+the score plays index 104 twenty-five times, and the lookup finds it in the
+source. That is what *not a note* means, said structurally rather than by
+special-casing it onto an instrument.
+
+### 4.3 A source is self-contained, with private state
 
 ```jsonc
-"wave0_wave1": {
-  "state": {"lo": 0, "hi": 0},
-  "on": [{"event": "sound", "voice": 0, "set": {"lo": {"payload": "wave"}}},
-         {"event": "sound", "voice": 1, "set": {"hi": {"payload": "wave"}}}],
-  "value": {"u16": [{"own": "lo"}, {"own": "hi"}]}
+"past_tuning": {
+  "base":  96,
+  "state": {"wave0": 0, "wave1": 0, …, "ins1": 9, …},
+  "on":    [{"event": "sound", "voice": 0, "set": {"wave0": {"payload": "wave"}}}, …],
+  "words": [ … ]
 }
 ```
 
 It reads **nothing** of the player's: no cell of another voice, no table, no
-address, no index past the end of anything. What it needs it *mirrors*, by
-subscribing to the events the player publishes, and two generators mirroring the
-same fact keep two copies — deliberately cheaper than a shared namespace,
-because a private copy cannot alias.
+address. What it needs it *mirrors*, by subscribing to the events the player
+publishes; seventeen private bytes and seventeen subscriptions cover the whole
+tail. Mirroring is deliberately cheaper than a shared namespace, because a
+private copy cannot alias.
 
 The player publishes six events, each a musical fact and none a memory
-location, and every subscription is a `set`: a generator mirrors, it never
-counts.
+location, and every subscription is a `set`: a source mirrors, it never counts.
 
 | event | when | payload |
 | --- | --- | --- |
-| `note` | the row latched a note | `note` — its number, or the seed's |
+| `note` | the row latched a note | `note` |
 | `instrument` | the row carried an instrument | `ins` |
 | `sound` | any fetch, once the instrument's registers are emitted | `wave` |
 | `row` | any fetch, once the row is consumed | `pos` — the cursor's new position |
 | `order` | the order position moved | `pos` |
 | `turn` | an accumulator's phase turned | `acc`, `phase` |
 
-Song 1's eight generators and what each mirrors:
-
-| generator | reached as | mirrors |
-| --- | --- | --- |
-| `sidofs2_voice_base` | `octave` of note 85 | nothing — `u16(sid_base 2, sid_base of the reader)` |
-| `orderpos0_orderpos1` | `octave` of note 86 | two `order` positions |
-| `patrow1_patrow2` | `octave` of note 88 | two cursor positions, by `row` |
-| `wave2_note0` | `octave` of note 93 | one `sound` wave, one `note` number |
-| `ins0_ins1` | `octave` of note 95 | two `instrument` ids |
-| `wave0_wave1` | instruments 4 and 7's seed `freq` | two `sound` waves |
-| `…_difference` | instrument 7's seed `interval` | four bytes, two `sound` waves and a `note` |
-| `pwdir0_pwdir1` | instrument 7's seed `octave` | two pulse-sweep phases, by `turn` |
-
 `sid_base` is the chip's own register layout — the offset the player computes
 for every write it emits — so even the SID stride is not a constant in the data,
-and a source that depends on nothing live is folded to a number at build time
-(which is why note 95's interval is `$09D2` and not a generator).
+and a word that depends on nothing live is folded to a number at build time
+(which is why index 96 prints as `u16(0, 7)` and needs no state).
 
 **The invariant this buys, and the player enforces it:** no expression reads
 another voice's state. `{"cell": name}` is the voice being committed and nothing
-else. Cross-voice dependence exists only as a generator, declared, initialised
-and fed by published events. A test walks the whole object and asserts it.
+else. Cross-voice dependence exists only in a source, declared, initialised and
+fed by published events. A test walks the whole object and asserts it.
 
 **No packed byte survives.** The score's event fields are `dur`, `tie`, `gate`,
 `ins`, `note` and `arm`, every one a musical fact: the row byte's bit fields are
 separate columns, and a portamento byte is unpacked at build time into
 `arm(slide, {delta, phase})` — §3.6's own command, the shape an instrument
-already uses to arm an accumulator. Nine porta bytes become nine `(delta,
-phase)` pairs and the `porta` cell leaves the player entirely. The carry no
-producer leaves, which the 6502 takes off the instrument index's own third
-shift, folds to `0` with its proof recorded (no declared instrument id has bit 5
-set), so the object never reads an index as if it were data.
+already uses to arm an accumulator. The carry no producer leaves, which the 6502
+takes off the instrument index's own third shift, folds to `0` with its proof
+recorded (no declared instrument id has bit 5 set).
 
 **A cursor publishes its position, not its increment.** A pattern carries a
 `cursor` column — the position the voice's own cursor holds *after* each event,
 0 at the pattern's end, which is the cursor's own reset — and the player
 publishes that position. `Event.bytes`, the last encoding width in the score, is
 gone with it, and so is the `wrap` event and the `add` form in a subscription.
-The column is emitted only for the patterns a watched voice plays: 18 of song
-1's 31, and none at all in subtunes 2 and 3. It is the object's one stated
-residue — not derivable, because the trackerprog's cursor is the event index and
-Hubbard's is a byte offset, so it is a materialised coordinate, which is what
-§6's materialisation rule is for.
-
-Two-thirds of the machinery is free where it is not needed: **subtunes 2 and 3
-carry no generators and no seeds at all**, and neither would GT2, JCH, SID
-Wizard, defMON or Follin.
+It is the object's one materialised coordinate: not derivable, because the
+trackerprog's cursor is the event index and Hubbard's is a byte offset.
 
 ### 4.4 An instrument has a note row, whether or not it has a prelude
 
@@ -372,12 +358,12 @@ sections, no JSON — measured the way architecture §11 asks of a presentation:
 
 | subtune | lines | tokens | statements | blocks | header rows | data rows | `xz -9e` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | 810 | 5,313 | 769 | 8 | 41 | 769 | 3,784 |
-| 2 | 238 | 1,464 | 219 | 7 | 19 | 219 | 2,004 |
-| 3 | 163 | 998 | 150 | 7 | 13 | 150 | 1,764 |
+| 1 | 818 | 5,668 | 777 | 8 | 41 | 777 | 3,728 |
+| 2 | 289 | 1,934 | 269 | 8 | 20 | 269 | 2,604 |
+| 3 | 211 | 1,429 | 197 | 8 | 14 | 197 | 2,364 |
 
 Statements equal data rows by construction: the print carries one datum per
-line. Song 1's 810 lines against the source `tuneprog.md`'s 414 is the trade the
+line. Song 1's 818 lines against the source `tuneprog.md`'s 414 is the trade the
 layer makes — the program's 252 code lines become 60 lines of instruments,
 accumulators and generators, and the rest is the score
 and the tuning printed *as data*, which the tuneprog never printed at all.
@@ -387,35 +373,34 @@ for:
 
 | artefact | raw | `xz -9e` |
 | --- | --- | --- |
-| `trackerprog.json`, song 1, compact | 49,190 | **3,932** |
-| — its `score` half | 40,008 | 1,564 |
-| — everything else (tuning, modulator tables, generators, accs, instruments) | 9,173 | 2,536 |
+| `trackerprog.json`, song 1, compact | 49,035 | **3,760** |
+| — its `score` half | 41,089 | 1,736 |
+| — everything else (tuning, the source, accs, instruments) | 7,937 | 2,184 |
 | `tuneprog.md`, the source print | 21,679 | 4,644 |
 | the whole load band | 4,039 | 2,548 |
 | the tune's data floor (commando-floor §2.2) | 1,941 | 1,112 |
-| `trackerprog.json`, song 2 / song 3 | 13,122 / 8,731 | 2,136 / 1,900 |
+| `trackerprog.json`, song 2 / song 3 | 15,668 / 11,298 | 2,564 / 2,312 |
 
 The layer's claim holds: the score compresses better than the program that
-played it (3,932 against 4,644), and the score half alone lands within 40 % of
-the tune's own compressed data. Every structural cleanup so far has cost
-compressed bytes and been worth them: 3,252 for the first draft's seven
-cell-valued pitch entries, 3,804 to bound the table, 3,932 to keep the tuning
-pure and give each modulator its own. What the object buys with them is that no
-part of it can be walked off, aliased or unpacked at run time. The JSON's raw
+played it (3,760 against 4,644), and the score half alone lands within 40 % of
+the tune's own compressed data. Subtunes 2 and 3 grew, because they now carry
+the tune's whole tuning and the whole source rather than the slice their own
+melody touches — which is the point: those two sections are the same object in
+all three, and a fourth melody would need neither changed. The JSON's raw
 size is key repetition and nothing else.
 
 Code, all new, no existing module touched:
 
 | file | lines | role |
 | --- | --- | --- |
-| `deity_informant/trackerprog/universal.py` | 396 | §4 + §5, one procedure over the object; publishes the seven events |
+| `deity_informant/trackerprog/universal.py` | 390 | §4 + §5, one procedure over the object; publishes the seven events |
 | `deity_informant/trackerprog/attest.py` | 81 | §2's comparison |
-| `deity_informant/trackerprog/printer.py` | 341 | the flattened form: one fact per line, and §6.2's numbers |
-| `tools/trackerprog_commando.py` | 643 | the transliteration and the PcodeVM reference |
-| `tests/trackerprog/test_commando_oracle.py` | 159 | the three certificates and seven claims |
-| `tests/trackerprog/test_universal.py` | 440 | hermetic snippets, one per section 5 mechanism |
+| `deity_informant/trackerprog/printer.py` | 323 | the flattened form: one fact per line, and §6.2's numbers |
+| `tools/trackerprog_commando.py` | 597 | the transliteration and the PcodeVM reference |
+| `tests/trackerprog/test_commando_oracle.py` | 175 | the three certificates and six claims |
+| `tests/trackerprog/test_universal.py` | 386 | hermetic snippets, one per section 5 mechanism |
 
 Against the floor: the player pseudocode
 [playroutine-anatomy.md](playroutine-anatomy.md) §3.1.3 is 65 lines and covers
-all three songs and every fx bit. The universal player is 396 lines and covers
+all three songs and every fx bit. The universal player is 390 lines and covers
 *no* song — it has no Commando in it. That is the trade the layer is for.

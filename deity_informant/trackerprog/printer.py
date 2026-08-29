@@ -68,10 +68,8 @@ def expr(e, notes=None):
         return "freq[%s]" % expr(a, notes)
     if k == "pitchrow":
         return "%s[%s]" % (expr(a[0], notes), expr(a[1], notes))
-    if k == "row":
-        return "->%d" % (notes[a] if notes else a)
-    if k == "note":
-        return "note.%s" % (a if isinstance(a, str) else expr(a, notes))
+    if k == "noteword":
+        return "pitch(%s)" % expr(a, notes)
     if k == "shr":
         return "%s >> %s" % (_sub(a[0], notes), expr(a[1], notes))
     if k == "reload":
@@ -99,7 +97,7 @@ def _regs(ws):
 def render(obj):  # noqa: C901 - one branch per object section, each linear
     """The whole object as text."""
     m, g, out = obj["meta"], obj["globals"], []
-    notes = obj["pitch"]["notes"]
+    notes = None
     add = out.append
 
     add("# trackerprog: %s song %d" % (m["tune"], m["song"] + 1))
@@ -128,25 +126,40 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
     add("init       %s" % _regs(g["init_writes"]))
     add("stop       %s" % _regs(g["stop_writes"]))
 
+    p = obj["pitch"]
     add("")
-    add("## pitch -- %d notes; a note number and its frequency, and nothing else" % len(notes))
+    add(
+        "## pitch -- the tuning: notes %d..%d, and nothing else"
+        % (p["base"], p["base"] + len(p["freq"]) - 1)
+    )
     add("")
-    for i in range(0, len(notes), 8):
+    for i in range(0, len(p["freq"]), 8):
         add(
             "    "
             + "  ".join(
-                "%3d %s" % (n, hexv(obj["pitch"]["freq"][i + j], 4))
-                for j, n in enumerate(notes[i : i + 8])
+                "%3d %s" % (p["base"] + i + j, hexv(f, 4))
+                for j, f in enumerate(p["freq"][i : i + 8])
             )
         )
 
     if obj.get("generators"):
         add("")
-        add("## generators -- private state, fed by published events")
+        add("## sources -- what a note index finds past the tuning")
         add("")
+        add("indexed by position, never by note, and fed only by published events,")
+        add("so the melody may change without the object changing.")
         for k, gen in obj["generators"].items():
-            init = " ".join("%s=%s" % (a, hexv(b)) for a, b in gen["state"].items()) or "stateless"
-            add("%s = %s   [%s]" % (k, expr(gen["value"], notes), init))
+            add("")
+            add("%s -- indices %d..%d" % (k, gen["base"], gen["base"] + len(gen["words"]) - 1))
+            for j, w in enumerate(gen["words"]):
+                add(
+                    "    %3d  %s"
+                    % (gen["base"] + j, "trap: " + w["trap"] if "trap" in w else expr(w, notes))
+                )
+            add(
+                "    state  "
+                + (" ".join("%s=%s" % (a, hexv(b)) for a, b in gen["state"].items()) or "stateless")
+            )
             for s in gen["on"]:
                 how = ("%s := %s" % (a, expr(b, notes)) for a, b in s.get("set", {}).items())
                 how = list(how) + [
@@ -192,19 +205,6 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
                 arms,
             )
         )
-        if "seed" in ins:
-            add(
-                "      seed  no note: number %d, %s"
-                % (
-                    ins["seed"]["number"],
-                    ", ".join(
-                        "%s %s" % (f, expr(v, notes))
-                        for f, v in ins["seed"].items()
-                        if f != "number"
-                    ),
-                )
-            )
-
     add("")
     add("## score")
     add("")
@@ -226,11 +226,7 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
                     "tie" if e["tie"] else ".",
                     e["gate"],
                     "." if e["ins"] is None else e["ins"],
-                    (
-                        "."
-                        if e["note"] is None
-                        else "seed" if e["note"] == "seed" else notes[e["note"]]
-                    ),
+                    "." if e["note"] is None else e["note"],
                     "." if e["arm"] is None else _arm(e["arm"]),
                 )
             )
@@ -250,17 +246,6 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
 def _arm(a):
     over = " ".join("%s %s" % (k, expr(v)) for k, v in a.items() if k != "acc")
     return a["acc"] + ("(%s)" % over if over else "")
-
-
-def _table(name, rows, notes):
-    """An accumulator's own table over the tuning's rows, wrapped."""
-    live = [(notes[i], e) for i, e in enumerate(rows) if e is not None]
-    out = ["      table   %s, by note (a note absent here is never modulated this way)" % name]
-    for i in range(0, len(live), 6):
-        out.append(
-            "              " + "  ".join("%d:%s" % (n, expr(e, notes)) for n, e in live[i : i + 6])
-        )
-    return out
 
 
 def _acc(name, a, notes):
@@ -309,9 +294,6 @@ def _acc(name, a, notes):
             else "[%s, %s] " % (hexv(b["interval"][0], 4), hexv(b["interval"][1], 4))
         )
         lines.append("      bound   %s%s -- %s" % (iv, b["from"], b.get("witness", "")))
-    for field in ("interval", "octave"):
-        if field in a:
-            lines += _table(field, a[field], notes)
     lines.append("      writes  %s" % " ".join("%s(%s)" % (t, p) for t, p in a["produce"]))
     for key, label in (("false", "else "), ("true", "steps")):
         if key in a.get("gate", {}):
