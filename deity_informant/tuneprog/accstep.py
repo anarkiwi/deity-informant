@@ -25,7 +25,6 @@ from .nodes import At, Sel
 
 State = namedtuple("State", "env parts snaps prev site disp where")
 COPY = "#copy"  # the target's own copy index, bound per copy by :func:`prove`
-END = (float("inf"),)  # a rank past every clause of the tick
 
 
 class Inexact(Exception):
@@ -89,15 +88,21 @@ class Stepper:
                     for k in range(copies):
                         ranks.setdefault((rid, a + k * max(scale, 1)), set()).add((c.rank, c.chain))
         self.writes = {k: sorted(v) for k, v in ranks.items()}
-        self.memo, self.busy, self.inputs = {}, set(), {}
+        self.memo, self.busy, self.inputs, self.apart = {}, set(), {}, {}
         self.bad, self.unnamed = np.zeros(cells.ticks, bool), {}
 
     def epoch(self, cell, at, chain):
         """``pre``/``post``/``mid``: the read against the writes a tick can make beside it."""
-        ws = [r for r, ch in self.writes.get(cell) or () if not self.ctx.exclusive(chain, ch)]
+        ws = [r for r, ch in self.writes.get(cell) or () if not self._apart(chain, ch)]
         if not ws or ws[0] > at:
             return "pre"
         return "post" if ws[-1] < at else "mid"
+
+    def _apart(self, one, two):
+        key = (one, two)
+        if key not in self.apart:
+            self.apart[key] = self.ctx.exclusive(one, two)
+        return self.apart[key]
 
     def full(self, v):
         return np.full(self.cells.ticks, int(v), np.int64)
@@ -288,9 +293,7 @@ class Stepper:
     def prefix(self, rid, x, at, st):
         """``(rid, x)`` after its clauses of rank below ``at``, from last tick's value.
 
-        The record carries those clauses as the input's own recurrence, and
-        ``complete`` says whether the cell's whole clause set reproduces its column
-        -- a cell the score decoder moves per pattern byte does not, and the acc's
+        The record carries those clauses as the input's own recurrence; the acc's
         own proof is what covers the part it reads.
         """
         env = tuple(sorted(st.env.items()))
@@ -310,21 +313,8 @@ class Stepper:
             self.bad = was
         entry = ("%s@%s" % (self.ref(rid, x)["name"], _key(at)), {"before": at, "clauses": out})
         self.memo[key] = (val, entry)
-        if at != END:
-            entry[1]["complete"] = self.complete(rid, x, st)
-            self.inputs[entry[0]] = entry[1]
+        self.inputs[entry[0]] = entry[1]
         return val
-
-    def complete(self, rid, x, st):
-        """True when a cell's whole clause set reproduces its column, ``None`` if unreadable."""
-        env = tuple(sorted(st.env.items()))
-        if (rid, x, END, env) in self.busy:
-            return None
-        try:
-            full = self.prefix(rid, x, END, st)
-        except Inexact:
-            return None
-        return bool((full[1:] == self.cells.col(rid, x)[1:]).all())
 
     def _prefix(self, rid, x, at, st):
         prev = _lag(self.cells.col(rid, x))
@@ -332,7 +322,7 @@ class Stepper:
         val, out = prev, []
         for tgt, c in sorted(self.by[rid], key=lambda tc: (tc[1].rank, _pc(tc[1]))):
             cell = self._cellof(tgt, c, rid, x) if c.rank < at else None
-            if cell is None or self.ctx.exclusive(st.where[3], c.chain):
+            if cell is None or self._apart(st.where[3], c.chain):
                 continue
             here = sub._replace(env=self._bind(c, x, sub.env), site=_pc(c), where=_where(c))
             self.bad[:] = False

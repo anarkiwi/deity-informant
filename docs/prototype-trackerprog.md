@@ -193,7 +193,7 @@ recurrence a player computes `cell(t+1)` with:
 step = { width   : bits of the value
        , value   : [{cell, shift, bits}, …]          # the bytes the value is made of
        , clauses : [ {site, rank, kind, when, copy, …}, … ]   # in tick order
-       , inputs  : { "cell@rank": {before, clauses, complete}, … } }
+       , inputs  : { "cell@rank": {before, clauses}, … } }
 clause = step: {sign, delta, carry, comp, times} | action | opaque: {value} | half: {value, shift}
 when   = [{test, truth, at}, …]                     # the branch's own condition, at its decider
 term   = {const} | {index} | {self, shift, bits} | {table, region, addr}
@@ -204,9 +204,8 @@ term   = {const} | {index} | {self, shift, bits} | {table, region, addr}
 `rank` is the statement's position on its call chain (a tuple, compared
 lexicographically), and every read's `epoch` is decided by that rank against the
 writes of its cell: `pre` (last tick's value) before them all, `post` after them
-all, `mid` between — the cell's own clauses up to `before`, carried in `inputs`.
-A `mid` input's `complete` says whether its whole clause set reproduces its
-column; the acc's own proof covers the part it reads. The replay
+all, `mid` between — the cell's own clauses up to `before`, carried in `inputs`,
+which the acc's own proof covers. The replay
 (`accstep.prove`) applies the clauses in rank order from `cell(t-1)` and requires
 `cell(t)` at every tick; an acc it cannot state (`inexact recurrence`, with the
 term and site) or reproduce (`divergent recurrence`, with the first tick) is a
