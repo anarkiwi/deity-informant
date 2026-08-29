@@ -61,10 +61,10 @@ class Player:
             "orderpos": [0] * n,
             "rowsleft": [0] * n,
             "dur": [0] * n,
-            "note": [0] * n,
             "freq": [0] * n,
-            "noteidx": [0] * n,
         }
+        self.noteref = [0] * n
+        self.cur = None  # the accumulator stepping, for its own per-note table
         self.evrow = [0] * n
         self.tie = [False] * n
         self.armed = [[] for _ in range(n)]  # the accs the score armed
@@ -96,23 +96,30 @@ class Player:
             return p if name == "pw" else (p & 0xFF if name == "pw_lo" else p >> 8)
         return self.c[name][v] & 0xFFFF
 
-    # ---- the bounded pitch table ----------------------------------------------
-    def column(self, name, i):
-        """One column of note-space row ``i``: a constant, a generator or a row."""
-        e = self.o["pitch"][name][i]
-        if e is None:
-            raise AssertionError("pitch.%s has no row %d: not a note the score plays" % (name, i))
-        if isinstance(e, int):
-            return e
-        if "at" in e:
-            return self.column("freq", e["at"])
-        return self.ev(e) & 0xFFFF
+    # ---- the tuning, and the tables the modulators keep over it ----------------
+    def noteval(self, field):
+        """``field`` of the voice's current note: the tuning, or a modulator's table.
 
-    def note_index(self, byte):
-        i = self.o["pitch"]["index"].get(str(byte))
-        if i is None:
-            raise AssertionError("note %d is outside the bounded note space" % byte)
-        return i
+        A pitch table is a pitch table -- ``freq`` and nothing else.  Any other
+        field belongs to the accumulator asking for it, over the same rows.  A
+        note the tuning does not have is the instrument's seed, which carries
+        the same fields for itself.
+        """
+        ref = self.noteref[self.v]
+        if ref == "seed":
+            e = self.instr()["seed"][field]
+        elif field == "freq":
+            e = self.o["pitch"]["freq"][ref]
+        else:
+            t = self.cur.get(field)
+            e = None if t is None or not 0 <= ref < len(t) else t[ref]
+        if e is None:
+            raise AssertionError("no %s for this note: it is never modulated that way" % field)
+        if isinstance(e, int):
+            return e & 0xFFFF
+        if "row" in e:
+            return self.o["pitch"]["freq"][e["row"]]
+        return self.ev(e) & 0xFFFF
 
     def ev(self, e, ov=None):
         """Evaluate one section 5 expression node."""
@@ -138,10 +145,10 @@ class Player:
                 return self.ev(g["value"], ov)
             finally:
                 self.own = keep
-        if k == "notefreq":
-            return self.column("freq", self.ev(a, ov))
-        if k == "pitchrow":
-            return self.column(self.ev(a[0], ov), self.ev(a[1], ov))
+        if k == "note":
+            return self.noteval(a if isinstance(a, str) else self.ev(a, ov))
+        if k == "shr":
+            return self.ev(a[0], ov) >> self.ev(a[1], ov)
         if k == "flag":
             return self.flags.get(a, 0)
         if k == "payload":
@@ -165,8 +172,6 @@ class Player:
         if k == "fold":  # the triangle a free counter's low bits already are
             x = self.ev(a[0], ov) & a[1]
             return x ^ a[1] if x > a[1] >> 1 else x
-        if k == "tablestep":  # the interval above this note, shifted -- a column
-            return self.column("step", self.ev(a[0], ov)) >> self.ev(a[1], ov)
         if k == "stream":
             return self.o["streams"][a[0]]["rows"][self.ev(a[1], ov)]
         raise KeyError("expression form %r" % (k,))
@@ -180,6 +185,11 @@ class Player:
                 own = self.gen[name]
                 for k, e in sub["set"].items():  # a generator mirrors; it never counts
                     own[k] = self.ev(e, payload) & 0xFF
+
+    def notenumber(self, v):
+        """The number the voice's note carries in the tune's own numbering."""
+        ref = self.noteref[v]
+        return self.instr(v)["seed"]["number"] if ref == "seed" else self.o["pitch"]["notes"][ref]
 
     def instr(self, v=None):
         return self.o["instruments"][str(self.c["ins"][self.v if v is None else v])]
@@ -261,10 +271,12 @@ class Player:
                 self.publish("instrument", v, {"ins": e["ins"]})
             if e["arm"] is not None:
                 self.armed[v].append(e["arm"])
-            self.c["note"][v] = e["note"]
-            self.c["noteidx"][v] = self.note_index(e["note"])
-            self.publish("note", v, {"note": e["note"]})
-            f = self.column("freq", self.c["noteidx"][v])
+            ref = e["note"]
+            if isinstance(ref, int) and not 0 <= ref < len(self.o["pitch"]["freq"]):
+                raise AssertionError("row %d is outside the tuning" % ref)
+            self.noteref[v] = ref
+            self.publish("note", v, {"note": self.notenumber(v)})
+            f = self.noteval("freq")
             self.c["freq"][v] = f
             prod += [("freq_hi", f >> 8), ("freq_lo", f & 0xFF)]
         self.c["wave"][v] = self.instr()["wave"]
@@ -285,7 +297,8 @@ class Player:
         for name, d in self.o["globals"]["flags"].items():
             self.flags[name] = self.ev(d["default"])
         for arm in sorted(arms, key=lambda a: self.o["accs"][a["acc"]]["rank"]):
-            self.step(self.o["accs"][arm["acc"]], arm, prod, edge)
+            self.cur = self.o["accs"][arm["acc"]]
+            self.step(self.cur, arm, prod, edge)
 
     def step(self, a, ov, prod, edge):
         v = self.v

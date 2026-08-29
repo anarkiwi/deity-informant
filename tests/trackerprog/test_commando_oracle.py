@@ -64,37 +64,50 @@ def test_the_object_is_the_tune_and_no_more(song):
     assert obj["meta"]["commit_order"] == ["ctrl", "ad", "sr"]
 
 
-def test_the_note_space_is_bounded_and_the_escapes_are_generators():
-    """commando-floor section 5: the overrun is load-bearing, 25 notes' worth.
-
-    The table never runs off its end.  Where a transposition would have left it,
-    a column names a generator with its own private state.
-    """
+def test_the_pitch_table_is_only_a_pitch_table():
+    """Note numbers and frequencies, nothing else, and every entry a constant."""
     obj = built(0)
     p = obj["pitch"]
-    assert len(p["freq"]) == len(p["notes"]) == 70
-    assert max(p["notes"]) == 104 and min(p["notes"]) == 16
-    gens = set()
+    assert set(p) == {"notes", "index", "freq"}
+    assert len(p["freq"]) == len(p["notes"]) == 69
+    assert all(isinstance(f, int) for f in p["freq"])
+    assert max(p["notes"]) == 95 and min(p["notes"]) == 16  # 104 is no note
 
-    def walk(x):
-        if isinstance(x, dict):
-            if "gen" in x:
-                gens.add(x["gen"])
-            for v in x.values():
-                walk(v)
-        elif isinstance(x, list):
-            for v in x:
-                walk(v)
 
-    walk([p["freq"], p["step"], p["octave"]])
-    assert gens == set(obj["generators"])
-    assert len(gens) == 8
-    for g in obj["generators"].values():
-        assert set(g["value"]) == {"u16"}
-        for sub in g["on"]:
-            assert sub["event"] in ("sound", "note", "instrument", "order", "row", "wrap", "turn")
-    # subtunes 2 and 3 never leave the table, so they carry no generator at all
+def test_the_modulators_keep_their_own_tables_over_the_tuning():
+    """commando-floor section 5: the overrun is load-bearing, 25 notes' worth.
+
+    It is not in the tuning.  The vibrato's interval and the arpeggio's octave
+    are each that accumulator's own table, and where the tune's own arithmetic
+    left the tuning the entry names a generator.
+    """
+    obj = built(0)
+    n = len(obj["pitch"]["notes"])
+    vib, arp = obj["accs"]["vibrato"], obj["accs"]["arpeggio"]
+    assert len(vib["interval"]) == len(arp["octave"]) == n
+    assert all(x is None or isinstance(x, int) for x in vib["interval"])  # all constants
+    escapes = {
+        obj["pitch"]["notes"][i]: e["gen"]
+        for i, e in enumerate(arp["octave"])
+        if isinstance(e, dict) and "gen" in e
+    }
+    assert set(escapes) == {85, 86, 88, 93, 95}
+    assert set(escapes.values()) <= set(obj["generators"])
     assert built(1)["generators"] == {} and built(2)["generators"] == {}
+
+
+def test_a_played_index_that_is_not_a_note_lives_on_its_instrument():
+    """104 is the drum's seed, not a pitch: it is a record on instruments 4 and 7."""
+    obj = built(0)
+    seeded = {k: i["seed"] for k, i in obj["instruments"].items() if "seed" in i}
+    assert set(seeded) == {"4", "7"}
+    assert all(s["number"] == 104 for s in seeded.values())
+    assert set(seeded["4"]) == {"number", "freq"}  # no vibrato, no arpeggio
+    assert set(seeded["7"]) == {"number", "freq", "interval", "octave"}
+    assert "104" not in obj["pitch"]["index"]
+    events = [e for p in obj["score"]["patterns"].values() for e in p["events"]]
+    # commando-floor section 5: "song 1 plays pitch 104 twenty-five times"
+    assert sum(1 for e in events if e["note"] == "seed") == 25
 
 
 def test_no_expression_reads_another_voices_state():

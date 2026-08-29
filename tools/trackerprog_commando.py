@@ -133,6 +133,14 @@ def pattern(m, pn):
     return {"events": out, "cursor": cursor}
 
 
+def resolve_notes(patterns, index):
+    """Each event's note becomes a row of the tuning, or ``seed``."""
+    for pat in patterns.values():
+        for e in pat["events"]:
+            if e["note"] is not None:
+                e["note"] = index.get(str(e["note"]), "seed")
+
+
 def score(m, song):
     """The three order programs and the patterns they reach."""
     orders, used = [], set()
@@ -161,20 +169,102 @@ def reached(m, orders, patterns):
 
 
 def pitch(m, pairs):
-    """The note space and its columns -- bounded, with no read past its end.
+    """The tuning, and the tables the modulators keep on top of it.
 
-    A trackerprog's pitch table is bounded: an index outside it is not a note,
-    so nothing may run off it.  The space is the notes the score plays plus the
-    in-range targets of the arpeggio's octave; ``freq`` tunes every row,
-    ``step`` is the interval above a note (what the vibrato shifts) and
-    ``octave`` is the arpeggio's second row, each materialised per note.  Where
-    a transposition would have left the table, the column names a **generator**
-    (section 4) instead -- a self-contained 16-bit source, never a table read.
+    A pitch table is a pitch table: note numbers and their frequencies, nothing
+    else.  What the vibrato and the arpeggio need -- the interval above a note,
+    the note an octave up -- are transformations, so each keeps **its own**
+    table over the same rows.  A played note whose index leaves the tuning is
+    not a note at all: it is an instrument's **seed**, and it lives on the
+    instrument that plays it (:func:`seeds`).
     """
     played = sorted({n for _, n in pairs})
-    space = sorted(set(played) | {n + 12 for n in played if n + 12 < TABLE_END})
+    real = [n for n in played if n < TABLE_END]
+    space = sorted(set(real) | {n + 12 for n in real if n + 12 < TABLE_END})
     at = {n: i for i, n in enumerate(space)}
     gens = {}
+    word = _word(m, gens)
+    tuning = {
+        "notes": space,
+        "index": {str(n): i for i, n in enumerate(space)},
+        "freq": [word(n) for n in space],
+    }
+    interval = [(word(n + 1) - word(n)) & 0xFFFF if n in real else None for n in space]
+    octave = [
+        None if n not in real else {"row": at[n + 12]} if n + 12 in at else word(n + 12)
+        for n in space
+    ]
+    return tuning, {"interval": interval, "octave": octave}, gens
+
+
+def _word(m, gens):
+    """The value the tune's own byte array carries at index ``n``."""
+
+    def word(n):
+        if n < TABLE_END:
+            a = FREQ_ORIGIN + 2 * n
+            return m[a] | m[a + 1] << 8
+        lo, hi = FUSED[2 * (n - TABLE_END)], FUSED[2 * (n - TABLE_END) + 1]
+        assert lo[1] is not None and hi[1] is not None, "index %d names tick scratch" % n
+        a, b = _static(lo[1]), _static(hi[1])
+        if a is not None and b is not None:  # nothing live: it is just a number
+            return a | b << 8
+        name = "%s_%s" % (lo[0], hi[0])
+        gens[name] = _generator(lo[1], hi[1], _seed(m))
+        return {"gen": name}
+
+    return word
+
+
+def _static(src):
+    """The value of a source that depends on nothing live, else ``None``."""
+    v = src.get("sid_base")
+    return 7 * v if isinstance(v, int) else None
+
+
+def seeds(m, pairs, gens):
+    """A played index that is not a note: the instrument's own starting value.
+
+    Instrument 4's and 7's ``104`` is no pitch -- it is "start from the wave
+    the other voices are sounding".  So it is not in the tuning; it is a record
+    on the instrument, carrying exactly the columns that instrument's armed
+    accumulators ask of a note.
+    """
+    word, out = _word(m, gens), {}
+    for i, n in sorted(pairs):
+        if n < TABLE_END:
+            continue
+        col = m[INS_BASE + 8 * i : INS_BASE + 8 * i + 8]
+        rec = {"number": n, "freq": word(n)}
+        if col[5]:  # the vibrato asks for the interval above
+            rec["interval"] = _difference(m, gens, n)
+        if col[7] & 4:  # the arpeggio asks for the octave above
+            rec["octave"] = word(n + 12)
+        out[i] = rec
+    return out
+
+
+def _difference(m, gens, n):
+    """``word(n+1) - word(n)`` as one generator with its own four bytes."""
+    parts = [FUSED[2 * (k - TABLE_END) + j] for k in (n, n + 1) for j in (0, 1)]
+    name = "_".join(p[0] for p in parts) + "_difference"
+    state, on, halves = {}, [], []
+    for k, (label, src) in zip("abcd", parts):
+        g = _generator(src, src, _seed(m))
+        state[k] = g["state"].get("lo", 0)
+        halves.append({"own": k})
+        for sub in g["on"][:1]:
+            on.append(dict(sub, set={k: next(iter(sub["set"].values()))}))
+    gens[name] = {
+        "state": state,
+        "on": on,
+        "value": {"sub": [{"u16": halves[2:]}, {"u16": halves[:2]}]},
+    }
+    return {"gen": name}
+
+
+def _seed(m):
+    """A mirrored cell's value in the post-init image."""
     base = {
         "wave": 0x54F8,
         "note": 0x54FB,
@@ -183,40 +273,7 @@ def pitch(m, pairs):
         "patrow": 0x54EF,
         "pwdir": 0x5510,
     }
-    seed = lambda kind, v: m[base[kind] + v]
-
-    def word(n):
-        """The value a would-be index ``n`` carries: a constant, or a generator."""
-        if n < TABLE_END:
-            a = FREQ_ORIGIN + 2 * n
-            return m[a] | m[a + 1] << 8
-        lo, hi = FUSED[2 * (n - TABLE_END)], FUSED[2 * (n - TABLE_END) + 1]
-        assert lo[1] is not None and hi[1] is not None, "index %d names tick scratch" % n
-        name = "%s_%s" % (lo[0], hi[0])
-        gens[name] = _generator(lo[1], hi[1], seed)
-        return {"gen": name}
-
-    def sub(a, b):
-        return (a - b) & 0xFFFF if isinstance(a, int) and isinstance(b, int) else {"sub": [a, b]}
-
-    freq = [word(n) for n in space]
-    # step and octave belong to the notes the score plays; a row that is only an
-    # octave target is read through ``freq`` alone and carries neither.
-    step = [sub(word(n + 1), word(n)) if n in played else None for n in space]
-    octave = [
-        None if n not in played else {"at": at[n + 12]} if n + 12 in at else word(n + 12)
-        for n in space
-    ]
-    return (
-        {
-            "notes": space,
-            "index": {str(n): i for i, n in enumerate(space)},
-            "freq": freq,
-            "step": step,
-            "octave": octave,
-        },
-        gens,
-    )
+    return lambda kind, v: m[base[kind] + v]
 
 
 def _generator(lo, hi, seed):
@@ -277,10 +334,10 @@ def accs():
             "cell": "tick",
             "target": "freq",
             "width": 16,
-            "policy": {"reload": {"notefreq": {"cell": "noteidx"}}},
+            "policy": {"reload": {"note": "freq"}},
             "delta": {
                 "repeat": [
-                    {"tablestep": [{"cell": "noteidx"}, "shift"]},
+                    {"shr": [{"note": "interval"}, "shift"]},
                     {"fold": [{"cell": "counter"}, 7]},
                 ]
             },
@@ -395,15 +452,8 @@ def accs():
             "cell": "tick",
             "target": "freq",
             "width": 16,
-            "policy": {
-                "reload": {
-                    "pitchrow": [
-                        {"stream": ["arp", {"and": [{"cell": "counter"}, 1]}]},
-                        {"cell": "noteidx"},
-                    ]
-                }
-            },
-            "bound": {"from": "proved", "interval": [0, 12], "witness": "the arp stream"},
+            "policy": {"reload": {"note": {"stream": ["arp", {"and": [{"cell": "counter"}, 1]}]}}},
+            "bound": {"from": "proved", "interval": [0, 12], "witness": "the octave table"},
             "rate": 1,
             "scope": "voice",
             "phase": {"and": [{"cell": "counter"}, 1]},
@@ -417,7 +467,12 @@ def build(path, song=0):
     m = load(path)
     orders, patterns = score(m, song)
     pairs = reached(m, orders, patterns)
-    tuning, generators = pitch(m, pairs)
+    tuning, tables, generators = pitch(m, pairs)
+    seedrecs = seeds(m, pairs, generators)
+    resolve_notes(patterns, tuning["index"])
+    acc = accs()
+    acc["vibrato"]["interval"] = tables["interval"]
+    acc["arpeggio"]["octave"] = tables["octave"]
     instruments = {}
     watched = {s["voice"] for g in generators.values() for s in g["on"] if s["event"] == "row"}
     keep = {p for v in watched for p in orders[v]["play"]}
@@ -441,12 +496,22 @@ def build(path, song=0):
             arms.append({"acc": "skydive"})
         if fx & 4:
             arms.append({"acc": "arpeggio"})
+        rec = {}
+        if i in seedrecs:
+            rec["seed"] = {
+                k: v
+                for k, v in seedrecs[i].items()
+                if k in ("number", "freq")
+                or (k == "interval" and vib)
+                or (k == "octave" and fx & 4)
+            }
         instruments[str(i)] = {
             "adsr": [ad, sr],
             "wave": wave,
             "pw": [pw_lo, pw_hi],
             "prelude": {"stream": "note_off", "early": 1},
             "accs": arms,
+            **rec,
         }
     return {
         "$trackerprog": 1,
@@ -498,9 +563,9 @@ def build(path, song=0):
                 ],
                 "term": "halt",
             },
-            "arp": {"rows": ["freq", "octave"], "term": "jump", "kind": "pitch"},
+            "arp": {"rows": ["freq", "octave"], "term": "jump", "kind": "note column"},
         },
-        "accs": accs(),
+        "accs": acc,
         "instruments": instruments,
         "score": {"patterns": patterns, "orders": orders},
         "state0": {

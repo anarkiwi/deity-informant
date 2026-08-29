@@ -35,19 +35,33 @@ def pat(events, cursor=None):
 
 
 def tuning(hi=20):
-    """A bounded note space: notes 1..hi-1, with step and octave columns."""
+    """A pitch table: note numbers and their frequencies, and nothing else."""
     notes = list(range(1, hi))
-    at = {k: i for i, k in enumerate(notes)}
     return {
         "notes": notes,
         "index": {str(k): i for i, k in enumerate(notes)},
         "freq": [0x0101 * k for k in notes],
-        "step": [0x0101 for _ in notes],
-        "octave": [{"at": at[k + 12]} if k + 12 in at else None for k in notes],
     }
 
 
-def obj(patterns, orders, instruments, pitch=None, rate=2, generators=None):
+def modtables(t):
+    """The tables the vibrato and the arpeggio keep over the tuning's rows."""
+    at = {k: i for i, k in enumerate(t["notes"])}
+    return (
+        [0x0101] * len(t["notes"]),
+        [{"row": at[k + 12]} if k + 12 in at else None for k in t["notes"]],
+    )
+
+
+def _rows(patterns, index):
+    for p in patterns.values():
+        for e in p["events"]:
+            if isinstance(e["note"], int):
+                e["note"] = index[str(e["note"])]
+    return patterns
+
+
+def obj(patterns, orders, instruments, pitch=None, rate=2, generators=None, octave=None):
     """A one- or two-voice trackerprog over the same seven accumulator forms."""
     n = len(orders)
     return {
@@ -102,10 +116,13 @@ def obj(patterns, orders, instruments, pitch=None, rate=2, generators=None):
             },
             "arp": {"rows": ["freq", "octave"], "term": "jump", "kind": "pitch"},
         },
-        "accs": TC.accs(),
+        "accs": _accs(pitch or tuning(), octave),
         "instruments": instruments,
         "score": {
-            "patterns": {k: v if "events" in v else pat(v) for k, v in patterns.items()},
+            "patterns": _rows(
+                {k: v if "events" in v else pat(v) for k, v in patterns.items()},
+                (pitch or tuning())["index"],
+            ),
             "orders": orders,
         },
         "state0": {
@@ -117,14 +134,26 @@ def obj(patterns, orders, instruments, pitch=None, rate=2, generators=None):
     }
 
 
-def ins(wave=0x41, ad=1, sr=2, pw=(0x10, 0x02), accs=()):
-    return {
+def _accs(t, octave=None):
+    a = TC.accs()
+    a["vibrato"]["interval"], a["arpeggio"]["octave"] = modtables(t)
+    if octave:
+        for row, e in octave.items():
+            a["arpeggio"]["octave"][row] = e
+    return a
+
+
+def ins(wave=0x41, ad=1, sr=2, pw=(0x10, 0x02), accs=(), seed=None):
+    rec = {
         "adsr": [ad, sr],
         "wave": wave,
         "pw": list(pw),
         "prelude": {"stream": "note_off", "early": 1},
         "accs": list(accs),
     }
+    if seed:
+        rec["seed"] = seed
+    return rec
 
 
 def test_the_note_row_and_the_tempo_divider():
@@ -279,8 +308,7 @@ def test_a_trapped_arm_raises_where_it_is_taken():
 
 def test_a_generator_carries_its_own_state_fed_by_published_events():
     """No expression reads another voice's cells: a generator mirrors, privately."""
-    t = tuning()
-    t["octave"][1] = {"gen": "wave01"}  # note 2's octave is not a note
+    t = tuning()  # note 2's octave is not a note: the arpeggio names a generator
     g = {
         "wave01": {
             "state": {"lo": 0, "hi": 0},
@@ -297,6 +325,7 @@ def test_a_generator_carries_its_own_state_fed_by_published_events():
         {"0": ins(accs=[{"acc": "arpeggio"}])},
         pitch=t,
         generators=g,
+        octave={1: {"gen": "wave01"}},
     )
     p = Player(o)
     assert p.gen["wave01"] == {"lo": 0, "hi": 0}
@@ -306,38 +335,36 @@ def test_a_generator_carries_its_own_state_fed_by_published_events():
     assert (FHI, 0x02) in w[2]  # and the note itself on the other phase
 
 
-def test_the_pitch_table_is_bounded_in_both_directions():
-    o = obj({"1": [event(3, note=99, ins=0)]}, [{"play": [1], "end": "jump"}], {"0": ins()})
-    with pytest.raises(AssertionError, match="outside the bounded note space"):
+def test_a_note_the_tuning_does_not_have_is_the_instruments_seed():
+    """A played index outside the tuning is not a note; it lives on the instrument."""
+    o = obj(
+        {"1": [event(9, note="seed", ins=0)]},
+        [{"play": [1], "end": "jump"}],
+        {"0": ins(seed={"number": 104, "freq": 0x1234})},
+    )
+    w = render(o, 2)
+    assert (FHI, 0x12) in w[0] and (FLO, 0x34) in w[0]
+    del o["instruments"]["0"]["seed"]
+    with pytest.raises(KeyError):
         render(o, 2)
-    t = tuning()
+
+
+def test_the_tuning_is_bounded_and_a_modulator_table_is_sparse():
+    o = obj({"1": [event(3, note=2, ins=0)]}, [{"play": [1], "end": "jump"}], {"0": ins()})
+    o["score"]["patterns"]["1"]["events"][0]["note"] = 99
+    with pytest.raises(AssertionError, match="outside the tuning"):
+        render(o, 2)
     o = obj(
         {"1": [event(9, note=19, ins=0)]},
         [{"play": [1], "end": "jump"}],
         {"0": ins(accs=[{"acc": "arpeggio"}])},
-        pitch=t,
     )
-    with pytest.raises(AssertionError, match="not a note the score plays"):
-        render(o, 3)  # note 19's octave is off the table: it must name a generator
-
-
-def test_the_attestation_names_what_it_compares_and_what_it_drops():
-    o = obj({"1": [event(3, note=2, ins=0)]}, [{"play": [1], "end": "jump"}], {"0": ins()})
-    ref = render(o, 6)
-    d = attest(o, ref)
-    assert d["divergence"] is None and d["ticks"] == 6
-    assert d["compared"] and d["dropped"] and d["same_per_register_order"]
-    assert d["identical_ticks"] == 6 and d["permuted_ticks"] == 0
-    bent = [list(t) for t in ref]
-    bent[0] = [(CTRL, 0x7F)] + bent[0][:-1]
-    d = attest(o, bent)
-    assert d["divergence"]["tick"] == 0 and "edges" in d["divergence"]
-    assert not subsequences_agree(bent, ref)
+    with pytest.raises(AssertionError, match="never modulated"):
+        render(o, 3)  # note 19 has no octave: nothing arpeggiates it
 
 
 def test_the_flattened_print_carries_every_section_and_measures_itself():
     t = tuning()
-    t["octave"][1] = {"gen": "wave01"}
     g = {
         "wave01": {
             "state": {"lo": 0, "hi": 0},
@@ -351,6 +378,7 @@ def test_the_flattened_print_carries_every_section_and_measures_itself():
         {"0": ins(accs=[{"acc": "vibrato", "shift": 1}, {"acc": "drum"}])},
         pitch=t,
         generators=g,
+        octave={1: {"gen": "wave01"}},
     )
     text = printer.render(o)
     for section in (
@@ -366,10 +394,10 @@ def test_the_flattened_print_carries_every_section_and_measures_itself():
         assert section in text
     assert "wave01 = u16(own.lo, own.hi)   [lo=$00 hi=$00]" in text
     assert "on sound(voice 0): lo := wave" in text
-    assert "repeat(step[noteidx] >> <shift>, fold(counter, 7))" in text  # the override, named
+    assert "repeat(note.interval >> <shift>, fold(counter, 7))" in text  # the override, named
+    assert "table   interval, by note" in text and "table   octave, by note" in text
     assert "(dur - 1) & $FF >= rowsleft" in text  # nested binaries parenthesised
     assert "emits   the value the tick came in with" in text
-    assert "--" in text.split("## generators")[0]  # an octave-target-only row
     assert "     dur  tie  gate   ins  note  arm" in text
     assert "slide(delta 4 phase 1)" in text  # the arm the row carries, materialised
     n = printer.numbers(text)
@@ -380,7 +408,6 @@ def test_the_flattened_print_carries_every_section_and_measures_itself():
 
 def test_the_print_states_a_stateless_generator_as_such():
     t = tuning()
-    t["octave"][1] = {"gen": "bases"}
     o = obj(
         {"1": [event(3, note=2, ins=0)]},
         [{"play": [1], "end": "jump"}],
@@ -393,6 +420,21 @@ def test_the_print_states_a_stateless_generator_as_such():
                 "value": {"u16": [{"sid_base": 2}, {"sid_base": "reader"}]},
             }
         },
+        octave={1: {"gen": "bases"}},
     )
     text = printer.render(o)
     assert "bases = u16(sid_base(2), sid_base(reader))   [stateless]" in text
+
+
+def test_the_attestation_names_what_it_compares_and_what_it_drops():
+    o = obj({"1": [event(3, note=2, ins=0)]}, [{"play": [1], "end": "jump"}], {"0": ins()})
+    ref = render(o, 6)
+    d = attest(o, ref)
+    assert d["divergence"] is None and d["ticks"] == 6
+    assert d["compared"] and d["dropped"] and d["same_per_register_order"]
+    assert d["identical_ticks"] == 6 and d["permuted_ticks"] == 0
+    bent = [list(t) for t in ref]
+    bent[0] = [(CTRL, 0x7F)] + bent[0][:-1]
+    d = attest(o, bent)
+    assert d["divergence"]["tick"] == 0 and "edges" in d["divergence"]
+    assert not subsequences_agree(bent, ref)
