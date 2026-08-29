@@ -75,12 +75,13 @@ factored form — the certified program. Right column is the object.
 | `row & $1F` | the event's `dur`, in row ticks | §3.6 |
 | `row & $20` | the event's `tie`: it disarms the prelude | new (§4.7) |
 | `row & $40` | the event's `gate: off` — a keyoff | §3.6 |
-| the extra byte `< $80` / `≥ $80` | the event's `ins` / `porta` | §3.6 |
+| the extra byte `< $80` | the event's `ins` | §3.6 |
 | `$518B` hard cut | the instrument's **prelude**, `early = 1` row tick, rows `set(ctrl, wave & $FE) set(ad,0) set(sr,0)` | §3.5 |
 | `ins.vib ≠ 0` | `Acc(freq, repeat(tablestep(pitch, note, vib+1), phase(fold(counter,7))), policy reload(pitch[note]))` | §5 vibrato, stateless phase |
 | `ins.fx & 8` | `Acc(pw_lo, const(pspeed) + carry(C), width 8, wrap, scope instrument)` | §5 pulse run |
 | `ins.pspeed ≠ 0` | `Acc(pw, const(pspeed & $E0), width 12, reflect, bound [$800,$EFF] projected, rate (pspeed & $1F)+1, phase cell pwdir, scope instrument)` | §5 pulse sweep |
-| `voice.porta ≠ 0` | `Acc(freq, field(porta, $7E), phase bit(porta, 0), wrap, scope voice)`, armed by the score | §5 free slide |
+| the extra byte `≥ $80` | `arm(slide, {delta, phase})` on the event — the byte is unpacked at build time, never at run time | §3.6 |
+| `voice.porta ≠ 0` | `Acc(freq, const(<delta>), phase const(<phase>), wrap, scope voice)`, armed by the score | §5 free slide |
 | `ins.fx & 1` | `Acc(freq_hi, const(-1), emit entry)` plus two ctrl rows its own guard selects | new (§4.4, §4.5) |
 | `ins.fx & 4` | `Acc(freq, policy reload(pitch[note + arp[counter & 1]]))` | §5 arpeggio |
 | `ins.fx & 2` | `skydive`, declared with its guard and `trap: true` | §5 (struck row, kept as data) |
@@ -183,16 +184,16 @@ subscribing to the events the player publishes, and two generators mirroring the
 same fact keep two copies. That is deliberately cheaper than a shared state
 namespace, because a private copy cannot alias.
 
-The player publishes seven events, each a musical fact and none a memory
-location:
+The player publishes six events, each a musical fact and none a memory
+location, and every subscription is a `set` — a generator **mirrors**, it never
+counts:
 
 | event | when | payload |
 | --- | --- | --- |
 | `note` | the row latched a note | `note` |
 | `instrument` | the row carried an instrument | `ins` |
 | `sound` | any fetch, once the instrument's registers are emitted | `wave` |
-| `row` | any fetch, once the row is consumed | `bytes` |
-| `wrap` | the pattern restarted | — |
+| `row` | any fetch, once the row is consumed | `pos` — the cursor's new position |
 | `order` | the order position moved | `pos` |
 | `turn` | an accumulator's phase turned | `acc`, `phase` |
 
@@ -203,7 +204,7 @@ Song 1's eight generators and what each mirrors:
 | `sidofs0_sidofs1` | `step` of note 95 | nothing — `u16(sid_base 0, sid_base 1)` |
 | `sidofs2_voice_base` | `octave` of note 85 | nothing — `u16(sid_base 2, sid_base of the reader)` |
 | `orderpos0_orderpos1` | `octave` of note 86 | two `order` positions |
-| `patrow1_patrow2` | `octave` of note 88 | two byte cursors, by `row` and `wrap` |
+| `patrow1_patrow2` | `octave` of note 88 | two cursor positions, by `row` |
 | `wave0_wave1` | `freq` of note 104 | two `sound` waves |
 | `wave2_note0` | `step` of note 104, `octave` of 93 | one `sound` wave, one `note` |
 | `ins0_ins1` | `octave` of note 95 | two `instrument` ids |
@@ -211,6 +212,27 @@ Song 1's eight generators and what each mirrors:
 
 `sid_base` is the chip's own register layout — the offset the player computes
 for every write it emits — so even the SID stride is not a constant in the data.
+
+**No packed byte survives.** The score's event fields are `dur`, `tie`, `gate`,
+`ins`, `note` and `arm`, every one a musical fact: the row byte's bit fields are
+separate columns, and a portamento byte is unpacked at build time into
+`arm(slide, {delta, phase})` — §3.6's own command, the shape an instrument
+already uses to arm an accumulator. Nine porta bytes become nine `(delta,
+phase)` pairs and the `porta` cell leaves the player entirely. The carry no
+producer leaves, which the 6502 takes off the instrument index's own third
+shift, folds to `0` with its proof recorded (no declared instrument id has bit 5
+set), so the object never reads an index as if it were data.
+
+**A cursor publishes its position, not its increment.** A pattern carries a
+`cursor` column — the position the voice's own cursor holds *after* each event,
+0 at the pattern's end, which is the cursor's own reset — and the player
+publishes that position. `Event.bytes`, the last encoding width in the score, is
+gone with it, and so is the `wrap` event and the `add` form in a subscription.
+The column is emitted only for the patterns a watched voice plays: 18 of song
+1's 31, and none at all in subtunes 2 and 3. It is the object's one stated
+residue — not derivable, because the trackerprog's cursor is the event index and
+Hubbard's is a byte offset, so it is a materialised coordinate, which is what
+§6's materialisation rule is for.
 
 **The invariant this buys, and the player enforces it:** no expression reads
 another voice's state. `{"cell": name}` is the voice being committed and nothing
@@ -327,14 +349,14 @@ sections, no JSON — measured the way architecture §11 asks of a presentation:
 
 | subtune | lines | tokens | statements | blocks | header rows | data rows | `xz -9e` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | 830 | 5,073 | 788 | 8 | 42 | 788 | 3,644 |
-| 2 | 259 | 1,508 | 239 | 7 | 20 | 239 | 2,056 |
-| 3 | 179 | 1,022 | 165 | 7 | 14 | 165 | 1,796 |
+| 1 | 846 | 5,295 | 804 | 8 | 42 | 804 | 3,684 |
+| 2 | 259 | 1,488 | 239 | 7 | 20 | 239 | 2,024 |
+| 3 | 179 | 1,014 | 165 | 7 | 14 | 165 | 1,780 |
 
 Statements equal data rows by construction: the print carries one datum per
-line. Song 1's 830 lines against the source `tuneprog.md`'s 414 is the trade the
+line. Song 1's 846 lines against the source `tuneprog.md`'s 414 is the trade the
 layer makes — the program's 252 code lines become 60 lines of instruments,
-accumulators and generators, and the 578 lines that replace them are the score
+accumulators and generators, and the rest is the score
 and the tuning printed *as data*, which the tuneprog never printed at all.
 
 `xz -9e` of the serialised object, the extra number §9's acceptance #3 asks
@@ -342,21 +364,21 @@ for:
 
 | artefact | raw | `xz -9e` |
 | --- | --- | --- |
-| `trackerprog.json`, song 1, compact | 54,060 | **3,804** |
-| — its `score` half | 45,151 | 1,448 |
-| — everything else (tuning, generators, accs, instruments) | 8,909 | 2,496 |
-| — the eight generators alone | 1,592 | — |
+| `trackerprog.json`, song 1, compact | 48,778 | **3,856** |
+| — its `score` half | 39,968 | 1,560 |
+| — everything else (tuning, generators, accs, instruments) | 8,801 | 2,472 |
 | `tuneprog.md`, the source print | 21,679 | 4,644 |
 | the whole load band | 4,039 | 2,548 |
 | the tune's data floor (commando-floor §2.2) | 1,941 | 1,112 |
-| `trackerprog.json`, song 2 / song 3 | 14,497 / 9,504 | 2,180 / 1,912 |
+| `trackerprog.json`, song 2 / song 3 | 13,180 / 8,805 | 2,152 / 1,904 |
 
 The layer's claim holds: the score compresses better than the program that
-played it (3,804 against 4,644), and the score half alone lands within 30 % of
+played it (3,856 against 4,644), and the score half alone lands within 40 % of
 the tune's own compressed data. Bounding the pitch table cost 552 compressed
 bytes against the first draft's seven cell-valued entries — the price of a table
-that cannot be walked off, paid once. The JSON's raw size is key repetition and
-nothing else.
+that cannot be walked off, paid once; unpacking the porta byte and moving the
+cursor into the pattern paid 5,282 raw bytes back. The JSON's raw size is key
+repetition and nothing else.
 
 Code, all new, no existing module touched:
 

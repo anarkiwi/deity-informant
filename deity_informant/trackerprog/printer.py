@@ -113,11 +113,14 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
         if m["row_consumes_tick"]
         else "sequencer  the row shares the voice's tick"
     )
-    add("note row   %s; the score arms %s" % (m["note_row"], m["score_acc"]))
+    add("note row   %s" % m["note_row"])
     add("player     %s" % m["player"])
     add("mode_vol   %s" % hexv(g["mode_vol"]))
     for name, d in g.get("flags", {}).items():
-        add("flag %-5s = %s where no producer leaves it" % (name, expr(d["default"], notes)))
+        add(
+            "flag %-5s = %s where no producer leaves it%s"
+            % (name, expr(d["default"], notes), "" if "proof" not in d else " (%s)" % d["proof"])
+        )
     add("init       %s" % _regs(g["init_writes"]))
     add("stop       %s" % _regs(g["stop_writes"]))
 
@@ -197,18 +200,20 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
             add("    " + " ".join("%3d" % x for x in o["play"][i : i + 24]))
     for k, pat in obj["score"]["patterns"].items():
         add("")
-        add("pattern %s -- %d events, %d bytes" % (k, len(pat), sum(e["bytes"] for e in pat)))
-        add("     dur  tie  gate   ins  note  porta")
-        for e in pat:
+        add("pattern %s -- %d events" % (k, len(pat["events"])))
+        if "cursor" in pat:
+            add("    cursor  " + " ".join(str(x) for x in pat["cursor"]))
+        add("     dur  tie  gate   ins  note  arm")
+        for e in pat["events"]:
             add(
-                "    %4d  %3s  %-5s %4s  %4s  %5s"
+                "    %4d  %3s  %-5s %4s  %4s  %s"
                 % (
                     e["dur"],
                     "tie" if e["tie"] else ".",
                     e["gate"],
                     "." if e["ins"] is None else e["ins"],
                     "." if e["note"] is None else e["note"],
-                    "." if e["porta"] is None else hexv(e["porta"]),
+                    "." if e["arm"] is None else _arm(e["arm"]),
                 )
             )
 

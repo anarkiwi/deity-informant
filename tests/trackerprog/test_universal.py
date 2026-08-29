@@ -22,16 +22,16 @@ import trackerprog_commando as TC  # noqa: E402
 CTRL, AD, SR, FLO, FHI, PLO, PHI = 4, 5, 6, 0, 1, 2, 3
 
 
-def event(dur, note=None, ins=None, porta=None, gate="on", tie=False, nbytes=2):
-    return {
-        "dur": dur,
-        "note": note,
-        "ins": ins,
-        "porta": porta,
-        "gate": gate,
-        "tie": tie,
-        "bytes": nbytes,
-    }
+def event(dur, note=None, ins=None, slide=None, gate="on", tie=False):
+    arm = None if slide is None else {"acc": "slide", "delta": slide[0], "phase": slide[1]}
+    return {"dur": dur, "note": note, "ins": ins, "arm": arm, "gate": gate, "tie": tie}
+
+
+def pat(events, cursor=None):
+    p = {"events": events}
+    if cursor is not None:
+        p["cursor"] = cursor
+    return p
 
 
 def tuning(hi=20):
@@ -63,7 +63,6 @@ def obj(patterns, orders, instruments, pitch=None, rate=2, generators=None):
             "tempo": {"rate": rate, "phase": 0},
             "row_consumes_tick": True,
             "note_row": "note_on",
-            "score_acc": "slide",
             "player": "hermetic",
         },
         "globals": {
@@ -105,7 +104,10 @@ def obj(patterns, orders, instruments, pitch=None, rate=2, generators=None):
         },
         "accs": TC.accs(),
         "instruments": instruments,
-        "score": {"patterns": patterns, "orders": orders},
+        "score": {
+            "patterns": {k: v if "events" in v else pat(v) for k, v in patterns.items()},
+            "orders": orders,
+        },
         "state0": {
             "ins": [0] * n,
             "wave": [0] * n,
@@ -143,7 +145,7 @@ def test_the_note_row_and_the_tempo_divider():
 
 def test_a_keyoff_row_re_emits_the_instrument_with_the_gate_cleared():
     o = obj(
-        {"1": [event(0, note=2, ins=0), event(0, gate="off", nbytes=1)]},
+        {"1": [event(0, note=2, ins=0), event(0, gate="off")]},
         [{"play": [1], "end": "jump"}],
         {"0": ins()},
     )
@@ -160,7 +162,7 @@ def test_the_prelude_fires_a_row_tick_early_and_the_tie_disarms_it():
         {"0": ins()},
     )
     assert render(o, 6)[2][:3] == cut
-    o["score"]["patterns"]["1"][0]["tie"] = True
+    o["score"]["patterns"]["1"]["events"][0]["tie"] = True
     assert render(o, 6)[2][:3] != cut
 
 
@@ -175,14 +177,14 @@ def test_the_order_program_jumps_and_stops():
 
 def test_the_free_slide_is_a_field_delta_with_a_phase_bit():
     up = obj(
-        {"1": [event(9, note=2, ins=0, porta=0x84, nbytes=3)]},
+        {"1": [event(9, note=2, ins=0, slide=(4, 0))]},
         [{"play": [1], "end": "jump"}],
         {"0": ins()},
     )
     w = render(up, 4)
     assert (FLO, 0x06) in w[1] and (FHI, 0x02) in w[1]  # 0x0202 + 4
     dn = obj(
-        {"1": [event(9, note=2, ins=0, porta=0x85, nbytes=3)]},
+        {"1": [event(9, note=2, ins=0, slide=(4, 1))]},
         [{"play": [1], "end": "jump"}],
         {"0": ins()},
     )
@@ -344,7 +346,7 @@ def test_the_flattened_print_carries_every_section_and_measures_itself():
         }
     }
     o = obj(
-        {"1": [event(9, note=2, ins=0, porta=0x85, nbytes=3), event(0, gate="off", nbytes=1)]},
+        {"1": [event(9, note=2, ins=0, slide=(4, 1)), event(0, gate="off")]},
         [{"play": [1], "end": "jump"}],
         {"0": ins(accs=[{"acc": "vibrato", "shift": 1}, {"acc": "drum"}])},
         pitch=t,
@@ -368,8 +370,8 @@ def test_the_flattened_print_carries_every_section_and_measures_itself():
     assert "(dur - 1) & $FF >= rowsleft" in text  # nested binaries parenthesised
     assert "emits   the value the tick came in with" in text
     assert "--" in text.split("## generators")[0]  # an octave-target-only row
-    assert "     dur  tie  gate   ins  note  porta" in text
-    assert "$85" in text  # the porta byte the row carries
+    assert "     dur  tie  gate   ins  note  arm" in text
+    assert "slide(delta 4 phase 1)" in text  # the arm the row carries, materialised
     n = printer.numbers(text)
     assert set(n) == {"lines", "tokens", "statements", "blocks", "header_rows", "data_rows", "xz"}
     assert n["blocks"] == 8 and n["data_rows"] == n["statements"] > 0

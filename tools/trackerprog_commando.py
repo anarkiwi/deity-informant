@@ -95,30 +95,42 @@ def load(path):
 
 
 def pattern(m, pn):
-    """One pattern as events -- what the fetch grammar decodes, materialised."""
+    """One pattern, materialised: events, and the cursor coordinate each leaves.
+
+    Nothing packed survives.  The row byte's fields are separate columns, and a
+    portamento byte becomes ``arm(slide, {delta, phase})`` -- section 3.6's own
+    command, the same shape an instrument uses to arm an accumulator.  The
+    ``cursor`` column is the position the voice's own cursor holds *after* each
+    event, which is what a generator watching that cursor observes; it is
+    dropped where nothing watches (:func:`build`).
+    """
     base = m[PATPTR_LO + pn] | m[PATPTR_HI + pn] << 8
-    out, i = [], 0
+    out, cursor, i = [], [], 0
     while m[base + i] != 0xFF:
-        start, r = i, m[base + i]
+        r = m[base + i]
         e = {
             "dur": r & 0x1F,
             "tie": bool(r & 0x20),
             "gate": "off" if r & 0x40 else "on",
             "note": None,
             "ins": None,
-            "porta": None,
+            "arm": None,
         }
         i += 1
         if not r & 0x40:
             if r & 0x80:
                 x = m[base + i]
                 i += 1
-                e["ins" if x < 0x80 else "porta"] = x
+                if x < 0x80:
+                    e["ins"] = x
+                else:
+                    e["arm"] = {"acc": "slide", "delta": x & 0x7E, "phase": x & 1}
             e["note"] = m[base + i]
             i += 1
-        e["bytes"] = i - start
         out.append(e)
-    return out
+        cursor.append(i)
+    cursor[-1] = 0  # the cursor's own reset at the pattern's end
+    return {"events": out, "cursor": cursor}
 
 
 def score(m, song):
@@ -141,7 +153,7 @@ def reached(m, orders, patterns):
     for v, o in enumerate(orders):
         cur = m[0x54FE + v]
         for p in o["play"]:
-            for e in patterns[str(p)]:
+            for e in patterns[str(p)]["events"]:
                 cur = e["ins"] if e["ins"] is not None else cur
                 if e["note"] is not None:
                     out.add((cur, e["note"]))
@@ -232,9 +244,8 @@ def _generator(lo, hi, seed):
         kind, v = src["observe"], src["voice"]
         state[half] = seed(kind, v)
         value.append({"own": half})
-        if kind == "patrow":  # a byte cursor: it counts what the fetch consumed
-            on.append({"event": "row", "voice": v, "add": {half: {"payload": "bytes"}}})
-            on.append({"event": "wrap", "voice": v, "set": {half: 0}})
+        if kind == "patrow":  # a cursor: it is told its position, it does not count
+            on.append({"event": "row", "voice": v, "set": {half: {"payload": "pos"}}})
             continue
         assert kind in events, "no event publishes %s" % kind
         name, payload = events[kind]
@@ -243,6 +254,18 @@ def _generator(lo, hi, seed):
             sub["acc"] = "pulse_bounce"
         on.append(sub)
     return {"state": state, "on": on, "value": {"u16": value}}
+
+
+def _flag_default(instruments):
+    """The carry no producer leaves: the residue of the index's own three shifts.
+
+    ``bit(ins, 5)`` over the declared instruments, constant-folded where every
+    declared id proves it, so the object never reads an index as if it were data.
+    """
+    bits = {int(k) >> 5 & 1 for k in instruments}
+    if bits == {0}:
+        return {"default": {"const": 0}, "proof": "no declared instrument id has bit 5 set"}
+    return {"default": {"bit": [{"cell": "ins"}, 5]}}
 
 
 def accs():
@@ -315,8 +338,8 @@ def accs():
             "cell": "voice.freq",
             "target": "freq",
             "width": 16,
-            "delta": {"field": [{"cell": "porta"}, 0x7E]},
-            "phase": {"bit": [{"cell": "porta"}, 0]},
+            "delta": {"const": "delta"},
+            "phase": {"const": "phase"},
             "policy": "wrap",
             "bound": {
                 "from": "projected",
@@ -396,6 +419,11 @@ def build(path, song=0):
     pairs = reached(m, orders, patterns)
     tuning, generators = pitch(m, pairs)
     instruments = {}
+    watched = {s["voice"] for g in generators.values() for s in g["on"] if s["event"] == "row"}
+    keep = {p for v in watched for p in orders[v]["play"]}
+    for k, pat in patterns.items():
+        if int(k) not in keep:
+            del pat["cursor"]
     for i in sorted({i for i, _ in pairs}):
         pw_lo, pw_hi, wave, ad, sr, vib, pspeed, fx = m[INS_BASE + 8 * i : INS_BASE + 8 * i + 8]
         arms = []
@@ -433,12 +461,11 @@ def build(path, song=0):
             "tempo": {"rate": m[SPEEDTBL + song] + 1, "phase": 0},
             "row_consumes_tick": True,
             "note_row": "note_on",
-            "score_acc": "slide",
             "player": "prototype-trackerprog.md sections 4 and 5",
         },
         "globals": {
             "mode_vol": 0x0F,
-            "flags": {"C": {"default": {"bit": [{"cell": "ins"}, 5]}}},
+            "flags": {"C": _flag_default(instruments)},
             "init_writes": [[4, 0], [11, 0], [4, 0], [11, 0], [18, 0], [24, 0x0F]],
             "stop_writes": [[4, 0], [11, 0], [18, 0], [24, 0x0F]],
         },
@@ -526,7 +553,7 @@ def main(argv=None):
         % (
             len(obj["instruments"]),
             len(obj["score"]["patterns"]),
-            sum(len(p) for p in obj["score"]["patterns"].values()),
+            sum(len(p["events"]) for p in obj["score"]["patterns"].values()),
             len(obj["pitch"]["notes"]),
             len(obj["generators"]),
             len(obj["accs"]),

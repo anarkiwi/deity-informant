@@ -59,11 +59,9 @@ class Player:
             "wave": list(s0["wave"]),
             "pwdir": list(s0["pwdir"]),
             "orderpos": [0] * n,
-            "patrow": [0] * n,
             "rowsleft": [0] * n,
             "dur": [0] * n,
             "note": [0] * n,
-            "porta": [0] * n,
             "freq": [0] * n,
             "noteidx": [0] * n,
         }
@@ -180,10 +178,8 @@ class Player:
                 if sub["event"] != event or sub["voice"] != voice or sub.get("acc") != acc:
                     continue
                 own = self.gen[name]
-                for k, e in sub.get("set", {}).items():
+                for k, e in sub["set"].items():  # a generator mirrors; it never counts
                     own[k] = self.ev(e, payload) & 0xFF
-                for k, e in sub.get("add", {}).items():
-                    own[k] = (own[k] + self.ev(e, payload)) & 0xFF
 
     def instr(self, v=None):
         return self.o["instruments"][str(self.c["ins"][self.v if v is None else v])]
@@ -250,14 +246,12 @@ class Player:
             if o["end"] != "jump":
                 self.stopping = 1
                 return
-            self.c["orderpos"][v] = self.c["patrow"][v] = self.evrow[v] = 0
+            self.c["orderpos"][v] = self.evrow[v] = 0
             self.c["rowsleft"][v] = 0
-            self.publish("wrap", v)
             self.publish("order", v, {"pos": 0})
         pat = self.o["score"]["patterns"][str(o["play"][self.c["orderpos"][v]])]
-        e = pat[self.evrow[v]]
+        e = pat["events"][self.evrow[v]]
         self.armed[v] = []
-        self.c["porta"][v] = 0
         self.c["rowsleft"][v] = self.c["dur"][v] = e["dur"]
         self.tie[v] = e["tie"]
         gate = 0xFE if e["gate"] == "off" else 0xFF
@@ -265,9 +259,8 @@ class Player:
             if e["ins"] is not None:
                 self.c["ins"][v] = e["ins"]
                 self.publish("instrument", v, {"ins": e["ins"]})
-            if e["porta"] is not None:
-                self.c["porta"][v] = e["porta"]
-                self.armed[v].append(self.o["meta"]["score_acc"])
+            if e["arm"] is not None:
+                self.armed[v].append(e["arm"])
             self.c["note"][v] = e["note"]
             self.c["noteidx"][v] = self.note_index(e["note"])
             self.publish("note", v, {"note": e["note"]})
@@ -277,19 +270,18 @@ class Player:
         self.c["wave"][v] = self.instr()["wave"]
         self.publish("sound", v, {"wave": self.c["wave"][v]})
         self.rows(self.o["meta"]["note_row"], prod, edge, {"gate": gate})
-        self.c["patrow"][v] += e["bytes"]
-        self.publish("row", v, {"bytes": e["bytes"]})
+        if "cursor" in pat:  # a cursor publishes its position, not an increment
+            self.publish("row", v, {"pos": pat["cursor"][self.evrow[v]]})
         self.evrow[v] += 1
-        if self.evrow[v] == len(pat):
-            self.evrow[v] = self.c["patrow"][v] = 0
+        if self.evrow[v] == len(pat["events"]):
+            self.evrow[v] = 0
             self.c["orderpos"][v] += 1
-            self.publish("wrap", v)
             self.publish("order", v, {"pos": self.c["orderpos"][v]})
 
     # ---- the accumulators -----------------------------------------------------
     def accs(self, prod, edge):
         v = self.v
-        arms = list(self.instr()["accs"]) + [{"acc": a} for a in self.armed[v]]
+        arms = list(self.instr()["accs"]) + list(self.armed[v])
         for name, d in self.o["globals"]["flags"].items():
             self.flags[name] = self.ev(d["default"])
         for arm in sorted(arms, key=lambda a: self.o["accs"][a["acc"]]["rank"]):

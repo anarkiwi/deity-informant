@@ -51,7 +51,7 @@ def test_the_object_is_the_tune_and_no_more(song):
     ins, pats, events = SHAPE[song]
     assert len(obj["instruments"]) == ins  # 13 in the file; the subtune reaches these
     assert len(obj["score"]["patterns"]) == pats
-    assert sum(len(p) for p in obj["score"]["patterns"].values()) == events
+    assert sum(len(p["events"]) for p in obj["score"]["patterns"].values()) == events
     assert set(obj["accs"]) == {
         "vibrato",
         "pulse_run",
