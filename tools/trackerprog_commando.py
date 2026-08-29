@@ -52,35 +52,33 @@ FREQ_ORIGIN = 0x5428  # pitch index n is the u16 at FREQ_ORIGIN + 2n
 INS_BASE, PATPTR_LO, PATPTR_HI = 0x5591, 0x5711, 0x573E
 SONGPTR, SPEEDTBL = 0x56FF, 0x5514
 
-# The cells the pitch table's tail overlaps (commando-floor section 5, "const is
-# refuted by the tune"): each is state the universal player already holds.
-CELLS = {
-    0x54EB: "voice_base",
-    0x54EC: ("orderpos", 0),
-    0x54ED: ("orderpos", 1),
-    0x54EE: ("orderpos", 2),
-    0x54EF: ("patrow", 0),
-    0x54F0: ("patrow", 1),
-    0x54F1: ("patrow", 2),
-    0x54F2: ("rowsleft", 0),
-    0x54F3: ("rowsleft", 1),
-    0x54F4: ("rowsleft", 2),
-    0x54F5: ("dur", 0),
-    0x54F6: ("dur", 1),
-    0x54F7: ("dur", 2),
-    0x54F8: ("wave", 0),
-    0x54F9: ("wave", 1),
-    0x54FA: ("wave", 2),
-    0x54FB: ("note", 0),
-    0x54FC: ("note", 1),
-    0x54FD: ("note", 2),
-    0x54FE: ("ins", 0),
-    0x54FF: ("ins", 1),
-    0x5500: ("ins", 2),
-    0x5510: ("pwdir", 0),
-    0x5511: ("pwdir", 1),
-    0x5512: ("pwdir", 2),
-}
+# Build-time only, and none of it reaches the object.  The fused region
+# commando-floor section 5 documents: the frequency table tunes notes 16..95 at
+# $5448..$54E7 and the per-voice state follows it, so an index past 95 names
+# state, not tuning.  This decodes *which* state, so the object can carry a
+# self-contained generator for that value instead of running off a table.
+#
+# Each row is (byte width, the generator source for byte i, a name).  ``None``
+# is a byte no reachable index names.
+TABLE_END = 96  # the const table's last note is 95
+
+
+def _voice_byte(kind, i):
+    """The byte at per-voice cell ``kind[i]``, as a generator's own state."""
+    return {"observe": kind, "voice": i}
+
+
+FUSED = (
+    [("sidofs%d" % i, {"sid_base": i}) for i in range(3)]
+    + [("voice_base", {"sid_base": "reader"})]
+    + [
+        ("%s%d" % (k, i), _voice_byte(k, i))
+        for k in ("orderpos", "patrow", "rowsleft", "rowbyte", "wave", "note", "ins")
+        for i in range(3)
+    ]
+    + [("scratch%d" % i, None) for i in range(12)]
+    + [("%s%d" % (k, i), _voice_byte(k, i)) for k in ("pwdelay", "pwdir") for i in range(3)]
+)
 
 
 def load(path):
@@ -150,27 +148,100 @@ def reached(m, orders, patterns):
 
 
 def pitch(m, pairs):
-    """The tuning, materialised: a const where the table is const, else two cells."""
-    need = set()
-    for i, n in pairs:
-        col = m[INS_BASE + 8 * i : INS_BASE + 8 * i + 8]
-        need |= {n, n + 1} if col[5] else {n}
-        need |= {n + 12} if col[7] & 4 else set()
-    out = {}
-    for n in sorted(need):
-        a = FREQ_ORIGIN + 2 * n
-        if a in CELLS or a + 1 in CELLS:
-            out[str(n)] = {"cells": [_ref(m, a), _ref(m, a + 1)]}
-        else:
-            out[str(n)] = {"const": m[a] | m[a + 1] << 8}
-    return out
+    """The note space and its columns -- bounded, with no read past its end.
+
+    A trackerprog's pitch table is bounded: an index outside it is not a note,
+    so nothing may run off it.  The space is the notes the score plays plus the
+    in-range targets of the arpeggio's octave; ``freq`` tunes every row,
+    ``step`` is the interval above a note (what the vibrato shifts) and
+    ``octave`` is the arpeggio's second row, each materialised per note.  Where
+    a transposition would have left the table, the column names a **generator**
+    (section 4) instead -- a self-contained 16-bit source, never a table read.
+    """
+    played = sorted({n for _, n in pairs})
+    space = sorted(set(played) | {n + 12 for n in played if n + 12 < TABLE_END})
+    at = {n: i for i, n in enumerate(space)}
+    gens = {}
+    base = {
+        "wave": 0x54F8,
+        "note": 0x54FB,
+        "ins": 0x54FE,
+        "orderpos": 0x54EC,
+        "patrow": 0x54EF,
+        "pwdir": 0x5510,
+    }
+    seed = lambda kind, v: m[base[kind] + v]
+
+    def word(n):
+        """The value a would-be index ``n`` carries: a constant, or a generator."""
+        if n < TABLE_END:
+            a = FREQ_ORIGIN + 2 * n
+            return m[a] | m[a + 1] << 8
+        lo, hi = FUSED[2 * (n - TABLE_END)], FUSED[2 * (n - TABLE_END) + 1]
+        assert lo[1] is not None and hi[1] is not None, "index %d names tick scratch" % n
+        name = "%s_%s" % (lo[0], hi[0])
+        gens[name] = _generator(lo[1], hi[1], seed)
+        return {"gen": name}
+
+    def sub(a, b):
+        return (a - b) & 0xFFFF if isinstance(a, int) and isinstance(b, int) else {"sub": [a, b]}
+
+    freq = [word(n) for n in space]
+    # step and octave belong to the notes the score plays; a row that is only an
+    # octave target is read through ``freq`` alone and carries neither.
+    step = [sub(word(n + 1), word(n)) if n in played else None for n in space]
+    octave = [
+        None if n not in played else {"at": at[n + 12]} if n + 12 in at else word(n + 12)
+        for n in space
+    ]
+    return (
+        {
+            "notes": space,
+            "index": {str(n): i for i, n in enumerate(space)},
+            "freq": freq,
+            "step": step,
+            "octave": octave,
+        },
+        gens,
+    )
 
 
-def _ref(m, a):
-    c = CELLS.get(a)
-    if c is None:
-        return {"const": m[a]}
-    return {"cell": c} if isinstance(c, str) else {"cell": c[0], "voice": c[1]}
+def _generator(lo, hi, seed):
+    """A generator: private state, the events that update it, and its value.
+
+    It reads nothing of the player's -- no cell of another voice, no table, no
+    address, no index past the end of anything.  What it needs it **mirrors**,
+    by subscribing to the events the player publishes; two generators mirroring
+    the same fact keep two copies, which is cheaper than a shared namespace and
+    cannot alias.  ``sid_base`` is the chip's own register layout, which the
+    player computes for every write it emits.
+    """
+    events = {
+        "wave": ("sound", "wave"),
+        "note": ("note", "note"),
+        "ins": ("instrument", "ins"),
+        "orderpos": ("order", "pos"),
+        "pwdir": ("turn", "phase"),
+    }
+    state, on, value = {}, [], []
+    for half, src in (("lo", lo), ("hi", hi)):
+        if "sid_base" in src:
+            value.append(dict(src))
+            continue
+        kind, v = src["observe"], src["voice"]
+        state[half] = seed(kind, v)
+        value.append({"own": half})
+        if kind == "patrow":  # a byte cursor: it counts what the fetch consumed
+            on.append({"event": "row", "voice": v, "add": {half: {"payload": "bytes"}}})
+            on.append({"event": "wrap", "voice": v, "set": {half: 0}})
+            continue
+        assert kind in events, "no event publishes %s" % kind
+        name, payload = events[kind]
+        sub = {"event": name, "voice": v, "set": {half: {"payload": payload}}}
+        if name == "turn":
+            sub["acc"] = "pulse_bounce"
+        on.append(sub)
+    return {"state": state, "on": on, "value": {"u16": value}}
 
 
 def accs():
@@ -182,10 +253,10 @@ def accs():
             "cell": "tick",
             "target": "freq",
             "width": 16,
-            "policy": {"reload": {"pitch": {"cell": "note"}}},
+            "policy": {"reload": {"notefreq": {"cell": "noteidx"}}},
             "delta": {
                 "repeat": [
-                    {"tablestep": [{"cell": "note"}, "shift"]},
+                    {"tablestep": [{"cell": "noteidx"}, "shift"]},
                     {"fold": [{"cell": "counter"}, 7]},
                 ]
             },
@@ -302,12 +373,10 @@ def accs():
             "width": 16,
             "policy": {
                 "reload": {
-                    "pitch": {
-                        "add": [
-                            {"cell": "note"},
-                            {"stream": ["arp", {"and": [{"cell": "counter"}, 1]}]},
-                        ]
-                    }
+                    "pitchrow": [
+                        {"stream": ["arp", {"and": [{"cell": "counter"}, 1]}]},
+                        {"cell": "noteidx"},
+                    ]
                 }
             },
             "bound": {"from": "proved", "interval": [0, 12], "witness": "the arp stream"},
@@ -324,6 +393,7 @@ def build(path, song=0):
     m = load(path)
     orders, patterns = score(m, song)
     pairs = reached(m, orders, patterns)
+    tuning, generators = pitch(m, pairs)
     instruments = {}
     for i in sorted({i for i, _ in pairs}):
         pw_lo, pw_hi, wave, ad, sr, vib, pspeed, fx = m[INS_BASE + 8 * i : INS_BASE + 8 * i + 8]
@@ -371,7 +441,8 @@ def build(path, song=0):
             "init_writes": [[4, 0], [11, 0], [4, 0], [11, 0], [18, 0], [24, 0x0F]],
             "stop_writes": [[4, 0], [11, 0], [18, 0], [24, 0x0F]],
         },
-        "pitch": pitch(m, pairs),
+        "pitch": tuning,
+        "generators": generators,
         "streams": {
             "note_on": {
                 "rows": [
@@ -399,7 +470,7 @@ def build(path, song=0):
                 ],
                 "term": "halt",
             },
-            "arp": {"rows": [0, 12], "term": "jump", "kind": "pitch"},
+            "arp": {"rows": ["freq", "octave"], "term": "jump", "kind": "pitch"},
         },
         "accs": accs(),
         "instruments": instruments,
@@ -447,12 +518,13 @@ def main(argv=None):
         d.mkdir(parents=True, exist_ok=True)
         (d / "trackerprog.json").write_text(json.dumps(obj, indent=1))
     print(
-        "instruments %d  patterns %d  events %d  pitch %d  accs %d"
+        "instruments %d  patterns %d  events %d  notes %d  generators %d  accs %d"
         % (
             len(obj["instruments"]),
             len(obj["score"]["patterns"]),
             sum(len(p) for p in obj["score"]["patterns"].values()),
-            len(obj["pitch"]),
+            len(obj["pitch"]["notes"]),
+            len(obj["generators"]),
             len(obj["accs"]),
         )
     )

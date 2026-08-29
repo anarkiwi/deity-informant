@@ -21,6 +21,20 @@ An accumulator is section 5's record -- ``target``, ``width``, ``delta``,
 ``bound``, ``policy``, ``rate``, ``phase``, ``links``, ``scope`` -- read as
 data, so the evaluator below dispatches on the *form* of a delta and never on
 the name of an effect.
+
+Two invariants the object must keep, and this module enforces:
+
+* **the pitch table is bounded.**  ``pitch.freq`` is indexed by a row of the
+  note space and by nothing else; there is no arithmetic on a pitch index, no
+  stride, and no read past the end.  A note the score plays that is not a row
+  of the space is an error, not a value.
+* **nothing reads another voice's state.**  An expression reads the cells of
+  the voice being committed, and no others.  Where a tune's value genuinely
+  depends on another voice, a **generator** (``obj["generators"]``) carries it:
+  private state with declared initial values, updated only by the events this
+  player publishes, and a value over that state alone.  Two generators
+  mirroring the same fact keep two copies; nothing is shared, so nothing
+  aliases.
 """
 
 from __future__ import annotations
@@ -51,6 +65,7 @@ class Player:
             "note": [0] * n,
             "porta": [0] * n,
             "freq": [0] * n,
+            "noteidx": [0] * n,
         }
         self.evrow = [0] * n
         self.tie = [False] * n
@@ -58,6 +73,8 @@ class Player:
         self.divider = [dict((k, d[i]) for k, d in s0["dividers"].items()) for i in range(n)]
         self.pw = {k: v["pw"][0] | v["pw"][1] << 8 for k, v in obj["instruments"].items()}
         self.flags = {}
+        self.gen = {k: dict(g["state"]) for k, g in obj.get("generators", {}).items()}
+        self.own = None
         self.tick_no = -1
         self.stopping = 0
         self.v = 0
@@ -65,10 +82,11 @@ class Player:
         self.w = []
 
     # ---- reading the object ---------------------------------------------------
-    def cell(self, name, voice=None):
-        v = self.v if voice is None else voice
-        if name == "voice_base":
-            return 7 * v
+    def cell(self, name):
+        """A cell of the voice being committed.  There is no other-voice form."""
+        v = self.v
+        if name == "voice_index":
+            return v
         if name == "counter":
             return self.tick_no
         if name == "freq_hi":
@@ -80,15 +98,23 @@ class Player:
             return p if name == "pw" else (p & 0xFF if name == "pw_lo" else p >> 8)
         return self.c[name][v] & 0xFFFF
 
-    def pitch(self, n):
-        e = self.o["pitch"][str(n)]
-        if "const" in e:
-            return e["const"]
-        lo, hi = e["cells"]
-        return self.ref(lo) | self.ref(hi) << 8
+    # ---- the bounded pitch table ----------------------------------------------
+    def column(self, name, i):
+        """One column of note-space row ``i``: a constant, a generator or a row."""
+        e = self.o["pitch"][name][i]
+        if e is None:
+            raise AssertionError("pitch.%s has no row %d: not a note the score plays" % (name, i))
+        if isinstance(e, int):
+            return e
+        if "at" in e:
+            return self.column("freq", e["at"])
+        return self.ev(e) & 0xFFFF
 
-    def ref(self, r):
-        return r["const"] if "const" in r else self.cell(r["cell"], r.get("voice")) & 0xFF
+    def note_index(self, byte):
+        i = self.o["pitch"]["index"].get(str(byte))
+        if i is None:
+            raise AssertionError("note %d is outside the bounded note space" % byte)
+        return i
 
     def ev(self, e, ov=None):
         """Evaluate one section 5 expression node."""
@@ -100,9 +126,28 @@ class Player:
         if k == "const":
             return (ov or {})[a] if isinstance(a, str) else a
         if k == "cell":
-            return self.cell(a) if isinstance(a, str) else self.cell(a[0], a[1])
+            return self.cell(a)
+        if k == "own":
+            return self.own[a]
+        if k == "sid_base":
+            return 7 * (self.v if a == "reader" else a)
+        if k == "u16":
+            return (self.ev(a[0], ov) & 0xFF) | (self.ev(a[1], ov) & 0xFF) << 8
+        if k == "gen":
+            g = self.o["generators"][a]
+            keep, self.own = self.own, self.gen[a]
+            try:
+                return self.ev(g["value"], ov)
+            finally:
+                self.own = keep
+        if k == "notefreq":
+            return self.column("freq", self.ev(a, ov))
+        if k == "pitchrow":
+            return self.column(self.ev(a[0], ov), self.ev(a[1], ov))
         if k == "flag":
             return self.flags.get(a, 0)
+        if k == "payload":
+            return ov[a]
         if k == "ins":
             x = self.instr()
             for part in a.split("."):
@@ -114,8 +159,7 @@ class Player:
             return self.ev(a[0], ov) + self.ev(a[1], ov)
         if k == "sub":
             return self.ev(a[0], ov) - self.ev(a[1], ov)
-        if k == "pitch":
-            return self.pitch(self.ev(a, ov))
+
         if k == "field":
             return self.ev(a[0], ov) & a[1]
         if k == "bit":
@@ -123,12 +167,23 @@ class Player:
         if k == "fold":  # the triangle a free counter's low bits already are
             x = self.ev(a[0], ov) & a[1]
             return x ^ a[1] if x > a[1] >> 1 else x
-        if k == "tablestep":  # (P[n+1] - P[n]) >> shift
-            n = self.ev(a[0], ov)
-            return ((self.pitch(n + 1) - self.pitch(n)) & 0xFFFF) >> self.ev(a[1], ov)
+        if k == "tablestep":  # the interval above this note, shifted -- a column
+            return self.column("step", self.ev(a[0], ov)) >> self.ev(a[1], ov)
         if k == "stream":
             return self.o["streams"][a[0]]["rows"][self.ev(a[1], ov)]
         raise KeyError("expression form %r" % (k,))
+
+    def publish(self, event, voice, payload=None, acc=None):
+        """One musical fact, offered to every generator that subscribes to it."""
+        for name, g in self.o.get("generators", {}).items():
+            for sub in g["on"]:
+                if sub["event"] != event or sub["voice"] != voice or sub.get("acc") != acc:
+                    continue
+                own = self.gen[name]
+                for k, e in sub.get("set", {}).items():
+                    own[k] = self.ev(e, payload) & 0xFF
+                for k, e in sub.get("add", {}).items():
+                    own[k] = (own[k] + self.ev(e, payload)) & 0xFF
 
     def instr(self, v=None):
         return self.o["instruments"][str(self.c["ins"][self.v if v is None else v])]
@@ -197,6 +252,8 @@ class Player:
                 return
             self.c["orderpos"][v] = self.c["patrow"][v] = self.evrow[v] = 0
             self.c["rowsleft"][v] = 0
+            self.publish("wrap", v)
+            self.publish("order", v, {"pos": 0})
         pat = self.o["score"]["patterns"][str(o["play"][self.c["orderpos"][v]])]
         e = pat[self.evrow[v]]
         self.armed[v] = []
@@ -207,20 +264,27 @@ class Player:
         if e["gate"] == "on":
             if e["ins"] is not None:
                 self.c["ins"][v] = e["ins"]
+                self.publish("instrument", v, {"ins": e["ins"]})
             if e["porta"] is not None:
                 self.c["porta"][v] = e["porta"]
                 self.armed[v].append(self.o["meta"]["score_acc"])
             self.c["note"][v] = e["note"]
-            f = self.pitch(e["note"])
+            self.c["noteidx"][v] = self.note_index(e["note"])
+            self.publish("note", v, {"note": e["note"]})
+            f = self.column("freq", self.c["noteidx"][v])
             self.c["freq"][v] = f
             prod += [("freq_hi", f >> 8), ("freq_lo", f & 0xFF)]
         self.c["wave"][v] = self.instr()["wave"]
+        self.publish("sound", v, {"wave": self.c["wave"][v]})
         self.rows(self.o["meta"]["note_row"], prod, edge, {"gate": gate})
         self.c["patrow"][v] += e["bytes"]
+        self.publish("row", v, {"bytes": e["bytes"]})
         self.evrow[v] += 1
         if self.evrow[v] == len(pat):
             self.evrow[v] = self.c["patrow"][v] = 0
             self.c["orderpos"][v] += 1
+            self.publish("wrap", v)
+            self.publish("order", v, {"pos": self.c["orderpos"][v]})
 
     # ---- the accumulators -----------------------------------------------------
     def accs(self, prod, edge):
@@ -289,6 +353,7 @@ class Player:
             if turn:
                 c = self.c[a["phase"]["cell"]]
                 c[self.v] = (c[self.v] + (-1 if ph else 1)) & 0xFF
+                self.publish("turn", self.v, {"phase": c[self.v]}, acc=a["id"])
         return out
 
     def load(self, a):

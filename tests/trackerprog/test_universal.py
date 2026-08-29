@@ -33,7 +33,20 @@ def event(dur, note=None, ins=None, porta=None, gate="on", tie=False, nbytes=2):
     }
 
 
-def obj(patterns, orders, instruments, pitch=None, rate=2):
+def tuning(hi=20):
+    """A bounded note space: notes 1..hi-1, with step and octave columns."""
+    notes = list(range(1, hi))
+    at = {k: i for i, k in enumerate(notes)}
+    return {
+        "notes": notes,
+        "index": {str(k): i for i, k in enumerate(notes)},
+        "freq": [0x0101 * k for k in notes],
+        "step": [0x0101 for _ in notes],
+        "octave": [{"at": at[k + 12]} if k + 12 in at else None for k in notes],
+    }
+
+
+def obj(patterns, orders, instruments, pitch=None, rate=2, generators=None):
     """A one- or two-voice trackerprog over the same seven accumulator forms."""
     n = len(orders)
     return {
@@ -57,7 +70,8 @@ def obj(patterns, orders, instruments, pitch=None, rate=2):
             "init_writes": [],
             "stop_writes": [[4, 0], [24, 0x0F]],
         },
-        "pitch": pitch or {str(k): {"const": 0x0100 * k + k} for k in range(1, 20)},
+        "pitch": pitch or tuning(),
+        "generators": generators or {},
         "streams": {
             "note_on": {
                 "rows": [
@@ -85,7 +99,7 @@ def obj(patterns, orders, instruments, pitch=None, rate=2):
                 ],
                 "term": "halt",
             },
-            "arp": {"rows": [0, 12], "term": "jump", "kind": "pitch"},
+            "arp": {"rows": ["freq", "octave"], "term": "jump", "kind": "pitch"},
         },
         "accs": TC.accs(),
         "instruments": instruments,
@@ -259,20 +273,48 @@ def test_a_trapped_arm_raises_where_it_is_taken():
         render(o, 4)
 
 
-def test_a_pitch_entry_may_name_two_cells():
-    pitch = {
-        "2": {"cells": [{"cell": "wave", "voice": 0}, {"cell": "pwdir", "voice": 1}]},
-        "3": {"const": 0x0303},
+def test_a_generator_carries_its_own_state_fed_by_published_events():
+    """No expression reads another voice's cells: a generator mirrors, privately."""
+    t = tuning()
+    t["octave"][1] = {"gen": "wave01"}  # note 2's octave is not a note
+    g = {
+        "wave01": {
+            "state": {"lo": 0, "hi": 0},
+            "on": [
+                {"event": "sound", "voice": 0, "set": {"lo": {"payload": "wave"}}},
+                {"event": "sound", "voice": 1, "set": {"hi": {"payload": "wave"}}},
+            ],
+            "value": {"u16": [{"own": "lo"}, {"own": "hi"}]},
+        }
     }
     o = obj(
         {"1": [event(9, note=2, ins=0)]},
         [{"play": [1], "end": "jump"}, {"play": [1], "end": "jump"}],
-        {"0": ins()},
-        pitch=pitch,
+        {"0": ins(accs=[{"acc": "arpeggio"}])},
+        pitch=t,
+        generators=g,
     )
-    w = render(o, 22)
-    assert (FLO, 0x00) in w[0]  # tick 0: no wave has been latched yet
-    assert (7 + FLO, 0x41) in w[20]  # the next fetch reads voice 0's live wave shadow
+    p = Player(o)
+    assert p.gen["wave01"] == {"lo": 0, "hi": 0}
+    w = [p.tick() for _ in range(3)]
+    assert p.gen["wave01"] == {"lo": 0x41, "hi": 0x41}  # both voices published `sound`
+    assert (FHI, 0x41) in w[1] and (FLO, 0x41) in w[1]  # the arpeggio read the generator
+    assert (FHI, 0x02) in w[2]  # and the note itself on the other phase
+
+
+def test_the_pitch_table_is_bounded_in_both_directions():
+    o = obj({"1": [event(3, note=99, ins=0)]}, [{"play": [1], "end": "jump"}], {"0": ins()})
+    with pytest.raises(AssertionError, match="outside the bounded note space"):
+        render(o, 2)
+    t = tuning()
+    o = obj(
+        {"1": [event(9, note=19, ins=0)]},
+        [{"play": [1], "end": "jump"}],
+        {"0": ins(accs=[{"acc": "arpeggio"}])},
+        pitch=t,
+    )
+    with pytest.raises(AssertionError, match="not a note the score plays"):
+        render(o, 3)  # note 19's octave is off the table: it must name a generator
 
 
 def test_the_attestation_names_what_it_compares_and_what_it_drops():

@@ -63,14 +63,58 @@ def test_the_object_is_the_tune_and_no_more(song):
     assert obj["meta"]["commit_order"] == ["ctrl", "ad", "sr"]
 
 
-def test_the_pitch_tail_names_cells_the_player_already_holds():
-    """commando-floor section 5: the overrun is load-bearing, 25 notes' worth."""
+def test_the_note_space_is_bounded_and_the_escapes_are_generators():
+    """commando-floor section 5: the overrun is load-bearing, 25 notes' worth.
+
+    The table never runs off its end.  Where a transposition would have left it,
+    a column names a generator with its own private state.
+    """
     obj = built(0)
-    cells = {n: e["cells"] for n, e in obj["pitch"].items() if "cells" in e}
-    assert set(cells) == {"97", "98", "100", "104", "105", "107", "116"}
-    assert obj["pitch"]["96"] == {"const": 0x0700}  # the last const pair of the fusion
-    named = {r["cell"] for pair in cells.values() for r in pair if "cell" in r}
-    assert named <= {"orderpos", "patrow", "wave", "note", "ins", "pwdir", "voice_base"}
+    p = obj["pitch"]
+    assert len(p["freq"]) == len(p["notes"]) == 70
+    assert max(p["notes"]) == 104 and min(p["notes"]) == 16
+    gens = set()
+
+    def walk(x):
+        if isinstance(x, dict):
+            if "gen" in x:
+                gens.add(x["gen"])
+            for v in x.values():
+                walk(v)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v)
+
+    walk([p["freq"], p["step"], p["octave"]])
+    assert gens == set(obj["generators"])
+    assert len(gens) == 8
+    for g in obj["generators"].values():
+        assert set(g["value"]) == {"u16"}
+        for sub in g["on"]:
+            assert sub["event"] in ("sound", "note", "instrument", "order", "row", "wrap", "turn")
+    # subtunes 2 and 3 never leave the table, so they carry no generator at all
+    assert built(1)["generators"] == {} and built(2)["generators"] == {}
+
+
+def test_no_expression_reads_another_voices_state():
+    """The invariant a generator exists to keep."""
+    obj = built(0)
+    seen = []
+
+    def walk(x):
+        if isinstance(x, dict):
+            if "cell" in x:
+                seen.append(x["cell"])
+            for v in x.values():
+                walk(v)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v)
+
+    walk(obj["accs"])
+    walk(obj["streams"])
+    walk(obj["generators"])
+    assert seen and all(isinstance(c, str) for c in seen)  # never [name, voice]
 
 
 def test_the_inherited_carry_is_load_bearing():
