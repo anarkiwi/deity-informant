@@ -21,7 +21,7 @@ from .loops import _entry_value, _exit_tests, repeats
 from .provenance import stops
 
 DEPTH = 16  # call frames a value is chased through before it is left as it stands
-MAXARMS = 256
+MAXARMS = 64
 Arm = namedtuple("Arm", "guards value addr proc block path exact")
 Site = namedtuple("Site", "proc block idx stmt at")
 
