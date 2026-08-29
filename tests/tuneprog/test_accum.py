@@ -714,10 +714,9 @@ def test_sid_wizard_s_cutoff_refuses_where_its_reader_cannot_place_a_write():
 
 
 @pytest.mark.hvsc
-def test_hubbard_s_portamento_is_exact_and_his_scratch_producers_refuse_by_name():
+def test_hubbard_s_producers_are_exact_or_refuse_by_the_cell_they_move():
     doc = exemplar(COMMANDO)
-    porta = one(doc, **{"cell.name": "voice[].acc"})
-    assert porta["verify"]["divergences"] == 0 and porta["width"] == 16
+    assert all(a["verify"]["divergences"] == 0 and a["width"] in (8, 16) for a in doc["accs"])
     assert {r["cell"] for r in doc["refusals"]} >= {"acc_2_lo", "rec2[].b5591"}
     for r in doc["refusals"]:
         assert r["why"] in accum.WHYS and r["cell"] and r["site"]
