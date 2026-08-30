@@ -62,7 +62,7 @@ SONGPTR, SPEEDTBL = 0x56FF, 0x5514
 # Each row is (byte width, the generator source for byte i, a name).  ``None``
 # is a byte no reachable index names.
 FIRST_NOTE, TABLE_END = 16, 96  # the table tunes notes 16..95
-SOURCE_TOP = 116  # the furthest index the tune's own transposition can reach
+OVERFLOW = 12  # a transposition of +12 from the tuning's top twelve notes
 
 
 def _voice_byte(kind, i):
@@ -101,12 +101,11 @@ def pattern(m, pn):
     Nothing packed survives.  The row byte's fields are separate columns, and a
     portamento byte becomes ``arm(slide, {delta, phase})`` -- section 3.6's own
     command, the same shape an instrument uses to arm an accumulator.  The
-    ``cursor`` column is the position the voice's own cursor holds *after* each
-    event, which is what a generator watching that cursor observes; it is
-    dropped where nothing watches (:func:`build`).
+    A pattern is its events and nothing else: a modulator that watches this
+    tune's own byte cursor counts it for itself (:func:`_word`).
     """
     base = m[PATPTR_LO + pn] | m[PATPTR_HI + pn] << 8
-    out, cursor, i = [], [], 0
+    out, i = [], 0
     while m[base + i] != 0xFF:
         r = m[base + i]
         e = {
@@ -129,9 +128,7 @@ def pattern(m, pn):
             e["note"] = m[base + i]
             i += 1
         out.append(e)
-        cursor.append(i)
-    cursor[-1] = 0  # the cursor's own reset at the pattern's end
-    return {"events": out, "cursor": cursor}
+    return {"events": out}
 
 
 def score(m, song):
@@ -162,21 +159,24 @@ def reached(m, orders, patterns):
 
 
 def pitch(m, pairs):
-    """The tuning, and the one source a note-indexed read finds past its end.
+    """The tuning, and the two places a value that is not a pitch belongs.
 
     A pitch table is a pitch table: a base note and a contiguous run of
-    frequencies -- the tune's whole tuning, not the notes this melody happens to
-    play.  The vibrato and the arpeggio are then **expressions** over it,
-    ``noteword(n+1) - noteword(n)`` and ``noteword(n+12)``, with no table of
-    their own.
+    frequencies, notes 16..95.  No note number outside it exists anywhere in
+    the object -- not in the score, not in a table, not as an index.
 
-    ``noteword`` is total, and that is the whole trick.  Hubbard's lookup has a
-    domain larger than his tuning (commando-floor section 5, "const is refuted by
-    the tune"), so past the tuning it resolves against a **source**: one
-    generator with private state, indexed by position and not by note, so a
-    different melody over the same tune reads the same source and nothing
-    shatters.  A position the object cannot publish is a stated trap, never a
-    hole.
+    Two things this tune does are not pitch, and each is private to whatever
+    does it:
+
+    * the **arpeggio** transposes past the top of the tuning.  Its bound is the
+      tuning and its behaviour at that bound is its own -- twelve words indexed
+      by how far past the transposition went, with the private state and the
+      subscriptions to feed them.  No other modulator asks for one: the
+      vibrato's step above the tuning's last note is measurably never observed,
+      so the tuning simply has no interval there;
+    * instruments 4 and 7 sound a **drum**, whose frequency is no pitch at all.
+      That is a modulator on those instruments -- inline, self-contained, one
+      copy each.
     """
     tuning = {
         "base": FIRST_NOTE,
@@ -185,7 +185,79 @@ def pitch(m, pairs):
             for n in range(FIRST_NOTE, TABLE_END)
         ],
     }
-    return tuning, {"past_tuning": _source(m)}
+    beyond = _beyond(m)
+    drums = {}
+    for i, n in sorted(pairs):
+        if n < TABLE_END:
+            continue
+        col = m[INS_BASE + 8 * i : INS_BASE + 8 * i + 8]
+        rec = {"state": {}, "on": []}
+        rec["value"], why = _word(m, rec, n)
+        assert why is None, why
+        if col[7] & 4:  # this drum is arpeggiated: its own octave, for the same reason
+            rec["octave"], why = _word(m, rec, n + 12)
+            assert why is None, why
+        drums[i] = rec
+    return tuning, beyond, drums
+
+
+def _beyond(m):
+    """The arpeggio's own behaviour past the tuning, by overflow distance."""
+    rec = {"index": "how far past it the transposition went", "state": {}, "on": [], "words": []}
+    for d in range(OVERFLOW):
+        w, why = _word(m, rec, TABLE_END + d)
+        rec["words"].append(w if why is None else {"trap": why})
+    return rec
+
+
+def _word(m, rec, n):
+    """The word at index ``n`` of the tune's byte array, over ``rec``'s own state."""
+    seed, halves = _seed(m), []
+    for j in (0, 1):
+        label, src = FUSED[2 * (n - TABLE_END) + j]
+        if src is None:
+            return None, "a cell the tick recomputes; nothing carries it between ticks"
+        v = _static(src)
+        if v is not None:
+            halves.append({"const": v})
+            continue
+        if "sid_base" in src:
+            halves.append(dict(src))
+            continue
+        kind, i = src["observe"], src["voice"]
+        if kind not in EVENTS and kind != "patrow":
+            return None, "no event publishes %s" % kind
+        rec["state"][label] = seed(kind, i)
+        if kind == "patrow":
+            # this tune's cursor counts bytes, and a row is one, plus one where it
+            # sounds and one where it carries an instrument or an arm.  That is the
+            # modulator's own model of the cell it mirrors; the score keeps events.
+            subs = [
+                {
+                    "event": "row",
+                    "voice": i,
+                    "add": {
+                        label: {
+                            "add": [
+                                {"const": 1},
+                                {"add": [{"payload": "sounds"}, {"payload": "field"}]},
+                            ]
+                        }
+                    },
+                },
+                {"event": "wrap", "voice": i, "set": {label: {"const": 0}}},
+            ]
+        else:
+            name, payload = EVENTS[kind]
+            sub = {"event": name, "voice": i, "set": {label: {"payload": payload}}}
+            if name == "turn":
+                sub["acc"] = "pulse_bounce"
+            subs = [sub]
+        for sub in subs:
+            if sub not in rec["on"]:
+                rec["on"].append(sub)
+        halves.append({"own": label})
+    return {"u16": halves}, None
 
 
 def _static(src):
@@ -207,58 +279,11 @@ def _seed(m):
     return lambda kind, v: m[base[kind] + v]
 
 
-def _source(m):
-    """The words a note index finds past the tuning, as one indexed generator."""
-    seed, state, on, words = _seed(m), {}, [], []
-    for n in range(TABLE_END, SOURCE_TOP + 1):
-        halves, why = [], None
-        for j in (0, 1):
-            label, src = FUSED[2 * (n - TABLE_END) + j]
-            if src is None:
-                why = "a cell the tick recomputes; nothing carries it between ticks"
-                break
-            v = _static(src)
-            if v is not None:
-                halves.append({"const": v})
-                continue
-            if "sid_base" in src:
-                halves.append(dict(src))
-                continue
-            kind, i = src["observe"], src["voice"]
-            if kind not in EVENTS:
-                why = "no event publishes %s" % kind
-                break
-            state[label] = seed(kind, i)
-            name, payload = EVENTS[kind]
-            sub = {"event": name, "voice": i, "set": {label: {"payload": payload}}}
-            if name == "turn":
-                sub["acc"] = "pulse_bounce"
-            if sub not in on:
-                on.append(sub)
-            halves.append({"own": label})
-        words.append({"u16": halves} if why is None else {"trap": why})
-    return {"base": TABLE_END, "state": state, "on": on, "words": words}
-
-
-def _seed(m):
-    """A mirrored cell's value in the post-init image."""
-    base = {
-        "wave": 0x54F8,
-        "note": 0x54FB,
-        "ins": 0x54FE,
-        "orderpos": 0x54EC,
-        "patrow": 0x54EF,
-        "pwdir": 0x5510,
-    }
-    return lambda kind, v: m[base[kind] + v]
-
-
 EVENTS = {
     "wave": ("sound", "wave"),
     "note": ("note", "note"),
     "ins": ("instrument", "ins"),
     "orderpos": ("order", "pos"),
-    "patrow": ("row", "pos"),
     "pwdir": ("turn", "phase"),
 }
 
@@ -283,29 +308,20 @@ def accs():
             "cell": "tick",
             "target": "freq",
             "width": 16,
-            "policy": {"reload": {"noteword": {"cell": "note"}}},
+            "policy": {"reload": {"notefreq": None}},
             "delta": {
                 "repeat": [
-                    {
-                        "shr": [
-                            {
-                                "sub": [
-                                    {"noteword": {"add": [{"cell": "note"}, 1]}},
-                                    {"noteword": {"cell": "note"}},
-                                ]
-                            },
-                            "shift",
-                        ]
-                    },
+                    {"shr": [{"interval": None}, "shift"]},
                     {"fold": [{"cell": "counter"}, 7]},
                 ]
             },
+            "overflow": "beyond_tuning",
             "delta_when": [[{"cell": "dur"}, ">=", 6]],
             "flag": {"name": "C", "seed": 1, "unguarded": 0},
             "bound": {
                 "from": "proved",
                 "interval": [0, 3],
-                "witness": "the fold's own range, 0..3 semitone steps",
+                "witness": "the fold's own range; the tuning has no interval above its top",
             },
             "rate": 1,
             "scope": "voice",
@@ -412,16 +428,14 @@ def accs():
             "target": "freq",
             "width": 16,
             "policy": {
-                "reload": {
-                    "noteword": {
-                        "add": [
-                            {"cell": "note"},
-                            {"stream": ["arp", {"and": [{"cell": "counter"}, 1]}]},
-                        ]
-                    }
-                }
+                "reload": {"transpose": {"stream": ["arp", {"and": [{"cell": "counter"}, 1]}]}}
             },
-            "bound": {"from": "proved", "interval": [0, 12], "witness": "the arp stream"},
+            "overflow": "beyond_tuning",
+            "bound": {
+                "from": "proved",
+                "interval": [0, 12],
+                "witness": "the arp stream; past the tuning, beyond",
+            },
             "rate": 1,
             "scope": "voice",
             "phase": {"and": [{"cell": "counter"}, 1]},
@@ -435,14 +449,14 @@ def build(path, song=0):
     m = load(path)
     orders, patterns = score(m, song)
     pairs = reached(m, orders, patterns)
-    tuning, generators = pitch(m, pairs)
+    tuning, beyond, drums = pitch(m, pairs)
+    for pat in patterns.values():  # an index outside the tuning is no note
+        for e in pat["events"]:
+            if e["note"] is not None and e["note"] >= TABLE_END:
+                e["note"] = None
     acc = accs()
+    acc["arpeggio"]["beyond"] = beyond
     instruments = {}
-    watched = {s["voice"] for g in generators.values() for s in g["on"] if s["event"] == "row"}
-    keep = {p for v in watched for p in orders[v]["play"]}
-    for k, pat in patterns.items():
-        if int(k) not in keep:
-            del pat["cursor"]
     for i in sorted({i for i, _ in pairs}):
         pw_lo, pw_hi, wave, ad, sr, vib, pspeed, fx = m[INS_BASE + 8 * i : INS_BASE + 8 * i + 8]
         arms = []
@@ -466,6 +480,7 @@ def build(path, song=0):
             "pw": [pw_lo, pw_hi],
             "prelude": {"stream": "note_off", "early": 1},
             "accs": arms,
+            **({"pitch": drums[i]} if i in drums else {}),
         }
     return {
         "$trackerprog": 1,
@@ -489,7 +504,6 @@ def build(path, song=0):
             "stop_writes": [[4, 0], [11, 0], [18, 0], [24, 0x0F]],
         },
         "pitch": tuning,
-        "generators": generators,
         "streams": {
             "note_on": {
                 "rows": [
@@ -568,13 +582,13 @@ def main(argv=None):
         (d / "trackerprog.md").write_text(text)
         print("print: " + "  ".join("%s %s" % kv for kv in printer.numbers(text).items()))
     print(
-        "instruments %d  patterns %d  events %d  notes %d  generators %d  accs %d"
+        "instruments %d  patterns %d  events %d  tuning %d  drums %d  accs %d"
         % (
             len(obj["instruments"]),
             len(obj["score"]["patterns"]),
             sum(len(p["events"]) for p in obj["score"]["patterns"].values()),
             len(obj["pitch"]["freq"]),
-            len(obj["generators"]),
+            sum(1 for i in obj["instruments"].values() if "pitch" in i),
             len(obj["accs"]),
         )
     )

@@ -27,11 +27,8 @@ def event(dur, note=None, ins=None, slide=None, gate="on", tie=False):
     return {"dur": dur, "note": note, "ins": ins, "arm": arm, "gate": gate, "tie": tie}
 
 
-def pat(events, cursor=None):
-    p = {"events": events}
-    if cursor is not None:
-        p["cursor"] = cursor
-    return p
+def pat(events):
+    return {"events": events}
 
 
 def tuning(hi=20):
@@ -39,7 +36,7 @@ def tuning(hi=20):
     return {"base": 1, "freq": [0x0101 * k for k in range(1, hi)]}
 
 
-def obj(patterns, orders, instruments, pitch=None, rate=2, generators=None):
+def obj(patterns, orders, instruments, pitch=None, rate=2, beyond=None):
     """A one- or two-voice trackerprog over the same seven accumulator forms."""
     n = len(orders)
     return {
@@ -64,7 +61,6 @@ def obj(patterns, orders, instruments, pitch=None, rate=2, generators=None):
             "stop_writes": [[4, 0], [24, 0x0F]],
         },
         "pitch": pitch or tuning(),
-        "generators": generators or {},
         "streams": {
             "note_on": {
                 "rows": [
@@ -94,7 +90,7 @@ def obj(patterns, orders, instruments, pitch=None, rate=2, generators=None):
             },
             "arp": {"rows": [0, 12], "term": "jump", "kind": "pitch"},
         },
-        "accs": TC.accs(),
+        "accs": _accs(beyond),
         "instruments": instruments,
         "score": {
             "patterns": {k: v if "events" in v else pat(v) for k, v in patterns.items()},
@@ -109,18 +105,39 @@ def obj(patterns, orders, instruments, pitch=None, rate=2, generators=None):
     }
 
 
-def ins(wave=0x41, ad=1, sr=2, pw=(0x10, 0x02), accs=()):
-    return {
+def _accs(beyond=None):
+    a = TC.accs()
+    if beyond:
+        a["arpeggio"]["beyond"] = beyond
+    return a
+
+
+def ins(wave=0x41, ad=1, sr=2, pw=(0x10, 0x02), accs=(), pitch=None):
+    rec = {
         "adsr": [ad, sr],
         "wave": wave,
         "pw": list(pw),
         "prelude": {"stream": "note_off", "early": 1},
         "accs": list(accs),
     }
+    if pitch:
+        rec["pitch"] = pitch
+    return rec
 
 
-def source(words, base=20, state=None, on=()):
-    return {"past_tuning": {"base": base, "state": state or {}, "on": list(on), "words": words}}
+def beyond(words, state=None, on=()):
+    """The arpeggio's own behaviour past the tuning."""
+    return {
+        "index": "how far past it the transposition went",
+        "state": state or {},
+        "on": list(on),
+        "words": words,
+    }
+
+
+def unpitched(value, state=None, on=(), **rest):
+    """An instrument whose sound is no pitch: its own modulator, private and inline."""
+    return dict({"state": state or {}, "on": list(on), "value": value}, **rest)
 
 
 def test_the_note_row_and_the_tempo_divider():
@@ -273,67 +290,76 @@ def test_a_trapped_arm_raises_where_it_is_taken():
         render(o, 4)
 
 
-def test_a_source_carries_its_own_state_fed_by_published_events():
-    """No expression reads another voice's state: a source mirrors, privately."""
-    g = source(
-        [{"u16": [{"own": "lo"}, {"own": "hi"}]}],
-        base=14,  # note 2's octave lands here, past the tuning
+def test_an_unpitched_instrument_carries_its_own_pitch_modulator():
+    """A sound whose frequency is no pitch: the instrument's own, private, inline."""
+    p = unpitched(
+        {"u16": [{"own": "lo"}, {"own": "hi"}]},
         state={"lo": 0, "hi": 0},
         on=[
             {"event": "sound", "voice": 0, "set": {"lo": {"payload": "wave"}}},
             {"event": "sound", "voice": 1, "set": {"hi": {"payload": "wave"}}},
         ],
+        octave={"u16": [{"const": 0x11}, {"const": 0x22}]},
     )
     o = obj(
-        {"1": [event(9, note=2, ins=0)]},
+        {"1": [event(9, ins=0)]},  # no note: the instrument sounds
         [{"play": [1], "end": "jump"}, {"play": [1], "end": "jump"}],
-        {"0": ins(accs=[{"acc": "arpeggio"}])},
-        pitch={"base": 1, "freq": [0x0101 * k for k in range(1, 14)]},
-        generators=g,
+        {"0": ins(accs=[{"acc": "arpeggio"}], pitch=p)},
     )
-    p = Player(o)
-    assert p.gen["past_tuning"] == {"lo": 0, "hi": 0}
-    w = [p.tick() for _ in range(3)]
-    assert p.gen["past_tuning"] == {"lo": 0x41, "hi": 0x41}  # both voices published `sound`
-    assert (FHI, 0x41) in w[1] and (FLO, 0x41) in w[1]  # the arpeggio read the source
-    assert (FHI, 0x02) in w[2]  # and the tuning on the other phase
+    pl = Player(o)
+    w = [pl.tick() for _ in range(3)]
+    assert pl.priv[id(o["instruments"]["0"]["pitch"])] == {"lo": 0x41, "hi": 0x41}
+    assert (7 + FHI, 0x00) in w[0]  # at note on no voice has latched a wave yet
+    assert (FHI, 0x22) in w[1] and (FLO, 0x11) in w[1]  # its own octave, for the arpeggio
+    assert (FHI, 0x41) in w[2] and (FLO, 0x41) in w[2]  # and its own frequency on the other phase
 
 
-def test_the_tuning_is_total_and_a_position_it_cannot_publish_traps():
-    o = obj({"1": [event(3, note=99, ins=0)]}, [{"play": [1], "end": "jump"}], {"0": ins()})
-    with pytest.raises(AssertionError, match="outside the tuning and every source"):
-        render(o, 2)
+def test_the_arpeggio_owns_what_it_does_past_the_tuning():
+    """The bound is the tuning; the behaviour at that bound is the modulator's own."""
+    b = beyond(
+        [{"u16": [{"own": "lo"}, {"const": 0x33}]}, {"trap": "no event publishes rowbyte"}],
+        state={"lo": 0},
+        on=[{"event": "sound", "voice": 0, "set": {"lo": {"payload": "wave"}}}],
+    )
     o = obj(
-        {"1": [event(9, note=2, ins=0)]},
+        {"1": [event(9, note=7, ins=0)]},  # 7 + 12 = 19, one past a tuning of 1..18
         [{"play": [1], "end": "jump"}],
         {"0": ins(accs=[{"acc": "arpeggio"}])},
-        pitch={"base": 1, "freq": [0x0101 * k for k in range(1, 14)]},
-        generators=source([{"trap": "no event publishes rowbyte"}], base=14),
+        pitch={"base": 1, "freq": [0x0101 * k for k in range(1, 19)]},
+        beyond=b,
     )
+    w = render(o, 2)
+    assert (FHI, 0x33) in w[1] and (FLO, 0x41) in w[1]
+    o["score"]["patterns"]["1"]["events"][0]["note"] = 8  # 8 + 12 = 20, the trapped one
     with pytest.raises(AssertionError, match="no event publishes rowbyte"):
+        render(o, 2)
+    o["score"]["patterns"]["1"]["events"][0]["note"] = 9  # past its own bound
+    with pytest.raises(AssertionError, match="beyond its own bound"):
+        render(o, 2)
+
+
+def test_the_tuning_is_asked_only_for_notes_it_has():
+    o = obj({"1": [event(3, note=99, ins=0)]}, [{"play": [1], "end": "jump"}], {"0": ins()})
+    with pytest.raises(AssertionError, match="note 99 is outside the tuning"):
         render(o, 2)
 
 
 def test_the_flattened_print_carries_every_section_and_measures_itself():
-    t = tuning()
-    g = source(
-        [{"u16": [{"own": "lo"}, {"own": "hi"}]}],
-        base=20,
+    p = unpitched(
+        {"u16": [{"own": "lo"}, {"own": "hi"}]},
         state={"lo": 0, "hi": 0},
         on=[{"event": "sound", "voice": 0, "set": {"lo": {"payload": "wave"}}}],
     )
     o = obj(
         {"1": [event(9, note=2, ins=0, slide=(4, 1)), event(0, gate="off")]},
         [{"play": [1], "end": "jump"}],
-        {"0": ins(accs=[{"acc": "vibrato", "shift": 1}, {"acc": "drum"}])},
-        pitch=t,
-        generators=g,
+        {"0": ins(accs=[{"acc": "vibrato", "shift": 1}, {"acc": "drum"}], pitch=p)},
+        beyond=beyond([{"trap": "a cell the tick recomputes"}]),
     )
     text = printer.render(o)
     for section in (
         "## meta",
         "## pitch",
-        "## sources",
         "## streams",
         "## accumulators",
         "## instruments",
@@ -341,35 +367,20 @@ def test_the_flattened_print_carries_every_section_and_measures_itself():
         "## initial state",
     ):
         assert section in text
-    assert "past_tuning -- indices 20..20" in text
+    assert "## pitch -- the tuning: notes 1..19, and nothing else" in text
+    assert "beyond  past the tuning, by how far past it the transposition went" in text
+    assert "0  trap: a cell the tick recomputes" in text
+    assert "pitch   this instrument's sound is no pitch; it is its own" in text
     assert "on sound(voice 0): lo := wave" in text
-    assert "(pitch(note + 1) - pitch(note)) >> <shift>" in text  # an expression, not a table
+    assert "repeat(interval >> <shift>, fold(counter, 7))" in text  # an expression
     assert "(dur - 1) & $FF >= rowsleft" in text  # nested binaries parenthesised
     assert "emits   the value the tick came in with" in text
     assert "     dur  tie  gate   ins  note  arm" in text
     assert "slide(delta 4 phase 1)" in text  # the arm the row carries, materialised
     n = printer.numbers(text)
     assert set(n) == {"lines", "tokens", "statements", "blocks", "header_rows", "data_rows", "xz"}
-    assert n["blocks"] == 8 and n["data_rows"] == n["statements"] > 0
+    assert n["blocks"] == 7 and n["data_rows"] == n["statements"] > 0
     assert n["lines"] == n["header_rows"] + n["data_rows"]
-
-
-def test_the_print_states_a_trap_and_its_reason():
-    o = obj(
-        {"1": [event(3, note=2, ins=0)]},
-        [{"play": [1], "end": "jump"}],
-        {"0": ins()},
-        generators=source(
-            [
-                {"trap": "a cell the tick recomputes"},
-                {"u16": [{"sid_base": 2}, {"sid_base": "reader"}]},
-            ]
-        ),
-    )
-    text = printer.render(o)
-    assert "20  trap: a cell the tick recomputes" in text
-    assert "21  u16(sid_base(2), sid_base(reader))" in text
-    assert "state  stateless" in text
 
 
 def test_the_attestation_names_what_it_compares_and_what_it_drops():
@@ -384,3 +395,31 @@ def test_the_attestation_names_what_it_compares_and_what_it_drops():
     d = attest(o, bent)
     assert d["divergence"]["tick"] == 0 and "edges" in d["divergence"]
     assert not subsequences_agree(bent, ref)
+
+
+def test_an_unpitched_sound_has_no_interval_above_it():
+    """A vibrato over something that is not a pitch steps by nothing."""
+    p = unpitched({"u16": [{"const": 0x34}, {"const": 0x12}]})
+    o = obj(
+        {"1": [event(9, ins=0)]},
+        [{"play": [1], "end": "jump"}],
+        {"0": ins(accs=[{"acc": "vibrato", "shift": 1}], pitch=p)},
+    )
+    w = render(o, 6)
+    for t in w[1:]:
+        assert [v for r, v in t if r == FHI] in ([], [0x12])  # never stepped
+        assert [v for r, v in t if r == FLO] in ([], [0x34])
+
+
+def test_no_note_number_outside_the_tuning_exists_anywhere():
+    """The rule this object keeps: a value that is not a pitch is never a note."""
+    p = unpitched({"u16": [{"const": 0x34}, {"const": 0x12}]})
+    o = obj(
+        {"1": [event(9, note=2, ins=0), event(3, ins=0)]},
+        [{"play": [1], "end": "jump"}],
+        {"0": ins(pitch=p)},
+    )
+    top = o["pitch"]["base"] + len(o["pitch"]["freq"]) - 1
+    notes = [e["note"] for x in o["score"]["patterns"].values() for e in x["events"]]
+    assert all(n is None or o["pitch"]["base"] <= n <= top for n in notes)
+    assert "latches" not in p and "number" not in p and "interval" not in p

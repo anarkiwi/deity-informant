@@ -70,8 +70,16 @@ class Player:
         self.divider = [dict((k, d[i]) for k, d in s0["dividers"].items()) for i in range(n)]
         self.pw = {k: v["pw"][0] | v["pw"][1] << 8 for k, v in obj["instruments"].items()}
         self.flags = {}
-        self.gen = {k: dict(g["state"]) for k, g in obj.get("generators", {}).items()}
+        self.priv, self.subs = {}, []
+        for owner in [a.get("beyond") for a in obj["accs"].values()] + [
+            i.get("pitch") for i in obj["instruments"].values()
+        ]:
+            if owner is None:
+                continue
+            self.priv[id(owner)] = dict(owner["state"])
+            self.subs += [(id(owner), x) for x in owner["on"]]
         self.own = None
+        self.cur = None  # the modulator stepping, for its own behaviour past the tuning
         self.tick_no = -1
         self.stopping = 0
         self.v = 0
@@ -95,34 +103,73 @@ class Player:
             return p if name == "pw" else (p & 0xFF if name == "pw_lo" else p >> 8)
         return self.c[name][v] & 0xFFFF
 
-    # ---- the tuning, total by construction ------------------------------------
-    def noteword(self, i):
-        """The word a note index carries: the tuning, or the source past its end.
-
-        A pitch table is a pitch table -- a base and a contiguous run of
-        frequencies -- so the modulators are expressions over it and keep no
-        tables of their own.  An index past the tuning resolves against a
-        source: a generator indexed by position, not by note, so the melody may
-        change without the object changing.  A position the object publishes
-        nothing for is a stated trap, never a hole.
-        """
+    # ---- the tuning, and what is not a pitch ----------------------------------
+    def tuned(self, n):
+        """The tuning at note ``n``.  It is defined over the tuning and nowhere else."""
         p = self.o["pitch"]
-        k = i - p["base"]
-        if 0 <= k < len(p["freq"]):
-            return p["freq"][k]
-        for name, g in self.o.get("generators", {}).items():
-            j = i - g["base"]
-            if not 0 <= j < len(g["words"]):
-                continue
-            w = g["words"][j]
-            if "trap" in w:
-                raise AssertionError("index %d in %s: %s" % (i, name, w["trap"]))
-            keep, self.own = self.own, self.gen[name]
-            try:
-                return self.ev(w) & 0xFFFF
-            finally:
-                self.own = keep
-        raise AssertionError("note index %d is outside the tuning and every source" % i)
+        k = n - p["base"]
+        if not 0 <= k < len(p["freq"]):
+            raise AssertionError("note %d is outside the tuning" % n)
+        return p["freq"][k]
+
+    def private(self, owner, e):
+        """Evaluate ``e`` over ``owner``'s own private state."""
+        keep, self.own = self.own, self.priv[id(owner)]
+        try:
+            return self.ev(e) & 0xFFFF
+        finally:
+            self.own = keep
+
+    def unpitched(self):
+        """The instrument's own pitch modulator, where its sound is no pitch."""
+        return self.instr().get("pitch")
+
+    def pitchof(self):
+        """The voice's frequency: its note in the tuning, or the instrument's own."""
+        n = self.c["note"][self.v]
+        if n is not None:
+            return self.tuned(n)
+        p = self.unpitched()
+        return self.private(p, p["value"])
+
+    def transpose(self, off):
+        """This voice's pitch moved by ``off`` semitones -- the arpeggio's question.
+
+        Past the top of the tuning there is no pitch, so the answer is the
+        modulator's own, indexed by how far past it went.  Where the sound has
+        no pitch at all the instrument answers instead.
+        """
+        n = self.c["note"][self.v]
+        if n is None:
+            p = self.unpitched()
+            return self.private(p, p["octave" if off else "value"])
+        p = self.o["pitch"]
+        top = p["base"] + len(p["freq"])
+        if n + off < top:
+            return self.tuned(n + off)
+        b, d = self.cur["beyond"], n + off - top
+        if d >= len(b["words"]):
+            raise AssertionError(
+                "%s: %d past the tuning is beyond its own bound" % (self.cur["id"], d)
+            )
+        w = b["words"][d]
+        if "trap" in w:
+            raise AssertionError("%s, %d past the tuning: %s" % (self.cur["id"], d, w["trap"]))
+        return self.private(b, w)
+
+    def interval(self):
+        """The step to the next semitone above.
+
+        There is none above the top of the tuning, and none at all above a
+        sound that is not a pitch: a vibrato over either steps by nothing.
+        """
+        n = self.c["note"][self.v]
+        if n is None:
+            return 0
+        p = self.o["pitch"]
+        if n + 1 >= p["base"] + len(p["freq"]):
+            return 0
+        return (self.tuned(n + 1) - self.tuned(n)) & 0xFFFF
 
     def ev(self, e, ov=None):
         """Evaluate one section 5 expression node."""
@@ -148,8 +195,12 @@ class Player:
                 return self.ev(g["value"], ov)
             finally:
                 self.own = keep
-        if k == "noteword":
-            return self.noteword(self.ev(a, ov))
+        if k == "notefreq":
+            return self.pitchof()
+        if k == "interval":
+            return self.interval()
+        if k == "transpose":
+            return self.transpose(self.ev(a, ov))
         if k == "shr":
             return self.ev(a[0], ov) >> self.ev(a[1], ov)
         if k == "flag":
@@ -180,14 +231,15 @@ class Player:
         raise KeyError("expression form %r" % (k,))
 
     def publish(self, event, voice, payload=None, acc=None):
-        """One musical fact, offered to every generator that subscribes to it."""
-        for name, g in self.o.get("generators", {}).items():
-            for sub in g["on"]:
-                if sub["event"] != event or sub["voice"] != voice or sub.get("acc") != acc:
-                    continue
-                own = self.gen[name]
-                for k, e in sub["set"].items():  # a generator mirrors; it never counts
-                    own[k] = self.ev(e, payload) & 0xFF
+        """One musical fact, offered to every modulator that subscribes to it."""
+        for key, sub in self.subs:
+            if sub["event"] != event or sub["voice"] != voice or sub.get("acc") != acc:
+                continue
+            own = self.priv[key]
+            for k, e in sub.get("set", {}).items():
+                own[k] = self.ev(e, payload) & 0xFF
+            for k, e in sub.get("add", {}).items():  # a cursor counts for itself
+                own[k] = (own[k] + self.ev(e, payload)) & 0xFF
 
     def instr(self, v=None):
         return self.o["instruments"][str(self.c["ins"][self.v if v is None else v])]
@@ -256,6 +308,7 @@ class Player:
                 return
             self.c["orderpos"][v] = self.evrow[v] = 0
             self.c["rowsleft"][v] = 0
+            self.publish("wrap", v)
             self.publish("order", v, {"pos": 0})
         pat = self.o["score"]["patterns"][str(o["play"][self.c["orderpos"][v]])]
         e = pat["events"][self.evrow[v]]
@@ -270,19 +323,27 @@ class Player:
             if e["arm"] is not None:
                 self.armed[v].append(e["arm"])
             self.c["note"][v] = e["note"]
-            self.publish("note", v, {"note": e["note"]})
-            f = self.noteword(e["note"])
+            if e["note"] is not None:
+                self.publish("note", v, {"note": e["note"]})
+            f = self.pitchof()
             self.c["freq"][v] = f
             prod += [("freq_hi", f >> 8), ("freq_lo", f & 0xFF)]
         self.c["wave"][v] = self.instr()["wave"]
         self.publish("sound", v, {"wave": self.c["wave"][v]})
         self.rows(self.o["meta"]["note_row"], prod, edge, {"gate": gate})
-        if "cursor" in pat:  # a cursor publishes its position, not an increment
-            self.publish("row", v, {"pos": pat["cursor"][self.evrow[v]]})
+        self.publish(
+            "row",
+            v,
+            {
+                "sounds": int(e["gate"] == "on"),
+                "field": int(e["ins"] is not None or e["arm"] is not None),
+            },
+        )
         self.evrow[v] += 1
         if self.evrow[v] == len(pat["events"]):
             self.evrow[v] = 0
             self.c["orderpos"][v] += 1
+            self.publish("wrap", v)
             self.publish("order", v, {"pos": self.c["orderpos"][v]})
 
     # ---- the accumulators -----------------------------------------------------
@@ -292,7 +353,8 @@ class Player:
         for name, d in self.o["globals"]["flags"].items():
             self.flags[name] = self.ev(d["default"])
         for arm in sorted(arms, key=lambda a: self.o["accs"][a["acc"]]["rank"]):
-            self.step(self.o["accs"][arm["acc"]], arm, prod, edge)
+            self.cur = self.o["accs"][arm["acc"]]
+            self.step(self.cur, arm, prod, edge)
 
     def step(self, a, ov, prod, edge):
         v = self.v

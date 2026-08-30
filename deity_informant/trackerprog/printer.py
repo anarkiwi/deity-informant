@@ -65,11 +65,11 @@ def expr(e, notes=None):
     if k == "stream":
         return "%s[%s]" % (a[0], expr(a[1], notes))
     if k == "notefreq":
-        return "freq[%s]" % expr(a, notes)
-    if k == "pitchrow":
-        return "%s[%s]" % (expr(a[0], notes), expr(a[1], notes))
-    if k == "noteword":
-        return "pitch(%s)" % expr(a, notes)
+        return "pitch"
+    if k == "interval":
+        return "interval"
+    if k == "transpose":
+        return "transpose(%s)" % expr(a, notes)
     if k == "shr":
         return "%s >> %s" % (_sub(a[0], notes), expr(a[1], notes))
     if k == "reload":
@@ -142,32 +142,6 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
             )
         )
 
-    if obj.get("generators"):
-        add("")
-        add("## sources -- what a note index finds past the tuning")
-        add("")
-        add("indexed by position, never by note, and fed only by published events,")
-        add("so the melody may change without the object changing.")
-        for k, gen in obj["generators"].items():
-            add("")
-            add("%s -- indices %d..%d" % (k, gen["base"], gen["base"] + len(gen["words"]) - 1))
-            for j, w in enumerate(gen["words"]):
-                add(
-                    "    %3d  %s"
-                    % (gen["base"] + j, "trap: " + w["trap"] if "trap" in w else expr(w, notes))
-                )
-            add(
-                "    state  "
-                + (" ".join("%s=%s" % (a, hexv(b)) for a, b in gen["state"].items()) or "stateless")
-            )
-            for s in gen["on"]:
-                how = ("%s := %s" % (a, expr(b, notes)) for a, b in s.get("set", {}).items())
-                how = list(how) + [
-                    "%s += %s" % (a, expr(b, notes)) for a, b in s.get("add", {}).items()
-                ]
-                acc = "" if "acc" not in s else " of %s" % s["acc"]
-                add("    on %s(voice %d)%s: %s" % (s["event"], s["voice"], acc, "; ".join(how)))
-
     add("")
     add("## streams")
     add("")
@@ -205,6 +179,11 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
                 arms,
             )
         )
+        if "pitch" in ins:
+            for line in _private(
+                "pitch", ins["pitch"], notes, "this instrument's sound is no pitch; it is its own"
+            ):
+                add(line[2:])
     add("")
     add("## score")
     add("")
@@ -215,8 +194,6 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
     for k, pat in obj["score"]["patterns"].items():
         add("")
         add("pattern %s -- %d events" % (k, len(pat["events"])))
-        if "cursor" in pat:
-            add("    cursor  " + " ".join(str(x) for x in pat["cursor"]))
         add("     dur  tie  gate   ins  note  arm")
         for e in pat["events"]:
             add(
@@ -246,6 +223,30 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
 def _arm(a):
     over = " ".join("%s %s" % (k, expr(v)) for k, v in a.items() if k != "acc")
     return a["acc"] + ("(%s)" % over if over else "")
+
+
+def _private(label, rec, notes, head):
+    """A modulator's own values and the private state that feeds them."""
+    out = ["      %-7s %s" % (label, head)]
+    for j, w in enumerate(rec.get("words", [])):
+        out.append(
+            "          %3d  %s" % (j, "trap: " + w["trap"] if "trap" in w else expr(w, notes))
+        )
+    for f in ("value", "octave"):
+        if f in rec:
+            out.append("          %-9s %s" % (f, expr(rec[f], notes)))
+    out.append(
+        "          state  "
+        + (" ".join("%s=%s" % (a, hexv(b)) for a, b in rec["state"].items()) or "stateless")
+    )
+    for x in rec["on"]:
+        how = "; ".join(
+            ["%s := %s" % (a, expr(b, notes)) for a, b in x.get("set", {}).items()]
+            + ["%s += %s" % (a, expr(b, notes)) for a, b in x.get("add", {}).items()]
+        )
+        acc = "" if "acc" not in x else " of %s" % x["acc"]
+        out.append("          on %s(voice %d)%s: %s" % (x["event"], x["voice"], acc, how))
+    return out
 
 
 def _acc(name, a, notes):
@@ -294,6 +295,10 @@ def _acc(name, a, notes):
             else "[%s, %s] " % (hexv(b["interval"][0], 4), hexv(b["interval"][1], 4))
         )
         lines.append("      bound   %s%s -- %s" % (iv, b["from"], b.get("witness", "")))
+    if "beyond" in a:
+        lines += _private(
+            "beyond", a["beyond"], notes, "past the tuning, by " + a["beyond"]["index"]
+        )
     lines.append("      writes  %s" % " ".join("%s(%s)" % (t, p) for t, p in a["produce"]))
     for key, label in (("false", "else "), ("true", "steps")):
         if key in a.get("gate", {}):

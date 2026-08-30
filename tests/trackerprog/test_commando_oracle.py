@@ -40,9 +40,10 @@ def test_every_commando_subtune_certifies_on_the_universal_player(song):
     assert doc["divergence"] is None
     assert doc["ticks"] == HORIZON
     assert doc["compared"] and doc["dropped"]
-    # stronger than section 2, and free: the two sides differ only by the
-    # interleave of registers inside a tick, never by a value or a count
-    assert doc["same_per_register_order"]
+    # Stronger than section 2, and free where it holds: the two sides differ only
+    # by the interleave of registers inside a tick.  Subtune 1 is the exception --
+    # see test_the_only_intermediate_writes_that_differ_are_superseded.
+    assert doc["same_per_register_order"] == (song != 0)
 
 
 @pytest.mark.parametrize("song", (0, 1, 2))
@@ -73,57 +74,61 @@ def test_the_pitch_table_is_only_a_pitch_table():
         assert all(isinstance(f, int) for f in p["freq"])
 
 
-def test_the_modulators_are_expressions_not_tables():
-    """The vibrato's interval and the arpeggio's octave are read, not tabulated."""
-    obj = built(0)
-    vib, arp = obj["accs"]["vibrato"], obj["accs"]["arpeggio"]
-    assert "interval" not in vib and "octave" not in arp
-    assert vib["delta"]["repeat"][0]["shr"][0]["sub"] == [
-        {"noteword": {"add": [{"cell": "note"}, 1]}},
-        {"noteword": {"cell": "note"}},
-    ]
-    assert arp["policy"]["reload"]["noteword"]["add"][0] == {"cell": "note"}
-    assert obj["streams"]["arp"]["rows"] == [0, 12]  # semitone offsets, not note rows
-    # no instrument carries a per-note record of any kind
-    assert all(
-        set(i) == {"adsr", "wave", "pw", "prelude", "accs"} for i in obj["instruments"].values()
-    )
-
-
-def test_one_source_covers_every_index_past_the_tuning():
-    """commando-floor section 5: the overrun is load-bearing, 25 notes' worth.
-
-    It is one generator indexed by position -- not by note -- so the same source
-    serves every subtune and a different melody reads it unchanged.
-    """
+def test_no_note_number_outside_the_tuning_exists_anywhere():
+    """The rule: a value that is not in the pitch table is not a pitch, so not a note."""
     for song in (0, 1, 2):
         obj = built(song)
-        assert set(obj["generators"]) == {"past_tuning"}
-        g = obj["generators"]["past_tuning"]
-        assert g["base"] == 96 and len(g["words"]) == 21  # indices 96..116
-        assert all("u16" in w or "trap" in w for w in g["words"])
-        assert all(w["trap"] for w in g["words"] if "trap" in w)  # every trap says why
-        assert {s["event"] for s in g["on"]} <= {
-            "sound",
-            "note",
-            "instrument",
-            "order",
-            "row",
-            "turn",
-        }
-        assert all("set" in s for s in g["on"])  # a source mirrors; it never counts
-    # every subtune carries the same source: it is the tune's, not the melody's
-    assert built(0)["generators"] == built(1)["generators"] == built(2)["generators"]
+        top = obj["pitch"]["base"] + len(obj["pitch"]["freq"]) - 1
+        notes = [e["note"] for p in obj["score"]["patterns"].values() for e in p["events"]]
+        assert all(n is None or obj["pitch"]["base"] <= n <= top for n in notes)
+        for i in obj["instruments"].values():
+            assert set(i.get("pitch", {})) <= {"state", "on", "value", "octave"}
+        assert "generators" not in obj and "residue" not in obj
 
 
-def test_the_score_carries_note_numbers_and_the_drum_index_is_one_of_them():
-    """104 is no pitch, and the tuning does not pretend otherwise: it stops at 95."""
+def test_the_modulators_are_expressions_and_own_what_they_do_past_the_tuning():
+    """commando-floor section 5: the overrun is load-bearing, 25 notes' worth.
+
+    It is not in the tuning and not a note.  The arpeggio's bound is the tuning
+    and its behaviour there is its own, indexed by how far past it went.
+    """
     obj = built(0)
+    vib, arp = obj["accs"]["vibrato"], obj["accs"]["arpeggio"]
+    assert vib["delta"]["repeat"][0] == {"shr": [{"interval": None}, "shift"]}
+    assert arp["policy"]["reload"]["transpose"] == {
+        "stream": ["arp", {"and": [{"cell": "counter"}, 1]}]
+    }
+    assert obj["streams"]["arp"]["rows"] == [0, 12]  # semitone offsets
+    assert "beyond" not in vib  # the vibrato never asks for one; measured, not assumed
+    b = arp["beyond"]
+    assert len(b["words"]) == 12 and all("u16" in w or "trap" in w for w in b["words"])
+    assert all(w["trap"] for w in b["words"] if "trap" in w)  # every trap says why
+    assert {x["event"] for x in b["on"]} <= {
+        "sound",
+        "note",
+        "instrument",
+        "order",
+        "row",
+        "wrap",
+        "turn",
+    }
+    # it mirrors what it is told, and counts for itself what the tune counts
+    assert all(set(x) <= {"event", "voice", "acc", "set", "add"} for x in b["on"])
+    assert {k for p in obj["score"]["patterns"].values() for k in p} == {"events"}
+    assert built(0)["accs"]["arpeggio"]["beyond"] == built(1)["accs"]["arpeggio"]["beyond"]
+
+
+def test_an_unpitched_instrument_carries_its_own_pitch_modulator():
+    """104 was never a note: the drum's frequency is its instrument's, privately."""
+    obj = built(0)
+    drums = {k: i["pitch"] for k, i in obj["instruments"].items() if "pitch" in i}
+    assert set(drums) == {"4", "7"}
+    assert set(drums["4"]) == {"state", "on", "value"}  # no arpeggio, so no octave
+    assert set(drums["7"]) == {"state", "on", "value", "octave"}
+    assert all("interval" not in d for d in drums.values())  # no pitch, no semitone above
     events = [e for p in obj["score"]["patterns"].values() for e in p["events"]]
-    notes = {e["note"] for e in events if e["note"] is not None}
-    assert max(notes) == 104 and 104 > obj["pitch"]["base"] + len(obj["pitch"]["freq"]) - 1
     # commando-floor section 5: "song 1 plays pitch 104 twenty-five times"
-    assert sum(1 for e in events if e["note"] == 104) == 25
+    assert sum(1 for e in events if e["note"] is None and e["gate"] == "on") == 25
 
 
 def test_no_expression_reads_another_voices_state():
@@ -143,7 +148,7 @@ def test_no_expression_reads_another_voices_state():
 
     walk(obj["accs"])
     walk(obj["streams"])
-    walk(obj["generators"])
+    walk(obj["instruments"])
     assert seen and all(isinstance(c, str) for c in seen)  # never [name, voice]
 
 
@@ -171,5 +176,32 @@ def test_the_print_is_flat_and_round_trips_the_object_by_eye(song):
     assert "{" not in text and '"' not in text  # nothing of the serialisation shows
     n = printer.numbers(text)
     assert n["lines"] == n["header_rows"] + n["data_rows"]
-    assert n["blocks"] == 8 - (0 if built(song)["generators"] else 1)
+    assert n["blocks"] == 7
     assert n["xz"] < 4644  # the source tuneprog.md's own xz -9e
+
+
+def test_the_only_intermediate_writes_that_differ_are_superseded():
+    """What dropping the fabricated note costs, measured rather than asserted.
+
+    An unpitched sound has no semitone above it, so a vibrato over it steps by
+    nothing.  Hubbard's routine steps by whatever lies past his tuning instead,
+    and writes it -- then the same instrument's arpeggio overwrites it in the
+    same tick.  Section 2 drops that intermediate by design; so does the object.
+    """
+    ref = TC.reference(str(tune_file(COMMANDO)), 0, HORIZON)
+    got = render(built(0), HORIZON)
+    bad = []
+    for want, mine in zip(ref, got):
+        want = [tuple(x) for x in want]
+        mine = [tuple(x) for x in mine]
+        for r in {q for q, _ in want} | {q for q, _ in mine}:
+            a = [v for q, v in want if q == r]
+            b = [v for q, v in mine if q == r]
+            if a != b:
+                bad.append((r, a, b))
+                break
+    assert len(bad) == 105
+    assert {r % 7 for r, _, _ in bad} == {0}  # freq_lo alone
+    for _, a, b in bad:
+        assert a[-1] == b[-1]  # the value the tick leaves is identical
+        assert a[1:] == b[1:] and len(a) > 1  # only a write another write supersedes
