@@ -59,7 +59,7 @@ def obj(events, streams=None, accs=None, instrument=None, tempo=2, early=1, curs
             "rows": [{"when": [[{"cell": "staged"}, "!=", 0]], "sets": [["ad", 0x0F]]}],
         },
         "exit": {"rank": 0, "rows": [{"sets": [["ctrl", GATED]]}]},
-        "funktempo": {"rank": 0, "rows": [{"value": 3}, {"value": 5}]},
+        "funktempo": {"rank": 0, "rows": [{"value": 2}, {"value": 4}]},
     }
     st.update(streams or {})
     return {
@@ -155,7 +155,7 @@ def test_a_funk_tempo_alternates_the_two_lengths_its_stream_names():
     o["meta"]["tempo"]["alternate"] = {"stream": "funktempo", "when": [[{"cell": "tempo"}, "<", 2]]}
     p = Player(o)
     seen = [p.tick() and 0 or p.c["rowclock"][0] for _ in range(9)]
-    assert seen[2:8] == [2, 1, 0, 4, 3, 2]  # 3 - 1 then 5 - 1, the two funk values less one
+    assert seen[2:8] == [2, 1, 0, 4, 3, 2]  # the two funk rows' own countdowns, in turn
 
 
 def test_a_stream_holds_its_row_then_takes_its_op_and_its_next():

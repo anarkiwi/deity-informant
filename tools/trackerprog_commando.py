@@ -545,7 +545,7 @@ def build(path, song=0):
         "state0": {
             "ins": [m[0x54FE + v] for v in range(3)],
             "wave": [m[0x54F8 + v] for v in range(3)],
-            "pwdir": [m[0x5510 + v] for v in range(3)],
+            "cells": {"pwdir": [m[0x5510 + v] for v in range(3)]},
             "dividers": {"pulse_bounce": [m[0x550D + v] for v in range(3)]},
         },
     }

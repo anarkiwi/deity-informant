@@ -9,6 +9,12 @@ from __future__ import annotations
 
 REG = {"freq_lo": 0, "freq_hi": 1, "pw_lo": 2, "pw_hi": 3, "ctrl": 4, "ad": 5, "sr": 6}
 EDGE = ("ctrl", "ad", "sr")  # section 2 rule 1: every write kept, in tick order
+GATE_BIT = 1  # ctrl bit 0 is the gate (anatomy:153): a chip fact, like REG
+# the ctrl mask a row leaves, gating on and gating off.  The waveform byte
+# carries its own gate bit and the row says only whether to keep it, so the two
+# masks are the whole byte and the byte with that bit cleared -- there is no
+# family's version of this and no tune states one
+GATE = (0xFF, 0xFF ^ GATE_BIT)
 
 
 class Player:
@@ -26,7 +32,6 @@ class Player:
         self.c = {
             "ins": list(s0.get("ins", [0] * n)),
             "wave": list(s0.get("wave", [0] * n)),
-            "pwdir": list(s0.get("pwdir", [0] * n)),
             "orderpos": [0] * n,
             "rowsleft": [0] * n,
             "dur": [0] * n,
@@ -460,7 +465,7 @@ class Player:
         if f and self.guards(f["when"]):
             t = self.c[n][v]
             self.c[n][v] = t ^ 1
-            return (self.ev({"tabcell": [f["stream"], t, "value"]}) - 1) & 0xFF
+            return self.ev({"tabcell": [f["stream"], t, "value"]})
         return self.c[n][v]
 
     def early_due(self, v):
@@ -741,7 +746,7 @@ class Player:
             elif f == "hrins":  # the instrument the row will play, the prelude's own
                 self.c[k][v] = self.c["ins"][v] if e["ins"] is None else e["ins"]
             elif f == "gate" and e["gate"] is not None:
-                self.c[k][v] = 0xFF if e["gate"] == "on" else 0xFE
+                self.c[k][v] = self.gate_mask(e)
             elif f == "note" and e["note"] is not None:  # the pitch, staged with the row
                 self.c[k][v] = e["note"]
             elif f == "transpose":  # the order's own column, staged with the row it plays
@@ -790,9 +795,7 @@ class Player:
     def gate_mask(self, e):
         """The ctrl mask a row leaves: its own gate statement, else whether it sounds."""
         g = e["gate"]
-        if g is None:
-            return 0xFF if e["sounds"] else 0xFE
-        return 0xFF if g == "on" else 0xFE
+        return GATE[0 if (e["sounds"] if g is None else g == "on") else 1]
 
     def apply_row(self, play, e, prod, edge):
         """The row's own program: section 3.6's steps, in the order the object gives.
