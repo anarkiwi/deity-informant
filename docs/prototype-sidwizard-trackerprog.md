@@ -179,7 +179,7 @@ had bit 7 set". The V flag is a player idiom, and what it decides is two clauses
 `tempo & $80 != 0 and spdcnt >= tempo & $7F` sends it back to `tmpptr`. Both
 zero the counter. That is the whole tempo program, and `TEMPOTBL` being *state* —
 the score's own `tempo` commands write it — makes it a stream of eight global
-cells read with `tabcell`, which is §3.6's `set_tempo(stream)` over cells.
+cells read with `tabcell`, which is §3.6's tempo over a stream of cells.
 
 Second, **the phases are guards.** `spdcnt` 0, 1, 2 and "anything else" are four
 different ticks: the row is read, the position advances, the note starts, the

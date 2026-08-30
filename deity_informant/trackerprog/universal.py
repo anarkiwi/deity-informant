@@ -818,15 +818,20 @@ class Player:
             self.armed[self.v] = list(self.o["meta"]["rest_arm"])
         self.inline(self.instr().get("on_note", ()), prod, edge)
 
-    def inline(self, rows, prod, edge):
-        """An inline stream: guarded rows of ``sets`` and ``point``, in order."""
+    def inline(self, rows, prod, edge, ov=None):
+        """An inline stream: guarded rows of ``sets`` and ``point``, in order.
+
+        One act (section 2 rule 1): an instrument's note-on and one row command
+        are each one thing the tick did, however many guarded rows say it.
+        """
+        ov = self.payload if ov is None else ov
+        self.act += 1
         for row in rows:
-            if not self.guards(row.get("when"), self.payload):
+            if not self.guards(row.get("when"), ov):
                 continue
-            self.act += 1
             for t, e in row.get("sets", ()):
-                self.assign(t, self.ev(e, self.payload), prod, edge)
-            self.points(row.get("point", ()), self.payload)
+                self.assign(t, self.ev(e, ov), prod, edge)
+            self.points(row.get("point", ()), ov)
 
     def points(self, pts, ov=None):
         """A step's re-points: the slot, the row, whether the hold survives."""
@@ -843,15 +848,11 @@ class Player:
 
     def hold_command(self, cmd, prod, edge):
         """Apply one section 3.6 command: what it arms, sets, re-points and resets."""
-        self.act += 1
         if "arms" in cmd:
             self.armed[self.v] = list(cmd["arms"])
         for a in cmd.get("links", ()):
             self.store(self.o["accs"][a], 0)
-        for st in cmd.get("sets", ()):
-            if len(st) < 3 or self.guards(st[2], cmd):
-                self.assign(st[0], self.ev(st[1], cmd), prod, edge)
-        self.points(cmd.get("point", ()), cmd)
+        self.inline(cmd.get("rows", ()), prod, edge, cmd)
         for name, e in cmd.get("flags", {}).items():
             self.flags[name] = self.ev(e, cmd)
         for t, e in cmd.get("all", ()):  # section 3.6's global tempo: every voice

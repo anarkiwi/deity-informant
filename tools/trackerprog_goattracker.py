@@ -338,7 +338,7 @@ class Tune:
     def name(self, fx, param):
         """One row command, interned under what it does; the score names it."""
         key = COMMANDS[fx] + ("" if param is None else ":%02X" % param)
-        self.cmds.setdefault(key, self.command(fx, param))
+        self.cmds.setdefault(key, rows_of(self.command(fx, param)))
         return key
 
     def command(self, fx, param):  # noqa: C901 - one clause per command number
@@ -625,25 +625,35 @@ class Tune:
                 {"commands": True},
             ],
             "pitch_links": ["vib_phase"],
-            "prologue": {
-                "id": "init",
-                "sets": [
-                    ["@wave", 0],
-                    ["@param", 0],
-                    ["@tempo", L["deftempo"]],
-                    ["@rowclock", 1],
-                    ["@instr", 1],
-                    ["#filtctrl", 0],
-                    [21, 0],
-                    ["ctrl", GATED],
-                ],
-                "point": [["wave", 0], ["pulse", 0], ["filter", 0]],
-            },
+            "prologue": rows_of(
+                {
+                    "id": "init",
+                    "sets": [
+                        ["@wave", 0],
+                        ["@param", 0],
+                        ["@tempo", L["deftempo"]],
+                        ["@rowclock", 1],
+                        ["@instr", 1],
+                        ["#filtctrl", 0],
+                        [21, 0],
+                        ["ctrl", GATED],
+                    ],
+                    "point": [["wave", 0], ["pulse", 0], ["filter", 0]],
+                }
+            ),
             "player": "prototype-trackerprog.md sections 4 and 5",
         }
 
 
 UNTIED = [["tie", "==", 0]]  # a row a tie does not admit
+
+
+def rows_of(c):
+    """A command's writes as an inline stream: one guard shape, section 3.3's."""
+    row = {k: c.pop(k) for k in ("sets", "point") if k in c}
+    return dict(c, rows=[row]) if row else c
+
+
 GATED = {"and": [{"cell": "wave"}, {"cell": "gate"}]}
 SPEED = {"tabcell": ["speed", {"const": "row"}, "delta"]}
 DEPTH = {"tabcell": ["speed", {"const": "row"}, "depth"]}

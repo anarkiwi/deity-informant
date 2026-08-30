@@ -310,7 +310,7 @@ def _state(k, v):
         return ["%-10s %s" % (k, v)]
     if not isinstance(v, dict):
         return ["%-10s %s" % (k, " ".join(hexv(x) for x in v))]
-    if {"arms", "sets", "point", "all"} & set(v):  # a command the voice starts holding
+    if {"arms", "rows", "all"} & set(v):  # a command the voice starts holding
         return ["%-10s %s" % (k, _cmd(v, None))]
     out = []
     for a, b in v.items():
@@ -430,12 +430,14 @@ def _cmd(c, notes):
         bits.append("arm " + " ".join(_arm(a) for a in c["arms"]))
     if c.get("links"):
         bits.append("reset " + " ".join(c["links"]))
-    if c.get("sets"):
-        bits.append(_sets(c["sets"], notes))
+    for row in c.get("rows", ()):
+        when = "" if not row.get("when") else " when %s" % guards(row["when"], notes)
+        if row.get("sets"):
+            bits.append(_sets(row["sets"], notes) + when)
+        if row.get("point"):
+            bits.append(_points(row["point"], notes) + when)
     if c.get("all"):
         bits.append("every voice " + _sets(c["all"], notes))
-    if c.get("point"):
-        bits.append(_points(c["point"], notes))
     if c.get("tie"):
         bits.append("ties")
     return " ; ".join(bits) or "--"

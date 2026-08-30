@@ -179,12 +179,22 @@ emits is this.
 The one sequencing form. A stream is a finite table of steps:
 
 ```
-Step = { sets: [ set(target, value), … ]   // shadow assignments, in this order,
+Step = { when:  [ guard, … ]               // the one guard shape in this schema
+       , sets:  [ set(target, value), … ]  // assignments, in this order,
                                            // all inside one tick (Walker's gate 1→0→1)
-       , op:   acc(acc_id) | pitch(offset | absolute) | none
-       , hold: k ticks (k ≥ 1) }
-Terminator = jump(row) | halt
+       , point: [ (slot, row, keep), … ]   // re-point a stream, keeping its hold or not
+       , op:    acc(acc_id) | pitch(offset | absolute) | cmd(name) | none
+       , run:   [ acc(acc_id), … ]         // an acc the step runs on every tick it holds
+       , hold:  k ticks (k ≥ 1)
+       , next / jump: row }                // where the step goes, and where a row jumps
 ```
+
+Every field is optional and every one is a *step's*, not a family's: an
+instrument's note-on (§3.5), a prelude, a row program's stream step (§3.6) and
+a table are all this object. The first draft named a terminator, `jump(row) |
+halt`, as a field of the stream; the exemplars put the jump on the row that
+carries it and nothing reads a `halt` — a stream with no jump is one, so the
+row's `jump` is the whole of it.
 
 A stream has a `rate` — **one meaning everywhere in this schema** (§3.6, §5): a
 divider, the object advances once every `k` ticks, `k ≥ 1`, so a step occupies
@@ -228,8 +238,14 @@ Ins = { adsr: (ad, sr)
       , accs:    [ acc_id, … ] }             // the modulations armed at note-on
 ```
 
+**One inline stream, three places.** An instrument's `on_note`, a prelude and a
+command's `rows` are the same object — guarded §3.3 steps — and one procedure
+runs all three, so a guard has one spelling everywhere in the schema and never a
+positional slot beside the thing it guards. Each is **one act** (§2 rule 1): one
+thing the tick did, however many guarded rows say it.
+
 `on_note` is a stream and nothing else — guarded rows of `sets` and `point`,
-where `point(slot, row, keep)` is §3.6's `set_stream`. The first draft gave the
+where `point(slot, row, keep)` is §3.6's own re-point. The first draft gave the
 note-on three fields (`sets` unconditionally, `note_sets` and `points` only
 where no tie held) and the player kept two lists with a `return` between them;
 the tie is a fact of the row (`when tie == 0`), so it is a guard like any other
@@ -273,18 +289,36 @@ Event   = { sounds: bool            // the row starts a sound -- the one field t
           , ins:  instrument | none
           , cmds: [Cmd, …]          // in row order; §4 emits them in that order
           , dur:  rows }
-Cmd     = set_tempo(stream | k)     // a divider or a tempo stream
-        | set_vol(v)                // $D418 low nibble, global, last writer wins
-        | set(target, value)        // shadow assignment; commits with the tick
-        | set_register(reg, value)  // immediate chip write, reg a literal 0..24
-        | set_stream(slot, stream, row)          // re-point a stream, reset its hold
-        | arm(acc_id, overrides) | disarm(acc_id)
-        | porta(acc_id, target_note) | filter_set(…) | gate(mask) | break
+Cmd     = { arms:  [ arm(acc_id, overrides), … ]   // what the row arms, and its overrides
+          , links: [ acc_id, … ]                   // the accs its own events zero (§5)
+          , sets:  [ set(target, value), … ]       // a shadow, a cell, a global, a flag
+          , point: [ (slot, row, keep), … ]        // re-point a stream (the old set_stream)
+          , all:   [ set(cell, value), … ]         // one cell of every voice: global tempo
+          , flags: { name: value }                 // what a producer leaves for another
+          , tie:   bool }                          // re-target without re-triggering
 Order   = per-voice sequence program over
           { play(pattern, transpose, repeat, vol?, tempo?)
-          | for(n){…} | call(seq) | ret
-          | jump(row) | stop | horizon }   // bounded call depth, stated (Galway: 8)
+          | jump(row) | stop | horizon }
 ```
+
+**A command is a record, not an opcode.** The first draft listed nine named
+commands — `set_tempo`, `set_vol`, `set`, `set_register`, `set_stream`, `arm`,
+`disarm`, `porta`, `filter_set`, `gate`, `break` — and not one of the three
+certified families emits any of them: a tempo is `sets` on the tempo cell, a
+volume is `sets` on the global `$D418` nibble, a portamento is `arms` with its
+overrides, a `set_stream` is `point`. The record above is what the exemplars
+carry (GoatTracker 2's 43, SID Wizard's 44 and 60), and it is smaller *and*
+more general than the list it replaces, because a family command is a
+combination of fields rather than a name the schema had to have foreseen. What
+a command may not do is still §8's boundary: a residue no combination of these
+fields expresses is a `command residue` refusal, not a new opcode.
+
+`for(n){…}`, `call(seq)` and `ret` are struck with them. They rest on Galway
+and Follin, which are prose-only and deferred (§9), and §1's rule is that a
+schema row carries two certified families or one plus a survey count. The three
+certified orderlists are `play` steps and one of `jump`, `stop` or `horizon`;
+when a score-as-program exemplar lands, the grammar gains what that exemplar
+shows and no more.
 
 **The note column is a token class, and the layer spends it.** The first draft
 wrote `note: index | rest | hold | keyoff | keyon`, which is the *source byte's*
@@ -343,16 +377,18 @@ instrument supplies the frequency (Hubbard's drums; commando-trackerprog §4.3).
 The ctrl mask a row leaves is `$FF` where it sounds and `$FE` where it does not,
 overridden by an explicit `gate`.
 
-Six changes from the first draft, each forced by a source:
+Five changes from the first draft, each forced by a source (a sixth, `set` for a
+shadow against `set_register` for the chip, is struck with the opcode list: both
+are a `sets` entry, and *when* it reaches the chip is the target's own — a
+shadow register defers, a producer does not):
 
 | change | why, and the evidence |
 | --- | --- |
 | `play` gains `vol?`, `tempo?` | SW's orderlist columns are pattern, transpose, **volume, tempo**, stop, loop; GT2's pattern, repeat, transpose, loop; JCH's `[transpose] pattern` (all anatomy:209). Optional, `none` where a family has no column. `vol` lands on the one global `$D418` nibble (sw:109), so three voices' columns resolve by last-writer, which §2 makes exact |
 | a `horizon` terminator | a source materialised only as far as the certified ticks reach, distinct from `stop` (Hubbard's `$FE`, SW's stop — anatomy:209) and from `jump`. The same fact as `end.kind = horizon`, stated twice |
 | `arm(acc_id, overrides)` replaces `arm(acc_id, param)` | `Acc` has no `param` and should not: GT2's vibrato parameter selects a bound *and* a step (`b1096 = T1851[y] & $7F` is speedcmp, gt2.md:812; `T1863[y]` the depth or shift, gt2.md:653-684), so the command re-binds a subset of `{delta, bound, rate, phase}` on a declared `Acc` |
-| `set` for a shadow, `set_register` for the chip | two families write registers from a command and differ in *when*. GT2 commands 5/6 put AD/SR into the ghost, which the flush emits at the commit (anatomy:876) — that is `set`, the assignment §3.3 already has. Follin's `$85` lists write `$D400+r` **immediately, no deferred flush**, for an arbitrary register of any voice (anatomy:1803; `sid.reg[a75] = …`, follin:160-167) — that is `set_register` |
-| `set_register`'s index is a literal `0..24` | Follin's resolves, because T2 materialises decoded score bytes exactly as it materialises pattern rows. Where it does not, the refusal is `command residue` (§8) — the 36 `index not a voice` sites T0's sweep already names one layer down (backlog §4, W4) |
-| `set_stream(slot, stream, row)` | GT2 commands 8/9/A re-point the wave, pulse and filter tables and zero the matching hold (`waveptr=A (wavetime=0)`, anatomy:876) — a re-point plus a link (§5), not two opcodes |
+| a command's register target is a literal `0..24` | Follin's `$85` lists write `$D400+r` for an arbitrary register of any voice (anatomy:1803; `sid.reg[a75] = …`, follin:160-167) and resolve, because T2 materialises decoded score bytes exactly as it materialises pattern rows. Where the index does not resolve, the refusal is `command residue` (§8) — the 36 `index not a voice` sites T0's sweep already names one layer down (backlog §4, W4) |
+| `point(slot, row, keep)` | GT2 commands 8/9/A re-point the wave, pulse and filter tables and zero the matching hold (`waveptr=A (wavetime=0)`, anatomy:876) — a re-point plus a link (§5), not two opcodes. It is a field of a §3.3 step, and a command's writes *are* a §3.3 stream, so there is one shape and one guard |
 
 **The row clock is a divider, a countdown or a counter.** `meta.tempo.form` says
 which: Hubbard's `divider` (a rate and a phase), GoatTracker 2's `countdown` (a
@@ -376,7 +412,8 @@ whether a command outlives the row that gave it is one datum, `meta.row_command`
 anatomy:876's tick-0 dispatch running unconditionally), Hubbard spends it on its
 row. It is a property of the tune, not of the row clock.
 
-`set_tempo(stream | k)` has two certified families: GT2's `funktempo`, loading a
+A tempo command — `sets` on the tempo cell, or on the cell a tempo stream is read
+through — has two certified families: GT2's `funktempo`, loading a
 two-entry alternating tempo (`funktempotbl[0..1] = speedtbl[A]`, anatomy:876),
 and SW's tempo program (anatomy:213). Per-**voice** tempo likewise: GT2's
 command F sets one voice when bit 7 is set and all three otherwise
@@ -544,7 +581,8 @@ each with two certified families or a marked single-family exception:
 | filter sweep (**exercised**, sidwizard-trackerprog §5) | target `split(3, 8)` on cutoff, `delta tabcell(T[c], signed 11)`, `bound observed` | SW: the filter program's step byte is a signed 11-bit delta — `cutoff_lo = ((t3 & 7) + cutoff_lo) & 7` with the carry out, `cutoff_hi += (t3 >> 3) + carry`, the negative arm's shift arithmetic as `~(~t3 >> 3)` (sw.md:868-885, joined in `p_1611`). JCH `rec7` segments and defMON's `filter.acc` write the high half only, the same split with the low half pinned (jch.md:654, automatas.md:420) — and the split is the *chip's*, already `grid.PAIRS[6]`, not a family's |
 | keyboard tracking (**exercised**, sidwizard-trackerprog §5) | `tabcell(T[c])` on the cutoff target | SW `CKBDTRK` (§3.7, sw:110-116); defMON's oscillator uses the same form on freq, `voice[v].acc += FREQ[$80 + (pw_hi[v] << 1)]` with the sign from `bit(cell, 7)` (automatas.md:433-437) |
 | arpeggio / chord | target note, a `pitch` stream, or an absolute producer where the phase is stateless | Hubbard octave arp: `f = FREQ[note + ($C if counter & 1 else 0)]` — an **absolute `set` producer** (§4), `phase fn(global_counter)` (commando-floor:249-251). GT2 wavetable note column (gt2.md:564-569); SW chords |
-| tremolo, LFOs | target **gate-mask**, `policy reflect` (triangle) or `halt` (one-shot), or a stream | Walker's gate-toggle tremolo and its four identical modulators per voice (anatomy:212) move the ctrl gate bit, not a volume. `$D418` is one global register, so `target vol, scope voice` does not exist and is removed; per-pattern volume is `set_vol` (§3.6), global, last-writer. Prose-only family, so both are projections |
+| tremolo, LFOs | target **gate-mask**, `policy reflect` (triangle) or `halt` (one-shot), or a stream | Walker's gate-toggle tremolo and its four identical modulators per voice (anatomy:212) move the ctrl gate bit, not a volume. `$D418` is one global register, so `target vol, scope voice` does not exist and is removed; per-pattern volume is `play`'s `vol` column (§3.6) on the one global nibble,
+last-writer. Prose-only family, so both are projections |
 
 **What T1 recognises, and what the exemplars changed (#296).** Every rule below
 cites two certified families, as §1 requires; the four rows the classifier could
@@ -723,6 +761,8 @@ Wizard's `b1024` still refuse, and their cells are not scratch.
 | ~~rows as streams, six tunes certified (**#302**)~~ — superseded, it encoded the observable | `emit.lift` reads T2's rows and the observable: per row a stream of steps with holds (the voice's ordered edges, `note_off`/`freq`/`pw` sets), deduplicated, the row's instrument the stream it arms; the global channel one stream; a second schedule entry refuses as `sample stream`. JCH ×2, GT2 ×2, Commando ×2 render at 0 divergences | `trackerprog.emit`, `player` |
 | the universal player, the certificate and the print (**#300**) | `trackerprog/player.py` is §4 tick for tick (row clock, sequencer step, armed accumulators, `commit` in `meta.commit_order`, `grid.reduce_tick`); `certify.py` is §2's comparison over the whole horizon with `compared`, `dropped`, `refusals`, `emitted`, the loop claim re-checked on the render; `emit.py` lifts T0's sites that are a constant or a pitch lookup at the row boundary or every tick and refuses the rest as `command residue`, prints `trackerprog.md` and measures §6.2's six plus `xz -9e`; `tools/tuneprog_trackerprog.py`. The hermetic tune renders at 0 divergences; GT2, JCH and Commando carry named residue (backlog §4, W8) | `trackerprog.player`, `certify`, `emit` |
 
+| one grammar, audited across three families (**#310**) | the three hand exemplars read together against §3: `meta.commit` struck (the tick is always a sequence of acts, and rendering it so for the families that do not need it is write-for-write identical over their whole horizons); `meta.row` replaces `note_row`, `gate_row`, `pitch_row`, `row_sets`, `row_commits` and merges `latch`/`row` into one `apply_row`; `Ins.on_note` replaces `sets`/`note_sets`/`points`; `meta.tick` replaces `tempo.early_first`, `meta.voice_exit` and the commit's `pre` list; `interval(n)` replaces `tablestep`; one cell vocabulary for `Acc.cell`, retiring `voice.freq*` and the `@`-means-two-things collision. §3.3's terminator, §3.6's nine-command opcode list and `for`/`call`/`ret` are struck as grammar no exemplar carries. 22 meta keys at the third family become 15; the player loses 60 lines while carrying the same three families at 0 divergences | `universal`, `printer`, the three `tools/trackerprog_*.py` |
+
 Everything after this is the rest of the `trackerprog/` package, under the same
 rules (≤ 500 lines per module, hermetic tests, the certificate).
 
@@ -737,7 +777,7 @@ residue is not emitted:
 | `external input` | see the rule below |
 | `unclassified update` | a state cell reaching a SID register whose update T1 cannot bound — the accumulator invariant is the claim, so an unbounded or unmodelled data-dependent update refuses |
 | `score not cursor-shaped` | a pattern fetch T2 cannot express as the cursor grammar (a genuinely computed score) |
-| `command residue` | a pattern command not expressible in §3.6's set, `set_register` with a non-literal register index included |
+| `command residue` | a pattern command not expressible as §3.6's record, a register target with a non-literal index included |
 
 **The `external input` rule**, restated so it does not refuse the arithmetic. A
 pinned input refuses only when *all three* hold: its `tracedata.input_kind`
@@ -808,8 +848,8 @@ reading of them.
 The genericity gate: the six tracker exemplars must lift with zero
 family-conditioned code in `trackerprog/` — the same modules, hermetic snippet
 tests per mechanism, each schema row's two-family evidence recorded here. The
-two single-family rows (§5's stateless-phase vibrato, §3.6's Follin
-`set_register`) are data forms, not code branches.
+two single-family rows (§5's stateless-phase vibrato, §3.6's Follin register
+target) are data forms, not code branches.
 
 ## 10. Open
 

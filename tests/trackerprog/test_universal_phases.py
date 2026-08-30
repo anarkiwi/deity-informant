@@ -240,7 +240,7 @@ def test_a_step_whose_counter_is_read_at_entry_does_not_run_on_the_tick_it_ends(
 
 def test_an_edge_written_twice_in_one_tick_is_two_writes():
     """Section 2 rule 1: the tick is a sequence of acts, each in the commit order."""
-    cmd = {"sets": [["sr", 0x77], ["ad", 0x88]]}
+    cmd = {"rows": [{"sets": [["sr", 0x77], ["ad", 0x88]]}]}
     o = obj([event(note=1, ins=1, arm="louder")])
     o["score"]["commands"]["louder"] = cmd
     w = render(o, 4)

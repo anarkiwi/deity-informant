@@ -865,7 +865,7 @@ class Tune:
             if self.m[self.target(kind, idx)] == 0x60:  # this build compiles the effect out
                 what, val = "nop", (idx << 4 | val if kind == "smallfx" else val)
         key = what if val is None else "%s:%02X" % (what, val)
-        self.cmds.setdefault(key, self.command(what, val))
+        self.cmds.setdefault(key, rows_of(self.command(what, val)))
         return key
 
     def command(self, what, v):  # noqa: C901 - one clause per command
@@ -1263,7 +1263,7 @@ class Tune:
             "pitch_target": "@freq",
             "player": "prototype-trackerprog.md sections 4 and 5",
             **(
-                {"prologue": {"id": "the frame the slowdown gate spends", "sets": []}}
+                {"prologue": {"id": "the frame the slowdown gate spends", "rows": []}}
                 if L["slowdown"] is not None
                 else {}
             ),
@@ -1271,6 +1271,15 @@ class Tune:
 
 
 UNTIED = [["tie", "==", 0]]  # a row a tie does not admit
+
+
+def rows_of(c):
+    """A command's writes as an inline stream: one guard shape, section 3.3's."""
+    out = inline(c.pop("sets", ()), [])
+    if "point" in c:
+        out = out or [{"when": []}]
+        out[-1]["point"] = c.pop("point")
+    return dict(c, rows=out) if out else c
 
 
 def inline(sets, when):

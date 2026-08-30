@@ -689,6 +689,61 @@ commands" was load-bearing and untrue in general. It is now `meta.row_command` �
 {`held`, `spent`}, read by one procedure on both paths. The generalisable check
 is §6.1's: one musical question, one place that answers it.
 
+### 6.4 What reading the three together found
+
+With Hubbard, GoatTracker 2 and SID Wizard all on one player, the object could
+be audited the way §1 asks — every schema row against two certified families —
+and the answer was that the *player's* growth, not the schema's, was the
+measure. `meta` carried 12 keys at one family, 18 at two and 22 at three, and
+15 of them were branch points; §9's genericity gate claims two marked
+single-family rows and the audit found twenty-one unmarked ones.
+
+Four reductions came out of it, each certified at 0 divergences on all seven
+tunes:
+
+**A reduction in §2 is not two forms in §4.** `meta.commit ∈ {order, acts}` let
+a family collapse a tick's edge writes. Rendering the acts sequence for the two
+families that do not need it is write-for-write identical over their whole
+horizons — Hubbard 11,780 ticks, GoatTracker 2 12,000 × 2 — so the datum
+distinguished no observation and the branch was deleted. The generalisable
+check: before a schema row admits a second form, render the first for the
+family that has the second and count the ticks that differ.
+
+**A hook is a phase with a name, and names do not compose.** Five meta keys
+attached a stream to a point in the row (`note_row`, `gate_row`, `pitch_row`,
+`row_sets`, `row_commits`) and two more to a point in the tick
+(`tempo.early_first`, `meta.voice_exit`), while a *third* mechanism — a stream
+with a `rank` and a `when` — already existed and was the general one. Worse,
+one name meant two things: `note_row` fired at the note-on in GoatTracker 2 and
+at every row in Hubbard, because the two families ran different row procedures
+(`latch` and `row`) that also differed in capability — `latch` applied no
+orderlist transpose and ran its commands before the note rather than after.
+`meta.row` and `meta.tick` are those seven keys and two procedures said once.
+The generalisable check: two procedures for one musical act is the §4.8 failure
+one level up, and a hook per call site is how it gets there.
+
+**An ordering said twice will disagree.** The commit kept three lists so a
+prelude could be emitted ahead of the tick's producers — an ordering the tick
+list also states. They disagreed: GoatTracker 2's prelude runs *after* its
+machine and must win the register a held `sr` command wrote, and the fixed
+first list gave that register to the command. One list, and the order is the
+order.
+
+**A sigil that means two things is a grammar, not a shorthand.** `@name` was a
+voice cell in every assign target and a *shadow register pair* in an
+accumulator's `cell`. One vocabulary — `tick`, a voice cell, `#global`,
+`ins.pw`, `shadow.<pair>`, any with `.hi`/`.lo` — retires the collision,
+`voice.freq`/`voice.freq.hi`, and the four hard-coded half-names. `tablestep`
+went the same way: it is `interval(n) >> shift`, and the grammar already had
+`shr`.
+
+**And grammar with no exemplar is not grammar.** §3.3's terminator (written by
+every tool, read only by the print), §3.6's nine named commands (of which the
+three families emit none — the record they do emit is smaller and more general)
+and `for`/`call`/`ret` in `Order` (Galway and Follin, both prose-only) are
+struck. The generalisable check is §1's own rule applied to the *print* as well
+as the player: a row nothing renders is a row nothing tests.
+
 ### 6.3 Three more the third family found
 
 [prototype-sidwizard-trackerprog.md](prototype-sidwizard-trackerprog.md), same

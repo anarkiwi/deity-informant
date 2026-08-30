@@ -92,7 +92,7 @@ def obj(events, streams=None, accs=None, instrument=None, tempo=2, early=1, curs
             ],
             "prologue": {
                 "id": "init",
-                "sets": [["@rowclock", 1], ["@tempo", tempo], ["@instr", 1]],
+                "rows": [{"sets": [["@rowclock", 1], ["@tempo", tempo], ["@instr", 1]]}],
             },
             "player": "hermetic",
             **meta,
@@ -226,7 +226,7 @@ def test_a_global_channel_steps_its_own_stream_and_commits_its_own_registers():
 
 
 def test_the_fetch_stages_the_row_early_and_a_tie_holds_the_prelude():
-    tied = {"id": 3, "tie": True, "sets": [], "arms": []}
+    tied = {"id": 3, "tie": True, "rows": [], "arms": []}
     w = render(obj([event(note=1, ins=1), event(note=2, arm=tied)], tempo=3), 16)
     assert column(w, AD)[4:7] == [0, 0x0F, 0x11]  # the cut, one tick before the row
     assert column(w, AD)[7:16] == [0x11] * 9  # and never again: the second row ties
