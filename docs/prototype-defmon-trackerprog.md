@@ -127,9 +127,13 @@ horizon, the reference being the tune's own player on `deity_informant.PcodeVM`.
 | Automatas | 1 | 113 | 1,621 | 292 | 358 | 5 | **149,025** | 3,576,600 | **0** | 149,025 |
 | Jazzpjazz | 1 | 32 | 305 | 169 | 97 | 5 | **1,799** | 43,176 | **0** | 1,799 |
 
-`compared` and `dropped` are §2's own three and three. `refusals` is empty on
-both: nothing is emitted partially, and the four arms neither horizon takes are
-`trap`-carrying rows with their reason attached (§5).
+`compared` and `dropped` are §2's own three and three, and `identical_ticks` is
+the tick count, which is stronger than either — per register, per value, per
+position in the tick. There is no refusal to name on either tune: nothing is
+emitted partially, and the four arms neither horizon takes each carry their
+reason — `trap` in the object for the routing byte written outright, the absolute
+note column and the oscillator's interval branch; a build-time assertion for the
+last two of those and for a chained sidTAB jump (§6).
 
 *Automatas* is the first exemplar whose certification does not fit in a script's
 60 seconds — the tuneprog's own took 371 s — so the tool carries
@@ -165,15 +169,15 @@ count excludes a register in the middle.
 form to the family that had the count: GoatTracker 2's value is
 `range(24, -1, -1)`, and its two builds render write for write identical over
 their whole 12,000-tick horizons — the count was that list, said less. Rendering
-defMON's list ascending instead diverges on **20,000 of 20,000** ticks of
+defMON's list ascending instead diverges on **149,025 of 149,025** ticks of
 *Automatas* and **1,799 of 1,799** of *Jazzpjazz*: §2 rule 1 keeps every
 `ctrl`/`AD`/`SR` write in tick order, and voice order inside a flush is that
 order.
 
 The same measurement retires `commit_order` for this family, and confirms §3.1's
 own claim about it: swapping `ad` and `sr` diverges on **0** ticks of either
-tune, because every edge write goes through the image and the flush re-orders
-them. A family whose writes go through a shadow cannot tell the difference, and
+tune's whole horizon, because every edge write goes through the image and the
+flush re-orders them. A family whose writes go through a shadow cannot tell the difference, and
 this is the first one measured saying so.
 
 ### 4.2 A global commit outside the image reaches the chip on its own tick
@@ -186,7 +190,7 @@ The rule that carries both without a second datum: **the image holds the
 registers the flush names, and a commit to a register the flush does not name
 reaches the chip where it is made.** GoatTracker 2's three filter registers are
 in its flush and still defer; defMON's cutoff is not in its flush and does not.
-Deferring the cutoff through the image instead diverges on **12,540** ticks of
+Deferring the cutoff through the image instead diverges on **55,260** ticks of
 *Automatas* and **282** of *Jazzpjazz*.
 
 This also settles where the global channel runs. §4's pseudocode puts
@@ -278,7 +282,7 @@ The transliteration is two object rows per sidTAB row: an **act** row of
 `hold 1` carrying the record's `sets`, and a **wait** row of `hold DL` carrying
 nothing, elided where `DL & $7F` is zero. That is not a schema row; it is the
 same stream, cut where the family cuts it. Making the wait one tick longer
-diverges on 16,766 of 20,000 ticks of *Automatas* and 1,350 of 1,799 of
+diverges on 138,907 of 149,025 ticks of *Automatas* and 1,350 of 1,799 of
 *Jazzpjazz*.
 
 The delay's **bit 7** is §3.3's terminator: the row acts and the cascade stops.
@@ -320,7 +324,7 @@ frame, `main()` on one of them and `sub()` on seven.
 `{"form": "divider", "rate": 8, "phase": 0}`; the cascades' holds, the
 oscillator's producers and the filter's step are all *per tick*, which is what
 the anatomy's "sidTAB row = DL+1 calls" says (anatomy:213). Shortening the row
-by one clock step diverges on 19,975 of 20,000 ticks, so the divider is load
+by one clock step diverges on 149,000 of 149,025 ticks, so the divider is load
 bearing and not an alignment that happens to work. The tool derives it from the
 certificate's cadence, `round(19656 / cycles_per_tick)`.
 
@@ -416,25 +420,35 @@ because a stream's rows are its own and two cursors over one table is not
 something §3.3 can say. The compressor recovers most of it; the print does not.
 
 **What the object needs, poisoned one datum at a time.** Each row is the object
-with one thing taken out, re-rendered against the same reference; the count is
-the ticks whose write list is no longer identical. *Automatas* over its first
-20,000 ticks, *Jazzpjazz* over its whole horizon.
+with one thing taken out, re-rendered against the object's own certified render;
+the count is the ticks whose write list is no longer identical. **Over the whole
+horizon of each tune**, which is not a detail — see below.
 
-| datum taken out | Automatas / 20,000 | Jazzpjazz / 1,799 |
+| datum taken out | Automatas / 149,025 | Jazzpjazz / 1,799 |
 | --- | --- | --- |
-| the flush's order, run ascending instead | 20,000 | 1,799 |
-| the per-voice detune the write-out adds (`b101F`) | 19,999 | 1,798 |
-| the row one clock step shorter | 19,975 | 1,795 |
-| the sidTAB delay one tick longer | 16,766 | 1,350 |
-| the cutoff written through the image, not the chip | 12,540 | 282 |
-| the cutoff's floor | 4,443 | 0 — this build's floor is zero |
+| the flush's order, run ascending instead | 149,025 | 1,799 |
+| the row one clock step shorter | 149,000 | 1,795 |
+| the per-voice detune the write-out adds (`b101F`) | 146,487 | 1,798 |
+| the sidTAB delay one tick longer | 138,907 | 1,350 |
+| the cutoff written through the image, not the chip | 55,260 | 282 |
+| the cutoff's floor | 49,758 | 0 — this build's floor is zero |
+| the carry the frequency add leaves | 44,675 | 0 — 129 sweep steps, none with a carry |
 | `commit_order`, `ad` and `sr` swapped | **0** — the image re-orders them | **0** |
-| the carry the frequency add leaves | **0** — see §8 | **0** |
 | the oscillator's interval branch | **0** — dead in both, and a `trap` | **0** |
 
-Every non-zero row is a §2 **divergence**, not a permutation. The three zeros
-are the section's real content, and two of them are expectations this exemplar
-was supposed to confirm and did not (§8).
+Every non-zero row is a §2 **divergence**, not a permutation. The two zeros are
+the section's real content: one is §3.1's own claim about a shadowed family,
+confirmed by measurement for the first time, and the other is an arm no
+reachable sidTAB row of either tune can take, which the tool asserts at build
+time rather than discovering at tick 100,000.
+
+**A prefix is not a horizon, and this table is where it showed.** Run over
+*Automatas*' first 20,000 ticks — a longer prefix than any other exemplar's
+whole certified horizon — the carry row reads **0**, and the conclusion written
+from it was that defMON could not be §5's second family for `+ carry(site,
+flag)`. Over the whole 149,025 it reads **44,675**: the carry is set on 9,144 of
+the sweep's 170,702 steps, and the first of them is past tick 20,000. §9's
+acceptance #1 says the whole certified horizon; this is what it is for.
 
 Code, against SID Wizard's:
 
@@ -455,9 +469,10 @@ GoatTracker, nor SID Wizard, nor defMON in it.
 
 ## 8. The eight things the family was expected to force
 
-Eight expectations came with this exemplar. Four held, two held in kind but not
-in spelling, and **two were wrong** — and saying which is which is the point of
-writing it down.
+Eight expectations came with this exemplar. Five held, two held in kind but not
+in spelling, and **one was wrong** — and saying which is which is the point of
+writing it down. One of the five held only when the measurement was taken over
+the *whole* horizon rather than a 20,000-tick prefix (§7).
 
 | # | the expectation | what the code said |
 | --- | --- | --- |
@@ -465,7 +480,7 @@ writing it down.
 | 2 | §3.5's "the sidTAB row **is** the instrument" — an `Ins` with `on_note` and nothing else | **wrong, and the sharpest of the eight.** A sidTAB row is a *stream row*; a voice runs **two** of them at once, so no single `Event.ins` can name them and both are §3.6 `point` commands. The object has **one** instrument for the whole tune, and it is the voice's own machine — an `on_note` that resets the oscillator and six arms. It has no `adsr` and no `prelude`, which is the first `Ins` of any family to have neither |
 | 3 | §3.5's data-side prelude row, `WG=00 AD=0F SR=00 → WG=09 → sound` | **held, and it is not a prelude.** It is the first three rows of a sidTAB program — `ctrl_eor := 0 ; ad := $0F ; sr := 0`, `hold 3`, `ctrl_eor := 9` — so the object carries no `prelude` and no `early` for this family at all. §3.5's table row is right about the *data* and wrong to call it a prelude: nothing schedules it, the stream simply starts there |
 | 4 | §10's multispeed, to be **measured** on a used entry | **held (§4.10).** `rate 8` on the row clock, `cycles_per_tick 2457`, and every other phase at the tick. The first measurement of §10's answer, and it needed no new field |
-| 5 | the **second family** for §5's `carry(site, flag)` — `pw_lo -= (b101E + (1 - carry_2))` | **wrong.** The term is in the object because the program computes it, but the carry is **0 on all 17,106 pulse-width steps** of *Automatas* and all 129 of *Jazzpjazz*: dropping it diverges on no tick of either horizon. The row stays single-family (Hubbard), and this exemplar cannot promote it. What defMON *does* second-family is the flag itself — `!C` set by one producer and read by another, which SID Wizard's pulse write also does |
+| 5 | the **second family** for §5's `carry(site, flag)` — `pw_lo -= (b101E + (1 - carry_2))` | **held, and only just.** `delta {"sub": [{"add": [pwstep, 1]}, {"flag": "C"}]}`, the carry the frequency add of the same voice's tick left. It is set on **9,144 of 170,702** sweep steps of *Automatas* and dropping it diverges on 44,675 ticks — but on *Jazzpjazz*, and on *Automatas*' first 20,000, it is set on none, so the first reading of this row said the expectation was wrong (§7). The row is two-family; it took the whole horizon to say so |
 | 6 | `tabcell(T[c])` on freq, sign from `bit(cell, 7)` | **held in kind, not in spelling.** The slide's step is an absolute table entry at a cell-derived index, which is the row. But the table is the *tuning*, so the object spells it `{"tuned": 2·(osc & $3F) − 36}` — §5's own "the tuning read as a table by something that is not a note" — and no stream carries it. The sign is `bit(osc, 6)`, not bit 7: bit 7 says whether there is a slide at all |
 | 7 | the `horizon` terminator, on the first `complete: false` exemplar | **held.** *Jazzpjazz*'s three orders end `horizon`, materialised 28 steps of 72, and `end.kind = horizon`. `stop` is still unexercised by any family |
 | 8 | the arranger — `flag [A] [B] [note]` rows over three pattern columns with an `$FF` jump, subtune = start row, and the byte-range token class spent | **held, and it forced one thing more.** The flag byte is `sounds`/`arm`/`arm`/`dur` and the note byte is a pitch index; the `$FF` row's jump target is the voice-1 column of that row; the subtune is the arranger cursor's init value. What was not foreseen is that the arranger's end is **global** — one cursor for three voices, advanced by whichever pattern ends first — so the score is materialised per arranger step (§4.7), which §6's own rule already licenses |

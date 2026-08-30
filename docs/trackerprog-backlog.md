@@ -854,13 +854,18 @@ is untested, and a guard evaluated twice against a moving cell is two guards —
 §6.1's "one musical question, one place that answers it", applied to the
 player's own control flow rather than to the object's.
 
-**And two citations fell.** §3.5's "the sidTAB row *is* the instrument" is wrong:
-a voice runs two sidTAB programs at once, so no single `Event.ins` names them
-and both are §3.6 `point` commands; defMON's one `Ins` has neither `adsr` nor
-`prelude`, the first of any family with neither. §5's pulse-run row named defMON
-as the second family for `+ carry(site, flag)`; the term is in the object because
-the program computes it, but the carry is **0 on all 17,235 sweep steps of both
-certified horizons**, so no observation distinguishes it and the row stays
-Hubbard's alone. The generalisable check is §6.4's first one turned around: a
-row's second family must be a family whose *horizon* exercises it, not one whose
-listing mentions it.
+**A citation fell, and a second one nearly did for the wrong reason.** §3.5's
+"the sidTAB row *is* the instrument" is wrong: a voice runs two sidTAB programs
+at once, so no single `Event.ins` names them and both are §3.6 `point` commands;
+defMON's one `Ins` has neither `adsr` nor `prelude`, the first of any family with
+neither. §5's pulse-run row names defMON as the second family for
+`+ carry(site, flag)`, and the first measurement said it was wrong — the carry is
+0 on every sweep step of *Jazzpjazz*'s whole horizon **and of *Automatas*' first
+20,000 ticks**, a longer prefix than any other exemplar's whole horizon. Over
+*Automatas*' whole 149,025 the carry is set on 9,144 of 170,702 steps and
+dropping it diverges on 44,675 ticks, so the row is two-family after all. The
+generalisable check, and the sharpest one this family produced: **a poison
+measured on a prefix is not a poison.** §9's acceptance #1 already says the whole
+certified horizon for the certificate; it goes for every count a document draws
+a conclusion from, and this is the first exemplar long enough for the difference
+to bite.
