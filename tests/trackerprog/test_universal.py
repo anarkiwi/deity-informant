@@ -62,6 +62,7 @@ def obj(patterns, orders, instruments, pitch=None, rate=2, beyond=None):
             "voice_order": list(reversed(range(n))),
             "commit_order": ["ctrl", "ad", "sr"],
             "tempo": {"rate": rate, "phase": 0},
+            "tick": ["prelude", "commit", "row", "commit", "machine"],
             "row_consumes_tick": True,
             "row": [
                 {"ins": True},

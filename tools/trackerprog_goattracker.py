@@ -522,6 +522,7 @@ class Tune:
         gates = {self.col("gatetimer", i) for i in used}
         assert len(gates) == 1, "the fetch is early by one number, not by the instrument"
         cells = {k: [m[L[k] + 7 * v] for v in range(3)] for k in LIVE}
+        cells["staged"] = [0] * 3  # the fetch leaves whether its row keys a note
         streams = {
             "note_on": {
                 "rank": 0,
@@ -531,7 +532,12 @@ class Tune:
             "hard_restart": {
                 "rank": 0,
                 "term": "halt",
-                "rows": [{"sets": [["sr", L["srparam"]], ["ad", L["adparam"]], ["@gate", 0xFE]]}],
+                "rows": [
+                    {
+                        "when": [[{"cell": "staged"}, "!=", 0]],
+                        "sets": [["sr", L["srparam"]], ["ad", L["adparam"]], ["@gate", 0xFE]],
+                    }
+                ],
             },
             "exit": {"rank": 0, "term": "halt", "rows": [{"sets": [["ctrl", GATED]]}]},
             "funktempo": {
@@ -607,16 +613,17 @@ class Tune:
                 "early": early,
                 "alternate": {"stream": "funktempo", "when": [[{"cell": "tempo"}, "<", 2]]},
             },
+            "tick": ["row", "commit", "machine", "fetch", "prelude", {"stream": "exit"}],
             "row_consumes_tick": [["keys", "!=", 0]],
             "row_command": "held",
             "prefetch": ["ins", "gate", "arm"],
+            "stage_sounds": "staged",
             "rest_arm": ARMS[0],
             "row": [
                 {"note": True, "when": [["sounds", "!=", 0]]},
                 {"stream": "note_on", "when": [["keys", "!=", 0]]},
                 {"commands": True},
             ],
-            "voice_exit": "exit",
             "pitch_links": ["vib_phase"],
             "prologue": {
                 "id": "init",

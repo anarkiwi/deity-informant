@@ -495,6 +495,7 @@ def build(path, song=0):
             "voice_order": [2, 1, 0],
             "commit_order": ["ctrl", "ad", "sr"],
             "tempo": {"rate": m[SPEEDTBL + song] + 1, "phase": 0},
+            "tick": ["prelude", "commit", "row", "commit", "machine"],
             "row_consumes_tick": True,
             "row_command": "spent",
             "row": [

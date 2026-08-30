@@ -76,6 +76,8 @@ class Player:
         self.stepped = False  # whether the row clock advanced on the tick being rendered
         self.payload = {}
         self.wide = set(m.get("wide", ()))  # the voice cells that are 16 bits
+        self.prod, self.edge = [], []
+        self.boundary = self.spent = False
         self.tickphase = 0
         self.act = 0  # which of the tick's acts an edge write belongs to
         self.tick_no = -1
@@ -317,7 +319,7 @@ class Player:
             self.v = v
             prod, edge = [], []
             self.hold_command(self.o["meta"]["prologue"], prod, edge)
-            self.commit([], prod, edge)
+            self.commit(prod, edge)
         self.held = [self.cmd(self.o["state0"].get("held"))] * self.n
 
     def channel(self):
@@ -337,35 +339,58 @@ class Player:
                 self.shadow[reg] = self.ev(e) & 0xFF
 
     def voice(self, v):
-        """One voice's tick.  True where a terminator abandoned the whole tick."""
-        pre, prod, edge = [], [], []
-        self.op = False
-        boundary = self.clock(v)
-        if self.tempo.get("early_first"):
-            # the row the fetch stages decides what the tick's modulators do, so
-            # where the object says so the fetch is the voice's first act
-            if self.tickphase == self.ev(self.tempo["fetch"]):
-                self.fetch(prod, edge)
-            if self.early_due(v):
+        """One voice's tick: the phases ``meta.tick`` names, in that order.
+
+        The phases are the fixed four -- ``fetch`` the row the clock runs ahead
+        of, ``prelude`` the instrument's early rows, ``row`` the boundary, and
+        ``machine`` the streams and armed accumulators -- plus ``{"stream": s}``
+        for a stream every path ends on.  Which phases a tune has and in which
+        order is data: a fetch that runs ahead of the tick's modulators is the
+        list saying so, not a flag.  A row that spends its tick (§3.6's
+        ``row_consumes_tick``) skips the phases after it; a stream step still
+        runs, being the voice's own write-out and not a modulation.
+        """
+        self.op, self.spent = False, False
+        self.prod, self.edge = [], []
+        self.boundary = self.clock(v)
+        for step in self.o["meta"]["tick"]:
+            if not isinstance(step, str):
+                self.rows(step["stream"], self.prod, self.edge)
+            elif self.spent:
+                continue
+            elif self.run_phase(step, v):
+                return True
+        self.commit(self.prod, self.edge)
+        return False
+
+    def run_phase(self, step, v):
+        """One phase of the voice's tick.  True where a terminator abandoned it."""
+        if step == "fetch":
+            if self.fetch_due(v):
+                self.fetch(self.prod, self.edge)
+        elif step == "prelude":
+            if self.stepped and self.early_due(v):
                 p = self.instr().get("prelude")
-                if p is not None:  # the prelude commits ahead of the tick's producers
-                    self.rows(p["stream"], pre, pre)
-        if boundary:
-            self.sequencer_step(prod, edge)
+                if p is not None:
+                    self.rows(p["stream"], self.prod, self.edge)
+        elif step == "machine":
+            self.machine(self.prod, self.edge)
+        elif step == "commit":  # a group boundary: what the tick has written, written
+            self.commit(self.prod, self.edge)
+            self.prod, self.edge = [], []
+        elif step == "row" and self.boundary:
+            self.sequencer_step(self.prod, self.edge)
             if self.stopping:
                 return True
-            if self.guards(self.consumes(), self.payload):
-                self.exit_rows(prod, edge)
-                self.commit(pre, prod, edge)
-                return False
-            self.commit(pre, prod, edge)
-            pre, prod, edge = [], [], []
-        self.machine(prod, edge)
-        if not self.tempo.get("early_first") and self.stepped and self.early_due(v):
-            self.prelude(pre, prod, edge)
-        self.exit_rows(prod, edge)
-        self.commit(pre, prod, edge)
+            self.spent = self.guards(self.consumes(), self.payload)
         return False
+
+    def fetch_due(self, v):
+        """Where the clock says the fetch runs: a named phase, or the early lead."""
+        f = self.tempo.get("fetch")
+        if f is not None:
+            return self.tickphase == self.ev(f)
+        return self.stepped and self.early_due(v)
 
     def consumes(self):
         """Whether the row just taken spends the voice's tick, as a guard list."""
@@ -556,9 +581,8 @@ class Player:
         else:
             prod.append((t, val & 0xFF))
 
-    def commit(self, pre, prod, edge):
-        """The tick's per-voice writes: the prelude, the producers, then the edges."""
-        self.edges(pre)  # 1 the prelude's rows, ahead of the tick's producers
+    def commit(self, prod, edge):
+        """One group of the tick's per-voice writes: its producers, then its edges."""
         for t, x in prod:  # 4 the freq/pw producers, in declared order
             self.emit(t, x)
         self.edges(edge)  # 5 every edge write kept, section 2 rule 1
@@ -600,24 +624,6 @@ class Player:
             self.act += 1
             for t, e in row["sets"]:
                 self.assign(t, self.ev(e, ov), prod, edge)
-
-    def exit_rows(self, prod, edge):
-        """The rows every voice path ends on, where a tune has such an exit."""
-        name = self.o["meta"].get("voice_exit")
-        if name:
-            self.rows(name, prod, edge)
-
-    def prelude(self, pre, prod, edge):
-        """The instrument's early rows, and the row a fetch stages along with them."""
-        if self.tempo.get("form") != "countdown":
-            self.rows(self.instr()["prelude"]["stream"], pre, pre)
-            return
-        if not self.fetch(prod, edge):
-            return
-        v = self.v
-        p = self.instr()["prelude"]
-        if self.staged[v]["sounds"] and not self.tied[v] and p is not None:
-            self.rows(p["stream"], prod, edge)
 
     def fetch(self, prod, edge):
         """Read the row the clock runs ahead of, and commit what it stages early."""

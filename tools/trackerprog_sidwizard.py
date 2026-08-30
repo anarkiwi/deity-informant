@@ -1230,7 +1230,6 @@ class Tune:
                 "boundary": 2,
                 "fetch": 0,
                 "early": [[{"cell": "phase"}, "<", 2]],
-                "early_first": True,
                 "reset": [
                     {
                         "when": [
@@ -1248,6 +1247,7 @@ class Tune:
                     },
                 ],
             },
+            "tick": ["fetch", "prelude", "commit", "row", "commit", "machine", {"stream": "exit"}],
             "row_consumes_tick": [["sounds", "!=", 0]],
             "row_command": "spent",
             "prefetch": [["hrins", "hrins"]],
@@ -1261,7 +1261,6 @@ class Tune:
                 {"commands": True},
             ],
             "pitch_target": "@freq",
-            "voice_exit": "exit",
             "player": "prototype-trackerprog.md sections 4 and 5",
             **(
                 {"prologue": {"id": "the frame the slowdown gate spends", "sets": []}}

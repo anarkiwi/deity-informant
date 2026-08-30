@@ -406,24 +406,50 @@ Normative semantics — anatomy §2's pseudocode made exact. One tick:
 tick():
     for v in voices:                              # per-voice tempo, §3.6
         tempo[v].step()                           # a divider or a stream; row clock
-        if row_boundary(v): sequencer_step(v)     # consume Event; note-on arms the
-                                                  # instrument's streams and accs
-        for s in active_streams(v): s.step_if_hold_elapsed()
-        for a in active_accs(v):    a.step_if_rate()          # §5 semantics
+        for phase in meta.tick: run(phase, v)     # the voice's tick, §4.1
         commit(v)
     commit_global(): cutoff one value (split 3+8), res_route, mode_vol
 
-commit(v):                                        # the tick's per-voice edge list
-    1  prelude steps due this tick, in the prelude stream's row order
-    2  the voice's other stream `set` steps, in stream declaration order
-    3  the Event's `set_register` writes, in `cmds` order      # Follin $85, immediate
-    4  the voice's freq/pw producers, in declared order        # §2 rule 2 keeps the last
-    5  ad, sr, ctrl in `meta.commit_order`                     # §3.1
+commit(v):                                        # one group of the tick's writes
+    the voice's freq/pw producers, in declared order    # §2 rule 2 keeps the last
+    then its edge writes, the tick's acts in order,
+    each act's own in `meta.commit_order`               # §2 rule 1, §3.1
 ```
 
-Steps 1–3 and 5 deposit into the ordered ctrl/AD/SR list §2 compares; step 4
-deposits 16-bit values §2 reduces to the tick's last; voice order inside a tick
-is dropped by §2 and said so in the certificate.
+**§4.1 The voice's tick is a declared order.** `meta.tick` is a list of phases:
+
+| phase | what it is |
+| --- | --- |
+| `fetch` | read the row the clock runs ahead of, and stage what it commits early (§3.5) |
+| `prelude` | the instrument's early rows, where the clock says the next row is near |
+| `row` | the row boundary: consume the Event and run §3.6's row program |
+| `machine` | the voice's streams and armed accumulators, in `rank` order (§3.3, §5) |
+| `commit` | a group boundary — what the tick has written so far, written |
+| `{stream: s}` | a stream every path of the voice ends on, run whatever the row did |
+
+Which phases a tune has, and in which order, is one datum: a family whose fetch
+runs ahead of the tick's own modulators is the list saying so, and a family
+whose prelude commits ahead of its producers is `prelude` before `commit` before
+`row`. A row that spends its tick (§3.6's `row_consumes_tick`) skips the phases
+after it; a `{stream}` phase still runs, being the voice's write-out rather than
+a modulation:
+
+| source | `meta.tick` |
+| --- | --- |
+| Hubbard | `prelude` `commit` `row` `commit` `machine` |
+| GoatTracker 2 | `row` `commit` `machine` `fetch` `prelude` `{stream: exit}` |
+| SID Wizard | `fetch` `prelude` `commit` `row` `commit` `machine` `{stream: exit}` |
+
+The first draft hard-coded this sequence and reached the three families with two
+flags on top of it (`tempo.early_first`, `meta.voice_exit`) and a fixed
+three-list commit whose first list existed only to put a prelude ahead of the
+producers. Both flags and that list are the order, said once: GoatTracker 2's
+prelude runs *after* its machine and must win the register, SID Wizard's runs
+before and must lose it, and no third datum decides — the list does.
+
+Producers and edges deposit as §2 compares them: the edge writes into the
+ordered ctrl/AD/SR list, the producers as 16-bit values §2 reduces to the tick's
+last. Voice order inside a tick is dropped by §2 and said so in the certificate.
 
 **Producers, not a sum.** The first draft's `freq = pitch[note + …] + Σ accs`
 cannot reproduce Hubbard: within one tick its vibrato, portamento, drum and

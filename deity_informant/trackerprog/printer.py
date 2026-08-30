@@ -162,8 +162,10 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
             add("%s %s" % (label, v if isinstance(v, str) else " ".join(str(x) for x in v)))
     for i, step in enumerate(m.get("row", ())):
         add("row %-6d %s%s" % (i, _rowstep(step, notes), _when(step, notes)))
-    if m.get("voice_exit"):
-        add("voice exit %s" % m["voice_exit"])
+    add(
+        "tick       %s"
+        % " ; ".join(x if isinstance(x, str) else "stream %s" % x["stream"] for x in m["tick"])
+    )
     if m.get("prologue"):
         add("prologue   " + _cmd(m["prologue"], notes))
     add("player     %s" % m["player"])

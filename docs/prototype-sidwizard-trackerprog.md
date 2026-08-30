@@ -102,7 +102,7 @@ object.
 | `VIDELCNT` counting down before the vibrato runs | `vib_delay`, ranked *after* the vibrato so both read the value the tick came in with (#297's epochs) | §5 (a counter is a divider) |
 | the orderlist `< $80` pattern · `$80–$9F` transpose · `$A0–$AF` volume · `$B0–$EF` tempo · `$FE` stop · `$FF pos` | `play(pattern, transpose, vol?, tempo?)` and `end: jump(k)`; §8 says which columns these tunes leave unexercised | §3.6 |
 | `WRPITCH` `sid.freq ← freq + detuner + c` | `pitch_out`, a producer that writes the chip and moves no cell, reading the flag `C` the pulse write left | new (§4.7) |
-| `WRWFGHO` `sid.ctrl ← wfghost` | `meta.voice_exit` | §4.5 of the GT2 exemplar |
+| `WRWFGHO` `sid.ctrl ← wfghost` | a `{stream}` phase of `meta.tick` | §4.1 |
 | `COMMONREGS` after the three voices | `globals.commit`, run **after** the voice loop, with a guard per entry | new (§4.6) |
 | `NOTEFXTBL` 8, `SMALLFXTBL` 14, `BIGFXTABLE` 31 words | `score.commands`, **named by what they do** — `portamento:34`, `sustain:06`, `arpeggio.speed:03` — never by the index one of the three tables dispatched them with | §3.6 |
 | `INITER`'s 30 relocated operands | nothing: the object is read from the image the tick sees (§6) | — |
@@ -167,7 +167,7 @@ from zero and the row ends where it meets the tempo. So `form: counter`, with
 
 ```jsonc
 "cell": "spdcnt", "boundary": 2, "fetch": 0,
-"early": [[{"cell": "phase"}, "<", 2]], "early_first": true,
+"early": [[{"cell": "phase"}, "<", 2]],
 "reset": [ {"when": [...], "sets": [["@spdcnt", 0], ["@tmppos", ...]]}, ... ]
 ```
 
@@ -188,8 +188,9 @@ as a cell named `phase` and lets each stream, arm and prelude row carry the guar
 it needs. The two that the *player* reads are `boundary` (the tick the row
 sounds) and `fetch` (the tick it is read), which are §3.5's `early` given a third
 job: the fetch runs ahead of the row it stages, and here it runs ahead of the
-tick's modulators too (`early_first`), because the row it stages decides what
-they do.
+tick's modulators too, because the row it stages decides what they do — which
+is `meta.tick` putting `fetch` and `prelude` ahead of `row` and `machine` (§4.1)
+rather than a flag beside the clock.
 
 ### 4.2 The prelude belongs to the row's instrument, not the voice's
 

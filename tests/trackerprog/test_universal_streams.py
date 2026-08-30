@@ -12,7 +12,7 @@ from deity_informant.trackerprog.universal import Player, render
 FLO, FHI, PLO, PHI, CTRL, AD, SR = 0, 1, 2, 3, 4, 5, 6
 CUT, RES, VOL = 22, 23, 24
 GATED = {"and": [{"cell": "wave"}, {"cell": "gate"}]}
-CELLS = ("rowclock", "tempo", "instr", "gate", "wave", "param", "vibtime", "vibdelay")
+CELLS = ("rowclock", "tempo", "instr", "gate", "wave", "param", "vibtime", "vibdelay", "staged")
 WAVE_ROWS = [
     {"trap": "a 1-based table has no row zero"},
     {"sets": [["@wave", 0x21]], "hold": 2, "op": {"pitch": 2}},
@@ -54,7 +54,11 @@ def obj(events, streams=None, accs=None, instrument=None, tempo=2, early=1, curs
     """A one-voice trackerprog whose writes all pass through a flushed shadow."""
     st = {
         "note_on": {"rank": 0, "term": "halt", "rows": [{"sets": [["ad", {"ins": "adsr.0"}]]}]},
-        "hard_restart": {"rank": 0, "term": "halt", "rows": [{"sets": [["ad", 0x0F]]}]},
+        "hard_restart": {
+            "rank": 0,
+            "term": "halt",
+            "rows": [{"when": [[{"cell": "staged"}, "!=", 0]], "sets": [["ad", 0x0F]]}],
+        },
         "exit": {"rank": 0, "term": "halt", "rows": [{"sets": [["ctrl", GATED]]}]},
         "funktempo": {"rank": 0, "term": "jump", "rows": [{"value": 3}, {"value": 5}]},
     }
@@ -77,14 +81,15 @@ def obj(events, streams=None, accs=None, instrument=None, tempo=2, early=1, curs
                 "boundary": 0,
                 "early": early,
             },
+            "tick": ["row", "commit", "machine", "fetch", "prelude", {"stream": "exit"}],
             "row_consumes_tick": [["keys", "!=", 0]],
             "prefetch": ["ins", "gate", "arm"],
+            "stage_sounds": "staged",
             "row": [
                 {"note": True, "when": [["sounds", "!=", 0]]},
                 {"stream": "note_on", "when": [["keys", "!=", 0]]},
                 {"commands": True},
             ],
-            "voice_exit": "exit",
             "prologue": {
                 "id": "init",
                 "sets": [["@rowclock", 1], ["@tempo", tempo], ["@instr", 1]],

@@ -91,7 +91,7 @@ def test_the_flattened_print_carries_the_streams_and_measures_itself():
     for line in (
         "shadow     25 registers, flushed descending at the head of every tick",
         "tempo countdown rowclock, reload tempo",
-        "voice exit exit",
+        "tick       row ; commit ; machine ; fetch ; prelude ; stream exit",
         "a new pitch resets vib_phase",
     ):
         assert line in text
