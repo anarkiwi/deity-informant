@@ -487,15 +487,20 @@ Code, against GoatTracker 2's:
 
 | file | lines | role |
 | --- | --- | --- |
-| `deity_informant/trackerprog/universal.py` | 999 (was 821) | §4 + §5, one procedure over the object |
-| `deity_informant/trackerprog/printer.py` | 602 (was 507) | the flattened form and §6.2's numbers |
+| `deity_informant/trackerprog/universal.py` | 1,009 (was 821) | §4 + §5, one procedure over the object |
+| `deity_informant/trackerprog/printer.py` | 608 (was 507) | the flattened form and §6.2's numbers |
 | `deity_informant/trackerprog/attest.py` | 81 (unchanged) | §2's comparison |
 | `tools/trackerprog_sidwizard.py` | 1,504 | the transliteration, the signatures and the PcodeVM reference |
 | `tests/trackerprog/test_sidwizard_oracle.py` | 330 | the two certificates, the loop, and the byte-for-byte round trip |
 | `tests/trackerprog/test_universal_phases.py` | 345 | hermetic snippets, one per form of §4 |
 
-The player grew by 178 lines to carry a third family and covers *no* tune: it
-still has neither Commando, nor GoatTracker, nor SID Wizard in it.
+The player grew by 188 lines to carry a third family and covers *no* tune: it
+still has neither Commando, nor GoatTracker, nor SID Wizard in it. Reading the
+three objects together afterwards took the *object's* grammar back down — the
+union of `meta` keys 26 → 21 and the keys the player branches on 15 → 10
+(prototype-trackerprog §7, backlog §6.4) — for 14 more lines here, which is
+where the generality belongs: paid once, in the player, rather than once per
+family, in the schema.
 
 ---
 

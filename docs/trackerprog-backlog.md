@@ -698,8 +698,11 @@ measure. `meta` carried 12 keys at one family, 18 at two and 22 at three, and
 15 of them were branch points; §9's genericity gate claims two marked
 single-family rows and the audit found twenty-one unmarked ones.
 
-Four reductions came out of it, each certified at 0 divergences on all seven
-tunes:
+Five reductions came out of it, each certified at 0 divergences on all seven
+tunes. Measured together: the union of `meta` keys across the three families
+26 → 21, the keys the player *branches* on 15 → 10, two row procedures → one,
+three mechanisms for "run a stream at a point in the tick" → one, two guard
+spellings → one, at the cost of 14 lines in the player.
 
 **A reduction in §2 is not two forms in §4.** `meta.commit ∈ {order, acts}` let
 a family collapse a tick's edge writes. Rendering the acts sequence for the two
@@ -736,6 +739,14 @@ accumulator's `cell`. One vocabulary — `tick`, a voice cell, `#global`,
 `voice.freq`/`voice.freq.hi`, and the four hard-coded half-names. `tablestep`
 went the same way: it is `interval(n) >> shift`, and the grammar already had
 `shr`.
+
+**A guard with two spellings is two guards.** A stream row carried `when`; a
+command's set, an instrument's set and a global commit carried theirs as a third
+element of the list beside the value — 39 of them in SID Wizard alone. A
+command's writes are now rows of the same inline stream an instrument's note-on
+and a prelude are, and one procedure runs all three. The generalisable check: a
+guard that lives in a tuple position cannot be read by anything that did not
+already know the tuple's shape.
 
 **And grammar with no exemplar is not grammar.** §3.3's terminator (written by
 every tool, read only by the print), §3.6's nine named commands (of which the
