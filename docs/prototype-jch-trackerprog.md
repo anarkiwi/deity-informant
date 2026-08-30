@@ -555,8 +555,8 @@ Code, against defMON's:
 | `deity_informant/trackerprog/universal.py` | 1,063 (was 1,033) | §4 + §5, one procedure over the object |
 | `deity_informant/trackerprog/printer.py` | 628 (was 618) | the flattened form and §6.2's numbers |
 | `deity_informant/trackerprog/attest.py` | 81 (unchanged) | §2's comparison |
-| `tools/trackerprog_jch.py` | 1,548 | the transliteration, 14 signatures, the two builds |
-| `tests/trackerprog/test_jch_oracle.py` | 292 | the two certificates and the byte-for-byte round trip |
+| `tools/trackerprog_jch.py` | 1,546 | the transliteration, 14 signatures, the two builds |
+| `tests/trackerprog/test_jch_oracle.py` | 305 | the two certificates and the byte-for-byte round trip |
 | `tests/trackerprog/test_universal_fetch.py` | 169 | hermetic snippets, one per form of §4 |
 
 The player grew by **30 lines** to carry a fifth family — 38 added against 8

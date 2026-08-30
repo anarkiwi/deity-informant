@@ -480,7 +480,7 @@ class Tune:
         self.m, lo, hi = image(path, song)
         self.L = layout(self.m, lo, hi)
         self.cycles, self.ticks = cycles, ticks
-        self.cmds, self.notes, self.xposes = {}, set(), set()
+        self.cmds = {}  # the pattern commands the score reaches, by what they do
         self.pairs = set()  # the (instrument, note) pairs the tuning is read at
         self.prog = {}  # a column program's rows, per table base
         self.decoded = {}  # one pattern per (number, entry duration, entry instrument)
@@ -638,7 +638,6 @@ class Tune:
                 e["gate"], e["tie"] = "on", True
             else:
                 e["note"], e["sounds"], e["gate"] = b, True, "on"
-                self.notes.add(b)
             e["arm"] = arm or None
             out.append(e)
             if dur:  # the row steps the event holds: one event that does nothing
@@ -683,7 +682,6 @@ class Tune:
             if b >= 0x80:
                 xpose, at = b & 0x7F, at + 1
                 b = m[at]
-            self.xposes.add(xpose)
             entry = (b, dur, ins)
             evs, dur, ins = self.decode(b, dur, ins)
             play.append({"pattern": entry, "transpose": xpose})
