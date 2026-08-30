@@ -989,7 +989,6 @@ class Tune:
 
     def acc(self, name, cell, width, delta, phase=None, scope="voice", witness=""):
         out = {
-            "id": name,
             "cell": cell,
             "target": "freq" if "vib" in name or name == "slide" else "pw",
             "width": width,
@@ -1019,7 +1018,6 @@ class Tune:
             else [["@vdir", {"xor": [{"cell": "vdir"}, 1]}]]
         )
         return {
-            "id": name,
             "cell": cell,
             "target": "note" if cursor else "freq",
             "width": 8,

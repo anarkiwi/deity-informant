@@ -90,7 +90,7 @@ object.
 | `LSR; BCC freqadd / BCS freqsub` | the freq Acc's `phase bit(vibtime, 0)` | §5 vibrato |
 | `mt_effect_0`'s `vibdelay` countdown | `Acc(vibdelay, const(-1))`, guarded by the arm | §5 (a counter is a divider) |
 | `fx 1/2`: `freq ± speed` | `porta_up` / `porta_down`, `phase const(0/1)` | §5 free slide |
-| `fx 3`: the 16-bit compare chain and `p_1327` | `policy clamp(pitch[note])`, `links [reset(vib_phase)]` | §5 tone portamento |
+| `fx 3`: the 16-bit compare chain and `p_1327` | `policy clamp(pitch[note])`, the vibrato phase reset through `meta.pitch_links` | §5 tone portamento |
 | `fx 3` with speed index 0 | `policy take` — the degenerate clamp | new (§4.6) |
 | `p_1327`'s `lastnote = abs; vibtime = 0` | taking a pitch of the tuning sets `lastnote` and `meta.pitch_links` | new (§4.6) |
 | `mt_loadregs`: `ghost.ctrl = wave & gate` | a `{stream}` phase of `meta.tick`, run whatever the row did | new (§4.5) |
@@ -203,14 +203,15 @@ Every GT2 tick 0 runs a command, and the command is the last one the score gave
 score replaces it. One record, unpacked into named fields:
 
 ```
-{ id, arms: [acc arms], links: [acc ids to reset], sets: [[target, value]],
+{ arms: [acc arms], links: [acc ids to reset], sets: [[target, value]],
   point: [[stream slot, row]], all: [[cell, value]], tie: bool }
 ```
 
-`arms` is §3.6's `arm(acc_id, overrides)`; `point` re-points a cursor *and*
-resets its hold, exactly as §3.6 says;
-`links` is §5's `links: [reset(acc_id)]` (commands 1 and 2 zero the vibrato
-phase); `all` is §3.6's global tempo — the one place a command writes every
+The record has no name of its own either: `score.commands` is a dict and the key
+is the name. `arms` is §3.6's `arm(acc_id, overrides)`; `point` re-points a
+cursor *and* resets its hold, exactly as §3.6 says;
+`links` is §3.6's `Cmd.links` (commands 1 and 2 zero the vibrato phase), which
+is the one place the object reads a link; `all` is §3.6's global tempo — the one place a command writes every
 voice's cell, which is a **write**, not a read, so the invariant that no
 *expression* reads another voice's state is untouched. `tie` belongs to the
 command because GT2's does: a tone portamento suppresses the hard restart and
@@ -236,8 +237,8 @@ directly still rests in something.
 
 ### 4.5 A stream step's `op`, and the voice's exit rows
 
-§3.3 gives a step `sets`, an `op` and a `hold` and a terminator, and Commando
-exercised none of it: its streams are one row of `set`s. GT2 exercises all of
+§3.3 gives a step `sets`, an `op` and a `hold`, and the jump the row that
+carries it carries, and Commando exercised none of it: its streams are one row of `set`s. GT2 exercises all of
 it, and the rule the player keeps is one line:
 
 > **a step's `sets` and `op` fire on the tick that consumes the step** — the
@@ -264,14 +265,19 @@ consumes.
 toneporta   freq  w16  voice.freq        scope voice
   policy  clamp pitch
   delta   speed[param].delta
-  links   reset vib_phase
 ```
 
 Two things it needed. First, **taking a pitch of the tuning is one named
 operation**, not three assignments: it writes the frequency, records the note
 sounded (`lastnote`, which `tablestep` reads) and resets the phases
 `meta.pitch_links` names. The wavetable's note op and the portamento's snap are
-the same operation, so it is stated once. Second, `speed index 0 = tie/instant`
+the same operation, so it is stated once — and the reset is `meta.pitch_links`
+and nothing else. The object also carried it a second time as an `Acc.links` on
+this record, which is where §5 had put it; no reader ever read that field, not
+the player and not the print, and the block above is what the print always
+emitted. It is struck (prototype-trackerprog.md §5, §7): `links` is a §3.6
+command's field — commands 1 and 2 below — and `meta.pitch_links`, and an `Acc`
+has neither. Second, `speed index 0 = tie/instant`
 is `policy take` — the degenerate clamp, a step that cannot fall short because
 there is no step. It is a policy, not a special case in the clamp's arithmetic.
 
@@ -356,9 +362,11 @@ an instrument, or carries a note: a keyoff is a row with nothing else on it.
   `phase` is bit 0 of the phase Acc's cell and whose `delta` is a `tablestep` or
   a constant. §5 wrote this row from GT2 and it held **exactly as written**,
   including that the bound is the speed byte's `& $7F` and *not* the depth.
-- **tone portamento** — `clamp(pitch[note])` with `links [reset(vibrato
-  phase)]`, §5's own row, and §5's `links` rule ("the constants the clamp
-  action's own block stores into another Acc's cell") is precisely what it is.
+- **tone portamento** — `clamp(pitch[note])`, §5's own row, whose reset of the
+  vibrato phase is §5's `links` rule ("the constants the clamp action's own block
+  stores into another Acc's cell") exactly. Where the object *carries* it moved:
+  taking a pitch is one operation and `meta.pitch_links` is what it resets, so
+  the record's own `links` column was a second spelling nothing read (§4.6).
 - **free slide is `wrap`, not `reflect`** (§5's correction 5) — GT2's
   portamento up/down has no target, and the object says so.
 - **`arm(acc_id, overrides)` rather than `Acc.param`** (§3.6's third change,

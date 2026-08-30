@@ -93,7 +93,6 @@ def obj(patterns, orders, instruments, pitch=None, rate=2, beyond=None):
                         ]
                     }
                 ],
-                "term": "halt",
             },
             "note_off": {
                 "rows": [
@@ -105,9 +104,8 @@ def obj(patterns, orders, instruments, pitch=None, rate=2, beyond=None):
                         ]
                     }
                 ],
-                "term": "halt",
             },
-            "arp": {"rows": [0, 12], "term": "jump", "kind": "pitch"},
+            "arp": {"rows": [0, 12], "kind": "pitch"},
         },
         "accs": _accs(beyond),
         "instruments": instruments,

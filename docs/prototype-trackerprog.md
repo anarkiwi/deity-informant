@@ -196,7 +196,10 @@ instrument's note-on (§3.5), a prelude, a row program's stream step (§3.6) and
 a table are all this object. The first draft named a terminator, `jump(row) |
 halt`, as a field of the stream; the exemplars put the jump on the row that
 carries it and nothing reads a `halt` — a stream with no jump is one, so the
-row's `jump` is the whole of it.
+row's `jump` is the whole of it. #310 struck it from the grammar and four of the
+five tools went on writing `term` for two more families, the print rendering it
+beside the stream's name: striking a row from the schema is not striking it from
+the object, and both are now done (§7).
 
 A stream has a `rate` — **one meaning everywhere in this schema** (§3.6, §5): a
 divider, the object advances once every `k` ticks, `k ≥ 1`, so a step occupies
@@ -546,11 +549,16 @@ Acc = { target : freq | pw | cutoff | note | wave-param | gate-mask
       , policy : wrap | reflect | reflect-complement | clamp(v) | halt | reload(v)
       , rate   : every k ticks (k ≥ 1)            # the §3.3 divider, one meaning
       , phase  : bit(self, k) | bit(cell, k) | cell != 0 | fn(global_counter) | acc(id)
-      , links  : [ reset(acc_id | stream_slot), … ]   # what this Acc's events zero
       , cell   : the value's own, in one vocabulary -- `tick`, a voice cell,
                  `#global`, `ins.pw`, `shadow.<pair>`, any of them with `.hi`/`.lo`
       , scope  : read from the value cell's region index domain }
 ```
+
+An `Acc` has no name of its own: it is named by the key `accs` declares it
+under, which is the name a stream's `op`, an instrument's arm, a command's
+`arms` and a `publish` subscription all use. Four tools wrote that name a second
+time as an `id` column and the player read the column rather than the key, which
+is a second spelling of one fact and is struck (§7).
 
 **Bounded** is the invariant, not a hint: `bound × policy` makes the reachable
 value set finite and statically known; the trackerprog states each interval and
@@ -582,6 +590,14 @@ re-points the pulse cursor and reloads the pw accumulator in one step
 act, which §3.5 already says an note-on is. The row keeps GoatTracker 2 and the
 hermetic clamp snippet ([prototype-jch-trackerprog.md](prototype-jch-trackerprog.md)
 §8, row 5).
+
+And `links` is not a field of an `Acc`. It is §3.6's `Cmd.links` — what a row
+command zeroes, which is what GT2's handlers 1 and 2 do — and `meta.pitch_links`
+— what taking a pitch of the tuning zeroes, which is what `p_1327` does. GT2
+wrote both spellings for one fact, `Cmd.links` on the commands and an `Acc.links`
+on `toneporta`, and the second reached neither the player nor the print: the
+snap's reset flows through `meta.pitch_links` and always did. The `Acc` row is
+struck and the two that are read stand (§7).
 
 Every per-frame modulation in the anatomy's row (anatomy:212) lands on one line,
 each with two certified families or a marked single-family exception:
@@ -782,6 +798,8 @@ Wizard's `b1024` still refuse, and their cells are not scratch.
 | defMON, the fourth family (**#311**) | the two certified defMON tuneprogs transliterated onto the same player: *Automatas* over its whole 149,025-tick horizon and *Jazzpjazz* over its 1,799, 0 divergences and write lists **identical** on every tick, the loop claim re-verified on the render. Six forms in the player — `meta.shadow.registers` is the ordered list of registers the image carries (GoatTracker 2's value is `range(24, -1, -1)`, write for write identical), a `globals.commit` to a register outside that list reaches the chip on its own tick, `{"cell": …}` and a `sets` target now read and write §5's own cell vocabulary (`shadow.<pair>` included), `xor` beside `and`/`or`, `row_consumes_tick: false` is *never* rather than always, and a gate reports the decision the step made rather than re-reading the cell it moved. Four in the data only: the arranger's end is global so the score materialises per step, a stream that acts and *then* holds is two rows, a tuning read below itself and past itself is a signed `base`, and §10's multispeed is `rate = 8` — measured. One expectation fell: the sidTAB row is a stream row and not an instrument, so both sidcalls are `point` commands and the family's one `Ins` carries neither `adsr` nor `prelude`. `carry(site, flag)` is two-family after all, but only over the whole horizon — a 20,000-tick prefix reads 0 where 149,025 reads 44,675 | `universal`, `printer`, `tools/trackerprog_defmon.py` |
 
 | JCH V20, the fifth family (**#312**) | the two certified JCH tuneprogs transliterated onto the same player: *Guldkornekspressen Intro* over its whole 2,401-tick horizon with the loop claim re-verified, and *I Could Eat a Knob at Night* over its whole 8,577 with the write lists **identical** on every tick, 0 divergences on both. **`end.kind = fixed_point` is taken for the first time**: period 1, `loop` null, the score materialised to `first_repeat` and the render's last tick writing nothing. Five forms in the player, every one a marked single-family data form — a flush entry may state the guard the image writes it under (one build flushes the same 25 registers in either direction, and which one is a byte of the frame: fixing either diverges on 4,689 and 3,887 of 8,577), `meta.prefetch` gains `note`, `transpose` and `cmds` (the row's pitch staged with the row, worth 8 and 397 ticks; the order's transpose too, because the vibrato reads the untransposed note, worth 240; the row's commands spent at the fetch rather than the boundary, worth 38), and `reg.N` is a register of the one global channel written by the voice whose write-out sends it. Five in the data only, including the two column programs as act-and-hold rows with the step ranked after them (reversing it diverges on 1,821 of 2,401) and the wrapper as a stream, a countdown and seven overrides. **Two expectations measured to zero and were struck**: the build byte's own effects skip (0 of 8,577 on the only build that sets it) and a staged instrument (0 on both). The first family whose two builds disagree about having a shadow, and the second measurement that a shadow hides `commit_order` — and, new, voice order with it | `universal`, `printer`, `tools/trackerprog_jch.py` |
+
+| the object's dead surface, pruned (**P1**) | every field the five tools emit, read back against every consumer — the player, the print and the round-trip tests — and the eight nothing read struck: §3.3's `term` (#310 took it out of the grammar and left it in four tools and the print), a stream's `kind` and `scope`, an `Acc`'s `id` (the key `accs` declares it under is its name, and the player now reads that), an `Acc`'s `links` on GoatTracker 2's `toneporta` (a second spelling of `meta.pitch_links`, which is what the snap actually resets), Commando's `overflow` and `armed_by` (the arm the print announced is the `arms` of the event the print already renders), defMON's `meta.order_steps`, and the label on SID Wizard's `prologue`. Measured, the way §6.4's first check asks: rendering the pruned objects is **write-for-write identical on every tick of all eleven builds' whole horizons** — 0 differing of 243,265, Commando ×3 11,780, GoatTracker 2 8,236 and 8,659, SID Wizard 8,084 and 14,465, defMON 1,799 and 149,025, JCH 2,401 and 8,577 — and all eleven re-certify at 0 divergences against their tunes' own players. The print loses 1 line and 8–28 tokens per build where a stream carried a terminator; `universal.py` 1,063 → 1,066, `printer.py` 628 → 622, the five tools 5,666 → 5,614. The generalisable check, which is §6.4's applied to the *object* rather than to the player: **a field the object writes and no consumer reads is not a field**, and grep for the readers of every name the schema declares — a row struck from §3 stays in the tools until someone looks | `universal`, `printer`, the five `tools/trackerprog_*.py` |
 
 Everything after this is the rest of the `trackerprog/` package, under the same
 rules (≤ 500 lines per module, hermetic tests, the certificate).

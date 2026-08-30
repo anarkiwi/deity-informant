@@ -51,11 +51,10 @@ def instrument(**kw):
 def obj(events, streams=None, accs=None, tempo=4, ins=None, **meta):
     """A one-voice trackerprog whose tick is three phases of a counted clock."""
     st = {
-        "exit": {"term": "halt", "rows": [{"when": LIVE, "sets": [["ctrl", {"cell": "wave"}]]}]},
-        "gate_row": {"term": "halt", "rows": [{"sets": [["@gate", {"payload": "gate"}]]}]},
-        "pitch_row": {"term": "halt", "rows": [{"sets": [["#seen", {"cell": "note"}]]}]},
+        "exit": {"rows": [{"when": LIVE, "sets": [["ctrl", {"cell": "wave"}]]}]},
+        "gate_row": {"rows": [{"sets": [["@gate", {"payload": "gate"}]]}]},
+        "pitch_row": {"rows": [{"sets": [["#seen", {"cell": "note"}]]}]},
         "hard_restart": {
-            "term": "halt",
             "rows": [
                 {
                     "when": [
@@ -71,7 +70,6 @@ def obj(events, streams=None, accs=None, tempo=4, ins=None, **meta):
             "rank": 25,
             "all": True,
             "when": LIVE,
-            "term": "halt",
             "rows": [{"sets": [["pitch", {"cell": "freq"}]]}],
         },
     }
@@ -178,10 +176,8 @@ def test_a_stream_a_guard_does_not_admit_does_not_run():
     """A stream carries its own guards, and the voice's tick reads them."""
     rows = [{"trap": "no stream"}, {"sets": [["@wave", 0x21]], "next": 1}]
     cur = {"wave": [{"row": 1, "hold": 0}]}
-    quiet = quiet_obj(
-        {"wave": {"rank": 5, "term": "halt", "when": [[0, "!=", 0]], "rows": rows}}, cur
-    )
-    loud = quiet_obj({"wave": {"rank": 5, "term": "halt", "rows": rows}}, cur)
+    quiet = quiet_obj({"wave": {"rank": 5, "when": [[0, "!=", 0]], "rows": rows}}, cur)
+    loud = quiet_obj({"wave": {"rank": 5, "rows": rows}}, cur)
     assert col(render(quiet, 6), CTRL) == [[0]] * 6
     assert col(render(loud, 6), CTRL) == [[0x21]] * 6
 
@@ -197,7 +193,6 @@ def test_a_divider_kept_in_a_cell_holds_the_stream():
         {
             "wave": {
                 "rank": 5,
-                "term": "halt",
                 "rate": {"cell": "arpscnt", "reload": 2},
                 "rows": rows,
             }
@@ -213,7 +208,7 @@ def _sweep(epoch):
         {"hold": 3, "run": [{"acc": "step", "delta": 1}], "sets": [["@wave", 0x11]], "next": 1},
     ]
     o = quiet_obj(
-        {"pulse": dict({"rank": 5, "term": "halt", "rows": rows}, **epoch)},
+        {"pulse": dict({"rank": 5, "rows": rows}, **epoch)},
         {"pulse": [{"row": 1, "hold": 0}]},
     )
     o["accs"] = {
@@ -258,12 +253,11 @@ def test_a_flag_one_producer_leaves_and_another_reads():
     o = obj(
         [event(note=1, ins=1)],
         streams={
-            "wave": {"rank": 5, "term": "halt", "rows": rows},
+            "wave": {"rank": 5, "rows": rows},
             "pitch_out": {
                 "rank": 25,
                 "all": True,
                 "when": LIVE,
-                "term": "halt",
                 "rows": [{"sets": [["pitch", {"add": [{"cell": "freq"}, {"flag": "C"}]}]]}],
             },
         },
@@ -278,12 +272,11 @@ def test_a_producer_may_write_the_chip_without_moving_the_cell():
     o = obj(
         [event(note=1, ins=1)],
         streams={
-            "wave": {"rank": 5, "term": "halt", "rows": rows},
+            "wave": {"rank": 5, "rows": rows},
             "pitch_out": {
                 "rank": 25,
                 "all": True,
                 "when": LIVE,
-                "term": "halt",
                 "rows": [{"sets": [["pitch", {"add": [{"cell": "freq"}, 5]}]]}],
             },
         },
@@ -332,7 +325,7 @@ def test_a_step_past_the_top_of_the_tuning_is_the_stream_s_own():
     ]
     o = obj(
         [event(note=1, ins=1)],
-        streams={"wave": {"rank": 5, "term": "halt", "rows": rows, "beyond": beyond}},
+        streams={"wave": {"rank": 5, "rows": rows, "beyond": beyond}},
     )
     o["state0"]["cursors"] = {"wave": [{"row": 1, "hold": 0}]}
     w = render(o, 5)

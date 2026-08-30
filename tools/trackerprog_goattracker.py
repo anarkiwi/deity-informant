@@ -409,7 +409,7 @@ class Tune:
                 )
             rows.append(row)
         rows.append({"trap": "past the last row of the table"})
-        return {"rank": 0, "rows": rows, "term": "jump"}
+        return {"rank": 0, "rows": rows}
 
     def wave_command(self, fx, param):
         """A wavetable command row: this tick's own effect, or a row command."""
@@ -438,7 +438,7 @@ class Tune:
                     }
                 )
         rows.append({"trap": "past the last row of the table"})
-        return {"rank": 6, "rows": rows, "term": "jump"}
+        return {"rank": 6, "rows": rows}
 
     def filter_stream(self):
         """The filter table: set the cutoff, set the mode, or sweep for a count."""
@@ -462,7 +462,7 @@ class Tune:
         rows.append({"trap": "past the last row of the table"})
         for y in fused:
             rows[y] = {"trap": "the mode row above consumed this cutoff row with it"}
-        return {"rank": 0, "rows": rows, "term": "jump", "scope": "global"}
+        return {"rank": 0, "rows": rows}
 
     def speed_stream(self):
         """The speed table, unpacked: what an arm binds on the accumulator it names."""
@@ -481,7 +481,7 @@ class Tune:
                         "depth": right,
                     }
                 )
-        return {"rank": 0, "rows": rows, "term": "halt", "kind": "arm"}
+        return {"rank": 0, "rows": rows}
 
     def instruments(self, used):
         """Nine columns, read as adsr, a prelude, four stream entries and cells."""
@@ -526,12 +526,10 @@ class Tune:
         streams = {
             "note_on": {
                 "rank": 0,
-                "term": "halt",
                 "rows": [{"sets": [["sr", {"ins": "adsr.1"}], ["ad", {"ins": "adsr.0"}]]}],
             },
             "hard_restart": {
                 "rank": 0,
-                "term": "halt",
                 "rows": [
                     {
                         "when": [[{"cell": "staged"}, "!=", 0]],
@@ -539,10 +537,9 @@ class Tune:
                     }
                 ],
             },
-            "exit": {"rank": 0, "term": "halt", "rows": [{"sets": [["ctrl", GATED]]}]},
+            "exit": {"rank": 0, "rows": [{"sets": [["ctrl", GATED]]}]},
             "funktempo": {
                 "rank": 0,
-                "term": "jump",
                 "rows": [{"value": {"global": "funk0"}}, {"value": {"global": "funk1"}}],
             },
             "wave": self.wave_stream(),
@@ -627,7 +624,6 @@ class Tune:
             "pitch_links": ["vib_phase"],
             "prologue": rows_of(
                 {
-                    "id": "init",
                     "sets": [
                         ["@wave", 0],
                         ["@param", 0],
@@ -692,7 +688,6 @@ def accs():
     }
     return {
         "vib_delay": {
-            "id": "vib_delay",
             "rank": 3,
             "cell": "vibdelay",
             "target": "note",
@@ -709,7 +704,6 @@ def accs():
             "produce": [],
         },
         "vib_phase": {
-            "id": "vib_phase",
             "rank": 1,
             "cell": "vibtime",
             "target": "note",
@@ -726,7 +720,6 @@ def accs():
             "produce": [],
         },
         "vibrato": {
-            "id": "vibrato",
             "rank": 2,
             "cell": "freq",
             "target": "freq",
@@ -739,10 +732,9 @@ def accs():
             "bound": {"from": "projected", "interval": [0, 0xFFFF], "witness": "the 16-bit store"},
             "produce": [["freq_lo", "lo"], ["freq_hi", "hi"]],
         },
-        "porta_up": dict(slide, id="porta_up", rank=2, phase={"const": 0}),
-        "porta_down": dict(slide, id="porta_down", rank=2, phase={"const": 1}),
+        "porta_up": dict(slide, rank=2, phase={"const": 0}),
+        "porta_down": dict(slide, rank=2, phase={"const": 1}),
         "toneporta": {
-            "id": "toneporta",
             "rank": 2,
             "cell": "freq",
             "target": "freq",
@@ -751,7 +743,6 @@ def accs():
             "policy": {"clamp": {"notefreq": None}},
             "rate": 1,
             "scope": "voice",
-            "links": [{"reset": "vib_phase"}],
             "bound": {
                 "from": "proved",
                 "interval": [0, 0xFFFF],
@@ -760,7 +751,6 @@ def accs():
             "produce": [["freq_lo", "lo"], ["freq_hi", "hi"]],
         },
         "toneporta_snap": {
-            "id": "toneporta_snap",
             "rank": 2,
             "cell": "freq",
             "target": "freq",
@@ -776,7 +766,6 @@ def accs():
             "produce": [],
         },
         "pulse_step": {
-            "id": "pulse_step",
             "rank": 6,
             "cell": "shadow.pw",
             "target": "pw",
@@ -793,7 +782,6 @@ def accs():
             "produce": [],
         },
         "cutoff_step": {
-            "id": "cutoff_step",
             "rank": 0,
             "cell": "#cutoff",
             "target": "cutoff",

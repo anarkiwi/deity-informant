@@ -406,7 +406,6 @@ class Tune:
         """
         m, L = self.m, self.L
         return {
-            "id": "wave.pitch",
             "index": "how far past the tuning the step's own seven bits went",
             "state": {},
             "on": [],
@@ -424,7 +423,6 @@ class Tune:
         m, L = self.m, self.L
         return {
             "rank": 0,
-            "term": "halt",
             "rows": [{"value": m[L["exptabh"] + i]} for i in range(107)],
         }
 
@@ -432,7 +430,6 @@ class Tune:
         """The tempo program: eight rows the score's own commands write."""
         return {
             "rank": 0,
-            "term": "halt",
             "rows": [{"value": {"global": "tempo%d" % i}} for i in range(8)],
         }
 
@@ -460,7 +457,7 @@ class Tune:
                 )
             else:
                 rows.append({"raw": b, "value": signed(b), "next": k + 1})
-        return {"rank": 0, "term": "halt", "rows": rows}
+        return {"rank": 0, "rows": rows}
 
     def chordstart_stream(self):
         """Where each chord begins: the tune's own table of chord starts."""
@@ -468,7 +465,6 @@ class Tune:
         n = L["insptlo"] - L["chdptrlo"]
         return {
             "rank": 0,
-            "term": "halt",
             "rows": [{"value": m[L["chdptrlo"] + i]} for i in range(n)],
         }
 
@@ -991,7 +987,7 @@ class Tune:
                 "sets": [["!dead", {"trap": DEAD["hr.mute"]}]],
             }
         )
-        return {"rank": 0, "term": "halt", "rows": rows}
+        return {"rank": 0, "rows": rows}
 
     def fixed(self):
         """The rows the voice emits itself: its gate, its pulse and its pitch."""
@@ -1018,7 +1014,6 @@ class Tune:
         }
         out = {
             "exit": {
-                "term": "halt",
                 "rows": [
                     {"when": LIVE, "sets": [["ctrl", {"cell": "wave"}]]},
                     {
@@ -1028,11 +1023,9 @@ class Tune:
                 ],
             },
             "pitch_row": {
-                "term": "halt",
                 "rows": [{"when": OWNS, "sets": [["#ownerpitch", NOTE]]}],
             },
             "gate_row": {
-                "term": "halt",
                 "rows": [
                     {
                         "sets": [
@@ -1049,7 +1042,6 @@ class Tune:
                 "rank": 15,
                 "all": True,
                 "when": RUN,
-                "term": "halt",
                 "rows": [
                     {
                         "when": [[{"cell": "pkbdtrk"}, "==", 0]],
@@ -1073,11 +1065,9 @@ class Tune:
                 "rank": 25,
                 "all": True,
                 "when": LIVE,
-                "term": "halt",
                 "rows": [{"sets": [["pitch", self.pitch_out()]]}],
             },
             "voice_bit": {
-                "term": "halt",
                 "rows": [
                     {"value": m[L["cvar"] + 7 * v], "mask": m[L["cvar"] + 1 + 7 * v]}
                     for v in range(3)
@@ -1141,7 +1131,6 @@ class Tune:
         streams = self.fixed()
         streams["wave"] = {
             "rank": 20,
-            "term": "halt",
             "when": LIVE,
             "rows": self.rows["wave"],
             "rate": {"cell": "arpscnt", "reload": {"and": [{"cell": "arpsped"}, 0x3F]}},
@@ -1149,14 +1138,12 @@ class Tune:
         }
         streams["pulse"] = {
             "rank": 10,
-            "term": "halt",
             "when": RUN,
             "epoch": "entry",
             "rows": self.rows["pulse"],
         }
         streams["filter"] = {
             "rank": 5,
-            "term": "halt",
             "when": RUN + OWNS,
             "epoch": "entry",
             "rows": self.rows["filter"],
@@ -1262,11 +1249,7 @@ class Tune:
             ],
             "pitch_target": "@freq",
             "player": "prototype-trackerprog.md sections 4 and 5",
-            **(
-                {"prologue": {"id": "the frame the slowdown gate spends", "rows": []}}
-                if L["slowdown"] is not None
-                else {}
-            ),
+            **({"prologue": {"rows": []}} if L["slowdown"] is not None else {}),
         }
 
 
@@ -1341,7 +1324,6 @@ def accs():
     vc, vf = {"cell": "vibracnt"}, {"cell": "vibfrequ"}
     return {
         "freqmod_step": {
-            "id": "freqmod_step",
             "rank": 0,
             "cell": "freqmod",
             "target": "note",
@@ -1358,7 +1340,6 @@ def accs():
             },
         },
         "vib_phase": {
-            "id": "vib_phase",
             "rank": 1,
             "cell": "vibracnt",
             "target": "note",
@@ -1375,7 +1356,6 @@ def accs():
             },
         },
         "vib_delay": {
-            "id": "vib_delay",
             "rank": 3,  # the delay's own step is read at its entry, so it runs last
             "cell": "videlcnt",
             "target": "note",
@@ -1389,15 +1369,13 @@ def accs():
         },
         "vibrato": dict(
             freq,
-            id="vibrato",
             rank=2,
             phase={"sub": [1, {"bit": [{"sub": [{"field": [{"add": [vc, vc]}, 0xFF]}, vf]}, 8]}]},
         ),
-        "slide_up": dict(freq, id="slide_up", rank=2, phase={"const": 0}),
-        "slide_down": dict(freq, id="slide_down", rank=2, phase={"const": 1}),
+        "slide_up": dict(freq, rank=2, phase={"const": 0}),
+        "slide_down": dict(freq, rank=2, phase={"const": 1}),
         "toneporta": dict(
             freq,
-            id="toneporta",
             rank=2,
             policy={"clamp": {"notefreq": None}, "edge": 1},
             bound={
@@ -1407,7 +1385,6 @@ def accs():
             },
         ),
         "pulse_step": {
-            "id": "pulse_step",
             "rank": 10,
             "cell": "pw",
             "target": "pw",
@@ -1424,7 +1401,6 @@ def accs():
             },
         },
         "cutoff_step": {
-            "id": "cutoff_step",
             "rank": 5,
             "cell": "#cutoff",
             "target": "split(3, 8)",

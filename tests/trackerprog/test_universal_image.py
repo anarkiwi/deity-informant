@@ -84,7 +84,6 @@ def test_a_global_commit_outside_the_image_reaches_the_chip_on_its_own_tick():
     """A register the flush does not carry is written where it is made, not deferred."""
     step = {
         "all": True,
-        "term": "halt",
         "rows": [{"when": [], "sets": [["#level", {"add": [{"global": "level"}, 1]}]]}],
     }
     w = render(
@@ -107,7 +106,6 @@ def test_the_cell_vocabulary_is_one_for_a_read_a_write_and_an_accumulator():
         "poke": {
             "rank": 0,
             "all": True,
-            "term": "halt",
             "rows": [
                 {
                     "when": [[{"cell": "shadow.pw.hi"}, "==", 0]],
@@ -118,7 +116,6 @@ def test_the_cell_vocabulary_is_one_for_a_read_a_write_and_an_accumulator():
     }
     a = {
         "sweep": {
-            "id": "sweep",
             "rank": 1,
             "cell": "shadow.pw",
             "target": "pw",
@@ -140,7 +137,6 @@ def test_xor_is_an_expression_like_and_and_or():
         "poke": {
             "rank": 0,
             "all": True,
-            "term": "halt",
             "rows": [{"when": [], "sets": [["ctrl", {"xor": [{"cell": "mask"}, 0x0F]}]]}],
         }
     }
@@ -154,7 +150,6 @@ def test_a_row_that_never_spends_its_tick_still_runs_the_machine():
         "poke": {
             "rank": 0,
             "all": True,
-            "term": "halt",
             "rows": [
                 {
                     "when": [],
@@ -174,7 +169,6 @@ def test_the_gate_reports_the_decision_the_step_made_not_the_cell_it_left():
     """The step decides once, before it moves: a gate re-reading the cell would flip."""
     a = {
         "bounce": {
-            "id": "bounce",
             "rank": 0,
             "cell": "level",
             "target": "pw",
