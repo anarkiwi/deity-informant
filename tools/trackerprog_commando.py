@@ -304,7 +304,6 @@ def accs():
     """Section 5's records.  Seven forms; six are section 5's own rows."""
     return {
         "vibrato": {
-            "id": "vibrato",
             "rank": 0,
             "cell": "tick",
             "target": "freq",
@@ -316,7 +315,6 @@ def accs():
                     {"fold": [{"cell": "counter"}, 7]},
                 ]
             },
-            "overflow": "beyond_tuning",
             "delta_when": [[{"cell": "dur"}, ">=", 6]],
             "flag": {"name": "C", "seed": 1, "unguarded": 0},
             "bound": {
@@ -330,7 +328,6 @@ def accs():
             "produce": [["freq_lo", "lo"], ["freq_hi", "hi"]],
         },
         "pulse_run": {
-            "id": "pulse_run",
             "rank": 1,
             "cell": "ins.pw.lo",
             "target": "pw",
@@ -347,7 +344,6 @@ def accs():
             "produce": [["pw_lo", "byte"]],
         },
         "pulse_bounce": {
-            "id": "pulse_bounce",
             "rank": 1,
             "cell": "ins.pw",
             "target": "pw",
@@ -366,7 +362,6 @@ def accs():
             "produce": [["pw_hi", "hi"], ["pw_lo", "lo"]],
         },
         "slide": {
-            "id": "slide",
             "rank": 2,
             "cell": "freq",
             "target": "freq",
@@ -381,11 +376,9 @@ def accs():
             },
             "rate": 1,
             "scope": "voice",
-            "armed_by": "score",
             "produce": [["freq_lo", "lo"], ["freq_hi", "hi"]],
         },
         "drum": {
-            "id": "drum",
             "rank": 3,
             "cell": "freq.hi",
             "target": "freq",
@@ -407,7 +400,6 @@ def accs():
             },
         },
         "skydive": {
-            "id": "skydive",
             "rank": 4,
             "cell": "freq.hi",
             "target": "freq",
@@ -423,7 +415,6 @@ def accs():
             "note": "dead in this family: fx & 2 and dur >= 3 never hold together",
         },
         "arpeggio": {
-            "id": "arpeggio",
             "rank": 5,
             "cell": "tick",
             "target": "freq",
@@ -431,7 +422,6 @@ def accs():
             "policy": {
                 "reload": {"transpose": {"stream": ["arp", {"and": [{"cell": "counter"}, 1]}]}}
             },
-            "overflow": "beyond_tuning",
             "bound": {
                 "from": "proved",
                 "interval": [0, 12],
@@ -527,7 +517,6 @@ def build(path, song=0):
                         ]
                     }
                 ],
-                "term": "halt",
             },
             "note_off": {
                 "rows": [
@@ -539,9 +528,8 @@ def build(path, song=0):
                         ]
                     }
                 ],
-                "term": "halt",
             },
-            "arp": {"rows": [0, 12], "term": "jump", "kind": "pitch"},
+            "arp": {"rows": [0, 12]},
         },
         "accs": acc,
         "instruments": instruments,

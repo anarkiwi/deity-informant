@@ -587,10 +587,9 @@ class Tune:
         """The two cascades, the oscillator's producers and the filter channel."""
         m, L = self.m, self.L
         return {
-            "casa": {"rank": 0, "term": "halt", "rows": self.rows},
-            "casb": {"rank": 1, "term": "halt", "rows": self.rows},
+            "casa": {"rank": 0, "rows": self.rows},
+            "casb": {"rank": 1, "rows": self.rows},
             "voice_bit": {
-                "term": "halt",
                 "rows": [
                     {"value": m[L["r_bit"] + STRIDE * v], "mask": m[L["r_mask"] + STRIDE * v]}
                     for v in range(VOICES)
@@ -599,10 +598,9 @@ class Tune:
             "pitch_out": {
                 "rank": 3,
                 "all": True,
-                "term": "halt",
                 "rows": self.pitch_rows(),
             },
-            "filter": {"all": True, "term": "halt", "rows": self.filter_rows()},
+            "filter": {"all": True, "rows": self.filter_rows()},
         }
 
     def pitch_rows(self):
@@ -735,11 +733,10 @@ class Tune:
         }
         bounce = {"name": "bounce", "unguarded": 1}
         return {
-            "slide_up": dict(slide, id="slide_up", phase={"const": 0}),
-            "slide_down": dict(slide, id="slide_down", phase={"const": 1}),
+            "slide_up": dict(slide, phase={"const": 0}),
+            "slide_down": dict(slide, phase={"const": 1}),
             "pw_down": dict(
                 pw,
-                id="pw_down",
                 delta=dn,
                 phase={"const": 1},
                 delta_when=[[PW, ">=", dn]],
@@ -748,7 +745,6 @@ class Tune:
             ),
             "pw_up": dict(
                 pw,
-                id="pw_up",
                 delta=up,
                 phase={"const": 0},
                 delta_when=[[{"add": [PW, up]}, "<", 0x1000]],
@@ -756,7 +752,6 @@ class Tune:
                 flag=bounce,
             ),
             "pw_turn": {
-                "id": "pw_turn",
                 "rank": 5,
                 "cell": "pwstep",
                 "target": "pw",
@@ -893,7 +888,6 @@ class Tune:
             "row_consumes_tick": False,
             "row_command": "spent",
             "row": [{"commands": True}, {"note": True, "when": [["sounds", "!=", 0]]}],
-            "order_steps": steps,
             "player": "prototype-trackerprog.md sections 4 and 5",
         }
 

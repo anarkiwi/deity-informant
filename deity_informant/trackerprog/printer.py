@@ -221,11 +221,7 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
     add("## streams")
     add("")
     for k, st in obj["streams"].items():
-        head = "%s%s%s" % (
-            k,
-            "" if "term" not in st else " -- " + st["term"],
-            "" if "rank" not in st else ", rank %d" % st["rank"],
-        )
+        head = "%s%s" % (k, "" if "rank" not in st else ", rank %d" % st["rank"])
         if st.get("all"):
             head += ", every row every tick"
         if st.get("epoch") == "entry":
@@ -608,8 +604,6 @@ def _acc(name, a, notes):
             )
     if a.get("trap"):
         lines.append("      trap    %s" % a.get("note", "the arm the horizon never takes"))
-    if a.get("armed_by"):
-        lines.append("      armed   by the %s" % a["armed_by"])
     return "\n".join(lines)
 
 

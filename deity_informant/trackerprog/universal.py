@@ -45,6 +45,8 @@ class Player:
             k: v["pw"][0] | v["pw"][1] << 8 for k, v in obj["instruments"].items() if "pw" in v
         }
         self.flags = {}
+        # an accumulator is named by the key it is declared under and nowhere else
+        self.accname = {id(a): k for k, a in obj["accs"].items()}
         self.priv, self.subs = {}, []
         for owner in [a.get("beyond") for a in obj["accs"].values()] + [
             i.get("pitch") for i in obj["instruments"].values()
@@ -919,10 +921,11 @@ class Player:
             raise AssertionError("the arm the certified horizon never takes")
         k = self.ev(a.get("rate", 1), ov)
         if k > 1:  # section 3.3's divider, the one meaning of rate
-            self.divider[v][a["id"]] = self.divider[v].get(a["id"], 0) - 1
-            if self.divider[v][a["id"]] >= 0:
+            name = self.accname[id(a)]
+            self.divider[v][name] = self.divider[v].get(name, 0) - 1
+            if self.divider[v][name] >= 0:
                 return
-            self.divider[v][a["id"]] = k - 1
+            self.divider[v][name] = k - 1
         pol = a["policy"]
         # the decision the step makes, made once and before anything moves: a gate
         # reports what the step did, not a re-reading of a cell the step moved
@@ -980,7 +983,7 @@ class Player:
             if turn:
                 c = self.c[a["phase"]["cell"]]
                 c[self.v] = (c[self.v] + (-1 if ph else 1)) & 0xFF
-                self.publish("turn", self.v, {"phase": c[self.v]}, acc=a["id"])
+                self.publish("turn", self.v, {"phase": c[self.v]}, acc=self.accname[id(a)])
         return out
 
     def toward(self, a, ov, val, step, prod):

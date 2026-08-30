@@ -53,14 +53,13 @@ def ins(points=(), prelude="hard_restart", accs=()):
 def obj(events, streams=None, accs=None, instrument=None, tempo=2, early=1, cursors=(), **meta):
     """A one-voice trackerprog whose writes all pass through a flushed shadow."""
     st = {
-        "note_on": {"rank": 0, "term": "halt", "rows": [{"sets": [["ad", {"ins": "adsr.0"}]]}]},
+        "note_on": {"rank": 0, "rows": [{"sets": [["ad", {"ins": "adsr.0"}]]}]},
         "hard_restart": {
             "rank": 0,
-            "term": "halt",
             "rows": [{"when": [[{"cell": "staged"}, "!=", 0]], "sets": [["ad", 0x0F]]}],
         },
-        "exit": {"rank": 0, "term": "halt", "rows": [{"sets": [["ctrl", GATED]]}]},
-        "funktempo": {"rank": 0, "term": "jump", "rows": [{"value": 3}, {"value": 5}]},
+        "exit": {"rank": 0, "rows": [{"sets": [["ctrl", GATED]]}]},
+        "funktempo": {"rank": 0, "rows": [{"value": 3}, {"value": 5}]},
     }
     st.update(streams or {})
     return {
@@ -91,7 +90,6 @@ def obj(events, streams=None, accs=None, instrument=None, tempo=2, early=1, curs
                 {"commands": True},
             ],
             "prologue": {
-                "id": "init",
                 "rows": [{"sets": [["@rowclock", 1], ["@tempo", tempo], ["@instr", 1]]}],
             },
             "player": "hermetic",
@@ -124,7 +122,6 @@ def column(w, reg):
 
 def acc(name, cell, **kw):
     rec = {
-        "id": name,
         "rank": 0,
         "cell": cell,
         "target": "freq",
@@ -161,7 +158,7 @@ def test_a_funk_tempo_alternates_the_two_lengths_its_stream_names():
 def test_a_stream_holds_its_row_then_takes_its_op_and_its_next():
     o = obj(
         [event(note=1, ins=1)],
-        streams={"wave": {"rank": 0, "term": "jump", "rows": WAVE_ROWS}},
+        streams={"wave": {"rank": 0, "rows": WAVE_ROWS}},
         instrument=ins(points=[["wave", 1, False]], prelude=None),
         tempo=6,
         cursors=["wave"],
@@ -176,7 +173,7 @@ def test_a_step_that_produces_stands_the_armed_accumulators_down():
     a = acc("slide", "freq", delta={"const": 0x10}, produce=[["freq_hi", "hi"]])
     o = obj(
         [event(note=1, ins=1)],
-        streams={"wave": {"rank": 0, "term": "jump", "rows": WAVE_ROWS}},
+        streams={"wave": {"rank": 0, "rows": WAVE_ROWS}},
         accs=a,
         instrument=ins(points=[["wave", 1, False]], prelude=None, accs=[{"acc": "slide"}]),
         tempo=6,
@@ -189,7 +186,7 @@ def test_a_step_that_produces_stands_the_armed_accumulators_down():
 def test_a_trap_row_is_no_row_at_all():
     o = obj(
         [event(note=1, ins=1)],
-        streams={"wave": {"rank": 0, "term": "jump", "rows": [{"trap": "no row zero"}, {}]}},
+        streams={"wave": {"rank": 0, "rows": [{"trap": "no row zero"}, {}]}},
         cursors=["wave"],
     )
     p = Player(o)
@@ -213,7 +210,7 @@ def test_a_global_channel_steps_its_own_stream_and_commits_its_own_registers():
     ]
     o = obj(
         [event(note=1, ins=1)],
-        streams={"filter": {"rank": 0, "term": "jump", "rows": rows}},
+        streams={"filter": {"rank": 0, "rows": rows}},
         accs=a,
     )
     o["globals"]["streams"] = ["filter"]
@@ -293,7 +290,7 @@ def test_take_is_the_degenerate_clamp_and_reaches_its_target_at_once():
 
 def test_a_tabcell_reads_the_column_of_a_stream_row_a_cell_selects():
     rows = [{"delta": {"trap": "no speed"}}, {"delta": 7}, {"delta": 9}]
-    p = Player(obj([event()], streams={"speed": {"rank": 0, "term": "halt", "rows": rows}}))
+    p = Player(obj([event()], streams={"speed": {"rank": 0, "rows": rows}}))
     p.c["param"][0] = 2
     assert p.ev({"tabcell": ["speed", {"cell": "param"}, "delta"]}) == 9
     p.c["param"][0] = 0

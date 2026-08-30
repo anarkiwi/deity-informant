@@ -502,6 +502,19 @@ union of `meta` keys 26 → 21 and the keys the player branches on 15 → 10
 where the generality belongs: paid once, in the player, rather than once per
 family, in the schema.
 
+**Three instrument columns neither build reads.** The audit that pruned the
+object's dead surface (prototype-trackerprog §7) found `wave_base`, `pw_base`
+and `flt_base` — an instrument's first row in each of its three tables — named
+by exactly one reader, the `stream.wave` / `stream.pulse` / `stream.filter`
+commands, which re-point a cursor to `base + index + 3·param`. Neither Emomyst
+nor End of the World emits one of those commands: GoatTracker 2's two builds
+emit eighteen between them and SID Wizard's two emit none. So the three columns
+are written and read by nothing in either certified object, and they are *not*
+struck, because the reader is real and the tool would answer a build that has
+one with a `KeyError` rather than a refusal. It is §4's own distinction stated
+about a column instead of a form: a field no exemplar exercises is untested,
+which is not the same thing as a field no consumer has.
+
 ---
 
 ## 8. The four things the family was expected to force
