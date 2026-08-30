@@ -419,7 +419,7 @@ The print, `trackerprog.md`, measured the way architecture §11 asks:
 | its `tuneprog.md` / load band | 31,690 / 6,065 | 6,648 / 2,948 |
 
 The layer's claim holds on both tunes — 8,604 against 8,900, and 3,848 against
-6,648 — but *Automatas*' margin is the narrowest of the eight hand exemplars,
+6,648 — but *Automatas*' margin is the narrowest of the nine hand exemplars,
 and the object says why: `casa` and `casb` are the same 358 rows printed twice,
 because a stream's rows are its own and two cursors over one table is not
 something §3.3 can say. The compressor recovers most of it; the print does not.
@@ -462,12 +462,13 @@ Code, against SID Wizard's:
 | `deity_informant/trackerprog/universal.py` | 1,033 (was 1,009) | §4 + §5, one procedure over the object |
 | `deity_informant/trackerprog/printer.py` | 618 (was 608) | the flattened form and §6.2's numbers |
 | `deity_informant/trackerprog/attest.py` | 81 (unchanged) | §2's comparison |
-| `tools/trackerprog_defmon.py` | 1,061 | the transliteration, 17 signatures, the chunked reference |
-| `tests/trackerprog/test_defmon_oracle.py` | 222 | the two certificates and the byte-for-byte round trip |
+| `tools/trackerprog_defmon.py` | 1,058 | the transliteration, 17 signatures, the chunked reference |
+| `tests/trackerprog/test_defmon_oracle.py` | 229 | the two certificates and the byte-for-byte round trip |
 | `tests/trackerprog/test_universal_image.py` | 198 | hermetic snippets, one per form of §4 |
 
-The player grew by 24 lines to carry a fourth family, and one of those lines is
-a bug fix (§4.5) and six are a comment. It still has neither Commando, nor
+The player grew by 24 lines to carry a fourth family — 40 added against 16
+taken out, and a third of what is added is comment. One of the six forms is a
+bug fix (§4.5) and one deletes a duplicated read (§4.3). It still has neither Commando, nor
 GoatTracker, nor SID Wizard, nor defMON in it.
 
 ---
