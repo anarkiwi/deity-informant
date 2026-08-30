@@ -620,3 +620,70 @@ that line was wrong. defMON is certified four times over — `automatas`,
 and `goto80-jazzpjazz` (1,799 ticks, `horizon`), architecture §9.2 — with recert
 dirs for all four and its own [prototype-automatas.md](prototype-automatas.md).
 W0 puts it in the acceptance list.
+
+---
+
+## 6. What the GoatTracker 2 transliteration found in the print
+
+Five gaps in the printed tuneprog, each one a place where
+[prototype-goattracker-trackerprog.md](prototype-goattracker-trackerprog.md)
+§8 had to open a disassembler because the print did not settle a fact a
+materialiser needs. All five are in the *presentation*, not the certified
+program: the S4/S6 artefacts carry the information, and `printer` drops or
+re-derives it.
+
+| # | item | mechanism | size | acceptance |
+| --- | --- | --- | --- | --- |
+| P1 | one canonical origin per region | a region prints under several names with several derived origins (`T16F9[1 + t1]` / `T16F9[2 + r4]` / `T16F9[y]` are one array; so are `T175D`/`T1761`, `T1875`/`T1876`/`T188A`, `T17FB`/`T17FC`, `T1826`/`T1839`), and the header's "2-based, read at `$16F7,i`" names neither the base nor the basedness a reader can index by. Pick the origin once (`regions._origin` already computes it), record `base` and `first_index`, and normalise every index expression to it | small | on the four GT2/Commando/JCH/SW prints, every read of one region prints `T[e]` against one stated base; a test materialises the GT2 wavetable from the print alone |
+| P2 | fold a carry the reaching compare proves | `a38 = ((T175D[y] + freq_lo_idx) + (T16F9[y] >= $E0)) & $7F` re-derives a carry as a predicate the reader must evaluate; `$12CD CMP #$E0` / `$12CF BCS` proves it 0 on that path. Constant-fold `carry(site)` where the reaching compare decides it; keep the named form (§4.11's producer/consumer pair) only where it is live | small | GT2's five re-derived carries fold to constants; Hubbard's `$5237` inherited carry stays named; recert-neutral |
+| P3 | print an untaken arm's body | `p_1082` prints from `# $108B` with `# untaken: T1851[y] >= 0` and drops the two instructions the arm holds — here `LDY #$00 ; STY $FD`, which is what makes the vibrato depth 8-bit. A second build of the same player may take the arm, so a transliteration that must render both needs the semantics either way | small | every `untaken` marker carries its arm's statements, marked; the GT2 print gains the 12 (15) arms §3 of prototype-goattracker.md counts |
+| P4 | state `commit_order` in the certificate | the per-voice edge-register order is recovered (the stores are named `ghost[x/7].ad` etc. and their order inside a routine is in the IR) but appears nowhere a reader can use; §3.1 of prototype-trackerprog.md needs exactly this one datum per tune | small | `certificate.json` carries `commit_order`; the six certified families' values match §3.1's table |
+| P5 | dispatch on the command number, not the patched address | the tick-0 and continuous dispatches print as `switch b1295: case $1006:` — the compiled form. The command's *number* is the index into `T144A` the block above computes, so the two GT2 builds label the same command with different addresses | medium | the GT2 prints' two switches are over the index; the arms of the two builds are comparable line for line |
+
+P1–P4 are small and independent; P5 wants the switch's index recovered from
+its writer, which `resolve` already closes statically (prototype-goattracker.md
+G5). None changes a certified program, so all five are recert-neutral.
+
+### 6.1 The one the two families found together
+
+Not a print gap: a schema one, and it is already fixed in §3.6 rather than
+tracked. Recorded here because the *method* generalises.
+
+`Event.note: index | rest | hold | keyoff | keyon` was the source byte's own
+token class, not the music. GT2's `$BD`/`$BE`/`$BF` sit in the note range and
+make the enum look right; SID Wizard's note column also carries `set vibrato
+amplitude`, `porta`, `sync on/off` and `ring on/off` (anatomy:1204), which makes
+it obviously wrong. The anatomy already names the construct as an idiom to be
+spent (anatomy:2833, "byte ranges as token classes"), so the enum was the one
+place the schema kept a packing it elsewhere removes.
+
+The field the two families forced is `sounds`. Before it, the universal player
+answered "does this row key a note?" from `gate == "on"` for Hubbard and from
+`note is not None` for GoatTracker 2 — one fact, two computations, in one
+procedure. **A second family is what makes that visible**: with one exemplar
+either spelling is self-consistent. The check worth repeating on the next family
+is mechanical — grep the player for every expression that decides the same
+musical question, and require there be one.
+
+### 6.2 Two more the second family found
+
+Same shape as §6.1: things one exemplar could not show were wrong.
+
+**A command named by its dispatch index.** The GoatTracker 2 object interned its
+row commands under the nibble `T144A` indexes them with — `F:07`, `8:04`, and an
+`id` field carrying the nibble itself. `prototype-goattracker.md` G5 and
+anatomy:2799 both class the patched low-byte jump as an idiom the lift spends,
+and prototype-goattracker-trackerprog.md §2 claims the two jump tables
+disappear; keeping their index as the command's *name* kept them. Commands are
+now named by what they do (`tempo:07`, `stream.wave:04`, `sr:A4`), which also
+makes the two builds' commands comparable — the same music names the same
+command whatever page the handler landed on. SID Wizard's `BIGFXTABLE` index
+(anatomy:2799) is the same trap waiting on that family.
+
+**Whether a command outlives its row was implied by the clock.** GT2 re-runs the
+last command the score gave at every row boundary (effect memory); Hubbard
+spends it on its row. The player got this right by accident — the holding lived
+in the countdown branch of the sequencer, so "countdown-clock families hold their
+commands" was load-bearing and untrue in general. It is now `meta.row_command` ∈
+{`held`, `spent`}, read by one procedure on both paths. The generalisable check
+is §6.1's: one musical question, one place that answers it.

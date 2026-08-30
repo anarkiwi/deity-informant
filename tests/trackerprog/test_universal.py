@@ -22,9 +22,21 @@ import trackerprog_commando as TC  # noqa: E402
 CTRL, AD, SR, FLO, FHI, PLO, PHI = 4, 5, 6, 0, 1, 2, 3
 
 
-def event(dur, note=None, ins=None, slide=None, gate="on", tie=False):
-    arm = None if slide is None else {"acc": "slide", "delta": slide[0], "phase": slide[1]}
-    return {"dur": dur, "note": note, "ins": ins, "arm": arm, "gate": gate, "tie": tie}
+def event(dur, note=None, ins=None, slide=None, sounds=True, gate=None, tie=False):
+    arm = (
+        None
+        if slide is None
+        else {"arms": [{"acc": "slide", "delta": slide[0], "phase": slide[1]}]}
+    )
+    return {
+        "dur": dur,
+        "note": note,
+        "ins": ins,
+        "arm": arm,
+        "sounds": sounds,
+        "gate": gate,
+        "tie": tie,
+    }
 
 
 def pat(events):
@@ -158,7 +170,7 @@ def test_the_note_row_and_the_tempo_divider():
 
 def test_a_keyoff_row_re_emits_the_instrument_with_the_gate_cleared():
     o = obj(
-        {"1": [event(0, note=2, ins=0), event(0, gate="off")]},
+        {"1": [event(0, note=2, ins=0), event(0, sounds=False)]},
         [{"play": [1], "end": "jump"}],
         {"0": ins()},
     )
@@ -351,7 +363,7 @@ def test_the_flattened_print_carries_every_section_and_measures_itself():
         on=[{"event": "sound", "voice": 0, "set": {"lo": {"payload": "wave"}}}],
     )
     o = obj(
-        {"1": [event(9, note=2, ins=0, slide=(4, 1)), event(0, gate="off")]},
+        {"1": [event(9, note=2, ins=0, slide=(4, 1)), event(0, sounds=False)]},
         [{"play": [1], "end": "jump"}],
         {"0": ins(accs=[{"acc": "vibrato", "shift": 1}, {"acc": "drum"}], pitch=p)},
         beyond=beyond([{"trap": "a cell the tick recomputes"}]),
@@ -375,7 +387,7 @@ def test_the_flattened_print_carries_every_section_and_measures_itself():
     assert "repeat(interval >> <shift>, fold(counter, 7))" in text  # an expression
     assert "(dur - 1) & $FF >= rowsleft" in text  # nested binaries parenthesised
     assert "emits   the value the tick came in with" in text
-    assert "     dur  tie  gate   ins  note  arm" in text
+    assert "     dur  snd  tie  gate   ins  note  arm" in text
     assert "slide(delta 4 phase 1)" in text  # the arm the row carries, materialised
     n = printer.numbers(text)
     assert set(n) == {"lines", "tokens", "statements", "blocks", "header_rows", "data_rows", "xz"}

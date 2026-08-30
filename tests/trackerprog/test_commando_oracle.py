@@ -128,7 +128,7 @@ def test_an_unpitched_instrument_carries_its_own_pitch_modulator():
     assert all("interval" not in d for d in drums.values())  # no pitch, no semitone above
     events = [e for p in obj["score"]["patterns"].values() for e in p["events"]]
     # commando-floor section 5: "song 1 plays pitch 104 twenty-five times"
-    assert sum(1 for e in events if e["note"] is None and e["gate"] == "on") == 25
+    assert sum(1 for e in events if e["note"] is None and e["sounds"]) == 25
 
 
 def test_no_expression_reads_another_voices_state():
@@ -205,3 +205,23 @@ def test_the_only_intermediate_writes_that_differ_are_superseded():
     for _, a, b in bad:
         assert a[-1] == b[-1]  # the value the tick leaves is identical
         assert a[1:] == b[1:] and len(a) > 1  # only a write another write supersedes
+
+
+def _canonical(events):
+    """Section 3.6's event, as the layer states it after the note column is spent."""
+    for e in events:
+        assert set(e) == {"dur", "sounds", "tie", "gate", "note", "ins", "arm"}
+        assert isinstance(e["sounds"], bool)
+        if e["note"] is not None:  # a pitch is a pitch: a row with one sounds
+            assert e["sounds"]
+        if e["gate"] is not None:  # a gate statement is its own row, never a note's
+            assert not e["sounds"] and e["gate"] in ("on", "off")
+
+
+@pytest.mark.parametrize("song", (0, 1, 2))
+def test_the_event_is_the_canonical_one(song):
+    """The same shape GoatTracker 2 uses: a gate token this family does not have."""
+    obj = built(song)
+    events = [e for p in obj["score"]["patterns"].values() for e in p["events"]]
+    _canonical(events)
+    assert all(e["gate"] is None for e in events)  # the row byte's bit 6 is `sounds`

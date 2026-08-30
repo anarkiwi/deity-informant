@@ -110,8 +110,9 @@ def pattern(m, pn):
         r = m[base + i]
         e = {
             "dur": r & 0x1F,
+            "sounds": not r & 0x40,
             "tie": bool(r & 0x20),
-            "gate": "off" if r & 0x40 else "on",
+            "gate": None,
             "note": None,
             "ins": None,
             "arm": None,
@@ -124,7 +125,7 @@ def pattern(m, pn):
                 if x < 0x80:
                     e["ins"] = x
                 else:
-                    e["arm"] = {"acc": "slide", "delta": x & 0x7E, "phase": x & 1}
+                    e["arm"] = {"arms": [{"acc": "slide", "delta": x & 0x7E, "phase": x & 1}]}
             e["note"] = m[base + i]
             i += 1
         out.append(e)
@@ -494,6 +495,7 @@ def build(path, song=0):
             "commit_order": ["ctrl", "ad", "sr"],
             "tempo": {"rate": m[SPEEDTBL + song] + 1, "phase": 0},
             "row_consumes_tick": True,
+            "row_command": "spent",
             "note_row": "note_on",
             "player": "prototype-trackerprog.md sections 4 and 5",
         },

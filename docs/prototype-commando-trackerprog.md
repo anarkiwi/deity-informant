@@ -76,7 +76,7 @@ factored form — the certified program. Right column is the object.
 | `speedctr`, `speed` | `meta.tempo` — a divider, `rate = 3` | §3.3 |
 | `row & $1F` | the event's `dur`, in row ticks | §3.6 |
 | `row & $20` | the event's `tie`: it disarms the prelude | new (§4.8) |
-| `row & $40` | the event's `gate: off` — a keyoff | §3.6 |
+| `row & $40` | the event's `sounds` — this family's only gate token | §3.6 |
 | the extra byte `< $80` | the event's `ins` | §3.6 |
 | `$518B` hard cut | the instrument's **prelude**, `early = 1` row tick, rows `set(ctrl, wave & $FE) set(ad,0) set(sr,0)` | §3.5 |
 | `ins.vib ≠ 0` | `Acc(freq, repeat(tablestep(pitch, note, vib+1), phase(fold(counter,7))), policy reload(pitch[note]))` | §5 vibrato, stateless phase |
@@ -332,11 +332,22 @@ stream with a `select` on the Acc's guard.
 On the tick a voice takes a new row, its accumulators do not run. §4's tick runs
 the sequencer step and then the streams and accs unconditionally. One bit.
 
-### 4.9 `Event.tie`
+### 4.9 `Event.tie`, and `sounds` rather than `gate`
 
 §3.5's prelude belongs to the instrument; whether it fires belongs to the
 **row** — bit 5 of the row byte. One bit per event. (§3.6's nearest existing
 spelling is `cmds: [gate(mask)]`.)
+
+Bit 6 is the row's other flag, and the first draft of this document called it
+`gate: on | off`. §3.6 now calls it `sounds`, because it is the field *every*
+family answers "does this row key a note?" with, and Hubbard's row byte simply
+has no gate token of its own: an event here always has `gate: none`. The
+distinction is not academic — GoatTracker 2 has three tokens where Hubbard has
+one bit (`$BD` rest, `$BE` keyoff, `$BF` keyon), so a rest and a keyoff both
+have `sounds: false` and only the keyoff carries a `gate`. The consequence for
+this tune is that §4.3's drum rows say what they are: `sounds: true, note: none`
+— the row sounds, and its pitch is the instrument's own — where before, `note:
+none` had to be read against `gate: on` to mean anything.
 
 ### 4.10 `Acc.when` and `Acc.delta_when`
 

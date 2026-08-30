@@ -383,6 +383,16 @@ SPEED[param].left & $80 ? (FREQ[lastnote+1] − FREQ[lastnote]) >> SPEED[param].
 (left, right)` / `< $80 ⇒ ghost.pw += sext(right) ; pulsetime …` / `$FF ⇒ jump`); and
 the single exit `ghost[v].ctrl ← wave & gate`.
 
+**Hand exemplar.** [prototype-goattracker-trackerprog.md](prototype-goattracker-trackerprog.md)
+is this family transliterated by hand into the tracker reading and certified on the
+same universal player Commando renders on: both builds, 8,236 and 8,659 ticks,
+0 divergences and the write lists *identical* rather than permuted, with the
+inherited loop claim re-verified on the render. It records the seven forms the
+family forced -- a shadow and its flush, a countdown row clock, a fetch that runs
+ahead of its row, a held row command, a stream step's `op`, `clamp` and its
+degenerate `take`, and a prologue -- and, in its §8, the five things the printed
+tuneprog could not settle.
+
 **reading**: `Ins = {adsr, prelude: early = gatetimer, rows set(sr,0) set(ad,$F)
 set(ctrl, wave & $FE), note row set(ctrl, firstwave), streams: wave/pulse/filter
 by pointer, accs: [vibrato]}`; `WAVE`/`PULSE`/`FILT` are streams with the three
