@@ -359,9 +359,10 @@ therefore runs the tune's own `init` on the PcodeVM and reads the image the
 On that image, **17 signatures** locate every datum by the operand of the
 instruction that reads or writes it. Three shapes of signature:
 
-* **one site** — the write-out's four blocks, the filter, the arranger's reload
-  and its three column tables, the oscillator's four branches, and the two
-  halves of `row_apply`;
+* **one site** — the write-out's four blocks (pulse, frequency, the three edge
+  registers, routing and volume), the filter's whole chain, the arranger's
+  reload and the three column tables it indexes, the oscillator's four branches,
+  and `row_apply`'s four pieces;
 * **`n` sites at the player's own stride** — `cascade` matches its six unrolled
   copies and `patrow` its three, and the copy stride and the voice base come out
   of the match rather than out of a constant. The six cascades' `LDX #imm`
@@ -385,7 +386,7 @@ one of them refuses; none of them approximates.
 
 That the object *is* the tune's data and not a reading of it is checked rather
 than asserted: `test_every_byte_of_the_tune_s_data_is_in_the_object`
-reconstructs every reachable sidTAB record — both mask bytes and all eleven
+reconstructs every reachable sidTAB record — both mask bytes and all twelve
 columns in the record's own order — and every row's delay including its
 terminator bit, out of the object alone, and diffs them against the image byte
 for byte; the arranger's three columns and every pattern's flag, sidcall and
