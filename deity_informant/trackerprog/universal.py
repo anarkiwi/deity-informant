@@ -556,32 +556,28 @@ class Player:
             prod.append((t, val & 0xFF))
 
     def commit(self, pre, prod, edge):
-        acts = self.o["meta"].get("commit") == "acts"
-        if acts:
-            self.edges(pre)  # 1 the prelude's rows, ahead of the tick's producers
-        else:
-            for e in pre:
-                self.emit(e[0], e[1])
+        """The tick's per-voice writes: the prelude, the producers, then the edges."""
+        self.edges(pre)  # 1 the prelude's rows, ahead of the tick's producers
         for t, x in prod:  # 4 the freq/pw producers, in declared order
             self.emit(t, x)
-        if acts:
-            self.edges(edge)  # 5 every edge write kept, section 2 rule 1
-            return
-        d = {t: x for t, x, _ in edge}
-        for t in self.commit_order:  # 5 ad, sr, ctrl in meta.commit_order
-            if t in d:
-                self.emit(t, d[t])
+        self.edges(edge)  # 5 every edge write kept, section 2 rule 1
 
     def edges(self, edge):
         """Every edge write the tick made: its acts in order, each in ``commit_order``.
 
         A register written twice in one tick is two events (section 2 rule 1), so
         the tick is a sequence of acts and ``commit_order`` orders one act's own.
+        A family whose writes go through a shadow makes one act of the tick and
+        cannot tell the difference; one that writes as it goes needs the sequence.
         """
         i = 0
         while i < len(edge):
+            if len(edge[i]) < 3:  # a producer inside the list: no act to group it with
+                self.emit(edge[i][0], edge[i][1])
+                i += 1
+                continue
             act, one = edge[i][2], {}
-            while i < len(edge) and edge[i][2] == act:
+            while i < len(edge) and len(edge[i]) > 2 and edge[i][2] == act:
                 one[edge[i][0]] = edge[i][1]
                 i += 1
             for t in self.commit_order:

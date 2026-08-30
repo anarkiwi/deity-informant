@@ -82,7 +82,6 @@ def obj(events, streams=None, accs=None, tempo=4, ins=None, **meta):
             "cycles_per_tick": 19656,
             "voice_order": [0],
             "commit_order": ["ad", "sr", "ctrl"],
-            "commit": "acts",
             "wide": ["freq", "pw"],
             "tempo": {
                 "form": "counter",
@@ -336,7 +335,6 @@ def test_the_print_carries_the_phased_forms():
     text = printer.render(obj([event(note=1, ins=1, gate=None)]))
     for line in (
         "tempo counter spdcnt, row at 2, fetched at 0",
-        "commits    every edge write, its acts in order, each in the commit order",
         "gate row    gate_row",
         "pitch row   pitch_row",
         "sounds cell pending",

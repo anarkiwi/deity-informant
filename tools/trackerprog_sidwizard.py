@@ -1224,7 +1224,6 @@ class Tune:
             "voices": 3,
             "voice_order": [2, 1, 0],
             "commit_order": L["commit_order"],
-            "commit": "acts",
             "wide": list(WIDE),
             "tempo": {
                 "form": "counter",

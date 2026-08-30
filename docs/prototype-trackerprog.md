@@ -130,14 +130,20 @@ across its versions:
 | SID Wizard 1.6 / 1.9 | `(ad, sr, ctrl)` / `(sr, ad, ctrl)` | anatomy:1232, the HR and note-start frames |
 | Hubbard | `(ctrl, ad, sr)` | `sid[v].ctrl`, then `pw`, then `ad`, `sr` — commando-floor:201-205 |
 
-`commit_order` orders one *act*'s edges; whether the tick is one act or several
-is its companion, `meta.commit` ∈ {`order`, `acts`}. A family whose writes go
-through a shadow can be committed as a set — the flush fixes the order anyway —
-but §2 rule 1 keeps every `ctrl`/`AD`/`SR` write, and a family without one writes
-`AD` from the instrument and again from the row's own effect on the same tick.
-`acts` says the tick is a sequence of them, each act's own edges in
-`commit_order`: SID Wizard needs it and collapsing them diverges on 500 ticks of
-*Emomyst* (sidwizard-trackerprog §4.5).
+`commit_order` orders one *act*'s edges, and **the tick is always a sequence of
+acts** — one act per thing the tick did, a stream row's `sets`, an instrument's
+note-on, one row command. There is no second form and no datum selecting one:
+§2 rule 1 keeps every `ctrl`/`AD`/`SR` write, so a family that writes `AD` from
+the instrument and again from the row's own effect on the same tick needs the
+sequence (SID Wizard, diverging on 500 ticks of *Emomyst* without it —
+sidwizard-trackerprog §4.5), and a family whose writes go through a shadow makes
+one act of the tick and cannot tell the difference. Measured rather than
+argued: rendering the acts sequence for the families that do not need it is
+write-for-write identical over their whole horizons — Hubbard 11,780 ticks,
+GoatTracker 2 12,000 × 2, 0 differing. The first draft's `meta.commit` ∈
+{`order`, `acts`} is therefore struck: the general form costs the families
+without the problem nothing, and a schema row no observation distinguishes is
+not a row.
 
 ### 3.2 pitch
 

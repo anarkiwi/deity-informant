@@ -700,9 +700,11 @@ it.** The player took the last value per edge register and emitted the three in
 `commit_order`. For a family whose writes go through a ghost flush that is
 exactly right and unobservable; for one that writes the chip as it goes it is
 wrong, and SID Wizard's note-start tick writes `AD` from the instrument and again
-from the row's own `attack` effect. `meta.commit ∈ {order, acts}` says which,
-where an act is one thing the tick did and `commit_order` orders that act's own
-edges. Measured: collapsing them diverges on 500 ticks of *Emomyst* and 44 of
+from the row's own `attack` effect. The tick is therefore always a sequence of
+acts, one act per thing the tick did, `commit_order` ordering that act's own
+edges — and rendering it that way for the two families that do not need it is
+write-for-write identical over their whole horizons, so no datum selects the
+form. Measured: collapsing them diverges on 500 ticks of *Emomyst* and 44 of
 *End of the World*. The generalisable check is that a *reduction* in §2 is not a
 licence to reduce in §4 — the player must produce what the rule compares, and
 only a family that exercises the rule proves it does.

@@ -132,7 +132,6 @@ def test_the_print_carries_the_forms_and_measures_itself():
     text = printer.render(built(EMOMYST))
     for line in (
         "tempo counter spdcnt, row at 2, fetched at 0",
-        "commits    every edge write, its acts in order, each in the commit order",
         "voice exit exit",
         "prologue   --",
     ):

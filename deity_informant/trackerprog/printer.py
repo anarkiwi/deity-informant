@@ -160,8 +160,6 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
                     ),
                 )
             )
-    if m.get("commit") == "acts":
-        add("commits    every edge write, its acts in order, each in the commit order")
     if m.get("voice_exit"):
         add("voice exit %s" % m["voice_exit"])
     if m.get("prologue"):

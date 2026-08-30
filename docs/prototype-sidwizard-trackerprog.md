@@ -133,8 +133,7 @@ certified horizon, the reference being the tune's own player on
 horizon for both tunes: not a permutation, not a multiset — the same list.
 `same_per_register_order` is true. GoatTracker 2 got this for free because a
 ghost flush emits the whole image in one fixed order; SID Wizard writes the chip
-as it goes, so the object has to say *when*, and §4.5's `meta.commit: acts` is
-that sentence. It is not a nicety: without it §2 *itself* fails, on 500 ticks of
+as it goes, so the player has to produce the sequence, which is §4.5. It is not a nicety: without it §2 *itself* fails, on 500 ticks of
 Emomyst and 44 of End of the World, because rule 1 keeps every edge write and
 collapsing two writes of one register into one is a divergence rather than a
 permutation.
@@ -241,7 +240,7 @@ whose writes go through a flush, and wrong for one whose do not — SID Wizard's
 note-start tick writes `AD` from the instrument and then `AD` again from the
 row's own `attack` effect, and those are two events.
 
-`meta.commit: "acts"` says so, and what it says is not "in list order": it is
+The commit says so, and what it says is not "in list order": it is
 **the tick's acts in order, each act's own edges in `commit_order`**. An act is
 one thing the tick did — a stream row's `sets`, an instrument's note-on, one row
 command — and the object already delimits them. That keeps §3.1's datum doing
