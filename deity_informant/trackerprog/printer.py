@@ -563,14 +563,14 @@ def _acc(name, a, notes):
         lines.append("      rate    every %s ticks" % expr(a["rate"], notes))
     if "phase" in a:
         lines.append("      phase   %s" % expr(a["phase"], notes))
-    if "flag" in a:
+    if "flag" in a:  # the carry the accumulator's own arithmetic leaves another producer
         f = a["flag"]
-        lines.append(
-            "      flag    %s = %s at entry, %s where the delta is skipped"
-            % (f["name"], f["seed"], f["unguarded"])
-            if "seed" in f
-            else "      flag    %s = %s where the delta is skipped" % (f["name"], f["unguarded"])
-        )
+        bits = ["%s = the carry of its own step" % f["name"]]
+        if "seed" in f:
+            bits.append("%s at entry" % f["seed"])
+        if "unguarded" in f:
+            bits.append("%s where the delta is skipped" % f["unguarded"])
+        lines.append("      flag    " + ", ".join(bits))
     if a.get("when"):
         lines.append("      when    %s" % guards(a["when"], notes))
     if a.get("step_when"):

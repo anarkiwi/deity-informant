@@ -264,6 +264,10 @@ class Player:
             return self.ev(a[0], ov) & a[1]
         if k == "bit":
             return (self.ev(a[0], ov) >> a[1]) & 1
+        if k == "carry_out":  # the carry an add of the stated width leaves another producer
+            return (self.ev(a[0], ov) >> a[1]) & 1
+        if k == "borrow_out":  # a subtraction's own: the 6502's C, 1 where it did not borrow
+            return 1 - ((self.ev(a[0], ov) >> a[1]) & 1)
         if k == "fold":  # the triangle a free counter's low bits already are
             x = self.ev(a[0], ov) & a[1]
             return x ^ a[1] if x > a[1] >> 1 else x
@@ -939,7 +943,7 @@ class Player:
             out = self.apply(a, ov, val, prod, stepped)
             if out is None:
                 return  # the policy took the value to its bound, and said so itself
-        elif "flag" in a:
+        elif "unguarded" in a.get("flag", ()):  # a carry the block that makes it did not make
             self.flags[a["flag"]["name"]] = a["flag"]["unguarded"]
         emitted = val if a.get("emit") == "entry" else out
         self.store(a, out)

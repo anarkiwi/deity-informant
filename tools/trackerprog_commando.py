@@ -316,7 +316,10 @@ def accs():
                 ]
             },
             "delta_when": [[{"cell": "dur"}, ">=", 6]],
-            "flag": {"name": "C", "seed": 1, "unguarded": 0},
+            # the carry the loop's last addition leaves, seeded for the frame it
+            # makes none; where the block does not run the flag keeps its own
+            # default, which says the same thing and is worth 0 ticks either way
+            "flag": {"name": "C", "seed": 1},
             "bound": {
                 "from": "projected",
                 "interval": [0, 0xFFFF],

@@ -615,7 +615,7 @@ class Tune:
                 "sets": [
                     ["freq_lo", plain],
                     ["freq_hi", hi],
-                    ["!C", {"bit": [plain, 8]}],
+                    ["!C", {"carry_out": [plain, 8]}],
                 ],
             },
             {
@@ -628,7 +628,7 @@ class Tune:
                 "sets": [
                     ["freq_lo", {"field": [slid, 0xFF]}],
                     ["freq_hi", {"shr": [{"field": [slid, 0xFFFF]}, 8]}],
-                    ["!C", {"bit": [slid, 16]}],
+                    ["!C", {"carry_out": [slid, 16]}],
                 ],
             },
         ]
@@ -648,15 +648,15 @@ class Tune:
         out = [
             {
                 "when": [[{"global": "flt_dir"}, "==", 0]],
-                "sets": [["#flt_carry", {"bit": [up, 16]}], ["#flt_acc", {"field": [up, 0xFFFF]}]],
+                "sets": [
+                    ["#flt_carry", {"carry_out": [up, 16]}],
+                    ["#flt_acc", {"field": [up, 0xFFFF]}],
+                ],
             },
             {
                 "when": [[{"global": "flt_dir"}, "!=", 0]],
                 "sets": [
-                    [
-                        "#flt_carry",
-                        {"bit": [{"sub": [{"add": [acc, 0x10000]}, {"add": [step, 1]}]}, 16]},
-                    ],
+                    ["#flt_carry", {"borrow_out": [down, 16]}],
                     ["#flt_acc", {"field": [down, 0xFFFF]}],
                 ],
             },
