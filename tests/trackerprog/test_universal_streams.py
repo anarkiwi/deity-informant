@@ -38,8 +38,13 @@ def ins(points=(), prelude="hard_restart", accs=()):
         "adsr": [0x11, 0x22],
         "wave": 0x41,
         "sets": [],
-        "note_sets": [["@wave", 0x41], ["@gate", 0xFF]],
-        "points": list(points),
+        "on_note": [
+            {
+                "when": [["tie", "==", 0]],
+                "sets": [["@wave", 0x41], ["@gate", 0xFF]],
+                "point": list(points),
+            }
+        ],
         "prelude": prelude and {"stream": prelude},
         "accs": list(accs),
     }

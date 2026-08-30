@@ -215,9 +215,18 @@ commands. The full object is §5.
 ```
 Ins = { adsr: (ad, sr)
       , prelude: (stream, early: k) | null   // ends k ticks before the next row boundary
-      , streams: { wave: (stream, row), pulse: …, filter: …, pitch: … }  // any subset
-      , accs: [acc_id, …] }                  // the modulations armed at note-on
+      , on_note: [ Step, … ]                 // an inline §3.3 stream: the note-on's own
+      , accs:    [ acc_id, … ] }             // the modulations armed at note-on
 ```
+
+`on_note` is a stream and nothing else — guarded rows of `sets` and `point`,
+where `point(slot, row, keep)` is §3.6's `set_stream`. The first draft gave the
+note-on three fields (`sets` unconditionally, `note_sets` and `points` only
+where no tie held) and the player kept two lists with a `return` between them;
+the tie is a fact of the row (`when tie == 0`), so it is a guard like any other
+and the three fields are one. A step's own `wave`, `pulse`, `filter` and `pitch`
+streams are named §3.3 streams with a `rank`, re-pointed from here — not a slot
+map on the instrument, which no exemplar carries.
 
 Hard restart is **not** one fixed shape, and the first draft's `{early, ad, sr,
 first_ctrl}` record cannot hold the families: SW 1.6 writes AD,SR and 1.9 SR,AD

@@ -646,9 +646,8 @@ class Tune:
                 "flt_base": self.row_of(i, "filter", 0),
                 "vibracnt": 0 if typ == 0x30 else ((vib & 0x0F) >> (0 if typ == 0x20 else 1)),
                 "prelude": {"stream": "hard_restart"},
-                "sets": [],
-                "note_sets": self.note_sets(i),
-                "points": self.points(i),
+                "on_note": inline(self.note_sets(i), UNTIED)
+                + [{"when": UNTIED, "point": self.points(i)}],
                 "accs": arms(),
             }
         return out
@@ -1270,6 +1269,25 @@ class Tune:
                 else {}
             ),
         }
+
+
+UNTIED = [["tie", "==", 0]]  # a row a tie does not admit
+
+
+def inline(sets, when):
+    """Sets as an inline stream: one row per run of them sharing a guard (section 3.3).
+
+    A set carries its guard beside it in the routine's own text; a stream row
+    carries one guard for its whole row, so a run of sets under one guard is one
+    row and the schema keeps a single shape for a guard.
+    """
+    out = []
+    for t, *rest in sets:
+        g = when + (rest[1] if len(rest) > 1 else [])
+        if not out or out[-1]["when"] != g:
+            out.append({"when": g, "sets": []})
+        out[-1]["sets"].append([t, rest[0]])
+    return out
 
 
 SV = {"cell": "slidevib"}

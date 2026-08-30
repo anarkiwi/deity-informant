@@ -799,26 +799,34 @@ class Player:
         )
         if n is not None:
             self.publish("note", v, {"note": self.c["note"][v]})
-        self.note_on(self.tied[v], prod, edge)
+        self.note_on(prod, edge)
 
-    def note_on(self, tied, prod, edge):
-        """Arm the instrument: its cells, its streams and the rows it emits."""
-        v, ins = self.v, self.instr()
-        self.act += 1
-        for st in ins.get("sets", ()):
-            if len(st) < 3 or self.guards(st[2]):
-                self.assign(st[0], self.ev(st[1]), prod, edge)
+    def note_on(self, prod, edge):
+        """Arm the instrument: the rows its own note-on emits, and what it rests in.
+
+        One inline stream (section 3.3), the row's facts its guards -- a row a
+        tie does not admit carries ``when tie == 0`` and says so, rather than the
+        player keeping two lists and a return between them.
+        """
         if "rest_arm" in self.o["meta"]:
-            self.armed[v] = list(self.o["meta"]["rest_arm"])
-        if tied:
-            return
-        self.act += 1
-        for st in ins.get("note_sets", ()):
-            if len(st) < 3 or self.guards(st[2], self.payload):
-                self.assign(st[0], self.ev(st[1]), prod, edge)
-        for p in ins.get("points", ()):
-            if len(p) < 4 or self.guards(p[3], self.payload):
-                self.point(p[0], self.ev(p[1]), p[2])
+            self.armed[self.v] = list(self.o["meta"]["rest_arm"])
+        self.inline(self.instr().get("on_note", ()), prod, edge)
+
+    def inline(self, rows, prod, edge):
+        """An inline stream: guarded rows of ``sets`` and ``point``, in order."""
+        for row in rows:
+            if not self.guards(row.get("when"), self.payload):
+                continue
+            self.act += 1
+            for t, e in row.get("sets", ()):
+                self.assign(t, self.ev(e, self.payload), prod, edge)
+            self.points(row.get("point", ()), self.payload)
+
+    def points(self, pts, ov=None):
+        """A step's re-points: the slot, the row, whether the hold survives."""
+        for pt in pts:
+            if len(pt) < 4 or self.guards(pt[3], ov):
+                self.point(pt[0], self.ev(pt[1], ov), pt[2] if len(pt) > 2 else False)
 
     def point(self, slot, r, keep=False):
         """Re-point a stream and reset the hold it was counting (section 3.6)."""
@@ -837,8 +845,7 @@ class Player:
         for st in cmd.get("sets", ()):
             if len(st) < 3 or self.guards(st[2], cmd):
                 self.assign(st[0], self.ev(st[1], cmd), prod, edge)
-        for pt in cmd.get("point", ()):
-            self.point(pt[0], self.ev(pt[1], cmd), pt[2] if len(pt) > 2 else False)
+        self.points(cmd.get("point", ()), cmd)
         for name, e in cmd.get("flags", {}).items():
             self.flags[name] = self.ev(e, cmd)
         for t, e in cmd.get("all", ()):  # section 3.6's global tempo: every voice

@@ -480,7 +480,7 @@ def build(path, song=0):
             "wave": wave,
             "pw": [pw_lo, pw_hi],
             "prelude": {"stream": "note_off", "early": 1},
-            "sets": [["freq", {"notefreq": None}]],
+            "on_note": [{"sets": [["freq", {"notefreq": None}]]}],
             "accs": arms,
             **({"pitch": drums[i]} if i in drums else {}),
         }

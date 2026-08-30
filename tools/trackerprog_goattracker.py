@@ -500,9 +500,10 @@ class Tune:
                 "wave": fw,
                 "vibparam": self.col("vibparam", i),
                 "vibdelay": self.col("vibdelay", i),
-                "sets": [["@vibdelay", {"ins": "vibdelay"}], ["@param", {"ins": "vibparam"}]],
-                "note_sets": note_sets,
-                "points": points,
+                "on_note": [
+                    {"sets": [["@vibdelay", {"ins": "vibdelay"}], ["@param", {"ins": "vibparam"}]]},
+                    {"when": UNTIED, "sets": note_sets, "point": points},
+                ],
                 "prelude": None if i >= self.L["nohr"] else {"stream": "hard_restart"},
                 "accs": [],
             }
@@ -635,6 +636,7 @@ class Tune:
         }
 
 
+UNTIED = [["tie", "==", 0]]  # a row a tie does not admit
 GATED = {"and": [{"cell": "wave"}, {"cell": "gate"}]}
 SPEED = {"tabcell": ["speed", {"const": "row"}, "delta"]}
 DEPTH = {"tabcell": ["speed", {"const": "row"}, "depth"]}

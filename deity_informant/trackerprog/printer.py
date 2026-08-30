@@ -434,36 +434,36 @@ def _cmd(c, notes):
         bits.append(_sets(c["sets"], notes))
     if c.get("all"):
         bits.append("every voice " + _sets(c["all"], notes))
-    for pt in c.get("point", ()):
-        bits.append("%s := row %s" % (pt[0], expr(pt[1], notes)))
+    if c.get("point"):
+        bits.append(_points(c["point"], notes))
     if c.get("tie"):
         bits.append("ties")
     return " ; ".join(bits) or "--"
 
 
+def _points(pts, notes):
+    """What a step re-points: the slot, the row, and whether the hold survives."""
+    return " ".join(
+        "%s := row %s (hold %s)%s"
+        % (
+            p[0],
+            expr(p[1], notes),
+            "kept" if len(p) > 2 and p[2] else "reset",
+            "" if len(p) < 4 or not p[3] else " when " + guards(p[3], notes),
+        )
+        for p in pts
+    )
+
+
 def _ins(ins, notes):
     """An instrument's cells, its stream entries and the prelude that precedes it."""
     out = []
-    for f, label in (("sets", "always"), ("note_sets", "on note")):
-        if ins.get(f):
-            out.append("      %-7s %s" % (label, _sets(ins[f], notes)))
-    if ins.get("points"):
-        out.append(
-            "      %-7s %s"
-            % (
-                "streams",
-                " ".join(
-                    "%s row %s (hold %s)%s"
-                    % (
-                        p[0],
-                        expr(p[1], notes),
-                        "kept" if p[2] else "reset",
-                        "" if len(p) < 4 or not p[3] else " when " + guards(p[3], notes),
-                    )
-                    for p in ins["points"]
-                ),
-            )
-        )
+    for row in ins.get("on_note", ()):
+        when = "" if not row.get("when") else " when %s" % guards(row["when"], notes)
+        if row.get("sets"):
+            out.append("      %-7s %s%s" % ("on note", _sets(row["sets"], notes), when))
+        if row.get("point"):
+            out.append("      %-7s %s%s" % ("streams", _points(row["point"], notes), when))
     p = ins.get("prelude")
     if isinstance(p, dict):
         out.append(

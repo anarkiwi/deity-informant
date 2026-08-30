@@ -35,8 +35,12 @@ def instrument(**kw):
         "wave": 0x41,
         "transpose": 0,
         "sets": [],
-        "note_sets": [["@wave", 0x41], ["@gate", 0xFF], ["ad", 0x11], ["sr", 0x22]],
-        "points": [],
+        "on_note": [
+            {
+                "when": [["tie", "==", 0]],
+                "sets": [["@wave", 0x41], ["@gate", 0xFF], ["ad", 0x11], ["sr", 0x22]],
+            }
+        ],
         "prelude": {"stream": "hard_restart"},
         "accs": [],
     }
