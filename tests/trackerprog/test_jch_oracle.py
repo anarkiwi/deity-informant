@@ -165,6 +165,18 @@ def test_no_command_is_named_by_the_index_its_player_dispatched_on(name):
     assert obj["meta"]["row_command"] == "spent"
 
 
+def test_the_comparison_chunks_and_resumes_where_it_left_off(tmp_path):
+    """The certificate is the whole horizon however many invocations reach it."""
+    loop, ticks, cycles, _, _ = claim(GULDKORN)
+    obj, sid = built(GULDKORN), str(tune_file(GULDKORN))
+    state = str(tmp_path / "resume.pkl")
+    doc, done = TJ.certify(sid, 0, obj, ticks, cycles, budget=0.05, state=state)
+    assert not done and 0 < doc["ticks"] < ticks
+    while not done:
+        doc, done = TJ.certify(sid, 0, obj, ticks, cycles, budget=0.5, state=state)
+    assert doc["ticks"] == ticks and doc["divergence"] is None and doc["diverged"] == 0
+
+
 def test_the_print_carries_the_forms_and_measures_itself():
     text = printer.render(built(GULDKORN))
     for line in (
