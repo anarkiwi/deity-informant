@@ -619,7 +619,12 @@ class Tune:
             "tick": ["row", "commit", "machine", "fetch", "prelude", {"stream": "exit"}],
             "row_consumes_tick": [["keys", "!=", 0]],
             "row_command": "held",
-            "prefetch": ["ins", "gate", "arm"],
+            # what the fetch stages: a row program over the row it read (section 3.6)
+            "stage": [
+                {"ins": True},
+                {"sets": [["@gate", {"payload": "gate"}]], "when": [["gate_stmt", "!=", 0]]},
+                {"hold": True},
+            ],
             "stage_sounds": "staged",
             "rest_arm": ARMS[0],
             "row": [

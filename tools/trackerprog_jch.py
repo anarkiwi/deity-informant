@@ -1285,15 +1285,15 @@ class Tune:
         """Section 3.1, and the data a family's whole tick shape reduces to."""
         gate = [["gate_stmt", "!=", 0]]
         pre = [
-            ["gate", "pend_gate"],
-            ["transpose", "pend_xpose"],
-            ["note", "pend_note"],
+            {"sets": [["@pend_gate", {"payload": "gate"}]], "when": gate},
+            {"sets": [["@pend_xpose", {"payload": "transpose"}]]},
+            {"sets": [["@pend_note", {"payload": "note"}]], "when": [["sounds", "!=", 0]]},
         ]
         row = [{"stream": "notestage", "when": [["sounds", "!=", 0]]}]
         if self.late:  # the row's commands at the boundary, which is what they cost
             row.insert(0, {"commands": True, "when": gate})
         else:
-            pre.append(["cmds", "cmds"])
+            pre.append({"commands": True})
         out = {
             "tune": Path(self.path).name,
             "family": "JCH V20",
@@ -1313,7 +1313,7 @@ class Tune:
             "tick": ["fetch", "prelude", "row", "machine"],
             "row_consumes_tick": [["keys", "!=", 0]],
             "row_command": "spent",
-            "prefetch": pre,
+            "stage": pre,
             "stage_sounds": "keyed",
             "row": row
             + [

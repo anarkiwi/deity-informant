@@ -90,7 +90,7 @@ object.
 | `$7D` / `$7E` gate on/off | the event's `gate`, and a `{stream}` step of `meta.row` guarded on `gate_stmt` — one stream that says what a gate statement does (the mask, and the mask re-applied to the waveform) | §3.6 (§4.10) |
 | `HARDRST` at ticks 0 and 1 with the tick number as the mask | the instrument's **prelude**: one stream, two rows, each guarded by the clock's phase and the instrument's own control bit | §3.5 |
 | 1.6 writes `AD` then `SR`, 1.9 `SR` then `AD` (anatomy:1232) | **`meta.commit_order`, and nothing else** | §3.1 |
-| the HR reads `INS[CURIFX or CURINS]`, the tables read `INS[CURINS]` | `meta.prefetch [[ins, hrins]]` and `{"insrec": ["hrins", "hr.0"]}` — the prelude belongs to the row's instrument, the streams to the voice's cursor | new (§4.2) |
+| the HR reads `INS[CURIFX or CURINS]`, the tables read `INS[CURINS]` | `meta.stage`'s one row, `@hrins := payload.ins`, and `{"insrec": ["hrins", "hr.0"]}` — the prelude belongs to the row's instrument, the streams to the voice's cursor | new (§4.2) |
 | `TICK_2`'s `STRTSND` | the instrument's `note_sets` and `points`, guarded by its own control bits and by whether the row named an instrument (`TABLRST`) | §3.5 |
 | `WFARPTB` rows `[wave\|cmd, pitch\|chord, detune]`, `--ARPSCNT` | the `wave` stream, and `rate` — a divider kept in the cell `arpscnt`, which a row and two commands also set | new (§4.3) |
 | `SETPWID` / `FILTPRG` rows `[count\|set, step, track]` | the `pulse` and `filter` streams, `epoch: entry` — the counter is read before its own move, so the consuming tick does not sweep | new (§4.4) |
@@ -201,10 +201,10 @@ the same problem by staging `ins` at the fetch, which works because its tables
 are one global table its cursors index. SID Wizard's tables live inside each
 instrument record, so staging `ins` early would move the tables too.
 
-Two data. `meta.prefetch` gains a **target cell** — `[["ins", "hrins"]]`, "stage
-the row's instrument into `hrins`, keeping the voice's own where the row names
-none" — and `{"insrec": [cell, column]}` reads a column of the instrument a cell
-names. The prelude's rows then say `["ad", {"insrec": ["hrins", "hr.0"]}]` and
+Two data. The fetch stages the row's instrument into a cell of the tune's own
+choosing — `{"sets": [["@hrins", {"payload": "ins"}]]}`, "the row's instrument,
+or the voice's own where the row names none" — and `{"insrec": [cell, column]}`
+reads a column of the instrument a cell names. The prelude's rows then say `["ad", {"insrec": ["hrins", "hr.0"]}]` and
 mean it.
 
 ### 4.3 A stream's divider may live in a cell the score can set

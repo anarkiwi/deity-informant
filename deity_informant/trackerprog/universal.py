@@ -729,34 +729,30 @@ class Player:
     def stage(self, e, prod, edge):
         """What the fetch commits ``early``, before the row it belongs to arrives.
 
-        Three of the fields are **single-family data forms**, each marked with its
-        reason (prototype-jch-trackerprog.md §4.2, §4.3, §4.5): ``note`` because a
-        family whose commit copies a staged pitch moves the live note on a row
-        that does not sound, ``transpose`` because one reads the *untransposed*
-        note in a modulator, and ``cmds`` because one spends the row's commands
-        where it reads them rather than where the row lands. Each is worth ticks,
-        measured over that family's whole horizon; a fourth was struck at zero.
+        ``meta.stage`` is a row program (§3.6) over the row the clock ran ahead
+        to, and `row_step` runs it -- the same steps in the same order under the
+        same guards as ``meta.row``, over a payload that carries three more
+        facts a staging reads: the instrument the row will play, its pitch and
+        the transpose of the play step it belongs to.
         """
-        v = self.v
-        for f in self.o["meta"].get("prefetch", ()):
-            f, k = (f, f) if isinstance(f, str) else f
-            if f == "ins" and e["ins"] is not None:
-                self.c[k][v] = e["ins"]
-                self.publish("instrument", v, {"ins": e["ins"]})
-            elif f == "hrins":  # the instrument the row will play, the prelude's own
-                self.c[k][v] = self.c["ins"][v] if e["ins"] is None else e["ins"]
-            elif f == "gate" and e["gate"] is not None:
-                self.c[k][v] = self.gate_mask(e)
-            elif f == "note" and e["note"] is not None:  # the pitch, staged with the row
-                self.c[k][v] = e["note"]
-            elif f == "transpose":  # the order's own column, staged with the row it plays
-                self.c[k][v] = self.stagedplay[v].get("transpose", 0)
-            elif f == "arm" and e["arm"] is not None:
-                self.held[v] = self.cmd(e["arm"])
-            elif f == "cmds" and e["arm"] is not None:  # a row whose commands the fetch spends
-                a = e["arm"]
-                for c in a if isinstance(a, list) else [a]:
-                    self.hold_command(self.cmd(c), prod, edge)
+        self.payload = self.stage_facts(e)
+        for step in self.o["meta"].get("stage", ()):
+            if self.guards(step.get("when"), self.payload):
+                self.row_step(step, self.stagedplay[self.v], e, prod, edge)
+
+    def stage_facts(self, e):
+        """The row the fetch read, as the values its own steps read.
+
+        §3.6's facts, plus the three a staging copies rather than tests: ``ins``
+        the instrument the row will play (its own, else the one the voice holds),
+        ``note`` its pitch, ``transpose`` the play step's own column -- which one
+        family reads *untransposed* in a modulator, so the fetch stages it.
+        """
+        f = self.row_facts(e)
+        f["ins"] = self.c["ins"][self.v] if e["ins"] is None else e["ins"]
+        f["note"] = 0 if e["note"] is None else e["note"]
+        f["transpose"] = self.stagedplay[self.v].get("transpose", 0)
+        return f
 
     def sequencer_step(self, prod, edge):
         """Consume the order program's next event and give it to the voice."""
@@ -834,7 +830,7 @@ class Player:
         """One step of the row program."""
         if "sets" in step:
             for t, val in step["sets"]:
-                self.assign(t, self.ev(val), prod, edge)
+                self.assign(t, self.ev(val, self.payload), prod, edge)
         elif "stream" in step:
             self.rows(step["stream"], prod, edge, self.payload)
         elif "commands" in step:
@@ -848,6 +844,8 @@ class Player:
                 self.publish("instrument", self.v, {"ins": e["ins"]})
         elif "note" in step:
             self.sound(play, e, prod, edge)
+        elif "hold" in step and e["arm"] is not None:  # the command the voice keeps
+            self.held[self.v] = self.cmd(e["arm"])
 
     def sound(self, play, e, prod, edge):
         """The row keys a sound: the note it names, and the instrument it arms."""

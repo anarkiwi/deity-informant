@@ -106,6 +106,8 @@ def _rowstep(step, notes):
         return "the row's own commands"
     if "ins" in step:
         return "the instrument the row names"
+    if "hold" in step:
+        return "the command the voice keeps"
     return "the sound the row keys"
 
 
@@ -158,19 +160,14 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
             "shadow     %d registers, flushed %s at the head of every tick"
             % (len(m["shadow"]["registers"]), _flush(m["shadow"]["registers"]))
         )
-    for k, label in (("prefetch", "fetched early"), ("pitch_links", "a new pitch resets")):
-        if m.get(k):
-            add(
-                "%-10s %s"
-                % (
-                    label,
-                    " ".join(x if isinstance(x, str) else "%s into %s" % tuple(x) for x in m[k]),
-                )
-            )
+    if m.get("pitch_links"):
+        add("%-10s %s" % ("a new pitch resets", " ".join(m["pitch_links"])))
     for k, label in (("stage_sounds", "sounds cell"), ("wide", "wide cells ")):
         if m.get(k):
             v = m[k]
             add("%s %s" % (label, v if isinstance(v, str) else " ".join(str(x) for x in v)))
+    for i, step in enumerate(m.get("stage", ())):
+        add("staged %-3d %s%s" % (i, _rowstep(step, notes), _when(step, notes)))
     for i, step in enumerate(m.get("row", ())):
         add("row %-6d %s%s" % (i, _rowstep(step, notes), _when(step, notes)))
     add(

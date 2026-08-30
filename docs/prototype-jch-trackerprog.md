@@ -101,7 +101,7 @@ player's own code. Right column is the object.
 | `tick(): phase -= 1; if phase >= 0: … else phase = b1747` (jch.md:322-329) | `meta.tempo` — a **countdown** on the `phase` cell against the `speed` cell, boundary 0, `early 2`. The funk-tempo arm below it is untaken: the speed is 2 or more in both builds, and a build-time assertion says so | §3.6 the row clock |
 | `p_10E9`: `for v in 2, 1, 0:` … `if phase == 0:` the commit, `elif phase == 2 and timer_3 == 0:` the prefetch, else the effects (jch.md:336-340) | `meta.tick: fetch ; prelude ; row ; machine` and `meta.voice_order [2, 1, 0]` — the phases are the list, and the voice order is the last-writer over the global channel's registers (§7) | §4.1 |
 | `voice_3[v].timer_3 -= 1; if < 0:` the staged row goes live (jch.md:340-343) | the fetch stages the event and the boundary applies it; a row's own duration is the **empty events that follow it** (§4.8) | §3.6 `dur` |
-| `voice_2[v].f06 ← voice[v].b17BC`, `f00 ← b17B3`, `f03 ← b17AD`, `f09 ← b17B0`, `f03/f06 ← b17B9/b17B6` | `meta.row`'s `sets` step, one assignment per staged cell, and `meta.prefetch`'s `gate`, `note` and `transpose` fields that fill them (§4.2, §4.5) | §3.6 `meta.row` |
+| `voice_2[v].f06 ← voice[v].b17BC`, `f00 ← b17B3`, `f03 ← b17AD`, `f09 ← b17B0`, `f03/f06 ← b17B9/b17B6` | `meta.row`'s `sets` step, one assignment per staged cell, and the three `meta.stage` rows that fill them (§4.2, §4.5) | §3.6 `meta.row` |
 | `if voice_3[v].timer == 0:` the note-on, else `p_1409` (jch.md:355) | `Event.tie` and `row_consumes_tick: [[keys != 0]]` — a tie row runs the machine, a keying row spends the tick on its note-on | §3.6 `tie` |
 | the note-on (jch.md:357-393): the wave pointer, the wave speed, the pulse pointer and its record, the volume nibble, the routing byte, `sid[v].ad`, `sid[v].sr`, `sid[v].ctrl = 9` | `Ins.on_note`, one inline §3.3 stream of five guarded rows — `sets` for the cells, a `point` for the pulse cursor and one for the filter's, and `reg.23`/`reg.24` for the two channel registers (§4.4). It is **one act**, and its edges are `ad`, `sr`, `ctrl` in `commit_order` | §3.5 |
 | the prefetch (jch.md:405-505): the order pointer, the pattern pointer pair, the row's bytes, then `voice_2[v].f06 = $FE` and, where the instrument says so, `sid[v].ad = $F` / `sid[v].sr = 0` | the `fetch` phase and `Ins.prelude` at `early 2` — two guarded rows, the gate mask and the hard restart, the second armed by a cell the note-on sets (§4.9) | §3.5 prelude |
@@ -227,8 +227,9 @@ or a `$7E` hold — still moves the live note to whatever the last staged byte
 was. §3.6's `{"note"}` row step takes the note from the *event*, which is right
 for a row that sounds and says nothing at all for a row that does not.
 
-`meta.prefetch` gains `note`: the pitch the fetch read, staged into a cell like
-the gate and the instrument beside it. The row program then has two writers and
+The fetch's staging gains a row: the pitch the fetch read, `{"sets":
+[["@pend_note", {"payload": "note"}]], "when": [["sounds", "!=", 0]]}`, into a
+cell like the gate and the transpose beside it. The row program then has two writers and
 neither is the other's spelling — the row that sounds takes its own note through
 §3.6's step, and the rows that step takes no interest in take the one the fetch
 left, `@note := pend_note + xpose`.
@@ -247,9 +248,9 @@ boundary that makes the flag live, and a vibrato command zeroes the running
 accumulator there. A vibrato already sounding therefore changes shape two frames
 early, which is a thing the player does and the object has to say.
 
-`meta.prefetch` gains `cmds`, which runs the row's own commands through the same
-`hold_command` the row program uses — one implementation, two positions in the
-tick. Rendering them at the boundary instead, which is what every earlier family
+The staging carries `{"commands": true}`, which is §3.6's own row step run at the
+fetch instead of at the boundary — one implementation, one spelling, two
+positions in the tick. Rendering them at the boundary instead, which is what every earlier family
 does, diverges on **38** of Guldkorn's 2,401 ticks (the first at tick 1,004) and
 **0** of Knob at Night's 8,577, which carries no command at all. This is the
 check §6.4 asks for, applied before the field was added rather than after.
@@ -288,9 +289,9 @@ into the tuning. V20's vibrato does not read that index. Its depth is
 neither the order's transpose nor the wave row's offset — a semitone of the
 untransposed note, which at a transpose of 12 is a different semitone.
 
-The third and last entry `meta.prefetch` gains: `transpose` stages the play
-step's column into a cell beside the pitch and the gate, and the accumulator's
-delta is `interval(note − xpose)`. The order's column stays where §3.6 puts it
+The third and last row the staging carries: `{"sets": [["@pend_xpose",
+{"payload": "transpose"}]]}` puts the play step's column into a cell beside the
+pitch and the gate, and the accumulator's delta is `interval(note − xpose)`. The order's column stays where §3.6 puts it
 and the note cell stays what §4 makes it; what the cell adds is the *other*
 reader. Measured: taking
 the interval at the transposed note diverges on **240** of Guldkorn's 2,401
@@ -403,7 +404,7 @@ first frame's flush is guarded on and the only row no `globals.commit` reads.
 Night, and where it is set the prefetch frame skips the pulse, the filter and the
 vibrato (`$1766`, `knob.md:9093-9096`, and `$1201`/`$1206` in the player). The first
 object said so, and needed a
-`meta.prefetch` field of its own — a cell saying the fetch had read a row at all —
+`meta.stage` row of its own — a cell saying the fetch had read a row at all —
 to say it. Measured over the **whole 8,577-tick horizon of the only build that
 sets the byte**: **0** divergences. That build's pulse programs are self-loops
 with a zero step, its cutoff is overwritten by the wrapper before it reaches the
