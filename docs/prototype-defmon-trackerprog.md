@@ -372,12 +372,15 @@ instruction that reads or writes it. Three shapes of signature:
   into seven bits and reads a byte with bit 7 set as an absolute note. No
   reachable row of that build has one, so the arm is a `trap`.
 
-Six assertions in `layout` are the tool's own fail-closed checks: the six
+Five assertions in `layout` are the tool's own fail-closed checks: the six
 cascades are two sets of three, the three voice records are one stride apart,
 the slide's two windows are one table read at two offsets, the interval's two
 reads are neighbours, and the tuning's high half starts exactly where its low
-half ends. Two more are in the record reader: a pulse byte the chip's nibble
-cannot hold refuses, and a sidTAB jump landing on another jump refuses.
+half ends. Six more are spread over the reading: a sidTAB jump landing on another
+jump, a pulse byte the chip's own nibble cannot hold, an oscillator byte in the
+interval range, a filter shift that is neither `NOP` nor `ASL`, a per-voice
+detune that is not the voice index, and an arranger step no pattern ends. Every
+one of them refuses; none of them approximates.
 
 That the object *is* the tune's data and not a reading of it is checked rather
 than asserted: `test_every_byte_of_the_tune_s_data_is_in_the_object`
