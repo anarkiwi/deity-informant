@@ -163,7 +163,17 @@ p_1363/p_1373: the pulse program   p_1382: the row fetch + hard restart
 p_1406/p_140F: pattptr, then ghost[x/7].ctrl = wave & gate
 ```
 
-## 6. What remains
+## 6. The layer above
+
+[prototype-goattracker-trackerprog.md](prototype-goattracker-trackerprog.md) is
+both tunes transliterated by hand into a trackerprog
+([prototype-trackerprog.md](prototype-trackerprog.md) §3) and rendered by the
+same universal player as Commando, with no branch on the family: 0 divergences
+over both horizons, the write lists identical rather than permuted (a ghost
+flush is exactly what §2's reduction was written to tolerate), and G2's loop
+claim re-verified on the render.
+
+## 7. What remains
 
 - **Blocks A+B print as six records, not two.** `init` zeroes them in one 42-byte loop, so
   the access relation joins them into one region; the tick's 7-byte stride is what

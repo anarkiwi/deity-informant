@@ -226,10 +226,13 @@ that is only `streams`.
 
 ```
 Pattern = rows of Event
-Event   = { note: index | rest | hold | keyoff | keyon
+Event   = { sounds: bool            // the row starts a sound -- the one field that says so
+          , note: index | none      // its pitch; none = the instrument's own (§3.5)
+          , gate: on | off | none   // the row's own gate statement, where a family has one
+          , tie:  bool              // re-target without re-triggering
           , ins:  instrument | none
           , cmds: [Cmd, …]          // in row order; §4 emits them in that order
-          , dur:  ticks }
+          , dur:  rows }
 Cmd     = set_tempo(stream | k)     // a divider or a tempo stream
         | set_vol(v)                // $D418 low nibble, global, last writer wins
         | set(target, value)        // shadow assignment; commits with the tick
@@ -243,6 +246,42 @@ Order   = per-voice sequence program over
           | jump(row) | stop | horizon }   // bounded call depth, stated (Galway: 8)
 ```
 
+**The note column is a token class, and the layer spends it.** The first draft
+wrote `note: index | rest | hold | keyoff | keyon`, which is the *source byte's*
+range table, not the music. Every family packs more than a pitch into that byte
+and each packs something different: GT2 `note $60–$BC | rest $BD | keyoff $BE |
+keyon $BF | packed rest $C0+` (anatomy:872); SID Wizard `note $01–$5F | set
+vibrato amplitude $60–$6F | packed rest $70–$77 | porta $78 | sync on/off
+$79/$7A | ring on/off $7B/$7C | gate on $7D | gate off $7E` (anatomy:1204); JCH
+`dur/instr/super/note/rest/hold` (anatomy:210); Hubbard a keyoff *bit* in the row
+byte. The anatomy already names the general fact — "byte ranges as token classes
+… tokenizer thresholds = the `CMP` immediates" (anatomy:2833) — as a player
+idiom with a generic fix, alongside `X = voice*7` and the 1-based tables.
+
+Admitting `keyoff` as a *note value* therefore admits `sync on` as one, and the
+rule collapses. The rule that survives all four is
+[prototype-commando-trackerprog.md](prototype-commando-trackerprog.md) §4.1's:
+**a value that is not in the pitch table is not a pitch, so it is not a note.**
+Each token the byte packed becomes its own field — `sounds`, `gate`, `dur`,
+`tie`, `cmds` — and the note column holds a pitch or nothing:
+
+| the byte says | the event says | Hubbard | GoatTracker 2 | SID Wizard |
+| --- | --- | --- | --- | --- |
+| the row starts a sound | `sounds` | row bit 6 clear | a note byte `$60–$BC` | `$01–$5F` |
+| its pitch | `note` | index, or none for a drum | index | index |
+| a gate statement of its own | `gate` | — (its bit 6 *is* `sounds`) | `$BE` / `$BF` | `$7D` / `$7E` |
+| rows the event spans | `dur` | 1 | `$C0+n` | `$70–$77` |
+| re-target, do not re-trigger | `tie` | row bit 5 | effect 3 | — |
+| everything else | `cmds` / `arm` | the porta byte | the fx nibble | `$60–$6F`, `$78–$7C` |
+
+`sounds` is the field §4's tick reads to decide whether a row keys a note, and
+it is the *only* one: an object that answered it from `gate` in one family and
+from `note` in another would be two grammars. `note: none` then means one thing
+everywhere — no pitch of the row's own — and where such a row sounds, §3.5's
+instrument supplies the frequency (Hubbard's drums; commando-trackerprog §4.3).
+The ctrl mask a row leaves is `$FF` where it sounds and `$FE` where it does not,
+overridden by an explicit `gate`.
+
 Six changes from the first draft, each forced by a source:
 
 | change | why, and the evidence |
@@ -253,6 +292,15 @@ Six changes from the first draft, each forced by a source:
 | `set` for a shadow, `set_register` for the chip | two families write registers from a command and differ in *when*. GT2 commands 5/6 put AD/SR into the ghost, which the flush emits at the commit (anatomy:876) — that is `set`, the assignment §3.3 already has. Follin's `$85` lists write `$D400+r` **immediately, no deferred flush**, for an arbitrary register of any voice (anatomy:1803; `sid.reg[a75] = …`, follin:160-167) — that is `set_register` |
 | `set_register`'s index is a literal `0..24` | Follin's resolves, because T2 materialises decoded score bytes exactly as it materialises pattern rows. Where it does not, the refusal is `command residue` (§8) — the 36 `index not a voice` sites T0's sweep already names one layer down (backlog §4, W4) |
 | `set_stream(slot, stream, row)` | GT2 commands 8/9/A re-point the wave, pulse and filter tables and zero the matching hold (`waveptr=A (wavetime=0)`, anatomy:876) — a re-point plus a link (§5), not two opcodes |
+
+A command is named by **what it does**, never by the index a family's dispatch
+gives it: GoatTracker 2's `T144A` nibble and SID Wizard's `BIGFXTABLE` index are
+the patched jump the lift already spends (gt2:16, anatomy:2799), so a score that
+named its commands `F:07` would be carrying the jump table one layer up. And
+whether a command outlives the row that gave it is one datum, `meta.row_command`
+∈ {`held`, `spent`}: GT2 re-runs the last command at every row (effect memory,
+anatomy:876's tick-0 dispatch running unconditionally), Hubbard spends it on its
+row. It is a property of the tune, not of the row clock.
 
 `set_tempo(stream | k)` has two certified families: GT2's `funktempo`, loading a
 two-entry alternating tempo (`funktempotbl[0..1] = speedtbl[A]`, anatomy:876),
