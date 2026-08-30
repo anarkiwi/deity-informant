@@ -970,16 +970,16 @@ class Player:
         if isinstance(pol, dict) and "clamp" in pol:
             return self.toward(a, ov, val, step, prod)
         if pol == "reflect-complement":  # the triangle one complement folds
-            hi = self.ev(a["bound"]["interval"][1], ov)
+            hi = self.ev(a["amplitude"]["interval"][1], ov)
             if not val & (mask ^ mask >> 1) and val > hi:
                 val ^= mask
             return (val + step) & mask
         ph = self.ev(a["phase"], ov) if "phase" in a else 0
         out = (val - step if ph else val + step) & mask
-        b = a.get("bound")
-        if b and pol == "reflect":
-            lo, hi = b["interval"]
-            turn = (out >> b["shift"]) == ((hi if not ph else lo) >> b["shift"])
+        if pol == "reflect":
+            am = a["amplitude"]
+            lo, hi = (self.ev(x, ov) for x in am["interval"])
+            turn = (out >> am["shift"]) == ((hi if not ph else lo) >> am["shift"])
             if turn:
                 c = self.c[a["phase"]["cell"]]
                 c[self.v] = (c[self.v] + (-1 if ph else 1)) & 0xFF
@@ -1012,7 +1012,31 @@ class Player:
         return x if part is None else (x & 0xFF if part == "lo" else (x >> 8) & 0xFF)
 
     def store(self, a, val):
+        """Move an accumulator's cell, held to the interval its record declares.
+
+        Section 5's bound is the invariant and not a hint, so the renderer
+        asserts it: two constants -- which is what *statically known* means --
+        and a move that leaves them stops the render rather than rendering
+        something the object does not claim.  The threshold a ``reflect`` turns
+        at and a ``reflect-complement`` folds at is the triangle's ``amplitude``
+        and lives there; it is the step's own arithmetic, not a claim about the
+        cell, and in neither family are the two the same interval.
+        """
+        b = a.get("bound")
+        if b is None or not b["interval"][0] <= val <= b["interval"][1]:
+            self.escaped(a, val)
         self.store_cell(a["cell"], val)
+
+    def escaped(self, a, val):
+        """A move the object does not claim: section 5's bound, stated and broken."""
+        name = self.accname[id(a)]
+        b = a.get("bound")
+        if b is None:
+            raise AssertionError("%s stores with no bound to hold it to" % name)
+        raise AssertionError(
+            "%s left its %s bound [%d, %d] at %d"
+            % (name, b["from"], b["interval"][0], b["interval"][1], val)
+        )
 
     def store_cell(self, name, val):
         """Move one named cell of section 5's vocabulary, or a half of it."""

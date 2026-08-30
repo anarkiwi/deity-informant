@@ -545,7 +545,9 @@ Acc = { target : freq | pw | cutoff | note | wave-param | gate-mask
              | repeat(Δ, n)                           # n·Δ, a triangle's closed form
              | Δ + carry(site, flag)                  # any of the above, plus a live carry
       , bound  : { interval: [lo, hi], from: proved | projected | observed
-                 , witness: <guard | mask | period> }
+                 , witness: <guard | mask | period> }   # lo, hi constants: asserted
+      , amplitude : { interval: [lo, hi], shift: k }    # reflect / reflect-complement's
+                                                        # own turn, not a claim
       , policy : wrap | reflect | reflect-complement | clamp(v) | halt | reload(v)
       , rate   : every k ticks (k ≥ 1)            # the §3.3 divider, one meaning
       , phase  : bit(self, k) | bit(cell, k) | cell != 0 | fn(global_counter) | acc(id)
@@ -562,8 +564,32 @@ is a second spelling of one fact and is struck (§7).
 
 **Bounded** is the invariant, not a hint: `bound × policy` makes the reachable
 value set finite and statically known; the trackerprog states each interval and
-the renderer asserts it — the tuneprog's envelope discipline one layer up. The
-three `bound.from` tags differ:
+the renderer asserts it — the tuneprog's envelope discipline one layer up. It
+asserts it *as of §7's second package*, and until then the sentence was a claim
+the code did not make: `bound.interval` was read only as the fold and turn
+threshold of `reflect-complement` and `reflect`, and `from` and `witness` were
+read nowhere. `Player.store` now holds every move an accumulator makes to the
+interval its record declares, and five of the sixteen records did not survive
+that — which is what an invariant nothing checks is worth.
+
+Two consequences the assertion forced, both of them §5's own words taken at
+face value.
+
+*Statically known* is what `bound.interval` says, so it is **two constants**.
+An interval that reads a live cell is not a statically known reachable set; it
+is arithmetic the step does.
+
+That arithmetic is **`amplitude`**, and it is not a bound. The threshold a
+`reflect` turns at and a `reflect-complement` folds at is the triangle's own
+swing: it decides what the step does and claims nothing about where the cell
+goes, and in neither certified family are the two the same interval. GoatTracker
+2's vibrato phase swings against `speedcmp` and keeps the byte, and Hubbard's
+pulse sweep turns at `$800`/`$EFF` and keeps twelve bits — a step of `$E0` from
+`$E60` lands at `$F40`, which the turn test does not see, and the next one wraps
+to `$020`. The field the step reads and the interval the record claims were one
+key, and one key cannot be both.
+
+The three `bound.from` tags differ:
 
 | `from` | source of the interval | evidence |
 | --- | --- | --- |
@@ -676,6 +702,11 @@ classifier:
    triangle's amplitude, not the cell's range. T1 offers the guard's interval
    first and takes the first one the horizon keeps, which here is `observed` at
    the byte's width — the record says which, and never widens silently.
+   Corrected here in 2026 and **still written the wrong way in the object** until
+   §7's second package turned the assertion on: it leaves `[0, speedcmp]` on
+   1,532 of *Je suis Linus*' 10,956 moves and 1,114 of *Do It Again*' 10,073,
+   from tick 2 and tick 20. `amplitude` now carries the compare and `bound` says
+   `observed [0, $FF]`, which is the correction as data rather than as prose.
 2. **`split(k, 8)` is `split(lo, hi)`.** One rule, two families: SID Wizard's
    cutoff is `(3, 8)` and Hubbard's pw `(8, 4)`. The `8` was the cutoff case.
 3. **`tabcell(T[c], signed = k)`'s `k` is the width the byte is signed *into*.**
@@ -800,6 +831,8 @@ Wizard's `b1024` still refuse, and their cells are not scratch.
 | JCH V20, the fifth family (**#312**) | the two certified JCH tuneprogs transliterated onto the same player: *Guldkornekspressen Intro* over its whole 2,401-tick horizon with the loop claim re-verified, and *I Could Eat a Knob at Night* over its whole 8,577 with the write lists **identical** on every tick, 0 divergences on both. **`end.kind = fixed_point` is taken for the first time**: period 1, `loop` null, the score materialised to `first_repeat` and the render's last tick writing nothing. Five forms in the player, every one a marked single-family data form — a flush entry may state the guard the image writes it under (one build flushes the same 25 registers in either direction, and which one is a byte of the frame: fixing either diverges on 4,689 and 3,887 of 8,577), `meta.prefetch` gains `note`, `transpose` and `cmds` (the row's pitch staged with the row, worth 8 and 397 ticks; the order's transpose too, because the vibrato reads the untransposed note, worth 240; the row's commands spent at the fetch rather than the boundary, worth 38), and `reg.N` is a register of the one global channel written by the voice whose write-out sends it. Five in the data only, including the two column programs as act-and-hold rows with the step ranked after them (reversing it diverges on 1,821 of 2,401) and the wrapper as a stream, a countdown and seven overrides. **Two expectations measured to zero and were struck**: the build byte's own effects skip (0 of 8,577 on the only build that sets it) and a staged instrument (0 on both). The first family whose two builds disagree about having a shadow, and the second measurement that a shadow hides `commit_order` — and, new, voice order with it | `universal`, `printer`, `tools/trackerprog_jch.py` |
 
 | the object's dead surface, pruned (**P1**) | every field the five tools emit, read back against every consumer — the player, the print and the round-trip tests — and the eight nothing read struck: §3.3's `term` (#310 took it out of the grammar and left it in four tools and the print), a stream's `kind` and `scope`, an `Acc`'s `id` (the key `accs` declares it under is its name, and the player now reads that), an `Acc`'s `links` on GoatTracker 2's `toneporta` (a second spelling of `meta.pitch_links`, which is what the snap actually resets), Commando's `overflow` and `armed_by` (the arm the print announced is the `arms` of the event the print already renders), defMON's `meta.order_steps`, and the label on SID Wizard's `prologue`. Measured, the way §6.4's first check asks: rendering the pruned objects is **write-for-write identical on every tick of all eleven builds' whole horizons** — 0 differing of 243,265, Commando ×3 11,780, GoatTracker 2 8,236 and 8,659, SID Wizard 8,084 and 14,465, defMON 1,799 and 149,025, JCH 2,401 and 8,577 — and all eleven re-certify at 0 divergences against their tunes' own players. The print loses 1 line and 8–28 tokens per build where a stream carried a terminator; `universal.py` 1,063 → 1,066, `printer.py` 628 → 622, the five tools 5,666 → 5,614. The generalisable check, which is §6.4's applied to the *object* rather than to the player: **a field the object writes and no consumer reads is not a field**, and grep for the readers of every name the schema declares — a row struck from §3 stays in the tools until someone looks | `universal`, `printer`, the five `tools/trackerprog_*.py` |
+
+| §5's bound asserted, and five records that did not survive it (**P2**) | `Player.store` holds every accumulator move to the interval its record declares — §5 has said the renderer does this since the first draft and it did not, `bound.interval` being read only as `reflect`'s turn and `reflect-complement`'s fold and `from`/`witness` read nowhere. Turning it on took **five of the sixteen records** out, none of them a bug in the render and every one a claim the object was making falsely: Hubbard's vibrato said `proved [0, 3]` where `[0, 3]` is the *fold*, the repeat's count, and the cell holds a frequency (8,836 / 22,488 / 1,089 escaping moves on the three subtunes, from **tick 1**); its arpeggio said `proved [0, 12]` where `[0, 12]` is the arp stream's transpose (16,341 / 13,803 / 1,089, from tick 1); its drum said `proved [1, $FF]` from the guard `freq_hi != 0`, which bounds the value the step comes *in* with and not the one it leaves after `−1` (32 and 5, from tick 173); its pulse sweep said `projected [$800, $EFF]`, which is where the bounce turns and not where the cell goes, since a step of `$E0` from `$E60` reaches `$F40` and then wraps to `$020` (10 moves, from tick 3,457); and GoatTracker 2's vibrato phase said `proved [0, speedcmp]`, which §5 correction 1 declared wrong in prose in 2026 and which the object went on saying (1,532 of 10,956 and 1,114 of 10,073, from ticks 2 and 20). The turn and the fold move to **`amplitude`**, which is the step's own arithmetic and may read a live cell; `bound.interval` is two constants, which is what §5's *statically known* means. Measured: rendering the corrected objects is **write-for-write identical on every tick of all eleven builds' whole horizons** — 0 differing of 243,265 — and all eleven re-certify at 0 divergences; the assertion costs under 4 % of render. The generalisable check: **an invariant the renderer does not assert is prose**, and the interval a *step* reads is not the interval a *record* claims — one key cannot be both | `universal`, `printer`, `tools/trackerprog_{commando,goattracker}.py` |
 
 Everything after this is the rest of the `trackerprog/` package, under the same
 rules (≤ 500 lines per module, hermetic tests, the certificate).

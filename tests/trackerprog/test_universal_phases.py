@@ -222,6 +222,7 @@ def _sweep(epoch):
             "policy": "wrap",
             "scope": "voice",
             "produce": [["pw_lo", "lo"]],
+            "bound": {"from": "projected", "interval": [0, 0xFFFF], "witness": "16-bit"},
         }
     }
     return [x[0] for x in col(render(o, 9), PLO) if x]
@@ -305,6 +306,7 @@ def test_a_clamp_takes_its_target_at_the_edge_the_object_names():
                     "policy": {"clamp": {"notefreq": None}, "edge": edge},
                     "scope": "voice",
                     "produce": [],
+                    "bound": {"from": "proved", "interval": [0, 0xFFFF], "witness": "the target"},
                 }
             },
             ins=instrument(accs=[{"acc": "porta"}], note_sets=[]),

@@ -584,6 +584,17 @@ def _acc(name, a, notes):
             if a["emit"] == "entry"
             else "      emits   the value the tick left"
         )
+    if "amplitude" in a:  # the triangle's own threshold, not a claim about the cell
+        m = a["amplitude"]
+        lines.append(
+            "      swings  [%s, %s]%s -- %s"
+            % (
+                _bound(m["interval"][0]),
+                _bound(m["interval"][1]),
+                "" if "shift" not in m else " >> %d" % m["shift"],
+                m.get("turn") or m.get("fold", ""),
+            )
+        )
     if "bound" in a:
         b = a["bound"]
         iv = "" if "interval" not in b else "[%s, %s] " % tuple(_bound(x) for x in b["interval"])
