@@ -34,8 +34,8 @@ Four results:
    low to high when the frame's own delay byte is zero and high to low when it is
    not, so a flush entry states the guard the image writes it under (§4.1).
 4. **The layer invariant holds at five families**, with no branch on
-   `meta.family` anywhere in `trackerprog/`. Four of the ten forms below are in
-   the player and six are only in the data; two things the family was expected
+   `meta.family` anywhere in `trackerprog/`. Five of the ten forms below are in
+   the player and five are only in the data; two things the family was expected
    to force turn out to be worth **0 ticks** and are in neither.
 
 Reproduce:
@@ -57,8 +57,8 @@ needed · 5 what the spec got right · 6 finding the data · 7 measurements ·
 The forms, in one line each. In the player: §4.1 a flush entry states its own
 guard · §4.2 the row's pitch staged with the row the clock runs ahead of · §4.3
 the row's commands spent at the fetch · §4.4 a register of the global channel
-written by the voice whose write-out sends it. In the data only: §4.5 the
-order's transpose in a cell, because the vibrato reads the *untransposed* note ·
+written by the voice whose write-out sends it · §4.5 the order's transpose
+staged too, because the vibrato reads the *untransposed* note. In the data only:
 §4.6 a column program is an act row, a wait row and an accumulator ranked after
 them · §4.7 the wave column's jump resolved in place · §4.8 the row's duration
 as the empty events that follow it · §4.9 the prelude armed by a cell the
@@ -185,8 +185,9 @@ before it reads a byte of the tune's data, so there is nothing to emit partially
 
 ## 4. What the spec needed
 
-Ten forms. Four are in the player, six are only in the data, and §4.11 is the
-two the family was expected to force that are worth nothing at all.
+Ten forms. Five are in the player — three of them entries in one list that
+already existed — five are only in the data, and §4.11 is the two the family was
+expected to force that are worth nothing at all.
 
 ### 4.1 A flush entry states the guard the image writes it under
 
@@ -287,8 +288,11 @@ into the tuning. V20's vibrato does not read that index. Its depth is
 neither the order's transpose nor the wave row's offset — a semitone of the
 untransposed note, which at a transpose of 12 is a different semitone.
 
-No new field: `meta.prefetch`'s `transpose` stages the play step's column into a
-cell, and the accumulator's delta is `interval(note − xpose)`. Measured: taking
+The third and last entry `meta.prefetch` gains: `transpose` stages the play
+step's column into a cell beside the pitch and the gate, and the accumulator's
+delta is `interval(note − xpose)`. The order's column stays where §3.6 puts it
+and the note cell stays what §4 makes it; what the cell adds is the *other*
+reader. Measured: taking
 the interval at the transposed note diverges on **240** of Guldkorn's 2,401
 ticks, and on 0 of Knob at Night's, which has no vibrato and a transpose of zero.
 
@@ -562,10 +566,10 @@ Code, against defMON's:
 | `tests/trackerprog/test_universal_fetch.py` | 169 | hermetic snippets, one per form of §4 |
 
 The player grew by **30 lines** to carry a fifth family — 38 added against 8
-taken out, and 16 of the 38 are comment or docstring, because three of the four
-forms are single-family data forms and each is marked at its row with its reason
-and its measurement. Two of the four (§4.2 and §4.3) are entries in a list that
-already existed, one (§4.1) is a guard on an entry of a list that already
+taken out, of which 16 are comment or docstring, because all five forms are
+single-family data forms and each is marked at its own row with its reason and
+its measurement. Three of the five (§4.2, §4.3 and §4.5) are entries in a list
+that already existed, one (§4.1) is a guard on an entry of a list that already
 existed, and one (§4.4) is a target spelling. It still has neither Commando, nor
 GoatTracker, nor SID Wizard, nor defMON, nor JCH in it.
 
