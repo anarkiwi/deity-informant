@@ -315,9 +315,11 @@ a zero step, which is what a build that overwrites two voices' pulse widths from
 a data stream has left of its pulse programs.
 
 The note-on points the cursor at the row **after** the act it has already made,
-which is how an instrument enters a program mid-record; the tune's own
-post-init state enters one mid-*hold*, and the object says so with the cursor's
-`hold` (`enter()`, §6).
+which is how an instrument enters a program mid-record. The tune's own post-init
+state enters one mid-*hold* — Guldkorn's three voices start at pulse records 12,
+32 and 0 with 8, 3 and 0 frames left, and its filter at record 16 with 2 of 4 —
+so `state0.cursors` carries the row **and** the hold the record has already
+spent, which is `enter()` in §6.
 
 ### 4.7 The wave column's jump, resolved in place
 
@@ -395,7 +397,7 @@ first frame's flush is guarded on and the only row no `globals.commit` reads.
 
 **The build byte's own effects skip.** `$17CA` is 0 in Guldkorn and 1 in Knob at
 Night, and where it is set the prefetch frame skips the pulse, the filter and the
-vibrato (`$1766`, `knob.md:9093-9096`, and `$1201`/`$1206` in the player).  The first
+vibrato (`$1766`, `knob.md:9093-9096`, and `$1201`/`$1206` in the player). The first
 object said so, and needed a
 `meta.prefetch` field of its own — a cell saying the fetch had read a row at all —
 to say it. Measured over the **whole 8,577-tick horizon of the only build that
