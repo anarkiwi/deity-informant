@@ -540,7 +540,13 @@ class Tune:
             "exit": {"rank": 0, "rows": [{"sets": [["ctrl", GATED]]}]},
             "funktempo": {
                 "rank": 0,
-                "rows": [{"value": {"global": "funk0"}}, {"value": {"global": "funk1"}}],
+                # the row's value is the countdown the reload takes, which is one
+                # clock step less than the length the command wrote: the boundary
+                # is the step at 0, so a row of n steps counts n - 1 down to it
+                "rows": [
+                    {"value": {"and": [{"sub": [{"global": "funk0"}, 1]}, 0xFF]}},
+                    {"value": {"and": [{"sub": [{"global": "funk1"}, 1]}, 0xFF]}},
+                ],
             },
             "wave": self.wave_stream(),
             "pulse": self.pulse_stream(),

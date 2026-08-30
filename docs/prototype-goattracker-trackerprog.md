@@ -72,7 +72,7 @@ object.
 | `FREQ_LO[n]`/`FREQ_HI[n]`, 96 entries | `pitch(n)` — the tuning, total by construction | §3.2 |
 | `(FREQ[n+1] - FREQ[n]) >> k`, the calculated speed | `tablestep(pitch, lastnote, k)` — an expression over the tuning | §5 `tablestep` |
 | `DEC counter,X; BEQ tick0; BPL; reload tempo` | `meta.tempo` countdown: a cell, a reload cell, a boundary | new (§4.2) |
-| `tempo < 2 ⇒ tempo ^= 1; funktempotbl[tempo] - 1` | `tempo.alternate`, a two-row stream over two global cells | §3.6, a tempo over a stream |
+| `tempo < 2 ⇒ tempo ^= 1; funktempotbl[tempo] - 1` | `tempo.alternate`, a two-row stream over two global cells, each row carrying the `- 1` | §3.6, a tempo over a stream |
 | `counter == gatetimer ⇒ fetch_row` | the fetch, `early` clock steps before the row (§4.3) | §3.5 `early` |
 | the row's `instr`, `newfx`, `newparam`, `gate` | `meta.prefetch` — the fields the fetch commits early | new (§4.3) |
 | `SR=0; AD=$0F; gate=$FE` unless legato or fx 3 | the instrument's **prelude**, and the held command's `tie` | §3.5 |
@@ -171,6 +171,14 @@ row, and a `reload` cell it takes the row's length from when it goes past.
 `tempo.alternate` is §3.6's tempo over a stream: two rows the reload alternates
 between, which is `funktempo` and nothing else. It is dead in *Je suis Linus*
 and fires 4,326 times in *Do It Again*, on the same code.
+
+The `- 1` is the row's, not the player's. The reload takes a *countdown* against
+the boundary at 0, so a row of `n` clock steps counts `n - 1` down to it — which
+is what the plain reload cell already holds, and what the funk row now holds too:
+the player subtracted it for this one path and for no other value in the schema
+(prototype-trackerprog.md §7). It is load-bearing and the measurement says so:
+a funk row reloading its own length instead of its countdown diverges on **8,625
+of *Do It Again*'s 8,659** ticks, from tick 20, and on 0 of *Je suis Linus*'.
 
 ### 4.3 The fetch runs ahead of the row it stages
 
