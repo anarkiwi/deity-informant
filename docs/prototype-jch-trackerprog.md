@@ -580,15 +580,15 @@ GoatTracker, nor SID Wizard, nor defMON, nor JCH in it.
 
 ## 8. The ten things the family was expected to force
 
-Ten expectations came with this exemplar. Six held, two held in kind but not in
-spelling, and **two were wrong** — and saying which is which is the point of
-writing it down.
+Ten expectations came with this exemplar. Six held (1, 2, 4, 6, 7, 9), two held
+in kind but not in spelling (8, 10), and **two were wrong** (3, 5) — and saying
+which is which is the point of writing it down.
 
 | # | the expectation | what the code said |
 | --- | --- | --- |
 | 1 | `end.kind = fixed_point`, which no exemplar had taken: period 1, `loop` null, materialise to `first_repeat` | **held.** Knob at Night's period is 1 at tick 8,576 and the object carries the reason: the wrapper's two-byte countdown, `$80` and `$22`, is 128 + 33·256 = 8,576 frames, and the `#playing` cell it closes guards every flush entry. The orders end `horizon`, the score is materialised as far as the horizon reaches, and `end.verified` is the render's own last two ticks — 25 writes, then none |
 | 2 | a family whose two tunes disagree about having a shadow | **held, and it is the first.** One build's `meta.shadow` is 25 registers and the other has no `shadow` key at all. What was not foreseen is that the flush **order** is a datum of the frame rather than of the tune (§4.1), which is the one form of the five the player gained that is a new field |
-| 3 | §3.3's two column programs, `rec6` 4 columns and `rec7` 3 | **held in kind, corrected in fact.** *Both* are four columns: the filter program's fourth is its `next` link, at the address the print attributes to `rec6` because a region prints under several derived origins (backlog P1). The corrected reading is in §6, and the `$FF`-keeps-the-value sentinel, the direction bit and the frame count are exactly where §3.3 says |
+| 3 | §3.3's two column programs, `rec6` 4 columns and `rec7` 3 | **wrong in fact, held in kind.** *Both* are four columns: the filter program's fourth is its `next` link, at the address the print attributes to `rec6` because a region prints under several derived origins (backlog P1). The corrected reading is in §6, and the `$FF`-keeps-the-value sentinel, the direction bit and the frame count are exactly where §3.3 says |
 | 4 | reload *then* step, in one tick: one `Acc` with `policy.reload`, or two — measure it | **held, and it is two.** A record acts and then holds — defMON's own split — and the step is an `Acc` **ranked after** the stream. Ranking it the other way diverges on 1,821 of Guldkorn's 2,401 ticks (§4.6) |
 | 5 | `links` on a re-trigger: §5's second family, the arm re-pointing the pulse cursor *and* reloading the accumulator in one step | **wrong.** It is not an `Acc.links` at all: it is the instrument's `on_note`, which is one inline §3.3 stream, and a `point` beside a `sets` in the same act is what §3.5 already says an instrument's note-on is. The object uses `links` nowhere. §5's `links` row keeps GoatTracker 2 and the hermetic clamp snippet, and this citation should go |
 | 6 | the note column's `super` token, spent the way the layer spends a byte-range token class | **held.** `super` is the `$C0–$FF` class, an index into a two-byte command record, and it becomes `Event.cmds`: 13 commands in Guldkorn (11 slides and 2 vibratos) and **0** in Knob at Night, which drives its pulse and cutoff from the wrapper's data stream instead |
