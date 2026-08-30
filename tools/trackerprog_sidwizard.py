@@ -1237,7 +1237,7 @@ class Tune:
             "tick": ["fetch", "prelude", "commit", "row", "commit", "machine", {"stream": "exit"}],
             "row_consumes_tick": [["sounds", "!=", 0]],
             "row_command": "spent",
-            "prefetch": [["hrins", "hrins"]],
+            "stage": [{"sets": [["@hrins", {"payload": "ins"}]]}],
             "stage_sounds": "pending",
             "row": [
                 {"sets": [["@pending", 0]]},

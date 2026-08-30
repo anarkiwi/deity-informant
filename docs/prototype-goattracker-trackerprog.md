@@ -74,7 +74,7 @@ object.
 | `DEC counter,X; BEQ tick0; BPL; reload tempo` | `meta.tempo` countdown: a cell, a reload cell, a boundary | new (§4.2) |
 | `tempo < 2 ⇒ tempo ^= 1; funktempotbl[tempo] - 1` | `tempo.alternate`, a two-row stream over two global cells, each row carrying the `- 1` | §3.6, a tempo over a stream |
 | `counter == gatetimer ⇒ fetch_row` | the fetch, `early` clock steps before the row (§4.3) | §3.5 `early` |
-| the row's `instr`, `newfx`, `newparam`, `gate` | `meta.prefetch` — the fields the fetch commits early | new (§4.3) |
+| the row's `instr`, `newfx`, `newparam`, `gate` | `meta.stage` — the row program the fetch runs early | new (§4.3) |
 | `SR=0; AD=$0F; gate=$FE` unless legato or fx 3 | the instrument's **prelude**, and the held command's `tie` | §3.5 |
 | the orderlist's `$E0+t` / `$FF pos` | `play(pattern, transpose)` / `end: jump(k)` | §3.6 |
 | `$C0+n`, the packed rest | the event's `dur`, in **rows** | §3.6 |
@@ -187,7 +187,11 @@ takes effect *then*, not at the row. Two data:
 
 ```jsonc
 "tempo": { "early": 2 },              // the fetch's lead, in clock steps
-"prefetch": ["ins", "gate", "arm"]    // the fields it commits when it reads
+"stage": [                            // what it commits when it reads: a row program
+  { "ins": true },
+  { "sets": [["@gate", {"payload": "gate"}]], "when": [["gate_stmt", "!=", 0]] },
+  { "hold": true }
+]
 ```
 
 The rest of the event — the note, the note-on, the command — lands at the row.

@@ -82,7 +82,11 @@ def obj(events, streams=None, accs=None, instrument=None, tempo=2, early=1, curs
             },
             "tick": ["row", "commit", "machine", "fetch", "prelude", {"stream": "exit"}],
             "row_consumes_tick": [["keys", "!=", 0]],
-            "prefetch": ["ins", "gate", "arm"],
+            "stage": [
+                {"ins": True},
+                {"sets": [["@gate", {"payload": "gate"}]], "when": [["gate_stmt", "!=", 0]]},
+                {"hold": True},
+            ],
             "stage_sounds": "staged",
             "row": [
                 {"note": True, "when": [["sounds", "!=", 0]]},

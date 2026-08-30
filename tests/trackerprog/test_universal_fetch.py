@@ -86,7 +86,7 @@ def cells(p):
 
 def test_the_fetch_stages_the_row_s_own_pitch_where_the_boundary_takes_it():
     """``note`` staged early is the pitch the row carries, held until the boundary."""
-    o = obj(prefetch=[["note", "staged"]])
+    o = obj(stage=[{"sets": [["@staged", {"payload": "note"}]], "when": [["sounds", "!=", 0]]}])
     p = Player(o)
     seen = []
     for _ in range(9):
@@ -99,7 +99,7 @@ def test_the_fetch_stages_the_row_s_own_pitch_where_the_boundary_takes_it():
 
 def test_the_fetch_stages_the_order_s_transpose_with_the_row_it_plays():
     """The order's own column reaches a cell, which is where a modulator can read it."""
-    p = Player(obj(prefetch=[["transpose", "xpose"]]))
+    p = Player(obj(stage=[{"sets": [["@xpose", {"payload": "transpose"}]]}]))
     p.tick()
     assert p.c["xpose"][0] == 3  # the play step's column, not the pattern's own byte
     assert cells(p)["note"] in (0, 4)
@@ -109,7 +109,7 @@ def test_a_row_s_commands_are_spent_at_the_fetch_and_not_held_for_the_boundary()
     """``cmds`` runs the row's own commands where the fetch reads them."""
     cmd = {"rows": [{"when": [], "sets": [["@level", 9]]}]}
     o = obj(
-        prefetch=[["cmds", "cmds"]],
+        stage=[{"commands": True}],
         events=[event(1, arm=["bump"]), event(2)],
         commands={"bump": cmd},
     )
@@ -124,7 +124,7 @@ def test_a_row_s_commands_are_spent_at_the_fetch_and_not_held_for_the_boundary()
         )
     )
     held.tick()
-    assert held.c["level"][0] == 0  # with no prefetch entry the boundary spends it
+    assert held.c["level"][0] == 0  # with no staged step the boundary spends it
     for _ in range(2):
         held.tick()
     assert held.c["level"][0] == 9
