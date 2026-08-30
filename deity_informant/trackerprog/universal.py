@@ -600,8 +600,13 @@ class Player:
         elif t == "freq":
             self.c["freq"][self.v] = val
             prod += [("freq_lo", val & 0xFF), ("freq_hi", (val >> 8) & 0xFF)]
-        elif isinstance(t, str) and t[:4] == "reg.":  # a register of the global channel,
-            prod.append((int(t[4:]), val))  # written by the voice whose write-out sends it
+        elif isinstance(t, str) and t[:4] == "reg.":
+            # a register of the tune's one global channel, written by the voice whose
+            # write-out sends it and resolved by last-writer (§3.7).  A single-family
+            # data form: JCH's write-out sends the cutoff and the volume inside every
+            # voice's own group, so the value the tick leaves is the last voice's, not
+            # the channel's at the end of the tick (prototype-jch-trackerprog.md §4.4)
+            prod.append((int(t[4:]), val))
         elif t in EDGE:  # an edge write belongs to the act of the tick that made it
             edge.append((t, val & 0xFF, self.act))
         else:
@@ -715,7 +720,16 @@ class Player:
         return self.pattern_of(v)["events"][self.evrow[v]]
 
     def stage(self, e, prod, edge):
-        """What the fetch commits ``early``, before the row it belongs to arrives."""
+        """What the fetch commits ``early``, before the row it belongs to arrives.
+
+        Three of the fields are **single-family data forms**, each marked with its
+        reason (prototype-jch-trackerprog.md §4.2, §4.3, §4.5): ``note`` because a
+        family whose commit copies a staged pitch moves the live note on a row
+        that does not sound, ``transpose`` because one reads the *untransposed*
+        note in a modulator, and ``cmds`` because one spends the row's commands
+        where it reads them rather than where the row lands. Each is worth ticks,
+        measured over that family's whole horizon; a fourth was struck at zero.
+        """
         v = self.v
         for f in self.o["meta"].get("prefetch", ()):
             f, k = (f, f) if isinstance(f, str) else f

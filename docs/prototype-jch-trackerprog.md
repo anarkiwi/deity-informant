@@ -552,16 +552,18 @@ Code, against defMON's:
 
 | file | lines | role |
 | --- | --- | --- |
-| `deity_informant/trackerprog/universal.py` | 1,049 (was 1,033) | §4 + §5, one procedure over the object |
+| `deity_informant/trackerprog/universal.py` | 1,063 (was 1,033) | §4 + §5, one procedure over the object |
 | `deity_informant/trackerprog/printer.py` | 628 (was 618) | the flattened form and §6.2's numbers |
 | `deity_informant/trackerprog/attest.py` | 81 (unchanged) | §2's comparison |
-| `tools/trackerprog_jch.py` | 1,547 | the transliteration, 14 signatures, the two builds |
-| `tests/trackerprog/test_jch_oracle.py` | 283 | the two certificates and the byte-for-byte round trip |
+| `tools/trackerprog_jch.py` | 1,548 | the transliteration, 14 signatures, the two builds |
+| `tests/trackerprog/test_jch_oracle.py` | 292 | the two certificates and the byte-for-byte round trip |
 | `tests/trackerprog/test_universal_fetch.py` | 169 | hermetic snippets, one per form of §4 |
 
-The player grew by **16 lines** to carry a fifth family, and half of that is
-comment. Two of the four forms it gained (§4.2 and §4.3) are entries in a list
-that already existed, one (§4.1) is a guard on an entry of a list that already
+The player grew by **30 lines** to carry a fifth family — 38 added against 8
+taken out, and 16 of the 38 are comment or docstring, because three of the four
+forms are single-family data forms and each is marked at its row with its reason
+and its measurement. Two of the four (§4.2 and §4.3) are entries in a list that
+already existed, one (§4.1) is a guard on an entry of a list that already
 existed, and one (§4.4) is a target spelling. It still has neither Commando, nor
 GoatTracker, nor SID Wizard, nor defMON, nor JCH in it.
 
