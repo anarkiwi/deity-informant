@@ -2,7 +2,7 @@
 
 Generic over the object -- it walks what is there and names nothing of any
 tune or family.  Expressions print in the vocabulary of
-prototype-trackerprog.md section 5 (``repeat``, ``tablestep``, ``field``,
+prototype-trackerprog.md section 5 (``repeat``, ``interval``, ``field``,
 ``fold``, ``bit``, ``carry``), guards as comparisons, and every table as rows
 with a header.  :func:`numbers` measures the print the way architecture
 section 11 requires of a presentation.
@@ -60,8 +60,6 @@ def expr(e, notes=None):
         return "bit(%s, %d)" % (expr(a[0], notes), a[1])
     if k == "fold":
         return "fold(%s, %d)" % (expr(a[0], notes), a[1])
-    if k == "tablestep":
-        return "step[%s] >> %s" % (expr(a[0], notes), expr(a[1], notes))
     if k == "repeat":
         return "repeat(%s, %s)" % (expr(a[0], notes), expr(a[1], notes))
     if k == "stream":
@@ -75,7 +73,7 @@ def expr(e, notes=None):
     if k == "notefreq":
         return "pitch"
     if k == "interval":
-        return "interval"
+        return "interval" if a is None else "interval(%s)" % expr(a, notes)
     if k == "transpose":
         return "transpose(%s)" % expr(a, notes)
     if k == "shr":

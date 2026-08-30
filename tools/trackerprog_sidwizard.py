@@ -1315,7 +1315,7 @@ def arms():
 def accs():
     """Section 5's records: every one a row of section 5's own table."""
     freq = {
-        "cell": "voice.freq",
+        "cell": "freq",
         "target": "freq",
         "width": 16,
         "delta": {"cell": "freqmod"},

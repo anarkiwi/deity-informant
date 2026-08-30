@@ -305,7 +305,7 @@ def test_a_clamp_takes_its_target_at_the_edge_the_object_names():
                 "porta": {
                     "id": "porta",
                     "rank": 0,
-                    "cell": "voice.freq",
+                    "cell": "freq",
                     "target": "freq",
                     "width": 16,
                     "delta": {"const": 0x100},

@@ -163,7 +163,16 @@ Every *note* elsewhere is an index into this table or a signed index offset.
 Accumulator deltas are not notes: they are in the **target register's own
 units**, raw frequency for a `freq` target (Hubbard's `porta & $7E` step,
 commando-floor:236-238; GT2's 16-bit speed-table entry, gt2.md:683-684), and
-§5's `tablestep` is the bridge from a note interval into those units.
+§5's `interval(n)` is the bridge from a note interval into those units.
+
+`interval(n)` is `pitch[n+1] - pitch[n]`, and `0` where there is no semitone
+above `n` — at the top of the tuning, and over a sound that is no pitch at all.
+The first draft carried a second form, `tablestep(P, n, shift)`, which is
+`interval(n) >> shift` with the shift folded in and the top of the tuning left
+to raise; the shift is `shr`, which the grammar already has, so the two are one.
+T1's rule of the same name (§5, the classifier's table-difference recogniser)
+is unchanged: it names the shape read out of the *source program*, and what it
+emits is this.
 
 ### 3.3 streams
 
@@ -389,10 +398,10 @@ The filter as a global channel (cutoff streams and accumulators, resonance,
 routing), master volume, per-voice and default tempo. Filter ownership — SW's
 owner voice, JCH's "filter runs on track 0" — is last-writer over the global
 channel, which the observable makes exact without an ownership construct.
-Keyboard tracking (SW `CKBDTRK`) is **not** a `tablestep` term: it adds an
+Keyboard tracking (SW `CKBDTRK`) is **not** an `interval` term: it adds an
 *absolute* table entry, `a11 = FREQ[$E + (freq_idx + b1024[$2C + b1024_idx])]`
-then `cutoff_hi = (a11 + cutoff_hi) + c6` (sw:110-116), where `tablestep` is a
-difference of adjacent entries. It is §5's `tabcell(T[c])` delta on the cutoff
+then `cutoff_hi = (a11 + cutoff_hi) + c6` (sw:110-116), where `interval` is a
+difference of adjacent *tuning* entries. It is §5's `tabcell(T[c])` delta on the cutoff
 target — the same construct defMON's oscillator uses (automatas.md:433-437), so
 it earns its row on two families and needs none of its own.
 
@@ -481,7 +490,7 @@ Acc = { target : freq | pw | cutoff | note | wave-param | gate-mask
       , delta  : const(k)                             # signed
              | field(cell, mask)                      # a masked field of a live cell
              | tabcell(T[c], signed = k | unsigned)   # an absolute table entry at a cell
-             | tablestep(P, n, shift)                 # (P[n+1] - P[n]) >> shift
+             | interval(n)                            # pitch[n+1] - pitch[n], 0 at the top
              | repeat(Δ, n)                           # n·Δ, a triangle's closed form
              | Δ + carry(site, flag)                  # any of the above, plus a live carry
       , bound  : { interval: [lo, hi], from: proved | projected | observed
@@ -490,6 +499,8 @@ Acc = { target : freq | pw | cutoff | note | wave-param | gate-mask
       , rate   : every k ticks (k ≥ 1)            # the §3.3 divider, one meaning
       , phase  : bit(self, k) | bit(cell, k) | cell != 0 | fn(global_counter) | acc(id)
       , links  : [ reset(acc_id | stream_slot), … ]   # what this Acc's events zero
+      , cell   : the value's own, in one vocabulary -- `tick`, a voice cell,
+                 `#global`, `ins.pw`, `shadow.<pair>`, any of them with `.hi`/`.lo`
       , scope  : read from the value cell's region index domain }
 ```
 
@@ -524,8 +535,8 @@ each with two certified families or a marked single-family exception:
 
 | effect | Acc | evidence |
 | --- | --- | --- |
-| vibrato (triangle) | **two coupled Accs**: a phase Acc `delta const(+2)`, `bound [0, speedcmp] proved`, `policy reflect-complement`; and a freq Acc whose `phase` is `acc(phase_id)` bit 0 and whose `delta` is `tablestep` or `const` | GT2: `voice[x/7].b14A0 = (a + 2) + c`, `t4 = b14A0 & 1`, then `ghost.freq += ptr` or `-= ptr` (gt2.md:852-862); the bound is the SMC cell `b1096 = T1851[y] & $7F` (gt2.md:812 — speedcmp, **not** the depth) and the complement is `a57 = ~b14A0` (gt2.md:835); `ptr` is either the 16-bit const `(T1851[y] << 8) \| T1863[y]` or `tablestep(FREQ, freq_lo_idx_2, T1863[y])` through the variable-shift loop `p_12E5` (gt2.md:653-684). JCH: the same two-cell shape on its slide/vibrato (jch:82) |
-| vibrato, stateless phase | one freq producer, `delta repeat(tablestep(FREQ, note, ins.vib + 1), n)`, `phase fn(global_counter)` | **single-family exception (Hubbard)**: `phase = counter & 7; if phase >= 4: phase ^= 7`, then `for _ in 0..phase-1: f += step` (commando-floor:215-221). It is the closed form of the triangle every other family accumulates, not a new mechanism; admitted because Hubbard is §9's certified non-tracker exemplar and nothing else makes its `freq` exact. T1 reads the `phase` off the counter that decides the count (`accrule.fn_phase`) and verifies the producer against the register, not the cell (#298) |
+| vibrato (triangle) | **two coupled Accs**: a phase Acc `delta const(+2)`, `bound [0, speedcmp] proved`, `policy reflect-complement`; and a freq Acc whose `phase` is `acc(phase_id)` bit 0 and whose `delta` is a shifted `interval` or a `const` | GT2: `voice[x/7].b14A0 = (a + 2) + c`, `t4 = b14A0 & 1`, then `ghost.freq += ptr` or `-= ptr` (gt2.md:852-862); the bound is the SMC cell `b1096 = T1851[y] & $7F` (gt2.md:812 — speedcmp, **not** the depth) and the complement is `a57 = ~b14A0` (gt2.md:835); `ptr` is either the 16-bit const `(T1851[y] << 8) \| T1863[y]` or `interval(freq_lo_idx_2) >> T1863[y]` through the variable-shift loop `p_12E5` (gt2.md:653-684). JCH: the same two-cell shape on its slide/vibrato (jch:82) |
+| vibrato, stateless phase | one freq producer, `delta repeat(interval >> (ins.vib + 1), n)`, `phase fn(global_counter)` | **single-family exception (Hubbard)**: `phase = counter & 7; if phase >= 4: phase ^= 7`, then `for _ in 0..phase-1: f += step` (commando-floor:215-221). It is the closed form of the triangle every other family accumulates, not a new mechanism; admitted because Hubbard is §9's certified non-tracker exemplar and nothing else makes its `freq` exact. T1 reads the `phase` off the counter that decides the count (`accrule.fn_phase`) and verifies the producer against the register, not the cell (#298) |
 | tone portamento | target freq, `policy clamp(pitch[target])` with an `edge` (where the step that lands exactly on the target either reaches it or does not — sidwizard-trackerprog §4.8), `delta const`, `links [reset(vibrato phase)]` | GT2 `p_10AB` case 3: the 16-bit compare chain against `FREQ[freq_lo_idx]`, snapping in `p_1327` (gt2.md:798-801). JCH's slide is the same shape with the compare on its own target |
 | free slide | target freq, `policy halt` or `wrap` at width, `delta field(cell, mask)`, `phase bit(cell, 0)` | Hubbard: `d = voice[v].porta & $7E; freq += -d if porta & 1 else d` — a free ±step ramp with **no target**, so this row and not the portamento row (commando-floor:236-238). JCH slide acc (jch:82) |
 | pulse sweep (bounce) | target pw, `policy reflect`, `bound [$8xx, $Exx] proved`, `rate` a divider, `phase cell != 0` | Hubbard: `pw += d` until `pw_hi == $E`, down until `$8`; `pwdir` the phase, `pwdelay` the divider, `ins.pw` the instrument-scoped value (commando-floor:222-233). JCH `rec6` segments, direction column `& $80` (jch.md:527) |

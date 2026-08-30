@@ -140,7 +140,7 @@ def _pulse_bytes(row):
 
 def _speed_bytes(row):
     if isinstance(row["delta"], dict):
-        return 0x80 | row["cmp"], row["delta"]["tablestep"][2]
+        return 0x80 | row["cmp"], row["delta"]["shr"][1]
     return row["cmp"], row["depth"]
 
 

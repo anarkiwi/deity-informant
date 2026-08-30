@@ -470,7 +470,7 @@ class Tune:
         for y in range(1, self.L["speedrows"] + 1):
             left, right = self.t("speed", y), self.t("speed", y, True)
             if left & 0x80:  # calculated: a fraction of the semitone above the note sounded
-                step = {"tablestep": ["pitch", {"cell": "lastnote"}, right]}
+                step = {"shr": [{"interval": {"cell": "lastnote"}}, right]}
                 rows.append({"zero": 0, "cmp": left & 0x7F, "delta": step, "depth": step})
             else:
                 rows.append(
@@ -666,7 +666,7 @@ ARMS = {
 def accs():
     """Section 5's records: eight forms, every one a row of section 5's own table."""
     slide = {
-        "cell": "voice.freq",
+        "cell": "freq",
         "target": "freq",
         "width": 16,
         "delta": SPEED,
@@ -718,7 +718,7 @@ def accs():
         "vibrato": {
             "id": "vibrato",
             "rank": 2,
-            "cell": "voice.freq",
+            "cell": "freq",
             "target": "freq",
             "width": 16,
             "delta": DEPTH,
@@ -734,7 +734,7 @@ def accs():
         "toneporta": {
             "id": "toneporta",
             "rank": 2,
-            "cell": "voice.freq",
+            "cell": "freq",
             "target": "freq",
             "width": 16,
             "delta": SPEED,
@@ -752,7 +752,7 @@ def accs():
         "toneporta_snap": {
             "id": "toneporta_snap",
             "rank": 2,
-            "cell": "voice.freq",
+            "cell": "freq",
             "target": "freq",
             "width": 16,
             "policy": "take",
@@ -768,7 +768,7 @@ def accs():
         "pulse_step": {
             "id": "pulse_step",
             "rank": 6,
-            "cell": "@pw",
+            "cell": "shadow.pw",
             "target": "pw",
             "width": 16,
             "delta": {"const": "delta"},

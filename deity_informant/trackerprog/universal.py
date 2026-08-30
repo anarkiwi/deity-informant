@@ -176,13 +176,16 @@ class Player:
         top = p["base"] + len(p["freq"])
         return self.tuned(n) if n < top else self.past(n - top)
 
-    def interval(self):
-        """The step to the next semitone above.
+    def interval(self, n=None):
+        """The step to the next semitone above ``n``, the voice's note by default.
 
         There is none above the top of the tuning, and none at all above a
-        sound that is not a pitch: a vibrato over either steps by nothing.
+        sound that is not a pitch: a vibrato over either steps by nothing.  It
+        is the bridge from a note interval into a register's own units, which a
+        shift then scales -- there is no second form for that.
         """
-        n = self.c["note"][self.v]
+        if n is None:
+            n = self.c["note"][self.v]
         if n is None:
             return 0
         p = self.o["pitch"]
@@ -215,7 +218,7 @@ class Player:
         if k == "notefreq":
             return self.pitchof()
         if k == "interval":
-            return self.interval()
+            return self.interval(None if a is None else self.ev(a, ov))
         if k == "tuned":  # the tuning read as a table, by something that is not a note
             return self.tuned(self.ev(a, ov))
         if k == "transpose":
@@ -249,9 +252,6 @@ class Player:
             raise AssertionError(a)
         if k == "stream":
             return self.o["streams"][a[0]]["rows"][self.ev(a[1], ov)]
-        if k == "tablestep":  # the bridge from a note interval into register units
-            n = self.ev(a[1], ov)
-            return ((self.tuned(n + 1) - self.tuned(n)) & 0xFFFF) >> self.ev(a[2], ov)
         if k == "tabcell":  # a named column of a stream row, selected by a live cell
             return self.ev(self.srow(a[0], self.ev(a[1], ov))[a[2]], ov)
         raise KeyError("expression form %r" % (k,))
@@ -542,7 +542,7 @@ class Player:
         """Take a note of the tuning: the pitch, the note sounded, what it resets."""
         self.c["lastnote"][self.v] = n
         for a in self.o["meta"].get("pitch_links", ()):
-            self.c[self.o["accs"][a]["cell"]][self.v] = 0
+            self.store(self.o["accs"][a], 0)
         f = self.freq_of(n)
         self.assign(self.o["meta"].get("pitch_target", "freq"), f, prod, [])
 
@@ -847,7 +847,7 @@ class Player:
         if "arms" in cmd:
             self.armed[self.v] = list(cmd["arms"])
         for a in cmd.get("links", ()):
-            self.c[self.o["accs"][a]["cell"]][self.v] = 0
+            self.store(self.o["accs"][a], 0)
         for st in cmd.get("sets", ()):
             if len(st) < 3 or self.guards(st[2], cmd):
                 self.assign(st[0], self.ev(st[1], cmd), prod, edge)
@@ -946,42 +946,48 @@ class Player:
         step += b
         return (val + step if d < 0 else val - step) & ((1 << a["width"]) - 1)
 
+    @staticmethod
+    def split_cell(s):
+        """A cell name and the half of it a ``.hi`` or ``.lo`` picks, where it does."""
+        return (s[:-3], s[-2:]) if s.endswith((".hi", ".lo")) else (s, None)
+
     def load(self, a):
-        s, i = a["cell"], str(self.c["ins"][self.v])
+        """An accumulator's value.  One vocabulary: the name, its space, its half."""
+        s, part = self.split_cell(a["cell"])
+        x = self.whole(s)
+        return x if part is None else (x & 0xFF if part == "lo" else (x >> 8) & 0xFF)
+
+    def store(self, a, val):
+        s, part = self.split_cell(a["cell"])
+        if part is not None:  # a half of the cell: the other half is the one it had
+            x = self.whole(s)
+            val = (x & 0xFF00) | val & 0xFF if part == "lo" else x & 0xFF | (val & 0xFF) << 8
+        self.put(s, val)
+
+    def whole(self, s):
+        """The whole value of a named cell: the tick's, an instrument's, a voice's."""
         if s == "tick":
             return self.acc
         if s == "ins.pw":
-            return self.pw[i]
-        if s == "ins.pw.lo":
-            return self.pw[i] & 0xFF
-        if s == "voice.freq":
-            return self.c["freq"][self.v]
-        if s == "voice.freq.hi":
-            return self.c["freq"][self.v] >> 8
+            return self.pw[str(self.c["ins"][self.v])]
         if s[:1] == "#":
             return self.gl[s[1:]]
-        if s[:1] == "@":
-            return self.shadow_pair(s[1:])
+        if s[:7] == "shadow.":
+            return self.shadow_pair(s[7:])
         return self.c[s][self.v]
 
-    def store(self, a, val):
-        s, i, v = a["cell"], str(self.c["ins"][self.v]), self.v
+    def put(self, s, val):
+        """Move a named cell to ``val``, whole."""
         if s == "tick":
             self.acc = val
         elif s == "ins.pw":
-            self.pw[i] = val
-        elif s == "ins.pw.lo":
-            self.pw[i] = (self.pw[i] & 0xFF00) | (val & 0xFF)
-        elif s == "voice.freq":
-            self.c["freq"][v] = val
-        elif s == "voice.freq.hi":
-            self.c["freq"][v] = (self.c["freq"][v] & 0xFF) | (val & 0xFF) << 8
+            self.pw[str(self.c["ins"][self.v])] = val
         elif s[:1] == "#":
             self.gl[s[1:]] = val
-        elif s[:1] == "@":
-            self.shadow_store(s[1:], val)
+        elif s[:7] == "shadow.":
+            self.shadow_store(s[7:], val)
         else:
-            self.c[s][v] = val & (0xFFFF if s in self.wide else 0xFF)
+            self.c[s][self.v] = val
 
     def shadow_pair(self, name):
         """A register pair read back out of the shadow the tune writes through."""

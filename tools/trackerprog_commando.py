@@ -17,7 +17,7 @@ the tuneprog says            the trackerprog says
 ``row & $1F``                the event's ``dur`` in row ticks
 ``row & $20``                the event's ``tie``: it disarms the prelude
 ``row & $40``                the event's ``gate: off`` -- a keyoff
-``ins.vib``                  ``Acc(freq, repeat(tablestep(pitch, note, vib+1),
+``ins.vib``                  ``Acc(freq, repeat(interval >> (vib+1),
                              phase(counter)), policy reload)``
 ``ins.fx & 8``               ``Acc(pw_lo, const(pspeed) + carry(vibrato))``
 ``ins.pspeed``               ``Acc(pw, const(pspeed & $E0), policy reflect,
@@ -368,7 +368,7 @@ def accs():
         "slide": {
             "id": "slide",
             "rank": 2,
-            "cell": "voice.freq",
+            "cell": "freq",
             "target": "freq",
             "width": 16,
             "delta": {"const": "delta"},
@@ -387,7 +387,7 @@ def accs():
         "drum": {
             "id": "drum",
             "rank": 3,
-            "cell": "voice.freq.hi",
+            "cell": "freq.hi",
             "target": "freq",
             "width": 8,
             "delta": {"const": -1},
@@ -409,7 +409,7 @@ def accs():
         "skydive": {
             "id": "skydive",
             "rank": 4,
-            "cell": "voice.freq.hi",
+            "cell": "freq.hi",
             "target": "freq",
             "width": 8,
             "delta": {"const": 2},

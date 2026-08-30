@@ -173,7 +173,7 @@ def test_a_stream_holds_its_row_then_takes_its_op_and_its_next():
 
 
 def test_a_step_that_produces_stands_the_armed_accumulators_down():
-    a = acc("slide", "voice.freq", delta={"const": 0x10}, produce=[["freq_hi", "hi"]])
+    a = acc("slide", "freq", delta={"const": 0x10}, produce=[["freq_hi", "hi"]])
     o = obj(
         [event(note=1, ins=1)],
         streams={"wave": {"rank": 0, "term": "jump", "rows": WAVE_ROWS}},
@@ -264,7 +264,7 @@ def test_reflect_complement_folds_the_phase_at_its_bound():
 def test_clamp_takes_its_target_where_the_step_would_pass_it():
     a = acc(
         "slide",
-        "voice.freq",
+        "freq",
         delta={"const": 0x180},
         policy={"clamp": {"notefreq": None}},
         produce=[["freq_lo", "lo"], ["freq_hi", "hi"]],
@@ -282,7 +282,7 @@ def test_clamp_takes_its_target_where_the_step_would_pass_it():
 
 
 def test_take_is_the_degenerate_clamp_and_reaches_its_target_at_once():
-    a = acc("snap", "voice.freq", policy="take")
+    a = acc("snap", "freq", policy="take")
     o = obj([event(note=3, ins=1)], accs=a, tempo=2, rest_arm=[{"acc": "snap"}], pitch_links=[])
     p = Player(o)
     for _ in range(6):
