@@ -75,7 +75,7 @@ def test_the_two_builds_differ_only_in_their_data(tune):
     """No address, no register offset and no family branch survives in the object."""
     obj = built(tune)
     assert obj["meta"]["commit_order"] == ["sr", "ad", "ctrl"]
-    assert obj["meta"]["shadow"] == {"registers": 25, "order": "descending"}
+    assert obj["meta"]["shadow"] == {"registers": list(range(24, -1, -1))}
     assert set(obj["accs"]) == set(TG.accs())
     assert sorted(obj["streams"]) == STREAMS
 

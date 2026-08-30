@@ -266,7 +266,7 @@ the write order §2 compares is the stream's own step order:
 | JCH V20 | `early = 2`; row `set(ad,$0F) set(sr,$00) set(ctrl, mask $FE)`, note row `set(ctrl,$09)` | jch.md:501-511, jch:150-158 |
 | GoatTracker 2 | `early = gatetimer` (instrument column 7); row `set(ctrl, wave & $FE)`, note row `set(ctrl, firstwave\|TEST)` | anatomy:214, anatomy:742 |
 | SID Wizard | `early = 2`; rows in the version's own AD/SR order, then `set(ctrl, TEST\|gate)` at tick 2 | anatomy:1232-1233 |
-| defMON | a sidTAB row program: `WG=00 AD=0F SR=00` → `WG=09` → sound | anatomy:214 |
+| defMON | `null`, and the data is right: `WG=00 AD=0F SR=00` → hold → `WG=09` is the first three rows of the sidTAB program the row starts, so nothing schedules it and there is no `early` (defmon-trackerprog §8) | anatomy:214 |
 | Blackbird (prose-only) | `early = 2`; `set(sr,0) set(ctrl, gate off)`, note row ADSR=0000 then the real AD/SR | anatomy:133-135 |
 | Hubbard, Galway, Follin | `null` — Hubbard cuts notes with SR=0, Galway pulses TEST at note-on | anatomy:137-140 |
 
@@ -275,8 +275,11 @@ firstwave with TEST", anatomy:214), so the first draft's `gate.timer` row is
 deleted — single-family only because it duplicated `early`. The nine-family
 "sound definition" row (anatomy:211) reduces here: Hubbard's 8-byte SID image +
 fx bits = `adsr` + armed `accs`; GT2's 9 columns + pointers = `adsr`, `prelude`,
-four stream refs; defMON's "the sidTAB row *is* the instrument" = an instrument
-that is only `streams`.
+four stream refs. defMON's "the sidTAB row *is* the instrument" is **wrong**,
+and the fourth exemplar says why: a sidTAB row is a *stream* row, a voice runs
+two such programs at once, so no single `ins` can name them and both are §3.6
+`point` commands — defMON's one `Ins` carries neither `adsr` nor `prelude`
+([prototype-defmon-trackerprog.md](prototype-defmon-trackerprog.md) §8).
 
 ### 3.6 score
 
@@ -439,7 +442,8 @@ Keyboard tracking (SW `CKBDTRK`) is **not** an `interval` term: it adds an
 *absolute* table entry, `a11 = FREQ[$E + (freq_idx + b1024[$2C + b1024_idx])]`
 then `cutoff_hi = (a11 + cutoff_hi) + c6` (sw:110-116), where `interval` is a
 difference of adjacent *tuning* entries. It is §5's `tabcell(T[c])` delta on the cutoff
-target — the same construct defMON's oscillator uses (automatas.md:433-437), so
+target — the same construct defMON's oscillator uses (automatas.md:433-437),
+where the table happens to be the tuning and the object spells it `tuned`, so
 it earns its row on two families and needs none of its own.
 
 ---
@@ -577,9 +581,9 @@ each with two certified families or a marked single-family exception:
 | tone portamento | target freq, `policy clamp(pitch[target])` with an `edge` (where the step that lands exactly on the target either reaches it or does not — sidwizard-trackerprog §4.8), `delta const`, `links [reset(vibrato phase)]` | GT2 `p_10AB` case 3: the 16-bit compare chain against `FREQ[freq_lo_idx]`, snapping in `p_1327` (gt2.md:798-801). JCH's slide is the same shape with the compare on its own target |
 | free slide | target freq, `policy halt` or `wrap` at width, `delta field(cell, mask)`, `phase bit(cell, 0)` | Hubbard: `d = voice[v].porta & $7E; freq += -d if porta & 1 else d` — a free ±step ramp with **no target**, so this row and not the portamento row (commando-floor:236-238). JCH slide acc (jch:82) |
 | pulse sweep (bounce) | target pw, `policy reflect`, `bound [$8xx, $Exx] proved`, `rate` a divider, `phase cell != 0` | Hubbard: `pw += d` until `pw_hi == $E`, down until `$8`; `pwdir` the phase, `pwdelay` the divider, `ins.pw` the instrument-scoped value (commando-floor:222-233). JCH `rec6` segments, direction column `& $80` (jch.md:527) |
-| pulse run (unbounded) | target pw, `delta const(k) + carry(site)`, `bound` **`projected`** at 12 bits | Hubbard: an **8-bit** add on `pw_lo` with the carry **live from the vibrato block** — `ins.pw_lo += ins.pspeed + C  # C inherited from $51FA` (commando-floor:222-224, `+ carry` at commando.md:394); the 12 bits come from the store's `& $F` (commando.md:380). defMON: `voice[v].pw_lo -= (b101E + (1 - carry_2))` with `carry_2` produced by the freq add above it (automatas.md:427-447). These are the writes that make both Commando subtunes aperiodic (architecture §5.2), rendered exactly, aperiodicity included |
+| pulse run (unbounded) | target pw, `delta const(k) + carry(site)`, `bound` **`projected`** at 12 bits | Hubbard: an **8-bit** add on `pw_lo` with the carry **live from the vibrato block** — `ins.pw_lo += ins.pspeed + C  # C inherited from $51FA` (commando-floor:222-224, `+ carry` at commando.md:394); the 12 bits come from the store's `& $F` (commando.md:380). defMON: `voice[v].pw_lo -= (b101E + (1 - carry_2))` with `carry_2` produced by the freq add above it (automatas.md:427-447), set on **9,144 of *Automatas*' 170,702 sweep steps** and on none of *Jazzpjazz*'s 129, so the row is two-family and it took the whole 149,025-tick horizon to say so — a 20,000-tick prefix reads 0 (defmon-trackerprog §7). These are the writes that make both Commando subtunes aperiodic (architecture §5.2), rendered exactly, aperiodicity included |
 | filter sweep (**exercised**, sidwizard-trackerprog §5) | target `split(3, 8)` on cutoff, `delta tabcell(T[c], signed 11)`, `bound observed` | SW: the filter program's step byte is a signed 11-bit delta — `cutoff_lo = ((t3 & 7) + cutoff_lo) & 7` with the carry out, `cutoff_hi += (t3 >> 3) + carry`, the negative arm's shift arithmetic as `~(~t3 >> 3)` (sw.md:868-885, joined in `p_1611`). JCH `rec7` segments and defMON's `filter.acc` write the high half only, the same split with the low half pinned (jch.md:654, automatas.md:420) — and the split is the *chip's*, already `grid.PAIRS[6]`, not a family's |
-| keyboard tracking (**exercised**, sidwizard-trackerprog §5) | `tabcell(T[c])` on the cutoff target | SW `CKBDTRK` (§3.7, sw:110-116); defMON's oscillator uses the same form on freq, `voice[v].acc += FREQ[$80 + (pw_hi[v] << 1)]` with the sign from `bit(cell, 7)` (automatas.md:433-437) |
+| keyboard tracking (**exercised**, sidwizard-trackerprog §5) | `tabcell(T[c])` on the cutoff target | SW `CKBDTRK` (§3.7, sw:110-116); defMON's oscillator uses the same form on freq, `voice[v].acc += FREQ[$80 + (pw_hi[v] << 1)]` — the table being the *tuning*, so the object spells it `tuned(2·(osc & $3F) − 36)` rather than a `tabcell` over a stream, and the sign is `bit(cell, 6)`: bit 7 says whether there is a slide at all (defmon-trackerprog §8) |
 | arpeggio / chord | target note, a `pitch` stream, or an absolute producer where the phase is stateless | Hubbard octave arp: `f = FREQ[note + ($C if counter & 1 else 0)]` — an **absolute `set` producer** (§4), `phase fn(global_counter)` (commando-floor:249-251). GT2 wavetable note column (gt2.md:564-569); SW chords |
 | tremolo, LFOs | target **gate-mask**, `policy reflect` (triangle) or `halt` (one-shot), or a stream | Walker's gate-toggle tremolo and its four identical modulators per voice (anatomy:212) move the ctrl gate bit, not a volume. `$D418` is one global register, so `target vol, scope voice` does not exist and is removed; per-pattern volume is `play`'s `vol` column (§3.6) on the one global nibble,
 last-writer. Prose-only family, so both are projections |
@@ -763,6 +767,8 @@ Wizard's `b1024` still refuse, and their cells are not scratch.
 
 | one grammar, audited across three families (**#310**) | the three hand exemplars read together against §3: `meta.commit` struck (the tick is always a sequence of acts, and rendering it so for the families that do not need it is write-for-write identical over their whole horizons); `meta.row` replaces `note_row`, `gate_row`, `pitch_row`, `row_sets`, `row_commits` and merges `latch`/`row` into one `apply_row`; `Ins.on_note` replaces `sets`/`note_sets`/`points`; `meta.tick` replaces `tempo.early_first`, `meta.voice_exit` and the commit's `pre` list; `interval(n)` replaces `tablestep`; one cell vocabulary for `Acc.cell`, retiring `voice.freq*` and the `@`-means-two-things collision. a command's writes become an inline stream, so a guard has one spelling and never a positional slot; §3.3's terminator, §3.6's nine-command opcode list, `for`/`call`/`ret` and §3.5's stream-slot map are struck as grammar no exemplar carries. Measured: the union of `meta` keys across the three families 26 → 21, the keys the player *branches* on 15 → 10, two row procedures → one, three mechanisms for "run a stream at a point in the tick" → one, two guard spellings → one; `universal.py` 995 → 1,009 lines, which is the price of the generality and is paid once rather than per family. 62 HVSC oracle tests unchanged: Hubbard ×3, GoatTracker 2 ×2 and SID Wizard ×2 at 0 divergences over their whole horizons | `universal`, `printer`, the three `tools/trackerprog_*.py` |
 
+| defMON, the fourth family (**#311**) | the two certified defMON tuneprogs transliterated onto the same player: *Automatas* over its whole 149,025-tick horizon and *Jazzpjazz* over its 1,799, 0 divergences and write lists **identical** on every tick, the loop claim re-verified on the render. Six forms in the player — `meta.shadow.registers` is the ordered list of registers the image carries (GoatTracker 2's value is `range(24, -1, -1)`, write for write identical), a `globals.commit` to a register outside that list reaches the chip on its own tick, `{"cell": …}` and a `sets` target now read and write §5's own cell vocabulary (`shadow.<pair>` included), `xor` beside `and`/`or`, `row_consumes_tick: false` is *never* rather than always, and a gate reports the decision the step made rather than re-reading the cell it moved. Four in the data only: the arranger's end is global so the score materialises per step, a stream that acts and *then* holds is two rows, a tuning read below itself and past itself is a signed `base`, and §10's multispeed is `rate = 8` — measured. One expectation fell: the sidTAB row is a stream row and not an instrument, so both sidcalls are `point` commands and the family's one `Ins` carries neither `adsr` nor `prelude`. `carry(site, flag)` is two-family after all, but only over the whole horizon — a 20,000-tick prefix reads 0 where 149,025 reads 44,675 | `universal`, `printer`, `tools/trackerprog_defmon.py` |
+
 Everything after this is the rest of the `trackerprog/` package, under the same
 rules (≤ 500 lines per module, hermetic tests, the certificate).
 
@@ -811,7 +817,11 @@ and the evidence §3.3, §3.5 and §5 lean on for the general stream form, the
 data-side prelude and the second family for `carry(site)`. Two costs:
 `automatas` needs `--budget`/`--resume` like every long tool (architecture §11),
 and `goto80-jazzpjazz` being `horizon` exercises that terminator, not the loop
-claim. Per exemplar:
+claim. Both landed; of the three citations two held and one did not — a voice
+runs *two* sidTAB programs at once, so a sidTAB row is a stream row and not an
+instrument, and both sidcalls are §3.6 `point` commands
+([prototype-defmon-trackerprog.md](prototype-defmon-trackerprog.md) §8). Per
+exemplar:
 
 | # | acceptance |
 | --- | --- |
@@ -832,18 +842,23 @@ the interpreter, not §4's fixed procedure over instruments, streams and
 accumulators — that reduction is backlog W11, and the exact replay is what it
 must be proved against.
 
-**State of the hand exemplars.** Three families are transliterated by hand onto
+**State of the hand exemplars.** Four families are transliterated by hand onto
 §4's own procedure and certified against their tunes' players on the PcodeVM,
 with no branch on `meta.family` anywhere in `trackerprog/`: Hubbard ×3 subtunes
 ([prototype-commando-trackerprog.md](prototype-commando-trackerprog.md)),
 GoatTracker 2 ×2 builds
-([prototype-goattracker-trackerprog.md](prototype-goattracker-trackerprog.md))
-and SID Wizard ×2 builds
-([prototype-sidwizard-trackerprog.md](prototype-sidwizard-trackerprog.md)), the
-last two with the inherited loop claim re-verified on the render and the write
-lists identical rather than permuted. Seven exemplars remain: JCH ×2, defMON ×2,
-Follin, and the T0–T3 lift that would produce these objects rather than a hand
-reading of them.
+([prototype-goattracker-trackerprog.md](prototype-goattracker-trackerprog.md)),
+SID Wizard ×2 builds
+([prototype-sidwizard-trackerprog.md](prototype-sidwizard-trackerprog.md)) and
+defMON ×2 builds
+([prototype-defmon-trackerprog.md](prototype-defmon-trackerprog.md)), the last
+three with the inherited loop claim re-verified on the render where the source
+carries one, and the write lists identical rather than permuted. defMON is the
+first exemplar whose horizon does not fit a script's 60 seconds, so its tool
+carries `--budget`/`--resume` (architecture §11); the whole 149,025-tick
+certificate is the tool's and the suite renders a stated prefix. Three exemplars
+remain: JCH ×2, Follin, and the T0–T3 lift that would produce these objects
+rather than a hand reading of them.
 
 The genericity gate: the six tracker exemplars must lift with zero
 family-conditioned code in `trackerprog/` — the same modules, hermetic snippet
@@ -855,7 +870,7 @@ target) are data forms, not code branches.
 
 | question | state |
 | --- | --- |
-| multispeed scaling | `rate` is now one thing, a divider (§3.3), so a sequencer running at frame rate under an n× entry is `rate = n` on that voice's tempo. Still to be *measured* on a used multispeed entry; SW 1.9 carries an unused one |
+| ~~multispeed scaling~~ | closed by defMON: *Automatas*' entry runs 8×/frame at `cycles_per_tick 2457` and its row clock is `rate = 8`, while its cascades, its oscillator and its filter run at the tick. `rate` carries it and nothing else knows — shortening the row by one clock step diverges on 149,000 of 149,025 ticks ([prototype-defmon-trackerprog.md](prototype-defmon-trackerprog.md) §4.10) |
 | `sext` as a delta | `sext(k, T[c])` appears in the IR only as a jump offset (`switch ($1953 + sext(T1934[a]))`, sw.md:1205). The one accumulator delta that sign-extends is SW's filter step, and it lifts as `tabcell(T[c], signed 11)` (§5). If an exemplar shows a sign-extended table entry that is *not* an absolute table cell, `delta` gains a form; until then it does not |
 | global-scope accumulators beyond the filter | a survey question, not a schema one: `scope` is read from the value cell's region (§5) |
 | the second entry | a tune whose NMI is a second *musical* entry (not a mixer) has two tick clocks; the schema has one cadence with per-voice dividers over it. Refuse until an exemplar demands otherwise |

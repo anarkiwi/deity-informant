@@ -797,3 +797,75 @@ trip reads the row's *shape* — the bit-7 continuation the layer spends — off
 tune and every value out of the object. §8 of prototype-trackerprog.md already
 says the trackerprog is *a* preimage; this is the first exemplar where that is a
 measurement rather than a caveat.
+
+### 6.5 Four more the fourth family found
+
+[prototype-defmon-trackerprog.md](prototype-defmon-trackerprog.md), same shape
+again, and this time §6.4's own five checks were applied *before* anything was
+added rather than after. Two of the four below are things the audit's checks
+caught; two are things only a family this unlike a tracker could show.
+
+**A field that names a set must name the set, not its size.** `meta.shadow` was
+`{registers: N, order: descending|ascending}` — a count and a direction, which
+is a *description* of a register set that happens to be a prefix in one of two
+orders. defMON's write-out is per voice and skips two registers in the middle,
+so no count and no direction reaches it. `registers` is now the ordered list the
+flush writes, and §6.4's first check was run on it: GoatTracker 2's list is
+`range(24, -1, -1)` and its two builds render **write for write identical** over
+their whole horizons, so the count was the list said less, and the general form
+costs the family that had it nothing. The generalisable check is §6.4's, with a
+corollary: a field whose value space is "a prefix, forwards or backwards" is a
+set described by an accident of the families that have been read so far.
+
+**Where a write lands is a property of the register, not of the family.** defMON
+defers its voice image and writes its cutoff to the chip in the middle of the
+same tick. The reflex is a second datum — a per-register flag, or a second
+commit list. The rule that carries both is one sentence with no new field: *the
+image holds the registers the flush names, and a commit to a register the flush
+does not name reaches the chip where it is made.* GoatTracker 2's filter
+registers are in its flush and still defer; defMON's cutoff is not and does not.
+Deferring it diverges on 12,540 of 20,000 ticks. The generalisable check is
+§6.4's ordering one: when a family seems to need a flag, look for the datum it
+already has that answers the same question.
+
+**A vocabulary is only one vocabulary if every reader and every writer uses it.**
+#310 gave `Acc.cell` one vocabulary and stopped there: the expression reader
+`{"cell": …}` still knew only voice cells, and no `sets` target could name the
+image at all. That is not a smaller vocabulary, it is *three* — and the third,
+"write it as a producer and let the commit place it", is a **different tick
+position**, so a family whose accumulator reads back what a stream row just
+wrote silently reads the previous tick's value. defMON's pulse-width sweep is
+exactly that, and it is a wrong width 132 ticks in rather than a type error.
+`Player.cell` and `assign` now go through the same `whole`/`store_cell` pair
+`Acc.load`/`Acc.store` use. The generalisable check: for each name space the
+schema declares, grep for every *reader* and every *writer* of it and require
+one implementation, not one spelling.
+
+**A dead arm is a dead arm, and a decision made twice is two decisions.** Two
+smaller ones, both caught by rendering rather than reading. `row_consumes_tick`
+had three values in the schema and two in the player — `false` reached
+`guards(None)`, which is vacuously true, so the one family to write it got
+*always* instead of *never*; every earlier family wrote `true` or a guard list,
+so the arm was dead code in a 1,009-line player. And `Acc.gate` chose its arm by
+evaluating `step_when` a second time, after the store: for the one family whose
+`step_when` reads the cell its own step moves, that is the opposite answer. The
+generalisable check for both: a value the schema admits and no exemplar writes
+is untested, and a guard evaluated twice against a moving cell is two guards —
+§6.1's "one musical question, one place that answers it", applied to the
+player's own control flow rather than to the object's.
+
+**A citation fell, and a second one nearly did for the wrong reason.** §3.5's
+"the sidTAB row *is* the instrument" is wrong: a voice runs two sidTAB programs
+at once, so no single `Event.ins` names them and both are §3.6 `point` commands;
+defMON's one `Ins` has neither `adsr` nor `prelude`, the first of any family with
+neither. §5's pulse-run row names defMON as the second family for
+`+ carry(site, flag)`, and the first measurement said it was wrong — the carry is
+0 on every sweep step of *Jazzpjazz*'s whole horizon **and of *Automatas*' first
+20,000 ticks**, a longer prefix than any other exemplar's whole horizon. Over
+*Automatas*' whole 149,025 the carry is set on 9,144 of 170,702 steps and
+dropping it diverges on 44,675 ticks, so the row is two-family after all. The
+generalisable check, and the sharpest one this family produced: **a poison
+measured on a prefix is not a poison.** §9's acceptance #1 already says the whole
+certified horizon for the certificate; it goes for every count a document draws
+a conclusion from, and this is the first exemplar long enough for the difference
+to bite.

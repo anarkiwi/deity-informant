@@ -604,7 +604,7 @@ class Tune:
             "voices": 3,
             "voice_order": [0, 1, 2],
             "commit_order": ["sr", "ad", "ctrl"],
-            "shadow": {"registers": L["regs"], "order": "descending"},
+            "shadow": {"registers": list(range(L["regs"] - 1, -1, -1))},
             "tempo": {
                 "form": "countdown",
                 "cell": "rowclock",
