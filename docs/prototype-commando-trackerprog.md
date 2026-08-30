@@ -344,8 +344,9 @@ spelling is `cmds: [gate(mask)]`.)
 *rules* table is about nothing else ("the store's transitively closed control
 dependences", #296). The drum needs three guards and the vibrato's delta one
 (`dur >= 6`); the accumulator needs a `when` list of comparisons over named
-cells — the same `when` the transition prototype gives every entry of its
-tick (`w11-producers`, unmerged).
+cells — the same `when`
+[prototype-trackerprog-transition.md](prototype-trackerprog-transition.md) §1
+gives every entry of its tick.
 
 ### 4.11 The flag's producer, not only its consumer
 

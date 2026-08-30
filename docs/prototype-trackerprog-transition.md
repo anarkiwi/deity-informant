@@ -39,7 +39,7 @@ trackerprog = { meta, pitch, state, tables, score, fetch, tick, forms }
 | section | content | source of truth |
 | --- | --- | --- |
 | `meta` | cadence (`cycles_per_tick`, calls per frame), voice order of the tick, provenance (tune, family, certificate digest), universal-player version | S0, certificate |
-| `pitch` | the tuning: `u16[N]` values **read** (Blackbird's quarter-tones as a 4N table of the sums, anatomy:2844), tuning annotation where `recover._freq` proves it | S6 `freq_table` |
+| `pitch` | the tuning and nothing else: a base note and a contiguous `u16[N]` of values **read** (Blackbird's quarter-tones as a 4N table of the sums, anatomy:2844), tuning annotation where `recover._freq` proves it. A value that is not in it is not a pitch, so it is not a note: see [prototype-commando-trackerprog.md](prototype-commando-trackerprog.md) §4.1-4.3 | S6 `freq_table` |
 | `state` | STATE (anatomy:191-192): every cell the tick reads or writes outside the score tables — per-voice records `voice[v].f` (stride, copies) and globals — with width (8/16), the post-init value, and a role where S6 has one (`timer`, `cursor`, `acc`, `sid_image`, `phase`) | S3 regions, S6 views, post-init image |
 | `tables` | TABLES (anatomy:193-195) other than the score: instrument records with named columns; wave/pulse/filter/speed/tempo/chord tables as byte rows; pointer tables. Bytes from the image, base and stride from S6 | S3/S6 |
 | `score` | per voice: the order list (materialised over the horizon: `play(pattern, transpose, vol, tempo)`, `for`, `call/ret`, `jump`, `stop`, `horizon`) and the patterns as rows of **bytes** — the bytes the fetch consumed, per T2's record, one row per fetch event | T2 (#299) |
@@ -216,9 +216,13 @@ row, ctrl, note, ins, porta, freq(u16 $551D|$551A), pwdelay, pwdir}`, globals
 **tables**: `INS[13] × 8` at `$5591` (pw_lo, pw_hi, ctrl, ad, sr, vib, pspeed,
 fx) — *mutable* (the pulse sweep writes columns 0–1, anatomy:389), so it is a
 `state` record with 13 copies indexed by `voice[v].ins`, not a const table;
-`SIDOFS[3]`, `SPEED[3]`. **pitch**: `FREQ[96]` u16 at `$5428` plus the 25 overrun
-reads into `voice[].ctrl`/`pwdir` (commando-floor:301-310), which are cell reads
-in the transition, not pitch entries. **score**: `TRACK[v]` bytes (pattern nrs,
+`SIDOFS[3]`, `SPEED[3]`. **pitch**: `FREQ[80]` u16 at `$5448`, notes 16..95 — the tuning, and no more.
+The 25 overrun reads into `voice[].ctrl`/`pwdir` (commando-floor:301-310) are
+cell reads in the transition, not pitch entries; the layer above places them
+where they belong, and the hand exemplar
+([prototype-commando-trackerprog.md](prototype-commando-trackerprog.md) §4.2-4.3)
+shows which is which — the arpeggio's own behaviour past the tuning, and the
+drum instruments' own pitch modulator. **score**: `TRACK[v]` bytes (pattern nrs,
 `$FF` loop, `$FE` stop) → `PAT[p]` rows.
 
 **fetch** (anatomy:324-343). Row clock: `speedctr` countdown reloaded from `speed`;
@@ -268,6 +272,19 @@ pulse bounce `Acc(INS[ins].pw, reflect [$8xx,$Exx] projected, rate pwdelay, phas
 pulse run `Acc(pw_lo, const(pspeed) + carry, wrap 8)`; drum and arpeggio as `set`
 producers on `fn(counter)`; `Ins = {adsr: (INS.ad, INS.sr), prelude: null, accs by
 fx bits}`. Coverage: every `tick` entry is under one form.
+
+**Hand exemplar.** [prototype-commando-trackerprog.md](prototype-commando-trackerprog.md)
+is this family transliterated by hand into the tracker reading and certified on
+one universal player: all three subtunes, 11,780 ticks each, 0 divergences on
+§2's observable. It is the oracle a lift of this family should reproduce, and it
+records the thirteen schema additions the tune forced — including three rules
+the reading here should keep. A pitch table holds the tuning and nothing else,
+and the modulators are expressions over it (`tablestep` and the octave are read,
+never tabulated per note). Where a transposition leaves the tuning, that is the
+*modulator's* own behaviour at its bound, with its own private state, indexed by
+how far past it went and never by a note. Where a sound has no pitch at all --
+Hubbard's drum, whose frequency is the waveform the other voices are sounding --
+that is a modulator on the instrument, and the score gives the event no note.
 
 ### 4.2 Galway — Comic Bakery (anatomy §3.2; prose-only, no certificate)
 
@@ -699,6 +716,7 @@ tables stand; they are now *matched*, not *proposed*):
 | form | matched on | rule |
 | --- | --- | --- |
 | stream | a `tables` row set read through one `cursor` cell whose `tick` entries step it (`+1`, `+stride`, jump by a row byte, hold by a countdown cell) | the cursor's own entries: step, jump, hold |
+| generator | a value a producer reads that no table and no tuning holds: a self-contained record with private state, its own subscriptions to what the player publishes, and a value over that state alone. It reads no cell of another voice, so cross-voice dependence exists only inside one | the reads a `tick` entry makes outside its own copy |
 | `Ins` | the cells a note-on entry group writes from one record's columns, plus the streams it re-points and the accs it resets | the fetch's note class |
 | prelude | SID edge entries (`ctrl/ad/sr`) guarded by the row clock at a fixed offset before the note class | `early` = that offset; rows = the entries in order |
 | `Acc` | an entry `c ← c ± Δ` with Δ a `const`, a `field(cell, mask)`, a `tabcell`, a `tablestep` (the closed shift) or `repeat` (the closed multiply), optionally `+ carry`; `rate` the countdown cell in its guards; `phase` the direction cell; `policy` from the guards that reload, clamp or flip the direction; `bound` proved from those guards, projected from the store's mask, or observed over the horizon | one match per entry |
@@ -708,6 +726,14 @@ tables stand; they are now *matched*, not *proposed*):
 `forms` records, per family and per tune: entries matched / total, and the
 list of unmatched entries by site. That list replaces §8's refusal table and is
 the layer's only "residue" — a measurement, not a gate.
+
+One correction the hand exemplar forces on that last sentence: a `residue`
+section is not a place to put things. Commando's reading has none. What a
+family's routine does that the tracker vocabulary has no *word* for still has an
+owner — the modulator that does it, or the instrument that sounds it — and it
+belongs there, in that owner's own private state, rather than in a table beside
+the tuning or in a list of exceptions. The measurement is of coverage; it is not
+a home for the uncovered.
 
 ---
 
