@@ -448,6 +448,18 @@ sid.cutoff_hi ← (ckbdtrk ? EXPTABH[ckbdtrk + dpitch[fltctrl]] : 0) + ctfhgho +
 sid.cutoff_lo ← ctflgho`. The three dispatchers (`BCC` offsets, `JMP` word table)
 are S2 switches; each FX handler is one or two assignments under `curifx == k`.
 
+**Hand exemplar.** [prototype-sidwizard-trackerprog.md](prototype-sidwizard-trackerprog.md)
+is this family transliterated by hand into the tracker reading and certified on
+the same universal player Commando and GoatTracker 2 render on: both builds,
+8,084 and 14,465 ticks, 0 divergences and the write lists *identical* rather
+than permuted -- earned rather than free, because this family has no ghost flush
+-- with both inherited loop claims re-verified on the render. It records the
+seven forms the family forced (a counter row clock whose phases are guards, a
+prelude belonging to the row's instrument, a stream divider kept in a cell, a
+step's epoch, an edge written twice in one tick, a global channel committed
+after the voices, a producer that moves no cell), and in its §8 what the two
+versions really differ in.
+
 **reading**: instrument = `Ins{adsr: (INS[3],INS[4]), prelude: rows by INS[0] bits
 at early 2/1 (1.6: ad,sr; 1.9: sr,ad), note row set(ctrl, INS[$F]), streams: wf/pw/filter
 rows at wftpos/pwtpos/fltposi, accs: [slide/vib by slidevib]}`; the WF/PW/filter

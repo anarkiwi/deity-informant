@@ -369,9 +369,12 @@ an instrument, or carries a note: a keyoff is a row with nothing else on it.
   own rule ("a counter is not an accumulator") makes it a guard and a −1 step,
   not a second `rate`.
 
-Two §5 delta forms remain unexercised by either family: `tabcell` on the
+Two §5 delta forms remained unexercised by either family: `tabcell` on the
 *cutoff* target (keyboard tracking, SW and defMON) and the sign-extended table
-entry. `tabcell` itself is exercised here, on a stream's named column.
+entry. `tabcell` itself is exercised here, on a stream's named column; the
+cutoff one is exercised by the third family
+([prototype-sidwizard-trackerprog.md](prototype-sidwizard-trackerprog.md) §5),
+which leaves the sign-extended entry alone.
 
 ---
 
