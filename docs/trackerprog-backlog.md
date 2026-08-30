@@ -869,3 +869,63 @@ measured on a prefix is not a poison.** §9's acceptance #1 already says the who
 certified horizon for the certificate; it goes for every count a document draws
 a conclusion from, and this is the first exemplar long enough for the difference
 to bite.
+
+### 6.6 Four more the fifth family found
+
+[prototype-jch-trackerprog.md](prototype-jch-trackerprog.md), same shape again,
+and this time §6.5's own six checks were applied before anything was added.
+**Two of the four below are things the checks took back out** — fields the
+family was expected to force, added, measured over the whole horizon and struck.
+
+**A datum can be a property of the *frame* and not of the tune.** `commit_order`
+is one permutation per tune and `meta.shadow.registers` one ordered list per
+tune, and both readings survive four families because in all four the tune
+writes its registers the same way every frame. The Puterman build of JCH does
+not: its wrapper flushes the same 25 registers **low to high** on a frame whose
+own delay byte is zero and **high to low** on one where it is not, and both arms
+are taken — 3,887 frames and 4,689. §2 rule 1 keeps every `ctrl`/`AD`/`SR` write
+in tick order, so the direction is observable on every tick: fixing the flush low
+to high diverges on 4,689 of 8,577 and high to low on 3,887. A flush entry may
+now state the guard the image writes it under, which is the shape
+`globals.commit` entries have had all along — and a bare register is the entry
+with no guard, so the four families that had a plain list are unchanged, object
+and render both. The generalisable check: before making a field one datum per
+tune, ask what varies *within* a tune; a family whose data drives its own
+write-out is where "one per tune" stops being true.
+
+**Two fields, added because the player has them, and worth nothing.** V20's
+prefetch skips the pulse, the filter and the vibrato on the row step it reads,
+where a build byte says so; and its row commit copies a *staged* instrument
+byte, not the row's own. Both are real things the player does, both were
+foreseen, and both were built. Measured over the whole horizon of the build that
+has them: the effects skip diverges on **0 of 8,577** — that build's pulse
+programs are self-loops with a zero step and its cutoff is overwritten by the
+wrapper before it reaches the chip — and the staged instrument on **0 of 8,577**
+and **0 of 2,401**. Both are struck, and with the first goes a `meta.prefetch`
+field that existed only to serve it. The staged *note* beside them survives the
+same measurement at 8 and 397 ticks and stays. The generalisable check is
+§6.4's, sharpened: rendering the general form and counting is not only how a
+second form is refused, it is how a *faithful* form is refused. Being what the
+player does is not the test; distinguishing an observation is.
+
+**A shadow hides more than `commit_order`.** §6.5 recorded that a family whose
+writes go through an image cannot tell `ad` from `sr`, and defMON measured it at
+0. The second such family measures it again at 0 — and adds one: **voice order**
+is invisible too. Committing JCH's voices 0, 1, 2 instead of 2, 1, 0 diverges on
+all 2,401 ticks of the build with no image, because the three voices write the
+one global channel's registers and the last one wins; through the other build's
+flush it diverges on 0. Two data of `meta` collapse to nothing under one form of
+`meta`, and the object still has to carry them, because the *other* build needs
+both. The generalisable check: a datum that is unobservable in one build of a
+family is not a datum the family does not have.
+
+**A citation fell, the second one to.** §5's `links` row named JCH's re-trigger
+arm as its second family — "re-points the pulse cursor **and** reloads the pw
+accumulator from the stream row in one step". It is not a `links`: it is the
+instrument's `on_note`, which §3.5 already makes one inline §3.3 stream, and a
+`point` beside a `sets` in one act is what that stream *is*. The object uses
+`links` nowhere. `links` keeps GoatTracker 2 and the hermetic clamp snippet, and
+the row is marked back down to one certified family plus a snippet. The
+generalisable check, which is §1's own rule read backwards: a citation written
+from a *reading* of a family is a hypothesis until that family is transliterated,
+and two of the five transliterations so far have taken one out.

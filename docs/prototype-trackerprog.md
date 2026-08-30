@@ -104,7 +104,9 @@ non-null, `end.kind = loop`. `complete` with **`period = 1`** did not loop — t
 state reached a fixed point and the tune *ended* (`jch-knob-at-night` period 1
 at tick 8,576, architecture §9.2; Follin song 1 period 1 at call 12,996,
 follin:93): `loop` null, `end.kind = fixed_point`, materialisation (§6) to
-`first_repeat`. A `horizon` tuneprog yields the horizon's score, `loop` null,
+`first_repeat` — exercised, and the tune says where the end comes from: its
+wrapper's own two-byte countdown closes the flush at frame 8,576
+([prototype-jch-trackerprog.md](prototype-jch-trackerprog.md) §3). A `horizon` tuneprog yields the horizon's score, `loop` null,
 `end.kind = horizon`, `Order` ending in the `horizon` terminator (§3.6).
 
 ---
@@ -125,7 +127,7 @@ across its versions:
 
 | source | `commit_order` | evidence |
 | --- | --- | --- |
-| JCH V20 | `(ad, sr, ctrl)` | `p_1616` writes `ad`, `sr`, `ctrl` in that order — jch:178-180, jch.md:656-658 |
+| JCH V20 | `(ad, sr, ctrl)` | `p_1616` writes `ad`, `sr`, `ctrl` in that order — jch:178-180, jch.md:656-658. Measured: any other order diverges on all 2,401 ticks of *Guldkornekspressen Intro*, and on **0** of *Knob at Night*, whose flush re-orders them ([prototype-jch-trackerprog.md](prototype-jch-trackerprog.md) §4.1) |
 | GoatTracker 2 | `(sr, ad, ctrl)` | the flush runs `$D418`→`$D400`, so per voice offset 6, 5, 4 (anatomy:766) |
 | SID Wizard 1.6 / 1.9 | `(ad, sr, ctrl)` / `(sr, ad, ctrl)` | anatomy:1232, the HR and note-start frames |
 | Hubbard | `(ctrl, ad, sr)` | `sid[v].ctrl`, then `pw`, then `ad`, `sr` — commando-floor:201-205 |
@@ -217,8 +219,11 @@ What lands here: GT2 wavetables (`T16F9` rows of wave/note with `$FF` jump, the
 role, gt2:84); GT2/SW pulse, filter and speed tables; JCH's two column programs
 — `rec6` pulse, **4** columns `[init/keep, Δ, dir|frames, next]` (`$FF` = keep,
 else nibbles to `pw_lo`/`pw_hi`; `pw += b1894`; `& $80` direction, `& $7F`
-frames — jch.md:527-538) and `rec7` filter, **3** columns `[init, Δ, frames]`
-(jch.md:544-546), counts at jch:82 and jch:106-107; SW tempo programs; defMON
+frames — jch.md:527-538) and `rec7` filter, **4** columns `[init, Δ, frames,
+next]` (jch.md:544-551) — both four, and the print's three is a region's derived
+origin (backlog P1), not a fact about the tune
+([prototype-jch-trackerprog.md](prototype-jch-trackerprog.md) §6); counts at
+jch:82 and jch:106-107; SW tempo programs; defMON
 sidTAB rows (variable-length register-column records with delay and jump,
 anatomy:211 — the form at its most general); and the prose-only Galway, Walker
 and Blackbird programs. The stream is what all of these already are: *rows,
@@ -263,7 +268,7 @@ the write order §2 compares is the stream's own step order:
 
 | source | prelude | evidence |
 | --- | --- | --- |
-| JCH V20 | `early = 2`; row `set(ad,$0F) set(sr,$00) set(ctrl, mask $FE)`, note row `set(ctrl,$09)` | jch.md:501-511, jch:150-158 |
+| JCH V20 | `early = 2`; row `set(ad,$0F) set(sr,$00) set(ctrl, mask $FE)`, note row `set(ctrl,$09)`; the flag that arms it is a **cell the note-on sets**, not a column the prelude reads, and the prelude's own frame leaves the machine out | jch.md:501-511, jch:150-158, [prototype-jch-trackerprog.md](prototype-jch-trackerprog.md) §4.9 |
 | GoatTracker 2 | `early = gatetimer` (instrument column 7); row `set(ctrl, wave & $FE)`, note row `set(ctrl, firstwave\|TEST)` | anatomy:214, anatomy:742 |
 | SID Wizard | `early = 2`; rows in the version's own AD/SR order, then `set(ctrl, TEST\|gate)` at tick 2 | anatomy:1232-1233 |
 | defMON | `null`, and the data is right: `WG=00 AD=0F SR=00` → hold → `WG=09` is the first three rows of the sidTAB program the row starts, so nothing schedules it and there is no `early` (defmon-trackerprog §8) | anatomy:214 |
@@ -436,7 +441,9 @@ opcode.
 
 The filter as a global channel (cutoff streams and accumulators, resonance,
 routing), master volume, per-voice and default tempo. Filter ownership — SW's
-owner voice, JCH's "filter runs on track 0" — is last-writer over the global
+owner voice, JCH's "filter runs on track 0" (which is a **byte of the tune's own
+filter table**, not a constant of the player — prototype-jch-trackerprog.md §8)
+— is last-writer over the global
 channel, which the observable makes exact without an ownership construct.
 Keyboard tracking (SW `CKBDTRK`) is **not** an `interval` term: it adds an
 *absolute* table entry, `a11 = FREQ[$E + (freq_idx + b1024[$2C + b1024_idx])]`
@@ -568,8 +575,13 @@ occurs for the filter in three families (JCH and SW `cutoff_hi`, defMON
 tone-portamento snap is the case: `p_1327` sets the note index *and* zeroes the
 vibrato phase — `voice[x/7].freq_lo_idx_2 = a; voice[x/7].b14A0 = 0`
 (gt2.md:798-801) — and the tick-0 handlers 1/2 zero `vibtime` the same way
-(anatomy:876). Second family: JCH's re-trigger arm re-points the pulse cursor
-and reloads the pw accumulator from the stream row in one step (jch.md:363-366).
+(anatomy:876). The second family named here was JCH's re-trigger arm, which
+re-points the pulse cursor and reloads the pw accumulator in one step
+(jch.md:363-366) — and that is **not** a `links`: it is the instrument's
+`on_note`, one inline §3.3 stream whose `point` sits beside its `sets` in one
+act, which §3.5 already says an note-on is. The row keeps GoatTracker 2 and the
+hermetic clamp snippet ([prototype-jch-trackerprog.md](prototype-jch-trackerprog.md)
+§8, row 5).
 
 Every per-frame modulation in the anatomy's row (anatomy:212) lands on one line,
 each with two certified families or a marked single-family exception:
@@ -769,6 +781,8 @@ Wizard's `b1024` still refuse, and their cells are not scratch.
 
 | defMON, the fourth family (**#311**) | the two certified defMON tuneprogs transliterated onto the same player: *Automatas* over its whole 149,025-tick horizon and *Jazzpjazz* over its 1,799, 0 divergences and write lists **identical** on every tick, the loop claim re-verified on the render. Six forms in the player — `meta.shadow.registers` is the ordered list of registers the image carries (GoatTracker 2's value is `range(24, -1, -1)`, write for write identical), a `globals.commit` to a register outside that list reaches the chip on its own tick, `{"cell": …}` and a `sets` target now read and write §5's own cell vocabulary (`shadow.<pair>` included), `xor` beside `and`/`or`, `row_consumes_tick: false` is *never* rather than always, and a gate reports the decision the step made rather than re-reading the cell it moved. Four in the data only: the arranger's end is global so the score materialises per step, a stream that acts and *then* holds is two rows, a tuning read below itself and past itself is a signed `base`, and §10's multispeed is `rate = 8` — measured. One expectation fell: the sidTAB row is a stream row and not an instrument, so both sidcalls are `point` commands and the family's one `Ins` carries neither `adsr` nor `prelude`. `carry(site, flag)` is two-family after all, but only over the whole horizon — a 20,000-tick prefix reads 0 where 149,025 reads 44,675 | `universal`, `printer`, `tools/trackerprog_defmon.py` |
 
+| JCH V20, the fifth family (**#312**) | the two certified JCH tuneprogs transliterated onto the same player: *Guldkornekspressen Intro* over its whole 2,401-tick horizon with the loop claim re-verified, and *I Could Eat a Knob at Night* over its whole 8,577 with the write lists **identical** on every tick, 0 divergences on both. **`end.kind = fixed_point` is taken for the first time**: period 1, `loop` null, the score materialised to `first_repeat` and the render's last tick writing nothing. Five forms in the player, every one a marked single-family data form — a flush entry may state the guard the image writes it under (one build flushes the same 25 registers in either direction, and which one is a byte of the frame: fixing either diverges on 4,689 and 3,887 of 8,577), `meta.prefetch` gains `note`, `transpose` and `cmds` (the row's pitch staged with the row, worth 8 and 397 ticks; the order's transpose too, because the vibrato reads the untransposed note, worth 240; the row's commands spent at the fetch rather than the boundary, worth 38), and `reg.N` is a register of the one global channel written by the voice whose write-out sends it. Five in the data only, including the two column programs as act-and-hold rows with the step ranked after them (reversing it diverges on 1,821 of 2,401) and the wrapper as a stream, a countdown and seven overrides. **Two expectations measured to zero and were struck**: the build byte's own effects skip (0 of 8,577 on the only build that sets it) and a staged instrument (0 on both). The first family whose two builds disagree about having a shadow, and the second measurement that a shadow hides `commit_order` — and, new, voice order with it | `universal`, `printer`, `tools/trackerprog_jch.py` |
+
 Everything after this is the rest of the `trackerprog/` package, under the same
 rules (≤ 500 lines per module, hermetic tests, the certificate).
 
@@ -842,22 +856,25 @@ the interpreter, not §4's fixed procedure over instruments, streams and
 accumulators — that reduction is backlog W11, and the exact replay is what it
 must be proved against.
 
-**State of the hand exemplars.** Four families are transliterated by hand onto
+**State of the hand exemplars.** Five families are transliterated by hand onto
 §4's own procedure and certified against their tunes' players on the PcodeVM,
 with no branch on `meta.family` anywhere in `trackerprog/`: Hubbard ×3 subtunes
 ([prototype-commando-trackerprog.md](prototype-commando-trackerprog.md)),
 GoatTracker 2 ×2 builds
 ([prototype-goattracker-trackerprog.md](prototype-goattracker-trackerprog.md)),
 SID Wizard ×2 builds
-([prototype-sidwizard-trackerprog.md](prototype-sidwizard-trackerprog.md)) and
+([prototype-sidwizard-trackerprog.md](prototype-sidwizard-trackerprog.md)),
 defMON ×2 builds
-([prototype-defmon-trackerprog.md](prototype-defmon-trackerprog.md)), the last
-three with the inherited loop claim re-verified on the render where the source
-carries one, and the write lists identical rather than permuted. defMON is the
-first exemplar whose horizon does not fit a script's 60 seconds, so its tool
-carries `--budget`/`--resume` (architecture §11); the whole 149,025-tick
-certificate is the tool's and the suite renders a stated prefix. Three exemplars
-remain: JCH ×2, Follin, and the T0–T3 lift that would produce these objects
+([prototype-defmon-trackerprog.md](prototype-defmon-trackerprog.md)) and JCH V20
+×2 builds ([prototype-jch-trackerprog.md](prototype-jch-trackerprog.md)), each
+with the inherited loop claim re-verified on the render where the source carries
+one, and the write lists identical or permuted rather than merely equal under
+§2's reduction. defMON is the first exemplar whose horizon does not fit a
+script's 60 seconds, so its tool carries `--budget`/`--resume` (architecture
+§11); the whole 149,025-tick certificate is the tool's and the suite renders a
+stated prefix. JCH is the first to take `end.kind = fixed_point` — a song that
+*ends* — and the first whose two builds disagree about having a shadow. Two
+exemplars remain: Follin, and the T0–T3 lift that would produce these objects
 rather than a hand reading of them.
 
 The genericity gate: the six tracker exemplars must lift with zero

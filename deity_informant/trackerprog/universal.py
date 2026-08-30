@@ -63,8 +63,14 @@ class Player:
         sh = m.get("shadow")  # a register file flushed once per tick, in a stated order
         self.shadow = list(s0["shadow"]) if sh else None
         # the flush names the registers the image carries, in the order it writes
-        # them: a register the image has no byte for is not in the list at all
-        self.flush = list(sh["registers"]) if sh else []
+        # them: a register the image has no byte for is not in the list at all, and
+        # an entry may state the guard the image writes it under -- one build of one
+        # family flushes the same 25 registers in either direction, and which one is
+        # a byte of the frame being flushed (prototype-jch-trackerprog.md section 4)
+        self.flush = [
+            (e, []) if isinstance(e, int) else tuple(e) for e in (sh or {}).get("registers", ())
+        ]
+        self.imaged = {r for r, _ in self.flush}
         self.gl = dict(s0.get("globals", {}))  # the tune's one global channel
         self.cursor = {k: [dict(x) for x in d] for k, d in s0.get("cursors", {}).items()}
         self.gcursor = {k: dict(d) for k, d in s0.get("gcursors", {}).items()}
@@ -302,7 +308,7 @@ class Player:
         self.tick_no += 1
         self.w = []
         if self.shadow is not None:  # this tick emits the image the last tick left
-            self.w = [(r, self.shadow[r] & 0xFF) for r in self.flush]
+            self.w = [(r, self.shadow[r] & 0xFF) for r, when in self.flush if self.guards(when)]
         if self.stopping:
             if self.stopping == 1:
                 self.stopping = 2
@@ -349,7 +355,7 @@ class Player:
             reg, e = c[0], c[1]
             if len(c) > 2 and not self.guards(c[2]):
                 continue
-            if self.shadow is None or reg not in self.flush:
+            if self.shadow is None or reg not in self.imaged:
                 self.w.append((reg, self.ev(e) & 0xFF))
             else:
                 self.shadow[reg] = self.ev(e) & 0xFF
@@ -594,6 +600,13 @@ class Player:
         elif t == "freq":
             self.c["freq"][self.v] = val
             prod += [("freq_lo", val & 0xFF), ("freq_hi", (val >> 8) & 0xFF)]
+        elif isinstance(t, str) and t[:4] == "reg.":
+            # a register of the tune's one global channel, written by the voice whose
+            # write-out sends it and resolved by last-writer (§3.7).  A single-family
+            # data form: JCH's write-out sends the cutoff and the volume inside every
+            # voice's own group, so the value the tick leaves is the last voice's, not
+            # the channel's at the end of the tick (prototype-jch-trackerprog.md §4.4)
+            prod.append((int(t[4:]), val))
         elif t in EDGE:  # an edge write belongs to the act of the tick that made it
             edge.append((t, val & 0xFF, self.act))
         else:
@@ -628,7 +641,7 @@ class Player:
                     self.emit(t, one[t])
 
     def emit(self, target, val):
-        r = 7 * self.v + REG[target]
+        r = target if isinstance(target, int) else 7 * self.v + REG[target]
         if self.shadow is None:
             self.w.append((r, val & 0xFF))
         else:
@@ -666,7 +679,7 @@ class Player:
             self.staged[v] = None
             return False
         self.staged[v] = e
-        self.stage(e)
+        self.stage(e, prod, edge)
         self.tied[v] = e["tie"] or bool((self.held[v] or {}).get("tie"))
         if k:  # the one field that says a row keys a note, staged with the row
             self.c[k][v] = int(self.keys(e))
@@ -706,8 +719,17 @@ class Player:
             self.publish("order", v, {"pos": self.c["orderpos"][v]})
         return self.pattern_of(v)["events"][self.evrow[v]]
 
-    def stage(self, e):
-        """What the fetch commits ``early``, before the row it belongs to arrives."""
+    def stage(self, e, prod, edge):
+        """What the fetch commits ``early``, before the row it belongs to arrives.
+
+        Three of the fields are **single-family data forms**, each marked with its
+        reason (prototype-jch-trackerprog.md §4.2, §4.3, §4.5): ``note`` because a
+        family whose commit copies a staged pitch moves the live note on a row
+        that does not sound, ``transpose`` because one reads the *untransposed*
+        note in a modulator, and ``cmds`` because one spends the row's commands
+        where it reads them rather than where the row lands. Each is worth ticks,
+        measured over that family's whole horizon; a fourth was struck at zero.
+        """
         v = self.v
         for f in self.o["meta"].get("prefetch", ()):
             f, k = (f, f) if isinstance(f, str) else f
@@ -718,8 +740,16 @@ class Player:
                 self.c[k][v] = self.c["ins"][v] if e["ins"] is None else e["ins"]
             elif f == "gate" and e["gate"] is not None:
                 self.c[k][v] = 0xFF if e["gate"] == "on" else 0xFE
+            elif f == "note" and e["note"] is not None:  # the pitch, staged with the row
+                self.c[k][v] = e["note"]
+            elif f == "transpose":  # the order's own column, staged with the row it plays
+                self.c[k][v] = self.stagedplay[v].get("transpose", 0)
             elif f == "arm" and e["arm"] is not None:
                 self.held[v] = self.cmd(e["arm"])
+            elif f == "cmds" and e["arm"] is not None:  # a row whose commands the fetch spends
+                a = e["arm"]
+                for c in a if isinstance(a, list) else [a]:
+                    self.hold_command(self.cmd(c), prod, edge)
 
     def sequencer_step(self, prod, edge):
         """Consume the order program's next event and give it to the voice."""

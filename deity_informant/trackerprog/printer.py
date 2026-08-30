@@ -114,7 +114,13 @@ def _when(step, notes):
 
 
 def _flush(rs):
-    """How the image's own flush runs: down, up, or the order the tune writes."""
+    """How the image's own flush runs: down, up, or the order the tune writes.
+
+    An entry may carry the guard the image writes it under, so a flush is a
+    sequence of guarded writes and the plain register is the entry with none.
+    """
+    if any(not isinstance(r, int) for r in rs):
+        return "under its own guards, %d of them" % sum(1 for r in rs if not isinstance(r, int))
     if rs == sorted(rs, reverse=True):
         return "descending"
     return "ascending" if rs == sorted(rs) else "in the image's own order"
@@ -215,7 +221,11 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
     add("## streams")
     add("")
     for k, st in obj["streams"].items():
-        head = "%s -- %s%s" % (k, st["term"], "" if "rank" not in st else ", rank %d" % st["rank"])
+        head = "%s%s%s" % (
+            k,
+            "" if "term" not in st else " -- " + st["term"],
+            "" if "rank" not in st else ", rank %d" % st["rank"],
+        )
         if st.get("all"):
             head += ", every row every tick"
         if st.get("epoch") == "entry":
