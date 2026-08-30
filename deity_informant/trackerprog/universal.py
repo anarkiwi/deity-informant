@@ -188,13 +188,6 @@ class Player:
             return 7 * (self.v if a == "reader" else a)
         if k == "u16":
             return (self.ev(a[0], ov) & 0xFF) | (self.ev(a[1], ov) & 0xFF) << 8
-        if k == "gen":
-            g = self.o["generators"][a]
-            keep, self.own = self.own, self.gen[a]
-            try:
-                return self.ev(g["value"], ov)
-            finally:
-                self.own = keep
         if k == "notefreq":
             return self.pitchof()
         if k == "interval":

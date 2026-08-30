@@ -44,8 +44,6 @@ def expr(e, notes=None):
         return a
     if k == "ins":
         return "ins." + a
-    if k == "gen":
-        return a
     if k == "sid_base":
         return "sid_base(%s)" % (a if isinstance(a, (int, str)) else expr(a, notes))
     if k == "u16":
