@@ -86,7 +86,7 @@ object.
 | `pulsetimetbl`/`pulsespdtbl` | the `pulse` stream: a `set` row, or `hold` ticks of `run(pulse_step)` | §3.3 |
 | `filttimetbl`/`filtspdtbl`, global | the `filter` stream on `globals.streams`, and the three registers `globals.commit` | §3.7 |
 | `speedtbl` left/right, double duty | the `speed` stream, unpacked into `delta`, `depth`, `cmp`, `zero` | §3.6 `arm(acc, overrides)` |
-| `vibtime += 2`, `EOR #$FF` above `speedcmp` | `Acc(vibtime, const(+2), reflect-complement, bound [0, speed[param].cmp])` | §5 vibrato |
+| `vibtime += 2`, `EOR #$FF` above `speedcmp` | `Acc(vibtime, const(+2), reflect-complement, amplitude [0, speed[param].cmp], bound observed [0, $FF])` | §5 vibrato |
 | `LSR; BCC freqadd / BCS freqsub` | the freq Acc's `phase bit(vibtime, 0)` | §5 vibrato |
 | `mt_effect_0`'s `vibdelay` countdown | `Acc(vibdelay, const(-1))`, guarded by the arm | §5 (a counter is a divider) |
 | `fx 1/2`: `freq ± speed` | `porta_up` / `porta_down`, `phase const(0/1)` | §5 free slide |
@@ -358,10 +358,18 @@ an instrument, or carries a note: a keyoff is a row with nothing else on it.
 - **`commit_order` is one datum per tune, not a player branch** — §3.1's row for
   GoatTracker 2, `(sr, ad, ctrl)`, unchanged.
 - **the coupled vibrato pair** — a phase Acc `delta const(+2)`,
-  `policy reflect-complement`, `bound [0, speedcmp] proved`; a freq Acc whose
+  `policy reflect-complement`, swinging against `speedcmp`; a freq Acc whose
   `phase` is bit 0 of the phase Acc's cell and whose `delta` is a `tablestep` or
   a constant. §5 wrote this row from GT2 and it held **exactly as written**,
-  including that the bound is the speed byte's `& $7F` and *not* the depth.
+  including that the speed byte's `& $7F` and *not* the depth is what the
+  triangle swings against. What §5 called that interval was wrong and this
+  object repeated it: `bound [0, speedcmp] proved` is where the phase *turns*,
+  and the complement arm exists precisely to put the cell above it — 1,532 of
+  *Je suis Linus*' 10,956 moves and 1,114 of *Do It Again*' 10,073 leave it,
+  the first at tick 2 and tick 20. §5's own correction 1 said so in prose in
+  2026; the record now says it as data, `amplitude` carrying the compare and
+  `bound observed [0, $FF]` carrying the byte
+  ([prototype-trackerprog.md](prototype-trackerprog.md) §5, §7).
 - **tone portamento** — `clamp(pitch[note])`, §5's own row, whose reset of the
   vibrato phase is §5's `links` rule ("the constants the clamp action's own block
   stores into another Acc's cell") exactly. Where the object *carries* it moved:

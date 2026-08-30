@@ -81,7 +81,7 @@ factored form — the certified program. Right column is the object.
 | `$518B` hard cut | the instrument's **prelude**, `early = 1` row tick, rows `set(ctrl, wave & $FE) set(ad,0) set(sr,0)` | §3.5 |
 | `ins.vib ≠ 0` | `Acc(freq, repeat(tablestep(pitch, note, vib+1), phase(fold(counter,7))), policy reload(pitch[note]))` | §5 vibrato, stateless phase |
 | `ins.fx & 8` | `Acc(pw_lo, const(pspeed) + carry(C), width 8, wrap, scope instrument)` | §5 pulse run |
-| `ins.pspeed ≠ 0` | `Acc(pw, const(pspeed & $E0), width 12, reflect, bound [$800,$EFF] projected, rate (pspeed & $1F)+1, phase cell pwdir, scope instrument)` | §5 pulse sweep |
+| `ins.pspeed ≠ 0` | `Acc(pw, const(pspeed & $E0), width 12, reflect, amplitude [$800,$EFF] >> 8, bound [0,$FFF] projected, rate (pspeed & $1F)+1, phase cell pwdir, scope instrument)` | §5 pulse sweep |
 | the extra byte `≥ $80` | `arm(slide, {delta, phase})` on the event — the byte is unpacked at build time, never at run time | §3.6 |
 | `voice.porta ≠ 0` | `Acc(freq, const(<delta>), phase const(<phase>), wrap, scope voice)`, armed by the score | §5 free slide |
 | `ins.fx & 1` | `Acc(freq_hi, const(-1), emit entry)` plus two ctrl rows its own guard selects | new (§4.5, §4.6) |
@@ -177,15 +177,20 @@ bytes tune notes 16..95 and then become state (commando-floor §5, "const is
 refuted by the tune"). Transposing an octave up from the tuning's top twelve
 notes runs off the end.
 
-§5 already gives every accumulator a `bound` and a policy at that bound. The
-arpeggio's bound is the tuning; its behaviour there is **its own**, with its own
-private state and subscriptions, indexed by how far past the transposition went
-and never by a note:
+§5 already gives every accumulator a policy at the edge of what it reaches. The
+edge the arpeggio runs off is the **tuning's** — not its `bound`, which is the
+16-bit store the cell keeps, a distinction §7's second package had to make when
+the renderer started asserting the one and this record was claiming the other
+(the arp stream's `[0, 12]` is the transpose, and the cell holds a frequency).
+Its behaviour past the tuning is **its own**, with its own private state and
+subscriptions, indexed by how far past the transposition went and never by a
+note:
 
 ```
 [5] arpeggio      freq  w16  tick           scope voice
       policy  reload transpose(arp[counter & 1])
-      bound   [$0000, $000C] proved -- the arp stream; past the tuning, beyond
+      phase   counter & 1
+      bound   [$0000, $FFFF] projected -- the 16-bit store
       beyond  past the tuning, by how far past it the transposition went
             0  u16(0, 7)
             1  u16(14, sid_base(reader))
@@ -400,10 +405,15 @@ Every §5 row Hubbard is cited for held **exactly as written**, with no widening
   instrument byte; the `dur >= 6` guard is the delta's, not the producer's.
 - **free slide is `wrap`, not `reflect`** (§5's correction 5): `porta` is set by
   the score and never turns.
-- **pulse sweep** — `reflect`, `bound [$800,$EFF]` **projected** from the store's
-  `& $F` (correction 4), `rate` the divider, `phase` the per-voice cell, `scope`
-  **instrument** while its phase and divider are per voice (§5's `scope` rule,
-  read off the cell).
+- **pulse sweep** — `reflect`, turning at `[$800, $EFF]` **projected** from the
+  store's `& $F` (correction 4), `rate` the divider, `phase` the per-voice cell,
+  `scope` **instrument** while its phase and divider are per voice (§5's `scope`
+  rule, read off the cell). Where `[$800, $EFF]` *lives* moved: it is the
+  `amplitude` the bounce turns at and not the interval the cell keeps, because a
+  step of `$E0` from `$E60` lands at `$F40`, which the turn's own `>> 8` does not
+  see, and the step after it wraps to `$020` — 10 moves of song 1's 6,800 leave
+  the window, the first at tick 3,457. The `bound` is the 12-bit store
+  ([prototype-trackerprog.md](prototype-trackerprog.md) §5, §7).
 - **pulse run** — `const(k) + carry(site)`, `bound` projected at 12 bits.
 - **arpeggio** — an absolute `set` producer over a pitch stream, `phase
   fn(counter)`.

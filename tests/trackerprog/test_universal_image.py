@@ -124,6 +124,7 @@ def test_the_cell_vocabulary_is_one_for_a_read_a_write_and_an_accumulator():
             "policy": "wrap",
             "scope": "voice",
             "produce": [],
+            "bound": {"from": "projected", "interval": [0, 0xFFFF], "witness": "16-bit"},
             "when": [[{"cell": "shadow.pw"}, ">=", 0x300]],
         }
     }
@@ -177,6 +178,7 @@ def test_the_gate_reports_the_decision_the_step_made_not_the_cell_it_left():
             "policy": "wrap",
             "scope": "voice",
             "produce": [],
+            "bound": {"from": "projected", "interval": [0, 0xFF], "witness": "the byte"},
             "step_when": [[{"cell": "level"}, "<", 8]],
             "gate": {"true": [["ad", 0x11]], "false": [["ad", 0x22]]},
         }

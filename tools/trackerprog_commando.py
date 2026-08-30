@@ -318,9 +318,9 @@ def accs():
             "delta_when": [[{"cell": "dur"}, ">=", 6]],
             "flag": {"name": "C", "seed": 1, "unguarded": 0},
             "bound": {
-                "from": "proved",
-                "interval": [0, 3],
-                "witness": "the fold's own range; the tuning has no interval above its top",
+                "from": "projected",
+                "interval": [0, 0xFFFF],
+                "witness": "the 16-bit store; [0, 3] is the fold, the repeat's own count",
             },
             "rate": 1,
             "scope": "voice",
@@ -350,11 +350,15 @@ def accs():
             "width": 12,
             "delta": {"const": "delta"},
             "policy": "reflect",
-            "bound": {
-                "from": "projected",
+            "amplitude": {
                 "interval": [0x800, 0xEFF],
                 "shift": 8,
-                "witness": "pw_hi == $E going up, == $8 going down",
+                "turn": "pw_hi == $E going up, == $8 going down",
+            },
+            "bound": {
+                "from": "projected",
+                "interval": [0, 0xFFF],
+                "witness": "the 12-bit store; a step of $E0 steps over the turn's window",
             },
             "rate": "rate",
             "phase": {"cell": "pwdir"},
@@ -386,7 +390,11 @@ def accs():
             "delta": {"const": -1},
             "policy": "wrap",
             "emit": "entry",
-            "bound": {"from": "proved", "interval": [1, 0xFF], "witness": "the guard freq_hi != 0"},
+            "bound": {
+                "from": "proved",
+                "interval": [0, 0xFE],
+                "witness": "the guard freq_hi != 0 on entry, and one step of -1",
+            },
             "when": [[{"cell": "freq_hi"}, "!=", 0], [{"cell": "rowsleft"}, "!=", 0]],
             "step_when": [
                 [{"and": [{"sub": [{"cell": "dur"}, 1]}, 0xFF]}, ">=", {"cell": "rowsleft"}]
@@ -423,9 +431,9 @@ def accs():
                 "reload": {"transpose": {"stream": ["arp", {"and": [{"cell": "counter"}, 1]}]}}
             },
             "bound": {
-                "from": "proved",
-                "interval": [0, 12],
-                "witness": "the arp stream; past the tuning, beyond",
+                "from": "projected",
+                "interval": [0, 0xFFFF],
+                "witness": "the 16-bit store; [0, 12] is the arp stream, the transpose",
             },
             "rate": 1,
             "scope": "voice",

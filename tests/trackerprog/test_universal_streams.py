@@ -129,8 +129,11 @@ def acc(name, cell, **kw):
         "policy": "wrap",
         "scope": "voice",
         "produce": [],
+        "bound": {"from": "projected", "interval": [0, 0xFFFF], "witness": "the 16-bit store"},
     }
     rec.update(kw)
+    if "width" in kw and "bound" not in kw:  # the store's own projection at that width
+        rec["bound"] = dict(rec["bound"], interval=[0, (1 << kw["width"]) - 1])
     return {name: rec}
 
 
@@ -242,6 +245,43 @@ def test_an_event_of_several_rows_spends_them_before_the_next_is_fetched():
     assert column(w, AD) == [0] * 9 + [0x0F] + [0x11] * 4
 
 
+def test_a_move_outside_the_declared_bound_stops_the_render():
+    """Section 5's bound is the invariant: the renderer asserts it, and says which acc."""
+    a = acc("run", "vibtime", width=8, delta={"const": 40})
+    a["run"]["bound"] = {"from": "proved", "interval": [0, 100], "witness": "a guard"}
+    o = obj([event(note=1, ins=1)], accs=a, tempo=2, rest_arm=[{"acc": "run"}])
+    with pytest.raises(AssertionError) as e:
+        render(o, 16)
+    assert str(e.value) == "run left its proved bound [0, 100] at 120"
+
+
+def test_an_accumulator_with_no_bound_is_refused_where_it_moves():
+    """Bounded is what an accumulator is; a record with no interval renders nothing."""
+    a = acc("run", "vibtime", width=8, delta={"const": 1})
+    del a["run"]["bound"]
+    o = obj([event(note=1, ins=1)], accs=a, tempo=2, rest_arm=[{"acc": "run"}])
+    with pytest.raises(AssertionError, match="run stores with no bound"):
+        render(o, 8)
+
+
+def test_the_amplitude_a_triangle_folds_at_is_not_the_bound_it_keeps():
+    """Section 5 correction 1: the complement arm leaves the amplitude, by design."""
+    a = acc(
+        "phase",
+        "vibtime",
+        width=8,
+        target="note",
+        delta={"const": 2},
+        policy="reflect-complement",
+        amplitude={"interval": [0, 4]},
+    )
+    o = obj([event(note=1, ins=1)], accs=a, tempo=2, rest_arm=[{"acc": "phase"}])
+    p = Player(o)
+    got = [p.tick() and 0 or p.c["vibtime"][0] for _ in range(16)]
+    # the cell swings against 4 and keeps the byte: two intervals, and only one is asserted
+    assert max(got) == 255 and a["phase"]["bound"]["interval"] == [0, 0xFF]
+
+
 def test_reflect_complement_folds_the_phase_at_its_bound():
     a = acc(
         "phase",
@@ -250,7 +290,7 @@ def test_reflect_complement_folds_the_phase_at_its_bound():
         target="note",
         delta={"const": 2},
         policy="reflect-complement",
-        bound={"from": "proved", "interval": [0, 4]},
+        amplitude={"interval": [0, 4]},
     )
     o = obj([event(note=1, ins=1)], accs=a, tempo=2, rest_arm=[{"acc": "phase"}])
     p = Player(o)

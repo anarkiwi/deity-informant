@@ -712,10 +712,14 @@ def accs():
             "policy": "reflect-complement",
             "rate": 1,
             "scope": "voice",
-            "bound": {
-                "from": "proved",
+            "amplitude": {
                 "interval": [0, {"tabcell": ["speed", {"const": "row"}, "cmp"]}],
-                "witness": "the speed row's own compare",
+                "fold": "the speed row's own compare: the triangle's amplitude",
+            },
+            "bound": {
+                "from": "observed",
+                "interval": [0, 0xFF],
+                "witness": "the byte; the complement arm leaves the amplitude by design",
             },
             "produce": [],
         },
