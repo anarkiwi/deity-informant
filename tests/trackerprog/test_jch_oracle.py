@@ -9,6 +9,7 @@ named in ``CLAIMS`` so the hvsc budget stays where it is.
 """
 
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -58,13 +59,17 @@ def claim(name):
     return TJ.claim(str(CERTS / (CLAIMS[name][0] + ".json")), 0)
 
 
+@lru_cache(maxsize=None)
 def tune(name):
+    """One reading per tune per worker: the object is a pure function of the band."""
     loop, ticks, cycles, _, _ = claim(name)
-    return TJ.Tune(str(tune_file(name)), 0, cycles, None if loop else ticks)
+    x = TJ.Tune(str(tune_file(name)), 0, cycles, None if loop else ticks)
+    x.built = x.build()  # rendering copies the state it moves, so one object serves all
+    return x
 
 
 def built(name):
-    return tune(name).build()
+    return tune(name).built
 
 
 @pytest.mark.parametrize("name", sorted(CLAIMS))
@@ -271,7 +276,7 @@ def _program_bytes(x, obj, base, name):
 def test_every_byte_of_the_tune_s_data_is_in_the_object(name):  # noqa: C901 - one per table
     """Every byte of the tune's own data, out of the object: the shape is the tune's."""
     x = tune(name)
-    obj = x.build()
+    obj = x.built
     m, L = x.m, x.L
     for i, ins in obj["instruments"].items():
         col = ins["adsr"] + [ins[k] for k in ("flags", "vol", "filter", "pulse", "wave", "wave")]
