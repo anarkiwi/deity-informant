@@ -146,7 +146,7 @@ def test_every_byte_of_the_tune_s_data_is_in_the_object(name):
         assert rows[r] == {"jump": x.act[x.enter(k)]}
     cols = (x.L["col0"], x.L["col1"], x.L["col2"])
     for step, o in enumerate(obj["score"]["orders"]):
-        for i, play in enumerate(o["play"]):
+        for i in range(len(o["play"])):
             assert x.m[cols[step] + i] == _pattern_no(x, obj, step, i), (step, i)
 
 
@@ -194,6 +194,13 @@ def test_no_number_outside_the_tuning_exists_anywhere(name):
             if e["note"] is not None:
                 assert p["base"] <= e["note"] < p["base"] + len(p["freq"])
     assert p["base"] < 0 < len(p["freq"])  # the slide's window lies below the notes
+    x = tune(name)
+    assert p["note_count"] == x.L["notes"]  # where the stored table ends
+    assert len(p["freq"]) > p["note_count"]  # and what is read past it
+    assert p["freq"] == [
+        x.m[x.L["pitch_lo"] + n] | x.m[x.L["pitch_hi"] + n] << 8
+        for n in range(p["base"], p["base"] + len(p["freq"]))
+    ]
 
 
 @pytest.mark.parametrize("name", sorted(CLAIMS))

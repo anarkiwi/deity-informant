@@ -172,6 +172,7 @@ CELLS = ("osc", "pwstep", "ctrl", "ctrl_eor", "freq_idx", "note")
 DEAD = {
     "res_route.literal": "no sidTAB row of either tune writes the routing byte outright",
     "cascade.chain": "no sidTAB jump of either tune lands on another jump",
+    "osc.interval": "no oscillator of either tune detunes a note by an interval of the tuning",
     "note.absolute": "no sidTAB row of the build that has the column takes a note outright",
 }
 # the image the tick writes out, in the order the tune's own write-out runs
@@ -254,10 +255,6 @@ def layout(m, lo, hi):
     return out
 
 
-def signed(b):
-    return b - 0x100 if b & 0x80 else b
-
-
 class Tune:
     """One defMON tune's data, read through its own player's operands."""
 
@@ -273,11 +270,12 @@ class Tune:
 
     # ---- the tuning -----------------------------------------------------------
     def pitch(self):
-        """One frequency table, read through three windows: notes, slide, interval.
+        """One frequency table, read through two windows: the notes and the slide.
 
         Materialised over the run the tune's own reads reach, which is wider than
         the table is stored: a read past its declared size extends the tuning with
         the values read (section 3.2), and a read below it is the slide's window.
+        ``note_count`` is where the stored table ends and the extension begins.
         """
         m, L = self.m, self.L
         lo, hi = self.span()
@@ -295,9 +293,8 @@ class Tune:
         idx |= {self.m[L["freq_idx"] + STRIDE * v] for v in range(VOICES)}
         top = max(idx)
         for o in self.oscs:
-            if 0 < o < 0x80:  # the interval window, a difference of two neighbours
-                top = max(top, max((o + n) & 0xFF for n in idx) - (L["pitch_lo"] - L["iv_lo"]) + 1)
-            elif o >= 0x80:  # the slide window, twice the step below the tuning
+            assert not 0 < o < 0x80, DEAD["osc.interval"]
+            if o:  # the slide window, twice the step below the tuning
                 top = max(top, 2 * (o & 0x3F) + L["base"])
         return L["base"], top
 
@@ -613,9 +610,6 @@ class Tune:
         lo = {"field": [{"tuned": FI}, 0xFF]}
         hi = {"shr": [{"tuned": FI}, 8]}
         plain = {"add": [lo, {"cell": "voice_no"}]}
-        y = {"field": [{"add": [OSC, FI]}, 0xFF]}
-        step = self.L["pitch_lo"] - self.L["iv_lo"]  # the window the difference is read in
-        det = {"add": [{"tuned": FI}, {"interval": {"sub": [y, step]}}]}
         slid = {"add": [{"cell": "acc"}, {"tuned": FI}]}
         return [
             {
@@ -628,11 +622,8 @@ class Tune:
             },
             {
                 "when": [[OSC, "!=", 0], [OSC, "<", 0x80]],
-                "sets": [
-                    ["freq_lo", {"field": [det, 0xFF]}],
-                    ["freq_hi", {"shr": [{"field": [det, 0xFFFF]}, 8]}],
-                    ["!C", {"bit": [det, 16]}],
-                ],
+                # the arm the horizon never takes: what it would add is `det`
+                "sets": [["freq_lo", {"trap": DEAD["osc.interval"]}]],
             },
             {
                 "when": [[OSC, ">=", 0x80]],
@@ -924,8 +915,13 @@ def claim(path, song):
 
 
 def loop_holds(obj, loop):
-    """Re-verify the inherited claim on the render: the horizon replays itself."""
-    n, p = loop["first_repeat"], loop["period"]
+    """Re-verify the inherited claim on the render: the horizon replays itself.
+
+    The claim names the call the state repeats *after*, and the write-out emits
+    the image the call before it left, so the replay starts one tick later: the
+    period after ``first_repeat`` is the period before it, write for write.
+    """
+    n, p = loop["first_repeat"] + 1, loop["period"]
     w = render(obj, n + p)
     return w[n - p : n] == w[n : n + p]
 
