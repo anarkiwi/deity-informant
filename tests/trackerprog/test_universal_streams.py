@@ -73,7 +73,7 @@ def obj(events, streams=None, accs=None, instrument=None, tempo=2, early=1, curs
             "cycles_per_tick": 19656,
             "voice_order": [0],
             "commit_order": ["sr", "ad", "ctrl"],
-            "shadow": {"registers": 25, "order": "descending"},
+            "shadow": {"registers": list(range(24, -1, -1))},
             "tempo": {
                 "form": "countdown",
                 "cell": "rowclock",

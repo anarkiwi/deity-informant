@@ -62,9 +62,9 @@ class Player:
         self.cur = None  # the modulator stepping, for its own behaviour past the tuning
         sh = m.get("shadow")  # a register file flushed once per tick, in a stated order
         self.shadow = list(s0["shadow"]) if sh else None
-        self.flush = list(range(sh["registers"] - 1, -1, -1)) if sh else []
-        if sh and sh.get("order") == "ascending":
-            self.flush.reverse()
+        # the flush names the registers the image carries, in the order it writes
+        # them: a register the image has no byte for is not in the list at all
+        self.flush = list(sh["registers"]) if sh else []
         self.gl = dict(s0.get("globals", {}))  # the tune's one global channel
         self.cursor = {k: [dict(x) for x in d] for k, d in s0.get("cursors", {}).items()}
         self.gcursor = {k: dict(d) for k, d in s0.get("gcursors", {}).items()}
@@ -103,6 +103,10 @@ class Player:
         if name in ("pw", "pw_lo", "pw_hi") and name not in self.c:
             p = self.pw[str(self.c["ins"][v])]
             return p if name == "pw" else (p & 0xFF if name == "pw_lo" else p >> 8)
+        if name not in self.c:  # section 5's own vocabulary, read as an expression
+            s, part = self.split_cell(name)
+            x = self.whole(s)
+            return x if part is None else (x & 0xFF if part == "lo" else (x >> 8) & 0xFF)
         return self.c[name][v] & 0xFFFF
 
     def command_of(self, e):
@@ -237,6 +241,8 @@ class Player:
             return self.ev(a[0], ov) & self.ev(a[1], ov)
         if k == "or":
             return self.ev(a[0], ov) | self.ev(a[1], ov)
+        if k == "xor":
+            return self.ev(a[0], ov) ^ self.ev(a[1], ov)
         if k == "add":
             return self.ev(a[0], ov) + self.ev(a[1], ov)
         if k == "sub":
@@ -323,17 +329,27 @@ class Player:
         self.held = [self.cmd(self.o["state0"].get("held"))] * self.n
 
     def channel(self):
-        """The one global channel's streams, stepped before the voices."""
+        """The one global channel's streams, stepped before the voices.
+
+        A stream with ``all`` is its guarded rows, exactly as a voice's is.
+        """
         for name in self.o.get("globals", {}).get("streams", ()):
-            self.stream_step(name, self.gcursor[name], [], [])
+            if self.o["streams"][name].get("all"):
+                self.rows(name, [], [])
+            else:
+                self.stream_step(name, self.gcursor[name], [], [])
 
     def channel_commit(self):
-        """The registers the global channel commits, once the voices have run."""
+        """The registers the global channel commits, once the voices have run.
+
+        The image holds the registers the flush names; a commit to a register the
+        image does not hold reaches the chip where it is made, on this tick.
+        """
         for c in self.o.get("globals", {}).get("commit", ()):
             reg, e = c[0], c[1]
             if len(c) > 2 and not self.guards(c[2]):
                 continue
-            if self.shadow is None:
+            if self.shadow is None or reg not in self.flush:
                 self.w.append((reg, self.ev(e) & 0xFF))
             else:
                 self.shadow[reg] = self.ev(e) & 0xFF
@@ -382,7 +398,7 @@ class Player:
             self.sequencer_step(self.prod, self.edge)
             if self.stopping:
                 return True
-            self.spent = self.guards(self.consumes(), self.payload)
+            self.spent = self.consumes()
         return False
 
     def fetch_due(self, v):
@@ -393,9 +409,9 @@ class Player:
         return self.stepped and self.early_due(v)
 
     def consumes(self):
-        """Whether the row just taken spends the voice's tick, as a guard list."""
+        """Whether the row just taken spends the voice's tick: always, never, or its guards."""
         r = self.o["meta"]["row_consumes_tick"]
-        return [] if r is True else (None if r is False else r)
+        return r if isinstance(r, bool) else self.guards(r, self.payload)
 
     # ---- the row clock --------------------------------------------------------
     def clock(self, v):
@@ -571,6 +587,8 @@ class Player:
             self.gl[t[1:]] = val & (0xFFFF if t[1:] in self.wide else 0xFF)
         elif isinstance(t, str) and t[:1] == "!":  # a flag another producer reads
             self.flags[t[1:]] = val
+        elif isinstance(t, str) and t[:7] == "shadow.":  # the image, written where it is
+            self.store_cell(t, val)
         elif t == "pitch":  # a producer that writes the chip without moving a cell
             prod += [("freq_lo", val & 0xFF), ("freq_hi", (val >> 8) & 0xFF)]
         elif t == "freq":
@@ -876,12 +894,15 @@ class Player:
                 return
             self.divider[v][a["id"]] = k - 1
         pol = a["policy"]
+        # the decision the step makes, made once and before anything moves: a gate
+        # reports what the step did, not a re-reading of a cell the step moved
+        stepped = self.guards(a.get("step_when"), ov)
         val = self.load(a)
         if isinstance(pol, dict) and "reload" in pol and self.guards(pol.get("when"), ov):
             val = self.ev(pol["reload"], ov)
         out = val
         if "delta" in a and self.guards(a.get("delta_when"), ov):
-            out = self.apply(a, ov, val, prod)
+            out = self.apply(a, ov, val, prod, stepped)
             if out is None:
                 return  # the policy took the value to its bound, and said so itself
         elif "flag" in a:
@@ -892,13 +913,12 @@ class Player:
             self.emit_part(prod, target, emitted, part)
         g = a.get("gate")
         if g:
-            key = "true" if self.guards(a.get("step_when"), ov) else "false"
-            for t, e in g[key]:
+            for t, e in g["true" if stepped else "false"]:
                 self.assign(t, self.ev(e, ov) & 0xFF, prod, edge)
 
-    def apply(self, a, ov, val, prod=None):  # noqa: C901 - one clause per policy
+    def apply(self, a, ov, val, prod=None, stepped=True):  # noqa: C901 - one per policy
         """One step of a bounded accumulator: delta, bound, policy, phase."""
-        if not self.guards(a.get("step_when"), ov):
+        if not stepped:
             return val
         d = a["delta"]
         mask = (1 << a["width"]) - 1
@@ -959,7 +979,11 @@ class Player:
         return x if part is None else (x & 0xFF if part == "lo" else (x >> 8) & 0xFF)
 
     def store(self, a, val):
-        s, part = self.split_cell(a["cell"])
+        self.store_cell(a["cell"], val)
+
+    def store_cell(self, name, val):
+        """Move one named cell of section 5's vocabulary, or a half of it."""
+        s, part = self.split_cell(name)
         if part is not None:  # a half of the cell: the other half is the one it had
             x = self.whole(s)
             val = (x & 0xFF00) | val & 0xFF if part == "lo" else x & 0xFF | (val & 0xFF) << 8

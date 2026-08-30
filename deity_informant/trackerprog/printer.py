@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import lzma
 
-OPS = {"and": "&", "add": "+", "sub": "-", "or": "|"}
+OPS = {"and": "&", "add": "+", "sub": "-", "or": "|", "xor": "^"}
 
 
 def hexv(v, width=2):
@@ -113,6 +113,13 @@ def _when(step, notes):
     return "" if not step.get("when") else " when %s" % guards(step["when"], notes)
 
 
+def _flush(rs):
+    """How the image's own flush runs: down, up, or the order the tune writes."""
+    if rs == sorted(rs, reverse=True):
+        return "descending"
+    return "ascending" if rs == sorted(rs) else "in the image's own order"
+
+
 def _regs(ws):
     return " ".join("%s=%s" % (hexv(r), hexv(v)) for r, v in ws)
 
@@ -143,7 +150,7 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
     if "shadow" in m:
         add(
             "shadow     %d registers, flushed %s at the head of every tick"
-            % (m["shadow"]["registers"], m["shadow"].get("order", "descending"))
+            % (len(m["shadow"]["registers"]), _flush(m["shadow"]["registers"]))
         )
     for k, label in (("prefetch", "fetched early"), ("pitch_links", "a new pitch resets")):
         if m.get(k):
@@ -240,12 +247,13 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
     add("")
     add("  id   ad   sr  wave     pw  accumulators armed at note on")
     for k, ins in obj["instruments"].items():
+        ad, sr = ins["adsr"] if "adsr" in ins else (None, None)  # a family may have none
         add(
             "%4s  %s  %s   %s  %s  %s"
             % (
                 k,
-                hexv(ins["adsr"][0]),
-                hexv(ins["adsr"][1]),
+                "--" if ad is None else hexv(ad),
+                "--" if sr is None else hexv(sr),
                 hexv(ins.get("wave", 0)),
                 "  --" if "pw" not in ins else hexv(ins["pw"][0] | ins["pw"][1] << 8, 4),
                 " ".join(_arm(a) for a in ins["accs"]),
@@ -557,6 +565,8 @@ def _acc(name, a, notes):
         lines.append(
             "      flag    %s = %s at entry, %s where the delta is skipped"
             % (f["name"], f["seed"], f["unguarded"])
+            if "seed" in f
+            else "      flag    %s = %s where the delta is skipped" % (f["name"], f["unguarded"])
         )
     if a.get("when"):
         lines.append("      when    %s" % guards(a["when"], notes))
