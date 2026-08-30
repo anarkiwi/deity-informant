@@ -131,9 +131,10 @@ horizon, the reference being the tune's own player on `deity_informant.PcodeVM`.
 the tick count, which is stronger than either — per register, per value, per
 position in the tick. There is no refusal to name on either tune: nothing is
 emitted partially, and the four arms neither horizon takes each carry their
-reason — `trap` in the object for the routing byte written outright, the absolute
-note column and the oscillator's interval branch; a build-time assertion for the
-last two of those and for a chained sidTAB jump (§6).
+reason — a `trap` in the object for the routing byte written outright, for the
+absolute note column one build has and for the oscillator's interval branch, and
+a build-time assertion for that last one again and for a chained sidTAB jump,
+which is a shape the object could not express at all (§6).
 
 *Automatas* is the first exemplar whose certification does not fit in a script's
 60 seconds — the tuneprog's own took 371 s — so the tool carries
@@ -161,9 +162,9 @@ Ten forms. Six are in the player and four are only in the data.
 
 `meta.shadow` was `{registers: N, order: descending|ascending}` — a *count* and
 a direction. defMON's write-out is per voice (`pw_lo`, `pw_hi`, `freq_lo`,
-`freq_hi`, `sr`, `ad`, `ctrl`) and then the two global registers, and it does
-not touch `$D415` or `$D416` at all. Neither direction is that order, and no
-count excludes a register in the middle.
+`freq_hi`, `sr`, `ad`, `ctrl`) and then the two global registers, and it touches
+neither `$D415` nor `$D416` — the cutoff is not the image's (§4.2). Neither
+direction is that order, and no count excludes a register in the middle.
 
 `registers` is now the ordered **list** the flush writes. Applying the general
 form to the family that had the count: GoatTracker 2's value is
@@ -293,7 +294,7 @@ trips.
 
 ### 4.9 A tuning read below itself and past itself
 
-One frequency table, three windows. The note is read at its base; the slide's
+One frequency table, two live windows. The note is read at its base; the slide's
 step is read **36 entries below** it (`2·(osc & $3F) − 36`, which is negative
 for two thirds of the byte's range); and a note offset that wraps in eight bits
 is read **past** its stored 156. §3.2 already says both — "the values read, not
@@ -313,7 +314,7 @@ narrows 255 to 252 and is not worth the row. The extension is not slack, though:
 renderer makes — `tuned` asserts, so a read outside what the object states is a
 failure and not a guess.
 
-### 4.10 Multispeed is `rate`, and the row clock is the only thing that has one
+### 4.10 Multispeed is `rate`, and it is the row clock's
 
 §10 asked whether "a sequencer running at frame rate under an n× entry is
 `rate = n` on that voice's tempo", and noted it had never been measured on a
