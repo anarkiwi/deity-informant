@@ -448,7 +448,7 @@ class Tune:
         while at not in seen:
             seen.add(at)
             f, y = self.m[at], 0
-            row = {"flag": f, "a": None, "b": None, "note": None, "at": at}
+            row = {"flag": f, "a": None, "b": None, "note": None}
             for k, c in ((0x40, "a"), (0x20, "b"), (0x10, "note")):
                 if f & k:
                     y += 1
@@ -553,10 +553,10 @@ class Tune:
             if r["note"] is not None:
                 self.notes.add(r["note"])
             arm = []
-            for slot, col in (("a", "a"), ("b", "b")):
-                if r[col] is not None:
-                    entries_.add(r[col])
-                    arm.append(self.command(slot, r[col]))
+            for slot in ("a", "b"):
+                if r[slot] is not None:
+                    entries_.add(r[slot])
+                    arm.append(self.command(slot, r[slot]))
             e["arm"] = arm or None
             out.append(e)
             spans.append(at)
