@@ -72,9 +72,13 @@ def obj(events, streams=None, accs=None, instrument=None, tempo=2, early=1, curs
                 "boundary": 0,
                 "early": early,
             },
-            "row_consumes_tick": [["sounds", "!=", 0]],
+            "row_consumes_tick": [["keys", "!=", 0]],
             "prefetch": ["ins", "gate", "arm"],
-            "note_row": "note_on",
+            "row": [
+                {"note": True, "when": [["sounds", "!=", 0]]},
+                {"stream": "note_on", "when": [["keys", "!=", 0]]},
+                {"commands": True},
+            ],
             "voice_exit": "exit",
             "prologue": {
                 "id": "init",

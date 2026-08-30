@@ -480,6 +480,7 @@ def build(path, song=0):
             "wave": wave,
             "pw": [pw_lo, pw_hi],
             "prelude": {"stream": "note_off", "early": 1},
+            "sets": [["freq", {"notefreq": None}]],
             "accs": arms,
             **({"pitch": drums[i]} if i in drums else {}),
         }
@@ -496,7 +497,13 @@ def build(path, song=0):
             "tempo": {"rate": m[SPEEDTBL + song] + 1, "phase": 0},
             "row_consumes_tick": True,
             "row_command": "spent",
-            "note_row": "note_on",
+            "row": [
+                {"ins": True},
+                {"note": True, "when": [["sounds", "!=", 0]]},
+                {"sets": [["@wave", {"ins": "wave"}]]},
+                {"stream": "note_on"},
+                {"commands": True},
+            ],
             "player": "prototype-trackerprog.md sections 4 and 5",
         },
         "globals": {

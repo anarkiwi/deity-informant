@@ -606,11 +606,15 @@ class Tune:
                 "early": early,
                 "alternate": {"stream": "funktempo", "when": [[{"cell": "tempo"}, "<", 2]]},
             },
-            "row_consumes_tick": [["sounds", "!=", 0]],
+            "row_consumes_tick": [["keys", "!=", 0]],
             "row_command": "held",
             "prefetch": ["ins", "gate", "arm"],
             "rest_arm": ARMS[0],
-            "note_row": "note_on",
+            "row": [
+                {"note": True, "when": [["sounds", "!=", 0]]},
+                {"stream": "note_on", "when": [["keys", "!=", 0]]},
+                {"commands": True},
+            ],
             "voice_exit": "exit",
             "pitch_links": ["vib_phase"],
             "prologue": {

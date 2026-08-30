@@ -63,7 +63,13 @@ def obj(patterns, orders, instruments, pitch=None, rate=2, beyond=None):
             "commit_order": ["ctrl", "ad", "sr"],
             "tempo": {"rate": rate, "phase": 0},
             "row_consumes_tick": True,
-            "note_row": "note_on",
+            "row": [
+                {"ins": True},
+                {"note": True, "when": [["sounds", "!=", 0]]},
+                {"sets": [["@wave", {"ins": "wave"}]]},
+                {"stream": "note_on"},
+                {"commands": True},
+            ],
             "player": "hermetic",
         },
         "globals": {
@@ -130,6 +136,7 @@ def ins(wave=0x41, ad=1, sr=2, pw=(0x10, 0x02), accs=(), pitch=None):
         "wave": wave,
         "pw": list(pw),
         "prelude": {"stream": "note_off", "early": 1},
+        "sets": [["freq", {"notefreq": None}]],
         "accs": list(accs),
     }
     if pitch:
@@ -156,8 +163,8 @@ def test_the_note_row_and_the_tempo_divider():
     o = obj({"1": [event(3, note=2, ins=0)]}, [{"play": [1], "end": "jump"}], {"0": ins()})
     w = render(o, 3)
     assert w[0] == [
-        (FHI, 0x02),
         (FLO, 0x02),
+        (FHI, 0x02),
         (PLO, 0x10),
         (PHI, 0x02),
         (CTRL, 0x41),

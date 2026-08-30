@@ -37,7 +37,6 @@ class Player:
         for k, d in s0.get("cells", {}).items():
             self.c[k] = list(d)
         self.evrow = [0] * n
-        self.tie = [False] * n
         self.armed = [[] for _ in range(n)]  # the accs the score armed
         self.divider = [
             dict((k, d[i]) for k, d in s0.get("dividers", {}).items()) for i in range(n)
@@ -421,7 +420,7 @@ class Player:
         if self.tempo.get("form") == "counter":
             return self.guards(e)
         if self.tempo.get("form") != "countdown":
-            return self.c["rowsleft"][v] == 0 and not self.tie[v]
+            return self.c["rowsleft"][v] == 0 and not self.tied[v]
         return e is not None and self.c[self.tempo["cell"]][v] == self.ev(e)
 
     # ---- the accumulators and the streams, in one rank order -------------------
@@ -541,6 +540,8 @@ class Player:
         elif isinstance(t, str) and t[:1] == "@":
             k = t[1:]
             self.c[k][self.v] = val & (0xFFFF if k in self.wide else 0xFF)
+            if k == "wave":  # the voice's waveform moved: the fact a modulator mirrors
+                self.publish("sound", self.v, {"wave": self.c[k][self.v]})
         elif isinstance(t, str) and t[:1] == "#":
             self.gl[t[1:]] = val & (0xFFFF if t[1:] in self.wide else 0xFF)
         elif isinstance(t, str) and t[:1] == "!":  # a flag another producer reads
@@ -657,23 +658,6 @@ class Player:
             self.publish("wrap", v)
             self.publish("order", v, {"pos": self.c["orderpos"][v]})
 
-    def take_row(self, prod, edge):
-        """A row boundary of a tune whose fetch runs ahead of it: take what it left."""
-        v = self.v
-        e = self.staged[v]
-        self.payload = {
-            "sounds": int(self.keys(e)),
-            "row": int(e is not None and e["sounds"]),
-            "newins": int(e is not None and e["ins"] is not None),
-        }
-        for t, val in self.o["meta"].get("row_sets", ()):
-            self.assign(t, self.ev(val), prod, edge)
-        if e is None:
-            for c in self.command_of(e):
-                self.hold_command(c, prod, edge)
-            return
-        self.row(self.stagedplay[v], e, prod, edge)
-
     # ---- the sequencer --------------------------------------------------------
     def order_of(self, v):
         return self.o["score"]["orders"][v]
@@ -717,7 +701,8 @@ class Player:
         """Consume the order program's next event and give it to the voice."""
         v = self.v
         if self.tempo.get("form") in ("countdown", "counter"):
-            self.take_row(prod, edge)  # the fetch already staged the row: take it
+            # the fetch already staged the row and the play step it belongs to
+            self.apply_row(self.stagedplay[v], self.staged[v], prod, edge)
             return
         o = self.order_of(v)
         if self.c["orderpos"][v] >= len(o["play"]):
@@ -732,9 +717,9 @@ class Player:
         pat = self.pattern_of(v)
         e = pat["events"][self.evrow[v]]
         self.armed[v] = []
-        self.tie[v] = e["tie"]
+        self.tied[v] = e["tie"]
         self.c["rowsleft"][v] = self.c["dur"][v] = e["dur"]
-        self.latch(e, prod, edge)
+        self.apply_row(self.play_of(v), e, prod, edge)
         self.evrow[v] += 1
         if self.evrow[v] == len(pat["events"]):
             self.evrow[v] = 0
@@ -753,52 +738,68 @@ class Player:
             return 0xFF if e["sounds"] else 0xFE
         return 0xFF if g == "on" else 0xFE
 
-    def latch(self, e, prod, edge):
-        """A row whose whole effect lands on its own tick."""
-        v = self.v
-        gate = self.gate_mask(e)
-        if e["sounds"]:
-            if e["ins"] is not None:
-                self.c["ins"][v] = e["ins"]
-                self.publish("instrument", v, {"ins": e["ins"]})
+    def apply_row(self, play, e, prod, edge):
+        """The row's own program: section 3.6's steps, in the order the object gives.
+
+        One procedure for every family.  A row is a short ordered list of steps
+        over the event -- an instrument commit, a guarded stream, the sound
+        itself, the row's commands -- and which steps a tune has, and in which
+        order, is data.  ``e is None`` is a row a fetch left empty; the steps
+        that need an event skip it and the rest still run.
+        """
+        self.payload = self.row_facts(e)
+        for step in self.o["meta"]["row"]:
+            if self.guards(step.get("when"), self.payload):
+                self.row_step(step, play, e, prod, edge)
+        self.publish("row", self.v, self.payload)
+
+    def row_facts(self, e):
+        """What the row is, as the values its own steps and streams read.
+
+        ``sounds`` is the row's own field (section 3.6), ``keys`` that field
+        against the tie: whether this row starts a sound the player must arm.
+        """
+        if e is None:
+            return {"sounds": 0, "keys": 0, "newins": 0, "field": 0, "gate_stmt": 0, "tie": 0}
+        return {
+            "sounds": int(e["sounds"]),
+            "keys": int(self.keys(e)),
+            "newins": int(e["ins"] is not None),
+            "field": int(e["ins"] is not None or e["arm"] is not None),
+            "gate_stmt": int(e["gate"] is not None),
+            "tie": int(self.tied[self.v]),
+            "gate": self.gate_mask(e),
+        }
+
+    def row_step(self, step, play, e, prod, edge):
+        """One step of the row program."""
+        if "sets" in step:
+            for t, val in step["sets"]:
+                self.assign(t, self.ev(val), prod, edge)
+        elif "stream" in step:
+            self.rows(step["stream"], prod, edge, self.payload)
+        elif "commands" in step:
             for c in self.command_of(e):
                 self.hold_command(c, prod, edge)
-            self.c["note"][v] = e["note"]
-            if e["note"] is not None:
-                self.publish("note", v, {"note": e["note"]})
-            f = self.pitchof()
-            self.c["freq"][v] = f
-            prod += [("freq_hi", f >> 8), ("freq_lo", f & 0xFF)]
-        self.c["wave"][v] = self.instr()["wave"]
-        self.publish("sound", v, {"wave": self.c["wave"][v]})
-        if "note_row" in self.o["meta"]:
-            self.rows(self.o["meta"]["note_row"], prod, edge, {"gate": gate})
-        self.payload = {
-            "sounds": int(e["sounds"]),
-            "field": int(e["ins"] is not None or e["arm"] is not None),
-        }
-        self.publish("row", v, self.payload)
+        elif e is None:
+            return
+        elif "ins" in step:
+            if e["ins"] is not None:
+                self.c["ins"][self.v] = e["ins"]
+                self.publish("instrument", self.v, {"ins": e["ins"]})
+        elif "note" in step:
+            self.sound(play, e, prod, edge)
 
-    def row(self, play, e, prod, edge):
-        """A row a fetch already staged: its note, its note on, and its command."""
+    def sound(self, play, e, prod, edge):
+        """The row keys a sound: the note it names, and the instrument it arms."""
         v = self.v
-        if "ins" in self.o["meta"].get("row_commits", ()) and e["ins"] is not None:
-            self.c["ins"][v] = e["ins"]
-            self.publish("instrument", v, {"ins": e["ins"]})
-        if e["gate"] is not None and "gate_row" in self.o["meta"]:
-            # what a gate statement does; the mask it leaves is gate_mask's, once
-            self.rows(self.o["meta"]["gate_row"], prod, edge, {"gate": self.gate_mask(e)})
-        if e["sounds"]:
-            if e["note"] is not None:
-                self.c["note"][v] = (
-                    e["note"] + play.get("transpose", 0) + self.instr().get("transpose", 0)
-                )
-                self.publish("note", v, {"note": self.c["note"][v]})
-            self.note_on(self.tied[v], prod, edge)
-            if "pitch_row" in self.o["meta"]:  # what a new pitch tells the tune's channels
-                self.rows(self.o["meta"]["pitch_row"], prod, edge)
-        for c in self.command_of(e):
-            self.hold_command(c, prod, edge)
+        n = e["note"]
+        self.c["note"][v] = (
+            None if n is None else n + play.get("transpose", 0) + self.instr().get("transpose", 0)
+        )
+        if n is not None:
+            self.publish("note", v, {"note": self.c["note"][v]})
+        self.note_on(self.tied[v], prod, edge)
 
     def note_on(self, tied, prod, edge):
         """Arm the instrument: its cells, its streams and the rows it emits."""
@@ -818,9 +819,6 @@ class Player:
         for p in ins.get("points", ()):
             if len(p) < 4 or self.guards(p[3], self.payload):
                 self.point(p[0], self.ev(p[1]), p[2])
-        if "note_row" in self.o["meta"]:
-            self.rows(self.o["meta"]["note_row"], prod, edge)
-        self.publish("sound", v, {"wave": self.cell("wave")})
 
     def point(self, slot, r, keep=False):
         """Re-point a stream and reset the hold it was counting (section 3.6)."""

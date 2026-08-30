@@ -87,7 +87,7 @@ object.
 | `READROW`'s 1–4 bytes with bit-7 continuation | `Event{sounds, note, gate, tie, ins, arm, dur}` — the note byte's token class is spent, not re-encoded | §3.6 |
 | `$70–$77`, the packed rest | the event's `dur`, in **rows** | §3.6 |
 | `$60–$6F` set vibrato amplitude, `$79–$7C` sync/ring | `cmds`, named by what they do | §3.6 |
-| `$7D` / `$7E` gate on/off | the event's `gate`, and `meta.gate_row` — one stream that says what a gate statement does (the mask, and the mask re-applied to the waveform) | new (§4.10) |
+| `$7D` / `$7E` gate on/off | the event's `gate`, and a `{stream}` step of `meta.row` guarded on `gate_stmt` — one stream that says what a gate statement does (the mask, and the mask re-applied to the waveform) | §3.6 (§4.10) |
 | `HARDRST` at ticks 0 and 1 with the tick number as the mask | the instrument's **prelude**: one stream, two rows, each guarded by the clock's phase and the instrument's own control bit | §3.5 |
 | 1.6 writes `AD` then `SR`, 1.9 `SR` then `AD` (anatomy:1232) | **`meta.commit_order`, and nothing else** | §3.1 |
 | the HR reads `INS[CURIFX or CURINS]`, the tables read `INS[CURINS]` | `meta.prefetch [[ins, hrins]]` and `{"insrec": ["hrins", "hr.0"]}` — the prelude belongs to the row's instrument, the streams to the voice's cursor | new (§4.2) |
@@ -303,7 +303,8 @@ forced.
 
 `$7D`/`$7E` are the `gate` field — but SID Wizard's gate is a **mask** ANDed into
 every waveform the table produces, not a ctrl bit, so what the field *does* is
-`meta.gate_row`: one stream, one row, `gate := mask ; wave := (wave & mask) | (mask & 1)`.
+a `gate_row` stream the row program runs when the event carries a gate
+statement: one row, `gate := mask ; wave := (wave & mask) | (mask & 1)`.
 The instrument's gate-off table pointers (`ins[$C..$E]`) are an arm neither tune
 takes; the object carries them and traps on them, §4.13's discipline.
 

@@ -98,6 +98,23 @@ def guards(gs, notes=None):
     return " and ".join("%s %s %s" % (expr(a, notes), op, expr(b, notes)) for a, op, b in gs)
 
 
+def _rowstep(step, notes):
+    """One step of the row program (section 3.6), as what it does."""
+    if "sets" in step:
+        return "sets %s" % _sets(step["sets"], notes)
+    if "stream" in step:
+        return "stream %s" % step["stream"]
+    if "commands" in step:
+        return "the row's own commands"
+    if "ins" in step:
+        return "the instrument the row names"
+    return "the sound the row keys"
+
+
+def _when(step, notes):
+    return "" if not step.get("when") else " when %s" % guards(step["when"], notes)
+
+
 def _regs(ws):
     return " ".join("%s=%s" % (hexv(r), hexv(v)) for r, v in ws)
 
@@ -139,33 +156,16 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
                     " ".join(x if isinstance(x, str) else "%s into %s" % tuple(x) for x in m[k]),
                 )
             )
-    for k, label in (
-        ("row_commits", "row commits"),
-        ("row_sets", "row sets   "),
-        ("gate_row", "gate row   "),
-        ("pitch_row", "pitch row  "),
-        ("stage_sounds", "sounds cell"),
-        ("wide", "wide cells "),
-    ):
+    for k, label in (("stage_sounds", "sounds cell"), ("wide", "wide cells ")):
         if m.get(k):
             v = m[k]
-            add(
-                "%s %s"
-                % (
-                    label,
-                    (
-                        v
-                        if isinstance(v, str)
-                        else _sets(v, notes) if k == "row_sets" else " ".join(str(x) for x in v)
-                    ),
-                )
-            )
+            add("%s %s" % (label, v if isinstance(v, str) else " ".join(str(x) for x in v)))
+    for i, step in enumerate(m.get("row", ())):
+        add("row %-6d %s%s" % (i, _rowstep(step, notes), _when(step, notes)))
     if m.get("voice_exit"):
         add("voice exit %s" % m["voice_exit"])
     if m.get("prologue"):
         add("prologue   " + _cmd(m["prologue"], notes))
-    if "note_row" in m:
-        add("note row   %s" % m["note_row"])
     add("player     %s" % m["player"])
     if "mode_vol" in g:
         add("mode_vol   %s" % hexv(g["mode_vol"]))

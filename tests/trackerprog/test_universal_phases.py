@@ -97,14 +97,18 @@ def obj(events, streams=None, accs=None, tempo=4, ins=None, **meta):
                     }
                 ],
             },
-            "row_consumes_tick": [["row", "!=", 0]],
+            "row_consumes_tick": [["sounds", "!=", 0]],
             "row_command": "spent",
             "prefetch": [["hrins", "hrins"]],
             "stage_sounds": "pending",
-            "row_commits": ["ins"],
-            "row_sets": [["@pending", 0]],
-            "gate_row": "gate_row",
-            "pitch_row": "pitch_row",
+            "row": [
+                {"sets": [["@pending", 0]]},
+                {"ins": True},
+                {"stream": "gate_row", "when": [["gate_stmt", "!=", 0]]},
+                {"note": True, "when": [["sounds", "!=", 0]]},
+                {"stream": "pitch_row", "when": [["sounds", "!=", 0]]},
+                {"commands": True},
+            ],
             "pitch_target": "@freq",
             "voice_exit": "exit",
             "player": "hermetic",
@@ -335,8 +339,9 @@ def test_the_print_carries_the_phased_forms():
     text = printer.render(obj([event(note=1, ins=1, gate=None)]))
     for line in (
         "tempo counter spdcnt, row at 2, fetched at 0",
-        "gate row    gate_row",
-        "pitch row   pitch_row",
+        "row 2      stream gate_row when <gate_stmt> != 0",
+        "row 3      the sound the row keys when <sounds> != 0",
+        "row 5      the row's own commands",
         "sounds cell pending",
     ):
         assert line in text, line

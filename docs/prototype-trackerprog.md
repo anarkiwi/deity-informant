@@ -296,6 +296,27 @@ Each token the byte packed becomes its own field — `sounds`, `gate`, `dur`,
 | re-target, do not re-trigger | `tie` | row bit 5 | effect 3 | effect 3, or `$3F` in the instrument column |
 | everything else | `cmds` / `arm` | the porta byte | the fx nibble | `$60–$77`, `$78–$7C`, and both effect columns |
 
+**The row is a program, and one procedure runs it.** `meta.row` is an ordered
+list of steps over the event — `{sets}` assignments, `{ins}` the instrument the
+row names, `{stream}` a guarded §3.3 stream, `{note}` the sound the row keys,
+`{commands}` the row's own — each with an optional `when` over the row's facts
+(`sounds`, `keys`, `newins`, `field`, `gate_stmt`, `tie`, `gate`, the mask
+below). Which steps a tune has, and in which order, is data:
+
+| source | `meta.row` |
+| --- | --- |
+| Hubbard | `ins` · `note` when `sounds` · `sets @wave` · `stream note_on` · `commands` |
+| GoatTracker 2 | `note` when `sounds` · `stream note_on` when `keys` · `commands` |
+| SID Wizard | `sets @pending` · `ins` · `stream gate_row` when `gate_stmt` · `note` when `sounds` · `stream pitch_row` when `sounds` · `commands` |
+
+The first draft gave each of these a meta key of its own — `note_row`,
+`gate_row`, `pitch_row`, `row_sets`, `row_commits` — and a family whose clock
+fetched ahead ran a *different procedure* from one whose clock did not, which is
+the two-grammars failure §4.8 of the GoatTracker 2 exemplar names for `sounds`,
+one level up. It showed: `note_row` fired at the note-on in one family and at
+every row in another, under one name. Five keys and two procedures reduce to one
+list and one `apply_row`, and the difference between the families is the list.
+
 `sounds` is the field §4's tick reads to decide whether a row keys a note, and
 it is the *only* one: an object that answered it from `gate` in one family and
 from `note` in another would be two grammars. `note: none` then means one thing
