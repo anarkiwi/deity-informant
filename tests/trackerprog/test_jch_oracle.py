@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "tools"))
 from deity_informant.trackerprog import printer  # noqa: E402
 
 import trackerprog_jch as TJ  # noqa: E402
-from _hvsc import GULDKORN, KNOB, tune_file  # noqa: E402
+from _hvsc import EASY, GULDKORN, KNOB, tune_file  # noqa: E402
 
 pytestmark = pytest.mark.hvsc
 
@@ -90,6 +90,15 @@ def test_each_build_certifies_on_the_universal_player(name):
         assert TJ.loop_holds(obj, loop)
     if end == "fixed_point" and prefix == ticks:
         assert TJ.fixed_point(obj, ticks)
+
+
+def test_the_sample_build_refuses_by_name_with_its_cell():
+    """A nibble stream is not a score: the third V20 tune refuses, and emits nothing."""
+    with pytest.raises(TJ.Refused) as e:
+        TJ.build(str(tune_file(EASY)))
+    r = e.value.refusal
+    assert (r.why, r.cell) == ("sample stream", "mode_vol") and r.site and r.detail
+    assert TJ.main([str(tune_file(EASY)), "--ticks", "10"]) == 3
 
 
 def test_the_song_that_ends_is_a_fixed_point_and_not_a_loop():

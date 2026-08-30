@@ -242,7 +242,8 @@ SIGS = {
 WRAP = {
     "count": (
         [
-            "A9 .. F0 01 60 20 .. .. 20 .. .. A2 .. CA D0 0B A0 .. 88 D0 03 EE .. .. 8C .. .. 8E .. .. 60"
+            "A9 .. F0 01 60 20 .. .. 20 .. .. A2 .. CA D0 0B A0 .. 88 D0 03 EE .. .. 8C .. .."
+            " 8E .. .. 60"
         ],
         {"c1": ("w", 28), "c2": ("w", 25), "ccell": ("w", 22)},
     ),
@@ -1012,7 +1013,7 @@ class Tune:
             out["phase"] = phase
         return out
 
-    def countdown(self, name, cell, reload_, read, cursor):
+    def countdown(self, name, cell, reload_, count, cursor):
         """A frame countdown that turns something at its end: the wave cursor, or a phase."""
         gate = (
             [["@" + cursor, {"and": [{"add": [{"cell": cursor}, 1]}, 0xFF]}]]
@@ -1028,8 +1029,8 @@ class Tune:
             "phase": {"const": 1},
             # the step is the count coming down; the frame it does not come down on
             # is the frame the record reloads and the thing it clocks turns
-            "step_when": [[read, "!=", 0]],
-            "policy": {"reload": {"cell": reload_}, "when": [[read, "==", 0]]},
+            "step_when": [[count, "!=", 0]],
+            "policy": {"reload": {"cell": reload_}, "when": [[count, "==", 0]]},
             "gate": {"true": [], "false": gate},
             "rate": 1,
             "scope": "voice",
