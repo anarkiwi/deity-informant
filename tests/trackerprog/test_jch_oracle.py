@@ -217,6 +217,18 @@ def _cmd_bytes(cmd):
     return 0xF0, s["#vol_or"]
 
 
+def _wave_note(row):
+    """A decoded wave row's own note byte, back out of its columns.
+
+    The three kinds are lossless: a trap row is the `$7E` the tune never takes, a
+    relative row is its index and an absolute one that index with bit 7 set.  A
+    jump row is the relative one whose index is `$7F`, and its target is `next`.
+    """
+    if "trap" in row:
+        return 0x7E
+    return row["pitch"] if row["relative"] else row["pitch"] | 0x80
+
+
 def _rest(ev, i):
     """The row steps the event at ``i`` holds: the empty event that follows it, or none."""
     return ev[i + 1]["dur"] if i + 1 < len(ev) and ev[i + 1]["gate"] is None else 0
@@ -285,8 +297,9 @@ def test_every_byte_of_the_tune_s_data_is_in_the_object(name):  # noqa: C901 - o
         for k, rec in _program_bytes(x, obj, base, stream).items():
             assert rec == list(m[base + k : base + k + 4]), "%s record %d" % (stream, k)
     rows = obj["streams"]["wavetab"]["rows"]
-    assert [r["note"] for r in rows] == list(m[L["wnote"] : L["wnote"] + L["wave_rows"]])
-    assert [r["ctrl"] for r in rows] == list(m[L["wctrl"] : L["wctrl"] + L["wave_rows"]])
+    assert [_wave_note(r) for r in rows] == list(m[L["wnote"] : L["wnote"] + L["wave_rows"]])
+    ctrl = list(m[L["wctrl"] : L["wctrl"] + L["wave_rows"]])  # a trap row carries no columns
+    assert [r.get("ctrl", c) for r, c in zip(rows, ctrl)] == ctrl
     assert obj["pitch"]["freq"] == [
         TJ.word(m, L["freq"] + 2 * n) for n in range(len(obj["pitch"]["freq"]))
     ]

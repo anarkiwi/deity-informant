@@ -331,13 +331,45 @@ spent, which is `enter()` in §6.
 `T17DB[cursor] == $7F` re-points the cursor through the *other* column and reads
 the row it lands on **in the same frame** — and the waveform byte the tick sends
 to `ctrl` is the one at the new cursor, not the old. That is defMON's `enter()`
-one layer up, and it needs no field: the `wave` stream's first guarded row is
-the jump and the rows after it read the cursor the first row moved. Rows are
-applied in order inside one `rows()` call, so "resolved in place" is the row
-order and nothing else.
+one layer up, and it needs no field: the `wave` stream's first row is the link
+and the rows after it read the cursor that row moved. Rows are applied in order
+inside one `rows()` call, so "resolved in place" is the row order and nothing
+else.
 
-The `$7E` token beside it — step the cursor *back* one and read that — is untaken
-in both builds and is a `trap` row carrying its reason.
+**And the link is a column, not a token.** The first version of this object kept
+the two raw byte columns and read the three kinds back out of them every tick,
+with the assembly's own `CMP` immediates as the guards — `== $7F` the jump,
+`>= $80` an absolute note, `< $80` a relative one. That is §3.6's "byte ranges
+as token classes", which the layer spends for the note column and had left
+unspent here, and the bytes are **constants of the table**: GoatTracker 2, SID
+Wizard and defMON all decode their wave tables into typed rows at build time,
+and this one is no less decodable. Each row now states what it is:
+
+```
+next      the row the cursor goes to -- the jump's target on a jump row, and
+          the row itself on every other, so the reader follows it always and a
+          note row's follow is the identity.  Section 3.3's own link, explicit
+pitch     the note the row names, seven bits
+relative  1 where `pitch` is added to the live note, 0 where it is the note
+ctrl      the waveform byte the row sends
+```
+
+Four rows read them and none tests a byte range: the link, the absolute note,
+the relative note, the waveform. The vocabulary is §3.3's and GoatTracker 2's —
+`next` for the link and `pitch`/`relative` for the note column, which is what
+its `op: pitch(offset | absolute)` carries — though the *mechanism* is not
+GoatTracker 2's `op`, because `op` takes a pitch of the tuning and V20's wave
+row moves an **index** that a separate stream turns into a frequency two ranks
+later. Guldkorn's 64 rows decode to 15 jumps, 19 absolute notes and 30 relative
+ones; Knob at Night's 19 to 5, 3 and 11. Measured: 0 differing ticks of
+Guldkorn's 2,401 and Knob at Night's 8,577, and the round trip is the check that
+the decode is lossless — the test rebuilds each row's own byte out of its
+columns and diffs the pair against the tune (prototype-trackerprog.md §7).
+
+The `$7E` token beside them — step the cursor *back* one and read that — appears
+in **neither build's table at all**, so where the first version carried a guarded
+trap row the reader evaluated every tick, the decoded table carries §3.3's own
+`trap` on the row and any read of it refuses by name.
 
 ### 4.8 A row's duration is the empty events that follow it
 

@@ -797,12 +797,7 @@ class Tune:
                 "when": self.fx_guard() + [[{"cell": "voice_index"}, "==", m[L["owner"]]]],
                 "rows": f_rows,
             },
-            "wavetab": {
-                "rows": [
-                    {"note": m[L["wnote"] + i], "ctrl": m[L["wctrl"] + i]}
-                    for i in range(L["wave_rows"])
-                ]
-            },
+            "wavetab": {"rows": [self.wave_row(i) for i in range(L["wave_rows"])]},
             "voicebits": {
                 "rows": [
                     {"mask": m[L["vmask"] + v], "bit": m[L["vbit"] + v]} for v in range(VOICES)
@@ -849,28 +844,46 @@ class Tune:
         m, L = self.m, self.L
         return {m[L["ins4"] + 8 * i] for i in self.used} | {m[L["fcur"]]}
 
+    def wave_row(self, i):
+        """One row of the wave table, decoded: where it links, its note, its waveform.
+
+        The three kinds the column packs are constants of the table, so the tune
+        states them rather than the reader deriving them from a byte range every
+        tick (section 3.6's "byte ranges as token classes", spent here too).
+        ``next`` is section 3.3's link made explicit -- the jump's target on a
+        jump row and the row itself on every other, so the reader follows it
+        unconditionally and a note row's follow is the identity.  ``$7E`` -- step
+        the cursor back one and read that -- is untaken in both builds, so the
+        row is a section 3.3 ``trap`` and any read of it refuses by name.
+        """
+        m, L = self.m, self.L
+        b, c = m[L["wnote"] + i], m[L["wctrl"] + i]
+        if b == STEP_BACK:
+            return {"trap": DEAD["wave.step_back"]}
+        return {
+            "next": c if b == JUMP else i,
+            "pitch": b & 0x7F,
+            "relative": int(b < 0x80),
+            "ctrl": c,
+        }
+
     def wave_rows(self):
-        """The wave row the cursor is on, read every tick: a jump, a note, an offset."""
-        note = {"tabcell": ["wavetab", {"cell": "wavecur"}, "note"]}
-        ctrl = {"tabcell": ["wavetab", {"cell": "wavecur"}, "ctrl"]}
+        """The wave row the cursor is on, read every tick: its link, its note, its waveform."""
+        col = {
+            k: {"tabcell": ["wavetab", {"cell": "wavecur"}, k]}
+            for k in ("next", "pitch", "relative", "ctrl")
+        }
+        moved = {"and": [{"add": [col["pitch"], {"cell": "note"}]}, 0x7F]}
         return [
-            {"when": [[note, "==", JUMP]], "sets": [["@wavecur", ctrl]]},
+            # the link first, so the rows after it read the row it lands on -- which
+            # is what "resolved in place" is, and it is the row order and nothing else
+            {"sets": [["@wavecur", col["next"]]]},
             {
-                "when": [[note, "==", STEP_BACK]],
-                "sets": [["!dead", {"trap": DEAD["wave.step_back"]}]],
+                "when": [[col["relative"], "==", 0]],
+                "sets": [["@freq_idx", col["pitch"]], ["!raw", 1]],
             },
-            {
-                "when": [[note, ">=", 0x80]],
-                "sets": [["@freq_idx", {"and": [note, 0x7F]}], ["!raw", 1]],
-            },
-            {
-                "when": [[note, "<", 0x80]],
-                "sets": [
-                    ["@freq_idx", {"and": [{"add": [note, {"cell": "note"}]}, 0x7F]}],
-                    ["!raw", 0],
-                ],
-            },
-            {"when": [], "sets": [["@wave", ctrl]]},
+            {"when": [[col["relative"], "!=", 0]], "sets": [["@freq_idx", moved], ["!raw", 0]]},
+            {"sets": [["@wave", col["ctrl"]]]},
         ]
 
     def pitch_rows(self):
