@@ -530,7 +530,10 @@ instrument, which is nineteen times.
 
 **What the object needs, poisoned one datum at a time.** Each row is the object
 with one thing taken out, re-rendered against the tune's own player; the count is
-§2 **divergences**, not permutations. **Over the whole horizon of each tune.**
+§2 **divergences**, not permutations. **Over the whole horizon of each tune** —
+which is where the last row was decided, and the row above it. Every poison but
+one is a mutation of the emitted object; the row's commands are the tool's own
+`--late`, because *when* they run is not a field of the object.
 
 | datum taken out | Guldkorn / 2,401 | Knob / 8,577 |
 | --- | --- | --- |
