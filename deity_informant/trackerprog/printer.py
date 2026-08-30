@@ -2,7 +2,7 @@
 
 Generic over the object -- it walks what is there and names nothing of any
 tune or family.  Expressions print in the vocabulary of
-prototype-trackerprog.md section 5 (``repeat``, ``tablestep``, ``field``,
+prototype-trackerprog.md section 5 (``repeat``, ``interval``, ``field``,
 ``fold``, ``bit``, ``carry``), guards as comparisons, and every table as rows
 with a header.  :func:`numbers` measures the print the way architecture
 section 11 requires of a presentation.
@@ -44,6 +44,10 @@ def expr(e, notes=None):
         return a
     if k == "ins":
         return "ins." + a
+    if k == "insrec":
+        return "ins[%s].%s" % (a[0], a[1])
+    if k == "tuned":
+        return "pitch[%s]" % expr(a, notes)
     if k == "sid_base":
         return "sid_base(%s)" % (a if isinstance(a, (int, str)) else expr(a, notes))
     if k == "u16":
@@ -56,8 +60,6 @@ def expr(e, notes=None):
         return "bit(%s, %d)" % (expr(a[0], notes), a[1])
     if k == "fold":
         return "fold(%s, %d)" % (expr(a[0], notes), a[1])
-    if k == "tablestep":
-        return "step[%s] >> %s" % (expr(a[0], notes), expr(a[1], notes))
     if k == "repeat":
         return "repeat(%s, %s)" % (expr(a[0], notes), expr(a[1], notes))
     if k == "stream":
@@ -71,7 +73,7 @@ def expr(e, notes=None):
     if k == "notefreq":
         return "pitch"
     if k == "interval":
-        return "interval"
+        return "interval" if a is None else "interval(%s)" % expr(a, notes)
     if k == "transpose":
         return "transpose(%s)" % expr(a, notes)
     if k == "shr":
@@ -92,6 +94,23 @@ def _sub(e, notes):
 
 def guards(gs, notes=None):
     return " and ".join("%s %s %s" % (expr(a, notes), op, expr(b, notes)) for a, op, b in gs)
+
+
+def _rowstep(step, notes):
+    """One step of the row program (section 3.6), as what it does."""
+    if "sets" in step:
+        return "sets %s" % _sets(step["sets"], notes)
+    if "stream" in step:
+        return "stream %s" % step["stream"]
+    if "commands" in step:
+        return "the row's own commands"
+    if "ins" in step:
+        return "the instrument the row names"
+    return "the sound the row keys"
+
+
+def _when(step, notes):
+    return "" if not step.get("when") else " when %s" % guards(step["when"], notes)
 
 
 def _regs(ws):
@@ -128,17 +147,37 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
         )
     for k, label in (("prefetch", "fetched early"), ("pitch_links", "a new pitch resets")):
         if m.get(k):
-            add("%-10s %s" % (label, " ".join(str(x) for x in m[k])))
-    if m.get("voice_exit"):
-        add("voice exit %s" % m["voice_exit"])
+            add(
+                "%-10s %s"
+                % (
+                    label,
+                    " ".join(x if isinstance(x, str) else "%s into %s" % tuple(x) for x in m[k]),
+                )
+            )
+    for k, label in (("stage_sounds", "sounds cell"), ("wide", "wide cells ")):
+        if m.get(k):
+            v = m[k]
+            add("%s %s" % (label, v if isinstance(v, str) else " ".join(str(x) for x in v)))
+    for i, step in enumerate(m.get("row", ())):
+        add("row %-6d %s%s" % (i, _rowstep(step, notes), _when(step, notes)))
+    add(
+        "tick       %s"
+        % " ; ".join(x if isinstance(x, str) else "stream %s" % x["stream"] for x in m["tick"])
+    )
     if m.get("prologue"):
         add("prologue   " + _cmd(m["prologue"], notes))
-    add("note row   %s" % m["note_row"])
     add("player     %s" % m["player"])
     if "mode_vol" in g:
         add("mode_vol   %s" % hexv(g["mode_vol"]))
-    for reg, e in g.get("commit", ()):
-        add("global     %s := %s" % (hexv(reg), expr(e, notes)))
+    for c in g.get("commit", ()):
+        add(
+            "global     %s := %s%s"
+            % (
+                hexv(c[0]),
+                expr(c[1], notes),
+                "" if len(c) < 3 else " when %s" % guards(c[2], notes),
+            )
+        )
     for name, d in g.get("flags", {}).items():
         add(
             "flag %-5s = %s where no producer leaves it%s"
@@ -169,9 +208,26 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
     add("## streams")
     add("")
     for k, st in obj["streams"].items():
-        add("%s -- %s%s" % (k, st["term"], "" if "rank" not in st else ", rank %d" % st["rank"]))
+        head = "%s -- %s%s" % (k, st["term"], "" if "rank" not in st else ", rank %d" % st["rank"])
+        if st.get("all"):
+            head += ", every row every tick"
+        if st.get("epoch") == "entry":
+            head += ", counted at entry"
+        if st.get("rate"):
+            head += ", one row every %s + 1 ticks in %s" % (
+                expr(st["rate"]["reload"], notes),
+                st["rate"]["cell"],
+            )
+        if st.get("when"):
+            head += ", when " + guards(st["when"], notes)
+        add(head)
         for i, row in enumerate(st["rows"]):
             add("    row %d: %s" % (i, _row(row, notes)))
+        if "beyond" in st:
+            for line in _private(
+                "beyond", st["beyond"], notes, "past the tuning, by how far past it the step went"
+            ):
+                add(line)
 
     add("")
     add("## accumulators -- section 5 records, in rank order")
@@ -190,7 +246,7 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
                 k,
                 hexv(ins["adsr"][0]),
                 hexv(ins["adsr"][1]),
-                hexv(ins["wave"]),
+                hexv(ins.get("wave", 0)),
                 "  --" if "pw" not in ins else hexv(ins["pw"][0] | ins["pw"][1] << 8, 4),
                 " ".join(_arm(a) for a in ins["accs"]),
             )
@@ -254,7 +310,7 @@ def _state(k, v):
         return ["%-10s %s" % (k, v)]
     if not isinstance(v, dict):
         return ["%-10s %s" % (k, " ".join(hexv(x) for x in v))]
-    if {"arms", "sets", "point", "all"} & set(v):  # a command the voice starts holding
+    if {"arms", "rows", "all"} & set(v):  # a command the voice starts holding
         return ["%-10s %s" % (k, _cmd(v, None))]
     out = []
     for a, b in v.items():
@@ -273,7 +329,17 @@ def _state(k, v):
 
 
 def _tempo(t, notes):
-    """The row clock: a divider, or a countdown cell and what reloads it."""
+    """The row clock: a divider, a countdown, or a counter and what resets it."""
+    if t.get("form") == "counter":
+        s = "tempo counter %s, row at %s" % (t["cell"], expr(t.get("boundary", 0), notes))
+        if "fetch" in t:
+            s += ", fetched at %s" % expr(t["fetch"], notes)
+        for r in t.get("reset", ()):
+            s += "\n           reset %s where %s" % (
+                _sets(r["sets"], notes),
+                guards(r["when"], notes),
+            )
+        return s
     if t.get("form") != "countdown":
         return "tempo divider %d phase %d" % (t["rate"], t["phase"])
     s = "tempo countdown %s, reload %s, row at %d" % (t["cell"], t["reload"], t.get("boundary", 0))
@@ -301,7 +367,12 @@ def _target(t):
 
 
 def _sets(rows, notes):
-    return " ; ".join("%s := %s" % (_target(t), expr(v, notes)) for t, v in rows)
+    """Assignments, each with the guards that let it through where it has any."""
+    return " ; ".join(
+        "%s := %s%s"
+        % (_target(r[0]), expr(r[1], notes), "" if len(r) < 3 else " when %s" % guards(r[2], notes))
+        for r in rows
+    )
 
 
 def _row(row, notes):
@@ -313,19 +384,21 @@ def _row(row, notes):
     if "trap" in row:
         return "trap: " + row["trap"]
     bits = []
+    if row.get("when"):
+        bits.append("when " + guards(row["when"], notes))
     if "sets" in row:
         bits.append(_sets(row["sets"], notes))
-    for f in ("delta", "depth", "cmp", "zero", "value"):
+    for f in ("delta", "depth", "cmp", "zero", "value", "raw", "mask"):
         if f in row:
             bits.append("%s %s" % (f, expr(row[f], notes)))
     if row.get("hold", 1) != 1:
-        bits.append("hold %d" % row["hold"])
+        bits.append("hold %s" % expr(row["hold"], notes))
     for a in row.get("run", ()):
         bits.append("run " + _arm(a))
     if "op" in row:
         bits.append("op " + _op(row["op"], notes))
     if "next" in row:
-        bits.append("next %d" % row["next"])
+        bits.append("next %s" % expr(row["next"], notes))
     return " ; ".join(bits) or "--"
 
 
@@ -333,12 +406,16 @@ def _op(op, notes):
     """A step's own producer: a pitch of the tuning, an accumulator, or a command."""
     if "pitch" in op:
         n = op["pitch"]
+        if not isinstance(n, int):
+            return "pitch %s" % expr(n, notes)
         return "pitch %s" % ("note %+d" % n if op.get("relative") else "note %d" % n)
     return _armref(op) if "acc" in op or "cmd" in op else _cmd(op, notes)
 
 
 def _armref(a):
-    """What a row's arm column holds: an arm, a command, or the name of one."""
+    """What a row's arm column holds: an arm, a command, or the names of them."""
+    if isinstance(a, list):
+        return " ".join(_armref(x) for x in a)
     if isinstance(a, str):
         return a
     if "cmd" in a:
@@ -353,34 +430,42 @@ def _cmd(c, notes):
         bits.append("arm " + " ".join(_arm(a) for a in c["arms"]))
     if c.get("links"):
         bits.append("reset " + " ".join(c["links"]))
-    if c.get("sets"):
-        bits.append(_sets(c["sets"], notes))
+    for row in c.get("rows", ()):
+        when = "" if not row.get("when") else " when %s" % guards(row["when"], notes)
+        if row.get("sets"):
+            bits.append(_sets(row["sets"], notes) + when)
+        if row.get("point"):
+            bits.append(_points(row["point"], notes) + when)
     if c.get("all"):
         bits.append("every voice " + _sets(c["all"], notes))
-    for slot, r in c.get("point", ()):
-        bits.append("%s := row %s" % (slot, expr(r, notes)))
     if c.get("tie"):
         bits.append("ties")
     return " ; ".join(bits) or "--"
 
 
+def _points(pts, notes):
+    """What a step re-points: the slot, the row, and whether the hold survives."""
+    return " ".join(
+        "%s := row %s (hold %s)%s"
+        % (
+            p[0],
+            expr(p[1], notes),
+            "kept" if len(p) > 2 and p[2] else "reset",
+            "" if len(p) < 4 or not p[3] else " when " + guards(p[3], notes),
+        )
+        for p in pts
+    )
+
+
 def _ins(ins, notes):
     """An instrument's cells, its stream entries and the prelude that precedes it."""
     out = []
-    for f, label in (("sets", "always"), ("note_sets", "on note")):
-        if ins.get(f):
-            out.append("      %-7s %s" % (label, _sets(ins[f], notes)))
-    if ins.get("points"):
-        out.append(
-            "      %-7s %s"
-            % (
-                "streams",
-                " ".join(
-                    "%s row %s (hold %s)" % (s, r, "kept" if k else "reset")
-                    for s, r, k in ins["points"]
-                ),
-            )
-        )
+    for row in ins.get("on_note", ()):
+        when = "" if not row.get("when") else " when %s" % guards(row["when"], notes)
+        if row.get("sets"):
+            out.append("      %-7s %s%s" % ("on note", _sets(row["sets"], notes), when))
+        if row.get("point"):
+            out.append("      %-7s %s%s" % ("streams", _points(row["point"], notes), when))
     p = ins.get("prelude")
     if isinstance(p, dict):
         out.append(
@@ -427,6 +512,19 @@ def _private(label, rec, notes, head):
     return out
 
 
+def _policy(pol, notes):
+    """A policy record: what it clamps to or reloads from, and where its edge is."""
+    if "clamp" in pol:
+        return "clamp %s%s" % (
+            expr(pol["clamp"], notes),
+            "" if not pol.get("edge") else " (edge %d)" % pol["edge"],
+        )
+    return "reload %s%s" % (
+        expr(pol["reload"], notes),
+        "" if not pol.get("when") else " when " + guards(pol["when"], notes),
+    )
+
+
 def _bound(x):
     """One end of a bound: a number, or the expression the tune reads it from."""
     return hexv(x, 4) if isinstance(x, int) else expr(x)
@@ -444,7 +542,7 @@ def _acc(name, a, notes):
     )
     lines = [head]
     pol = a["policy"]
-    lines.append("      policy  %s" % (expr(pol, notes) if isinstance(pol, dict) else pol))
+    lines.append("      policy  %s" % (_policy(pol, notes) if isinstance(pol, dict) else pol))
     if "delta" in a:
         d = "      delta   %s" % expr(a["delta"], notes)
         if a.get("delta_when"):
@@ -476,7 +574,10 @@ def _acc(name, a, notes):
         lines.append("      bound   %s%s -- %s" % (iv, b["from"], b.get("witness", "")))
     if "beyond" in a:
         lines += _private(
-            "beyond", a["beyond"], notes, "past the tuning, by " + a["beyond"]["index"]
+            "beyond",
+            a["beyond"],
+            notes,
+            "past the tuning, by " + a["beyond"].get("index", "how far past it it went"),
         )
     lines.append("      writes  %s" % " ".join("%s(%s)" % (t, p) for t, p in a["produce"]))
     for key, label in (("false", "else "), ("true", "steps")):

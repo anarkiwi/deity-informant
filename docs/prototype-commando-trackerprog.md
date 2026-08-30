@@ -308,9 +308,12 @@ it escapes into the score, and it is gone.
 
 §3.5's table says Hubbard's prelude is `null`, and then there is nowhere for the
 five sets a note-on emits (`ctrl = wave & gate`, `pw_lo`, `pw_hi`, `ad`, `sr`).
-Expressed here as `meta.note_row`, a §3.3 stream of `set` steps whose values
-read the instrument's own columns and its **live** pw cell. Proposal: every
-`Ins` has a note row; `prelude: null` means no *early* rows, not no note row.
+Expressed here as a `{stream}` step of §3.6's `meta.row` program, a §3.3 stream
+of `set` steps whose values read the instrument's own columns and its **live**
+pw cell. Proposal: every `Ins` has a note row; `prelude: null` means no *early*
+rows, not no note row. (Written first as `meta.note_row`, a key of its own; it
+turned out to fire at the note-on in GoatTracker 2 and at *every* row here,
+under one name, which is why the row is a program and not a set of hooks.)
 
 ### 4.6 `Acc.emit ∈ {entry, exit}`
 

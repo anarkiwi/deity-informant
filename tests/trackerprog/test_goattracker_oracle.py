@@ -91,7 +91,7 @@ def test_the_flattened_print_carries_the_streams_and_measures_itself():
     for line in (
         "shadow     25 registers, flushed descending at the head of every tick",
         "tempo countdown rowclock, reload tempo",
-        "voice exit exit",
+        "tick       row ; commit ; machine ; fetch ; prelude ; stream exit",
         "a new pitch resets vib_phase",
     ):
         assert line in text
@@ -140,7 +140,7 @@ def _pulse_bytes(row):
 
 def _speed_bytes(row):
     if isinstance(row["delta"], dict):
-        return 0x80 | row["cmp"], row["delta"]["tablestep"][2]
+        return 0x80 | row["cmp"], row["delta"]["shr"][1]
     return row["cmp"], row["depth"]
 
 

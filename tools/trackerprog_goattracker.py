@@ -338,7 +338,7 @@ class Tune:
     def name(self, fx, param):
         """One row command, interned under what it does; the score names it."""
         key = COMMANDS[fx] + ("" if param is None else ":%02X" % param)
-        self.cmds.setdefault(key, self.command(fx, param))
+        self.cmds.setdefault(key, rows_of(self.command(fx, param)))
         return key
 
     def command(self, fx, param):  # noqa: C901 - one clause per command number
@@ -470,7 +470,7 @@ class Tune:
         for y in range(1, self.L["speedrows"] + 1):
             left, right = self.t("speed", y), self.t("speed", y, True)
             if left & 0x80:  # calculated: a fraction of the semitone above the note sounded
-                step = {"tablestep": ["pitch", {"cell": "lastnote"}, right]}
+                step = {"shr": [{"interval": {"cell": "lastnote"}}, right]}
                 rows.append({"zero": 0, "cmp": left & 0x7F, "delta": step, "depth": step})
             else:
                 rows.append(
@@ -500,9 +500,10 @@ class Tune:
                 "wave": fw,
                 "vibparam": self.col("vibparam", i),
                 "vibdelay": self.col("vibdelay", i),
-                "sets": [["@vibdelay", {"ins": "vibdelay"}], ["@param", {"ins": "vibparam"}]],
-                "note_sets": note_sets,
-                "points": points,
+                "on_note": [
+                    {"sets": [["@vibdelay", {"ins": "vibdelay"}], ["@param", {"ins": "vibparam"}]]},
+                    {"when": UNTIED, "sets": note_sets, "point": points},
+                ],
                 "prelude": None if i >= self.L["nohr"] else {"stream": "hard_restart"},
                 "accs": [],
             }
@@ -521,6 +522,7 @@ class Tune:
         gates = {self.col("gatetimer", i) for i in used}
         assert len(gates) == 1, "the fetch is early by one number, not by the instrument"
         cells = {k: [m[L[k] + 7 * v] for v in range(3)] for k in LIVE}
+        cells["staged"] = [0] * 3  # the fetch leaves whether its row keys a note
         streams = {
             "note_on": {
                 "rank": 0,
@@ -530,7 +532,12 @@ class Tune:
             "hard_restart": {
                 "rank": 0,
                 "term": "halt",
-                "rows": [{"sets": [["sr", L["srparam"]], ["ad", L["adparam"]], ["@gate", 0xFE]]}],
+                "rows": [
+                    {
+                        "when": [[{"cell": "staged"}, "!=", 0]],
+                        "sets": [["sr", L["srparam"]], ["ad", L["adparam"]], ["@gate", 0xFE]],
+                    }
+                ],
             },
             "exit": {"rank": 0, "term": "halt", "rows": [{"sets": [["ctrl", GATED]]}]},
             "funktempo": {
@@ -606,29 +613,45 @@ class Tune:
                 "early": early,
                 "alternate": {"stream": "funktempo", "when": [[{"cell": "tempo"}, "<", 2]]},
             },
-            "row_consumes_tick": [["sounds", "!=", 0]],
+            "tick": ["row", "commit", "machine", "fetch", "prelude", {"stream": "exit"}],
+            "row_consumes_tick": [["keys", "!=", 0]],
             "row_command": "held",
             "prefetch": ["ins", "gate", "arm"],
+            "stage_sounds": "staged",
             "rest_arm": ARMS[0],
-            "note_row": "note_on",
-            "voice_exit": "exit",
+            "row": [
+                {"note": True, "when": [["sounds", "!=", 0]]},
+                {"stream": "note_on", "when": [["keys", "!=", 0]]},
+                {"commands": True},
+            ],
             "pitch_links": ["vib_phase"],
-            "prologue": {
-                "id": "init",
-                "sets": [
-                    ["@wave", 0],
-                    ["@param", 0],
-                    ["@tempo", L["deftempo"]],
-                    ["@rowclock", 1],
-                    ["@instr", 1],
-                    ["#filtctrl", 0],
-                    [21, 0],
-                    ["ctrl", GATED],
-                ],
-                "point": [["wave", 0], ["pulse", 0], ["filter", 0]],
-            },
+            "prologue": rows_of(
+                {
+                    "id": "init",
+                    "sets": [
+                        ["@wave", 0],
+                        ["@param", 0],
+                        ["@tempo", L["deftempo"]],
+                        ["@rowclock", 1],
+                        ["@instr", 1],
+                        ["#filtctrl", 0],
+                        [21, 0],
+                        ["ctrl", GATED],
+                    ],
+                    "point": [["wave", 0], ["pulse", 0], ["filter", 0]],
+                }
+            ),
             "player": "prototype-trackerprog.md sections 4 and 5",
         }
+
+
+UNTIED = [["tie", "==", 0]]  # a row a tie does not admit
+
+
+def rows_of(c):
+    """A command's writes as an inline stream: one guard shape, section 3.3's."""
+    row = {k: c.pop(k) for k in ("sets", "point") if k in c}
+    return dict(c, rows=[row]) if row else c
 
 
 GATED = {"and": [{"cell": "wave"}, {"cell": "gate"}]}
@@ -653,7 +676,7 @@ ARMS = {
 def accs():
     """Section 5's records: eight forms, every one a row of section 5's own table."""
     slide = {
-        "cell": "voice.freq",
+        "cell": "freq",
         "target": "freq",
         "width": 16,
         "delta": SPEED,
@@ -705,7 +728,7 @@ def accs():
         "vibrato": {
             "id": "vibrato",
             "rank": 2,
-            "cell": "voice.freq",
+            "cell": "freq",
             "target": "freq",
             "width": 16,
             "delta": DEPTH,
@@ -721,7 +744,7 @@ def accs():
         "toneporta": {
             "id": "toneporta",
             "rank": 2,
-            "cell": "voice.freq",
+            "cell": "freq",
             "target": "freq",
             "width": 16,
             "delta": SPEED,
@@ -739,7 +762,7 @@ def accs():
         "toneporta_snap": {
             "id": "toneporta_snap",
             "rank": 2,
-            "cell": "voice.freq",
+            "cell": "freq",
             "target": "freq",
             "width": 16,
             "policy": "take",
@@ -755,7 +778,7 @@ def accs():
         "pulse_step": {
             "id": "pulse_step",
             "rank": 6,
-            "cell": "@pw",
+            "cell": "shadow.pw",
             "target": "pw",
             "width": 16,
             "delta": {"const": "delta"},

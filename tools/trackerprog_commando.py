@@ -17,7 +17,7 @@ the tuneprog says            the trackerprog says
 ``row & $1F``                the event's ``dur`` in row ticks
 ``row & $20``                the event's ``tie``: it disarms the prelude
 ``row & $40``                the event's ``gate: off`` -- a keyoff
-``ins.vib``                  ``Acc(freq, repeat(tablestep(pitch, note, vib+1),
+``ins.vib``                  ``Acc(freq, repeat(interval >> (vib+1),
                              phase(counter)), policy reload)``
 ``ins.fx & 8``               ``Acc(pw_lo, const(pspeed) + carry(vibrato))``
 ``ins.pspeed``               ``Acc(pw, const(pspeed & $E0), policy reflect,
@@ -368,7 +368,7 @@ def accs():
         "slide": {
             "id": "slide",
             "rank": 2,
-            "cell": "voice.freq",
+            "cell": "freq",
             "target": "freq",
             "width": 16,
             "delta": {"const": "delta"},
@@ -387,7 +387,7 @@ def accs():
         "drum": {
             "id": "drum",
             "rank": 3,
-            "cell": "voice.freq.hi",
+            "cell": "freq.hi",
             "target": "freq",
             "width": 8,
             "delta": {"const": -1},
@@ -409,7 +409,7 @@ def accs():
         "skydive": {
             "id": "skydive",
             "rank": 4,
-            "cell": "voice.freq.hi",
+            "cell": "freq.hi",
             "target": "freq",
             "width": 8,
             "delta": {"const": 2},
@@ -480,6 +480,7 @@ def build(path, song=0):
             "wave": wave,
             "pw": [pw_lo, pw_hi],
             "prelude": {"stream": "note_off", "early": 1},
+            "on_note": [{"sets": [["freq", {"notefreq": None}]]}],
             "accs": arms,
             **({"pitch": drums[i]} if i in drums else {}),
         }
@@ -494,9 +495,16 @@ def build(path, song=0):
             "voice_order": [2, 1, 0],
             "commit_order": ["ctrl", "ad", "sr"],
             "tempo": {"rate": m[SPEEDTBL + song] + 1, "phase": 0},
+            "tick": ["prelude", "commit", "row", "commit", "machine"],
             "row_consumes_tick": True,
             "row_command": "spent",
-            "note_row": "note_on",
+            "row": [
+                {"ins": True},
+                {"note": True, "when": [["sounds", "!=", 0]]},
+                {"sets": [["@wave", {"ins": "wave"}]]},
+                {"stream": "note_on"},
+                {"commands": True},
+            ],
             "player": "prototype-trackerprog.md sections 4 and 5",
         },
         "globals": {

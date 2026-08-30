@@ -72,7 +72,7 @@ object.
 | `FREQ_LO[n]`/`FREQ_HI[n]`, 96 entries | `pitch(n)` — the tuning, total by construction | §3.2 |
 | `(FREQ[n+1] - FREQ[n]) >> k`, the calculated speed | `tablestep(pitch, lastnote, k)` — an expression over the tuning | §5 `tablestep` |
 | `DEC counter,X; BEQ tick0; BPL; reload tempo` | `meta.tempo` countdown: a cell, a reload cell, a boundary | new (§4.2) |
-| `tempo < 2 ⇒ tempo ^= 1; funktempotbl[tempo] - 1` | `tempo.alternate`, a two-row stream over two global cells | §3.6 `set_tempo(stream)` |
+| `tempo < 2 ⇒ tempo ^= 1; funktempotbl[tempo] - 1` | `tempo.alternate`, a two-row stream over two global cells | §3.6, a tempo over a stream |
 | `counter == gatetimer ⇒ fetch_row` | the fetch, `early` clock steps before the row (§4.3) | §3.5 `early` |
 | the row's `instr`, `newfx`, `newparam`, `gate` | `meta.prefetch` — the fields the fetch commits early | new (§4.3) |
 | `SR=0; AD=$0F; gate=$FE` unless legato or fx 3 | the instrument's **prelude**, and the held command's `tie` | §3.5 |
@@ -93,7 +93,7 @@ object.
 | `fx 3`: the 16-bit compare chain and `p_1327` | `policy clamp(pitch[note])`, `links [reset(vib_phase)]` | §5 tone portamento |
 | `fx 3` with speed index 0 | `policy take` — the degenerate clamp | new (§4.6) |
 | `p_1327`'s `lastnote = abs; vibtime = 0` | taking a pitch of the tuning sets `lastnote` and `meta.pitch_links` | new (§4.6) |
-| `mt_loadregs`: `ghost.ctrl = wave & gate` | `meta.voice_exit`, a stream every voice path ends on | new (§4.5) |
+| `mt_loadregs`: `ghost.ctrl = wave & gate` | a `{stream}` phase of `meta.tick`, run whatever the row did | new (§4.5) |
 | `init`: zero blocks A+B, tempo/counter/instr | `meta.prologue`, applied on the tick the init call spends | new (§4.7) |
 
 What disappears: the patched `JSR`/`JMP` low bytes (`$1289`, `$1295`, `$131E`,
@@ -168,7 +168,7 @@ global default. The object states which: `meta.tempo.form`. Commando's is a
 `divider` (`rate`, `phase`, a per-row countdown in its steps). GT2's is a
 `countdown` — a cell the tick decrements, a `boundary` value that names the
 row, and a `reload` cell it takes the row's length from when it goes past.
-`tempo.alternate` is §3.6's `set_tempo(stream)`: two rows the reload alternates
+`tempo.alternate` is §3.6's tempo over a stream: two rows the reload alternates
 between, which is `funktempo` and nothing else. It is dead in *Je suis Linus*
 and fires 4,326 times in *Do It Again*, on the same code.
 
@@ -207,8 +207,8 @@ score replaces it. One record, unpacked into named fields:
   point: [[stream slot, row]], all: [[cell, value]], tie: bool }
 ```
 
-`arms` is §3.6's `arm(acc_id, overrides)`; `point` is `set_stream(slot, stream,
-row)`, which re-points a cursor *and* resets its hold, exactly as §3.6 says;
+`arms` is §3.6's `arm(acc_id, overrides)`; `point` re-points a cursor *and*
+resets its hold, exactly as §3.6 says;
 `links` is §5's `links: [reset(acc_id)]` (commands 1 and 2 zero the vibrato
 phase); `all` is §3.6's global tempo — the one place a command writes every
 voice's cell, which is a **write**, not a read, so the invariant that no
@@ -250,7 +250,8 @@ absence of a second producer. A step may also `run` an accumulator on *every*
 tick it holds — the pulse and filter sweeps — which is the same rule with the
 other timing, and both are needed because both occur.
 
-`meta.voice_exit` names a stream every voice path ends on: GT2's
+A `{stream}` phase of `meta.tick` (§4.1) names a stream every voice path ends
+on: GT2's
 `mt_loadregs`, `ctrl = wave & gate`, on every tick including the ones a row
 consumes.
 
@@ -363,15 +364,18 @@ an instrument, or carries a note: a keyoff is a row with nothing else on it.
 - **`arm(acc_id, overrides)` rather than `Acc.param`** (§3.6's third change,
   written from GT2's vibrato) is exactly the shape needed: a speed row re-binds
   `delta`, `bound` and — the small widening §4.4 names — `when`.
-- **`set_stream(slot, stream, row)` re-points *and* resets the hold** (§3.6's
+- **a `point` re-points *and* resets the hold** (§3.6's
   sixth change): commands 8/9/A, verbatim.
 - **`rate` has one meaning** — a divider. GT2's `vibdelay` is a counter, so §5's
   own rule ("a counter is not an accumulator") makes it a guard and a −1 step,
   not a second `rate`.
 
-Two §5 delta forms remain unexercised by either family: `tabcell` on the
+Two §5 delta forms remained unexercised by either family: `tabcell` on the
 *cutoff* target (keyboard tracking, SW and defMON) and the sign-extended table
-entry. `tabcell` itself is exercised here, on a stream's named column.
+entry. `tabcell` itself is exercised here, on a stream's named column; the
+cutoff one is exercised by the third family
+([prototype-sidwizard-trackerprog.md](prototype-sidwizard-trackerprog.md) §5),
+which leaves the sign-extended entry alone.
 
 ---
 

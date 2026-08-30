@@ -12,7 +12,7 @@ from deity_informant.trackerprog.universal import Player, render
 FLO, FHI, PLO, PHI, CTRL, AD, SR = 0, 1, 2, 3, 4, 5, 6
 CUT, RES, VOL = 22, 23, 24
 GATED = {"and": [{"cell": "wave"}, {"cell": "gate"}]}
-CELLS = ("rowclock", "tempo", "instr", "gate", "wave", "param", "vibtime", "vibdelay")
+CELLS = ("rowclock", "tempo", "instr", "gate", "wave", "param", "vibtime", "vibdelay", "staged")
 WAVE_ROWS = [
     {"trap": "a 1-based table has no row zero"},
     {"sets": [["@wave", 0x21]], "hold": 2, "op": {"pitch": 2}},
@@ -38,8 +38,13 @@ def ins(points=(), prelude="hard_restart", accs=()):
         "adsr": [0x11, 0x22],
         "wave": 0x41,
         "sets": [],
-        "note_sets": [["@wave", 0x41], ["@gate", 0xFF]],
-        "points": list(points),
+        "on_note": [
+            {
+                "when": [["tie", "==", 0]],
+                "sets": [["@wave", 0x41], ["@gate", 0xFF]],
+                "point": list(points),
+            }
+        ],
         "prelude": prelude and {"stream": prelude},
         "accs": list(accs),
     }
@@ -49,7 +54,11 @@ def obj(events, streams=None, accs=None, instrument=None, tempo=2, early=1, curs
     """A one-voice trackerprog whose writes all pass through a flushed shadow."""
     st = {
         "note_on": {"rank": 0, "term": "halt", "rows": [{"sets": [["ad", {"ins": "adsr.0"}]]}]},
-        "hard_restart": {"rank": 0, "term": "halt", "rows": [{"sets": [["ad", 0x0F]]}]},
+        "hard_restart": {
+            "rank": 0,
+            "term": "halt",
+            "rows": [{"when": [[{"cell": "staged"}, "!=", 0]], "sets": [["ad", 0x0F]]}],
+        },
         "exit": {"rank": 0, "term": "halt", "rows": [{"sets": [["ctrl", GATED]]}]},
         "funktempo": {"rank": 0, "term": "jump", "rows": [{"value": 3}, {"value": 5}]},
     }
@@ -72,13 +81,18 @@ def obj(events, streams=None, accs=None, instrument=None, tempo=2, early=1, curs
                 "boundary": 0,
                 "early": early,
             },
-            "row_consumes_tick": [["sounds", "!=", 0]],
+            "tick": ["row", "commit", "machine", "fetch", "prelude", {"stream": "exit"}],
+            "row_consumes_tick": [["keys", "!=", 0]],
             "prefetch": ["ins", "gate", "arm"],
-            "note_row": "note_on",
-            "voice_exit": "exit",
+            "stage_sounds": "staged",
+            "row": [
+                {"note": True, "when": [["sounds", "!=", 0]]},
+                {"stream": "note_on", "when": [["keys", "!=", 0]]},
+                {"commands": True},
+            ],
             "prologue": {
                 "id": "init",
-                "sets": [["@rowclock", 1], ["@tempo", tempo], ["@instr", 1]],
+                "rows": [{"sets": [["@rowclock", 1], ["@tempo", tempo], ["@instr", 1]]}],
             },
             "player": "hermetic",
             **meta,
@@ -159,7 +173,7 @@ def test_a_stream_holds_its_row_then_takes_its_op_and_its_next():
 
 
 def test_a_step_that_produces_stands_the_armed_accumulators_down():
-    a = acc("slide", "voice.freq", delta={"const": 0x10}, produce=[["freq_hi", "hi"]])
+    a = acc("slide", "freq", delta={"const": 0x10}, produce=[["freq_hi", "hi"]])
     o = obj(
         [event(note=1, ins=1)],
         streams={"wave": {"rank": 0, "term": "jump", "rows": WAVE_ROWS}},
@@ -212,7 +226,7 @@ def test_a_global_channel_steps_its_own_stream_and_commits_its_own_registers():
 
 
 def test_the_fetch_stages_the_row_early_and_a_tie_holds_the_prelude():
-    tied = {"id": 3, "tie": True, "sets": [], "arms": []}
+    tied = {"id": 3, "tie": True, "rows": [], "arms": []}
     w = render(obj([event(note=1, ins=1), event(note=2, arm=tied)], tempo=3), 16)
     assert column(w, AD)[4:7] == [0, 0x0F, 0x11]  # the cut, one tick before the row
     assert column(w, AD)[7:16] == [0x11] * 9  # and never again: the second row ties
@@ -250,7 +264,7 @@ def test_reflect_complement_folds_the_phase_at_its_bound():
 def test_clamp_takes_its_target_where_the_step_would_pass_it():
     a = acc(
         "slide",
-        "voice.freq",
+        "freq",
         delta={"const": 0x180},
         policy={"clamp": {"notefreq": None}},
         produce=[["freq_lo", "lo"], ["freq_hi", "hi"]],
@@ -268,7 +282,7 @@ def test_clamp_takes_its_target_where_the_step_would_pass_it():
 
 
 def test_take_is_the_degenerate_clamp_and_reaches_its_target_at_once():
-    a = acc("snap", "voice.freq", policy="take")
+    a = acc("snap", "freq", policy="take")
     o = obj([event(note=3, ins=1)], accs=a, tempo=2, rest_arm=[{"acc": "snap"}], pitch_links=[])
     p = Player(o)
     for _ in range(6):

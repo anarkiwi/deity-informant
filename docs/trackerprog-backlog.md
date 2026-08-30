@@ -678,7 +678,8 @@ disappear; keeping their index as the command's *name* kept them. Commands are
 now named by what they do (`tempo:07`, `stream.wave:04`, `sr:A4`), which also
 makes the two builds' commands comparable — the same music names the same
 command whatever page the handler landed on. SID Wizard's `BIGFXTABLE` index
-(anatomy:2799) is the same trap waiting on that family.
+(anatomy:2799) was the same trap waiting on that family; §6.3 records that it
+sprang the same way and what avoiding it cost.
 
 **Whether a command outlives its row was implied by the clock.** GT2 re-runs the
 last command the score gave at every row boundary (effect memory); Hubbard
@@ -687,3 +688,112 @@ in the countdown branch of the sequencer, so "countdown-clock families hold thei
 commands" was load-bearing and untrue in general. It is now `meta.row_command` ∈
 {`held`, `spent`}, read by one procedure on both paths. The generalisable check
 is §6.1's: one musical question, one place that answers it.
+
+### 6.4 What reading the three together found
+
+With Hubbard, GoatTracker 2 and SID Wizard all on one player, the object could
+be audited the way §1 asks — every schema row against two certified families —
+and the answer was that the *player's* growth, not the schema's, was the
+measure. `meta` carried 12 keys at one family, 18 at two and 22 at three, and
+15 of them were branch points; §9's genericity gate claims two marked
+single-family rows and the audit found twenty-one unmarked ones.
+
+Five reductions came out of it, each certified at 0 divergences on all seven
+tunes. Measured together: the union of `meta` keys across the three families
+26 → 21, the keys the player *branches* on 15 → 10, two row procedures → one,
+three mechanisms for "run a stream at a point in the tick" → one, two guard
+spellings → one, at the cost of 14 lines in the player.
+
+**A reduction in §2 is not two forms in §4.** `meta.commit ∈ {order, acts}` let
+a family collapse a tick's edge writes. Rendering the acts sequence for the two
+families that do not need it is write-for-write identical over their whole
+horizons — Hubbard 11,780 ticks, GoatTracker 2 12,000 × 2 — so the datum
+distinguished no observation and the branch was deleted. The generalisable
+check: before a schema row admits a second form, render the first for the
+family that has the second and count the ticks that differ.
+
+**A hook is a phase with a name, and names do not compose.** Five meta keys
+attached a stream to a point in the row (`note_row`, `gate_row`, `pitch_row`,
+`row_sets`, `row_commits`) and two more to a point in the tick
+(`tempo.early_first`, `meta.voice_exit`), while a *third* mechanism — a stream
+with a `rank` and a `when` — already existed and was the general one. Worse,
+one name meant two things: `note_row` fired at the note-on in GoatTracker 2 and
+at every row in Hubbard, because the two families ran different row procedures
+(`latch` and `row`) that also differed in capability — `latch` applied no
+orderlist transpose and ran its commands before the note rather than after.
+`meta.row` and `meta.tick` are those seven keys and two procedures said once.
+The generalisable check: two procedures for one musical act is the §4.8 failure
+one level up, and a hook per call site is how it gets there.
+
+**An ordering said twice will disagree.** The commit kept three lists so a
+prelude could be emitted ahead of the tick's producers — an ordering the tick
+list also states. They disagreed: GoatTracker 2's prelude runs *after* its
+machine and must win the register a held `sr` command wrote, and the fixed
+first list gave that register to the command. One list, and the order is the
+order.
+
+**A sigil that means two things is a grammar, not a shorthand.** `@name` was a
+voice cell in every assign target and a *shadow register pair* in an
+accumulator's `cell`. One vocabulary — `tick`, a voice cell, `#global`,
+`ins.pw`, `shadow.<pair>`, any with `.hi`/`.lo` — retires the collision,
+`voice.freq`/`voice.freq.hi`, and the four hard-coded half-names. `tablestep`
+went the same way: it is `interval(n) >> shift`, and the grammar already had
+`shr`.
+
+**A guard with two spellings is two guards.** A stream row carried `when`; a
+command's set, an instrument's set and a global commit carried theirs as a third
+element of the list beside the value — 39 of them in SID Wizard alone. A
+command's writes are now rows of the same inline stream an instrument's note-on
+and a prelude are, and one procedure runs all three. The generalisable check: a
+guard that lives in a tuple position cannot be read by anything that did not
+already know the tuple's shape.
+
+**And grammar with no exemplar is not grammar.** §3.3's terminator (written by
+every tool, read only by the print), §3.6's nine named commands (of which the
+three families emit none — the record they do emit is smaller and more general)
+and `for`/`call`/`ret` in `Order` (Galway and Follin, both prose-only) are
+struck. The generalisable check is §1's own rule applied to the *print* as well
+as the player: a row nothing renders is a row nothing tests.
+
+### 6.3 Three more the third family found
+
+[prototype-sidwizard-trackerprog.md](prototype-sidwizard-trackerprog.md), same
+shape again — with the difference that two of the three are things the *first
+two* families had made invisible rather than merely unresolved.
+
+**§2 rule 1 was being collapsed, and only a family without a shadow could show
+it.** The player took the last value per edge register and emitted the three in
+`commit_order`. For a family whose writes go through a ghost flush that is
+exactly right and unobservable; for one that writes the chip as it goes it is
+wrong, and SID Wizard's note-start tick writes `AD` from the instrument and again
+from the row's own `attack` effect. The tick is therefore always a sequence of
+acts, one act per thing the tick did, `commit_order` ordering that act's own
+edges — and rendering it that way for the two families that do not need it is
+write-for-write identical over their whole horizons, so no datum selects the
+form. Measured: collapsing them diverges on 500 ticks of *Emomyst* and 44 of
+*End of the World*. The generalisable check is that a *reduction* in §2 is not a
+licence to reduce in §4 — the player must produce what the rule compares, and
+only a family that exercises the rule proves it does.
+
+**`meta.shadow` did not need widening; it needed asking.** The expectation was a
+"partial shadow" — SID Wizard ghosts FREQ/PW/WF and writes AD/SR and the filter
+directly (anatomy:1236) — and a `meta.shadow` that names which registers pass
+through it. Reading the two binaries says there is no flush in either: a ghost
+register here is a *cell* a producer reads on the tick that computed it, which
+the schema already has. A shadow is a register file a tick **defers**, and a
+family that defers nothing has none. The generalisable check: before widening a
+field for a family, confirm the family has the thing the field is about.
+
+**Naming a command by what it does has a price, and it is worth paying.**
+`BIGFXTABLE`'s 31 words, `SMALLFXTBL`'s 14 and `NOTEFXTBL`'s 8 all disappear —
+no command in the object is named by an index, and the tables are read only to
+ask whether this build's exporter compiled the handler in (a bare `RTS` makes it
+`nop`, and the score keeps the byte). What that costs is that three of SID
+Wizard's effects have the *same encoding in two columns*: the note column's
+`$60–$6F` and small effect 8, the instrument column's `$40–$7F` and small effects
+4–7, and `arpeggio.speed` as small effect C and big effect C. A score naming them
+by what they do cannot say which byte carried one, so the byte-for-byte round
+trip reads the row's *shape* — the bit-7 continuation the layer spends — off the
+tune and every value out of the object. §8 of prototype-trackerprog.md already
+says the trackerprog is *a* preimage; this is the first exemplar where that is a
+measurement rather than a caveat.
