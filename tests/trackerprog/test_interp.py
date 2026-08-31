@@ -1,4 +1,4 @@
-"""T3: the universal player renders a tune lifted from its data, and certifies it."""
+"""T3: the scoreprog interpreter renders a tune lifted from its data, and certifies it."""
 
 import json
 import sys
@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tuneprog"))
 
-from deity_informant.trackerprog import certify, emit, lift, player, region  # noqa: E402
+from deity_informant.trackerprog import certify, emit, interp, lift, region  # noqa: E402
 from deity_informant.trackerprog.refuse import Refusal  # noqa: E402
 from deity_informant.tuneprog import pipeline, provenance  # noqa: E402
 from deity_informant.tuneprog.history import history  # noqa: E402
@@ -240,4 +240,4 @@ def test_the_player_refuses_a_score_it_has_run_out_of():
         tp["score"]["fetches"][key] = tp["score"]["fetches"][key][:1]
     _got, trap = emit.replay(tp)
     assert trap and trap["trap"] == "score exhausted"
-    assert player.DEFAULT_ORDER == ("ad", "sr", "ctrl")
+    assert interp.DEFAULT_ORDER == ("ad", "sr", "ctrl")
