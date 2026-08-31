@@ -992,13 +992,18 @@ class Player:
         return True
 
     def advance(self, v):
-        """The fetch's own cursor: the next event, and the next order step at a wrap."""
+        """The fetch's own cursor: the next event, and the next order step at a wrap.
+
+        The step is ``order_step``'s, not an increment of its own: *when* the row
+        is read and *what shape the sequencer is* are two properties, and a
+        prefetching family with a called or counted score walks past ``call``,
+        ``mark`` and ``loop`` as though each were ``play`` if the wrap here does
+        not run the order program.
+        """
         self.evrow[v] += 1
         if self.evrow[v] == len(self.pattern_of(v)["events"]):
             self.evrow[v] = 0
-            self.c["orderpos"][v] += 1
-            self.publish("wrap", v)
-            self.publish("order", v, {"pos": self.c["orderpos"][v]})
+            self.order_step(v)
 
     # ---- the sequencer --------------------------------------------------------
     def order_of(self, v):

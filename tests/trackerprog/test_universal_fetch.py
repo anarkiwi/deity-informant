@@ -7,7 +7,7 @@ commands spent at the fetch rather than held for the boundary, and a register of
 the tune's one global channel written by the voice whose write-out sends it.
 """
 
-from deity_informant.trackerprog.universal import Player, render
+from deity_informant.trackerprog.universal import REG, Player, render
 
 FLUSH = list(range(7))  # a one-voice image: the registers the write-out runs
 
@@ -172,3 +172,85 @@ def test_a_voice_writes_a_register_of_the_one_global_channel():
     assert w[0] == [(22, 0x40), (4, 0x41)]  # the producer first, then the voice's edge
     image = render(obj(streams=st, shadow=FLUSH + [22]), 2)
     assert dict(image[1])[22] == 0x40  # through an image that holds it, the tick after
+
+
+# ---- the order program, under a clock that prefetches -------------------------
+# *When* the row is read and *what shape the sequencer is* are two properties.
+# They were coupled: ``advance``, the prefetch path's cursor, stepped
+# ``orderpos`` by one of its own instead of calling ``order_step``, so a
+# prefetching family with a called or counted score walked past ``call``,
+# ``mark`` and ``loop`` as though each were ``play``.  It stayed invisible
+# because the three prefetching families have flat orders and the two with order
+# programs do not prefetch -- no exemplar separated them.
+
+ORDER_ROW = [
+    {"note": True, "when": [["sounds", "!=", 0]]},
+    {"sets": [["ctrl", {"payload": "note"}]], "when": [["sounds", "!=", 0]]},
+]
+
+
+class Coupled(Player):
+    """``advance`` before the fix: its own increment, ignoring ``play_of``'s ``op``."""
+
+    def advance(self, v):
+        self.evrow[v] += 1
+        if self.evrow[v] == len(self.pattern_of(v)["events"]):
+            self.evrow[v] = 0
+            self.c["orderpos"][v] += 1
+            self.publish("wrap", v)
+            self.publish("order", v, {"pos": self.c["orderpos"][v]})
+
+
+def ordered(play):
+    """A prefetching object whose score is an order *program*; one row per step."""
+    o = obj(events=[event(1)], row=ORDER_ROW)
+    o["score"]["orders"] = [{"play": play, "end": {"jump": 0}}]
+    o["score"]["patterns"] = {k: {"events": [event(n)]} for k, n in (("0", 1), ("1", 7), ("2", 9))}
+    return o
+
+
+def notes(cls, o, ticks):
+    """The note each tick keyed, off the ``ctrl`` byte this snippet writes it to."""
+    p, out = cls(o), []
+    for _ in range(ticks):
+        out += [v for r, v in p.tick() if r == REG["ctrl"]]
+    return out
+
+
+def test_a_counted_loop_runs_its_body_where_the_clock_prefetches():
+    """``mark``/``loop`` under a ``fetch`` phase: the body three times, not once."""
+    o = ordered(
+        [
+            {"pattern": "0", "op": {"mark": 3, "next": 1}},
+            {"pattern": "1", "op": {"loop": True, "next": 2}},
+            {"pattern": "2", "op": {"jump": 0}},
+        ]
+    )
+    assert notes(Player, o, 16) == [1, 7, 7, 7]
+    assert notes(Coupled, o, 16) == [1, 7, 9, 1]  # the mark and the loop taken as play
+
+
+def test_a_call_returns_where_it_says_where_the_clock_prefetches():
+    """``call``/``ret`` under a ``fetch`` phase: the stack is the score's either way."""
+    o = ordered(
+        [
+            {"pattern": "0", "op": {"call": 2, "ret": 1}},
+            {"pattern": "1", "op": {"jump": 0}},
+            {"pattern": "2", "op": "ret"},
+        ]
+    )
+    assert notes(Player, o, 16) == [1, 9, 7, 1]
+    assert notes(Coupled, o, 16) == [1, 7, 9, 1]  # walked straight past the call
+
+
+def test_a_stop_in_a_prefetched_score_stops_the_voice():
+    """``stop`` reaches the voice through the fetch's wrap, and halts its clock."""
+    o = ordered([{"pattern": "0", "op": "stop"}, {"pattern": "1", "op": {"jump": 0}}])
+    p = Player(o)
+    for _ in range(12):
+        p.tick()
+    assert p.stopped == [True] and p.stopping == 0
+    q = Coupled(o)  # the coupled body walks past the stop and never halts
+    for _ in range(12):
+        q.tick()
+    assert q.stopped == [False]

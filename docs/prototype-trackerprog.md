@@ -413,6 +413,21 @@ program. And **`mark` and `loop` are two steps, not one `for`**: they are two
 bytes in two places with the body between them. The other five families carry no
 `op` at all and take the `play` list as before.
 
+**The order program runs at two positions, and it is one program.** A voice's
+`play` cursor steps in two places — `sequencer_step`'s walk, where the row
+boundary consumes the score, and `advance`, the cursor of a clock that fetches
+its row ahead — and both are `order_step`. `advance` used to step `orderpos` by
+one of its own and discard the `op` `play_of` returns, so a family whose clock
+prefetches walked past `call`, `mark`, `loop` and `stop` as though each were
+`play`. Nothing observed it: the three prefetching families have flat orders and
+the two with order programs do not prefetch, so *when* the row is read and *what
+shape the sequencer is* were one flag with no exemplar to separate them. They are
+separate now — 0 differing of 332,358 over thirty builds against the merge base's
+own renders (`trackerprog_poison.py --emit-digests`/`--against`), the change
+reaching no certified tick, and three hermetic snippets with `fetch` in
+`meta.tick` that mis-render on the old body kept beside them
+(`tests/trackerprog/test_universal_fetch.py`).
+
 **The counted loops nest, and the ninth family is why.** The sixth's are two
 bytes over one register per voice that nothing saves or restores, so the object
 said the loops do not nest by having one cell. Galway's `For` pushes the loop's
