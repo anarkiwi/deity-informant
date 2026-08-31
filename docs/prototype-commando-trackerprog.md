@@ -80,7 +80,7 @@ factored form — the certified program. Right column is the object.
 | the extra byte `< $80` | the event's `ins` | §3.6 |
 | `$518B` hard cut | the instrument's **prelude**, `early = 1` row tick, rows `set(ctrl, wave & $FE) set(ad,0) set(sr,0)` | §3.5 |
 | `ins.vib ≠ 0` | `Acc(freq, repeat(tablestep(pitch, note, vib+1), phase(fold(counter,7))), policy reload(pitch[note]))` | §5 vibrato, stateless phase |
-| `ins.fx & 8` | `Acc(pw_lo, const(pspeed) + carry(C), width 8, wrap, scope instrument)` | §5 pulse run |
+| `ins.fx & 8` | `Acc(pw_lo, add(const(pspeed), flag(C)), width 8, wrap, scope instrument)` | §5 pulse run |
 | `ins.pspeed ≠ 0` | `Acc(pw, const(pspeed & $E0), width 12, reflect, amplitude [$800,$EFF] >> 8, bound [0,$FFF] projected, rate (pspeed & $1F)+1, phase cell pwdir, scope instrument)` | §5 pulse sweep |
 | the extra byte `≥ $80` | `arm(slide, {delta, phase})` on the event — the byte is unpacked at build time, never at run time | §3.6 |
 | `voice.porta ≠ 0` | `Acc(freq, const(<delta>), phase const(<phase>), wrap, scope voice)`, armed by the score | §5 free slide |
@@ -369,14 +369,27 @@ gives every entry of its tick.
 
 ### 4.11 The flag's producer, not only its consumer
 
-§5 gives the consumer `Δ + carry(site, flag)`. The producer needs stating too:
-the vibrato's `repeat` loop leaves `C`, the value it leaves when the loop does
-not run (`seed: 1`, the compare's own carry), the value when its guard fails
-(`unguarded: 0`), and the default when no vibrato is armed at all
-(`globals.flags.C.default = bit(ins, 5)`, the residue of the instrument index's
-three shifts — always 0 for this tune, and stated rather than assumed).
+§5 gives the consumer a live carry, `add(Δ, flag(C))`. The producer needs
+stating too, and this is the one carry in the layer that is **not** an
+expression: the vibrato's `repeat` loop leaves `C`, and the carry it leaves is
+the carry of the *last* of its `n` additions, so no expression over the value
+the loop stored recovers it without re-running that step in the object. So the
+record states it — `flag: {name: "C", seed: 1}`, the seed being what the loop
+leaves when it does not run, which is the compare's own carry — and
+`globals.flags.C.default` states what `C` is when no vibrato is armed at all
+(`bit(ins, 5)`, the residue of the instrument index's three shifts, always 0 for
+this tune and stated rather than assumed).
 
-The term is load-bearing: delete `+ carry` and subtune 2 diverges on 11,747 of
+The record also carried `unguarded: 0`, the value where the guard fails, and
+that is the flag's own default said twice: measured, it is worth **0 ticks on
+all three subtunes**, and it is struck. defMON keeps the field, where its two
+pulse arms want 1 against a default of 0 and it is worth 475 of *Jazzpjazz*'s
+1,799 ticks and 127,722 of *Automatas*' 149,025
+([prototype-trackerprog.md](prototype-trackerprog.md) §5, §7).
+
+The seed is load-bearing on its own: rendering it as 0 diverges on **11,747 of
+subtune 2's 11,780** ticks and 329 of subtune 3's. And the term is load-bearing:
+delete the carry and subtune 2 diverges on 11,747 of
 11,780 ticks. It is the write that makes the subtunes aperiodic
 (architecture §5.2), and it is exercised on 2,106 ticks.
 
@@ -414,7 +427,7 @@ Every §5 row Hubbard is cited for held **exactly as written**, with no widening
   see, and the step after it wraps to `$020` — 10 moves of song 1's 6,800 leave
   the window, the first at tick 3,457. The `bound` is the 12-bit store
   ([prototype-trackerprog.md](prototype-trackerprog.md) §5, §7).
-- **pulse run** — `const(k) + carry(site)`, `bound` projected at 12 bits.
+- **pulse run** — `add(const(k), flag(C))`, `bound` projected at 12 bits.
 - **arpeggio** — an absolute `set` producer over a pitch stream, `phase
   fn(counter)`.
 - **`commit_order (ctrl, ad, sr)`** — §3.1's row for Hubbard, unchanged.

@@ -267,11 +267,18 @@ their guards exclusive, and §2 rule 2 makes the last one the tick's value).
 
 `assign`'s target `pitch` emits the pair without storing, so the cell keeps the
 value the waveform table's step took (`meta.pitch_target` says where that step
-puts it, `"@freq"` here rather than the chip). And the carry is §5's
-`Δ + carry(site, flag)` with the *producer* stated as Commando's §4.11 asks: the
-pulse write leaves `C`, each waveform row leaves `C`, `globals.flags.C.default`
-is what it is when neither ran, and `pitch_out` reads `{"flag": "C"}`. It is
-load-bearing: §7 measures what dropping it costs.
+puts it, `"@freq"` here rather than the chip). And the carry is §5's live carry with the
+*producer* stated as Commando's §4.11 asks: the pulse write leaves `C`, each
+waveform row leaves `C`, `globals.flags.C.default` is what it is when neither
+ran, and `pitch_out` reads `{"flag": "C"}`. It is load-bearing: §7 measures what
+dropping it costs.
+
+Every one of those producers is an **expression**, and each is now written as
+the carry it is: `carry_out(e, 8)` where an eight-bit add leaves one, and
+`borrow_out(e, 8)` where a subtraction does — the pulse's high half and the
+vibrato's phase, both of which had been spelled `1 − bit(e, 8)`, a complement of
+a bit whose whole content is the 6502's own `C` convention
+([prototype-trackerprog.md](prototype-trackerprog.md) §5, §7).
 
 ### 4.8 `clamp(target)` has an edge
 

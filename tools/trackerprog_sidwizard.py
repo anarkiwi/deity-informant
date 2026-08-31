@@ -364,8 +364,13 @@ TEMPO = {"tabcell": ["tempo", {"cell": "tmppos"}, "value"]}
 
 
 def carry(e):
-    """The bit an eight-bit add leaves, which another producer reads as a flag."""
-    return {"bit": [e, 8]}
+    """The carry an eight-bit add leaves, which another producer reads as a flag."""
+    return {"carry_out": [e, 8]}
+
+
+def borrow(e):
+    """The carry an eight-bit subtraction leaves: the 6502's C, 1 where it did not borrow."""
+    return {"borrow_out": [e, 8]}
 
 
 def nibble(base, hi, v):
@@ -1009,7 +1014,7 @@ class Tune:
         hi = {
             "add": [
                 {"add": [{"field": [d, 0xFF]}, {"shr": [pw, 8]}]},
-                {"sub": [1, {"bit": [d, 8]}]},
+                borrow(d),
             ]
         }
         out = {
@@ -1370,7 +1375,7 @@ def accs():
         "vibrato": dict(
             freq,
             rank=2,
-            phase={"sub": [1, {"bit": [{"sub": [{"field": [{"add": [vc, vc]}, 0xFF]}, vf]}, 8]}]},
+            phase=borrow({"sub": [{"field": [{"add": [vc, vc]}, 0xFF]}, vf]}),
         ),
         "slide_up": dict(freq, rank=2, phase={"const": 0}),
         "slide_down": dict(freq, rank=2, phase={"const": 1}),

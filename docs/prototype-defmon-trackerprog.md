@@ -88,7 +88,7 @@ own code. Right column is the object.
 | `tick(): if (call_counter & 7) != 0: sub() else: main()` | `meta.tempo.rate 8` — the row clock is a divider over the entry, and every other phase runs at the tick | §10, now measured (§4.10) |
 | `writeout()`: `sid[v].pw_lo ← voice[v].pw_lo`, `pw_hi`, `freq`, `sr`, `ad`, `ctrl ^ ctrl_eor`, then `res_route` and `mode_vol \| $F` | `meta.shadow.registers` — the 23 registers the image carries, in the order it writes them; the `ctrl` write is the `xor` of two cells (§4.4) | §3.1 (§4.1) |
 | `filter()` writes `sid.cutoff_hi` directly, before the row and the cascades | `globals.streams: [filter]` — an `all` stream of six guarded rows, and a `globals.commit` to register 22, which the image does not hold and so reaches the chip on its own tick | new (§4.2) |
-| `filter.acc ± filter.step`, the high byte floored at `b10CE` where it goes negative, then `+ b10CA + carry`, then `CMP`/`BCS` against the same floor, then `NOP` or `ASL` | those six rows, in order: the step and its carry, the floor on the accumulator, the byte, the floor on the byte twice, and the build's own shift | §5 filter sweep |
+| `filter.acc ± filter.step`, the high byte floored at `b10CE` where it goes negative, then `+ b10CA + carry`, then `CMP`/`BCS` against the same floor, then `NOP` or `ASL` | those six rows, in order: the step and its carry — `carry_out(acc + step, 16)` going up and `borrow_out(acc − (step + 1), 16)` coming down — the floor on the accumulator, the byte, the floor on the byte twice, and the build's own shift | §5 filter sweep |
 | `row_advance()`: `b10D9 & $80` reloads all three voices from `T1A00`/`T1A80` through `T1B00`/`T1C00`/`T1D00` at `cursor_10EB` | the score's three `Order` programs, one column each; `cursor_10EB`'s init value is the **subtune**, the `$FF` row's jump target is the *voice-1 column* of that row | §3.6 |
 | the first pattern to reach an end row ends all three, and its low nibble is every voice's next count | the score is materialised **per arranger step**, each voice's play step being its own pattern *cut where the step ends* | §6's materialisation (§4.7) |
 | `p_112A()`: `flag [A] [B] [note]`, bit 7 end · bit 6 sidcall A · bit 5 sidcall B · bit 4 note · bits 3–0 the count | `Event{sounds, note, arm, dur}` — the flag's token class is spent, `dur` is the count plus one, and a value that is not in the pitch table is not a note | §3.6 |
@@ -101,7 +101,7 @@ own code. Right column is the object.
 | `pw_hi[v] >= $80`: `acc ± FREQ[2·(osc & $3F)]`, sign from `bit(osc, 6)`; then `freq ← acc + FREQ[fi]` | two `Acc`s on the voice's `acc` cell, `delta {"tuned": 2·(osc & $3F) − 36}`, `phase const 0/1`; `pitch_out` row 3 adds the tuning at the note | §5 `tabcell`, spelled `tuned` (§8) |
 | `0 < pw_hi[v] < $80`: `freq ← FREQ[fi] + (FREQ[Y−24] − FREQ[Y−25])` | `pitch_out` row 2, a `trap`: no `osc` byte of either tune is in that range | §5 `interval` (§8) |
 | `voice[v].pw_lo ∓ (b101E …)` with the bounce at `pw_hi == 0` and `== $F` | `pw_down` / `pw_up` on `shadow.pw`, each with the endpoint as `policy.reload` and `delta_when`, and `pw_turn` on the flag the skipped delta leaves | §5 reflect |
-| `voice[v].pw_lo -= (b101E + (1 - carry_2))` | `delta {"sub": [{"add": [pwstep, 1]}, {"flag": "C"}]}` — the carry the frequency add of the same voice's tick left | §5 `carry(site, flag)` (§8) |
+| `voice[v].pw_lo -= (b101E + (1 - carry_2))` | `delta {"sub": [{"add": [pwstep, 1]}, {"flag": "C"}]}` — the carry the frequency add of the same voice's tick left, which that row writes as `carry_out(…, 8)` | §5 a live carry (§8) |
 | `p_14CB`: `$D41B` decides `b10CE` and `b10D4` | the filter channel's floor and its shift, read off the image the tick sees | §6 |
 | `init()`'s `io[$DC04] = $98`, `io[$DC05] = 9` | nothing: the cadence is `meta.cycles_per_tick`, taken from the source certificate | §3.1 |
 
@@ -447,11 +447,24 @@ confirmed by measurement for the first time, and the other is an arm no
 reachable sidTAB row of either tune can take, which the tool asserts at build
 time rather than discovering at tick 100,000.
 
+**The carry, and the bias that was not the tune's.** Both spellings of it moved
+in §7's sixth package: the cutoff's up arm was `bit(acc + step, 16)` and its down
+arm `bit(((acc + $10000) − (step + 1)), 16)`, a tree whose whole content is that
+the 6502's subtraction leaves a carry and Python's shift on a negative number is
+arithmetic. They are `carry_out(e, 16)` and `borrow_out(e, 16)` now, the bias
+lives in the player where the machine's own arithmetic belongs, and `bit` keeps
+only the genuine bit tests this object has plenty of — the accumulator's sign,
+the byte's sign, the oscillator's direction bit, the sweep's. The `bounce` flag
+that the two pulse arms leave stays an `Acc.flag`, and its `unguarded: 1` is the
+one thing in the layer that field is still needed for: it is worth 475 of
+*Jazzpjazz*'s 1,799 ticks and 127,722 of *Automatas*' 149,025, against 0 on all
+three Commando subtunes, whose own default already says what theirs did
+([prototype-trackerprog.md](prototype-trackerprog.md) §5, §7).
+
 **A prefix is not a horizon, and this table is where it showed.** Run over
 *Automatas*' first 20,000 ticks — a longer prefix than any other exemplar's
 whole certified horizon — the carry row reads **0**, and the conclusion written
-from it was that defMON could not be §5's second family for `+ carry(site,
-flag)`. Over the whole 149,025 it reads **44,675**: the carry is set on 9,144 of
+from it was that defMON could not be §5's second family for a live carry. Over the whole 149,025 it reads **44,675**: the carry is set on 9,144 of
 the sweep's 170,702 steps, and the first of them is past tick 20,000. §9's
 acceptance #1 says the whole certified horizon; this is what it is for.
 
@@ -486,7 +499,7 @@ the *whole* horizon rather than a 20,000-tick prefix (§7).
 | 2 | §3.5's "the sidTAB row **is** the instrument" — an `Ins` with `on_note` and nothing else | **wrong, and the sharpest of the eight.** A sidTAB row is a *stream row*; a voice runs **two** of them at once, so no single `Event.ins` can name them and both are §3.6 `point` commands. The object has **one** instrument for the whole tune, and it is the voice's own machine — an `on_note` that resets the oscillator and six arms. It has no `adsr` and no `prelude`, which is the first `Ins` of any family to have neither |
 | 3 | §3.5's data-side prelude row, `WG=00 AD=0F SR=00 → WG=09 → sound` | **held, and it is not a prelude.** It is the first three rows of a sidTAB program — `ctrl_eor := 0 ; ad := $0F ; sr := 0`, `hold 3`, `ctrl_eor := 9` — so the object carries no `prelude` and no `early` for this family at all. §3.5's table row is right about the *data* and wrong to call it a prelude: nothing schedules it, the stream simply starts there |
 | 4 | §10's multispeed, to be **measured** on a used entry | **held (§4.10).** `rate 8` on the row clock, `cycles_per_tick 2457`, and every other phase at the tick. The first measurement of §10's answer, and it needed no new field |
-| 5 | the **second family** for §5's `carry(site, flag)` — `pw_lo -= (b101E + (1 - carry_2))` | **held, and only just.** `delta {"sub": [{"add": [pwstep, 1]}, {"flag": "C"}]}`, the carry the frequency add of the same voice's tick left. It is set on **9,144 of 170,702** sweep steps of *Automatas* and dropping it diverges on 44,675 ticks — but on *Jazzpjazz*, and on *Automatas*' first 20,000, it is set on none, so the first reading of this row said the expectation was wrong (§7). The row is two-family; it took the whole horizon to say so |
+| 5 | the **second family** for §5's live carry — `pw_lo -= (b101E + (1 - carry_2))` | **held, and only just.** `delta {"sub": [{"add": [pwstep, 1]}, {"flag": "C"}]}`, the carry the frequency add of the same voice's tick left. It is set on **9,144 of 170,702** sweep steps of *Automatas* and dropping it diverges on 44,675 ticks — but on *Jazzpjazz*, and on *Automatas*' first 20,000, it is set on none, so the first reading of this row said the expectation was wrong (§7). The row is two-family; it took the whole horizon to say so |
 | 6 | `tabcell(T[c])` on freq, sign from `bit(cell, 7)` | **held in kind, not in spelling.** The slide's step is an absolute table entry at a cell-derived index, which is the row. But the table is the *tuning*, so the object spells it `{"tuned": 2·(osc & $3F) − 36}` — §5's own "the tuning read as a table by something that is not a note" — and no stream carries it. The sign is `bit(osc, 6)`, not bit 7: bit 7 says whether there is a slide at all |
 | 7 | the `horizon` terminator, on the first `complete: false` exemplar | **held.** *Jazzpjazz*'s three orders end `horizon`, materialised 28 steps of 72, and `end.kind = horizon`. `stop` is still unexercised by any family |
 | 8 | the arranger — `flag [A] [B] [note]` rows over three pattern columns with an `$FF` jump, subtune = start row, and the byte-range token class spent | **held, and it forced one thing more.** The flag byte is `sounds`/`arm`/`arm`/`dur` and the note byte is a pitch index; the `$FF` row's jump target is the voice-1 column of that row; the subtune is the arranger cursor's init value. What was not foreseen is that the arranger's end is **global** — one cursor for three voices, advanced by whichever pattern ends first — so the score is materialised per arranger step (§4.7), which §6's own rule already licenses |
