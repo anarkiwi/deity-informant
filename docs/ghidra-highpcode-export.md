@@ -138,7 +138,7 @@ sites that produced none is nothing to compare, which is what "Decompiler proces
 Error: Overlapping input varnodes" leave behind (GoatTracker's `row_apply`, *Playful Professor*'s `p_6200`,
 both SID Wizard tunes).
 
-No flag on the four exemplars. Over the 51 certificates two survive, both standing:
+No flag on the four exemplars. Over the 52 certificates two survive, both standing:
 
 * *Deflektor*'s `init`, 2 `goto` against Ghidra's 0 over the same 55 sites (51 printed lines to 35 C lines).
   They are the copy fold's cross-copy edges inside `for v in 0, 1, 2`; Ghidra does not fold and writes the
@@ -221,8 +221,10 @@ with the borrow inverted. Both are §1's `subtraction_flags1` patch (ghidra#3189
 with all four traces step for step, registers included (Ghouls'n'Ghosts' 4,154 steps become the 1,475 our own
 VM runs).
 
-Over all 51 certificates the emulator now agrees with every one: 51 exports, 51 `agree`, no `ERROR` row,
-`ours_bigger` 0 beside the two recorded rows. The five the earlier run reported as disagreements were all
+Over all 52 certificates the emulator now agrees with every one: 52 exports, 52 `agree`, no `ERROR` row,
+`ours_bigger` 0 beside the two recorded rows. The 52nd, `lft-quintessence`, was run on its own when it
+was added: 3 functions, 232 sites, 1,016 raw ops, 1,817 high P-Code ops, 300 C lines, 17 uncovered,
+2 partial, 1 merged, `EMULATE-ORACLE-OK calls=8 steps=1755 sid_mismatch=0 agree=true`, 0 flags. The five the earlier run reported as disagreements were all
 this oracle's own models, and all five are gone:
 
 * four were the frame. The tick of *Jodler*, *Playful Professor*, *Alien 3* and *Easy Does It* is an

@@ -40,6 +40,7 @@ GULDKORN = "Guldkornekspressen_Intro.sid"
 JAZZPJAZZ = "Jazzpjazz.sid"
 JODLER = "Jodler.sid"
 PROFESSOR = "Playful_Professor-Math_Tutor.sid"
+QUINTESSENCE = "Quintessence.sid"
 ZETA = "Experiment_Zeta.sid"
 
 

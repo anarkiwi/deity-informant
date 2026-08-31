@@ -31,6 +31,7 @@ HVSC = {
     "Playful_Professor-Math_Tutor.sid": (
         "MUSICIANS/B/Baumrucker_Steven/Playful_Professor-Math_Tutor.sid"
     ),
+    "Quintessence.sid": "MUSICIANS/L/Lft/Quintessence.sid",
 }
 
 

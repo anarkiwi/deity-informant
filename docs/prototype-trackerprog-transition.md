@@ -204,7 +204,7 @@ numbers.
 Each family below is the object's four data halves as the anatomy gives them,
 with the tick written as the transition list in the anatomy's own pseudocode
 vocabulary (its §3.x.3), so the lift's output for the certified six can be
-checked line by line against the print, and the three prose-only families are
+checked line by line against the print, and the two prose-only families are
 shown to fit the same object with nothing added. `v` is the voice; SID targets
 are `sid[v].reg`; `gs ⇒` prefixes guards.
 
@@ -663,7 +663,7 @@ and mod3's one-shot as `policy halt`; `period == $FF` is the anatomy's volatile 
 (`external input`, the one stated boundary — it lands in an additive offset, so
 with `$D41B` pinned the object renders). Coverage: complete but for that input.
 
-### 4.9 Blackbird — Quintessence (anatomy §3.9; prose-only)
+### 4.9 Blackbird — Quintessence (anatomy §3.9; **certified**, [prototype-blackbird-trackerprog.md](prototype-blackbird-trackerprog.md))
 
 **state** (stride 7, anatomy:2440-2469): `voice[v].{pwidth, trwpos, pendnote,
 pendfx, pendins, wavemask, trtimer, fxpos, currfx, currins, basepitch, wavepos,
@@ -783,9 +783,17 @@ forced — `$8D` sets the running pulse mode as well as the note-on one, `$93` i
 not unused, and the note index is a byte, so what lies past the 97-entry tuning
 is bounded by the index and not by the score's own note bytes.
 
-Prose-only families (Galway, Walker, Blackbird) are covered by §4 on paper and by
+**Landed for Blackbird** ([prototype-blackbird-trackerprog.md](prototype-blackbird-trackerprog.md)):
+*Quintessence* renders over its whole 10,426-tick horizon, 0 divergences, and
+§4.9's reading holds but for its last sentence — the unpacker is not "kept in
+`fetch` as provenance of that materialisation", it is gone, and the tool reads
+the rows the tokenizer finished off the tune's own cells instead of
+re-implementing the two-level fetch. The `pwidth` accumulator, the four
+quarter-tone sums and the *next*-byte loop marker are as §4.9 wrote them.
+
+Prose-only families (Galway, Walker) are covered by §4 on paper and by
 the hermetic snippet tests of each construct they need (a command loop with
-call/ret, a table-membership token class, a two-level fetch); they enter the
+call/ret, a table-membership token class); they enter the
 acceptance when a certificate exists (architecture §9.2).
 
 ---
@@ -798,7 +806,7 @@ acceptance when a certificate exists (architecture §9.2).
 | --- | --- | --- |
 | `resolve`, `cursors`, `score`, `streams`, `pitch`, `hist` | T2: the score as a cursor nest, materialised rows | **kept** (#299, #303) |
 | `region` | the fetch regions | kept (#305) |
-| `fetch` | the fetch bodies over `byte` with the row-walk loop as the grammar (`consume`, `exit`) | extend: the loop body form for JCH/Galway/Follin/SW/Blackbird |
+| `fetch` | the fetch bodies over `byte` with the row-walk loop as the grammar (`consume`, `exit`) | extend: the loop body form for JCH/Galway/Follin/SW |
 | `transition` | §3.3: every store outside the fetch as an entry; procedure summaries; the two loop closures | new, from `producers.py` (which does this for SID sites) |
 | `state` | §3.1: the STATE layout and post-init values; TABLES | new, small |
 | `universal` | §2: the player | rewrite, ~150 lines |

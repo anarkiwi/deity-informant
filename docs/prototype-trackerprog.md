@@ -14,9 +14,9 @@ shows all nine playroutines are one object (STATE, TABLES, PLAY), and the six
 certified families — [GoatTracker 2](prototype-goattracker.md), [SID
 Wizard](prototype-sidwizard.md), [JCH V20](prototype-jch.md),
 [Hubbard](prototype-commando-floor.md), [defMON](prototype-automatas.md),
-[Follin](prototype-follin.md). Galway, Walker and Blackbird are **prose-only**:
-no certificate covers them (architecture §9.2) and no schema row rests on them
-alone. The survey fact that sizes the layer: 91.6 % of traced HVSC by weight has
+[Follin](prototype-follin.md) and [Blackbird](prototype-blackbird-trackerprog.md).
+Galway and Walker are **prose-only**: no certificate covers them (architecture
+§9.2) and no schema row rests on them alone. The survey fact that sizes the layer: 91.6 % of traced HVSC by weight has
 ≥ 50 % of its indexed play sites on a voice-like domain (architecture §9.3, line
 1009; its own summary line reads "the SID stride appears in 90 % of tunes"), so
 the object this schema names is the population's.
@@ -249,8 +249,9 @@ origin (backlog P1), not a fact about the tune
 ([prototype-jch-trackerprog.md](prototype-jch-trackerprog.md) §6); counts at
 jch:82 and jch:106-107; SW tempo programs; defMON
 sidTAB rows (variable-length register-column records with delay and jump,
-anatomy:211 — the form at its most general); and the prose-only Galway, Walker
-and Blackbird programs. The stream is what all of these already are: *rows,
+anatomy:211 — the form at its most general); Blackbird's pitch and wave programs,
+whose loop marker is the *next* byte and whose backward jump is folded into the
+row that lands on it; and the prose-only Galway and Walker programs. The stream is what all of these already are: *rows,
 holds, one terminator*.
 
 ### 3.4 accumulators
@@ -296,7 +297,7 @@ the write order §2 compares is the stream's own step order:
 | GoatTracker 2 | `early = gatetimer` (instrument column 7); row `set(ctrl, wave & $FE)`, note row `set(ctrl, firstwave\|TEST)` | anatomy:214, anatomy:742 |
 | SID Wizard | `early = 2`; rows in the version's own AD/SR order, then `set(ctrl, TEST\|gate)` at tick 2 | anatomy:1232-1233 |
 | defMON | `null`, and the data is right: `WG=00 AD=0F SR=00` → hold → `WG=09` is the first three rows of the sidTAB program the row starts, so nothing schedules it and there is no `early` (defmon-trackerprog §8) | anatomy:214 |
-| Blackbird (prose-only) | `early = 2`; `set(sr,0) set(ctrl, gate off)`, note row ADSR=0000 then the real AD/SR | anatomy:133-135 |
+| Blackbird | `early = 2`; `set(sr, 0) set(@wavemask, $FE)` — and **no `ctrl` write at all**: the gate goes off because the engine ANDs that mask into every control byte for the next two frames. The note row is five writes in three acts, `sr $0F` · `ad 0, ctrl 1` · the instrument's `ad, sr`, so `AD` and `SR` each appear twice and `commit_order` says only that `ad` comes first ([prototype-blackbird-trackerprog.md](prototype-blackbird-trackerprog.md) §5). The first draft's row, written from anatomy:133-135 before a certificate existed, had the `ctrl` write and two acts |
 | Hubbard, Galway, Follin | `null` — Hubbard cuts notes with SR=0, Galway pulses TEST at note-on | anatomy:137-140 |
 
 GT2's `gatetimer` **is** `early`, not a second field ("gatetimer frames early,
@@ -971,6 +972,8 @@ Wizard's `b1024` still refuse, and their cells are not scratch.
 
 | §5's bound asserted, and five records that did not survive it (**P2**) | `Player.store` holds every accumulator move to the interval its record declares — §5 has said the renderer does this since the first draft and it did not, `bound.interval` being read only as `reflect`'s turn and `reflect-complement`'s fold and `from`/`witness` read nowhere. Turning it on took **five of the sixteen records** out, none of them a bug in the render and every one a claim the object was making falsely: Hubbard's vibrato said `proved [0, 3]` where `[0, 3]` is the *fold*, the repeat's count, and the cell holds a frequency (8,836 / 22,488 / 1,089 escaping moves on the three subtunes, from **tick 1**); its arpeggio said `proved [0, 12]` where `[0, 12]` is the arp stream's transpose (16,341 / 13,803 / 1,089, from tick 1); its drum said `proved [1, $FF]` from the guard `freq_hi != 0`, which bounds the value the step comes *in* with and not the one it leaves after `−1` (32 and 5, from tick 173); its pulse sweep said `projected [$800, $EFF]`, which is where the bounce turns and not where the cell goes, since a step of `$E0` from `$E60` reaches `$F40` and then wraps to `$020` (10 moves, from tick 3,457); and GoatTracker 2's vibrato phase said `proved [0, speedcmp]`, which §5 correction 1 declared wrong in prose in 2026 and which the object went on saying (1,532 of 10,956 and 1,114 of 10,073, from ticks 2 and 20). The turn and the fold move to **`amplitude`**, which is the step's own arithmetic and may read a live cell; `bound.interval` is two constants, which is what §5's *statically known* means. Measured: rendering the corrected objects is **write-for-write identical on every tick of all eleven builds' whole horizons** — 0 differing of 243,265 — and all eleven re-certify at 0 divergences; the assertion costs under 4 % of render. The generalisable check: **an invariant the renderer does not assert is prose**, and the interval a *step* reads is not the interval a *record* claims — one key cannot be both | `universal`, `printer`, `tools/trackerprog_{commando,goattracker}.py` |
 
+| Blackbird, the seventh family (**#322**) | lft's *Quintessence* transliterated onto the same player over its whole 10,426-tick horizon, 0 divergences, `end.kind = horizon` — and **the first family that cost the player nothing**: `universal.py` and `printer.py` are byte for byte as #321 left them, every form this family needs being one the six before it earned. Two things outside the player had to move. The tuneprog front end could not certify the tune at all: Blackbird's `X = voice×7` indexes the state arrays *and* `$D400,X`, so the region carrying `v_wavemask` is typed `io`, and `Machine.ioload`/`iostore` took a site's class for the address's — a RAM read pinned as a chip input, trapping `input exhausted` at tick 0. The address decides, exactly as the tracer's own read and write decide it; 51/51 recert unmoved and the tune now certifies over the whole song. And §2's *dropped* voice order became load-bearing for the first time: a tick that runs a tokenizer pass over all three voices and then its audio engine over all three permutes its writes between voices on 8,442 of 10,426 ticks, and `attest` printed "order between voices inside a tick" on its own `dropped` list while comparing the flat edge list — it now compares per voice, which is what `certify.divergence` always did. All fourteen earlier builds re-certify and not one loses an identical tick. Three schema rows written from prose while the family had no certificate: §3.2's quarter-semitone tuning lands as written, plus the low half's own carry-in (2,185 ticks); §3.3's Blackbird program is the pitch/wave stream, with a backward jump folded into the row that lands on it; §3.5's prelude row is corrected — no `ctrl` write, and five writes in three acts. The score is one LZ stream of 2,961 bytes over three ring buffers and §6 drops all of it: 6,255 rows of `dur` 1, `xz -9e` 5,860 against the source `tuneprog.md`'s 7,956 | `attest`, `interp`, `tools/trackerprog_blackbird.py` |
+
 Everything after this is the rest of the `trackerprog/` package, under the same
 rules (≤ 500 lines per module, hermetic tests, the certificate).
 
@@ -1010,8 +1013,9 @@ construction.
 
 Exemplars, in order: **GT2 ×2, JCH ×2, SW ×2** (the tracker end — all six
 `complete`), then **defMON ×2**, then **Commando ×2** (effects-rich,
-non-tracker, aperiodic observable), then **Follin** (score-as-program) — all
-landed.
+non-tracker, aperiodic observable), then **Follin** (score-as-program), then
+**Blackbird** (a score that does not exist until the player has decompressed it)
+— all landed.
 
 defMON belongs in the list, not in the deferred set: certified twice over —
 `automatas` (149,025 ticks, period 129,024, `complete`) and `goto80-jazzpjazz`
