@@ -72,7 +72,7 @@ object.
 | `FREQ_LO[n]`/`FREQ_HI[n]`, 96 entries | `pitch(n)` — the tuning, total by construction | §3.2 |
 | `(FREQ[n+1] - FREQ[n]) >> k`, the calculated speed | `tablestep(pitch, lastnote, k)` — an expression over the tuning | §5 `tablestep` |
 | `DEC counter,X; BEQ tick0; BPL; reload tempo` | `meta.tempo` countdown: a cell, a reload cell, a boundary | new (§4.2) |
-| `tempo < 2 ⇒ tempo ^= 1; funktempotbl[tempo] - 1` | `tempo.alternate`, a two-row stream over two global cells, each row carrying the `- 1` | §3.6, a tempo over a stream |
+| `tempo < 2 ⇒ tempo ^= 1; funktempotbl[tempo] - 1` | one more `meta.tempo.reset` clause, ahead of the plain one — written first as a `tempo.alternate` record of its own, which §7's seventh package showed it always was | §3.6, a tempo over a stream |
 | `counter == gatetimer ⇒ fetch_row` | the fetch, `early` clock steps before the row (§4.3) | §3.5 `early` |
 | the row's `instr`, `newfx`, `newparam`, `gate` | `meta.stage` — the row program the fetch runs early | new (§4.3) |
 | `SR=0; AD=$0F; gate=$FE` unless legato or fx 3 | the instrument's **prelude**, and the held command's `tie` | §3.5 |
@@ -80,7 +80,7 @@ object.
 | `$C0+n`, the packed rest | the event's `dur`, in **rows** | §3.6 |
 | pattern `[instr][fx param](note\|rest\|keyoff\|keyon)` | `Event{sounds, note, gate, ins, arm}` — the note byte's token class is spent, not re-encoded (§4.8) | §3.6 |
 | the 15 tick-0 handlers | §3.6 `cmds`, **named by what they do** — `tempo:07`, `stream.wave:04`, `sr:A4` — never by the nibble the jump table indexed them with; `score.commands` carries each once and `meta.row_command: held` says the voice keeps the last one (§4.4) | §3.6 `cmds` |
-| `INS[i]`, 9 columns | `Ins{adsr, sets, note_sets, points, prelude}` | §3.5 |
+| `INS[i]`, 9 columns | `Ins{adsr, on_note, prelude, accs}` plus the family's own `wave`, `vibparam`, `vibdelay` columns — the first draft's `sets`/`note_sets`/`points` split was struck into one `on_note` inline stream, the tie being a guard like any other (§3.5) | §3.5 |
 | `wavetbl`/`notetbl` rows, `$00-$0F` delay, `$FF` jump | the `wave` stream: `hold`, `sets`, `op`, `jump` | §3.3 |
 | a wavetable note column | the step's `op: pitch(absolute \| relative)`, the relative one a **signed semitone count** read off the column's low seven bits; the armed accs stand down | §3.3 `op` |
 | `pulsetimetbl`/`pulsespdtbl` | the `pulse` stream: a `set` row, or `hold` ticks of `run(pulse_step)` | §3.3 |
@@ -476,12 +476,17 @@ The print, `trackerprog.md`, measured the way architecture §11 asks:
 | — everything else | 19,407 | 2,908 |
 | its `tuneprog.md` / load band | 42,300 / 4,439 | 7,688 / 2,668 |
 
-The layer's claim holds again, and by a wider margin than Commando's: the score
-compresses better than the program that played it (5,608 against 8,356; 5,296
-against 7,688). The score half alone lands at 2,856 against a 2,804-byte
+These two are the layer's **worst** ratios against the binary: 5,988 and 5,628
+compressed object against load bands of 2,804 and 2,668 — **2.14×** and
+**2.11×** (§9.1 of [prototype-trackerprog.md](prototype-trackerprog.md)). The old figures (5,608 against 8,356; 5,296 against 7,688) were
+measured against `tuneprog.md`, a pretty-printed decompilation, which is what
+made the claim look wider here than anywhere else.
+
+The score half alone is the part that holds up: 3,100 against a 2,804-byte
 compressed load band that contains the player *and* the data — so the music
 alone, materialised with every packed byte unpacked and every cursor spent,
-costs about what the whole cartridge does compressed.
+costs about what the whole cartridge does compressed. It is the sound half that
+doubles the total.
 
 The raw size is key repetition and one deliberate choice: the fifteen row
 commands are **interned**. GT2 re-runs its held command at every row, so an

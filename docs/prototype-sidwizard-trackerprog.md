@@ -81,7 +81,7 @@ object.
 
 | the player says | the trackerprog says | §5 row |
 | --- | --- | --- |
-| `SPDCNT` post-incremented against `TEMPOTBL[TMPPOS]`, `BEQ`/`BVC` | `meta.tempo.form: counter` — a cell the tick steps and two guarded **reset** clauses; the V-flag trick is spent for what it decides | new (§4.1) |
+| `SPDCNT` post-incremented against `TEMPOTBL[TMPPOS]`, `BEQ`/`BVC` | `meta.tempo`: a cell the tick steps by `+1` and two guarded **reset** clauses; the V-flag trick is spent for what it decides. Written first as a `form: counter` of its own, and `form` is gone — the counter is the general clock and the other two families' are values of it (§4.1 below) | new (§4.1) |
 | `TEMPOTBL` entry bit 7 = "loop the tempo program" | the second reset clause: `spdcnt >= tempo & $7F` and back to `tmpptr`; the first is `== tempo` and on to `tmppos + 1` | new (§4.1) |
 | ticks `0/1/2` and `else` | `meta.tempo.fetch 0`, `early [phase < 2]`, `boundary 2`; every stream and arm carries its own `when` over `{"cell": "phase"}` | new (§4.1) |
 | `READROW`'s 1–4 bytes with bit-7 continuation | `Event{sounds, note, gate, tie, ins, arm, dur}` — the note byte's token class is spent, not re-encoded | §3.6 |
@@ -91,7 +91,7 @@ object.
 | `HARDRST` at ticks 0 and 1 with the tick number as the mask | the instrument's **prelude**: one stream, two rows, each guarded by the clock's phase and the instrument's own control bit | §3.5 |
 | 1.6 writes `AD` then `SR`, 1.9 `SR` then `AD` (anatomy:1232) | **`meta.commit_order`, and nothing else** | §3.1 |
 | the HR reads `INS[CURIFX or CURINS]`, the tables read `INS[CURINS]` | `meta.stage`'s one row, `@hrins := payload.ins`, and `{"insrec": ["hrins", "hr.0"]}` — the prelude belongs to the row's instrument, the streams to the voice's cursor | new (§4.2) |
-| `TICK_2`'s `STRTSND` | the instrument's `note_sets` and `points`, guarded by its own control bits and by whether the row named an instrument (`TABLRST`) | §3.5 |
+| `TICK_2`'s `STRTSND` | the instrument's `on_note` — one inline stream of `sets` and `point` rows, guarded by its own control bits and by whether the row named an instrument (`TABLRST`); the draft's `note_sets`/`points` split is struck | §3.5 |
 | `WFARPTB` rows `[wave\|cmd, pitch\|chord, detune]`, `--ARPSCNT` | the `wave` stream, and `rate` — a divider kept in the cell `arpscnt`, which a row and two commands also set | new (§4.3) |
 | `SETPWID` / `FILTPRG` rows `[count\|set, step, track]` | the `pulse` and `filter` streams, `epoch: entry` — the counter is read before its own move, so the consuming tick does not sweep | new (§4.4) |
 | the 11-bit cutoff, `AND #7` / `LSR×3` / `PHP`/`PLP` | one global cell of `width 11` and `split(3, 8)` at the commit | §5 filter sweep |
@@ -474,9 +474,11 @@ The print, `trackerprog.md`, measured the way architecture §11 asks:
 | `trackerprog.json`, compact / its `score` half | 204,570 / 132,196 | 7,852 / 3,544 |
 | its `tuneprog.md` / load band | 54,965 / 6,171 | 9,652 / 3,992 |
 
-The layer's claim holds on both tunes: the score compresses better than the
-program that played it (5,896 against 8,904; 7,448 against 9,652). The margin is
-narrower than GoatTracker 2's, and the reason is in the object: SID Wizard's
+Measured against the binary rather than against `tuneprog.md`, the layer's first
+claim **does not hold**: the objects are 6,288 and 7,876 compressed against load
+bands of 3,576 and 3,992 — **1.76×** and **1.97×** (§9.1 of [prototype-trackerprog.md](prototype-trackerprog.md)). The reason is in the
+object, and it is the same one that made the old margin narrower than
+GoatTracker 2's: SID Wizard's
 tables are *per instrument*, so eleven instruments carry eleven waveform tables
 where GoatTracker 2's thirty share one.
 
