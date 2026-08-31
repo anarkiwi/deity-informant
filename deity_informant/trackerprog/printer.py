@@ -591,15 +591,20 @@ def _acc(name, a, notes):
         )
     if "amplitude" in a:  # the triangle's own threshold, not a claim about the cell
         m = a["amplitude"]
-        lines.append(
-            "      swings  [%s, %s]%s -- %s"
-            % (
-                _bound(m["interval"][0]),
-                _bound(m["interval"][1]),
-                "" if "shift" not in m else " >> %d" % m["shift"],
-                m.get("turn") or m.get("fold", ""),
+        if "count" in m:  # the turn a counter decides, where the cell is shared
+            lines.append(
+                "      swings  turns every %s steps of %s" % (expr(m["count"], notes), m["cell"])
             )
-        )
+        else:
+            lines.append(
+                "      swings  [%s, %s]%s -- %s"
+                % (
+                    _bound(m["interval"][0]),
+                    _bound(m["interval"][1]),
+                    "" if "shift" not in m else " >> %d" % m["shift"],
+                    m.get("turn") or m.get("fold", ""),
+                )
+            )
     if "bound" in a:
         b = a["bound"]
         iv = "" if "interval" not in b else "[%s, %s] " % tuple(_bound(x) for x in b["interval"])

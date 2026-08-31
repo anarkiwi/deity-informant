@@ -627,7 +627,7 @@ pulse `Acc(pw, reflect [$0001,$0FF8] proved, const(ps) with sign in ps)`; filter
 `Acc(cutoff_acc, const(step), clamp)`. `rate` is the cascade's `DL` divider.
 Coverage: complete.
 
-### 4.8 Walker — Chameleon (anatomy §3.8; prose-only)
+### 4.8 Walker — Chameleon (anatomy §3.8; **certified**, [prototype-walker-trackerprog.md](prototype-walker-trackerprog.md))
 
 **state**: page-2 sequencer cells (`$02A7–$02FF`: block, song, blockpos, callctr,
 songpos, voicecur, transpose[v], detune[v], mode[v], ctrl[v], gateen[v], route[v],

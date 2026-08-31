@@ -10,13 +10,14 @@ rendered by **one fixed universal player**. Effects are **bounded
 accumulators**.
 
 Empirical ground: [playroutine-anatomy.md](playroutine-anatomy.md) §2, which
-shows all nine playroutines are one object (STATE, TABLES, PLAY), and the six
+shows all nine playroutines are one object (STATE, TABLES, PLAY), and the eight
 certified families — [GoatTracker 2](prototype-goattracker.md), [SID
 Wizard](prototype-sidwizard.md), [JCH V20](prototype-jch.md),
 [Hubbard](prototype-commando-floor.md), [defMON](prototype-automatas.md),
-[Follin](prototype-follin.md) and [Blackbird](prototype-blackbird-trackerprog.md).
-Galway and Walker are **prose-only**: no certificate covers them (architecture
-§9.2) and no schema row rests on them alone. The survey fact that sizes the layer: 91.6 % of traced HVSC by weight has
+[Follin](prototype-follin.md), [Blackbird](prototype-blackbird-trackerprog.md)
+and [Walker](prototype-walker-trackerprog.md).
+Galway alone is **prose-only**: no certificate covers it (architecture
+§9.2) and no schema row rests on it alone. The survey fact that sizes the layer: 91.6 % of traced HVSC by weight has
 ≥ 50 % of its indexed play sites on a voice-like domain (architecture §9.3, line
 1009; its own summary line reads "the SID stride appears in 90 % of tunes"), so
 the object this schema names is the population's.
@@ -640,6 +641,8 @@ Acc = { target : freq | pw | cutoff | note | wave-param | gate-mask
                  , witness: <guard | mask | period> }   # lo, hi constants: asserted
       , amplitude : { interval: [lo, hi], shift: k }    # reflect / reflect-complement's
                                                         # own turn, not a claim
+                  | { count: n, cell: <phase counter> }  # ..or the turn counted, where
+                                                        # the cell is not one Acc's
       , flag   : { name, seed?, unguarded? }      # the carry this step's own arithmetic
                                                   # leaves the next producer (below)
       , policy : wrap | reflect | reflect-complement | clamp(v) | halt | reload(v)
@@ -682,6 +685,16 @@ pulse sweep turns at `$800`/`$EFF` and keeps twelve bits — a step of `$E0` fro
 `$E60` lands at `$F40`, which the turn test does not see, and the next one wraps
 to `$020`. The field the step reads and the interval the record claims were one
 key, and one key cannot be both.
+
+**A turn is a bound on the value, or a count of the steps.** Both are the
+triangle's own arithmetic and `amplitude` carries either. The bound is exact
+wherever the cell an `Acc` moves is that `Acc`'s alone, which is every family
+but the eighth: Walker's pitch triangle and pitch bend sum into **one**
+frequency offset per voice, and both have moved it on 1,140 of that horizon's
+9,949 modulator steps, so the value there is neither modulator's and no
+interval on it is either's swing. `count` is the period and `cell` is where the
+modulator counts its own steps — in §5's cell vocabulary, so a modulator on the
+global channel counts in a `#global` (walker-trackerprog §4.1).
 
 The three `bound.from` tags differ:
 
@@ -765,8 +778,7 @@ each with two certified families or a marked single-family exception:
 | filter sweep (**exercised**, sidwizard-trackerprog §5) | target `split(3, 8)` on cutoff, `delta tabcell(T[c], signed 11)`, `bound observed` | SW: the filter program's step byte is a signed 11-bit delta — `cutoff_lo = ((t3 & 7) + cutoff_lo) & 7` with the carry out, `cutoff_hi += (t3 >> 3) + carry`, the negative arm's shift arithmetic as `~(~t3 >> 3)` (sw.md:868-885, joined in `p_1611`). JCH `rec7` segments and defMON's `filter.acc` write the high half only, the same split with the low half pinned (jch.md:654, automatas.md:420) — and the split is the *chip's*, already `grid.PAIRS[6]`, not a family's |
 | keyboard tracking (**exercised**, sidwizard-trackerprog §5) | `tabcell(T[c])` on the cutoff target | SW `CKBDTRK` (§3.7, sw:110-116); defMON's oscillator uses the same form on freq, `voice[v].acc += FREQ[$80 + (pw_hi[v] << 1)]` — the table being the *tuning*, so the object spells it `tuned(2·(osc & $3F) − 36)` rather than a `tabcell` over a stream, and the sign is `bit(cell, 6)`: bit 7 says whether there is a slide at all (defmon-trackerprog §8) |
 | arpeggio / chord | target note, a `pitch` stream, or an absolute producer where the phase is stateless | Hubbard octave arp: `f = FREQ[note + ($C if counter & 1 else 0)]` — an **absolute `set` producer** (§4), `phase fn(global_counter)` (commando-floor:249-251). GT2 wavetable note column (gt2.md:564-569); SW chords |
-| tremolo, LFOs | target **gate-mask**, `policy reflect` (triangle) or `halt` (one-shot), or a stream | Walker's gate-toggle tremolo and its four identical modulators per voice (anatomy:212) move the ctrl gate bit, not a volume. `$D418` is one global register, so `target vol, scope voice` does not exist and is removed; per-pattern volume is `play`'s `vol` column (§3.6) on the one global nibble,
-last-writer. Prose-only family, so both are projections |
+| tremolo, LFOs (**exercised**, walker-trackerprog §5) | four copies of one triangle: `policy reflect`, the turn a **count** and not a bound; a one-shot is `delta_when` and not a policy; a gate tremolo is a stream and not an `Acc` | Walker: `mod1`/`mod2`/`mod3` per voice and the filter's copy on the global channel, `delta` the four bytes of RAM at `$AD73`, `rate` a countdown a note-on reloads. `mod1` and `mod3` sum into one frequency offset — both move it on 1,140 of the horizon's 9,949 modulator steps — so no bound on the cell is either's amplitude, which is what `amplitude.count` is for. The gate tremolo (`mod4`) moves the ctrl gate bit and not a volume: `$D418` is one global register, so `target vol, scope voice` does not exist and is removed; per-pattern volume is `play`'s `vol` column (§3.6) on the one global nibble, last-writer |
 
 **What T1 recognises, and what the exemplars changed (#296).** Every rule below
 cites two certified families, as §1 requires; the four rows the classifier could
