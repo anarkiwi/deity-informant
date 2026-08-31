@@ -11,6 +11,7 @@ position -- the certificate names, so the boundary is stated and not hidden.
 from __future__ import annotations
 
 from ..tuneprog import grid
+from ..tuneprog.facts import SID_VOICE
 from .universal import render
 
 COMPARED = (
@@ -47,9 +48,26 @@ def attest(obj, reference, ticks=None):
         elif sorted(want) == sorted(mine):
             out["permuted_ticks"] += 1
         a, b = grid.reduce_tick(want), grid.reduce_tick(mine)
-        if a != b and out["divergence"] is None:
+        if _voiced(a) != _voiced(b) and out["divergence"] is None:
             out["divergence"] = _where(t, a, b, want, mine)
     return out
+
+
+def _voiced(obs):
+    """One tick's observable as section 2 compares it: the edges *per voice*.
+
+    Rule 1 keeps every ctrl/AD/SR write in tick order, and it is a rule about one
+    voice's own envelope generator; order between voices is on the certificate's
+    ``dropped`` list, so the comparison drops it too -- which is what
+    :func:`~.certify.divergence` already does on the certificate's own side.  A
+    family whose tick runs one pass over all three voices and then another
+    interleaves its writes differently from one that finishes a voice at a time,
+    and neither ordering is audible.
+    """
+    out = {}
+    for r, v in obs.edges:
+        out.setdefault(r // SID_VOICE, []).append((r, v))
+    return out, obs.values
 
 
 def subsequences_agree(reference, got):
@@ -69,8 +87,11 @@ def subsequences_agree(reference, got):
 
 def _where(t, a, b, want, mine):
     d = {"tick": t, "expected": _fmt(want), "got": _fmt(mine)}
-    if a.edges != b.edges:
-        d["edges"] = {"expected": list(a.edges), "got": list(b.edges)}
+    wa, ga = _voiced(a)[0], _voiced(b)[0]
+    for v in sorted(set(wa) | set(ga)):
+        if wa.get(v, []) != ga.get(v, []):
+            d["edges"] = {"voice": v, "expected": wa.get(v, []), "got": ga.get(v, [])}
+            break
     for i, (x, y) in enumerate(zip(a.values, b.values)):
         if x != y:
             d.setdefault("values", []).append({"column": i, "expected": x, "got": y})

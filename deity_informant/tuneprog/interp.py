@@ -17,6 +17,8 @@ from .ir import (
     hits_band,
     Goto,
     If,
+    IO_HI,
+    IO_LO,
     Let,
     Phi,
     REGVAR,
@@ -108,14 +110,26 @@ class Machine:
         return self.m[a] if self.k[a] else self.take_input(a)
 
     def ioload(self, a):
-        """A byte from $D000-$DFFF: a pinned input when I/O is mapped, else RAM."""
+        """A byte from $D000-$DFFF: a pinned input when I/O is mapped, else RAM.
+
+        The *address* says whether a byte is the chip's, exactly as the tracer's
+        own read does: a site's class is its envelope's, and an envelope reaches
+        I/O without every access through it landing there.
+        """
+        if not IO_LO <= a <= IO_HI:
+            return self.rdk(a)
         if self.bank != 2:
             return self.m[a]
         return self.override[a] if a in self.override else self.take_input(a)
 
     def iostore(self, a, v, src=0):
-        """A store into $D000-$DFFF: a SID write, a schedule effect, or RAM."""
-        if self.bank == 2:
+        """A store into $D000-$DFFF: a SID write, a schedule effect, or RAM.
+
+        The address decides here too: a site whose envelope reaches the chip
+        still writes memory where it lands outside it, and that byte joins the
+        footprint like any other store rather than a write log.
+        """
+        if self.bank == 2 and IO_LO <= a <= IO_HI:
             if SID_LO <= a <= SID_HI:
                 self.sid.append((a, v))
                 self.src.append(src)

@@ -233,6 +233,25 @@ def test_carry_io_and_bank_shapes_reach_the_generated_code():
     assert v.div is None
 
 
+def test_an_io_classed_access_that_lands_in_ram_is_ram():
+    """The address says whether a byte is the chip's, not the site's envelope.
+
+    A region takes its kind from the addresses its accessors reach, so one
+    stride-7 index that walks both a state block and ``$D400,X`` types the block
+    ``io`` -- Blackbird's ``AND $12F3,X`` beside its ``STA $D404,X``. The class is
+    the envelope's and the landing is the address's, exactly as the tracer's own
+    read and write decide it.
+    """
+    m = Machine(bytes(0x10000), (0x1000, 0x2000))
+    m.m[0x12F3] = 0x5A
+    assert m.ioload(0x12F3) == 0x5A  # no pinned input: this is not the chip
+    m.iostore(0x12F3, 0xFE)
+    assert m.m[0x12F3] == 0xFE and m.k[0x12F3] and 0x12F3 in m.W
+    assert not m.sid and not m.io  # neither a SID write nor a schedule effect
+    m.iostore(0xD404, 0x41)
+    assert m.sid == [(0xD404, 0x41)]
+
+
 def test_assert_and_plain_condition_and_far_branches_compile():
     proc = Proc(
         "f",

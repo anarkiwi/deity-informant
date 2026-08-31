@@ -995,6 +995,48 @@ generalisable check: a static census over a player's data is a lower bound on
 what its tunes do, and the render is what settles it — which is the same reason
 §6.4 measures rather than argues, applied to the *source* rather than the layer.
 
+### 6.9 Three the seventh family found
+
+[prototype-blackbird-trackerprog.md](prototype-blackbird-trackerprog.md), the
+first family whose object cost the player nothing at all.
+
+**A comparison's `dropped` list is a claim about the code, and nobody had
+checked it.** §2 drops "order between voices inside a tick", the certificate
+prints it, and `certify.divergence` splits the edges per voice before comparing.
+`attest` — the harness every hand exemplar certifies through — printed the same
+list and compared `TickObs.edges` as one flat tuple. Six families never noticed,
+because a player that finishes one voice before starting the next produces the
+interleave the universal player does. The seventh runs a tokenizer pass over all
+three voices and then its audio engine over all three, and diverged on the first
+hard-restart tick with per-voice edge lists that were *identical*. The
+generalisable check: **a boundary a document states and a comparison does not
+implement is prose**, which is §5's own lesson about `bound.interval` (P2) read
+one layer out — and the family that finds it is the one whose player groups its
+work differently from yours. All fourteen earlier builds re-certify and not one
+loses an identical tick, which is what says the weakening hid nothing.
+
+**A datum can be coarser than its name.** `meta.commit_order` is a permutation of
+`(ctrl, ad, sr)`, six values, and every earlier family's tune picks exactly one.
+This one's note-on writes `sr`, then `ad, ctrl`, then `ad, sr` — three acts in
+which `sr` and `ctrl` never appear together — so **two** of the six render it and
+four do not: the object's content is "`ad` comes first", not an order. The
+generalisable check: a schema row measured to more than one value is still a row,
+and the poison sweep is what says how much of it a tune actually spends. Four
+other forms measured to **0** here and are stated as such rather than dropped
+(voice order, the filter's position, the two write-only streams' ranks, and a
+carry the cursor's range makes provably zero).
+
+**A packed rest and a held row are not the same thing.** §3.6's `dur > 1` in the
+prefetched path is a row the fetch spends and never applies — a packed rest,
+which is what GoatTracker 2's `$C0+n` and SID Wizard's `$70–$77` are. This
+family's delay token looks identical in the byte stream and is not: its `execute`
+runs on every row it covers and does nothing only because two cells are zero. So
+every row cycle is one event of `dur` 1 and a held row is an event that says
+nothing, which is §6's materialisation taken literally — 6,255 rows carrying what
+7,579 token bytes said, and no decompressor, no ring buffer and no delay token in
+the object. The generalisable check: **before reusing a form, check what the
+program does on the rows it covers**, not what its bytes look like.
+
 ### 6.7 What hardening the layer found, with the families all in
 
 Eight packages over the object and the player, after the fifth family and before
