@@ -1,5 +1,8 @@
 """Per-frame register grids: a write belongs to the frame its cycle falls in."""
 
+import sys
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -187,3 +190,34 @@ def test_the_change_rule_keeps_exactly_the_writes_the_register_file_did_not_hold
         want.append(sid[a] != v)
         sid[a] = v
     assert list(grid.changes(reg, val, seed)) == want
+
+
+def test_a_cached_oracle_trace_is_keyed_by_the_render_length(tmp_path, monkeypatch):
+    """A trace is only as long as the render that made it, so the length is the key.
+
+    Two callers ask for one tune at two lengths -- the grid oracle at 62 seconds
+    and the cadence oracle at 20 -- and keying on the tune alone let whichever
+    ran first decide, silently answering the long request with the short trace
+    (Commando's 20 s render is 1,002 frames against the 3,000 the grid asks for).
+    """
+    calls = []
+
+    class _Fake:
+        SIDTRACE_IMAGE = "img"
+
+        @staticmethod
+        def run_sidtrace(tune, out, *, seconds, image):
+            calls.append((Path(out).name, seconds, image))
+            Path(out).parent.mkdir(parents=True, exist_ok=True)
+            Path(out).write_bytes(b"")
+
+        @staticmethod
+        def read_sidtrace(path):
+            return Path(path).name
+
+    monkeypatch.setitem(sys.modules, "pysidtracker.oracle", _Fake)
+    tune = tmp_path / "Commando.sid"
+    tune.write_bytes(b"")
+    names = [grid.oracle_rows(tune, tmp_path / "csv", seconds=s) for s in (62, 20, 62)]
+    assert names == ["Commando-62s.csv.zst", "Commando-20s.csv.zst", "Commando-62s.csv.zst"]
+    assert [c[1] for c in calls] == [62, 20]  # the third reading is the first's cache hit

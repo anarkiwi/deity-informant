@@ -158,12 +158,19 @@ def sidtrace_grid(
 
 
 def oracle_rows(tune_path, oracle_cache, seconds=60, image=None):
-    """The sidtrace oracle's rows for ``tune_path``, rendering into the cache once."""
+    """The sidtrace oracle's rows for ``tune_path``, rendering into the cache once.
+
+    The render length is part of the key, because a trace is only as long as the
+    render that made it: one tune asked for at two lengths is two files, and a
+    shorter one can never answer a longer request. Keying on the tune alone let
+    whichever caller ran first decide, which is a race under ``pytest -n auto``
+    and silent whenever the short render wins.
+    """
     # pylint: disable=import-outside-toplevel,import-error
     from pysidtracker.oracle import SIDTRACE_IMAGE, read_sidtrace, run_sidtrace
 
     tune_path, oracle_cache = Path(tune_path), Path(oracle_cache)
-    csv = oracle_cache / (tune_path.stem + ".csv.zst")
+    csv = oracle_cache / ("%s-%ds.csv.zst" % (tune_path.stem, seconds))
     if not csv.exists():
         run_sidtrace(tune_path, csv, seconds=seconds, image=image or SIDTRACE_IMAGE)
     return read_sidtrace(csv)
