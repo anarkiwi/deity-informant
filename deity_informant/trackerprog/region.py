@@ -4,7 +4,7 @@ A tune's score is read by a bounded piece of its tick -- the blocks that load th
 order, pointer and pattern tables T2 named, the innermost loops around them, and
 every block a byte those loads produced decides. Its cursors are the cells no
 block outside it touches. The region is single-entry, single-exit; what it
-computes for one entry is one *fetch* (:mod:`.player` records it as data), and
+computes for one entry is one *fetch* (:mod:`.interp` records it as data), and
 the rest of the tick is the player's producer program.
 """
 

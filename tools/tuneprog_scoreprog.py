@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""T3: the trackerprog of a decompiled tune, lifted from its data, rendered and certified.
+"""T3: the scoreprog of a decompiled tune, lifted from its data, rendered and certified.
 
 Reads the certified program and its T0/T1/T2 documents from the output directory,
-lifts the trackerprog from the program's tables and its fetch regions, replays it
-on the universal player and compares the section 2 observable against the
-verifier's over the whole horizon. Writes ``trackerprog.json`` and
-``trackerprog.md`` only when emitted; ``trackerprog.certificate.json`` always.
+lifts the scoreprog from the program's tables and its fetch regions, replays it on
+the scoreprog interpreter (``trackerprog/interp.py``) and compares the section 2
+observable against the verifier's over the whole horizon. Writes ``scoreprog.json``
+and ``scoreprog.md`` only when emitted; ``scoreprog.certificate.json`` always.
+
+A scoreprog is not a trackerprog: it carries the certified tick in a ``program``
+key and renders on an S4 interpreter, where a trackerprog carries no code and
+renders on the universal player of ``trackerprog/universal.py``. The nine hand
+trackerprogs are ``tools/trackerprog_*.py``.
 """
 
 import argparse
@@ -42,7 +47,7 @@ def documents(out, prog, view, st, names, hist, ver, cert):
 
 
 def run(out, calls=None):
-    """``(certificate, trackerprog, refusals, numbers, seconds)`` of one output directory."""
+    """``(certificate, scoreprog, refusals, numbers, seconds)`` of one output directory."""
     t0s = time.process_time()
     prog = Tuneprog.load(out / "tuneprog.S4.json")
     s6 = json.loads((out / "tuneprog.S6.json").read_text())
@@ -64,17 +69,15 @@ def run(out, calls=None):
     if src.exists():
         n["tuneprog"] = emit.numbers_tuneprog(src.read_text(), view)
     doc["numbers"] = n
-    (out / "trackerprog.certificate.json").write_text(json.dumps(doc, indent=1))
+    (out / "scoreprog.certificate.json").write_text(json.dumps(doc, indent=1))
     if doc["emitted"]:
-        (out / "trackerprog.json").write_text(json.dumps(emit.to_json(tp)))
-        (out / "trackerprog.md").write_text(md)
+        (out / "scoreprog.json").write_text(json.dumps(emit.to_json(tp)))
+        (out / "scoreprog.md").write_text(md)
     return doc, tp, refusals, n, time.process_time() - t0s
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(
-        prog="tuneprog_trackerprog.py", description=__doc__.splitlines()[0]
-    )
+    ap = argparse.ArgumentParser(prog="tuneprog_scoreprog.py", description=__doc__.splitlines()[0])
     ap.add_argument("--out", required=True, action="append", help="a pipeline output directory")
     ap.add_argument("--calls", type=int, help="ticks to replay (default: the trace's)")
     args = ap.parse_args(argv)

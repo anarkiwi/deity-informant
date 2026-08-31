@@ -68,10 +68,10 @@ def equal_ticks(want, got):
 
 
 def certificate(tune, cert, want, got, refusals, end, trap=None):
-    """``trackerprog.certificate.json`` (section 2), with the loop claim re-checked.
+    """``scoreprog.certificate.json`` (section 2), with the loop claim re-checked.
 
     Emitted only with no refusal, no divergence and no trap: a render that
-    differs from the source is not a trackerprog, however it is described.
+    differs from the source is not a scoreprog, however it is described.
     """
     sub = ((cert or {}).get("subtunes") or [{}])[0]
     digest = (

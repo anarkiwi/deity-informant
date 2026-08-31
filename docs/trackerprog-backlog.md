@@ -39,11 +39,27 @@ A first-principles review against all nine families settled six questions. Each
 is a decision, not a proposal.
 
 **D1 — the hand object is the trackerprog; the lift's object is not.**
-`universal.py` renders the nine hand objects; `player.py` renders a *different*
-object carrying a whole S4 `Tuneprog` in a `program` key, and that is what T0–T3
-produces. They share no field but the certificate. One of the two is the layer;
-the other is a partial lift that has not arrived yet. B2 names them apart, B6/B7
-converge them.
+`universal.py` renders the nine hand objects; `interp.py` (was `player.py`)
+renders a *different* object carrying a whole S4 `Tuneprog` in a `program` key,
+and that is what T0–T3 produces. One of the two is the layer; the other is a
+partial lift that has not arrived yet. **B2 named the second a `scoreprog`**;
+B6/B7 converge them.
+
+The first draft of this row said the two "share no field but the certificate".
+Measured in B2, that is wrong twice over. The nine hand objects are one 8-key
+set `{meta, pitch, streams, accs, instruments, score, state0, globals}`;
+`emit.KEYS` is ten — seven of those names, no `state0`, plus `producers`,
+`program` and `inputs`. Under the seven shared names the shapes are disjoint
+(`pitch` a dict `{base, freq, tuning}` against a list; `streams` named row lists
+against column-byte tables; `score` `{patterns, orders, commands}` against
+`{voices, end, regions, tables, fetches}`; `accs` §5 records whose `target` is a
+register *name* against T1 records whose `target` is a *dict*; `globals` four
+keys against `{}`), and they share exactly **one field**: `meta.commit_order`.
+They do not share the certificate either — `attest.attest` certifies the hand
+objects and `certify.divergence` the scoreprog, which is B9's row. Sharper than
+the original claim: `emit.replay` reads only `meta.horizon`, `score`, `program`
+and `inputs`, so a scoreprog's `pitch`, `streams`, `accs`, `instruments` and
+`producers` are *readings* it prints and its own renderer never reads.
 
 **D2 — the sound half does not want a small total language.** It was tried:
 `w11-producers-archive` if-converted the certified tick to a ranked item list and
@@ -102,9 +118,20 @@ tools/trackerprog_poison.py --builds all --emit-digests DIR   # then --against D
 
 ### Tier 1 — the layer states things that are not true
 
-| # | item | mechanism | size | acceptance |
-| --- | --- | --- | --- | --- |
-| B2 | one schema, or two names | `universal.py` reads `{meta, pitch, streams, accs, instruments, score, state0, globals}` — the nine hand objects, byte-identical in their key sets. `emit.py` writes `{…, producers, program, inputs}` and `player.py` interprets its `program` as S4 IR. §1 presents one object with a residual `program` block; they are two artefacts. Name the lift's for what it is, state both paths in §1, and stop asserting the lift produces a trackerprog | small | §1 and §6 describe two artefacts and one target; no doc says the trackerprog carries a program |
+**B2, one schema or two names, landed.** The lift's artefact is a **`scoreprog`**:
+a certified tuneprog with its fetch regions cut out and its score in their place
+as data, ten keys, rendered by `trackerprog/interp.py` (was `player.py`) and
+certified by `certify.py`. §1 now carries both terms and the one target, §6 says
+the lift emits a scoreprog, and the code stopped asserting otherwise — the S4 tag
+is `$scoreprog`, `tools/tuneprog_scoreprog.py` writes `scoreprog.{json,md,
+certificate.json}`, and one module claims to be the universal player rather than
+two. It went past documents because the collision was in the tree: all nine hand
+tools and the lift wrote **one filename at two shapes**, and `$trackerprog` was
+spent twice — as a key in the hand objects and as the S4 tag of the lift's list,
+which §3 declares to be the schema's. §3.2's own rules decide that ("a sigil that
+means two things is a grammar"; "one *implementation* per name space"). Nothing
+on the hand path moved, so `--builds all` is 0 of 332,358 by construction.
+
 | B3 | the order program is unreachable when the clock prefetches | `advance` (`universal.py:994`) never calls `order_step`; both call sites (`:1086`, `:1107`) are on the non-prefetch path, and `advance` ignores the `op` `play_of` returns. The three prefetching families have flat orders and the two with order programs do not prefetch, so it has never fired. A prefetching family with a called or counted score walks past `call`/`mark`/`loop` as though it were `play`, silently. `advance` calls `order_step` at the wrap | small | 0 differing of 332,358 over thirty builds; a hermetic snippet with `fetch` in `meta.tick` and a `mark`/`loop` pair mis-renders before the change and renders after |
 | B4 | measure §9 against the load band | re-measure §6.2's six and `xz` against the bytes the tune actually occupies — the figure each family doc already reports — instead of against `tuneprog.md`. State the result whatever it is; if the layer's object is larger than the binary it came from, that is the finding | small | §9 carries one table against the load band, and the claim is met or restated |
 | B5 | the doc audit | roughly a dozen places where [prototype-trackerprog.md](prototype-trackerprog.md) is contradicted by the code or by a family doc. Confirm each against the code, then fix the doc or change the code — including §3.5's "one procedure runs all three" inline streams (there are two), §3.4's `Acc.step` as what a player computes `cell(t+1)` with (no player does), §5's `Acc` grammar (omits fields the player reads, lists fields it never reads), §3.5's "GT2's `gatetimer` **is** `early`" against `trackerprog_goattracker.py:523`'s assert of the opposite, §7's "six families transliterated by hand", §1 on Galway as prose-only, and the rows §3 struck that three family docs still describe as live. **Already fixed:** §7's horizon total, and `Event.cmds` → `Event.arm` | small–medium | every row confirmed, then closed on one side or the other; no claim in the spec that the code refutes |
@@ -148,6 +175,13 @@ The five presentation gaps of §4; multispeed (§10); the `mods`/`arms` split of
 the accumulator record, which is the largest migration anyone has proposed and
 should stay behind B8's measurement — if JCH's object does not shrink, it is not
 worth it.
+
+And the residue B2 named but did not move: `deity_informant/trackerprog/` holds
+both halves under one package name — the trackerprog's `universal`, `printer`,
+`attest`, `poison`, and the scoreprog's `emit`, `interp`, `region`, `resolve`,
+`lift`, `score`, `streams`, `pitch`, `cursors`, `hist`, `certify`. Splitting them
+is a migration, and B7 deletes half of one side, so it waits for B7 to land or to
+be refused.
 
 ## 3. What the transliterations settled
 
@@ -219,7 +253,7 @@ is a to-do. A bare § is a section of
 | Naming a command by what it does costs a byte-for-byte round trip its *shape*, and §8 already says the trackerprog is *a* preimage | three SID Wizard effects have the same encoding in two columns |
 | **A number no harness generates is a number nobody checked** — the method is not the tool | §7 quoted "render both forms and count differing ticks" forty-odd times with no tool in the tree doing it, and its headline horizon total was wrong six times over against its own per-build list; `tools/trackerprog_poison.py` is the tool, and every horizon it uses is the certificate's |
 | A claim measured against a presentation artefact is not measured | §9 compares the object to `tuneprog.md`, a pretty-printed decompilation, where the program that played the tune is the binary |
-| Two artefacts that share a certificate and no field are two artefacts, whatever one document calls them | the nine hand objects and what the T0–T3 lift emits have disjoint key sets and two players; the spec presents one object with a residual `program` block |
+| Two artefacts are two artefacts whatever one document calls them — and the shared *names* are what hides it, so count the shared **fields**, not the keys | the nine hand objects and what the T0–T3 lift emits share seven of eight key names at disjoint shapes, and one field, `meta.commit_order`. They have two renderers and two certificates, and the spec presented them as one object with a residual `program` block until B2 |
 | An interpreter that dispatches per reading can be compiled per object — but the next factor after that would cost the layer the thing it exists to have | 2.12× over eleven builds, write lists identical tick for tick; the remaining cost is flat at 5–10 % across four procedures, so the next step is generating source per object rather than one fixed procedure a reader can hold against §4 |
 
 ## 4. Presentation gaps

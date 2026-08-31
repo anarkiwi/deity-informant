@@ -1,7 +1,13 @@
-"""T3 -- the trackerprog lifted from the program's data, and its print.
+"""T3 -- the scoreprog lifted from the program's data, and its print.
+
+A *scoreprog* is not a trackerprog: it carries the certified tick as a
+``program`` key and renders on :mod:`.interp`, where a trackerprog carries no
+code and renders on :mod:`.universal`.  The two share the seven key names below
+and one field, ``meta.commit_order``; B6/B7 of docs/trackerprog-backlog.md are
+what converge them.
 
 The score is the certified tick's fetch regions run over the program's own
-tables (:mod:`.region`, :mod:`.player`): one row per fetch, its bytes and the
+tables (:mod:`.region`, :mod:`.interp`): one row per fetch, its bytes and the
 cells it set. The sounds are the tables and recurrences the rest of the tick
 reads -- the instrument records the envelope writes index (T2's selector, or the
 pointer table a record base goes through), the streams T2 walked, T1's
@@ -21,7 +27,7 @@ from ..tuneprog.facts import SID_VOICES
 from ..tuneprog.ir import Bin, Const, Load, R16, Tuneprog, Var, dec, enc
 from ..tuneprog.irwalk import addr_split, walk
 from ..tuneprog.tracedata import input_kind
-from . import cursors, player, region
+from . import cursors, interp, region
 from .refuse import Refusal
 from .resolve import Program
 
@@ -439,7 +445,7 @@ def _envvars(fetch, prog):
 
 
 def lift(prog, view, names, t0, t1, t2, cert, inputs=()):
-    """``(trackerprog, refusals, recorded observable)``: the lift, from the data alone."""
+    """``(scoreprog, refusals, recorded observable)``: the lift, from the data alone."""
     refusals = [Refusal(**r) if isinstance(r, dict) else r for r in t2.get("refusals") or ()]
     refusals = [r for r in refusals if isinstance(r, Refusal)]
     for entry in (prog.meta.get("schedule") or [])[1:]:
@@ -458,7 +464,7 @@ def lift(prog, view, names, t0, t1, t2, cert, inputs=()):
     refusals += bad
     ticks, end = horizon(cert, t2)
     envvars = _envvars(fetch, prog)
-    P = player.Player(prog, fetch, pins, envvars=envvars).run_init()
+    P = interp.Player(prog, fetch, pins, envvars=envvars).run_init()
     obs, trap = P.render(ticks)
     if trap is not None:
         why = "external input" if trap["trap"] == "external input" else "score not cursor-shaped"
@@ -472,7 +478,7 @@ def lift(prog, view, names, t0, t1, t2, cert, inputs=()):
             },
             "source": {"tune": prog.meta.get("name"), "song": prog.meta.get("song")},
             "sid_model": prog.meta.get("sid_model"),
-            "player": "universal/3",
+            "player": "trackerprog/interp.py",
             "commit_order": list(commit_order(t0)),
             "horizon": ticks,
         },
@@ -513,11 +519,11 @@ def commit_order(t0):
         if w.get("register") in ("ad", "sr", "ctrl"):
             pcs.setdefault(w["register"], []).append(int(w["site"]["pc"][1:], 16))
     got = sorted(pcs, key=lambda r: min(pcs[r]))
-    return tuple(got) if len(got) == 3 else player.DEFAULT_ORDER
+    return tuple(got) if len(got) == 3 else interp.DEFAULT_ORDER
 
 
 def fetch_of(tp):
-    """The :class:`~.region.Fetch` a trackerprog carries."""
+    """The :class:`~.region.Fetch` a scoreprog carries."""
     F = region.Fetch(tables=tuple(tuple(t) for t in tp["score"]["tables"]))
     for r in tp["score"]["regions"]:
         F.regions[(r["proc"], r["entry"])] = region.Region(
@@ -533,7 +539,7 @@ def fetch_of(tp):
 
 
 def replay(tp, ticks=None):
-    """``(observable, trap)``: the trackerprog rendered on the player from its data."""
+    """``(observable, trap)``: the scoreprog rendered on :mod:`.interp` from its data."""
     prog = (
         tp["program"] if isinstance(tp["program"], Tuneprog) else Tuneprog.from_json(tp["program"])
     )
@@ -541,17 +547,17 @@ def replay(tp, ticks=None):
     for k, v in tp["score"]["fetches"].items():
         proc, entry = k.split(":", 1)
         fetches[(proc, entry)] = v
-    P = player.Player(prog, fetch_of(tp), tp["inputs"], fetches=fetches).run_init()
+    P = interp.Player(prog, fetch_of(tp), tp["inputs"], fetches=fetches).run_init()
     return P.render(ticks or tp["meta"]["horizon"])
 
 
 # ---- the print and its measure -----------------------------------------------------
 def render(tp):
-    """``trackerprog.md``: meta, pitch, instruments, streams, accumulators, producers, score."""
+    """``scoreprog.md``: meta, pitch, instruments, streams, accumulators, producers, score."""
     m = tp["meta"]
     ins = tp["instruments"]
     out = [
-        "# trackerprog: %s" % m["source"]["tune"],
+        "# scoreprog: %s" % m["source"]["tune"],
         "",
         "## meta",
         "",
@@ -652,7 +658,7 @@ def measure(md, section):
 
 
 def numbers(tp, md):
-    """The six numbers of a trackerprog print plus its ``xz -9e`` size.
+    """The six numbers of a scoreprog print plus its ``xz -9e`` size.
 
     Statements are the score's rows and the producers; blocks the patterns, streams,
     regions and the instrument table; data rows the pitch, instrument and stream entries.
@@ -687,6 +693,10 @@ def numbers_tuneprog(md, view):
     return got
 
 
+# a scoreprog's ten keys.  Seven of the names are a trackerprog's, at disjoint
+# shapes; there is no ``state0``, and ``producers``/``program``/``inputs`` are
+# the lift's alone.  Only ``meta.horizon``, ``score``, ``program`` and ``inputs``
+# are read by :func:`replay`; the rest are readings the print carries
 KEYS = (
     "meta",
     "pitch",
@@ -702,12 +712,12 @@ KEYS = (
 
 
 def to_json(tp):
-    """S4-style tagged: ``["$trackerprog", *KEYS]`` with every IR node and dict encoded."""
-    return ["$trackerprog"] + [enc(tp[k]) for k in KEYS]
+    """S4-style tagged: ``["$scoreprog", *KEYS]`` with every IR node and dict encoded."""
+    return ["$scoreprog"] + [enc(tp[k]) for k in KEYS]
 
 
 def from_json(doc):
-    assert doc[0] == "$trackerprog"
+    assert doc[0] == "$scoreprog"
     out = {k: dec(v) for k, v in zip(KEYS, doc[1:])}
     out["inputs"] = {int(k): v for k, v in out["inputs"].items()}
     if out["instruments"]:

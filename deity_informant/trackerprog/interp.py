@@ -1,12 +1,15 @@
-"""T3 -- the universal player: one fixed interpreter over a trackerprog's data.
+"""T3 -- the scoreprog interpreter: one fixed interpreter over an S4 program.
 
-The trackerprog carries the certified tick with its fetch regions cut out
-(:mod:`.region`) and, in their place, the score as data: one *fetch* per entry of
-a region -- the cells and registers it set, the temps it left, the block it
-resumed at. The player runs the tick from the post-init image and, at a region's
-entry, applies the next fetch instead of reading the score tables. Lifting is the
-same run with the regions executed and their effects recorded; certification is
-the replay compared with :attr:`~.tuneprog.verify.Verifier.obs` tick for tick.
+A scoreprog is the certified tick with its fetch regions cut out (:mod:`.region`)
+and, in their place, the score as data: one *fetch* per entry of a region -- the
+cells and registers it set, the temps it left, the block it resumed at. This
+interpreter runs the tick from the post-init image and, at a region's entry,
+applies the next fetch instead of reading the score tables. Lifting is the same
+run with the regions executed and their effects recorded; certification is the
+replay compared with :attr:`~.tuneprog.verify.Verifier.obs` tick for tick.
+
+It is not the universal player of prototype-trackerprog.md sections 4 and 5 --
+that is :mod:`.universal`, which reads a trackerprog and no program at all.
 """
 
 from __future__ import annotations

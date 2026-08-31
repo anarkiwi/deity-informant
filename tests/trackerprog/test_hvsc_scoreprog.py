@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "tools"))
 from deity_informant.trackerprog.refuse import REASONS  # noqa: E402
 from deity_informant.tuneprog import pipeline  # noqa: E402
 
-import tuneprog_trackerprog as T3  # noqa: E402
+import tuneprog_scoreprog as T3  # noqa: E402
 from _hvsc import COMMANDO, EMOMYST, GULDKORN, LINUS, tune_file  # noqa: E402
 
 pytestmark = pytest.mark.hvsc
@@ -48,7 +48,7 @@ def test_the_trackers_and_hubbard_certify_on_the_universal_player(rel):
         "data_rows",
         "xz",
     }
-    assert (out / "trackerprog.json").exists() and (out / "trackerprog.md").exists()
+    assert (out / "scoreprog.json").exists() and (out / "scoreprog.md").exists()
     assert len(tp["score"]["voices"]) == 3 and tp["score"]["regions"]
     assert all(v["order"] and v["patterns"] for v in tp["score"]["voices"])
 
@@ -72,6 +72,6 @@ def test_accumulators_annotate_the_producers_that_step_them():
 
 def test_the_certificate_names_its_refusals_by_reason(tmp_path):
     doc, _tp, _refusals, _numbers, out = exemplar(EMOMYST)
-    cert = json.loads((out / "trackerprog.certificate.json").read_text())
+    cert = json.loads((out / "scoreprog.certificate.json").read_text())
     assert cert["emitted"] and all(r["why"] in REASONS for r in cert["refusals"])
     assert doc["source"]["tune"] and tmp_path
