@@ -286,7 +286,7 @@ how far past it went and never by a note. Where a sound has no pitch at all --
 Hubbard's drum, whose frequency is the waveform the other voices are sounding --
 that is a modulator on the instrument, and the score gives the event no note.
 
-### 4.2 Galway — Comic Bakery (anatomy §3.2; prose-only, no certificate)
+### 4.2 Galway — Comic Bakery (anatomy §3.2; certified, [prototype-galway-trackerprog.md](prototype-galway-trackerprog.md))
 
 **state**: `D[v]` 39 bytes (FMG0..3 u16, FMD0..3, FMDLY, FMC, PMD0/1, PMDLY, PMC,
 PMG0/1 u16, PINIT u16, VFREQ u16, VWFG, VADSC, VRC, FCURR u16, FMD0C..3C, PCURR u16,
@@ -330,6 +330,18 @@ bounded by 2 (PM) / 4 (FM) segments per tick and unrolls to guarded entries.
 hold `FMDk`, terminator by `FMC & $81`); the arp list is a `pitch` stream; gate
 and release timers are `prelude`-shaped `set` steps at `early = VADSC`. Every
 entry is under a form.
+
+**Hand exemplar.** [prototype-galway-trackerprog.md](prototype-galway-trackerprog.md)
+is this family transliterated by hand and certified on the same universal
+player, at 0 divergences over **all fourteen subtunes** (29,911 ticks,
+write-for-write identical per register). Three of the sketch above are corrected
+by the render. The segments' gradients and durations are *cells* and not stream
+rows, because `DMoke` pokes them mid-note — so an `Acc` per segment with a
+`delta` reading the cells, and the stream form is the arpeggio's alone. The gate
+is not a `prelude`: both its modes are guarded rows of a stream the tick ends on,
+because the relative mode compares `VADSC` against the row clock rather than
+scheduling anything. And the *score* is where the family costs the layer: the
+counted loop nests (§3.6), and a `stop` ends a sequencer and not a voice.
 
 ### 4.3 GoatTracker 2 (anatomy §3.3, prototype-goattracker)
 
@@ -791,7 +803,8 @@ the rows the tokenizer finished off the tune's own cells instead of
 re-implementing the two-level fetch. The `pwidth` accumulator, the four
 quarter-tone sums and the *next*-byte loop marker are as §4.9 wrote them.
 
-Prose-only families (Galway, Walker) are covered by §4 on paper and by
+Prose-only families (Galway, Walker) — since certified, §4.2 and §4.9 —
+are covered by §4 on paper and by
 the hermetic snippet tests of each construct they need (a command loop with
 call/ret, a table-membership token class); they enter the
 acceptance when a certificate exists (architecture §9.2).

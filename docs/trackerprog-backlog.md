@@ -51,7 +51,7 @@ Commando aperiodicity, cert numbers, 51/51.
 | 9.3 | "measured like §6.2" + `xz -9e` | §6.2's six are tokens/lines/statements/blocks/header rows/data rows; `xz` is §8.3. Architecture §11 requires §6.2's six verbatim |
 | 1 | 91.6 % "voice-stride state appears" | 91.6 % weighted of tunes with ≥ 50 % voice-like indexed sites (arch:**1009**, not 940); the summary line at arch:1027 says 90 % |
 | 10 | note-95 overrun reads two bytes past the table | the certified case is pitch 104 ×25, reading `voice[].ctrl` and `pwdir` — **play-written state** (commando-floor:301-310), not materialisable as `pitch` |
-| 3–5 | Galway, Walker, Blackbird evidence | prose-only families; none certified (arch §9.2) |
+| ~~3–5~~ | ~~Galway, Walker, Blackbird evidence~~ | struck: all three are certified exemplars (arch §9.2) |
 
 ## 3. Review: internal
 
@@ -615,11 +615,16 @@ W4 depends on W3; W5 on W0, W2, W4; W6 on W0, W2, W3; W7 on all.
    ([prototype-follin-trackerprog.md](prototype-follin-trackerprog.md)), and
    I6's `set_register` needed no form of its own: `$85` is §3.7's `reg.N`.
 
-~~Deliberately not now: Galway/Walker/Blackbird~~ — Blackbird landed (#322) and
-Walker has, over its whole 8,052-call horizon and with a new front-end
-certificate ([prototype-walker-trackerprog.md](prototype-walker-trackerprog.md)).
-Deliberately not now: Galway (*Comic Bakery*, uncertified — the anatomy
-describes it, no certificate covers it), multispeed (§10). **Not** defMON:
+~~Deliberately not now: Galway/Walker/Blackbird~~ — all three landed. Blackbird
+(#322), Walker over its whole 8,052-call horizon and with a new front-end
+certificate ([prototype-walker-trackerprog.md](prototype-walker-trackerprog.md)),
+and **Galway over all fourteen subtunes** with a front-end certificate the tune
+had never had ([prototype-galway-trackerprog.md](prototype-galway-trackerprog.md)):
+29,911 ticks, 0 divergences, write-for-write identical per register, and the two
+forms the ninth family forced — a counted loop that nests, over the same stack
+its calls use, and `meta.stop` ∈ {`voice`, `sequencer`} for what a score's own
+stop stops. **All nine of the anatomy's families are now certified exemplars,
+and none of them is prose-only.** Deliberately not now: multispeed (§10). **Not** defMON:
 that line was wrong. defMON is certified four times over — `automatas`,
 `automatas-6581`, `automatas-8580` (149,025 ticks, period 129,024, `complete`)
 and `goto80-jazzpjazz` (1,799 ticks, `horizon`), architecture §9.2 — with recert
