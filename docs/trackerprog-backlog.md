@@ -78,7 +78,8 @@ coverage number rather than a gate on emission.
 **D4 — the compression claim is measured against the tune's own load band.**
 §9 asks whether the score compresses better than the program that played it. The
 program that played it is the binary, not `tuneprog.md` — a pretty-printed
-decompilation, which is a presentation artefact. B4 re-measures.
+decompilation, which is a presentation artefact. B4 re-measured, and **it does
+not**: 1.26×–2.14× the band on every tune certified whole (§9.1).
 
 **D5 — the accumulator is a reading, not a universal.** Follin has none at all
 across 32 subtunes and 111,763 ticks; Galway's effects are its order program,
@@ -152,10 +153,30 @@ other: the two positions still disagree about the *end* of the `play` list.
 only `{jump}`, returns `None` otherwise, and raises `IndexError` on a step whose
 pattern is empty. One question, two places that answer it — §3.2's own row.
 
+**B4, §9 against the load band, landed — and the claim did not survive it.**
+`trackerprog/sizes.py` and `tools/trackerprog_sizes.py` measure `xz -9e` of every
+certified subtune's object against `xz -9e` of the tune's own PSID load band,
+over the poison registry's thirty builds. §9.1 carries the table.
+
+**The object is 1.26×–2.14× the binary that played it.** Ten of the thirteen
+tunes have one subtune, so the band holds exactly the music the object covers,
+and every one of the ten is over 1; Galway is the eleventh certified whole — all
+fourteen subtunes — at 1.91×. The two ratios under 1 are the two tunes measured
+on a fraction of their subtunes against a band holding all of them, which is not
+a comparison, and the tool states that coverage on the row rather than letting
+the ratio pass.
+
+The mechanism, which was not where §9 assumed: **the score is not what makes the
+object large.** Materialised over the whole horizon — Blackbird's LZ stream
+expanded to 511,867 bytes — it still compresses to about what the whole load band
+does (3,100 against 2,804 on *Je suis Linus*, a band holding the player *and* the
+data). It is the sound half that doubles the total, and 95 % of *Knob at Night*.
+So §9's claim is restated: the object is player-independent, not small, and B7
+and B8 are where a saving would come from.
+
 | # | item | mechanism | size | acceptance |
 | --- | --- | --- | --- | --- |
-| B4 | measure §9 against the load band | re-measure §6.2's six and `xz` against the bytes the tune actually occupies — the figure each family doc already reports — instead of against `tuneprog.md`. State the result whatever it is; if the layer's object is larger than the binary it came from, that is the finding | small | §9 carries one table against the load band, and the claim is met or restated |
-| B5 | the doc audit | roughly a dozen places where [prototype-trackerprog.md](prototype-trackerprog.md) is contradicted by the code or by a family doc. Confirm each against the code, then fix the doc or change the code — including §3.5's "one procedure runs all three" inline streams (there are two), §3.4's `Acc.step` as what a player computes `cell(t+1)` with (no player does), §5's `Acc` grammar (omits fields the player reads, lists fields it never reads), §3.5's "GT2's `gatetimer` **is** `early`" against `trackerprog_goattracker.py:523`'s assert of the opposite, §7's "six families transliterated by hand", §1 on Galway as prose-only, and the rows §3 struck that three family docs still describe as live. **Already fixed:** §7's horizon total, and `Event.cmds` → `Event.arm` | small–medium | every row confirmed, then closed on one side or the other; no claim in the spec that the code refutes |
+| B5 | the doc audit | roughly a dozen places where [prototype-trackerprog.md](prototype-trackerprog.md) is contradicted by the code or by a family doc. Confirm each against the code, then fix the doc or change the code — including §3.5's "one procedure runs all three" inline streams (there are two), §3.4's `Acc.step` as what a player computes `cell(t+1)` with (no player does), §5's `Acc` grammar (omits fields the player reads, lists fields it never reads), §3.5's "GT2's `gatetimer` **is** `early`" against `trackerprog_goattracker.py:523`'s assert of the opposite, §7's "six families transliterated by hand", §1 on Galway as prose-only, and the rows §3 struck that three family docs still describe as live. **Already fixed:** §7's horizon total, and `Event.cmds` → `Event.arm`. **Added by B4:** five family docs still assert the compression claim §9.1 refuted, and their size tables are stale against the objects the tools build now — *Je suis Linus* prints 5,608 where the object measures 5,988 | small–medium | every row confirmed, then closed on one side or the other; no claim in the spec that the code refutes |
 
 These are one tier because they share a cause. Each is a statement nothing
 executes: a schema in prose, a claim measured against the wrong thing, a doc row
@@ -273,7 +294,7 @@ is a to-do. A bare § is a section of
 | An invariant the renderer does not assert is prose | turning `bound.interval` on took five of sixteen accumulator records out — none a bug in the render, every one a false claim the object was making |
 | Naming a command by what it does costs a byte-for-byte round trip its *shape*, and §8 already says the trackerprog is *a* preimage | three SID Wizard effects have the same encoding in two columns |
 | **A number no harness generates is a number nobody checked** — the method is not the tool | §7 quoted "render both forms and count differing ticks" forty-odd times with no tool in the tree doing it, and its headline horizon total was wrong six times over against its own per-build list; `tools/trackerprog_poison.py` is the tool, and every horizon it uses is the certificate's |
-| A claim measured against a presentation artefact is not measured | §9 compares the object to `tuneprog.md`, a pretty-printed decompilation, where the program that played the tune is the binary |
+| A claim measured against a presentation artefact is not measured — and re-measuring against the real one may refute the claim, which is the result | §9 compared the object to `tuneprog.md`, a pretty-printed decompilation, where the program that played the tune is the binary. Against the binary the object is 1.26×–2.14× its size on every tune certified whole (§9.1), so the compression claim was an artefact of the yardstick |
 | Two artefacts are two artefacts whatever one document calls them — and the shared *names* are what hides it, so count the shared **fields**, not the keys | the nine hand objects and what the T0–T3 lift emits share seven of eight key names at disjoint shapes, and one field, `meta.commit_order`. They have two renderers and two certificates, and the spec presented them as one object with a residual `program` block until B2 |
 | An interpreter that dispatches per reading can be compiled per object — but the next factor after that would cost the layer the thing it exists to have | 2.12× over eleven builds, write lists identical tick for tick; the remaining cost is flat at 5–10 % across four procedures, so the next step is generating source per object rather than one fixed procedure a reader can hold against §4 |
 
