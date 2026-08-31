@@ -183,13 +183,13 @@ def run(path, song, ticks):
 class Sequencer:
     """The three byte-code interpreters, simulated over the certified horizon.
 
-    Only the sequencer: the per-frame engine touches nothing the sequencer reads
-    while every voice is free and the music owns all three (``F9 == $3F``, which
-    :func:`score` asserts), so the walk is exact without it.  What it collects is
-    what section 6 asks for -- the state ``(pc, transpose)`` each row is read
-    under, the S record the note copies, and the successor of every state -- and
-    the duration table is read out of the image because the *song* loads it
-    (``fload`` into ``S2 + $35``, whose entry 0 is voice 2's own stack slot 7).
+    Only the sequencer: the one thing the engine leaves it is the free bit, and
+    :meth:`note` asserts that at every note-on rather than carrying it, so the
+    walk is exact without the engine.  What it collects is what section 6 asks
+    for -- the state each row is read under (:meth:`state`) and the successor of
+    every one -- and the duration table is read out of the image band because the
+    *song* loads it (``fload`` into ``S2 + $35``, whose entry 0 is voice 2's own
+    stack slot 7, so S and the three stacks are one array here as they are there).
     """
 
     def __init__(self, m):
@@ -200,8 +200,8 @@ class Sequencer:
         self.stack = [[] for _ in range(3)]  # the call sites, shadowing the tune's
         self.ins, self.images = {}, []  # the S records the walk interns, section 6
         self.sp = [self.m[ZSP + v] for v in range(3)]
-        self.rows = {}  # (v, pc, tr) -> the row it is, resolved
-        self.succ = {}  # (v, pc, tr) -> the states it goes to
+        self.rows = {}  # a state -> the row it reads, resolved
+        self.succ = {}  # a state -> the states it goes to
         self.ret = {}  # a call site -> the state its return comes back to
         self.runs = [bool(self.m[ZFREE] >> v & 1) for v in range(3)]
         # the record each voice's engine starts on: init clears neither S nor D,
@@ -210,22 +210,22 @@ class Sequencer:
         self.start = [self.state(v) if self.runs[v] else None for v in range(3)]
 
     def state(self, v):
-        """The state a row is read under: where, under what transpose, and on what record.
+        """Where a row is read, and the three things the score left behind for it.
 
         The sixth family's states carry the note length a block was entered
-        with; this one carries the *transpose* and the *instrument*, because
-        both are things the score's own commands leave behind and a block
-        called from two places inherits.  Interning the record here is what
-        makes section 6's materialisation possible at all: an ``Ins`` is a
-        constant of the object, so a row that reads two records is two rows.
+        with; this one carries the transpose, the instrument record and whether
+        the stack under it is empty -- all three being things a block called from
+        two places inherits.  Interning the record here is what makes section 6's
+        materialisation possible at all: an ``Ins`` is a constant of the object,
+        so a row that reads two records is two rows.
         """
         img = bytes(self.m[SREC[v] : SREC[v] + SLEN])
         i = self.ins.get(img)
         if i is None:
             i = self.ins[img] = len(self.images)
             self.images.append(img)
-        # ..and whether the stack under it is empty, which is what says a ``Ret``
-        # ends the voice's sequencer rather than returning (section 3.6's ``stop``)
+        # the empty flag is what says a ``Ret`` ends this voice's sequencer
+        # rather than returning, which is section 3.6's ``stop``
         return (v, self.pc[v], self.tr[v], i, int(self.sp[v] == 7))
 
     def tick(self):
