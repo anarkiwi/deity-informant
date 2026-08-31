@@ -68,7 +68,6 @@ class Player:
             "ins": list(s0.get("ins", [0] * n)),
             "wave": list(s0.get("wave", [0] * n)),
             "orderpos": [0] * n,
-            "loopcnt": [0] * n,
             "rowsleft": [0] * n,
             "dur": [0] * n,
             "freq": [0] * n,
@@ -82,7 +81,9 @@ class Player:
         # stack and where its one counted loop returns to (section 3.6)
         self.stopped = list(s0.get("stopped", [False] * n))
         self.callstack = [list(x) for x in s0.get("callstack", [[]] * n)]
-        self.loopstart = list(s0.get("loopstart", [0] * n))
+        # the counted loops nest: a `mark` opens one and the `loop` that spends
+        # it closes it, so what a voice carries is a stack and not a register
+        self.loopstack = [[list(y) for y in x] for x in s0.get("loopstack", [[]] * n)]
         self.armed = [[] for _ in range(n)]  # the accs the score armed
         self.divider = [
             dict((k, d[i]) for k, d in s0.get("dividers", {}).items()) for i in range(n)
@@ -126,6 +127,8 @@ class Player:
         self.boundary = self.spent = False
         self.tickphase = 0
         self.prefetched = "fetch" in m["tick"]  # a tick that reads its row ahead
+        # what the score's own stop stops: the whole voice, or its sequencer alone
+        self.stopsafter = m.get("stop", "voice") == "voice"
         self.act = 0  # which of the tick's acts an edge write belongs to
         self.tick_no = -1
         self.stopping = 0
@@ -586,12 +589,22 @@ class Player:
         ``row_consumes_tick``) skips the phases after it; a stream step still
         runs, being the voice's own write-out and not a modulation.
         """
-        if self.stopped[v]:  # a voice its own score stopped runs no clock
+        halted = self.stopped[v]
+        if halted and self.stopsafter:  # the score stopped the voice itself
             return False
         self.op, self.spent = False, False
         self.prod, self.edge = [], []
-        self.boundary = self.clock(v)
+        # a score that stops the *sequencer* leaves the sound running: the clock
+        # is the sequencer's, so a halted voice does not step it, and every
+        # other phase is the voice's own and runs (prototype-galway-trackerprog.md
+        # section 4).  Which of the two a family's stop is, is one datum
+        self.boundary = False if halted else self.clock(v)
         for name, run in self.phases:
+            # the tick a score ends a voice's *sequencer* on is that voice's
+            # last: the source leaves the voice's routine where it clears the
+            # run bit, so the phases after the row do not run on it
+            if not self.stopsafter and self.stopped[v] and not halted:
+                break
             if name is None:
                 self.rows(run, self.prod, self.edge)
             elif self.spent:
@@ -1110,9 +1123,12 @@ class Player:
         """One step of the order program: its own ``op``, else the next step.
 
         Section 3.6's order grammar, matched by the one family that emits it:
-        ``call``/``ret`` over a per-voice return stack, ``mark``/``loop`` over
-        one counted-loop register, ``jump``, and ``stop`` -- which stops this
-        voice and not the tune, because the score stops each of them by itself.
+        ``call``/``ret`` over a per-voice return stack, ``mark``/``loop`` over a
+        per-voice loop stack, ``jump``, and ``stop`` -- which stops this voice
+        and not the tune, because the score stops each of them by itself.  The
+        loop stack is the ninth family's: Galway pushes a counted loop's start
+        and its count onto the same 8-deep stack its calls use, and six of the
+        main theme's loops open while another is still live.
         """
         op = self.play_of(v).get("op")
         pos = self.c["orderpos"][v]
@@ -1128,11 +1144,14 @@ class Player:
             self.callstack[v].append(op.get("ret", pos + 1))
             self.c["orderpos"][v] = op["call"]
         elif "mark" in op:  # the counted loop opens: its count, and where it returns
-            self.c["loopcnt"][v] = op["mark"]
-            self.loopstart[v] = self.c["orderpos"][v] = op.get("next", pos + 1)
+            self.loopstack[v].append([op["mark"] & 0xFF, op.get("next", pos + 1)])
+            self.c["orderpos"][v] = op.get("next", pos + 1)
         else:  # "loop": the count spent, or the step back to the mark
-            self.c["loopcnt"][v] = n = (self.c["loopcnt"][v] - 1) & 0xFF
-            self.c["orderpos"][v] = self.loopstart[v] if n else op.get("next", pos + 1)
+            top = self.loopstack[v][-1]
+            top[0] = n = (top[0] - 1) & 0xFF
+            self.c["orderpos"][v] = top[1] if n else op.get("next", pos + 1)
+            if not n:
+                self.loopstack[v].pop()
         self.publish("wrap", v)
         self.publish("order", v, {"pos": self.c["orderpos"][v]})
 

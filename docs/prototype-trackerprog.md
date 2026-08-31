@@ -363,10 +363,19 @@ Two spellings the exemplar forced rather than the draft foreseeing them. **A
 call names where it comes back to**, not merely where it goes: the 6502 pushes
 `ptr + 3`, an address, and the order of the block list is not the order of the
 program. And **`mark` and `loop` are two steps, not one `for`**: they are two
-bytes in two places with the body between them, over one counted-loop register
-per voice that nothing saves or restores, so the object says the loops do not
-nest by having one cell. The other five families carry no `op` at all and take
-the `play` list as before.
+bytes in two places with the body between them. The other five families carry no
+`op` at all and take the `play` list as before.
+
+**The counted loops nest, and the ninth family is why.** The sixth's are two
+bytes over one register per voice that nothing saves or restores, so the object
+said the loops do not nest by having one cell. Galway's `For` pushes the loop's
+start *and* its count onto the **same 8-deep stack** its `Call` pushes return
+addresses on, and the main theme opens a loop inside a live one from tick 3,072
+— six times on voice 1 and three on voice 2, and with one register the outer
+loop runs the inner one's count and the score plays the wrong block. A voice
+therefore carries a loop *stack*, which a family whose loops do not nest sees as
+the register it had: **0 of Follin's 111,763 ticks differ**
+([prototype-galway-trackerprog.md](prototype-galway-trackerprog.md) §4.1).
 
 **`stop` stops one voice, not the tune.** Every other certified score ends the
 tune; this one ends each voice by itself (`$86` clears that voice's active flag
@@ -374,6 +383,17 @@ and the routine moves on), and the filter goes on writing. So the terminator is
 per voice, `state0.stopped` seeds it from the entry — a sound effect starts one
 to three voices and leaves the others stopped — and a stopped voice runs no
 clock (follin-trackerprog §4.3).
+
+**And what it stops is one datum, `meta.stop` ∈ {`voice`, `sequencer`}.** Follin's
+per-frame block tests the active flag first and skips the whole voice — the
+modulators, the gate and the write-out with it (anatomy §3.6.3). Galway's eighth
+`Ret` clears the run bit and returns from the *voice routine*, so the sequencer
+stops and the engine plays the note out, counts its release down and frees the
+chip several hundred ticks later; the tick the score stops on is the voice's
+last, and every tick after it runs every phase but the row. Its eight
+sound-effect subtunes are that value with nothing else in them — three voices
+stopped from tick 0, no score at all, and the certificate is the engine over the
+record the entry left (galway-trackerprog §4.2).
 
 **The note column is a token class, and the layer spends it.** The first draft
 wrote `note: index | rest | hold | keyoff | keyon`, which is the *source byte's*
@@ -985,6 +1005,7 @@ Wizard's `b1024` still refuse, and their cells are not scratch.
 | §5's bound asserted, and five records that did not survive it (**P2**) | `Player.store` holds every accumulator move to the interval its record declares — §5 has said the renderer does this since the first draft and it did not, `bound.interval` being read only as `reflect`'s turn and `reflect-complement`'s fold and `from`/`witness` read nowhere. Turning it on took **five of the sixteen records** out, none of them a bug in the render and every one a claim the object was making falsely: Hubbard's vibrato said `proved [0, 3]` where `[0, 3]` is the *fold*, the repeat's count, and the cell holds a frequency (8,836 / 22,488 / 1,089 escaping moves on the three subtunes, from **tick 1**); its arpeggio said `proved [0, 12]` where `[0, 12]` is the arp stream's transpose (16,341 / 13,803 / 1,089, from tick 1); its drum said `proved [1, $FF]` from the guard `freq_hi != 0`, which bounds the value the step comes *in* with and not the one it leaves after `−1` (32 and 5, from tick 173); its pulse sweep said `projected [$800, $EFF]`, which is where the bounce turns and not where the cell goes, since a step of `$E0` from `$E60` reaches `$F40` and then wraps to `$020` (10 moves, from tick 3,457); and GoatTracker 2's vibrato phase said `proved [0, speedcmp]`, which §5 correction 1 declared wrong in prose in 2026 and which the object went on saying (1,532 of 10,956 and 1,114 of 10,073, from ticks 2 and 20). The turn and the fold move to **`amplitude`**, which is the step's own arithmetic and may read a live cell; `bound.interval` is two constants, which is what §5's *statically known* means. Measured: rendering the corrected objects is **write-for-write identical on every tick of all eleven builds' whole horizons** — 0 differing of 243,265 — and all eleven re-certify at 0 divergences; the assertion costs under 4 % of render. The generalisable check: **an invariant the renderer does not assert is prose**, and the interval a *step* reads is not the interval a *record* claims — one key cannot be both | `universal`, `printer`, `tools/trackerprog_{commando,goattracker}.py` |
 
 | Blackbird, the seventh family (**#322**) | lft's *Quintessence* transliterated onto the same player over its whole 10,426-tick horizon, 0 divergences, `end.kind = horizon` — and **the first family that cost the player nothing**: `universal.py` and `printer.py` are byte for byte as #321 left them, every form this family needs being one the six before it earned. Two things outside the player had to move. The tuneprog front end could not certify the tune at all: Blackbird's `X = voice×7` indexes the state arrays *and* `$D400,X`, so the region carrying `v_wavemask` is typed `io`, and `Machine.ioload`/`iostore` took a site's class for the address's — a RAM read pinned as a chip input, trapping `input exhausted` at tick 0. The address decides, exactly as the tracer's own read and write decide it; 51/51 recert unmoved and the tune now certifies over the whole song. And §2's *dropped* voice order became load-bearing for the first time: a tick that runs a tokenizer pass over all three voices and then its audio engine over all three permutes its writes between voices on 8,442 of 10,426 ticks, and `attest` printed "order between voices inside a tick" on its own `dropped` list while comparing the flat edge list — it now compares per voice, which is what `certify.divergence` always did. All fourteen earlier builds re-certify and not one loses an identical tick. Three schema rows written from prose while the family had no certificate: §3.2's quarter-semitone tuning lands as written, plus the low half's own carry-in (2,185 ticks); §3.3's Blackbird program is the pitch/wave stream, with a backward jump folded into the row that lands on it; §3.5's prelude row is corrected — no `ctrl` write, and five writes in three acts. The score is one LZ stream of 2,961 bytes over three ring buffers and §6 drops all of it: 6,255 rows of `dur` 1, `xz -9e` 5,860 against the source `tuneprog.md`'s 7,956 | `attest`, `interp`, `tools/trackerprog_blackbird.py` |
+| Galway, the ninth family and the last of the nine | Martin Galway's *Comic Bakery* transliterated onto the same player over **all fourteen subtunes**, 29,911 ticks, 0 divergences, `same_per_register_order` on every one — and the front-end certificate it renders against is new, which retires architecture §9.1's last open row. Two forms, both in the order program and both struck against the sixth family before they were written. **The counted loops nest**: Galway pushes a loop's start and count onto the same 8-deep stack its calls use and the main theme opens one inside a live one from tick 3,072, so `loopcnt`/`loopstart` become a `loopstack` — 0 of Follin's 111,763 ticks differ, a stack of depth one being the register it had. **And what a `stop` stops is `meta.stop` ∈ {`voice`, `sequencer`}**: Follin's skips the whole voice, Galway's clears the run bit and lets the engine play the note out, so a halted voice runs no clock and every other phase, and the tick its score stops on is its last. Its eight sound-effect subtunes are that value alone — three voices stopped from tick 0 and no score at all. In the data: §6 spends `Moke`/`FLoad`/`load*` into 134 interned instrument records because they build the record the *next* note copies, while `DMoke` stays 18 commands because it pokes the live engine; a block's state carries the transpose, the record and whether its stack is empty; and `testpulse = [1, 0, 1]` is the anatomy correction that one of the three unrolled copies sends `wave|8` to its own `pw_lo` and not its `ctrl`. All fifteen earlier builds re-certify unchanged | `universal`, `tools/trackerprog_galway.py` |
 
 Everything after this is the rest of the `trackerprog/` package, under the same
 rules (≤ 500 lines per module, hermetic tests, the certificate).

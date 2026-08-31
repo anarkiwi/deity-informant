@@ -28,6 +28,7 @@ PAL_CLOCK = 985248
 ALIEN3 = "Alien_3.sid"
 AUTOMATAS = "Automatas.sid"
 CHAMELEON = "Chameleon.sid"
+COMIC_BAKERY = "Comic_Bakery.sid"
 COMMANDO = "Commando.sid"
 DEFLEKTOR = "Deflektor.sid"
 GNG = "Ghouls_n_Ghosts.sid"
