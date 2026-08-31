@@ -1244,7 +1244,7 @@ class Tune:
         """What init leaves: the cells, the cursors, the channel and, maybe, the image."""
         m, L = self.m, self.L
         cells = {k: [m[L[f] + v] for v in range(VOICES)] for k, f in CELLS.items() if f}
-        cells["phase"] = [m[L["phase"]]] * VOICES
+        cells["rowclock"] = [m[L["phase"]]] * VOICES
         cells["speed"] = [m[L["speed"]]] * VOICES
         cells["xpose"] = [x >> 1 for x in cells["xpose"]]
         cells["pend_xpose"] = [x >> 1 for x in cells["pend_xpose"]]
@@ -1317,11 +1317,16 @@ class Tune:
             "commit_order": ["ad", "sr", "ctrl"],
             "wide": list(WIDE) + ["dptr"],
             "tempo": {
-                "form": "countdown",
-                "cell": "phase",
-                "boundary": 0,
-                "reload": "speed",
-                "early": 2,
+                "cell": "rowclock",
+                "step": -1,
+                "boundary": [[{"cell": "rowclock"}, "==", 0]],
+                "early": [[{"cell": "rowclock"}, "==", 2]],
+                "reset": [
+                    {
+                        "when": [[{"cell": "rowclock"}, ">=", 0x80]],
+                        "sets": [["@rowclock", {"cell": "speed"}]],
+                    }
+                ],
             },
             "tick": ["fetch", "prelude", "row", "machine"],
             "row_consumes_tick": [["keys", "!=", 0]],

@@ -90,7 +90,7 @@ def test_the_flattened_print_carries_the_streams_and_measures_itself():
     text = printer.render(built(LINUS))
     for line in (
         "shadow     25 registers, flushed descending at the head of every tick",
-        "tempo countdown rowclock, reload tempo",
+        "tempo rowclock -1, row at rowclock == 0, early where rowclock == 2",
         "tick       row ; commit ; machine ; fetch ; prelude ; stream exit",
         "a new pitch resets vib_phase",
     ):

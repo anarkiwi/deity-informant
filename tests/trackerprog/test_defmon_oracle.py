@@ -62,7 +62,8 @@ def test_the_two_builds_differ_in_their_multispeed_and_their_data(name):
     """The version difference is the entry's rate and the note column's mask."""
     _, _, _, rate, _ = CLAIMS[name]
     obj = built(name)
-    assert obj["meta"]["tempo"] == {"form": "divider", "rate": rate, "phase": 0}
+    t = obj["meta"]["tempo"]  # the entry's rate, as the one clock form's own divider
+    assert (t["cell"], t["step"], t["rate"], t["phase"]) == ("rowsleft", -1, rate, 0)
     assert obj["meta"]["shadow"]["registers"] == TD.FLUSH  # the cutoff is not the image's
     assert 22 not in TD.FLUSH
     assert sorted(obj["streams"]) == STREAMS
@@ -219,7 +220,7 @@ def test_no_command_is_named_by_the_index_its_player_dispatched_on(name):
 def test_the_print_carries_the_forms_and_measures_itself():
     text = printer.render(built(JAZZPJAZZ))
     for line in (
-        "tick       16422 cycles; tempo divider 1 phase 0",
+        "tick       16422 cycles; tempo rowsleft -1, row at rowsleft >= $80",
         "sequencer  the row shares the voice's tick",
         "tick       row ; machine",
         "shadow     23 registers, flushed in the image's own order at the head of every tick",

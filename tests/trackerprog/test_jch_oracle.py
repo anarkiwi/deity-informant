@@ -185,7 +185,7 @@ def test_the_comparison_chunks_and_resumes_where_it_left_off(tmp_path):
 def test_the_print_carries_the_forms_and_measures_itself():
     text = printer.render(built(GULDKORN))
     for line in (
-        "tick       19656 cycles; tempo countdown phase, reload speed, row at 0, fetch 2 early",
+        "tick       19656 cycles; tempo rowclock -1, row at rowclock == 0, early where rowclock == 2",
         "sequencer  the row consumes the voice's tick when <keys> != 0",
         "tick       fetch ; prelude ; row ; machine",
     ):

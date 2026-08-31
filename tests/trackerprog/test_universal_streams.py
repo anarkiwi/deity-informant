@@ -74,11 +74,16 @@ def obj(events, streams=None, accs=None, instrument=None, tempo=2, early=1, curs
             "commit_order": ["sr", "ad", "ctrl"],
             "shadow": {"registers": list(range(24, -1, -1))},
             "tempo": {
-                "form": "countdown",
                 "cell": "rowclock",
-                "reload": "tempo",
-                "boundary": 0,
-                "early": early,
+                "step": -1,
+                "boundary": [[{"cell": "rowclock"}, "==", 0]],
+                "early": [[{"cell": "rowclock"}, "==", early]],
+                "reset": [
+                    {
+                        "when": [[{"cell": "rowclock"}, ">=", 0x80]],
+                        "sets": [["@rowclock", {"cell": "tempo"}]],
+                    }
+                ],
             },
             "tick": ["row", "commit", "machine", "fetch", "prelude", {"stream": "exit"}],
             "row_consumes_tick": [["keys", "!=", 0]],
@@ -155,8 +160,18 @@ def test_the_countdown_clock_reloads_from_its_tempo_cell():
 
 
 def test_a_funk_tempo_alternates_the_two_lengths_its_stream_names():
+    """A tempo over a stream is a reset clause, ahead of the plain reload's own."""
     o = obj([event(note=1, ins=1)], tempo=0)
-    o["meta"]["tempo"]["alternate"] = {"stream": "funktempo", "when": [[{"cell": "tempo"}, "<", 2]]}
+    o["meta"]["tempo"]["reset"].insert(
+        0,
+        {
+            "when": [[{"cell": "rowclock"}, ">=", 0x80], [{"cell": "tempo"}, "<", 2]],
+            "sets": [
+                ["@rowclock", {"tabcell": ["funktempo", {"cell": "tempo"}, "value"]}],
+                ["@tempo", {"xor": [{"cell": "tempo"}, 1]}],
+            ],
+        },
+    )
     p = Player(o)
     seen = [p.tick() and 0 or p.c["rowclock"][0] for _ in range(9)]
     assert seen[2:8] == [2, 1, 0, 4, 3, 2]  # the two funk rows' own countdowns, in turn
