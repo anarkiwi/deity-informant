@@ -62,8 +62,9 @@ needed · 5 what the spec got right · 6 finding the data · 7 measurements ·
 The forms, in one line each. In the player: §4.1 the fetch is a walk · §4.2 the
 order program's own steps · §4.3 a `stop` that stops one voice and not the tune
 · §4.4 the global channel steps *after* the voices · §4.5 a row's own length
-and note are facts of the row · §4.6 a stream carries what lies past the tuning
-· §4.7 an order that is a program prints one step per line. In the data only:
+and note are facts of the row · §4.6 a stream carries what lies past the tuning.
+In the print: §4.7 an order that is a program prints one step per line. In the
+data only:
 §4.8 the bounce whose turn steps back · §4.9 the two-armed branch as two rows ·
 §4.10 the score's own note lengths, which make its grammar context-sensitive.
 
@@ -414,9 +415,9 @@ code, which removes tokens. `xz` is 52% of the source.
 | `tests/trackerprog/test_follin_oracle.py` | 158 | the three certificates and the family's own forms |
 | `tests/trackerprog/test_universal_order.py` | 216 | hermetic snippets, one per form of §4.2 |
 
-The player grew by **110 lines** to carry a sixth family. Six of them are the
-order program's steps, one procedure with one `elif` per step; the rest is the
-fetch loop and three small openings — a stopped voice, a channel that steps
+The player grew by **110 lines** to carry a sixth family. Most of it is the
+order program — one procedure with one `elif` per step, plus the walk that runs
+it — and the rest is three small openings: a stopped voice, a channel that steps
 after the voices, and a stream that carries what lies past the tuning. It still
 has neither Commando, nor GoatTracker, nor SID Wizard, nor defMON, nor JCH, nor
 Follin in it.
