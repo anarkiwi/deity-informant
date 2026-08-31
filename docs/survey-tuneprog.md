@@ -123,7 +123,15 @@ The twenty largest families, plus the nine exemplar families in bold.
 | **Martin_Galway** (Galway, Comic Bakery) | 55 | 30 | 14 (47 %) | 0 | diverged ×10 |
 | **Stephen_Ruddy** (Follin, Ghouls'n'Ghosts) | 37 | 30 | 26 (87 %) | 3 | refused ×4 |
 | **Electrosound** (Walker, Chameleon) | 301 | 30 | 30 (100 %) | 0 | – |
-| **Blackbird/LFT** (Blackbird, Quintessence) | 40 | 30 | 26 (87 %) | 0 | diverged ×3 |
+| **Blackbird/LFT** (Blackbird, Quintessence) | 40 | 30 | 26 (87 %)* | 0 | diverged ×3* |
+
+\* The Blackbird row was measured before the front-end fix in
+[prototype-blackbird-trackerprog.md](prototype-blackbird-trackerprog.md) §4.1, and this
+family is the one uniquely exposed to what it fixes: `X = voice×7` indexes the state
+arrays *and* `$D400,X`, so a region carrying per-voice cells types `io` and a RAM read
+through it was pinned as a chip input. *Quintessence* itself was one of the tunes that
+did not certify and now certifies over its whole 10,426 calls. The row is therefore a
+lower bound; re-measuring the stratum is a backlog item and is not claimed here.
 
 Eight of the nine exemplar families certify 87–100 % of a 30-tune draw without a
 line of family-specific code (design principle 5, measured). Galway is the
