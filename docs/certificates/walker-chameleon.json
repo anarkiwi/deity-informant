@@ -1,0 +1,72 @@
+{
+ "compared": [
+  "init writes",
+  "tick sid writes",
+  "tick schedule effects"
+ ],
+ "copies": {
+  "coverage": {
+   "1,1,1": 9
+  },
+  "families": [
+   {
+    "bases": [
+     "$A08D",
+     "$A093",
+     "$A099"
+    ],
+    "columns": 2,
+    "copies": 3,
+    "proc": "p_A08D",
+    "rows": 3,
+    "table": "$0200"
+   }
+  ],
+  "refused": [],
+  "statements": 9,
+  "unverified": 0
+ },
+ "cost": {
+  "calls_per_second": 10364,
+  "ir_blocks": 320,
+  "ir_procs": 52,
+  "ir_statements": 1169,
+  "regions": 101,
+  "sites": 1087,
+  "trace_calls": 8052,
+  "verify_cpu_seconds": 0.8
+ },
+ "divergence": null,
+ "entry": {
+  "addr": 43621,
+  "cycles_per_tick": 9828,
+  "kind": "sub",
+  "source": "cia_timer"
+ },
+ "generated": "2026-08-31T06:34:31Z",
+ "oracle": "deity_informant.PcodeVM@0.5.0",
+ "presentation": "S5/S6 annotate the certified S4 IR; the program is unchanged",
+ "reference_validated_against": "none",
+ "sid_model": null,
+ "stack": "eliminated",
+ "stage": "S6",
+ "subtunes": [
+  {
+   "closure": "trace",
+   "complete": true,
+   "cycles_per_tick": 9828,
+   "divergences": 0,
+   "envelope_traps": 0,
+   "first_repeat": 8051,
+   "inputs_pinned": 16,
+   "interp_prefix": 2000,
+   "period": 72,
+   "seconds": 80.32,
+   "song": 1,
+   "ticks": 8052,
+   "trace_first_repeat": 8051,
+   "trace_period": 72
+  }
+ ],
+ "tune": "Chameleon.sid"
+}

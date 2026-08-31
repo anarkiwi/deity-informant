@@ -27,6 +27,7 @@ from _prog import proc_body as body  # noqa: E402
 PAL_CLOCK = 985248
 ALIEN3 = "Alien_3.sid"
 AUTOMATAS = "Automatas.sid"
+CHAMELEON = "Chameleon.sid"
 COMMANDO = "Commando.sid"
 DEFLEKTOR = "Deflektor.sid"
 GNG = "Ghouls_n_Ghosts.sid"

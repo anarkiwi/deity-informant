@@ -14,6 +14,7 @@ HVSC = {
     "A_Mind_Is_Born.sid": "MUSICIANS/L/Lft/A_Mind_Is_Born.sid",
     "Alien_3.sid": "MUSICIANS/R/Rodger_Andrew/Alien_3.sid",
     "Automatas.sid": "MUSICIANS/G/Goto80/Automatas.sid",
+    "Chameleon.sid": "MUSICIANS/W/Walker_Martin/Chameleon.sid",
     "Commando.sid": "MUSICIANS/H/Hubbard_Rob/Commando.sid",
     "Deflektor.sid": "MUSICIANS/D/Daglish_Ben/Deflektor.sid",
     "Do_It_Again.sid": "MUSICIANS/L/Linus/Do_It_Again.sid",

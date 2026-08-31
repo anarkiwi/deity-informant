@@ -1376,14 +1376,28 @@ class Player:
         ph = self.ev(a["phase"], ov) if "phase" in a else 0
         out = (val - step if ph else val + step) & mask
         if pol == "reflect":
-            am = a["amplitude"]
-            lo, hi = (self.ev(x, ov) for x in am["interval"])
-            turn = (out >> am["shift"]) == ((hi if not ph else lo) >> am["shift"])
-            if turn:
-                c = self.c[a["phase"]["cell"]]
-                c[self.v] = (c[self.v] + (-1 if ph else 1)) & 0xFF
-                self.publish("turn", self.v, {"phase": c[self.v]}, acc=self.accname[id(a)])
+            if self.turned(a["amplitude"], out, ph, ov):
+                k = a["phase"]["cell"]
+                self.put(k, (self.whole(k) + (-1 if ph else 1)) & 0xFF)
+                self.publish("turn", self.v, {"phase": self.whole(k)}, acc=self.accname[id(a)])
         return out
+
+    def turned(self, am, out, ph, ov):
+        """Whether the triangle turns on this step: at its bound, or on a count.
+
+        A bound is the turn where the accumulator's value is the modulator's own;
+        where two modulators sum into one cell the value is neither's, so the turn
+        is a counter of the modulator's own steps against its period, which is
+        what ``count`` names.  The counter is a cell of section 5's vocabulary,
+        so a modulator on the global channel counts in a global cell.
+        """
+        if "count" not in am:
+            lo, hi = (self.ev(x, ov) for x in am["interval"])
+            return (out >> am["shift"]) == ((hi if not ph else lo) >> am["shift"])
+        n = (self.whole(am["cell"]) + 1) & 0xFF
+        turn = n == self.ev(am["count"], ov)
+        self.put(am["cell"], 0 if turn else n)
+        return turn
 
     def toward(self, a, ov, val, step, prod):
         """``clamp(target)``: move by ``step``, and take the target where it is passed.

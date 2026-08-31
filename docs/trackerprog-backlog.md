@@ -615,8 +615,11 @@ W4 depends on W3; W5 on W0, W2, W4; W6 on W0, W2, W3; W7 on all.
    ([prototype-follin-trackerprog.md](prototype-follin-trackerprog.md)), and
    I6's `set_register` needed no form of its own: `$85` is §3.7's `reg.N`.
 
-Deliberately not now: Galway/Walker/Blackbird (uncertified — the anatomy
-describes them, no certificate covers them), multispeed (§10). **Not** defMON:
+~~Deliberately not now: Galway/Walker/Blackbird~~ — Blackbird landed (#322) and
+Walker has, over its whole 8,052-call horizon and with a new front-end
+certificate ([prototype-walker-trackerprog.md](prototype-walker-trackerprog.md)).
+Deliberately not now: Galway (*Comic Bakery*, uncertified — the anatomy
+describes it, no certificate covers it), multispeed (§10). **Not** defMON:
 that line was wrong. defMON is certified four times over — `automatas`,
 `automatas-6581`, `automatas-8580` (149,025 ticks, period 129,024, `complete`)
 and `goto80-jazzpjazz` (1,799 ticks, `horizon`), architecture §9.2 — with recert
@@ -1036,6 +1039,53 @@ nothing, which is §6's materialisation taken literally — 6,255 rows carrying 
 7,579 token bytes said, and no decompressor, no ring buffer and no delay token in
 the object. The generalisable check: **before reusing a form, check what the
 program does on the rows it covers**, not what its bytes look like.
+
+### 6.10 Four the eighth family found
+
+[prototype-walker-trackerprog.md](prototype-walker-trackerprog.md), the first
+family whose modulators are unrolled by modulator rather than by voice.
+
+**A turn is exact only where the cell is one modulator's.** §5's `reflect` reads
+the triangle's turn off the accumulator's own value, which is right for seven
+families and undecidable for the eighth: Walker's pitch triangle (step `$0A`)
+and pitch bend (step `$50`) both add into one 16-bit frequency offset per voice,
+and on **1,140 of the horizon's 9,949 modulator steps** both have moved it. No
+interval on that cell is either modulator's swing. The player's own turn is and
+always was a counter — `++phase; if phase == period: phase = 0; dir ^= 1` — so
+`amplitude` gains `{count, cell}` beside `{interval, shift}`, fifteen lines
+including the move of the direction flip onto §5's `whole`/`put` pair so a
+modulator on the global channel can count in a `#global`. The strike is a check
+and not the argument: no earlier object writes `count`, so the arm is
+unreachable for all of them by construction, and all fifteen earlier builds
+re-certify at 0 divergences over their whole horizons. The generalisable check:
+**a form that reads a shared cell must be told what is its own**, and a
+projection written from prose (§7's "policy `reflect` (triangle) or `halt`
+(one-shot)") is exactly where that goes unnoticed.
+
+**A one-shot is a guard, not a policy.** The same prose row projected `policy
+halt` for the bend that stops one step short of its period. The certified
+reading is `delta_when` on `phase + 1` against a cell loaded beside the period —
+which costs the player nothing, generalises to any stopping condition the object
+can name, and stays correct when a drum record overrides both the period and the
+stop. The generalisable check: before adding a policy, ask whether the guard
+channel already says it.
+
+**A modulator on the global channel is the same record.** The filter is the
+fourth copy of the one template and runs once per call after the three voices.
+It needed no new form: `globals.after` already steps a stream after the voices,
+`stream_step` already steps an `Acc` a row's `run` names, and §5's cell
+vocabulary already resolves `#global`. What it needed was for the *turn* to use
+that vocabulary too, which is the same fifteen lines. Its fire is any voice's
+note-on and its reset is the **owner** voice's, which is one global cell the
+block header writes and the gate reads.
+
+**A header that re-arms every voice makes a block a pattern.** Walker's block
+header forces `reload` on all three voices before any of them reads a token, so
+whether a note re-triggers or ties cannot depend on the order step that plays
+the block. Eleven blocks therefore carry thirty-two steps and the score states
+2,592 played rows as **1,134**. The generalisable check: **what a header resets
+is what says whether a pattern is reusable**, and it is cheaper to read than to
+compare rows.
 
 ### 6.7 What hardening the layer found, with the families all in
 
