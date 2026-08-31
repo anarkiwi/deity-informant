@@ -213,7 +213,7 @@ def test_a_trap_row_is_no_row_at_all():
     )
     p = Player(o)
     p.cursor["wave"][0]["row"] = 1
-    assert p.slots() == ["wave"]
+    assert [k for _, _, _, k in p.slots()] == ["wave"]
     p.cursor["wave"][0]["row"] = 0
     assert p.slots() == []  # row zero is the 1-based table's null, so the cursor is off
     p.cursor["wave"][0]["row"] = 0

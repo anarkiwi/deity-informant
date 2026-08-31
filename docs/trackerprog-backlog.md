@@ -929,3 +929,80 @@ the row is marked back down to one certified family plus a snippet. The
 generalisable check, which is §1's own rule read backwards: a citation written
 from a *reading* of a family is a hypothesis until that family is transliterated,
 and two of the five transliterations so far have taken one out.
+
+### 6.7 What hardening the layer found, with the families all in
+
+Eight packages over the object and the player, after the fifth family and before
+any sixth. Every one is measured the way §6.4's first check asks — render both
+forms and count the ticks that differ, over each build's **whole** horizon — and
+every one lands at **0 differing of 243,265** across the eleven builds, because
+none of them is a change to what the layer plays. The full rows are
+[prototype-trackerprog.md](prototype-trackerprog.md) §7; the checks they add are
+these.
+
+**A field the object writes and no consumer reads is not a field.** §6.4 struck
+§3.3's terminator from the *grammar* and four tools went on writing it, and the
+print on rendering it, for two more families. Striking a row from the schema is
+not striking it from the object, and the way to know is to grep for the readers
+of every name the schema declares — the player's, the print's and the round-trip
+tests' — and to delete what nothing answers. Eight fields went that way (P1).
+
+**An invariant the renderer does not assert is prose.** §5 has said since the
+first draft that "the trackerprog states each interval and the renderer asserts
+it", and the renderer did not: `bound.interval` was read as one policy's
+threshold and `from` and `witness` were read nowhere. Turning the assertion on
+took **five of the sixteen accumulator records** out — not one of them a bug in
+the render, every one a claim the object was making falsely, and one of them a
+correction §5 had written in prose in 2026 and the object had gone on
+contradicting for two more families. The corollary is the second half of the
+same check: **the interval a *step* reads is not the interval a *record*
+claims**, and one key cannot be both (P2).
+
+**A constant in the player is a family in the player.** Three values sat in the
+one procedure that is supposed to have no family in it: a voice cell the player
+*declared* that was one family's pulse direction, a `- 1` the player did to one
+family's reload and to no other value in the schema, and one musical question
+answered at two sites. Each goes to where its own fact lives — the tune's
+`state0.cells`, the stream row's own value, and the one place that answers it —
+and what stays a constant is named beside the chip's others, because no family
+varies it and by §6.4's check a datum no observation distinguishes is not a
+datum (P3).
+
+**An enum is a hook list that has not noticed yet.** `meta.prefetch` grew one
+string value per family across three PRs, which is §6.4's own `note_row`/
+`gate_row` failure one level down: five of its seven values did what a `sets`
+row already does under a guard the grammar already had. A staging *is* a row
+program; the only thing that made it not `meta.row` was when it runs (P4).
+
+**A token class the layer has not spent is a token class the layer will pay
+for.** §3.6 spends the note column's byte ranges — "a value that is not in the
+pitch table is not a pitch" — and one family's wave table still carried the raw
+bytes and read the three kinds back out of them every tick, with the assembly's
+own `CMP` immediates as the guards. The bytes are constants of the table and the
+other three families decode theirs at build time (P5).
+
+**One machine fact, one spelling.** The 6502 carry had three: a delta form the
+object never wrote, a bit of an unmasked sum written by two families, and a
+`+ 2^w` bias tree whose whole content is that Python's shift on a negative
+number is arithmetic and the machine's is not. The bias belongs in the player;
+the two nodes that remain, `carry_out` and `borrow_out`, say what they are and
+are greppable (P6).
+
+**Three procedures for one clock is §4.8's failure with a `form` field on it.**
+`meta.tempo.form` selected three procedures in `clock()` and three more
+elsewhere; the counter is the general one and the other two are values of it, a
+divider being the rate with a step of −1 and a countdown a step of −1 with a
+reset. The tempo-over-a-stream record went with them, because it was one more
+reset clause all along. The generalisable check is §6.4's ordering one read
+backwards: **when three names select three procedures, one of the three is the
+form and the other two are its values** (P7).
+
+**And an interpreter that dispatches per reading can be compiled per object.**
+The object is fixed for a render, so every expression, guard, target and plan is
+compiled on first reading and called thereafter — 2.12× over the eleven builds'
+whole horizons, with the write lists identical tick for tick. The check the
+package leaves is the honest one about its own target: it aimed at 5× and the
+profile says the remaining cost is flat across four procedures at 5–10 % each,
+so the next factor is generating source per object, which would cost the layer
+the thing it exists to have — one fixed procedure a reader can hold against §4
+(P8).

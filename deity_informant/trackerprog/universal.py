@@ -7,6 +7,8 @@ no table of its own, dispatching only on the form of a delta, policy or row.
 
 from __future__ import annotations
 
+import operator
+
 REG = {"freq_lo": 0, "freq_hi": 1, "pw_lo": 2, "pw_hi": 3, "ctrl": 4, "ad": 5, "sr": 6}
 EDGE = ("ctrl", "ad", "sr")  # section 2 rule 1: every write kept, in tick order
 GATE_BIT = 1  # ctrl bit 0 is the gate (anatomy:153): a chip fact, like REG
@@ -15,6 +17,36 @@ GATE_BIT = 1  # ctrl bit 0 is the gate (anatomy:153): a chip fact, like REG
 # masks are the whole byte and the byte with that bit cleared -- there is no
 # family's version of this and no tune states one
 GATE = (0xFF, 0xFF ^ GATE_BIT)
+
+# the compiler's dispatch, spent once per node instead of once per evaluation
+_CMP = {">=": operator.ge, "<": operator.lt, "!=": operator.ne, "==": operator.eq, ">": operator.gt}
+_BINOP = {
+    "and": operator.and_,
+    "or": operator.or_,
+    "xor": operator.xor,
+    "add": operator.add,
+    "sub": operator.sub,
+    "shr": operator.rshift,
+}
+_RANK = operator.itemgetter(0)
+# what a stored player leaves behind: the object compiled, which is read again
+_DERIVED = (
+    "accname heard code tests kept rowplans plans puts steps armwhen columns ranked flagdefs"
+    " clockplan earlycode fetchcode spends phases flushcode commits cursors priv subs"
+).split()
+_UNARY = {  # a node whose argument is a name, not an expression
+    "cell": lambda p, a: p.cellcode(a),
+    "global": lambda p, a: (lambda ov: p.gl[a] & 0xFFFF),
+    "own": lambda p, a: (lambda ov: p.own[a]),
+    "flag": lambda p, a: (lambda ov: p.flags.get(a, 0)),
+    "payload": lambda p, a: (lambda ov: ov[a]),
+    "ins": lambda p, a: (lambda ov: p.column(p.instr(), a)),
+    "insrec": lambda p, a: (lambda ov: p.column(p.o["instruments"][str(p.cell(a[0]))], a[1])),
+    "sid_base": lambda p, a: (lambda ov: 7 * (p.v if a == "reader" else a)),
+    "notefreq": lambda p, a: (lambda ov: p.pitchof()),
+    "tuned": lambda p, a: (lambda ov, x=None: p.tuned(p.code_of(a)(ov))),
+    "transpose": lambda p, a: (lambda ov: p.transpose(p.code_of(a)(ov))),
+}
 
 
 class Player:
@@ -53,17 +85,9 @@ class Player:
         # an accumulator is named by the key it is declared under and nowhere else
         self.accname = {id(a): k for k, a in obj["accs"].items()}
         self.priv, self.subs = {}, []
-        for owner in [a.get("beyond") for a in obj["accs"].values()] + [
-            i.get("pitch") for i in obj["instruments"].values()
-        ]:
-            if owner is None:
-                continue
+        for owner in self.owners():
             self.priv[id(owner)] = dict(owner["state"])
             self.subs += [(id(owner), x) for x in owner["on"]]
-        for owner in [s.get("beyond") for s in obj["streams"].values()]:
-            if owner is not None:
-                self.priv[id(owner)] = dict(owner["state"])
-                self.subs += [(id(owner), x) for x in owner["on"]]
         self.own = None
         self.beyond = None  # the stream stepping, for its own behaviour past the tuning
         self.cur = None  # the modulator stepping, for its own behaviour past the tuning
@@ -99,6 +123,95 @@ class Player:
         self.v = 0
         self.acc = 0  # the tick-scratch accumulator an acc with scope "tick" uses
         self.w = []
+        self.compile()
+
+    def compile(self):
+        """The object, compiled: nothing here is a fact, and all of it is derived.
+
+        Every expression node, guard list, ``sets`` target, accumulator, stream
+        row and stream column of a trackerprog is fixed for the render, so each
+        is compiled to a closure -- here where it is the tick's own shape, and on
+        first reading where the tick chooses it.  Section 4 is unchanged: this is
+        the same procedure over the same object, said once instead of walked per
+        tick.
+        """
+        o, t = self.o, self.tempo
+        # an accumulator is named by the key it is declared under and nowhere else
+        self.accname = {id(a): k for k, a in o["accs"].items()}
+        self.heard = {}  # the subscriptions one published fact reaches
+        for key, sub in self.subs:
+            self.heard.setdefault((sub["event"], sub["voice"], sub.get("acc")), []).append(
+                (key, sub)
+            )
+        # the memos a reading fills: a closure per node, a predicate per guard list,
+        # a setter per target, a plan per accumulator, stream, arm and column
+        self.code, self.tests, self.kept = {}, {}, []
+        self.rowplans, self.plans, self.puts, self.steps, self.armwhen = {}, {}, {}, {}, {}
+        self.columns = {}
+        self.ranked = sorted(  # the streams a voice's machine runs, in rank order
+            (
+                (st["rank"], k, st, self.guardcode(st.get("when")))
+                for k, st in o["streams"].items()
+                if "rank" in st
+            ),
+            key=_RANK,
+        )
+        self.flagdefs = [  # the flags a voice's machine resets before its rank order
+            (k, self.code_of(d["default"])) for k, d in o["globals"].get("flags", {}).items()
+        ]
+        self.clockplan = (  # the row clock: its cell, its step, its boundary, its resets
+            self.c[t["cell"]],
+            t["step"],
+            self.guardcode(t["boundary"]),
+            [(self.guardcode(r["when"]), self.setcode(r["sets"])) for r in t.get("reset", ())],
+        )
+        self.earlycode = self.guardcode(t.get("early"))
+        self.fetchcode = self.guardcode(t["fetch"] if "fetch" in t else t.get("early"))
+        rc = o["meta"]["row_consumes_tick"]
+        self.spends = self.guardcode(None if isinstance(rc, bool) else rc)
+        self.phases = [  # meta.tick, resolved: a phase is the procedure that runs it
+            (None, e["stream"]) if not isinstance(e, str) else (e, getattr(self, "phase_" + e))
+            for e in o["meta"]["tick"]
+        ]
+        self.flushcode = [(r, self.guardcode(w)) for r, w in self.flush]
+        self.commits = [  # the global channel's own registers, their guards and values
+            (c[0], self.code_of(c[1]), self.guardcode(c[2] if len(c) > 2 else None))
+            for c in o.get("globals", {}).get("commit", ())
+        ]
+        glob = set(o.get("globals", {}).get("streams", ()))  # where each cursor lives
+        self.cursors = {k: d for k, d in self.gcursor.items() if k not in glob}
+        self.cursors.update(
+            (k, d) for k, d in self.cursor.items() if k not in glob and k not in self.gcursor
+        )
+
+    def owners(self):
+        """Every modulator with private state, in the one order the player keeps them.
+
+        The order is the enumeration itself, which is what lets a stored player
+        come back: ``id`` keys nothing across a pickle, so the state is carried
+        by position and re-keyed against the object it is read with.
+        """
+        o = self.o
+        seq = [a.get("beyond") for a in o["accs"].values()]
+        seq += [i.get("pitch") for i in o["instruments"].values()]
+        seq += [s.get("beyond") for s in o["streams"].values()]
+        return [x for x in seq if x is not None]
+
+    def __getstate__(self):
+        """A player without its derived form: the compiled object, and the id keys."""
+        d = {k: v for k, v in self.__dict__.items() if k not in _DERIVED}
+        d["_own"] = [self.priv[id(x)] for x in self.owners()]
+        return d
+
+    def __setstate__(self, d):
+        """A stored player, read back: compile the object again and re-key the state."""
+        own = d.pop("_own")
+        self.__dict__.update(d)
+        self.priv, self.subs = {}, []
+        for x, state in zip(self.owners(), own):
+            self.priv[id(x)] = state
+            self.subs += [(id(x), y) for y in x["on"]]
+        self.compile()
 
     # ---- reading the object ---------------------------------------------------
     def cell(self, name):
@@ -213,74 +326,133 @@ class Player:
             return 0
         return (self.tuned(n + 1) - self.tuned(n)) & 0xFFFF
 
-    def ev(self, e, ov=None):  # noqa: C901 - one clause per section 5 expression form
-        """Evaluate one section 5 expression node."""
+    def ev(self, e, ov=None):
+        """Evaluate one section 5 expression node, through the closure it compiles to."""
+        f = self.code.get(id(e))
+        return (f or self.compiled(e))(ov)
+
+    def compiled(self, e):
+        """The closure a node evaluates through, compiled once and kept with it.
+
+        The object is fixed for the player's life, so every expression in it is
+        compiled the first time it is reached and never dispatched on again.  The
+        memo holds the node beside its closure, which is what keeps ``id(e)`` a
+        key: nothing the memo names can be collected while the memo lives.
+        """
+        f = self.build(e)
+        self.code[id(e)] = f
+        self.kept.append(e)
+        return f
+
+    def build(self, e):  # noqa: C901 - one clause per section 5 expression form
+        """Compile one section 5 expression node to a closure over the payload."""
         if isinstance(e, int):
-            return e
+            return lambda ov: e
         if isinstance(e, str):
-            return (ov or {})[e]
+            return lambda ov: (ov or {})[e]
         k, a = next(iter(e.items()))
+        if k in _BINOP:
+            op, x, y = _BINOP[k], self.code_of(a[0]), self.code_of(a[1])
+            return lambda ov: op(x(ov), y(ov))
+        if k in _UNARY:
+            return _UNARY[k](self, a)
         if k == "const":
             if not isinstance(a, str):
-                return a
-            x = (ov or {})[a]
-            return x if isinstance(x, int) else self.ev(x, ov)
-        if k == "cell":
-            return self.cell(a)
-        if k == "global":
-            return self.gcell(a)
-        if k == "own":
-            return self.own[a]
-        if k == "sid_base":
-            return 7 * (self.v if a == "reader" else a)
+                return lambda ov: a
+            return lambda ov: self.const(a, ov)
         if k == "u16":
-            return (self.ev(a[0], ov) & 0xFF) | (self.ev(a[1], ov) & 0xFF) << 8
-        if k == "notefreq":
-            return self.pitchof()
+            x, y = self.code_of(a[0]), self.code_of(a[1])
+            return lambda ov: (x(ov) & 0xFF) | (y(ov) & 0xFF) << 8
         if k == "interval":
-            return self.interval(None if a is None else self.ev(a, ov))
-        if k == "tuned":  # the tuning read as a table, by something that is not a note
-            return self.tuned(self.ev(a, ov))
-        if k == "transpose":
-            return self.transpose(self.ev(a, ov))
-        if k == "shr":
-            return self.ev(a[0], ov) >> self.ev(a[1], ov)
-        if k == "flag":
-            return self.flags.get(a, 0)
-        if k == "payload":
-            return ov[a]
-        if k == "ins":
-            return self.column(self.instr(), a)
-        if k == "insrec":  # a column of the instrument a cell names
-            return self.column(self.o["instruments"][str(self.cell(a[0]))], a[1])
-        if k == "and":
-            return self.ev(a[0], ov) & self.ev(a[1], ov)
-        if k == "or":
-            return self.ev(a[0], ov) | self.ev(a[1], ov)
-        if k == "xor":
-            return self.ev(a[0], ov) ^ self.ev(a[1], ov)
-        if k == "add":
-            return self.ev(a[0], ov) + self.ev(a[1], ov)
-        if k == "sub":
-            return self.ev(a[0], ov) - self.ev(a[1], ov)
+            if a is None:
+                return lambda ov: self.interval(None)
+            x = self.code_of(a)
+            return lambda ov: self.interval(x(ov))
         if k == "field":
-            return self.ev(a[0], ov) & a[1]
-        if k == "bit":
-            return (self.ev(a[0], ov) >> a[1]) & 1
-        if k == "carry_out":  # the carry an add of the stated width leaves another producer
-            return (self.ev(a[0], ov) >> a[1]) & 1
+            x, m = self.code_of(a[0]), a[1]
+            return lambda ov: x(ov) & m
+        if k in ("bit", "carry_out"):
+            x, n = self.code_of(a[0]), a[1]
+            return lambda ov: (x(ov) >> n) & 1
         if k == "borrow_out":  # a subtraction's own: the 6502's C, 1 where it did not borrow
-            return 1 - ((self.ev(a[0], ov) >> a[1]) & 1)
+            x, n = self.code_of(a[0]), a[1]
+            return lambda ov: 1 - ((x(ov) >> n) & 1)
         if k == "fold":  # the triangle a free counter's low bits already are
-            x = self.ev(a[0], ov) & a[1]
-            return x ^ a[1] if x > a[1] >> 1 else x
+            x, m = self.code_of(a[0]), a[1]
+            return lambda ov: self.folded(x(ov) & m, m)
         if k == "trap":
-            raise AssertionError(a)
+            return lambda ov: self.sprung(a)
         if k == "stream":
-            return self.o["streams"][a[0]]["rows"][self.ev(a[1], ov)]
+            rows, y = self.o["streams"][a[0]]["rows"], self.code_of(a[1])
+            return lambda ov: rows[y(ov)]
         if k == "tabcell":  # a named column of a stream row, selected by a live cell
-            return self.ev(self.srow(a[0], self.ev(a[1], ov))[a[2]], ov)
+            name, y, col = a[0], self.code_of(a[1]), a[2]
+            cols = self.column_of(name, col)
+            return lambda ov: (cols[y(ov)] or self.missing(name, col, y(ov)))(ov)
         raise KeyError("expression form %r" % (k,))
+
+    def column_of(self, name, col):
+        """One named column of a stream's rows, compiled: a closure per row.
+
+        A row the column is not in, and a row the object marks as no row at all,
+        are both ``None`` here and both answered by ``missing`` at the read --
+        the second by ``srow``'s own refusal, which is where it belongs.
+        """
+        out = self.columns.get((name, col))
+        if out is None:
+            rows = self.o["streams"][name]["rows"]
+            # the list goes into the memo before it is filled: a column may read
+            # its own stream at another row, and that is the object's, not a loop
+            out = self.columns[(name, col)] = [None] * len(rows)
+            for i, r in enumerate(rows):
+                if isinstance(r, dict) and col in r and "trap" not in r:
+                    out[i] = self.code_of(r[col])
+        return out
+
+    def missing(self, name, col, i):
+        """A column a compiled row does not carry: read it out, or refuse the row."""
+        return self.code_of(self.srow(name, i)[col])
+
+    def setcode(self, sets):
+        """One ``sets`` list, compiled: each target's own setter and its value."""
+        return [(self.put_to(t), self.code_of(e)) for t, e in sets]
+
+    def code_of(self, e):
+        """The closure a sub-expression evaluates through, compiled now."""
+        return self.code.get(id(e)) or self.compiled(e)
+
+    def const(self, a, ov):
+        """A named constant an arm or a command binds: a number, or an expression."""
+        x = (ov or {})[a]
+        return x if isinstance(x, int) else self.ev(x, ov)
+
+    @staticmethod
+    def folded(x, m):
+        return x ^ m if x > m >> 1 else x
+
+    @staticmethod
+    def sprung(why):
+        raise AssertionError(why)
+
+    def cellcode(self, name):
+        """A cell read, compiled: a plain voice cell is its own list and index."""
+        if name in self.c and name not in ("freq_hi", "freq_lo"):
+            d = self.c[name]
+            return lambda ov: d[self.v] & 0xFFFF
+        return lambda ov: self.cell(name)
+
+    def guardcode(self, gs):
+        """One guard list, compiled to a predicate: one comparison, no dict."""
+        if not gs:
+            return lambda ov: True
+        t = [(self.code_of(x), _CMP[op], self.code_of(y)) for x, op, y in gs]
+        if len(t) == 1:
+            ((x, op, y),) = t
+            return lambda ov: op(x(ov), y(ov))
+        if len(t) == 2:
+            (x, op, y), (x2, op2, y2) = t
+            return lambda ov: op(x(ov), y(ov)) and op2(x2(ov), y2(ov))
+        return lambda ov: all(op(x(ov), y(ov)) for x, op, y in t)
 
     @staticmethod
     def column(x, path):
@@ -297,9 +469,7 @@ class Player:
 
     def publish(self, event, voice, payload=None, acc=None):
         """One musical fact, offered to every modulator that subscribes to it."""
-        for key, sub in self.subs:
-            if sub["event"] != event or sub["voice"] != voice or sub.get("acc") != acc:
-                continue
+        for key, sub in self.heard.get((event, voice, acc), ()):
             own = self.priv[key]
             for k, e in sub.get("set", {}).items():
                 own[k] = self.ev(e, payload) & 0xFF
@@ -310,11 +480,12 @@ class Player:
         return self.o["instruments"][str(self.c["ins"][self.v if v is None else v])]
 
     def guards(self, gs, ov=None):
-        for lhs, op, rhs in gs or ():
-            x, y = self.ev(lhs, ov), self.ev(rhs, ov)
-            if not {">=": x >= y, "<": x < y, "!=": x != y, "==": x == y, ">": x > y}[op]:
-                return False
-        return True
+        """Whether a guard list holds, through the predicate it compiles to."""
+        f = self.tests.get(id(gs))
+        if f is None:
+            f = self.tests[id(gs)] = self.guardcode(gs)
+            self.kept.append(gs)
+        return f(ov)
 
     # ---- the tick -------------------------------------------------------------
     def tick(self):
@@ -322,7 +493,8 @@ class Player:
         self.tick_no += 1
         self.w = []
         if self.shadow is not None:  # this tick emits the image the last tick left
-            self.w = [(r, self.shadow[r] & 0xFF) for r, when in self.flush if self.guards(when)]
+            sh = self.shadow
+            self.w = [(r, sh[r] & 0xFF) for r, when in self.flushcode if when(None)]
         if self.stopping:
             if self.stopping == 1:
                 self.stopping = 2
@@ -365,14 +537,13 @@ class Player:
         The image holds the registers the flush names; a commit to a register the
         image does not hold reaches the chip where it is made, on this tick.
         """
-        for c in self.o.get("globals", {}).get("commit", ()):
-            reg, e = c[0], c[1]
-            if len(c) > 2 and not self.guards(c[2]):
+        for reg, f, when in self.commits:
+            if not when(None):
                 continue
             if self.shadow is None or reg not in self.imaged:
-                self.w.append((reg, self.ev(e) & 0xFF))
+                self.w.append((reg, f(None) & 0xFF))
             else:
-                self.shadow[reg] = self.ev(e) & 0xFF
+                self.shadow[reg] = f(None) & 0xFF
 
     def voice(self, v):
         """One voice's tick: the phases ``meta.tick`` names, in that order.
@@ -389,42 +560,51 @@ class Player:
         self.op, self.spent = False, False
         self.prod, self.edge = [], []
         self.boundary = self.clock(v)
-        for step in self.o["meta"]["tick"]:
-            if not isinstance(step, str):
-                self.rows(step["stream"], self.prod, self.edge)
+        for name, run in self.phases:
+            if name is None:
+                self.rows(run, self.prod, self.edge)
             elif self.spent:
                 continue
-            elif self.run_phase(step, v):
+            elif run(v):
                 return True
         self.commit(self.prod, self.edge)
         return False
 
-    def run_phase(self, step, v):
-        """One phase of the voice's tick.  True where a terminator abandoned it."""
-        if step == "fetch":
-            if self.fetch_due(v):
-                self.fetch(self.prod, self.edge)
-        elif step == "prelude":
-            if self.stepped and self.early_due(v):
-                p = self.instr().get("prelude")
-                if p is not None:
-                    self.rows(p["stream"], self.prod, self.edge)
-        elif step == "machine":
-            self.machine(self.prod, self.edge)
-        elif step == "commit":  # a group boundary: what the tick has written, written
-            self.commit(self.prod, self.edge)
-            self.prod, self.edge = [], []
-        elif step == "row" and self.boundary:
-            self.sequencer_step(self.prod, self.edge)
-            if self.stopping:
-                return True
-            self.spent = self.consumes()
+    def phase_fetch(self, v):
+        if self.fetch_due(v):
+            self.fetch(self.prod, self.edge)
+        return False
+
+    def phase_prelude(self, v):
+        if self.stepped and self.early_due(v):
+            p = self.instr().get("prelude")
+            if p is not None:
+                self.rows(p["stream"], self.prod, self.edge)
+        return False
+
+    def phase_machine(self, v):
+        self.machine(self.prod, self.edge)
+        return False
+
+    def phase_commit(self, v):  # a group boundary: what the tick has written, written
+        self.commit(self.prod, self.edge)
+        self.prod, self.edge = [], []
+        return False
+
+    def phase_row(self, v):
+        """The row boundary.  True where the order program's own end abandoned it."""
+        if not self.boundary:
+            return False
+        self.sequencer_step(self.prod, self.edge)
+        if self.stopping:
+            return True
+        self.spent = self.consumes()
         return False
 
     def consumes(self):
         """Whether the row just taken spends the voice's tick: always, never, or its guards."""
         r = self.o["meta"]["row_consumes_tick"]
-        return r if isinstance(r, bool) else self.guards(r, self.payload)
+        return r if isinstance(r, bool) else self.spends(self.payload)
 
     # ---- the row clock --------------------------------------------------------
     def clock(self, v):
@@ -457,52 +637,73 @@ class Player:
 
     def early_due(self, v):
         """True where the next row is ``early`` clock steps away."""
-        return self.guards(self.tempo.get("early"))
+        return self.earlycode(None)
 
     def fetch_due(self, v):
         """Where the clock says the fetch runs: its own guard, else the early lead."""
-        t = self.tempo
-        return self.stepped and self.guards(t["fetch"] if "fetch" in t else t.get("early"))
+        return self.stepped and self.fetchcode(None)
 
     # ---- the accumulators and the streams, in one rank order -------------------
     def machine(self, prod, edge):
         """The voice's streams and armed accumulators, in the rank the object gives."""
         v = self.v
-        for name, d in self.o["globals"].get("flags", {}).items():
-            self.flags[name] = self.ev(d["default"])
-        work = [(self.o["streams"][s]["rank"], "s", s) for s in self.slots()]
-        arms = list(self.instr().get("accs", ())) + list(self.armed[v])
-        work += [(self.o["accs"][a["acc"]]["rank"], "a", a) for a in arms]
-        for _, kind, x in sorted(work, key=lambda t: t[0]):
-            if kind == "s":
-                if self.o["streams"][x].get("all"):
-                    self.rows(x, prod, edge)
-                else:
-                    self.stream_step(x, self.slot(x), prod, edge)
-            elif not self.op:
-                self.cur = self.o["accs"][x["acc"]]
-                self.step(self.cur, x, prod, edge)
+        for name, f in self.flagdefs:
+            self.flags[name] = f(None)
+        work = self.slots()
+        accs, n = self.o["accs"], len(work)
+        for a in self.instr().get("accs", ()):
+            work.append((accs[a["acc"]]["rank"], n, None, a))
+            n += 1
+        for a in self.armed[v]:
+            work.append((accs[a["acc"]]["rank"], n, None, a))
+            n += 1
+        work.sort()  # the rank, and the object's own order breaking a tie
+        for _, _i, st, x in work:
+            if st is None:
+                if not self.op:
+                    self.cur = self.o["accs"][x["acc"]]
+                    self.step(self.cur, x, prod, edge)
+            elif st.get("all"):
+                self.rows(x, prod, edge)
+            else:
+                self.stream_step(x, self.slot(x), prod, edge)
 
     def slots(self):
         """The stream slots the voice runs: a cursor on a row, and its guards held."""
         out = []
-        for k, st in self.o["streams"].items():
-            if "rank" not in st or not self.guards(st.get("when")):
+        for rank, k, st, when in self.ranked:
+            if not when(None):
                 continue
             cur = self.slot(k)
             if st.get("all") or (cur is not None and cur["row"]):
-                out.append(k)
+                out.append((rank, len(out), st, k))
         return out
 
     def slot(self, name):
         """A stream's cursor for the voice being committed, per voice or the tune's."""
-        if name in self.o.get("globals", {}).get("streams", ()):
-            return None
-        if name in self.gcursor:
-            return self.gcursor[name]
-        return self.cursor[name][self.v] if name in self.cursor else None
+        d = self.cursors.get(name)
+        return None if d is None else (d[self.v] if isinstance(d, list) else d)
 
     # ---- streams --------------------------------------------------------------
+    def steprows(self, name):
+        """A stream's rows, compiled: each one's hold, its sets and where it goes."""
+        st = self.o["streams"][name]
+        plan = self.steps[name] = [
+            (
+                None
+                if "trap" in r
+                else (
+                    self.code_of(r.get("hold", 1)),
+                    self.setcode(r.get("sets", ())),
+                    self.code_of(r["next"]) if "next" in r else None,
+                    r.get("run", ()),
+                    r.get("op"),
+                )
+            )
+            for r in st["rows"]
+        ]
+        return plan
+
     def stream_step(self, name, cur, prod, edge):
         """One section 3.3 step: what it runs while held, then its sets, op and next."""
         st = self.o["streams"][name]
@@ -517,26 +718,29 @@ class Player:
                 return
             c[self.v] = self.ev(r["reload"]) & 0xFF
         self.beyond = st.get("beyond")
-        row = self.srow(name, y)
+        plan = self.steps.get(name) or self.steprows(name)
+        if plan[y] is None:
+            self.srow(name, y)  # the row the object marks as no row at all, refused by name
+        hold, sets, nxt, run, op = plan[y]
         cur["hold"] += 1
-        done = cur["hold"] >= self.ev(row.get("hold", 1))
+        done = cur["hold"] >= hold(None)
         # a step's counter is read either before or after its own move (#297's
         # epochs), which is what says whether the consuming tick runs too
         if not (done and st.get("epoch") == "entry"):
-            for a in row.get("run", ()):  # an acc the step runs on every tick it holds
+            for a in run:  # an acc the step runs on every tick it holds
                 self.cur = self.o["accs"][a["acc"]]
                 self.step(self.cur, a, prod, edge)
         if not done:
             return
         cur["hold"] = 0
         self.act += 1
-        for t, e in row.get("sets", ()):
-            self.assign(t, self.ev(e), prod, edge)
-        nxt = self.ev(row.get("next", y + 1))
+        for put, f in sets:
+            put(f(None), prod, edge)
+        nxt = y + 1 if nxt is None else nxt(None)
         j = st["rows"][nxt] if nxt < len(st["rows"]) else {}
         cur["row"] = self.ev(j["jump"]) if "jump" in j else nxt
-        if "op" in row:
-            self.operate(row["op"], prod, edge)
+        if op is not None:
+            self.operate(op, prod, edge)
 
     def operate(self, op, prod, edge):
         """A step's own producer: the accs the score armed stand down for the tick."""
@@ -574,6 +778,61 @@ class Player:
         return self.private(b, w)
 
     # ---- writing --------------------------------------------------------------
+    def put_to(self, t):
+        """A set's target, compiled and kept: the one place that value goes."""
+        key = t if isinstance(t, int) else "s" + t
+        f = self.puts.get(key)
+        if f is None:
+            f = self.puts[key] = self.putcode(t)
+        return f
+
+    def putcode(self, t):  # noqa: C901 - one clause per section 5 target form
+        """``assign``'s dispatch, made once for a target instead of once per write."""
+        if isinstance(t, int):
+            return lambda val, prod, edge: self.shadow.__setitem__(t, val & 0xFF)
+        if t[:1] == "@":
+            k = t[1:]
+            d, m = self.c[k], 0xFFFF if k in self.wide else 0xFF
+            if k == "wave":  # the voice's waveform moved: the fact a modulator mirrors
+                return lambda val, prod, edge: self.sounded(d, val & m)
+            return lambda val, prod, edge: d.__setitem__(self.v, val & m)
+        if t[:1] == "#":
+            k, m = t[1:], 0xFFFF if t[1:] in self.wide else 0xFF
+            return lambda val, prod, edge: self.gl.__setitem__(k, val & m)
+        if t[:1] == "!":  # a flag another producer reads
+            k = t[1:]
+            return lambda val, prod, edge: self.flags.__setitem__(k, val)
+        if t[:7] == "shadow.":  # the image, written where it is
+            return lambda val, prod, edge: self.store_cell(t, val)
+        if t == "pitch":  # a producer that writes the chip without moving a cell
+            return lambda val, prod, edge: prod.extend(
+                (("freq_lo", val & 0xFF), ("freq_hi", (val >> 8) & 0xFF))
+            )
+        if t == "freq":
+            d = self.c["freq"]
+            return lambda val, prod, edge: self.pitched(d, val, prod)
+        if t[:4] == "reg.":
+            # a register of the tune's one global channel, written by the voice whose
+            # write-out sends it and resolved by last-writer (§3.7).  A single-family
+            # data form: JCH's write-out sends the cutoff and the volume inside every
+            # voice's own group, so the value the tick leaves is the last voice's, not
+            # the channel's at the end of the tick (prototype-jch-trackerprog.md §4.4)
+            r = int(t[4:])
+            return lambda val, prod, edge: prod.append((r, val))
+        if t in EDGE:  # an edge write belongs to the act of the tick that made it
+            return lambda val, prod, edge: edge.append((t, val & 0xFF, self.act))
+        return lambda val, prod, edge: prod.append((t, val & 0xFF))
+
+    def pitched(self, d, val, prod):
+        """The voice's frequency cell, and the pair the commit sends with it."""
+        d[self.v] = val
+        prod.extend((("freq_lo", val & 0xFF), ("freq_hi", (val >> 8) & 0xFF)))
+
+    def sounded(self, d, val):
+        """A voice cell whose move is a fact of its own: the waveform."""
+        d[self.v] = val
+        self.publish("sound", self.v, {"wave": val})
+
     def assign(self, t, val, prod, edge):
         """A set's target: a voice cell, a global cell, or a register."""
         if isinstance(t, int):
@@ -643,12 +902,18 @@ class Player:
 
     def rows(self, name, prod, edge, ov=None):
         """A stream's ``set`` steps, routed by target."""
-        for row in self.o["streams"][name]["rows"]:
-            if not self.guards(row.get("when"), ov):
+        plan = self.rowplans.get(name)
+        if plan is None:
+            plan = self.rowplans[name] = [
+                (self.guardcode(r.get("when")), self.setcode(r["sets"]))
+                for r in self.o["streams"][name]["rows"]
+            ]
+        for when, sets in plan:
+            if not when(ov):
                 continue
             self.act += 1
-            for t, e in row["sets"]:
-                self.assign(t, self.ev(e, ov), prod, edge)
+            for put, f in sets:
+                put(f(ov), prod, edge)
 
     def fetch(self, prod, edge):
         """Read the row the clock runs ahead of, and commit what it stages early."""
@@ -864,12 +1129,19 @@ class Player:
         """
         ov = self.payload if ov is None else ov
         self.act += 1
-        for row in rows:
-            if not self.guards(row.get("when"), ov):
+        plan = self.rowplans.get(id(rows))
+        if plan is None:
+            plan = self.rowplans[id(rows)] = [
+                (self.guardcode(r.get("when")), self.setcode(r.get("sets", ())), r.get("point", ()))
+                for r in rows
+            ]
+            self.kept.append(rows)
+        for when, sets, pts in plan:
+            if not when(ov):
                 continue
-            for t, e in row.get("sets", ()):
-                self.assign(t, self.ev(e, ov), prod, edge)
-            self.points(row.get("point", ()), ov)
+            for put, f in sets:
+                put(f(ov), prod, edge)
+            self.points(pts, ov)
 
     def points(self, pts, ov=None):
         """A step's re-points: the slot, the row, whether the hold survives."""
@@ -898,31 +1170,61 @@ class Player:
                 self.c[t[1:]][u] = self.ev(e, cmd) & 0xFF
 
     # ---- the accumulators -----------------------------------------------------
+    def plan(self, a):
+        """One accumulator's own guards and expressions, compiled once.
+
+        The record is fixed, so what its step asks of it -- whether it runs, its
+        divider, whether it steps, whether it reloads and from what, and what its
+        gate writes either way -- is compiled on the first arm and kept.
+        """
+        pol = a["policy"]
+        d = isinstance(pol, dict)
+        g = a.get("gate") or {}
+        out = {
+            "when": self.guardcode(a.get("when")),
+            "rate": self.code_of(a.get("rate", 1)),
+            "step_when": self.guardcode(a.get("step_when")),
+            "delta_when": self.guardcode(a.get("delta_when")),
+            "reload_when": self.guardcode(pol.get("when")) if d and "reload" in pol else None,
+            "reload": self.code_of(pol["reload"]) if d and "reload" in pol else None,
+            "gate": {arm: self.setcode(g[arm]) for arm in g if arm in ("true", "false")},
+        }
+        self.plans[id(a)] = out
+        self.kept.append(a)
+        return out
+
     def step(self, a, ov, prod, edge):
         v = self.v
-        if not self.guards(a.get("when"), ov) or not self.guards(ov.get("when"), ov):
+        pair = self.armwhen.get(id(ov))
+        if pair is None:
+            pair = self.armwhen[id(ov)] = (
+                self.plans.get(id(a)) or self.plan(a),
+                self.guardcode(ov.get("when")),
+            )
+            self.kept.append(ov)
+        p, w = pair
+        if not p["when"](ov) or not w(ov):
             return
         if a["policy"] == "take":  # the degenerate clamp: already at its target
             self.take(self.c["note"][self.v], prod)
             return
         if a.get("trap"):
             raise AssertionError("the arm the certified horizon never takes")
-        k = self.ev(a.get("rate", 1), ov)
+        k = p["rate"](ov)
         if k > 1:  # section 3.3's divider, the one meaning of rate
             name = self.accname[id(a)]
             self.divider[v][name] = self.divider[v].get(name, 0) - 1
             if self.divider[v][name] >= 0:
                 return
             self.divider[v][name] = k - 1
-        pol = a["policy"]
         # the decision the step makes, made once and before anything moves: a gate
         # reports what the step did, not a re-reading of a cell the step moved
-        stepped = self.guards(a.get("step_when"), ov)
+        stepped = p["step_when"](ov)
         val = self.load(a)
-        if isinstance(pol, dict) and "reload" in pol and self.guards(pol.get("when"), ov):
-            val = self.ev(pol["reload"], ov)
+        if p["reload"] is not None and p["reload_when"](ov):
+            val = p["reload"](ov)
         out = val
-        if "delta" in a and self.guards(a.get("delta_when"), ov):
+        if "delta" in a and p["delta_when"](ov):
             out = self.apply(a, ov, val, prod, stepped)
             if out is None:
                 return  # the policy took the value to its bound, and said so itself
@@ -932,10 +1234,8 @@ class Player:
         self.store(a, out)
         for target, part in a["produce"]:
             self.emit_part(prod, target, emitted, part)
-        g = a.get("gate")
-        if g:
-            for t, e in g["true" if stepped else "false"]:
-                self.assign(t, self.ev(e, ov) & 0xFF, prod, edge)
+        for put, f in p["gate"].get("true" if stepped else "false", ()):
+            put(f(ov) & 0xFF, prod, edge)
 
     def apply(self, a, ov, val, prod=None, stepped=True):  # noqa: C901 - one per policy
         """One step of a bounded accumulator: delta, bound, policy, phase."""
