@@ -5,6 +5,7 @@ vocabulary; this is its certificate over all fourteen subtunes, and the two
 things the family says: a counted loop that nests, and a stop for a sequencer.
 """
 
+import json
 import sys
 from functools import lru_cache
 from pathlib import Path
@@ -24,21 +25,11 @@ from _hvsc import COMIC_BAKERY, tune_file  # noqa: E402
 pytestmark = pytest.mark.hvsc
 
 JINGLES, EFFECTS = (4, 5, 6), tuple(range(7, 15))
-TICKS = {  # every subtune's whole horizon (docs/certificates/galway-comic-bakery.json)
-    1: 9450,
-    2: 9450,
-    3: 9450,
-    4: 112,
-    5: 138,
-    6: 577,
-    7: 26,
-    8: 21,
-    9: 101,
-    10: 356,
-    11: 31,
-    12: 121,
-    13: 31,
-    14: 47,
+CERT = Path(__file__).resolve().parent.parent.parent / "docs" / "certificates"
+# every subtune's whole horizon, read from the certificate that records it
+TICKS = {
+    x["song"]: x["ticks"]
+    for x in json.loads((CERT / "galway-comic-bakery.json").read_text())["subtunes"]
 }
 TOTAL = 29911
 TESTPULSE = [1, 0, 1]  # voice 1's copy names its own base where the others name base+2
