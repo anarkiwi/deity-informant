@@ -421,13 +421,6 @@ class Player:
             self.spent = self.consumes()
         return False
 
-    def fetch_due(self, v):
-        """Where the clock says the fetch runs: a named phase, or the early lead."""
-        f = self.tempo.get("fetch")
-        if f is not None:
-            return self.tickphase == self.ev(f)
-        return self.stepped and self.early_due(v)
-
     def consumes(self):
         """Whether the row just taken spends the voice's tick: always, never, or its guards."""
         r = self.o["meta"]["row_consumes_tick"]
