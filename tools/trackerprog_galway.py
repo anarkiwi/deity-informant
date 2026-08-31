@@ -156,10 +156,6 @@ def entries(path):
     return struct.unpack(">H", d[10:12])[0], struct.unpack(">H", d[12:14])[0]
 
 
-def signed16(x):
-    return x - 0x10000 if x & 0x8000 else x
-
-
 def word(m, a):
     return m[a] | m[a + 1] << 8
 
@@ -794,7 +790,7 @@ BOUND16 = {
 }
 
 
-def ramp(rank, cell, target, produce, when, delta=None, gate_sets=(), trap=False):
+def ramp(rank, cell, target, produce, when, delta=None, gate_sets=()):
     """One arm of a piecewise-linear generator: a bounded accumulator, section 5."""
     a = {
         "rank": rank,
@@ -812,8 +808,6 @@ def ramp(rank, cell, target, produce, when, delta=None, gate_sets=(), trap=False
         a["delta"] = delta
     if gate_sets:
         a["gate"] = {"true": list(gate_sets)}
-    if trap:
-        a["trap"] = True
     return a
 
 
@@ -832,8 +826,8 @@ def accs():
     """
     live = [C("vrc"), "!=", 0]
 
-    def arm(tag, rank, cell, target, produce, when, delta=None, gate_sets=(), trap=False):
-        g = list(gate_sets) + ([] if trap else [["!" + tag + "done", {"const": 1}]])
+    def arm(tag, rank, cell, target, produce, when, delta=None, gate_sets=()):
+        """An arm that steps: it ends its generator, so it raises the flag."""
         return ramp(
             rank,
             cell,
@@ -841,8 +835,7 @@ def accs():
             produce,
             [[{"flag": tag + "done"}, "==", 0]] + list(when),
             delta=delta,
-            gate_sets=g,
-            trap=trap,
+            gate_sets=list(gate_sets) + [["!" + tag + "done", {"const": 1}]],
         )
 
     def hold(tag, rank, cell, target, when, gate_sets, reload=None):
