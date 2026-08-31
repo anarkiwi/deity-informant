@@ -132,15 +132,36 @@ which §3 declares to be the schema's. §3.2's own rules decide that ("a sigil t
 means two things is a grammar"; "one *implementation* per name space"). Nothing
 on the hand path moved, so `--builds all` is 0 of 332,358 by construction.
 
-| B3 | the order program is unreachable when the clock prefetches | `advance` (`universal.py:994`) never calls `order_step`; both call sites (`:1086`, `:1107`) are on the non-prefetch path, and `advance` ignores the `op` `play_of` returns. The three prefetching families have flat orders and the two with order programs do not prefetch, so it has never fired. A prefetching family with a called or counted score walks past `call`/`mark`/`loop` as though it were `play`, silently. `advance` calls `order_step` at the wrap | small | 0 differing of 332,358 over thirty builds; a hermetic snippet with `fetch` in `meta.tick` and a `mark`/`loop` pair mis-renders before the change and renders after |
+**B3, the order program under a prefetching clock, landed.** `advance` stepped
+`orderpos` by one of its own and discarded the `op` `play_of` returns; it calls
+`order_step` at the wrap now, so the two sites are one program. The strike is the
+old body against the new over every build's whole horizon, the harness's own
+two-checkout form — `--emit-digests DIR` in a worktree at the merge base, then
+`--against DIR` here — at **0 differing of 332,358 over thirty builds**. That is
+the measurement that the hole was structurally unreachable rather than merely
+unnoticed: no certified build reaches a non-`None` `op` through the fetch. Three hermetic snippets in
+`test_universal_fetch.py` carry `fetch` in `meta.tick` and an order *program*,
+and each mis-renders on the old body kept beside them: a counted loop plays its
+body once instead of three times, a call walks straight past its callee, and a
+`stop` never halts its voice.
+
+It found one more gap on the same path, left for B5 to close on one side or the
+other: the two positions still disagree about the *end* of the `play` list.
+`next_row`/`order_end` (the walk) take a bare `"jump"`, a `{jump}` dict, else
+`stopping`, and loop over a step with no rows; `next_event` (the fetch) takes
+only `{jump}`, returns `None` otherwise, and raises `IndexError` on a step whose
+pattern is empty. One question, two places that answer it — §3.2's own row.
+
+| # | item | mechanism | size | acceptance |
+| --- | --- | --- | --- | --- |
 | B4 | measure §9 against the load band | re-measure §6.2's six and `xz` against the bytes the tune actually occupies — the figure each family doc already reports — instead of against `tuneprog.md`. State the result whatever it is; if the layer's object is larger than the binary it came from, that is the finding | small | §9 carries one table against the load band, and the claim is met or restated |
 | B5 | the doc audit | roughly a dozen places where [prototype-trackerprog.md](prototype-trackerprog.md) is contradicted by the code or by a family doc. Confirm each against the code, then fix the doc or change the code — including §3.5's "one procedure runs all three" inline streams (there are two), §3.4's `Acc.step` as what a player computes `cell(t+1)` with (no player does), §5's `Acc` grammar (omits fields the player reads, lists fields it never reads), §3.5's "GT2's `gatetimer` **is** `early`" against `trackerprog_goattracker.py:523`'s assert of the opposite, §7's "six families transliterated by hand", §1 on Galway as prose-only, and the rows §3 struck that three family docs still describe as live. **Already fixed:** §7's horizon total, and `Event.cmds` → `Event.arm` | small–medium | every row confirmed, then closed on one side or the other; no claim in the spec that the code refutes |
 
 These are one tier because they share a cause. Each is a statement nothing
 executes: a schema in prose, a claim measured against the wrong thing, a doc row
-no reader checks. B3 is here rather than in a defect list because it is the same
-failure — two properties that should be orthogonal, coupled by a flag, and no
-exemplar yet that separates them.
+no reader checks. B3 belonged here rather than in a defect list because it was
+the same failure — two properties that should be orthogonal, coupled by a flag,
+and no exemplar to separate them.
 
 ### Tier 2 — the open design work
 
@@ -223,7 +244,7 @@ is a to-do. A bare § is a section of
 | Name a command by what it does, not by its dispatch index — the index keeps the jump table the lift is supposed to spend | GoatTracker 2's `T144A` nibble; SID Wizard's `BIGFXTABLE` was the same trap waiting |
 | A token class the layer has not spent is a token class the layer will pay for | one family's wave table carried raw bytes and re-read three kinds out of them every tick, with the assembly's own `CMP` immediates as guards |
 | One machine fact, one spelling | the 6502 carry had three; `carry_out` and `borrow_out` remain, the bias tree belongs in the player |
-| Two properties that should be orthogonal, selected by one flag, is a hole and not an inelegance — and it stays invisible while no exemplar separates them | *when* the row is read and *what shape the sequencer is* are one flag: the order program is unreachable to any family whose clock prefetches, and the three that prefetch happen to have flat orders |
+| Two properties that should be orthogonal, selected by one flag, is a hole and not an inelegance — and it stays invisible while no exemplar separates them; the measurement that says so is the *old* form against the new over the whole horizon, where 0 differing means unreachable and not unimportant | *when* the row is read and *what shape the sequencer is* were one flag: the order program was unreachable to any family whose clock prefetches, and the three that prefetch happen to have flat orders. B3 split them at 0 differing of 332,358, so the evidence is three hermetic snippets and not a tune |
 
 ### 3.3 What a form must be told
 
