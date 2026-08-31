@@ -11,8 +11,8 @@ Records, linked and never duplicated here:
 [ghidra-highpcode-export.md](ghidra-highpcode-export.md) (the independent baseline),
 `docs/prototype-*.md` (the certified exemplars), `docs/certificates/` (the evidence).
 
-Numbers are from the tree at this document's commit, measured 2026-08-23:
-60 modules, 17,582 lines, 51 certificates, 863 tests.
+Numbers are from the tree at this document's commit, measured 2026-08-31:
+69 modules, 20,663 lines, 53 certificates, 1,130 tests.
 
 Contents: 1 definitions · 2 pipeline · 3 the lift end to end · 4 the IR ·
 5 verification and the certificate · 6 presentation · 7 CLI and tools ·
@@ -943,12 +943,11 @@ belongs to:
 
 | | |
 | --- | --- |
-| certified | 51 certificates, 759,353 ticks, 0 divergences, 0 envelope traps; 42 complete via periodicity, `--songs all` complete on 31 of 32 subtunes; no tune-specific code in the front end for any anatomy mechanism |
-| families | defMON (*Automatas*, both SID models), Hubbard (*Commando* 1–2), Follin (*Ghouls'n'Ghosts*, 32 subtunes + the union), GoatTracker 2 ×2, SID Wizard ×2, JCH V20 ×3 (including the two-entry *Easy Does It*), installed-handler ×2 (*Jodler*, *Playful Professor*), dead-NMI ×2 (*Alien 3*, *Jazzpjazz*), patched-dispatch ×2 (*Experiment Zeta*, *Deflektor*) |
-| certify at 15 s, not run to length | Blackbird (*Quintessence*), Galway (*Comic Bakery*), Walker (*Chameleon*) |
+| certified | 54 certificates, 807,742 ticks, 0 divergences, 0 envelope traps; 43 complete via periodicity, `--songs all` complete on 31 of 32 subtunes and on 11 of 14; no tune-specific code in the front end for any anatomy mechanism |
+| families | defMON (*Automatas*, both SID models), Hubbard (*Commando* 1–2), Follin (*Ghouls'n'Ghosts*, 32 subtunes + the union), GoatTracker 2 ×2, SID Wizard ×2, JCH V20 ×3 (including the two-entry *Easy Does It*), installed-handler ×2 (*Jodler*, *Playful Professor*), dead-NMI ×2 (*Alien 3*, *Jazzpjazz*), patched-dispatch ×2 (*Experiment Zeta*, *Deflektor*), Blackbird (*Quintessence*), Walker (*Chameleon*, 2× speed), Galway (*Comic Bakery*, all 14 subtunes) |
 | refused by design | a CIA #2 source with no schedule (TOD alarm, serial, FLAG, CNT timer): 6 of 7,023 |
 | survey | 7,023-tune stratified sample at 30 s: **91.2 % of HVSC by weight certifies** (76.7 % raw), 2.5 % diverges, 6.2 % refused with a diagnosis, 0.26 % crashes; `--until-period` over 1,338: 99.4 % of certified programs complete by weight ([survey-tuneprog.md](survey-tuneprog.md)) |
-| code | `deity_informant/tuneprog/`, 60 modules, 17,582 lines, none over 500; 790 hermetic + 63 HVSC + 10 oracle tests, 96 % coverage; SSA 1.0–1.6 statements per instruction |
+| code | `deity_informant/tuneprog/`, 69 modules, 20,663 lines, the largest 511; 917 hermetic + 203 HVSC + 10 oracle tests, 94 % coverage; SSA 1.0–1.6 statements per instruction |
 | baseline | the Ghidra high-P-Code export with SMC context ([ghidra-highpcode-export.md](ghidra-highpcode-export.md)), 8.3–16.5× our S4 — a baseline, not core. The three Ghidra oracles run nightly over all 51 certificates: 51 exports, the emulator agreeing with every one, no `ERROR` row, and the 2 standing `ours_bigger` flags carried as `--known` ([tuneprog-backlog.md](tuneprog-backlog.md) §2.6), so the gate is clean. Beside it the `sidplayfp` grid oracle |
 | merged PRs | #225–#286, one stage each, every one on green CI with recert reproduced |
 
@@ -956,8 +955,8 @@ Open work, by lever, and the done ledger: [tuneprog-backlog.md](tuneprog-backlog
 
 ### 9.2 The certified set
 
-51 certificates, 759,353 verified ticks, **0 divergences and 0 envelope traps**,
-42 complete via periodicity. Numbers below are read from `docs/certificates/`.
+54 certificates, 807,742 verified ticks, **0 divergences and 0 envelope traps**,
+43 complete via periodicity. Numbers below are read from `docs/certificates/`.
 
 | certificate | tune | player | ticks | period | procs | blocks | stmts | regions | certified |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
@@ -971,6 +970,9 @@ Open work, by lever, and the done ledger: [tuneprog-backlog.md](tuneprog-backlog
 | `jch-knob-at-night` | I_Could_Eat_a_Knob_at_Night.sid | JCH V20 + a banking wrapper | 8,577 | 1 | 9 | 160 | 477 | 98 | complete |
 | `jch-guldkorn-intro` | Guldkornekspressen_Intro.sid | JCH V20 | 2,401 | 1,512 | 2 | 160 | 443 | 103 | complete |
 | `jch-easy-does-it` | Easy_Does_It.sid | JCH V20 + a CIA #2 NMI sample mixer | 1,799 | — | 5 | 211 | 669 | 107 | horizon |
+| `lft-quintessence` | Quintessence.sid | Blackbird, an LZ score in three ring buffers | 10,426 | — | 3 | 176 | 429 | 54 | horizon |
+| `walker-chameleon` | Chameleon.sid | Walker, a typed keyboard at 2× speed | 8,052 | 72 | 52 | 320 | 1,169 | 101 | complete |
+| `galway-comic-bakery` | Comic_Bakery.sid | Galway, 14 subtunes: 3 sequenced, 3 jingles, 8 effects | 29,911 | 1 | 20 | 524 | 1,485 | 102 | complete (11 of 14) |
 | `sw-emomyst` | Emomyst.sid | SID Wizard 1.6 | 8,084 | 6,120 | 15 | 368 | 955 | 96 | complete |
 | `sw-end-of-the-world` | End_of_the_World.sid | SID Wizard 1.9 | 14,465 | 7,688 | 16 | 364 | 939 | 94 | complete |
 | `becher-jodler` | Jodler.sid | installed CINV handler | 707 | 700 | 2 | 11 | 54 | 36 | complete |
@@ -994,6 +996,8 @@ the pushed A/X/Y live-in). Every other one is `stack: eliminated`.
 | the installed-handler family (PSID `play == 0`, CINV entries) | [prototype-kernal-entry.md](prototype-kernal-entry.md) |
 | the second interrupt (a CIA #2 NMI as the schedule's second entry) | [prototype-nmi.md](prototype-nmi.md) |
 | the complexity floor of one simple tune (Hubbard's *Commando*) | [prototype-commando-floor.md](prototype-commando-floor.md) |
+| Blackbird (*Quintessence*) — the read whose class is not its address | [prototype-blackbird-trackerprog.md](prototype-blackbird-trackerprog.md) §4.1 |
+| Walker (*Chameleon*) — four modulators over two shared offsets | [prototype-walker-trackerprog.md](prototype-walker-trackerprog.md) |
 
 [survey-tuneprog.md](survey-tuneprog.md) is the campaign record behind §9.1's
 survey row: the whole pipeline over the same stratified sample, by family, with

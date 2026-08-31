@@ -19,8 +19,10 @@ ghidra/6510/data/languages/*.sla
 nomoresecrets.pdf
 
 # oracle harness caches (fetched HVSC tunes + sidtrace CSVs, never committed;
-# no trailing slash, so a symlink to a shared cache is ignored as well as a dir)
-.oracle-cache
+# no trailing slash, so a symlink to a shared cache is ignored as well as a dir).
+# The glob covers a scratch cache too: `DEITY_ORACLE_CACHE` names the directory,
+# so anything a run points it at must be ignored, not just the default name
+.oracle-cache*
 
 # local artifacts
 .sweep-cache

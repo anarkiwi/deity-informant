@@ -166,7 +166,20 @@ p_1337(a, x):                            # $1337 HARDRST, 4,776 calls
         ...
 ```
 
-## 6. What remains
+## 6. The layer above
+
+[prototype-sidwizard-trackerprog.md](prototype-sidwizard-trackerprog.md) is both
+builds transliterated by hand into a trackerprog
+([prototype-trackerprog.md](prototype-trackerprog.md) §3) and rendered by the
+same universal player as Commando and GoatTracker 2, with no branch on the
+family: 0 divergences over both horizons, the write lists identical rather than
+permuted (and earned rather than free, because this family has no ghost flush),
+and both loop claims re-verified on the render. Its §8 records what the two
+builds' difference really is — `commit_order` for the sound, nine build flags
+for everything else — and its §7 the poison table saying what each datum is
+worth in ticks.
+
+## 7. What remains
 
 - **`b1024` prints as fifteen records.** `init` zeroes VARIABLES in one loop, so the access
   relation joins all five bunches into one region; the tick's `abs,X` with X ∈ {0,7,14} is

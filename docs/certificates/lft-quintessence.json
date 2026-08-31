@@ -1,0 +1,50 @@
+{
+ "compared": [
+  "init writes",
+  "tick sid writes",
+  "tick schedule effects"
+ ],
+ "cost": {
+  "calls_per_second": 9455,
+  "ir_blocks": 176,
+  "ir_procs": 3,
+  "ir_statements": 429,
+  "regions": 54,
+  "sites": 366,
+  "trace_calls": 10426,
+  "verify_cpu_seconds": 1.1
+ },
+ "divergence": null,
+ "entry": {
+  "addr": 4099,
+  "cycles_per_tick": 19656,
+  "kind": "sub",
+  "source": "pal_video"
+ },
+ "generated": "2026-08-31T04:56:07Z",
+ "oracle": "deity_informant.PcodeVM@0.5.0",
+ "presentation": "S5/S6 annotate the certified S4 IR; the program is unchanged",
+ "reference_validated_against": "none",
+ "sid_model": null,
+ "stack": "eliminated",
+ "stage": "S6",
+ "subtunes": [
+  {
+   "closure": "trace",
+   "complete": false,
+   "cycles_per_tick": 19656,
+   "divergences": 0,
+   "envelope_traps": 0,
+   "first_repeat": null,
+   "inputs_pinned": 0,
+   "interp_prefix": 2000,
+   "period": null,
+   "seconds": 208.0,
+   "song": 1,
+   "ticks": 10426,
+   "trace_first_repeat": null,
+   "trace_period": null
+  }
+ ],
+ "tune": "Quintessence.sid"
+}

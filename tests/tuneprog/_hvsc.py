@@ -27,6 +27,8 @@ from _prog import proc_body as body  # noqa: E402
 PAL_CLOCK = 985248
 ALIEN3 = "Alien_3.sid"
 AUTOMATAS = "Automatas.sid"
+CHAMELEON = "Chameleon.sid"
+COMIC_BAKERY = "Comic_Bakery.sid"
 COMMANDO = "Commando.sid"
 DEFLEKTOR = "Deflektor.sid"
 GNG = "Ghouls_n_Ghosts.sid"
@@ -40,6 +42,7 @@ GULDKORN = "Guldkornekspressen_Intro.sid"
 JAZZPJAZZ = "Jazzpjazz.sid"
 JODLER = "Jodler.sid"
 PROFESSOR = "Playful_Professor-Math_Tutor.sid"
+QUINTESSENCE = "Quintessence.sid"
 ZETA = "Experiment_Zeta.sid"
 
 
