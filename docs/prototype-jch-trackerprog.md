@@ -553,9 +553,11 @@ The print, `trackerprog.md`, measured the way architecture §11 asks:
 | `trackerprog.json`, compact / its `score` half | 690,967 / 72,333 | 16,268 / 792 |
 | its `tuneprog.md` / load band | 308,909 / 39,424 | 19,904 / 9,600 |
 
-The layer's claim holds on both, and Knob at Night's is the **widest margin of
-any exemplar**: 6,068 against 19,904, a third of the print that carries the same
-tune. Both prints carry the same 34,304 bytes of wrapper data, one as rows of a
+Against `tuneprog.md` *Knob at Night* had the widest margin of any exemplar —
+6,068 against 19,904 — which is exactly how much a presentation artefact can
+flatter the object: against the binary it is 16,180 against a 9,600-byte load
+band, **1.69×**, and *Guldkorn* is 4,852 against 2,472, **1.96×** (§9.1 of [prototype-trackerprog.md](prototype-trackerprog.md)). Both prints
+carry the same 34,304 bytes of wrapper data, one as rows of a
 stream and one as a hex dump of a region, and the score's own half compresses to
 792 bytes. Guldkorn's margin is the ordinary one — 4,536 against 5,664 — and the
 object says where it goes: seven accumulator arms are printed once per

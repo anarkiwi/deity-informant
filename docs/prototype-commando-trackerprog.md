@@ -469,9 +469,11 @@ for:
 | the tune's data floor (commando-floor §2.2) | 1,941 | 1,112 |
 | `trackerprog.json`, song 2 / song 3 | 14,754 / 10,591 | 2,424 / 2,236 |
 
-The layer's claim holds: the score compresses better than the program that
-played it (3,520 against 4,644), and the score half alone lands within 40 % of
-the tune's own compressed data. Subtunes 2 and 3 grew, because they now carry
+The layer's claim as first stated — the score compresses better than the program
+that played it — was measured against `tuneprog.md`, a presentation artefact, and
+**does not hold against the binary**: song 1's object is 3,632 compressed against
+a 2,548-byte compressed load band, **1.43×** (§9.1 of [prototype-trackerprog.md](prototype-trackerprog.md)). The score half alone still lands
+within 40 % of the tune's own compressed data, which is where the margin is. Subtunes 2 and 3 grew, because they now carry
 the tune's whole tuning and the whole source rather than the slice their own
 melody touches — which is the point: those two sections are the same object in
 all three, and a fourth melody would need neither changed. The JSON's raw

@@ -418,9 +418,10 @@ The print, `trackerprog.md`, measured the way architecture §11 asks:
 | `trackerprog.json`, compact / its `score` half | 54,509 / 29,082 | 3,712 / 1,024 |
 | its `tuneprog.md` / load band | 31,690 / 6,065 | 6,648 / 2,948 |
 
-The layer's claim holds on both tunes — 8,604 against 8,900, and 3,848 against
-6,648 — but *Automatas*' margin is the narrowest of the nine hand exemplars,
-and the object says why: `casa` and `casb` are the same 358 rows printed twice,
+Against the binary, *Jazzpjazz* is the **closest any exemplar comes** to the
+first claim — 3,700 compressed against a 2,944-byte load band, 1.26× — and
+*Automatas* is 8,216 against 4,316, 1.90× (§9.1 of [prototype-trackerprog.md](prototype-trackerprog.md)). Neither is under 1, so the claim
+does not hold; *Automatas* is the worse of the two and the object says why: `casa` and `casb` are the same 358 rows printed twice,
 because a stream's rows are its own and two cursors over one table is not
 something §3.3 can say. The compressor recovers most of it; the print does not.
 

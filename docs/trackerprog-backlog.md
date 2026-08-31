@@ -117,7 +117,7 @@ tools/trackerprog_poison.py --builds all --drop PATH --set 'PATH=JSON'
 tools/trackerprog_poison.py --builds all --emit-digests DIR   # then --against DIR
 ```
 
-### Tier 1 — the layer states things that are not true
+### Tier 1 — the layer states things that are not true — **all five struck**
 
 **B2, one schema or two names, landed.** The lift's artefact is a **`scoreprog`**:
 a certified tuneprog with its fetch regions cut out and its score in their place
@@ -174,15 +174,42 @@ data). It is the sound half that doubles the total, and 95 % of *Knob at Night*.
 So §9's claim is restated: the object is player-independent, not small, and B7
 and B8 are where a saving would come from.
 
-| # | item | mechanism | size | acceptance |
-| --- | --- | --- | --- | --- |
-| B5 | the doc audit | roughly a dozen places where [prototype-trackerprog.md](prototype-trackerprog.md) is contradicted by the code or by a family doc. Confirm each against the code, then fix the doc or change the code — including §3.5's "one procedure runs all three" inline streams (there are two), §3.4's `Acc.step` as what a player computes `cell(t+1)` with (no player does), §5's `Acc` grammar (omits fields the player reads, lists fields it never reads), §3.5's "GT2's `gatetimer` **is** `early`" against `trackerprog_goattracker.py:523`'s assert of the opposite, §7's "six families transliterated by hand", §1 on Galway as prose-only, and the rows §3 struck that three family docs still describe as live. **Already fixed:** §7's horizon total, and `Event.cmds` → `Event.arm`. **Added by B4:** five family docs still assert the compression claim §9.1 refuted, and their size tables are stale against the objects the tools build now — *Je suis Linus* prints 5,608 where the object measures 5,988 | small–medium | every row confirmed, then closed on one side or the other; no claim in the spec that the code refutes |
+**B5, the doc audit, landed.** Eight rows, every one confirmed against the code
+before it was touched, then closed:
 
-These are one tier because they share a cause. Each is a statement nothing
-executes: a schema in prose, a claim measured against the wrong thing, a doc row
-no reader checks. B3 belonged here rather than in a defect list because it was
-the same failure — two properties that should be orthogonal, coupled by a flag,
-and no exemplar to separate them.
+| row | verdict | closed by |
+| --- | --- | --- |
+| §3.5 "one procedure runs all three" inline streams | **refuted, twice** — there are two procedures, `rows()` (a *named* stream, `sets` only) and `inline()` (an anonymous row list, `sets` **and** `point`); and a prelude is a named-stream reference, so the three are not one object either. Worse, `inline` counts **one** act and `rows` counts one act **per matching row**, and an act is what §2 rule 1 groups edge writes by | the doc, saying what the code does; the unification stays B9 |
+| §3.4 `Acc.step`, "the recurrence a player computes `cell(t+1)` with" | **refuted** — no hand tool emits `step` on any of the nine families' accumulators and `universal.py` never reads one. It is T1's field, so it belongs to a *scoreprog* | moved to §7 under T1, grammar box and all |
+| §5's `Acc` grammar box | **refuted** — it listed 11 fields; the record has **21**, of which the player reads **18**. Omitted: `produce`, `rank`, `when`, `step_when`, `delta_when`, `gate`, `emit`, `beyond`, `trap`, and the `take` policy | rewritten from the code, and `policy: halt` deleted — no tool writes it and `apply()` has no arm |
+| §3.5 "GT2's `gatetimer` **is** `early`" | **half true** — the column is where the value comes from, but `early` is `meta.tempo.early`, a guard on the row clock and one number per tune. `trackerprog_goattracker.py` asserts every used instrument carries the same column 7 and would refuse a tune that varied it | the doc, stating both halves |
+| §7/§9 "six families transliterated by hand" | **stale** — nine, thirty builds, 332,358 ticks | the doc |
+| §1 "Galway alone is prose-only" | **stale** — nine certified since #325 | the doc; and §3.2's Blackbird pitch "projection", §3.6's "the other five families", §3.7's "all five families" with it |
+| struck rows still live in family docs | **confirmed, four** — GT2's `Ins{sets, note_sets, points}` and `tempo.alternate`, SW's `note_sets`/`points` and `meta.tempo.form: counter` (contradicted 80 lines later by its own document) | the four family docs |
+| the compression claim, from B4 | **refuted** — six family docs asserted it; Blackbird's own numbers contradicted it in the sentence that made it | all six restated against the load band, pointing at §9.1 |
+
+§5's box is now machine-checked: `tests/trackerprog/test_schema_doc.py` asserts
+it names exactly the fields the nine families write, that every field it calls
+read has a reader in `universal.py`, that the three it calls annotations are read
+by `printer.py` and not by the player, and that `halt` is gone. **This closes
+B10's schema half**; what is left of B10 is the presentation — stating `Acc`
+coverage per family rather than as the layer's centre.
+
+Left open and recorded rather than swept in: the nine family docs' own `xz`
+tables predate the current objects by a few per cent (*Je suis Linus* prints
+5,608, measures 5,988). §9.1 says so and `tools/trackerprog_sizes.py`
+regenerates them; a table refresh is mechanical and belongs with B8's survey.
+
+**Tier 1 is struck.** The five were one tier because they shared a cause: each
+was a statement nothing executed — a schema in prose, a claim measured against
+the wrong thing, a doc row no reader checks. Three of them are now executable
+instead. B1 renders thirty builds against a stated mutation, B4's table
+regenerates from the binaries, and B5's §5 box is asserted against the nine
+families' own records and the player's source, so the next drift fails CI rather
+than waiting for an audit. B3 belonged here rather than in a defect list for the
+same reason: two properties that should have been orthogonal, coupled by a flag,
+with no exemplar to separate them — and 0 differing of 332,358 is what says a
+coupling was a hole and not an inelegance.
 
 ### Tier 2 — the open design work
 
@@ -204,8 +231,8 @@ every family with more than one commit.
 | # | item | mechanism | size | acceptance |
 | --- | --- | --- | --- | --- |
 | B8 | the one-family forms | roughly twenty-five forms with one family behind them, each either deleted, expressed in the general vocabulary, or kept with its single family stated. `globals.stop_writes` (Hubbard: a literal write list — the observable, in the object), `meta.rest_arm`, `meta.pitch_links` + `Cmd.links`, `Acc.policy: "take"`, `reflect-complement`, `state0.held` (GT2); `Acc.beyond`/`emit`/`trap`/`flag.seed`/`amplitude.shift`, `state0.dividers`, `end: "jump"` as a bare string (Hubbard); `meta.pitch_target`, `Stream.epoch` (SW); `amplitude.count` (Walker); the two forms under `meta.prologue`; and the certificate's loop shape, which Walker alone spells `{tick, period}` against `certify.py:83`'s `first_repeat` | medium | each row deleted at 0 differing, or kept with its family and its survey named |
-| B9 | the duplicated procedures | `channel()` and `channel_after()` are byte-identical bodies over two lists; `certify.divergence` and `attest.attest` are two comparisons over one §2 rule, with `COMPARED`/`DROPPED` declared twice; the three inline streams run through two procedures that disagree about acts; three vocabularies name one concept, the epoch of a read (`Acc.emit`, `Stream.epoch`, and the `pre`/`post`/`mid` of `Acc.step`). One implementation each | medium | 0 differing of 332,358 over thirty builds; the certificate has one implementation |
-| B10 | `Acc` demoted to a reading | rewrite §5's grammar box from the code (it is stale by eight fields), move `Acc.step` out of §3.4, mark `bound.witness`/`scope`/`target` as annotations rather than semantics, delete `policy: halt` (spec-only: no tool writes it, `apply()` has no arm for it), and state coverage per family rather than presenting the accumulator as the layer's centre | small | §5 matches what the player reads, field for field |
+| B9 | the duplicated procedures | `channel()` and `channel_after()` are byte-identical bodies over two lists; `certify.divergence` and `attest.attest` are two comparisons over one §2 rule, with `COMPARED`/`DROPPED` declared twice; the three inline streams run through two procedures that disagree about acts — `rows()` takes a *named* stream and counts one act **per matching row**, `inline()` takes an anonymous row list, reads `point`, and counts **one** act for the whole list, and an act is what §2 rule 1 groups edge writes by (§3.5, measured in B5); three vocabularies name one concept, the epoch of a read (`Acc.emit`, `Stream.epoch`, and the `pre`/`post`/`mid` of `Acc.step`). One implementation each | medium | 0 differing of 332,358 over thirty builds; the certificate has one implementation |
+| B10 | `Acc` demoted to a reading | **B5 closed the schema half**: §5's box is rewritten from the code and machine-checked, `Acc.step` is out of §3.4, `bound.witness`/`scope`/`target`/`note` are marked as annotations, and `policy: halt` is deleted. What is left is the *presentation* — state `Acc` coverage per family (Follin has none at all across 32 subtunes, D5) rather than presenting the accumulator as the layer's centre | small | §5 opens with coverage, not with the grammar |
 
 Tier 3 is deliberately last. Every row is real, none is load-bearing, and each
 costs a render of thirty builds to settle — which is what B1 bought, and what

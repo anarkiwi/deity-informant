@@ -351,10 +351,12 @@ Print, §6.2's six numbers plus `xz`:
 | `trackerprog.md` | 6,911 | 48,584 | 6,899 | 7 | 12 | 6,899 | **5,860** |
 | source `tuneprog.md` | — | — | — | — | — | — | 7,956 |
 
-The score compresses better than the program that played it, which is §9's own
-claim — and it does so against a tune whose author compressed the score himself:
-5,860 bytes of print against 5,758 bytes of `.sid` file, of which 2,961 are the
-LZ stream.
+This is the exemplar that tests §9's first claim hardest, because its author
+compressed the score himself. It fails it: 5,860 bytes of compressed print, and
+6,352 of compressed object, against a load band that compresses to **3,772** —
+**1.68×** (§9.1 of [prototype-trackerprog.md](prototype-trackerprog.md)). The earlier reading here compared the compressed print against the
+*raw* 5,758-byte `.sid` file, of which 2,961 are the LZ stream, and even that
+comparison had the print the larger of the two.
 
 ## 8. Boundaries
 
