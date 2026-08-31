@@ -776,6 +776,13 @@ Per certified tune (GT2 ×2, JCH ×3, SW ×2, Commando ×2, defMON ×2, Follin �
    claim is exactness).
 5. **Untouched.** recert 51/51; no `tuneprog` artefact moves.
 
+**Landed for Follin** ([prototype-follin-trackerprog.md](prototype-follin-trackerprog.md)):
+all 32 subtunes render write for write over their whole horizons, 111,763 ticks,
+0 divergences. §4.6's reading holds as written, with three corrections the render
+forced — `$8D` sets the running pulse mode as well as the note-on one, `$93` is
+not unused, and the note index is a byte, so what lies past the 97-entry tuning
+is bounded by the index and not by the score's own note bytes.
+
 Prose-only families (Galway, Walker, Blackbird) are covered by §4 on paper and by
 the hermetic snippet tests of each construct they need (a command loop with
 call/ret, a table-membership token class, a two-level fetch); they enter the

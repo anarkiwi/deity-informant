@@ -610,8 +610,10 @@ W4 depends on W3; W5 on W0, W2, W4; W6 on W0, W2, W3; W7 on all.
    by name until the fold fix).
 4. ~~**W7**~~, ~~**W8**~~, ~~**W9**~~ (superseded: they read the
    observable), ~~**W10**~~ (the lift from data: nine tunes certified from
-   their programs' tables); then **W11** for the section 4 reduction; Follin
-   after I6.
+   their programs' tables); then **W11** for the section 4 reduction;
+   ~~Follin after I6~~ — landed, all 32 subtunes certified write for write
+   ([prototype-follin-trackerprog.md](prototype-follin-trackerprog.md)), and
+   I6's `set_register` needed no form of its own: `$85` is §3.7's `reg.N`.
 
 Deliberately not now: Galway/Walker/Blackbird (uncertified — the anatomy
 describes them, no certificate covers them), multispeed (§10). **Not** defMON:
@@ -929,6 +931,69 @@ the row is marked back down to one certified family plus a snippet. The
 generalisable check, which is §1's own rule read backwards: a citation written
 from a *reading* of a family is a hypothesis until that family is transliterated,
 and two of the five transliterations so far have taken one out.
+
+### 6.8 Five more the sixth family found
+
+[prototype-follin-trackerprog.md](prototype-follin-trackerprog.md), the first
+family whose *score* is a program rather than a list.
+
+**A row nothing renders is a row nothing tests — and the converse is a debt.**
+§6.2 struck `for`/`call`/`ret` from §3.6's `Order` because they rested on two
+prose-only families, with the promise that "when a score-as-program exemplar
+lands, the grammar gains what that exemplar shows and no more". It landed, and
+the grammar gained five steps: `call`, `ret`, `mark`, `loop`, `jump` — 858 of
+them across 32 subtunes, beside 46 `stop`s. Two spellings the strike could not
+have foreseen and the exemplar settled at once: a **call names where it comes
+back to** (the machine pushes an address, and the block list's order is not the
+program's), and **`mark` and `loop` are two steps, not one `for`** (two bytes in
+two places over one counted-loop register per voice, so the object says the
+loops do not nest by having one cell). The generalisable check: striking a row
+for want of an exemplar is right, and it is a debt with a stated shape — what
+comes back is not the row that went, and the difference is the exemplar's
+whole content.
+
+**A loop the other families run once is free by construction, not by
+measurement.** The fetch became a walk — several rows at one boundary, because
+this family's sequencer runs until a note arrives. The risk was the *group*: §2
+rule 1 keeps every edge write in tick order, and a family with no shadow writes
+as it goes, so the walk has to flush between rows. Flushing *after* each row
+would have made a one-row family one flush where it had none, and would have
+needed measuring on all eleven earlier builds. Flushing **between** two rows and
+never after the last makes a one-row family bit-identical *by construction* — it
+never reaches the flush at all. Measured anyway, and 0 of 236,586 ticks. The
+generalisable check: when a general form must not disturb the families that do
+not need it, place the new work where their control flow does not go, and the
+measurement confirms rather than decides.
+
+**A terminator can belong to a voice.** Every certified score before this one
+ends the tune. `$86` ends a *voice*: its flag clears, the routine moves to the
+next, and the filter goes on writing forever. So `stop` is per voice, `stopped`
+is a seeded per-voice list, and a stopped voice runs no clock at all. It is not
+an edge case of a song that ends — it is the ordinary state of a sound effect,
+which starts one to three voices over whatever was playing; starting all three
+of subtune 20's instead diverges on all 20,049 of its ticks. The generalisable
+check: a terminator's *scope* is a datum, and the family that shows it is the
+one whose entry starts fewer voices than it has.
+
+**Before or after the voices is a property of the channel, not of the player.**
+`globals.streams` stepped the one global channel ahead of the voices, which is
+right for a channel the voices read. Follin's they write — the owner voice's
+note-on reloads the cutoff the filter then sweeps — so the same list in the same
+place writes the un-swept value on 383 ticks. `globals.after` is the second
+list. The generalisable check is §6.4's ordering one again, one level up: when
+a phase's position is right for every family so far, it is a default and not a
+law, and the family that breaks it is the one whose voices *write* what the
+phase reads.
+
+**Two anatomy facts fell to the render that no census found.** The anatomy's
+static census of this player counts `$93` (skip transpose) at **0** and calls
+its cell unused; subtune 7 uses it three times, and rendering it as a no-op
+diverges on 2,575 and 4,155 ticks. And `$8D` is documented as setting the pulse
+mode "at next note"; it stores the same byte to the running mode as well, worth
+2,260 ticks. Both are one instruction apart from what the document says. The
+generalisable check: a static census over a player's data is a lower bound on
+what its tunes do, and the render is what settles it — which is the same reason
+§6.4 measures rather than argues, applied to the *source* rather than the layer.
 
 ### 6.7 What hardening the layer found, with the families all in
 

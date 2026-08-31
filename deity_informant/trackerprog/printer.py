@@ -132,6 +132,21 @@ def _regs(ws):
     return " ".join("%s=%s" % (hexv(r), hexv(v)) for r, v in ws)
 
 
+def _step(op):
+    """One step of an order program: what it does when its rows run out."""
+    if op is None:
+        return "next"
+    if isinstance(op, str):
+        return op
+    if "call" in op:
+        return "call %d, back at %d" % (op["call"], op.get("ret", -1))
+    if "mark" in op:
+        return "mark %d from %d" % (op["mark"], op.get("next", -1))
+    if "loop" in op:
+        return "loop, else %d" % op.get("next", -1)
+    return "jump %d" % op["jump"]
+
+
 def render(obj):  # noqa: C901 - one branch per object section, each linear
     """The whole object as text."""
     m, g, out = obj["meta"], obj["globals"], []
@@ -271,8 +286,13 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
         end = o["end"] if isinstance(o["end"], str) else "jump %d" % o["end"]["jump"]
         add("order %d -- %d steps, %s" % (v, len(o["play"]), end))
         steps = [x if isinstance(x, int) else x["pattern"] for x in o["play"]]
-        for i in range(0, len(steps), 24):
-            add("    " + " ".join("%3d" % x for x in steps[i : i + 24]))
+        if any(isinstance(x, dict) and x.get("op") for x in o["play"]):
+            # an order that is a program prints one step per line with its step
+            for i, x in enumerate(o["play"]):
+                add("    %3d  %-4s  %s" % (i, steps[i], _step(x.get("op"))))
+        else:
+            for i in range(0, len(steps), 24):
+                add("    " + " ".join("%3s" % x for x in steps[i : i + 24]))
         moved = [
             (i, x["transpose"])
             for i, x in enumerate(o["play"])
