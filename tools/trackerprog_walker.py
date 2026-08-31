@@ -331,7 +331,7 @@ def inc(name):
     return masked({"add": [cell(name), 1]})
 
 
-def modclock(k, rate):
+def modclock(k):
     """One modulator's own clock: the countdown, and the two ways it comes due.
 
     ``rate`` is an inverted target -- the countdown reloads to 100 and fires
@@ -407,12 +407,9 @@ def triangle(rank, value, target, dirc, phase, period, fire, step, width, halt=N
     }
 
 
-def modcols(rec, base, period_at=2):
-    return {
-        "mode": rec[base],
-        "rate": rec[base + 1],
-        "period": rec[base + period_at],
-    }
+def modcols(rec, base):
+    """One modulator's three bytes, wherever in a record they sit."""
+    return {"mode": rec[base], "rate": rec[base + 1], "period": rec[base + 2]}
 
 
 def melodic(m, i, steps):
@@ -645,7 +642,7 @@ def machinestreams():
         {"when": [[flag("run"), "==", 0]], "sets": [["@delayctr", inc("delayctr")]]},
     ]
     for k in ("m1", "m2", "m3", "m4"):
-        clocks += modclock(k, None)
+        clocks += modclock(k)
     clocks += [
         {
             "when": [[flag("m3fire"), "!=", 0], [g, "==", v], [cell("m3period"), "!=", 0xFF]],
