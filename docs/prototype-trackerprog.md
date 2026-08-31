@@ -1136,7 +1136,7 @@ exemplar:
 | --- | --- |
 | 1 | `trackerprog.certificate.json`: 0 divergences over the whole certified horizon on the §2 observable, `compared` and `dropped` both populated, the loop claim re-verified where `end.kind = loop` |
 | 2 | every refusal named with its cell — no partial emit |
-| 3 | the print measured with **§6.2's six numbers** — tokens, lines, statements, blocks, header rows, data rows, which architecture §11 requires verbatim of every presentation change — plus **one extra**, `xz -9e` of `trackerprog.md` against the source `tuneprog.md`'s. `xz` is §8.3's own unit and no substitute for the six. The layer's claim is that the score compresses *better* than the program that played it |
+| 3 | the print measured with **§6.2's six numbers** — tokens, lines, statements, blocks, header rows, data rows, which architecture §11 requires verbatim of every presentation change — plus **one extra**, `xz -9e` of the object against **the tune's own load band**. `xz` is §8.3's own unit and no substitute for the six. The first draft compared against `tuneprog.md` and claimed the score compresses *better* than the program that played it; measured against the binary, it does not — §9.1 |
 | 4 | recert untouched: 51/51, no tuneprog artefact moves |
 
 State after t3-from-data — these are **scoreprogs** (§1), certified against §2
@@ -1189,6 +1189,66 @@ one remaining single-family row (§5's stateless-phase vibrato) is a data form,
 not a code branch. §3.6's "a command's register target is a literal 0..24" is
 confirmed and is no longer single-family: it is §3.7's `reg.N`, which JCH's
 write-out earned first, and Follin's `$85` lists render through it unchanged.
+
+### 9.1 The object against the load band
+
+The claim above was measured against `tuneprog.md`, which is a pretty-printed
+decompilation — a *presentation* artefact, and §3.4's own rule is that a claim
+measured against one is not measured. The program that played the tune is the
+binary. Measured against it by `tools/trackerprog_sizes.py`, over the poison
+registry's own thirty builds — `xz -9e` of the PSID load band, header stripped,
+against `xz -9e` of every certified subtune's object concatenated:
+
+| tune | songs | certified | band `xz` | object `xz` | ratio |
+| --- | --- | --- | --- | --- | --- |
+| *Je suis Linus* (GT2) | 1 | 1 | 2,804 | 5,988 | **2.14×** |
+| *Do It Again* (GT2) | 1 | 1 | 2,668 | 5,628 | **2.11×** |
+| *End of the World* (SW) | 1 | 1 | 3,992 | 7,876 | **1.97×** |
+| *Guldkorn Intro* (JCH) | 1 | 1 | 2,472 | 4,852 | **1.96×** |
+| *Comic Bakery* (Galway) | 14 | **14** | 4,760 | 9,096 | **1.91×** |
+| *Automatas* (defMON) | 1 | 1 | 4,316 | 8,216 | **1.90×** |
+| *Emomyst* (SW) | 1 | 1 | 3,576 | 6,288 | **1.76×** |
+| *Knob at Night* (JCH) | 1 | 1 | 9,600 | 16,180 | **1.69×** |
+| *Quintessence* (Blackbird) | 1 | 1 | 3,772 | 6,352 | **1.68×** |
+| *Chameleon* (Walker) | 1 | 1 | 3,140 | 4,916 | **1.57×** |
+| *Jazzpjazz* (defMON) | 1 | 1 | 2,944 | 3,700 | **1.26×** |
+| *Commando* (Hubbard) | 19 | 3 | 2,548 | 4,096 | 1.61× (3 of 19) |
+| *Ghouls'n'Ghosts* (Follin) | 32 | 3 | 10,888 | 8,648 | 0.79× (3 of 32) |
+
+**The claim does not hold, and this is the finding.** Ten of the thirteen tunes
+have one subtune, so the band holds exactly the music the object covers, and the
+object is **1.26× to 2.14×** the binary on every one. Galway is the eleventh and
+the only multi-subtune tune certified whole — all fourteen — and it is 1.91×. The two ratios below 1 are the two tunes measured on a fraction of
+their subtunes against a band that holds all of them, which is not a comparison:
+Follin's three of thirty-two is 0.79× and its three objects summed separately are
+already 1.36×.
+
+Where the bytes go, and it is not where the first draft assumed:
+
+| build | score `xz` | rest `xz` | score share |
+| --- | --- | --- | --- |
+| *Je suis Linus* | 3,100 | 3,192 | 49 % |
+| *Automatas* | 4,240 | 4,144 | 51 % |
+| *Quintessence* | 511,867 raw → 3,204 | 3,252 | 50 % |
+| *Knob at Night* | 792 | 15,524 | 5 % |
+
+The **score is not what makes the object large**. Materialised over the whole
+horizon with every packed byte unpacked, every cursor spent and Blackbird's LZ
+stream expanded 511,867 bytes wide, it still compresses to about what the whole
+load band does — 3,100 against 2,804 for *Je suis Linus*, a band that holds the
+player *and* the data. It is the sound half — instruments, streams,
+accumulators, `state0`, and the schema's own key names once per record — that
+doubles the total, and on *Knob at Night* it is 95 % of it.
+
+So the layer trades size for the thing it exists to have. §6's materialisation
+rule drops every storage idiom deliberately, and the object carries no player at
+all where the band carries one; what it buys is that nine families render on one
+procedure, which no binary does. **The honest claim is that the object is
+player-independent, not that it is small** — and the sound half is where any
+future saving is, which is what B7 and B8 of
+[trackerprog-backlog.md](trackerprog-backlog.md) are about.
+
+---
 
 ## 10. Open
 
