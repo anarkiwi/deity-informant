@@ -7,10 +7,8 @@ from tempfile import mkdtemp
 import numpy as np
 import pytest
 
-from deity_informant.tuneprog import accreg, accum, accrule, accshape, graph, pipeline
+from deity_informant.tuneprog import accreg, accum, accshape, graph, pipeline
 from deity_informant.tuneprog import provenance
-from deity_informant.tuneprog.accdelta import delta_of
-from deity_informant.tuneprog.acchist import Cells, replay
 from deity_informant.tuneprog.accshape import canon, sext_split, step, terms
 from deity_informant.tuneprog.facts import Facts
 from deity_informant.tuneprog.history import history
@@ -87,23 +85,6 @@ def test_a_signed_byte_split_three_and_eight_is_one_table_read():
 def test_the_additive_spine_carries_the_sign_of_every_term():
     x, y = Var("x"), Var("y")
     assert terms(Bin("-", x, Bin("+", y, Const(1)))) == [(1, x), (-1, y), (-1, Const(1))]
-
-
-def test_a_move_no_clause_makes_is_the_replay_s_divergence():
-    cur = np.array([0, 2, 4, 9], np.int64)
-    plan = [
-        {
-            "when": np.ones(4, bool),
-            "kind": "step",
-            "sign": 1,
-            "delta": np.full(4, 2, np.int64),
-            "carry": np.zeros(4, np.int64),
-            "live": False,
-            "comp": False,
-        }
-    ]
-    prev = np.array([0, 0, 2, 4], np.int64)
-    assert (~replay(cur, prev, plan, 8)).sum() == 1
 
 
 # ---- one policy per snippet ---------------------------------------------------
@@ -506,7 +487,7 @@ def test_a_segment_reload_and_the_step_that_follows_it_are_one_tick():
 
 def _writes(view, addr):
     """Every store into one cell, in the order :func:`~.accshape.rank` runs them."""
-    got = accshape.sites(view, Facts(view), accshape.rank(view))
+    got = accshape.sites(view, Facts(view), accshape.rank(view)[0])
     return [x for k, v in got.items() if k.cells[0][1] == addr for x in v]
 
 
@@ -671,7 +652,7 @@ def test_the_same_scratch_with_no_register_column_refuses():
     doc = t1(PARKED, calls=48, data=_data(PARKED, LOOPTAB))
     assert doc["accs"] == []
     assert [(r["clause"], r["scratch"], r["why"]) for r in doc["refusals"]] == [
-        ("replay", True, accum.WHY)
+        ("replay", True, accum.DIVERGES)
     ]
 
 
@@ -696,74 +677,60 @@ def exemplar(rel, calls=1200):
 
 
 @pytest.mark.hvsc
-@pytest.mark.parametrize("rel", (LINUS, GULDKORN, EMOMYST))
-def test_every_exemplar_accumulator_replays_and_every_residue_is_named(rel):
+@pytest.mark.parametrize("rel", (LINUS, GULDKORN, EMOMYST, COMMANDO))
+def test_every_exemplar_accumulator_is_an_exact_recurrence_or_a_named_refusal(rel):
     doc = exemplar(rel)
-    assert doc["accs"] and doc["horizon"]["ticks"] == 1200
+    assert doc["horizon"]["ticks"] == 1200 and (doc["accs"] or doc["refusals"])
     for a in doc["accs"]:
         assert a["verify"]["divergences"] == 0 and a["verify"]["escapes"] == 0
+        assert a["step"]["clauses"] and a["step"]["value"] and a["step"]["width"] == a["width"]
+        for c in a["step"]["clauses"]:
+            assert c["site"] and c["kind"] in ("step", "action", "opaque", "half")
+            assert all(t["truth"] in (True, False) and t["test"] for t in c["when"])
         assert a["delta"]["kind"] in ("const", "field", "tabcell", "tablestep", "repeat")
-        assert a["bound"]["from"] in ("proved", "projected", "observed")
         assert a["policy"] in accum.POLICIES and a["scope"] in ("voice", "instrument", "global")
         assert a["target"]["register"] and a["cell"]["name"]
     for r in doc["refusals"]:
-        assert r["why"] == accum.WHY and r["cell"] and r["clause"] in accum.CLAUSES
+        assert r["why"] in accum.WHYS and r["cell"] and r["clause"] in accum.CLAUSES
+        assert r["why"] == accum.WHY or r["detail"]
+        assert r["why"] != accum.DIVERGES or r["tick"] > 0
 
 
 @pytest.mark.hvsc
-def test_goattracker_s_vibrato_is_a_phase_accumulator_and_a_table_step():
+def test_goattracker_s_filter_steps_by_a_table_cell_and_its_vibrato_refuses_by_name():
     doc = exemplar(LINUS)
-    ph = one(doc, policy="reflect-complement")
-    assert ph["delta"] == {"kind": "const", "value": 2} and ph["scope"] == "voice"
-    freq = one(doc, **{"phase.kind": "acc"})
-    assert (
-        freq["phase"]["acc"] == ph["id"] and freq["phase"]["cell"]["region"] == ph["cell"]["region"]
-    )
-    assert freq["delta"]["kind"] == "tablestep" and freq["width"] == 16
-    assert freq["target"]["register"] == "freq" and freq["target"]["voices"] == [0, 1, 2]
+    flt = one(doc, **{"target.register": "cutoff_hi"})
+    assert flt["delta"]["kind"] == "tabcell" and flt["verify"]["divergences"] == 0
+    assert flt["step"]["inputs"]  # the cursor it reads mid-tick, as its own clauses
+    assert {r["cell"] for r in doc["refusals"]} >= {"ghost", "voice[].b14A0"}
 
 
 @pytest.mark.hvsc
-def test_sid_wizard_s_filter_is_one_signed_step_across_a_three_and_eight_split():
+def test_sid_wizard_s_cutoff_refuses_where_its_reader_cannot_place_a_write():
     doc = exemplar(EMOMYST)
-    got = [a for a in doc["accs"] if a["target"]["kind"] == "split"]
-    assert got and all(a["width"] == 11 and a["target"]["split"] == [3, 8] for a in got)
-    assert all(a["delta"]["kind"] == "tabcell" and a["delta"]["signed"] == 11 for a in got)
-    assert all(a["scope"] == "global" for a in got)
+    got = [r for r in doc["refusals"] if r["cell"] == "cutoff_lo"]
+    assert got and all(r["why"] in (accum.INEXACT, accum.DIVERGES) for r in got)
+    assert all(r["site"] for r in got)
 
 
 @pytest.mark.hvsc
-def test_the_voice_stride_of_a_value_cell_is_the_scope_the_record_carries():
-    for rel, want in ((LINUS, "voice"), (GULDKORN, "voice"), (EMOMYST, "global")):
-        assert want in {a["scope"] for a in exemplar(rel)["accs"]}
-
-
-@pytest.mark.hvsc
-def test_hubbard_s_effects_are_named_or_refused_by_the_cell_they_move():
+def test_hubbard_s_producers_are_exact_or_refuse_by_the_cell_they_move():
     doc = exemplar(COMMANDO)
-    vib = one(doc, **{"delta.kind": "repeat"})
-    assert vib["delta"]["step"]["kind"] == "tablestep" and vib["delta"]["n"]["name"]
-    assert vib["target"]["register"] == "freq" and vib["policy"] == "reload"
-    voices = vib["target"]["voices"]  # the scope a scratch cell has is the site's voices
-    assert vib["scope"] == ("voice" if len(voices) > 1 else "global")
-    assert vib["phase"]["kind"] == "fn"
-    assert vib["verify"]["copies"] == len(voices)
-    assert vib["bound"]["from"] == "observed"
-    run = one(doc, **{"delta.kind": "tabcell"})
-    assert run["policy"] == "wrap" and run["scope"] == "instrument"
-    assert run["delta"]["carry"]["site"] and run["delta"]["carry"]["flag"]
-    for a in doc["accs"]:
-        assert a["verify"]["divergences"] == 0 and a["verify"]["escapes"] == 0
-    for r in doc["refusals"]:  # fail-closed on what one column a tick cannot take apart
-        assert r["why"] == accum.WHY and r["cell"] and r["site"]
+    assert all(a["verify"]["divergences"] == 0 and a["width"] in (8, 16) for a in doc["accs"])
+    cells = {r["cell"] for r in doc["refusals"]}
+    assert "rec2[].b5591" in cells and any(c.startswith("acc") for c in cells)  # the vibrato
+    for r in doc["refusals"]:
+        assert r["why"] in accum.WHYS and r["cell"] and r["site"]
 
 
 @pytest.mark.hvsc
-def test_jch_s_pulse_and_filter_are_reload_streams_of_segments():
+def test_jch_s_pulse_and_filter_are_exact_reload_streams_of_segments():
     doc = exemplar(GULDKORN)
-    assert doc["refusals"] == []
-    got = [a for a in doc["accs"] if a["policy"] == "reload"]
+    got = [a for a in doc["accs"] if a["target"]["register"] in ("pw", "cutoff_hi")]
     assert len(got) == 3 and {a["target"]["register"] for a in got} == {"pw", "cutoff_hi"}
     for a in got:
         assert a["delta"]["kind"] == "tabcell" and a["delta"]["index"]["role"] == "cursor"
         assert a["rate"]["kind"] == "countdown" and a["verify"]["divergences"] == 0
+        assert any(t["at"] for c in a["step"]["clauses"] for t in c["when"])
+    assert "voice" in {a["scope"] for a in got}
+    assert {r["cell"] for r in doc["refusals"]} == {"voice[].freq_lo"}

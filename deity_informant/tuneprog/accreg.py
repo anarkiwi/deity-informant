@@ -10,11 +10,10 @@ from __future__ import annotations
 import numpy as np
 
 from . import grid
-from .accguard import valnames
-from .acchist import truth
 from .accshape import arms
-from .facts import GLOBAL_REG, SID_REG_LO, SID_VOICE, SID_VOICES, VOICE_REG, elem_count
-from .ir import Load, Var, W16
+from .accstep import State, exprs_of, indexes
+from .facts import GLOBAL_REG, SID_REG_LO, SID_VOICE, VOICE_REG
+from .ir import Store, Var, W16
 from .irwalk import walk
 
 
@@ -53,25 +52,8 @@ def _overlaps(a, b):
     return a is not None and b is not None and a[0] == b[0] and a[1] < b[2] and b[1] < a[2]
 
 
-def indexes(cells, exprs):
-    """``{name: stride}`` of every index a read of a three-copy region takes.
-
-    :func:`~.accshape.arms` leaves a copy loop's own index standing in the value
-    and in the guards, because every copy shares them; the name a region of three
-    elements is indexed by is the binding that says which copy a reading is for.
-    """
-    out = {}
-    for e in exprs:
-        for x in walk(e):
-            r = cells.rgn.get(x.r) if type(x) is Load else None
-            if r is not None and elem_count(r) == SID_VOICES:
-                for n in valnames(x.a):
-                    out[n] = max(out.get(n, 0), r.stride, 1)
-    return out
-
-
 def others(ctx, t0_doc, rid):
-    """``[(register, voices, [guard path])]`` for the sites that write, but not this cell.
+    """``[(register, voices, [(guard path, ranks)])]`` for the sites that write, but not this cell.
 
     A register is no one producer's: what a tick leaves in it is the last site that
     wrote it, so a tick another site wrote is no reading of this one's value.
@@ -81,63 +63,66 @@ def others(ctx, t0_doc, rid):
         if not w.get("register") or any(c["region"] == rid for c in w["cells"]):
             continue
         site = w["site"]
-        s = _stmt(ctx, site)
-        if s is None:
+        got = _stmt(ctx, site)
+        if got is None:
             return None
+        lbl, i, s = got
         skip = frozenset(x.n for x in walk(s.a) if type(x) is Var)
         raw = s.e if type(s) is W16 else s.v
-        gs = [a.guards for a in arms(ctx, site["proc"], site["block"], raw, s.a, skip)]
+        arms_ = arms(ctx, site["proc"], lbl, raw, s.a, skip)
+        gs = [(a.guards, at) for a, _r, at in ctx.ranked(site["proc"], lbl, i, arms_)]
         out.append((w["register"], w["voices"], gs))
     return out
 
 
 def _stmt(ctx, site):
-    """The statement one T0 site names, found back in its own block."""
+    """``(block, index, statement)`` of one T0 site, found back by its pc.
+
+    The block is looked up by pc, not by the label T0 carries: :func:`~.pipeline.present`
+    labels its blocks per run.
+    """
     p = ctx.prog.procs.get(site["proc"])
-    b = None if p is None else p.blocks.get(site["block"])
     pc = int(site["pc"][1:], 16)
-    return None if b is None else next((s for s in b.stmts if getattr(s, "src", None) == pc), None)
+    for lbl, b in (p.blocks.items() if p is not None else ()):
+        for i, s in enumerate(b.stmts):
+            if getattr(s, "src", None) == pc and type(s) in (Store, W16):
+                return lbl, i, s
+    return None
 
 
-def series(cells, acc, plan, ctx, t0_doc):
-    """``([(voice, env, the register's values, the ticks another site wrote it)], blind)``.
+def series(cells, acc, plan, ctx, t0_doc, stepper):
+    """``[(voice, env, the register's values, the ticks another site wrote it)]``.
 
-    ``(None, 0)`` where T0 names no register or the observable has no column for it.
-    ``blind`` counts the competing guards no history reads, which widen the ticks
-    the record leaves to another producer exactly as :func:`~.acchist.truth` does.
+    ``None`` where T0 names no register or the observable has no column for it. A
+    competing site's guards are read exactly, at their own epochs; one the stepper
+    cannot read raises :class:`~.accstep.Inexact` at its site.
     """
     reg, voices = acc["target"]["register"], acc["target"]["voices"]
     if cells.obs is None or not reg or not voices:
-        return None, 0
+        return None
     rest = others(ctx, t0_doc, acc["cell"]["region"])
     if rest is None:
-        return None, 0
-    guards = [g for _r, _v, gs in rest for path in gs for g, _t, _w in path]
-    names = indexes(cells, [x for c in plan for x in _exprs(c)] + guards)
-    out, seen, was = [], 0, cells.subst
-    cells.subst, mask = dict(cells.epochs()), (1 << acc["width"]) - 1
+        return None
+    guards = [g for _r, _v, gs in rest for path, _at in gs for g, _t, _w in path]
+    names = indexes(cells, [x for c in plan for x in exprs_of(c)] + guards)
+    out, mask = [], (1 << acc["width"]) - 1
     for v in voices:
         got = column(reg, v)
         if got is None or got[0] >= cells.obs.shape[1] or acc["width"] > got[2] - got[1]:
-            cells.subst = was
-            return None, 0
+            return None
         env = {n: v * s for n, s in names.items()}
         wrote = np.zeros(cells.ticks, bool)
         for other, vs, gs in rest:
             if v not in vs or not _overlaps(column(other, v), got):
                 continue
-            for g in gs:
-                held, _gone, blind = truth(cells, g, env)
-                seen, wrote = seen + blind, wrote | held
+            for path, at in gs:
+                st = State(env, {}, [], None, other, 0, None)
+                stepper.bad[:] = False
+                held = stepper.guards(path, at, st)[0]
+                stepper.check(held, st)
+                wrote |= held
         out.append((v, env, (cells.obs[: cells.ticks, got[0]] >> got[1]) & mask, wrote))
-    cells.subst = was
-    return out, seen
-
-
-def _exprs(c):
-    """Every expression one clause stands on: its value, its delta and its guards."""
-    got = (c.value, c.delta, c.carry, c.times, c.addr)
-    return [x for x in got if x is not None] + [g for g, _t, _w in c.guards]
+    return out
 
 
 def bound(per, complete, period, ticks):

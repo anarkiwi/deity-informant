@@ -31,12 +31,14 @@ def copies_of(cells, clauses):
     """``(index names, stride, copies)`` of the cell one store family writes.
 
     Every clause's index, not the steps' alone: an action and a step reach the same
-    copy under names their own procedures give it.
+    copy under names their own procedures give it. A name inside a load of the
+    address selects the record the copy index is read from, not the copy.
     """
     names, lo, hi = set(), None, None
     for c in clauses:
         a, (l, h) = _addr(c)
-        names |= {x.n for x in walk(a) if type(x) is Var}
+        inner = {y.n for x in walk(a) if type(x) is Load for y in walk(x.a) if type(y) is Var}
+        names |= {x.n for x in walk(a) if type(x) is Var} - inner
         lo, hi = (l if lo is None else min(lo, l)), (h if hi is None else max(hi, h))
     if not names or lo is None:
         return [], 0, 1
@@ -299,7 +301,7 @@ def _merge(byname):
         for other, ocs in sorted(byname.items()):
             if other.kind == "byte" and other.cells[0] in tgt.cells:
                 for c in (x for x in ocs if x.kind in ("action", "step")):
-                    at = (c.site.proc, c.site.block, _gkey(c))
+                    at = (c.site.proc, c.site.block, c.rank, _gkey(c))
                     halves.setdefault(at, {})[other.cells[0]] = c
         extra = [x for _k, g in sorted(halves.items()) for x in _halves(tgt, g)]
         out[tgt] = sorted(cs + extra, key=lambda c: (c.rank, c.site.stmt.src, repr(c.value)))
@@ -320,8 +322,17 @@ def _halves(tgt, got):
     """
     lo, hi = got.get(tgt.cells[0]), got.get(tgt.cells[1])
     if lo is not None and hi is not None and lo.kind == "action" and hi.kind == "action":
-        return [lo._replace(value=Bin("|", lo.value, Bin("<<", hi.value, Const(8, 1), 2), 2))]
+        exact = _pair(_exact(lo), _exact(hi))
+        return [lo._replace(value=_pair(lo.value, hi.value), exact=exact)]
     return [c._replace(kind="half", shift=0 if k == tgt.cells[0] else 8) for k, c in got.items()]
+
+
+def _pair(a, b):
+    return Bin("|", a, Bin("<<", b, Const(8, 1), 2), 2)
+
+
+def _exact(c):
+    return c.value if c.exact is None else c.exact
 
 
 def candidates(byname, sources):

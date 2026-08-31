@@ -7,10 +7,11 @@ One additive term of a recurrence as ``const``, ``field``, ``tabcell`` or
 from __future__ import annotations
 
 from .accguard import opened
-from .accshape import canon, cellof, maskof, onepass, reads, selfread, shift_loop
+from .accshape import canon, cellof, maskof, onepass, reads, selfread, shift_loop, zeroexit
 from .facts import elem_count
 from .ir import Bin, Const, Load, MASK, R16
 from .irwalk import addr_split, walk
+from .nodes import At
 
 
 # ---- the section 5 delta grammar ----------------------------------------------
@@ -127,7 +128,8 @@ def tablestep_exprs(ctx, byname):
         if n is None:
             continue
         c = shifts[0]
-        k = Const(0, 1) if onepass(ctx, c.proc, c.block, c.guards) else Const(1, 1)
+        once = onepass(ctx, c.proc, c.block, c.guards) or zeroexit(ctx, c.proc, c.block)
+        k = Const(0, 1) if once else Const(1, 1)
         out[tgt.cells[0]] = _difference(diff.value) + (Bin("+", n, k, 2),)
     return out
 
@@ -160,6 +162,8 @@ def unscratch(e, tab):
         return Bin(e.op, unscratch(e.a, tab), unscratch(e.b, tab), e.w)
     if t is Load:
         return Load(e.cls, unscratch(e.a, tab), e.w, e.lo, e.hi, e.r)
+    if t is At:
+        return At(unscratch(e.e, tab), e.site, e.via)
     return R16(e.lo, e.hi, unscratch(e.a, tab)) if t is R16 else e
 
 
