@@ -147,6 +147,16 @@ GoatTracker 2 12,000 × 2, 0 differing. The first draft's `meta.commit` ∈
 without the problem nothing, and a schema row no observation distinguishes is
 not a row.
 
+**`row_ends_fetch`: where the walk stops.** A family whose row *is* its boundary
+consumes exactly one row per boundary. Follin's fetch is a walk over its own byte
+stream — it takes every command it meets on the way to the note, up to 25 in one
+tick — and `meta.row_ends_fetch` is the guard over §3.6's row facts that ends it
+(there, a row that carries a length). Absent, every row ends the walk and the
+walk is one step, which is what the other five families have; the loop flushes
+its group *between* two rows and never after the last, so a one-row family is
+bit-identical by construction and measures 0 over all eleven earlier builds'
+whole horizons (follin-trackerprog §4.1).
+
 ### 3.2 pitch
 
 `pitch: [u16; N]` — the tune's frequency table as the lift **materialises** it,
@@ -175,6 +185,17 @@ to raise; the shift is `shr`, which the grammar already has, so the two are one.
 T1's rule of the same name (§5, the classifier's table-difference recogniser)
 is unchanged: it names the shape read out of the *source program*, and what it
 emits is this.
+
+**Past the top of the tuning is a producer, and its bound is the index's own.**
+§6's rule that the overrun is a producer takes its first exemplar here. Follin
+reads `notetab[note + transpose]` with a 97-entry table and a one-byte index, so
+past entry 96 the read is what the image holds after the table — for the low
+half, the high half's own start, and then the sound-effect pointers. That is the
+`beyond` record §5 already had, attached to the stream whose row makes the
+producer, and its `words` are bounded by the *index*, not by the notes the score
+holds: 159 of them, `$61` through `$FF`, each stated. A bound derived from the
+score's own note bytes and transposes was written first and two sound effects
+walked straight past it (follin-trackerprog §4.6).
 
 ### 3.3 streams
 
@@ -309,7 +330,9 @@ Cmd     = { arms:  [ arm(acc_id, overrides), … ]   // what the row arms, and i
           , tie:   bool }                          // re-target without re-triggering
 Order   = per-voice sequence program over
           { play(pattern, transpose, repeat, vol?, tempo?)
-          | jump(row) | stop | horizon }
+          | jump(step) | call(step, ret) | ret
+          | mark(count, next) | loop(next)
+          | stop | horizon }
 ```
 
 **A command is a record, not an opcode.** The first draft listed nine named
@@ -324,12 +347,31 @@ combination of fields rather than a name the schema had to have foreseen. What
 a command may not do is still §8's boundary: a residue no combination of these
 fields expresses is a `command residue` refusal, not a new opcode.
 
-`for(n){…}`, `call(seq)` and `ret` are struck with them. They rest on Galway
-and Follin, which are prose-only and deferred (§9), and §1's rule is that a
-schema row carries two certified families or one plus a survey count. The three
-certified orderlists are `play` steps and one of `jump`, `stop` or `horizon`;
-when a score-as-program exemplar lands, the grammar gains what that exemplar
-shows and no more.
+`for(n){…}`, `call(seq)` and `ret` were struck with them, resting as they did on
+Galway and Follin, which were prose-only. **The exemplar has landed, and the
+grammar gains what it shows and no more**
+([prototype-follin-trackerprog.md](prototype-follin-trackerprog.md) §4.2). Follin
+has no orderlist/pattern split at all — one byte stream per voice is both, and
+its structure is `$8A` call, `$8B` return, `$82`/`$81` counted loop, `$87` jump,
+`$86` stop — so a `play` step may carry an `op`, and the five above are the five
+that family emits: 302 calls, 126 returns, 196 marks, 195 loops, 39 jumps and 46
+stops across its 32 subtunes.
+
+Two spellings the exemplar forced rather than the draft foreseeing them. **A
+call names where it comes back to**, not merely where it goes: the 6502 pushes
+`ptr + 3`, an address, and the order of the block list is not the order of the
+program. And **`mark` and `loop` are two steps, not one `for`**: they are two
+bytes in two places with the body between them, over one counted-loop register
+per voice that nothing saves or restores, so the object says the loops do not
+nest by having one cell. The other five families carry no `op` at all and take
+the `play` list as before.
+
+**`stop` stops one voice, not the tune.** Every other certified score ends the
+tune; this one ends each voice by itself (`$86` clears that voice's active flag
+and the routine moves on), and the filter goes on writing. So the terminator is
+per voice, `state0.stopped` seeds it from the entry — a sound effect starts one
+to three voices and leaves the others stopped — and a stopped voice runs no
+clock (follin-trackerprog §4.3).
 
 **The note column is a token class, and the layer spends it.** The first draft
 wrote `note: index | rest | hold | keyoff | keyon`, which is the *source byte's*
@@ -423,7 +465,7 @@ shadow register defers, a producer does not):
 | `play` gains `vol?`, `tempo?` | SW's orderlist columns are pattern, transpose, **volume, tempo**, stop, loop; GT2's pattern, repeat, transpose, loop; JCH's `[transpose] pattern` (all anatomy:209). Optional, `none` where a family has no column. `vol` lands on the one global `$D418` nibble (sw:109), so three voices' columns resolve by last-writer, which §2 makes exact |
 | a `horizon` terminator | a source materialised only as far as the certified ticks reach, distinct from `stop` (Hubbard's `$FE`, SW's stop — anatomy:209) and from `jump`. The same fact as `end.kind = horizon`, stated twice |
 | `arm(acc_id, overrides)` replaces `arm(acc_id, param)` | `Acc` has no `param` and should not: GT2's vibrato parameter selects a bound *and* a step (`b1096 = T1851[y] & $7F` is speedcmp, gt2.md:812; `T1863[y]` the depth or shift, gt2.md:653-684), so the command re-binds a subset of `{delta, bound, rate, phase}` on a declared `Acc` |
-| a command's register target is a literal `0..24` | Follin's `$85` lists write `$D400+r` for an arbitrary register of any voice (anatomy:1803; `sid.reg[a75] = …`, follin:160-167) and resolve, because T2 materialises decoded score bytes exactly as it materialises pattern rows. Where the index does not resolve, the refusal is `command residue` (§8) — the 36 `index not a voice` sites T0's sweep already names one layer down (backlog §4, W4) |
+| a command's register target is a literal `0..24` | Follin's `$85` lists write `$D400+r` for an arbitrary register of any voice (anatomy:1803; `sid.reg[a75] = …`, follin:160-167) and resolve, because T2 materialises decoded score bytes exactly as it materialises pattern rows. Where the index does not resolve, the refusal is `command residue` (§8) — the 36 `index not a voice` sites T0's sweep already names one layer down (backlog §4, W4). **Rendered, and it needed no form of its own**: the target is §3.7's `reg.N`, which JCH's write-out earned first, so the hand transliteration of `$85` is a `sets` entry like any other (follin-trackerprog §5) |
 | `point(slot, row, keep)` | GT2 commands 8/9/A re-point the wave, pulse and filter tables and zero the matching hold (`waveptr=A (wavetime=0)`, anatomy:876) — a re-point plus a link (§5), not two opcodes. It is a field of a §3.3 step, and a command's writes *are* a §3.3 stream, so there is one shape and one guard |
 
 **The row clock is a counter, and there is no second form.**
@@ -496,6 +538,14 @@ difference of adjacent *tuning* entries. It is §5's `tabcell(T[c])` delta on th
 target — the same construct defMON's oscillator uses (automatas.md:433-437),
 where the table happens to be the tuning and the object spells it `tuned`, so
 it earns its row on two families and needs none of its own.
+
+**The channel steps before the voices or after them, and which is data.**
+`globals.streams` runs the channel ahead of the voices, which is right for one
+the voices *read*. Follin's they **write**: the owner voice's note-on reloads
+`#cutoff` from `#cutreset` and the filter sweeps from there in the same frame,
+so sweeping first writes the un-swept value — 383 diverging ticks of its song 0.
+`globals.after` is the second list, and a tune declares which of the two it has
+(follin-trackerprog §4.4).
 
 ---
 
@@ -960,7 +1010,8 @@ construction.
 
 Exemplars, in order: **GT2 ×2, JCH ×2, SW ×2** (the tracker end — all six
 `complete`), then **defMON ×2**, then **Commando ×2** (effects-rich,
-non-tracker, aperiodic observable), then **Follin** (score-as-program).
+non-tracker, aperiodic observable), then **Follin** (score-as-program) — all
+landed.
 
 defMON belongs in the list, not in the deferred set: certified twice over —
 `automatas` (149,025 ticks, period 129,024, `complete`) and `goto80-jazzpjazz`
@@ -994,7 +1045,7 @@ the interpreter, not §4's fixed procedure over instruments, streams and
 accumulators — that reduction is backlog W11, and the exact replay is what it
 must be proved against.
 
-**State of the hand exemplars.** Five families are transliterated by hand onto
+**State of the hand exemplars.** Six families are transliterated by hand onto
 §4's own procedure and certified against their tunes' players on the PcodeVM,
 with no branch on `meta.family` anywhere in `trackerprog/`: Hubbard ×3 subtunes
 ([prototype-commando-trackerprog.md](prototype-commando-trackerprog.md)),
@@ -1003,23 +1054,31 @@ GoatTracker 2 ×2 builds
 SID Wizard ×2 builds
 ([prototype-sidwizard-trackerprog.md](prototype-sidwizard-trackerprog.md)),
 defMON ×2 builds
-([prototype-defmon-trackerprog.md](prototype-defmon-trackerprog.md)) and JCH V20
-×2 builds ([prototype-jch-trackerprog.md](prototype-jch-trackerprog.md)), each
+([prototype-defmon-trackerprog.md](prototype-defmon-trackerprog.md)), JCH V20
+×2 builds ([prototype-jch-trackerprog.md](prototype-jch-trackerprog.md)) and
+Follin ×3 named builds of a 32-subtune sweep
+([prototype-follin-trackerprog.md](prototype-follin-trackerprog.md)), each
 with the inherited loop claim re-verified on the render where the source carries
 one, and the write lists identical or permuted rather than merely equal under
 §2's reduction. defMON is the first exemplar whose horizon does not fit a
 script's 60 seconds, so its tool carries `--budget`/`--resume` (architecture
 §11); the whole 149,025-tick certificate is the tool's and the suite renders a
 stated prefix. JCH is the first to take `end.kind = fixed_point` — a song that
-*ends* — and the first whose two builds disagree about having a shadow. Two
-exemplars remain: Follin, and the T0–T3 lift that would produce these objects
-rather than a hand reading of them.
+*ends* — and the first whose two builds disagree about having a shadow. Follin
+is the score-as-program exemplar §3.6's `Order` grammar was waiting for, the
+first whose fetch is a walk over several rows at one boundary, the first with no
+instrument table and no accumulator at all, and the first certified over *every*
+subtune of its tune: all 32, 111,763 ticks, write-for-write identical. One
+exemplar remains: the T0–T3 lift that would produce these objects rather than a
+hand reading of them.
 
 The genericity gate: the six tracker exemplars must lift with zero
 family-conditioned code in `trackerprog/` — the same modules, hermetic snippet
 tests per mechanism, each schema row's two-family evidence recorded here. The
-two single-family rows (§5's stateless-phase vibrato, §3.6's Follin register
-target) are data forms, not code branches.
+one remaining single-family row (§5's stateless-phase vibrato) is a data form,
+not a code branch. §3.6's "a command's register target is a literal 0..24" is
+confirmed and is no longer single-family: it is §3.7's `reg.N`, which JCH's
+write-out earned first, and Follin's `$85` lists render through it unchanged.
 
 ## 10. Open
 
