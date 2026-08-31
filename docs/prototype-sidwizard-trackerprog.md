@@ -159,17 +159,29 @@ so a tick's writes are the tick's own state and the claim lands where it says.
 Eight forms and three corrections. None is a family branch, none is a new
 mechanism, and every form is a datum the first two families do not carry.
 
-### 4.1 A row clock is a divider, a countdown **or a counter**
+### 4.1 A row clock counting **up**, and the form the other two turned out to be
 
 §3.6 says tempo is "a divider or a tempo stream", and GoatTracker 2 added
 `meta.tempo.form: countdown`. SID Wizard's is neither: `SPDCNT` counts **up**
 from zero and the row ends where it meets the tempo. So `form: counter`, with
 
 ```jsonc
-"cell": "spdcnt", "boundary": 2, "fetch": 0,
-"early": [[{"cell": "phase"}, "<", 2]],
+"cell": "spdcnt", "step": 1,
+"boundary": [[{"cell": "phase"}, "==", 2]],
+"fetch":    [[{"cell": "phase"}, "==", 0]],
+"early":    [[{"cell": "phase"}, "<",  2]],
 "reset": [ {"when": [...], "sets": [["@spdcnt", 0], ["@tmppos", ...]]}, ... ]
 ```
+
+The `form` is gone from that record, and this family is why: **the counter is the
+general one**, and §7's seventh package made the other two values of it. A
+countdown is a `step` of −1 with a reset clause that reloads; a divider is the
+`rate` with a step of −1 and no reset, the row's length being the sequencer's to
+reload. One `clock()`, one `early_due()`, one `fetch_due()`, and the reset
+clauses this family needed anyway are what the other two families' reloads
+became. It is measured at 0 differing ticks on all eleven builds, and the clauses
+are load-bearing: a clock with no reset at all diverges on 8,077 of *Emomyst*'s
+8,084 ticks and 14,451 of *End of the World*'s 14,465.
 
 Two things it needed. First, **the reset is guarded assignment, not a reload.**
 `SEC; SBC TEMPOTBL−1,Y; BEQ new_row; BVC same_row` is the anatomy's technique 8:

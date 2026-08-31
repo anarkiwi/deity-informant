@@ -1217,10 +1217,10 @@ class Tune:
             "commit_order": L["commit_order"],
             "wide": list(WIDE),
             "tempo": {
-                "form": "counter",
                 "cell": "spdcnt",
-                "boundary": 2,
-                "fetch": 0,
+                "step": 1,
+                "boundary": [[{"cell": "phase"}, "==", 2]],
+                "fetch": [[{"cell": "phase"}, "==", 0]],
                 "early": [[{"cell": "phase"}, "<", 2]],
                 "reset": [
                     {

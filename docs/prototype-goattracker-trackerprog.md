@@ -161,16 +161,29 @@ unnecessary for this family instead of merely tolerable. `commit_order (sr, ad,
 ctrl)` follows from it — per voice the descending sweep passes offset 6, 5, 4 —
 and §3.1's row for GoatTracker 2 is unchanged.
 
-### 4.2 A row clock is a divider **or** a countdown
+### 4.2 A row clock counting down, and a tempo over a stream
 
 §3.6 already says tempo is "a divider or a tempo stream", per voice with a
-global default. The object states which: `meta.tempo.form`. Commando's is a
-`divider` (`rate`, `phase`, a per-row countdown in its steps). GT2's is a
-`countdown` — a cell the tick decrements, a `boundary` value that names the
-row, and a `reload` cell it takes the row's length from when it goes past.
-`tempo.alternate` is §3.6's tempo over a stream: two rows the reload alternates
-between, which is `funktempo` and nothing else. It is dead in *Je suis Linus*
-and fires 4,326 times in *Do It Again*, on the same code.
+global default. This family's counts **down**: a cell the tick decrements, a
+boundary at zero, and the row's own length taken from a `tempo` cell when the
+cell goes past it. Commando's counts down too, over a rate.
+
+The object said that with a `meta.tempo.form` of its own — `countdown` against
+Commando's `divider` and SID Wizard's `counter`, three names selecting three
+procedures in the player — and §7's seventh package took the three back to one.
+GT2's clock is now `step −1`, `boundary [rowclock == 0]`, and a `reset` clause
+that reloads where the cell has gone past; Commando's is the same step with a
+`rate` and no reset at all, because a divider's row length is the sequencer's to
+reload. Nothing about this family's clock moved except where it is written.
+
+`tempo.alternate` moved with it. §3.6's tempo over a stream was a record of its
+own — a stream name and a guard, read by a `reload()` the player kept for it —
+and it is **one more reset clause, ahead of the plain one**: where the tempo cell
+says so, take the row's length from the funk stream and toggle the cell that
+indexes it, and otherwise take the tempo cell. First match wins, which is what
+the two arms always were. It is dead in *Je suis Linus* and fires 4,326 times in
+*Do It Again*, on the same code; striking the clause and leaving the plain reload
+diverges on **8,639 of *Do It Again*'s 8,659** ticks and 0 of *Je suis Linus*'.
 
 The `- 1` is the row's, not the player's. The reload takes a *countdown* against
 the boundary at 0, so a row of `n` clock steps counts `n - 1` down to it — which

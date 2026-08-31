@@ -131,7 +131,7 @@ def test_the_event_is_the_canonical_one(tune):
 def test_the_print_carries_the_forms_and_measures_itself():
     text = printer.render(built(EMOMYST))
     for line in (
-        "tempo counter spdcnt, row at 2, fetched at 0",
+        "tempo spdcnt +1, row at phase == 2, fetched where phase == 0, early where phase < 2",
         "tick       fetch ; prelude ; commit ; row ; commit ; machine ; stream exit",
         "prologue   --",
     ):

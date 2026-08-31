@@ -92,6 +92,7 @@ class Player:
         self.prod, self.edge = [], []
         self.boundary = self.spent = False
         self.tickphase = 0
+        self.prefetched = "fetch" in m["tick"]  # a tick that reads its row ahead
         self.act = 0  # which of the tick's acts an edge write belongs to
         self.tick_no = -1
         self.stopping = 0
@@ -109,6 +110,8 @@ class Player:
             return self.tick_no
         if name == "phase":  # the clock step this tick is, for a phased tick
             return self.tickphase
+        if name == "tied":  # whether the row the clock is running out re-targets
+            return int(self.tied[v])
         if name == "freq_hi":
             return self.c["freq"][v] >> 8
         if name == "freq_lo":
@@ -418,13 +421,6 @@ class Player:
             self.spent = self.consumes()
         return False
 
-    def fetch_due(self, v):
-        """Where the clock says the fetch runs: a named phase, or the early lead."""
-        f = self.tempo.get("fetch")
-        if f is not None:
-            return self.tickphase == self.ev(f)
-        return self.stepped and self.early_due(v)
-
     def consumes(self):
         """Whether the row just taken spends the voice's tick: always, never, or its guards."""
         r = self.o["meta"]["row_consumes_tick"]
@@ -434,52 +430,39 @@ class Player:
     def clock(self, v):
         """Step the voice's row clock; True on a row boundary.
 
-        Two forms, one meaning: a divider whose phase names the boundary tick and
-        a per-row countdown in its steps, or a countdown cell the tick decrements
-        and a tempo cell it reloads from.
+        One form, and every family's is a value of it.  A counter ``cell`` the
+        tick moves by ``step``, on the ticks ``rate`` and ``phase`` name; a
+        ``boundary`` guard saying which of its steps the row lands on; and
+        guarded ``reset`` clauses -- what the clock does at its end, the first
+        that holds and no more.  A divider is the rate with a step of -1 and no
+        reset, the row's own length reloaded by the sequencer; a countdown is a
+        step of -1 and a reset that reloads; a counter is a step of +1 and a
+        reset that zeroes.  The step this tick is is ``phase``, which any guard
+        may read (sidwizard-trackerprog.md section 4.1).
         """
-        self.stepped = True
-        if self.tempo.get("form") == "counter":
-            k = self.tempo["cell"]
-            for r in self.tempo.get("reset", ()):
-                if self.guards(r["when"]):
-                    for t, e in r["sets"]:
-                        self.assign(t, self.ev(e), [], [])
-                    break
-            self.tickphase = self.c[k][v]
-            self.c[k][v] = (self.tickphase + 1) & 0xFF
-            return self.tickphase == self.ev(self.tempo.get("boundary", 0))
-        if self.tempo.get("form") == "countdown":
-            k = self.tempo["cell"]
-            self.c[k][v] = (self.c[k][v] - 1) & 0xFF
-            if self.c[k][v] == self.tempo.get("boundary", 0):
-                return True
-            if self.c[k][v] & 0x80:  # went past the boundary: reload the row's length
-                self.c[k][v] = self.reload(v, self.tempo["reload"])
-            return False
+        t = self.tempo
         self.stepped = self.tick_no % self.rate == self.phase
         if not self.stepped:
             return False
-        self.c["rowsleft"][v] -= 1
-        return self.c["rowsleft"][v] < 0
-
-    def reload(self, v, n):
-        """The row's length in clock steps, and the alternation a funk tempo makes."""
-        f = self.tempo.get("alternate")
-        if f and self.guards(f["when"]):
-            t = self.c[n][v]
-            self.c[n][v] = t ^ 1
-            return self.ev({"tabcell": [f["stream"], t, "value"]})
-        return self.c[n][v]
+        k = t["cell"]
+        self.tickphase = self.c[k][v]
+        self.c[k][v] = (self.tickphase + t["step"]) & 0xFF
+        hit = self.guards(t["boundary"])
+        for r in t.get("reset", ()):
+            if self.guards(r["when"]):
+                for target, e in r["sets"]:
+                    self.assign(target, self.ev(e), [], [])
+                break
+        return hit
 
     def early_due(self, v):
         """True where the next row is ``early`` clock steps away."""
-        e = self.tempo.get("early")
-        if self.tempo.get("form") == "counter":
-            return self.guards(e)
-        if self.tempo.get("form") != "countdown":
-            return self.c["rowsleft"][v] == 0 and not self.tied[v]
-        return e is not None and self.c[self.tempo["cell"]][v] == self.ev(e)
+        return self.guards(self.tempo.get("early"))
+
+    def fetch_due(self, v):
+        """Where the clock says the fetch runs: its own guard, else the early lead."""
+        t = self.tempo
+        return self.stepped and self.guards(t["fetch"] if "fetch" in t else t.get("early"))
 
     # ---- the accumulators and the streams, in one rank order -------------------
     def machine(self, prod, edge):
@@ -761,7 +744,7 @@ class Player:
     def sequencer_step(self, prod, edge):
         """Consume the order program's next event and give it to the voice."""
         v = self.v
-        if self.tempo.get("form") in ("countdown", "counter"):
+        if self.prefetched:
             # the fetch already staged the row and the play step it belongs to
             self.apply_row(self.stagedplay[v], self.staged[v], prod, edge)
             return

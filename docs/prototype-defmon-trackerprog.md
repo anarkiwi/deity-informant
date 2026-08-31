@@ -322,7 +322,7 @@ used multispeed entry. *Automatas* is one: `cycles_per_tick 2457`, 8 calls a
 frame, `main()` on one of them and `sub()` on seven.
 
 `rate` carries it, and nothing else has to know. The row clock is
-`{"form": "divider", "rate": 8, "phase": 0}`; the cascades' holds, the
+`rate 8` on the one clock form -- a step of -1 over `rowsleft`, on one tick in eight; the cascades' holds, the
 oscillator's producers and the filter's step are all *per tick*, which is what
 the anatomy's "sidTAB row = DL+1 calls" says (anatomy:213). Shortening the row
 by one clock step diverges on 149,000 of 149,025 ticks, so the divider is load

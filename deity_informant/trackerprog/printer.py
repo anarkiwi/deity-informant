@@ -340,27 +340,15 @@ def _state(k, v):
 
 
 def _tempo(t, notes):
-    """The row clock: a divider, a countdown, or a counter and what resets it."""
-    if t.get("form") == "counter":
-        s = "tempo counter %s, row at %s" % (t["cell"], expr(t.get("boundary", 0), notes))
-        if "fetch" in t:
-            s += ", fetched at %s" % expr(t["fetch"], notes)
-        for r in t.get("reset", ()):
-            s += "\n           reset %s where %s" % (
-                _sets(r["sets"], notes),
-                guards(r["when"], notes),
-            )
-        return s
-    if t.get("form") != "countdown":
-        return "tempo divider %d phase %d" % (t["rate"], t["phase"])
-    s = "tempo countdown %s, reload %s, row at %d" % (t["cell"], t["reload"], t.get("boundary", 0))
-    if "early" in t:
-        s += ", fetch %s early" % expr(t["early"], notes)
-    if "alternate" in t:
-        s += ", alternating %s when %s" % (
-            t["alternate"]["stream"],
-            guards(t["alternate"]["when"], notes),
-        )
+    """The row clock: a counter cell, its step, its boundary and what resets it."""
+    s = "tempo %s %+d, row at %s" % (t["cell"], t["step"], guards(t["boundary"], notes))
+    if t.get("rate", 1) != 1:
+        s += ", one step every %d ticks at phase %d" % (t["rate"], t.get("phase", 0))
+    for k, label in (("fetch", "fetched"), ("early", "early")):
+        if k in t:
+            s += ", %s where %s" % (label, guards(t[k], notes))
+    for r in t.get("reset", ()):
+        s += "\n           reset %s where %s" % (_sets(r["sets"], notes), guards(r["when"], notes))
     return s
 
 

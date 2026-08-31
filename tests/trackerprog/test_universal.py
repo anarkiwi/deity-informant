@@ -61,7 +61,14 @@ def obj(patterns, orders, instruments, pitch=None, rate=2, beyond=None):
             "cycles_per_tick": 19656,
             "voice_order": list(reversed(range(n))),
             "commit_order": ["ctrl", "ad", "sr"],
-            "tempo": {"rate": rate, "phase": 0},
+            "tempo": {
+                "cell": "rowsleft",
+                "step": -1,
+                "rate": rate,
+                "phase": 0,
+                "boundary": [[{"cell": "rowsleft"}, ">=", 0x80]],
+                "early": [[{"cell": "rowsleft"}, "==", 0], [{"cell": "tied"}, "==", 0]],
+            },
             "tick": ["prelude", "commit", "row", "commit", "machine"],
             "row_consumes_tick": True,
             "row": [

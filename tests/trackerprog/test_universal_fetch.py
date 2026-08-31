@@ -26,11 +26,16 @@ def obj(streams=None, events=None, commands=None, shadow=None, **meta):
             "commit_order": ["ad", "sr", "ctrl"],
             "wide": [],
             "tempo": {
-                "form": "countdown",
-                "cell": "phase",
-                "boundary": 0,
-                "reload": "speed",
-                "early": 2,
+                "cell": "rowclock",
+                "step": -1,
+                "boundary": [[{"cell": "rowclock"}, "==", 0]],
+                "early": [[{"cell": "rowclock"}, "==", 2]],
+                "reset": [
+                    {
+                        "when": [[{"cell": "rowclock"}, ">=", 0x80]],
+                        "sets": [["@rowclock", {"cell": "speed"}]],
+                    }
+                ],
             },
             "tick": ["fetch", "row", "machine"],
             "row_consumes_tick": False,
@@ -53,7 +58,7 @@ def obj(streams=None, events=None, commands=None, shadow=None, **meta):
         "state0": {
             "shadow": [0] * 25,
             "cells": {
-                "phase": [3],
+                "rowclock": [3],
                 "speed": [3],
                 "staged": [0],
                 "xpose": [0],
@@ -91,7 +96,7 @@ def test_the_fetch_stages_the_row_s_own_pitch_where_the_boundary_takes_it():
     seen = []
     for _ in range(9):
         p.tick()
-        seen.append((p.c["phase"][0], p.c["staged"][0]))
+        seen.append((p.c["rowclock"][0], p.c["staged"][0]))
     # the clock counts 2, 1, 0 and the fetch at 2 stages the row the boundary takes
     assert seen[:4] == [(2, 1), (1, 1), (0, 1), (3, 1)]
     assert seen[4] == (2, 2)  # the next row, staged one clock step ahead of its own

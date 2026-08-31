@@ -609,12 +609,29 @@ class Tune:
             "commit_order": ["sr", "ad", "ctrl"],
             "shadow": {"registers": list(range(L["regs"] - 1, -1, -1))},
             "tempo": {
-                "form": "countdown",
                 "cell": "rowclock",
-                "reload": "tempo",
-                "boundary": 0,
-                "early": early,
-                "alternate": {"stream": "funktempo", "when": [[{"cell": "tempo"}, "<", 2]]},
+                "step": -1,
+                "boundary": [[{"cell": "rowclock"}, "==", 0]],
+                "early": [[{"cell": "rowclock"}, "==", early]],
+                # past the boundary the clock takes the row's own length: the funk
+                # tempo's two, alternating, where the tempo cell says so, else the
+                # tempo cell itself.  The first clause that holds is the whole of it
+                "reset": [
+                    {
+                        "when": [
+                            [{"cell": "rowclock"}, ">=", 0x80],
+                            [{"cell": "tempo"}, "<", 2],
+                        ],
+                        "sets": [
+                            ["@rowclock", {"tabcell": ["funktempo", {"cell": "tempo"}, "value"]}],
+                            ["@tempo", {"xor": [{"cell": "tempo"}, 1]}],
+                        ],
+                    },
+                    {
+                        "when": [[{"cell": "rowclock"}, ">=", 0x80]],
+                        "sets": [["@rowclock", {"cell": "tempo"}]],
+                    },
+                ],
             },
             "tick": ["row", "commit", "machine", "fetch", "prelude", {"stream": "exit"}],
             "row_consumes_tick": [["keys", "!=", 0]],

@@ -86,10 +86,10 @@ def obj(events, streams=None, accs=None, tempo=4, ins=None, **meta):
             "commit_order": ["ad", "sr", "ctrl"],
             "wide": ["freq", "pw"],
             "tempo": {
-                "form": "counter",
                 "cell": "spdcnt",
-                "boundary": 2,
-                "fetch": 0,
+                "step": 1,
+                "boundary": [[{"cell": "phase"}, "==", 2]],
+                "fetch": [[{"cell": "phase"}, "==", 0]],
                 "early": [[{"cell": "phase"}, "<", 2]],
                 "reset": [
                     {
@@ -344,7 +344,7 @@ def test_the_print_carries_the_phased_forms():
     """The print walks what is there: the counter, the acts, and the guarded rows."""
     text = printer.render(obj([event(note=1, ins=1, gate=None)]))
     for line in (
-        "tempo counter spdcnt, row at 2, fetched at 0",
+        "tempo spdcnt +1, row at phase == 2, fetched where phase == 0, early where phase < 2",
         "row 2      stream gate_row when <gate_stmt> != 0",
         "row 3      the sound the row keys when <sounds> != 0",
         "row 5      the row's own commands",
