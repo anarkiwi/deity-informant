@@ -21,11 +21,10 @@ PLAYER = ROOT / "deity_informant" / "trackerprog" / "universal.py"
 PRINTER = ROOT / "deity_informant" / "trackerprog" / "printer.py"
 
 # read by the player, in the box; annotations, marked as such in the box
-READ = {
-    "cell", "width", "produce", "delta", "bound", "policy", "rate", "phase",
-    "amplitude", "flag", "rank", "when", "step_when", "delta_when", "gate",
-    "emit", "beyond", "trap",
-}
+READ = set(
+    "cell width produce delta bound policy rate phase amplitude flag rank"
+    " when step_when delta_when gate emit beyond trap".split()
+)
 ANNOTATIONS = {"target", "scope", "note"}
 
 
