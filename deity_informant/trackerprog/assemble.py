@@ -113,37 +113,15 @@ def lift(art, ticks=None, hints=None):  # noqa: C901 - one clause per derived da
         build.divider_phase(img, sch.divider[0], rate - 1, rate) if sch.divider and rate > 1 else 0
     )
     voices = cells.voices
-    streams, accs, rank = {}, {}, [0]
 
-    def items(name, blocks, allrows):
-        low.scope = set(blocks)
-        got = build.stream_items(low, low.sequence(blocks, trips), trips)
-        out = []
-        for it in got:
-            if it[0] == "rows":
-                nm = "%s%d" % (name, len(out))
-                streams[nm] = {"rows": it[1], **({"all": True, "rank": rank[0]} if allrows else {})}
-                rank[0] += 1
-                out.append(("stream", nm))
-            else:
-                nm = "acc%d" % len(accs)
-                k, rec = build.acc_of(nm, it[1], it[2], it[3], rank[0], it[4])
-                accs[k] = rec
-                rank[0] += 1
-                out.append(("acc", nm))
-        return out
-
-    pre = items("prelude", segs.get("prelude", []), False)
-    rows = items("rowprog", rowblocks, False)
-    items("machine", segs.get("machine", []), True)
-    gl = items("global", glob, False)
-    for nm in [x[1] for x in pre + rows + gl if x[0] == "stream"]:
-        streams[nm].pop("rank", None)
-        streams[nm]["all"] = True
+    ph = build.Phases(low, trips)
+    pre = ph.add("prelude", segs.get("prelude", []), False)
+    rows = ph.add("rowprog", rowblocks, False)
+    ph.add("machine", segs.get("machine", []), True)
+    gl = ph.add("global", glob, False)
+    streams, accs = ph.streams, ph.accs
     limit = max(0, (view.by_id()[rid].size - 2 * n) // 2)
-    words = build.beyond_words(cells, pstart, n, limit)
-    for st in streams.values():
-        st["beyond"] = {"id": "the fused tuning", "words": words}
+    ph.beyond(build.beyond_words(cells, pstart, n, limit))
 
     ordernames = build.order_letters(low, _order_region(art, view, names))
     build.dce(list(streams.values()), _keep(low, accs, sch))

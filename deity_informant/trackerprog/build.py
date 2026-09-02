@@ -236,6 +236,41 @@ def stream_items(low, seq, trips):
     return items
 
 
+class Phases:
+    """The lowered segments as ranked items: runs of guarded rows, and the accs between.
+
+    A voice's machine is one rank order over both (§4), so a segment is a list of
+    ``("stream", name)`` and ``("acc", name)`` in the order its blocks stand in.
+    """
+
+    def __init__(self, low, trips):
+        self.low, self.trips = low, trips
+        self.streams, self.accs, self.rank = {}, {}, 0
+
+    def add(self, name, blocks, ranked):
+        """One segment, lowered and named; ``ranked`` where the machine phase runs it."""
+        self.low.scope = set(blocks)
+        out = []
+        for it in stream_items(self.low, self.low.sequence(blocks, self.trips), self.trips):
+            if it[0] == "rows":
+                nm = "%s%d" % (name, len(out))
+                self.streams[nm] = {"rows": it[1], "all": True}
+                if ranked:
+                    self.streams[nm]["rank"] = self.rank
+                out.append(("stream", nm))
+            else:
+                nm = "acc%d" % len(self.accs)
+                self.accs[nm] = acc_of(nm, it[1], it[2], it[3], self.rank, it[4])[1]
+                out.append(("acc", nm))
+            self.rank += 1
+        return out
+
+    def beyond(self, words):
+        """The words past the tuning every lowered stream reads through (§3.2)."""
+        for st in self.streams.values():
+            st["beyond"] = {"id": "the fused tuning", "words": words}
+
+
 def dce(streams, keep):
     """Drop the ``sets`` whose cell nothing reads: a cell no consumer reads is no cell."""
     for _ in range(8):
