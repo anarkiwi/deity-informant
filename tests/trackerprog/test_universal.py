@@ -80,10 +80,7 @@ def obj(patterns, orders, instruments, pitch=None, rate=2, beyond=None, cells=No
                 {"commands": True},
             ],
         },
-        "globals": {
-            "flags": {"C": {"default": {"bit": [{"cell": "ins"}, 5]}}},
-            "stop_writes": [[4, 0], [24, 0x0F]],
-        },
+        "globals": {"flags": {"C": {"default": {"bit": [{"cell": "ins"}, 5]}}}},
         "pitch": pitch or tuning(),
         "streams": {
             "note_on": {
@@ -117,6 +114,8 @@ def obj(patterns, orders, instruments, pitch=None, rate=2, beyond=None, cells=No
         "score": {
             "patterns": {k: v if "events" in v else pat(v) for k, v in patterns.items()},
             "orders": orders,
+            # the tune's own end: the registers the routine writes, in its own order
+            "commands": {"silence": {"rows": [{"sets": [["reg.4", 0], ["reg.24", 0x0F]]}]}},
         },
         "state0": {
             "ins": [0] * n,
@@ -205,12 +204,15 @@ def test_the_prelude_fires_a_row_tick_early_and_the_tie_disarms_it():
 
 
 def test_the_order_program_jumps_and_stops():
+    """A list that jumps goes on; one that ends stops its voice and runs its command."""
     o = obj({"1": [event(0, note=2, ins=0)]}, [{"play": [1], "end": "jump"}], {"0": ins()})
     assert len(render(o, 8)) == 8 and render(o, 8)[6]  # the jump keeps playing
-    o["score"]["orders"][0]["end"] = "stop"
+    o["score"]["orders"][0]["end"] = {"stop": "silence"}
     w = render(o, 8)
-    assert w[2] == []  # the terminator abandons the tick it was read on
+    assert w[2] == []  # the row the terminator stands in for spends its tick
     assert w[3] == [(4, 0), (24, 0x0F)] and w[4] == [] and w[5] == []
+    o["score"]["orders"][0]["end"] = "stop"  # an end that names none stops the voice alone
+    assert render(o, 8)[3:] == [[]] * 5
 
 
 def test_the_free_slide_is_a_field_delta_with_a_phase_bit():

@@ -265,7 +265,7 @@ class Tune:
         self.cycles, self.ticks = cycles, ticks
         self.rate = 1 if cycles is None else round(19656 / cycles) or 1
         self.cmds = {}
-        self.act, self.jump, self.rows = {}, {}, [{"trap": "no cascade runs here"}]
+        self.act, self.jump, self.rows = {}, {}, []
         self.notes, self.offs, self.oscs = set(), set(), set()  # what the tuning must reach
 
     # ---- the tuning -----------------------------------------------------------
@@ -347,7 +347,8 @@ class Tune:
             self.rows.append(None)
         for i in acts:
             r, d = self.act[i], self.delay(i)
-            end = 0 if d & 0x80 else self.step(i + 1)  # the delay's bit 7 is the terminator
+            # the delay's bit 7 is the terminator: the cascade goes to no row
+            end = None if d & 0x80 else self.step(i + 1)
             self.rows[r] = dict(self.record(i), hold=1, next=r + 1 if d & 0x7F else end)
             if d & 0x7F:
                 self.rows[r + 1] = {"hold": d & 0x7F, "next": end}
@@ -813,7 +814,6 @@ class Tune:
         return {
             "streams": ["filter"],
             "flags": {"C": {"default": 0}, "bounce": {"default": 0}},
-            "stop_writes": [],
             "commit": [
                 [22, {"global": "cutoff"}],
                 [23, {"global": "res_route"}],
@@ -866,7 +866,7 @@ class Tune:
             "ins": [0] * VOICES,
             "globals": gl,
             "cursors": {
-                k: [{"row": 0, "hold": 0} for _ in range(VOICES)] for k in ("casa", "casb")
+                k: [{"row": None, "hold": 0} for _ in range(VOICES)] for k in ("casa", "casb")
             },
             "gcursors": {},
         }

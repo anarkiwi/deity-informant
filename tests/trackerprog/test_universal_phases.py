@@ -112,8 +112,13 @@ def obj(events, streams=None, accs=None, tempo=4, ins=None, **meta):
             ],
             "row_consumes_tick": [["sounds", "!=", 0]],
             "row_command": "spent",
-            "stage": [{"sets": [["@hrins", {"payload": "ins"}]]}],
-            "stage_sounds": "pending",
+            # the fetch's own row program: the instrument the row will play, staged
+            # under the guard that says the fetch read a row at all, and whether
+            # that row keys a note -- which a fetch that stages none says is 0
+            "stage": [
+                {"sets": [["@hrins", {"payload": "ins"}]], "when": [["dur", "!=", 0]]},
+                {"sets": [["@pending", {"payload": "keys"}]]},
+            ],
             "row": [
                 {"sets": [["@pending", 0]]},
                 {"ins": True},
@@ -138,7 +143,6 @@ def obj(events, streams=None, accs=None, tempo=4, ins=None, **meta):
             "streams": [],
             "commit": [[24, {"global": "seen"}]],
             "flags": {"C": {"default": 0}},
-            "stop_writes": [],
         },
         "state0": {
             "cells": {k: [0] for k in CELLS},
@@ -372,7 +376,7 @@ def test_the_print_carries_the_phased_forms():
         "row 2      stream gate_row when <gate_stmt> != 0",
         "row 3      the sound the row keys when <sounds> != 0",
         "row 5      the row's own commands",
-        "sounds cell pending",
+        "staged 1   sets @pending := keys",
     ):
         assert line in text, line
     assert printer.numbers(text)["blocks"] >= 5

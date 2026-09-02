@@ -25,8 +25,8 @@ pytestmark = pytest.mark.hvsc
 # tune -> cycles per tick, the certified horizon, the prefix this suite renders,
 #         the rate the entry runs at, (patterns, events, sidTAB rows, commands)
 CLAIMS = {
-    AUTOMATAS: (2457, 149025, 9000, 8, (113, 1621, 358, 97)),
-    JAZZPJAZZ: (16422, 1799, 1799, 1, (32, 305, 97, 11)),
+    AUTOMATAS: (2457, 149025, 9000, 8, (113, 1621, 357, 97)),
+    JAZZPJAZZ: (16422, 1799, 1799, 1, (32, 305, 96, 11)),
 }
 STREAMS = ["casa", "casb", "filter", "pitch_out", "voice_bit"]
 ACCS = ["pw_down", "pw_turn", "pw_up", "slide_down", "slide_up"]
@@ -137,7 +137,7 @@ def test_every_byte_of_the_tune_s_data_is_in_the_object(name):
     x = tune(name)
     obj = x.build()
     rows = obj["streams"]["casa"]["rows"]
-    waits = set(range(len(rows))) - set(x.act.values()) - set(x.jump.values()) - {0}
+    waits = set(range(len(rows))) - set(x.act.values()) - set(x.jump.values())
     for i, r in sorted(x.act.items()):
         at = x.addr(i)
         got = _record(rows[r])
@@ -152,11 +152,15 @@ def test_every_byte_of_the_tune_s_data_is_in_the_object(name):
 
 
 def _delay(rows, r, waits):
-    """A row's own delay: the hold it goes on to, and the bit 7 that ends the stream."""
+    """A row's own delay: the hold it goes on to, and the bit 7 that ends the stream.
+
+    A cascade that ends goes to no row, which is the ``next`` of null a stopped
+    cursor carries and not a row number reserved for it.
+    """
     nxt = rows[r]["next"]
     if nxt in waits:
-        return (0x80 if rows[nxt]["next"] == 0 else 0) | rows[nxt]["hold"]
-    return 0x80 if nxt == 0 else 0
+        return (0x80 if rows[nxt]["next"] is None else 0) | rows[nxt]["hold"]
+    return 0x80 if nxt is None else 0
 
 
 def _pattern_no(x, obj, voice, step):

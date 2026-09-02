@@ -101,7 +101,7 @@ def test_a_row_the_horizon_never_steps_on_is_a_trap_and_not_a_row():
     obj = built()[0]
     for name, (size, reached) in zip(("pitch", "wave"), TABLES):
         rows = obj["streams"][name]["rows"]
-        assert len(rows) == size + 1  # row 0 is the player's own empty cursor
+        assert len(rows) == size  # a byte offset is its own row, from the first
         assert sum(1 for r in rows if "trap" not in r) == reached
 
 

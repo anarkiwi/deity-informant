@@ -8,6 +8,7 @@ no table of its own, dispatching only on the form of a delta, policy or row.
 from __future__ import annotations
 
 import operator
+from itertools import chain
 
 REG = {"freq_lo": 0, "freq_hi": 1, "pw_lo": 2, "pw_hi": 3, "ctrl": 4, "ad": 5, "sr": 6}
 EDGE = ("ctrl", "ad", "sr")  # section 2 rule 1: every write kept, in tick order
@@ -20,6 +21,8 @@ GATE = (0xFF, 0xFF ^ GATE_BIT)
 # a fetch is a walk, so it is bounded: the two limits are the render's own
 # refusal to loop, and nothing about a tune is meant to reach them
 ROWS_PER_TICK, ORDER_STEPS = 256, 256
+# section 3.6's row facts, which a row the fetch did not read carries at zero
+_FACTS = ("sounds", "keys", "newins", "field", "gate_stmt", "tie", "dur", "note", "wraps")
 
 # the compiler's dispatch, spent once per node instead of once per evaluation
 _CMP = {">=": operator.ge, "<": operator.lt, "!=": operator.ne, "==": operator.eq, ">": operator.gt}
@@ -39,6 +42,13 @@ _DERIVED = (
     " clockplan earlycode fetchcode endcode spends phases flushcode commits cursors"
     " rowprog stageprog allplans pitchput rates beyonds"
 ).split()
+
+
+def _norow(ov):
+    """Where a step that stops its stream goes: no row at all (§3.3)."""
+    return None
+
+
 _UNARY = {  # a node whose argument is a name, not an expression
     "cell": lambda p, a: p.cellcode(a),
     "global": lambda p, a: (lambda ov: p.gl[a] & 0xFFFF),
@@ -107,10 +117,11 @@ class Player:
         self.cursor = {k: [dict(x) for x in d] for k, d in s0.get("cursors", {}).items()}
         self.gcursor = {k: dict(d) for k, d in s0.get("gcursors", {}).items()}
         self.held = [self.cmd(s0.get("held"))] * n  # the command a voice holds at the start
+        # the tune's init call: a command run on a tick of its own, before the first
+        self.entry = self.cmd(s0["prologue"]) if "prologue" in s0 else None
         self.staged = [None] * n  # the event a fetch left for the row boundary to take
         self.tied = [False] * n  # whether that event re-targets without re-triggering
         self.stagedplay = [{}] * n
-        self.op = False  # a stream step produced this tick, so the armed accs stand down
         self.stepped = False  # whether the row clock advanced on the tick being rendered
         self.payload = {}
         self.wide = set(m.get("wide", ()))  # the voice cells that are 16 bits
@@ -122,7 +133,6 @@ class Player:
         self.stopsafter = m.get("stop", "voice") == "voice"
         self.act = 0  # which of the tick's acts an edge write belongs to
         self.tick_no = -1
-        self.stopping = 0
         self.v = 0
         self.acc = 0  # the tick-scratch accumulator an acc with scope "tick" uses
         self.w = []
@@ -177,8 +187,8 @@ class Player:
         # family whose row is its own boundary has
         self.endcode = self.guardcode(o["meta"].get("row_ends_fetch"))
         self.fetchcode = self.guardcode(t["fetch"] if "fetch" in t else t.get("early"))
-        rc = o["meta"]["row_consumes_tick"]
-        self.spends = self.guardcode(None if isinstance(rc, bool) else rc)
+        rc = o["meta"]["row_consumes_tick"]  # always, never, or the row's own guards
+        self.spends = (lambda ov, b=rc: b) if isinstance(rc, bool) else self.guardcode(rc)
         self.phases = [  # meta.tick, resolved: a phase is the procedure that runs it
             (None, e["stream"]) if not isinstance(e, str) else (e, getattr(self, "phase_" + e))
             for e in o["meta"]["tick"]
@@ -224,9 +234,7 @@ class Player:
             p = self.pw[str(self.c["ins"][v])]
             return p if name == "pw" else (p & 0xFF if name == "pw_lo" else p >> 8)
         if name not in self.c:  # section 5's own vocabulary, read as an expression
-            s, part = self.split_cell(name)
-            x = self.whole(s)
-            return x if part is None else (x & 0xFF if part == "lo" else (x >> 8) & 0xFF)
+            return self.part_of(name)
         return self.c[name][v] & 0xFFFF
 
     def command_of(self, e):
@@ -247,10 +255,6 @@ class Player:
     def cmd(self, c):
         """A row command: the record, or the name the score gives it."""
         return self.o["score"]["commands"][c] if isinstance(c, str) else c
-
-    def gcell(self, name):
-        """A cell of the tune's one global channel."""
-        return self.gl[name] & 0xFFFF
 
     # ---- the tuning, and what is not a pitch ----------------------------------
     def tuned(self, n):
@@ -479,7 +483,8 @@ class Player:
         if len(t) == 2:
             (x, op, y), (x2, op2, y2) = t
             return lambda ov: op(x(ov), y(ov)) and op2(x2(ov), y2(ov))
-        return lambda ov: all(op(x(ov), y(ov)) for x, op, y in t)
+        head, tail = self.guardcode(gs[:2]), self.guardcode(gs[2:])  # a tree, not a frame
+        return lambda ov: head(ov) and tail(ov)
 
     @staticmethod
     def column(x, path):
@@ -513,31 +518,28 @@ class Player:
         if self.shadow is not None:  # this tick emits the image the last tick left
             sh = self.shadow
             self.w = [(r, sh[r] & 0xFF) for r, when in self.flushcode if when(None)]
-        if self.stopping:
-            if self.stopping == 1:
-                self.stopping = 2
-                self.w += [tuple(x) for x in self.o["globals"]["stop_writes"]]
-            return self.w
-        if self.tick_no == 0 and "prologue" in self.o["meta"]:
-            self.prologue()
-            return self.w
+        if self.entry is not None:
+            return self.enter()
         self.channel("streams")
         for v in self.order:
             self.v = v
-            if self.voice(v):
-                return self.w
+            self.voice(v)
         self.channel("after")
         self.channel_commit()
         return self.w
 
-    def prologue(self):
-        """The tune's own init call: one command every voice runs, spending its tick."""
+    def enter(self):
+        """A command the tune runs on a tick of its own: the init call the entry
+        state names (``state0.prologue``), or the one an order's ``end`` leaves.
+        Every voice runs it, and nothing else runs on that tick.
+        """
+        cmd, self.entry = self.entry, None
         for v in range(self.n):
             self.v = v
             prod, edge = [], []
-            self.hold_command(self.o["meta"]["prologue"], prod, edge)
+            self.hold_command(cmd, prod, edge)
             self.commit(prod, edge)
-        self.held = [self.cmd(self.o["state0"].get("held"))] * self.n
+        return self.w
 
     def channel(self, key):
         """The one global channel's streams, stepped where the channel declares.
@@ -571,6 +573,9 @@ class Player:
     def voice(self, v):
         """One voice's tick: the phases ``meta.tick`` names, in that order.
 
+        Nothing abandons a tick: a voice the score stopped runs no phase at all,
+        and the tune's own end is that voice stopped like any other (§3.6).
+
         The phases are the fixed four -- ``fetch`` the row the clock runs ahead
         of, ``prelude`` the instrument's early rows, ``row`` the boundary, and
         ``machine`` the streams and armed accumulators -- plus ``{"stream": s}``
@@ -582,8 +587,8 @@ class Player:
         """
         halted = self.stopped[v]
         if halted and self.stopsafter:  # the score stopped the voice itself
-            return False
-        self.op, self.spent = False, False
+            return
+        self.spent = False
         self.prod, self.edge = [], []
         # a score that stops the *sequencer* leaves the sound running: the clock
         # is the sequencer's, so a halted voice does not step it, and every
@@ -598,48 +603,32 @@ class Player:
                 break
             if name is None:
                 self.rows(run, self.prod, self.edge)
-            elif self.spent:
-                continue
-            elif run(v):
-                return True
+            elif not self.spent:
+                run(v)
         self.commit(self.prod, self.edge)
-        return False
 
     def phase_fetch(self, v):
-        if self.fetch_due(v):
+        if self.stepped and self.fetchcode(None):  # the step the clock reads its row at
             self.fetch(self.prod, self.edge)
-        return False
 
     def phase_prelude(self, v):
-        if self.stepped and self.early_due(v):
+        if self.stepped and self.earlycode(None):  # the next row is `early` steps away
             p = self.instr().get("prelude")
             if p is not None:
                 self.rows(p["stream"], self.prod, self.edge)
-        return False
 
     def phase_machine(self, v):
         self.machine(self.prod, self.edge)
-        return False
 
     def phase_commit(self, v):  # a group boundary: what the tick has written, written
         self.commit(self.prod, self.edge)
         self.prod, self.edge = [], []
-        return False
 
     def phase_row(self, v):
-        """The row boundary.  True where the order program's own end abandoned it."""
-        if not self.boundary:
-            return False
-        self.sequencer_step(self.prod, self.edge)
-        if self.stopping:
-            return True
-        self.spent = self.consumes()
-        return False
-
-    def consumes(self):
-        """Whether the row just taken spends the voice's tick: always, never, or its guards."""
-        r = self.o["meta"]["row_consumes_tick"]
-        return r if isinstance(r, bool) else self.spends(self.payload)
+        """The row boundary: the order program consumed, and the tick it spends."""
+        if self.boundary:
+            self.sequencer_step(self.prod, self.edge)
+            self.spent = self.spends(self.payload)
 
     # ---- the row clock --------------------------------------------------------
     def clock(self, v):
@@ -669,14 +658,6 @@ class Player:
                 break
         return hit
 
-    def early_due(self, v):
-        """True where the next row is ``early`` clock steps away."""
-        return self.earlycode(None)
-
-    def fetch_due(self, v):
-        """Where the clock says the fetch runs: its own guard, else the early lead."""
-        return self.stepped and self.fetchcode(None)
-
     # ---- the accumulators and the streams, in one rank order -------------------
     def machine(self, prod, edge):
         """The voice's streams and armed accumulators, in the rank the object gives."""
@@ -684,19 +665,15 @@ class Player:
         for name, f in self.flagdefs:
             self.flags[name] = f(None)
         work = self.slots()
-        accs, n = self.o["accs"], len(work)
-        for a in self.instr().get("accs", ()):
+        accs = self.o["accs"]
+        arms = chain(self.instr().get("accs", ()), self.armed[v])
+        for n, a in enumerate(arms, len(work)):
             work.append((accs[a["acc"]]["rank"], n, None, a))
-            n += 1
-        for a in self.armed[v]:
-            work.append((accs[a["acc"]]["rank"], n, None, a))
-            n += 1
         work.sort()  # the rank, and the object's own order breaking a tie
         for _, _i, st, x in work:
             if st is None:
-                if not self.op:
-                    self.cur = self.o["accs"][x["acc"]]
-                    self.step(self.cur, x, prod, edge)
+                self.cur = self.o["accs"][x["acc"]]
+                self.step(self.cur, x, prod, edge)
             elif st.get("all"):
                 self.rows(x, prod, edge)
             else:
@@ -709,7 +686,7 @@ class Player:
             if not when(None):
                 continue
             cur = self.slot(k)
-            if st.get("all") or (cur is not None and cur["row"]):
+            if st.get("all") or (cur is not None and cur["row"] is not None):
                 out.append((rank, len(out), st, k))
         return out
 
@@ -729,7 +706,7 @@ class Player:
                 else (
                     self.code_of(r.get("hold", 1)),
                     self.setcode(r.get("sets", ())),
-                    self.code_of(r["next"]) if "next" in r else None,
+                    None if "next" not in r else self.stepto(r["next"]),
                     r.get("run", ()),
                     r.get("op"),
                 )
@@ -738,11 +715,15 @@ class Player:
         ]
         return plan
 
+    def stepto(self, nxt):
+        """Where a row sends its cursor; a ``next`` of null is no row at all (§3.3)."""
+        return _norow if nxt is None else self.code_of(nxt)
+
     def stream_step(self, name, cur, prod, edge):
         """One section 3.3 step: what it runs while held, then its sets, op and next."""
         st = self.o["streams"][name]
         y = cur["row"]
-        if not y:
+        if y is None:  # a cursor that is on no row: the stream does not run (§3.3)
             return
         due = self.rates[name]  # section 3.3's divider, in a cell the score can set
         if due is not None and not due(None):
@@ -766,15 +747,29 @@ class Player:
         self.act += 1
         for put, f in sets:
             put(f(None), prod, edge)
-        nxt = y + 1 if nxt is None else nxt(None)
-        j = st["rows"][nxt] if nxt < len(st["rows"]) else {}
-        cur["row"] = self.ev(j["jump"]) if "jump" in j else nxt
+        cur["row"] = self.lands(st, y + 1 if nxt is None else nxt(None))
         if op is not None:
             self.operate(op, prod, edge)
 
+    def lands(self, st, nxt):
+        """Where a step leaves its cursor: the row it steps to, or the jump that row
+        carries, taken here because a jump occupies no tick; null in either is no row.
+        """
+        if nxt is None:
+            return None
+        j = st["rows"][nxt] if nxt < len(st["rows"]) else {}
+        if "jump" not in j:
+            return nxt
+        return None if j["jump"] is None else self.ev(j["jump"])
+
     def operate(self, op, prod, edge):
-        """A step's own producer: the accs the score armed stand down for the tick."""
-        self.op = True
+        """A step's own producer: a pitch of the tuning, an accumulator, or a command.
+
+        A family whose armed accumulators stand down for a tick one of its steps
+        produced on says so in the object: the row leaves a flag and the arm's
+        ``when`` reads it (§5's producer flags), which is one family's precedence
+        stated where the family is.
+        """
         if "pitch" in op:
             self.cur = op
             n = self.ev(op["pitch"])
@@ -831,12 +826,8 @@ class Player:
             return lambda val, prod, edge: self.flags.__setitem__(k, val)
         if t[:7] == "shadow.":  # the image, written where it is
             return lambda val, prod, edge: self.store_cell(t, val)
-        if t == "pitch":  # a producer that writes the chip without moving a cell
-            return lambda val, prod, edge: prod.extend(
-                (("freq_lo", val & 0xFF), ("freq_hi", (val >> 8) & 0xFF))
-            )
-        if t == "freq":
-            d = self.c["freq"]
+        if t in ("pitch", "freq"):  # the frequency: `pitch` writes the chip alone
+            d = self.c["freq"] if t == "freq" else None
             return lambda val, prod, edge: self.pitched(d, val, prod)
         if t[:4] == "reg.":
             # a register of the tune's one global channel, written by the voice whose
@@ -851,8 +842,9 @@ class Player:
         return lambda val, prod, edge: prod.append((t, val & 0xFF))
 
     def pitched(self, d, val, prod):
-        """The voice's frequency cell, and the pair the commit sends with it."""
-        d[self.v] = val
+        """The pair the commit sends for a frequency, and the cell where it has one."""
+        if d is not None:
+            d[self.v] = val
         prod.extend((("freq_lo", val & 0xFF), ("freq_hi", (val >> 8) & 0xFF)))
 
     def commit(self, prod, edge):
@@ -925,34 +917,41 @@ class Player:
         return plan
 
     def fetch(self, prod, edge):
-        """Read the row the clock runs ahead of, and commit what it stages early."""
+        """Read the row the clock runs ahead of, and run ``meta.stage`` over it.
+
+        A fetch tick that stages no row -- an event of several rows still
+        spending them, a row the count has not reached, a play list that ended --
+        runs the same program over the empty facts (``row_facts(None)``), so what
+        the fetch leaves for the row is one program under one guard list.
+        """
         v = self.v
-        k = self.o["meta"].get("stage_sounds")
+        e = self.staging(v)
+        self.row_program(self.stageprog, self.stage_facts(e), self.stagedplay[v], e, prod, edge)
+        if e is not None:
+            self.advance(v)
+
+    def staging(self, v):
+        """The row the fetch stages, and the cursor it leaves; ``None`` where it stages none."""
         if self.c["rowsleft"][v] > 0:  # an event of several rows, still spending them
-            if k:
-                self.c[k][v] = 0
             self.c["rowsleft"][v] -= 1
             self.staged[v] = None
             if self.c["rowsleft"][v] == 0:
                 self.advance(v)
-            return False
-        if k:
-            self.c[k][v] = 0
+            return None
         e = self.next_event()
         if e is None:
-            return False
+            return None
         self.stagedplay[v] = self.play_of(v)
         if e["dur"] > 1:  # the cursor stays where it is until the count runs out
             self.c["rowsleft"][v] = e["dur"] - 1
             self.staged[v] = None
-            return False
+            return None
         self.staged[v] = e
-        self.stage(e, prod, edge)
-        self.tied[v] = e["tie"] or bool((self.held[v] or {}).get("tie"))
-        if k:  # the one field that says a row keys a note, staged with the row
-            self.c[k][v] = int(self.keys(e))
-        self.advance(v)
-        return True
+        # the row's own tie, settled before its program runs over it -- a command
+        # the row hands the voice adds its own at the step that takes it, so
+        # `keys` is one fact at the staging and at the boundary
+        self.tied[v] = bool(e["tie"])
+        return e
 
     def advance(self, v):
         """The fetch's own cursor: the next event, and the next order step at a wrap.
@@ -988,31 +987,14 @@ class Player:
         ev = self.pattern_of(v)["events"]
         return ev[self.evrow[v]] if self.evrow[v] < len(ev) else None
 
-    def stage(self, e, prod, edge):
-        """What the fetch commits ``early``, before the row it belongs to arrives.
-
-        ``meta.stage`` is a row program (§3.6) over the row the clock ran ahead
-        to, and `row_step` runs it -- the same steps in the same order under the
-        same guards as ``meta.row``, over a payload that carries two more
-        facts a staging reads: the instrument the row will play, and the
-        transpose of the play step it belongs to.
-        """
-        self.payload = self.stage_facts(e)
-        for when, step, sets in self.stageprog:
-            if when(self.payload):
-                self.row_step(step, sets, self.stagedplay[self.v], e, prod, edge)
-
     def stage_facts(self, e):
-        """The row the fetch read, as the values its own steps read.
-
-        §3.6's facts, plus the two a staging copies rather than tests: ``ins``
-        the instrument the row will play (its own, else the one the voice holds),
-        and ``transpose``, the play step's own column -- which one family reads
-        *untransposed* in a modulator, so the fetch stages it.  The row's pitch
-        was a third until a row's own note became a fact of the row itself.
+        """§3.6's facts of the row the fetch read, plus the two a staging copies
+        rather than tests: ``ins``, the instrument the row will play (its own, else
+        the one the voice holds), and ``transpose``, the play step's own column,
+        which one family reads *untransposed* in a modulator.
         """
         f = self.row_facts(e)
-        f["ins"] = self.c["ins"][self.v] if e["ins"] is None else e["ins"]
+        f["ins"] = self.c["ins"][self.v] if e is None or e["ins"] is None else e["ins"]
         f["transpose"] = self.stagedplay[self.v].get("transpose", 0)
         return f
 
@@ -1044,10 +1026,7 @@ class Player:
             self.tied[v] = e["tie"]
             self.c["rowsleft"][v] = self.c["dur"][v] = e["dur"]
             self.apply_row(self.play_of(v), e, prod, edge)
-            self.evrow[v] += 1
-            if self.evrow[v] == len(self.pattern_of(v)["events"]):
-                self.evrow[v] = 0
-                self.order_step(v)
+            self.advance(v)
             if self.endcode(self.payload):
                 return
         raise AssertionError("the order program made no row in %d steps" % ROWS_PER_TICK)
@@ -1059,7 +1038,7 @@ class Player:
         the program runs on until one has one, or until it stops.
         """
         for _ in range(ORDER_STEPS):
-            if self.stopped[v] or self.stopping:
+            if self.stopped[v]:
                 return None
             if self.c["orderpos"][v] >= len(self.order_of(v)["play"]):
                 if not self.order_end(v):
@@ -1077,11 +1056,16 @@ class Player:
 
         One answer for both positions that ask it -- the fetch reading ahead and
         the walk stepping -- because what the play list does when it runs out is
-        the order's own datum and not the caller's.
+        the order's own datum and not the caller's.  A list that jumps goes on; any
+        other end stops that voice, exactly as the ``stop`` step of the order
+        program does, and may name the command the tune runs after its last row
+        (``end: {"stop": name}``), which ``enter`` spends a tick on.
         """
         j = self.order_of(v)["end"]
-        if not (j == "jump" or isinstance(j, dict)):
-            self.stopping = 1
+        if not (j == "jump" or isinstance(j, dict) and "jump" in j):
+            self.stopped[v] = True
+            if isinstance(j, dict):
+                self.entry = self.cmd(j["stop"])
             return False
         self.c["orderpos"][v] = j["jump"] if isinstance(j, dict) else 0
         self.evrow[v] = self.c["rowsleft"][v] = 0
@@ -1138,17 +1122,22 @@ class Player:
         return GATE[0 if (e["sounds"] if g is None else g == "on") else 1]
 
     def apply_row(self, play, e, prod, edge):
-        """The row's own program: section 3.6's steps, in the order the object gives.
+        """The boundary's own program, over the row the score gave the voice."""
+        self.row_program(self.rowprog, self.row_facts(e), play, e, prod, edge)
 
-        One procedure for every family.  A row is a short ordered list of steps
-        over the event -- an instrument commit, a guarded stream, the sound
-        itself, the row's commands -- and which steps a tune has, and in which
-        order, is data.  ``e is None`` is a row a fetch left empty; the steps
-        that need an event skip it and the rest still run.
+    def row_program(self, prog, facts, play, e, prod, edge):
+        """§3.6's row program: its steps over the row's facts, in the object's order.
+
+        One procedure for every family and for both positions the program runs at
+        -- ``meta.row`` at the boundary and ``meta.stage`` at the fetch, whose
+        facts carry two values it copies rather than tests.  A row is a short
+        ordered list of steps over the event: an instrument commit, a guarded
+        stream, the sound itself, the row's commands.  ``e is None`` is a row a
+        fetch left empty; the steps that need an event skip it and the rest run.
         """
-        self.payload = self.row_facts(e)
-        for when, step, sets in self.rowprog:
-            if when(self.payload):
+        self.payload = facts
+        for when, step, sets in prog:
+            if when(facts):
                 self.row_step(step, sets, play, e, prod, edge)
 
     def row_facts(self, e):
@@ -1158,17 +1147,7 @@ class Player:
         against the tie: whether this row starts a sound the player must arm.
         """
         if e is None:
-            return {
-                "sounds": 0,
-                "keys": 0,
-                "newins": 0,
-                "field": 0,
-                "gate_stmt": 0,
-                "tie": 0,
-                "dur": 0,
-                "note": 0,
-                "wraps": 0,
-            }
+            return dict.fromkeys(_FACTS, 0)
         return {
             "dur": e["dur"],  # a row's own length, and the note it names
             "note": 0 if e["note"] is None else e["note"],
@@ -1202,8 +1181,21 @@ class Player:
                 self.c["ins"][self.v] = e["ins"]
         elif "note" in step:
             self.sound(play, e, prod, edge)
-        elif "hold" in step and e["arm"] is not None:  # the command the voice keeps
-            self.held[self.v] = self.cmd(e["arm"])
+        elif "hold" in step:  # the command the voice keeps, and the tie it carries
+            if e["arm"] is not None:
+                self.held[self.v] = self.cmd(e["arm"])
+            self.ties(e)
+
+    def ties(self, e):
+        """Settle the row's tie: its own field, and the command it hands the voice.
+
+        A command may re-target without re-triggering (§3.6's ``Cmd.tie``), so the
+        step that takes it is where the tie is known; the facts derived from it
+        move with it, and the steps after this one read them.
+        """
+        self.tied[self.v] = bool(e["tie"]) or bool((self.held[self.v] or {}).get("tie"))
+        self.payload["tie"] = int(self.tied[self.v])
+        self.payload["keys"] = int(self.keys(e))
 
     def sound(self, play, e, prod, edge):
         """The row keys a sound: the note it names, and the instrument it arms."""
@@ -1229,10 +1221,18 @@ class Player:
         """A step's re-points: the slot, the row, whether the hold survives."""
         for pt in pts:
             if len(pt) < 4 or self.guards(pt[3], ov):
-                self.point(pt[0], self.ev(pt[1], ov), pt[2] if len(pt) > 2 else False)
+                r = pt[1]
+                self.point(
+                    pt[0], r if r is None else self.ev(r, ov), pt[2] if len(pt) > 2 else False
+                )
 
     def point(self, slot, r, keep=False):
-        """Re-point a stream and reset the hold it was counting (section 3.6)."""
+        """Re-point a stream and reset the hold it was counting (section 3.6).
+
+        ``None`` is a cursor on no row -- what a command that stops a stream
+        points it to.  A cursor is off by saying so and never by its index: row 0
+        is a row like any other.
+        """
         cur = self.gcursor[slot] if slot in self.gcursor else self.cursor[slot][self.v]
         cur["row"] = r
         if not keep:
@@ -1309,7 +1309,7 @@ class Player:
         # the decision the step makes, made once and before anything moves: a gate
         # reports what the step did, not a re-reading of a cell the step moved
         stepped = p["step_when"](ov)
-        val = self.load(a)
+        val = self.part_of(a["cell"])
         if p["reload"] is not None and p["reload_when"](ov):
             val = p["reload"](ov)
         out = val
@@ -1322,7 +1322,7 @@ class Player:
         emitted = val if a.get("emit") == "entry" else out
         self.store(a, out)
         for target, part in a["produce"]:
-            self.emit_part(prod, target, emitted, part)
+            prod.append((target, emitted & 0xFF if part != "hi" else (emitted >> 8) & 0xFF))
         for put, f in p["gate"].get("true" if stepped else "false", ()):
             put(f(ov) & 0xFF, prod, edge)
 
@@ -1395,9 +1395,9 @@ class Player:
         """A cell name and the half of it a ``.hi`` or ``.lo`` picks, where it does."""
         return (s[:-3], s[-2:]) if s.endswith((".hi", ".lo")) else (s, None)
 
-    def load(self, a):
-        """An accumulator's value.  One vocabulary: the name, its space, its half."""
-        s, part = self.split_cell(a["cell"])
+    def part_of(self, name):
+        """One named cell, read: its space, and the half a ``.hi``/``.lo`` picks (§5)."""
+        s, part = self.split_cell(name)
         x = self.whole(s)
         return x if part is None else (x & 0xFF if part == "lo" else (x >> 8) & 0xFF)
 
@@ -1469,9 +1469,6 @@ class Player:
     def shadow_store(self, name, val):
         r = 7 * self.v + REG[name + "_lo"]
         self.shadow[r], self.shadow[r + 1] = val & 0xFF, (val >> 8) & 0xFF
-
-    def emit_part(self, prod, target, val, part):
-        prod.append((target, val & 0xFF if part != "hi" else (val >> 8) & 0xFF))
 
 
 def render(obj, ticks):

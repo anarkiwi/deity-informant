@@ -1146,7 +1146,6 @@ class Tune:
         out = {
             "streams": ["channel"],
             "flags": {"raw": {"default": 0}},
-            "stop_writes": [],
             "commit": [],  # the voices send the channel's own registers themselves
         }
         if self.L["wrapper"]:
@@ -1299,7 +1298,9 @@ class Tune:
         gate = [["gate_stmt", "!=", 0]]
         pre = [
             {"sets": [["@pend_gate", {"payload": "gate"}]], "when": gate},
-            {"sets": [["@pend_xpose", {"payload": "transpose"}]]},
+            # a row proper: a fetch tick that staged none carries no length, and
+            # its empty facts leave the transpose the last staging left
+            {"sets": [["@pend_xpose", {"payload": "transpose"}]], "when": [["dur", "!=", 0]]},
             {"sets": [["@pend_note", {"payload": "note"}]], "when": [["sounds", "!=", 0]]},
         ]
         row = [{"stream": "notestage", "when": [["sounds", "!=", 0]]}]
@@ -1307,6 +1308,9 @@ class Tune:
             row.insert(0, {"commands": True, "when": gate})
         else:
             pre.append({"commands": True})
+        # whether the row the fetch read keys a note, staged with the row: the
+        # empty facts of a fetch tick that stages none say 0
+        pre.append({"sets": [["@keyed", {"payload": "keys"}]]})
         out = {
             "tune": Path(self.path).name,
             "family": "JCH V20",
@@ -1332,7 +1336,6 @@ class Tune:
             "row_consumes_tick": [["keys", "!=", 0]],
             "row_command": "spent",
             "stage": pre,
-            "stage_sounds": "keyed",
             "row": row
             + [
                 {"sets": [["@cmd_slide", 0], ["@cmd_vib", 0]], "when": gate},

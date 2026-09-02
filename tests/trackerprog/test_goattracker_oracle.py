@@ -110,29 +110,35 @@ def _semitone_byte(n):
 
 
 def _wave_bytes(row):
-    """The wavetable row's own two bytes, back from the step."""
+    """The wavetable row's own two bytes, back from the step.
+
+    A row that produces leaves the flag its arms stand down on, which is the
+    player's precedence said in the object and no byte of the table.
+    """
     if "jump" in row:
-        return 0xFF, row["jump"]
+        return 0xFF, row["jump"] or 0  # a jump to no row is the byte that names none
     op, left, right = row.get("op"), 0, 0
+    sets = [x for x in row.get("sets", ()) if x[0] != "!produced"]
     if "hold" in row:
         left = row["hold"] - 1
-    elif "sets" in row:
-        left = (row["sets"][0][1] + 0x10) & 0xFF
+    elif sets:
+        left = (sets[0][1] + 0x10) & 0xFF
     if op is None:
         return left, right
+    assert row["sets"][-1] == ["!produced", 1]  # every producing row leaves it
     if "pitch" in op:
         n = op["pitch"]
         return left, _semitone_byte(n) if op.get("relative") else n
     if "cmd" in op:
         name, _, param = op["cmd"].partition(":")
-        return (left if "sets" in row else 0xF0 | NIBBLE[name]), int(param, 16)
+        return (left if sets else 0xF0 | NIBBLE[name]), int(param, 16)
     cmd = FX[op["acc"]]
-    return (left if "sets" in row else 0xF0 | cmd), op.get("row", 0)
+    return (left if sets else 0xF0 | cmd), op.get("row", 0)
 
 
 def _pulse_bytes(row):
     if "jump" in row:
-        return 0xFF, row["jump"]
+        return 0xFF, row["jump"] or 0
     if "sets" in row:
         return row["sets"][0][1], row["sets"][1][1]
     return row["hold"], row["run"][0]["delta"] & 0xFF
@@ -152,7 +158,7 @@ def _filt_bytes(rows, n):
         if "trap" in r:
             continue
         if "jump" in r:
-            out[i] = (0xFF, r["jump"])
+            out[i] = (0xFF, r["jump"] or 0)
         elif "run" in r:
             out[i] = (r["hold"], r["run"][0]["delta"])
         else:
@@ -265,8 +271,9 @@ def test_the_event_is_the_canonical_one(tune):
 def test_no_command_is_named_by_the_index_its_player_dispatched_on(tune):
     """A command is named by what it does; the jump table's nibble is spent."""
     obj = built(tune)
+    # `init` is the tune's own init call, which the entry state names (§3.6)
     for name, cmd in obj["score"]["commands"].items():
         head = name.split(":")[0]
-        assert head in TG.COMMANDS, name
+        assert head in TG.COMMANDS or head == obj["state0"]["prologue"], name
         assert "id" not in cmd
     assert obj["meta"]["row_command"] == "held"  # the holding is a datum, not the clock

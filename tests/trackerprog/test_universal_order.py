@@ -48,7 +48,7 @@ def obj(play, patterns, **meta):
             "patterns": patterns,
             "commands": {},
         },
-        "globals": {"streams": [], "commit": [], "flags": {}, "stop_writes": [[4, 0]]},
+        "globals": {"streams": [], "commit": [], "flags": {}},
         "state0": {"cells": {"dur": [1]}, "ins": [0], "cursors": {}, "gcursors": {}},
     }
 
@@ -167,7 +167,7 @@ def test_stop_stops_one_voice_and_not_the_tune():
         ((11, 6),),
         ((11, 6),),
     ]
-    assert p.stopped == [True, False] and p.stopping == 0
+    assert p.stopped == [True, False] and p.entry is None
 
 
 def test_a_voice_the_score_never_started_runs_no_clock():

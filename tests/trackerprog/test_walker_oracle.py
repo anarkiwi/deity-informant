@@ -103,7 +103,7 @@ def test_the_filter_is_the_fourth_copy_on_the_global_channel():
     assert obj["globals"]["after"] == ["filterclock", "filtermod"]
     f = obj["accs"]["filter"]
     assert f["scope"] == "global" and f["cell"][0] == "#"
-    assert obj["state0"]["gcursors"]["filtermod"]["row"] == 1
+    assert obj["state0"]["gcursors"]["filtermod"] == {"row": 0, "hold": 0}
 
 
 def test_the_engine_residue_is_the_initial_state():
