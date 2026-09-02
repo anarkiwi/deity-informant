@@ -196,8 +196,6 @@ class Coupled(Player):
         if self.evrow[v] == len(self.pattern_of(v)["events"]):
             self.evrow[v] = 0
             self.c["orderpos"][v] += 1
-            self.publish("wrap", v)
-            self.publish("order", v, {"pos": self.c["orderpos"][v]})
 
 
 def ordered(play):

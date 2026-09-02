@@ -238,6 +238,21 @@ holds: 159 of them, `$61` through `$FF`, each stated. A bound derived from the
 score's own note bytes and transposes was written first and two sound effects
 walked straight past it (follin-trackerprog §4.6).
 
+**A word past the tuning is an expression, and where it names a cell it names
+the voice.** What the image holds past a tuning is constant bytes for Follin and
+the engine's own per-voice state for Hubbard: `orderpos`, the pattern byte
+cursor, the row countdown, the waveform, the note and the instrument of *all
+three voices*, fused against the table by the load band
+([prototype-commando-trackerprog.md](prototype-commando-trackerprog.md) §4.2).
+§5's cell vocabulary states that outright — `{"cell": [name, voice]}` beside
+`{"cell": name}`: one name, one space, one half, read on the voice the word
+names instead of the voice being committed — and a byte the object has no cell
+for is a `trap` carrying its reason. The first draft stated the same memory
+model as a **publish/subscribe network** — seven event kinds, nine publish sites
+in the player, a private state dict per modulator and a `__getstate__` that
+re-keyed it by enumeration order — a second modulation language for one family.
+A memory model is a read; it is written as one (R4).
+
 ### 3.3 streams
 
 The one sequencing form. A stream is a finite table of steps:
@@ -340,6 +355,16 @@ tuning — or the anonymous row list itself. Its act is the row in both: R2's
 measurement, since the other rule differs on 2,943 ticks (§3.1). The first draft
 of this paragraph recorded two procedures that disagreed about acts; that was
 B9's row, and it is closed.
+
+**An instrument whose sound is no pitch carries its own.** Where a family keys a
+sound the tuning has no note for, the score gives the row no note (§3.2's rule:
+a value that is not in the pitch table is not a pitch) and the instrument
+answers instead, through a `pitch` record of `value` and — where the instrument
+arpeggiates — `octave`. Each is one §5 expression, read by the player only where
+`note` is none, and the record carries nothing else: Hubbard's two drums read
+the waveform and pulse-direction cells of two *other* voices and name them
+(§3.2), Galway's silence is a constant. An unpitched sound has no semitone above
+it either, so a vibrato over one steps by nothing.
 
 `on_note` is a stream and nothing else — guarded rows of `sets` and `point`,
 where `point(slot, row, keep)` is §3.6's own re-point. The first draft gave the
@@ -782,7 +807,8 @@ Acc = { cell   : the value's own, in one vocabulary -- `tick`, a voice cell,
                                                   # masked to 8 bits: edges and counters
       , emit   : "entry"                          # produce the value it had, not the one
                                                   # it leaves -- the epoch of the read
-      , beyond : what the value means past the tuning, for a producer its rows make
+      , beyond : { index, words: [ expr | {trap: why}, … ] }    # what the value means
+                                                    # past the tuning, by how far past (§3.2)
       , trap   : true                             # an arm the certified horizon never
                                                   # takes; reaching it is an assertion
 
@@ -802,10 +828,17 @@ an annotation — and **`policy: halt` was never real**: no tool writes it and
 of its period is `delta_when`, which is what §3.3 already said.
 
 An `Acc` has no name of its own: it is named by the key `accs` declares it
-under, which is the name a stream's `op`, an instrument's arm, a command's
-`arms` and a `publish` subscription all use. Four tools wrote that name a second
+under, which is the name a stream's `op`, an instrument's arm and a command's
+`arms` all use. Four tools wrote that name a second
 time as an `id` column and the player read the column rather than the key, which
 is a second spelling of one fact and is struck (§7).
+
+**One cell vocabulary, and the voice is part of it.** `cell` names the value's
+own on the voice being committed; `{"cell": [name, voice]}` is the same name,
+space and half read on the voice it states. Only `beyond` and an instrument's
+`pitch` use it, because only they are memory models (§3.2), and a modulator
+carries no state beyond its own expressions — there is no private state, no
+subscription and no event.
 
 **Bounded** is the invariant, not a hint: `bound × policy` makes the reachable
 value set finite and statically known; the trackerprog states each interval and

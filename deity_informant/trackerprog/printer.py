@@ -34,10 +34,8 @@ def expr(e, notes=None):
     k, a = next(iter(e.items()))
     if k == "const":
         return expr(a, notes)
-    if k == "cell":
-        return a
-    if k == "own":
-        return "own." + a
+    if k == "cell":  # a name, and the voice it is read on where that is not the reader
+        return a if isinstance(a, str) else "%s[%d]" % (a[0], a[1])
     if k == "flag":
         return "flag " + a
     if k == "payload":
@@ -241,7 +239,7 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
         for i, row in enumerate(st["rows"]):
             add("    row %d: %s" % (i, _row(row, notes)))
         if "beyond" in st:
-            for line in _private(
+            for line in _modulator(
                 "beyond", st["beyond"], notes, "past the tuning, by how far past it the step went"
             ):
                 add(line)
@@ -491,7 +489,7 @@ def _ins(ins, notes):
             % ("prelude", p["stream"], "" if "early" not in p else ", %s early" % p["early"])
         )
     if "pitch" in ins:
-        for line in _private(
+        for line in _modulator(
             "pitch", ins["pitch"], notes, "this instrument's sound is no pitch; it is its own"
         ):
             out.append(line[2:])
@@ -506,8 +504,8 @@ def _arm(a):
     return a["acc"] + ("(%s)" % over if over else "")
 
 
-def _private(label, rec, notes, head):
-    """A modulator's own values and the private state that feeds them."""
+def _modulator(label, rec, notes, head):
+    """A modulator's own values where the tuning has none: its words, or its two."""
     out = ["      %-7s %s" % (label, head)]
     for j, w in enumerate(rec.get("words", [])):
         out.append(
@@ -516,17 +514,6 @@ def _private(label, rec, notes, head):
     for f in ("value", "octave"):
         if f in rec:
             out.append("          %-9s %s" % (f, expr(rec[f], notes)))
-    out.append(
-        "          state  "
-        + (" ".join("%s=%s" % (a, hexv(b)) for a, b in rec["state"].items()) or "stateless")
-    )
-    for x in rec["on"]:
-        how = "; ".join(
-            ["%s := %s" % (a, expr(b, notes)) for a, b in x.get("set", {}).items()]
-            + ["%s += %s" % (a, expr(b, notes)) for a, b in x.get("add", {}).items()]
-        )
-        acc = "" if "acc" not in x else " of %s" % x["acc"]
-        out.append("          on %s(voice %d)%s: %s" % (x["event"], x["voice"], acc, how))
     return out
 
 
@@ -609,7 +596,7 @@ def _acc(name, a, notes):
         iv = "" if "interval" not in b else "[%s, %s] " % tuple(_bound(x) for x in b["interval"])
         lines.append("      bound   %s%s -- %s" % (iv, b["from"], b.get("witness", "")))
     if "beyond" in a:
-        lines += _private(
+        lines += _modulator(
             "beyond",
             a["beyond"],
             notes,

@@ -6,6 +6,7 @@ delta/policy pair -- so every branch of
 :mod:`deity_informant.trackerprog.universal` is exercised by data alone.
 """
 
+import pickle
 import sys
 from pathlib import Path
 
@@ -48,7 +49,7 @@ def tuning(hi=20):
     return {"base": 1, "freq": [0x0101 * k for k in range(1, hi)]}
 
 
-def obj(patterns, orders, instruments, pitch=None, rate=2, beyond=None):
+def obj(patterns, orders, instruments, pitch=None, rate=2, beyond=None, cells=None):
     """A one- or two-voice trackerprog over the same seven accumulator forms."""
     n = len(orders)
     return {
@@ -120,7 +121,7 @@ def obj(patterns, orders, instruments, pitch=None, rate=2, beyond=None):
         "state0": {
             "ins": [0] * n,
             "wave": [0] * n,
-            "cells": {"pwdir": [0] * n, "pwdelay": [0] * n},
+            "cells": dict({"pwdir": [0] * n, "pwdelay": [0] * n}, **(cells or {})),
         },
     }
 
@@ -146,19 +147,22 @@ def ins(wave=0x41, ad=1, sr=2, pw=(0x10, 0x02), accs=(), pitch=None):
     return rec
 
 
-def beyond(words, state=None, on=()):
+def beyond(words):
     """The arpeggio's own behaviour past the tuning."""
-    return {
-        "index": "how far past it the transposition went",
-        "state": state or {},
-        "on": list(on),
-        "words": words,
-    }
+    return {"index": "how far past it the transposition went", "words": words}
 
 
-def unpitched(value, state=None, on=(), **rest):
-    """An instrument whose sound is no pitch: its own modulator, private and inline."""
-    return dict({"state": state or {}, "on": list(on), "value": value}, **rest)
+def unpitched(value, **rest):
+    """An instrument whose sound is no pitch: its own modulator, inline."""
+    return dict({"value": value}, **rest)
+
+
+# the byte cursor a source packs a pattern into, kept by the row program itself:
+# one byte for the row and one more where it sounds, starting over at the wrap
+PATROW = [
+    {"sets": [["@patrow", {"add": [{"cell": "patrow"}, {"add": [{"const": 1}, "sounds"]}]}]]},
+    {"sets": [["@patrow", {"const": 0}]], "when": [["wraps", "!=", 0]]},
+]
 
 
 def test_the_note_row_and_the_tempo_divider():
@@ -311,15 +315,10 @@ def test_a_trapped_arm_raises_where_it_is_taken():
         render(o, 4)
 
 
-def test_an_unpitched_instrument_carries_its_own_pitch_modulator():
-    """A sound whose frequency is no pitch: the instrument's own, private, inline."""
+def test_an_unpitched_instrument_reads_the_cells_of_the_voices_it_names():
+    """A sound whose frequency is no pitch: two cells, each of the voice it names."""
     p = unpitched(
-        {"u16": [{"own": "lo"}, {"own": "hi"}]},
-        state={"lo": 0, "hi": 0},
-        on=[
-            {"event": "sound", "voice": 0, "set": {"lo": {"payload": "wave"}}},
-            {"event": "sound", "voice": 1, "set": {"hi": {"payload": "wave"}}},
-        ],
+        {"u16": [{"cell": ["wave", 0]}, {"cell": ["wave", 1]}]},
         octave={"u16": [{"const": 0x11}, {"const": 0x22}]},
     )
     o = obj(
@@ -329,19 +328,47 @@ def test_an_unpitched_instrument_carries_its_own_pitch_modulator():
     )
     pl = Player(o)
     w = [pl.tick() for _ in range(3)]
-    assert pl.priv[id(o["instruments"]["0"]["pitch"])] == {"lo": 0x41, "hi": 0x41}
+    assert pl.c["wave"] == [0x41, 0x41]  # the cells the word reads, on both voices
     assert (7 + FHI, 0x00) in w[0]  # at note on no voice has latched a wave yet
     assert (FHI, 0x22) in w[1] and (FLO, 0x11) in w[1]  # its own octave, for the arpeggio
     assert (FHI, 0x41) in w[2] and (FLO, 0x41) in w[2]  # and its own frequency on the other phase
 
 
+def test_a_cell_read_names_the_voice_or_the_one_being_committed():
+    """The two forms of one vocabulary, over the same cell of two voices."""
+    p = unpitched({"u16": [{"cell": ["wave", 1]}, {"cell": "wave"}]})
+    o = obj(
+        {"1": [event(9, ins=0)], "2": [event(9, note=5, ins=1)]},
+        [{"play": [1], "end": "jump"}, {"play": [2], "end": "jump"}],
+        {"0": ins(pitch=p), "1": ins(wave=0x21)},
+    )
+    o["state0"]["wave"] = [0x55, 0]  # so the two halves cannot be the same read
+    w = render(o, 2)
+    # voice 0 reads voice 1's waveform for the low half and its own for the high
+    assert (FLO, 0x21) in w[0] and (FHI, 0x55) in w[0]
+
+
+def test_the_row_program_keeps_the_byte_cursor_the_score_no_longer_packs():
+    """A packed cursor is a cell the row program counts, and the wrap starts it over."""
+    o = obj(
+        {"1": [event(0, note=2, ins=0), event(0, note=3), event(0, sounds=False)]},
+        [{"play": [1], "end": "jump"}],
+        {"0": ins()},
+        cells={"patrow": [0]},
+    )
+    o["meta"]["row"] += PATROW
+    pl = Player(o)
+    out = []
+    for _ in range(8):
+        pl.tick()
+        out.append(pl.c["patrow"][0])
+    # two bytes a sounding row, one the keyoff, and 0 where the cursor leaves the pattern
+    assert out == [2, 2, 4, 4, 0, 0, 2, 2]
+
+
 def test_the_arpeggio_owns_what_it_does_past_the_tuning():
     """The bound is the tuning; the behaviour at that bound is the modulator's own."""
-    b = beyond(
-        [{"u16": [{"own": "lo"}, {"const": 0x33}]}, {"trap": "no event publishes rowbyte"}],
-        state={"lo": 0},
-        on=[{"event": "sound", "voice": 0, "set": {"lo": {"payload": "wave"}}}],
-    )
+    b = beyond([{"u16": [{"cell": ["wave", 0]}, {"const": 0x33}]}, {"trap": "the packed row byte"}])
     o = obj(
         {"1": [event(9, note=7, ins=0)]},  # 7 + 12 = 19, one past a tuning of 1..18
         [{"play": [1], "end": "jump"}],
@@ -352,11 +379,23 @@ def test_the_arpeggio_owns_what_it_does_past_the_tuning():
     w = render(o, 2)
     assert (FHI, 0x33) in w[1] and (FLO, 0x41) in w[1]
     o["score"]["patterns"]["1"]["events"][0]["note"] = 8  # 8 + 12 = 20, the trapped one
-    with pytest.raises(AssertionError, match="no event publishes rowbyte"):
+    with pytest.raises(AssertionError, match="the packed row byte"):
         render(o, 2)
     o["score"]["patterns"]["1"]["events"][0]["note"] = 9  # past its own bound
     with pytest.raises(AssertionError, match="beyond its own bound"):
         render(o, 2)
+
+
+def test_a_stored_player_comes_back_with_its_compiled_form_rebuilt():
+    """The resume the two chunked certifications use: state pickles, closures do not."""
+    o = obj({"1": [event(3, note=2, ins=0)]}, [{"play": [1], "end": "jump"}], {"0": ins()})
+    pl = Player(o)
+    first = [pl.tick() for _ in range(3)]
+    stored = Player(o)
+    stored.tick()
+    assert "code" not in stored.__getstate__()  # the compiled form is not state
+    back = pickle.loads(pickle.dumps(stored))
+    assert [back.tick() for _ in range(2)] == first[1:]
 
 
 def test_the_tuning_is_asked_only_for_notes_it_has():
@@ -366,11 +405,7 @@ def test_the_tuning_is_asked_only_for_notes_it_has():
 
 
 def test_the_flattened_print_carries_every_section_and_measures_itself():
-    p = unpitched(
-        {"u16": [{"own": "lo"}, {"own": "hi"}]},
-        state={"lo": 0, "hi": 0},
-        on=[{"event": "sound", "voice": 0, "set": {"lo": {"payload": "wave"}}}],
-    )
+    p = unpitched({"u16": [{"cell": ["wave", 0]}, {"cell": ["wave", 1]}]})
     o = obj(
         {"1": [event(9, note=2, ins=0, slide=(4, 1)), event(0, sounds=False)]},
         [{"play": [1], "end": "jump"}],
@@ -392,7 +427,7 @@ def test_the_flattened_print_carries_every_section_and_measures_itself():
     assert "beyond  past the tuning, by how far past it the transposition went" in text
     assert "0  trap: a cell the tick recomputes" in text
     assert "pitch   this instrument's sound is no pitch; it is its own" in text
-    assert "on sound(voice 0): lo := wave" in text
+    assert "value     u16(wave[0], wave[1])" in text
     assert "repeat(interval >> <shift>, fold(counter, 7))" in text  # an expression
     assert "(dur - 1) & $FF >= rowsleft" in text  # nested binaries parenthesised
     assert "emits   the value the tick came in with" in text

@@ -32,16 +32,16 @@ _BINOP = {
     "shr": operator.rshift,
 }
 _RANK = operator.itemgetter(0)
-# what a stored player leaves behind: the object compiled, which is read again
+# what a stored player leaves behind: the object compiled, which is read again --
+# a closure is not state and does not pickle, so the resume rebuilds it
 _DERIVED = (
-    "accname heard code tests kept rowplans plans puts steps armwhen columns ranked flagdefs"
-    " clockplan earlycode fetchcode endcode spends phases flushcode commits cursors priv subs"
+    "accname code tests kept rowplans plans puts steps armwhen columns ranked flagdefs"
+    " clockplan earlycode fetchcode endcode spends phases flushcode commits cursors"
     " rowprog stageprog allplans pitchput rates beyonds"
 ).split()
 _UNARY = {  # a node whose argument is a name, not an expression
     "cell": lambda p, a: p.cellcode(a),
     "global": lambda p, a: (lambda ov: p.gl[a] & 0xFFFF),
-    "own": lambda p, a: (lambda ov: p.own[a]),
     "flag": lambda p, a: (lambda ov: p.flags.get(a, 0)),
     "payload": lambda p, a: (lambda ov: ov[a]),
     "ins": lambda p, a: (lambda ov: p.column(p.instr(), a)),
@@ -90,13 +90,6 @@ class Player:
             k: v["pw"][0] | v["pw"][1] << 8 for k, v in obj["instruments"].items() if "pw" in v
         }
         self.flags = {}
-        # an accumulator is named by the key it is declared under and nowhere else
-        self.accname = {id(a): k for k, a in obj["accs"].items()}
-        self.priv, self.subs = {}, []
-        for owner in self.owners():
-            self.priv[id(owner)] = dict(owner["state"])
-            self.subs += [(id(owner), x) for x in owner["on"]]
-        self.own = None
         self.beyond = None  # the stream stepping, for its own behaviour past the tuning
         self.cur = None  # the modulator stepping, for its own behaviour past the tuning
         sh = m.get("shadow")  # a register file flushed once per tick, in a stated order
@@ -148,11 +141,6 @@ class Player:
         o, t = self.o, self.tempo
         # an accumulator is named by the key it is declared under and nowhere else
         self.accname = {id(a): k for k, a in o["accs"].items()}
-        self.heard = {}  # the subscriptions one published fact reaches
-        for key, sub in self.subs:
-            self.heard.setdefault((sub["event"], sub["voice"], sub.get("acc")), []).append(
-                (key, sub)
-            )
         # the memos a reading fills: a closure per node, a predicate per guard list,
         # a setter per target, a plan per accumulator, stream, arm and column
         self.code, self.tests, self.kept = {}, {}, []
@@ -207,38 +195,18 @@ class Player:
             (k, d) for k, d in self.cursor.items() if k not in glob and k not in self.gcursor
         )
 
-    def owners(self):
-        """Every modulator with private state, in the one order the player keeps them.
-
-        The order is the enumeration itself, which is what lets a stored player
-        come back: ``id`` keys nothing across a pickle, so the state is carried
-        by position and re-keyed against the object it is read with.
-        """
-        o = self.o
-        seq = [a.get("beyond") for a in o["accs"].values()]
-        seq += [i.get("pitch") for i in o["instruments"].values()]
-        seq += [s.get("beyond") for s in o["streams"].values()]
-        return [x for x in seq if x is not None]
-
     def __getstate__(self):
-        """A player without its derived form: the compiled object, and the id keys."""
-        d = {k: v for k, v in self.__dict__.items() if k not in _DERIVED}
-        d["_own"] = [self.priv[id(x)] for x in self.owners()]
-        return d
+        """A player without its derived form: the cells and cursors, and no closures."""
+        return {k: v for k, v in self.__dict__.items() if k not in _DERIVED}
 
     def __setstate__(self, d):
-        """A stored player, read back: compile the object again and re-key the state."""
-        own = d.pop("_own")
+        """A stored player, read back: the object compiled again from the object."""
         self.__dict__.update(d)
-        self.priv, self.subs = {}, []
-        for x, state in zip(self.owners(), own):
-            self.priv[id(x)] = state
-            self.subs += [(id(x), y) for y in x["on"]]
         self.compile()
 
     # ---- reading the object ---------------------------------------------------
     def cell(self, name):
-        """A cell of the voice being committed.  There is no other-voice form."""
+        """One named cell, on the voice ``self.v`` names."""
         v = self.v
         if name == "voice_index":
             return v
@@ -293,14 +261,6 @@ class Player:
             raise AssertionError("note %d is outside the tuning" % n)
         return p["freq"][k]
 
-    def private(self, owner, e):
-        """Evaluate ``e`` over ``owner``'s own private state."""
-        keep, self.own = self.own, self.priv[id(owner)]
-        try:
-            return self.ev(e) & 0xFFFF
-        finally:
-            self.own = keep
-
     def unpitched(self):
         """The instrument's own pitch modulator, where its sound is no pitch."""
         return self.instr().get("pitch")
@@ -308,10 +268,7 @@ class Player:
     def pitchof(self):
         """The voice's frequency: its note in the tuning, or the instrument's own."""
         n = self.c["note"][self.v]
-        if n is not None:
-            return self.tuned(n)
-        p = self.unpitched()
-        return self.private(p, p["value"])
+        return self.tuned(n) if n is not None else self.ev(self.unpitched()["value"])
 
     def transpose(self, off):
         """This voice's pitch moved by ``off`` semitones -- the arpeggio's question.
@@ -322,8 +279,7 @@ class Player:
         """
         n = self.c["note"][self.v]
         if n is None:
-            p = self.unpitched()
-            return self.private(p, p["octave" if off else "value"])
+            return self.ev(self.unpitched()["octave" if off else "value"])
         return self.freq_of(n + off)
 
     def freq_of(self, n):
@@ -465,11 +421,27 @@ class Player:
         raise AssertionError(why)
 
     def cellcode(self, name):
-        """A cell read, compiled: a plain voice cell is its own list and index."""
+        """A cell read, compiled: the voice being committed, or the one it names.
+
+        One vocabulary either way -- a name, its space, its half (§5).  A word
+        about another voice's state states that voice, and reads the same cell
+        the voice itself would: ``{"cell": [name, v]}`` beside ``{"cell": name}``.
+        """
+        if isinstance(name, list):
+            name, u = name
+            return lambda ov: self.on_voice(name, u)
         if name in self.c and name not in ("freq_hi", "freq_lo"):
             d = self.c[name]
             return lambda ov: d[self.v] & 0xFFFF
         return lambda ov: self.cell(name)
+
+    def on_voice(self, name, u):
+        """One cell of the voice ``u``, read as that voice reads it."""
+        keep, self.v = self.v, u
+        try:
+            return self.cell(name)
+        finally:
+            self.v = keep
 
     def dividercode(self, r):
         """§3.3's divider, compiled: one procedure wherever a ``rate`` is one.
@@ -521,15 +493,6 @@ class Player:
         if "trap" in row:
             raise AssertionError("%s row %d: %s" % (name, y, row["trap"]))
         return row
-
-    def publish(self, event, voice, payload=None, acc=None):
-        """One musical fact, offered to every modulator that subscribes to it."""
-        for key, sub in self.heard.get((event, voice, acc), ()):
-            own = self.priv[key]
-            for k, e in sub.get("set", {}).items():
-                own[k] = self.ev(e, payload) & 0xFF
-            for k, e in sub.get("add", {}).items():  # a cursor counts for itself
-                own[k] = (own[k] + self.ev(e, payload)) & 0xFF
 
     def instr(self, v=None):
         return self.o["instruments"][str(self.c["ins"][self.v if v is None else v])]
@@ -841,7 +804,7 @@ class Player:
         w = b["words"][d]
         if "trap" in w:
             raise AssertionError("%s, %d past the tuning: %s" % (who, d, w["trap"]))
-        return self.private(b, w)
+        return self.ev(w)
 
     # ---- writing --------------------------------------------------------------
     def put_to(self, t):
@@ -859,8 +822,6 @@ class Player:
         if t[:1] == "@":
             k = t[1:]
             d, m = self.c[k], 0xFFFF if k in self.wide else 0xFF
-            if k == "wave":  # the voice's waveform moved: the fact a modulator mirrors
-                return lambda val, prod, edge: self.sounded(d, val & m)
             return lambda val, prod, edge: d.__setitem__(self.v, val & m)
         if t[:1] == "#":
             k, m = t[1:], 0xFFFF if t[1:] in self.wide else 0xFF
@@ -893,11 +854,6 @@ class Player:
         """The voice's frequency cell, and the pair the commit sends with it."""
         d[self.v] = val
         prod.extend((("freq_lo", val & 0xFF), ("freq_hi", (val >> 8) & 0xFF)))
-
-    def sounded(self, d, val):
-        """A voice cell whose move is a fact of its own: the waveform."""
-        d[self.v] = val
-        self.publish("sound", self.v, {"wave": val})
 
     def commit(self, prod, edge):
         """One group of the tick's per-voice writes: its producers, then its edges."""
@@ -1129,8 +1085,6 @@ class Player:
             return False
         self.c["orderpos"][v] = j["jump"] if isinstance(j, dict) else 0
         self.evrow[v] = self.c["rowsleft"][v] = 0
-        self.publish("wrap", v)
-        self.publish("order", v, {"pos": self.c["orderpos"][v]})
         return True
 
     def order_step(self, v):
@@ -1166,12 +1120,17 @@ class Player:
             self.c["orderpos"][v] = top[1] if n else op.get("next", pos + 1)
             if not n:
                 self.loopstack[v].pop()
-        self.publish("wrap", v)
-        self.publish("order", v, {"pos": self.c["orderpos"][v]})
 
     def keys(self, e):
         """Whether a row starts a sound: the one place the object is asked."""
         return e is not None and e["sounds"] and not self.tied[self.v]
+
+    def wrapping(self):
+        """Whether the cursor leaves its pattern after this row -- a byte cursor's end."""
+        v = self.v
+        play = self.order_of(v)["play"]
+        n = len(self.pattern_of(v)["events"]) if self.c["orderpos"][v] < len(play) else 0
+        return int(self.evrow[v] + 1 >= n)
 
     def gate_mask(self, e):
         """The ctrl mask a row leaves: its own gate statement, else whether it sounds."""
@@ -1191,7 +1150,6 @@ class Player:
         for when, step, sets in self.rowprog:
             if when(self.payload):
                 self.row_step(step, sets, play, e, prod, edge)
-        self.publish("row", self.v, self.payload)
 
     def row_facts(self, e):
         """What the row is, as the values its own steps and streams read.
@@ -1209,6 +1167,7 @@ class Player:
                 "tie": 0,
                 "dur": 0,
                 "note": 0,
+                "wraps": 0,
             }
         return {
             "dur": e["dur"],  # a row's own length, and the note it names
@@ -1220,6 +1179,9 @@ class Player:
             "gate_stmt": int(e["gate"] is not None),
             "tie": int(self.tied[self.v]),
             "gate": self.gate_mask(e),
+            # where a byte cursor the score no longer packs ends: the row program
+            # keeps such a cursor itself, and this is where it starts over (§3.6)
+            "wraps": self.wrapping(),
         }
 
     def row_step(self, step, sets, play, e, prod, edge):
@@ -1238,7 +1200,6 @@ class Player:
         elif "ins" in step:
             if e["ins"] is not None:
                 self.c["ins"][self.v] = e["ins"]
-                self.publish("instrument", self.v, {"ins": e["ins"]})
         elif "note" in step:
             self.sound(play, e, prod, edge)
         elif "hold" in step and e["arm"] is not None:  # the command the voice keeps
@@ -1251,8 +1212,6 @@ class Player:
         self.c["note"][v] = (
             None if n is None else n + play.get("transpose", 0) + self.instr().get("transpose", 0)
         )
-        if n is not None:
-            self.publish("note", v, {"note": self.c["note"][v]})
         self.note_on(prod, edge)
 
     def note_on(self, prod, edge):
@@ -1398,7 +1357,6 @@ class Player:
             if self.turned(a["amplitude"], out, ph, ov):
                 k = a["phase"]["cell"]
                 self.put(k, (self.whole(k) + (-1 if ph else 1)) & 0xFF)
-                self.publish("turn", self.v, {"phase": self.whole(k)}, acc=self.accname[id(a)])
         return out
 
     def turned(self, am, out, ph, ov):
