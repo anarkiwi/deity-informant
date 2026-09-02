@@ -69,9 +69,12 @@ PACKED = "the packed row byte, which the score keeps as an event's own fields"
 # the packed byte the score keeps as an event's own fields and no cell holds
 REGION = ("orderpos", "patrow", "rowsleft", "rowbyte", "wave", "note", "ins")
 
+# the region opens with the routine's own index table, $54E8..$54EA, and the
+# scalar at $54EB that holds the entry of the voice being run: a voice cell like
+# any other, seeded from that table and written by nothing
 FUSED = (
     [{"const": 7 * i} for i in range(3)]
-    + [{"sid_base": "reader"}]
+    + [{"cell": "voicebase"}]
     + [{"cell": [k, i]} if k != "rowbyte" else PACKED for k in REGION for i in range(3)]
     + [SCRATCH] * 12
     + [{"cell": [k, i]} for k in ("pwdelay", "pwdir") for i in range(3)]
@@ -502,10 +505,10 @@ def build(path, song=0):
                         {
                             "when": [[{"cell": "voice_index"}, "==", 0]],
                             "sets": [
-                                ["reg.4", 0],
-                                ["reg.11", 0],
-                                ["reg.18", 0],
-                                ["reg.24", 0x0F],
+                                ["v0.ctrl", 0],
+                                ["v1.ctrl", 0],
+                                ["v2.ctrl", 0],
+                                ["mode_vol", 0x0F],
                             ],
                         }
                     ]
@@ -516,6 +519,7 @@ def build(path, song=0):
             "ins": [m[0x54FE + v] for v in range(3)],
             "wave": [m[0x54F8 + v] for v in range(3)],
             "cells": {
+                "voicebase": [m[0x54E8 + v] for v in range(3)],
                 "patrow": [m[0x54EF + v] for v in range(3)],
                 "pwdir": [m[0x5510 + v] for v in range(3)],
                 "pwdelay": [m[0x550D + v] for v in range(3)],

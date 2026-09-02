@@ -132,7 +132,8 @@ def test_a_word_past_the_tuning_names_the_voice_whose_cell_it_reads():
 
     Every other read in the object is the voice being committed; the memory model
     the overrun *is* -- which player variable lives past the tuning -- is the one
-    place a word names another voice, and it names it outright.
+    place a word names another voice, and it names it outright.  The one word that
+    does not is the routine's own index into those arrays, which is the reader's.
     """
     obj = built(0)
 
@@ -149,8 +150,9 @@ def test_a_word_past_the_tuning_names_the_voice_whose_cell_it_reads():
 
     past = cells(obj["accs"]["arpeggio"]["beyond"], [])
     past += cells([i["pitch"] for i in obj["instruments"].values() if "pitch" in i], [])
-    assert past and all(isinstance(c, list) and c[1] in (0, 1, 2) for c in past)
-    assert {c[0] for c in past} <= {
+    assert past and all(c == "voicebase" or c[1] in (0, 1, 2) for c in past)
+    assert {c if isinstance(c, str) else c[0] for c in past} <= {
+        "voicebase",
         "orderpos",
         "patrow",
         "rowsleft",

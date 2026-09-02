@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from deity_informant.lifter import lift  # noqa: E402
 from deity_informant.trackerprog import printer  # noqa: E402
 from deity_informant.trackerprog.attest import COMPARED, DROPPED  # noqa: E402
-from deity_informant.trackerprog.universal import Player, render  # noqa: E402
+from deity_informant.trackerprog.universal import REGNAME, Player, render  # noqa: E402
 from deity_informant.tuneprog import grid  # noqa: E402
 from deity_informant.trackerprog.refuse import Refusal  # noqa: E402
 from deity_informant.tuneprog.machine import MachineImage, find_entries, port_bank  # noqa: E402
@@ -909,12 +909,12 @@ class Tune:
                 "sets": [
                     ["pw_lo", {"cell": "pw.lo"}],
                     ["pw_hi", {"cell": "pw.hi"}],
-                    ["reg.22", {"global": "cutoff"}],
+                    ["cutoff_hi", {"global": "cutoff"}],
                     ["pitch", {"cell": "freq"}],
                     ["ad", {"cell": "ad"}],
                     ["sr", {"cell": "sr"}],
                     ["ctrl", {"and": [{"cell": "wave"}, {"cell": "gatemask"}]}],
-                    ["reg.24", {"or": [{"global": "mode_vol"}, {"global": "vol_or"}]}],
+                    ["mode_vol", {"or": [{"global": "mode_vol"}, {"global": "vol_or"}]}],
                 ],
             },
             {"when": [], "sets": [["@fx", 0]]},
@@ -1132,12 +1132,12 @@ class Tune:
         mask = {"tabcell": ["voicebits", {"cell": "voice_index"}, "mask"]}
         bit = {"tabcell": ["voicebits", {"cell": "voice_index"}, "bit"]}
         if vol & 0x0F in (0, 8):
-            return [["#res", {"and": [res, mask]}], ["reg.23", {"global": "res"}]]
+            return [["#res", {"and": [res, mask]}], ["res_route", {"global": "res"}]]
         return [
             ["#mode_vol", (vol & 0x0F) << 4],
-            ["reg.24", {"or": [(vol & 0x0F) << 4, {"global": "vol_or"}]}],
+            ["mode_vol", {"or": [(vol & 0x0F) << 4, {"global": "vol_or"}]}],
             ["#res", {"or": [{"or": [{"and": [res, 0x0F]}, bit]}, vol & 0xF0]}],
-            ["reg.23", {"global": "res"}],
+            ["res_route", {"global": "res"}],
         ]
 
     # ---- the tune's one global channel ----------------------------------------
@@ -1216,13 +1216,13 @@ class Tune:
         """What the wrapper writes over the player's own image, every frame."""
         L, b = self.L, self.L["buf"]
         return [
-            [L["pw0_lo"] - b, self.wrapcell("pw0_lo")],
-            [L["pw0_hi"] - b, self.wrapcell("pw0_hi")],
-            [L["pw1_lo"] - b, self.wrapcell("pw1_lo")],
-            [L["pw1_hi"] - b, self.wrapcell("pw1_hi")],
-            [L["cut_reg"] - b, self.wrapcell("cut")],
-            [L["res_reg"] - b, L["res_ov"]],
-            [L["vol_reg"] - b, L["vol_ov"]],
+            [REGNAME[L["pw0_lo"] - b], self.wrapcell("pw0_lo")],
+            [REGNAME[L["pw0_hi"] - b], self.wrapcell("pw0_hi")],
+            [REGNAME[L["pw1_lo"] - b], self.wrapcell("pw1_lo")],
+            [REGNAME[L["pw1_hi"] - b], self.wrapcell("pw1_hi")],
+            [REGNAME[L["cut_reg"] - b], self.wrapcell("cut")],
+            [REGNAME[L["res_reg"] - b], L["res_ov"]],
+            [REGNAME[L["vol_reg"] - b], L["vol_ov"]],
         ]
 
     def flush(self):
@@ -1234,8 +1234,8 @@ class Tune:
         """
         run = [[{"global": "playing"}, "!=", 0]]
         d = self.wrapcell("delay")
-        return [[r, run + [[d, "==", 0]]] for r in range(25)] + [
-            [r, run + [[d, "!=", 0]]] for r in range(24, -1, -1)
+        return [[REGNAME[r], run + [[d, "==", 0]]] for r in range(25)] + [
+            [REGNAME[r], run + [[d, "!=", 0]]] for r in range(24, -1, -1)
         ]
 
     # ---- the state the tune's own init leaves ---------------------------------

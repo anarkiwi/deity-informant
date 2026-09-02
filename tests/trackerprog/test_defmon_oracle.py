@@ -65,7 +65,7 @@ def test_the_two_builds_differ_in_their_multispeed_and_their_data(name):
     t = obj["meta"]["tempo"]  # the entry's rate, as the one clock form's own divider
     assert (t["cell"], t["step"], t["rate"], t["phase"]) == ("rowsleft", -1, rate, 0)
     assert obj["meta"]["shadow"]["registers"] == TD.FLUSH  # the cutoff is not the image's
-    assert 22 not in TD.FLUSH
+    assert "cutoff_hi" not in TD.FLUSH
     assert sorted(obj["streams"]) == STREAMS
     assert sorted(obj["accs"]) == ACCS
     ends = {o["end"] if isinstance(o["end"], str) else "jump" for o in obj["score"]["orders"]}

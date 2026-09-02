@@ -115,7 +115,7 @@ def obj(patterns, orders, instruments, pitch=None, rate=2, beyond=None, cells=No
             "patterns": {k: v if "events" in v else pat(v) for k, v in patterns.items()},
             "orders": orders,
             # the tune's own end: the registers the routine writes, in its own order
-            "commands": {"silence": {"rows": [{"sets": [["reg.4", 0], ["reg.24", 0x0F]]}]}},
+            "commands": {"silence": {"rows": [{"sets": [["v0.ctrl", 0], ["mode_vol", 0x0F]]}]}},
         },
         "state0": {
             "ins": [0] * n,

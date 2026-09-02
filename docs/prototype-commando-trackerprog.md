@@ -193,7 +193,7 @@ transposition went and never by a note.
       bound   [$0000, $FFFF] projected -- the 16-bit store
       beyond  past the tuning, by how far past it the transposition went
             0  u16(0, 7)
-            1  u16(14, sid_base(reader))
+            1  u16(14, voicebase)
             2  u16(orderpos[0], orderpos[1])
             3  u16(orderpos[2], patrow[0])
             4  u16(patrow[1], patrow[2])
@@ -261,9 +261,12 @@ engine's per-voice state, so a word says which voice: `{"cell": [name, voice]}`
 beside `{"cell": name}`, the same name, space and half, read on the voice the
 word names instead of the voice being committed.
 
-`sid_base` is the chip's own register layout — the offset the player computes
-for every write it emits — so even the SID stride is not a constant in the data,
-and a word that depends on nothing live is folded to a number at build time.
+The region opens with the routine's own index table, `$54E8..$54EA`, and the
+scalar at `$54EB` that holds the entry of the voice being run: that scalar is a
+voice cell like any other, `voicebase`, seeded from the table and written by
+nothing, so the `X = 7v` index is a byte of the tune's memory and not an
+expression form the player computes (R6). A word that depends on nothing live is
+folded to a number at build time.
 
 **What this replaces.** The first draft carried a second modulation language for
 this one family: seven event kinds (`sound`, `note`, `instrument`, `order`,

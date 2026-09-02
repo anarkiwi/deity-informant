@@ -290,10 +290,10 @@ for one pushed one, and is a named refusal. None of the 33 tracks is one.
 
 ## 5. What the spec got right
 
-- **`reg.N` is `set_register`.** I6 settled §3.6's command list with a
+- **A named register is `set_register`.** I6 settled §3.6's command list with a
   `set_register` form for exactly this family's `$85`. It needed no new form:
-  §3.7's `reg.N` target, added for JCH's global channel, writes the chip by
-  number and across voices already. The expectation was right about the need
+  the named-register target, added for JCH's global channel, writes any voice's
+  register already. The expectation was right about the need
   and wrong about the spelling.
 - **The instrument is the note-on.** §3.5 says an instrument is the cells a
   note-on writes plus the streams it re-points. This family has no instrument
@@ -431,7 +431,7 @@ which is which is the point of writing it down.
 | # | the expectation | what the code said |
 | --- | --- | --- |
 | 1 | the score is a stack machine, not an order→pattern nest, and it restores §6.2's struck `call`/`ret`/`for` | **held.** Six steps, one per control byte, 904 of them across 32 subtunes. What was not foreseen is that a call must name its **return** rather than take the next step (§4.2), because the 6502 pushes an address and the block list's order is not the program's |
-| 2 | `set_register`, settled by I6 and never rendered, finally renders | **held in kind, not in spelling.** `$85` needed no new form: §3.7's `reg.N`, added for JCH's global channel, is a register by number written from a voice, and that is exactly what a raw list is. The expectation was right that the family needs it and wrong that the layer lacked it |
+| 2 | `set_register`, settled by I6 and never rendered, finally renders | **held in kind, not in spelling.** `$85` needed no new form: the named-register target, added for JCH's global channel, is a register of any voice written from a voice, and that is exactly what a raw list is. The expectation was right that the family needs it and wrong that the layer lacked it |
 | 3 | no instrument table: the instrument is a run of commands, and §3.5's `Ins` is tested hardest | **held.** `instruments` has one entry with no columns and no accs, the note-on is its inline stream, and the cells it reads are filled by the score's own commands. §3.5 did not have to change — what changed is that an instrument can be *empty*, and the family is still complete |
 | 4 | STATE that includes code bytes the tick rewrites | **held, and it cost nothing.** Six immediates and a handler's two data bytes are cells like any other; `state0` reads them at their addresses. The tuneprog layer had already done the work (`trace.py`'s `cells = code & (written_init \| written_play)`), and the trackerprog inherits it without a word |
 | 5 | the blip is a note-on phase *after* the note, the mirror of `early` | **held in kind, not in spelling.** It is not a prelude at all and not an `Acc`: it is a countdown cell the note-on loads and two guarded rows that fire when it runs out. And its own `gated` guard measures **0** on all three builds, which §7 records rather than hides |

@@ -877,10 +877,10 @@ def _loadfilt(m, b, steps):
     route = hdr[9] | hdr[10] << 1 | hdr[11] << 2
     seed = oneshot(steps[3], mod["period"], mod["type"], 8)
     return [
-        ["reg.24", f["mode_vol"]],
-        ["reg.22", f["cutoff"]],
+        ["mode_vol", f["mode_vol"]],
+        ["cutoff_hi", f["cutoff"]],
         ["#cutbase", f["cutoff"]],
-        ["reg.23", f["res"] | route],
+        ["res_route", f["res"] | route],
         ["#owner", owner],
         ["#fmode", mod["mode"]],
         ["#frate", mod["rate"]],
@@ -1046,7 +1046,7 @@ def build(path, ticks=TICKS, song=1):
                     "freset",
                 )
             },
-            "commit": [[22, masked({"add": [glob("cutbase"), glob("cutoff_off")]})]],
+            "commit": [["cutoff_hi", masked({"add": [glob("cutbase"), glob("cutoff_off")]})]],
         },
         "pitch": {
             "base": notes[0],

@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tuneprog"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "tools"))
 
 from deity_informant.trackerprog import printer  # noqa: E402
+from deity_informant.trackerprog.universal import REGNAME  # noqa: E402
 
 import trackerprog_jch as TJ  # noqa: E402
 from _hvsc import EASY, GULDKORN, KNOB, tune_file  # noqa: E402
@@ -126,7 +127,8 @@ def test_the_two_builds_disagree_about_having_a_shadow(name):
     assert obj["meta"]["commit_order"] == ["ad", "sr", "ctrl"]
     if name == KNOB:  # the same 25 registers, in the direction the frame's own byte picks
         regs = obj["meta"]["shadow"]["registers"]
-        assert [r for r, _ in regs] == list(range(25)) + list(range(24, -1, -1))
+        order = list(range(25)) + list(range(24, -1, -1))
+        assert [r for r, _ in regs] == [REGNAME[r] for r in order]
         assert all(len(w) == 2 for _, w in regs)
 
 

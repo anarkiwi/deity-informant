@@ -7,9 +7,11 @@ commands spent at the fetch rather than held for the boundary, and a register of
 the tune's one global channel written by the voice whose write-out sends it.
 """
 
-from deity_informant.trackerprog.universal import REG, Player, render
+from deity_informant.trackerprog.universal import REG, Player, chipreg, render
 
-FLUSH = list(range(7))  # a one-voice image: the registers the write-out runs
+# a one-voice image: the registers the write-out runs, named as the object names them
+FLUSH = ["v0.%s" % k for k in REG]
+FLUSHED = [chipreg(r) for r in FLUSH]
 
 
 def obj(streams=None, events=None, commands=None, shadow=None, **meta):
@@ -146,30 +148,30 @@ def test_a_flush_entry_states_the_guard_the_image_writes_it_under():
         }
     }
     w = render(obj(shadow=up + down, streams=st), 4)
-    assert [r for r, _ in w[0]] == FLUSH  # the frame carries no delay
-    assert [r for r, _ in w[1]] == list(reversed(FLUSH))  # and the next one does
-    assert [r for r, _ in w[2]] == FLUSH
+    assert [r for r, _ in w[0]] == FLUSHED  # the frame carries no delay
+    assert [r for r, _ in w[1]] == list(reversed(FLUSHED))  # and the next one does
+    assert [r for r, _ in w[2]] == FLUSHED
 
 
 def test_a_flush_entry_with_no_guard_is_the_entry_every_frame_writes():
     """A bare register is the degenerate entry: no guard, so every flush carries it."""
     w = render(obj(shadow=FLUSH), 2)
-    assert [r for r, _ in w[0]] == FLUSH
-    assert [r for r, _ in w[1]] == FLUSH
+    assert [r for r, _ in w[0]] == FLUSHED
+    assert [r for r, _ in w[1]] == FLUSHED
 
 
 def test_a_voice_writes_a_register_of_the_one_global_channel():
-    """``reg.N`` is the channel's own register, sent by the voice whose write-out runs."""
+    """A register named outright is sent by the voice whose write-out runs."""
     st = {
         "out": {
             "rank": 0,
             "all": True,
-            "rows": [{"when": [], "sets": [["reg.22", {"global": "level"}], ["ctrl", 0x41]]}],
+            "rows": [{"when": [], "sets": [["cutoff_hi", {"global": "level"}], ["ctrl", 0x41]]}],
         }
     }
     w = render(obj(streams=st), 1)
     assert w[0] == [(22, 0x40), (4, 0x41)]  # the producer first, then the voice's edge
-    image = render(obj(streams=st, shadow=FLUSH + [22]), 2)
+    image = render(obj(streams=st, shadow=FLUSH + ["cutoff_hi"]), 2)
     assert dict(image[1])[22] == 0x40  # through an image that holds it, the tick after
 
 
@@ -267,7 +269,7 @@ def test_a_play_list_whose_end_names_a_command_runs_it_on_a_tick_of_its_own():
     the tick after it -- the registers the routine writes, in its own order."""
     o = ordered([{"pattern": "0"}])
     o["score"]["orders"] = [{"play": [{"pattern": "0"}], "end": {"stop": "silence"}}]
-    o["score"]["commands"]["silence"] = {"rows": [{"sets": [["reg.4", 0], ["reg.24", 0x0F]]}]}
+    o["score"]["commands"]["silence"] = {"rows": [{"sets": [["v0.ctrl", 0], ["mode_vol", 0x0F]]}]}
     w = render(o, 12)
     assert w[5] == [(4, 0), (24, 0x0F)]  # the tick after the last row, and only it
     assert not any(w[6:]) and w[2] == [(4, 1)]

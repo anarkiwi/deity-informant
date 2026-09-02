@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "tools"))
 
 from deity_informant.trackerprog import printer  # noqa: E402
 from deity_informant.trackerprog.attest import attest  # noqa: E402
+from deity_informant.trackerprog.universal import CHIP  # noqa: E402
 
 import trackerprog_follin as TF  # noqa: E402
 from _hvsc import GNG, tune_file  # noqa: E402
@@ -122,8 +123,8 @@ def test_a_raw_register_list_is_a_command_that_writes_the_chip_by_number():
     for pat in built(0)["score"]["patterns"].values():
         for e in pat["events"]:
             for row in (e["arm"] or {}).get("rows", ()):
-                regs |= {t for t, _ in row["sets"] if str(t).startswith("reg.")}
-    assert regs and all(0 <= int(r.split(".")[1]) < 0x19 for r in regs)
+                regs |= {t for t, _ in row["sets"] if t in CHIP}
+    assert regs and {r.split(".")[0] for r in regs} > {"v0", "v1", "v2"} - {"res_route"}
 
 
 def test_no_number_outside_the_tuning_is_a_note():

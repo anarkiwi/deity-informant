@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import lzma
 
+from .universal import chipreg
+
 OPS = {"and": "&", "add": "+", "sub": "-", "or": "|", "xor": "^"}
 
 
@@ -46,8 +48,8 @@ def expr(e, notes=None):
         return "ins[%s].%s" % (a[0], a[1])
     if k == "tuned":
         return "pitch[%s]" % expr(a, notes)
-    if k == "sid_base":
-        return "sid_base(%s)" % (a if isinstance(a, (int, str)) else expr(a, notes))
+    if k == "bug":
+        return "bug(%s)" % a
     if k == "u16":
         return "u16(%s, %s)" % (expr(a[0], notes), expr(a[1], notes))
     if k in OPS:
@@ -119,11 +121,12 @@ def _flush(rs):
     An entry may carry the guard the image writes it under, so a flush is a
     sequence of guarded writes and the plain register is the entry with none.
     """
-    if any(not isinstance(r, int) for r in rs):
-        return "under its own guards, %d of them" % sum(1 for r in rs if not isinstance(r, int))
-    if rs == sorted(rs, reverse=True):
+    if any(not isinstance(r, str) for r in rs):
+        return "under its own guards, %d of them" % sum(1 for r in rs if not isinstance(r, str))
+    ns = [chipreg(r) for r in rs]
+    if ns == sorted(ns, reverse=True):
         return "descending"
-    return "ascending" if rs == sorted(rs) else "in the image's own order"
+    return "ascending" if ns == sorted(ns) else "in the image's own order"
 
 
 def _end(j):
@@ -192,7 +195,7 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
         add(
             "global     %s := %s%s"
             % (
-                hexv(c[0]),
+                c[0],
                 expr(c[1], notes),
                 "" if len(c) < 3 else " when %s" % guards(c[2], notes),
             )
@@ -375,15 +378,11 @@ def _consumes(r, notes):
     return "the row consumes the voice's tick when %s" % guards(r, notes)
 
 
-def _target(t):
-    return t if isinstance(t, str) else "reg " + hexv(t)
-
-
 def _sets(rows, notes):
     """Assignments, each with the guards that let it through where it has any."""
     return " ; ".join(
         "%s := %s%s"
-        % (_target(r[0]), expr(r[1], notes), "" if len(r) < 3 else " when %s" % guards(r[2], notes))
+        % (r[0], expr(r[1], notes), "" if len(r) < 3 else " when %s" % guards(r[2], notes))
         for r in rows
     )
 

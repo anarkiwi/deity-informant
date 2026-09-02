@@ -176,7 +176,8 @@ DEAD = {
     "note.absolute": "no sidTAB row of the build that has the column takes a note outright",
 }
 # the image the tick writes out, in the order the tune's own write-out runs
-FLUSH = [7 * v + r for v in range(3) for r in (2, 3, 0, 1, 6, 5, 4)] + [23, 24]
+WRITEOUT = ("pw_lo", "pw_hi", "freq_lo", "freq_hi", "sr", "ad", "ctrl")
+FLUSH = ["v%d.%s" % (v, k) for v in range(3) for k in WRITEOUT] + ["res_route", "mode_vol"]
 OSC = {"cell": "osc"}
 PWS = {"cell": "pwstep"}
 FI = {"cell": "freq_idx"}
@@ -815,9 +816,9 @@ class Tune:
             "streams": ["filter"],
             "flags": {"C": {"default": 0}, "bounce": {"default": 0}},
             "commit": [
-                [22, {"global": "cutoff"}],
-                [23, {"global": "res_route"}],
-                [24, {"or": [{"global": "mode_vol"}, 0x0F]}],
+                ["cutoff_hi", {"global": "cutoff"}],
+                ["res_route", {"global": "res_route"}],
+                ["mode_vol", {"or": [{"global": "mode_vol"}, 0x0F]}],
             ],
         }
 

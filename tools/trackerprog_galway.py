@@ -1073,10 +1073,10 @@ def build(path, song=1, ticks=TICKS):
         },
         "globals": {
             "commit": [
-                [24, {"const": m[VOL] | m[FILTSH + 3]}],
-                [21, {"const": m[FILTSH]}],
-                [22, {"const": m[FILTSH + 1]}],
-                [23, {"const": m[FILTSH + 2]}],
+                ["mode_vol", {"const": m[VOL] | m[FILTSH + 3]}],
+                ["cutoff_lo", {"const": m[FILTSH]}],
+                ["cutoff_hi", {"const": m[FILTSH + 1]}],
+                ["res_route", {"const": m[FILTSH + 2]}],
             ],
             "flags": {
                 "pmdone": {"default": {"const": 0}},

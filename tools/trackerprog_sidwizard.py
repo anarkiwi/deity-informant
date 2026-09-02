@@ -681,7 +681,7 @@ class Tune:
         ctrl, vib = self.rec(i, 0), self.rec(i, 5)
         s = [["@slidevib", ctrl & 0x30]]
         if ctrl & 0x08:  # the first frame's waveform, sounded against the test bit
-            hi = {"sid_base": "reader"} if L["hibug"] else NOTE
+            hi = {"bug": "voice_base"} if L["hibug"] else NOTE
             s += [["freq_hi", {"shr": [{"tuned": hi}, 8]}], ["@wave", self.rec(i, 0x0F)]]
         s.append(["@gate", 0xFF])
         if L["arpscnt_reset"]:
@@ -1107,11 +1107,11 @@ class Tune:
             "streams": [],
             "flags": {"C": {"default": 0}},
             "commit": [
-                [23, {"or": [{"global": "fswitch"}, {"global": "resonib"}]}],
-                [24, {"or": [{"global": "mainvol"}, {"global": "fltband"}]}],
-                [22, cut, [[{"global": "ckbdtrk"}, "==", 0]]],
-                [22, track, [[{"global": "ckbdtrk"}, "!=", 0]]],
-                [21, {"and": [{"global": "cutoff"}, 7]}],
+                ["res_route", {"or": [{"global": "fswitch"}, {"global": "resonib"}]}],
+                ["mode_vol", {"or": [{"global": "mainvol"}, {"global": "fltband"}]}],
+                ["cutoff_hi", cut, [[{"global": "ckbdtrk"}, "==", 0]]],
+                ["cutoff_hi", track, [[{"global": "ckbdtrk"}, "!=", 0]]],
+                ["cutoff_lo", {"and": [{"global": "cutoff"}, 7]}],
             ],
         }
 

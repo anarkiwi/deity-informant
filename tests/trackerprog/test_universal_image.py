@@ -7,10 +7,12 @@ not hold, the section 5 cell vocabulary read and written as a ``sets`` target,
 reporting the decision the step made rather than a re-reading of the cell.
 """
 
-from deity_informant.trackerprog.universal import Player, render
+from deity_informant.trackerprog.universal import Player, chipreg, render
 
-FLUSH = [2, 3, 0, 1, 6, 5, 4, 23, 24]  # the image, in the order the write-out runs
-CUT = 22  # written where it is made: the image has no byte for it
+# the image, in the order the write-out runs
+FLUSH = ["v0.pw_lo", "v0.pw_hi", "v0.freq_lo", "v0.freq_hi", "v0.sr", "v0.ad", "v0.ctrl"]
+FLUSH += ["res_route", "mode_vol"]
+CUT = "cutoff_hi"  # written where it is made: the image has no byte for it
 
 
 def obj(streams=None, accs=None, arms=(), commit=(), gstreams=(), cells=None, **meta):
@@ -82,7 +84,7 @@ def event(note=None, arm=None, dur=1):
 def test_the_flush_writes_the_registers_the_image_names_in_its_own_order():
     """The image is the registers the flush lists; the file's others are not its."""
     w = render(obj(), 2)
-    assert [r for r, _ in w[0]] == FLUSH
+    assert [r for r, _ in w[0]] == [chipreg(r) for r in FLUSH]
     assert 21 not in {r for t in w for r, _ in t}  # no byte, so no write
 
 
@@ -96,12 +98,12 @@ def test_a_global_commit_outside_the_image_reaches_the_chip_on_its_own_tick():
         obj(
             streams={"chan": step},
             gstreams=["chan"],
-            commit=[[CUT, {"global": "level"}], [24, {"global": "level"}]],
+            commit=[[CUT, {"global": "level"}], ["mode_vol", {"global": "level"}]],
         ),
         3,
     )
     # the channel steps before the voices, and its commit lands this tick at $16
-    assert [dict(t)[CUT] for t in w] == [0x41, 0x42, 0x43]
+    assert [dict(t)[chipreg(CUT)] for t in w] == [0x41, 0x42, 0x43]
     # the same value through the image is the tick after, because the flush is
     assert [dict(t)[24] for t in w] == [0x00, 0x41, 0x42]
 
