@@ -148,7 +148,7 @@ certificate carries the refusals:
 | number | value |
 | --- | --- |
 | store sites of the tick outside the fetch regions | **86** |
-| lowered into `sets` rows | **79** (84 rows over 6 streams, 257 assignments) |
+| lowered into `sets` rows | **79** (84 rows over 7 streams, 257 assignments) |
 | recognised into `Acc` records | **3** (the instrument-scoped pulse pair) |
 | refused | **4** (§3) |
 | T1 accumulators, by where their store landed | 1 `acc` (`rec2[].b5591`, T1's `acc2`), 2 `sets` (`acc_2_lo`, `voice[].acc`) |
@@ -212,7 +212,7 @@ is bigger than a reading, and that is the trade B7 names.**
 | `meta.tempo` | a divider, rate 3, phase 0 | a divider, rate 3, phase 0 | same clock, no `early` |
 | `meta.row` | `{commands}` `{stream rowprog0}` | five steps over the event's own fields | the lift keeps the row's **bytes** where the hand keeps its **fields** |
 | `instruments` | 13 records, the six S6 columns plus `pw` | 9 reached, `adsr`/`wave`/`pw` named | the lift carries the file's table; the hand carries the subtune's reach, named |
-| `streams` | 6, 84 rows of lowered `sets` | 3, 4 rows (`note_on`, `note_off`, `arp`) | the lowering, against the reading |
+| `streams` | 7, 84 rows of lowered `sets` | 3, 4 rows (`note_on`, `note_off`, `arp`) | the lowering, against the reading |
 | `accs` | 3 reload assignments | 7 §5 records with `delta`, `bound`, `policy`, `rate`, `phase` | **B7's residue** |
 | `beyond` | 21 words, 0 traps | 12 words, 2 traps | **the lift states more than the hand**: the two traps are the packed row byte, which the lift keeps as a cell (`b54F5`), so it has a word for them |
 | `globals` | the tick-level stream | `flags.C` and its proof | different mechanisms: the lift keeps the carry as a cell of the lowered arithmetic, so no producer flag is needed |
