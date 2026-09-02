@@ -245,14 +245,57 @@ for a stream's `rate` and an accumulator's, retiring `state0.dividers` and
 `Player.divider`. What it did **not** close, said plainly: `certify.divergence`
 and `attest.attest` stay two, because B2 settled that the scoreprog and the
 trackerprog are two artefacts with two renderers and each certificate states §2's
-rule for its own object; and the epoch of a read is still spelled twice in the
-trackerprog, `Acc.emit` and `Stream.epoch`, which are two of B8's one-family
-forms and are counted there (`Acc.step`'s `pre`/`post`/`mid` left with §3.4,
+rule for its own object; and the epoch of a read looked like two spellings in the
+trackerprog, `Acc.emit` and `Stream.epoch` — **B8 struck the second and kept the
+first, and they were never one fact**: one says which *tick* a step's arm runs
+on, which the rows already state as two rows, and the other which *value* a
+produce sends, which nothing else can state (`Acc.step`'s `pre`/`post`/`mid` left with §3.4,
 being the scoreprog's).
+
+**B8, the one-family forms, struck (#342).** The census was run as a script over
+the thirty cached objects rather than listed by hand, by the unit the review's
+§2.1 chose — a form (a key, a policy value, an expression kind, a `sets` target
+kind, a `meta` or `state0` key) joined to the line of `universal.py`,
+`compiler.py` or `printer.py` that reads it. **300 forms, 105 with one family**:
+58 of those are the family columns §3.3 and §3.5 already admit — an instrument's
+own record fields and a stream row's own columns, read through `{"ins": path}`
+and `tabcell` — and **47 are forms of the player**. Eight were struck, each
+because a general form the object already had says the same fact, and each
+measured over the whole horizon of the family that had it:
+
+| struck | family | what says it instead | measured |
+| --- | --- | --- | --- |
+| `Acc.policy: "take"` | GT2 | the `clamp` §5's own row calls it, `delta $FFFF` — a step that passes the target from either side | 0 differing of 16,895 |
+| `Cmd.links` | GT2 | a `sets` on the accumulator's own cell, in the same act and under §5's bound | 0 differing of 332,358 |
+| `Stream.epoch: "entry"` | SW | a step that acts and then holds is two rows (#311), the second appended so the instrument's row numbers stand | 0 differing of 22,549 |
+| `Acc.flag.unguarded` | defMON | `step_when` and `gate.false`, two of §5's own channels: the tick the delta is skipped is the tick the step did not take | 0 differing of 150,824 |
+| `{"stream": [name, row]}` | Hubbard | `tabcell` with the column named — the rows carry one | 0 differing of 332,358 |
+| `amplitude.turn` / `.fold` | Hubbard / GT2 | one `amplitude.witness`, the name `bound` already uses | annotations; 0 by construction |
+| `end: "jump"` as a bare string | Hubbard | `{"jump": 0}`, which four families write | 0 differing of 332,358 |
+| a command's `why`, a pulse row's `track`, the certificate's `loop.tick` | Follin, SW, Walker | nothing reads the first two (§3.1); the other five families spell the loop `{first_repeat, period}` | no reader |
+
+The remaining thirty-nine are **kept with their family, their reader and their
+number**: each is now stated at its own row of §3–§5 of
+[prototype-trackerprog.md](prototype-trackerprog.md) and struck by a `POISONS`
+entry, D6's rule applied to the schema — `reflect-complement` 3,593 of 16,895,
+`rest-arm` 152, `pitch-links` 2,354, `cmd-tie` 6,237, `row-command-spent` 6,820,
+`stage-hold` 13,947, `pitch-target` 13,994 of 22,549, `clamp-edge` 1,129,
+`insrec-voice` 853, `commit-guard` 22,548, `no-bug` 1,038, `op-wrap` refused,
+`emit-entry` 11,755 of 35,340, `acc-beyond` 120, `acc-trap` 0 (the claim it
+makes), `amplitude-count` 7,790 of 8,052, `stop-voice` 837 of 29,911,
+`flush-unguarded` 8,577 of 8,577, `sweep-bounce` 128,197. Three rows this item
+listed were answered by *refuting the proposal*: `meta.rest_arm`'s three arms
+moved into `meta.instrument.accs` differ on 2,714 of *Je suis Linus*'s 8,236 and
+are refused on *Do It Again*, because an instrument's arms are the voice's for as
+long as the instrument is; `meta.stop: sequencer` cannot be a cell guarding the
+clock, because an order's `stop` is a step of the score and no step of a score
+writes a cell; and `amplitude: {count}` cannot be a bound, because
+`amplitude.interval` is two constants and Walker's period is a byte of the
+instrument. `globals.stop_writes` and the two forms under `meta.prologue` had
+already gone with R5. **0 differing of 332,358 over all thirty builds.**
 
 | # | item | mechanism | size | acceptance |
 | --- | --- | --- | --- | --- |
-| B8 | the one-family forms | roughly twenty-five forms with one family behind them, each either deleted, expressed in the general vocabulary, or kept with its single family stated. `globals.stop_writes` (Hubbard: a literal write list — the observable, in the object), `meta.rest_arm`, `meta.pitch_links` + `Cmd.links`, `Acc.policy: "take"`, `reflect-complement`, `state0.held` (GT2); `Acc.beyond`/`emit`/`trap`/`flag.seed`/`amplitude.shift`, `end: "jump"` as a bare string (Hubbard; ~~`state0.dividers`~~, retired by R2); `meta.pitch_target`, `Stream.epoch` (SW); `amplitude.count` (Walker); the two forms under `meta.prologue`; and the certificate's loop shape, which Walker alone spells `{tick, period}` against `certify.py:83`'s `first_repeat` | medium | each row deleted at 0 differing, or kept with its family and its survey named |
 | B10 | `Acc` demoted to a reading | **B5 closed the schema half**: §5's box is rewritten from the code and machine-checked, `Acc.step` is out of §3.4, `bound.witness`/`scope`/`target`/`note` are marked as annotations, and `policy: halt` is deleted. What is left is the *presentation* — state `Acc` coverage per family (Follin has none at all across 32 subtunes, D5) rather than presenting the accumulator as the layer's centre | small | §5 opens with coverage, not with the grammar |
 
 Tier 3 is deliberately last. Every row is real, none is load-bearing, and each
@@ -263,8 +306,10 @@ makes doing them cheap rather than careful.
 
 The five presentation gaps of §4; multispeed (§10); the `mods`/`arms` split of
 the accumulator record, which is the largest migration anyone has proposed and
-should stay behind B8's measurement — if JCH's object does not shrink, it is not
-worth it.
+had been waiting on B8's measurement. B8 has run and gives it no evidence: the
+census is about *forms*, not bytes, and the eight it struck take one key each out
+of the objects that carried them. If JCH's object does not shrink, it is not
+worth it, and nothing measured says it would.
 
 And the residue B2 named but did not move: `deity_informant/trackerprog/` holds
 both halves under one package name — the trackerprog's `universal`, `printer`,

@@ -598,7 +598,6 @@ class Player(PlayerMixin):
                 cur=self.gcursor.get(name) if v is None else self.slot(name, v),
                 due=self.dividercode(st.get("rate")),
                 beyond=st.get("beyond"),
-                entry=st.get("epoch") == "entry",
                 land=self.landing(st),
                 rows=self.steprows(st),
             )
@@ -646,11 +645,8 @@ class Player(PlayerMixin):
         hold, sets, nxt, run, op = row
         cur["hold"] += 1
         done = cur["hold"] >= hold(None)
-        # a step's counter is read either before or after its own move (#297's
-        # epochs), which is what says whether the consuming tick runs too
-        if not (done and sr.entry):
-            for arm in run:  # an acc the step runs on every tick it holds
-                self.step(arm, prod, edge)
+        for arm in run:  # an acc the step runs on every tick it holds
+            self.step(arm, prod, edge)
         if not done:
             return
         cur["hold"] = 0
@@ -994,12 +990,12 @@ class Player(PlayerMixin):
         (``end: {"stop": name}``), which ``enter`` spends a tick on.
         """
         j = self.order_of(v)["end"]
-        if not (j == "jump" or isinstance(j, dict) and "jump" in j):
+        if not (isinstance(j, dict) and "jump" in j):
             self.stopped[v] = True
             if isinstance(j, dict):
                 self.entry = self.cmd(j["stop"])
             return False
-        self.c["orderpos"][v] = j["jump"] if isinstance(j, dict) else 0
+        self.c["orderpos"][v] = j["jump"]
         self.evrow[v] = self.c["rowsleft"][v] = 0
         return True
 
@@ -1157,7 +1153,6 @@ class Player(PlayerMixin):
         if p is None:
             p = self.cmdplans[id(cmd)] = Plan(
                 arms=cmd.get("arms"),
-                links=[self.storeof(a) for a in cmd.get("links", ())],
                 rows=self.rowsource(cmd.get("rows", ()), cmd),
                 flags=[(k, self.code_of(e, cmd)) for k, e in cmd.get("flags", {}).items()],
                 every=self.setcode(cmd["all"], cmd) if "all" in cmd else None,
@@ -1165,12 +1160,10 @@ class Player(PlayerMixin):
         return p
 
     def hold_command(self, cmd, prod, edge):
-        """Apply one section 3.6 command: what it arms, sets, re-points and resets."""
+        """Apply one section 3.6 command: what it arms, what it sets and re-points."""
         p = self.cmdplan(cmd)
         if p.arms is not None:
             self.armed[self.v] = p.arms
-        for put in p.links:
-            put(0)
         self.runstream(p.rows, prod, edge, cmd)
         for name, f in p.flags:
             self.flags[name] = f(cmd)
@@ -1214,7 +1207,6 @@ class Player(PlayerMixin):
             ov=ov,
             beyond=a.get("beyond"),
             when=_both(self.guardcode(a.get("when"), ov), self.guardcode(ov.get("when"), ov)),
-            take=pol == "take",
             trap=bool(a.get("trap")),
             divider=self.dividercode(a.get("rate"), ov),
             step_when=self.guardcode(a.get("step_when"), ov),
@@ -1226,7 +1218,6 @@ class Player(PlayerMixin):
             store=self.storeof(name),
             entry=a.get("emit") == "entry",
             produce=[(t, part == "hi") for t, part in a["produce"]],
-            unguarded=fl.get("unguarded"),
             flag=fl.get("name"),
             seed=fl["seed"] if fl and rep is not None else None,
             moves="delta" in a,
@@ -1261,9 +1252,6 @@ class Player(PlayerMixin):
         self.cur = p.beyond
         if not p.when(ov):
             return
-        if p.take:  # the degenerate clamp: already at its target
-            self.take(self.c["note"][self.v], prod)
-            return
         if p.trap:
             raise AssertionError("the arm the certified horizon never takes")
         if p.divider is not None and not p.divider(ov):
@@ -1279,8 +1267,6 @@ class Player(PlayerMixin):
             out = self.apply(p, val, prod, stepped)
             if out is None:
                 return  # the policy took the value to its bound, and said so itself
-        elif p.unguarded is not None:  # a carry the block that makes it did not make
-            self.flags[p.flag] = p.unguarded
         emitted = val if p.entry else out
         p.store(out)
         for target, hi in p.produce:

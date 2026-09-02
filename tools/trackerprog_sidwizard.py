@@ -533,6 +533,28 @@ class Tune:
                         getattr(self, t + "_row")(i, k, [self.rec(i, k + j) for j in range(3)])
                     )
 
+    @staticmethod
+    def act_then_hold(rows):
+        """A sweep that runs on the first n of its n+1 ticks is two rows: the one
+        that runs it, and the one the landing tick holds and acts on (§3.3).
+
+        The second half is appended, so an instrument's own row numbers stand.
+        """
+        out = list(rows)
+        for i, r in enumerate(rows):
+            if "run" not in r:
+                continue
+            hold, nxt = r.get("hold", 1), r.get("next", i + 1)
+            if hold == 1:  # the one tick it has is its landing: one row, and it acts
+                continue
+            tail = {"next": nxt}
+            if "sets" in r:
+                tail["sets"] = r["sets"]
+            out[i] = {k: v for k, v in r.items() if k != "sets"}
+            out[i].update(hold=hold - 1, next=len(out))
+            out.append(tail)
+        return out
+
     def row_of(self, i, slot, k):
         """The stream row one byte offset of an instrument is; else the table's end."""
         return self.base[i][slot].get(k, 0)
@@ -1137,14 +1159,12 @@ class Tune:
         streams["pulse"] = {
             "rank": 10,
             "when": RUN,
-            "epoch": "entry",
-            "rows": self.rows["pulse"],
+            "rows": self.act_then_hold(self.rows["pulse"]),
         }
         streams["filter"] = {
             "rank": 5,
             "when": RUN + OWNS,
-            "epoch": "entry",
-            "rows": self.rows["filter"],
+            "rows": self.act_then_hold(self.rows["filter"]),
         }
         if self.L["slowdown"] is not None:
             # the slowdown gate takes the init frame, and the init call writes nothing

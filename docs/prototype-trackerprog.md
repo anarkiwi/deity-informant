@@ -201,6 +201,16 @@ draft spoke in numbers in five spellings at once — a bare `0..24` as a target,
 as assembly operands less a buffer base — with the four global registers having
 no name at all (R6).
 
+**A guarded flush entry is one family's, and it is the frame's datum.** JCH V20
+alone writes `[name, guards]`: the delay byte of the frame the rip wrapper is on
+selects which of two orders the image goes out in, so its fifty entries are the
+same twenty-five registers twice under opposite guards. It is kept because the
+alternative was measured, and the guard is a property of the *frame* and not of
+the tune (backlog §3.1): each fixed direction on its own diverges — low-to-high
+on **4,690 of *Knob at Night*'s 8,577** ticks, high-to-low on **3,888** — and
+flushing every entry unguarded diverges on all 8,577 (`--poison
+flush-unguarded`). Eight families flush one fixed order and write a bare name.
+
 **`instrument`: the record every instrument extends.** What all of a family's
 instruments carry is the family's and not each record's — the engine an
 instrument arms, a note-on they all run, a pitch they all answer with — so
@@ -261,6 +271,15 @@ holds: 159 of them, `$61` through `$FF`, each stated. A bound derived from the
 score's own note bytes and transposes was written first and two sound effects
 walked straight past it (follin-trackerprog §4.6).
 
+**Where a taken pitch goes is one datum, `meta.pitch_target`.** Taking a note of
+the tuning writes the voice's frequency and the chip's pair with it, which is
+what eight families do and the default (`freq`). SID Wizard writes the **cell
+alone** (`@freq`), because a rank-25 stream adds its detune and its carry to that
+cell afterwards and sends the pair itself. It is one family's and it is kept:
+the field is the target's own name, in the same vocabulary a `sets` uses, and
+writing the chip too — `--poison pitch-target` — differs on **13,994 of its two
+builds' 22,549** ticks, the second write not being last.
+
 **A word past the tuning is an expression, and where it names a cell it names
 the voice.** What the image holds past a tuning is constant bytes for Follin and
 the engine's own per-voice state for Hubbard: `orderpos`, the pattern byte
@@ -285,7 +304,9 @@ Step = { when:  [ guard, … ]               // the one guard shape in this sche
        , sets:  [ set(target, value), … ]  // assignments, in this order,
                                            // all inside one tick (Walker's gate 1→0→1)
        , point: [ (slot, row, keep), … ]   // re-point a stream, keeping its hold or not
-       , op:    acc(acc_id) | pitch(offset | absolute) | cmd(name) | none
+       , op:    acc(acc_id) | pitch(offset | absolute, wrap?) | cmd(name) | none
+                                           // acc, cmd: GoatTracker 2 alone (B8);
+                                           // wrap, the note column's own bits: SID Wizard
        , run:   [ acc(acc_id), … ]         // an acc the step runs on every tick it holds
        , hold:  k ticks (k ≥ 1)
        , next / jump: row | null }         // where the step goes, and where a row jumps;
@@ -330,6 +351,13 @@ is **not** this: with `phase` it selects which ticks the tune's one clock steps
 on, over the global tick counter and once per tune, where a divider is per voice
 and per run — two questions, and the review's third divider is now the second.
 
+**Three of the four `op` values have one family, and each is stated with it**
+(B8): a step that arms an accumulator and a step that runs one of the score's own
+commands are GoatTracker 2's wavetable, and `wrap` — the modulus a relative note
+comes back inside, the note column's own bit width — is SID Wizard's. `pitch` is
+five families'. The two arms are struck by `--poison op-wrap`, which takes the
+step past the tuning and is refused on *Emomyst* rather than rendered.
+
 **A step that produces owns the tick, where a family says so.** A stream row
 that carries an `op` may leave a flag in its own `sets` (`!name`, §5's producer
 flags) and the arms of that family's accumulators read it in their `when`: one
@@ -340,10 +368,17 @@ on **0 of the other twenty-eight builds' 315,463**, SID Wizard's producing steps
 included (R5).
 
 And a step's counter is read either before or after its own move — #297's
-epochs, `epoch: entry` — which is what says whether the tick that consumes the
-step also runs it: GoatTracker 2's
-pulse row sweeps on all `n` of its ticks, SID Wizard's on the first `n` of `n+1`
-(sidwizard-trackerprog §4.4). There is no "steps per tick": defMON's cascades run up to
+epochs — which is what says whether the tick that consumes the step also runs
+it: GoatTracker 2's pulse row sweeps on all `n` of its ticks, SID Wizard's on
+the first `n` of `n+1` (sidwizard-trackerprog §4.4). **That is not a field of
+the stream.** The first draft carried `epoch: entry`, a value one family wrote
+and two lines of the player read, and the rows already say it: a step that acts
+and *then* holds is two rows (#311), so a sweep that does not run on its landing
+tick is the row that runs it, `hold: n-1`, and the row its landing tick holds and
+acts on. The second half is appended, so an instrument's own row numbers stand,
+and the rewrite is measured over both SID Wizard builds' whole horizons — **0
+differing of 22,549** (B8), with a hermetic snippet holding the two forms against
+each other. There is no "steps per tick": defMON's cascades run up to
 8×/frame under a CIA cadence, but the tick *is* the entry ("sidTAB row = DL+1
 calls", anatomy:213). Four families read that way — Hubbard `pwdelay -= 1; if <
 0: pwdelay = pspeed & $1F` (commando-floor:223-225), JCH `phase -= 1; if phase <
@@ -395,6 +430,13 @@ Ins = { prelude:   stream | [ Step, … ] | null  // the note's lead-in (see bel
 **Those six names are the whole of what the player knows about an instrument**,
 and everything else on the record is the family's own column, read by the
 object's own expressions through `{"ins": path}` and `{"insrec": [cell, path]}`.
+The second of those is **SID Wizard's alone** and is kept as the same
+generalisation §5 made for a cell: `ins` reads the record the voice is playing,
+`insrec` the record a cell names, which is what a family whose tables live
+*inside* the instrument needs — it stages the row's instrument into a cell and
+its hard restart reads that record while `ins` still names the old one. Reading
+the voice's own instead — `--poison insrec-voice`, one word of the object — moves
+853 of the two builds' 22,549 ticks.
 The first draft put `adsr` first and it was never a player name: no line of
 `universal.py` reads one. Seven families carry an `adsr` pair and **all seven**
 read it as a column of their own — `["ad", {"ins": "adsr.0"}]` — and
@@ -445,6 +487,17 @@ arpeggiates — `octave`. Each is one §5 expression, read by the player only wh
 the waveform and pulse-direction cells of two *other* voices and name them
 (§3.2), Galway's silence is a constant. An unpitched sound has no semitone above
 it either, so a vibrato over one steps by nothing.
+
+**What a note-on rests the machine in is `meta.rest_arm`**, and it is
+GoatTracker 2's alone. A note-on there re-arms the instrument vibrato and
+*replaces* whatever the score's last command armed, which is what makes it a
+datum of its own: an instrument's `accs` are the voice's for as long as the
+instrument is, so the same three arms moved into `meta.instrument.accs` — the
+record every instrument extends (§3.1) — differ on **2,714 of *Je suis Linus*'s
+8,236** ticks and are refused outright on *Do It Again*, an arm reaching a speed
+row the score never gave it. Resting in nothing (`--poison rest-arm`) differs on
+**152 of 16,895**. The other eight families arm at the note-on and disarm at the
+command, and write no such field.
 
 `on_note` is a stream and nothing else — guarded rows of `sets` and `point`,
 where `point(slot, row, keep)` is §3.6's own re-point. The first draft gave the
@@ -505,7 +558,6 @@ Event   = { sounds: bool            // the row starts a sound -- the one field t
                                     // one per family group -- see the backlog
           , dur:  rows }
 Cmd     = { arms:  [ arm(acc_id, overrides), … ]   // what the row arms, and its overrides
-          , links: [ acc_id, … ]                   // the accs its own events zero (§5)
           , sets:  [ set(target, value), … ]       // a shadow, a cell, a global, a flag
           , point: [ (slot, row, keep), … ]        // re-point a stream (the old set_stream)
           , all:   [ set(cell, value), … ]         // one cell of every voice: global tempo
@@ -608,7 +660,13 @@ chip several hundred ticks later; the tick the score stops on is the voice's
 last, and every tick after it runs every phase but the row. Its eight
 sound-effect subtunes are that value with nothing else in them — three voices
 stopped from tick 0, no score at all, and the certificate is the engine over the
-record the entry left (galway-trackerprog §4.2).
+record the entry left (galway-trackerprog §4.2). `sequencer` is **Galway's
+alone** and stays, because the object has nowhere else to put it: an order's
+`stop` is a step of the score, and no step of a score writes a cell, so a guard
+on the row clock cannot be reached from the place the tune stops. Rendering it as
+the other value — `--poison stop-voice` — differs on **837 of the fourteen
+subtunes' 29,911** ticks, which is the eight sound-effect ones and the tail of
+two others.
 
 **The note column is a token class, and the layer spends it.** The first draft
 wrote `note: index | rest | hold | keyoff | keyon`, which is the *source byte's*
@@ -758,6 +816,18 @@ whether a command outlives the row that gave it is one datum, `meta.row_command`
 anatomy:876's tick-0 dispatch running unconditionally), Hubbard spends it on its
 row. It is a property of the tune, not of the row clock.
 
+**Effect memory is GoatTracker 2's alone, and it is three forms with one family
+between them** (B8): `row_command: held`, `state0.held` — the command a voice
+carries into the tune's first row — and the `{"hold"}` step of `meta.stage`, which
+is where the voice takes the command and settles the row's tie. Each is kept and
+each is struck: spending the command instead (`--poison row-command-spent`)
+differs on **6,820 of the two builds' 16,895** ticks and dropping the step that
+takes it (`--poison stage-hold`) on **13,947**. `Cmd.tie` — a command that
+re-targets without re-triggering — is the same family and the same mechanism seen
+from the row: it cannot be the event's own `tie` field, because a held command
+ties the rows *after* the one that gave it, which no field of a row states.
+Dropping it (`--poison cmd-tie`) differs on **6,237**.
+
 **The init call is a command too, and the entry state names it.** `state0.prologue`
 is a `score.commands` entry every voice runs before the tune's first tick, which
 it spends: GoatTracker 2's clears the cells and the three cursors the init call
@@ -805,6 +875,14 @@ outright in its own `sets` (`cutoff_hi`, `res_route`, `mode_vol` — §3.1's one
 spelling): the value the tick leaves is then the last voice's and not the
 channel's at the end of the tick, which is last-writer and no new rule
 (prototype-jch-trackerprog.md §4.4).
+
+**A commit entry may state the guard it is written under**, a third column
+beside the register and its value — `[name, value, guards]`, the same guard shape
+as everywhere else. SID Wizard is the one family: its keyboard tracking decides
+per tick whether the cutoff the channel commits is the tune's or the tracked one,
+so the two entries name the same register under opposite guards. Committing both
+unguarded (`--poison commit-guard`) differs on **22,548 of its two builds'
+22,549** ticks. Eight families write two columns.
 
 **The channel steps before the voices or after them, and which is data.**
 `globals.streams` runs the channel ahead of the voices, which is right for one
@@ -925,18 +1003,19 @@ Acc = { cell   : the value's own, in one vocabulary -- `tick`, a voice cell,
       , bound  : { interval: [lo, hi], from: proved | projected | observed
                  , witness: <guard | mask | period> }   # lo, hi constants: asserted at
                                                         # every store; witness is a note
-      , policy : wrap | reflect | reflect-complement | take
+      , policy : wrap | reflect | reflect-complement
              | { clamp: v, edge?: b } | { reload: v, when?: guard }
       , rate   : 1 | { cell, reload }             # §3.3's divider, one form and one
                                                   # procedure: a per-voice counter cell the
                                                   # run steps down, fired and reloaded past
                                                   # 0.  A bare k names no counter: refused
       , phase  : bit(self, k) | bit(cell, k) | cell != 0 | fn(global_counter) | acc(id)
-      , amplitude : { interval: [lo, hi], shift: k }    # reflect / reflect-complement's
-                                                        # own turn, not a claim
+      , amplitude : { interval: [lo, hi], shift: k, witness? }  # reflect and
+                                                        # reflect-complement's own turn,
+                                                        # not a claim about the cell
                   | { count: n, cell: <phase counter> }  # ..or the turn counted, where
                                                          # the cell is not one Acc's
-      , flag   : { name, seed?, unguarded? }      # the carry this step's own arithmetic
+      , flag   : { name, seed? }                  # the carry this step's own arithmetic
                                                   # leaves the next producer
       , rank   : the order the tick runs it in, against the streams (§4)
 
@@ -962,18 +1041,39 @@ Acc = { cell   : the value's own, in one vocabulary -- `tick`, a voice cell,
 
 The first draft's box listed eleven fields; the record has **twenty-one**, of
 which the player reads **eighteen**. The nine it omitted are `produce`, `rank`,
-the three guard channels, `gate`, `emit`, `beyond` and `trap` — plus the `take`
-policy value. Of the eleven it listed, `target` and
+the three guard channels, `gate`, `emit`, `beyond` and `trap`. Of the eleven it
+listed, `target` and
 `scope` are annotations — §3.1's own rule, that a field only the print reads is
 an annotation — and **`policy: halt` was never real**: no tool writes it and
 `apply()` has no arm for it, so it is deleted here. A one-shot that stops short
 of its period is `delta_when`, which is what §3.3 already said.
+
+**Five of these are one family's, and each is kept with its family and its own
+number** (B8; the rest of the record has two or more). A field with one exemplar
+is a field the next family can silently break, so the schema states whose it is
+and the poison registry says what it is worth over the whole horizon:
+
+| field | family | reader | struck |
+| --- | --- | --- | --- |
+| `emit: "entry"` | Hubbard | `step()` — the value the produce sends is the one the tick came in with, which the drum's countdown needs and no `sets` can say, the gate running after the store | `emit-entry`, **11,755 of the three subtunes' 35,340** |
+| `beyond` | Hubbard | `past()` — the arpeggio's own words past the tuning (§3.2) | `acc-beyond`, **120 of song 1's 11,780**, the reads R4 counted |
+| `flag: {name, seed}` | Hubbard | `apply()` — the carry of the last of `n` additions | `flag-seed`, **11,747 of song 2's 11,780** |
+| `trap` | Hubbard | `step()` — an arm the certified horizon never takes | `acc-trap`, **0 of 332,358**: the 0 *is* the claim, and reaching it is an assertion |
+| `amplitude: {count, cell}` | Walker | `turned()` — the turn a counter decides, where the cell is two modulators' | `amplitude-count`, **7,790 of *Chameleon*'s 8,052** |
+| `policy.edge` | SID Wizard | `toward()` — which side of the target the step that lands on it is on | `clamp-edge`, **1,129 of 22,549** |
+| `policy: reflect-complement` | GoatTracker 2 | `apply()` — the phase byte's complement arm | `reflect-complement`, **3,593 of 16,895** |
 
 An `Acc` has no name of its own: it is named by the key `accs` declares it
 under, which is the name a stream's `op`, an instrument's arm and a command's
 `arms` all use. Four tools wrote that name a second
 time as an `id` column and the player read the column rather than the key, which
 is a second spelling of one fact and is struck (§7).
+
+**One form for a row of a stream read as a value**: `tabcell(T[c], column)`,
+which is what every table read in the object is. The first draft had a second,
+`{"stream": [name, row]}`, for a stream whose rows are bare numbers — one family
+(Hubbard's octave arpeggio), one reader, and no fact of its own: the rows carry
+the column the read names and the general form states it (B8, 0 differing).
 
 **One cell vocabulary, and the voice is part of it.** `cell` names the value's
 own on the voice being committed; `{"cell": [name, voice]}` is the same name,
@@ -1017,7 +1117,14 @@ frequency offset per voice, and both have moved it on 1,140 of that horizon's
 9,949 modulator steps, so the value there is neither modulator's and no
 interval on it is either's swing. `count` is the period and `cell` is where the
 modulator counts its own steps — in §5's cell vocabulary, so a modulator on the
-global channel counts in a `#global` (walker-trackerprog §4.1).
+global channel counts in a `#global` (walker-trackerprog §4.1). The count is
+Walker's alone and stays, and B8's question — whether a cell per modulator plus a
+bound turn would say it — is answered by the field above rather than by a render:
+`amplitude.interval` is **two constants**, because that is what §5 means by a
+bound, and Walker's period is a byte of the *instrument* (`m1period`), so no
+interval on any cell states it. Two of its four modulators do not even share a
+cell and still cannot use the bound. Turning on every step instead
+(`--poison amplitude-count`) differs on **7,790 of *Chameleon*'s 8,052** ticks.
 
 The three `bound.from` tags differ:
 
@@ -1049,15 +1156,22 @@ has. `repeat(Δ, n)`'s carry is the carry of the **last** of `n` additions, and
 `n`, `Δ` and the intermediate values are the arm's and the loop's; recovering it
 from the value the loop stored means re-running the loop's last step, spelled out
 in the object. #297's rule already says so from the other side — *a carry the
-step computes in place is part of its own arithmetic and stays there*. Its two
-optional fields are the two places the arithmetic makes no carry, and each is
-measured: `seed`, the value at entry, survives only the frame the count is zero
-and is worth **11,747 of Commando song 2's 11,780 ticks** and 329 of song 3's;
-`unguarded`, the value where the delta did not run, is worth **475 of
-*Jazzpjazz*'s 1,799 and 127,722 of *Automatas*' 149,025**, and **0** on all three
-Commando subtunes, whose flag's own `globals.flags` default already says it —
-so Hubbard writes `seed` and defMON writes `unguarded` and neither writes both
-(§7).
+step computes in place is part of its own arithmetic and stays there*. The record
+is **Hubbard's alone**, and its one optional field is where the loop makes no
+carry at all: `seed`, the value at entry, survives only the frame the count is
+zero and is worth **11,747 of Commando song 2's 11,780 ticks** and 329 of song
+3's (`--poison flag-seed`).
+
+The first draft carried a second optional field, `unguarded` — the value the flag
+takes on a tick the delta did not run, defMON's alone — and it was two of §5's
+own channels said a third way. The tick the delta is skipped is the tick the step
+did not take, which is `step_when`, and what a step writes either way is `gate`:
+`gate.false: [["!bounce", 1]]` on the guard `delta_when` already states leaves
+the same carry at the same point of the tick. Measured over both defMON builds'
+whole horizons, **0 differing of 150,824**, and the fact is worth what it always
+was — striking the two gates (`--poison sweep-bounce`) differs on **475 of
+*Jazzpjazz*'s 1,799 and 127,722 of *Automatas*' 149,025**, and on none of the
+Commando subtunes, whose flag's own `globals.flags` default already says it (B8).
 
 `scope` is no enumeration the schema picks per family: it is read off the region
 the value cell lives in, which S6 already recovers, and it is per **cell**, not
@@ -1079,13 +1193,19 @@ act, which §3.5 already says an note-on is. The row keeps GoatTracker 2 and the
 hermetic clamp snippet ([prototype-jch-trackerprog.md](prototype-jch-trackerprog.md)
 §8, row 5).
 
-And `links` is not a field of an `Acc`. It is §3.6's `Cmd.links` — what a row
-command zeroes, which is what GT2's handlers 1 and 2 do — and `meta.pitch_links`
-— what taking a pitch of the tuning zeroes, which is what `p_1327` does. GT2
-wrote both spellings for one fact, `Cmd.links` on the commands and an `Acc.links`
-on `toneporta`, and the second reached neither the player nor the print: the
-snap's reset flows through `meta.pitch_links` and always did. The `Acc` row is
-struck and the two that are read stand (§7).
+And `links` is not a field of an `Acc`, and after B8 it is not a field of a
+command either. What a row command zeroes is a **`sets` on the accumulator's own
+cell** — `["@vibtime", 0]` beside the command's other sets, in the same act and
+under §5's own bound — so GT2's handlers 1 and 2 need no field of their own: 0
+differing of 332,358 with `Cmd.links` struck from the schema, the player and the
+print. What is left is **`meta.pitch_links`**, GoatTracker 2's alone: taking a
+pitch of the tuning zeroes the vibrato phase (`p_1327`), and a *take* is not a
+`sets` — it happens inside the clamp policy and inside a step's own `op`, where
+the object has no assignment channel. It is kept with its family stated and
+struck by `--poison pitch-links`, **2,354 of the two builds' 16,895** ticks. The
+first draft wrote three spellings for the one fact, `Cmd.links`, `meta.pitch_links`
+and an `Acc.links` on `toneporta`; the third reached neither the player nor the
+print (§7, P1) and the first is a `sets`.
 
 Every per-frame modulation in the anatomy's row (anatomy:212) lands on one line,
 each with two certified families or a marked single-family exception:
@@ -1094,7 +1214,7 @@ each with two certified families or a marked single-family exception:
 | --- | --- | --- |
 | vibrato (triangle) | **two coupled Accs**: a phase Acc `delta const(+2)`, `bound [0, speedcmp] proved`, `policy reflect-complement`; and a freq Acc whose `phase` is `acc(phase_id)` bit 0 and whose `delta` is a shifted `interval` or a `const` | GT2: `voice[x/7].b14A0 = (a + 2) + c`, `t4 = b14A0 & 1`, then `ghost.freq += ptr` or `-= ptr` (gt2.md:852-862); the bound is the SMC cell `b1096 = T1851[y] & $7F` (gt2.md:812 — speedcmp, **not** the depth) and the complement is `a57 = ~b14A0` (gt2.md:835); `ptr` is either the 16-bit const `(T1851[y] << 8) \| T1863[y]` or `interval(freq_lo_idx_2) >> T1863[y]` through the variable-shift loop `p_12E5` (gt2.md:653-684). JCH: the same two-cell shape on its slide/vibrato (jch:82) |
 | vibrato, stateless phase | one freq producer, `delta repeat(interval >> (ins.vib + 1), n)`, `phase fn(global_counter)` | **single-family exception (Hubbard)**: `phase = counter & 7; if phase >= 4: phase ^= 7`, then `for _ in 0..phase-1: f += step` (commando-floor:215-221). It is the closed form of the triangle every other family accumulates, not a new mechanism; admitted because Hubbard is §9's certified non-tracker exemplar and nothing else makes its `freq` exact. T1 reads the `phase` off the counter that decides the count (`accrule.fn_phase`) and verifies the producer against the register, not the cell (#298) |
-| tone portamento | target freq, `policy clamp(pitch[target])` with an `edge` (where the step that lands exactly on the target either reaches it or does not — sidwizard-trackerprog §4.8), `delta const`, `links [reset(vibrato phase)]` | GT2 `p_10AB` case 3: the 16-bit compare chain against `FREQ[freq_lo_idx]`, snapping in `p_1327` (gt2.md:798-801). JCH's slide is the same shape with the compare on its own target |
+| tone portamento | target freq, `policy clamp(pitch[target])` with an `edge` (where the step that lands exactly on the target either reaches it or does not — SID Wizard's alone, sidwizard-trackerprog §4.8, and worth 1,129 of its two builds' 22,549 ticks: `--poison clamp-edge`), `delta const` | GT2 `p_10AB` case 3: the 16-bit compare chain against `FREQ[freq_lo_idx]`, snapping in `p_1327` (gt2.md:798-801). JCH's slide is the same shape with the compare on its own target. **A snap is this row too** (B8): GT2's parameter 0 was a `policy: take` of its own and is the clamp whose step reaches its target from either side, `delta $FFFF` — 0 differing of 16,895 |
 | free slide | target freq, `policy halt` or `wrap` at width, `delta field(cell, mask)`, `phase bit(cell, 0)` | Hubbard: `d = voice[v].porta & $7E; freq += -d if porta & 1 else d` — a free ±step ramp with **no target**, so this row and not the portamento row (commando-floor:236-238). JCH slide acc (jch:82) |
 | pulse sweep (bounce) | target pw, `policy reflect`, `bound [$8xx, $Exx] proved`, `rate` a divider, `phase cell != 0` | Hubbard: `pw += d` until `pw_hi == $E`, down until `$8`; `pwdir` the phase, `pwdelay` the divider, `ins.pw` the instrument-scoped value (commando-floor:222-233). JCH `rec6` segments, direction column `& $80` (jch.md:527) |
 | pulse run (unbounded) | target pw, `delta const(k) + carry(site)`, `bound` **`projected`** at 12 bits | Hubbard: an **8-bit** add on `pw_lo` with the carry **live from the vibrato block** — `ins.pw_lo += ins.pspeed + C  # C inherited from $51FA` (commando-floor:222-224, `+ carry` at commando.md:394); the 12 bits come from the store's `& $F` (commando.md:380). defMON: `voice[v].pw_lo -= (b101E + (1 - carry_2))` with `carry_2` produced by the freq add above it (automatas.md:427-447), set on **9,144 of *Automatas*' 170,702 sweep steps** and on none of *Jazzpjazz*'s 129, so the row is two-family and it took the whole 149,025-tick horizon to say so — a 20,000-tick prefix reads 0 (defmon-trackerprog §7). These are the writes that make both Commando subtunes aperiodic (architecture §5.2), rendered exactly, aperiodicity included |
@@ -1350,6 +1470,7 @@ recurrence`, with the first tick) is a refusal, never a record.
 | one register naming (**R6**, #339) | the object spoke in register numbers in five spellings at once — a bare int as a `sets` target (GoatTracker 2's cutoff, into the shadow), `reg.N` (Hubbard's end command, JCH, Follin, Walker), `globals.commit`'s first column (eight families), `meta.shadow.registers` (three) and JCH's overrides as assembly operands less a buffer base — with the four registers the chip has one of having no name at all, though `tuneprog/grid.py` already names them as the observable's columns. Every register the object names is a **name** now: a bare per-voice name is that register of the voice being committed, and a register named outright is a global name (`cutoff_lo cutoff_hi res_route mode_vol`) or a voice's own (`v1.pw_lo`), the one spelling a command's `sets`, a voice's write-out, `globals.commit` and `meta.shadow.registers` all use, the guarded flush entry keeping its `[name, guards]` shape. `universal.chipreg` is the only place a name becomes a number — `putcode` resolves a register named outright at compile time, `emit` resolves the committing voice's through a per-voice table `chipreg` fills — and the print prints names. **`sid_base` is gone with them**, `7·v` as a value being the `X = 7v` idiom §4 says S4–S6 erase, and both families were measured rather than argued: SID Wizard 1.6's is a *bug reproduction* (its first frame loads `freq_hi`'s note at the voice's own register base, `LDA freqtbh,X` where 1.9 has `,Y`) and is now `{"bug": "voice_base"}`, an expression form whose one value is named as the defect and whose every other name refuses to compile; Hubbard's was `u16(14, sid_base(reader))`, the byte at `$54EB`, which after #337 is stated outright as the voice cell `voicebase`, seeded from the tune's own three-byte table at `$54E8..$54EA` and written by nothing — a trap it could not be, 120 of song 1's beyond-word reads over its whole horizon taking that word. Measured: **0 differing of 332,358** over all thirty builds against the merge base's digests, every object rebuilt from all nine tools and every render recomputed; 6,000 ticks in one process, best of three, *Je suis Linus* 9,120 → **9,306** ticks/s, *Knob at Night* 4,042 → **4,145**, *Ghouls song 0* 10,818 → **10,853**, the write being a lookup where it was a multiply and a lookup. `universal.py` stays at **1,477** lines, `printer.py` 626 → 625, hermetic coverage 96 %; a new hermetic test walks all thirty cached objects and asserts the naming | `universal`, `printer`, all nine `tools/trackerprog_*.py`, `tests/trackerprog/test_register_names.py`, seven other test modules |
 | the compile finished, top down (**R7**, #340) | §5's forms are `trackerprog/compiler.py` (327 lines) and the object is spent **once**, where P8 spent it on first reading: a node is bound to its children's closures at compile time, an accumulator to *its arm*, a row program to its stream's compiled rows, a command to its own — so what an arm or a command states beside a record is a number in the closure and not a `const` read per step, which GoatTracker 2 took **15,243** times per 3,000 ticks and now takes none. The **machine's rank order is the object's and fixed**, so it is merged and sorted once for the pair a voice's instrument and its armed set make, not per voice-tick: `slots()`, the sort and the per-arm rank lookup are gone, and the two per-tick facts — a stream's `when` and whether its cursor is on a row — are still asked of *every* slot before any slot runs, which is what `slots()` did and what the order depends on. The `id()` memos and the `kept` pin list are gone but three, each holding the record it is keyed on so no identity it keys can be reused: an arm, an inline command a row carries, and the machine order. On the guards the review's own reason was wrong — a chained closure costs a frame per pair — and the measurement says what pays: **501 of SID Wizard's 505 guard terms, 407 of 407 of JCH's and 151 of 153 of Galway's state one operand outright**, so the constant folds *into* the comparison (`partial(operator.le, k)`, the operands the other way about) and a term costs one read, with three terms to a frame and a chain past that. Acceptance is P8's: **0 differing of 332,358** over all thirty builds against the merge base's digests. 6,000 ticks in one process, best of three, over the nine families' first builds: Hubbard 15,695 → **23,811** ticks/s, GoatTracker 2 9,059 → **14,282**, SID Wizard 4,347 → **6,541**, defMON 25,671 → **33,125**, JCH 5,014 → **7,149**, Follin 10,623 → **12,142**, Blackbird 12,755 → **17,003**, Walker 5,926 → **8,639**, Galway 5,399 → **7,112** — **7,699 → 10,811 ticks/s over the nine, 1.40×**. `universal.py` 1,477 → 1,399 and the new module 327; hermetic coverage 97 % and 100 %; a stored `Player` still drops the derived form and recompiles, which is what the two chunked certifications resume through | `universal`, `trackerprog.compiler`, `tests/trackerprog/test_compiler.py` |
 | the instrument record, and one row list (**R8**, #341) | §3.5's box opened with `adsr` and **no line of the player has ever read one** — an instrument is six player names and a family record, and the box named three of the six plus a name the player never asks for. Which of the two rows §7 offered is right was *measured*: a player whose note-on emits `adsr` in `commit_order`'s place, with the tools' own `ad`/`sr` sets struck, reproduces **SID Wizard alone** — 0 of 8,084 and 0 of 14,465 with 22 and 42 sets removed — while JCH's note-on puts `ad`, `sr` and `ctrl` in **one act** (257 of 2,401 on the build with no image) and Walker's puts them beside sixteen cells (346 of 8,052), and Hubbard, Blackbird and Galway write theirs from a *stream* at another point in the tick, which the rule breaks outright (1,543 of 11,780, 1,428 of 10,426, 1,327 of 9,450). One family is not a player rule, so the box states what is true: `prelude on_note accs pitch transpose pw`, and `adsr` is the family column all seven of them read as `{"ins": "adsr.0"}` — Galway spelled it *and* `ad`/`sr`, and now spells it once. **A row list is one shape wherever the grammar puts one**: a declared stream's name or the rows themselves, for a `prelude`, an `on_note` and a command's `rows` alike, so `{"stream": …, "early": …}` (whose `early` restated `meta.tempo.early`) is gone and `rowsource`/`runstream` are the one pair that resolves and runs all four places. **What every instrument of a family shares, the family states once**: `meta.instrument`, the record each instrument extends and each overrides field for field. Six families had named one `accs` list per instrument — Galway 62, SID Wizard 11 and 21, GoatTracker 2 30, JCH 19, Blackbird 15, Walker 11 — and none does now; Walker's and Blackbird's note-on and Hubbard's note-on and prelude are declared streams. **Every instrument column no expression, no player line and no print line reads is gone**, checked by a hermetic test that walks all thirty cached objects: SID Wizard's `vibdelay arpsped chord pw_index flt_index gate_off`, JCH's `flags vol filter pulse`, Blackbird's `note`, Walker's `filter`, Galway's `ad`/`sr` and two of its three spellings of one waveform byte (`wave|8` and `wave&$F7` are expressions now). Measured: **0 differing of 332,358** over all thirty builds against the merge base's digests, every object rebuilt from all seven edited tools and every render recomputed. The instrument half of the object falls 35,321 → 14,480 raw bytes on Galway, 25,334 → 12,876 on JCH, 25,262 → 11,355 on SID Wizard and 12,527 → 2,758 on Walker, and 1,012 → 840, 948 → 812, 1,164 → 1,032 and 1,032 → 548 under `xz -9e` — the copies were most of what the compressor was already removing, which is why §9.1's whole-object column moves by 0 to 3 % and not by a third. 6,000 ticks in one process, best of three, *Comic Bakery song 1* **7,014 → 8,304** ticks/s (62 instruments sharing one arm list compile it once), *End of the World* 7,189 → **7,655**, *Chameleon* 8,564 → **8,957**, *Je suis Linus* 14,076 → **14,258**. `universal.py` 1,399 → **1,398**, `compiler.py` 327, `printer.py` 625 → 633; hermetic coverage 97 % and 100 % | `universal`, `printer`, `trackerprog.compiler`, seven `tools/trackerprog_*.py`, `tests/trackerprog/test_schema_doc.py`, `tests/trackerprog/test_universal_streams.py`, three oracle tests |
+| the one-family forms, counted and settled (**B8**, #342) | the census was run as a script over the thirty cached objects, by the review's own unit — a form (a key, a policy value, an expression kind, a `sets` target kind, a `meta` or `state0` key) joined to the line of `universal.py`, `compiler.py` or `printer.py` that reads it: **300 forms, 105 with one family**, of which 58 are the family columns §3.3 and §3.5 admit and **47 are the player's**. Eight went, each because a general form the object already had says the same fact and each measured over the family's whole horizon: `Acc.policy: "take"` is the `clamp` §5's own row calls it, with a step that passes the target from either side (0 of 16,895); `Cmd.links` is a `sets` on the accumulator's own cell (0 of 332,358); `Stream.epoch: "entry"` is the two rows #311 already had, the second appended so an instrument's row numbers stand (0 of 22,549); `Acc.flag.unguarded` is `step_when` with `gate.false`, two of §5's own channels (0 of 150,824); `{"stream": [name, row]}` is `tabcell` with the column named; `amplitude.turn`/`.fold` are one `amplitude.witness`, the name `bound` already uses; `end: "jump"` as a bare string is `{"jump": 0}`, which four families write; and a command's `why`, a pulse row's `track` and the certificate's `loop.tick` were prose, a byte the round trip re-reads (restored) and a fifth spelling of `{first_repeat, period}`. **The other thirty-nine are kept with their family, their reader and a poison**, D6's rule applied to the schema: `reflect-complement` 3,593, `rest-arm` 152, `pitch-links` 2,354, `cmd-tie` 6,237, `row-command-spent` 6,820, `stage-hold` 13,947, `pitch-target` 13,994, `clamp-edge` 1,129, `insrec-voice` 853, `commit-guard` 22,548, `no-bug` 1,038, `op-wrap` (refused), `emit-entry` 11,755, `acc-beyond` 120, `acc-trap` 0 — the claim it makes — `amplitude-count` 7,790, `stop-voice` 837, `flush-unguarded` 8,577, `sweep-bounce` 128,197. Three of the review's own proposals were **refuted by measuring them**: `rest_arm` as `meta.instrument.accs` differs on 2,714 of 8,236 and is refused on the second build, `meta.stop: sequencer` cannot be a cell guarding the clock because no step of a score writes one, and `amplitude: {count}` cannot be a bound because `amplitude.interval` is two constants and Walker's period is a byte of the instrument; JCH's guarded flush keeps its two arms with the spec's claim now measured, each fixed direction diverging (4,690 and 3,888 of 8,577). Measured: **0 differing of 332,358** over all thirty builds against the merge base's digests, every object rebuilt from the six edited tools; 6,000 ticks in one process, best of three, over the nine families' first builds **132,770 → 132,774 ticks/s**, flat as a strike of unreached branches should be. `universal.py` 1,398 → **1,384**, `compiler.py` 327 → **324**, `printer.py` 633 → **625**; hermetic coverage 97 % and 100 %; §5's box is machine-checked down to its policy values and its `flag` fields | `universal`, `compiler`, `printer`, six `tools/trackerprog_*.py`, `tools/trackerprog_poison.py`, `tests/trackerprog/test_schema_doc.py`, six other test modules |
 
 Everything after this is the rest of the `trackerprog/` package, under the same
 rules (≤ 500 lines per module, hermetic tests, the certificate).

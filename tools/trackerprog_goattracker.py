@@ -349,8 +349,8 @@ class Tune:
             c["arms"] = [stands(a) for a in ([SNAP] if fx == 3 and param == 0 else ARMS[fx])]
             if fx == 3:  # a tone portamento re-targets the note; it does not retrigger
                 c["tie"] = True
-            if fx in (1, 2):
-                c["links"] = ["vib_phase"]
+            if fx in (1, 2):  # a slide resets the vibrato phase: the cell, written
+                c["sets"].append(["@vibtime", 0])
         elif fx == 5:
             c["sets"] = [["ad", param]]
         elif fx == 6:
@@ -774,7 +774,7 @@ def accs():
             "scope": "voice",
             "amplitude": {
                 "interval": [0, {"tabcell": ["speed", {"const": "row"}, "cmp"]}],
-                "fold": "the speed row's own compare: the triangle's amplitude",
+                "witness": "the speed row's own compare: the triangle's amplitude",
             },
             "bound": {
                 "from": "observed",
@@ -814,18 +814,21 @@ def accs():
             },
             "produce": [["freq_lo", "lo"], ["freq_hi", "hi"]],
         },
+        # a portamento with no speed is a clamp whose step reaches its target at
+        # once: parameter 0 snaps, which is the widest step the cell can hold
         "toneporta_snap": {
             "rank": 2,
             "cell": "freq",
             "target": "freq",
             "width": 16,
-            "policy": "take",
+            "delta": {"const": 0xFFFF},
+            "policy": {"clamp": {"notefreq": None}},
             "rate": 1,
             "scope": "voice",
             "bound": {
                 "from": "proved",
                 "interval": [0, 0xFFFF],
-                "witness": "no step at all: the voice is at its target already",
+                "witness": "the step passes the target from either side: the voice takes it",
             },
             "produce": [],
         },

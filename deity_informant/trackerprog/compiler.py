@@ -147,9 +147,6 @@ class PlayerMixin:
             return lambda ov: self.folded(x(ov) & m, m)
         if k == "trap":
             return lambda ov: self.sprung(a)
-        if k == "stream":
-            rows, y = self.o["streams"][a[0]]["rows"], self.code_of(a[1], pay)
-            return lambda ov: rows[y(ov)]
         if k == "tabcell":  # a named column of a stream row, selected by a live cell
             name, y, col = a[0], self.code_of(a[1], pay), a[2]
             cols = self.column_of(name, col)

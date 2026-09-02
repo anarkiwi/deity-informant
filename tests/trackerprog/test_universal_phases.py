@@ -208,13 +208,13 @@ def test_a_divider_kept_in_a_cell_holds_the_stream():
     assert col(render(o, 9), CTRL) == [[0x21]] * 3 + [[0x41]] * 3 + [[0x21]] * 3
 
 
-def _sweep(epoch, acc=()):
-    rows = [
+def _sweep(rows=None, acc=()):
+    rows = rows or [
         {"trap": "no stream"},
         {"hold": 3, "run": [{"acc": "step", "delta": 1}], "sets": [["@wave", 0x11]], "next": 1},
     ]
     o = quiet_obj(
-        {"pulse": dict({"rank": 5, "rows": rows}, **epoch)},
+        {"pulse": {"rank": 5, "rows": rows}},
         {"pulse": [{"row": 1, "hold": 0}]},
     )
     o["accs"] = {
@@ -239,15 +239,22 @@ def _sweep(epoch, acc=()):
 
 def test_one_divider_for_a_stream_and_for_an_accumulator():
     """§3.3's ``rate`` is one form and one procedure wherever it is a divider."""
-    assert _sweep({}, {"rate": {"cell": "arpscnt", "reload": 2}}) == [1, 2, 3]
+    assert _sweep(acc={"rate": {"cell": "arpscnt", "reload": 2}}) == [1, 2, 3]
     with pytest.raises(AssertionError):  # a bare k names no counter, so it is no divider
-        _sweep({}, {"rate": 3})
+        _sweep(acc={"rate": 3})
 
 
-def test_a_step_whose_counter_is_read_at_entry_does_not_run_on_the_tick_it_ends():
-    """#297's epochs: the consuming tick runs the step, or it does not, and the object says."""
-    assert _sweep({}) == [1, 2, 3, 4, 5, 6, 7, 8, 9]
-    assert _sweep({"epoch": "entry"}) == [1, 2, 3, 4, 5, 6]
+def test_a_step_that_acts_and_then_holds_is_two_rows():
+    """#297's epochs, in the rows: a sweep that does not run on its landing tick is
+    the acting row and the holding one, which is what the object already writes.
+    """
+    assert _sweep() == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    split = [
+        {"trap": "no stream"},
+        {"hold": 2, "run": [{"acc": "step", "delta": 1}], "next": 2},
+        {"sets": [["@wave", 0x11]], "next": 1},
+    ]
+    assert _sweep(split) == [1, 2, 3, 4, 5, 6]
 
 
 def test_an_edge_written_twice_in_one_tick_is_two_writes():

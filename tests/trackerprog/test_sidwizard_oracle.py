@@ -152,7 +152,7 @@ def _sets(row):
     return dict((t, v) for t, v, *_ in row.get("sets", ()))
 
 
-def _wave_bytes(row):
+def _wave_bytes(row, rows=()):
     """One waveform row's own three bytes, back from the step."""
     s = _sets(row)
     if "@wave" not in s and "@arpscnt" not in s:
@@ -170,27 +170,46 @@ def _wave_bytes(row):
     return b0, b1, row["detune"]
 
 
-def _pulse_bytes(row):
+def _acting(row, rows):
+    """A sweep row's own bytes: its delay, and the sets its landing row carries.
+
+    A sweep of `n + 1` ticks that runs on `n` of them is two rows -- the acting
+    one and the one its landing holds (section 3.3) -- so the delay is the first
+    row's `hold` and the third byte is on the row it goes to.  A sweep of one
+    tick runs on none and stays one row, delay 0.
+    """
+    s = _sets(row)
+    if s:
+        return row.get("hold", 1) - 1, s
+    return row["hold"], _sets(rows[row["next"]])
+
+
+def _pulse_bytes(row, rows):
     s = _sets(row)
     if "track" in row:
         return 0xFE, None, row["track"]
-    if "hold" in row:
-        return row["hold"] - 1, row["run"][0]["delta"] & 0xFF, s["@pkbdtrk"]
+    if "run" in row:
+        delay, s = _acting(row, rows)
+        return delay, row["run"][0]["delta"] & 0xFF, s["@pkbdtrk"]
     if "@pw" not in s:
         return (0xFF,)
     return 0x80 | s["@pw"] >> 8, s["@pw"] & 0xFF, s["@pkbdtrk"]
 
 
-def _filter_bytes(row):
+def _third(s):
+    return 0x80 | s["#fswitch"] if "#fswitch" in s else s.get("#ckbdtrk")
+
+
+def _filter_bytes(row, rows):
     s = _sets(row)
     if "track" in row:
         return 0xFE, None, row["track"]
-    third = 0x80 | s["#fswitch"] if "#fswitch" in s else s.get("#ckbdtrk")
-    if "hold" in row:
-        return row["hold"] - 1, row["run"][0]["delta"] & 0xFF, third
+    if "run" in row:
+        delay, s = _acting(row, rows)
+        return delay, row["run"][0]["delta"] & 0xFF, _third(s)
     if "#fltband" not in s:
         return (0xFF,)
-    return 0x80 | s["#fltband"] | s["#resonib"] >> 4, s["#cutoff"] >> 3, third
+    return 0x80 | s["#fltband"] | s["#resonib"] >> 4, s["#cutoff"] >> 3, _third(s)
 
 
 def _tables(x, obj, i):
@@ -199,7 +218,7 @@ def _tables(x, obj, i):
     for slot, fn in (("wave", _wave_bytes), ("pulse", _pulse_bytes), ("filter", _filter_bytes)):
         rows = obj["streams"][slot]["rows"]
         for k, r in x.base[i][slot].items():
-            for j, b in enumerate(fn(rows[r])):
+            for j, b in enumerate(fn(rows[r], rows)):
                 if b is not None:
                     out[k + j] = b
     return out

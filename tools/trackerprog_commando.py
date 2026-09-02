@@ -140,7 +140,7 @@ def score(m, song):
             seq.append(m[p])
             used.add(m[p])
             p += 1
-        orders.append({"play": seq, "end": "jump" if m[p] == 0xFF else {"stop": "silence"}})
+        orders.append({"play": seq, "end": {"jump": 0} if m[p] == 0xFF else {"stop": "silence"}})
     return orders, {str(p): pattern(m, p) for p in sorted(used)}
 
 
@@ -281,7 +281,7 @@ def accs():
             "amplitude": {
                 "interval": [0x800, 0xEFF],
                 "shift": 8,
-                "turn": "pw_hi == $E going up, == $8 going down",
+                "witness": "pw_hi == $E going up, == $8 going down",
             },
             "bound": {
                 "from": "projected",
@@ -359,7 +359,9 @@ def accs():
             "target": "freq",
             "width": 16,
             "policy": {
-                "reload": {"transpose": {"stream": ["arp", {"and": [{"cell": "counter"}, 1]}]}}
+                "reload": {
+                    "transpose": {"tabcell": ["arp", {"and": [{"cell": "counter"}, 1]}, "value"]}
+                }
             },
             "bound": {
                 "from": "projected",
@@ -492,7 +494,7 @@ def build(path, song=0):
                     }
                 ],
             },
-            "arp": {"rows": [0, 12]},
+            "arp": {"rows": [{"value": 0}, {"value": 12}]},
         },
         "accs": acc,
         "instruments": instruments,

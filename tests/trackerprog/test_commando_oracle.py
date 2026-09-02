@@ -96,9 +96,9 @@ def test_the_modulators_are_expressions_and_own_what_they_do_past_the_tuning():
     vib, arp = obj["accs"]["vibrato"], obj["accs"]["arpeggio"]
     assert vib["delta"]["repeat"][0] == {"shr": [{"interval": None}, "shift"]}
     assert arp["policy"]["reload"]["transpose"] == {
-        "stream": ["arp", {"and": [{"cell": "counter"}, 1]}]
+        "tabcell": ["arp", {"and": [{"cell": "counter"}, 1]}, "value"]
     }
-    assert obj["streams"]["arp"]["rows"] == [0, 12]  # semitone offsets
+    assert obj["streams"]["arp"]["rows"] == [{"value": 0}, {"value": 12}]  # semitone offsets
     assert "beyond" not in vib  # the vibrato never asks for one; measured, not assumed
     b = arp["beyond"]
     assert len(b["words"]) == 12 and all("u16" in w or "trap" in w for w in b["words"])

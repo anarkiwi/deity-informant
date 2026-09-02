@@ -334,7 +334,7 @@ def command(m, b, p):
         while m[p + i] < 0x80:
             pairs.append([REGNAME[m[p + i]], {"const": m[p + i + 1]}])
             i += 2
-        return {"rows": [{"sets": pairs}], "why": "$85 raw registers"}
+        return {"rows": [{"sets": pairs}]}
     if b == 0x80:
         pw = a[1] | a[2] << 8
         return _sets(
@@ -347,7 +347,7 @@ def command(m, b, p):
     if b == 0x83:
         return _sets([["@gated", 1], ["@gatelen", a[0]]])
     if b == 0x84:
-        return {"rows": [], "why": "$84 fixed length: the parse spent it"}
+        return {"rows": []}  # $84's length is fixed: the parse spent it
     if b == 0x88:
         return {
             "rows": [
