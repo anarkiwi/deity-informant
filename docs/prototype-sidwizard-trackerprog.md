@@ -45,8 +45,7 @@ needed · 5 what this family exercises · 6 finding the data · 7 measurements.
 
 The nine accumulator ids (`vib_phase`, `vibrato`, `vib_delay`, `freqmod_step`,
 `slide_up`, `slide_down`, `toneporta`, `pulse_step`, `cutoff_step`) are labels in
-the data; the player's one dispatch is on the *form* of a delta, a policy or a
-stream row.
+the data.
 
 ---
 
@@ -120,9 +119,8 @@ period before it, write for write.
 | Emomyst | 6,120 | 8,083 | ticks 1,963..8,082 against 8,083..14,202 | **yes** |
 | End of the World | 7,688 | 14,464 | ticks 6,776..14,463 against 14,464..22,151 | **yes** |
 
-The window starts *at* the claimed first repeat rather than one tick after it,
-which is GoatTracker 2's off-by-one and not this family's: there is no flush, so
-a tick's writes are the tick's own state and the claim lands where it says.
+The window starts *at* the claimed first repeat rather than one tick after it:
+there is no flush, so a tick's writes are the tick's own state.
 
 ---
 
@@ -319,8 +317,7 @@ The three dispatch tables are read only to ask whether this build's handler
 exists: an entry pointing at a bare `RTS` is an effect the exporter compiled out,
 which the score names `nop` while keeping the byte. Emomyst has five such small
 effects (9, B, D, E, F) and nine big ones ($17–$1F); End of the World has two
-($1D, $1E). That the object *is* the tune's data and not a reading of it is
-checked rather than asserted:
+($1D, $1E). That the object *is* the tune's data is checked rather than asserted:
 `test_every_byte_of_the_tune_s_data_is_in_the_object` reconstructs the tuning,
 the exponent table, the chord table and its starts, the tempo table, every
 instrument's sixteen-byte header and all three of its tables, and every pattern,
@@ -360,11 +357,9 @@ ticks whose write list is no longer identical.
 | the frame the slowdown gate spends | 8,084 — every tick moves | 0 — 1.9 has no gate |
 | the rows before the first note | 6 | 2 |
 
-Every non-zero row is a §2 **divergence**, not a permutation: rule 1 keeps every
-edge write and rule 2 the tick's last value, so nothing measured here hides in the
-reduction. Every zero is an arm the build does not have, and the two columns
-disagreeing is the point — the object carries both builds' data and each build's
-own signature decides which arm is live.
+Every non-zero row is a §2 **divergence**, not a permutation. Every zero is an arm
+the build does not have, and the two columns disagreeing is the point: the object
+carries both builds' data and each build's own signature decides which is live.
 
 The instrument columns `wave_base`, `pw_base` and `flt_base` — an instrument's
 first row in each of its three tables — are **struck**, with the three `stream.*`

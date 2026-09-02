@@ -56,8 +56,7 @@ needed · 5 finding the data · 6 measurements.
 | `globals` | one channel: the cutoff and the filter program's step, the routing byte, the volume byte and its `or` mask, and one flag (`raw`) | the same, plus the data pointer, the two countdown bytes and the gate they close |
 
 The seven accumulator ids (`pulse.step`, `filter.step`, `wave.step`, `slide`,
-`vibrato.turn`, `vibrato`, `vibrato.ramp`) are labels in the data; the player's
-one dispatch is on the *form* of a delta, a policy or a stream row.
+`vibrato.turn`, `vibrato`, `vibrato.ramp`) are labels in the data.
 
 ---
 
