@@ -639,7 +639,7 @@ def machinestreams():
 
     ``voicemod`` holds the whole block off for ``delay`` calls after a note-on,
     which is one guard the tick evaluates once and every later rank reads --
-    the flag channel section 7 gave the object for exactly this.
+    the flag channel section 5 gives the object for exactly this.
     """
     clocks = [
         {"when": [[cell("newnote"), "!=", 0]], "sets": [["!run", 1]]},
@@ -760,7 +760,7 @@ def filterstreams():
 
     It runs once the three voices have, so its own note-on is any voice's --
     and its reset is the *owner* voice's, the one whose instrument programmed
-    it.  ``globals.after`` is where a channel a voice feeds steps (section 4.4).
+    it.  ``globals.after`` is where a channel a voice feeds steps (section 3.7).
     """
     due = [[glob("frate"), "!=", 0]]
     fired = [[flag("ffire"), "!=", 0]]

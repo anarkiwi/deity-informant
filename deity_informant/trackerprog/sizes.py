@@ -1,9 +1,10 @@
 """Section 9.1's measurement: the object against the tune's own load band.
 
 Section 9 asked whether the score compresses better than the program that played
-it, and measured against ``tuneprog.md`` -- a pretty-printed decompilation, which
-section 3.4 rules is not a measurement.  The program that played the tune is the
-binary, so the denominator here is the PSID load band with its header stripped.
+it, and measured against ``tuneprog.md`` -- a pretty-printed decompilation, and
+a claim measured against a presentation artefact is not measured.  The program
+that played the tune is the binary, so the denominator here is the PSID load
+band with its header stripped.
 
 A tune's band holds *every* subtune, so the numerator is every certified
 subtune's object concatenated, and the row states the coverage: a ratio over a
@@ -21,7 +22,7 @@ PRESET = 9 | lzma.PRESET_EXTREME
 
 
 def xz(data):
-    """``xz -9e`` of some bytes, section 8.3's own unit."""
+    """``xz -9e`` of some bytes, architecture section 8.3's own unit."""
     return len(lzma.compress(data, preset=PRESET))
 
 

@@ -1,116 +1,25 @@
-# trackerprog — review and backlog
+# trackerprog — open work
 
-What is left to do on the trackerprog layer, and the rules the nine
-transliterations settled. Sizes follow [tuneprog-backlog.md](tuneprog-backlog.md)
-§2: small ≤ 1 day of one agent, medium ≤ 1 stage, large = a stage with a
-prototype.
+What is left on the trackerprog layer, and the checks the nine transliterations
+settled. Sizes follow [tuneprog-backlog.md](tuneprog-backlog.md) §2: small ≤ 1
+day of one agent, medium ≤ 1 stage, large = a stage with a prototype. The
+schema itself is [prototype-trackerprog.md](prototype-trackerprog.md); what the
+review found and what landed is [trackerprog-review.md](trackerprog-review.md).
 
-Contents: 1 state · 2 open work · 3 what the transliterations settled ·
-4 presentation gaps.
+Contents: 1 state · 2 decisions · 3 open work · 4 what a family must check ·
+5 presentation gaps.
 
 ---
 
 ## 1. State
 
-All nine of the anatomy's families are certified exemplars, rendered by one
-universal player against `Verifier.obs` at 0 divergences over their whole
-horizons: [Hubbard](prototype-commando-trackerprog.md),
-[GoatTracker 2](prototype-goattracker-trackerprog.md),
-[SID Wizard](prototype-sidwizard-trackerprog.md),
-[defMON](prototype-defmon-trackerprog.md), [JCH V20](prototype-jch-trackerprog.md),
-[Follin](prototype-follin-trackerprog.md),
-[Blackbird](prototype-blackbird-trackerprog.md),
-[Walker](prototype-walker-trackerprog.md) and
-[Galway](prototype-galway-trackerprog.md). `universal.py` branches on no family:
-the object is the tune and the procedure is fixed. **That thesis is proven and
-nothing below reopens it.**
+All nine of the anatomy's families are certified exemplars on one universal
+player, 0 divergences over their whole horizons — **thirty builds, 332,358
+ticks**. `universal.py` branches on no family. That thesis is proven and nothing
+below reopens it. T0–T3 land; the review's R1–R10 and the schema hardening
+B1–B9 are struck, in the git log and in the review's outcome table.
 
-The planes T0 (write provenance), T1 (accumulators, with `Acc.step` an exact
-recurrence), T2 (score, streams, pitch) and T3 (the certified render) all land,
-and the layer has been hardened with the families all in. The review of the
-prototype doc against its sources, the fifteen internal inconsistencies I1–I15,
-and work packages W0–W10 and W12 are all struck; their mechanisms and
-measurements are in [prototype-trackerprog.md](prototype-trackerprog.md) §7 and
-in #291–#304 and #307. The per-family findings they produced are §3 below.
-
-### 1.1 Decisions, so they are not relitigated
-
-A first-principles review against all nine families settled six questions. Each
-is a decision, not a proposal.
-
-**D1 — the hand object is the trackerprog; the lift's object is not.**
-`universal.py` renders the nine hand objects; `interp.py` (was `player.py`)
-renders a *different* object carrying a whole S4 `Tuneprog` in a `program` key,
-and that is what T0–T3 produces. One of the two is the layer; the other is a
-partial lift that has not arrived yet. **B2 named the second a `scoreprog`**;
-B6/B7 converge them.
-
-The first draft of this row said the two "share no field but the certificate".
-Measured in B2, that is wrong twice over. The nine hand objects are one 8-key
-set `{meta, pitch, streams, accs, instruments, score, state0, globals}`;
-`emit.KEYS` is ten — seven of those names, no `state0`, plus `producers`,
-`program` and `inputs`. Under the seven shared names the shapes are disjoint
-(`pitch` a dict `{base, freq, tuning}` against a list; `streams` named row lists
-against column-byte tables; `score` `{patterns, orders, commands}` against
-`{voices, end, regions, tables, fetches}`; `accs` §5 records whose `target` is a
-register *name* against T1 records whose `target` is a *dict*; `globals` four
-keys against `{}`), and they share exactly **one field**: `meta.commit_order`.
-They do not share the certificate either — `attest.attest` certifies the hand
-objects and `certify.divergence` the scoreprog — which B9 settled as two artefacts' two
-certificates and not one comparison said twice. Sharper than
-the original claim: `emit.replay` reads only `meta.horizon`, `score`, `program`
-and `inputs`, so a scoreprog's `pitch`, `streams`, `accs`, `instruments` and
-`producers` are *readings* it prints and its own renderer never reads.
-
-**D2 — the sound half does not want a small total language.** It was tried:
-`w11-producers-archive` if-converted the certified tick to a ranked item list and
-came out **2×–19× the size of the S4 program it replaced**. A language whose
-object is the *player* transliterated shares nothing between two families and
-abandons §1's thesis. Nine hand transliterations at 0 divergences are the
-evidence the tracker vocabulary suffices.
-
-**D3 — the form W11 needs is already in the grammar.** A stream with `all: True`
-is a list of guarded assignments applied in order (`universal.rows`), and a
-`{"stream": s}` phase in `meta.tick` runs one at a declared position. Follin,
-defMON, JCH and Walker already write it. So `program` can leave the object with a
-*trivial* lowering and no classification at all, and recognition becomes a
-coverage number rather than a gate on emission.
-
-**D4 — the compression claim is measured against the tune's own load band.**
-§9 asks whether the score compresses better than the program that played it. The
-program that played it is the binary, not `tuneprog.md` — a pretty-printed
-decompilation, which is a presentation artefact. B4 re-measured, and **it does
-not**: 1.26×–2.14× the band on every tune certified whole (§9.1).
-
-**D5 — the accumulator is a reading, not a universal.** Follin has none at all
-across 32 subtunes and 111,763 ticks; Galway's effects are its order program,
-Blackbird's are streams. Eighteen schema fields against sixteen total
-instantiations, and more one-family fields than the rest of the object combined.
-`bound` asserted at `store` stays — it took five false records out — but §5 stops
-presenting `Acc` as the layer's centre.
-
-**D6 — a schema row without a runnable poison test is prose.** The layer's method
-is to render both forms over the whole horizon and count differing ticks, and
-`tools/trackerprog_poison.py` is now that method: a stated mutation over a named
-build set, the sites it matched, and the ticks that differ. Every item below
-states its acceptance as a command.
-
-## 2. Open work
-
-Ordered. The order is the argument, so each tier says why it is where it is.
-
-### Tier 0 — struck: the layer can check itself
-
-**B1, the poison harness, landed.** `trackerprog/poison.py` and
-`tools/trackerprog_poison.py` take an object, a stated mutation and a build set,
-render both forms over each build's whole horizon, and report per build the
-differing ticks, the **sites** the mutation matched and the first divergence — a
-path that matches nothing renders 0 differing and is not evidence, and a poison
-the renderer refuses is an asserted invariant rather than a crash. The registry
-is **thirty builds, 332,358 ticks**, every horizon read from the committed
-certificate that records it; the eleven builds §7's P1–P8 were measured over are
-a named set totalling **236,586**, and both totals are asserted against every
-number these documents quote. Each acceptance below is now a command:
+Acceptance for every row below is a command:
 
 ```
 tools/trackerprog_poison.py --builds all --poison <name>
@@ -118,299 +27,121 @@ tools/trackerprog_poison.py --builds all --drop PATH --set 'PATH=JSON'
 tools/trackerprog_poison.py --builds all --emit-digests DIR   # then --against DIR
 ```
 
-### Tier 1 — the layer states things that are not true — **all five struck**
+## 2. Decisions, so they are not relitigated
 
-**B2, one schema or two names, landed.** The lift's artefact is a **`scoreprog`**:
-a certified tuneprog with its fetch regions cut out and its score in their place
-as data, ten keys, rendered by `trackerprog/interp.py` (was `player.py`) and
-certified by `certify.py`. §1 now carries both terms and the one target, §6 says
-the lift emits a scoreprog, and the code stopped asserting otherwise — the S4 tag
-is `$scoreprog`, `tools/tuneprog_scoreprog.py` writes `scoreprog.{json,md,
-certificate.json}`, and one module claims to be the universal player rather than
-two. It went past documents because the collision was in the tree: all nine hand
-tools and the lift wrote **one filename at two shapes**, and `$trackerprog` was
-spent twice — as a key in the hand objects and as the S4 tag of the lift's list,
-which §3 declares to be the schema's. §3.2's own rules decide that ("a sigil that
-means two things is a grammar"; "one *implementation* per name space"). Nothing
-on the hand path moved, so `--builds all` is 0 of 332,358 by construction.
+| # | decision |
+| --- | --- |
+| D1 | the hand object is the trackerprog; what the lift emits is a **scoreprog**, a different object with its own renderer and certificate, sharing one field (`meta.commit_order`). B6/B7 converge them |
+| D2 | the sound half does not want a small total language: `w11-producers-archive` if-converted the tick and came out 2×–19× the S4 program it replaced |
+| D3 | the form B7 needs is already in the grammar — a stream with `all: True` is a guarded assignment list, and a `{stream}` phase runs one at a declared position |
+| D4 | the compression claim is measured against the tune's own **load band**, not against `tuneprog.md`; measured, the object is 1.25×–2.18× the binary (§9.1) |
+| D5 | the accumulator is a reading, not a universal: Follin has none across 32 subtunes and 111,763 ticks, Galway's effects are its order program, Blackbird's are streams |
+| D6 | a schema row without a runnable poison is prose. Every kept one-family form carries one; the census strike measured **0 differing of 332,358** |
 
-**B3, the order program under a prefetching clock, landed.** `advance` stepped
-`orderpos` by one of its own and discarded the `op` `play_of` returns; it calls
-`order_step` at the wrap now, so the two sites are one program. The strike is the
-old body against the new over every build's whole horizon, the harness's own
-two-checkout form — `--emit-digests DIR` in a worktree at the merge base, then
-`--against DIR` here — at **0 differing of 332,358 over thirty builds**. That is
-the measurement that the hole was structurally unreachable rather than merely
-unnoticed: no certified build reaches a non-`None` `op` through the fetch. Three hermetic snippets in
-`test_universal_fetch.py` carry `fetch` in `meta.tick` and an order *program*,
-and each mis-renders on the old body kept beside them: a counted loop plays its
-body once instead of three times, a call walks straight past its callee, and a
-`stop` never halts its voice.
-
-It found one more gap on the same path, left for B5 to close on one side or the
-other: the two positions still disagree about the *end* of the `play` list.
-`next_row`/`order_end` (the walk) take a bare `"jump"`, a `{jump}` dict, else
-`stopping`, and loop over a step with no rows; `next_event` (the fetch) takes
-only `{jump}`, returns `None` otherwise, and raises `IndexError` on a step whose
-pattern is empty. One question, two places that answer it — §3.2's own row.
-
-**B4, §9 against the load band, landed — and the claim did not survive it.**
-`trackerprog/sizes.py` and `tools/trackerprog_sizes.py` measure `xz -9e` of every
-certified subtune's object against `xz -9e` of the tune's own PSID load band,
-over the poison registry's thirty builds. §9.1 carries the table.
-
-**The object is 1.26×–2.14× the binary that played it.** Ten of the thirteen
-tunes have one subtune, so the band holds exactly the music the object covers,
-and every one of the ten is over 1; Galway is the eleventh certified whole — all
-fourteen subtunes — at 1.91×. The two ratios under 1 are the two tunes measured
-on a fraction of their subtunes against a band holding all of them, which is not
-a comparison, and the tool states that coverage on the row rather than letting
-the ratio pass.
-
-The mechanism, which was not where §9 assumed: **the score is not what makes the
-object large.** Materialised over the whole horizon — Blackbird's LZ stream
-expanded to 511,867 bytes — it still compresses to about what the whole load band
-does (3,100 against 2,804 on *Je suis Linus*, a band holding the player *and* the
-data). It is the sound half that doubles the total on the even builds; *Knob at
-Night*'s 95 % is the rip wrapper's own per-frame table and not the sound
-vocabulary, which R9 restated at its row (§9.1).
-So §9's claim is restated: the object is player-independent, not small, and B7
-and B8 are where a saving would come from.
-
-**B5, the doc audit, landed.** Eight rows, every one confirmed against the code
-before it was touched, then closed:
-
-| row | verdict | closed by |
-| --- | --- | --- |
-| §3.5 "one procedure runs all three" inline streams | **refuted, twice** — there are two procedures, `rows()` (a *named* stream, `sets` only) and `inline()` (an anonymous row list, `sets` **and** `point`); and a prelude is a named-stream reference, so the three are not one object either. Worse, `inline` counts **one** act and `rows` counts one act **per matching row**, and an act is what §2 rule 1 groups edge writes by | the doc, saying what the code does; the unification landed as R2 — one procedure, and the act is the row |
-| §3.4 `Acc.step`, "the recurrence a player computes `cell(t+1)` with" | **refuted** — no hand tool emits `step` on any of the nine families' accumulators and `universal.py` never reads one. It is T1's field, so it belongs to a *scoreprog* | moved to §7 under T1, grammar box and all |
-| §5's `Acc` grammar box | **refuted** — it listed 11 fields; the record has **21**, of which the player reads **18**. Omitted: `produce`, `rank`, `when`, `step_when`, `delta_when`, `gate`, `emit`, `beyond`, `trap`, and the `take` policy | rewritten from the code, and `policy: halt` deleted — no tool writes it and `apply()` has no arm |
-| §3.5 "GT2's `gatetimer` **is** `early`" | **half true** — the column is where the value comes from, but `early` is `meta.tempo.early`, a guard on the row clock and one number per tune. `trackerprog_goattracker.py` asserts every used instrument carries the same column 7 and would refuse a tune that varied it | the doc, stating both halves |
-| §7/§9 "six families transliterated by hand" | **stale** — nine, thirty builds, 332,358 ticks | the doc |
-| §1 "Galway alone is prose-only" | **stale** — nine certified since #325 | the doc; and §3.2's Blackbird pitch "projection", §3.6's "the other five families", §3.7's "all five families" with it |
-| struck rows still live in family docs | **confirmed, four** — GT2's `Ins{sets, note_sets, points}` and `tempo.alternate`, SW's `note_sets`/`points` and `meta.tempo.form: counter` (contradicted 80 lines later by its own document) | the four family docs |
-| the compression claim, from B4 | **refuted** — six family docs asserted it; Blackbird's own numbers contradicted it in the sentence that made it | all six restated against the load band, pointing at §9.1 |
-
-§5's box is now machine-checked: `tests/trackerprog/test_schema_doc.py` asserts
-it names exactly the fields the nine families write, that every field it calls
-read has a reader in `universal.py`, that the three it calls annotations are read
-by `printer.py` and not by the player, and that `halt` is gone. **This closes
-B10's schema half**; what is left of B10 is the presentation — stating `Acc`
-coverage per family rather than as the layer's centre.
-
-Left open and recorded rather than swept in: the nine family docs' own `xz`
-tables predate the current objects by a few per cent (*Je suis Linus* prints
-5,608, measures 5,988). §9.1 says so and `tools/trackerprog_sizes.py`
-regenerates them; a table refresh is mechanical and belongs with B8's survey.
-
-**Tier 1 is struck.** The five were one tier because they shared a cause: each
-was a statement nothing executed — a schema in prose, a claim measured against
-the wrong thing, a doc row no reader checks. Three of them are now executable
-instead. B1 renders thirty builds against a stated mutation, B4's table
-regenerates from the binaries, and B5's §5 box is asserted against the nine
-families' own records and the player's source, so the next drift fails CI rather
-than waiting for an audit. B3 belonged here rather than in a defect list for the
-same reason: two properties that should have been orthogonal, coupled by a flag,
-with no exemplar to separate them — and 0 differing of 332,358 is what says a
-coupling was a hole and not an inelegance.
-
-### Tier 2 — the open design work
+## 3. Open work
 
 | # | item | mechanism | size | acceptance |
 | --- | --- | --- | --- | --- |
-| B6 | is the schedule recoverable? | the experiment W11 needs and nobody has run. There are **nine ground truths in `tools/`** — nine hand-written `meta.tick` phase lists, `meta.row`/`meta.stage` row programs, stream `rank`s and `commit_order`s. Ask whether they are derivable from the certified tick: the hypothesis is that the phases are the maximal segments of the tick's reverse postorder between the T0 commit sites, with the fetch regions as `row`/`fetch`. Nine families is enough to refute it outright | medium | for each of the nine, the derived schedule against the hand-written one, agreeing or differing by a named datum |
-| B7 | W11 restated — lower the tick, do not classify it | lower every store site of the certified tick outside the fetch regions into `sets` rows of an `all: True` stream, placed at a `{stream: s}` phase of `meta.tick` at its program position, every leaf opened to a named cell, a table entry, `pitch`, `byte` or a constant. `program`, `producers` and the S4 interpreter leave the object. Recognition — an `Acc` is a row whose sets are `c ← c ± Δ`, an instrument a row group reading one record's columns — is then a pass *over the lowered stream*, reported as coverage | large | the lift emits an object `universal.py` renders, at 0 divergences, with no `program` key; coverage stated per family |
+| B6 | is the schedule recoverable? | there are **nine ground truths in `tools/`** — nine hand-written `meta.tick` phase lists, `meta.row`/`meta.stage` programs, stream `rank`s and `commit_order`s. The hypothesis: the phases are the maximal segments of the tick's reverse postorder between the T0 commit sites, with the fetch regions as `row`/`fetch`. Nine families is enough to refute it outright | medium | for each of the nine, the derived schedule against the hand-written one, agreeing or differing by a named datum |
+| B7 | lower the tick, do not classify it | lower every store site of the certified tick outside the fetch regions into `sets` rows of an `all: True` stream, placed at a `{stream: s}` phase at its program position, every leaf opened to a named cell, a table entry, `pitch`, `byte` or a constant. `program`, `producers` and the S4 interpreter leave the object; recognition becomes a pass *over the lowered stream*, reported as coverage | large | the lift emits an object `universal.py` renders, 0 divergences, no `program` key; coverage stated per family |
+| B10 | `Acc` demoted to a reading | the schema half is closed and machine-checked; what is left is the presentation — §5 opening with coverage per family (D5) rather than with the grammar | small | §5 opens with coverage, not with the record |
 
-W11's old acceptance — *"the same nine tunes at 0 divergences with no `program`
-block"* — is **already met nine times**: no hand tool emits a `program`. It was
-never a schema question. It is a lift question, and its hard part is not producer
-values (mostly a stream column, a pitch lookup or a constant) but the *schedule*,
-which W11's old mechanism did not mention at all. Hence B6 before B7: a lift that
-classifies every producer perfectly and recovers no phase list renders wrong on
-every family with more than one commit.
+B6 comes before B7: a lift that classifies every producer perfectly and recovers
+no phase list renders wrong on every family with more than one commit.
 
-### Tier 3 — schema hygiene, unblocked by B1
+**Not now.** Multispeed (§10); the `mods`/`arms` split of the accumulator
+record — the census is about forms, not bytes, and the eight forms it struck
+take one key each out of the objects that carried them. And the package split:
+`deity_informant/trackerprog/` holds the trackerprog's `universal`, `printer`,
+`attest`, `poison` beside the scoreprog's `emit`, `interp`, `region`, `resolve`,
+`lift`, `score`, `streams`, `pitch`, `cursors`, `hist`, `certify`. B7 deletes
+half of one side, so it waits for B7 to land or to be refused.
 
-**B9, the duplicated procedures, struck (#336).** Two of its four rows landed as
-§7's R2, and two the row did not name went with them. `rows()` and `inline()`
-are **one procedure** over one compiled plan, reading `sets` and `point` in
-both; which act rule survives was measured and not chosen, each rendered over
-the whole horizon of every build — *the row is the act* at 0 differing of
-332,358 on all thirty, *the list is the act* at 2,943, differing on seven
-(Walker 1, Galway songs 1–6 at 994, 931, 928, 28, 11, 50). The act is therefore
-the row's datum and not the call site's, and §2 rule 1 and §3.1 state it with
-the limit nothing had: `edges()` keeps one write per register per act.
-`channel()`/`channel_after()` are one procedure over `globals.streams` and
-`globals.after`. The two unnamed: `order_end()` is the one answer to *the play
-list ended* for the fetch and the walk alike, and `dividercode` is one divider
-for a stream's `rate` and an accumulator's, retiring `state0.dividers` and
-`Player.divider`. What it did **not** close, said plainly: `certify.divergence`
-and `attest.attest` stay two, because B2 settled that the scoreprog and the
-trackerprog are two artefacts with two renderers and each certificate states §2's
-rule for its own object; and the epoch of a read looked like two spellings in the
-trackerprog, `Acc.emit` and `Stream.epoch` — **B8 struck the second and kept the
-first, and they were never one fact**: one says which *tick* a step's arm runs
-on, which the rows already state as two rows, and the other which *value* a
-produce sends, which nothing else can state (`Acc.step`'s `pre`/`post`/`mid` left with §3.4,
-being the scoreprog's).
+## 4. What a family must check
 
-**B8, the one-family forms, struck (#342).** The census was run as a script over
-the thirty cached objects rather than listed by hand, by the unit the review's
-§2.1 chose — a form (a key, a policy value, an expression kind, a `sets` target
-kind, a `meta` or `state0` key) joined to the line of `universal.py`,
-`compiler.py` or `printer.py` that reads it. **300 forms, 105 with one family**:
-59 of those are the family columns §3.3 and §3.5 already admit — an instrument's
-own record fields and a stream row's own columns, read through `{"ins": path}`
-and `tabcell` — and **46 are forms of the player**. Eight were struck, each
-because a general form the object already had says the same fact, and each
-measured over the whole horizon of the family that had it:
+Each row is a check to run on the tenth family, and the exemplar that forced it.
+A bare § is a section of [prototype-trackerprog.md](prototype-trackerprog.md).
 
-| struck | family | what says it instead | measured |
-| --- | --- | --- | --- |
-| `Acc.policy: "take"` | GT2 | the `clamp` §5's own row calls it, `delta $FFFF` — a step that passes the target from either side | 0 differing of 16,895 |
-| `Cmd.links` | GT2 | a `sets` on the accumulator's own cell, in the same act and under §5's bound | 0 differing of 332,358 |
-| `Stream.epoch: "entry"` | SW | a step that acts and then holds is two rows (#311), the second appended so the instrument's row numbers stand | 0 differing of 22,549 |
-| `Acc.flag.unguarded` | defMON | `step_when` and `gate.false`, two of §5's own channels: the tick the delta is skipped is the tick the step did not take | 0 differing of 150,824 |
-| `{"stream": [name, row]}` | Hubbard | `tabcell` with the column named — the rows carry one | 0 differing of 332,358 |
-| `amplitude.turn` / `.fold` | Hubbard / GT2 | one `amplitude.witness`, the name `bound` already uses | annotations; 0 by construction |
-| `end: "jump"` as a bare string | Hubbard | `{"jump": 0}`, which four families write | 0 differing of 332,358 |
-| a command's `why`, a pulse row's `track`, the certificate's `loop.tick` | Follin, SW, Walker | nothing reads the first two (§3.1); the other five families spell the loop `{first_repeat, period}` | no reader |
-
-The forty that remain are **kept with their family, their reader and their
-number**: each is now stated at its own row of §3–§5 of
-[prototype-trackerprog.md](prototype-trackerprog.md), and nineteen `POISONS`
-entries strike them — one per mechanism, the annotations and the second spelling
-of a form its own poison already covers apart — which is D6's rule applied to
-the schema — `reflect-complement` 3,593 of 16,895,
-`rest-arm` 152, `pitch-links` 2,354, `cmd-tie` 6,237, `row-command-spent` 6,820,
-`stage-hold` 13,947, `pitch-target` 13,994 of 22,549, `clamp-edge` 1,129,
-`insrec-voice` 853, `commit-guard` 22,548, `no-bug` 1,038, `op-wrap` refused,
-`emit-entry` 11,755 of 35,340, `acc-beyond` 120, `acc-trap` 0 (the claim it
-makes), `amplitude-count` 7,790 of 8,052, `stop-voice` 837 of 29,911,
-`flush-unguarded` 8,577 of 8,577, `sweep-bounce` 128,197. Three rows this item
-listed were answered by *refuting the proposal*: `meta.rest_arm`'s three arms
-moved into `meta.instrument.accs` differ on 2,714 of *Je suis Linus*'s 8,236 and
-are refused on *Do It Again*, because an instrument's arms are the voice's for as
-long as the instrument is; `meta.stop: sequencer` cannot be a cell guarding the
-clock, because an order's `stop` is a step of the score and no step of a score
-writes a cell; and `amplitude: {count}` cannot be a bound, because
-`amplitude.interval` is two constants and Walker's period is a byte of the
-instrument. `globals.stop_writes` and the two forms under `meta.prologue` had
-already gone with R5. **0 differing of 332,358 over all thirty builds.**
-
-| # | item | mechanism | size | acceptance |
-| --- | --- | --- | --- | --- |
-| B10 | `Acc` demoted to a reading | **B5 closed the schema half**: §5's box is rewritten from the code and machine-checked, `Acc.step` is out of §3.4, `bound.witness`/`scope`/`target`/`note` are marked as annotations, and `policy: halt` is deleted. What is left is the *presentation* — state `Acc` coverage per family (Follin has none at all across 32 subtunes, D5) rather than presenting the accumulator as the layer's centre | small | §5 opens with coverage, not with the grammar |
-
-Tier 3 is deliberately last. Every row is real, none is load-bearing, and each
-costs a render of thirty builds to settle — which is what B1 bought, and what
-makes doing them cheap rather than careful.
-
-### Not now
-
-The five presentation gaps of §4; multispeed (§10); the `mods`/`arms` split of
-the accumulator record, which is the largest migration anyone has proposed and
-had been waiting on B8's measurement. B8 has run and gives it no evidence: the
-census is about *forms*, not bytes, and the eight it struck take one key each out
-of the objects that carried them. If JCH's object does not shrink, it is not
-worth it, and nothing measured says it would.
-
-And the residue B2 named but did not move: `deity_informant/trackerprog/` holds
-both halves under one package name — the trackerprog's `universal`, `printer`,
-`attest`, `poison`, and the scoreprog's `emit`, `interp`, `region`, `resolve`,
-`lift`, `score`, `streams`, `pitch`, `cursors`, `hist`, `certify`. Splitting them
-is a migration, and B7 deletes half of one side, so it waits for B7 to land or to
-be refused.
-
-## 3. What the transliterations settled
-
-Each row is a check to run on the next family, and the exemplar that forced it.
-They are the durable half of nine transliterations and one hardening pass; none
-is a to-do. A bare § is a section of
-[prototype-trackerprog.md](prototype-trackerprog.md).
-
-### 3.1 What earns a field
+### 4.1 What earns a field
 
 | check | forced by |
 | --- | --- |
-| A field the object writes and no consumer reads is not a field — grep the readers of every name the schema declares, the player's, the print's and the round trip's, and delete what nothing answers | eight fields, after the schema had already struck them from the grammar |
-| Grammar with no exemplar is not grammar: a row nothing renders is a row nothing tests | §3.3's terminator, §3.6's nine named commands, `for`/`call`/`ret` in `Order` |
-| …and striking for want of an exemplar is a **debt with a stated shape**: what comes back is not the row that went | Follin's score-as-program returned five steps — `call`, `ret`, `mark`, `loop`, `jump` — and settled two spellings the strike could not have foreseen |
-| A field that names a set must name the set, not its size; a value space of "a prefix, forwards or backwards" describes the families read so far | defMON's flush skips two registers in the middle, so no count and no direction reaches it |
-| A value the schema admits and no exemplar writes is untested | `row_consumes_tick: false` reached `guards(None)` — vacuously true — so the one family to write it got *always* instead of *never* |
-| A datum can be coarser than its name; the poison sweep says how much of it a tune spends | Blackbird's `commit_order` content is "`ad` comes first": two of the six permutations render it, four do not |
-| A datum can be a property of the **frame** and not of the tune — ask what varies *within* a tune before making a field one datum per tune | the Puterman JCH build flushes low-to-high on a frame whose delay byte is zero and high-to-low otherwise, both arms taken |
-| A datum unobservable in one build of a family is not a datum the family does not have | voice order vanishes through JCH's flush and decides all 2,401 ticks of the build with no image |
-| Before widening a field for a family, confirm the family has the thing the field is about | a shadow is a register file a tick *defers*; SID Wizard defers nothing and has none |
-| When a family seems to need a flag, look for the datum it already has that answers the same question | *the image holds the registers the flush names, and a commit to a register the flush does not name reaches the chip where it is made* — one sentence, no new field, covers GoatTracker 2's deferred filter and defMON's immediate cutoff |
-| A field only the *print* reads is an annotation, not a field — the print is a consumer, so "no consumer reads it" passes things the player never sees | `Acc.bound.witness`, `Acc.scope` and `Acc.target` are written by nine tools, printed, and read by the player never; §5 presents them as semantics |
+| A field the object writes and no consumer reads is not a field — grep every name the schema declares | eight fields the grammar had already struck |
+| A field only the *print* reads is an annotation, not a field | `Acc.bound.witness`, `scope`, `target` |
+| Grammar with no exemplar is not grammar: a row nothing renders is a row nothing tests | §3.3's terminator, §3.6's nine named commands, `for`/`call`/`ret` |
+| …and striking for want of an exemplar is a debt with a stated shape: what comes back is not the row that went | Follin returned `call`, `ret`, `mark`, `loop`, `jump` and two spellings the strike could not have foreseen |
+| A field that names a set must name the set, not its size | defMON's flush skips two registers in the middle |
+| A value the schema admits and no exemplar writes is untested | `row_consumes_tick: false` reached a vacuously true guard |
+| A datum can be coarser than its name; the poison says how much of it a tune spends | Blackbird's `commit_order` content is "`ad` comes first" |
+| A datum can be a property of the **frame** and not of the tune | JCH's flush direction is the frame's delay byte, both arms taken |
+| A datum unobservable in one build of a family is not a datum the family lacks | voice order vanishes through JCH's flush and decides all 2,401 ticks of the build without one |
+| Before widening a field for a family, confirm the family has the thing the field is about | SID Wizard defers nothing and has no shadow |
+| When a family seems to need a flag, look for the datum that already answers the question | the image holds what the flush names; a commit outside it reaches the chip where it is made |
 
-### 3.2 One question, one place that answers it
+### 4.2 One question, one place that answers it
 
 | check | forced by |
 | --- | --- |
-| One musical question, one place that answers it — and a second family is what makes two spellings visible | "does this row key a note?" answered from `gate == "on"` for one family and `note is not None` for another |
-| A hook is a phase with a name, and names do not compose; a hook per call site is how two procedures for one musical act happen | seven meta keys attaching a stream to a point in the row or tick, beside the general `rank`/`when` that already existed; now `meta.row` and `meta.tick` |
-| An enum is a hook list that has not noticed yet | five of `meta.prefetch`'s seven values did what a `sets` row already does under a guard the grammar already had |
+| One musical question, one place that answers it — and a second family is what makes two spellings visible | "does this row key a note?" answered from `gate` in one family and `note` in another |
+| A hook is a phase with a name, and names do not compose | seven meta keys attaching a stream to a point in the tick |
+| An enum is a hook list that has not noticed yet | five of `meta.prefetch`'s seven values did what a guarded `sets` row already does |
 | When three names select three procedures, one of the three is the form and the other two are its values | the row clock: a counter, of which a divider and a countdown are values |
-| An ordering said twice will disagree — one list, and the order is the order | three commit lists gave a held `sr` command's register to the command, where the prelude must win it |
-| A sigil that means two things is a grammar, not a shorthand | `@name` was a voice cell in an assign target and a shadow register pair in an accumulator's `cell` |
-| A guard with two spellings is two guards: a guard in a tuple position cannot be read by anything that did not already know the tuple's shape | 39 of them in SID Wizard alone, carried as a third element beside the value |
-| For each name space the schema declares, require one *implementation*, not one spelling — every reader and every writer | a third spelling was a different tick position, so defMON's pulse sweep read the previous tick's value and was a wrong width 132 ticks in |
-| A guard evaluated twice against a moving cell is two guards | `Acc.gate` chose its arm by re-evaluating `step_when` after the store |
-| A constant in the player is a family in the player | three values in the one procedure that is supposed to have no family in it, each moved to where its own fact lives |
-| Name a command by what it does, not by its dispatch index — the index keeps the jump table the lift is supposed to spend | GoatTracker 2's `T144A` nibble; SID Wizard's `BIGFXTABLE` was the same trap waiting |
-| A token class the layer has not spent is a token class the layer will pay for | one family's wave table carried raw bytes and re-read three kinds out of them every tick, with the assembly's own `CMP` immediates as guards |
-| One machine fact, one spelling | the 6502 carry had three; `carry_out` and `borrow_out` remain, the bias tree belongs in the player |
-| Two properties that should be orthogonal, selected by one flag, is a hole and not an inelegance — and it stays invisible while no exemplar separates them; the measurement that says so is the *old* form against the new over the whole horizon, where 0 differing means unreachable and not unimportant | *when* the row is read and *what shape the sequencer is* were one flag: the order program was unreachable to any family whose clock prefetches, and the three that prefetch happen to have flat orders. B3 split them at 0 differing of 332,358, so the evidence is three hermetic snippets and not a tune |
+| An ordering said twice will disagree — one list, and the order is the order | three commit lists gave a held `sr` command the register the prelude must win |
+| A sigil that means two things is a grammar, not a shorthand | `@name` was a voice cell and a shadow pair |
+| A guard with two spellings is two guards; a guard in a tuple position cannot be read by anything that did not know the tuple | 39 of them in SID Wizard alone |
+| For each name space, require one *implementation*, not one spelling | a third spelling was a different tick position, wrong 132 ticks in |
+| A guard evaluated twice against a moving cell is two guards | `Acc.gate` re-evaluated `step_when` after the store |
+| A constant in the player is a family in the player | three of them, each moved to where its own fact lives |
+| Name a command by what it does, never by its dispatch index | GoatTracker 2's `T144A` nibble; SID Wizard's `BIGFXTABLE` |
+| A token class the layer has not spent is a token class the layer will pay for | JCH's wave table re-derived three row kinds every tick from a constant byte |
+| One machine fact, one spelling | the 6502 carry had three; `carry_out` and `borrow_out` remain |
+| Two properties that should be orthogonal, selected by one flag, is a hole and not an inelegance — and 0 differing means unreachable, not unimportant | *when* the row is read and *what shape the sequencer is* were one flag |
+| One act rule, and which one is a measurement | the row is the act at 0 differing; the list is the act at 2,943 |
+| A step has one grammar and may have two readers; say which reads which field | a cursor's row carries no `when` and a guarded row no `hold` |
 
-### 3.3 What a form must be told
-
-| check | forced by |
-| --- | --- |
-| A form that reads a shared cell must be told what is its own | Walker's pitch triangle and pitch bend both move one 16-bit offset, and on 1,140 of 9,949 modulator steps both have — no interval on that cell is either one's swing, so `amplitude` gained `{count, cell}` |
-| Before adding a policy, ask whether the guard channel already says it | the one-shot that stops a step short of its period is `delta_when`, not `policy halt` |
-| Before reusing a form, check what the program does on the rows it covers, not what its bytes look like | a packed rest and a held row are identical in the byte stream; one is spent and never applied, the other executes on every row it covers |
-| A terminator's *scope* is a datum, and the family that shows it starts fewer voices than it has | `$86` ends a voice, not the tune: its flag clears and the filter goes on writing |
-| Where a phase runs is a property of the channel, not of the player — when a position is right for every family so far it is a default, not a law | Follin's voices *write* the global channel the phase reads, so the same list in the same place writes the un-swept value on 383 ticks; `globals.after` is the second list |
-| What a header resets is what says whether a pattern is reusable, and it is cheaper to read than to compare rows | Walker's header re-arms all three voices before any reads a token: 2,592 played rows state as 1,134 |
-| Whether a command outlives its row is a datum, not a consequence of the clock's shape | effect memory lived in the countdown branch of the sequencer, so "countdown-clock families hold their commands" was load-bearing and untrue; now `meta.row_command` ∈ {`held`, `spent`} |
-
-### 3.4 How a claim is settled
+### 4.3 What a form must be told
 
 | check | forced by |
 | --- | --- |
-| Before a schema row admits a second form, render the first for the family that has the second and count the ticks that differ, over the **whole** horizon | `meta.commit ∈ {order, acts}` distinguished no observation and the branch was deleted |
-| A reduction in §2 is not a licence to reduce in §4: the player must produce what the rule compares, and only a family that exercises the rule proves it does | collapsing the per-tick act sequence is unobservable through a ghost flush and diverges on 500 ticks of *Emomyst* |
-| Being what the player does is not the test; distinguishing an observation is — that is how a *faithful* form is refused | two V20 fields, both real, both foreseen, both built, both 0 of 8,577 |
-| **A poison measured on a prefix is not a poison** | defMON's pulse carry is 0 over *Automatas*' first 20,000 ticks — longer than any other exemplar's whole horizon — and set on 9,144 of 170,702 steps over its full 149,025 |
-| When a general form must not disturb the families that do not need it, place the new work where their control flow does not go; the measurement then confirms rather than decides | flushing *between* two rows of a walk and never after the last makes a one-row family bit-identical by construction |
-| A static census over a player's data is a lower bound on what its tunes do; the render settles it | the anatomy counts `$93` at 0 and one subtune uses it three times; `$8D` also stores to the running mode |
-| A citation written from a *reading* of a family is a hypothesis until that family is transliterated | two transliterations took one out — §3.5's "the sidTAB row is the instrument", and §5's `links` row |
-| A boundary a document states and a comparison does not implement is prose | `certify` split edges per voice and `attest` compared them flat; six families never noticed, because a player that finishes one voice before the next produces the same interleave |
-| An invariant the renderer does not assert is prose | turning `bound.interval` on took five of sixteen accumulator records out — none a bug in the render, every one a false claim the object was making |
-| Naming a command by what it does costs a byte-for-byte round trip its *shape*, and §8 already says the trackerprog is *a* preimage | three SID Wizard effects have the same encoding in two columns |
-| **A number no harness generates is a number nobody checked** — the method is not the tool | §7 quoted "render both forms and count differing ticks" forty-odd times with no tool in the tree doing it, and its headline horizon total was wrong six times over against its own per-build list; `tools/trackerprog_poison.py` is the tool, and every horizon it uses is the certificate's |
-| A claim measured against a presentation artefact is not measured — and re-measuring against the real one may refute the claim, which is the result | §9 compared the object to `tuneprog.md`, a pretty-printed decompilation, where the program that played the tune is the binary. Against the binary the object is 1.26×–2.14× its size on every tune certified whole (§9.1), so the compression claim was an artefact of the yardstick |
-| Two artefacts are two artefacts whatever one document calls them — and the shared *names* are what hides it, so count the shared **fields**, not the keys | the nine hand objects and what the T0–T3 lift emits share seven of eight key names at disjoint shapes, and one field, `meta.commit_order`. They have two renderers and two certificates, and the spec presented them as one object with a residual `program` block until B2 |
-| An interpreter that dispatches per reading can be compiled per object — but the next factor after that would cost the layer the thing it exists to have | 2.12× over eleven builds, write lists identical tick for tick; the remaining cost is flat at 5–10 % across four procedures, so the next step is generating source per object rather than one fixed procedure a reader can hold against §4 |
+| A form that reads a shared cell must be told what is its own | Walker's two modulators move one offset on 1,140 of 9,949 steps |
+| Before adding a policy, ask whether a guard channel already says it | the one-shot is `delta_when`, not `policy halt` |
+| Before reusing a form, check what the program does on the rows it covers, not what its bytes look like | a packed rest and a held row are identical in the byte stream |
+| A terminator's *scope* is a datum, and the family that shows it starts fewer voices than it has | `$86` ends a voice, not the tune |
+| Where a phase runs is a property of the channel, not of the player | Follin's voices *write* the channel the phase reads: 383 ticks |
+| What a header resets says whether a pattern is reusable, and it is cheaper to read than to compare rows | Walker's 2,592 played rows state as 1,134 |
+| Whether a command outlives its row is a datum, not a consequence of the clock's shape | effect memory had lived in the countdown branch |
 
-## 4. Presentation gaps
+### 4.4 How a claim is settled
+
+| check | forced by |
+| --- | --- |
+| Before a schema row admits a second form, render the first for the family that has the second, over the **whole** horizon | `meta.commit ∈ {order, acts}` distinguished no observation |
+| A reduction in §2 is not a licence to reduce in §4 | collapsing the act sequence diverges on 500 ticks of *Emomyst* |
+| Being what the player does is not the test; distinguishing an observation is | two V20 fields, both real, both built, both 0 of 8,577 |
+| **A poison measured on a prefix is not a poison** | defMON's pulse carry is 0 over the first 20,000 ticks and set on 9,144 of 170,702 steps over 149,025 |
+| When a general form must not disturb the families that do not need it, place it where their control flow does not go | a fetch that flushes *between* two rows is bit-identical for a one-row family by construction |
+| A static census over a player's data is a lower bound on what its tunes do; the render settles it | the anatomy counts `$93` at 0; one subtune uses it three times |
+| A citation written from a *reading* of a family is a hypothesis until that family is transliterated | "the sidTAB row is the instrument"; §5's `links` row |
+| A boundary a document states and a comparison does not implement is prose | `certify` split edges per voice and `attest` compared them flat |
+| An invariant the renderer does not assert is prose | asserting `bound.interval` took five of sixteen records out |
+| Naming a command by what it does costs a byte-for-byte round trip its *shape* | three SID Wizard effects share an encoding across two columns |
+| **A number no harness generates is a number nobody checked** | §7 quoted "render both forms and count" forty-odd times with no tool doing it |
+| A claim measured against a presentation artefact is not measured, and re-measuring may refute it | the compression claim was an artefact of its yardstick (D4) |
+| Two artefacts are two artefacts whatever one document calls them — count the shared **fields**, not the key names | seven shared names, one shared field |
+| An interpreter that dispatches per reading can be compiled per object; the next factor would cost the layer a procedure a reader can hold | 2.14× then 1.40×, write lists identical throughout |
+
+## 5. Presentation gaps
 
 Five places where a transliteration had to open a disassembler because the
 printed tuneprog did not settle a fact a materialiser needs. All five are in the
-*presentation*, not the certified program: the S4/S6 artefacts carry the
-information and `printer` drops or re-derives it, so none changes a certified
-program and all are recert-neutral. All five are still open — nine families
-landed by hand without them, so none is blocking.
+*presentation*: the S4/S6 artefacts carry the information and `printer` drops or
+re-derives it, so all are recert-neutral, and nine families landed by hand
+without them.
 
 | # | item | mechanism | size | acceptance |
 | --- | --- | --- | --- | --- |
-| P1 | one canonical origin per region | a region prints under several names with several derived origins (`T16F9[1 + t1]` / `T16F9[2 + r4]` / `T16F9[y]` are one array; so are `T175D`/`T1761`, `T1875`/`T1876`/`T188A`, `T17FB`/`T17FC`, `T1826`/`T1839`), and the header's "2-based, read at `$16F7,i`" names neither the base nor the basedness a reader can index by. Pick the origin once (`regions._origin` already computes it), record `base` and `first_index`, and normalise every index expression to it | small | on the four GT2/Commando/JCH/SW prints, every read of one region prints `T[e]` against one stated base; a test materialises the GT2 wavetable from the print alone |
-| P2 | fold a carry the reaching compare proves | `a38 = ((T175D[y] + freq_lo_idx) + (T16F9[y] >= $E0)) & $7F` re-derives a carry as a predicate the reader must evaluate; `$12CD CMP #$E0` / `$12CF BCS` proves it 0 on that path. Constant-fold `carry(site)` where the reaching compare decides it; keep the named form (§4.11's producer/consumer pair) only where it is live | small | GT2's five re-derived carries fold to constants; Hubbard's `$5237` inherited carry stays named; recert-neutral |
-| P3 | print an untaken arm's body | `p_1082` prints from `# $108B` with `# untaken: T1851[y] >= 0` and drops the two instructions the arm holds — here `LDY #$00 ; STY $FD`, which is what makes the vibrato depth 8-bit. A second build of the same player may take the arm, so a transliteration that must render both needs the semantics either way | small | every `untaken` marker carries its arm's statements, marked; the GT2 print gains the 12 (15) arms §3 of prototype-goattracker.md counts |
-| P4 | state `commit_order` in the certificate | the per-voice edge-register order is recovered (the stores are named `ghost[x/7].ad` etc. and their order inside a routine is in the IR) but appears nowhere a reader can use; §3.1 of prototype-trackerprog.md needs exactly this one datum per tune | small | `certificate.json` carries `commit_order`; the certified families' values match §3.1's table |
-| P5 | dispatch on the command number, not the patched address | the tick-0 and continuous dispatches print as `switch b1295: case $1006:` — the compiled form. The command's *number* is the index into `T144A` the block above computes, so the two GT2 builds label the same command with different addresses | medium | the GT2 prints' two switches are over the index; the arms of the two builds are comparable line for line |
-
-P1–P4 are small and independent; P5 wants the switch's index recovered from its
-writer, which `resolve` already closes statically (prototype-goattracker.md G5).
+| P1 | one canonical origin per region | a region prints under several names with several derived origins (`T16F9[1 + t1]` / `T16F9[2 + r4]` / `T16F9[y]` are one array); pick the origin once (`regions._origin` computes it), record `base` and `first_index`, normalise every index expression to it | small | every read of one region prints `T[e]` against one stated base; a test materialises the GT2 wavetable from the print alone |
+| P2 | fold a carry the reaching compare proves | `a38 = ((T175D[y] + freq_lo_idx) + (T16F9[y] >= $E0)) & $7F` re-derives a carry the reaching `CMP`/`BCS` proves 0; constant-fold it, keep the named form only where it is live | small | GT2's five re-derived carries fold; Hubbard's `$5237` inherited carry stays named; recert-neutral |
+| P3 | print an untaken arm's body | `p_1082` prints `# untaken: …` and drops the two instructions the arm holds, which are what make the vibrato depth 8-bit; a second build may take the arm | small | every `untaken` marker carries its arm's statements, marked |
+| P4 | state `commit_order` in the certificate | the per-voice edge-register order is recovered but appears nowhere a reader can use; §3.1 needs exactly this one datum per tune | small | `certificate.json` carries `commit_order`, matching §3.1's table |
+| P5 | dispatch on the command number, not the patched address | the tick-0 and continuous dispatches print as `switch b1295: case $1006:`, so the two GT2 builds label one command with different addresses | medium | both switches are over the index; the two builds' arms are comparable line for line |

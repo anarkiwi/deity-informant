@@ -666,23 +666,17 @@ voice` is Follin's raw cross-voice register list and JCH's non-constant clear
 
 ### 6.0.0 The trackerprog layer (T2, T3)
 
-`deity_informant/trackerprog/` lifts the certified artefacts one layer up
-([prototype-trackerprog.md](prototype-trackerprog.md)): `tools/tuneprog_score.py`
-writes `tuneprog.T2.json` (cursors, streams, selectors, the pitch table and the
-score materialised over the horizon) and `tools/tuneprog_scoreprog.py` lifts a
-**scoreprog** from the program's data — the fetch regions cut out of the
-certified tick and recorded as fetches, the instrument table, T2's streams,
-T1's accumulators, T0's write sites as producers — replays it with the score
-tables never read and writes `scoreprog.certificate.json`, plus
-`scoreprog.json`/`scoreprog.md` when it certifies. Neither is a pipeline
-stage.
-
-A scoreprog is **not** a trackerprog (prototype-trackerprog.md §1): it carries
-the certified tick in a `program` key and renders on `trackerprog/interp.py`, an
-S4 interpreter, where a trackerprog is data alone and renders on
-`trackerprog/universal.py`. The nine hand trackerprogs are `tools/trackerprog_*.py`
-and certify through `attest.py`; the directory holds both halves and one
-package name, which the two paths converging will settle.
+`deity_informant/trackerprog/` lifts the certified artefacts one layer up; the
+schema, the player and the acceptance are
+[prototype-trackerprog.md](prototype-trackerprog.md) and nothing here repeats
+them. Two tools, neither a pipeline stage: `tools/tuneprog_score.py` writes
+`tuneprog.T2.json` (cursors, streams, selectors, the pitch table and the score
+materialised over the horizon), and `tools/tuneprog_scoreprog.py` lifts a
+**scoreprog**, replays it with the score tables never read and writes
+`scoreprog.certificate.json` plus `scoreprog.json`/`scoreprog.md` when it
+certifies. A scoreprog is **not** a trackerprog (prototype-trackerprog.md §1);
+the nine hand trackerprogs are `tools/trackerprog_*.py` and certify through
+`attest.py`.
 
 ### 6.0.1 The accumulator plane (T1)
 

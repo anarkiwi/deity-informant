@@ -85,7 +85,7 @@ BUILDS = (
 )
 BUILD = {b.name: b for b in BUILDS}
 
-# the eleven builds section 7's P1-P8 rows were measured over, before Follin
+# the eleven builds the schema-hardening packages were measured over, before Follin
 ELEVEN = tuple(
     b.name for b in BUILDS if b.module in ("commando", "goattracker", "sidwizard", "defmon", "jch")
 )
