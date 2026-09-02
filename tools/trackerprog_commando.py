@@ -64,14 +64,15 @@ FIRST_NOTE, TABLE_END = 16, 96  # the table tunes notes 16..95
 OVERFLOW = 12  # a transposition of +12 from the tuning's top twelve notes
 SCRATCH = "a cell the tick recomputes; nothing carries it between ticks"
 PACKED = "the packed row byte, which the score keeps as an event's own fields"
-# the per-voice cells of the region, in address order: every one of them is a
-# cell of section 5's own vocabulary, read on the voice the word names
-CELLS = ("orderpos", "patrow", "rowsleft", "rowbyte", "wave", "note", "ins")
+# the per-voice arrays of the region, in address order.  All but one are cells of
+# section 5's own vocabulary, read on the voice the word names; the row byte is
+# the packed byte the score keeps as an event's own fields and no cell holds
+REGION = ("orderpos", "patrow", "rowsleft", "rowbyte", "wave", "note", "ins")
 
 FUSED = (
     [{"const": 7 * i} for i in range(3)]
     + [{"sid_base": "reader"}]
-    + [{"cell": [k, i]} if k != "rowbyte" else PACKED for k in CELLS for i in range(3)]
+    + [{"cell": [k, i]} if k != "rowbyte" else PACKED for k in REGION for i in range(3)]
     + [SCRATCH] * 12
     + [{"cell": [k, i]} for k in ("pwdelay", "pwdir") for i in range(3)]
 )
