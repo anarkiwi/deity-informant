@@ -280,7 +280,7 @@ the head of this document; none is typed.
 | refused | **4** (§3) | **3** (§3) |
 | T1 accumulators recognised | **3 of 3**, none refused: `acc_2_lo` (`repeat` + `flag`), `voice[].acc` (`field` + `phase bit`), `rec2[].b5591` (`add` with the carry) | **0 of 5**: 3 `T0 names no write of its own cells`, 2 `width 12 is not a section 5 width` |
 | T2 recognised | the tuning (80 entries, base 16), the instrument selector (13 records, 6 columns), the score (3 order lists, 32 patterns, 572 events) | the tuning (95 entries, base 0), the selector (19 records, 8 columns, named by the values T2 saw the cell hold), the score (3 order lists, 36 patterns, 499 events) |
-| tables materialised as streams of their own bytes (§2.2) | 0 | **19**, 1,942 rows |
+| tables materialised as streams of their own bytes (§2.2) | 0 | **19**, 1,877 rows |
 | leaves opened | 437 constants, 324 cells, 32 globals, 10 pitch reads, 7 instrument columns, 0 unnamed | 841 constants, 697 cells, 25 globals, 4 pitch reads, 26 `tabcell` reads, 0 unnamed |
 | score bytes a row supplies | 2 to 4, the row's own bytes and no more | 3 to 6, one a name and **not** one a turn (§2.4) |
 
@@ -406,7 +406,7 @@ better statement, and §7 says what is left.
 | `score.orders` | 26 / 18 / 18 `play` steps, `jump(0)` | 15 / 8 / 8, `jump(0)` | the lift's visits are its own: one per fetch the horizon took, the hand's one per stored order byte |
 | `score.patterns` | 36 patterns, 499 events | 27, 723 | the lift's row is the fetch's own visit and carries no `dur`, so a held row is not an event (§8) |
 | `instruments` | 19 records, 8 columns, named `0, 8, …, 144` | 19, 8 columns | **identical set**, named by what the cell holds (§2.2) |
-| `streams` | 4 lowered (114 rows) and 19 tables (1,942 rows) | 10 (`pulse` 20, `filter` 23, `wavetab` 64, `wave`, `pitch`, `writeout`, `prelude`, `notestage`, `voicebits`, `channel`) | the lowering, against the reading: the hand's `pulse`/`filter`/`wavetab` are three of the lift's nineteen tables, read the same way (`tabcell`) |
+| `streams` | 4 lowered (114 rows) and 19 tables (1,877 rows) | 10 (`pulse` 20, `filter` 23, `wavetab` 64, `wave`, `pitch`, `writeout`, `prelude`, `notestage`, `voicebits`, `channel`) | the lowering, against the reading: the hand's `pulse`/`filter`/`wavetab` are three of the lift's nineteen tables, read the same way (`tabcell`) |
 | `accs` | 0 | 7 §5 records | §2.3: T1 states five and the join refuses all five, by name |
 | `state0` | 227 cells, 7 globals | 41 cells | every SSA temp the object still reads is a cell, and 8 of them are joins (§2.2) |
 
@@ -418,7 +418,7 @@ the object still carries the tick's arithmetic rather than a reading of it.
 
 | measure | Commando `main` #346 | Commando, this lift | Commando by hand | *Guldkorn*, this lift | *Guldkorn* by hand |
 | --- | --- | --- | --- | --- | --- |
-| streams / rows | 7 / 84 | 9 / 80 | 3 / 4 | 23 / 114 | 10 / 38 |
+| streams / rows that carry `sets` | 7 / 84 | 9 / 80 | 3 / 4 | 23 / 114 | 10 / 38 |
 | `sets` assignments | 257 | 196 | 5 | 388 | 80 |
 | accumulators | 3 reload stand-ins | 3 §5 records + 2 stand-ins | 7 §5 records | 0 | 7 §5 records |
 | `state0` cells | 206 (142 SSA · 27 register temps · 23 carry · 14 the tune's) | 117 (85 · 17 · 4 · 11) | 4 | 227 (152 SSA · 17 register · 2 carry · **8 join** · 48 the tune's) | 41 |
@@ -440,7 +440,7 @@ What remains, and what it would take:
 | 117 and 227 declared cells | one per SSA temp the rows still read, and on JCH one per join (§2.2). The lowering's own unit; nothing in the join changes it |
 | 2 reload stand-ins | §8 item 3: `ins.pw` is the only instrument-scoped cell the schema can be assigned |
 | `rate: 1` on all three records | T1's countdown is already a row and a guard (§4) |
-| 19 tables, 1,942 rows | JCH's column programs as bytes: the lowering states a table read at a cursor as `tabcell` over the region's own bytes, where the hand states 4-column records with `next` links and holds (jch-trackerprog §4.6). The rows are the same data; the reading is what the lift does not have |
+| 19 tables, 1,877 rows | JCH's column programs as bytes: the lowering states a table read at a cursor as `tabcell` over the region's own bytes, where the hand states 4-column records with `next` links and holds (jch-trackerprog §4.6). The rows are the same data; the reading is what the lift does not have |
 
 **T1's plane is horizon-dependent, and that bounds the pass.** Over a 1,200-call
 prefix T1 refuses both of Commando's recurrences as `divergent recurrence` and
