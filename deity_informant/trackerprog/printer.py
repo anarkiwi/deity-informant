@@ -126,8 +126,11 @@ def _flush(rs):
     return "ascending" if rs == sorted(rs) else "in the image's own order"
 
 
-def _regs(ws):
-    return " ".join("%s=%s" % (hexv(r), hexv(v)) for r, v in ws)
+def _end(j):
+    """What the play list does when it runs out: loop, or stop and run a command."""
+    if isinstance(j, str):
+        return j
+    return "jump %d" % j["jump"] if "jump" in j else "stop, then %s" % j["stop"]
 
 
 def _step(op):
@@ -175,10 +178,8 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
         )
     if m.get("pitch_links"):
         add("%-10s %s" % ("a new pitch resets", " ".join(m["pitch_links"])))
-    for k, label in (("stage_sounds", "sounds cell"), ("wide", "wide cells ")):
-        if m.get(k):
-            v = m[k]
-            add("%s %s" % (label, v if isinstance(v, str) else " ".join(str(x) for x in v)))
+    if m.get("wide"):
+        add("wide cells  %s" % " ".join(str(x) for x in m["wide"]))
     for i, step in enumerate(m.get("stage", ())):
         add("staged %-3d %s%s" % (i, _rowstep(step, notes), _when(step, notes)))
     for i, step in enumerate(m.get("row", ())):
@@ -187,8 +188,6 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
         "tick       %s"
         % " ; ".join(x if isinstance(x, str) else "stream %s" % x["stream"] for x in m["tick"])
     )
-    if m.get("prologue"):
-        add("prologue   " + _cmd(m["prologue"], notes))
     for c in g.get("commit", ()):
         add(
             "global     %s := %s%s"
@@ -203,8 +202,6 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
             "flag %-5s = %s where no producer leaves it%s"
             % (name, expr(d["default"], notes), "" if "proof" not in d else " (%s)" % d["proof"])
         )
-    if g.get("stop_writes"):
-        add("stop       %s" % _regs(g["stop_writes"]))
 
     p = obj["pitch"]
     add("")
@@ -273,7 +270,7 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
     add("## score")
     add("")
     for v, o in enumerate(obj["score"]["orders"]):
-        end = o["end"] if isinstance(o["end"], str) else "jump %d" % o["end"]["jump"]
+        end = _end(o["end"])
         add("order %d -- %d steps, %s" % (v, len(o["play"]), end))
         steps = [x if isinstance(x, int) else x["pattern"] for x in o["play"]]
         if any(isinstance(x, dict) and x.get("op") for x in o["play"]):

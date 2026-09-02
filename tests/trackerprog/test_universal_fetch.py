@@ -53,7 +53,7 @@ def obj(streams=None, events=None, commands=None, shadow=None, **meta):
             "patterns": {"0": {"events": events or [event(1), event(2)]}},
             "commands": commands or {},
         },
-        "globals": {"streams": [], "commit": [], "flags": {}, "stop_writes": []},
+        "globals": {"streams": [], "commit": [], "flags": {}},
         "state0": {
             "shadow": [0] * 25,
             "cells": {
@@ -257,9 +257,20 @@ def test_a_play_list_that_stops_at_its_end_stops_where_the_fetch_reads_it():
     p = Player(o)
     for _ in range(12):
         p.tick()
-    assert p.stopping == 2 and notes(Player, o, 12) == [1]
+    assert p.stopped == [True] and notes(Player, o, 12) == [1]
     o["score"]["orders"] = [{"play": [{"pattern": "0"}], "end": {"jump": 0}}]
     assert notes(Player, o, 12) == [1, 1, 1]  # the same list, wrapped instead of stopped
+
+
+def test_a_play_list_whose_end_names_a_command_runs_it_on_a_tick_of_its_own():
+    """The tune's own end: the voice stops, and the command the end names spends
+    the tick after it -- the registers the routine writes, in its own order."""
+    o = ordered([{"pattern": "0"}])
+    o["score"]["orders"] = [{"play": [{"pattern": "0"}], "end": {"stop": "silence"}}]
+    o["score"]["commands"]["silence"] = {"rows": [{"sets": [["reg.4", 0], ["reg.24", 0x0F]]}]}
+    w = render(o, 12)
+    assert w[5] == [(4, 0), (24, 0x0F)]  # the tick after the last row, and only it
+    assert not any(w[6:]) and w[2] == [(4, 1)]
 
 
 def test_a_stop_in_a_prefetched_score_stops_the_voice():
@@ -268,7 +279,7 @@ def test_a_stop_in_a_prefetched_score_stops_the_voice():
     p = Player(o)
     for _ in range(12):
         p.tick()
-    assert p.stopped == [True] and p.stopping == 0
+    assert p.stopped == [True] and p.entry is None
     q = Coupled(o)  # the coupled body walks past the stop and never halts
     for _ in range(12):
         q.tick()

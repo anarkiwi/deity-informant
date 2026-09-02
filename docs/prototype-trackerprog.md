@@ -265,7 +265,8 @@ Step = { when:  [ guard, … ]               // the one guard shape in this sche
        , op:    acc(acc_id) | pitch(offset | absolute) | cmd(name) | none
        , run:   [ acc(acc_id), … ]         // an acc the step runs on every tick it holds
        , hold:  k ticks (k ≥ 1)
-       , next / jump: row }                // where the step goes, and where a row jumps
+       , next / jump: row | null }         // where the step goes, and where a row jumps;
+                                           // null in either is no row, and the stream stops
 ```
 
 Every field is optional and every one is a *step's*, not a family's: an
@@ -277,6 +278,19 @@ row's `jump` is the whole of it. #310 struck it from the grammar and four of the
 five tools went on writing `term` for two more families, the print rendering it
 beside the stream's name: striking a row from the schema is not striking it from
 the object, and both are now done (§7).
+
+**A cursor is on a row, or on none, and never says so by its index.** Row 0 is a
+row like any other; a stream that is not running carries `row: null`, which is
+also what a `point` that stops one writes and what a `next` or a `jump` of null
+leaves. The first draft reserved index 0 for "no row" and five families paid for
+it in data: Blackbird added one to every row, cursor and pointer of its two
+tables, Walker and Galway opened a stream with a `trap` row, SID Wizard held a
+`no stream` row ahead of every instrument's three tables, and defMON both
+reserved a `no cascade runs here` row and spelled the delay byte's terminator as
+a step *to* it. The engine's own 1-based tables are unaffected — GoatTracker 2's
+wavetable rows are the source's, numbered as the source numbers them, and the
+byte that names no table (0) is a `point` to null and a jump of null, not a row
+(R5).
 
 A stream has a `rate` — a **divider**, the object advances once every `k` ticks,
 `k ≥ 1`, so a step occupies `hold × rate` ticks — and it is one form and one
@@ -292,6 +306,15 @@ no divider at all; a bare `k` names no counter and is refused. `meta.tempo.rate`
 is **not** this: with `phase` it selects which ticks the tune's one clock steps
 on, over the global tick counter and once per tune, where a divider is per voice
 and per run — two questions, and the review's third divider is now the second.
+
+**A step that produces owns the tick, where a family says so.** A stream row
+that carries an `op` may leave a flag in its own `sets` (`!name`, §5's producer
+flags) and the arms of that family's accumulators read it in their `when`: one
+family's precedence, stated in the object and not in the player. GoatTracker 2 is
+that family and the only one — the player's implicit rule stood accumulators down
+on 2,028 of *Je suis Linus*'s 8,236 ticks and 2,873 of *Do It Again*'s 8,659, and
+on **0 of the other twenty-eight builds' 315,463**, SID Wizard's producing steps
+included (R5).
 
 And a step's counter is read either before or after its own move — #297's
 epochs, `epoch: entry` — which is what says whether the tick that consumes the
@@ -436,6 +459,7 @@ Order   = per-voice sequence program over
           | jump(step) | call(step, ret) | ret
           | mark(count, next) | loop(next)
           | stop | horizon }
+          , end: jump(step) | stop | {stop: cmd}   // what the end of the list does
 ```
 
 **A command is a record, not an opcode.** The first draft listed nine named
@@ -501,6 +525,22 @@ and the routine moves on), and the filter goes on writing. So the terminator is
 per voice, `state0.stopped` seeds it from the entry — a sound effect starts one
 to three voices and leaves the others stopped — and a stopped voice runs no
 clock (follin-trackerprog §4.3).
+
+**And the play list's own end is that same stop.** An `Order.end` that is not a
+`jump` stops the voice whose list ran out, exactly as the `stop` step does, and
+may name a command the tune runs after its last row: `end: {"stop": name}`, an
+entry of `score.commands`. The first draft made the end a *tune* stop with a
+player state of its own — a two-step counter, a literal `globals.stop_writes`
+register list eight families carried empty, a tick abandoned mid-voice-loop and
+flush-only ticks after — and none of it was needed. Hubbard's `$FE` is four
+writes the routine makes on the tick after it reads the terminator, `$D404 =
+$D40B = $D412 = 0` and `$D418 = $0F`, which are a command's `sets` on §3.7's
+`reg.N` like Follin's `$85` lists; its three voices' lists end together, so the
+voice stop reproduces the tune's, and the tick the terminator is read on is spent
+by `row_consumes_tick` and not by an abort. Measured over the whole horizon of
+every build whose list can run out — Hubbard ×3, Follin ×3, Galway ×14, Walker,
+Blackbird, JCH, defMON — **0 differing of 292,914**, subtune 3's stop at tick 384
+and its 11,395 silent ticks after included (R5).
 
 **And what it stops is one datum, `meta.stop` ∈ {`voice`, `sequencer`}.** Follin's
 per-frame block tests the active flag first and skips the whole voice — the
@@ -582,6 +622,21 @@ grammar already has. Two survive as steps of their own because neither moves a
 cell — `{"commands"}`, which §3.6 already had, and `{"hold"}`, the command the
 score gives a voice to keep (§7).
 
+**A fetch that stages no row runs the same program over the empty facts.** The
+eighth value of that enum was the last to go and was a `meta` key rather than a
+value: `stage_sounds` named a voice cell the player zeroed on every fetch tick
+and set to `keys` on a staged row, in four families. It is a `sets` row of
+`meta.stage` — `@cell := <keys>` — and the zeroing is that same row under the
+same guard, because a fetch tick that stages nothing runs `meta.stage` over
+`row_facts(null)`, every fact of §3.6 at zero. A step that must not run then
+carries the guard that says a row was read at all, `dur != 0` — the same term
+`row_ends_fetch` already spells (SID Wizard's staged instrument, JCH's staged
+transpose). One consequence names itself: the row's tie is settled by the
+`{"hold"}` step that takes the command carrying it, so `keys` is one fact at the
+staging and at the boundary, and the facts derived from the tie move with it.
+Measured over the whole horizon of the four staging families' seven builds: **0
+differing of 60,848** (R5).
+
 `sounds` is the field §4's tick reads to decide whether a row keys a note, and
 it is the *only* one: an object that answered it from `gate` in one family and
 from `note` in another would be two grammars. `note: none` then means one thing
@@ -646,6 +701,15 @@ whether a command outlives the row that gave it is one datum, `meta.row_command`
 anatomy:876's tick-0 dispatch running unconditionally), Hubbard spends it on its
 row. It is a property of the tune, not of the row clock.
 
+**The init call is a command too, and the entry state names it.** `state0.prologue`
+is a `score.commands` entry every voice runs before the tune's first tick, which
+it spends: GoatTracker 2's clears the cells and the three cursors the init call
+clears and writes the gate byte, and SID Wizard's slowdown build carries an empty
+one because the gate takes that frame and nothing else does. It is the same
+procedure the order's `end` command runs — a command on a tick of its own — and
+it was a `meta.prologue` key with a `tick_no == 0` branch in the player until R5:
+0 differing of 39,444 over the four builds of the two families.
+
 A tempo command — `sets` on the tempo cell, or on the cell a tempo stream is read
 through — has two certified families: GT2's `funktempo`, loading a
 two-entry alternating tempo (`funktempotbl[0..1] = speedtbl[A]`, anatomy:876),
@@ -695,17 +759,27 @@ Normative semantics — anatomy §2's pseudocode made exact. One tick:
 
 ```
 tick():
-    for v in voices:                              # per-voice tempo, §3.6
-        tempo[v].step()                           # a divider or a stream; row clock
-        for phase in meta.tick: run(phase, v)     # the voice's tick, §4.1
+    flush the image the last tick left, in `meta.shadow`'s own order   # §3.1
+    if a command is due on a tick of its own:      # `state0.prologue`, an order's
+        every voice runs it; commit(v); done       #   `end: {stop}` -- §3.6
+    channel(globals.streams)                       # the channel the voices read
+    for v in meta.voice_order:                     # §3.1; a stopped voice runs nothing
+        tempo[v].step()                            # the row clock, §3.6
+        for phase in meta.tick: run(phase, v)      # the voice's tick, §4.1
         commit(v)
-    commit_global(): cutoff one value (split 3+8), res_route, mode_vol
+    channel(globals.after)                         # the channel the voices write
+    commit_global(): globals.commit, guard by guard, to the image or the chip
 
 commit(v):                                        # one group of the tick's writes
     the voice's freq/pw producers, in declared order    # §2 rule 2 keeps the last
     then its edge writes, the tick's acts in order,
     each act's own in `meta.commit_order`               # §2 rule 1, §3.1
 ```
+
+Nothing abandons a tick. A voice the score stopped runs no phase (or, where
+`meta.stop` is `sequencer`, every phase but the row), and the tune's own end is
+that voice stopped like any other, so there is no second procedure for the last
+tick of a tune (§3.6).
 
 **§4.1 The voice's tick is a declared order.** `meta.tick` is a list of phases:
 
@@ -1204,7 +1278,7 @@ recurrence`, with the first tick) is a refusal, never a record.
 | one target dispatch, and the review's dead surface (**R1/R3/R10**) | `Player.assign` was the second of two target dispatchers: the path of `meta.row`'s and `meta.stage`'s `sets`, the row clock's `reset` clauses, `take`'s pitch target and a command's `all`, each walked per write while a stream's `sets` went through the compiled `put_to`/`setcode`. It is deleted — all four take the compiled path, the two row programs compile to a guard predicate and a setter list per step (`rowcode`), and `clock()` runs the `clockplan` `compile()` had been building for no reader. Six dead things go with it: `meta.player`, a version string nine tools write and nothing checks; `globals.init_writes`, the init call's *observable* carried in five objects where §6 says the observable never goes, read only by the print; Hubbard's `globals.mode_vol`, the same byte as both write lists'; the "producer inside the edge list" arm of `edges()`, which measured 0 two-tuples over thirty builds and after the deletion has no site that could append one; SID Wizard's `wave_base`/`pw_base`/`flt_base`; and Blackbird's `meta.tempo.swing`, a prose string, which becomes the tempo record's `note` and is printed as one. The review's seventh, `lastnote`, is **not** dead: `trackerprog_goattracker.py:473` reads it as `{"interval": {"cell": "lastnote"}}` on the speed table's calculated arm and `take` is its only writer, so dropping the write diverges on **4,466 of *Je suis Linus*' 8,236** ticks and **4,284 of *Do It Again*'s 8,659** — an unread *declaration* and an unread *cell* are not one finding, and the cell stays. Two tool arms no tune reaches, both the backlog's own rule at work: walker's `main` rendered `None` ticks without `--ticks` and now renders the certificate's horizon as Galway's does; and SID Wizard's `stream.wave`, `stream.pulse` and `stream.filter` computed a stream row as `base + index + 3·v (+ $10)` from a *byte offset* of the instrument's record, where `row_of(i, slot, k)` is the map from an offset to a row and is a build-time table per instrument — a command names no instrument, so the three are a **named refusal** (`DEAD["fx.pointer"]`) with a hermetic test, and their three columns, of which `pw_base` is the end-of-table sentinel 1 on every instrument of both tunes, go with their only reader. Measured: **0 differing of 332,358** over all thirty builds against the merge base's digests, every object rebuilt from the edited tools; 6,000 ticks in one process, *Je suis Linus* **9,429 → 10,150** ticks/s and *End of the World* **4,371 → 4,515**. `universal.py` 1,527 → 1,515, `printer.py` 643 → 640 | `universal`, `printer`, `tools/trackerprog_*.py`, `tests/trackerprog/test_tool_refusals.py` |
 | one act, one divider, one end (**R2**, #336) | `rows()` (a *named* stream, `sets` only, one act per matching row) and `inline()` (an anonymous row list, `sets` **and** `point`, one act for the whole list) are one procedure over one compiled plan, reading both fields in both places. Which act rule survives is a measurement and not a choice: rendered over the whole horizon of every build, **the row is the act at 0 differing of 332,358** and the list is the act at **2,943** — Walker 1 and Galway songs 1–6 at 994, 931, 928, 28, 11, 50, 0 on the other twenty-three — so the act is the row's datum and not the call site's, and §2 and §3.1 now say so together with the limit the review found unstated and unexercised: `edges()` keeps **one write per register per act**, `commit_order` being a permutation with one slot for each, which a hermetic snippet now holds. `channel()` and `channel_after()` were byte-identical bodies over `globals.streams` and `globals.after`: one procedure, two calls. `next_event()` (the fetch) and `next_row()`/`order_end()` (the walk) answered *the play list ended* differently — a bare `"jump"`, a `{jump}` dict, else stopping in the walk; only `{jump}` in the fetch, which returned `None` on the other two and raised `IndexError` on an empty pattern — and now `order_end()` answers it for both and returns whether the list goes on, with hermetic snippets for the empty pattern and for a bare `end: "stop"` reached through the fetch. The third divider goes the same way: a stream's `rate: {cell, reload}` and an accumulator's `rate: k` counted `k−1..−1` in `Player.divider` off `state0.dividers`, and both are now one compiled procedure (`dividercode`) over one form — Hubbard's pulse bounce counts in the engine's own `pwdelay`, seeded through `state0.cells` like every other cell, so `state0.dividers` and `Player.divider` are gone and a bare `k`, naming no counter, is refused. `meta.tempo.rate` stays the clock's own and is not that question: with `phase` it selects which ticks the tune's one clock steps on, over the global counter and once per tune, where a divider is per voice and per run. Measured: **0 differing of 332,358** over all thirty builds against the merge base's digests, every object rebuilt from the edited tool; 6,000 ticks in one process, *Je suis Linus* **9,734 → 9,939** ticks/s, *End of the World* **4,231 → 4,426** and *Chameleon* **5,183 → 5,226**, which is flat inside the ±2 % this machine repeats to. `universal.py` 1,515 → 1,522, `printer.py` 640 → 642 | `universal`, `printer`, `tools/trackerprog_commando.py`, `tests/trackerprog/test_universal_fetch.py`, `tests/trackerprog/test_universal_phases.py` |
 | a word past the tuning reads a cell, and names the voice (**R4**, #337) | the overrun is a memory model — which player variable lives past the pitch table — and the object stated it as a **publish/subscribe network**: seven event kinds (`sound`, `note`, `instrument`, `order`, `row`, `wrap`, `turn`), nine `publish` sites in the player, `priv`/`subs`/`heard`/`owners()`/`private()`, and a `__getstate__` that re-keyed a private state dict by enumeration order — a second modulation language, for one family's `beyond` and two drums, with every other tool emitting `"on": []`. §5's cell vocabulary states it directly: **`{"cell": [name, voice]}` beside `{"cell": name}`**, one name, one space, one half, read on the voice the word names rather than the voice being committed, compiled like every other node. Hubbard's twelve `beyond` words and the two drums' `value`/`octave` are now `u16` of two cells, constants, or `sid_base(reader)`; `rowsleft` had been a trap only because no event published it, so one more word is live and the two traps left are the packed row byte the score no longer keeps. **The mirror was measured against the live cell before anything was struck** — equal at all **2,676** reads song 1's three modulators make over its whole horizon. The one subscription that *counted* rather than mirrored, this tune's byte cursor into a pattern, is two steps of `meta.row` over a cell of its own (`@patrow += 1 + sounds + field`, `@patrow := 0 when wraps != 0`), `wraps` being a fact of the row beside `sounds` and `field`; the other reset rule — at the pattern's first row, which needs no new fact — differs on **48 of song 1's 576 `patrow` reads**, so the reset belongs to the cursor. `__getstate__`/`__setstate__` stay minus the private half and were **measured, not assumed**: a `Player` does not pickle plainly, its compiled form being closures, and two tools pickle one to resume a chunked certification — so a stored player drops the derived form and recompiles, under the hermetic snippet the suite never had. Measured: **0 differing of 332,358** over all thirty builds against the merge base's digests, every object and every render rebuilt on both sides; 6,000 ticks in one process, *Commando song 1* **15,235 → 16,056** ticks/s and *Je suis Linus* **9,411 → 10,042**; `universal.py` 1,522 → **1,480**, `printer.py` 642 → 629, hermetic coverage 94 % → **95 %** | `universal`, `printer`, `tools/trackerprog_{commando,follin,galway,sidwizard}.py`, `tests/trackerprog/test_universal.py`, `tests/trackerprog/test_commando_oracle.py` |
-
+| five hooks into the grammar (**R5**, #338) | each was a rule the player kept for one family or a name the player knew, and each is now a datum. **`stage_sounds`**, a `meta` key naming the cell four families' fetch zeroed and set to `keys`, is a `sets` row of `meta.stage`; a fetch tick that stages no row runs the same program over `row_facts(null)`, and a step that must not run then carries `dur != 0`, the term `row_ends_fetch` already spells — **0 differing of 60,848** over the four families' seven builds. **The `op` stand-down** (`Player.op`: a producing step stood every armed accumulator ranked after it down) is a flag the producing row leaves (`!produced`) and the arm's own `when` reads: removing the rule outright differs on **2,028 of *Je suis Linus*'s 8,236** and **2,873 of *Do It Again*'s 8,659** and on **0 of the other twenty-eight builds' 315,463**, SID Wizard's producing steps included, so the rule was one family's and the review's count of the ticks it *fired* on was not the count of the ticks it *changed*. **The tune-level stop** — `Player.stopping`'s two-step counter, `globals.stop_writes`, a tick abandoned mid-voice-loop and flush-only ticks after — is gone: an `end` that is not a `jump` stops that voice like the order program's own `stop`, and may name a command (`end: {"stop": name}`) the tune runs on a tick of its own. Hubbard's four writes are that command's `sets` on `reg.N`, its three lists end together, and the terminator's tick is spent by `row_consumes_tick` — **0 differing of 292,914** over the twenty-six builds whose lists can run out, subtune 3's stop at tick 384 and its 11,395 silent ticks after included. **The prologue** is `state0.prologue`, a `score.commands` entry run by the same procedure as the end's, and the `tick_no == 0` branch is gone — 0 of 39,444. **Row 0 is a row**: a cursor carries `row: null` where it runs nothing, a `next` or a `jump` of null stops a stream, and the padding goes from all five families that paid for it (Blackbird's +1 on every row, cursor and pointer; Walker's and Galway's `trap` row; SID Wizard's `no stream` row; defMON's `no cascade runs here` row **and** its halt target, which the review did not name), GoatTracker 2's 1-based tables staying the source's with the byte that names none pointing at null. Two of §4's rows close with them: `guards(None)` is no longer vacuously true for `row_consumes_tick: false` (the bool compiles to its own predicate), and no phase, `voice()` or `tick()` can abandon a tick. Measured: **0 differing of 332,358** over all thirty builds against the merge base's digests, every object rebuilt from all nine edited tools; 6,000 ticks in one process, *Je suis Linus* **9,930 → 9,340** ticks/s — the arm now reached and its guard evaluated where the player used to skip it, 24,684 `step()` calls per 3,000 ticks against 16,397 — *End of the World* **4,480 → 4,810** (a guard list of three or more terms compiles to a tree of pairs instead of a generator) and *Quintessence* **13,370 → 13,100**. `universal.py` 1,480 → **1,477**, `printer.py` 629 → 626, hermetic coverage **96 %** | `universal`, `printer`, all nine `tools/trackerprog_*.py`, `tests/trackerprog/test_universal*.py`, four oracle tests |
 Everything after this is the rest of the `trackerprog/` package, under the same
 rules (≤ 500 lines per module, hermetic tests, the certificate).
 

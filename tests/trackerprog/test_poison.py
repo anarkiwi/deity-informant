@@ -24,8 +24,23 @@ from deity_informant.trackerprog.universal import render  # noqa: E402
 import trackerprog_poison as TP  # noqa: E402
 from test_universal import event, ins, obj  # noqa: E402
 
-TOTALS = {"eleven": 236586, "all": 332358}  # what the documents quote, computed below
-SIZES = {"eleven": 11, "all": 30}
+# what the documents quote, computed below: every one is a build spec the tool
+# takes, so a quoted total is a total the harness prints and not a typed number.
+# R5's rows quote a hook's own families, which is what a comma-separated spec is for
+TOTALS = {
+    "eleven": 236586,
+    "all": 332358,
+    "goattracker,sidwizard": 39444,
+    "goattracker,sidwizard,jch,blackbird": 60848,
+    "commando,follin,galway,walker,blackbird,jch,defmon": 292914,
+}
+SIZES = {
+    "eleven": 11,
+    "all": 30,
+    "goattracker,sidwizard": 4,
+    "goattracker,sidwizard,jch,blackbird": 7,
+    "commando,follin,galway,walker,blackbird,jch,defmon": 26,
+}
 DOCS = ("prototype-trackerprog.md", "trackerprog-backlog.md")
 
 
@@ -161,7 +176,7 @@ def test_every_build_names_a_committed_certificate_and_a_known_tune():
 
 def test_the_horizons_are_the_certificates_own_and_the_sets_total_what_is_quoted():
     for name, want in TOTALS.items():
-        h = TP.horizons(TP.SETS[name])
+        h = TP.horizons(TP.resolve(name))
         assert len(h) == SIZES[name] and sum(h.values()) == want
     galway = TP.horizons(TP.SETS["galway"])
     assert sum(galway.values()) == 29911 and len(galway) == 14

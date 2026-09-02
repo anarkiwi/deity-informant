@@ -902,7 +902,6 @@ def build(path, song=0):
             "after": ["filter"],
             # the cutoff is 11 bits over two registers the chip splits 8 and 3
             "commit": [[0x15, lo(G("cutoff"))], [0x16, lo({"shr": [G("cutoff"), 3]})]],
-            "stop_writes": [],
         },
         "pitch": pitch(m),
         "streams": _past(streams(), m),

@@ -104,6 +104,7 @@ def test_no_command_is_named_by_the_index_its_player_dispatched_on(tune):
     """A command is named by what it does; the three jump tables are spent."""
     obj = built(tune)
     known = set(TS.NOTEFX) | set(TS.SMALLFX) | set(TS.BIGFX) | {"legato", "nop"}
+    known |= {obj["state0"].get("prologue")}  # the init call, named by the entry state
     for name, cmd in obj["score"]["commands"].items():
         assert name.split(":")[0] in known, name
         assert "id" not in cmd
@@ -133,7 +134,8 @@ def test_the_print_carries_the_forms_and_measures_itself():
     for line in (
         "tempo spdcnt +1, row at phase == 2, fetched where phase == 0, early where phase < 2",
         "tick       fetch ; prelude ; commit ; row ; commit ; machine ; stream exit",
-        "prologue   --",
+        "prologue   init",  # the init call the entry state names, and its empty command
+        "    init   --",
     ):
         assert line in text, line
     n = printer.numbers(text)

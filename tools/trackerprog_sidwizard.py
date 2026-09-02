@@ -396,8 +396,7 @@ class Tune:
         self.L = layout(self.m, lo, hi)
         self.cmds = {}
         self.rows = {
-            k: [{"trap": "no stream"}, {"trap": "past the instrument's own rows"}]
-            for k in ("wave", "pulse", "filter")
+            k: [{"trap": "past the instrument's own rows"}] for k in ("wave", "pulse", "filter")
         }
         self.base = {}
 
@@ -536,7 +535,7 @@ class Tune:
 
     def row_of(self, i, slot, k):
         """The stream row one byte offset of an instrument is; else the table's end."""
-        return self.base[i][slot].get(k, 1)
+        return self.base[i][slot].get(k, 0)
 
     def wave_row(self, i, k, b):  # noqa: C901 - one clause per row type
         """A waveform row: a waveform or a repeat count, then what it plays."""
@@ -1107,7 +1106,6 @@ class Tune:
         return {
             "streams": [],
             "flags": {"C": {"default": 0}},
-            "stop_writes": [],
             "commit": [
                 [23, {"or": [{"global": "fswitch"}, {"global": "resonib"}]}],
                 [24, {"or": [{"global": "mainvol"}, {"global": "fltband"}]}],
@@ -1153,6 +1151,9 @@ class Tune:
             "epoch": "entry",
             "rows": self.rows["filter"],
         }
+        if self.L["slowdown"] is not None:
+            # the slowdown gate takes the init frame, and the init call writes nothing
+            self.cmds["init"] = {"rows": []}
         score["commands"] = dict(sorted(self.cmds.items()))
         return {
             "$trackerprog": 1,
@@ -1198,10 +1199,11 @@ class Tune:
                     for v in range(3)
                 ],
                 "pulse": [{"row": 0, "hold": m[L["pweepcnt"] + 7 * v]} for v in range(3)],
-                "pitch_out": [{"row": 1, "hold": 0} for _ in range(3)],
-                "pw_out": [{"row": 1, "hold": 0} for _ in range(3)],
+                "pitch_out": [{"row": 0, "hold": 0} for _ in range(3)],
+                "pw_out": [{"row": 0, "hold": 0} for _ in range(3)],
             },
             "gcursors": {"filter": {"row": 0, "hold": m[L["cwepcnt"]]}},
+            **({"prologue": "init"} if L["slowdown"] is not None else {}),
         }
 
     def meta(self):
@@ -1242,8 +1244,10 @@ class Tune:
             "tick": ["fetch", "prelude", "commit", "row", "commit", "machine", {"stream": "exit"}],
             "row_consumes_tick": [["sounds", "!=", 0]],
             "row_command": "spent",
-            "stage": [{"sets": [["@hrins", {"payload": "ins"}]]}],
-            "stage_sounds": "pending",
+            "stage": [
+                {"sets": [["@hrins", {"payload": "ins"}]], "when": ROW},
+                {"sets": [["@pending", {"payload": "keys"}]]},
+            ],
             "row": [
                 {"sets": [["@pending", 0]]},
                 {"ins": True},
@@ -1253,11 +1257,13 @@ class Tune:
                 {"commands": True},
             ],
             "pitch_target": "@freq",
-            **({"prologue": {"rows": []}} if L["slowdown"] is not None else {}),
         }
 
 
 UNTIED = [["tie", "==", 0]]  # a row a tie does not admit
+ROW = [
+    ["dur", "!=", 0]
+]  # a row proper: the empty facts of a fetch that staged none carry no length
 
 
 def rows_of(c):

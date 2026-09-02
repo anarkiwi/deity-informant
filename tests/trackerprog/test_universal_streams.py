@@ -13,11 +13,11 @@ FLO, FHI, PLO, PHI, CTRL, AD, SR = 0, 1, 2, 3, 4, 5, 6
 CUT, RES, VOL = 22, 23, 24
 GATED = {"and": [{"cell": "wave"}, {"cell": "gate"}]}
 CELLS = ("rowclock", "tempo", "instr", "gate", "wave", "param", "vibtime", "vibdelay", "staged")
+# a table's rows are its own, from the first: a cursor that is on no row says so
 WAVE_ROWS = [
-    {"trap": "a 1-based table has no row zero"},
-    {"sets": [["@wave", 0x21]], "hold": 2, "op": {"pitch": 2}},
-    {"sets": [["@wave", 0x11]], "op": {"pitch": 1, "relative": True}},
-    {"jump": 2},
+    {"sets": [["@wave", 0x21], ["!produced", 1]], "hold": 2, "op": {"pitch": 2}},
+    {"sets": [["@wave", 0x11], ["!produced", 1]], "op": {"pitch": 1, "relative": True}},
+    {"jump": 1},
 ]
 
 
@@ -91,16 +91,15 @@ def obj(events, streams=None, accs=None, instrument=None, tempo=2, early=1, curs
                 {"ins": True},
                 {"sets": [["@gate", {"payload": "gate"}]], "when": [["gate_stmt", "!=", 0]]},
                 {"hold": True},
+                # whether the row the fetch read keys a note; a fetch tick that
+                # stages none runs the same program over the empty facts, and says 0
+                {"sets": [["@staged", {"payload": "keys"}]]},
             ],
-            "stage_sounds": "staged",
             "row": [
                 {"note": True, "when": [["sounds", "!=", 0]]},
                 {"stream": "note_on", "when": [["keys", "!=", 0]]},
                 {"commands": True},
             ],
-            "prologue": {
-                "rows": [{"sets": [["@rowclock", 1], ["@tempo", tempo], ["@instr", 1]]}],
-            },
             **meta,
         },
         "pitch": {"base": 0, "freq": [0x0100 * (k + 1) for k in range(8)]},
@@ -110,15 +109,19 @@ def obj(events, streams=None, accs=None, instrument=None, tempo=2, early=1, curs
         "score": {
             "orders": [{"play": [{"pattern": 1, "transpose": 0}], "end": {"jump": 0}}],
             "patterns": {"1": {"events": events}},
+            "commands": {
+                "init": {"rows": [{"sets": [["@rowclock", 1], ["@tempo", tempo], ["@instr", 1]]}]}
+            },
         },
-        "globals": {"streams": [], "commit": [], "flags": {}, "stop_writes": []},
+        "globals": {"streams": [], "commit": [], "flags": {"produced": {"default": 0}}},
         "state0": {
             "shadow": [0] * 25,
             "cells": {k: [0] for k in CELLS},
             "ins": [1],
             "globals": {},
-            "cursors": {k: [{"row": 0, "hold": 0}] for k in cursors},
+            "cursors": {k: [{"row": None, "hold": 0}] for k in cursors},
             "gcursors": {},
+            "prologue": "init",  # the tune's init call, and the tick it spends
         },
     }
 
@@ -180,7 +183,7 @@ def test_a_stream_holds_its_row_then_takes_its_op_and_its_next():
     o = obj(
         [event(note=1, ins=1)],
         streams={"wave": {"rank": 0, "rows": WAVE_ROWS}},
-        instrument=ins(points=[["wave", 1, False]], prelude=None),
+        instrument=ins(points=[["wave", 0, False]], prelude=None),
         tempo=6,
         cursors=["wave"],
     )
@@ -191,33 +194,55 @@ def test_a_stream_holds_its_row_then_takes_its_op_and_its_next():
 
 
 def test_a_step_that_produces_stands_the_armed_accumulators_down():
-    a = acc("slide", "freq", delta={"const": 0x10}, produce=[["freq_hi", "hi"]])
+    """The row that produced leaves a flag, and the arm that stands down reads it."""
+    a = acc("slide", "freq", delta={"const": 0x100}, produce=[["freq_hi", "hi"]])
+    arm = {"acc": "slide", "when": [[{"flag": "produced"}, "==", 0]]}
     o = obj(
         [event(note=1, ins=1)],
         streams={"wave": {"rank": 0, "rows": WAVE_ROWS}},
         accs=a,
-        instrument=ins(points=[["wave", 1, False]], prelude=None, accs=[{"acc": "slide"}]),
+        instrument=ins(points=[["wave", 0, False]], prelude=None, accs=[arm]),
         tempo=6,
         cursors=["wave"],
     )
     w = render(o, 14)
     assert column(w, FHI)[11:14] == [3, 3, 3]  # the op wins the tick; the slide stands down
+    del o["instruments"]["1"]["accs"][0]["when"]  # and without the guard it does not
+    assert column(render(o, 14), FHI)[11:14] != [3, 3, 3]
 
 
-def test_a_trap_row_is_no_row_at_all():
+def test_a_cursor_is_on_a_row_or_on_none_and_never_says_so_by_its_index():
+    """Row 0 is a row like any other; a cursor that runs no stream carries ``None``."""
     o = obj(
         [event(note=1, ins=1)],
-        streams={"wave": {"rank": 0, "rows": [{"trap": "no row zero"}, {}]}},
+        streams={"wave": {"rank": 0, "rows": [{"trap": "the horizon never steps here"}, {}]}},
         cursors=["wave"],
     )
     p = Player(o)
-    p.cursor["wave"][0]["row"] = 1
-    assert [k for _, _, _, k in p.slots()] == ["wave"]
-    p.cursor["wave"][0]["row"] = 0
-    assert p.slots() == []  # row zero is the 1-based table's null, so the cursor is off
-    p.cursor["wave"][0]["row"] = 0
-    with pytest.raises(AssertionError, match="no row zero"):
+    for row in (0, 1):
+        p.cursor["wave"][0]["row"] = row
+        assert [k for _, _, _, k in p.slots()] == ["wave"]
+    p.cursor["wave"][0]["row"] = None
+    assert p.slots() == []  # the cursor is off, and the object said so
+    with pytest.raises(AssertionError, match="never steps here"):
         p.srow("wave", 0)
+
+
+def test_a_step_that_goes_to_no_row_stops_its_own_stream():
+    """``next: null`` and a jump of null are the same value the cursor is turned off by."""
+    rows = [{"sets": [["@wave", 0x21]], "next": 1}, {"sets": [["@wave", 0x11]], "next": None}]
+    o = obj(
+        [event(note=1, ins=1)],
+        streams={"wave": {"rank": 0, "rows": rows}},
+        instrument=ins(points=[["wave", 0, False]], prelude=None),
+        tempo=6,
+        cursors=["wave"],
+    )
+    p = Player(o)
+    w = [p.tick() for _ in range(12)]
+    assert column(w, CTRL)[9:12] == [0x41, 0x21, 0x11]  # the note-on, then the two rows
+    assert p.cursor["wave"][0]["row"] is None  # and the second row is the last
+    assert column([p.tick() for _ in range(2)], CTRL) == [0x11, 0x11]  # nothing steps it
 
 
 def test_a_global_channel_steps_its_own_stream_and_commits_its_own_registers():

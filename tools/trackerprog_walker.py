@@ -799,12 +799,7 @@ def filterstreams():
                 {"sets": [["#anynew", 0], ["#ownernew", 0]]},
             ],
         },
-        "filtermod": {
-            "rows": [
-                {"trap": "row 0 is the player's own empty cursor"},
-                {"run": [{"acc": "filter"}], "next": 1},
-            ]
-        },
+        "filtermod": {"rows": [{"run": [{"acc": "filter"}], "next": 0}]},
     }
 
 
@@ -1052,7 +1047,6 @@ def build(path, ticks=TICKS, song=1):
                 )
             },
             "commit": [[22, masked({"add": [glob("cutbase"), glob("cutoff_off")]})]],
-            "stop_writes": [],
         },
         "pitch": {
             "base": notes[0],
@@ -1116,7 +1110,7 @@ def build(path, ticks=TICKS, song=1):
             "ins": [0, 0, 0],
             "cells": cells,
             "globals": gl,
-            "gcursors": {"filtermod": {"row": 1, "hold": 0}},
+            "gcursors": {"filtermod": {"row": 0, "hold": 0}},
         },
     }
     return obj, writes

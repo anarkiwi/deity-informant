@@ -626,7 +626,7 @@ def instruments(images, silence):
             "fmdly": s[0x0C],
             "fmc": s[0x0D],
             "g": list(s[0:8]),
-            "on_note": [{"point": [["arp", s[0x0C] + 1, False]]}] if s[0x0D] & 8 else [],
+            "on_note": [{"point": [["arp", s[0x0C], False]]}] if s[0x0D] & 8 else [],
             "accs": ENGINE,
             # section 3.5's sound with no pitch at all: note $5E keys the
             # instrument and takes the tuning's own entry for it, read and not assumed
@@ -763,17 +763,16 @@ def arp():
 
     The same eight bytes are the four sixteen-bit frequency gradients when bit 3
     of the control byte is clear, so the object keeps them as eight cells and
-    each row of this stream names one -- the index is the row and not a read.
-    Row 0 is the player's own empty cursor, so offset ``k`` is row ``k + 1``.
+    each row of this stream names one -- the index is the row and not a read,
+    and the offset is its own row.
     """
-    rows = [{"trap": "row 0 is the player's own empty cursor"}]
-    for x in range(8):
-        rows.append(
-            {
-                "op": {"pitch": {"and": [{"add": [C("fmd2"), C("g%d" % x)]}, 0xFF]}},
-                "next": {"add": [C("fmd3"), 1]} if x == 0 else x,
-            }
-        )
+    rows = [
+        {
+            "op": {"pitch": {"and": [{"add": [C("fmd2"), C("g%d" % x)]}, 0xFF]}},
+            "next": C("fmd3") if x == 0 else x - 1,
+        }
+        for x in range(8)
+    ]
     return {
         "rank": 30,
         "when": [[C("vrc"), "!=", 0], [K("fmc", 8), "!=", 0]],
@@ -1083,7 +1082,6 @@ def build(path, song=1, ticks=TICKS):
                 "pmdone": {"default": {"const": 0}},
                 "fmdone": {"default": {"const": 0}},
             },
-            "stop_writes": [],
         },
         "pitch": pitch(m, notes),
         "streams": {"note_on": note_on(), "gate": gate(), "arp": arp()},
@@ -1094,7 +1092,7 @@ def build(path, song=1, ticks=TICKS):
             "ins": seq.ins0,
             "stopped": [not r for r in seq.runs],
             "cells": cells(m),
-            "cursors": {"arp": [{"row": m[DREC[v] + 0x0C] + 1, "hold": 0} for v in range(3)]},
+            "cursors": {"arp": [{"row": m[DREC[v] + 0x0C], "hold": 0} for v in range(3)]},
             "globals": {},
         },
     }

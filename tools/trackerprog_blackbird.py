@@ -216,10 +216,10 @@ def fxstream(m, reach):
     ``fxtable[y]`` is a pitch offset in quarter semitones and ``0`` is no pitch
     at all -- the voice's frequency goes to ``$FFFF``.  The *next* byte is the
     loop marker: negative, it is the signed jump added to the cursor, so a
-    program needs no terminator row.  Row 0 is the player's own "no stream", so
-    a byte offset ``k`` is row ``k + 1``.
+    program needs no terminator row.  A byte offset is its own row: a cursor on
+    no row says so, and no index is reserved for it.
     """
-    rows = [{"trap": "row 0 is the player's own empty cursor"}]
+    rows = []
     for k in range(FXLEN):
         if k not in reach:
             rows.append({"trap": "fxtable[%d]: the horizon never steps here" % k})
@@ -232,7 +232,7 @@ def fxstream(m, reach):
             if d == 0
             else {"tuned": {"and": [{"add": [{"cell": "note"}, d]}, 0x1FF]}}
         )
-        rows.append({"sets": [["pitch", val]], "next": nxt + 1})
+        rows.append({"sets": [["pitch", val]], "next": nxt})
     return {"rank": 0, "rows": rows}
 
 
@@ -246,7 +246,7 @@ def wavestream(m, reach):
     parameter follows, and the step past it is two plus the control byte's own
     sign bit, which is the carry the ``ASL`` that tested bit 6 left behind.
     """
-    rows = [{"trap": "row 0 is the player's own empty cursor"}]
+    rows = []
     for k in range(WAVELEN):
         if k not in reach:
             rows.append({"trap": "wavetable[%d]: the horizon never steps here" % k})
@@ -274,9 +274,9 @@ def wavestream(m, reach):
             # step's own add leaves -- is zero exactly while this does not wrap, and
             # the table is 72 bytes, so the object states the advance and asserts it
             assert step < 0x100, "the wave cursor wraps at row %d: the step's carry is live" % k
-            row["next"] = step + 1
+            row["next"] = step
         else:
-            row["next"] = t + 2
+            row["next"] = t + 1
         rows.append(row)
     return {"rank": 1, "rows": rows}
 
@@ -294,7 +294,6 @@ def filterstream(m):
     assert c & 0x80, "the horizon takes only the absolute arm of the cutoff"
     return {
         "rows": [
-            {"trap": "row 0 is the player's own empty cursor"},
             {
                 "sets": [
                     ["#mode_vol", {"const": m[FILTTABLE]}],
@@ -302,7 +301,7 @@ def filterstream(m):
                     ["#cutoff", {"const": (c << 1) & 0xFF}],
                     ["#cutoff_hi", {"xor": [{"global": "cutoff"}, 0x80]}],
                 ],
-                "next": 1,
+                "next": 0,
             },
         ]
     }
@@ -319,7 +318,7 @@ def instruments(m, used, ins_restart):
         "0": {
             "adsr": [0, 0],
             "restart": 0,
-            "wavepos": 1,
+            "wavepos": 0,
             "accs": [],
             "on_note": [],
             "note": "the cell's post-init value; no row plays it",
@@ -330,7 +329,7 @@ def instruments(m, used, ins_restart):
         rec = {
             "adsr": [m[INS_AD + i], m[INS_SR + i]],
             "restart": int(i >= ins_restart),
-            "wavepos": m[INS_WAVE + i] + 1,
+            "wavepos": m[INS_WAVE + i],
             "accs": [],
             "on_note": [{"point": [["wave", {"ins": "wavepos"}, False]]}],
         }
@@ -378,8 +377,7 @@ def build(path, ticks=TICKS):
             "tick": ["fetch", "prelude", "row", "machine"],
             "row_consumes_tick": False,
             "row_command": "spent",
-            "stage_sounds": "willsound",
-            "stage": [{"ins": True}],
+            "stage": [{"ins": True}, {"sets": [["@willsound", {"payload": "keys"}]]}],
             "row": [
                 {"sets": [["@wavemask", {"payload": "gate"}]], "when": [["gate_stmt", "!=", 0]]},
                 {
@@ -402,7 +400,6 @@ def build(path, ticks=TICKS):
                 [23, {"global": "res_route"}],
                 [22, {"global": "cutoff_hi"}],
             ],
-            "stop_writes": [],
         },
         "pitch": pitch(m, notes),
         "streams": {
@@ -449,7 +446,7 @@ def build(path, ticks=TICKS):
             "patterns": {str(v): {"events": events[v]} for v in range(3)},
             "orders": [{"play": [v], "end": "horizon"} for v in range(3)],
             "commands": {
-                name: {"rows": [{"point": [["pitch", m[FX_START + int(name[2:])] + 1, False]]}]}
+                name: {"rows": [{"point": [["pitch", m[FX_START + int(name[2:])], False]]}]}
                 for name in fxcmds
             },
         },
@@ -464,10 +461,10 @@ def build(path, ticks=TICKS):
             },
             "globals": {"mode_vol": 0, "res_route": 0, "cutoff": 0, "cutoff_hi": 0},
             "cursors": {
-                "pitch": [{"row": m[FXPOS + 7 * v] + 1, "hold": 0} for v in range(3)],
-                "wave": [{"row": m[WAVEPOS + 7 * v] + 1, "hold": 0} for v in range(3)],
+                "pitch": [{"row": m[FXPOS + 7 * v], "hold": 0} for v in range(3)],
+                "wave": [{"row": m[WAVEPOS + 7 * v], "hold": 0} for v in range(3)],
             },
-            "gcursors": {"filter": {"row": 1, "hold": 0}},
+            "gcursors": {"filter": {"row": 0, "hold": 0}},
         },
     }
     return obj, writes

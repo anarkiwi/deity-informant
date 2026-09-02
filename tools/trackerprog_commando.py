@@ -137,7 +137,7 @@ def score(m, song):
             seq.append(m[p])
             used.add(m[p])
             p += 1
-        orders.append({"play": seq, "end": "jump" if m[p] == 0xFF else "stop"})
+        orders.append({"play": seq, "end": "jump" if m[p] == 0xFF else {"stop": "silence"}})
     return orders, {str(p): pattern(m, p) for p in sorted(used)}
 
 
@@ -458,10 +458,7 @@ def build(path, song=0):
                 {"sets": [["@patrow", {"const": 0}]], "when": [["wraps", "!=", 0]]},
             ],
         },
-        "globals": {
-            "flags": {"C": _flag_default(instruments)},
-            "stop_writes": [[4, 0], [11, 0], [18, 0], [24, 0x0F]],
-        },
+        "globals": {"flags": {"C": _flag_default(instruments)}},
         "pitch": tuning,
         "streams": {
             "note_on": {
@@ -492,7 +489,29 @@ def build(path, song=0):
         },
         "accs": acc,
         "instruments": instruments,
-        "score": {"patterns": patterns, "orders": orders},
+        "score": {
+            "patterns": patterns,
+            "orders": orders,
+            # the four writes the routine makes on the tick after it reads the end,
+            # in the order it makes them: three gates and the master volume, at the
+            # registers the routine names.  One voice's run of the command makes
+            # them all, because the list is the tune's and not a voice's
+            "commands": {
+                "silence": {
+                    "rows": [
+                        {
+                            "when": [[{"cell": "voice_index"}, "==", 0]],
+                            "sets": [
+                                ["reg.4", 0],
+                                ["reg.11", 0],
+                                ["reg.18", 0],
+                                ["reg.24", 0x0F],
+                            ],
+                        }
+                    ]
+                }
+            },
+        },
         "state0": {
             "ins": [m[0x54FE + v] for v in range(3)],
             "wave": [m[0x54F8 + v] for v in range(3)],

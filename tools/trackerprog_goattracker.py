@@ -346,7 +346,7 @@ class Tune:
         c = {}
         if fx < 5:
             c["sets"] = [["@param", {"ins": "vibparam"} if fx == 0 else param]]
-            c["arms"] = [SNAP] if fx == 3 and param == 0 else ARMS[fx]
+            c["arms"] = [stands(a) for a in ([SNAP] if fx == 3 and param == 0 else ARMS[fx])]
             if fx == 3:  # a tone portamento re-targets the note; it does not retrigger
                 c["tie"] = True
             if fx in (1, 2):
@@ -358,15 +358,15 @@ class Tune:
         elif fx == 7:
             c["sets"] = [["@wave", param]]
         elif fx == 8:
-            c["point"] = [["wave", param]]
+            c["point"] = [["wave", _table(param)]]
         elif fx == 9:
-            c["point"] = [["pulse", param]]
+            c["point"] = [["pulse", _table(param)]]
         elif fx == 0xA:
-            c["point"] = [["filter", param]]
+            c["point"] = [["filter", _table(param)]]
         elif fx == 0xB:
             c["sets"] = [["#filtctrl", param]]
             if param == 0:
-                c["point"] = [["filter", 0]]
+                c["point"] = [["filter", None]]
         elif fx == 0xC:
             c["sets"] = [["#cutoff", param]]
         elif fx == 0xD:
@@ -391,8 +391,8 @@ class Tune:
         rows = [{"trap": "a 1-based table has no row zero"}]
         for y in range(1, self.L["waverows"] + 1):
             left, right = self.t("wave", y), self.t("wave", y, True)
-            if left == 0xFF:
-                rows.append({"jump": right})
+            if left == 0xFF:  # a jump byte of 0 is the byte that names no table
+                rows.append({"jump": right or None})
                 continue
             row = {}
             if left < 0x10:
@@ -407,6 +407,8 @@ class Tune:
                     if right < 0x80
                     else {"pitch": _semitones(right), "relative": True}
                 )
+            if "op" in row:
+                row["sets"] = row.get("sets", []) + [["!produced", 1]]
             rows.append(row)
         rows.append({"trap": "past the last row of the table"})
         return {"rank": 0, "rows": rows}
@@ -427,7 +429,7 @@ class Tune:
         for y in range(1, self.L["pulserows"] + 1):
             left, right = self.t("pulse", y), self.t("pulse", y, True)
             if left == 0xFF:
-                rows.append({"jump": right})
+                rows.append({"jump": right or None})
             elif left & 0x80:
                 rows.append({"sets": [["pw_hi", left], ["pw_lo", right]]})
             else:
@@ -446,7 +448,7 @@ class Tune:
         for y in range(1, self.L["filtrows"] + 1):
             left, right = self.t("filt", y), self.t("filt", y, True)
             if left == 0xFF:
-                rows.append({"jump": right})
+                rows.append({"jump": right or None})
             elif left == 0:
                 rows.append({"sets": [["#cutoff", right]]})
             elif left < 0x80:
@@ -492,7 +494,7 @@ class Tune:
             note_sets = [["@gate", 0xFF if fw < 0xFE else fw]]
             if fw < 0xFE:
                 note_sets.insert(0, ["@wave", fw])
-            points = [["wave", self.col("waveptr", i), True]]
+            points = [["wave", _table(self.col("waveptr", i)), True]]
             points += [["pulse", pul, False]] if pul else []
             points += [["filter", flt, False]] if flt else []
             out[str(i)] = {
@@ -553,6 +555,7 @@ class Tune:
             "filter": self.filter_stream(),
             "speed": self.speed_stream(),
         }
+        self.cmds["init"] = self.prologue()
         score["commands"] = dict(sorted(self.cmds.items()))  # every command, once, named
         return {
             "$trackerprog": 1,
@@ -569,8 +572,12 @@ class Tune:
                     [23, {"global": "filtctrl"}],
                     [24, {"or": [{"global": "filttype"}, {"global": "fader"}]}],
                 ],
-                "flags": {},
-                "stop_writes": [],
+                "flags": {
+                    "produced": {
+                        "default": 0,
+                        "proof": "a wavetable row that produced is the tick's own",
+                    }
+                },
             },
             "state0": {
                 "shadow": list(m[L["ghost"] : L["ghost"] + L["regs"]]),
@@ -585,14 +592,15 @@ class Tune:
                     "funk1": m[L["funk"] + 1],
                 },
                 "cursors": {
-                    k: [{"row": m[L[c] + 7 * v], "hold": m[L[h] + 7 * v]} for v in range(3)]
+                    k: [{"row": _table(m[L[c] + 7 * v]), "hold": m[L[h] + 7 * v]} for v in range(3)]
                     for k, c, h in (
                         ("wave", "waveptr", "wavetime"),
                         ("pulse", "pulseptr", "pulsetime"),
                     )
                 },
-                "gcursors": {"filter": {"row": m[L["filtstep"]], "hold": m[L["filttime"]]}},
+                "gcursors": {"filter": {"row": _table(m[L["filtstep"]]), "hold": m[L["filttime"]]}},
                 "held": self.name(0, None),
+                "prologue": "init",
             },
         }
 
@@ -641,34 +649,48 @@ class Tune:
                 {"ins": True},
                 {"sets": [["@gate", {"payload": "gate"}]], "when": [["gate_stmt", "!=", 0]]},
                 {"hold": True},
+                # whether the row the fetch read keys a note: the empty facts of a
+                # fetch tick that stages none say 0, so this is the whole of it
+                {"sets": [["@staged", {"payload": "keys"}]]},
             ],
-            "stage_sounds": "staged",
-            "rest_arm": ARMS[0],
+            "rest_arm": [stands(a) for a in ARMS[0]],
             "row": [
                 {"note": True, "when": [["sounds", "!=", 0]]},
                 {"stream": "note_on", "when": [["keys", "!=", 0]]},
                 {"commands": True},
             ],
             "pitch_links": ["vib_phase"],
-            "prologue": rows_of(
-                {
-                    "sets": [
-                        ["@wave", 0],
-                        ["@param", 0],
-                        ["@tempo", L["deftempo"]],
-                        ["@rowclock", 1],
-                        ["@instr", 1],
-                        ["#filtctrl", 0],
-                        [21, 0],
-                        ["ctrl", GATED],
-                    ],
-                    "point": [["wave", 0], ["pulse", 0], ["filter", 0]],
-                }
-            ),
         }
+
+    def prologue(self):
+        """The init call, as the command the entry state names: one command, one tick."""
+        return rows_of(
+            {
+                "sets": [
+                    ["@wave", 0],
+                    ["@param", 0],
+                    ["@tempo", self.L["deftempo"]],
+                    ["@rowclock", 1],
+                    ["@instr", 1],
+                    ["#filtctrl", 0],
+                    [21, 0],
+                    ["ctrl", GATED],
+                ],
+                "point": [["wave", None], ["pulse", None], ["filter", None]],
+            }
+        )
 
 
 UNTIED = [["tie", "==", 0]]  # a row a tie does not admit
+
+
+def _table(ptr):
+    """Where a pointer byte sends a cursor: the table's own row, or no row at all.
+
+    The engine's tables are 1-based and the byte that names none is 0, so a
+    cursor the byte turns off is a cursor on no row and never row 0 (section 3.3).
+    """
+    return ptr or None
 
 
 def rows_of(c):
@@ -683,6 +705,10 @@ DEPTH = {"tabcell": ["speed", {"const": "row"}, "depth"]}
 QUIET = [[{"tabcell": ["speed", {"const": "row"}, "zero"]}, "==", 0]]
 ROW = {"cell": "param"}
 SNAP = {"acc": "toneporta_snap"}
+# a wavetable row that produces owns the tick: the arm the *score* gave the voice
+# stands down for it.  The row leaves the flag and the arm reads it -- one family's
+# precedence, said in the object rather than in the player
+PRODUCED = [[{"flag": "produced"}, "==", 0]]
 ARMS = {
     0: [
         {"acc": "vib_delay", "row": ROW, "when": QUIET + [[{"cell": "vibdelay"}, "!=", 0]]},
@@ -694,6 +720,11 @@ ARMS = {
     3: [{"acc": "toneporta", "row": ROW}],
     4: [{"acc": "vib_phase", "row": ROW}, {"acc": "vibrato", "row": ROW}],
 }
+
+
+def stands(a):
+    """One arm of the score's, standing down for a tick a wavetable row produced on."""
+    return dict(a, when=PRODUCED + list(a.get("when", ())))
 
 
 def accs():
