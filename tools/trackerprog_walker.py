@@ -1181,7 +1181,7 @@ def main(argv=None):
             "certificate_digest": source,
             "rendered_from": digest(obj),
         }
-        c["loop"] = None if repeat is None else {"tick": repeat, "period": period}
+        c["loop"] = None if repeat is None else {"first_repeat": repeat, "period": period}
         c["end"] = {"tick": c["ticks"] - 1, "kind": "loop" if repeat else "horizon"}
         print(json.dumps({k: v for k, v in c.items() if k != "dropped"}, indent=1))
         if a.out:

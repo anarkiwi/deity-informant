@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 DOC = ROOT / "docs" / "prototype-trackerprog.md"
 PLAYER = ROOT / "deity_informant" / "trackerprog" / "universal.py"
 PRINTER = ROOT / "deity_informant" / "trackerprog" / "printer.py"
+COMPILER = ROOT / "deity_informant" / "trackerprog" / "compiler.py"
 
 # read by the player, in the box; annotations, marked as such in the box
 READ = set(
@@ -65,6 +66,54 @@ def test_the_box_carries_no_policy_no_tool_writes():
     """``halt`` was spec-only: no arm in ``apply``, no tool emitting it."""
     text = DOC.read_text().split("## 5. Effects as bounded accumulators", 1)[1]
     assert "halt" not in text.split("```", 2)[1]
+
+
+# the policy values and the flag's own fields, which B8 measured down to what the
+# families write: `take` is a clamp whose step reaches at once, and the carry the
+# delta did not make is `step_when` with `gate.false`
+POLICIES = {"wrap", "reflect", "reflect-complement", "clamp", "reload"}
+FLAG = {"name", "seed"}
+# a form B8 struck: no tool writes it, no line of the player reads it
+STRUCK = ("take", "unguarded", "epoch", "links")
+
+
+def policies():
+    """The policy values section 5's ``policy :`` entry names: a word, or the
+    first key of a record form."""
+    text = DOC.read_text().split("## 5. Effects as bounded accumulators", 1)[1]
+    block = text.split("```", 2)[1]
+    line = block.split(", policy :", 1)[1].split("\n      ,", 1)[0].split("#")[0]
+    return {re.findall(r"[a-z-]+", x)[0] for x in line.split("|")}
+
+
+def test_the_box_names_the_policy_values_and_the_flags_own_fields():
+    assert policies() == POLICIES
+    text = DOC.read_text().split("## 5. Effects as bounded accumulators", 1)[1]
+    flag = text.split("```", 2)[1].split(", flag   :", 1)[1].split("#")[0]
+    assert {m.rstrip("?") for m in re.findall(r"[a-z]+\??", flag)} == FLAG
+
+
+def test_no_form_b8_struck_survives_in_the_player_or_the_print():
+    """A value the schema dropped is a value nothing renders (section 3.1)."""
+    src = PLAYER.read_text() + PRINTER.read_text() + COMPILER.read_text()
+    for name in STRUCK:
+        assert '"%s"' % name not in src, name
+    cmd = DOC.read_text().split("### 3.6 score", 1)[1].split("```", 2)[1]
+    assert "links" not in cmd.split("Cmd     = {", 1)[1].split("Order", 1)[0]
+
+
+@pytest.mark.hvsc
+def test_the_nine_families_write_the_policy_values_and_flag_fields_the_box_names():
+    import trackerprog_poison as TP
+
+    pol, flag = set(), set()
+    for module in {b.module for b in TP.BUILDS}:
+        b = next(x for x in TP.BUILDS if x.module == module)
+        for acc in TP.build_object(b.name, str(TP.DEFAULT_CACHE))["accs"].values():
+            p = acc["policy"]
+            pol |= {p} if isinstance(p, str) else set(p) - {"when", "edge"}
+            flag |= set(acc.get("flag", ()))
+    assert pol == POLICIES and flag == FLAG
 
 
 @pytest.mark.hvsc

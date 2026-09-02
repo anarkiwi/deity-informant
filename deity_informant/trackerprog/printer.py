@@ -62,8 +62,6 @@ def expr(e, notes=None):
         return "fold(%s, %d)" % (expr(a[0], notes), a[1])
     if k == "repeat":
         return "repeat(%s, %s)" % (expr(a[0], notes), expr(a[1], notes))
-    if k == "stream":
-        return "%s[%s]" % (a[0], expr(a[1], notes))
     if k == "tabcell":
         return "%s[%s].%s" % (a[0], expr(a[1], notes), a[2])
     if k == "global":
@@ -229,8 +227,6 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
         head = "%s%s" % (k, "" if "rank" not in st else ", rank %d" % st["rank"])
         if st.get("all"):
             head += ", every row every tick"
-        if st.get("epoch") == "entry":
-            head += ", counted at entry"
         if st.get("rate"):
             head += ", one row every " + _divider(st["rate"], notes)
         if st.get("when"):
@@ -442,8 +438,6 @@ def _cmd(c, notes):
     bits = []
     if "arms" in c:
         bits.append("arm " + " ".join(_arm(a) for a in c["arms"]))
-    if c.get("links"):
-        bits.append("reset " + " ".join(c["links"]))
     rows, named = _rowlist(c.get("rows"))
     if named:
         bits.append("rows " + named)
@@ -566,8 +560,6 @@ def _acc(name, a, notes):
         bits = ["%s = the carry of its own step" % f["name"]]
         if "seed" in f:
             bits.append("%s at entry" % f["seed"])
-        if "unguarded" in f:
-            bits.append("%s where the delta is skipped" % f["unguarded"])
         lines.append("      flag    " + ", ".join(bits))
     if a.get("when"):
         lines.append("      when    %s" % guards(a["when"], notes))
@@ -592,7 +584,7 @@ def _acc(name, a, notes):
                     _bound(m["interval"][0]),
                     _bound(m["interval"][1]),
                     "" if "shift" not in m else " >> %d" % m["shift"],
-                    m.get("turn") or m.get("fold", ""),
+                    m.get("witness", ""),
                 )
             )
     if "bound" in a:

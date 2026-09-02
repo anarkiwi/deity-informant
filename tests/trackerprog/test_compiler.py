@@ -59,7 +59,7 @@ def player(streams=None, accs=None, arms=()):
             "instruments": {"0": {"adsr": [1, 2], "wave": 0x41, "on_note": [], "accs": list(arms)}},
             "score": {
                 "patterns": {"1": {"events": []}},
-                "orders": [{"play": [1], "end": "jump"}],
+                "orders": [{"play": [1], "end": {"jump": 0}}],
                 "commands": {},
             },
             "state0": {"cells": {"param": [0], "x": [5]}},

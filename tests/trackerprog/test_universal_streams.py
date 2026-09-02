@@ -367,8 +367,8 @@ def test_clamp_takes_its_target_where_the_step_would_pass_it():
     assert p.c["freq"][0] == 0x0600 and p.c["lastnote"][0] == 5
 
 
-def test_take_is_the_degenerate_clamp_and_reaches_its_target_at_once():
-    a = acc("snap", "freq", policy="take")
+def test_a_clamp_whose_step_reaches_at_once_takes_its_target():
+    a = acc("snap", "freq", policy={"clamp": {"notefreq": None}}, delta={"const": 0xFFFF})
     o = obj([event(note=3, ins=1)], accs=a, tempo=2, rest_arm=[{"acc": "snap"}], pitch_links=[])
     p = Player(o)
     for _ in range(6):

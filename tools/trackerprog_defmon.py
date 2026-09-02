@@ -733,7 +733,9 @@ class Tune:
                 "witness": "the chip's own twelve bits of the pair the sweep walks",
             },
         }
-        bounce = {"name": "bounce", "unguarded": 1}
+        # the end of the sweep is the tick its own step did not run: the step guard
+        # and the gate report it, which is what `bounce` is read for
+        bounce = {"false": [["!bounce", 1]]}
         return {
             "slide_up": dict(slide, phase={"const": 0}),
             "slide_down": dict(slide, phase={"const": 1}),
@@ -742,16 +744,18 @@ class Tune:
                 delta=dn,
                 phase={"const": 1},
                 delta_when=[[PW, ">=", dn]],
+                step_when=[[PW, ">=", dn]],
                 policy={"reload": 1, "when": [[PW, "<", dn]]},
-                flag=bounce,
+                gate=bounce,
             ),
             "pw_up": dict(
                 pw,
                 delta=up,
                 phase={"const": 0},
                 delta_when=[[{"add": [PW, up]}, "<", 0x1000]],
+                step_when=[[{"add": [PW, up]}, "<", 0x1000]],
                 policy={"reload": 0xFF8, "when": [[{"add": [PW, up]}, ">=", 0x1000]]},
-                flag=bounce,
+                gate=bounce,
             ),
             "pw_turn": {
                 "rank": 5,

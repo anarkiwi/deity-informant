@@ -96,11 +96,35 @@ POISONS = {
     "clock-no-reset": ["drop meta.tempo.reset"],
     "clock-no-funk": ["drop meta.tempo.reset.0"],
     "flag-seed": ["set accs.*.flag.seed=0"],
-    "flag-unguarded": ["drop accs.*.flag.unguarded"],
     "acc-bound": ["drop accs.*.bound"],
     "commit-order": ['set meta.commit_order=["ctrl", "ad", "sr"]'],
     "no-shadow": ["drop meta.shadow"],
     "stream-rank": ["drop streams.*.rank"],
+    # B8's one-family forms: each kept row of the schema, struck, so its worth is
+    # a number and not a sentence (backlog D6).  A form no build carries after the
+    # strike renders 0 and says "no site in", which is the registry doing its job
+    "acc-beyond": ['set accs.*.beyond.words.1={"const": 0}'],
+    "acc-trap": ["set accs.*.trap=false"],
+    "amplitude-count": ["set accs.*.amplitude.count=1"],
+    "clamp-edge": ["set accs.*.policy.edge=0"],
+    "cmd-tie": ["drop score.commands.*.tie"],
+    "emit-entry": ["drop accs.*.emit"],
+    "flush-unguarded": ["set meta.shadow.registers.*.1=[]"],
+    "insrec-voice": [
+        'set streams.hard_restart.rows.*.sets.*.1.insrec.0="ins"',
+        'set streams.hard_restart.rows.*.when.*.0.and.0.insrec.0="ins"',
+    ],
+    "no-bug": ['set instruments.*.on_note.0.sets.1.1.shr.0.tuned={"cell": "note"}'],
+    "op-wrap": ["drop streams.*.rows.*.op.wrap"],
+    "pitch-links": ["drop meta.pitch_links"],
+    "pitch-target": ['set meta.pitch_target="freq"'],
+    "reflect-complement": ["set accs.vib_phase.amplitude.interval.1=255"],
+    "rest-arm": ["set meta.rest_arm=[]"],
+    "row-command-spent": ['set meta.row_command="spent"'],
+    "stage-hold": ["drop meta.stage.*.hold"],
+    "stop-voice": ['set meta.stop="voice"'],
+    "sweep-bounce": ["drop accs.pw_down.gate", "drop accs.pw_up.gate"],
+    "commit-guard": ["drop globals.commit.*.2"],
 }
 
 

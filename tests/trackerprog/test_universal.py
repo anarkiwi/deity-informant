@@ -107,7 +107,7 @@ def obj(patterns, orders, instruments, pitch=None, rate=2, beyond=None, cells=No
                     }
                 ],
             },
-            "arp": {"rows": [0, 12], "kind": "pitch"},
+            "arp": {"rows": [{"value": 0}, {"value": 12}], "kind": "pitch"},
         },
         "accs": _accs(beyond),
         "instruments": instruments,
@@ -165,7 +165,7 @@ PATROW = [
 
 
 def test_the_note_row_and_the_tempo_divider():
-    o = obj({"1": [event(3, note=2, ins=0)]}, [{"play": [1], "end": "jump"}], {"0": ins()})
+    o = obj({"1": [event(3, note=2, ins=0)]}, [{"play": [1], "end": {"jump": 0}}], {"0": ins()})
     w = render(o, 3)
     assert w[0] == [
         (FLO, 0x02),
@@ -183,7 +183,7 @@ def test_the_note_row_and_the_tempo_divider():
 def test_a_keyoff_row_re_emits_the_instrument_with_the_gate_cleared():
     o = obj(
         {"1": [event(0, note=2, ins=0), event(0, sounds=False)]},
-        [{"play": [1], "end": "jump"}],
+        [{"play": [1], "end": {"jump": 0}}],
         {"0": ins()},
     )
     w = render(o, 4)
@@ -195,7 +195,7 @@ def test_the_prelude_fires_a_row_tick_early_and_the_tie_disarms_it():
     cut = [(CTRL, 0x40), (AD, 0), (SR, 0)]
     o = obj(
         {"1": [event(1, note=2, ins=0), event(1, note=3)]},
-        [{"play": [1], "end": "jump"}],
+        [{"play": [1], "end": {"jump": 0}}],
         {"0": ins()},
     )
     assert render(o, 6)[2][:3] == cut
@@ -205,7 +205,7 @@ def test_the_prelude_fires_a_row_tick_early_and_the_tie_disarms_it():
 
 def test_the_order_program_jumps_and_stops():
     """A list that jumps goes on; one that ends stops its voice and runs its command."""
-    o = obj({"1": [event(0, note=2, ins=0)]}, [{"play": [1], "end": "jump"}], {"0": ins()})
+    o = obj({"1": [event(0, note=2, ins=0)]}, [{"play": [1], "end": {"jump": 0}}], {"0": ins()})
     assert len(render(o, 8)) == 8 and render(o, 8)[6]  # the jump keeps playing
     o["score"]["orders"][0]["end"] = {"stop": "silence"}
     w = render(o, 8)
@@ -218,14 +218,14 @@ def test_the_order_program_jumps_and_stops():
 def test_the_free_slide_is_a_field_delta_with_a_phase_bit():
     up = obj(
         {"1": [event(9, note=2, ins=0, slide=(4, 0))]},
-        [{"play": [1], "end": "jump"}],
+        [{"play": [1], "end": {"jump": 0}}],
         {"0": ins()},
     )
     w = render(up, 4)
     assert (FLO, 0x06) in w[1] and (FHI, 0x02) in w[1]  # 0x0202 + 4
     dn = obj(
         {"1": [event(9, note=2, ins=0, slide=(4, 1))]},
-        [{"play": [1], "end": "jump"}],
+        [{"play": [1], "end": {"jump": 0}}],
         {"0": ins()},
     )
     assert (FLO, 0xFE) in render(dn, 2)[1]  # 0x0202 - 4
@@ -234,7 +234,7 @@ def test_the_free_slide_is_a_field_delta_with_a_phase_bit():
 def test_the_pulse_run_adds_a_constant_and_the_flag_it_is_given():
     o = obj(
         {"1": [event(9, note=2, ins=0)]},
-        [{"play": [1], "end": "jump"}],
+        [{"play": [1], "end": {"jump": 0}}],
         {"0": ins(accs=[{"acc": "pulse_run", "delta": 3}])},
     )
     w = render(o, 4)
@@ -245,7 +245,7 @@ def test_the_pulse_run_adds_a_constant_and_the_flag_it_is_given():
 def test_the_pulse_bounce_reflects_inside_its_projected_bound():
     o = obj(
         {"1": [event(31, note=2, ins=0)]},
-        [{"play": [1], "end": "jump"}],
+        [{"play": [1], "end": {"jump": 0}}],
         {"0": ins(pw=(0xC0, 0x0D), accs=[{"acc": "pulse_bounce", "delta": 0x60, "rate": 2}])},
     )
     p = Player(o)
@@ -261,7 +261,7 @@ def test_the_pulse_bounce_reflects_inside_its_projected_bound():
 def test_the_vibrato_is_a_reload_plus_a_closed_repeat_and_it_leaves_a_carry():
     o = obj(
         {"1": [event(9, note=2, ins=0)]},
-        [{"play": [1], "end": "jump"}],
+        [{"play": [1], "end": {"jump": 0}}],
         {"0": ins(accs=[{"acc": "vibrato", "shift": 1}, {"acc": "pulse_run", "delta": 0}])},
     )
     w = render(o, 9)
@@ -277,7 +277,7 @@ def test_the_vibrato_is_a_reload_plus_a_closed_repeat_and_it_leaves_a_carry():
 def test_the_vibrato_delta_is_guarded_by_the_row_length():
     short = obj(
         {"1": [event(5, note=2, ins=0)]},
-        [{"play": [1], "end": "jump"}],
+        [{"play": [1], "end": {"jump": 0}}],
         {"0": ins(accs=[{"acc": "vibrato", "shift": 1}])},
     )
     assert all((FLO, 0x02) in t for t in render(short, 6)[1:6:1] if t)
@@ -286,7 +286,7 @@ def test_the_vibrato_delta_is_guarded_by_the_row_length():
 def test_the_drum_emits_the_entry_value_and_picks_its_gate_row():
     o = obj(
         {"1": [event(9, note=2, ins=0)]},
-        [{"play": [1], "end": "jump"}],
+        [{"play": [1], "end": {"jump": 0}}],
         {"0": ins(accs=[{"acc": "drum"}])},
     )
     w = render(o, 12)
@@ -299,7 +299,7 @@ def test_the_drum_emits_the_entry_value_and_picks_its_gate_row():
 def test_the_arpeggio_reads_a_pitch_stream_off_the_global_counter():
     o = obj(
         {"1": [event(9, note=2, ins=0)]},
-        [{"play": [1], "end": "jump"}],
+        [{"play": [1], "end": {"jump": 0}}],
         {"0": ins(accs=[{"acc": "arpeggio"}])},
     )
     w = render(o, 5)
@@ -310,7 +310,7 @@ def test_the_arpeggio_reads_a_pitch_stream_off_the_global_counter():
 def test_a_trapped_arm_raises_where_it_is_taken():
     o = obj(
         {"1": [event(9, note=2, ins=0)]},
-        [{"play": [1], "end": "jump"}],
+        [{"play": [1], "end": {"jump": 0}}],
         {"0": ins(accs=[{"acc": "skydive"}])},
     )
     with pytest.raises(AssertionError):
@@ -325,7 +325,7 @@ def test_an_unpitched_instrument_reads_the_cells_of_the_voices_it_names():
     )
     o = obj(
         {"1": [event(9, ins=0)]},  # no note: the instrument sounds
-        [{"play": [1], "end": "jump"}, {"play": [1], "end": "jump"}],
+        [{"play": [1], "end": {"jump": 0}}, {"play": [1], "end": {"jump": 0}}],
         {"0": ins(accs=[{"acc": "arpeggio"}], pitch=p)},
     )
     pl = Player(o)
@@ -341,7 +341,7 @@ def test_a_cell_read_names_the_voice_or_the_one_being_committed():
     p = unpitched({"u16": [{"cell": ["wave", 1]}, {"cell": "wave"}]})
     o = obj(
         {"1": [event(9, ins=0)], "2": [event(9, note=5, ins=1)]},
-        [{"play": [1], "end": "jump"}, {"play": [2], "end": "jump"}],
+        [{"play": [1], "end": {"jump": 0}}, {"play": [2], "end": {"jump": 0}}],
         {"0": ins(pitch=p), "1": ins(wave=0x21)},
     )
     o["state0"]["wave"] = [0x55, 0]  # so the two halves cannot be the same read
@@ -354,7 +354,7 @@ def test_the_row_program_keeps_the_byte_cursor_the_score_no_longer_packs():
     """A packed cursor is a cell the row program counts, and the wrap starts it over."""
     o = obj(
         {"1": [event(0, note=2, ins=0), event(0, note=3), event(0, sounds=False)]},
-        [{"play": [1], "end": "jump"}],
+        [{"play": [1], "end": {"jump": 0}}],
         {"0": ins()},
         cells={"patrow": [0]},
     )
@@ -373,7 +373,7 @@ def test_the_arpeggio_owns_what_it_does_past_the_tuning():
     b = beyond([{"u16": [{"cell": ["wave", 0]}, {"const": 0x33}]}, {"trap": "the packed row byte"}])
     o = obj(
         {"1": [event(9, note=7, ins=0)]},  # 7 + 12 = 19, one past a tuning of 1..18
-        [{"play": [1], "end": "jump"}],
+        [{"play": [1], "end": {"jump": 0}}],
         {"0": ins(accs=[{"acc": "arpeggio"}])},
         pitch={"base": 1, "freq": [0x0101 * k for k in range(1, 19)]},
         beyond=b,
@@ -390,7 +390,7 @@ def test_the_arpeggio_owns_what_it_does_past_the_tuning():
 
 def test_a_stored_player_comes_back_with_its_compiled_form_rebuilt():
     """The resume the two chunked certifications use: state pickles, closures do not."""
-    o = obj({"1": [event(3, note=2, ins=0)]}, [{"play": [1], "end": "jump"}], {"0": ins()})
+    o = obj({"1": [event(3, note=2, ins=0)]}, [{"play": [1], "end": {"jump": 0}}], {"0": ins()})
     pl = Player(o)
     first = [pl.tick() for _ in range(3)]
     stored = Player(o)
@@ -402,7 +402,7 @@ def test_a_stored_player_comes_back_with_its_compiled_form_rebuilt():
 
 
 def test_the_tuning_is_asked_only_for_notes_it_has():
-    o = obj({"1": [event(3, note=99, ins=0)]}, [{"play": [1], "end": "jump"}], {"0": ins()})
+    o = obj({"1": [event(3, note=99, ins=0)]}, [{"play": [1], "end": {"jump": 0}}], {"0": ins()})
     with pytest.raises(AssertionError, match="note 99 is outside the tuning"):
         render(o, 2)
 
@@ -411,7 +411,7 @@ def test_the_flattened_print_carries_every_section_and_measures_itself():
     p = unpitched({"u16": [{"cell": ["wave", 0]}, {"cell": ["wave", 1]}]})
     o = obj(
         {"1": [event(9, note=2, ins=0, slide=(4, 1)), event(0, sounds=False)]},
-        [{"play": [1], "end": "jump"}],
+        [{"play": [1], "end": {"jump": 0}}],
         {"0": ins(accs=[{"acc": "vibrato", "shift": 1}, {"acc": "drum"}], pitch=p)},
         beyond=beyond([{"trap": "a cell the tick recomputes"}]),
     )
@@ -443,7 +443,7 @@ def test_the_flattened_print_carries_every_section_and_measures_itself():
 
 
 def test_the_attestation_names_what_it_compares_and_what_it_drops():
-    o = obj({"1": [event(3, note=2, ins=0)]}, [{"play": [1], "end": "jump"}], {"0": ins()})
+    o = obj({"1": [event(3, note=2, ins=0)]}, [{"play": [1], "end": {"jump": 0}}], {"0": ins()})
     ref = render(o, 6)
     d = attest(o, ref)
     assert d["divergence"] is None and d["ticks"] == 6
@@ -461,7 +461,7 @@ def test_an_unpitched_sound_has_no_interval_above_it():
     p = unpitched({"u16": [{"const": 0x34}, {"const": 0x12}]})
     o = obj(
         {"1": [event(9, ins=0)]},
-        [{"play": [1], "end": "jump"}],
+        [{"play": [1], "end": {"jump": 0}}],
         {"0": ins(accs=[{"acc": "vibrato", "shift": 1}], pitch=p)},
     )
     w = render(o, 6)
@@ -475,7 +475,7 @@ def test_no_note_number_outside_the_tuning_exists_anywhere():
     p = unpitched({"u16": [{"const": 0x34}, {"const": 0x12}]})
     o = obj(
         {"1": [event(9, note=2, ins=0), event(3, ins=0)]},
-        [{"play": [1], "end": "jump"}],
+        [{"play": [1], "end": {"jump": 0}}],
         {"0": ins(pitch=p)},
     )
     top = o["pitch"]["base"] + len(o["pitch"]["freq"]) - 1

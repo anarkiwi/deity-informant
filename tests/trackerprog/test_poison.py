@@ -33,6 +33,10 @@ TOTALS = {
     "goattracker,sidwizard": 39444,
     "goattracker,sidwizard,jch,blackbird": 60848,
     "commando,follin,galway,walker,blackbird,jch,defmon": 292914,
+    # B8's rows quote the one family the form they strike belongs to
+    "goattracker": 16895,
+    "sidwizard": 22549,
+    "defmon": 150824,
 }
 SIZES = {
     "eleven": 11,
@@ -40,12 +44,15 @@ SIZES = {
     "goattracker,sidwizard": 4,
     "goattracker,sidwizard,jch,blackbird": 7,
     "commando,follin,galway,walker,blackbird,jch,defmon": 26,
+    "goattracker": 2,
+    "sidwizard": 2,
+    "defmon": 2,
 }
 DOCS = ("prototype-trackerprog.md", "trackerprog-backlog.md")
 
 
 def hermetic():
-    return obj({"1": [event(3, note=2, ins=0)]}, [{"play": [1], "end": "jump"}], {"0": ins()})
+    return obj({"1": [event(3, note=2, ins=0)]}, [{"play": [1], "end": {"jump": 0}}], {"0": ins()})
 
 
 def test_a_segment_names_dict_keys_list_indices_and_everything():
