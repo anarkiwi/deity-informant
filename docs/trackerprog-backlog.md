@@ -257,9 +257,9 @@ the thirty cached objects rather than listed by hand, by the unit the review's
 §2.1 chose — a form (a key, a policy value, an expression kind, a `sets` target
 kind, a `meta` or `state0` key) joined to the line of `universal.py`,
 `compiler.py` or `printer.py` that reads it. **300 forms, 105 with one family**:
-58 of those are the family columns §3.3 and §3.5 already admit — an instrument's
+59 of those are the family columns §3.3 and §3.5 already admit — an instrument's
 own record fields and a stream row's own columns, read through `{"ins": path}`
-and `tabcell` — and **47 are forms of the player**. Eight were struck, each
+and `tabcell` — and **46 are forms of the player**. Eight were struck, each
 because a general form the object already had says the same fact, and each
 measured over the whole horizon of the family that had it:
 
@@ -274,10 +274,12 @@ measured over the whole horizon of the family that had it:
 | `end: "jump"` as a bare string | Hubbard | `{"jump": 0}`, which four families write | 0 differing of 332,358 |
 | a command's `why`, a pulse row's `track`, the certificate's `loop.tick` | Follin, SW, Walker | nothing reads the first two (§3.1); the other five families spell the loop `{first_repeat, period}` | no reader |
 
-The remaining thirty-nine are **kept with their family, their reader and their
+The forty that remain are **kept with their family, their reader and their
 number**: each is now stated at its own row of §3–§5 of
-[prototype-trackerprog.md](prototype-trackerprog.md) and struck by a `POISONS`
-entry, D6's rule applied to the schema — `reflect-complement` 3,593 of 16,895,
+[prototype-trackerprog.md](prototype-trackerprog.md), and nineteen `POISONS`
+entries strike them — one per mechanism, the annotations and the second spelling
+of a form its own poison already covers apart — which is D6's rule applied to
+the schema — `reflect-complement` 3,593 of 16,895,
 `rest-arm` 152, `pitch-links` 2,354, `cmd-tie` 6,237, `row-command-spent` 6,820,
 `stage-hold` 13,947, `pitch-target` 13,994 of 22,549, `clamp-edge` 1,129,
 `insrec-voice` 853, `commit-guard` 22,548, `no-bug` 1,038, `op-wrap` refused,
