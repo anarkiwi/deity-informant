@@ -41,8 +41,10 @@ landed · 8 refusals and boundaries · 9 acceptance · 10 open.
 Two artefacts, one target: two objects, two renderers, two certificates
 (`attest.py`, `certify.py`), seven shared key *names* at disjoint shapes and one
 shared field, `meta.commit_order`. The target is one object — a lift that emits
-what §4 renders, with no `program` key (backlog B6, B7) — and until then no
-document may say the lift produces a trackerprog. Layer invariant, as a test:
+what §4 renders, with no `program` key (backlog B6, B7). One prototype lift
+now reaches it, for one tune ([prototype-lifter.md](prototype-lifter.md));
+`tools/tuneprog_scoreprog.py` still emits a scoreprog, and of it no document
+may say otherwise. Layer invariant, as a test:
 two trackerprogs from different families render on the same player with no
 family branch, the source family surviving only as provenance in `meta`; a
 schema row needs two families or a marked exception (architecture §11), each
@@ -841,8 +843,12 @@ write lists identical or permuted rather than merely equal under §2.
 | [Galway](prototype-galway-trackerprog.md) | 14 subtunes | 29,911 | counted loops that **nest**; a `stop` that ends a voice's sequencer |
 
 One exemplar remains: the T0–T3 lift that would produce these objects rather
-than a hand reading of them. Today it produces a scoreprog (§1, §6), and eight
-of them certify `emitted: true` with no divergence over their whole horizons.
+than a hand reading of them. `tools/tuneprog_scoreprog.py` produces a scoreprog
+(§1, §6), and eight of them certify `emitted: true` with no divergence over
+their whole horizons; `tools/tuneprog_trackerprog.py` produces a **trackerprog**
+for one of the nine — Commando song 1, 11,780 ticks, 0 divergences, no
+`program` key, no hints — and refuses the rest with a named datum
+([prototype-lifter.md](prototype-lifter.md), backlog B6/B7).
 
 ### 9.1 The object against the load band
 
