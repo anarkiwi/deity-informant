@@ -252,7 +252,7 @@ on, which the rows already state as two rows, and the other which *value* a
 produce sends, which nothing else can state (`Acc.step`'s `pre`/`post`/`mid` left with §3.4,
 being the scoreprog's).
 
-**B8, the one-family forms, struck (#XXX).** The census was run as a script over
+**B8, the one-family forms, struck (#342).** The census was run as a script over
 the thirty cached objects rather than listed by hand, by the unit the review's
 §2.1 chose — a form (a key, a policy value, an expression kind, a `sets` target
 kind, a `meta` or `state0` key) joined to the line of `universal.py`,
