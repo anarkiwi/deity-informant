@@ -1,11 +1,14 @@
 """Hermetic snippet tests for the forms a phased, unshadowed tick needs.
 
 No tune and no HVSC: one hand-written trackerprog per form -- the counter clock
-and the guarded reset that turns it, a stream a guard admits, a divider kept in
-a cell the score can set, a step whose counter is read at entry, an edge written
-twice in one tick, a flag one producer leaves and another reads, a producer that
-moves no cell, the clamp's edge, and a step past the top of the tuning.
+and the guarded reset that turns it, a stream a guard admits, one divider for a
+stream and for an accumulator, a step whose counter is read at entry, an edge
+written twice in one tick, a register written twice in one act, a flag one
+producer leaves and another reads, a producer that moves no cell, the clamp's
+edge, and a step past the top of the tuning.
 """
+
+import pytest
 
 from deity_informant.trackerprog import printer
 from deity_informant.trackerprog.universal import Player, render
@@ -201,7 +204,7 @@ def test_a_divider_kept_in_a_cell_holds_the_stream():
     assert col(render(o, 9), CTRL) == [[0x21]] * 3 + [[0x41]] * 3 + [[0x21]] * 3
 
 
-def _sweep(epoch):
+def _sweep(epoch, acc=()):
     rows = [
         {"trap": "no stream"},
         {"hold": 3, "run": [{"acc": "step", "delta": 1}], "sets": [["@wave", 0x11]], "next": 1},
@@ -211,20 +214,30 @@ def _sweep(epoch):
         {"pulse": [{"row": 1, "hold": 0}]},
     )
     o["accs"] = {
-        "step": {
-            "id": "step",
-            "rank": 0,
-            "cell": "pw",
-            "target": "pw",
-            "width": 16,
-            "delta": {"const": "delta"},
-            "policy": "wrap",
-            "scope": "voice",
-            "produce": [["pw_lo", "lo"]],
-            "bound": {"from": "projected", "interval": [0, 0xFFFF], "witness": "16-bit"},
-        }
+        "step": dict(
+            {
+                "id": "step",
+                "rank": 0,
+                "cell": "pw",
+                "target": "pw",
+                "width": 16,
+                "delta": {"const": "delta"},
+                "policy": "wrap",
+                "scope": "voice",
+                "produce": [["pw_lo", "lo"]],
+                "bound": {"from": "projected", "interval": [0, 0xFFFF], "witness": "16-bit"},
+            },
+            **dict(acc),
+        )
     }
     return [x[0] for x in col(render(o, 9), PLO) if x]
+
+
+def test_one_divider_for_a_stream_and_for_an_accumulator():
+    """§3.3's ``rate`` is one form and one procedure wherever it is a divider."""
+    assert _sweep({}, {"rate": {"cell": "arpscnt", "reload": 2}}) == [1, 2, 3]
+    with pytest.raises(AssertionError):  # a bare k names no counter, so it is no divider
+        _sweep({}, {"rate": 3})
 
 
 def test_a_step_whose_counter_is_read_at_entry_does_not_run_on_the_tick_it_ends():
@@ -245,6 +258,18 @@ def test_an_edge_written_twice_in_one_tick_is_two_writes():
         (AD, 0x88),
         (SR, 0x77),
     ]
+
+
+def test_a_register_written_twice_in_one_act_keeps_the_last_write():
+    """An act has one slot per register; two guarded rows are two acts and two writes."""
+    twice = obj([event(note=1, ins=1, arm="twice")])
+    twice["score"]["commands"]["twice"] = {"rows": [{"sets": [["sr", 0x33], ["sr", 0x44]]}]}
+    assert [x for x in render(twice, 4)[2] if x[0] == SR] == [(SR, 0x22), (SR, 0x44)]
+    split = obj([event(note=1, ins=1, arm="twice")])
+    split["score"]["commands"]["twice"] = {
+        "rows": [{"sets": [["sr", 0x33]]}, {"sets": [["sr", 0x44]]}]
+    }
+    assert [x for x in render(split, 4)[2] if x[0] == SR] == [(SR, 0x22), (SR, 0x33), (SR, 0x44)]
 
 
 def test_a_flag_one_producer_leaves_and_another_reads():

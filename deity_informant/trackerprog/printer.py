@@ -234,10 +234,7 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
         if st.get("epoch") == "entry":
             head += ", counted at entry"
         if st.get("rate"):
-            head += ", one row every %s + 1 ticks in %s" % (
-                expr(st["rate"]["reload"], notes),
-                st["rate"]["cell"],
-            )
+            head += ", one row every " + _divider(st["rate"], notes)
         if st.get("when"):
             head += ", when " + guards(st["when"], notes)
         add(head)
@@ -352,6 +349,11 @@ def _state(k, v):
         else:
             out.append("%-10s %-10s %s" % (k, a, " ".join(hexv(x) for x in b)))
     return out
+
+
+def _divider(r, notes):
+    """§3.3's one divider, wherever a ``rate`` is one: the counter cell and its reload."""
+    return "%s + 1 ticks in %s" % (expr(r["reload"], notes), r["cell"])
 
 
 def _tempo(t, notes):
@@ -564,8 +566,8 @@ def _acc(name, a, notes):
         if a.get("delta_when"):
             d += "   when %s" % guards(a["delta_when"], notes)
         lines.append(d)
-    if a.get("rate", 1) != 1:
-        lines.append("      rate    every %s ticks" % expr(a["rate"], notes))
+    if isinstance(a.get("rate"), dict):
+        lines.append("      rate    every " + _divider(a["rate"], notes))
     if "phase" in a:
         lines.append("      phase   %s" % expr(a["phase"], notes))
     if "flag" in a:  # the carry the accumulator's own arithmetic leaves another producer

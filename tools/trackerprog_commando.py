@@ -363,7 +363,10 @@ def accs():
                 "interval": [0, 0xFFF],
                 "witness": "the 12-bit store; a step of $E0 steps over the turn's window",
             },
-            "rate": "rate",
+            # section 3.3's divider, in the engine's own counter: `pwdelay -= 1;
+            # if < 0: pwdelay = pspeed & $1F` (commando-floor:223-225), and the
+            # arm's `rate` is that byte plus one
+            "rate": {"cell": "pwdelay", "reload": {"sub": ["rate", 1]}},
             "phase": {"cell": "pwdir"},
             "scope": "instrument",
             "produce": [["pw_hi", "hi"], ["pw_lo", "lo"]],
@@ -553,8 +556,10 @@ def build(path, song=0):
         "state0": {
             "ins": [m[0x54FE + v] for v in range(3)],
             "wave": [m[0x54F8 + v] for v in range(3)],
-            "cells": {"pwdir": [m[0x5510 + v] for v in range(3)]},
-            "dividers": {"pulse_bounce": [m[0x550D + v] for v in range(3)]},
+            "cells": {
+                "pwdir": [m[0x5510 + v] for v in range(3)],
+                "pwdelay": [m[0x550D + v] for v in range(3)],
+            },
         },
     }
 

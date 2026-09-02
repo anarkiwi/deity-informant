@@ -101,6 +101,15 @@ The trackerprog observable, per tick — implemented as `grid.reduce_tick`
 | 2 | `freq`, `pw`, `cutoff` (`grid.PAIRS`) | one value per tick, the last the tick left: the DACs are level-sensitive, and the two 8-bit-bus writes a pair takes are already a print convention (architecture §6.1). `pw` carries the SID's 12-bit projection (`grid.PW_HI`), `cutoff` its 3+8 split (`grid.PAIRS[6]`) |
 | 3 | `res_route`, `mode_vol` (`grid.LEVEL`) | one value per tick, the same way — Hubbard's drum-then-arpeggio double write of `$D401` is last-wins under rule 2; a `mode_vol` carrying a sample stream is refused outright (§8) |
 
+Rule 1's unit is the **act**, not the write. §3.1's tick is a sequence of acts,
+`commit_order` orders one act's own edges, and inside one act a register keeps
+its *last* value — the order is a permutation and therefore has one slot per
+register (`universal.edges`). An act is **one row a guard admits**: of a §3.3
+stream wherever the grammar puts one — a table's step, an instrument's note-on,
+a prelude, a command — plus one per row the sequencer's walk consumes. A row
+that writes `AD` twice in its own `sets` therefore states one `AD` write and two
+rows that each write it state two (§3.1).
+
 Precedents: the Ghidra emulate oracle already compares "the ordered sequence of
 SID register changes, both sides reduced by the same rule" (architecture §5.4).
 The certificate names both halves, kept and dropped:
@@ -155,8 +164,15 @@ across its versions:
 | Hubbard | `(ctrl, ad, sr)` | `sid[v].ctrl`, then `pw`, then `ad`, `sr` — commando-floor:201-205 |
 
 `commit_order` orders one *act*'s edges, and **the tick is always a sequence of
-acts** — one act per thing the tick did, a stream row's `sets`, an instrument's
-note-on, one row command. There is no second form and no datum selecting one:
+acts** — one act per **row** of a §3.3 stream a guard admits, wherever the
+grammar puts a stream, plus one per row the walk consumes. The act is the row
+and not the call site, which is a measurement and not a choice: rendering the
+other rule — one act for a whole inline row list, which `inline()` counted until
+R2 — differs on **2,943 ticks of seven builds** (Walker 1, Galway songs 1–6:
+994, 931, 928, 28, 11, 50) and 0 on the other twenty-three. Inside one act a
+register keeps its last value, since `commit_order` is a permutation with one
+slot per register; no exemplar writes one twice in one act, and a hermetic
+snippet holds the rule. There is no second form and no datum selecting one:
 §2 rule 1 keeps every `ctrl`/`AD`/`SR` write, so a family that writes `AD` from
 the instrument and again from the row's own effect on the same tick needs the
 sequence (SID Wizard, diverging on 500 ticks of *Emomyst* without it —
@@ -247,14 +263,24 @@ five tools went on writing `term` for two more families, the print rendering it
 beside the stream's name: striking a row from the schema is not striking it from
 the object, and both are now done (§7).
 
-A stream has a `rate` — **one meaning everywhere in this schema** (§3.6, §5): a
-divider, the object advances once every `k` ticks, `k ≥ 1`, so a step occupies
-`hold × rate` ticks. `k` is the degenerate form; where the score can *set* the
-divider the rate is a cell and its reload, `{cell, reload}`, which is SID
-Wizard's `ARPSCNT` against `ARPSPED & $3F` with a waveform row and two effects
-also writing the cell (sidwizard-trackerprog §4.3). And a step's counter is read
-either before or after its own move — #297's epochs, `epoch: entry` — which is
-what says whether the tick that consumes the step also runs it: GoatTracker 2's
+A stream has a `rate` — a **divider**, the object advances once every `k` ticks,
+`k ≥ 1`, so a step occupies `hold × rate` ticks — and it is one form and one
+procedure (`universal.dividercode`) wherever the schema has one: a per-voice
+counter **cell** the run steps down by one, firing where it passes zero and
+reloading from the object's own expression, `{cell, reload}`. That is SID
+Wizard's `ARPSCNT` against `ARPSPED & $3F`, with a waveform row and two effects
+also writing the cell (sidwizard-trackerprog §4.3), and it is also §5's `Acc.rate`:
+Hubbard's pulse bounce counts in the engine's own `pwdelay` (`pwdelay -= 1; if <
+0: pwdelay = pspeed & $1F`, commando-floor:223-225), seeded through `state0.cells`
+like every other cell. `rate: 1` and no `rate` are the degenerate divider and are
+no divider at all; a bare `k` names no counter and is refused. `meta.tempo.rate`
+is **not** this: with `phase` it selects which ticks the tune's one clock steps
+on, over the global tick counter and once per tune, where a divider is per voice
+and per run — two questions, and the review's third divider is now the second.
+
+And a step's counter is read either before or after its own move — #297's
+epochs, `epoch: entry` — which is what says whether the tick that consumes the
+step also runs it: GoatTracker 2's
 pulse row sweeps on all `n` of its ticks, SID Wizard's on the first `n` of `n+1`
 (sidwizard-trackerprog §4.4). There is no "steps per tick": defMON's cascades run up to
 8×/frame under a CIA cadence, but the tick *is* the entry ("sidTAB row = DL+1
@@ -303,24 +329,17 @@ Ins = { adsr: (ad, sr)
       , accs:    [ acc_id, … ] }             // the modulations armed at note-on
 ```
 
-**One grammar for a stream in three places — but not yet one procedure.** An
+**One grammar for a stream in three places, and one procedure.** An
 instrument's `on_note`, a prelude and a command's `rows` are all guarded §3.3
 steps, so a guard has one spelling everywhere in the schema and never a
-positional slot beside the thing it guards. The **grammar** is one. Two things
-the first draft claimed here are not:
-
-- **A prelude is a named stream, not an inline one.** `meta.prologue` and an
-  instrument's `prelude` carry `{"stream": name}` and go through `rows(name, …)`;
-  `on_note` and a command's `rows` are anonymous row lists and go through
-  `inline(rows, …)`. Two procedures, and `inline` alone reads `point`.
-- **"Each is one act" holds for one of them.** `inline` counts **one** act
-  before its loop — one thing the tick did, however many guarded rows say it —
-  and `rows` counts one act **per matching row**. Since an act is what §2 rule 1
-  groups edge writes by, the two disagree about the observable they produce.
-
-Both are real and neither is a schema question: one implementation is
-[trackerprog-backlog.md](trackerprog-backlog.md) B9, and until it lands this
-paragraph says what the code does rather than what it should.
+positional slot beside the thing it guards. `Player.rows` runs all of them over
+one compiled plan, reading `sets` **and** `point` in each, and takes either the
+name of a declared stream — which `meta.prologue` and an instrument's `prelude`
+carry as `{"stream": name}`, and which also states what its rows mean past the
+tuning — or the anonymous row list itself. Its act is the row in both: R2's
+measurement, since the other rule differs on 2,943 ticks (§3.1). The first draft
+of this paragraph recorded two procedures that disagreed about acts; that was
+B9's row, and it is closed.
 
 `on_note` is a stream and nothing else — guarded rows of `sets` and `point`,
 where `point(slot, row, keep)` is §3.6's own re-point. The first draft gave the
@@ -741,7 +760,10 @@ Acc = { cell   : the value's own, in one vocabulary -- `tick`, a voice cell,
                                                         # every store; witness is a note
       , policy : wrap | reflect | reflect-complement | take
              | { clamp: v, edge?: b } | { reload: v, when?: guard }
-      , rate   : every k ticks (k ≥ 1)            # the §3.3 divider, one meaning
+      , rate   : 1 | { cell, reload }             # §3.3's divider, one form and one
+                                                  # procedure: a per-voice counter cell the
+                                                  # run steps down, fired and reloaded past
+                                                  # 0.  A bare k names no counter: refused
       , phase  : bit(self, k) | bit(cell, k) | cell != 0 | fn(global_counter) | acc(id)
       , amplitude : { interval: [lo, hi], shift: k }    # reflect / reflect-complement's
                                                         # own turn, not a claim
@@ -1147,6 +1169,7 @@ recurrence`, with the first tick) is a refusal, never a record.
 | Galway, the ninth family and the last of the nine | Martin Galway's *Comic Bakery* transliterated onto the same player over **all fourteen subtunes**, 29,911 ticks, 0 divergences, `same_per_register_order` on every one — and the front-end certificate it renders against is new, which retires architecture §9.1's last open row. Two forms, both in the order program and both struck against the sixth family before they were written. **The counted loops nest**: Galway pushes a loop's start and count onto the same 8-deep stack its calls use and the main theme opens one inside a live one from tick 3,072, so `loopcnt`/`loopstart` become a `loopstack` — 0 of Follin's 111,763 ticks differ, a stack of depth one being the register it had. **And what a `stop` stops is `meta.stop` ∈ {`voice`, `sequencer`}**: Follin's skips the whole voice, Galway's clears the run bit and lets the engine play the note out, so a halted voice runs no clock and every other phase, and the tick its score stops on is its last. Its eight sound-effect subtunes are that value alone — three voices stopped from tick 0 and no score at all. In the data: §6 spends `Moke`/`FLoad`/`load*` into 134 interned instrument records because they build the record the *next* note copies, while `DMoke` stays 18 commands because it pokes the live engine; a block's state carries the transpose, the record and whether its stack is empty; and `testpulse = [1, 0, 1]` is the anatomy correction that one of the three unrolled copies sends `wave|8` to its own `pw_lo` and not its `ctrl`. All fifteen earlier builds re-certify unchanged | `universal`, `tools/trackerprog_galway.py` |
 | the poison harness, §7's own method (**B1**) | §7 quotes *render both forms over the whole horizon and count differing ticks* forty-odd times and no tool in the tree did it, which is why its headline horizon total was wrong six times over against its own per-build list. `trackerprog/poison.py` is the method: a mutation is a stated edit to the object (`drop PATH`, `set PATH=JSON`, `*` over a mapping's keys or a list's indices), a strike renders both forms and counts, and every row carries the **sites** the path matched and the **first** differing tick — a path that matches nothing renders 0 differing and is not evidence, and a poison the renderer *refuses* is an asserted invariant rather than a crash. A render reduces to one 16-byte digest a tick and caches on the object's own hash, so the whole set is 5 MB and a second poison over one object costs one pass. `tools/trackerprog_poison.py` carries the registry — **thirty builds, 332,358 ticks**, every horizon read from the committed certificate that records it, so no tick count in the harness is typed; the eleven builds P1–P8 were measured over are a named set totalling **236,586**, and both totals are asserted against every `differing … of N` this document and the backlog quote. The four object-level poisons §7 already states reproduce exactly: the clock with no reset diverges on **8,230** of *Je suis Linus*' 8,236, **8,653** of *Do It Again*'s 8,659, **8,077** of *Emomyst*'s 8,084, **14,451** of *End of the World*'s 14,465 and **2,395** of *Guldkorn*'s 2,401; the funk clause alone on **8,639** of 8,659 and **0** of *Je suis Linus*'; `flag.seed` on **11,747** of Commando song 2's 11,780 and **329** of song 3's; `flag.unguarded` on **475** of *Jazzpjazz*'s 1,799 and **127,722** of *Automatas*' 149,025. Three things the first sweep found: `Acc.flag.seed` is a **required** key and not a defaulted one (`universal.py:1380` reads it unguarded, so dropping it raises where setting it measures); `unguarded` now matches **no site** on any Hubbard record, so P6's "0 on all three Commando subtunes" is no longer the same measurement and the sites count is what says so; and the Galway suite's horizon table had subtunes 12 and 13 transposed against the certificate — 121 ticks certified, 31 rendered — and now reads them from it | `trackerprog.poison`, `tools/trackerprog_poison.py`, `tests/trackerprog/test_poison.py` |
 | one target dispatch, and the review's dead surface (**R1/R3/R10**) | `Player.assign` was the second of two target dispatchers: the path of `meta.row`'s and `meta.stage`'s `sets`, the row clock's `reset` clauses, `take`'s pitch target and a command's `all`, each walked per write while a stream's `sets` went through the compiled `put_to`/`setcode`. It is deleted — all four take the compiled path, the two row programs compile to a guard predicate and a setter list per step (`rowcode`), and `clock()` runs the `clockplan` `compile()` had been building for no reader. Six dead things go with it: `meta.player`, a version string nine tools write and nothing checks; `globals.init_writes`, the init call's *observable* carried in five objects where §6 says the observable never goes, read only by the print; Hubbard's `globals.mode_vol`, the same byte as both write lists'; the "producer inside the edge list" arm of `edges()`, which measured 0 two-tuples over thirty builds and after the deletion has no site that could append one; SID Wizard's `wave_base`/`pw_base`/`flt_base`; and Blackbird's `meta.tempo.swing`, a prose string, which becomes the tempo record's `note` and is printed as one. The review's seventh, `lastnote`, is **not** dead: `trackerprog_goattracker.py:473` reads it as `{"interval": {"cell": "lastnote"}}` on the speed table's calculated arm and `take` is its only writer, so dropping the write diverges on **4,466 of *Je suis Linus*' 8,236** ticks and **4,284 of *Do It Again*'s 8,659** — an unread *declaration* and an unread *cell* are not one finding, and the cell stays. Two tool arms no tune reaches, both the backlog's own rule at work: walker's `main` rendered `None` ticks without `--ticks` and now renders the certificate's horizon as Galway's does; and SID Wizard's `stream.wave`, `stream.pulse` and `stream.filter` computed a stream row as `base + index + 3·v (+ $10)` from a *byte offset* of the instrument's record, where `row_of(i, slot, k)` is the map from an offset to a row and is a build-time table per instrument — a command names no instrument, so the three are a **named refusal** (`DEAD["fx.pointer"]`) with a hermetic test, and their three columns, of which `pw_base` is the end-of-table sentinel 1 on every instrument of both tunes, go with their only reader. Measured: **0 differing of 332,358** over all thirty builds against the merge base's digests, every object rebuilt from the edited tools; 6,000 ticks in one process, *Je suis Linus* **9,429 → 10,150** ticks/s and *End of the World* **4,371 → 4,515**. `universal.py` 1,527 → 1,515, `printer.py` 643 → 640 | `universal`, `printer`, `tools/trackerprog_*.py`, `tests/trackerprog/test_tool_refusals.py` |
+| one act, one divider, one end (**R2**, #336) | `rows()` (a *named* stream, `sets` only, one act per matching row) and `inline()` (an anonymous row list, `sets` **and** `point`, one act for the whole list) are one procedure over one compiled plan, reading both fields in both places. Which act rule survives is a measurement and not a choice: rendered over the whole horizon of every build, **the row is the act at 0 differing of 332,358** and the list is the act at **2,943** — Walker 1 and Galway songs 1–6 at 994, 931, 928, 28, 11, 50, 0 on the other twenty-three — so the act is the row's datum and not the call site's, and §2 and §3.1 now say so together with the limit the review found unstated and unexercised: `edges()` keeps **one write per register per act**, `commit_order` being a permutation with one slot for each, which a hermetic snippet now holds. `channel()` and `channel_after()` were byte-identical bodies over `globals.streams` and `globals.after`: one procedure, two calls. `next_event()` (the fetch) and `next_row()`/`order_end()` (the walk) answered *the play list ended* differently — a bare `"jump"`, a `{jump}` dict, else stopping in the walk; only `{jump}` in the fetch, which returned `None` on the other two and raised `IndexError` on an empty pattern — and now `order_end()` answers it for both and returns whether the list goes on, with hermetic snippets for the empty pattern and for a bare `end: "stop"` reached through the fetch. The third divider goes the same way: a stream's `rate: {cell, reload}` and an accumulator's `rate: k` counted `k−1..−1` in `Player.divider` off `state0.dividers`, and both are now one compiled procedure (`dividercode`) over one form — Hubbard's pulse bounce counts in the engine's own `pwdelay`, seeded through `state0.cells` like every other cell, so `state0.dividers` and `Player.divider` are gone and a bare `k`, naming no counter, is refused. `meta.tempo.rate` stays the clock's own and is not that question: with `phase` it selects which ticks the tune's one clock steps on, over the global counter and once per tune, where a divider is per voice and per run. Measured: **0 differing of 332,358** over all thirty builds against the merge base's digests, every object rebuilt from the edited tool; 6,000 ticks in one process, *Je suis Linus* **9,734 → 9,939** ticks/s, *End of the World* **4,231 → 4,426** and *Chameleon* **5,183 → 5,226**, which is flat inside the ±2 % this machine repeats to. `universal.py` 1,515 → 1,522, `printer.py` 640 → 642 | `universal`, `printer`, `tools/trackerprog_commando.py`, `tests/trackerprog/test_universal_fetch.py`, `tests/trackerprog/test_universal_phases.py` |
 
 Everything after this is the rest of the `trackerprog/` package, under the same
 rules (≤ 500 lines per module, hermetic tests, the certificate).

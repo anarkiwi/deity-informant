@@ -56,7 +56,8 @@ against column-byte tables; `score` `{patterns, orders, commands}` against
 register *name* against T1 records whose `target` is a *dict*; `globals` four
 keys against `{}`), and they share exactly **one field**: `meta.commit_order`.
 They do not share the certificate either — `attest.attest` certifies the hand
-objects and `certify.divergence` the scoreprog, which is B9's row. Sharper than
+objects and `certify.divergence` the scoreprog — which B9 settled as two artefacts' two
+certificates and not one comparison said twice. Sharper than
 the original claim: `emit.replay` reads only `meta.horizon`, `score`, `program`
 and `inputs`, so a scoreprog's `pitch`, `streams`, `accs`, `instruments` and
 `producers` are *readings* it prints and its own renderer never reads.
@@ -179,7 +180,7 @@ before it was touched, then closed:
 
 | row | verdict | closed by |
 | --- | --- | --- |
-| §3.5 "one procedure runs all three" inline streams | **refuted, twice** — there are two procedures, `rows()` (a *named* stream, `sets` only) and `inline()` (an anonymous row list, `sets` **and** `point`); and a prelude is a named-stream reference, so the three are not one object either. Worse, `inline` counts **one** act and `rows` counts one act **per matching row**, and an act is what §2 rule 1 groups edge writes by | the doc, saying what the code does; the unification stays B9 |
+| §3.5 "one procedure runs all three" inline streams | **refuted, twice** — there are two procedures, `rows()` (a *named* stream, `sets` only) and `inline()` (an anonymous row list, `sets` **and** `point`); and a prelude is a named-stream reference, so the three are not one object either. Worse, `inline` counts **one** act and `rows` counts one act **per matching row**, and an act is what §2 rule 1 groups edge writes by | the doc, saying what the code does; the unification landed as R2 — one procedure, and the act is the row |
 | §3.4 `Acc.step`, "the recurrence a player computes `cell(t+1)` with" | **refuted** — no hand tool emits `step` on any of the nine families' accumulators and `universal.py` never reads one. It is T1's field, so it belongs to a *scoreprog* | moved to §7 under T1, grammar box and all |
 | §5's `Acc` grammar box | **refuted** — it listed 11 fields; the record has **21**, of which the player reads **18**. Omitted: `produce`, `rank`, `when`, `step_when`, `delta_when`, `gate`, `emit`, `beyond`, `trap`, and the `take` policy | rewritten from the code, and `policy: halt` deleted — no tool writes it and `apply()` has no arm |
 | §3.5 "GT2's `gatetimer` **is** `early`" | **half true** — the column is where the value comes from, but `early` is `meta.tempo.early`, a guard on the row clock and one number per tune. `trackerprog_goattracker.py` asserts every used instrument carries the same column 7 and would refuse a tune that varied it | the doc, stating both halves |
@@ -228,10 +229,30 @@ every family with more than one commit.
 
 ### Tier 3 — schema hygiene, unblocked by B1
 
+**B9, the duplicated procedures, struck (#336).** Two of its four rows landed as
+§7's R2, and two the row did not name went with them. `rows()` and `inline()`
+are **one procedure** over one compiled plan, reading `sets` and `point` in
+both; which act rule survives was measured and not chosen, each rendered over
+the whole horizon of every build — *the row is the act* at 0 differing of
+332,358 on all thirty, *the list is the act* at 2,943, differing on seven
+(Walker 1, Galway songs 1–6 at 994, 931, 928, 28, 11, 50). The act is therefore
+the row's datum and not the call site's, and §2 rule 1 and §3.1 state it with
+the limit nothing had: `edges()` keeps one write per register per act.
+`channel()`/`channel_after()` are one procedure over `globals.streams` and
+`globals.after`. The two unnamed: `order_end()` is the one answer to *the play
+list ended* for the fetch and the walk alike, and `dividercode` is one divider
+for a stream's `rate` and an accumulator's, retiring `state0.dividers` and
+`Player.divider`. What it did **not** close, said plainly: `certify.divergence`
+and `attest.attest` stay two, because B2 settled that the scoreprog and the
+trackerprog are two artefacts with two renderers and each certificate states §2's
+rule for its own object; and the epoch of a read is still spelled twice in the
+trackerprog, `Acc.emit` and `Stream.epoch`, which are two of B8's one-family
+forms and are counted there (`Acc.step`'s `pre`/`post`/`mid` left with §3.4,
+being the scoreprog's).
+
 | # | item | mechanism | size | acceptance |
 | --- | --- | --- | --- | --- |
-| B8 | the one-family forms | roughly twenty-five forms with one family behind them, each either deleted, expressed in the general vocabulary, or kept with its single family stated. `globals.stop_writes` (Hubbard: a literal write list — the observable, in the object), `meta.rest_arm`, `meta.pitch_links` + `Cmd.links`, `Acc.policy: "take"`, `reflect-complement`, `state0.held` (GT2); `Acc.beyond`/`emit`/`trap`/`flag.seed`/`amplitude.shift`, `state0.dividers`, `end: "jump"` as a bare string (Hubbard); `meta.pitch_target`, `Stream.epoch` (SW); `amplitude.count` (Walker); the two forms under `meta.prologue`; and the certificate's loop shape, which Walker alone spells `{tick, period}` against `certify.py:83`'s `first_repeat` | medium | each row deleted at 0 differing, or kept with its family and its survey named |
-| B9 | the duplicated procedures | `channel()` and `channel_after()` are byte-identical bodies over two lists; `certify.divergence` and `attest.attest` are two comparisons over one §2 rule, with `COMPARED`/`DROPPED` declared twice; the three inline streams run through two procedures that disagree about acts — `rows()` takes a *named* stream and counts one act **per matching row**, `inline()` takes an anonymous row list, reads `point`, and counts **one** act for the whole list, and an act is what §2 rule 1 groups edge writes by (§3.5, measured in B5); three vocabularies name one concept, the epoch of a read (`Acc.emit`, `Stream.epoch`, and the `pre`/`post`/`mid` of `Acc.step`). One implementation each | medium | 0 differing of 332,358 over thirty builds; the certificate has one implementation |
+| B8 | the one-family forms | roughly twenty-five forms with one family behind them, each either deleted, expressed in the general vocabulary, or kept with its single family stated. `globals.stop_writes` (Hubbard: a literal write list — the observable, in the object), `meta.rest_arm`, `meta.pitch_links` + `Cmd.links`, `Acc.policy: "take"`, `reflect-complement`, `state0.held` (GT2); `Acc.beyond`/`emit`/`trap`/`flag.seed`/`amplitude.shift`, `end: "jump"` as a bare string (Hubbard; ~~`state0.dividers`~~, retired by R2); `meta.pitch_target`, `Stream.epoch` (SW); `amplitude.count` (Walker); the two forms under `meta.prologue`; and the certificate's loop shape, which Walker alone spells `{tick, period}` against `certify.py:83`'s `first_repeat` | medium | each row deleted at 0 differing, or kept with its family and its survey named |
 | B10 | `Acc` demoted to a reading | **B5 closed the schema half**: §5's box is rewritten from the code and machine-checked, `Acc.step` is out of §3.4, `bound.witness`/`scope`/`target`/`note` are marked as annotations, and `policy: halt` is deleted. What is left is the *presentation* — state `Acc` coverage per family (Follin has none at all across 32 subtunes, D5) rather than presenting the accumulator as the layer's centre | small | §5 opens with coverage, not with the grammar |
 
 Tier 3 is deliberately last. Every row is real, none is load-bearing, and each

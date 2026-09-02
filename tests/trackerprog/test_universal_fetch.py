@@ -242,6 +242,28 @@ def test_a_call_returns_where_it_says_where_the_clock_prefetches():
     assert notes(Coupled, o, 16) == [1, 7, 9, 1]  # walked straight past the call
 
 
+def test_an_empty_pattern_is_no_row_where_the_fetch_reads_it():
+    """A pattern with no events stages nothing; the fetch does not index past its end."""
+    o = obj()
+    o["score"]["patterns"]["0"] = {"events": []}
+    p = Player(o)
+    for _ in range(8):
+        assert p.tick() == []
+    assert p.staged == [None] and p.c["orderpos"] == [0]
+
+
+def test_a_play_list_that_stops_at_its_end_stops_where_the_fetch_reads_it():
+    """The terminator is the order's own datum, answered the same way in both positions."""
+    o = ordered([{"pattern": "0"}])
+    o["score"]["orders"] = [{"play": [{"pattern": "0"}], "end": "stop"}]
+    p = Player(o)
+    for _ in range(12):
+        p.tick()
+    assert p.stopping == 2 and notes(Player, o, 12) == [1]
+    o["score"]["orders"] = [{"play": [{"pattern": "0"}], "end": {"jump": 0}}]
+    assert notes(Player, o, 12) == [1, 1, 1]  # the same list, wrapped instead of stopped
+
+
 def test_a_stop_in_a_prefetched_score_stops_the_voice():
     """``stop`` reaches the voice through the fetch's wrap, and halts its clock."""
     o = ordered([{"pattern": "0", "op": "stop"}, {"pattern": "1", "op": {"jump": 0}}])
