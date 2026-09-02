@@ -82,7 +82,7 @@ def test_no_note_number_outside_the_tuning_exists_anywhere():
         notes = [e["note"] for p in obj["score"]["patterns"].values() for e in p["events"]]
         assert all(n is None or obj["pitch"]["base"] <= n <= top for n in notes)
         for i in obj["instruments"].values():
-            assert set(i.get("pitch", {})) <= {"state", "on", "value", "octave"}
+            assert set(i.get("pitch", {})) <= {"value", "octave"}
         assert "generators" not in obj and "residue" not in obj
 
 
@@ -103,18 +103,14 @@ def test_the_modulators_are_expressions_and_own_what_they_do_past_the_tuning():
     b = arp["beyond"]
     assert len(b["words"]) == 12 and all("u16" in w or "trap" in w for w in b["words"])
     assert all(w["trap"] for w in b["words"] if "trap" in w)  # every trap says why
-    assert {x["event"] for x in b["on"]} <= {
-        "sound",
-        "note",
-        "instrument",
-        "order",
-        "row",
-        "wrap",
-        "turn",
-    }
-    # it mirrors what it is told, and counts for itself what the tune counts
-    assert all(set(x) <= {"event", "voice", "acc", "set", "add"} for x in b["on"])
+    assert set(b) == {"index", "words"}  # no state of its own, and nothing to feed it
+    # the byte cursor the source packs a pattern into is a cell the row program keeps
     assert {k for p in obj["score"]["patterns"].values() for k in p} == {"events"}
+    assert obj["state0"]["cells"]["patrow"] == [0, 0, 0]
+    assert obj["meta"]["row"][-1] == {
+        "sets": [["@patrow", {"const": 0}]],
+        "when": [["wraps", "!=", 0]],
+    }
     assert built(0)["accs"]["arpeggio"]["beyond"] == built(1)["accs"]["arpeggio"]["beyond"]
 
 
@@ -123,33 +119,51 @@ def test_an_unpitched_instrument_carries_its_own_pitch_modulator():
     obj = built(0)
     drums = {k: i["pitch"] for k, i in obj["instruments"].items() if "pitch" in i}
     assert set(drums) == {"4", "7"}
-    assert set(drums["4"]) == {"state", "on", "value"}  # no arpeggio, so no octave
-    assert set(drums["7"]) == {"state", "on", "value", "octave"}
+    assert set(drums["4"]) == {"value"}  # no arpeggio, so no octave
+    assert set(drums["7"]) == {"value", "octave"}
     assert all("interval" not in d for d in drums.values())  # no pitch, no semitone above
     events = [e for p in obj["score"]["patterns"].values() for e in p["events"]]
     # commando-floor section 5: "song 1 plays pitch 104 twenty-five times"
     assert sum(1 for e in events if e["note"] is None and e["sounds"]) == 25
 
 
-def test_no_expression_reads_another_voices_state():
-    """The invariant a generator exists to keep."""
-    obj = built(0)
-    seen = []
+def test_a_word_past_the_tuning_names_the_voice_whose_cell_it_reads():
+    """The fused region as section 5 states it: a cell of a named voice, and no more.
 
-    def walk(x):
+    Every other read in the object is the voice being committed; the memory model
+    the overrun *is* -- which player variable lives past the tuning -- is the one
+    place a word names another voice, and it names it outright.
+    """
+    obj = built(0)
+
+    def cells(x, out):
         if isinstance(x, dict):
             if "cell" in x:
-                seen.append(x["cell"])
+                out.append(x["cell"])
             for v in x.values():
-                walk(v)
+                cells(v, out)
         elif isinstance(x, list):
             for v in x:
-                walk(v)
+                cells(v, out)
+        return out
 
-    walk(obj["accs"])
-    walk(obj["streams"])
-    walk(obj["instruments"])
-    assert seen and all(isinstance(c, str) for c in seen)  # never [name, voice]
+    past = cells(obj["accs"]["arpeggio"]["beyond"], [])
+    past += cells([i["pitch"] for i in obj["instruments"].values() if "pitch" in i], [])
+    assert past and all(isinstance(c, list) and c[1] in (0, 1, 2) for c in past)
+    assert {c[0] for c in past} <= {
+        "orderpos",
+        "patrow",
+        "rowsleft",
+        "wave",
+        "note",
+        "ins",
+        "pwdir",
+    }
+    del obj["accs"]["arpeggio"]["beyond"]
+    for i in obj["instruments"].values():
+        i.pop("pitch", None)
+    rest = cells([obj["accs"], obj["streams"], obj["instruments"], obj["meta"]], [])
+    assert rest and all(isinstance(c, str) for c in rest)
 
 
 def test_the_inherited_carry_is_load_bearing():

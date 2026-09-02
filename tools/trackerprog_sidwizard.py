@@ -421,8 +421,6 @@ class Tune:
         m, L = self.m, self.L
         return {
             "index": "how far past the tuning the step's own seven bits went",
-            "state": {},
-            "on": [],
             "words": [
                 {"u16": [m[L["freqtbl"] + 96 + d], m[L["freqtbh"] + 96 + d]]} for d in range(32)
             ],

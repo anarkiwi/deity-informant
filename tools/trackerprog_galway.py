@@ -630,7 +630,7 @@ def instruments(images, silence):
             "accs": ENGINE,
             # section 3.5's sound with no pitch at all: note $5E keys the
             # instrument and takes the tuning's own entry for it, read and not assumed
-            "pitch": {"state": {}, "on": [], "value": {"const": silence}},
+            "pitch": {"value": {"const": silence}},
         }
     return out
 

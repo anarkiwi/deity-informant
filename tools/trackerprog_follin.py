@@ -832,8 +832,6 @@ def beyond(m, why):
     return {
         "id": why,
         "index": "how far past the tuning the index went",
-        "state": {},
-        "on": [],
         "words": [K(word_split(m, n)) for n in range(NOTES, 0x100)],
     }
 

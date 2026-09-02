@@ -344,7 +344,7 @@ def test_a_clamp_takes_its_target_at_the_edge_the_object_names():
 
 def test_a_step_past_the_top_of_the_tuning_is_the_stream_s_own():
     """A note column of seven bits wraps; what it plays there is not a pitch."""
-    beyond = {"id": "wave.pitch", "state": {}, "on": [], "words": [{"u16": [0x34, 0x12]}]}
+    beyond = {"id": "wave.pitch", "words": [{"u16": [0x34, 0x12]}]}
     rows = [
         {"trap": "no stream"},
         {"sets": [["@wave", 0x21]], "op": {"pitch": 7, "relative": True, "wrap": 0x7F}, "next": 1},

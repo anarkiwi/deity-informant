@@ -56,30 +56,25 @@ SONGPTR, SPEEDTBL = 0x56FF, 0x5514
 # Build-time only, and none of it reaches the object.  The fused region
 # commando-floor section 5 documents: the frequency table tunes notes 16..95 at
 # $5448..$54E7 and the per-voice state follows it, so an index past 95 names
-# state, not tuning.  This decodes *which* state, so the object can carry a
-# self-contained generator for that value instead of running off a table.
+# state, not tuning.  This decodes *which* state, so a word past the tuning is a
+# section 5 expression over the cells that state names, and not a table read.
 #
-# Each row is (byte width, the generator source for byte i, a name).  ``None``
-# is a byte no reachable index names.
+# Each row is byte i's own expression, or the reason the object cannot state one.
 FIRST_NOTE, TABLE_END = 16, 96  # the table tunes notes 16..95
 OVERFLOW = 12  # a transposition of +12 from the tuning's top twelve notes
-
-
-def _voice_byte(kind, i):
-    """The byte at per-voice cell ``kind[i]``, as a generator's own state."""
-    return {"observe": kind, "voice": i}
-
+SCRATCH = "a cell the tick recomputes; nothing carries it between ticks"
+PACKED = "the packed row byte, which the score keeps as an event's own fields"
+# the per-voice arrays of the region, in address order.  All but one are cells of
+# section 5's own vocabulary, read on the voice the word names; the row byte is
+# the packed byte the score keeps as an event's own fields and no cell holds
+REGION = ("orderpos", "patrow", "rowsleft", "rowbyte", "wave", "note", "ins")
 
 FUSED = (
-    [("sidofs%d" % i, {"sid_base": i}) for i in range(3)]
-    + [("voice_base", {"sid_base": "reader"})]
-    + [
-        ("%s%d" % (k, i), _voice_byte(k, i))
-        for k in ("orderpos", "patrow", "rowsleft", "rowbyte", "wave", "note", "ins")
-        for i in range(3)
-    ]
-    + [("scratch%d" % i, None) for i in range(12)]
-    + [("%s%d" % (k, i), _voice_byte(k, i)) for k in ("pwdelay", "pwdir") for i in range(3)]
+    [{"const": 7 * i} for i in range(3)]
+    + [{"sid_base": "reader"}]
+    + [{"cell": [k, i]} if k != "rowbyte" else PACKED for k in REGION for i in range(3)]
+    + [SCRATCH] * 12
+    + [{"cell": [k, i]} for k in ("pwdelay", "pwdir") for i in range(3)]
 )
 
 
@@ -100,9 +95,9 @@ def pattern(m, pn):
 
     Nothing packed survives.  The row byte's fields are separate columns, and a
     portamento byte becomes ``arm(slide, {delta, phase})`` -- section 3.6's own
-    command, the same shape an instrument uses to arm an accumulator.  The
-    A pattern is its events and nothing else: a modulator that watches this
-    tune's own byte cursor counts it for itself (:func:`_word`).
+    command, the same shape an instrument uses to arm an accumulator.  A pattern
+    is its events and nothing else: the byte cursor the source keeps over them is
+    a cell the row program counts (``meta.row``, :func:`build`).
     """
     base = m[PATPTR_LO + pn] | m[PATPTR_HI + pn] << 8
     out, i = [], 0
@@ -171,8 +166,8 @@ def pitch(m, pairs):
 
     * the **arpeggio** transposes past the top of the tuning.  Its bound is the
       tuning and its behaviour at that bound is its own -- twelve words indexed
-      by how far past the transposition went, with the private state and the
-      subscriptions to feed them.  No other modulator asks for one: the
+      by how far past the transposition went, each a section 5 expression over
+      the cells the region names.  No other modulator asks for one: the
       vibrato's step above the tuning's last note is measurably never observed,
       so the tuning simply has no interval there;
     * instruments 4 and 7 sound a **drum**, whose frequency is no pitch at all.
@@ -186,107 +181,34 @@ def pitch(m, pairs):
             for n in range(FIRST_NOTE, TABLE_END)
         ],
     }
-    beyond = _beyond(m)
+    beyond = {
+        "index": "how far past it the transposition went",
+        "words": [_word(TABLE_END + d) for d in range(OVERFLOW)],
+    }
     drums = {}
     for i, n in sorted(pairs):
         if n < TABLE_END:
             continue
         col = m[INS_BASE + 8 * i : INS_BASE + 8 * i + 8]
-        rec = {"state": {}, "on": []}
-        rec["value"], why = _word(m, rec, n)
-        assert why is None, why
+        rec = {"value": _live(n)}
         if col[7] & 4:  # this drum is arpeggiated: its own octave, for the same reason
-            rec["octave"], why = _word(m, rec, n + 12)
-            assert why is None, why
+            rec["octave"] = _live(n + 12)
         drums[i] = rec
     return tuning, beyond, drums
 
 
-def _beyond(m):
-    """The arpeggio's own behaviour past the tuning, by overflow distance."""
-    rec = {"index": "how far past it the transposition went", "state": {}, "on": [], "words": []}
-    for d in range(OVERFLOW):
-        w, why = _word(m, rec, TABLE_END + d)
-        rec["words"].append(w if why is None else {"trap": why})
-    return rec
+def _word(n):
+    """The word at index ``n`` of the tune's byte array: an expression, or a trap."""
+    halves = FUSED[2 * (n - TABLE_END) : 2 * (n - TABLE_END) + 2]
+    why = next((h for h in halves if isinstance(h, str)), None)
+    return {"trap": why} if why else {"u16": [dict(h) for h in halves]}
 
 
-def _word(m, rec, n):
-    """The word at index ``n`` of the tune's byte array, over ``rec``'s own state."""
-    seed, halves = _seed(m), []
-    for j in (0, 1):
-        label, src = FUSED[2 * (n - TABLE_END) + j]
-        if src is None:
-            return None, "a cell the tick recomputes; nothing carries it between ticks"
-        v = _static(src)
-        if v is not None:
-            halves.append({"const": v})
-            continue
-        if "sid_base" in src:
-            halves.append(dict(src))
-            continue
-        kind, i = src["observe"], src["voice"]
-        if kind not in EVENTS and kind != "patrow":
-            return None, "no event publishes %s" % kind
-        rec["state"][label] = seed(kind, i)
-        if kind == "patrow":
-            # this tune's cursor counts bytes, and a row is one, plus one where it
-            # sounds and one where it carries an instrument or an arm.  That is the
-            # modulator's own model of the cell it mirrors; the score keeps events.
-            subs = [
-                {
-                    "event": "row",
-                    "voice": i,
-                    "add": {
-                        label: {
-                            "add": [
-                                {"const": 1},
-                                {"add": [{"payload": "sounds"}, {"payload": "field"}]},
-                            ]
-                        }
-                    },
-                },
-                {"event": "wrap", "voice": i, "set": {label: {"const": 0}}},
-            ]
-        else:
-            name, payload = EVENTS[kind]
-            sub = {"event": name, "voice": i, "set": {label: {"payload": payload}}}
-            if name == "turn":
-                sub["acc"] = "pulse_bounce"
-            subs = [sub]
-        for sub in subs:
-            if sub not in rec["on"]:
-                rec["on"].append(sub)
-        halves.append({"own": label})
-    return {"u16": halves}, None
-
-
-def _static(src):
-    """The value of a source that depends on nothing live, else ``None``."""
-    v = src.get("sid_base")
-    return 7 * v if isinstance(v, int) else None
-
-
-def _seed(m):
-    """A mirrored cell's value in the post-init image."""
-    base = {
-        "wave": 0x54F8,
-        "note": 0x54FB,
-        "ins": 0x54FE,
-        "orderpos": 0x54EC,
-        "patrow": 0x54EF,
-        "pwdir": 0x5510,
-    }
-    return lambda kind, v: m[base[kind] + v]
-
-
-EVENTS = {
-    "wave": ("sound", "wave"),
-    "note": ("note", "note"),
-    "ins": ("instrument", "ins"),
-    "orderpos": ("order", "pos"),
-    "pwdir": ("turn", "phase"),
-}
+def _live(n):
+    """The same word, where the index is one the object can state outright."""
+    w = _word(n)
+    assert "trap" not in w, w["trap"]
+    return w
 
 
 def _flag_default(instruments):
@@ -516,6 +438,24 @@ def build(path, song=0):
                 {"sets": [["@wave", {"ins": "wave"}]]},
                 {"stream": "note_on"},
                 {"commands": True},
+                # the source's byte cursor over the pattern: one byte for the row,
+                # one more where it sounds and one more where it carries an
+                # instrument or an arm, starting over where the cursor leaves the
+                # pattern.  A cell the row program keeps, not a column of the score
+                {
+                    "sets": [
+                        [
+                            "@patrow",
+                            {
+                                "add": [
+                                    {"cell": "patrow"},
+                                    {"add": [{"const": 1}, {"add": ["sounds", "field"]}]},
+                                ]
+                            },
+                        ]
+                    ]
+                },
+                {"sets": [["@patrow", {"const": 0}]], "when": [["wraps", "!=", 0]]},
             ],
         },
         "globals": {
@@ -557,6 +497,7 @@ def build(path, song=0):
             "ins": [m[0x54FE + v] for v in range(3)],
             "wave": [m[0x54F8 + v] for v in range(3)],
             "cells": {
+                "patrow": [m[0x54EF + v] for v in range(3)],
                 "pwdir": [m[0x5510 + v] for v in range(3)],
                 "pwdelay": [m[0x550D + v] for v in range(3)],
             },

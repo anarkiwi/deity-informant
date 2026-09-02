@@ -45,7 +45,7 @@ table of its own) renders it. The object is §3's seven sections:
 | --- | --- |
 | `meta` | 3 voices in order 2,1,0; `commit_order (ctrl, ad, sr)`; `tempo` a divider, `rate = speed + 1 = 3`; `cycles_per_tick 19656` |
 | `pitch` | `base 16` and **80** contiguous frequencies — the tune's whole tuning, the same in every subtune. No number outside 16..95 exists anywhere in the object (§4.1) |
-| modulators with private state | the arpeggio's `beyond` (12 words by overflow distance, 3 traps, the same in every subtune, §4.2); instruments 4 and 7's own `pitch` (§4.3) |
+| what lies past the tuning | the arpeggio's `beyond` (12 words by overflow distance, 2 traps, the same in every subtune, §4.2); instruments 4 and 7's own `pitch` (§4.3) — expressions over cells, no state |
 | `streams` | three: `note_on` (the note row's five sets), `note_off` (the prelude), `arp` (a two-row pitch stream `[0, 12]`) |
 | `accs` | seven declared forms, 18 arms across the 9 instruments (§2) |
 | `instruments` | **9** — the subtune's reach; the file carries 13 |
@@ -167,8 +167,8 @@ arpeggio  policy  reload transpose(arp[counter & 1])        with arp = [0, 12]
 And the rule the whole object keeps: **a value that is not in the pitch table is
 not a pitch, so it is not a note.** No number outside 16..95 appears anywhere —
 not in the score, not in a table, not as an index, not as a "note the tuning
-does not have". Two things this tune does are not pitch, and each is private to
-whatever does them.
+does not have". Two things this tune does are not pitch, and each is the
+modulator's own -- an expression, over cells it names outright (§4.4).
 
 ### 4.2 The arpeggio owns what it does past the tuning
 
@@ -182,9 +182,9 @@ edge the arpeggio runs off is the **tuning's** — not its `bound`, which is the
 16-bit store the cell keeps, a distinction §7's second package had to make when
 the renderer started asserting the one and this record was claiming the other
 (the arp stream's `[0, 12]` is the transpose, and the cell holds a frequency).
-Its behaviour past the tuning is **its own**, with its own private state and
-subscriptions, indexed by how far past the transposition went and never by a
-note:
+Its behaviour past the tuning is **its own**: twelve words, each a §5
+expression over the cells that region names, indexed by how far past the
+transposition went and never by a note.
 
 ```
 [5] arpeggio      freq  w16  tick           scope voice
@@ -194,13 +194,16 @@ note:
       beyond  past the tuning, by how far past it the transposition went
             0  u16(0, 7)
             1  u16(14, sid_base(reader))
-            2  u16(own.orderpos0, own.orderpos1)
-            …
-            5  trap: no event publishes rowsleft
-            …
-           11  u16(own.ins0, own.ins1)
-          state  orderpos0=$00 … ins1=$09
-          on order(voice 0): orderpos0 := pos ; …
+            2  u16(orderpos[0], orderpos[1])
+            3  u16(orderpos[2], patrow[0])
+            4  u16(patrow[1], patrow[2])
+            5  u16(rowsleft[0], rowsleft[1])
+            6  trap: the packed row byte, which the score keeps as an event's own fields
+            7  trap: the packed row byte, which the score keeps as an event's own fields
+            8  u16(wave[0], wave[1])
+            9  u16(wave[2], note[0])
+           10  u16(note[1], note[2])
+           11  u16(ins[0], ins[1])
 ```
 
 It is the arpeggio's because the arpeggio is the only thing that asks. That is
@@ -214,9 +217,10 @@ statement, and nothing carries a value for one.
 Being indexed by distance rather than by note, the twelve words are a property
 of the tune's memory layout, not of a melody: **the same `beyond` appears in
 every subtune**, and a melody reaching distance 3 or 10 — which song 1 never
-does — would work unchanged. A distance the object cannot publish is a trap
-carrying its reason: three are cells the tick recomputes, two are the row
-countdown nothing publishes, one is the row byte the score no longer packs.
+does — would work unchanged. A distance the object cannot state is a trap
+carrying its reason, and there is one such reason left: three of the region's
+twenty-four bytes are the packed row byte the score no longer keeps, and they
+fall in two of the twelve words.
 
 ### 4.3 An instrument owns what is not a pitch at all
 
@@ -228,15 +232,11 @@ self-contained, one copy each:
 ```
    4  $0F  $C4   $43  $0200  drum skydive
     pitch   this instrument's sound is no pitch; it is its own
-        value     u16(own.wave0, own.wave1)
-        state  wave0=$00 wave1=$00
-        on sound(voice 0): wave0 := wave
-        on sound(voice 1): wave1 := wave
+        value     u16(wave[0], wave[1])
    7  $0D  $FB   $15  $0180  vibrato(shift 2) drum arpeggio
     pitch   this instrument's sound is no pitch; it is its own
-        value     u16(own.wave0, own.wave1)
-        octave    u16(own.pwdir0, own.pwdir1)
-        state  wave0=$00 wave1=$00 pwdir0=$00 pwdir1=$00
+        value     u16(wave[0], wave[1])
+        octave    u16(pwdir[0], pwdir[1])
 ```
 
 It carries exactly what its instrument's modulators ask of a pitch: the
@@ -252,62 +252,53 @@ Reproducing that intermediate write would have meant putting a note number back
 into the object for a value §2 drops by design. It is out, and the certificate
 says exactly what that leaves.
 
-### 4.4 A modulator is self-contained, with private state
+### 4.4 A modulator reads, and names the voice it reads
 
 Whether it belongs to an accumulator (`beyond`) or an instrument (`pitch`), such
-a modulator reads **nothing** of the player's: no cell of another voice, no
-table, no address. What it needs it *mirrors*, by subscribing to the events the
-player publishes, and two modulators mirroring the same fact keep two copies —
-deliberately cheaper than a shared namespace, because a private copy cannot
-alias.
-
-The player publishes seven events, each a musical fact and none a memory
-location. A modulator mirrors what it is told with `set`, and counts for itself
-with `add` what the tune counts.
-
-| event | when | payload |
-| --- | --- | --- |
-| `note` | the row latched a note | `note` |
-| `instrument` | the row carried an instrument | `ins` |
-| `sound` | any fetch, once the instrument's registers are emitted | `wave` |
-| `row` | any fetch, once the row is consumed | `sounds`, `field` — what the row is |
-| `wrap` | the pattern restarted | — |
-| `order` | the order position moved | `pos` |
-| `turn` | an accumulator's phase turned | `acc`, `phase` |
+a modulator is **expressions and nothing else** — §5 nodes over §5's cells, with
+no state of its own and nothing to feed it. What lies past this tuning is the
+engine's per-voice state, so a word says which voice: `{"cell": [name, voice]}`
+beside `{"cell": name}`, the same name, space and half, read on the voice the
+word names instead of the voice being committed.
 
 `sid_base` is the chip's own register layout — the offset the player computes
 for every write it emits — so even the SID stride is not a constant in the data,
 and a word that depends on nothing live is folded to a number at build time.
 
-**The invariant this buys, and the player enforces it:** no expression reads
-another voice's state. `{"cell": name}` is the voice being committed and nothing
-else. Cross-voice dependence exists only inside a modulator's own private state.
-A test walks the whole object and asserts it.
+**What this replaces.** The first draft carried a second modulation language for
+this one family: seven event kinds (`sound`, `note`, `instrument`, `order`,
+`row`, `wrap`, `turn`), nine `publish` sites in the player, a private state dict
+per modulator, an `owners()` enumeration and a `__getstate__`/`__setstate__` pair
+that re-keyed that state by position, so that a modulator could *mirror* what it
+was told rather than read it. Every cell mirrored is a cell the player already
+keeps: over song 1's whole horizon the mirror and the live cell were equal at all
+**2,676** reads the three modulators make, and the render is identical on all
+thirty poison builds. The whole mechanism is struck (R4).
 
-**No packed byte survives.** The score's event fields are `dur`, `tie`, `gate`,
-`ins`, `note` and `arm`, every one a musical fact: the row byte's bit fields are
-separate columns, and a portamento byte is unpacked at build time into
-`arm(slide, {delta, phase})` — §3.6's own command. The carry no producer leaves,
-which the 6502 takes off the instrument index's own third shift, folds to `0`
-with its proof recorded (no declared instrument id has bit 5 set).
+**No packed byte survives, and a cursor over one is the row program's.** The
+score's event fields are `dur`, `tie`, `gate`, `ins`, `note` and `arm`, every
+one a musical fact: the row byte's bit fields are separate columns, and a
+portamento byte is unpacked at build time into `arm(slide, {delta, phase})` —
+§3.6's own command. The carry no producer leaves, which the 6502 takes off the
+instrument index's own third shift, folds to `0` with its proof recorded (no
+declared instrument id has bit 5 set).
 
-**A modulator that mirrors a counter counts for itself.** The arpeggio's
-`beyond` watches two voices' pattern cursors, and this tune's cursor counts
-*bytes* where the trackerprog's counts events. That is the modulator's business,
-not the score's: it subscribes to `row` and advances by its own model of the
-cell it mirrors —
+The one thing the subscriptions *counted* rather than mirrored was this tune's
+own **byte** cursor into a pattern, where the trackerprog's cursor counts
+events. That is two steps of `meta.row` over a cell of its own —
 
 ```
-on row(voice 1): patrow1 += 1 + (sounds + field)
-on wrap(voice 1): patrow1 := 0
+row 5      sets @patrow := patrow + (1 + (<sounds> + <field>))
+row 6      sets @patrow := 0 when <wraps> != 0
 ```
 
 — one byte for the row, one more where it sounds, one more where it carries an
-instrument or an arm. A pattern is its events and nothing else. An earlier draft
-put the byte offset in the score as a per-event `cursor` column: 570 integers
-that were a function of the events beside them, on all 31 patterns, of which
-pattern 31's were never read. That is what a modelling artefact looks like when
-it escapes into the score, and it is gone.
+instrument or an arm, and `0` where the cursor leaves the pattern. `wraps` is a
+fact of the row like `sounds` and `field`, so the counting is the row program's
+and needs no event. An earlier draft put the byte offset in the score instead,
+as a per-event `cursor` column: 570 integers that were a function of the events
+beside them, on all 31 patterns, of which pattern 31's were never read. A cell
+the row program keeps is neither that nor a subscription.
 
 ### 4.5 An instrument has a note row, whether or not it has a prelude
 
@@ -483,7 +474,7 @@ Code, all new, no existing module touched:
 
 | file | lines | role |
 | --- | --- | --- |
-| `deity_informant/trackerprog/universal.py` | 452 | §4 + §5, one procedure over the object; publishes the seven events |
+| `deity_informant/trackerprog/universal.py` | 452 | §4 + §5, one procedure over the object |
 | `deity_informant/trackerprog/attest.py` | 81 | §2's comparison |
 | `deity_informant/trackerprog/printer.py` | 328 | the flattened form: one fact per line, and §6.2's numbers |
 | `tools/trackerprog_commando.py` | 611 | the transliteration and the PcodeVM reference |
