@@ -185,6 +185,22 @@ GoatTracker 2 12,000 × 2, 0 differing. The first draft's `meta.commit` ∈
 without the problem nothing, and a schema row no observation distinguishes is
 not a row.
 
+**One register naming.** A register is a *name* wherever the object names one:
+the seven a voice has (`freq_lo freq_hi pw_lo pw_hi ctrl ad sr`, `universal.REG`)
+and the four the chip has one of (`cutoff_lo cutoff_hi res_route mode_vol`, the
+names `tuneprog/grid.py` already gives the observable's columns). A `sets` target
+that is a bare per-voice name is that register of the voice being committed; a
+target that names a register **outright** is a global name or a voice's own,
+`v1.pw_lo` — and that one spelling is what a command's `sets`, a voice's
+write-out and `globals.commit`'s first column all use. `meta.shadow.registers` is
+the image's registers in the order the flush writes them, by the same names, each
+entry a name or a `[name, guards]` pair. `universal.chipreg` is the only place a
+name becomes a number, and a write carries the number from there on. The first
+draft spoke in numbers in five spellings at once — a bare `0..24` as a target,
+`reg.N`, `globals.commit`'s column, `meta.shadow.registers`, and JCH's overrides
+as assembly operands less a buffer base — with the four global registers having
+no name at all (R6).
+
 **`row_ends_fetch`: where the walk stops.** A family whose row *is* its boundary
 consumes exactly one row per boundary. Follin's fetch is a walk over its own byte
 stream — it takes every command it meets on the way to the note, up to 25 in one
@@ -534,8 +550,8 @@ player state of its own — a two-step counter, a literal `globals.stop_writes`
 register list eight families carried empty, a tick abandoned mid-voice-loop and
 flush-only ticks after — and none of it was needed. Hubbard's `$FE` is four
 writes the routine makes on the tick after it reads the terminator, `$D404 =
-$D40B = $D412 = 0` and `$D418 = $0F`, which are a command's `sets` on §3.7's
-`reg.N` like Follin's `$85` lists; its three voices' lists end together, so the
+$D40B = $D412 = 0` and `$D418 = $0F`, which are a command's `sets` on the registers'
+own names, `v0.ctrl`/`v1.ctrl`/`v2.ctrl`/`mode_vol`, like Follin's `$85` lists; its three voices' lists end together, so the
 voice stop reproduces the tune's, and the tick the terminator is read on is spent
 by `row_consumes_tick` and not by an abort. Measured over the whole horizon of
 every build whose list can run out — Hubbard ×3, Follin ×3, Galway ×14, Walker,
@@ -660,7 +676,7 @@ shadow register defers, a producer does not):
 | `play` gains `vol?`, `tempo?` | SW's orderlist columns are pattern, transpose, **volume, tempo**, stop, loop; GT2's pattern, repeat, transpose, loop; JCH's `[transpose] pattern` (all anatomy:209). Optional, `none` where a family has no column. `vol` lands on the one global `$D418` nibble (sw:109), so three voices' columns resolve by last-writer, which §2 makes exact |
 | a `horizon` terminator | a source materialised only as far as the certified ticks reach, distinct from `stop` (Hubbard's `$FE`, SW's stop — anatomy:209) and from `jump`. The same fact as `end.kind = horizon`, stated twice |
 | `arm(acc_id, overrides)` replaces `arm(acc_id, param)` | `Acc` has no `param` and should not: GT2's vibrato parameter selects a bound *and* a step (`b1096 = T1851[y] & $7F` is speedcmp, gt2.md:812; `T1863[y]` the depth or shift, gt2.md:653-684), so the command re-binds a subset of `{delta, bound, rate, phase}` on a declared `Acc` |
-| a command's register target is a literal `0..24` | Follin's `$85` lists write `$D400+r` for an arbitrary register of any voice (anatomy:1803; `sid.reg[a75] = …`, follin:160-167) and resolve, because T2 materialises decoded score bytes exactly as it materialises pattern rows. Where the index does not resolve, the refusal is `command residue` (§8) — the 36 `index not a voice` sites T0's sweep already names one layer down (backlog §4, W4). **Rendered, and it needed no form of its own**: the target is §3.7's `reg.N`, which JCH's write-out earned first, so the hand transliteration of `$85` is a `sets` entry like any other (follin-trackerprog §5) |
+| a command's register target is a literal `0..24` | Follin's `$85` lists write `$D400+r` for an arbitrary register of any voice (anatomy:1803; `sid.reg[a75] = …`, follin:160-167) and resolve, because T2 materialises decoded score bytes exactly as it materialises pattern rows. Where the index does not resolve, the refusal is `command residue` (§8) — the 36 `index not a voice` sites T0's sweep already names one layer down (backlog §4, W4). **Rendered, and it needed no form of its own**: the target is the register's own name, `v1.ad` or `mode_vol` (§3.1), which JCH's write-out earned first, so the hand transliteration of `$85` is a `sets` entry like any other (follin-trackerprog §5) |
 | `point(slot, row, keep)` | GT2 commands 8/9/A re-point the wave, pulse and filter tables and zero the matching hold (`waveptr=A (wavetime=0)`, anatomy:876) — a re-point plus a link (§5), not two opcodes. It is a field of a §3.3 step, and a command's writes *are* a §3.3 stream, so there is one shape and one guard |
 
 **The row clock is a counter, and there is no second form.**
@@ -742,6 +758,12 @@ difference of adjacent *tuning* entries. It is §5's `tabcell(T[c])` delta on th
 target — the same construct defMON's oscillator uses (automatas.md:433-437),
 where the table happens to be the tuning and the object spells it `tuned`, so
 it earns its row on two families and needs none of its own.
+
+A voice's write-out may send one of the channel's registers itself, naming it
+outright in its own `sets` (`cutoff_hi`, `res_route`, `mode_vol` — §3.1's one
+spelling): the value the tick leaves is then the last voice's and not the
+channel's at the end of the tick, which is last-writer and no new rule
+(prototype-jch-trackerprog.md §4.4).
 
 **The channel steps before the voices or after them, and which is data.**
 `globals.streams` runs the channel ahead of the voices, which is right for one
@@ -831,7 +853,12 @@ declares four on `freq`.
 Everything a real player does beyond this — ghost register files and flush
 loops, unrolled voices, `X = 7v` double-duty indices, SMC-patched dispatch,
 1-based tables, relocation, stack tricks — is compilation, already decompiled
-away by S4–S6, and leaves no residue in the data. That list is the "symptoms"
+away by S4–S6, and leaves no residue in the data. The one residue `X = 7v` had
+left is gone with R6: SID Wizard 1.6's first-frame `LDA freqtbh,X` is a *marked
+defect*, `bug(voice_base)`, which no reader can take for a musical value, and
+Hubbard's `$54EB` — the routine's own index into the per-voice arrays that lie
+past its tuning — is the voice cell `voicebase`, seeded from the tune's own
+three-byte table and written by nothing. That list is the "symptoms"
 tables of the tracker prototypes, each row a player idiom the tuneprog erased;
 the trackerprog is the claim that what remains fits this procedure.
 
@@ -1403,8 +1430,9 @@ each schema row's two-family evidence recorded here, and `universal.py` branchin
 on no family at all, which it does. The
 one remaining single-family row (§5's stateless-phase vibrato) is a data form,
 not a code branch. §3.6's "a command's register target is a literal 0..24" is
-confirmed and is no longer single-family: it is §3.7's `reg.N`, which JCH's
-write-out earned first, and Follin's `$85` lists render through it unchanged.
+confirmed and is no longer single-family — or literal: it is the register's own
+name (§3.1), which JCH's write-out earned first, and Follin's `$85` lists render
+through it unchanged.
 
 ### 9.1 The object against the load band
 

@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from deity_informant.lifter import lift  # noqa: E402
 from deity_informant.trackerprog import printer  # noqa: E402
 from deity_informant.trackerprog.attest import attest  # noqa: E402
-from deity_informant.trackerprog.universal import render  # noqa: E402
+from deity_informant.trackerprog.universal import REGNAME, render  # noqa: E402
 from deity_informant.vm import PcodeVM, run_sub  # noqa: E402
 
 SIGS = {
@@ -568,9 +568,9 @@ class Tune:
             "globals": {
                 "streams": ["filter"],
                 "commit": [
-                    [22, {"global": "cutoff"}],
-                    [23, {"global": "filtctrl"}],
-                    [24, {"or": [{"global": "filttype"}, {"global": "fader"}]}],
+                    ["cutoff_hi", {"global": "cutoff"}],
+                    ["res_route", {"global": "filtctrl"}],
+                    ["mode_vol", {"or": [{"global": "filttype"}, {"global": "fader"}]}],
                 ],
                 "flags": {
                     "produced": {
@@ -615,7 +615,7 @@ class Tune:
             "voices": 3,
             "voice_order": [0, 1, 2],
             "commit_order": ["sr", "ad", "ctrl"],
-            "shadow": {"registers": list(range(L["regs"] - 1, -1, -1))},
+            "shadow": {"registers": [REGNAME[r] for r in range(L["regs"] - 1, -1, -1)]},
             "tempo": {
                 "cell": "rowclock",
                 "step": -1,
@@ -673,7 +673,7 @@ class Tune:
                     ["@rowclock", 1],
                     ["@instr", 1],
                     ["#filtctrl", 0],
-                    [21, 0],
+                    ["cutoff_lo", 0],
                     ["ctrl", GATED],
                 ],
                 "point": [["wave", None], ["pulse", None], ["filter", None]],

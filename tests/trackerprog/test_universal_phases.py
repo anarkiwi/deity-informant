@@ -141,7 +141,7 @@ def obj(events, streams=None, accs=None, tempo=4, ins=None, **meta):
         },
         "globals": {
             "streams": [],
-            "commit": [[24, {"global": "seen"}]],
+            "commit": [["mode_vol", {"global": "seen"}]],
             "flags": {"C": {"default": 0}},
         },
         "state0": {

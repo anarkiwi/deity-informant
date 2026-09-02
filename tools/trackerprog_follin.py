@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from deity_informant.lifter import lift  # noqa: E402
 from deity_informant.trackerprog import printer  # noqa: E402
 from deity_informant.trackerprog.attest import attest  # noqa: E402
-from deity_informant.trackerprog.universal import render  # noqa: E402
+from deity_informant.trackerprog.universal import REGNAME, render  # noqa: E402
 from deity_informant.tuneprog.machine import MachineImage  # noqa: E402
 from deity_informant.vm import PcodeVM, run_sub  # noqa: E402
 
@@ -332,7 +332,7 @@ def command(m, b, p):
     if b == 0x85:
         pairs, i = [], 1
         while m[p + i] < 0x80:
-            pairs.append(["reg.%d" % m[p + i], {"const": m[p + i + 1]}])
+            pairs.append([REGNAME[m[p + i]], {"const": m[p + i + 1]}])
             i += 2
         return {"rows": [{"sets": pairs}], "why": "$85 raw registers"}
     if b == 0x80:
@@ -901,7 +901,10 @@ def build(path, song=0):
             "streams": [],
             "after": ["filter"],
             # the cutoff is 11 bits over two registers the chip splits 8 and 3
-            "commit": [[0x15, lo(G("cutoff"))], [0x16, lo({"shr": [G("cutoff"), 3]})]],
+            "commit": [
+                ["cutoff_lo", lo(G("cutoff"))],
+                ["cutoff_hi", lo({"shr": [G("cutoff"), 3]})],
+            ],
         },
         "pitch": pitch(m),
         "streams": _past(streams(), m),

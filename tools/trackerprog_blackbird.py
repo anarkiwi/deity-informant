@@ -396,9 +396,9 @@ def build(path, ticks=TICKS):
         "globals": {
             "after": ["filter"],
             "commit": [
-                [24, {"global": "mode_vol"}],
-                [23, {"global": "res_route"}],
-                [22, {"global": "cutoff_hi"}],
+                ["mode_vol", {"global": "mode_vol"}],
+                ["res_route", {"global": "res_route"}],
+                ["cutoff_hi", {"global": "cutoff_hi"}],
             ],
         },
         "pitch": pitch(m, notes),

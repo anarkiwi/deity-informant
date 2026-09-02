@@ -11,12 +11,17 @@ import operator
 from itertools import chain
 
 REG = {"freq_lo": 0, "freq_hi": 1, "pw_lo": 2, "pw_hi": 3, "ctrl": 4, "ad": 5, "sr": 6}
+STRIDE, VOICES = 7, 3  # the chip's own shape: seven registers to a voice, three voices
+# every register the object may name outright: the four the chip has one of, named
+# as tuneprog/grid.py names the observable's columns, and a voice's seven named on
+# the voice (`v1.pw_lo`); a bare per-voice name is the committing voice's own
+CHIP = {"cutoff_lo": 21, "cutoff_hi": 22, "res_route": 23, "mode_vol": 24}
+CHIP.update(("v%d.%s" % (v, k), STRIDE * v + r) for v in range(VOICES) for k, r in REG.items())
+REGNAME = {r: k for k, r in CHIP.items()}  # what a number is called, for what reads numbers
 EDGE = ("ctrl", "ad", "sr")  # section 2 rule 1: every write kept, in tick order
 GATE_BIT = 1  # ctrl bit 0 is the gate (anatomy:153): a chip fact, like REG
-# the ctrl mask a row leaves, gating on and gating off.  The waveform byte
-# carries its own gate bit and the row says only whether to keep it, so the two
-# masks are the whole byte and the byte with that bit cleared -- there is no
-# family's version of this and no tune states one
+# the ctrl mask a row leaves, gating on and off: the waveform byte carries its own
+# gate bit and the row says only whether to keep it (§3.6), so no tune states one
 GATE = (0xFF, 0xFF ^ GATE_BIT)
 # a fetch is a walk, so it is bounded: the two limits are the render's own
 # refusal to loop, and nothing about a tune is meant to reach them
@@ -40,7 +45,7 @@ _RANK = operator.itemgetter(0)
 _DERIVED = (
     "accname code tests kept rowplans plans puts steps armwhen columns ranked flagdefs"
     " clockplan earlycode fetchcode endcode spends phases flushcode commits cursors"
-    " rowprog stageprog allplans pitchput rates beyonds"
+    " rowprog stageprog allplans pitchput rates beyonds regs"
 ).split()
 
 
@@ -49,6 +54,22 @@ def _norow(ov):
     return None
 
 
+def chipreg(name, v=None):
+    """One register of the chip, by name: the only place a name becomes a number.
+
+    A register named outright is the chip's own; a bare per-voice name is the
+    register of the voice ``v`` being committed, which only a write knows.
+    """
+    r = CHIP.get(name)
+    if r is None and v is None:
+        raise AssertionError("%r names no register of the chip" % (name,))
+    return STRIDE * v + REG[name] if r is None else r
+
+
+# a value a defect of the source makes, named as the defect and never as a musical
+# one: SID Wizard 1.6 reads `freq_hi`'s note at the voice's own register base
+_BUGS = {"voice_base": lambda p: STRIDE * p.v}
+
 _UNARY = {  # a node whose argument is a name, not an expression
     "cell": lambda p, a: p.cellcode(a),
     "global": lambda p, a: (lambda ov: p.gl[a] & 0xFFFF),
@@ -56,7 +77,7 @@ _UNARY = {  # a node whose argument is a name, not an expression
     "payload": lambda p, a: (lambda ov: ov[a]),
     "ins": lambda p, a: (lambda ov: p.column(p.instr(), a)),
     "insrec": lambda p, a: (lambda ov: p.column(p.o["instruments"][str(p.cell(a[0]))], a[1])),
-    "sid_base": lambda p, a: (lambda ov: 7 * (p.v if a == "reader" else a)),
+    "bug": lambda p, a: (lambda ov, f=_BUGS[a]: f(p)),
     "notefreq": lambda p, a: (lambda ov: p.pitchof()),
     "tuned": lambda p, a: (lambda ov, x=None: p.tuned(p.code_of(a)(ov))),
     "transpose": lambda p, a: (lambda ov: p.transpose(p.code_of(a)(ov))),
@@ -88,8 +109,7 @@ class Player:
         for k, d in s0.get("cells", {}).items():
             self.c[k] = list(d)
         self.evrow = [0] * n
-        # the order program's own state: a voice the score stopped, its return
-        # stack and where its one counted loop returns to (section 3.6)
+        # the order program's own state: a stopped voice, and its return stack (§3.6)
         self.stopped = list(s0.get("stopped", [False] * n))
         self.callstack = [list(x) for x in s0.get("callstack", [[]] * n)]
         # the counted loops nest: a `mark` opens one and the `loop` that spends
@@ -105,12 +125,11 @@ class Player:
         sh = m.get("shadow")  # a register file flushed once per tick, in a stated order
         self.shadow = list(s0["shadow"]) if sh else None
         # the flush names the registers the image carries, in the order it writes
-        # them: a register the image has no byte for is not in the list at all, and
-        # an entry may state the guard the image writes it under -- one build of one
-        # family flushes the same 25 registers in either direction, and which one is
-        # a byte of the frame being flushed (prototype-jch-trackerprog.md section 4)
+        # them, and an entry may state the guard the image writes it under: one
+        # build flushes the same 25 either way, by a byte of the frame (§3.1)
         self.flush = [
-            (e, []) if isinstance(e, int) else tuple(e) for e in (sh or {}).get("registers", ())
+            (chipreg(e), []) if isinstance(e, str) else (chipreg(e[0]), e[1])
+            for e in (sh or {}).get("registers", ())
         ]
         self.imaged = {r for r, _ in self.flush}
         self.gl = dict(s0.get("globals", {}))  # the tune's one global channel
@@ -168,10 +187,10 @@ class Player:
             ),
             key=_RANK,
         )
-        # what every stream carries per stream and not per row: its divider, and what
-        # its rows mean past the tuning for a producer one of them makes
+        # what a stream carries per stream: its divider, and its words past the tuning
         self.rates = {k: self.dividercode(st.get("rate")) for k, st in o["streams"].items()}
         self.beyonds = {k: st.get("beyond") for k, st in o["streams"].items()}
+        self.regs = [{k: chipreg(k, v) for k in REG} for v in range(self.n)]  # each voice's own
         self.flagdefs = [  # the flags a voice's machine resets before its rank order
             (k, self.code_of(d["default"])) for k, d in o["globals"].get("flags", {}).items()
         ]
@@ -195,7 +214,7 @@ class Player:
         ]
         self.flushcode = [(r, self.guardcode(w)) for r, w in self.flush]
         self.commits = [  # the global channel's own registers, their guards and values
-            (c[0], self.code_of(c[1]), self.guardcode(c[2] if len(c) > 2 else None))
+            (chipreg(c[0]), self.code_of(c[1]), self.guardcode(c[2] if len(c) > 2 else None))
             for c in o.get("globals", {}).get("commit", ())
         ]
         g = o.get("globals", {})  # where each cursor lives: the channel's, or a voice's
@@ -240,7 +259,6 @@ class Player:
     def command_of(self, e):
         """The commands a row applies, in row order: the ones it holds or carries.
 
-        Whether a command outlives its row is the tune's, not the clock's:
         ``meta.row_command`` says ``held`` where the voice keeps the last one the
         score gave it and re-runs it at every boundary, ``spent`` where it does not.
         """
@@ -545,10 +563,8 @@ class Player:
         """The one global channel's streams, stepped where the channel declares.
 
         A stream with ``all`` is its guarded rows, exactly as a voice's is.  A
-        channel a voice feeds -- one whose note-on reloads the cell the channel
-        sweeps -- steps once the voices have written it, and one that feeds the
-        voices steps before them; the two lists are ``globals.streams`` and
-        ``globals.after``, and where a phase runs is the channel's own datum.
+        channel the voices feed steps after them and one that feeds them steps
+        before: the two lists are ``globals.streams`` and ``globals.after``.
         """
         for name in self.o.get("globals", {}).get(key, ()):
             if self.o["streams"][name].get("all"):
@@ -576,14 +592,10 @@ class Player:
         Nothing abandons a tick: a voice the score stopped runs no phase at all,
         and the tune's own end is that voice stopped like any other (§3.6).
 
-        The phases are the fixed four -- ``fetch`` the row the clock runs ahead
-        of, ``prelude`` the instrument's early rows, ``row`` the boundary, and
-        ``machine`` the streams and armed accumulators -- plus ``{"stream": s}``
-        for a stream every path ends on.  Which phases a tune has and in which
-        order is data: a fetch that runs ahead of the tick's modulators is the
-        list saying so, not a flag.  A row that spends its tick (§3.6's
-        ``row_consumes_tick``) skips the phases after it; a stream step still
-        runs, being the voice's own write-out and not a modulation.
+        Which phases a tune has and in which order is data (§4.1), not a flag.  A
+        row that spends its tick (§3.6's ``row_consumes_tick``) skips the phases
+        after it; a stream step still runs, being the write-out and not a
+        modulation.
         """
         halted = self.stopped[v]
         if halted and self.stopsafter:  # the score stopped the voice itself
@@ -804,16 +816,18 @@ class Player:
     # ---- writing --------------------------------------------------------------
     def put_to(self, t):
         """A set's target, compiled and kept: the one place that value goes."""
-        key = t if isinstance(t, int) else "s" + t
-        f = self.puts.get(key)
+        f = self.puts.get(t)
         if f is None:
-            f = self.puts[key] = self.putcode(t)
+            f = self.puts[t] = self.putcode(t)
         return f
 
     def putcode(self, t):  # noqa: C901 - one clause per section 5 target form
         """A ``sets`` target's dispatch, made once for the target and not per write."""
-        if isinstance(t, int):
-            return lambda val, prod, edge: self.shadow.__setitem__(t, val & 0xFF)
+        if t in CHIP:
+            # a register the write names outright, sent by the voice whose write-out
+            # sends it and resolved by last-writer, not by the channel (§3.7)
+            r = chipreg(t)
+            return lambda val, prod, edge: prod.append((r, val))
         if t[:1] == "@":
             k = t[1:]
             d, m = self.c[k], 0xFFFF if k in self.wide else 0xFF
@@ -829,14 +843,6 @@ class Player:
         if t in ("pitch", "freq"):  # the frequency: `pitch` writes the chip alone
             d = self.c["freq"] if t == "freq" else None
             return lambda val, prod, edge: self.pitched(d, val, prod)
-        if t[:4] == "reg.":
-            # a register of the tune's one global channel, written by the voice whose
-            # write-out sends it and resolved by last-writer (§3.7).  A single-family
-            # data form: JCH's write-out sends the cutoff and the volume inside every
-            # voice's own group, so the value the tick leaves is the last voice's, not
-            # the channel's at the end of the tick (prototype-jch-trackerprog.md §4.4)
-            r = int(t[4:])
-            return lambda val, prod, edge: prod.append((r, val))
         if t in EDGE:  # an edge write belongs to the act of the tick that made it
             return lambda val, prod, edge: edge.append((t, val & 0xFF, self.act))
         return lambda val, prod, edge: prod.append((t, val & 0xFF))
@@ -858,9 +864,6 @@ class Player:
 
         A register written twice in one tick is two events (section 2 rule 1), so
         the tick is a sequence of acts and ``commit_order`` orders one act's own.
-        A family whose writes go through a shadow makes one act of the tick and
-        cannot tell the difference; one that writes as it goes needs the sequence.
-
         Inside one act a register keeps its **last** value: an act is one thing
         the tick did and ``commit_order`` is a permutation, so it has one slot per
         register and no exemplar writes the same one twice in a row (§3.1).
@@ -876,7 +879,7 @@ class Player:
                     self.emit(t, one[t])
 
     def emit(self, target, val):
-        r = target if isinstance(target, int) else 7 * self.v + REG[target]
+        r = target if isinstance(target, int) else self.regs[self.v][target]
         if self.shadow is None:
             self.w.append((r, val & 0xFF))
         else:
@@ -1001,13 +1004,10 @@ class Player:
     def sequencer_step(self, prod, edge):
         """Consume the order program until a row spends the voice's tick.
 
-        A family whose row *is* the boundary consumes exactly one row and
-        leaves the loop on the first pass; one whose fetch is a walk over its
-        own byte stream -- commands and notes in one program, the control flow
-        between them the score's -- consumes every command it meets on the way
-        to the note.  The group is flushed *between* two rows and never after
-        the last, so a family that takes one row is one act (section 2 rule 1)
-        and a family that takes six is six.
+        A family whose row *is* the boundary consumes exactly one row; one whose
+        fetch is a walk over its own byte stream consumes every command it meets
+        on the way to the note.  The group is flushed *between* two rows and never
+        after the last, so a family that takes six rows is six acts (§2 rule 1).
         """
         v = self.v
         if self.prefetched:
@@ -1463,11 +1463,11 @@ class Player:
 
     def shadow_pair(self, name):
         """A register pair read back out of the shadow the tune writes through."""
-        r = 7 * self.v + REG[name + "_lo"]
+        r = chipreg(name + "_lo", self.v)
         return self.shadow[r] | self.shadow[r + 1] << 8
 
     def shadow_store(self, name, val):
-        r = 7 * self.v + REG[name + "_lo"]
+        r = chipreg(name + "_lo", self.v)
         self.shadow[r], self.shadow[r + 1] = val & 0xFF, (val >> 8) & 0xFF
 
 

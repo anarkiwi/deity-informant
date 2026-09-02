@@ -426,7 +426,8 @@ What is new is that the two builds are not the same code. **Seven** signatures
 carry alternatives, exactly one of which may match, and which one is itself a
 datum: the hard-restart envelope pair's order (and so `commit_order`), the
 note-start pair's and whether it goes through the slowdown envelope remap, the
-1.6 `LDA FREQTBH,X` first-frame bug against 1.9's `,Y`, whether the note start
+1.6 `LDA FREQTBH,X` first-frame bug against 1.9's `,Y` (the object reproduces it
+as a *marked defect*, `bug(voice_base)`, and never as a note — R6), whether the note start
 resets `ARPSCNT`, whether the waveform step keeps the pitch it computed in a
 cell, whether the cutoff commit has a filter shift, and whether `WRPITCH` adds
 the detune or takes the slowdown build's path. **Six** more signatures are

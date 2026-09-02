@@ -7,10 +7,10 @@ global channel, the fetch that runs ahead of its row, and three policies.
 
 import pytest
 
-from deity_informant.trackerprog.universal import Player, render
+from deity_informant.trackerprog.universal import REGNAME, Player, render
 
 FLO, FHI, PLO, PHI, CTRL, AD, SR = 0, 1, 2, 3, 4, 5, 6
-CUT, RES, VOL = 22, 23, 24
+CUT, RES, VOL = 22, 23, 24  # the numbers the writes carry; the object names them
 GATED = {"and": [{"cell": "wave"}, {"cell": "gate"}]}
 CELLS = ("rowclock", "tempo", "instr", "gate", "wave", "param", "vibtime", "vibdelay", "staged")
 # a table's rows are its own, from the first: a cursor that is on no row says so
@@ -72,7 +72,7 @@ def obj(events, streams=None, accs=None, instrument=None, tempo=2, early=1, curs
             "cycles_per_tick": 19656,
             "voice_order": [0],
             "commit_order": ["sr", "ad", "ctrl"],
-            "shadow": {"registers": list(range(24, -1, -1))},
+            "shadow": {"registers": [REGNAME[r] for r in range(24, -1, -1)]},
             "tempo": {
                 "cell": "rowclock",
                 "step": -1,
@@ -260,7 +260,10 @@ def test_a_global_channel_steps_its_own_stream_and_commits_its_own_registers():
         accs=a,
     )
     o["globals"]["streams"] = ["filter"]
-    o["globals"]["commit"] = [[CUT, {"global": "cutoff"}], [VOL, {"global": "vol"}]]
+    o["globals"]["commit"] = [
+        [REGNAME[CUT], {"global": "cutoff"}],
+        [REGNAME[VOL], {"global": "vol"}],
+    ]
     o["state0"]["globals"] = {"cutoff": 0, "vol": 0x0F}
     o["state0"]["gcursors"] = {"filter": {"row": 1, "hold": 0}}
     w = render(o, 6)
