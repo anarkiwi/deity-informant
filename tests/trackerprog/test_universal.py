@@ -120,8 +120,7 @@ def obj(patterns, orders, instruments, pitch=None, rate=2, beyond=None):
         "state0": {
             "ins": [0] * n,
             "wave": [0] * n,
-            "cells": {"pwdir": [0] * n},
-            "dividers": {"pulse_bounce": [0] * n},
+            "cells": {"pwdir": [0] * n, "pwdelay": [0] * n},
         },
     }
 

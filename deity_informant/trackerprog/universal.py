@@ -36,7 +36,7 @@ _RANK = operator.itemgetter(0)
 _DERIVED = (
     "accname heard code tests kept rowplans plans puts steps armwhen columns ranked flagdefs"
     " clockplan earlycode fetchcode endcode spends phases flushcode commits cursors priv subs"
-    " rowprog stageprog allplans pitchput"
+    " rowprog stageprog allplans pitchput rates beyonds"
 ).split()
 _UNARY = {  # a node whose argument is a name, not an expression
     "cell": lambda p, a: p.cellcode(a),
@@ -86,9 +86,6 @@ class Player:
         # it closes it, so what a voice carries is a stack and not a register
         self.loopstack = [[list(y) for y in x] for x in s0.get("loopstack", [[]] * n)]
         self.armed = [[] for _ in range(n)]  # the accs the score armed
-        self.divider = [
-            dict((k, d[i]) for k, d in s0.get("dividers", {}).items()) for i in range(n)
-        ]
         self.pw = {
             k: v["pw"][0] | v["pw"][1] << 8 for k, v in obj["instruments"].items() if "pw" in v
         }
@@ -173,6 +170,10 @@ class Player:
             ),
             key=_RANK,
         )
+        # what every stream carries per stream and not per row: its divider, and what
+        # its rows mean past the tuning for a producer one of them makes
+        self.rates = {k: self.dividercode(st.get("rate")) for k, st in o["streams"].items()}
+        self.beyonds = {k: st.get("beyond") for k, st in o["streams"].items()}
         self.flagdefs = [  # the flags a voice's machine resets before its rank order
             (k, self.code_of(d["default"])) for k, d in o["globals"].get("flags", {}).items()
         ]
@@ -470,6 +471,31 @@ class Player:
             return lambda ov: d[self.v] & 0xFFFF
         return lambda ov: self.cell(name)
 
+    def dividercode(self, r):
+        """§3.3's divider, compiled: one procedure wherever a ``rate`` is one.
+
+        A counter cell the run steps down by one, firing where it passes zero and
+        reloading from the object's own expression -- a stream's ``rate`` and an
+        accumulator's are the same form and the same counter.  ``rate`` absent, or
+        the degenerate ``1``, is no divider at all and compiles to ``None``; the
+        counter is where a divider lives, so a bare ``k`` names none and is refused.
+        """
+        if r is None or r == 1:
+            return None
+        if not isinstance(r, dict):
+            raise AssertionError("a divider is a counter cell and its reload, not %r" % (r,))
+        d, f = self.c[r["cell"]], self.code_of(r["reload"])
+
+        def due(ov):
+            v = self.v
+            d[v] = c = (d[v] - 1) & 0xFF
+            if not c & 0x80:
+                return False
+            d[v] = f(ov) & 0xFF
+            return True
+
+        return due
+
     def guardcode(self, gs):
         """One guard list, compiled to a predicate: one comparison, no dict."""
         if not gs:
@@ -532,12 +558,12 @@ class Player:
         if self.tick_no == 0 and "prologue" in self.o["meta"]:
             self.prologue()
             return self.w
-        self.channel()
+        self.channel("streams")
         for v in self.order:
             self.v = v
             if self.voice(v):
                 return self.w
-        self.channel_after()
+        self.channel("after")
         self.channel_commit()
         return self.w
 
@@ -550,26 +576,16 @@ class Player:
             self.commit(prod, edge)
         self.held = [self.cmd(self.o["state0"].get("held"))] * self.n
 
-    def channel(self):
-        """The one global channel's streams, stepped before the voices.
+    def channel(self, key):
+        """The one global channel's streams, stepped where the channel declares.
 
-        A stream with ``all`` is its guarded rows, exactly as a voice's is.
+        A stream with ``all`` is its guarded rows, exactly as a voice's is.  A
+        channel a voice feeds -- one whose note-on reloads the cell the channel
+        sweeps -- steps once the voices have written it, and one that feeds the
+        voices steps before them; the two lists are ``globals.streams`` and
+        ``globals.after``, and where a phase runs is the channel's own datum.
         """
-        for name in self.o.get("globals", {}).get("streams", ()):
-            if self.o["streams"][name].get("all"):
-                self.rows(name, [], [])
-            else:
-                self.stream_step(name, self.gcursor[name], [], [])
-
-    def channel_after(self):
-        """The global channel's streams that run after the voices, not before.
-
-        A channel a voice feeds -- one whose note-on reloads the cell the
-        channel sweeps -- steps once the voices have written it, and one that
-        feeds the voices steps before them.  Which of the two a tune has is
-        the list it declares (``globals.streams`` and ``globals.after``).
-        """
-        for name in self.o.get("globals", {}).get("after", ()):
+        for name in self.o.get("globals", {}).get(key, ()):
             if self.o["streams"][name].get("all"):
                 self.rows(name, [], [])
             else:
@@ -765,14 +781,10 @@ class Player:
         y = cur["row"]
         if not y:
             return
-        r = st.get("rate")  # section 3.3's divider, kept in a cell the score can set
-        if r is not None:
-            c = self.c[r["cell"]]
-            c[self.v] = (c[self.v] - 1) & 0xFF
-            if not c[self.v] & 0x80:
-                return
-            c[self.v] = self.ev(r["reload"]) & 0xFF
-        self.beyond = st.get("beyond")
+        due = self.rates[name]  # section 3.3's divider, in a cell the score can set
+        if due is not None and not due(None):
+            return
+        self.beyond = self.beyonds[name]
         plan = self.steps.get(name) or self.steprows(name)
         if plan[y] is None:
             self.srow(name, y)  # the row the object marks as no row at all, refused by name
@@ -900,6 +912,10 @@ class Player:
         the tick is a sequence of acts and ``commit_order`` orders one act's own.
         A family whose writes go through a shadow makes one act of the tick and
         cannot tell the difference; one that writes as it goes needs the sequence.
+
+        Inside one act a register keeps its **last** value: an act is one thing
+        the tick did and ``commit_order`` is a permutation, so it has one slot per
+        register and no exemplar writes the same one twice in a row (§3.1).
         """
         i = 0
         while i < len(edge):
@@ -918,22 +934,39 @@ class Player:
         else:
             self.shadow[r] = val & 0xFF
 
-    def rows(self, name, prod, edge, ov=None):
-        """A stream's ``set`` steps, routed by target."""
-        # its own behaviour past the tuning, for a producer one of its rows makes
-        self.beyond = self.o["streams"][name].get("beyond")
-        plan = self.rowplans.get(name)
-        if plan is None:
-            plan = self.rowplans[name] = [
-                (self.guardcode(r.get("when")), self.setcode(r["sets"]))
-                for r in self.o["streams"][name]["rows"]
-            ]
-        for when, sets in plan:
+    def rows(self, rows, prod, edge, ov=None):
+        """A §3.3 stream's guarded rows of ``sets`` and ``point``, in order.
+
+        One procedure for the three places the grammar puts a stream: ``rows`` is
+        the name of a declared stream or the anonymous row list of an instrument's
+        note-on, a prelude or a command.  **One act per matching row** (section 2
+        rule 1) in both -- the act is the row and not the call site, which is the
+        measurement: the per-list rule differs on 2,943 ticks of seven builds.
+        """
+        if type(rows) is str:
+            self.beyond = self.beyonds[rows]
+            plan = self.rowplans.get(rows) or self.rowplan(rows, self.o["streams"][rows]["rows"])
+        else:
+            plan = self.rowplans.get(id(rows)) or self.rowplan(id(rows), rows)
+            if ov is None:
+                ov = self.payload
+        for when, sets, pts in plan:
             if not when(ov):
                 continue
             self.act += 1
             for put, f in sets:
                 put(f(ov), prod, edge)
+            if pts:
+                self.points(pts, ov)
+
+    def rowplan(self, key, rows):
+        """One guarded row list, compiled: each row's guard, its sets and its re-points."""
+        plan = self.rowplans[key] = [
+            (self.guardcode(r.get("when")), self.setcode(r.get("sets", ())), r.get("point", ()))
+            for r in rows
+        ]
+        self.kept.append(rows)
+        return plan
 
     def fetch(self, prod, edge):
         """Read the row the clock runs ahead of, and commit what it stages early."""
@@ -992,16 +1025,12 @@ class Player:
         return self.o["score"]["patterns"][str(self.play_of(v)["pattern"])]
 
     def next_event(self):
-        """The event the fetch is about to read, the order program's jump taken first."""
+        """The event the fetch is about to read, the play list's own end taken first."""
         v = self.v
-        o = self.order_of(v)
-        if self.c["orderpos"][v] >= len(o["play"]):
-            if not isinstance(o["end"], dict):
-                return None
-            self.c["orderpos"][v] = o["end"]["jump"]
-            self.evrow[v] = 0
-            self.publish("order", v, {"pos": self.c["orderpos"][v]})
-        return self.pattern_of(v)["events"][self.evrow[v]]
+        if self.c["orderpos"][v] >= len(self.order_of(v)["play"]) and not self.order_end(v):
+            return None
+        ev = self.pattern_of(v)["events"]
+        return ev[self.evrow[v]] if self.evrow[v] < len(ev) else None
 
     def stage(self, e, prod, edge):
         """What the fetch commits ``early``, before the row it belongs to arrives.
@@ -1077,7 +1106,8 @@ class Player:
             if self.stopped[v] or self.stopping:
                 return None
             if self.c["orderpos"][v] >= len(self.order_of(v)["play"]):
-                self.order_end(v)
+                if not self.order_end(v):
+                    return None
                 continue
             pat = self.pattern_of(v)
             if self.evrow[v] < len(pat["events"]):
@@ -1087,16 +1117,21 @@ class Player:
         raise AssertionError("the order program reached no row in %d steps" % ORDER_STEPS)
 
     def order_end(self, v):
-        """The end of the play list: the terminator the order declares."""
-        o = self.order_of(v)
-        if not (o["end"] == "jump" or isinstance(o["end"], dict)):
+        """The end of the play list: the terminator the order declares; False where it stops.
+
+        One answer for both positions that ask it -- the fetch reading ahead and
+        the walk stepping -- because what the play list does when it runs out is
+        the order's own datum and not the caller's.
+        """
+        j = self.order_of(v)["end"]
+        if not (j == "jump" or isinstance(j, dict)):
             self.stopping = 1
-            return
-        j = o["end"]
+            return False
         self.c["orderpos"][v] = j["jump"] if isinstance(j, dict) else 0
         self.evrow[v] = self.c["rowsleft"][v] = 0
         self.publish("wrap", v)
         self.publish("order", v, {"pos": self.c["orderpos"][v]})
+        return True
 
     def order_step(self, v):
         """One step of the order program: its own ``op``, else the next step.
@@ -1229,29 +1264,7 @@ class Player:
         """
         if "rest_arm" in self.o["meta"]:
             self.armed[self.v] = list(self.o["meta"]["rest_arm"])
-        self.inline(self.instr().get("on_note", ()), prod, edge)
-
-    def inline(self, rows, prod, edge, ov=None):
-        """An inline stream: guarded rows of ``sets`` and ``point``, in order.
-
-        One act (section 2 rule 1): an instrument's note-on and one row command
-        are each one thing the tick did, however many guarded rows say it.
-        """
-        ov = self.payload if ov is None else ov
-        self.act += 1
-        plan = self.rowplans.get(id(rows))
-        if plan is None:
-            plan = self.rowplans[id(rows)] = [
-                (self.guardcode(r.get("when")), self.setcode(r.get("sets", ())), r.get("point", ()))
-                for r in rows
-            ]
-            self.kept.append(rows)
-        for when, sets, pts in plan:
-            if not when(ov):
-                continue
-            for put, f in sets:
-                put(f(ov), prod, edge)
-            self.points(pts, ov)
+        self.rows(self.instr().get("on_note", ()), prod, edge)
 
     def points(self, pts, ov=None):
         """A step's re-points: the slot, the row, whether the hold survives."""
@@ -1272,7 +1285,7 @@ class Player:
             self.armed[self.v] = list(cmd["arms"])
         for a in cmd.get("links", ()):
             self.store(self.o["accs"][a], 0)
-        self.inline(cmd.get("rows", ()), prod, edge, cmd)
+        self.rows(cmd.get("rows", ()), prod, edge, cmd)
         for name, e in cmd.get("flags", {}).items():
             self.flags[name] = self.ev(e, cmd)
         if "all" in cmd:  # section 3.6's global tempo: one set, every voice
@@ -1305,7 +1318,7 @@ class Player:
         g = a.get("gate") or {}
         out = {
             "when": self.guardcode(a.get("when")),
-            "rate": self.code_of(a.get("rate", 1)),
+            "divider": self.dividercode(a.get("rate")),
             "step_when": self.guardcode(a.get("step_when")),
             "delta_when": self.guardcode(a.get("delta_when")),
             "reload_when": self.guardcode(pol.get("when")) if d and "reload" in pol else None,
@@ -1317,7 +1330,6 @@ class Player:
         return out
 
     def step(self, a, ov, prod, edge):
-        v = self.v
         pair = self.armwhen.get(id(ov))
         if pair is None:
             pair = self.armwhen[id(ov)] = (
@@ -1333,13 +1345,8 @@ class Player:
             return
         if a.get("trap"):
             raise AssertionError("the arm the certified horizon never takes")
-        k = p["rate"](ov)
-        if k > 1:  # section 3.3's divider, the one meaning of rate
-            name = self.accname[id(a)]
-            self.divider[v][name] = self.divider[v].get(name, 0) - 1
-            if self.divider[v][name] >= 0:
-                return
-            self.divider[v][name] = k - 1
+        if p["divider"] is not None and not p["divider"](ov):
+            return
         # the decision the step makes, made once and before anything moves: a gate
         # reports what the step did, not a re-reading of a cell the step moved
         stepped = p["step_when"](ov)
