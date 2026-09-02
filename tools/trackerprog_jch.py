@@ -1359,7 +1359,6 @@ class Tune:
                 {"ins": True, "when": gate},
                 {"note": True, "when": [["sounds", "!=", 0]]},
             ],
-            "player": "prototype-trackerprog.md sections 4 and 5",
         }
         if self.L["wrapper"]:
             out["shadow"] = {"registers": self.flush()}

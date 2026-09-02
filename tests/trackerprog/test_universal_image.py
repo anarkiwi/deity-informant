@@ -39,7 +39,6 @@ def obj(streams=None, accs=None, arms=(), commit=(), gstreams=(), cells=None, **
             "row_consumes_tick": False,
             "row_command": "spent",
             "row": [{"commands": True}, {"note": True, "when": [["sounds", "!=", 0]]}],
-            "player": "hermetic",
             **meta,
         },
         "pitch": {"base": 0, "freq": [0x0100 * (k + 1) for k in range(8)]},

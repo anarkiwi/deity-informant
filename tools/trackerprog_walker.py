@@ -1035,7 +1035,6 @@ def build(path, ticks=TICKS, song=1):
             "row_consumes_tick": False,
             "row_command": "spent",
             "row": rowprogram(),
-            "player": "prototype-trackerprog.md sections 4 and 5",
         },
         "globals": {
             "after": ["filterclock", "filtermod"],
@@ -1053,7 +1052,6 @@ def build(path, ticks=TICKS, song=1):
                 )
             },
             "commit": [[22, masked({"add": [glob("cutbase"), glob("cutoff_off")]})]],
-            "init_writes": [[r, 0] for r in range(25)],
             "stop_writes": [],
         },
         "pitch": {
@@ -1187,7 +1185,7 @@ def main(argv=None):
         if a.out:
             (Path(a.out) / "trackerprog.certificate.json").write_text(json.dumps(c, indent=1))
         return 0 if c["divergence"] is None else 1
-    render(obj, a.ticks)
+    render(obj, a.ticks or ticks)
     return 0
 
 

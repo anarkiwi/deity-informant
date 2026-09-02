@@ -191,9 +191,6 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
     )
     if m.get("prologue"):
         add("prologue   " + _cmd(m["prologue"], notes))
-    add("player     %s" % m["player"])
-    if "mode_vol" in g:
-        add("mode_vol   %s" % hexv(g["mode_vol"]))
     for c in g.get("commit", ()):
         add(
             "global     %s := %s%s"
@@ -208,8 +205,6 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
             "flag %-5s = %s where no producer leaves it%s"
             % (name, expr(d["default"], notes), "" if "proof" not in d else " (%s)" % d["proof"])
         )
-    if g.get("init_writes"):
-        add("init       %s" % _regs(g["init_writes"]))
     if g.get("stop_writes"):
         add("stop       %s" % _regs(g["stop_writes"]))
 
@@ -369,6 +364,8 @@ def _tempo(t, notes):
             s += ", %s where %s" % (label, guards(t[k], notes))
     for r in t.get("reset", ()):
         s += "\n           reset %s where %s" % (_sets(r["sets"], notes), guards(r["when"], notes))
+    if "note" in t:
+        s += "\n           note  %s" % t["note"]
     return s
 
 

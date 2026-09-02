@@ -142,8 +142,7 @@ scoreprog of §6 is a different object with a different tag, `$scoreprog`
 ### 3.1 meta
 
 Cadence (`cycles_per_tick`, `source`), SID model, subtune, source tune and
-family (provenance only), universal-player semantic version, and
-**`commit_order`**: the permutation of `(ctrl, ad, sr)` the commit emits per
+family (provenance only), and **`commit_order`**: the permutation of `(ctrl, ad, sr)` the commit emits per
 voice (§4) — one datum per tune, lifted like the pitch table, not a player
 branch. Four certified families take three of the six values, one of them two
 across its versions:

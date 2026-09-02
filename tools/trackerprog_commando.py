@@ -514,12 +514,9 @@ def build(path, song=0):
                 {"stream": "note_on"},
                 {"commands": True},
             ],
-            "player": "prototype-trackerprog.md sections 4 and 5",
         },
         "globals": {
-            "mode_vol": 0x0F,
             "flags": {"C": _flag_default(instruments)},
-            "init_writes": [[4, 0], [11, 0], [4, 0], [11, 0], [18, 0], [24, 0x0F]],
             "stop_writes": [[4, 0], [11, 0], [18, 0], [24, 0x0F]],
         },
         "pitch": tuning,

@@ -4,6 +4,12 @@
 Not a lift, a reading: docs/prototype-sidwizard.md and playroutine-anatomy.md
 section 3.4 restated in the trackerprog's vocabulary and rendered by the
 universal player.  docs/prototype-sidwizard-trackerprog.md is the mapping.
+
+Refused: the three table-pointer commands.  ``stream.wave``, ``stream.pulse``
+and ``stream.filter`` carry a *byte offset* into the instrument's own record,
+and ``row_of`` -- a build-time table per instrument -- is the only map from one
+to a stream row, so a command, which names no instrument, cannot state the row.
+Neither certified tune emits one; the build stops rather than compute it.
 """
 
 import argparse
@@ -225,7 +231,11 @@ DEAD = {
     "hr.mute": "no instrument of either tune hard-restarts with the test bit",
     "gate.pointer": "no instrument of either tune carries a gate-off pointer",
     "amount.clamp": "the modulation amount never reaches the top of its table",
+    "fx.pointer": "the parameter is a byte offset of the instrument's own record and"
+    " row_of, the map from one to a stream row, is that instrument's alone",
 }
+# the commands that map cannot be stated for, refused rather than computed
+FXPOINT = ("stream.wave", "stream.pulse", "stream.filter")
 
 
 def signed(b):
@@ -337,7 +347,6 @@ def layout(m, lo, hi):
         transpose=a["transpose"] is not None,
         seqfx=a["seqfx"] is not None,
         ownercheck=a["ownercheck"] is not None,
-        fxpos_clears=a["fxpos"] is not None,
         slowdown=a["slowdcnt"] if a["slowdown"] is not None else None,
         slowdownv=a.get("slowdownv") if a["slowdown"] is not None else None,
         commit_order=["sr", "ad", "ctrl"] if a["hradsr"] else ["ad", "sr", "ctrl"],
@@ -638,13 +647,10 @@ class Tune:
                 "arpsped": self.rec(i, 7),
                 "chord": self.rec(i, 8),
                 "transpose": signed(self.rec(i, 9)),
-                "gate_off": [self.rec(i, k) for k in (0x0C, 0x0D, 0x0E)],
-                "wave": self.rec(i, 0x0F),
                 "pw_index": self.rec(i, 0x0A),
                 "flt_index": self.rec(i, 0x0B),
-                "wave_base": self.row_of(i, "wave", 0),
-                "pw_base": self.row_of(i, "pulse", 0),
-                "flt_base": self.row_of(i, "filter", 0),
+                "gate_off": [self.rec(i, k) for k in (0x0C, 0x0D, 0x0E)],
+                "wave": self.rec(i, 0x0F),
                 "vibracnt": 0 if typ == 0x30 else ((vib & 0x0F) >> (0 if typ == 0x20 else 1)),
                 "prelude": {"stream": "hard_restart"},
                 "on_note": inline(self.note_sets(i), UNTIED)
@@ -925,12 +931,8 @@ class Tune:
         }
         if what in one:
             return {"sets": one[what]()}
-        if what == "stream.wave":
-            return {"point": [["wave", {"add": [{"ins": "wave_base"}, 3 * v + 0x10]}]]}
-        for slot, col in (("stream.pulse", "pw"), ("stream.filter", "flt")):
-            if what == slot:
-                r = {"add": [{"add": [{"ins": col + "_base"}, {"ins": col + "_index"}]}, 3 * v]}
-                return {"point": [[slot.split(".")[1], r, not L["fxpos_clears"]]]}
+        if what in FXPOINT:
+            raise AssertionError("command residue: %s: %s" % (what, DEAD["fx.pointer"]))
         if what == "tempo":
             return {"sets": [["#tempo0", v | 0x80]], "all": [["@tmppos", 0], ["@tmpptr", 0]]}
         if what == "tempo.funk":
@@ -1253,7 +1255,6 @@ class Tune:
                 {"commands": True},
             ],
             "pitch_target": "@freq",
-            "player": "prototype-trackerprog.md sections 4 and 5",
             **({"prologue": {"rows": []}} if L["slowdown"] is not None else {}),
         }
 

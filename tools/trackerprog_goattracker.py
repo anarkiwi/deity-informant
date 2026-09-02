@@ -665,7 +665,6 @@ class Tune:
                     "point": [["wave", 0], ["pulse", 0], ["filter", 0]],
                 }
             ),
-            "player": "prototype-trackerprog.md sections 4 and 5",
         }
 
 

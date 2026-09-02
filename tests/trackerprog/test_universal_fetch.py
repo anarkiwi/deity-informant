@@ -41,7 +41,6 @@ def obj(streams=None, events=None, commands=None, shadow=None, **meta):
             "row_consumes_tick": False,
             "row_command": "spent",
             "row": [{"note": True, "when": [["sounds", "!=", 0]]}],
-            "player": "hermetic",
             **({} if shadow is None else {"shadow": {"registers": shadow}}),
             **meta,
         },

@@ -101,7 +101,6 @@ def obj(events, streams=None, accs=None, instrument=None, tempo=2, early=1, curs
             "prologue": {
                 "rows": [{"sets": [["@rowclock", 1], ["@tempo", tempo], ["@instr", 1]]}],
             },
-            "player": "hermetic",
             **meta,
         },
         "pitch": {"base": 0, "freq": [0x0100 * (k + 1) for k in range(8)]},

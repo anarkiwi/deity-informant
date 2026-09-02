@@ -1071,7 +1071,6 @@ def build(path, song=1, ticks=TICKS):
                 {"note": True, "when": [["sounds", "!=", 0]]},
                 {"stream": "note_on", "when": [["sounds", "!=", 0]]},
             ],
-            "player": "prototype-trackerprog.md sections 4 and 5",
         },
         "globals": {
             "commit": [
@@ -1084,7 +1083,6 @@ def build(path, song=1, ticks=TICKS):
                 "pmdone": {"default": {"const": 0}},
                 "fmdone": {"default": {"const": 0}},
             },
-            "init_writes": [[r, 0] for r in range(21)],
             "stop_writes": [],
         },
         "pitch": pitch(m, notes),

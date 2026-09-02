@@ -318,8 +318,7 @@ over both horizons.
 GT2's `init` only *schedules*; the first `play` call flushes the image the file
 carries, runs the reset, and spends its tick. `meta.prologue` is that reset as a
 list of assignments; the tick emits the flush and nothing else. Commando's
-object carries `init_writes` as data the player never runs, because Commando's
-init happens before the horizon; GT2's is inside it.
+init happens before the horizon and is no part of its object; GT2's is inside it.
 
 And `{"trap": reason}` as an *expression*: a value the object states is not
 there. The speed table is 1-based, so index 0 is its null — `waveptr == 0` means

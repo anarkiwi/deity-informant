@@ -894,7 +894,6 @@ class Tune:
             "row_consumes_tick": False,
             "row_command": "spent",
             "row": [{"commands": True}, {"note": True, "when": [["sounds", "!=", 0]]}],
-            "player": "prototype-trackerprog.md sections 4 and 5",
         }
 
 
