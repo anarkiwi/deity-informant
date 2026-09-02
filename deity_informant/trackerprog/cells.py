@@ -134,7 +134,7 @@ class Cells:
         for name in sorted(self.used):
             base = self.vcells.get(name)
             if base is None:
-                base = self._base(name.lstrip("#"))
+                base = self.baseof(name.lstrip("#"))
             if base is None:
                 continue
             if name.startswith("#"):
@@ -146,7 +146,7 @@ class Cells:
                 cells[name] = [0] * self.voices
         return cells, glob
 
-    def _base(self, field):
+    def baseof(self, field):
         for rid, (g, f, _s, _n) in self.group.items():
             if f == field and g == "voice":
                 return self.byid[rid].base

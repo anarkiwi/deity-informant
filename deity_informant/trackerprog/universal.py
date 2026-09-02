@@ -729,6 +729,11 @@ class Player(PlayerMixin):
             # sends it and resolved by last-writer, not by the channel (§3.7)
             r = chipreg(t)
             return lambda val, prod, edge: prod.append((r, val))
+        if t[:2] in ("@.", "#.") or (t[:1] in "@#" and t.endswith((".hi", ".lo"))):
+            # a half of a cell §5's own vocabulary already names, written where
+            # `cellput` writes it: the other half is the one the cell had
+            put = self.cellput(t[1:] if t[:1] == "@" else t)
+            return lambda val, prod, edge: put(val)
         if t[:1] == "@":
             k = t[1:]
             d, m = self.c[k], 0xFFFF if k in self.wide else 0xFF

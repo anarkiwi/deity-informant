@@ -30,6 +30,7 @@ _BINOP = {
     "add": operator.add,
     "sub": operator.sub,
     "shr": operator.rshift,
+    "shl": operator.lshift,  # ``shr``'s own mirror: a shift is one node, not k doublings
 }
 
 

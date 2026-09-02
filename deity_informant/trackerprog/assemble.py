@@ -8,7 +8,7 @@ and assembles the object ``universal.py`` renders. Hints supply what it cannot.
 from __future__ import annotations
 
 from ..tuneprog.graph import cfg, idoms, natural_loops, preds_of, rpo, succs
-from . import build, emit, lower, record, region, schedule
+from . import build, emit, lower, record, recognise, region, schedule
 from .refuse import Refusal
 from .cells import Cells
 from .vocab import Vocab
@@ -122,6 +122,9 @@ def lift(art, ticks=None, hints=None):  # noqa: C901 - one clause per derived da
     streams, accs = ph.streams, ph.accs
     limit = max(0, (view.by_id()[rid].size - 2 * n) // 2)
     ph.beyond(build.beyond_words(cells, pstart, n, limit))
+    build.dce(list(streams.values()), _keep(low, accs, sch))
+    join = recognise.Join(art, view, cells, ph)
+    t1got = join.run()
 
     ordernames = build.order_letters(low, _order_region(art, view, names))
     build.dce(list(streams.values()), _keep(low, accs, sch))
@@ -132,8 +135,8 @@ def lift(art, ticks=None, hints=None):  # noqa: C901 - one clause per derived da
                 [x[1] for x in r["sets"]]
             )
     for a in accs.values():
-        alive |= build._cellnames(a.get("when", [])) | build._cellnames([a["policy"]["reload"]])
-    orders, pats = build.score_of(
+        alive |= build._cellnames(list(a.values()))
+    orders, pats = record.score_of(
         fetches.get(key, []),
         low,
         vvar,
@@ -143,7 +146,7 @@ def lift(art, ticks=None, hints=None):  # noqa: C901 - one clause per derived da
         _order_cursor(art, view, names),
         alive,
     )
-    cellseed, globseed = cells.seed(img)
+    cellseed, globseed = build.widen(*cells.seed(img), join.merged, img, cells)
     obj = {
         "$trackerprog": 1,
         "meta": {
@@ -169,13 +172,13 @@ def lift(art, ticks=None, hints=None):  # noqa: C901 - one clause per derived da
             "row_consumes_tick": sch.row_consumes_tick,
             "row_command": "spent",
             "row": [{"commands": True}] + [{"stream": nm} for _k, nm in rows],
-            "wide": sorted(low.wide),
+            "wide": sorted(set(low.wide) | set(join.wide)),
         },
         "pitch": {"base": basenote, "freq": list(art["t2"]["pitch"]["entries"])},
-        "streams": streams,
+        "streams": build.unsite(streams),
         "accs": accs,
         "instruments": _instruments(art, view, names, ins, pwcols, img, accs),
-        "score": {"patterns": build.patterns_of(pats), "orders": orders},
+        "score": {"patterns": record.patterns_of(pats), "orders": orders},
         "globals": {"streams": [nm for k, nm in gl if k == "stream"]},
         "state0": {"cells": cellseed, "globals": globseed},
     }
@@ -185,7 +188,8 @@ def lift(art, ticks=None, hints=None):  # noqa: C901 - one clause per derived da
     sch.voice_order = tuple(obj["meta"]["voice_order"])
     for site in sorted(low.bad - set(voc.supplied)):
         refusals.append(Refusal("unclassified update", site, site, "no section 5 cell holds it"))
-    cov = build.coverage(low, prog, proc, segs, glob, list(streams.values()), accs, art["t1"])
+    build.prune(obj)
+    cov = build.coverage(low, prog, proc, segs, glob, list(streams.values()), accs, t1got)
     report = {
         "schedule": sch.datums(),
         "supplied": sorted(voc.supplied),
@@ -249,8 +253,8 @@ def _keep(low, accs, sch):
     """The cells a reader outside the lowered rows still has: the object's own."""
     out = {"note", "ins", "phase", "voice_index", cells_name(low, sch)}
     for a in accs.values():
-        out |= build._cellnames(a.get("when", []))
-        out |= build._cellnames([a["policy"]["reload"]])
+        out |= build._cellnames(list(a.values()))
+        out |= {a["cell"].lstrip("#") + h for h in ("", ".lo", ".hi")}
     out |= build._cellnames([sch and low.term(*sch.boundary)])
     return out
 

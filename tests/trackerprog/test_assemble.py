@@ -298,7 +298,7 @@ def test_the_lowering_makes_one_row_per_block_under_its_guard_path():
     low.scope = set(low.proc.blocks)
     when, parts = low.row("loop")
     assert when and parts[0][0]
-    assert any(t == "#scratch" for t, _v in parts[0][0])
+    assert any(t == "#scratch" for t, _v, _s in parts[0][0])
 
 
 def test_a_guard_decided_outside_the_phase_is_the_schedule_s_and_not_the_row_s():
@@ -398,9 +398,9 @@ def test_the_score_is_grouped_where_the_fetch_steps_the_order_cursor():
                 "tick": tick,
             }
         )
-    orders, pats = build.score_of(rows, low, "x", set(), VOICE + 6, 1, 0x2500)
+    orders, pats = record.score_of(rows, low, "x", set(), VOICE + 6, 1, 0x2500)
     assert len(pats) == 1 and orders[0]["play"] == [0, 0]
-    got = build.patterns_of(pats)
+    got = record.patterns_of(pats)
     ev = got["0"]["events"][0]
     assert ev["dur"] == 3 and ev["arm"]["rows"][0]["sets"] == [["@tn", 12]]
     assert ev["sounds"] is False and ev["note"] is None
@@ -416,17 +416,14 @@ def test_the_coverage_counts_the_leaves_and_where_t1_s_accumulators_landed():
     low, _voc = lowered()
     streams = [{"rows": [{"when": [], "sets": [["freq_lo", {"cell": "a"}]]}]}]
     accs = {"acc0": {"site": "$1050", "policy": {"reload": 1}, "when": []}}
-    t1 = {"accs": [{"id": "a0", "cell": {"name": "c"}, "sites": ["$1050"]}]}
-    cov = build.coverage(low, Prog(), "tick", {"machine": ["loop"]}, [], streams, accs, t1)
+    t1got = [{"id": "a0", "cell": "c", "sites": ["$1050"], "form": "acc", "why": None}]
+    cov = build.coverage(low, Prog(), "tick", {"machine": ["loop"]}, [], streams, accs, t1got)
     assert cov["t1_recognised"] == 1 and cov["leaves"]["cell"] == 1
-    assert cov["store_sites"] == 2
-    t1["accs"][0]["sites"] = ["$1054"]
-    assert (
-        build.coverage(low, Prog(), "tick", {"machine": ["loop"]}, [], streams, accs, t1)[
-            "t1_accumulators"
-        ][0]["form"]
-        == "sets"
-    )
+    assert cov["store_sites"] == 2 and cov["t1_refused"] == []
+    t1got[0].update(form="sets", why="no lowered row stores it")
+    other = build.coverage(low, Prog(), "tick", {"machine": ["loop"]}, [], streams, accs, t1got)
+    assert other["t1_recognised"] == 0
+    assert other["t1_refused"] == [["a0", "c", "no lowered row stores it"]]
 
 
 # ---- the whole lift ----------------------------------------------------------------------

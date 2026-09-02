@@ -43,13 +43,28 @@ def rows(names, cache):
     return sorted(out, key=lambda r: -r["ratio"])
 
 
+def one_row(obj, tune):
+    """One lifted object against its own tune's load band, off the registry."""
+    path = tunes.resolve(tune)
+    if path is None:
+        raise SystemExit("%s unavailable (no HVSC tree, no cache, offline)" % tune)
+    return sizes.tune_row(Path(path).read_bytes(), [obj], tune)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="trackerprog_sizes.py", description=__doc__.splitlines()[0])
     ap.add_argument("--builds", default="all", help="a build set (default: all thirty)")
     ap.add_argument("--cache", default=str(TP.DEFAULT_CACHE), help="object cache directory")
+    ap.add_argument("--object", help="one object file, against its own tune's band")
+    ap.add_argument("--tune", help="the tune the --object plays (default: its meta.tune)")
     ap.add_argument("--halves", action="store_true", help="the score half against the rest")
     ap.add_argument("--json", action="store_true", help="the rows as JSON")
     a = ap.parse_args(argv)
+    if a.object:
+        obj = json.loads(Path(a.object).read_bytes())
+        got = one_row(obj, a.tune or obj["meta"]["tune"])
+        print(json.dumps(got, indent=1) if a.json else sizes.line(got))
+        return 0
     names = TP.resolve(a.builds)
     if a.halves:
         got = {n: sizes.halves(TP.build_object(n, a.cache)) for n in names}

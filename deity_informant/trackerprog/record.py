@@ -87,3 +87,67 @@ def run(prog, proc, groups, ticks, inputs=None, envvars=None, loops=(), marks=()
     R = Recorder(prog, F, inputs, envvars=envvars, track=loops, marks=marks).run_init()
     obs, trap = R.render(ticks)
     return R, R.fetches, trap, obs
+
+
+def score_of(records, low, vvar, ordernames, tempo, voices, ordpos=None, keep=None):
+    """The score the fetches read: per-voice orders of patterns of events.
+
+    A visit ends where the fetch stepped the *order* cursor T2 named -- which is
+    the pattern's own end, and the only place the score's shape comes from.
+    """
+    rows = {v: [] for v in range(voices)}
+    for got in records:
+        v = got["env"].get(vvar)
+        if v is None or v not in rows:
+            continue
+        sets = [
+            ["@" + low.temps[n], int(got["temps"][n])]
+            for n in got["seen"]
+            if n in low.temps and n in got["temps"] and (keep is None or low.temps[n] in keep)
+        ]
+        pat = next((int(got["temps"][n]) for n in got["seen"] if n in ordernames), 0)
+        dur = next((c[2] for c in got["cmds"] if c[0] == "ram" and c[1] == tempo + v), 0)
+        ends = ordpos is not None and any(c[0] == "ram" and c[1] == ordpos + v for c in got["cmds"])
+        rows[v].append((pat, dur, sets, ends))
+    orders, pats = [], {}
+    for v in range(voices):
+        play, cur, last = [], [], None
+        for pat, dur, sets, ends in rows[v]:
+            if last is not None and (pat != last or cur and cur[-1][2]):
+                _visit(play, pats, last, cur)
+                cur = []
+            cur.append((dur, sets, ends))
+            last = pat
+        if cur:
+            _visit(play, pats, last, cur)
+        orders.append({"play": play, "end": {"jump": 0}})
+    return orders, pats
+
+
+def _visit(play, pats, pat, rows):
+    """One visit of one pattern: its events, kept once and named by what they decode to."""
+    key = (pat, tuple((d, tuple(tuple(s) for s in ss)) for d, ss, _e in rows))
+    name = pats.get(key)
+    if name is None:
+        name = pats[key] = len(pats)
+    play.append(name)
+
+
+def patterns_of(pats):
+    return {
+        str(name): {
+            "events": [
+                {
+                    "dur": d,
+                    "sounds": False,
+                    "note": None,
+                    "gate": None,
+                    "tie": False,
+                    "ins": None,
+                    "arm": {"rows": [{"sets": [list(s) for s in ss]}]},
+                }
+                for d, ss in rows
+            ]
+        }
+        for (_p, rows), name in pats.items()
+    }

@@ -83,8 +83,22 @@ def test_the_coverage_names_what_the_lowering_did_not_recognise():
     cov = report["coverage"]
     assert cov["store_sites"] == 76 and cov["accs"] == 3
     assert cov["refused"] == ["$5023", "$5026", "$5029", "$502C"]
-    assert all(a["form"] in ("acc", "sets") for a in cov["t1_accumulators"])
     assert {"cell", "ins", "pitch", "global"} <= set(cov["leaves"])
+
+
+def test_t1s_plane_is_the_joins_input_and_this_prefix_states_none_of_it():
+    """T1 verifies a recurrence over a horizon, and 1,200 calls is not one.
+
+    Over this prefix T1 refuses both, so the join has nothing to join: the
+    recognition runs hermetically in ``test_recognise.py`` and over the whole
+    horizon under ``tools/tuneprog_trackerprog.py``.
+    """
+    art = artefacts(COMMANDO)
+    assert art["t1"]["accs"] == []
+    assert {r["why"] for r in art["t1"]["refusals"]} == {"divergent recurrence"}
+    _obj, report = assemble.lift(art, ticks=CALLS)
+    assert report["coverage"]["t1_accumulators"] == []
+    assert report["coverage"]["t1_recognised"] == 0 and report["coverage"]["t1_refused"] == []
 
 
 @pytest.mark.parametrize("rel", (LINUS, GULDKORN, EMOMYST))
