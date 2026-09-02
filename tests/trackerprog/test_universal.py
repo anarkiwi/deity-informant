@@ -395,7 +395,8 @@ def test_a_stored_player_comes_back_with_its_compiled_form_rebuilt():
     first = [pl.tick() for _ in range(3)]
     stored = Player(o)
     stored.tick()
-    assert "code" not in stored.__getstate__()  # the compiled form is not state
+    kept = stored.__getstate__()  # the compiled form is not state, and no memo of it is
+    assert not {"phases", "machines", "armplans", "rowsof"} & set(kept)
     back = pickle.loads(pickle.dumps(stored))
     assert [back.tick() for _ in range(2)] == first[1:]
 
