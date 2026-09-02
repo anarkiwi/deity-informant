@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import re
 
-from .refuse import Refusal
-
 TABLEKIND = ("const", "init_constant")
 RECORDS = 13
 
@@ -156,7 +154,3 @@ class Cells:
             if ident(self.names.of(r.id)) == field:
                 return r.base
         return None
-
-    @staticmethod
-    def refuse(addr, site):
-        return Refusal("unclassified update", "$%04X" % addr, site, "no section 5 cell holds it")

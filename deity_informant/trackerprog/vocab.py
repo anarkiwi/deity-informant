@@ -35,7 +35,6 @@ class Vocab:
         self.inspw = {}  # region id -> "lo" | "hi"
         self.insstride = 8
         self.dropstores = set()
-        self.dropguards = set()
         self.subst = {}  # SSA name -> a node the schedule states outright
 
     # ---- loads -------------------------------------------------------------------
@@ -151,10 +150,3 @@ class Vocab:
         if s.r in self.inspw and self.isins(low, idx):
             return ("acc", "ins.pw." + self.inspw[s.r])
         raise Unlowerable("$%04X[..]" % s.lo)
-
-    def drop_guard(self, low, c, truth):
-        del low, truth
-        return id(c) in self.dropguards
-
-    def value_subst(self, name):
-        return self.subst.get(name)

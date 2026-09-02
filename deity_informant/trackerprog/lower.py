@@ -11,7 +11,7 @@ from __future__ import annotations
 from ..tuneprog.accguard import guardpath
 from ..tuneprog.graph import cfg, idoms, natural_loops, preds_of, rpo, succs
 from ..tuneprog.ir import Bin, Const, If, Let, Load, Store, Var, evalbin
-from ..tuneprog.irwalk import addr_split, walk
+from ..tuneprog.irwalk import addr_split
 from .cells import ident
 
 MASK = {1: 0xFF, 2: 0xFFFF}
@@ -99,7 +99,7 @@ class Lower:
         self.assigned = frozenset(seen)
         self.defs = {n: e for n, e in seen.items() if e is not None}
         self.reach = reaching(self.proc, self.rpo, vocab.vidx)
-        self.temps, self.read, self.wide, self.bad = {}, set(), set(), set()
+        self.temps, self.wide, self.bad = {}, set(), set()
         self.lbl, self.scope, self.local = None, frozenset(), {}
         self.written = self._written()
 
@@ -174,7 +174,6 @@ class Lower:
             if e.n in self.v.vidx:
                 return {"cell": "voice_index"}
             if e.n in self.v.supplied or e.n in self.assigned:
-                self.read.add(e.n)
                 return {"cell": self.temp(e.n, e.w)}
             raise Unlowerable(e.n)
         if t is Load:
@@ -221,7 +220,7 @@ class Lower:
     def when(self, lbl, extra=()):
         out = []
         for d, c, t, _w in self.guards.get(lbl, ()):
-            if not self.onpath(d) or self.v.drop_guard(self, c, t):
+            if not self.onpath(d):
                 continue
             out.append(self.term(c, t))
         return out + [list(x) for x in extra]
@@ -346,7 +345,3 @@ class Lower:
 
     def refusals(self):
         return sorted(self.bad)
-
-
-def leaf_loads(e):
-    return [x for x in walk(e) if type(x) is Load]
