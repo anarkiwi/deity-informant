@@ -14,6 +14,7 @@ from ..tuneprog.ir import Bin, Const, If, Let, Load, Store, Var, evalbin
 from ..tuneprog.irwalk import addr_split
 from .cells import ident
 
+FLAG, RESET = "!flag", "!reset"  # a join's own cell: the row that raises it, and its reset
 MASK = {1: 0xFF, 2: 0xFFFF}
 BINOP = {"&": "and", "|": "or", "^": "xor", "+": "add", "-": "sub", ">>": "shr"}
 CMP = {"==": "==", "!=": "!=", "<": "<"}
@@ -52,6 +53,34 @@ def _shl(node, k, w):
     if not k:
         return node
     return masked(node << k if isinstance(node, int) else {"shl": [node, k]}, w)
+
+
+def _fold(ctxs):
+    """Two guards that differ in one term and its negation are the guard without it."""
+    out = list(ctxs)
+    for _ in range(len(out) * len(out) + 1):
+        for i, (g, x) in enumerate(out):
+            got = next(
+                (j for j in range(i + 1, len(out)) if x == out[j][1] and _pair(g, out[j][0])), None
+            )
+            if got is None:
+                continue
+            drop = set(g) - set(out[got][0])
+            out = [y for k, y in enumerate(out) if k not in (i, got)]
+            out.append((tuple(t for t in g if t not in drop), x))
+            break
+        else:
+            return out
+    return out
+
+
+def _pair(a, b):
+    """Whether two guards differ in exactly one term, and it is the same condition."""
+    x, y = set(a) - set(b), set(b) - set(a)
+    if len(x) != 1 or len(y) != 1:
+        return False
+    (_d1, c1, t1), (_d2, c2, t2) = next(iter(x)), next(iter(y))
+    return c1 is c2 and t1 != t2
 
 
 def reaching(p, order, vidx=frozenset()):
@@ -101,8 +130,12 @@ class Lower:
         self.assigned = frozenset(seen)
         self.defs = {n: e for n, e in seen.items() if e is not None}
         self.reach = reaching(self.proc, self.rpo, vocab.vidx)
+        self.preds = preds_of(self.proc)
         self.temps, self.wide, self.bad = {}, set(), set()
-        self.lbl, self.scope, self.local = None, frozenset(), {}
+        self.lbl, self.gate, self.local, self.scope = None, frozenset(), {}, frozenset()
+        # the conditions the schedule states outright: a divider's own compare,
+        # which ``meta.tempo``'s rate and phase say once for the whole tune
+        self.stated = frozenset()
         self.written = self._written()
 
     def _written(self):
@@ -135,7 +168,7 @@ class Lower:
         t = type(e)
         if t is Var and e.n in self.local:
             return Const(self.local[e.n], e.w)
-        if t is Var and e.n in self.v.supplied:
+        if t is Var and (e.n in self.v.supplied or e.n in self.v.subst):
             return e
         if t is Var and e.n not in self.v.vidx and e.n in self.defs:
             return self.expand(self.defs[e.n], depth - 1)
@@ -215,20 +248,89 @@ class Lower:
             return [self.value(c.b), ">=" if truth else "<", self.value(c.a)]
         return [self.value(c), "!=" if truth else "==", 0]
 
-    def onpath(self, d):
-        """Whether a branch of the phase decides this row, or the schedule does (B6)."""
-        return not self.scope or d in self.scope
+    def guard(self, c, t):
+        """One term of the *schedule's* own guard: the cells it reads, not the temps.
 
-    def when(self, lbl, extra=()):
+        A row's guard is read where the row runs and may name the temp a block
+        left; the clock's is read before any phase of the tick has run, so every
+        name in it is expanded to the cell it reads.
+        """
+        self.lbl, self.local = None, {}
+        return self.term(self.expand(c), t)
+
+    def guard_value(self, e):
+        """One value the schedule states, read the same way as its guards."""
+        self.lbl, self.local = None, {}
+        return self.value(self.expand(e))
+
+    def onpath(self, d, c, t):
+        """Whether the row states this term, or the schedule already does (B6).
+
+        Control dependence is sound where dominance is not, so a term decided in
+        another phase is still the row's -- except two the schedule states: the
+        guard the phase itself runs under (``meta.tempo.boundary``, the row's),
+        and the divider's own compare, which ``rate`` and ``phase`` spend.
+        """
+        if (id(c), t) in self.gate:
+            return False
+        return d in self.scope or id(c) not in self.stated
+
+    def when(self, lbl, extra=(), guard=None):
         out = []
-        for d, c, t, _w in self.guards.get(lbl, ()):
-            if not self.onpath(d):
+        got = guard if guard is not None else [x[:3] for x in self.guards.get(lbl, ())]
+        for d, c, t in got:
+            if not self.onpath(d, c, t):
                 continue
             out.append(self.term(c, t))
         return out + [list(x) for x in extra]
 
+    # ---- the guard a join stands under ----------------------------------------------
+    def _edge(self, q, lbl):
+        """The term the edge from ``q`` to ``lbl`` decides, where it decides one."""
+        term = self.proc.blocks[q].term
+        if type(term) is not If or term.t == term.f:
+            return ()
+        return ((q, term.c, lbl == term.t),)
+
+    def _own(self, lbl):
+        """One block's own guard path, as the terms a row states."""
+        return tuple((d, c, t) for d, c, t, _w in self.guards.get(lbl, ()))
+
+    def plan(self, blocks):
+        """``({block: (guard, extra)}, {block: [(flag, guard, extra)]})`` (B7).
+
+        Control dependence says a block runs *only if* an edge was taken; it does
+        not say the block is reached no other way, so the guard path of a block a
+        join carries is one path's.  The reaching condition is a **disjunction**,
+        which the one guard shape of section 3.3 cannot state, and two paths that
+        differ in one term and its negation are the one path that term does not
+        decide -- a diamond folds, a join a path *leaves* does not.  What does not
+        fold the object states as a cell: every path that reaches the block raises
+        it where that path already stands, and the block's own guard reads it.
+        """
+        eff, rows = {}, {}
+        for lbl in self.rpo:
+            if lbl not in blocks:
+                continue
+            ps = [q for q in sorted(self.preds.get(lbl, ())) if q in eff]
+            got, ctx = [], {}
+            for q in ps:
+                ctx[q] = (tuple(dict.fromkeys(eff[q][0] + self._edge(q, lbl))), eff[q][1])
+                if ctx[q] not in got:
+                    got.append(ctx[q])
+            got = _fold(got)
+            if len(got) < 2:  # one path, and the guard path it carries is the row's
+                eff[lbl] = (self._own(lbl), got[0][1] if got else ())
+                continue
+            name = "j" + ident(lbl)
+            self.cells.declare(name, None)
+            for q in ps:
+                rows.setdefault(q, []).append((name, ctx[q]))
+            eff[lbl] = ((), (({"cell": name}, "!=", 0),))
+        return eff, rows
+
     # ---- statements ----------------------------------------------------------------
-    def row(self, lbl, extra=(), local=None):
+    def row(self, lbl, extra=(), local=None, guard=None):
         """One block as a guarded row, and the accumulator stores it must be split at."""
         self.lbl, self.local = lbl, dict(local or {})
         out, parts = [], []
@@ -242,7 +344,7 @@ class Lower:
             else:
                 out.append(got)
         parts.append((out, None))
-        when = self.when(lbl, extra)
+        when = self.when(lbl, extra, guard)
         return when, parts
 
     def one(self, s):
@@ -275,14 +377,19 @@ class Lower:
         """The blocks in reverse postorder, each inner loop unrolled to its own bound."""
         inner = {h: v for h, v in self.loops.items() if h in blocks and len(v[0]) < len(blocks)}
         body = {l for _h, (b, _x) in inner.items() for l in b}
-        out = []
+        eff, flagrows = self.plan(blocks)
+        flags = sorted({n for v in flagrows.values() for n, _c in v})
+        out = [(RESET, tuple(flags), {}, ())] if flags else []
         for lbl in self.rpo:
             if lbl not in blocks:
                 continue
             if lbl in inner:
                 out += self._unroll(lbl, inner[lbl], trips.get(lbl, 1))
             elif lbl not in body:
-                out.append((lbl, (), {}))
+                guard, extra = eff.get(lbl) or (self._own(lbl), ())
+                out.append((lbl, extra, {}, guard))
+            for name, (guard, extra) in flagrows.get(lbl, ()):
+                out.append(((FLAG, name, lbl), extra, {}, guard))
         return out
 
     def _unroll(self, head, loop, k):
@@ -294,7 +401,7 @@ class Lower:
             (c, t)
             for lat in sorted(latches)
             for d, c, t, _w in self.guards.get(lat, ())
-            if (id(c), t) not in seen and self.onpath(d)
+            if (id(c), t) not in seen and self.onpath(d, c, t)
         ]
         if not cont:
             t = self.proc.blocks[head].term
@@ -310,9 +417,9 @@ class Lower:
             self.local = {n: (c + (j - 1) * d) & 0xFF for n, (c, d) in ind.items()} if j else {}
             terms = () if not j else tuple(tuple(self.term(c, t)) for c, t in cont)
             if j == max(int(k), 1):
-                out.append((None, terms, {}))
+                out.append((None, terms, {}, None))
                 break
-            out += [(l, terms, step) for l in order]
+            out += [(l, terms, step, None) for l in order]
         self.local = keep
         return out
 

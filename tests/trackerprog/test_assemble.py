@@ -8,7 +8,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tuneprog"))
 
-from deity_informant.trackerprog import assemble, build, lower, record, schedule  # noqa: E402
+from deity_informant.trackerprog import (
+    assemble,
+    build,
+    lower,
+    record,
+    report,
+    schedule,
+)  # noqa: E402
 from deity_informant.trackerprog.cells import Cells, ident  # noqa: E402
 from deity_informant.trackerprog.universal import Player  # noqa: E402
 from deity_informant.trackerprog.vocab import Vocab, _plus  # noqa: E402
@@ -161,7 +168,7 @@ class Prog:
 
 def vocab(low=None):
     cells = Cells(View(regions(), {"tick": proc()}, image()), names(), pitch=(1, PITCH, NOTES))
-    voc = Vocab(cells, image(), {8: "freq_lo", 9: "ctrl"}, frozenset({"x"}))
+    voc = Vocab(cells, image(), build.registers(), frozenset({"x"}))
     voc.supplied = {"n"}
     voc.pitch, voc.notebase, voc.insbase = (1, PITCH, NOTES), VOICE, VOICE + 3
     voc.inscol, voc.insstride = {2: "wave", 3: "adsr"}, 2
@@ -191,6 +198,31 @@ def test_cells_answers_voice_global_and_pitch_by_address():
     assert glob["scratch"] == 0 and cellseed["c2400"] == [0, 0, 0]
 
 
+def test_a_record_split_one_copy_a_voice_names_each_field_a_voice_cell():
+    n = names()
+    n.groups["voice_2"] = {
+        "stride": 1,
+        "n": 3,
+        "members": [],
+        "split": 11,
+        "fields": {"0": "f00", "3": "freq_lo"},
+    }
+    c = Cells(View(regions() + [Rgn(11, "voice_2", 0x2400, 6, "state")], {}, image()), n)
+    assert c.at(0x2400) == ("voice", ("f00", 0)) and c.at(0x2402) == ("voice", ("f00", 2))
+    # a name section 5 answers itself is not a tune's, and is qualified by its group
+    assert c.at(0x2403) == ("voice", ("voice_2_freq_lo", 0))
+    assert c.baseof("voice_2_freq_lo") == 0x2403
+
+
+def test_a_scalar_the_tick_keeps_is_one_cell_every_voice_enters_with():
+    m = image()
+    m[GLOB] = 5
+    c = Cells(View(regions(), {}, m), names())
+    assert c.scalarcell(GLOB) == "scratch"
+    assert c.seed(m)[0]["scratch"] == [5, 5, 5]
+    assert c.scalarcell(GLOB, "phase") == "c%04X" % GLOB
+
+
 def test_a_word_past_the_tuning_is_the_cell_that_holds_it():
     c = Cells(View(regions(), {}, image()), names(), pitch=(1, PITCH, NOTES))
     c.voicecell(PITCH + 2 * NOTES)
@@ -199,9 +231,9 @@ def test_a_word_past_the_tuning_is_the_cell_that_holds_it():
     assert "trap" in words[2]
 
 
-def test_registers_are_the_chip_s_own_columns_by_their_base():
-    got = build.registers(View(regions(), {}, image()))
-    assert got == {8: "freq_lo", 9: "ctrl"}
+def test_registers_are_the_chip_s_own_columns_by_their_offset():
+    got = build.registers()
+    assert got[0] == "freq_lo" and got[4] == "ctrl" and got[24] == "mode_vol"
 
 
 def test_a_sum_with_one_constant_splits_into_term_and_offset():
@@ -280,6 +312,49 @@ def test_the_instrument_column_is_the_record_the_voice_plays():
     assert not voc.isins(low, ram(VOICE, 4, V("x")))
 
 
+def test_a_const_table_read_at_a_cell_is_a_stream_of_its_own_bytes():
+    low, voc = lowered()
+    low.lbl = "mach"
+    got = voc.load(low, ram(INS, 2, V("c")))
+    assert got == {"tabcell": ["T%04X" % INS, {"cell": "tc"}, "b"]}
+    st = build.table_streams(voc, image())
+    assert [r["b"] for r in st["T%04X" % INS]["rows"]] == list(image()[INS : INS + 3])
+    low.lbl, voc.rowblocks = "fetch", frozenset({"fetch"})
+    with pytest.raises(lower.Unlowerable):  # the bytes a fetch read are the score's own
+        voc.load(low, ram(INS, 2, V("c")))
+
+
+def test_the_pinned_reads_are_data_where_their_kind_is_never_external():
+    prog, m = Prog(), image()
+    m[0xFB] = 7
+    prog.inputs = [
+        [0x1000, 0xFB, "uninit_ram", 1, 2],
+        [0x1004, 0xD012, "raster", 9, 2],
+        [0x1008, 0x10000, "entry_reg", 1, 1],
+    ]
+    got, bad = build.pinned_inputs(prog, m)
+    assert got == {0xFB: 7} and bad == [("$D012", "$1004", "raster")]
+
+
+def test_the_instrument_records_are_named_by_what_the_cell_selecting_them_holds():
+    art = {
+        "t2": {
+            "selectors": [
+                {
+                    "kind": "selector",
+                    "cursor": "b1014@$101D",
+                    "entries": 2,
+                    "visited": [0, 8],
+                    "columns": [{"table": "wave", "stride": 8}],
+                }
+            ],
+            "streams": [],
+        }
+    }
+    got = build.instrument_table(art, View(regions(), {}, image()), names())
+    assert got[0] == 0x101D and got[3] == 2 and got[4] == [0, 8]
+
+
 def test_a_store_names_a_register_a_cell_or_an_accumulator():
     low, voc = lowered()
     low.lbl = "fetch"
@@ -301,20 +376,30 @@ def test_the_lowering_makes_one_row_per_block_under_its_guard_path():
     assert any(t == "#scratch" for t, _v, _s in parts[0][0])
 
 
-def test_a_guard_decided_outside_the_phase_is_the_schedule_s_and_not_the_row_s():
+def test_the_guard_a_phase_runs_under_is_the_schedule_s_and_not_the_row_s():
     low, _voc = lowered()
-    low.scope = {"loop"}
-    assert low.when("loop") == []
-    low.scope = None
+    got = low.guards["loop"]
     assert low.when("loop")
+    low.gate = frozenset((id(c), t) for _d, c, t, _w in got)
+    assert low.when("loop") == []
+
+
+def test_a_divider_s_own_compare_is_the_rate_and_not_a_row_s_guard():
+    low, _voc = lowered()
+    d, c, t, _w = low.guards["loop"][0]
+    low.stated = frozenset({id(c)})
+    low.scope = {d, "loop"}
+    assert low.onpath(d, c, t)
+    low.scope = {"loop"}
+    assert not low.onpath(d, c, t)
 
 
 def test_an_inner_loop_is_unrolled_to_its_own_bound_and_traps_past_it():
     low, _voc = lowered()
     low.scope = set(low.proc.blocks)
     seq = low.sequence({"mach", "loop", "tail"}, {"loop": 3})
-    assert [l for l, _e, _x in seq].count("loop") == 3
-    assert any(l is None and e for l, e, _x in seq)
+    assert [l for l, _e, _x, _g in seq].count("loop") == 3
+    assert any(l is None and e for l, e, _x, _g in seq)
     items = build.stream_items(low, seq, {})
     rows = [r for k, v in items if k == "rows" for r in v]
     assert any("trap" in json.dumps(r["sets"]) for r in rows)
@@ -325,6 +410,33 @@ def test_the_dead_sets_are_dropped_and_the_live_ones_kept():
     build.dce(st, {"live"})
     assert [s[0] for s in st[0]["rows"][0]["sets"]] == ["@live", "freq_lo"]
     assert build._cellnames([{"cell": "a"}, {"cell": ["b", 1]}]) == {"a", "b"}
+
+
+def test_a_join_several_paths_reach_is_one_cell_and_not_one_guard():
+    low, _voc = lowered()
+    eff, rows = low.plan({"head", "fetch", "mach", "loop", "tail"})
+    assert eff["fetch"][1] == () and eff["fetch"][0]  # one path: its own guard path
+    assert eff["tail"][0] == () and eff["tail"][1]  # a join: one term, over a cell
+    name = eff["tail"][1][0][0]["cell"]
+    assert set(rows) == {"fetch", "mach", "loop"}
+    assert {n for v in rows.values() for n, _c in v} == {name}
+
+
+def test_two_paths_that_differ_in_one_term_and_its_negation_are_the_one_path():
+    c, d = Bin("==", V("a"), C(0)), Bin("==", V("b"), C(0))
+    arm = lambda t, e=(): (((("head", c, t),) + e), ())
+    assert lower._fold([arm(True), arm(False)]) == [((), ())]
+    assert len(lower._fold([arm(True), (((("head", d, True),)), ())])) == 2
+
+
+def test_the_flag_rows_raise_the_join_s_cell_where_each_path_already_stands():
+    low, _voc = lowered()
+    seq = low.sequence({"head", "fetch", "mach", "loop", "tail"}, {"loop": 1})
+    assert seq[0][0] == lower.RESET
+    rows = [r for k, v in build.stream_items(low, seq, {}) if k == "rows" for r in v]
+    sets = [s for r in rows for s in r["sets"]]
+    assert [s[1] for s in sets if s[0].startswith("@j")].count(0) == 1
+    assert [s[1] for s in sets if s[0].startswith("@j")].count(1) == 3
 
 
 # ---- the schedule (B6) -----------------------------------------------------------------
@@ -342,10 +454,30 @@ def test_the_segments_split_at_the_fetch_and_name_the_commits():
     assert schedule.segments(["a"], set(), set()) == [("machine", ["a"])]
 
 
-def test_the_row_clock_is_the_counter_that_decides_the_fetch():
+def test_the_row_clock_is_the_counter_a_guard_of_the_fetch_s_path_steps():
     p = proc()
-    got = schedule.clock_of(p, set(p.blocks), frozenset({"x"}), "fetch")
-    assert got[0] == "head" and got[3] == VOICE + 6 and got[5] is True
+    base, lbl, pre, store_, step, keep, div, spent = schedule.clock_of(p, frozenset({"x"}), "fetch")
+    assert base == VOICE + 6 and lbl == "head" and step == -1
+    assert pre.n == "t0" and store_.src == 0x1010
+    assert len(keep) == 1 and keep[0][1] is True and not div and not spent
+
+
+def test_a_counter_a_guard_compares_with_a_cell_is_the_divider_and_not_the_clock():
+    p = proc()
+    p.blocks["head"].term = If(Bin("!=", ram(GLOB, 7), ram(INS + 1, 3)), "fetch", "mach")
+    p.blocks["fetch"].stmts.insert(0, Let("g", ram(GLOB, 7)))
+    p.blocks["fetch"].stmts.insert(1, store(GLOB, 7, Bin("-", V("g"), C(1)), src=0x1024))
+    got = schedule.clock_of(p, frozenset({"x"}), "fetch")
+    assert got is None or GLOB in got[6]
+
+
+def test_a_store_outside_the_voice_loop_is_the_clock_s_own_reset_clause():
+    p = proc()
+    p.blocks["top"].stmts.append(store(VOICE + 6, 6, ram(GLOB, 7), V("x"), src=0x1004))
+    got = schedule.resets_of(
+        p, VOICE + 6, None, {"head", "fetch", "mach", "loop", "tail"}, {"top": ()}
+    )
+    assert [s.src for s, _g in got] == [0x1004]
 
 
 def test_the_divider_is_the_tick_level_counter_a_reload_gates():
@@ -367,6 +499,9 @@ def test_a_schedule_states_every_datum_b6_compares():
         "row_consumes_tick",
         "tempo.rate",
         "tempo.phase",
+        "tempo.step",
+        "tempo.resets",
+        "tempo.boundary_terms",
         "segments",
     }
 
@@ -417,11 +552,11 @@ def test_the_coverage_counts_the_leaves_and_where_t1_s_accumulators_landed():
     streams = [{"rows": [{"when": [], "sets": [["freq_lo", {"cell": "a"}]]}]}]
     accs = {"acc0": {"site": "$1050", "policy": {"reload": 1}, "when": []}}
     t1got = [{"id": "a0", "cell": "c", "sites": ["$1050"], "form": "acc", "why": None}]
-    cov = build.coverage(low, Prog(), "tick", {"machine": ["loop"]}, [], streams, accs, t1got)
+    cov = report.coverage(low, Prog(), "tick", {"machine": ["loop"]}, [], streams, accs, t1got)
     assert cov["t1_recognised"] == 1 and cov["leaves"]["cell"] == 1
     assert cov["store_sites"] == 2 and cov["t1_refused"] == []
     t1got[0].update(form="sets", why="no lowered row stores it")
-    other = build.coverage(low, Prog(), "tick", {"machine": ["loop"]}, [], streams, accs, t1got)
+    other = report.coverage(low, Prog(), "tick", {"machine": ["loop"]}, [], streams, accs, t1got)
     assert other["t1_recognised"] == 0
     assert other["t1_refused"] == [["a0", "c", "no lowered row stores it"]]
 
@@ -454,7 +589,7 @@ def test_the_recorder_names_each_inner_loop_s_own_test_and_its_reset():
 
 
 def test_a_recorded_region_exports_every_temp_it_binds():
-    F = record.fetch_of(Prog(), "tick", [("fetch", ["fetch"], "tail")])
+    F = record.fetch_of(Prog(), "tick", [("fetch", ["fetch"], ["tail"])])
     r = F.regions[("tick", "fetch")]
     assert r.liveout == ("n",) and r.exits == frozenset({"tail"})
 

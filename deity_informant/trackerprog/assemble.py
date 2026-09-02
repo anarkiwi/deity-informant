@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from ..tuneprog.graph import cfg, idoms, natural_loops, preds_of, rpo, succs
 from . import build, emit, lower, record, recognise, region, schedule
+from .report import coverage
 from .refuse import Refusal
 from .cells import Cells
 from .vocab import Vocab
@@ -66,25 +67,34 @@ def lift(art, ticks=None, hints=None):  # noqa: C901 - one clause per derived da
     rid, org, n, basenote = pit
     pstart = org + 2 * basenote
     cells = Cells(view, names, pitch=(rid, pstart, n), inspw=pwcols)
-    voc = Vocab(cells, prog.reads(), build.registers(view), sch.vidx)
+    voc = Vocab(cells, prog.reads(), build.registers(), sch.vidx)
     voc.pitch, voc.inspw = (rid, org, n), pwcols
     voc.insbase, voc.inscol, voc.insstride = ins[0], ins[1], ins[2]
     low = lower.Lower(prog, proc, cells, voc)
     voc.notebase = build.note_base(low, rid, org, [p])
     _need(voc.notebase, "unclassified update", "note", "no cell indexes the tuning")
     cells.rename = {voc.notebase: "note", voc.insbase: "ins"}
-    voc.dropstores = {sch.clock[2].src}
+    clockcell = _clockcell(cells, sch)
+    voc.dropstores = {sch.clock[2].src} | {st.src for st, _g in sch.resets}
+    # the counter as the object reads it: its own step before the clock takes it,
+    # and the cell every later read of it is (section 3.6)
     voc.subst = {sch.clock[1].n: {"cell": "phase"}}
+    if not sch.inloop:  # a scalar the tick keeps: the object's cell is the clock's own
+        voc.subst.update({n: {"cell": clockcell} for n in sch.reads})
 
     body = set(sch.body)
     segs = {name: _live(prog, proc, blocks) for name, blocks in sch.segments}
+    voc.rowblocks = frozenset(segs["row"])
     glob = _live(prog, proc, [l for l in rpo(p) if l not in body])
-    low.scope, low.local = None, {}
+    low.gate, low.scope, low.local = frozenset(), frozenset(), {}
     build._supplied(low, sum(segs.values(), []) + glob)
     inrow = _defined(p, segs["row"])
     low.v.supplied = {n for n in low.bad if n in low.assigned and n in inrow}
     low = lower.Lower(prog, proc, cells, voc)
+    low.stated = frozenset(id(c) for c in sch.spent)
     img = record.interp.Player(prog, region.Fetch()).run_init().m
+    inputs, badinputs = build.pinned_inputs(prog, img)
+    refusals += [Refusal("external input", a, site, kind) for a, site, kind in badinputs]
 
     trips = {}
     loops = record.headers(prog, proc, set(sum(segs.values(), []) + glob))
@@ -93,18 +103,21 @@ def lift(art, ticks=None, hints=None):  # noqa: C901 - one clause per derived da
     rowblocks = segs["row"]
     exits = sorted({s for l in rowblocks for s in succs(p.blocks[l].term) if s not in rowblocks})
     exits = [e for e in exits if type(p.blocks[e].term).__name__ != TRAP]
-    vvar = sorted(sch.vidx)[0]
+    vnames = sorted(sch.vidx)
     key = (proc, rowblocks[0])
     R, fetches, trap, _obs = record.run(
         prog,
         proc,
-        [(rowblocks[0], rowblocks, exits[0])],
+        [(rowblocks[0], rowblocks, exits)],
         ticks or art["t2"]["horizon"]["ticks"],
-        envvars={key: [vvar]},
+        inputs=inputs,
+        envvars={key: vnames},
         loops=loops,
         marks=marks,
     )
     trips = dict(R.trips)
+    vvar = record.voice_name(fetches.get(key, []), vnames, cells.voices)
+    _need(vvar, "unclassified update", proc, "no name the fetch carries is the voice")
     if trap is not None:
         refusals.append(Refusal("external input", trap["detail"], "", trap["trap"]))
 
@@ -116,7 +129,7 @@ def lift(art, ticks=None, hints=None):  # noqa: C901 - one clause per derived da
 
     ph = build.Phases(low, trips)
     pre = ph.add("prelude", segs.get("prelude", []), False)
-    rows = ph.add("rowprog", rowblocks, False)
+    rows = ph.add("rowprog", rowblocks, False, gate=sch.boundary)
     ph.add("machine", segs.get("machine", []), True)
     gl = ph.add("global", glob, False)
     streams, accs = ph.streams, ph.accs
@@ -162,11 +175,12 @@ def lift(art, ticks=None, hints=None):  # noqa: C901 - one clause per derived da
             "commit_order": list(sch.commit_order),
             "instrument": {},
             "tempo": {
-                "cell": cells.voicecell(sch.clock[3]),
-                "step": -1,
+                "cell": clockcell,
+                "step": sch.step,
                 "rate": rate,
                 "phase": phase,
-                "boundary": [low.term(*sch.boundary)],
+                "boundary": [low.guard(c, t) for c, t in sch.boundary],
+                **_resets(low, clockcell, sch),
             },
             "tick": _tick(sch.tick, pre),
             "row_consumes_tick": sch.row_consumes_tick,
@@ -175,7 +189,7 @@ def lift(art, ticks=None, hints=None):  # noqa: C901 - one clause per derived da
             "wide": sorted(set(low.wide) | set(join.wide)),
         },
         "pitch": {"base": basenote, "freq": list(art["t2"]["pitch"]["entries"])},
-        "streams": build.unsite(streams),
+        "streams": {**build.unsite(streams), **build.table_streams(voc, img)},
         "accs": accs,
         "instruments": _instruments(art, view, names, ins, pwcols, img, accs),
         "score": {"patterns": record.patterns_of(pats), "orders": orders},
@@ -189,7 +203,7 @@ def lift(art, ticks=None, hints=None):  # noqa: C901 - one clause per derived da
     for site in sorted(low.bad - set(voc.supplied)):
         refusals.append(Refusal("unclassified update", site, site, "no section 5 cell holds it"))
     build.prune(obj)
-    cov = build.coverage(low, prog, proc, segs, glob, list(streams.values()), accs, t1got)
+    cov = coverage(low, prog, proc, segs, glob, list(streams.values()), accs, t1got)
     report = {
         "schedule": sch.datums(),
         "supplied": sorted(voc.supplied),
@@ -201,6 +215,28 @@ def lift(art, ticks=None, hints=None):  # noqa: C901 - one clause per derived da
         "patterns": len(pats),
     }
     return obj, report
+
+
+def _clockcell(cells, sch):
+    """The cell ``meta.tempo`` moves: a voice's own counter, or the tick's own.
+
+    A counter the tick steps outside the voice loop is one value the whole tune
+    keeps, and every voice's copy of it steps by the same rule (section 3.6).
+    """
+    base = sch.clock[3]
+    return cells.voicecell(base) if sch.inloop else cells.scalarcell(base)
+
+
+def _resets(low, cell, sch):
+    """Section 3.6's ``reset`` clauses: what the tick does to the counter at its end."""
+    out = [
+        {
+            "when": [low.guard(c, t) for c, t in guard],
+            "sets": [["@" + cell, low.guard_value(st.v)]],
+        }
+        for st, guard in sch.resets
+    ]
+    return {"reset": out} if out else {}
 
 
 def _tick(tick, pre):
@@ -251,21 +287,20 @@ def _order_region(art, view, names):
 
 def _keep(low, accs, sch):
     """The cells a reader outside the lowered rows still has: the object's own."""
-    out = {"note", "ins", "phase", "voice_index", cells_name(low, sch)}
+    out = {"note", "ins", "phase", "voice_index", _clockcell(low.cells, sch)}
     for a in accs.values():
         out |= build._cellnames(list(a.values()))
         out |= {a["cell"].lstrip("#") + h for h in ("", ".lo", ".hi")}
-    out |= build._cellnames([sch and low.term(*sch.boundary)])
+    out |= build._cellnames([low.guard(c, t) for c, t in sch.boundary])
     return out
 
 
-def cells_name(low, sch):
-    return low.cells.voicecell(sch.clock[3])
-
-
 def _instruments(art, view, names, ins, pwcols, img, accs):
-    """One record per entry of T2's selector: its columns, and its pulse pair."""
-    addr, cols, stride, entries = ins
+    """One record per entry of T2's selector: its columns, and its pulse pair.
+
+    A record is named by what the cell that selects it holds, which T2 states.
+    """
+    addr, cols, stride, entries, keys = ins
     byid = view.by_id()
     out = {}
     for i in range(entries):
@@ -275,7 +310,7 @@ def _instruments(art, view, names, ins, pwcols, img, accs):
             pw[0 if part == "lo" else 1] = int(img[byid[rid].base + i * stride])
         rec["pw"] = pw
         rec["accs"] = [{"acc": k} for k in accs]
-        out[str(i)] = rec
+        out[str(keys[i])] = rec
     del art, names, addr
     return out
 

@@ -14,13 +14,17 @@ from . import region as rgn
 
 
 def fetch_of(prog, proc, groups):
-    """A :class:`~.region.Fetch` over given block groups, each exporting every temp."""
+    """A :class:`~.region.Fetch` over given block groups, each exporting every temp.
+
+    A group is ``(entry, blocks, exits)``: every block the region's own paths
+    leave by, since a visit that left another way is a visit the score loses.
+    """
     F = rgn.Fetch()
     p = prog.procs[proc]
-    for entry, blocks, exit_ in groups:
+    for entry, blocks, exits in groups:
         names = tuple(s.n for l in blocks for s in p.blocks[l].stmts if type(s) is Let)
         F.regions[(proc, entry)] = rgn.Region(
-            proc, frozenset(blocks), entry, exit_, frozenset([exit_]), frozenset(), names
+            proc, frozenset(blocks), entry, exits[0], frozenset(exits), frozenset(), names
         )
     return F
 
@@ -87,6 +91,19 @@ def run(prog, proc, groups, ticks, inputs=None, envvars=None, loops=(), marks=()
     R = Recorder(prog, F, inputs, envvars=envvars, track=loops, marks=marks).run_init()
     obs, trap = R.render(ticks)
     return R, R.fetches, trap, obs
+
+
+def voice_name(records, names, voices):
+    """The name the fetch's own environment carries the voice in.
+
+    The voice loop leaves several names for its index and the score needs the one
+    the fetch itself carries: every voice, and no value that is not one.
+    """
+    for n in names:
+        got = [r["env"].get(n) for r in records]
+        if got and len(set(got)) == voices and all(v in range(voices) for v in got):
+            return n
+    return None
 
 
 def score_of(records, low, vvar, ordernames, tempo, voices, ordpos=None, keep=None):

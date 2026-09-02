@@ -93,7 +93,13 @@ class Acc:
         prod, self.drop = self.j.produce(self, self.stream, idx[0], when)
         if not prod:
             return self.refuse("T0 names no write of its own cells")
-        self.drop += [(self.stream, i, k) for i, k, _s in self.rows if i in idx]
+        # a store of the cell that is not the delta leaves the stream only where
+        # the record states it: a reload's own value.  Under `wrap` the record
+        # has no such field, so that store is a row like any other
+        held = self.a.get("policy") == "reload"
+        self.drop += [
+            (self.stream, i, k) for i, k, _s in self.rows if i in idx and (held or i in deltarows)
+        ]
         stop = max(i for n, i, _k in self.drop if n == self.stream)
         got = self.fields(rows, idx, deltarows, when, stop)
         if got is None:
