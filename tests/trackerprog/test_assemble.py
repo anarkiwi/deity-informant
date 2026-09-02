@@ -456,9 +456,7 @@ def test_the_segments_split_at_the_fetch_and_name_the_commits():
 
 def test_the_row_clock_is_the_counter_a_guard_of_the_fetch_s_path_steps():
     p = proc()
-    base, lbl, pre, store_, step, keep, div, spent = schedule.clock_of(
-        p, set(p.blocks), frozenset({"x"}), "fetch"
-    )
+    base, lbl, pre, store_, step, keep, div, spent = schedule.clock_of(p, frozenset({"x"}), "fetch")
     assert base == VOICE + 6 and lbl == "head" and step == -1
     assert pre.n == "t0" and store_.src == 0x1010
     assert len(keep) == 1 and keep[0][1] is True and not div and not spent
@@ -469,7 +467,7 @@ def test_a_counter_a_guard_compares_with_a_cell_is_the_divider_and_not_the_clock
     p.blocks["head"].term = If(Bin("!=", ram(GLOB, 7), ram(INS + 1, 3)), "fetch", "mach")
     p.blocks["fetch"].stmts.insert(0, Let("g", ram(GLOB, 7)))
     p.blocks["fetch"].stmts.insert(1, store(GLOB, 7, Bin("-", V("g"), C(1)), src=0x1024))
-    got = schedule.clock_of(p, set(p.blocks), frozenset({"x"}), "fetch")
+    got = schedule.clock_of(p, frozenset({"x"}), "fetch")
     assert got is None or GLOB in got[6]
 
 

@@ -145,9 +145,6 @@ def pw_columns(art, view, names):
     return out
 
 
-SIDBASE = 0xD400
-
-
 def registers():
     """``{offset from the chip's own base: register name}``: its own columns.
 

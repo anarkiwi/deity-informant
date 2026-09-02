@@ -163,7 +163,7 @@ def counters(p, vidx):
     return out
 
 
-def clock_of(p, body, vidx, entry, guards=None):
+def clock_of(p, vidx, entry, guards=None):
     """Section 3.6's row clock, from the guard the fetch's own path stands under.
 
     The fetch is read at a step of one counter, so the counter is the address a
@@ -275,7 +275,7 @@ def derive(prog, proc, fetchblocks, t0, entry):
     sch.segments = segments(order, set(fetchblocks), sites)
     sch.tick = tick_list(sch.segments, p, sites)
     guards = guardpath(p, sites=True)
-    got = clock_of(p, body, sch.vidx, entry, guards)
+    got = clock_of(p, sch.vidx, entry, guards)
     if got:
         base, lbl, pre, store, step, keep, div, spent = got
         sch.clock = (lbl, pre, store, base)
