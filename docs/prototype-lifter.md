@@ -406,7 +406,7 @@ better statement, and §7 says what is left.
 | `score.orders` | 26 / 18 / 18 `play` steps, `jump(0)` | 15 / 8 / 8, `jump(0)` | the lift's visits are its own: one per fetch the horizon took, the hand's one per stored order byte |
 | `score.patterns` | 36 patterns, 499 events | 27, 723 | the lift's row is the fetch's own visit and carries no `dur`, so a held row is not an event (§8) |
 | `instruments` | 19 records, 8 columns, named `0, 8, …, 144` | 19, 8 columns | **identical set**, named by what the cell holds (§2.2) |
-| `streams` | 4 lowered (114 rows) and 19 tables (1,877 rows) | 10 (`pulse` 20, `filter` 23, `wavetab` 64, `wave`, `pitch`, `writeout`, `prelude`, `notestage`, `voicebits`, `channel`) | the lowering, against the reading: the hand's `pulse`/`filter`/`wavetab` are three of the lift's nineteen tables, read the same way (`tabcell`) |
+| `streams` | 4 lowered (114 rows) and 19 tables (1,877 rows) | 10 (`pulse` 20, `filter` 23, `wavetab` 64, `wave`, `pitch`, `writeout`, `prelude`, `notestage`, `voicebits`, `channel`) | the lowering, against the reading: the hand's `pulse` 20, `filter` 23 and `wavetab` 64 are the same bytes the lift's nineteen tables hold, read the same way (`tabcell`) — records with a `next` link and a hold, against one row a byte |
 | `accs` | 0 | 7 §5 records | §2.3: T1 states five and the join refuses all five, by name |
 | `state0` | 227 cells, 7 globals | 41 cells | every SSA temp the object still reads is a cell, and 8 of them are joins (§2.2) |
 
