@@ -171,7 +171,9 @@ The mechanism, which was not where §9 assumed: **the score is not what makes th
 object large.** Materialised over the whole horizon — Blackbird's LZ stream
 expanded to 511,867 bytes — it still compresses to about what the whole load band
 does (3,100 against 2,804 on *Je suis Linus*, a band holding the player *and* the
-data). It is the sound half that doubles the total, and 95 % of *Knob at Night*.
+data). It is the sound half that doubles the total on the even builds; *Knob at
+Night*'s 95 % is the rip wrapper's own per-frame table and not the sound
+vocabulary, which R9 restated at its row (§9.1).
 So §9's claim is restated: the object is player-independent, not small, and B7
 and B8 are where a saving would come from.
 

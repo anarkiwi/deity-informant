@@ -154,8 +154,8 @@ divergences and 0 envelope traps — where architecture §9.2 had it in the
 
 §2's rule 1 keeps every `ctrl`/`AD`/`SR` write in tick order because the
 envelope generator is edge-triggered — which is a fact about **one voice's**
-envelope generator. The certificate says so: "order between voices inside a
-tick" is on the `dropped` list, and `certify.divergence` splits the edges per
+envelope generator. The certificate says so: "the interleave between voices of one
+tick's writes" is on the `dropped` list, and `certify.divergence` splits the edges per
 voice before comparing them. `attest`, the hand tools' harness, printed the same
 `dropped` list and then compared `TickObs.edges` as one flat tuple.
 

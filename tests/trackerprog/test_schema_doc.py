@@ -190,3 +190,91 @@ def _paths(x, out):
     elif isinstance(x, list):
         for y in x:
             _paths(y, out)
+
+
+# section 5's cell vocabulary, section 3.6's row program and section 4.1's phases:
+# three boxes naming what the player itself knows, machine-checked against it
+DECLARED = "ins wave orderpos rowsleft dur freq note lastnote".split()
+RESERVED = "voice_index counter phase tied freq_hi freq_lo pw pw_lo pw_hi".split()
+ROW_STEPS = {"sets", "ins", "stream", "note", "commands", "hold"}
+PHASES = {"fetch", "prelude", "row", "machine", "commit"}
+
+
+def _table(head, marker):
+    """The backticked names of the table row whose first column holds ``marker``."""
+    text = DOC.read_text().split(head, 1)[1]
+    row = next(x for x in text.splitlines() if x.startswith("|") and marker in x)
+    return re.findall(r"`([a-z_.<>#]+)`", row.split("|")[2])
+
+
+def test_the_cell_box_names_the_players_own_state_vector():
+    """The eight cells ``Player.__init__`` declares, in the order it declares them."""
+    src = PLAYER.read_text().split("self.c = {", 1)[1].split("}", 1)[0]
+    assert re.findall(r'"([a-z_]+)":', src) == DECLARED
+    assert _table("## 5. Effects as bounded accumulators", "Player.__init__") == DECLARED
+
+
+def test_the_cell_box_names_what_cell_answers_itself():
+    """Every name ``cell()`` special-cases before reading the vector, and no other."""
+    body = PLAYER.read_text().split("    def cell(self, name):", 1)[1]
+    body = body.split("    def command_of", 1)[0]
+    seen = re.findall(r'name (?:==|in \()\s*"([a-z_]+)"(?:, "([a-z_]+)", "([a-z_]+)")?', body)
+    got = list(dict.fromkeys(n for group in seen for n in group if n))
+    assert got == RESERVED
+    assert _table("## 5. Effects as bounded accumulators", "answers itself") == RESERVED
+
+
+def test_the_row_program_box_names_every_step_row_step_runs():
+    """Section 3.6's six steps are ``Player.row_step``'s own branches."""
+    body = PLAYER.read_text().split("    def row_step(self", 1)[1].split("    def ties(", 1)[0]
+    assert set(re.findall(r'"([a-z]+)" in step', body)) == ROW_STEPS
+    text = DOC.read_text().split("### 3.6 score", 1)[1].split("Which steps a tune has", 1)[0]
+    assert {m for m in re.findall(r"^\| `\{([a-z]+)\}`", text, re.M)} == ROW_STEPS
+
+
+def test_the_phase_table_names_every_phase_the_player_has_and_the_stream_phase():
+    """Section 4.1's list is ``meta.tick``'s vocabulary: the five named phases the
+    player resolves to a ``phase_`` method, and the ``{stream: s}`` entry."""
+    assert set(re.findall(r"def phase_([a-z]+)\(", PLAYER.read_text())) == PHASES
+    text = DOC.read_text().split("**§4.1 The voice's tick is a declared order.**", 1)[1]
+    table = text.split("Which phases a tune has", 1)[0]
+    named = re.findall(r"^\| `([a-z]+)` \|", table, re.M)
+    assert set(named) == PHASES and "| `{stream: s}` |" in table
+
+
+def test_section_4s_pseudocode_names_every_procedure_one_tick_runs():
+    """A reader holding the code against section 4 holds it against the code: the
+    block names the six procedures ``tick`` reaches and nothing it does not."""
+    text = DOC.read_text().split("## 4. The universal player", 1)[1]
+    block = text.split("```", 2)[1]
+    called = {m.group(1) for m in re.finditer(r"^([a-z_]+)\(", block, re.M)}
+    assert called == {"tick", "voice", "clock", "channel", "channel_commit", "commit"}
+    src = PLAYER.read_text()
+    for name in called:
+        assert "    def %s(self" % name in src, name
+
+
+# section 3.3's two readers: what a cursor-stepped row has, and what a guarded one
+# has.  The grammar is one; the readers are not, so the box says which reads which
+CURSOR_ONLY = {"hold", "next", "jump", "op", "run", "trap"}
+ROWS_ONLY = {"when", "point"}
+
+
+def test_the_step_table_gives_each_field_the_reader_the_player_gives_it():
+    """``steprows`` compiles a cursor-stepped row and ``rowplan`` a guarded one."""
+    src = PLAYER.read_text()
+    cursor = src.split("    def steprows(self", 1)[1].split("    def stream_step(", 1)[0]
+    rows = src.split("    def rowplan(self", 1)[1].split("    def runstream(", 1)[0]
+    got = set(re.findall(r'r(?:\.get)?[(\[]"([a-z]+)"', cursor))
+    got |= set(re.findall(r'"([a-z]+)" (?:not )?in r\b', cursor))
+    assert got == CURSOR_ONLY | {"sets"}
+    assert set(re.findall(r'r\.get\("([a-z]+)"', rows)) == ROWS_ONLY | {"sets"}
+    text = DOC.read_text().split("### 3.3 streams", 1)[1].split("A stream may be reached", 1)[0]
+    table = {
+        m.group(1): (m.group(2).strip(), m.group(3).strip())
+        for m in re.finditer(r"^\| `([a-z]+)`[^|]*\| ([^|]+)\|([^|]+)\|", text, re.M)
+    }
+    assert set(table) == CURSOR_ONLY | ROWS_ONLY | {"sets"}
+    for name, (bycursor, byrows) in table.items():
+        assert bycursor.startswith("—") == (name not in CURSOR_ONLY | {"sets"}), name
+        assert byrows.startswith("—") == (name not in ROWS_ONLY | {"sets"}), name

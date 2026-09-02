@@ -120,7 +120,8 @@ The certificate names both halves, kept and dropped:
   "compared": ["per-voice ctrl/AD/SR write order", "freq/pw/cutoff tick values",
                "res_route/mode_vol tick values"],
   "dropped":  ["order between registers of different classes inside a tick",
-               "order between voices inside a tick", "cycle position inside a tick"],
+               "the interleave between voices of one tick's writes",
+               "cycle position inside a tick"],
   "ticks": 8236,                       // the whole certified horizon, never less
   "divergence": null,                  // else {tick, register, expected, got}
   "refusals": [],                      // non-empty ⇒ no trackerprog is emitted
@@ -128,6 +129,19 @@ The certificate names both halves, kept and dropped:
   "end":  {"tick": 8235, "kind": "loop" | "fixed_point" | "horizon"}
 }
 ```
+
+**What the voice-order row drops is the interleave, not the order.** `attest`
+and `certify` both group a tick's edges *per voice* and compare each voice's own
+sequence, so what neither compares is how one voice's writes interleave with
+another's — a tick that runs a tokenizer pass over three voices and then an
+engine pass over three permutes them against a player that finishes a voice at a
+time (Blackbird, 8,442 of 10,426 ticks). The **order the voices run in** is not
+dropped and cannot be: `meta.voice_order` is a datum of the object (`[2, 1, 0]`
+in five families), read at `Player.tick`, and it decides the render wherever two
+voices meet — the one global channel, a register the flush does not hold, a
+command's `all`, and any cell one voice writes and another reads (§3.2's
+`{"cell": [name, voice]}`). The `dropped` list says the interleave, which is
+what the comparison drops.
 
 Three source shapes, three ends. `complete` with `period > 1` closes: `loop`
 non-null, `end.kind = loop`. `complete` with **`period = 1`** did not loop — the
@@ -303,25 +317,51 @@ The one sequencing form. A stream is a finite table of steps:
 Step = { when:  [ guard, … ]               // the one guard shape in this schema
        , sets:  [ set(target, value), … ]  // assignments, in this order,
                                            // all inside one tick (Walker's gate 1→0→1)
-       , point: [ (slot, row, keep), … ]   // re-point a stream, keeping its hold or not
+       , point: [ (slot, row, keep, guard?), … ]   // re-point a stream, keeping its
+                                           // hold or not; null is a cursor on no row
        , op:    acc(acc_id) | pitch(offset | absolute, wrap?) | cmd(name) | none
                                            // acc, cmd: GoatTracker 2 alone (B8);
                                            // wrap, the note column's own bits: SID Wizard
        , run:   [ acc(acc_id), … ]         // an acc the step runs on every tick it holds
        , hold:  k ticks (k ≥ 1)
-       , next / jump: row | null }         // where the step goes, and where a row jumps;
+       , next / jump: row | null           // where the step goes, and where a row jumps;
                                            // null in either is no row, and the stream stops
+       , trap:  why }                      // a row the certified horizon never reaches:
+                                           // arriving at it is an assertion, by name
 ```
 
-Every field is optional and every one is a *step's*, not a family's: an
-instrument's note-on (§3.5), a prelude, a row program's stream step (§3.6) and
-a table are all this object. The first draft named a terminator, `jump(row) |
-halt`, as a field of the stream; the exemplars put the jump on the row that
-carries it and nothing reads a `halt` — a stream with no jump is one, so the
-row's `jump` is the whole of it. #310 struck it from the grammar and four of the
-five tools went on writing `term` for two more families, the print rendering it
-beside the stream's name: striking a row from the schema is not striking it from
-the object, and both are now done (§7).
+Every field is optional and every one is a *step's*, not a family's. Any other
+key on a row is the family's own column, read by the object's expressions
+through `tabcell` (§5) and by nothing in the player.
+
+**A step has two readers, and which one runs it decides which fields it has.**
+A stream a **cursor** steps — the `machine` phase's ranked streams without
+`all`, and the global channel's — is `Player.stream_step`: a divider, a hold, a
+landing. A stream run as a **guarded row list** is `Player.runstream`, which is
+the one procedure for a declared stream with `all`, a `{stream}` phase, a
+`{stream}` step of §3.6's row program, an instrument's `on_note`, a prelude and
+a command's `rows` (§3.5). The grammar is one; the two readers are not, and each
+row of the table is the families that write the field:
+
+| field | `stream_step` (cursor) | `runstream` (rows) | families writing it |
+| --- | --- | --- | --- |
+| `sets` | yes | yes | all nine (5 on a cursor, 9 in a row list) |
+| `when` | — the *stream's* own guard is asked once per slot, never the row's | the **row's** | 8 — every family but Blackbird |
+| `point` | — | yes | 6: GT2, SW, JCH, defMON, Blackbird, Galway |
+| `hold` | yes | — | 4: GT2, SW, JCH, defMON |
+| `next` | yes | — | 7 — every family but Hubbard and Follin |
+| `jump` | yes | — | 2: GT2, defMON |
+| `op` | yes | — | 3: GT2, SW, Galway |
+| `run` | yes | — | 4: GT2, SW, Blackbird, Walker |
+| `trap` | yes | — | 4: GT2, SW, JCH, Blackbird |
+
+A stream may be reached both ways where a family names one from two places
+(GoatTracker 2's `note_on` and `exit`, GoatTracker 2's and SID Wizard's
+`hard_restart`); it is the same rows under both readers.
+
+The first draft named a terminator, `jump(row) | halt`, as a field of the
+stream; the exemplars put the jump on the row that carries it and nothing reads
+a `halt` — a stream with no jump is one, so the row's `jump` is the whole of it.
 
 **A cursor is on a row, or on none, and never says so by its index.** Row 0 is a
 row like any other; a stream that is not running carries `row: null`, which is
@@ -697,11 +737,21 @@ Each token the byte packed becomes its own field — `sounds`, `gate`, `dur`,
 | everything else | `arm` | the porta byte | the fx nibble | `$60–$77`, `$78–$7C`, and both effect columns |
 
 **The row is a program, and one procedure runs it.** `meta.row` is an ordered
-list of steps over the event — `{sets}` assignments, `{ins}` the instrument the
-row names, `{stream}` a guarded §3.3 stream, `{note}` the sound the row keys,
-`{commands}` the row's own — each with an optional `when` over the row's facts
-(`sounds`, `keys`, `newins`, `field`, `gate_stmt`, `tie`, `gate`, the mask
-below). Which steps a tune has, and in which order, is data:
+list of steps over the event, each with an optional `when` over the row's facts
+(`sounds`, `keys`, `newins`, `field`, `gate_stmt`, `tie`, `dur`, `note`,
+`wraps`, and `gate`, the mask below). Six steps, and `Player.row_step` is the
+one procedure over all six:
+
+| step | what it does |
+| --- | --- |
+| `{sets}` | assignments, over the row's own facts as the payload |
+| `{ins}` | the instrument the row names, where it names one |
+| `{stream}` | a guarded §3.3 stream — a declared one by name, or the rows (§3.3) |
+| `{note}` | the sound the row keys: the pitch, and what the note-on arms (§3.5) |
+| `{commands}` | the row's own commands, in row order |
+| `{hold}` | the command the score gives the voice to keep, and the tie it carries |
+
+Which steps a tune has, and in which order, is data:
 
 | source | `meta.row` |
 | --- | --- |
@@ -896,42 +946,65 @@ so sweeping first writes the un-swept value — 383 diverging ticks of its song 
 
 ## 4. The universal player
 
-Normative semantics — anatomy §2's pseudocode made exact. One tick:
+Normative semantics — anatomy §2's pseudocode made exact. This is
+`Player.tick`/`voice`/`commit` line for line, and there is no other entry:
 
 ```
-tick():
-    flush the image the last tick left, in `meta.shadow`'s own order   # §3.1
-    if a command is due on a tick of its own:      # `state0.prologue`, an order's
-        every voice runs it; commit(v); done       #   `end: {stop}` -- §3.6
-    channel(globals.streams)                       # the channel the voices read
-    for v in meta.voice_order:                     # §3.1; a stopped voice runs nothing
-        tempo[v].step()                            # the row clock, §3.6
-        for phase in meta.tick: run(phase, v)      # the voice's tick, §4.1
-        commit(v)
-    channel(globals.after)                         # the channel the voices write
-    commit_global(): globals.commit, guard by guard, to the image or the chip
+tick():                                            # `Player.tick`
+    if meta.shadow:                                # this tick emits the image the
+        for (register, guards) in meta.shadow.registers:   #   last tick left, §3.1
+            if guards hold: write it                       #   one family guards them
+    if a command is due on a tick of its own:       # `state0.prologue`, or the one
+        for v in 0..voices-1: run it; commit(v)     #   an order's `end: {stop}` named
+        return the tick's writes                    # nothing else runs on that tick
+    channel(globals.streams)                        # the channel the voices read
+    for v in meta.voice_order: voice(v)             # §3.1
+    channel(globals.after)                          # the channel the voices write
+    channel_commit()                                # §3.7
 
-commit(v):                                        # one group of the tick's writes
+voice(v):                                          # `Player.voice`
+    if v is stopped and meta.stop == voice: nothing runs at all      # §3.6
+    boundary = false if v is stopped else clock(v)  # the row clock steps, §3.6
+    spent = false
+    for phase in meta.tick:                         # §4.1, in the order given
+        if meta.stop == sequencer and v has been stopped this tick: break
+        if phase is {stream: s}: run it             # the write-out: spent or not
+        elif not spent: run it                      # `row` sets spent from
+    commit(v)                                       #   `row_consumes_tick`
+
+clock(v):                                          # `Player.clock`, §3.6
+    stepped = tick_no % tempo.rate == tempo.phase   # which ticks the clock steps on
+    if not stepped: return false                    # `fetch` and `prelude` read this
+    phase = tempo.cell[v]; tempo.cell[v] += tempo.step   # `phase` is the step it was
+    hit = tempo.boundary holds
+    the first tempo.reset clause whose guard holds, and no more
+    return hit
+
+channel(key):     globals[key]'s streams, each by its own reader (§3.3)
+channel_commit(): globals.commit, guard by guard -- into the image, or to the chip
+                  on this tick for a register meta.shadow.registers does not name
+
+commit(v):                                         # one group of the tick's writes
     the voice's freq/pw producers, in declared order    # §2 rule 2 keeps the last
     then its edge writes, the tick's acts in order,
-    each act's own in `meta.commit_order`               # §2 rule 1, §3.1
+    each act's own in `meta.commit_order`, one slot per register   # §2 rule 1, §3.1
 ```
 
-Nothing abandons a tick. A voice the score stopped runs no phase (or, where
-`meta.stop` is `sequencer`, every phase but the row), and the tune's own end is
-that voice stopped like any other, so there is no second procedure for the last
-tick of a tune (§3.6).
+Nothing abandons a tick, and no phase, `voice` or `tick` can. A voice the score
+stopped runs no phase (or, where `meta.stop` is `sequencer`, every phase up to
+the one that stopped it), and the tune's own end is that voice stopped like any
+other, so there is no second procedure for the last tick of a tune (§3.6).
 
 **§4.1 The voice's tick is a declared order.** `meta.tick` is a list of phases:
 
 | phase | what it is |
 | --- | --- |
-| `fetch` | read the row the clock runs ahead of, and run `meta.stage` over it — §3.6's own row program, one tick position earlier (§3.5) |
-| `prelude` | the instrument's early rows, where the clock says the next row is near |
-| `row` | the row boundary: consume the Event and run §3.6's row program |
-| `machine` | the voice's streams and armed accumulators, in `rank` order (§3.3, §5) |
+| `fetch` | on a tick the clock stepped and `tempo.fetch` (else `tempo.early`) admits: read the row the clock runs ahead of and run `meta.stage` over it — §3.6's own row program, one tick position earlier (§3.5) |
+| `prelude` | on a tick the clock stepped and `tempo.early` admits: the instrument's early rows, where the next row is near |
+| `row` | the row boundary, where the clock said so: consume the Event, run §3.6's row program, and set `spent` from `row_consumes_tick` |
+| `machine` | the voice's streams and armed accumulators, in the `rank` order the object gives (§3.3, §5) |
 | `commit` | a group boundary — what the tick has written so far, written |
-| `{stream: s}` | a stream every path of the voice ends on, run whatever the row did |
+| `{stream: s}` | a stream every path of the voice ends on, run whatever the row did, and the one phase a spent tick still runs |
 
 Which phases a tune has, and in which order, is one datum: a family whose fetch
 runs ahead of the tick's own modulators is the list saying so, and a family
@@ -1081,6 +1154,23 @@ space and half read on the voice it states. Only `beyond` and an instrument's
 `pitch` use it, because only they are memory models (§3.2), and a modulator
 carries no state beyond its own expressions — there is no private state, no
 subscription and no event.
+
+**The player's own names, and everything else is the tune's.** A cell is one of
+three things, and `Player.cell` decides in that order:
+
+| what | names |
+| --- | --- |
+| the eight voice cells the player declares (`Player.__init__`) | `ins` `wave` `orderpos` `rowsleft` `dur` `freq` `note` `lastnote` |
+| the names `cell()` answers itself, from the tick rather than the vector | `voice_index` `counter` `phase` `tied` `freq_hi` `freq_lo` `pw` `pw_lo` `pw_hi` |
+| everything else | the tune's own, declared and seeded by `state0.cells` and read on the voice being committed — `#global`, `ins.pw`, `shadow.<pair>` and a `.hi`/`.lo` half with them |
+
+The eight are the player's state vector and no more: `pwdir` and `pwdelay` were
+in it until P3 and are Hubbard's, seeded like every other cell a tune has. Two
+of the eight are also a tune's — defMON's row clock counts in `rowsleft` and
+Follin's in `dur`, which is a tune naming a cell it did not declare and a cell
+the sequencer reloads either way — `state0.cells` fills the same slot. The
+reserved names win over the vector; `pw`/`pw_lo`/`pw_hi` read the instrument's
+own space (§5's `ins.pw`) only where the tune declares no cell of that name.
 
 **Bounded** is the invariant, not a hint: `bound × policy` makes the reachable
 value set finite and statically known; the trackerprog states each interval and
@@ -1646,14 +1736,24 @@ The **score is not what makes the object large**. Materialised over the whole
 horizon with every packed byte unpacked, every cursor spent and Blackbird's LZ
 stream expanded 511,866 bytes wide, it still compresses to about what the whole
 load band does — 3,208 against 2,804 for *Je suis Linus*, a band that holds the
-player *and* the data. It is the sound half — instruments, streams,
-accumulators, `state0`, and the schema's own key names once per record — that
-doubles the total, and on *Knob at Night* it is 95 % of it. The instruments are
-the smallest part of that half and are now smaller: after R8 stated a shared
-record and a row list once rather than per instrument, the instrument half of the
-nine families' first builds is 88 to 1,032 `xz` bytes each — Galway 1,012 → 840,
-JCH 948 → 812, SID Wizard 1,164 → 1,032, Walker 1,032 → 548 — against whole
-objects of 3,672 to 16,252, which is why this table barely moves.
+player *and* the data. On the three even builds it is the sound half —
+instruments, streams, accumulators, `state0`, and the schema's own key names
+once per record — that doubles the total.
+
+***Knob at Night*'s 5 % is not that, and the row is corrected.** Its `rest` is
+616,634 raw bytes of which **598,626 are one stream, `wrapdata`** — the rip
+wrapper's own per-frame record, four bytes a frame over 8,577 frames (two pulse
+widths, a cutoff and a delay), read through the `dptr` cursor the wrapper walks
+(`trackerprog_jch.py:1179–1211`). That is **12,636 of the object's 16,252 `xz`
+bytes**, 81 % of the `rest` column and 78 % of the whole. It is tune data the
+wrapper carries, not the sound vocabulary: the `rest` column with `wrapdata`
+taken out measures **2,936** `xz`, which is the sound half the other three
+builds' rows are made of. The instruments are the
+smallest part of that half and are now smaller: after R8 stated a shared record
+and a row list once rather than per instrument, the instrument half of the nine
+families' first builds is 88 to 1,032 `xz` bytes each — Galway 1,012 → 840, JCH
+948 → 812, SID Wizard 1,164 → 1,032, Walker 1,032 → 548 — against whole objects
+of 3,672 to 16,252, which is why this table barely moves.
 
 The per-family `xz` tables in the nine `prototype-*-trackerprog.md` documents
 predate this and were measured against `tuneprog.md`; each now states its

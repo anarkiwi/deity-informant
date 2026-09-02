@@ -4,8 +4,11 @@ One comparison, over the whole certified horizon: the universal player's SID
 writes against the reference's, both reduced by :func:`~..tuneprog.grid.reduce_tick`
 -- per-voice ctrl/AD/SR writes kept in tick order, freq/pw/cutoff and
 res_route/mode_vol as the one value the tick left.  What the reduction drops --
-order between register classes inside a tick, order between voices, the cycle
-position -- the certificate names, so the boundary is stated and not hidden.
+order between register classes inside a tick, the *interleave* between voices of
+one tick's writes, the cycle position -- the certificate names, so the boundary
+is stated and not hidden.  The order the voices *run* in is not dropped:
+``meta.voice_order`` decides the render wherever two voices share a cell or a
+register (section 2).
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ COMPARED = (
 )
 DROPPED = (
     "order between registers of different classes inside a tick",
-    "order between voices inside a tick",
+    "the interleave between voices of one tick's writes",
     "cycle position inside a tick",
 )
 
