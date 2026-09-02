@@ -206,7 +206,7 @@ class Player:
 
     # ---- reading the object ---------------------------------------------------
     def cell(self, name):
-        """One named cell, on the voice ``self.v`` names."""
+        """One named cell of §5's vocabulary, read on the voice being committed."""
         v = self.v
         if name == "voice_index":
             return v
