@@ -78,13 +78,13 @@ next family can silently break.
 objects and by the unit this section chose — a form (a key, a policy value, an
 expression kind, a `sets` target kind, a `meta` or `state0` key) joined to the
 line that reads it. It found **300 forms, 105 of them with one family**, of which
-58 are the family columns §3.3 and §3.5 already admit (an instrument's own record
+59 are the family columns §3.3 and §3.5 already admit (an instrument's own record
 fields and a stream row's own columns, read through `{"ins": path}` and
-`tabcell`) and 47 are forms of the player. Eight of those were struck and the
-rest are kept with their family and their reader stated at their own schema row
-and a poison registered against each: **292 forms, 99 one-family, 42 of them the
-player's** after — three more than the arithmetic, because striking `unguarded`
-leaves `Acc.flag` itself one family's and the census had been counting
+`tabcell`) and 46 are forms of the player. Eight decisions struck nine of those
+rows and the rest are kept with their family and their reader stated at their own
+schema row, with a `POISONS` entry per mechanism: **292 forms, 99 one-family, 40
+of them the player's** after — three more than the arithmetic, because striking
+`unguarded` leaves `Acc.flag` itself one family's and the census had been counting
 `amplitude.fold`, a prose key, as the `fold` expression. Every kept row of §3–§5
 now has a number beside it. What went, and what the eight
 cost: `policy: take` and `Cmd.links` and `Stream.epoch` and `Acc.flag.unguarded`
