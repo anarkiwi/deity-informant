@@ -89,11 +89,13 @@ def constant_under(e, guards):
 
     Machine-checked and not argued: the cells both read are enumerated over the
     byte.  A term the arithmetic does not reach is dropped, which only widens
-    the set the value must be constant on.
+    the set the value must be constant on, and so is a term over cells the value
+    does not reach -- which is every guard of the row that is not about it.
     """
     try:
         guards = [t for t in guards if all(evaluable(x) for x in (t[0], t[2]))]
-        names = sorted(free(e) | free(guards))
+        guards, names = _about(e, guards)
+        names = sorted(names)
         if len(names) > LIMIT:
             return None
         got = set()
@@ -106,6 +108,17 @@ def constant_under(e, guards):
     except (Opaque, KeyError):
         return None
     return got.pop() if len(got) == 1 else None
+
+
+def _about(e, guards):
+    """The guard terms that can constrain a value: the ones its own cells reach."""
+    names = free(e)
+    while True:
+        got = [t for t in guards if free([t[0], t[2]]) & names]
+        more = names | free([[t[0], t[2]] for t in got])
+        if more == names:
+            return got, names
+        names = more
 
 
 def target_of(name):

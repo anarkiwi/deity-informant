@@ -15,12 +15,10 @@ from ..tuneprog.history import history
 from ..tuneprog.ir import Bin, Const, Load, Store, Tuneprog, Var
 from ..tuneprog.irwalk import addr_split, walk
 from ..tuneprog.recover import Names
-from . import emit, lift as t2lift
+from . import emit, lift as t2lift, lower
 from .universal import CHIP, REG
 
 BYTE = {"from": "projected", "interval": [0, 0xFF], "witness": "the 8-bit store"}
-# the fields of a section 5 record that carry an expression, and no other
-EXPRS = ("policy", "delta", "delta_when", "when", "step_when", "phase", "rate", "gate")
 
 
 def read(out):
@@ -114,7 +112,12 @@ def note_base(low, rid, org, procs):
 
 
 def instrument_table(art, view, names):
-    """``(cursor address, {region id: column}, stride, entries)`` -- T2's own selector."""
+    """``(cursor address, {region id: column}, stride, entries, keys)`` -- T2's selector.
+
+    ``keys`` is what the cell that selects a record holds for each of them: the
+    values T2 saw it take, which is the record's own number where the tune keeps
+    one and the offset it already is where the tune keeps that.
+    """
     regs = emit.by_name(view, names)
     for s in art["t2"]["selectors"] + art["t2"]["streams"]:
         if s["kind"] != "selector":
@@ -122,7 +125,9 @@ def instrument_table(art, view, names):
         _name, _at, addr = s["cursor"].partition("@$")
         cols = {regs[c["table"]].id: c["table"] for c in s["columns"] if c["table"] in regs}
         stride = max(s["columns"][0]["stride"], 1) if s["columns"] else 1
-        return int(addr, 16), cols, stride, s["entries"]
+        seen = sorted(s.get("visited") or ())
+        keys = seen if len(seen) == s["entries"] else list(range(s["entries"]))
+        return int(addr, 16), cols, stride, s["entries"], keys
     return None
 
 
@@ -143,18 +148,17 @@ def pw_columns(art, view, names):
 SIDBASE = 0xD400
 
 
-def registers(view):
-    """``{region id: register name}`` for the chip's own columns, by their base."""
+def registers():
+    """``{offset from the chip's own base: register name}``: its own columns.
+
+    A store names its register by the address it stands at and not by the region
+    it lands in: a family that writes the whole file through one indexed store
+    has one region for all of it, and the seven of a voice are the offsets the
+    voice map moves (section 3.1).
+    """
     off = {v: k for k, v in REG.items()}
     off.update({v: k for k, v in CHIP.items() if "." not in k})
-    out = {}
-    for r in view.storage:
-        if r.kind != "io" or not SIDBASE <= r.base < SIDBASE + 0x20:
-            continue
-        name = off.get(r.base - SIDBASE)
-        if name is not None:
-            out[r.id] = name
-    return out
+    return off
 
 
 def divider_rate(store, low, img):
@@ -200,6 +204,28 @@ def beyond_words(cells, org, n, limit):
     return out
 
 
+# the pinned reads section 8 calls external: the other three kinds are never one
+EXTERNAL = ("raster", "cia", "sid_readback", "io")
+
+
+def pinned_inputs(prog, img):
+    """``({address: value}, refusals)``: the tick's pinned reads as data (section 8).
+
+    ``ack``, ``entry_reg`` and ``uninit_ram`` are never external, so the byte the
+    post-init image holds is the value the run reads; one of the four external
+    kinds is a refusal by name, with the site S4 records it at.
+    """
+    out, bad = {}, []
+    for site, addr, kind, _reads, _phase in prog.inputs:
+        if addr >= 0x10000:
+            continue
+        if kind in EXTERNAL:
+            bad.append(("$%04X" % addr, "$%04X" % site, kind))
+        else:
+            out[addr] = int(img[addr])
+    return out, bad
+
+
 SITES = "_sites"
 
 
@@ -229,7 +255,7 @@ def prune(obj):
     live |= {a["cell"].lstrip("#") for a in obj["accs"].values()}
     for st in obj["streams"].values():
         for r in st["rows"]:
-            live |= {s[0].lstrip("@#!") for s in r["sets"]}
+            live |= {s[0].lstrip("@#!") for s in r.get("sets", ())}
     live |= _reads([obj["streams"], obj["accs"], obj["score"], obj["meta"]])
     live = {n.split(".")[0] for n in live}
     obj["state0"]["cells"] = {k: v for k, v in obj["state0"]["cells"].items() if k in live}
@@ -247,14 +273,14 @@ def sets_of(parts):
     return [[t, v] for t, v, _s in parts]
 
 
-def row_of(low, lbl, extra, local=None):
+def row_of(low, lbl, extra, local=None, guard=None):
     """One block as a row of a stream, and the accumulator stores it is split at.
 
     Each row carries the store site of every assignment under ``_sites``, which
     is what :mod:`.recognise` joins T1's accumulator records to and which is
     stripped once the join has run.
     """
-    when, parts = low.row(lbl, extra, local)
+    when, parts = low.row(lbl, extra, local, guard)
     out = []
     for sets, acc in parts:
         if sets:
@@ -269,7 +295,18 @@ def row_of(low, lbl, extra, local=None):
 def stream_items(low, seq, trips):
     """A segment as ranked items: runs of guarded rows, and the accumulators between."""
     items, rows = [], []
-    for lbl, extra, local in seq:
+    for lbl, extra, local, guard in seq:
+        if lbl == lower.RESET:  # the cells the joins of this segment read, before them
+            rows.append(
+                {"when": [], "sets": [["@" + n, 0] for n in extra], SITES: [None] * len(extra)}
+            )
+            continue
+        if isinstance(lbl, tuple) and lbl[0] == lower.FLAG:
+            low.lbl, low.local = lbl[2], {}
+            rows.append(
+                {"when": low.when(lbl[2], extra, guard), "sets": [["@" + lbl[1], 1]], SITES: [None]}
+            )
+            continue
         if lbl is None:
             rows.append(
                 {
@@ -279,7 +316,7 @@ def stream_items(low, seq, trips):
                 }
             )
             continue
-        for got in row_of(low, lbl, extra, local):
+        for got in row_of(low, lbl, extra, local, guard):
             if got[0] == "row":
                 rows.append(got[1])
             else:
@@ -304,8 +341,13 @@ class Phases:
         self.low, self.trips = low, trips
         self.streams, self.accs, self.rank = {}, {}, 0
 
-    def add(self, name, blocks, ranked):
-        """One segment, lowered and named; ``ranked`` where the machine phase runs it."""
+    def add(self, name, blocks, ranked, gate=()):
+        """One segment, lowered and named; ``ranked`` where the machine phase runs it.
+
+        ``gate`` is the guard the phase itself runs under, which its rows do not
+        repeat: the row phase's is ``meta.tempo.boundary``.
+        """
+        self.low.gate = frozenset((id(c), t) for c, t in gate)
         self.low.scope = set(blocks)
         out = []
         for it in stream_items(self.low, self.low.sequence(blocks, self.trips), self.trips):
@@ -427,6 +469,14 @@ def order_letters(low, rid):
     return out
 
 
+def table_streams(voc, img):
+    """The const tables the lowering read at a cell, each a stream of its own bytes."""
+    return {
+        name: {"rows": [{"b": int(img[a])} for a in range(base, top + 1)]}
+        for name, (base, top) in sorted(voc.tables.items())
+    }
+
+
 def acc_of(name, cell, expr, when, rank, src=0):
     """One store the object has no ``sets`` target for: a reload accumulator (§5)."""
     return name, {
@@ -442,49 +492,3 @@ def acc_of(name, cell, expr, when, rank, src=0):
         "produce": [],
         "when": when,
     }
-
-
-def coverage(low, prog, proc, segs, glob, streams, accs, t1got):
-    """B7's numbers: the store sites lowered, recognised and refused, and their leaves."""
-    p = prog.procs[proc]
-    blocks = sum(segs.values(), []) + list(glob)
-    sites = [s for l in blocks for s in p.blocks[l].stmts if type(s) is Store and s.cls != "chk"]
-    leaves = {}
-    for st in streams:
-        for r in st["rows"]:
-            _leafkinds([x[1] for x in r["sets"]] + list(r.get("when", [])), leaves)
-    for a in accs.values():
-        _leafkinds([a.get(k) for k in EXPRS if k in a], leaves)
-    return {
-        "store_sites": len(sites),
-        "rows": sum(len(st["rows"]) for st in streams),
-        "sets": sum(len(r["sets"]) for st in streams for r in st["rows"]),
-        "accs": len(accs),
-        "refused": sorted(low.bad - set(low.v.supplied)),
-        "leaves": dict(sorted(leaves.items())),
-        "t1_accumulators": t1got,
-        "t1_recognised": sum(1 for a in t1got if a["form"] == "acc"),
-        "t1_refused": [[a["id"], a["cell"], a["why"]] for a in t1got if a["form"] != "acc"],
-    }
-
-
-def _leafkinds(nodes, out):
-    """How many of each section 5 leaf form the lowered rows carry."""
-    stack = list(nodes)
-    while stack:
-        x = stack.pop()
-        if isinstance(x, int):
-            out["const"] = out.get("const", 0) + 1
-        elif isinstance(x, (list, tuple)):
-            stack += list(x)
-        elif isinstance(x, dict):
-            for k, v in x.items():
-                if k in ("cell", "global", "ins", "flag"):
-                    out[k] = out.get(k, 0) + 1
-                elif k in ("transpose", "tuned"):
-                    out["pitch"] = out.get("pitch", 0) + 1
-                    stack.append(v)
-                else:
-                    out[k] = out.get(k, 0) + 1
-                    stack.append(v)
-    return out

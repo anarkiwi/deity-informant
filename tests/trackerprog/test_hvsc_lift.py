@@ -101,7 +101,27 @@ def test_t1s_plane_is_the_joins_input_and_this_prefix_states_none_of_it():
     assert report["coverage"]["t1_recognised"] == 0 and report["coverage"]["t1_refused"] == []
 
 
-@pytest.mark.parametrize("rel", (LINUS, GULDKORN, EMOMYST))
+def test_jch_derives_the_row_clock_of_section_3_6_and_names_where_it_diverges():
+    """The second family, as far as it goes (prototype-lifter.md section 9).
+
+    B6's schedule is derived and agrees with the hand tool's datum for datum but
+    one; the clock is section 3.6's general counter -- one the tick steps outside
+    the voice loop, with a boundary of three terms and a reset clause -- and the
+    object the lowering reaches renders, with the certificate naming the first
+    divergence rather than the lift approximating past it.
+    """
+    obj, report = assemble.lift(artefacts(GULDKORN), ticks=CALLS)
+    sch = report["schedule"]
+    assert sch["voice_order"] == [2, 1, 0] and sch["commit_order"] == ["ad", "sr", "ctrl"]
+    assert sch["tempo.step"] == -1 and sch["tempo.rate"] == 1
+    assert sch["tempo.resets"] == 1 and sch["tempo.boundary_terms"] == 3
+    assert obj["meta"]["tempo"]["reset"][0]["sets"][0][1] == 3  # the tune's own speed
+    assert report["coverage"]["refused"] == ["$saved", "$saved12", "V#1"]
+    doc = attest(obj, reference(GULDKORN, int(obj["meta"]["song"] or 0), CALLS))
+    assert doc["divergence"]["tick"] == 4  # section 9: the fetch's own loop, one byte a turn
+
+
+@pytest.mark.parametrize("rel", (LINUS, EMOMYST))
 def test_the_other_families_refuse_with_a_named_datum_rather_than_approximating(rel):
     with pytest.raises(assemble.Refused) as x:
         assemble.lift(artefacts(rel), ticks=CALLS)

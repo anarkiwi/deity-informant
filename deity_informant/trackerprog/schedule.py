@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from ..tuneprog.accguard import guardpath
 from ..tuneprog.graph import cfg, idoms, natural_loops, preds_of, rpo, succs
-from ..tuneprog.ir import Bin, Const, If, Let, Load, Store, Var
-from ..tuneprog.irwalk import addr_split
+from ..tuneprog.ir import Bin, Const, Let, Load, Store, Var
+from ..tuneprog.irwalk import addr_split, walk
 from .emit import commit_order
 
 EDGE = ("ctrl", "ad", "sr")
@@ -31,7 +32,12 @@ class Schedule:
     segments: list = field(default_factory=list)
     tick: list = field(default_factory=list)
     clock: tuple = ()  # (block, the Let that reads the counter, the store that steps it)
-    boundary: object = None
+    step: int = -1
+    inloop: bool = True  # whether the counter the tick steps is a voice's own
+    boundary: tuple = ()  # ((condition, its truth), ...): the guard the fetch stands under
+    resets: tuple = ()  # ((store, ((condition, its truth), ...)), ...): section 3.6's clauses
+    reads: frozenset = frozenset()  # the names that read the counter after its own step
+    spent: tuple = ()  # the conditions ``rate`` and ``phase`` already state
     divider: tuple = ()  # (cell address, reload value)
     rate: int = 1
     phase: int = 0
@@ -46,6 +52,9 @@ class Schedule:
             "row_consumes_tick": self.row_consumes_tick,
             "tempo.rate": self.rate,
             "tempo.phase": self.phase,
+            "tempo.step": self.step,
+            "tempo.resets": len(self.resets),
+            "tempo.boundary_terms": len(self.boundary),
             "segments": [(n, len(b)) for n, b in self.segments],
         }
 
@@ -92,35 +101,109 @@ def copies(p, seed):
     return frozenset(out)
 
 
+def _defs(p):
+    """``{name: value}``: what each ``Let`` of one procedure binds."""
+    return {s.n: s.e for b in p.blocks.values() for s in b.stmts if type(s) is Let}
+
+
 def _decrement(s):
     """``address`` where a store is ``cell = cell - 1`` at a constant base, else ``None``."""
+    got = _stepped(s, None)
+    return None if got is None or got[1] != -1 else got[0]
+
+
+def _stepped(s, defs, vidx=frozenset()):
+    """``(address, step)`` where a store is ``cell = cell + k`` at a constant base.
+
+    The value's own name must read that very cell, so a store of one counter's
+    step into another is not a step of the cell it lands in.
+    """
     if type(s) is not Store or s.cls != "ram":
         return None
-    base, _idx = addr_split(s.a)
+    base, idx = addr_split(s.a)
     v = s.v
-    if base is None or type(v) is not Bin or v.op != "-":
+    if base is None or not (idx is None or (type(idx) is Var and idx.n in vidx)):
         return None
-    if type(v.b) is not Const or v.b.v != 1 or type(v.a) is not Var:
+    if type(v) is not Bin or v.op not in ("+", "-") or type(v.b) is not Const:
         return None
-    return base
+    if type(v.a) is not Var or (defs is not None and _reads(defs, v.a) != {base}):
+        return None
+    return base, -v.b.v if v.op == "-" else v.b.v
 
 
-def clock_of(p, body, vidx, entry):
-    """The row clock: the block whose counter step decides the fetch, and its guard."""
-    for lbl in body:
-        b = p.blocks[lbl]
-        if type(b.term) is not If or entry not in (b.term.t, b.term.f):
-            continue
+def _reads(defs, e, depth=3):
+    """The constant base addresses one expression reads, through the names it names."""
+    out = set()
+    for x in walk(e):
+        if type(x) is Load and x.cls in ("ram", "chk"):
+            base = addr_split(x.a)[0]
+            if base is not None:
+                out.add(base)
+        elif type(x) is Var and depth and x.n in defs:
+            out |= _reads(defs, defs[x.n], depth - 1)
+    return out
+
+
+def counters(p, vidx):
+    """``{address: (label, the Let that read it, the store that steps it, step)}``.
+
+    One counter is one address a store moves by a constant: what section 3.6's
+    row clock is a value of, and what a tick-level divider is another.
+    """
+    defs, out = _defs(p), {}
+    for lbl, b in p.blocks.items():
         for s in b.stmts:
-            if type(s) is not Store or s.cls != "ram":
+            got = _stepped(s, defs, vidx)
+            if got is None or got[0] in out:
                 continue
-            base, idx = addr_split(s.a)
-            if base is None or not (type(idx) is Var and idx.n in vidx):
+            pre = next(
+                (x for x in b.stmts if type(x) is Let and _reads(defs, x.e, 0) == {got[0]}), None
+            )
+            out[got[0]] = (lbl, pre, s, got[1])
+    return out
+
+
+def clock_of(p, body, vidx, entry, guards=None):
+    """Section 3.6's row clock, from the guard the fetch's own path stands under.
+
+    The fetch is read at a step of one counter, so the counter is the address a
+    term of that path reads and a store moves by a constant. A term comparing
+    such a counter with another *cell* is a **divider** (``rate``, ``phase``) and
+    not the clock's boundary; of the rest the clock is the counter whose own step
+    stands under the fewest guards, the outer counter of a nest being the tick's.
+    """
+    guards = guardpath(p, sites=True) if guards is None else guards
+    defs, steps = _defs(p), counters(p, vidx)
+    terms = [(d, c, t, _reads(defs, c)) for d, c, t, _w in guards.get(entry, ())]
+    div = {
+        a
+        for _d, c, _t, seen in terms
+        if type(c) is Bin and len(seen & set(steps)) == 1 and len(seen) > 1
+        for a in seen & set(steps)
+    }
+    got = [a for _d, _c, _t, seen in terms for a in sorted(seen & set(steps)) if a not in div]
+    if not got:
+        return None
+    base = min(got, key=lambda a: (len(guards.get(steps[a][0], ())), -got.count(a), a))
+    lbl, pre, store, step = steps[base]
+    keep = tuple((c, t) for _d, c, t, seen in terms if not seen & div)
+    spent = tuple(c for _d, c, _t, seen in terms if seen & div)
+    return base, lbl, pre, store, step, keep, div, spent
+
+
+def resets_of(p, addr, skip, outside, guards):
+    """Section 3.6's ``reset`` clauses: what the tick does to the counter at its end.
+
+    A store the *tick* makes outside the voice loop is the clock's own; one a
+    voice makes is a row of that voice's phase like any other.
+    """
+    out = []
+    for lbl in [l for l in rpo(p) if l not in outside]:
+        for s in p.blocks[lbl].stmts:
+            if type(s) is not Store or s is skip or addr_split(s.a)[0] != addr:
                 continue
-            got = [x for x in p.blocks[lbl].stmts if type(x) is Let and type(x.e) is Load]
-            pre = next((x for x in got if addr_split(x.e.a)[0] == base), None)
-            return lbl, pre, s, base, b.term.c, entry == b.term.t
-    return None
+            out.append((s, tuple((c, t) for _d, c, t, _w in guards.get(lbl, ()))))
+    return tuple(out)
 
 
 def _reload(p, addr, skip):
@@ -134,16 +217,21 @@ def _reload(p, addr, skip):
     return None
 
 
-def divider_of(p, body):
-    """The tick-level counter a reload gates: ``(address, reload)`` -- section 3.6's rate."""
-    for lbl, b in p.blocks.items():
-        if lbl in body:
-            continue
-        for s in b.stmts:
-            a = _decrement(s)
-            got = None if a is None else _reload(p, a, s)
-            if got is not None:
-                return a, got[0], got[1]
+def divider_of(p, div):
+    """The tick-level counter a reload gates: ``(address, reload)`` -- section 3.6's rate.
+
+    ``div`` is what :func:`clock_of` read off the fetch's own guard path: a
+    counter a term compares with a second cell, which is the reload that says
+    how many ticks one step of the clock is.
+    """
+    for addr in sorted(div):
+        for b in p.blocks.values():
+            for s in b.stmts:
+                if _decrement(s) != addr:
+                    continue
+                got = _reload(p, addr, s)
+                if got is not None:
+                    return addr, got[0], got[1]
     return None
 
 
@@ -186,14 +274,24 @@ def derive(prog, proc, fetchblocks, t0, entry):
     sites = {int(w["site"]["pc"][1:], 16) for w in t0.get("writes") or () if w["register"] in EDGE}
     sch.segments = segments(order, set(fetchblocks), sites)
     sch.tick = tick_list(sch.segments, p, sites)
-    got = clock_of(p, body, sch.vidx, entry)
+    guards = guardpath(p, sites=True)
+    got = clock_of(p, body, sch.vidx, entry, guards)
     if got:
-        lbl, pre, store, base, cond, taken = got
+        base, lbl, pre, store, step, keep, div, spent = got
         sch.clock = (lbl, pre, store, base)
-        sch.boundary = (cond, taken)
-    got = divider_of(p, body)
-    if got:
-        sch.divider = (got[0], got[1])
+        sch.step, sch.boundary, sch.inloop, sch.spent = step, keep, lbl in body, spent
+        sch.reads = frozenset(
+            x.n
+            for l, b in p.blocks.items()
+            for x in b.stmts
+            if type(x) is Let and x is not pre and _reads(_defs(p), x.e, 0) == {base} and l in body
+        )
+        # a clause is the clock's own where the clock is the tick's: a counter a
+        # voice steps is refilled by a row of that voice's phase, not by the clock
+        sch.resets = () if sch.inloop else resets_of(p, base, store, body, guards)
+        got = divider_of(p, div)
+        if got:
+            sch.divider = (got[0], got[1])
     sch.row_consumes_tick = not _reaches(p, fetchblocks, sch.segments, head)
     return sch
 
