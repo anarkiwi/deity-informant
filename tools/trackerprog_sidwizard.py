@@ -635,24 +635,19 @@ class Tune:
         for i in sorted(used):
             ctrl, vib = self.rec(i, 0), self.rec(i, 5)
             typ = ctrl & 0x30
+            # the six columns the note-on bakes as constants -- the delay, the arp
+            # speed, the chord, the two table indices and the gate-off triple --
+            # are read by no expression and are not on the record (§3.5)
             out[str(i)] = {
                 "ctrl": ctrl,
                 "hr": [self.rec(i, 1), self.rec(i, 2)],
                 "adsr": [self.adsr(self.rec(i, 3), 5), self.adsr(self.rec(i, 4), 6)],
                 "vib": vib,
-                "vibdelay": self.rec(i, 6),
-                "arpsped": self.rec(i, 7),
-                "chord": self.rec(i, 8),
                 "transpose": signed(self.rec(i, 9)),
-                "pw_index": self.rec(i, 0x0A),
-                "flt_index": self.rec(i, 0x0B),
-                "gate_off": [self.rec(i, k) for k in (0x0C, 0x0D, 0x0E)],
                 "wave": self.rec(i, 0x0F),
                 "vibracnt": 0 if typ == 0x30 else ((vib & 0x0F) >> (0 if typ == 0x20 else 1)),
-                "prelude": {"stream": "hard_restart"},
                 "on_note": inline(self.note_sets(i), UNTIED)
                 + [{"when": UNTIED, "point": self.points(i)}],
-                "accs": arms(),
             }
         return out
 
@@ -1244,6 +1239,7 @@ class Tune:
             "tick": ["fetch", "prelude", "commit", "row", "commit", "machine", {"stream": "exit"}],
             "row_consumes_tick": [["sounds", "!=", 0]],
             "row_command": "spent",
+            "instrument": shared(),
             "stage": [
                 {"sets": [["@hrins", {"payload": "ins"}]], "when": ROW},
                 {"sets": [["@pending", {"payload": "keys"}]]},
@@ -1294,6 +1290,14 @@ def inline(sets, when):
 SV = {"cell": "slidevib"}
 DELAY = [[SV, "!=", 0], [{"and": [SV, 0x80]}, "==", 0]]
 LATE = [[{"and": [{"cell": "videlcnt"}, 0x80]}, "!=", 0]]
+
+
+def shared():
+    """What every instrument of this family carries, stated once (§3.5): the hard
+    restart it preludes with, and the modulations its note-on arms -- one arm per
+    value of the tune's own selector, which is the engine's and not the record's.
+    """
+    return {"prelude": "hard_restart", "accs": arms()}
 
 
 def arms():

@@ -201,6 +201,13 @@ draft spoke in numbers in five spellings at once — a bare `0..24` as a target,
 as assembly operands less a buffer base — with the four global registers having
 no name at all (R6).
 
+**`instrument`: the record every instrument extends.** What all of a family's
+instruments carry is the family's and not each record's — the engine an
+instrument arms, a note-on they all run, a pitch they all answer with — so
+`meta.instrument` states it once and an instrument's own entries win field for
+field (§3.5). Six families carry one, and it is the same rule as a row list
+naming a declared stream: one statement, at the one place that makes it.
+
 **`row_ends_fetch`: where the walk stops.** A family whose row *is* its boundary
 consumes exactly one row per boundary. Follin's fetch is a walk over its own byte
 stream — it takes every command it meets on the way to the note, up to 25 in one
@@ -377,23 +384,57 @@ from those. The recurrence, its `clauses`/`inputs`/`epoch` vocabulary and the
 ### 3.5 instruments
 
 ```
-Ins = { adsr: (ad, sr)
-      , prelude: (stream, early: k) | null   // ends k ticks before the next row boundary
-      , on_note: [ Step, … ]                 // an inline §3.3 stream: the note-on's own
-      , accs:    [ acc_id, … ] }             // the modulations armed at note-on
+Ins = { prelude:   stream | [ Step, … ] | null  // the note's lead-in (see below)
+      , on_note:   stream | [ Step, … ]         // the note-on's own §3.3 stream
+      , accs:      [ acc_id, … ]                // the modulations armed at note-on
+      , pitch:     { value, octave } | null     // where the sound is no pitch (§3.2)
+      , transpose: semitones                    // SID Wizard alone
+      , pw:        (lo, hi) }                   // Hubbard alone: §5's `ins.pw` space
 ```
 
-**One grammar for a stream in three places, and one procedure.** An
-instrument's `on_note`, a prelude and a command's `rows` are all guarded §3.3
-steps, so a guard has one spelling everywhere in the schema and never a
-positional slot beside the thing it guards. `Player.rows` runs all of them over
-one compiled plan, reading `sets` **and** `point` in each, and takes either the
-name of a declared stream — which `meta.prologue` and an instrument's `prelude`
-carry as `{"stream": name}`, and which also states what its rows mean past the
-tuning — or the anonymous row list itself. Its act is the row in both: R2's
-measurement, since the other rule differs on 2,943 ticks (§3.1). The first draft
-of this paragraph recorded two procedures that disagreed about acts; that was
-B9's row, and it is closed.
+**Those six names are the whole of what the player knows about an instrument**,
+and everything else on the record is the family's own column, read by the
+object's own expressions through `{"ins": path}` and `{"insrec": [cell, path]}`.
+The first draft put `adsr` first and it was never a player name: no line of
+`universal.py` reads one. Seven families carry an `adsr` pair and **all seven**
+read it as a column of their own — `["ad", {"ins": "adsr.0"}]` — and
+the alternative was measured before it was struck (R8). A player whose note-on
+emitted `adsr` in `commit_order`'s place reproduces **SID Wizard alone**, 0 of
+8,084 and 0 of 14,465 ticks with its 22 and 42 inline `ad`/`sr` sets removed;
+JCH's note-on puts `ad`, `sr` and `ctrl` in **one act** and Walker's puts them
+beside sixteen other cells, so a player act of its own differs on 257 of 2,401
+and 346 of 8,052; and Hubbard, Blackbird and Galway write theirs from a *stream*
+at another point in the tick, which the rule differs on outright (1,543 of
+11,780, 1,428 of 10,426, 1,327 of 9,450). One family is not a player rule.
+`adsr` and `wave` are the two family columns the **print** knows by name, which
+§3.1 calls an annotation and not a field.
+
+**One grammar for a stream in four places, one spelling, and one procedure.** A
+declared stream, an instrument's `prelude`, its `on_note` and a command's `rows`
+are all guarded §3.3 steps, so a guard has one spelling everywhere in the schema
+and never a positional slot beside the thing it guards. Each of the three is
+written **either as the name of a declared stream or as the rows themselves**,
+and `Player.rowsource` resolves the two into one plan that `Player.runstream`
+runs — reading `sets` **and** `point`, and a named stream's words past the
+tuning with them. Its act is the row in every one: R2's measurement, since the
+other rule differs on 2,943 ticks (§3.1). The first draft gave the prelude a
+record of its own, `{stream, early}`, whose `early` restated `meta.tempo.early`;
+that spelling is gone, and with it the second procedure B9's row named.
+
+**What every instrument of a family shares, the family states once.** A row list
+several instruments carry is one declared stream they name, and a column all of
+them carry is `meta.instrument` — the record every instrument extends, its own
+entries winning field for field. Both are the same rule and neither is a new
+construct: the engine an instrument arms is the *voice's*, not the record's, so
+Galway's 62 instruments, SID Wizard's 11 and 21, JCH's 19, Walker's 11, GoatTracker 2's
+30 and Blackbird's 15 all named one `accs` list and now none does; Walker's and
+Blackbird's note-on, Hubbard's note-on and prelude and Galway's silent pitch go
+the same way. Measured, the instrument half of the object falls from 35,321 to
+14,480 bytes on Galway, 25,334 to 12,876 on JCH, 25,262 to 11,355 on SID Wizard
+and 12,527 to 2,758 on Walker, and under `xz -9e` from 1,012 to 840, 948 to 812,
+1,164 to 1,032 and 1,032 to 548 — the copies were most of what the compressor
+was removing, which is why §9.1's whole-object column moves by 0 to 3 % and not
+by a third.
 
 **An instrument whose sound is no pitch carries its own.** Where a family keys a
 sound the tuning has no note for, the score gives the row no note (§3.2's rule:
@@ -1308,6 +1349,7 @@ recurrence`, with the first tick) is a refusal, never a record.
 | five hooks into the grammar (**R5**, #338) | each was a rule the player kept for one family or a name the player knew, and each is now a datum. **`stage_sounds`**, a `meta` key naming the cell four families' fetch zeroed and set to `keys`, is a `sets` row of `meta.stage`; a fetch tick that stages no row runs the same program over `row_facts(null)`, and a step that must not run then carries `dur != 0`, the term `row_ends_fetch` already spells — **0 differing of 60,848** over the four families' seven builds. **The `op` stand-down** (`Player.op`: a producing step stood every armed accumulator ranked after it down) is a flag the producing row leaves (`!produced`) and the arm's own `when` reads: removing the rule outright differs on **2,028 of *Je suis Linus*'s 8,236** and **2,873 of *Do It Again*'s 8,659** and on **0 of the other twenty-eight builds' 315,463**, SID Wizard's producing steps included, so the rule was one family's and the review's count of the ticks it *fired* on was not the count of the ticks it *changed*. **The tune-level stop** — `Player.stopping`'s two-step counter, `globals.stop_writes`, a tick abandoned mid-voice-loop and flush-only ticks after — is gone: an `end` that is not a `jump` stops that voice like the order program's own `stop`, and may name a command (`end: {"stop": name}`) the tune runs on a tick of its own. Hubbard's four writes are that command's `sets` on `reg.N`, its three lists end together, and the terminator's tick is spent by `row_consumes_tick` — **0 differing of 292,914** over the twenty-six builds whose lists can run out, subtune 3's stop at tick 384 and its 11,395 silent ticks after included. **The prologue** is `state0.prologue`, a `score.commands` entry run by the same procedure as the end's, and the `tick_no == 0` branch is gone — 0 of 39,444. **Row 0 is a row**: a cursor carries `row: null` where it runs nothing, a `next` or a `jump` of null stops a stream, and the padding goes from all five families that paid for it (Blackbird's +1 on every row, cursor and pointer; Walker's and Galway's `trap` row; SID Wizard's `no stream` row; defMON's `no cascade runs here` row **and** its halt target, which the review did not name), GoatTracker 2's 1-based tables staying the source's with the byte that names none pointing at null. Two of §4's rows close with them: `guards(None)` is no longer vacuously true for `row_consumes_tick: false` (the bool compiles to its own predicate), and no phase, `voice()` or `tick()` can abandon a tick. Measured: **0 differing of 332,358** over all thirty builds against the merge base's digests, every object rebuilt from all nine edited tools; 6,000 ticks in one process, *Je suis Linus* **9,930 → 9,340** ticks/s — the arm now reached and its guard evaluated where the player used to skip it, 24,684 `step()` calls per 3,000 ticks against 16,397 — *End of the World* **4,480 → 4,810** (a guard list of three or more terms compiles to a tree of pairs instead of a generator) and *Quintessence* **13,370 → 13,100**. `universal.py` 1,480 → **1,477**, `printer.py` 629 → 626, hermetic coverage **96 %** | `universal`, `printer`, all nine `tools/trackerprog_*.py`, `tests/trackerprog/test_universal*.py`, four oracle tests |
 | one register naming (**R6**, #339) | the object spoke in register numbers in five spellings at once — a bare int as a `sets` target (GoatTracker 2's cutoff, into the shadow), `reg.N` (Hubbard's end command, JCH, Follin, Walker), `globals.commit`'s first column (eight families), `meta.shadow.registers` (three) and JCH's overrides as assembly operands less a buffer base — with the four registers the chip has one of having no name at all, though `tuneprog/grid.py` already names them as the observable's columns. Every register the object names is a **name** now: a bare per-voice name is that register of the voice being committed, and a register named outright is a global name (`cutoff_lo cutoff_hi res_route mode_vol`) or a voice's own (`v1.pw_lo`), the one spelling a command's `sets`, a voice's write-out, `globals.commit` and `meta.shadow.registers` all use, the guarded flush entry keeping its `[name, guards]` shape. `universal.chipreg` is the only place a name becomes a number — `putcode` resolves a register named outright at compile time, `emit` resolves the committing voice's through a per-voice table `chipreg` fills — and the print prints names. **`sid_base` is gone with them**, `7·v` as a value being the `X = 7v` idiom §4 says S4–S6 erase, and both families were measured rather than argued: SID Wizard 1.6's is a *bug reproduction* (its first frame loads `freq_hi`'s note at the voice's own register base, `LDA freqtbh,X` where 1.9 has `,Y`) and is now `{"bug": "voice_base"}`, an expression form whose one value is named as the defect and whose every other name refuses to compile; Hubbard's was `u16(14, sid_base(reader))`, the byte at `$54EB`, which after #337 is stated outright as the voice cell `voicebase`, seeded from the tune's own three-byte table at `$54E8..$54EA` and written by nothing — a trap it could not be, 120 of song 1's beyond-word reads over its whole horizon taking that word. Measured: **0 differing of 332,358** over all thirty builds against the merge base's digests, every object rebuilt from all nine tools and every render recomputed; 6,000 ticks in one process, best of three, *Je suis Linus* 9,120 → **9,306** ticks/s, *Knob at Night* 4,042 → **4,145**, *Ghouls song 0* 10,818 → **10,853**, the write being a lookup where it was a multiply and a lookup. `universal.py` stays at **1,477** lines, `printer.py` 626 → 625, hermetic coverage 96 %; a new hermetic test walks all thirty cached objects and asserts the naming | `universal`, `printer`, all nine `tools/trackerprog_*.py`, `tests/trackerprog/test_register_names.py`, seven other test modules |
 | the compile finished, top down (**R7**, #340) | §5's forms are `trackerprog/compiler.py` (327 lines) and the object is spent **once**, where P8 spent it on first reading: a node is bound to its children's closures at compile time, an accumulator to *its arm*, a row program to its stream's compiled rows, a command to its own — so what an arm or a command states beside a record is a number in the closure and not a `const` read per step, which GoatTracker 2 took **15,243** times per 3,000 ticks and now takes none. The **machine's rank order is the object's and fixed**, so it is merged and sorted once for the pair a voice's instrument and its armed set make, not per voice-tick: `slots()`, the sort and the per-arm rank lookup are gone, and the two per-tick facts — a stream's `when` and whether its cursor is on a row — are still asked of *every* slot before any slot runs, which is what `slots()` did and what the order depends on. The `id()` memos and the `kept` pin list are gone but three, each holding the record it is keyed on so no identity it keys can be reused: an arm, an inline command a row carries, and the machine order. On the guards the review's own reason was wrong — a chained closure costs a frame per pair — and the measurement says what pays: **501 of SID Wizard's 505 guard terms, 407 of 407 of JCH's and 151 of 153 of Galway's state one operand outright**, so the constant folds *into* the comparison (`partial(operator.le, k)`, the operands the other way about) and a term costs one read, with three terms to a frame and a chain past that. Acceptance is P8's: **0 differing of 332,358** over all thirty builds against the merge base's digests. 6,000 ticks in one process, best of three, over the nine families' first builds: Hubbard 15,695 → **23,811** ticks/s, GoatTracker 2 9,059 → **14,282**, SID Wizard 4,347 → **6,541**, defMON 25,671 → **33,125**, JCH 5,014 → **7,149**, Follin 10,623 → **12,142**, Blackbird 12,755 → **17,003**, Walker 5,926 → **8,639**, Galway 5,399 → **7,112** — **7,699 → 10,811 ticks/s over the nine, 1.40×**. `universal.py` 1,477 → 1,399 and the new module 327; hermetic coverage 97 % and 100 %; a stored `Player` still drops the derived form and recompiles, which is what the two chunked certifications resume through | `universal`, `trackerprog.compiler`, `tests/trackerprog/test_compiler.py` |
+| the instrument record, and one row list (**R8**, #341) | §3.5's box opened with `adsr` and **no line of the player has ever read one** — an instrument is six player names and a family record, and the box named three of the six plus a name the player never asks for. Which of the two rows §7 offered is right was *measured*: a player whose note-on emits `adsr` in `commit_order`'s place, with the tools' own `ad`/`sr` sets struck, reproduces **SID Wizard alone** — 0 of 8,084 and 0 of 14,465 with 22 and 42 sets removed — while JCH's note-on puts `ad`, `sr` and `ctrl` in **one act** (257 of 2,401 on the build with no image) and Walker's puts them beside sixteen cells (346 of 8,052), and Hubbard, Blackbird and Galway write theirs from a *stream* at another point in the tick, which the rule breaks outright (1,543 of 11,780, 1,428 of 10,426, 1,327 of 9,450). One family is not a player rule, so the box states what is true: `prelude on_note accs pitch transpose pw`, and `adsr` is the family column all seven of them read as `{"ins": "adsr.0"}` — Galway spelled it *and* `ad`/`sr`, and now spells it once. **A row list is one shape wherever the grammar puts one**: a declared stream's name or the rows themselves, for a `prelude`, an `on_note` and a command's `rows` alike, so `{"stream": …, "early": …}` (whose `early` restated `meta.tempo.early`) is gone and `rowsource`/`runstream` are the one pair that resolves and runs all four places. **What every instrument of a family shares, the family states once**: `meta.instrument`, the record each instrument extends and each overrides field for field. Six families had named one `accs` list per instrument — Galway 62, SID Wizard 11 and 21, GoatTracker 2 30, JCH 19, Blackbird 15, Walker 11 — and none does now; Walker's and Blackbird's note-on and Hubbard's note-on and prelude are declared streams. **Every instrument column no expression, no player line and no print line reads is gone**, checked by a hermetic test that walks all thirty cached objects: SID Wizard's `vibdelay arpsped chord pw_index flt_index gate_off`, JCH's `flags vol filter pulse`, Blackbird's `note`, Walker's `filter`, Galway's `ad`/`sr` and two of its three spellings of one waveform byte (`wave|8` and `wave&$F7` are expressions now). Measured: **0 differing of 332,358** over all thirty builds against the merge base's digests, every object rebuilt from all seven edited tools and every render recomputed. The instrument half of the object falls 35,321 → 14,480 raw bytes on Galway, 25,334 → 12,876 on JCH, 25,262 → 11,355 on SID Wizard and 12,527 → 2,758 on Walker, and 1,012 → 840, 948 → 812, 1,164 → 1,032 and 1,032 → 548 under `xz -9e` — the copies were most of what the compressor was already removing, which is why §9.1's whole-object column moves by 0 to 3 % and not by a third. 6,000 ticks in one process, best of three, *Comic Bakery song 1* **7,014 → 8,304** ticks/s (62 instruments sharing one arm list compile it once), *End of the World* 7,189 → **7,655**, *Chameleon* 8,564 → **8,957**, *Je suis Linus* 14,076 → **14,258**. `universal.py` 1,399 → **1,398**, `compiler.py` 327, `printer.py` 625 → 633; hermetic coverage 97 % and 100 % | `universal`, `printer`, `trackerprog.compiler`, seven `tools/trackerprog_*.py`, `tests/trackerprog/test_schema_doc.py`, `tests/trackerprog/test_universal_streams.py`, three oracle tests |
 
 Everything after this is the rest of the `trackerprog/` package, under the same
 rules (≤ 500 lines per module, hermetic tests, the certificate).
@@ -1448,50 +1490,55 @@ against `xz -9e` of every certified subtune's object concatenated:
 
 | tune | songs | certified | band `xz` | object `xz` | ratio |
 | --- | --- | --- | --- | --- | --- |
-| *Je suis Linus* (GT2) | 1 | 1 | 2,804 | 5,988 | **2.14×** |
-| *Do It Again* (GT2) | 1 | 1 | 2,668 | 5,628 | **2.11×** |
-| *End of the World* (SW) | 1 | 1 | 3,992 | 7,876 | **1.97×** |
-| *Guldkorn Intro* (JCH) | 1 | 1 | 2,472 | 4,852 | **1.96×** |
-| *Comic Bakery* (Galway) | 14 | **14** | 4,760 | 9,096 | **1.91×** |
-| *Automatas* (defMON) | 1 | 1 | 4,316 | 8,216 | **1.90×** |
-| *Emomyst* (SW) | 1 | 1 | 3,576 | 6,288 | **1.76×** |
-| *Knob at Night* (JCH) | 1 | 1 | 9,600 | 16,180 | **1.69×** |
-| *Quintessence* (Blackbird) | 1 | 1 | 3,772 | 6,352 | **1.68×** |
-| *Chameleon* (Walker) | 1 | 1 | 3,140 | 4,916 | **1.57×** |
-| *Jazzpjazz* (defMON) | 1 | 1 | 2,944 | 3,700 | **1.26×** |
-| *Commando* (Hubbard) | 19 | 3 | 2,548 | 4,096 | 1.61× (3 of 19) |
-| *Ghouls'n'Ghosts* (Follin) | 32 | 3 | 10,888 | 8,648 | 0.79× (3 of 32) |
+| *Je suis Linus* (GT2) | 1 | 1 | 2,804 | 6,116 | **2.18×** |
+| *Do It Again* (GT2) | 1 | 1 | 2,668 | 5,756 | **2.16×** |
+| *End of the World* (SW) | 1 | 1 | 3,992 | 7,648 | **1.92×** |
+| *Guldkorn Intro* (JCH) | 1 | 1 | 2,472 | 4,696 | **1.90×** |
+| *Automatas* (defMON) | 1 | 1 | 4,316 | 8,152 | **1.89×** |
+| *Comic Bakery* (Galway) | 14 | **14** | 4,760 | 8,656 | **1.82×** |
+| *Emomyst* (SW) | 1 | 1 | 3,576 | 6,136 | **1.72×** |
+| *Knob at Night* (JCH) | 1 | 1 | 9,600 | 16,252 | **1.69×** |
+| *Quintessence* (Blackbird) | 1 | 1 | 3,772 | 6,156 | **1.63×** |
+| *Commando* (Hubbard) | 19 | 3 | 2,548 | 3,916 | 1.54× (3 of 19) |
+| *Chameleon* (Walker) | 1 | 1 | 3,140 | 4,720 | **1.50×** |
+| *Jazzpjazz* (defMON) | 1 | 1 | 2,944 | 3,672 | **1.25×** |
+| *Ghouls'n'Ghosts* (Follin) | 32 | 3 | 10,888 | 8,528 | 0.78× (3 of 32) |
 
 **The claim does not hold, and this is the finding.** Ten of the thirteen tunes
 have one subtune, so the band holds exactly the music the object covers, and the
-object is **1.26× to 2.14×** the binary on every one. Galway is the eleventh and
-the only multi-subtune tune certified whole — all fourteen — and it is 1.91×. The two ratios below 1 are the two tunes measured on a fraction of
-their subtunes against a band that holds all of them, which is not a comparison:
-Follin's three of thirty-two is 0.79× and its three objects summed separately are
-already 1.36×.
+object is **1.25× to 2.18×** the binary on every one. Galway is the eleventh and
+the only multi-subtune tune certified whole — all fourteen — and it is 1.82×. The one ratio below 1 is the tune measured on a fraction of
+its subtunes against a band that holds all of them, which is not a comparison:
+Follin's three of thirty-two is 0.78× and its three objects summed separately are
+already 1.35×.
 
 Where the bytes go, and it is not where the first draft assumed:
 
 | build | score `xz` | rest `xz` | score share |
 | --- | --- | --- | --- |
-| *Je suis Linus* | 3,100 | 3,192 | 49 % |
-| *Automatas* | 4,240 | 4,144 | 51 % |
-| *Quintessence* | 511,867 raw → 3,204 | 3,252 | 50 % |
-| *Knob at Night* | 792 | 15,524 | 5 % |
+| *Je suis Linus* | 3,208 | 3,248 | 50 % |
+| *Automatas* | 4,244 | 4,080 | 51 % |
+| *Quintessence* | 511,866 raw → 3,204 | 3,080 | 51 % |
+| *Knob at Night* | 792 | 15,580 | 5 % |
 
 The **score is not what makes the object large**. Materialised over the whole
 horizon with every packed byte unpacked, every cursor spent and Blackbird's LZ
-stream expanded 511,867 bytes wide, it still compresses to about what the whole
-load band does — 3,100 against 2,804 for *Je suis Linus*, a band that holds the
+stream expanded 511,866 bytes wide, it still compresses to about what the whole
+load band does — 3,208 against 2,804 for *Je suis Linus*, a band that holds the
 player *and* the data. It is the sound half — instruments, streams,
 accumulators, `state0`, and the schema's own key names once per record — that
-doubles the total, and on *Knob at Night* it is 95 % of it.
+doubles the total, and on *Knob at Night* it is 95 % of it. The instruments are
+the smallest part of that half and are now smaller: after R8 stated a shared
+record and a row list once rather than per instrument, the instrument half of the
+nine families' first builds is 88 to 1,032 `xz` bytes each — Galway 1,012 → 840,
+JCH 948 → 812, SID Wizard 1,164 → 1,032, Walker 1,032 → 548 — against whole
+objects of 3,672 to 16,252, which is why this table barely moves.
 
 The per-family `xz` tables in the nine `prototype-*-trackerprog.md` documents
 predate this and were measured against `tuneprog.md`; each now states its
 family's load-band ratio and points here, but its own table's object sizes are a
 few per cent behind the objects the tools build today (*Je suis Linus* prints
-5,608 where it now measures 5,988). The figures above are the current ones, and
+5,608 where it now measures 6,116). The figures above are the current ones, and
 `tools/trackerprog_sizes.py` regenerates them.
 
 So the layer trades size for the thing it exists to have. §6's materialisation

@@ -5,6 +5,8 @@ countdown clock and its funk alternation, a stream's hold, jump, op and trap, a
 global channel, the fetch that runs ahead of its row, and three policies.
 """
 
+import json
+
 import pytest
 
 from deity_informant.trackerprog.universal import REGNAME, Player, render
@@ -45,7 +47,7 @@ def ins(points=(), prelude="hard_restart", accs=()):
                 "point": list(points),
             }
         ],
-        "prelude": prelude and {"stream": prelude},
+        "prelude": prelude,
         "accs": list(accs),
     }
 
@@ -383,3 +385,36 @@ def test_a_tabcell_reads_the_column_of_a_stream_row_a_cell_selects():
     p.c["param"][0] = 0
     with pytest.raises(AssertionError, match="no speed"):
         p.ev({"tabcell": ["speed", {"cell": "param"}, "delta"]})
+
+
+def _named(o):
+    """The same object with every inline row list named: the note-on, the prelude
+    and the command's rows become declared streams the records point at."""
+    o = json.loads(json.dumps(o))
+    rec = o["instruments"]["1"]
+    o["streams"]["ins_on_note"] = {"rows": rec["on_note"]}
+    o["streams"]["init_rows"] = {"rows": o["score"]["commands"]["init"]["rows"]}
+    rec["on_note"] = "ins_on_note"
+    o["score"]["commands"]["init"]["rows"] = "init_rows"
+    return o
+
+
+def test_a_row_list_is_one_shape_wherever_the_grammar_puts_one():
+    """A note-on, a prelude and a command's rows: a stream's name, or the rows."""
+    events = [event(note=3, ins=1), event(note=5, ins=1, tie=True), event()]
+    o = obj(events)
+    assert render(o, 12) == render(_named(o), 12)
+
+
+def test_the_record_every_instrument_extends_is_the_family_s_own():
+    """What an instrument does not state, ``meta.instrument`` states once; what it
+    does state is its own, and the two are one record at every read."""
+    want = render(obj([event(note=3, ins=1)]), 12)
+    o = obj([event(note=3, ins=1)])
+    rec = o["instruments"]["1"]
+    shared = {k: rec.pop(k) for k in ("accs", "prelude", "on_note", "adsr")}
+    o["meta"]["instrument"] = shared  # the family answers `{"ins": "adsr.0"}` for it
+    assert render(o, 12) == want
+    o["meta"]["instrument"] = dict(shared, adsr=[0, 0])
+    o["instruments"]["1"]["adsr"] = shared["adsr"]  # and the instrument's own wins
+    assert render(o, 12) == want

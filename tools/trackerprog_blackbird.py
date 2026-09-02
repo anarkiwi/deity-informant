@@ -312,29 +312,21 @@ def instruments(m, used, ins_restart):
 
     The exporter sorts the table so that one compare against a constant replaces
     a per-instrument hard-restart flag; ``restart`` is that compare, and the
-    instruments it holds for are the ones that carry a prelude.
+    instruments it holds for are the ones that carry a prelude.  Instrument 0 is
+    the ``ins`` cell's post-init value and no row plays it, so it keys nothing
+    and its note-on is no rows at all.
     """
-    out = {
-        "0": {
-            "adsr": [0, 0],
-            "restart": 0,
-            "wavepos": 0,
-            "accs": [],
-            "on_note": [],
-            "note": "the cell's post-init value; no row plays it",
-        }
-    }
+    out = {"0": {"adsr": [0, 0], "restart": 0, "wavepos": 0}}
     for i in sorted(used):
         assert not m[INS_FILT + i], "instrument %d re-points the filter" % i
         rec = {
             "adsr": [m[INS_AD + i], m[INS_SR + i]],
             "restart": int(i >= ins_restart),
             "wavepos": m[INS_WAVE + i],
-            "accs": [],
-            "on_note": [{"point": [["wave", {"ins": "wavepos"}, False]]}],
+            "on_note": "note_on",
         }
         if i >= ins_restart:
-            rec["prelude"] = {"stream": "hard_restart"}
+            rec["prelude"] = "hard_restart"
         out[str(i)] = rec
     return out
 
@@ -377,6 +369,7 @@ def build(path, ticks=TICKS):
             "tick": ["fetch", "prelude", "row", "machine"],
             "row_consumes_tick": False,
             "row_command": "spent",
+            "instrument": {"accs": []},  # no instrument of this family arms one
             "stage": [{"ins": True}, {"sets": [["@willsound", {"payload": "keys"}]]}],
             "row": [
                 {"sets": [["@wavemask", {"payload": "gate"}]], "when": [["gate_stmt", "!=", 0]]},
@@ -413,6 +406,8 @@ def build(path, ticks=TICKS):
             "hard_restart": {
                 "rows": [{"sets": [["sr", {"const": 0}], ["@wavemask", {"const": 0xFE}]]}]
             },
+            # the note-on every instrument runs: its own row of the wave program
+            "note_on": {"rows": [{"point": [["wave", {"ins": "wavepos"}, False]]}]},
             "restart_sr": {"rows": [{"sets": [["sr", {"const": 0x0F}]]}]},
             "restart_gate": {"rows": [{"sets": [["ad", {"const": 0}], ["ctrl", {"const": 0x01}]]}]},
             "envelope": {

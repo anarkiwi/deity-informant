@@ -137,7 +137,7 @@ def ins(wave=0x41, ad=1, sr=2, pw=(0x10, 0x02), accs=(), pitch=None):
         "adsr": [ad, sr],
         "wave": wave,
         "pw": list(pw),
-        "prelude": {"stream": "note_off", "early": 1},
+        "prelude": "note_off",
         "on_note": [{"sets": [["freq", {"notefreq": None}]]}],
         "accs": list(accs),
     }

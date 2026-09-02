@@ -1052,6 +1052,11 @@ class Tune:
             },
         }
 
+    def shared(self):
+        """What every instrument of this family carries, stated once (section 3.5):
+        the hard restart it preludes with, and the engine's own arms."""
+        return {"prelude": "prelude", "accs": self.arms()}
+
     def arms(self):
         """One arm per accumulator, guarded by what the tick's own skips leave running."""
         run = self.fx_guard()
@@ -1114,17 +1119,10 @@ class Tune:
                 ],
             }
         )
-        return {
-            "adsr": [col[0], col[1]],
-            "flags": col[2],
-            "vol": col[3],
-            "filter": col[4],
-            "pulse": col[5],
-            "wave": col[6],
-            "prelude": {"stream": "prelude", "early": 2},
-            "on_note": rows,
-            "accs": self.arms(),
-        }
+        # the five bytes the note-on spends -- the wave flags, the volume and
+        # routing, and the two program indices -- are its own constants and no
+        # column of the record: nothing reads them back (section 3.5)
+        return {"adsr": [col[0], col[1]], "wave": col[6], "on_note": rows}
 
     def route(self, vol):
         """The filter routing byte: this voice's bit cleared, or set beside a resonance."""
@@ -1335,6 +1333,7 @@ class Tune:
             "tick": ["fetch", "prelude", "row", "machine"],
             "row_consumes_tick": [["keys", "!=", 0]],
             "row_command": "spent",
+            "instrument": self.shared(),
             "stage": pre,
             "row": row
             + [

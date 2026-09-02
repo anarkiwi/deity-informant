@@ -100,7 +100,8 @@ def test_the_test_bit_pulse_is_a_datum_because_one_copy_differs():
     """Voice 1's unrolled copy sends ``wave|8`` to its own ``pw_lo``, not its ``ctrl``."""
     obj = built(MAIN)[0]
     assert obj["state0"]["cells"]["testpulse"] == TESTPULSE
-    pulse = [r for r in obj["streams"]["note_on"]["rows"] if "wave_test" in str(r["sets"])]
+    test_bit = str(TG.TESTPULSE)  # the record's waveform byte with bit 3 set
+    pulse = [r for r in obj["streams"]["note_on"]["rows"] if test_bit in str(r["sets"])]
     assert [r["sets"][0][0] for r in pulse] == ["ctrl", "pw_lo"]
 
 
@@ -126,8 +127,9 @@ def test_the_engine_residue_is_the_initial_state():
 def test_the_silence_note_is_a_sound_with_no_pitch():
     """``$5E`` keys the instrument, and the tuning's own entry for it is its pitch."""
     obj = built(MAIN)[0]
-    silence = {rec["pitch"]["value"]["const"] for rec in obj["instruments"].values()}
-    assert silence == {0}  # entry $5E of the tune's own table, read and not assumed
+    # one fact for every instrument, so the family states it once (section 3.5)
+    assert obj["meta"]["instrument"]["pitch"]["value"]["const"] == 0
+    assert not [rec for rec in obj["instruments"].values() if "pitch" in rec]
     assert not [
         e
         for pat in obj["score"]["patterns"].values()

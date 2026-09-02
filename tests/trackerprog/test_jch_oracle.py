@@ -293,8 +293,13 @@ def test_every_byte_of_the_tune_s_data_is_in_the_object(name):  # noqa: C901 - o
     obj = x.built
     m, L = x.m, x.L
     for i, ins in obj["instruments"].items():
-        col = ins["adsr"] + [ins[k] for k in ("flags", "vol", "filter", "pulse", "wave", "wave")]
-        assert col == [m[L["ins0"] + 8 * int(i) + k] for k in range(8)], "instrument %s" % i
+        col = [m[L["ins0"] + 8 * int(i) + k] for k in range(8)]
+        # the record states AD, SR and the waveform row; the wave flags, the volume
+        # and routing byte and the two program indices are the note-on's own
+        # constants and no column of it, because nothing reads them back (§3.5)
+        assert ins["adsr"] + [ins["wave"], ins["wave"]] == col[:2] + col[6:], "instrument %s" % i
+        sets = {t: v for r in ins["on_note"] for t, v in r.get("sets", ())}
+        assert (sets["@hrflag"], sets["@wavetimer"]) == (col[2] & 0x80, col[2] & 0x0F), i
     for base, stream in ((L["pcol0"], "pulse"), (L["fcol0"], "filter")):
         for k, rec in _program_bytes(x, obj, base, stream).items():
             assert rec == list(m[base + k : base + k + 4]), "%s record %d" % (stream, k)

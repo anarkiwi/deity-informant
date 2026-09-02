@@ -254,7 +254,9 @@ def render(obj):  # noqa: C901 - one branch per object section, each linear
     add("## instruments -- %d" % len(obj["instruments"]))
     add("")
     add("  id   ad   sr  wave     pw  accumulators armed at note on")
-    for k, ins in obj["instruments"].items():
+    shared = obj["meta"].get("instrument", {})  # the record every instrument extends
+    for k, one in obj["instruments"].items():
+        ins = {**shared, **one}
         ad, sr = ins["adsr"] if "adsr" in ins else (None, None)  # a family may have none
         add(
             "%4s  %s  %s   %s  %s  %s"
@@ -442,7 +444,10 @@ def _cmd(c, notes):
         bits.append("arm " + " ".join(_arm(a) for a in c["arms"]))
     if c.get("links"):
         bits.append("reset " + " ".join(c["links"]))
-    for row in c.get("rows", ()):
+    rows, named = _rowlist(c.get("rows"))
+    if named:
+        bits.append("rows " + named)
+    for row in rows:
         when = "" if not row.get("when") else " when %s" % guards(row["when"], notes)
         if row.get("sets"):
             bits.append(_sets(row["sets"], notes) + when)
@@ -469,21 +474,24 @@ def _points(pts, notes):
     )
 
 
+def _rowlist(x):
+    """A row list where the grammar puts one: a declared stream's name, or its rows."""
+    return ((), x) if isinstance(x, str) else (x or (), None)
+
+
 def _ins(ins, notes):
-    """An instrument's cells, its stream entries and the prelude that precedes it."""
+    """An instrument's note-on and prelude -- named or their own rows -- and its pitch."""
     out = []
-    for row in ins.get("on_note", ()):
-        when = "" if not row.get("when") else " when %s" % guards(row["when"], notes)
-        if row.get("sets"):
-            out.append("      %-7s %s%s" % ("on note", _sets(row["sets"], notes), when))
-        if row.get("point"):
-            out.append("      %-7s %s%s" % ("streams", _points(row["point"], notes), when))
-    p = ins.get("prelude")
-    if isinstance(p, dict):
-        out.append(
-            "      %-7s %s%s"
-            % ("prelude", p["stream"], "" if "early" not in p else ", %s early" % p["early"])
-        )
+    for label, x in (("on note", ins.get("on_note")), ("prelude", ins.get("prelude"))):
+        rows, named = _rowlist(x)
+        if named:
+            out.append("      %-7s %s" % (label, named))
+        for row in rows:
+            when = "" if not row.get("when") else " when %s" % guards(row["when"], notes)
+            if row.get("sets"):
+                out.append("      %-7s %s%s" % (label, _sets(row["sets"], notes), when))
+            if row.get("point"):
+                out.append("      %-7s %s%s" % ("streams", _points(row["point"], notes), when))
     if "pitch" in ins:
         for line in _modulator(
             "pitch", ins["pitch"], notes, "this instrument's sound is no pitch; it is its own"

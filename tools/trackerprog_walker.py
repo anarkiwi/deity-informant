@@ -412,6 +412,18 @@ def modcols(rec, base):
     return {"mode": rec[base], "rate": rec[base + 1], "period": rec[base + 2]}
 
 
+def filtercols(m, i):
+    """The filter half of a 30-byte record: a block's, not a sound's (``_loadfilt``)."""
+    p = ptr(m, INS_LO, INS_HI, i)
+    rec = [m[(p + k) & W16] for k in range(30)]
+    return {
+        "mode_vol": (rec[I_VOL] << 4) + 0x0F,
+        "cutoff": rec[I_CUT],
+        "res": rec[I_RES] << 4,
+        "mod": dict(modcols(rec, I_FILT), type=rec[I_FILT + 3]),
+    }
+
+
 def melodic(m, i, steps):
     """One 30-byte instrument as a record: five registers and its four modulators."""
     p = ptr(m, INS_LO, INS_HI, i)
@@ -435,14 +447,6 @@ def melodic(m, i, steps):
         "m2": modcols(rec, I_M2),
         "m3": m3,
         "m4": {"mode": rec[I_M4], "rate": rec[I_M4 + 1]},
-        "filter": {
-            "mode_vol": (rec[I_VOL] << 4) + 0x0F,
-            "cutoff": rec[I_CUT],
-            "res": rec[I_RES] << 4,
-            "mod": dict(modcols(rec, I_FILT), type=rec[I_FILT + 3]),
-        },
-        "accs": arms(),
-        "on_note": NOTE_ROWS,
     }
 
 
@@ -463,13 +467,14 @@ def drum(m, k, steps):
         "delay": 0,
         "drum": 1,
         "m3": m3,
-        "accs": arms(),
-        "on_note": DRUM_ROWS,
+        "on_note": "drum_on",
     }
 
 
-def arms():
-    return [{"acc": "mod1"}, {"acc": "mod2"}, {"acc": "mod3"}]
+def shared():
+    """What every instrument of this family carries: the three modulators the
+    engine arms at every note-on, and the note-on itself, stated once (§3.5)."""
+    return {"accs": [{"acc": "mod1"}, {"acc": "mod2"}, {"acc": "mod3"}], "on_note": "note_on"}
 
 
 def _loads():
@@ -872,8 +877,8 @@ def _loadfilt(m, b, steps):
     base = ptr(m, BLOCK_LO, BLOCK_HI, b)
     hdr = [m[base + i] for i in range(16)]
     owner = hdr[12] - 1
-    rec = melodic(m, hdr[3 + owner], steps)
-    f, mod = rec["filter"], rec["filter"]["mod"]
+    f = filtercols(m, hdr[3 + owner])
+    mod = f["mod"]
     route = hdr[9] | hdr[10] << 1 | hdr[11] << 2
     seed = oneshot(steps[3], mod["period"], mod["type"], 8)
     return [
@@ -1029,6 +1034,7 @@ def build(path, ticks=TICKS, song=1):
             "tick": ["row", "machine"],
             "row_consumes_tick": False,
             "row_command": "spent",
+            "instrument": shared(),
             "row": rowprogram(),
         },
         "globals": {
@@ -1055,6 +1061,8 @@ def build(path, ticks=TICKS, song=1):
         },
         "streams": dict(
             rowstreams(),
+            note_on={"rows": NOTE_ROWS},
+            drum_on={"rows": DRUM_ROWS},
             **machinestreams(),
             **filterstreams(),
             noise={
