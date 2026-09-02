@@ -219,11 +219,12 @@ def test_a_cursor_is_on_a_row_or_on_none_and_never_says_so_by_its_index():
         cursors=["wave"],
     )
     p = Player(o)
+    order = p.machine_order(0, ())  # the rank order is the object's, and fixed
     for row in (0, 1):
         p.cursor["wave"][0]["row"] = row
-        assert [k for _, _, _, k in p.slots()] == ["wave"]
+        assert [x.name for chk, _, x in order if chk()] == ["wave"]
     p.cursor["wave"][0]["row"] = None
-    assert p.slots() == []  # the cursor is off, and the object said so
+    assert [x.name for chk, _, x in order if chk()] == []  # off, and the object said so
     with pytest.raises(AssertionError, match="never steps here"):
         p.srow("wave", 0)
 
