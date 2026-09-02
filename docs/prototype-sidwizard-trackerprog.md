@@ -523,18 +523,23 @@ union of `meta` keys 26 → 21 and the keys the player branches on 15 → 10
 where the generality belongs: paid once, in the player, rather than once per
 family, in the schema.
 
-**Three instrument columns neither build reads.** The audit that pruned the
-object's dead surface (prototype-trackerprog §7) found `wave_base`, `pw_base`
-and `flt_base` — an instrument's first row in each of its three tables — named
-by exactly one reader, the `stream.wave` / `stream.pulse` / `stream.filter`
-commands, which re-point a cursor to `base + index + 3·param`. Neither Emomyst
-nor End of the World emits one of those commands: GoatTracker 2's two builds
-emit eighteen between them and SID Wizard's two emit none. So the three columns
-are written and read by nothing in either certified object, and they are *not*
-struck, because the reader is real and the tool would answer a build that has
-one with a `KeyError` rather than a refusal. It is §4's own distinction stated
-about a column instead of a form: a field no exemplar exercises is untested,
-which is not the same thing as a field no consumer has.
+**Three instrument columns, and the reader that could not have been right.**
+The audit that pruned the object's dead surface (prototype-trackerprog §7) found
+`wave_base`, `pw_base` and `flt_base` — an instrument's first row in each of its
+three tables — named by exactly one reader, the `stream.wave` / `stream.pulse` /
+`stream.filter` commands, which re-pointed a cursor to `base + index + 3·param`.
+Neither *Emomyst* nor *End of the World* emits one: GoatTracker 2's two builds
+emit eighteen between them and SID Wizard's two emit none, so the arithmetic was
+never rendered — and it is wrong. `param` counts three-byte rows of the
+instrument's *record*, and a cursor counts rows of the concatenated stream, whose
+map is `row_of(i, slot, k)`: a build-time table per instrument. `pw_base` is the
+row of byte offset 0, which is in no instrument's block, so it is the end-of-table
+sentinel 1 on every instrument of both tunes. A command names no instrument and
+so cannot carry that map, and R10 makes the three a **named refusal** (`DEAD`'s
+`fx.pointer`) instead of a computed row; the three columns go with their only
+reader. The general rule is the one the review states: a value the schema admits
+and no exemplar writes is untested, and an untested arm is as likely to be wrong
+as absent.
 
 ---
 

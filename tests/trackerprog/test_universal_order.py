@@ -37,7 +37,6 @@ def obj(play, patterns, **meta):
                 {"commands": True},
                 {"sets": [["ctrl", {"payload": "note"}]], "when": [["sounds", "!=", 0]]},
             ],
-            "player": "hermetic",
             **meta,
         },
         "pitch": {"base": 0, "freq": [0x0100 * (k + 1) for k in range(16)]},

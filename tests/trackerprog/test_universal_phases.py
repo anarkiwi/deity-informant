@@ -120,7 +120,6 @@ def obj(events, streams=None, accs=None, tempo=4, ins=None, **meta):
                 {"commands": True},
             ],
             "pitch_target": "@freq",
-            "player": "hermetic",
             **meta,
         },
         "pitch": {"base": 0, "freq": [0x0100 * (k + 1) for k in range(8)]},

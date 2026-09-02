@@ -897,7 +897,6 @@ def build(path, song=0):
                 {"stream": "noteon", "when": [["sounds", "!=", 0]]},
                 {"stream": "rest", "when": [["dur", "!=", 0], ["sounds", "==", 0]]},
             ],
-            "player": "prototype-trackerprog.md sections 4 and 5",
         },
         "globals": {
             "flags": {k: {"default": K(0)} for k in _FLAGS},
@@ -905,7 +904,6 @@ def build(path, song=0):
             "after": ["filter"],
             # the cutoff is 11 bits over two registers the chip splits 8 and 3
             "commit": [[0x15, lo(G("cutoff"))], [0x16, lo({"shr": [G("cutoff"), 3]})]],
-            "init_writes": [[r, v] for r in range(0x18, -1, -1) for v in (8, 0)],
             "stop_writes": [],
         },
         "pitch": pitch(m),

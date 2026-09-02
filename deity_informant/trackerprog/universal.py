@@ -36,6 +36,7 @@ _RANK = operator.itemgetter(0)
 _DERIVED = (
     "accname heard code tests kept rowplans plans puts steps armwhen columns ranked flagdefs"
     " clockplan earlycode fetchcode endcode spends phases flushcode commits cursors priv subs"
+    " rowprog stageprog allplans pitchput"
 ).split()
 _UNARY = {  # a node whose argument is a name, not an expression
     "cell": lambda p, a: p.cellcode(a),
@@ -159,7 +160,11 @@ class Player:
         # a setter per target, a plan per accumulator, stream, arm and column
         self.code, self.tests, self.kept = {}, {}, []
         self.rowplans, self.plans, self.puts, self.steps, self.armwhen = {}, {}, {}, {}, {}
-        self.columns = {}
+        self.columns, self.allplans = {}, {}
+        # §3.6's two row programs and the note's own target, compiled with the rest
+        self.rowprog = self.rowcode(o["meta"]["row"])
+        self.stageprog = self.rowcode(o["meta"].get("stage", ()))
+        self.pitchput = self.put_to(o["meta"].get("pitch_target", "freq"))
         self.ranked = sorted(  # the streams a voice's machine runs, in rank order
             (
                 (st["rank"], k, st, self.guardcode(st.get("when")))
@@ -434,6 +439,13 @@ class Player:
         """One ``sets`` list, compiled: each target's own setter and its value."""
         return [(self.put_to(t), self.code_of(e)) for t, e in sets]
 
+    def rowcode(self, prog):
+        """One row program (§3.6), compiled: each step's guard and its own ``sets``."""
+        return [
+            (self.guardcode(s.get("when")), s, self.setcode(s["sets"]) if "sets" in s else None)
+            for s in prog
+        ]
+
     def code_of(self, e):
         """The closure a sub-expression evaluates through, compiled now."""
         return self.code.get(id(e)) or self.compiled(e)
@@ -664,18 +676,17 @@ class Player:
         reset that zeroes.  The step this tick is is ``phase``, which any guard
         may read (sidwizard-trackerprog.md section 4.1).
         """
-        t = self.tempo
+        cell, step, boundary, resets = self.clockplan
         self.stepped = self.tick_no % self.rate == self.phase
         if not self.stepped:
             return False
-        k = t["cell"]
-        self.tickphase = self.c[k][v]
-        self.c[k][v] = (self.tickphase + t["step"]) & 0xFF
-        hit = self.guards(t["boundary"])
-        for r in t.get("reset", ()):
-            if self.guards(r["when"]):
-                for target, e in r["sets"]:
-                    self.assign(target, self.ev(e), [], [])
+        self.tickphase = cell[v]
+        cell[v] = (self.tickphase + step) & 0xFF
+        hit = boundary(None)
+        for when, sets in resets:  # the first that holds, and no more
+            if when(None):
+                for put, f in sets:
+                    put(f(None), [], [])
                 break
         return hit
 
@@ -807,8 +818,7 @@ class Player:
         self.c["lastnote"][self.v] = n
         for a in self.o["meta"].get("pitch_links", ()):
             self.store(self.o["accs"][a], 0)
-        f = self.freq_of(n)
-        self.assign(self.o["meta"].get("pitch_target", "freq"), f, prod, [])
+        self.pitchput(self.freq_of(n), prod, [])
 
     def past(self, d):
         """A frequency the tuning has no note for: the modulator says what it is."""
@@ -831,7 +841,7 @@ class Player:
         return f
 
     def putcode(self, t):  # noqa: C901 - one clause per section 5 target form
-        """``assign``'s dispatch, made once for a target instead of once per write."""
+        """A ``sets`` target's dispatch, made once for the target and not per write."""
         if isinstance(t, int):
             return lambda val, prod, edge: self.shadow.__setitem__(t, val & 0xFF)
         if t[:1] == "@":
@@ -877,38 +887,6 @@ class Player:
         d[self.v] = val
         self.publish("sound", self.v, {"wave": val})
 
-    def assign(self, t, val, prod, edge):
-        """A set's target: a voice cell, a global cell, or a register."""
-        if isinstance(t, int):
-            self.shadow[t] = val & 0xFF
-        elif isinstance(t, str) and t[:1] == "@":
-            k = t[1:]
-            self.c[k][self.v] = val & (0xFFFF if k in self.wide else 0xFF)
-            if k == "wave":  # the voice's waveform moved: the fact a modulator mirrors
-                self.publish("sound", self.v, {"wave": self.c[k][self.v]})
-        elif isinstance(t, str) and t[:1] == "#":
-            self.gl[t[1:]] = val & (0xFFFF if t[1:] in self.wide else 0xFF)
-        elif isinstance(t, str) and t[:1] == "!":  # a flag another producer reads
-            self.flags[t[1:]] = val
-        elif isinstance(t, str) and t[:7] == "shadow.":  # the image, written where it is
-            self.store_cell(t, val)
-        elif t == "pitch":  # a producer that writes the chip without moving a cell
-            prod += [("freq_lo", val & 0xFF), ("freq_hi", (val >> 8) & 0xFF)]
-        elif t == "freq":
-            self.c["freq"][self.v] = val
-            prod += [("freq_lo", val & 0xFF), ("freq_hi", (val >> 8) & 0xFF)]
-        elif isinstance(t, str) and t[:4] == "reg.":
-            # a register of the tune's one global channel, written by the voice whose
-            # write-out sends it and resolved by last-writer (§3.7).  A single-family
-            # data form: JCH's write-out sends the cutoff and the volume inside every
-            # voice's own group, so the value the tick leaves is the last voice's, not
-            # the channel's at the end of the tick (prototype-jch-trackerprog.md §4.4)
-            prod.append((int(t[4:]), val))
-        elif t in EDGE:  # an edge write belongs to the act of the tick that made it
-            edge.append((t, val & 0xFF, self.act))
-        else:
-            prod.append((t, val & 0xFF))
-
     def commit(self, prod, edge):
         """One group of the tick's per-voice writes: its producers, then its edges."""
         for t, x in prod:  # 4 the freq/pw producers, in declared order
@@ -925,12 +903,8 @@ class Player:
         """
         i = 0
         while i < len(edge):
-            if len(edge[i]) < 3:  # a producer inside the list: no act to group it with
-                self.emit(edge[i][0], edge[i][1])
-                i += 1
-                continue
             act, one = edge[i][2], {}
-            while i < len(edge) and len(edge[i]) > 2 and edge[i][2] == act:
+            while i < len(edge) and edge[i][2] == act:
                 one[edge[i][0]] = edge[i][1]
                 i += 1
             for t in self.commit_order:
@@ -1039,9 +1013,9 @@ class Player:
         transpose of the play step it belongs to.
         """
         self.payload = self.stage_facts(e)
-        for step in self.o["meta"].get("stage", ()):
-            if self.guards(step.get("when"), self.payload):
-                self.row_step(step, self.stagedplay[self.v], e, prod, edge)
+        for when, step, sets in self.stageprog:
+            if when(self.payload):
+                self.row_step(step, sets, self.stagedplay[self.v], e, prod, edge)
 
     def stage_facts(self, e):
         """The row the fetch read, as the values its own steps read.
@@ -1179,9 +1153,9 @@ class Player:
         that need an event skip it and the rest still run.
         """
         self.payload = self.row_facts(e)
-        for step in self.o["meta"]["row"]:
-            if self.guards(step.get("when"), self.payload):
-                self.row_step(step, play, e, prod, edge)
+        for when, step, sets in self.rowprog:
+            if when(self.payload):
+                self.row_step(step, sets, play, e, prod, edge)
         self.publish("row", self.v, self.payload)
 
     def row_facts(self, e):
@@ -1213,11 +1187,12 @@ class Player:
             "gate": self.gate_mask(e),
         }
 
-    def row_step(self, step, play, e, prod, edge):
+    def row_step(self, step, sets, play, e, prod, edge):
         """One step of the row program."""
-        if "sets" in step:
-            for t, val in step["sets"]:
-                self.assign(t, self.ev(val, self.payload), prod, edge)
+        if sets is not None:
+            ov = self.payload
+            for put, f in sets:
+                put(f(ov), prod, edge)
         elif "stream" in step:
             self.rows(step["stream"], prod, edge, self.payload)
         elif "commands" in step:
@@ -1300,9 +1275,22 @@ class Player:
         self.inline(cmd.get("rows", ()), prod, edge, cmd)
         for name, e in cmd.get("flags", {}).items():
             self.flags[name] = self.ev(e, cmd)
-        for t, e in cmd.get("all", ()):  # section 3.6's global tempo: every voice
-            for u in range(self.n):
-                self.c[t[1:]][u] = self.ev(e, cmd) & 0xFF
+        if "all" in cmd:  # section 3.6's global tempo: one set, every voice
+            keep = self.v
+            for put, f in self.allcode(cmd["all"]):
+                val = f(cmd)
+                for u in range(self.n):
+                    self.v = u
+                    put(val, prod, edge)
+            self.v = keep
+
+    def allcode(self, sets):
+        """A command's ``all`` list, compiled: the set every voice takes."""
+        plan = self.allplans.get(id(sets))
+        if plan is None:
+            plan = self.allplans[id(sets)] = self.setcode(sets)
+            self.kept.append(sets)
+        return plan
 
     # ---- the accumulators -----------------------------------------------------
     def plan(self, a):

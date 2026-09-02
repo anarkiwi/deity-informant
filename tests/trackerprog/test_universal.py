@@ -78,12 +78,9 @@ def obj(patterns, orders, instruments, pitch=None, rate=2, beyond=None):
                 {"stream": "note_on"},
                 {"commands": True},
             ],
-            "player": "hermetic",
         },
         "globals": {
-            "mode_vol": 0x0F,
             "flags": {"C": {"default": {"bit": [{"cell": "ins"}, 5]}}},
-            "init_writes": [],
             "stop_writes": [[4, 0], [24, 0x0F]],
         },
         "pitch": pitch or tuning(),
