@@ -19,6 +19,8 @@ from . import emit, lift as t2lift
 from .universal import CHIP, REG
 
 BYTE = {"from": "projected", "interval": [0, 0xFF], "witness": "the 8-bit store"}
+# the fields of a section 5 record that carry an expression, and no other
+EXPRS = ("policy", "delta", "delta_when", "when", "step_when", "phase", "rate", "gate")
 
 
 def read(out):
@@ -198,18 +200,67 @@ def beyond_words(cells, org, n, limit):
     return out
 
 
+SITES = "_sites"
+
+
+def unsite(streams):
+    """The rows as the object carries them: the join's own bookkeeping taken off."""
+    for st in streams.values():
+        for r in st["rows"]:
+            r.pop(SITES, None)
+    return streams
+
+
+def widen(cellseed, globseed, merged, img, cells):
+    """The halves T1 named as one word, seeded as the one 16-bit cell they are."""
+    for lo, hi in merged:
+        if lo.startswith("#"):
+            base = cells.baseof(hi[1:])
+            globseed[lo[1:]] = globseed.pop(lo[1:], 0) | (int(img[base]) if base else 0) << 8
+            globseed.pop(hi[1:], None)
+        elif lo in cellseed and hi in cellseed:
+            cellseed[lo] = [a | b << 8 for a, b in zip(cellseed[lo], cellseed.pop(hi))]
+    return cellseed, globseed
+
+
+def prune(obj):
+    """``state0`` held to the cells the object reads or writes: a dead seed is no cell."""
+    live = set(obj["meta"].get("wide", ())) | {obj["meta"]["tempo"]["cell"]}
+    live |= {a["cell"].lstrip("#") for a in obj["accs"].values()}
+    for st in obj["streams"].values():
+        for r in st["rows"]:
+            live |= {s[0].lstrip("@#!") for s in r["sets"]}
+    live |= _reads([obj["streams"], obj["accs"], obj["score"], obj["meta"]])
+    live = {n.split(".")[0] for n in live}
+    obj["state0"]["cells"] = {k: v for k, v in obj["state0"]["cells"].items() if k in live}
+    obj["state0"]["globals"] = {k: v for k, v in obj["state0"]["globals"].items() if k in live}
+    return obj
+
+
+def site_of(src):
+    """One store site as the certificate and T0/T1 name it."""
+    return None if src is None else "$%04X" % src
+
+
 def sets_of(parts):
     """The plain assignments of one lowered block, its accumulator stores taken out."""
-    return [[t, v] for t, v in parts]
+    return [[t, v] for t, v, _s in parts]
 
 
 def row_of(low, lbl, extra, local=None):
-    """One block as a row of a stream, and the accumulator stores it is split at."""
+    """One block as a row of a stream, and the accumulator stores it is split at.
+
+    Each row carries the store site of every assignment under ``_sites``, which
+    is what :mod:`.recognise` joins T1's accumulator records to and which is
+    stripped once the join has run.
+    """
     when, parts = low.row(lbl, extra, local)
     out = []
     for sets, acc in parts:
         if sets:
-            out.append(("row", {"when": [list(x) for x in when], "sets": sets_of(sets)}))
+            row = {"when": [list(x) for x in when], "sets": sets_of(sets)}
+            row[SITES] = [site_of(s) for _t, _v, s in sets]
+            out.append(("row", row))
         if acc is not None:
             out.append(("acc", acc[1], acc[2], [list(x) for x in when], acc[3]))
     return out
@@ -220,7 +271,13 @@ def stream_items(low, seq, trips):
     items, rows = [], []
     for lbl, extra, local in seq:
         if lbl is None:
-            rows.append({"when": [list(t) for t in extra], "sets": [["@trap", {"trap": "loop"}]]})
+            rows.append(
+                {
+                    "when": [list(t) for t in extra],
+                    "sets": [["@trap", {"trap": "loop"}]],
+                    SITES: [None],
+                }
+            )
             continue
         for got in row_of(low, lbl, extra, local):
             if got[0] == "row":
@@ -282,13 +339,34 @@ def dce(streams, keep):
         for st in streams:
             for r in st["rows"]:
                 n = len(r["sets"])
-                r["sets"] = [s for s in r["sets"] if s[0][:1] != "@" or s[0][1:] in live]
-                gone += n - len(r["sets"])
+                at = [k for k, s in enumerate(r["sets"]) if s[0][:1] != "@" or s[0][1:] in live]
+                r["sets"] = [r["sets"][k] for k in at]
+                if SITES in r:  # the join's own bookkeeping, kept beside its row
+                    r[SITES] = [r[SITES][k] for k in at]
+                gone += n - len(at)
         if not gone:
             break
     for st in streams:
         st["rows"] = [r for r in st["rows"] if r["sets"]]
     return streams
+
+
+def _reads(node):
+    """Every cell and global one part of the object reads, by name."""
+    out, stack = set(), [node]
+    while stack:
+        x = stack.pop()
+        if isinstance(x, dict):
+            for k, v in x.items():
+                if k in ("cell", "global") and isinstance(v, str):
+                    out.add(v)
+                elif k == "cell":
+                    out.add(v[0])
+                else:
+                    stack.append(v)
+        elif isinstance(x, (list, tuple)):
+            stack += list(x)
+    return out
 
 
 def _cellnames(node):
@@ -349,70 +427,6 @@ def order_letters(low, rid):
     return out
 
 
-def score_of(records, low, vvar, ordernames, tempo, voices, ordpos=None, keep=None):
-    """The score the fetches read: per-voice orders of patterns of events.
-
-    A visit ends where the fetch stepped the *order* cursor T2 named -- which is
-    the pattern's own end, and the only place the score's shape comes from.
-    """
-    rows = {v: [] for v in range(voices)}
-    for got in records:
-        v = got["env"].get(vvar)
-        if v is None or v not in rows:
-            continue
-        sets = [
-            ["@" + low.temps[n], int(got["temps"][n])]
-            for n in got["seen"]
-            if n in low.temps and n in got["temps"] and (keep is None or low.temps[n] in keep)
-        ]
-        pat = next((int(got["temps"][n]) for n in got["seen"] if n in ordernames), 0)
-        dur = next((c[2] for c in got["cmds"] if c[0] == "ram" and c[1] == tempo + v), 0)
-        ends = ordpos is not None and any(c[0] == "ram" and c[1] == ordpos + v for c in got["cmds"])
-        rows[v].append((pat, dur, sets, ends))
-    orders, pats = [], {}
-    for v in range(voices):
-        play, cur, last = [], [], None
-        for pat, dur, sets, ends in rows[v]:
-            if last is not None and (pat != last or cur and cur[-1][2]):
-                _visit(play, pats, last, cur)
-                cur = []
-            cur.append((dur, sets, ends))
-            last = pat
-        if cur:
-            _visit(play, pats, last, cur)
-        orders.append({"play": play, "end": {"jump": 0}})
-    return orders, pats
-
-
-def _visit(play, pats, pat, rows):
-    """One visit of one pattern: its events, kept once and named by what they decode to."""
-    key = (pat, tuple((d, tuple(tuple(s) for s in ss)) for d, ss, _e in rows))
-    name = pats.get(key)
-    if name is None:
-        name = pats[key] = len(pats)
-    play.append(name)
-
-
-def patterns_of(pats):
-    return {
-        str(name): {
-            "events": [
-                {
-                    "dur": d,
-                    "sounds": False,
-                    "note": None,
-                    "gate": None,
-                    "tie": False,
-                    "ins": None,
-                    "arm": {"rows": [{"sets": [list(s) for s in ss]}]},
-                }
-                for d, ss in rows
-            ]
-        }
-        for (_p, rows), name in pats.items()
-    }
-
-
 def acc_of(name, cell, expr, when, rank, src=0):
     """One store the object has no ``sets`` target for: a reload accumulator (§5)."""
     return name, {
@@ -430,7 +444,7 @@ def acc_of(name, cell, expr, when, rank, src=0):
     }
 
 
-def coverage(low, prog, proc, segs, glob, streams, accs, t1):
+def coverage(low, prog, proc, segs, glob, streams, accs, t1got):
     """B7's numbers: the store sites lowered, recognised and refused, and their leaves."""
     p = prog.procs[proc]
     blocks = sum(segs.values(), []) + list(glob)
@@ -440,18 +454,7 @@ def coverage(low, prog, proc, segs, glob, streams, accs, t1):
         for r in st["rows"]:
             _leafkinds([x[1] for x in r["sets"]] + list(r.get("when", [])), leaves)
     for a in accs.values():
-        _leafkinds([a["policy"]["reload"]] + list(a.get("when", [])), leaves)
-    sited = {a.get("site") for a in accs.values()}
-    lowered = {"$%04X" % s.src for s in sites}
-    t1got = [
-        {
-            "id": a["id"],
-            "cell": a["cell"]["name"],
-            "sites": a.get("sites") or [],
-            "form": _form(a.get("sites") or [], sited, lowered),
-        }
-        for a in (t1 or {}).get("accs") or ()
-    ]
+        _leafkinds([a.get(k) for k in EXPRS if k in a], leaves)
     return {
         "store_sites": len(sites),
         "rows": sum(len(st["rows"]) for st in streams),
@@ -461,14 +464,8 @@ def coverage(low, prog, proc, segs, glob, streams, accs, t1):
         "leaves": dict(sorted(leaves.items())),
         "t1_accumulators": t1got,
         "t1_recognised": sum(1 for a in t1got if a["form"] == "acc"),
+        "t1_refused": [[a["id"], a["cell"], a["why"]] for a in t1got if a["form"] != "acc"],
     }
-
-
-def _form(sites, sited, lowered):
-    """Where a T1 accumulator's own store landed: an ``Acc``, a ``sets`` row, or neither."""
-    if any(s in sited for s in sites):
-        return "acc"
-    return "sets" if any(s in lowered for s in sites) else "refused"
 
 
 def _leafkinds(nodes, out):

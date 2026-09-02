@@ -76,6 +76,8 @@ def expr(e, notes=None):
         return "transpose(%s)" % expr(a, notes)
     if k == "shr":
         return "%s >> %s" % (_sub(a[0], notes), expr(a[1], notes))
+    if k == "shl":
+        return "%s << %s" % (_sub(a[0], notes), expr(a[1], notes))
     if k == "reload":
         return "reload " + expr(a, notes)
     if k == "mul":

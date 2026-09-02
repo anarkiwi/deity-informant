@@ -3,10 +3,13 @@
 The exemplar [prototype-trackerprog.md](prototype-trackerprog.md) §9 says is
 missing: a **lift** that produces a trackerprog rather than a hand reading of
 one. It answers [trackerprog-backlog.md](trackerprog-backlog.md) **B6** (is the
-schedule recoverable?) and attempts **B7** (lower the tick, do not classify it)
-on one tune, Commando song 1 — 11,780 ticks, **0 divergences**, no `program`
-key, rendered by `deity_informant/trackerprog/universal.py` and certified
-against the tune's own player on the PcodeVM. The hints file is **empty**.
+schedule recoverable?) and **B7** (lower the tick, do not classify it, then
+recognise what T1 names) on one tune, Commando song 1 — 11,780 ticks,
+**0 divergences**, no `program` key, rendered by
+`deity_informant/trackerprog/universal.py` and certified against the tune's own
+player on the PcodeVM. The hints file is **empty**, and **all three of T1's
+accumulators land as §5 records** (§2.3); §7 states what the pass did not
+change.
 
 ```
 tools/tuneprog_trackerprog.py --out out/recert-main/commando-song1 \
@@ -14,7 +17,8 @@ tools/tuneprog_trackerprog.py --out out/recert-main/commando-song1 \
 ```
 
 Contents: 1 the source · 2 the method · 3 the hints · 4 coverage ·
-5 the certificate · 6 against the hand object · 7 what the next family needs.
+5 the certificate · 6 against the hand object · 7 the limits ·
+8 what the next family needs.
 
 ---
 
@@ -102,7 +106,7 @@ per voice. Nothing is classified; a leaf with no name is refused.
 | a load of a `const` record column at `stride × ins` | `{"ins": column}` |
 | a load of the tuning at `2·E` | `{"transpose": k}` where `E` is the note cell plus a constant, else `{"transpose": {"sub": [E, note]}}` |
 | a load of a cell | `{"cell": name}` / `{"global": name}` |
-| `<<` by a constant | the adds §5 has |
+| `<<` by a constant | one `shl` node, the mirror of the `shr` §5 already has: an operand is named once and never doubled *k* times |
 | `a < b`, `a <= b`, `carry(a, b)` | `carry_out` / `borrow_out` on the difference or the sum |
 | `a != 0` on a masked bit | `{"bit": [a, k]}` |
 | an inner loop | unrolled to the turns the horizon takes, repetition *j* under the edge that continues it, and a `trap` row past the last |
@@ -114,13 +118,44 @@ ways, and the guard `guardpath` gives is one edge's. The lift keeps only the
 terms a branch *inside the same segment* decides — the rest is what `meta.tick`
 already says, which is the same claim B6 makes.
 
+**The shift is one node, not 2^*k* copies.** `x << k` had been *k* doublings of
+`{"add": [node, node]}` with the subtree copied at each, so a shift by *k* had
+2^*k* leaves and the vibrato step's 16-bit rotate stood as 128 copies of one
+mask: the largest `sets` expression was **1,282 nodes** on `main` and is **36**
+here, against the hand object's 5 (§7's table). One expression of the 196 still
+names an operand twice — the two-stage carry an `ADC` leaves in the S4 IR, 3
+nodes at `machine2` row 3 — and it is the IR's own shape, not the lowering's.
+
+### 2.3 B7: T1's accumulators, joined
+
+`trackerprog/recognise.py` and `algebra.py`. T1 states, per accumulator, the
+**cell** it moves, the **sites** that move it, its `delta`, `bound`, `policy`
+and `phase`; the lowering names every store by the cell it moves and carries
+each assignment's own **site** on the row. The join is those two facts and
+nothing else — no family, no expression pasted from a hand tool.
+
+| the join asks | the answer it takes |
+| --- | --- |
+| which rows are the accumulator's | the rows whose `sets` target the cell `cells.py` names T1's address, in the one stream that holds a T1 site |
+| which of them is the delta | the store whose site is a T1 site; any other store of the same cell under a guard the delta's own extends is the `policy`'s |
+| the record's `when` | the longest guard list every store row begins with; the delta's extra terms are `delta_when`, minus any term reading a cell the join takes out |
+| `delta` | T1's own form over the object's cells (`repeat(step, n)`, `field(cell, mask)`); where T1 names a cell the object cannot, the store peeled as an accumulation on its own cell |
+| `produce` | the T0 write whose cells are the accumulator's own, found in the run or in the rows the run's guard still covers; its `sets` leave with the rows |
+| `flag` | the one cell a repeated addition writes on every turn and a later row reads: §5's carry. Its `seed` is the value it enters the loop with, **enumerated over the byte** on the set `when` and `delta_when` admit, and refused where that is not one constant |
+| a word in two named halves | one 16-bit cell, the halves read and written as §5's `.hi`/`.lo` on the low half's name, listed in `meta.wide` |
+
+The rows the record replaces leave the stream, the stream is cut at the record,
+and every rank renumbers over streams and records together. A store the schema
+has no `sets` target for is already an `Acc` (`build.acc_of`, `ins.pw`); where
+T1 names it, the join restates the assignment as the record it stands for.
+
 **What lies past the tuning is derived, not read.** Commando's frequency table
 is fused with the per-voice arrays (commando-trackerprog §4.2). The lift takes
 T2's 80 entries as the tuning and asks `cells.py` what holds each byte after
 them: **21 words, every one a named cell, no trap** — where the hand states 12
 words with 2 traps.
 
-### 2.3 The score, materialised
+### 2.4 The score, materialised
 
 The fetch regions are not lowered: they are the score. `record.py` runs the
 certified tick from the post-init image with the row segment recorded, and each
@@ -145,23 +180,37 @@ certificate carries the refusals:
 
 ## 4. Coverage
 
+Every number below is `trackerprog.lift.report.json`, written by the command at
+the head of this document; none is typed.
+
 | number | value |
 | --- | --- |
 | store sites of the tick outside the fetch regions | **86** |
-| lowered into `sets` rows | **79** (84 rows over 7 streams, 257 assignments) |
-| recognised into `Acc` records | **3** (the instrument-scoped pulse pair) |
+| lowered into `sets` rows | **80 rows over 9 streams, 196 assignments** |
+| recognised into `Acc` records | **5** — T1's three accumulators joined (§2.3), and two stores of `ins.pw` T1 names no accumulator for |
 | refused | **4** (§3) |
-| T1 accumulators, by where their store landed | 1 `acc` (`rec2[].b5591`, T1's `acc2`), 2 `sets` (`acc_2_lo`, `voice[].acc`) |
+| T1 accumulators recognised | **3 of 3**, none refused: `acc_2_lo` (`repeat` + `flag`), `voice[].acc` (`field` + `phase bit`), `rec2[].b5591` (`add` with the carry) |
 | T2 recognised | the tuning (80 entries, base 16), the instrument selector (13 records, 6 columns), the score (3 order lists, 32 patterns, 572 events) |
-| leaves opened | 1,262 constants, 811 cells, 49 globals, 10 pitch reads, 7 instrument columns, 0 unnamed |
+| leaves opened | 437 constants, 324 cells, 32 globals, 10 pitch reads, 7 instrument columns, 0 unnamed |
 | score bytes a row supplies | 2 to 4, the row's own bytes and no more |
 
-**Two of T1's three accumulators stay as lowered `sets`.** That is the honest
-half of B7: the lowering is complete and the *recognition* pass is not. The one
-that lands as an `Acc` does so because the schema has no `sets` target for an
-instrument-scoped cell, not because the pass recognised a pulse run — it is
-stated as `policy: {reload: …}`, an assignment, and carries none of §5's
-`delta`, `bound.from: proved` or `rate`.
+The three records, as the object states them:
+
+| T1 | cell | width | delta | policy | bound | phase / flag | produce |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `acc0` the vibrato | `#acc_2_lo` | 16 | `repeat(u16(#step_lo, #step_hi), #b550C)` under `delta_when` | `reload` the tuning's own word | `observed [0, 64814]` | `flag {C_43, seed 1}` | `freq_lo` `freq_hi` |
+| `acc1` the slide | `acc` | 16 | `field(#freq_lo_add, $FF)` | `wrap` | `projected [0, 65535]` | `bit(b5520, 0)` | `freq_lo` `freq_hi` |
+| `acc2` the pulse run | `ins.pw.lo` | 8 | `#b5507 + tC_6`, the carry the vibrato's loop left | `wrap` | `projected [0, 255]` | — | `pw_lo` |
+
+**T1's `rate` is not restated, and the reason is the lowering.** T1 gives all
+three a countdown on `timer_5`; the lowering has already spent that counter as
+a row and a guard, so a divider on the record would step it twice. The records
+carry `rate: 1` and the divider stays where the lowering put it.
+
+**The two `Acc` records that are still assignments** are the note-on's own
+writes to `ins.pw.hi`/`ins.pw.lo`: T1 states no accumulator over them, so they
+stay `policy: {reload: …}` — §5's record is the only `sets` target the schema
+has for an instrument-scoped cell (§8 item 3), not a reading of anything.
 
 ## 5. The certificate
 
@@ -170,33 +219,42 @@ against the tune's own player on `deity_informant.PcodeVM`.
 
 | subtune | ticks | SID writes | divergences | permuted | identical | per-register order |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | **11,780** | **133,109** | **0** | 8,370 | 3,410 | **identical** |
+| 1 | **11,780** | **133,109** | **0** | 8,370 | 3,410 | identical |
 
 133,109 is the write count [prototype-commando-floor.md](prototype-commando-floor.md)
-§2.2 measures on the trace, to the write. `same_per_register_order` holds, which
-is **stronger than the hand object on this subtune**: the hand's 105 intermediate
-`freq_lo` writes (commando-trackerprog §3) are not dropped here, because the lift
-keeps the store the hand's `pitch` modulator folds away.
+§2.2 measures on the trace, to the write.
+
+**What the 0 is worth, and what it is not.** A lowering renders the program it
+was lowered from, so 0 divergences over the horizon is close to guaranteed by
+construction and is *not* evidence that anything was abstracted. What it is
+evidence of is the recognition: every store the join took out of a stream and
+restated as a §5 record renders the same writes as the rows it replaced, and
+the horizon is where that is checked. `same_per_register_order` is a **symptom
+and not a merit** — it holds because the lift keeps intermediate stores the
+hand's producer list folds away, so the two write lists differ only by the
+interleave; a reading that folded them would lose the property and be the
+better object.
 
 The print and the object against the tune's own load band (§9's acceptance #3):
 
 | measure | lines | tokens | statements | blocks | header rows | data rows | `xz -9e` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `trackerprog.lift.md` | 1,177 | 17,845 | 1,136 | 7 | 41 | 1,136 | 5,696 |
+| `trackerprog.lift.md` | 1,145 | 14,862 | 1,104 | 7 | 41 | 1,104 | 5,316 |
 
 | artefact | raw | `xz -9e` |
 | --- | --- | --- |
-| the lifted object, compact | 162,579 | **5,892** |
+| the lifted object, compact | 138,225 | **5,496** |
 | — its `score` half | 101,990 | 1,776 |
-| — everything else | 60,580 | 4,268 |
-| the hand object, song 1 | 47,313 | 3,464 |
+| — everything else | 36,226 | 3,860 |
+| the hand object, song 1 | 53,898 | 3,464 |
 | the whole load band | 4,039 | 2,548 |
 
-**2.31× the compressed load band**, against the hand's 1.36× and §9.1's
-1.25×–2.18× band. The two score halves are within a quarter of each other
-(1,776 against the hand's 1,444, over the same 572 events); the whole difference
-is the sound half, 4,268 against 2,232, which holds 206 declared cells and 84
-rows of lowered arithmetic where the hand holds seven accumulators. **A lowering
+**2.16× the compressed load band** (`tools/trackerprog_sizes.py --object`),
+against the hand's 1.36× and §9.1's 1.25×–2.18× band; `main` at #346 was 2.31×.
+The two score halves are within a seventh of each other (1,776 against the
+hand's 1,568, over the same 572 events); the whole difference is the sound half,
+3,860 against 2,076, which holds 117 declared cells and 80 rows of lowered
+arithmetic where the hand holds seven accumulators and four cells. **A lowering
 is bigger than a reading, and that is the trade B7 names.**
 
 ## 6. Against the hand object
@@ -212,18 +270,58 @@ is bigger than a reading, and that is the trade B7 names.**
 | `meta.tempo` | a divider, rate 3, phase 0 | a divider, rate 3, phase 0 | same clock, no `early` |
 | `meta.row` | `{commands}` `{stream rowprog0}` | five steps over the event's own fields | the lift keeps the row's **bytes** where the hand keeps its **fields** |
 | `instruments` | 13 records, the six S6 columns plus `pw` | 9 reached, `adsr`/`wave`/`pw` named | the lift carries the file's table; the hand carries the subtune's reach, named |
-| `streams` | 7, 84 rows of lowered `sets` | 3, 4 rows (`note_on`, `note_off`, `arp`) | the lowering, against the reading |
-| `accs` | 3 reload assignments | 7 §5 records with `delta`, `bound`, `policy`, `rate`, `phase` | **B7's residue** |
+| `streams` | 9, 80 rows of lowered `sets` | 3, 4 rows (`note_on`, `note_off`, `arp`) | the lowering, against the reading |
+| `accs` | 5: 3 §5 records joined from T1, 2 reload assignments on `ins.pw` | 7 §5 records | **the three T1 states are records; the four the hand reads and T1 does not are still rows** |
 | `beyond` | 21 words, 0 traps | 12 words, 2 traps | **the lift states more than the hand**: the two traps are the packed row byte, which the lift keeps as a cell (`b54F5`), so it has a word for them |
-| `globals` | the tick-level stream | `flags.C` and its proof | different mechanisms: the lift keeps the carry as a cell of the lowered arithmetic, so no producer flag is needed |
-| `state0` | 206 cells, 20 globals | 4 cells | every SSA temp is a cell |
+| `globals` | the tick-level stream, and `flag C_43` | `flags.C` and its proof | **the same mechanism**: the vibrato's loop leaves §5's carry and the pulse run reads it |
+| `state0` | 117 cells, 19 globals | 4 cells | every SSA temp the object still reads is a cell |
 
-Two places where the lift's statement is the better one: the `beyond` words (no
-trap), and the write list (`same_per_register_order` on the subtune where the
-hand permutes). Everywhere else the hand's is the better statement, and the gap
-is exactly the recognition B7 asks for.
+Where the lift's statement is now the hand's: the carry (§5's `flag`, seeded and
+read as a flag by the producer that consumes it), the vibrato's `repeat`, the
+slide's `field` with a `phase bit`, the pulse run's `delta` with the carry. Where
+it is better: the `beyond` words (no trap). Everywhere else the hand's is the
+better statement, and §7 says what is left.
 
-## 7. What the next family would need
+## 7. The limits
+
+The recognition changes what T1 names and nothing else. **The unit of the
+lowering is unchanged**: one IR block is one row, one SSA temp is one cell, and
+the object still carries the tick's arithmetic rather than a reading of it.
+
+| measure | `main` at #346 | this lift | the hand object |
+| --- | --- | --- | --- |
+| streams / rows | 7 / 84 | 9 / 80 | 3 / 4 |
+| `sets` assignments | 257 | 196 | 5 |
+| accumulators | 3 reload stand-ins | 3 §5 records + 2 stand-ins | 7 §5 records |
+| `state0` cells | 206 (142 SSA · 27 register temps · 23 carry · 14 the tune's) | 117 (85 · 17 · 4 · 11) | 4 |
+| largest `sets` expression | 1,282 nodes | 36 | 5 |
+| raw / `xz -9e` | 162,579 / 5,892 | 138,225 / 5,496 | 53,898 / 3,464 |
+| ratio to the load band | 2.31× | **2.16×** | 1.36× |
+
+What the pass removed: the vibrato's unrolled loop, the slide's two arms, the
+pulse run's assignment and the register stores the three fed — 19 of the 23
+carry cells and 57 of the 142 SSA temps with them. What the linear shift removed:
+the largest expression, 1,282 nodes down to 36. Together, 24,354 raw bytes and
+396 compressed ones.
+
+What remains, and what it would take:
+
+| residue | what it is |
+| --- | --- |
+| 80 rows of lowered arithmetic | the tick outside the fetch regions that T1 names no accumulator over: the drum, the skydive, the arpeggio, the pulse bounce and the note-on. A second recognition pass would need a plane that states them, and T1 does not |
+| 117 declared cells | one per SSA temp the rows still read. The lowering's own unit; nothing in the join changes it |
+| 2 reload stand-ins | §8 item 3: `ins.pw` is the only instrument-scoped cell the schema can be assigned |
+| `rate: 1` on all three records | T1's countdown is already a row and a guard (§4) |
+
+**T1's plane is horizon-dependent, and that bounds the pass.** Over a 1,200-call
+prefix T1 refuses both of Commando's recurrences as `divergent recurrence` and
+states no accumulator at all, so the join has nothing to join and every store
+stays a row. `tests/trackerprog/test_hvsc_lift.py` asserts exactly that at that
+horizon; the join itself is exercised on hand-built rows and T1 records in
+`tests/trackerprog/test_recognise.py`, and over the whole horizon by the command
+at the head of this document.
+
+## 8. What the next family would need
 
 The lift is fail-closed and the other three exemplars with a T0 plane refuse
 with a named datum rather than approximating:
@@ -243,13 +341,14 @@ Four things stand between this and a second family:
    only the divider-and-countdown value of it, and refuses the rest.
 3. **`ins.pw` is the only instrument-scoped cell the schema can be assigned.**
    Every other per-record mutable cell has no `sets` target, and the reload
-   accumulator this lift uses for the pulse pair is a stand-in, not a reading.
-4. **The recognition pass.** T1 states each accumulator's `delta`, `bound`,
-   `rate` and `phase`; joining them to the store sites the lowering already
-   named would replace whole runs of `sets` rows with §5 records, and is what
-   would bring the object back toward the hand's size.
+   accumulator this lift uses for the note-on's pulse writes is a stand-in, not
+   a reading.
+4. **A plane that names the effects T1 does not.** The recognition (§2.3) joins
+   what T1 states, and on this tune that is three of the hand's seven; the other
+   four — the drum, the skydive, the arpeggio and the pulse bounce — are §7's
+   residue, and no certified artefact names them as accumulators.
 
 The mechanisms themselves are family-free: `tests/trackerprog/test_assemble.py`
-exercises them on hand-built IR with no tune at all, and
-`tests/trackerprog/test_hvsc_lift.py` lifts and certifies Commando and asserts
-the three refusals.
+and `tests/trackerprog/test_recognise.py` exercise them on hand-built IR, rows
+and T1 records with no tune at all, and `tests/trackerprog/test_hvsc_lift.py`
+lifts and certifies Commando and asserts the three refusals.

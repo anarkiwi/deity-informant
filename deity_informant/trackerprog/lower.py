@@ -47,9 +47,11 @@ def _truth(a, b, op, w, e):
 
 
 def _shl(node, k, w):
-    for _ in range(int(k)):
-        node = masked(node * 2 if isinstance(node, int) else {"add": [node, node]}, w)
-    return node
+    """``x << k`` as one node: the operand is named once, never doubled ``k`` times."""
+    k = int(k)
+    if not k:
+        return node
+    return masked(node << k if isinstance(node, int) else {"shl": [node, k]}, w)
 
 
 def reaching(p, order, vidx=frozenset()):
@@ -234,7 +236,7 @@ class Lower:
             got = self.one(s)
             if got is None:
                 continue
-            if got[0] == "acc":
+            if len(got) == 4:  # an accumulator's own store: the row is split at it
                 parts.append((out, got))
                 out = []
             else:
@@ -244,21 +246,25 @@ class Lower:
         return when, parts
 
     def one(self, s):
-        """One statement: a temp, a cell, a register, or an accumulator's own store."""
+        """One statement: a temp, a cell, a register, or an accumulator's own store.
+
+        A plain assignment carries the site it moves, which is what B7's
+        recognition joins T1's accumulator records to.
+        """
         t = type(s)
         self.lbl = self.lbl
         try:
             if t is Let:
                 if s.n in self.v.supplied or s.n in self.v.subst:
                     return None
-                return ("@" + self.temp(s.n, getattr(s.e, "w", 1)), self.value(s.e))
+                return ("@" + self.temp(s.n, getattr(s.e, "w", 1)), self.value(s.e), None)
             if t is Store:
                 got = self.v.target(self, s)
                 if got is None:
                     return None
                 if got[0] == "acc":
                     return ("acc", got[1], self.value(s.v), s.src)
-                return (got[1], self.value(s.v))
+                return (got[1], self.value(s.v), s.src)
         except Unlowerable as x:
             self.bad.add(s.n if t is Let else "$%04X" % s.src)
             del x

@@ -683,6 +683,15 @@ instrument's own space only where the tune declares no cell of that name. One
 form reads a row of a stream as a value, `tabcell(T[c], column)`, which is what
 every table read in the object is.
 
+**Two forms the lift alone writes.** `shl` is `shr`'s own mirror — `x << k` as
+one node, where a lowering otherwise spells it as *k* doublings of a copied
+subtree and pays 2^*k* leaves for it — and a `sets` target may name the
+`.hi`/`.lo` half this vocabulary already has, which `cellput` implemented and
+`putcode` reached for `shadow.` alone. No hand object writes either, so the
+harness measures what that is worth and no more: **0 differing of 332,358** over
+the thirty builds (`--emit-digests` then `--against`). Both are exercised by the
+lift's own certificate ([prototype-lifter.md](prototype-lifter.md) §2.2, §2.3).
+
 **Bounded** is the invariant, not a hint: `bound × policy` makes the reachable
 value set finite and statically known, and `Player.store` asserts the interval
 at every move — turning that assertion on took **five of sixteen** records out,
