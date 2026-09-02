@@ -206,23 +206,18 @@ def _tables(x, obj, i):
 
 
 def _header(ins):
-    """The instrument's sixteen-byte header, back from its named columns."""
-    return (
-        [ins["ctrl"]]
-        + ins["hr"]
-        + ins["adsr"]
-        + [
-            ins["vib"],
-            ins["vibdelay"],
-            ins["arpsped"],
-            ins["chord"],
-            ins["transpose"] & 0xFF,
-            ins["pw_index"],
-            ins["flt_index"],
-        ]
-        + ins["gate_off"]
-        + [ins["wave"]]
-    )
+    """The header bytes the object states, by position in the tune's own record.
+
+    Nine are the record's own columns; three -- the vibrato delay, the arpeggio
+    speed and the chord -- are the constants the note-on bakes, and are no column
+    of the record because nothing reads them back (section 3.5).  Positions 10
+    and 11 are the two table indices, spent into the rows they select, and 12-14
+    the gate-off pointer, which the note-on refuses where it is not zero.
+    """
+    sets = {t: v for r in ins["on_note"] for t, v in r.get("sets", ())}
+    cols = [ins["ctrl"]] + ins["hr"] + ins["adsr"] + [ins["vib"]]
+    baked = [sets["@videlcnt"], sets["@arpsped"], sets["@curchord"], ins["transpose"] & 0xFF]
+    return dict(enumerate(cols + baked)) | {15: ins["wave"]}
 
 
 @pytest.mark.parametrize("tune", sorted(CLAIMS))
@@ -247,7 +242,9 @@ def test_every_byte_of_the_tune_s_data_is_in_the_object(tune):
     )
     for k, ins in obj["instruments"].items():
         i, at = int(k), x.ins_at(int(k))
-        assert _header(ins) == list(m[at : at + 16]), "instrument %s header" % k
+        want = list(m[at : at + 16])
+        assert {j: want[j] for j in _header(ins)} == _header(ins), "instrument %s header" % k
+        assert want[12:15] == [0, 0, 0], "instrument %s gate-off pointer" % k
         for off, b in _tables(x, obj, i).items():
             assert b == m[at + off], "instrument %s byte %02X" % (k, off)
     for k, pat in obj["score"]["patterns"].items():

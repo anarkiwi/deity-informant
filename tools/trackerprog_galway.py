@@ -592,25 +592,21 @@ def I(n):
     return {"ins": n}
 
 
-def instruments(images, silence):
+def instruments(images):
     """The S records the horizon copies, interned: one ``Ins`` per distinct image.
 
     A ``Moke``, an ``FLoad`` and the three ``load`` commands all write this
     record and never the chip, so section 6 spends them here -- the instrument
-    *is* what the score built by the time a note copied it.  Every record
-    carries the same accumulators because the engine is the voice's and not the
-    instrument's: what an instrument does is decide the cells it starts from.
+    *is* what the score built by the time a note copied it.  The accumulators and
+    the silent sound are ``meta.instrument``'s, because the engine is the voice's
+    and not the instrument's: what an instrument does is decide the cells it
+    starts from.
     """
     out = {}
     for i, s in enumerate(images):
-        wave = s[0x18]
         out[str(i)] = {
             "adsr": [s[0x19], s[0x1A]],
-            "sr": s[0x1A],
-            "ad": s[0x19],
-            "wave": wave,
-            "wave_test": wave | 8,  # the TEST-bit pulse two of the three copies make
-            "wave_gate": wave & 0xF7,  # bit 3 is the player's own flag and never the chip's
+            "wave": s[0x18],
             "pw": [s[0x16], s[0x17]],
             "arp": int(bool(s[0x0D] & 8)),
             "vadsc": s[0x1B],
@@ -627,12 +623,24 @@ def instruments(images, silence):
             "fmc": s[0x0D],
             "g": list(s[0:8]),
             "on_note": [{"point": [["arp", s[0x0C], False]]}] if s[0x0D] & 8 else [],
-            "accs": ENGINE,
-            # section 3.5's sound with no pitch at all: note $5E keys the
-            # instrument and takes the tuning's own entry for it, read and not assumed
-            "pitch": {"value": {"const": silence}},
         }
     return out
+
+
+def shared(silence):
+    """What every instrument of this family carries, stated once (section 3.5).
+
+    The engine is the voice's, so the accumulators are the family's record and
+    not each instrument's; and section 3.5's sound with no pitch at all is one
+    fact for all 62 -- note $5E keys the instrument and takes the tuning's own
+    entry for it, read and not assumed.
+    """
+    return {"accs": ENGINE, "pitch": {"value": {"const": silence}}}
+
+
+# the TEST-bit pulse two of the three unrolled copies make, off the record's own
+# waveform byte; bit 3 of it is the player's own flag and never the chip's
+TESTPULSE = {"or": [{"ins": "wave"}, 8]}
 
 
 def note_on():
@@ -646,10 +654,10 @@ def note_on():
     """
     return {
         "rows": [
-            {"sets": [["sr", I("sr")], ["ad", I("ad")]]},
-            {"sets": [["ctrl", I("wave_test")]], "when": [[C("testpulse"), "!=", 0]]},
-            {"sets": [["pw_lo", I("wave_test")]], "when": [[C("testpulse"), "==", 0]]},
-            {"sets": [["ctrl", I("wave_gate")]]},
+            {"sets": [["sr", I("adsr.1")], ["ad", I("adsr.0")]]},
+            {"sets": [["ctrl", TESTPULSE]], "when": [[C("testpulse"), "!=", 0]]},
+            {"sets": [["pw_lo", TESTPULSE]], "when": [[C("testpulse"), "==", 0]]},
+            {"sets": [["ctrl", {"and": [I("wave"), 0xF7]}]]},
             {"sets": [["pw_hi", I("pw.1")], ["pw_lo", I("pw.0")]]},
             {
                 "sets": [
@@ -1060,6 +1068,7 @@ def build(path, song=1, ticks=TICKS):
             "row_consumes_tick": False,
             "row_ends_fetch": [["dur", "!=", 0]],
             "row_command": "spent",
+            "instrument": shared(word_at(m, SILENT)),
             # what the score's own stop stops: this family ends a voice's
             # *sequencer* -- the eight-deep stack runs out and the run bit
             # clears -- and its engine plays the note out and frees the chip
@@ -1086,7 +1095,7 @@ def build(path, song=1, ticks=TICKS):
         "pitch": pitch(m, notes),
         "streams": {"note_on": note_on(), "gate": gate(), "arp": arp()},
         "accs": accs(),
-        "instruments": instruments(images, word_at(m, SILENT)),
+        "instruments": instruments(images),
         "score": {"patterns": patterns, "orders": orders, "commands": commands},
         "state0": {
             "ins": seq.ins0,

@@ -79,3 +79,65 @@ def test_the_nine_families_write_exactly_the_boxs_fields():
         for acc in obj["accs"].values():
             seen |= set(acc)
     assert seen == READ | ANNOTATIONS
+
+
+# section 3.5's instrument record: the names the player reads, and the two the
+# print knows as columns where a family has them (section 3.1: an annotation)
+INS_READ = set("prelude on_note accs pitch transpose pw".split())
+INS_PRINTED = {"adsr", "wave"}
+
+
+def insbox():
+    """The field names section 3.5's ``Ins = { … }`` block declares."""
+    text = DOC.read_text().split("### 3.5 instruments", 1)[1]
+    block = text.split("```", 2)[1]
+    return {m.group(1) for m in re.finditer(r"^(?:Ins = \{ |      , )([a-z_]+) *:", block, re.M)}
+
+
+def test_the_instrument_box_names_what_the_player_reads_and_nothing_else():
+    assert insbox() == INS_READ
+
+
+def test_every_name_in_the_instrument_box_has_a_reader_in_the_player():
+    src = PLAYER.read_text()
+    for name in INS_READ:
+        assert re.search(r'["\']%s["\']' % name, src), name
+
+
+def test_the_two_instrument_columns_the_print_knows_are_not_player_names():
+    """A name only the print reads is an annotation and not a field (section 3.1)."""
+    printed = PRINTER.read_text()
+    for name in INS_PRINTED:
+        assert re.search(r'ins\[["\']%s["\']\]|ins\.get\(["\']%s["\']' % (name, name), printed)
+    assert "adsr" not in PLAYER.read_text()  # `wave` is also a cell name, so it is not asked
+
+
+@pytest.mark.hvsc
+def test_no_instrument_column_is_read_by_nothing():
+    """Every key an instrument carries past the box is the family's own column,
+    so the object's own expressions read it: grep every ``ins``/``insrec`` path.
+    """
+    import trackerprog_poison as TP
+
+    for module in sorted({b.module for b in TP.BUILDS}):
+        b = next(x for x in TP.BUILDS if x.module == module)
+        obj = TP.build_object(b.name, str(TP.DEFAULT_CACHE))
+        read, keys = set(), set()
+        _paths(obj, read)
+        for one in obj["instruments"].values():
+            keys |= set(one) | set(obj["meta"].get("instrument", {}))
+        assert not keys - INS_READ - INS_PRINTED - read, module
+
+
+def _paths(x, out):
+    """Every instrument column the object reads, by the name its path starts with."""
+    if isinstance(x, dict):
+        for k, v in x.items():
+            if k == "ins" and isinstance(v, str):
+                out.add(v.split(".", maxsplit=1)[0])
+            elif k == "insrec" and isinstance(v, list):
+                out.add(str(v[1]).split(".", maxsplit=1)[0])
+            _paths(v, out)
+    elif isinstance(x, list):
+        for y in x:
+            _paths(y, out)

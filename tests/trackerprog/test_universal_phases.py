@@ -44,7 +44,7 @@ def instrument(**kw):
                 "sets": [["@wave", 0x41], ["@gate", 0xFF], ["ad", 0x11], ["sr", 0x22]],
             }
         ],
-        "prelude": {"stream": "hard_restart"},
+        "prelude": "hard_restart",
         "accs": [],
     }
     rec.update(kw)

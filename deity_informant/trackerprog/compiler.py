@@ -53,7 +53,7 @@ _UNARY = {  # a node whose argument is a name, not an expression
     "flag": lambda p, a, pay: (lambda ov, d=p.flags: d.get(a, 0)),
     "payload": lambda p, a, pay: (lambda ov: ov[a]),
     "ins": lambda p, a, pay: (lambda ov: p.column(p.instr(), a)),
-    "insrec": lambda p, a, pay: (lambda ov: p.column(p.o["instruments"][str(p.cell(a[0]))], a[1])),
+    "insrec": lambda p, a, pay: (lambda ov: p.column(p.ins[str(p.cell(a[0]))], a[1])),
     "bug": lambda p, a, pay: p.bugcode(a),
     "notefreq": lambda p, a, pay: (lambda ov: p.pitchof()),
     "tuned": lambda p, a, pay: (lambda ov, f=p.code_of(a, pay): p.tuned(f(ov))),
@@ -72,9 +72,9 @@ class PlayerMixin:
     """The object compiled: §5's forms, each spent once and called thereafter.
 
     The compile half of ``universal.Player``, whose state it reads: ``o`` the
-    object, ``c`` the voice cells, ``v`` the voice being committed, ``gl`` the
-    global channel, ``flags``, ``pw``, ``acc``, and the memos ``columns`` and
-    ``spaces`` a reading fills.
+    object, ``c`` the voice cells, ``v`` the voice being committed, ``ins`` the
+    instrument records, ``gl`` the global channel, ``flags``, ``pw``, ``acc``,
+    and the memos ``columns`` and ``spaces`` a reading fills.
     """
 
     def ev(self, e, ov=None):

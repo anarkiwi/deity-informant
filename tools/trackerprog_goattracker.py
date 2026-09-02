@@ -506,8 +506,7 @@ class Tune:
                     {"sets": [["@vibdelay", {"ins": "vibdelay"}], ["@param", {"ins": "vibparam"}]]},
                     {"when": UNTIED, "sets": note_sets, "point": points},
                 ],
-                "prelude": None if i >= self.L["nohr"] else {"stream": "hard_restart"},
-                "accs": [],
+                "prelude": None if i >= self.L["nohr"] else "hard_restart",
             }
         return out
 
@@ -615,6 +614,9 @@ class Tune:
             "voices": 3,
             "voice_order": [0, 1, 2],
             "commit_order": ["sr", "ad", "ctrl"],
+            # the vibrato this family arms is `meta.rest_arm`'s, so no instrument
+            # of it carries an accumulator of its own (section 3.5)
+            "instrument": {"accs": []},
             "shadow": {"registers": [REGNAME[r] for r in range(L["regs"] - 1, -1, -1)]},
             "tempo": {
                 "cell": "rowclock",

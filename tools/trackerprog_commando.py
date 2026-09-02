@@ -408,8 +408,6 @@ def build(path, song=0):
             "adsr": [ad, sr],
             "wave": wave,
             "pw": [pw_lo, pw_hi],
-            "prelude": {"stream": "note_off"},
-            "on_note": [{"sets": [["freq", {"notefreq": None}]]}],
             "accs": arms,
             **({"pitch": drums[i]} if i in drums else {}),
         }
@@ -423,6 +421,12 @@ def build(path, song=0):
             "voices": 3,
             "voice_order": [2, 1, 0],
             "commit_order": ["ctrl", "ad", "sr"],
+            # every instrument of this family cuts its note the same way and keys
+            # the tuning's own frequency: one record, stated once (section 3.5)
+            "instrument": {
+                "prelude": "note_off",
+                "on_note": [{"sets": [["freq", {"notefreq": None}]]}],
+            },
             "tempo": {
                 "cell": "rowsleft",
                 "step": -1,

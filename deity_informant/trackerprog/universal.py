@@ -103,9 +103,9 @@ class Player(PlayerMixin):
         # it closes it, so what a voice carries is a stack and not a register
         self.loopstack = [[list(y) for y in x] for x in s0.get("loopstack", [[]] * n)]
         self.armed = [()] * n  # the accs the score armed, as the object lists them
-        self.pw = {
-            k: v["pw"][0] | v["pw"][1] << 8 for k, v in obj["instruments"].items() if "pw" in v
-        }
+        # the record every instrument extends, and what each states of its own (§3.5)
+        self.ins = {k: {**m.get("instrument", {}), **v} for k, v in obj["instruments"].items()}
+        self.pw = {k: v["pw"][0] | v["pw"][1] << 8 for k, v in self.ins.items() if "pw" in v}
         self.flags = {}
         self.beyond = None  # the stream stepping, for its own behaviour past the tuning
         self.cur = None  # the modulator stepping, for its own behaviour past the tuning
@@ -365,17 +365,17 @@ class Player(PlayerMixin):
         return lambda ov: f(self)
 
     def instr(self, v=None):
-        return self.o["instruments"][str(self.c["ins"][self.v if v is None else v])]
+        return self.ins[str(self.c["ins"][self.v if v is None else v])]
 
     def insplan(self, k):
         """One instrument's compiled half: its note-on rows, its prelude, its arms."""
         p = self.insplans.get(k)
         if p is None:
-            i = self.o["instruments"][k]
-            early, un = i.get("prelude"), i.get("pitch") or {}
+            i = self.ins[k]
+            pre, un = i.get("prelude"), i.get("pitch") or {}
             p = self.insplans[k] = Plan(
-                on_note=self.rowplan(i.get("on_note", ())),
-                prelude=None if early is None else self.streamrows(early["stream"]),
+                on_note=self.rowsource(i.get("on_note", ())),
+                prelude=self.rowsource(pre) if pre else None,
                 arms=[self.armof(x) for x in i.get("accs", ())],
                 # what an instrument whose sound is no pitch answers with instead
                 value=self.code_of(un["value"]) if "value" in un else None,
@@ -581,6 +581,13 @@ class Player(PlayerMixin):
             )
         return sr
 
+    def rowsource(self, x, pay=None):
+        """A §3.3 stream where the grammar puts one: a declared stream's name, or
+        the rows -- one shape for a prelude, a note-on and a command's rows."""
+        if isinstance(x, str):
+            return self.streamrows(x)
+        return Plan(name=None, plan=self.rowplan(x or (), pay), beyond=None)
+
     def streamstep(self, name, v):
         """A stream a cursor steps: its cursor, its divider, its rows and their landings."""
         sr = self.stepsof.get((name, v))
@@ -606,7 +613,7 @@ class Player(PlayerMixin):
                 else (
                     self.code_of(r.get("hold", 1)),
                     self.setcode(r.get("sets", ())),
-                    None if "next" not in r else self.stepto(r["next"]),
+                    None if "next" not in r else self.landrow(r["next"]),
                     [self.armof(x) for x in r.get("run", ())],
                     self.opcode(r["op"]) if "op" in r else None,
                 )
@@ -614,18 +621,15 @@ class Player(PlayerMixin):
             for r in st["rows"]
         ]
 
+    def landrow(self, y):
+        """Where a row sends a cursor; a ``next`` or a ``jump`` of null is no row (§3.3)."""
+        return _norow if y is None else self.code_of(y)
+
     def landing(self, st):
         """Where a step that arrives at each row leaves its cursor: the row itself,
         or the jump that row carries, taken here because a jump occupies no tick.
         """
-        return [
-            None if "jump" not in r else (_norow if r["jump"] is None else self.code_of(r["jump"]))
-            for r in st["rows"]
-        ]
-
-    def stepto(self, nxt):
-        """Where a row sends its cursor; a ``next`` of null is no row at all (§3.3)."""
-        return _norow if nxt is None else self.code_of(nxt)
+        return [None if "jump" not in r else self.landrow(r["jump"]) for r in st["rows"]]
 
     def stream_step(self, sr, prod, edge):
         """One section 3.3 step: what it runs while held, then its sets, op and next."""
@@ -799,16 +803,16 @@ class Player(PlayerMixin):
             for r in rows
         ]
 
-    def rows(self, plan, prod, edge, ov):
+    def runstream(self, sr, prod, edge, ov=None):
         """A §3.3 stream's guarded rows of ``sets`` and ``point``, in order.
 
-        One procedure for the three places the grammar puts a stream: a declared
-        stream's rows, or the anonymous row list of an instrument's note-on, a
-        prelude or a command.  **One act per matching row** (section 2 rule 1) in
-        both -- the act is the row and not the call site, which is the
-        measurement: the per-list rule differs on 2,943 ticks of seven builds.
+        The one procedure for the four places the grammar puts a stream -- a
+        declared stream, a note-on, a prelude, a command's rows -- named or inline.
+        **One act per matching row** (section 2 rule 1): the act is the row and not
+        the call site, which is the measurement -- 2,943 ticks of seven builds.
         """
-        for when, sets, pts in plan:
+        self.beyond = sr.beyond
+        for when, sets, pts in sr.plan:
             if not when(ov):
                 continue
             self.act += 1
@@ -816,11 +820,6 @@ class Player(PlayerMixin):
                 put(f(ov), prod, edge)
             if pts:
                 self.points(pts, ov)
-
-    def runstream(self, sr, prod, edge, ov=None):
-        """One declared stream run as its rows: its words past the tuning, then them."""
-        self.beyond = sr.beyond
-        self.rows(sr.plan, prod, edge, ov)
 
     def pointcode(self, pts, pay=None):
         """A step's re-points, compiled: the slot, the row, the hold and the guard."""
@@ -1149,7 +1148,7 @@ class Player(PlayerMixin):
         if self.restarm is not None:
             self.armed[self.v] = self.restarm
         p = self.insplan(str(self.c["ins"][self.v]))
-        self.rows(p.on_note, prod, edge, self.payload)
+        self.runstream(p.on_note, prod, edge, self.payload)
 
     # ---- the commands ---------------------------------------------------------
     def cmdplan(self, cmd):
@@ -1159,7 +1158,7 @@ class Player(PlayerMixin):
             p = self.cmdplans[id(cmd)] = Plan(
                 arms=cmd.get("arms"),
                 links=[self.storeof(a) for a in cmd.get("links", ())],
-                rows=self.rowplan(cmd.get("rows", ()), cmd),
+                rows=self.rowsource(cmd.get("rows", ()), cmd),
                 flags=[(k, self.code_of(e, cmd)) for k, e in cmd.get("flags", {}).items()],
                 every=self.setcode(cmd["all"], cmd) if "all" in cmd else None,
             )
@@ -1172,7 +1171,7 @@ class Player(PlayerMixin):
             self.armed[self.v] = p.arms
         for put in p.links:
             put(0)
-        self.rows(p.rows, prod, edge, cmd)
+        self.runstream(p.rows, prod, edge, cmd)
         for name, f in p.flags:
             self.flags[name] = f(cmd)
         if p.every is not None:  # section 3.6's global tempo: one set, every voice
