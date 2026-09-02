@@ -19,7 +19,7 @@ COMPARED = [
 ]
 DROPPED = [
     "order between registers of different classes inside a tick",
-    "order between voices inside a tick",
+    "the interleave between voices of one tick's writes",
     "cycle position inside a tick",
 ]
 
