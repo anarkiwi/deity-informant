@@ -855,8 +855,10 @@ One exemplar remains: the T0–T3 lift that would produce these objects rather
 than a hand reading of them. `tools/tuneprog_scoreprog.py` produces a scoreprog
 (§1, §6), and eight of them certify `emitted: true` with no divergence over
 their whole horizons; `tools/tuneprog_trackerprog.py` produces a **trackerprog**
-for one of the nine — Commando song 1, 11,780 ticks, 0 divergences, no
-`program` key, no hints — and refuses the rest with a named datum
+for two of the nine, both with no `program` key and no hints — Commando song 1
+at 11,780 ticks and 0 divergences, and *Guldkorn Intro* over its whole 2,401,
+whose certificate **names its first divergence** at tick 4 rather than the lift
+approximating past it — and refuses the rest with a named datum
 ([prototype-lifter.md](prototype-lifter.md), backlog B6/B7).
 
 ### 9.1 The object against the load band
