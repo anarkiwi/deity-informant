@@ -186,7 +186,7 @@ The print and the object against the tune's own load band (§9's acceptance #3):
 
 | artefact | raw | `xz -9e` |
 | --- | --- | --- |
-| the lifted object, compact | 162,570 | **5,892** |
+| the lifted object, compact | 162,579 | **5,892** |
 | — its `score` half | 101,990 | 1,776 |
 | — everything else | 60,580 | 4,268 |
 | the hand object, song 1 | 47,313 | 3,464 |
