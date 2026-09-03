@@ -14,12 +14,111 @@ from __future__ import annotations
 
 import itertools
 
-from . import algebra
+from ..tuneprog.graph import cfg, idoms, natural_loops, preds_of, rpo, succs
+from . import emit, region, schedule, tables
 from ..tuneprog.ir import Bin, Const, Let, Load, Store, Var
 from ..tuneprog.irwalk import addr_split, walk
-from .lower import Unlowerable
+from .read import Unlowerable
+from .refuse import Refusal, Refused
+
+TRAP = "Trap"
 
 MAXCOMBO = 24
+MASK8 = 0xFF
+
+def _live(prog, proc, blocks):
+    """The blocks of a set the program can reach: a trap is no block of a phase."""
+    p = prog.procs[proc]
+    return [l for l in blocks if type(p.blocks[l].term).__name__ != TRAP]
+
+
+def _rowblocks(prog, proc, rowr):
+    """The blocks the ``row`` segment is: the fetch regions, and where they rejoin.
+
+    A region's exit is the row's where the fetch alone reaches it, and the
+    machine's where the voice loop closes on it -- a latch runs on every turn.
+    """
+    got = {l for r in rowr for l in r.blocks}
+    latches = schedule.voice_loop(prog, proc, frozenset(got))[1][1]
+    return got | ({r.exit for r in rowr} - set(latches))
+
+
+def _channels(prog, proc, fetch, pattables):
+    """The fetch regions the ``row`` is: those a pattern table is read in.
+
+    T2 names the table each channel of the score reads, so a region that reads no
+    pattern table is a walk of the order list, which the object states as a table
+    read at a cursor (section 3.3) like any other.
+    """
+    got = region.score_loads(prog.procs[proc], pattables) if pattables else set()
+    rowr = [r for r in fetch.regions.values() if r.proc == proc and r.blocks & got]
+    return rowr or [r for r in fetch.regions.values() if r.proc == proc]
+
+
+def _order_cursor(art, view, names):
+    """The cell the fetch steps at a pattern's end: T2's own order cursor."""
+    regs = emit.by_name(view, names)
+    for v in art["t2"]["score"]:
+        for ch in v.get("order", ()):
+            name, _at, addr = ch["cursor"].partition("@$")
+            if addr:
+                return int(addr, 16)
+            r = regs.get(name)
+            if r is not None:
+                return r.base
+    return None
+
+
+def _latches(prog, proc, sch):
+    """The blocks that close the voice loop: where its index is rebound."""
+    p = prog.procs[proc]
+    g = cfg(p)
+    return natural_loops(g, idoms(p, g), preds_of(p)).get(sch.head, (set(), set()))[1]
+
+
+def _resets(low, cell, sch):
+    """Section 3.6's ``reset`` clauses: what the tick does to the counter at its end."""
+    out = [
+        {
+            "when": [low.guard(c, t) for c, t in guard],
+            "sets": [["@" + cell, low.guard_value(st.v)]],
+        }
+        for st, guard in sch.resets
+    ]
+    return {"reset": out} if out else {}
+
+
+def _instruments(art, view, names, ins, pwcols, img, accs):
+    """One record per entry of T2's selector: its columns, and its pulse pair.
+
+    A record is named by what the cell that selects it holds, which T2 states.
+    """
+    addr, cols, stride, entries, keys = ins
+    org = {rid: tables._origin_of(view, rid) for rid in set(cols) | set(pwcols)}
+    # a record stands where the selecting cell's own value puts it: the value is
+    # the record's number in one family and the offset it already is in another
+    offsets = all(k == j * stride for j, k in enumerate(keys))
+    out = {}
+    for i in range(entries):
+        at = keys[i] if offsets else keys[i] * stride
+        rec = {name: int(img[org[rid] + at]) for rid, name in cols.items()}
+        pw = [0, 0]
+        for rid, part in pwcols.items():
+            pw[0 if part == "lo" else 1] = int(img[org[rid] + at])
+        rec["pw"] = pw
+        rec["accs"] = [{"acc": k} for k in accs]
+        out[str(keys[i])] = rec
+    del art, names, addr, view
+    return out
+
+
+def _need(got, why, cell, detail):
+    """A datum the binding cannot do without: a refusal by name, and no object."""
+    if got in (None, (), []):
+        raise Refused([Refusal(why, cell, "", detail)])
+    return got
+
+
 # the event fields section 3.6 lists that a guard may read as a cell of the player
 FACTCELL = {"dur": {"cell": "dur"}, "tie": {"cell": "tied"}, "note": {"cell": "note"},
             "ins": {"cell": "ins"}}
@@ -156,19 +255,26 @@ class Score:
     cell, and ``sounds`` whether it stored a note at all (section 3.6).
     """
 
-    def __init__(self, records, vvar, roles, voices, stride, ordpos, top, seed=None):
+    def __init__(self, records, vvar, roles, voices, stride, ordpos, top, seed=None,
+                 own=()):
         self.rows, self.voices, self.top = {v: [] for v in range(voices)}, voices, top
         self.seed = seed or [0] * voices
+        own = set(own)
         self.supplied = {}
         for rec in sorted(records, key=lambda r: r.get("seq", 0)):
             at = rec["env"].get(vvar)
             if at is None or at % stride or at // stride not in self.rows:
                 continue
             v, (st, sites) = at // stride, _stores(rec)
+            # a role the tune keeps in one cell for the whole tune is read there,
+            # and one it keeps per voice at the copy the visit's own index names
+            def _at(key, at=at):
+                return roles[key] + (at if roles[key] in own else 0)
+
             row = {
-                "dur": st.get(roles["dur"] + at, 0),
-                "note": st.get(roles["note"] + at),
-                "ins": st.get(roles["ins"] + at),
+                "dur": st.get(_at("dur"), 0),
+                "note": st.get(_at("note")),
+                "ins": st.get(_at("ins")),
                 "packed": {n: st.get(a + at) for n, a in roles.get("packed", {}).items()},
                 "temps": {n: int(x) for n, x in rec["temps"].items()},
                 "st": st,
@@ -557,7 +663,7 @@ class Accs:
             if len(halves) == 1:
                 return {"reload": halves[0]}
             if halves:
-                return {"reload": algebra.unsplit(*halves)
+                return {"reload": _unsplit(*halves)
                         or {"or": [halves[0], {"shl": [halves[1], 8]}]}}
         low.lbl, low.local, low.pick = blk, {}, {}
         if a["width"] <= 8:
@@ -565,7 +671,7 @@ class Accs:
         hi = next((self.view.by_id()[r].base for r in a["regions"]
                    if r != a["cell"]["region"]), lo + 1)
         halves = [low.value(low.expand(_reload(low, x))) for x in (lo, hi)]
-        return {"reload": algebra.unsplit(*halves) or {"or": [halves[0], {"shl": [halves[1], 8]}]}}
+        return {"reload": _unsplit(*halves) or {"or": [halves[0], {"shl": [halves[1], 8]}]}}
 
     def phase(self, a, blk):
         """T1's phase over the object's cells: a bit of a live cell, or none."""
@@ -629,6 +735,16 @@ class Accs:
 
 
 
+
+
+def _unsplit(lo, hi):
+    """``(M8(E), M8(E >> 8))`` as ``E``: one word stated once and not twice."""
+    if not (isinstance(lo, dict) and "and" in lo and lo["and"][1] == MASK8):
+        return None
+    if not (isinstance(hi, dict) and "and" in hi and hi["and"][1] == MASK8):
+        return None
+    a, b = lo["and"][0], hi["and"][0]
+    return a if isinstance(b, dict) and b.get("shr") == [a, 8] else None
 
 
 def _flagname(x):
@@ -706,11 +822,10 @@ class Binder:
     """One certified tune's planes, bound to the player's own slots (§4, §5)."""
 
     def __init__(self, art, ticks=None):
-        from . import assemble, build, emit, record, region, schedule, tables
+        from . import build, record
         from .cells import Cells
-        from .lower import Lower
+        from .read import Reader
         from .vocab import Vocab
-        from ..tuneprog.graph import rpo
 
         self.art, self.refusals = art, []
         view, names, t0 = art["view"], art["names"], art["t0"]
@@ -719,19 +834,18 @@ class Binder:
         self.view, self.names, self.t0 = view, names, t0
         self.prog, self.proc, self.p = prog, proc, p
         fetch, self.refusals = region.fetch(prog, emit.tables_of(art["t2"], view, names))
-        rowr = assemble._channels(prog, proc, fetch,
-                                  emit.tables_of(art["t2"], view, names, ("pattern",)))
-        self.rowfb = assemble._rowblocks(prog, proc, rowr)
+        rowr = _channels(prog, proc, fetch,
+                         emit.tables_of(art["t2"], view, names, ("pattern",)))
+        self.rowfb = _rowblocks(prog, proc, rowr)
         order = [l for l in rpo(p) if l in self.rowfb]
-        assemble._need(order, "score not cursor-shaped", proc, "the tick reaches no fetch region")
+        _need(order, "score not cursor-shaped", proc, "the tick reaches no fetch region")
         self.sch = sch = schedule.derive(prog, proc, self.rowfb, t0, order[0])
-        assemble._need(sch.clock, "unclassified update", proc, "no row clock steps the voice loop")
+        _need(sch.clock, "unclassified update", proc, "no row clock steps the voice loop")
         self.pit = tables.pitch_of(art, view, names)
         self.ins = tables.instrument_table(art, view, names)
         self.pwcols = tables.pw_columns(art, view, names)
-        assemble._need(self.pit, "unclassified update", "pitch", "T2 materialised no tuning")
-        assemble._need(self.ins, "command residue", "instruments",
-                       "T2 found no instrument selector")
+        _need(self.pit, "unclassified update", "pitch", "T2 materialised no tuning")
+        _need(self.ins, "command residue", "instruments", "T2 found no instrument selector")
         pit = self.pit
         entry0 = tuple(b + pit.step * pit.base for b in pit.obases)
         self.cells = Cells(view, names, pitch=(pit.rids, entry0, pit.step, pit.n),
@@ -740,10 +854,9 @@ class Binder:
         self.voc.pitch, self.voc.inspw = (pit.rids, pit.obases, pit.step, pit.n), self.pwcols
         self.voc.insbase, self.voc.inscol, self.voc.insstride = self.ins[0], self.ins[1], \
             self.ins[2]
-        self.low = Lower(prog, proc, self.cells, self.voc)
+        self.low = Reader(prog, proc, self.cells, self.voc)
         self.voc.notebase = tables.note_base(self.low, pit, [p])
-        assemble._need(self.voc.notebase, "unclassified update", "note",
-                       "no cell indexes the tuning")
+        _need(self.voc.notebase, "unclassified update", "note", "no cell indexes the tuning")
         self.img = record.interp.Player(prog, region.Fetch()).run_init().m
         self.voc.img = self.img
         self.ticks = ticks or art["t2"]["horizon"]["ticks"]
@@ -775,7 +888,7 @@ class Binder:
             for s in blk.stmts:
                 if type(s) is Store and s.cls == "ram" and addr_split(s.a)[0] == addr:
                     got.append((lbl, s))
-        if len(got) != 1 or self.cells.at(addr) is not None:
+        if len(got) != 1:
             return addr
         low.lbl, low.local, low.pick, low.sub = got[0][0], {}, {}, {}
         e = low.expand(got[0][1].v)
@@ -786,11 +899,9 @@ class Binder:
 
     def roles(self):
         """The player's own slots, bound to the cells S6, T1 and T2 name (§4, §5)."""
-        from . import assemble
-
         sch, voc = self.sch, self.voc
         lo, hi = self.freqpair()
-        self.orderbase = assemble._order_cursor(self.art, self.view, self.names)
+        self.orderbase = _order_cursor(self.art, self.view, self.names)
         self.clockbase = sch.clock[3]
         voc.notebase = self.copied(voc.notebase)
         voc.insbase = self.copied(voc.insbase)
@@ -819,13 +930,22 @@ class Binder:
 
     def supplied(self):
         """The names no cell of the tune holds: the bytes a fetch read (the score's)."""
-        from . import build
-        from .lower import Lower
+        from .read import Reader
 
-        blocks = sum(self.segs.values(), [])
-        self.low.gate, self.low.scope, self.low.local = frozenset(), frozenset(), {}
-        got = build._supplied(self.low, blocks)
-        self.low = Lower(self.prog, self.proc, self.cells, self.voc)
+        low, got = self.low, set()
+        low.gate, low.scope, low.local, low.pick, low.sub = frozenset(), frozenset(), {}, {}, {}
+        for lbl in sum(self.segs.values(), []):
+            low.lbl = lbl
+            for s in low.proc.blocks[lbl].stmts:
+                try:
+                    if type(s) is Let:
+                        low.value(s.e)
+                    elif low.v.target(low, s) is not None:
+                        low.value(s.v)
+                except Unlowerable:
+                    got.add(s.n if type(s) is Let else "$%04X" % s.src)
+        got = {n for n in got | set(low.bad) if n in low.defs}
+        self.low = Reader(self.prog, self.proc, self.cells, self.voc)
         self.low.stated = frozenset(id(c) for c in self.sch.spent)
         self.voc.supplied = {n for n in got if n in self.low.defs or n in self.low.assigned}
         return self.voc.supplied
@@ -833,7 +953,6 @@ class Binder:
     def visits(self):
         """The horizon recorded over the fetch regions: one visit a row of a voice."""
         from . import build, record
-        from ..tuneprog.graph import succs
 
         rowblocks = self.segs["row"]
         exits = sorted({s for l in rowblocks for s in succs(self.p.blocks[l].term)
@@ -857,8 +976,10 @@ class Binder:
                  "ins": self.voc.insbase}
         seed = ([int(self.img[self.orderbase + v * self.cells.stride])
                  for v in range(self.cells.voices)] if self.orderbase else None)
+        own = {a for a in roles.values()
+               if a is not None and (self.cells.at(a) or (None,))[0] == "voice"}
         self.score = Score(recs, self.vvar, roles, self.cells.voices, self.cells.stride,
-                           self.orderbase, top, seed)
+                           self.orderbase, top, seed, own)
         own = {self.clockbase, self.voc.notebase, self.voc.insbase, self.orderbase}
         self.sc = _scorecells(self.low, self.segs["row"], self.voc.supplied)
         # the byte the row's own fields are read off is the row and not a command:
@@ -1051,8 +1172,7 @@ class Binder:
 
     def run(self):  # noqa: C901 - one clause per section of the object
         """The bound object, and the report of what each plane supplied."""
-        from . import assemble, build, record, tables
-        from .refuse import Refusal
+        from . import build, record
 
         self.roles()
         self.supplied()
@@ -1094,9 +1214,9 @@ class Binder:
                 elif s.src in sc:
                     roles[s.src] = "arm"
 
-        return self.assemble(order, drop, roles, tables, build, assemble)
+        return self.assemble(order, drop, roles, tables, build)
 
-    def assemble(self, order, drop, roles, tables, build, asm):  # noqa: C901
+    def assemble(self, order, drop, roles, tables, build):  # noqa: C901
         """The object: the phases, the row program, the score and the records."""
         segs, out = self.segs, _Out()
         low, sch = self.low, self.sch
@@ -1161,9 +1281,9 @@ class Binder:
         for key, _at in accat:
             self.accs[key]["rank"] = rank
             rank += 1
-        return self.object(out, pre, rowprog, gl, prol, tables, build, asm)
+        return self.object(out, pre, rowprog, gl, prol, tables, build)
 
-    def object(self, out, pre, rowprog, gl, prol, tables, build, asm):  # noqa: C901
+    def object(self, out, pre, rowprog, gl, prol, tables, build):  # noqa: C901
         """The sections of the object, each the plane that supplied it."""
         low, sch, art = self.low, self.sch, self.art
         rate = build.divider_rate(sch.divider[1], low, self.img) if sch.divider else 1
@@ -1181,8 +1301,8 @@ class Binder:
         words = whole[:max(_transposed(out.streams), 1)]
         for st in out.streams.values():
             st["beyond"] = {"id": "the fused tuning", "words": words}
-        instruments = asm._instruments(art, self.view, self.names, self.ins, self.pwcols,
-                                       self.img, self.accs)
+        instruments = _instruments(art, self.view, self.names, self.ins, self.pwcols,
+                                   self.img, self.accs)
         # a record no cell of the tune ever selects is no record of the object; a
         # score whose row states no instrument selects them all
         got = {r["ins"] for v in range(self.cells.voices) for r in self.score.rows[v]}
@@ -1202,7 +1322,7 @@ class Binder:
                 "voices": self.cells.voices,
                 "horizon": self.ticks,
                 "voice_order": build.voice_order(self.p, sch.head,
-                                                 asm._latches(self.prog, self.proc, sch),
+                                                 _latches(self.prog, self.proc, sch),
                                                  sch.vidx, self.cells.voices, self.cells.stride),
                 "commit_order": list(sch.commit_order),
                 "instrument": {},
@@ -1212,7 +1332,7 @@ class Binder:
                     "rate": rate,
                     "phase": phase,
                     "boundary": [low.guard(c, t) for c, t in sch.boundary],
-                    **asm._resets(low, self.clockcell, sch),
+                    **_resets(low, self.clockcell, sch),
                 },
                 "tick": tick,
                 "row_consumes_tick": sch.row_consumes_tick,

@@ -24,7 +24,8 @@ for _v in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # pylint: disable=wrong-import-position
-from deity_informant.trackerprog import assemble, bind, build, printer, sizes  # noqa: E402
+from deity_informant.trackerprog import bind, build, printer, sizes  # noqa: E402
+from deity_informant.trackerprog.refuse import Refused  # noqa: E402
 from deity_informant.trackerprog.attest import attest  # noqa: E402
 
 
@@ -73,7 +74,7 @@ def run(out, sid=None, ticks=None, hint=None, certify=False):
     art = build.read(out)
     try:
         obj, report = bind.lift(art, ticks=ticks, hints=hint)
-    except assemble.Refused as x:
+    except Refused as x:
         doc = {"emitted": False, "refusals": [r.to_dict() for r in x.refusals]}
         (out / "trackerprog.lift.report.json").write_text(json.dumps(doc, indent=1))
         return None, doc

@@ -1,6 +1,6 @@
 """B7 -- what the object calls the thing one load or store names.
 
-The leaf half of :mod:`.lower`: a register from T0, an instrument column, the
+The leaf half of :mod:`.read`: a register from T0, an instrument column, the
 tuning through ``transpose``, the instrument's own pulse pair, or a named cell.
 A leaf with no name here is a refusal, and the score supplies the score's bytes.
 """
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from ..tuneprog.ir import Bin, Const, Load, Var
 from ..tuneprog.irwalk import addr_split
-from .lower import Unlowerable, masked
+from .read import Unlowerable, masked
 from .universal import REGNAME
 
 COLUMN = "b"  # the one column a table materialised as a stream of its own bytes has
