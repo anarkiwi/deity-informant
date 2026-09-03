@@ -15,14 +15,13 @@ from __future__ import annotations
 from ..tuneprog.graph import rpo, succs
 from ..tuneprog.ir import Let, Load, Store
 from ..tuneprog.irwalk import addr_split
-from . import build, emit, record, region, schedule, tables
+from . import build, emit, record, region, schedule, sections, tables
 from .cells import Cells
 from .events import Score, _same, _scorecells, fields_of, masks_of, terms_of, tie_of
 from .read import Reader, Unlowerable
-from .refuse import Refusal
 from .records import Accs, _addr
+from .refuse import Refusal
 from .rows import ambiguous
-from . import sections as sectionsmod
 from .shape import _channels, _need, _order_cursor, _rename, _rowblocks, _u16name
 from .vocab import Vocab
 
@@ -31,7 +30,7 @@ class Binder:
     """One certified tune's planes, bound to the player's own slots (§4, §5)."""
 
     def __init__(self, art, ticks=None):
-        self.art, self.refusals = art, []
+        self.art = art
         view, names, t0 = art["view"], art["names"], art["t0"]
         prog, proc = art["prog"], art["prog"].meta["tick_proc"]
         p = prog.procs[proc]
@@ -327,7 +326,7 @@ class Binder:
                 elif s.src in sc:
                     roles[s.src] = "arm"
 
-        return sectionsmod.assemble(self, order, drop, roles)
+        return sections.assemble(self, order, drop, roles)
 
 
 def lift(art, ticks=None, hints=None):
@@ -342,7 +341,7 @@ def lift(art, ticks=None, hints=None):
     report = {
         "schedule": b.sch.datums(),
         "refusals": [r.to_dict() for r in b.refusals],
-        "coverage": sectionsmod.coverage(b, obj),
+        "coverage": sections.coverage(b, obj),
         "trips": b.trips,
         "rows": sum(len(s["rows"]) for s in obj["streams"].values()),
         "accs": len(obj["accs"]),
