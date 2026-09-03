@@ -1,8 +1,9 @@
-"""B6/B7 -- the trackerprog lifted from a tune's certified artefacts.
+"""B6/B7 -- what the binding reads off a tune before it binds anything.
 
-The schedule of :mod:`.schedule`, the lowering of :mod:`.lower` and the score
-the fetch regions read, assembled into the one object ``universal.py`` renders.
-What the lift cannot derive it takes from a named hint, one datum a line.
+The certified artefacts of one output directory or computed in memory, the
+chip's own register columns, the tick's pinned reads, the divider, the order one
+pass over the voices takes, the const tables read at a cell, and the seed the
+object carries.
 """
 
 from __future__ import annotations
@@ -140,7 +141,7 @@ def _reads(node):
 
 
 def _cellnames(node):
-    """Every cell one lowered expression reads."""
+    """Every cell one read expression names."""
     out, stack = set(), [node]
     while stack:
         x = stack.pop()
@@ -211,7 +212,7 @@ def _order(start, step, n, stride):
 
 
 def table_streams(voc, img):
-    """The const tables the lowering read at a cell, each a stream of its own bytes."""
+    """The const tables a read took at a cell, each a stream of its own bytes."""
     return {
         name: {"rows": [{"b": int(img[a])} for a in range(base, top + 1)]}
         for name, (base, top) in sorted(voc.tables.items())

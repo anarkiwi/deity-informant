@@ -78,7 +78,7 @@ class Cells:
         return out
 
     def declare(self, name, base, copies=None):
-        """A cell the lowering needs by name: a voice's own, seeded from the image.
+        """A cell the binding needs by name: a voice's own, seeded from the image.
 
         ``copies`` is how many the image holds: one for a scalar the whole tune
         shares, which every voice's own copy then enters the horizon with.

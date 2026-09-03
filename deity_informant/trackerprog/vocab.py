@@ -170,7 +170,7 @@ class Vocab:
         return False
 
     def cellread(self, low, base):
-        """One per-voice cell as the lowering sees it, for comparing two readings."""
+        """One per-voice cell as the reader sees it, for comparing two readings."""
         v = sorted(self.vidx)[0]
         e = Load("ram", Bin("+", Const(base, 2), Var(v, 1), 2), 1, base, base + 2, -1)
         return low.expand(e)

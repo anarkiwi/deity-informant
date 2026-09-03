@@ -187,7 +187,6 @@ class Reader:
         self.pick = {}
         # a value a block has since stored: read at the row, it is that cell
         self.sub = {}
-        # the turn of an unrolled loop being lowered, and the cells its own turns read
         self.turn, self.turns = None, {}
         # one plan over several segments: a join's own preds may stand in another
         self.eff, self.flagrows, self.planned = {}, {}, frozenset()

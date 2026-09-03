@@ -356,6 +356,3 @@ def _reload(low, addr):
 def _clean(low, node):
     """Whether an expression reads no name the object has no cell of its own for."""
     return not (_reads(node) & {c.lstrip("#") for c in low.temps.values()})
-
-
-# ---- the lift ------------------------------------------------------------------
