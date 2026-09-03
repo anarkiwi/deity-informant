@@ -9,10 +9,11 @@ refused, and the score supplies the bytes a fetch read.
 from __future__ import annotations
 
 from ..tuneprog.accguard import guardpath
-from ..tuneprog.graph import cfg, idoms, natural_loops, preds_of, rpo, succs
+from ..tuneprog.graph import cfg, idoms, natural_loops, preds_of, rpo
 from ..tuneprog.ir import Bin, Const, If, Let, Load, Store, Var, evalbin
 from ..tuneprog.irwalk import addr_split
 from .cells import ident
+from .flow import fold, reaching
 
 FLAG, RESET = "!flag", "!reset"  # a join's own cell: the row that raises it, and its reset
 MASK = {1: 0xFF, 2: 0xFFFF}
@@ -55,64 +56,6 @@ def _shl(node, k, w):
     return masked(node << k if isinstance(node, int) else {"shl": [node, k]}, w)
 
 
-def _fold(ctxs):
-    """Two guards that differ in one term and its negation are the guard without it."""
-    out = list(ctxs)
-    for _ in range(len(out) * len(out) + 1):
-        for i, (g, x) in enumerate(out):
-            got = next(
-                (j for j in range(i + 1, len(out)) if x == out[j][1] and _pair(g, out[j][0])), None
-            )
-            if got is None:
-                continue
-            drop = set(g) - set(out[got][0])
-            out = [y for k, y in enumerate(out) if k not in (i, got)]
-            out.append((tuple(t for t in g if t not in drop), x))
-            break
-        else:
-            return out
-    return out
-
-
-def _pair(a, b):
-    """Whether two guards differ in exactly one term, and it is the same condition."""
-    x, y = set(a) - set(b), set(b) - set(a)
-    if len(x) != 1 or len(y) != 1:
-        return False
-    (_d1, c1, t1), (_d2, c2, t2) = next(iter(x)), next(iter(y))
-    return c1 is c2 and t1 != t2
-
-
-def reaching(p, order, vidx=frozenset()):
-    """``{label: {address: {expressions}}}``: the ram stores one base address has."""
-    gen = {}
-    for lbl, b in p.blocks.items():
-        d = {}
-        for s in b.stmts:
-            if type(s) is Store and s.cls == "ram":
-                base, idx = addr_split(s.a)
-                if base is not None and (idx is None or (type(idx) is Var and idx.n in vidx)):
-                    d[base] = {s.v}
-        gen[lbl] = d
-    inn = {lbl: {} for lbl in p.blocks}
-    for _ in range(len(p.blocks) + 1):
-        moved = False
-        for lbl in order:
-            out = {}
-            for pr, b in p.blocks.items():
-                if lbl not in succs(b.term):
-                    continue
-                d = dict(inn[pr])
-                d.update(gen[pr])
-                for a, vs in d.items():
-                    out[a] = out.get(a, set()) | vs
-            if out != inn[lbl]:
-                inn[lbl], moved = out, True
-        if not moved:
-            break
-    return inn
-
-
 class Lower:
     """The lowering of one procedure's blocks into guarded rows of ``sets``."""
 
@@ -133,6 +76,10 @@ class Lower:
         self.preds = preds_of(self.proc)
         self.temps, self.wide, self.bad = {}, set(), set()
         self.lbl, self.gate, self.local, self.scope = None, frozenset(), {}, frozenset()
+        # the turn of an unrolled loop being lowered, and the cells its own turns read
+        self.turn, self.turns = None, {}
+        # one plan over several segments: a join's own preds may stand in another
+        self.eff, self.flagrows, self.planned = {}, {}, frozenset()
         # the conditions the schedule states outright: a divider's own compare,
         # which ``meta.tempo``'s rate and phase say once for the whole tune
         self.stated = frozenset()
@@ -160,6 +107,32 @@ class Lower:
         if w == 2:
             self.wide.add(c)
         return c
+
+    def turnsof(self, blocks):
+        """``{name: (loop header, whether the head binds it)}`` for one segment.
+
+        A name an unrolled loop binds takes one value a *turn*, so the score
+        supplies one constant per turn of it and not one per name.
+        """
+        out = {}
+        got = sorted(((len(v[0]), h) for h, v in self.loops.items() if h in blocks))
+        for n, h in got:
+            if n >= len(blocks):
+                continue
+            for lbl in self.loops[h][0]:
+                for s in self.proc.blocks[lbl].stmts:
+                    if type(s) is Let:
+                        out.setdefault(s.n, (h, lbl == h))
+        return out
+
+    def turncell(self, n, w=1):
+        """The cell one turn of an unrolled loop reads its own supplied byte in."""
+        if self.turn is None:
+            return None
+        got = self.turns.setdefault(n, [])
+        while len(got) <= self.turn:
+            got.append(self.cells.declare("%s__%d" % (self.temp(n, w), len(got)), None))
+        return got[self.turn]
 
     def expand(self, e, depth=DEPTH):
         """One expression with its SSA names and single reaching stores substituted."""
@@ -318,7 +291,7 @@ class Lower:
                 ctx[q] = (tuple(dict.fromkeys(eff[q][0] + self._edge(q, lbl))), eff[q][1])
                 if ctx[q] not in got:
                     got.append(ctx[q])
-            got = _fold(got)
+            got = fold(got)
             if len(got) < 2:  # one path, and the guard path it carries is the row's
                 eff[lbl] = (self._own(lbl), got[0][1] if got else ())
                 continue
@@ -330,9 +303,9 @@ class Lower:
         return eff, rows
 
     # ---- statements ----------------------------------------------------------------
-    def row(self, lbl, extra=(), local=None, guard=None):
+    def row(self, lbl, extra=(), local=None, guard=None, turn=None):
         """One block as a guarded row, and the accumulator stores it must be split at."""
-        self.lbl, self.local = lbl, dict(local or {})
+        self.lbl, self.local, self.turn = lbl, dict(local or {}), turn
         out, parts = [], []
         for s in self.proc.blocks[lbl].stmts:
             got = self.one(s)
@@ -357,9 +330,15 @@ class Lower:
         self.lbl = self.lbl
         try:
             if t is Let:
-                if s.n in self.v.supplied or s.n in self.v.subst:
+                w = getattr(s.e, "w", 1)
+                if s.n in self.v.subst:
                     return None
-                return ("@" + self.temp(s.n, getattr(s.e, "w", 1)), self.value(s.e), None)
+                if s.n in self.v.supplied:
+                    cell = self.turncell(s.n, w)
+                    if cell is None:  # one value a name: the score writes the cell itself
+                        return None
+                    return ("@" + self.temp(s.n, w), {"cell": cell}, None)
+                return ("@" + self.temp(s.n, w), self.value(s.e), None)
             if t is Store:
                 got = self.v.target(self, s)
                 if got is None:
@@ -372,14 +351,49 @@ class Lower:
             del x
         return None
 
+    def planall(self, groups):
+        """One plan a segment, and the flags every other segment must raise.
+
+        A join's own preds do not stop at a segment's edge, so a plan taken
+        segment by segment leaves a cell the paths of *one* segment raise and
+        every other path unreached.  Each segment decides its own cells and then
+        every path that reaches one raises it where that path stands, whichever
+        segment holds it; the flags are reset once, at the head of the first
+        phase, which every path's own row follows.
+        """
+        eff, flagrows = {}, {}
+        for g in groups:
+            e, rows = self.plan(frozenset(g))
+            eff.update(e)
+            for q, v in rows.items():
+                flagrows.setdefault(q, []).extend(v)
+        names = {n for v in flagrows.values() for n, _c in v}
+        for lbl in sorted(eff):
+            name = "j" + ident(lbl)  # the cell ``plan`` declares a join under
+            if name not in names:
+                continue
+            have = {q for q, v in flagrows.items() for n, _c in v if n == name}
+            for q in sorted(self.preds.get(lbl, ())):
+                if q in have or q not in eff:
+                    continue
+                ctx = (tuple(dict.fromkeys(eff[q][0] + self._edge(q, lbl))), eff[q][1])
+                flagrows.setdefault(q, []).append((name, ctx))
+        self.eff, self.flagrows = eff, flagrows
+        self.planned = frozenset(eff)
+        return sorted({n for v in flagrows.values() for n, _c in v})
+
     # ---- the linear order ------------------------------------------------------------
-    def sequence(self, blocks, trips):
+    def sequence(self, blocks, trips, reset=()):
         """The blocks in reverse postorder, each inner loop unrolled to its own bound."""
         inner = {h: v for h, v in self.loops.items() if h in blocks and len(v[0]) < len(blocks)}
         body = {l for _h, (b, _x) in inner.items() for l in b}
-        eff, flagrows = self.plan(blocks)
-        flags = sorted({n for v in flagrows.values() for n, _c in v})
-        out = [(RESET, tuple(flags), {}, ())] if flags else []
+        self.turn = None
+        if frozenset(blocks) <= self.planned:
+            eff, flagrows, flags = self.eff, self.flagrows, list(reset)
+        else:
+            eff, flagrows = self.plan(blocks)
+            flags = sorted({n for v in flagrows.values() for n, _c in v})
+        out = [(RESET, tuple(flags), {}, (), None)] if flags else []
         for lbl in self.rpo:
             if lbl not in blocks:
                 continue
@@ -387,9 +401,9 @@ class Lower:
                 out += self._unroll(lbl, inner[lbl], trips.get(lbl, 1))
             elif lbl not in body:
                 guard, extra = eff.get(lbl) or (self._own(lbl), ())
-                out.append((lbl, extra, {}, guard))
+                out.append((lbl, extra, {}, guard, None))
             for name, (guard, extra) in flagrows.get(lbl, ()):
-                out.append(((FLAG, name, lbl), extra, {}, guard))
+                out.append(((FLAG, name, lbl), extra, {}, guard, None))
         return out
 
     def _unroll(self, head, loop, k):
@@ -397,12 +411,19 @@ class Lower:
         body, latches = loop
         order = [l for l in self.rpo if l in body]
         seen = {(id(c), t) for _d, c, t, _w in self.guards.get(head, ())}
-        cont = [
-            (c, t)
-            for lat in sorted(latches)
-            for d, c, t, _w in self.guards.get(lat, ())
-            if (id(c), t) not in seen and self.onpath(d, c, t)
-        ]
+        # one more turn is taken where a back edge is: the *disjunction* of the
+        # latches' own paths, folded as a join's is (two that differ in one term
+        # and its negation are the one path that term does not decide)
+        paths = []
+        for lat in sorted(latches):
+            g = tuple(
+                (d, c, t)
+                for d, c, t, _w in self.guards.get(lat, ())
+                if (id(c), t) not in seen and self.onpath(d, c, t)
+            )
+            if g not in paths:
+                paths.append(g)
+        cont = [(c, t) for g, _x in fold([(g, ()) for g in paths]) for _d, c, t in g]
         if not cont:
             t = self.proc.blocks[head].term
             cont = [
@@ -417,9 +438,9 @@ class Lower:
             self.local = {n: (c + (j - 1) * d) & 0xFF for n, (c, d) in ind.items()} if j else {}
             terms = () if not j else tuple(tuple(self.term(c, t)) for c, t in cont)
             if j == max(int(k), 1):
-                out.append((None, terms, {}, None))
+                out.append((None, terms, {}, None, None))
                 break
-            out += [(l, terms, step, None) for l in order]
+            out += [(l, terms, step, None, j) for l in order]
         self.local = keep
         return out
 
