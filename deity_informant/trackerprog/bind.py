@@ -421,13 +421,29 @@ class Accs:
                 continue
             part = "byte" if a["width"] <= 8 else ("lo" if lo in hit else "hi")
             reg = w["register"]
-            sites.add(int(w["site"]["pc"][1:], 16))
+            sites |= self.regsites(w["site"]["block"], reg)
             blocks.add(w["site"]["block"])
             if reg == "freq":  # a 16-bit write of the pair the chip reads as one
                 out += [("freq_lo", "lo"), ("freq_hi", "hi")]
             else:
                 out.append((reg, part))
         return [list(x) for x in dict.fromkeys(out)], sites, sorted(blocks)
+
+    def regsites(self, lbl, reg):
+        """The stores one block makes to the registers a 16-bit produce sends.
+
+        A pair the chip reads as one value is two stores of the machine and one
+        write of T0, so the record's produce states both.
+        """
+        want = {"freq": ("freq_lo", "freq_hi"), "pw": ("pw_lo", "pw_hi")}.get(reg, (reg,))
+        out = set()
+        for s in self.low.proc.blocks[lbl].stmts:
+            if type(s) is not Store or s.cls != "io":
+                continue
+            base = addr_split(s.a)[0]
+            if base is not None and self.low.v.regs.get(base - 0xD400) in want:
+                out.add(s.src)
+        return out
 
     def delta(self, a, blk):
         """T1's delta over the object's cells: section 5's own four forms."""
@@ -824,8 +840,14 @@ class Binder:
             if tgt is None:
                 continue
             kind = "reg" if tgt[0] == "reg" else "set"
-            name = "@" + tgt[1] if tgt[0] == "copy" else tgt[1]
-            got.append((i, kind, [name, low.value(low.expand(s.v))]))
+            if tgt[0] == "acc":
+                got.append((i, kind, ["@" + tgt[1], low.value(low.expand(s.v))]))
+                continue
+            if tgt[0] == "copy":
+                got.append((i, kind, [tgt[1], low.value(low.expand(s.v))]))
+                continue
+            got.append((i, kind, [tgt[1], low.value(low.expand(s.v))]))
+        got = _copies(low, got)
         for _i, kind, pair in _epoch(low.proc.blocks[lbl].stmts, got):
             key = kind if split or pair is None else "set"
             if out and out[-1][0] == key and key == "set" and pair is not None:
@@ -856,7 +878,7 @@ class Binder:
 
     def run(self):  # noqa: C901 - one clause per section of the object
         """The bound object, and the report of what each plane supplied."""
-        from . import assemble, build, tables
+        from . import assemble, build, record, tables
         from .refuse import Refusal
 
         self.roles()
@@ -864,6 +886,8 @@ class Binder:
         recs = self.visits()
         self.bind_fields(recs)
         self.amb = ambiguous(self.p)
+        pro = record.firstonly(self.prog, self.proc, self.inputs)
+        self.pro = pro if pro and not pro & set(self.sch.body) else frozenset()
         self.plan()
         order = self.low.rpo
         A = Accs(self.low, self.art, self.names, self.view)
@@ -930,6 +954,14 @@ class Binder:
             else:
                 rowprog.append({"sets": [list(x) for x in sets],
                                 **({"when": when} if when else {})})
+        body = set(self.sch.body)
+        glob = [l for l in order if l not in body and l not in self.pro]
+        low.gate, low.scope = frozenset(), set(glob)
+        low.gate, low.scope = frozenset(), set(self.pro)
+        prol = _rows_of(self.blockrows(set(self.pro), order, drop, roles), ("set", "reg"))
+        low.gate, low.scope = frozenset(), set(glob)
+        gl = [out.stream("global%d" % i, [r]) for i, r in enumerate(
+            _rows_of(self.blockrows(set(glob), order, drop, roles), ("set", "reg")))]
         low.gate, low.scope = frozenset(), set(segs.get("machine", []))
         items = []
         for lbl, kind, when, sets in self.blockrows(set(segs.get("machine", [])), order,
@@ -952,9 +984,9 @@ class Binder:
             rank += 1
         if rows:
             out.stream("machine%d" % nm, rows, rank)
-        return self.object(out, pre, rowprog, tables, build, asm)
+        return self.object(out, pre, rowprog, gl, prol, tables, build, asm)
 
-    def object(self, out, pre, rowprog, tables, build, asm):  # noqa: C901
+    def object(self, out, pre, rowprog, gl, prol, tables, build, asm):  # noqa: C901
         """The sections of the object, each the plane that supplied it."""
         low, sch, art = self.low, self.sch, self.art
         rate = build.divider_rate(sch.divider[1], low, self.img) if sch.divider else 1
@@ -965,7 +997,8 @@ class Binder:
             tick += [{"stream": nm} for nm in pre] if name == "prelude" else [name]
         orders, pats = self.score.events(self.tie)
         self.armsets(pats, out)
-        limit = tables.beyond_limit(self.cells, low, self.pit)
+        limit = min(tables.beyond_limit(self.cells, low, self.pit),
+                    _transposed(out.streams) or 1)
         words = tables.beyond_words(self.cells, low, self.pit, limit)
         for st in out.streams.values():
             st["beyond"] = {"id": "the fused tuning", "words": words}
@@ -1006,10 +1039,12 @@ class Binder:
             "accs": {k: v for k, v in sorted(self.accs.items(), key=lambda kv: kv[1]["rank"])},
             "instruments": instruments,
             "score": {"patterns": pats, "orders": orders},
-            "globals": self.flags(),
-            "state0": {"cells": cellseed, "globals": globseed},
+            "globals": {**self.flags(), **({"streams": gl} if gl else {})},
+            "state0": {"cells": cellseed, "globals": globseed,
+                       **({"prologue": {"rows": prol}} if prol else {})},
         }
         _merge_halves(obj)
+        _dce(obj)
         build.prune(obj)
         return obj
 
@@ -1202,3 +1237,106 @@ def _carried(low, c):
     low.lbl, low.local, low.pick = None, {}, {}
     return any(type(x) is Var and x.n not in low.defs and x.n not in low.v.vidx
                for x in walk(low.expand(c)))
+
+
+def _copies(low, got):
+    """Fold the copies of one per-voice cell a block writes at constant addresses.
+
+    A value every copy takes is one write every voice makes (§3.6's ``all``); a
+    copy that is neither the committing voice's nor one of a full set is no cell.
+    """
+    at = {}
+    for k, (_i, _kind, pair) in enumerate(got):
+        if pair is not None and isinstance(pair[0], tuple):
+            at.setdefault(pair[0][0], []).append(k)
+    out, drop = list(got), set()
+    for name, ks in at.items():
+        vals = {got[k][2][0][1]: repr(got[k][2][1]) for k in ks}
+        full = len(vals) == low.cells.voices and len(set(vals.values())) == 1
+        for j, k in enumerate(ks):
+            if full:
+                out[k] = (got[k][0], got[k][1], ["*" + name, got[k][2][1]])
+                if j:
+                    drop.add(k)
+            elif not got[k][2][0][1]:
+                out[k] = (got[k][0], got[k][1], ["@" + name, got[k][2][1]])
+            else:
+                drop.add(k)
+                low.bad.add(name)
+    return [x for k, x in enumerate(out) if k not in drop]
+
+
+KEEP = ("rowsleft", "dur", "note", "ins", "freq", "orderpos", "tied", "phase", "counter",
+        "voice_index", "lastnote", "wave")
+
+
+def _needed(target):
+    """Whether one ``sets`` target is a register the chip has, and not a cell."""
+    return target[:1] not in "@#!*"
+
+
+def _dce(obj):
+    """Drop the assignments whose cell nothing the object states reads.
+
+    Liveness and not a count of readers: a cell two dead rows pass between them
+    is dead, so the live set grows from the roots -- the registers, the records,
+    the score and the words past the tuning -- through the rows that write them.
+    """
+    rows = [r for st in obj["streams"].values() for r in st["rows"]]
+    rows += [s for s in obj["meta"]["row"] if "sets" in s]
+    nodes = [(r, k) for r in rows for k in range(len(r["sets"]))]
+    live = set(KEEP) | {a["cell"].lstrip("#").split(".")[0] for a in obj["accs"].values()}
+    for part in ("accs", "score", "globals", "instruments"):
+        live |= _reads(obj[part])
+    live |= _reads(obj["meta"]["tempo"]) | _reads([s.get("when") for s in obj["meta"]["row"]])
+    live |= _reads([st.get("beyond") for st in obj["streams"].values()])
+    keep = set()
+    for _ in range(len(nodes) + 1):
+        more = set()
+        for r, k in nodes:
+            if (id(r), k) in keep:
+                continue
+            t = r["sets"][k][0]
+            if _needed(t) or t.lstrip("@#!*").split(".")[0] in live:
+                more.add((id(r), k))
+        if not more:
+            break
+        keep |= more
+        for r, k in nodes:
+            if (id(r), k) in keep:
+                live |= _reads(r["sets"][k][1]) | _reads(r.get("when", []))
+    for r in rows:
+        r["sets"] = [x for k, x in enumerate(r["sets"]) if (id(r), k) in keep]
+    for st in obj["streams"].values():
+        st["rows"] = [r for r in st["rows"] if r["sets"]]
+    obj["meta"]["row"] = [s for s in obj["meta"]["row"] if "sets" not in s or s["sets"]]
+    named = {s["stream"] for s in obj["meta"]["row"] if "stream" in s}
+    named |= {e["stream"] for e in obj["meta"]["tick"] if not isinstance(e, str)}
+    named |= set(obj["globals"].get("streams", ()))
+    obj["streams"] = {k: v for k, v in obj["streams"].items()
+                      if v["rows"] and (k in named or "rank" in v)}
+    obj["meta"]["row"] = [s for s in obj["meta"]["row"]
+                          if "stream" not in s or s["stream"] in obj["streams"]]
+    obj["meta"]["tick"] = [e for e in obj["meta"]["tick"]
+                           if isinstance(e, str) or e["stream"] in obj["streams"]]
+    obj["globals"]["streams"] = [k for k in obj["globals"].get("streams", ())
+                                 if k in obj["streams"]]
+    if not obj["globals"]["streams"]:
+        del obj["globals"]["streams"]
+    return obj
+
+
+def _transposed(streams):
+    """How far past the tuning a transposition of the object's own can reach (§3.2)."""
+    got = [0]
+    for st in streams.values():
+        for r in st["rows"]:
+            stack = [r.get("when", []), [x[1] for x in r["sets"]]]
+            while stack:
+                x = stack.pop()
+                if isinstance(x, dict):
+                    for k, v in x.items():
+                        got.append(v) if k == "transpose" and isinstance(v, int) else stack.append(v)
+                elif isinstance(x, (list, tuple)):
+                    stack += list(x)
+    return max(got)

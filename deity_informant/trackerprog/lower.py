@@ -19,7 +19,7 @@ MASK = {1: 0xFF, 2: 0xFFFF}
 BINOP = {"&": "and", "|": "or", "^": "xor", "+": "add", "-": "sub", ">>": "shr"}
 CMP = {"==": "==", "!=": "!=", "<": "<"}
 NEG = {"==": "!=", "!=": "==", "<": ">="}
-DEPTH = 8
+DEPTH = 16
 
 
 class Unlowerable(Exception):
