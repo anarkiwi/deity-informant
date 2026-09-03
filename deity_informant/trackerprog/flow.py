@@ -1,15 +1,65 @@
 """B7 -- the flow facts the lowering reads off one procedure.
 
-Two of them, and neither knows anything of the object: which ram stores reach a
-block, and when two guard paths are one path with a term left out -- the fold a
-join's reaching condition and a loop's own back edges are both answered by.
+Three of them, and none knows anything of the object: which ram stores reach a
+block, when two guard paths are one path with a term left out -- the fold a
+join's reaching condition and a loop's own back edges are both answered by --
+and the terms a jump table's own edges decide.
 """
 
 from __future__ import annotations
 
-from ..tuneprog.graph import succs
-from ..tuneprog.ir import Store, Var
+from ..tuneprog.accguard import _domsets
+from ..tuneprog.graph import EXIT, cfg, postdoms, succs
+from ..tuneprog.ir import Bin, Const, Store, Switch, Var
 from ..tuneprog.irwalk import addr_split
+
+
+def switched(proc, guards):
+    """``guards`` with the term each edge of a jump table decides.
+
+    Control dependence over a ``Switch`` is one case: a block one case alone
+    reaches stands under the term that case is, and one several reach under none.
+    """
+    g = cfg(proc)
+    ipd = postdoms(g, proc, EXIT)
+    pd = _domsets(ipd, [n for n in ipd if n in proc.blocks])
+    out = {lbl: list(gs) for lbl, gs in guards.items()}
+    for d, b in proc.blocks.items():
+        if type(b.term) is not Switch:
+            continue
+        for s, c in _cases(b.term):
+            term = (d, Bin("==", b.term.e, Const(c, 2), 1), True, ())
+            for lbl in proc.blocks:
+                if s in pd and lbl in pd[s] and lbl not in pd.get(d, ()):
+                    out[lbl].append(term)
+    return _closed(proc, out)
+
+
+def _cases(t):
+    """``(label, value)`` for each case of a table that reaches its label alone."""
+    got = {}
+    for c, s in t.cases:
+        got.setdefault(s, []).append(c)
+    return [(s, cs[0]) for s, cs in sorted(got.items()) if len(cs) == 1]
+
+
+def edge(term, lbl):
+    """The term the edge of a jump table to one label decides, where it decides one."""
+    got = [c for s, c in _cases(term) if s == lbl]
+    return (Bin("==", term.e, Const(got[0], 2), 1),) if got else ()
+
+
+def _closed(proc, out):
+    """A guard map closed under its own deciders' guards."""
+    for _ in range(len(proc.blocks)):
+        moved = False
+        for lbl, gs in out.items():
+            got = list(gs) + [x for d, _c, _v, _w in gs for x in out.get(d, ()) if x not in gs]
+            moved = moved or len(got) != len(gs)
+            out[lbl] = list(dict.fromkeys(got))
+        if not moved:
+            break
+    return {lbl: tuple(gs) for lbl, gs in out.items()}
 
 
 def fold(ctxs):

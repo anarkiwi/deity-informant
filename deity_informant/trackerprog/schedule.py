@@ -168,9 +168,10 @@ def clock_of(p, vidx, entry, guards=None):
 
     The fetch is read at a step of one counter, so the counter is the address a
     term of that path reads and a store moves by a constant. A term comparing
-    such a counter with another *cell* is a **divider** (``rate``, ``phase``) and
-    not the clock's boundary; of the rest the clock is the counter whose own step
-    stands under the fewest guards, the outer counter of a nest being the tick's.
+    such a counter with the cell **its own reload reads** is a **divider**
+    (``rate``, ``phase``) -- that compare is the reload and not a boundary -- and
+    of the rest the clock is the counter whose own step stands under the fewest
+    guards, the outer counter of a nest being the tick's.
     """
     guards = guardpath(p, sites=True) if guards is None else guards
     defs, steps = _defs(p), counters(p, vidx)
@@ -180,6 +181,7 @@ def clock_of(p, vidx, entry, guards=None):
         for _d, c, _t, seen in terms
         if type(c) is Bin and len(seen & set(steps)) == 1 and len(seen) > 1
         for a in seen & set(steps)
+        if _reloaded_from(p, defs, steps, a, seen - {a})
     }
     got = [a for _d, _c, _t, seen in terms for a in sorted(seen & set(steps)) if a not in div]
     if not got:
@@ -189,6 +191,18 @@ def clock_of(p, vidx, entry, guards=None):
     keep = tuple((c, t) for _d, c, t, seen in terms if not seen & div)
     spent = tuple(c for _d, c, _t, seen in terms if seen & div)
     return base, lbl, pre, store, step, keep, div, spent
+
+
+def _reloaded_from(p, defs, steps, addr, others):
+    """Whether a counter is refilled from one of the cells a term compares it with.
+
+    Section 3.6's ``rate`` is a counter's own reload plus one, so the compare that
+    states a divider is the compare against that reload. A counter a path tests
+    against some *other* cell -- the lead a fetch runs ahead by -- is the clock
+    itself, and the test is its own boundary.
+    """
+    got = _reload(p, addr, steps[addr][2])
+    return got is not None and bool(_reads(defs, got[0].v) & others)
 
 
 def resets_of(p, addr, skip, outside, guards):

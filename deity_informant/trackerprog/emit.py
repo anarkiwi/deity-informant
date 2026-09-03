@@ -103,12 +103,12 @@ def by_name(view, names):
 
 
 # ---- the score tables and the pinned inputs ----------------------------------
-def tables_of(t2, view, names):
+def tables_of(t2, view, names, roles=("order", "pattern")):
     """The address envelopes of the order and pattern tables T2's score reads."""
     regs = by_name(view, names)
     out = set()
     for v in t2["score"]:
-        for role in ("order", "pattern"):
+        for role in roles:
             for ch in v.get(role, ()):
                 r = regs.get(ch["table"])
                 if r is not None:

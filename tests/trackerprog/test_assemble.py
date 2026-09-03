@@ -16,6 +16,8 @@ from deity_informant.trackerprog import (
     record,
     report,
     schedule,
+    tables,
+    unroll,
 )  # noqa: E402
 from deity_informant.trackerprog.cells import Cells, ident  # noqa: E402
 from deity_informant.trackerprog.universal import Player  # noqa: E402
@@ -168,10 +170,15 @@ class Prog:
 
 
 def vocab(low=None):
-    cells = Cells(View(regions(), {"tick": proc()}, image()), names(), pitch=(1, PITCH, NOTES))
+    cells = Cells(
+        View(regions(), {"tick": proc()}, image()),
+        names(),
+        pitch=((1,), (PITCH, PITCH + 1), 2, NOTES),
+    )
     voc = Vocab(cells, image(), build.registers(), frozenset({"x"}))
     voc.supplied = {"n"}
-    voc.pitch, voc.notebase, voc.insbase = (1, PITCH, NOTES), VOICE, VOICE + 3
+    voc.pitch = ((1,), (PITCH, PITCH + 1), 2, NOTES)
+    voc.notebase, voc.insbase = VOICE, VOICE + 3
     voc.inscol, voc.insstride = {2: "wave", 3: "adsr"}, 2
     del low
     return voc
@@ -188,7 +195,7 @@ def test_a_name_the_object_carries_has_nothing_else_in_it():
 
 
 def test_cells_answers_voice_global_and_pitch_by_address():
-    c = Cells(View(regions(), {}, image()), names(), pitch=(1, PITCH, NOTES))
+    c = Cells(View(regions(), {}, image()), names(), pitch=((1,), (PITCH, PITCH + 1), 2, NOTES))
     assert c.at(PITCH + 4) == ("pitch", (2, 0))
     assert c.at(VOICE + 1) == ("voice", ("note", 1))
     assert c.at(GLOB) == ("global", "scratch")
@@ -224,12 +231,16 @@ def test_a_scalar_the_tick_keeps_is_one_cell_every_voice_enters_with():
     assert c.scalarcell(GLOB, "phase") == "c%04X" % GLOB
 
 
-def test_a_word_past_the_tuning_is_the_cell_that_holds_it():
-    c = Cells(View(regions(), {}, image()), names(), pitch=(1, PITCH, NOTES))
+def test_a_word_past_the_tuning_is_the_byte_or_the_cell_that_holds_it():
+    c = Cells(View(regions(), {}, image()), names(), pitch=((1,), (PITCH, PITCH + 1), 2, NOTES))
     c.voicecell(PITCH + 2 * NOTES)
-    words = build.beyond_words(c, PITCH, NOTES, 3)
+    tune = tables.Tuning((1,), PITCH, (PITCH, PITCH + 1), 2, NOTES, 0)
+    low = lowered()[0]
+    words = tables.beyond_words(c, low, tune, 3)
+    assert len(words) == 3 and words[0]["u16"] == [0, 0]  # the image's own, past the tuning
+    low.written = ((PITCH + 2 * NOTES, PITCH + 2 * NOTES + 2),)
+    words = tables.beyond_words(c, low, tune, 3)
     assert words[0]["u16"][0]["cell"][1] == 0
-    assert "trap" in words[2]
 
 
 def test_registers_are_the_chip_s_own_columns_by_their_offset():
@@ -352,7 +363,7 @@ def test_the_instrument_records_are_named_by_what_the_cell_selecting_them_holds(
             "streams": [],
         }
     }
-    got = build.instrument_table(art, View(regions(), {}, image()), names())
+    got = tables.instrument_table(art, View(regions(), {}, image()), names())
     assert got[0] == 0x101D and got[3] == 2 and got[4] == [0, 8]
 
 
@@ -362,7 +373,7 @@ def test_a_store_names_a_register_a_cell_or_an_accumulator():
     assert voc.target(low, store(0xD400, 8, C(1), src=0x1030, cls="io")) == ("reg", "freq_lo")
     assert voc.target(low, store(VOICE, 4, C(1), V("x"))) == ("cell", "@note")
     assert voc.target(low, store(GLOB, 7, C(1))) == ("cell", "#scratch")
-    assert voc.target(low, store(0, 0, C(1), cls="chk")) is None
+    assert voc.target(low, store(0, 0, C(1), cls="chk")) == ("cell", "#c0000")
     voc.inspw = {2: "lo"}
     idx = Bin("<<", ram(VOICE + 3, 5, V("x")), C(1))
     assert voc.target(low, store(INS, 2, C(1), idx)) == ("acc", "ins.pw.lo")
@@ -398,7 +409,7 @@ def test_a_divider_s_own_compare_is_the_rate_and_not_a_row_s_guard():
 def test_an_inner_loop_is_unrolled_to_its_own_bound_and_traps_past_it():
     low, _voc = lowered()
     low.scope = set(low.proc.blocks)
-    seq = low.sequence({"mach", "loop", "tail"}, {"loop": 3})
+    seq = unroll.sequence(low, {"mach", "loop", "tail"}, {"loop": 3})
     assert [l for l, _e, _x, _g, _j in seq].count("loop") == 3
     assert [j for l, _e, _x, _g, j in seq if l == "loop"] == [0, 1, 2]
     assert any(l is None and e for l, e, _x, _g, _j in seq)
@@ -416,7 +427,9 @@ def test_a_name_an_unrolled_loop_binds_takes_one_cell_a_turn():
     assert not low.turnsof({"loop"})  # a loop that is the whole segment is no inner one
     rows = [
         r
-        for k, v in build.stream_items(low, low.sequence({"mach", "loop", "tail"}, {"loop": 3}), {})
+        for k, v in build.stream_items(
+            low, unroll.sequence(low, {"mach", "loop", "tail"}, {"loop": 3}), {}
+        )
         if k == "rows"
         for r in v
     ]
@@ -447,9 +460,11 @@ def test_a_join_a_second_segment_reaches_is_raised_where_that_path_stands():
         "mach",
         "loop",
     }
-    seq = low.sequence({"fetch"}, {}, flags)
-    assert seq[0][0] == lower.RESET and seq[0][1] == ("jtail",)
-    assert low.sequence({"out"}, {})[0][0] != lower.RESET  # a segment the plan does not hold
+    seq = unroll.sequence(low, {"fetch"}, {}, flags)
+    assert seq[0][0] == unroll.RESET and seq[0][1] == ("jtail",)
+    assert (
+        unroll.sequence(low, {"out"}, {})[0][0] != unroll.RESET
+    )  # a segment the plan does not hold
 
 
 def test_the_dead_sets_are_dropped_and_the_live_ones_kept():
@@ -478,8 +493,8 @@ def test_two_paths_that_differ_in_one_term_and_its_negation_are_the_one_path():
 
 def test_the_flag_rows_raise_the_join_s_cell_where_each_path_already_stands():
     low, _voc = lowered()
-    seq = low.sequence({"head", "fetch", "mach", "loop", "tail"}, {"loop": 1})
-    assert seq[0][0] == lower.RESET
+    seq = unroll.sequence(low, {"head", "fetch", "mach", "loop", "tail"}, {"loop": 1})
+    assert seq[0][0] == unroll.RESET
     rows = [r for k, v in build.stream_items(low, seq, {}) if k == "rows" for r in v]
     sets = [s for r in rows for s in r["sets"]]
     assert [s[1] for s in sets if s[0].startswith("@j")].count(0) == 1
@@ -509,13 +524,16 @@ def test_the_row_clock_is_the_counter_a_guard_of_the_fetch_s_path_steps():
     assert len(keep) == 1 and keep[0][1] is True and not div and not spent
 
 
-def test_a_counter_a_guard_compares_with_a_cell_is_the_divider_and_not_the_clock():
+def test_a_counter_the_guard_compares_with_its_own_reload_is_the_divider():
+    """Section 3.6's ``rate`` is a counter's reload plus one, so that compare states it."""
     p = proc()
     p.blocks["head"].term = If(Bin("!=", ram(GLOB, 7), ram(INS + 1, 3)), "fetch", "mach")
     p.blocks["fetch"].stmts.insert(0, Let("g", ram(GLOB, 7)))
     p.blocks["fetch"].stmts.insert(1, store(GLOB, 7, Bin("-", V("g"), C(1)), src=0x1024))
     got = schedule.clock_of(p, frozenset({"x"}), "fetch")
-    assert got is None or GLOB in got[6]
+    assert got[0] == GLOB and not got[6]  # no reload: the counter is the clock, not a rate
+    p.blocks["top"].stmts.append(store(GLOB, 7, ram(INS + 1, 3), src=0x1026))
+    assert schedule.clock_of(p, frozenset({"x"}), "fetch") is None  # its reload: a divider
 
 
 def test_a_store_outside_the_voice_loop_is_the_clock_s_own_reset_clause():
@@ -724,3 +742,41 @@ def test_the_lowered_rows_render_on_the_universal_player():
         "state0": {"cells": {"timer": [1]}},
     }
     assert Player(obj).tick() == [(4, 0x40)]
+
+
+# ---- the tune's own tables ---------------------------------------------------------
+def _art(pitch):
+    return {"t2": {"pitch": pitch, "selectors": [], "streams": []}}
+
+
+def test_the_tuning_is_one_word_table_or_two_byte_tables_at_their_own_origins():
+    view = View(regions(), {"tick": proc()}, image())
+    got = tables.pitch_of(_art({"layout": "u16le", "entries": [1] * NOTES}), view, names())
+    assert (
+        got.rids == (1,) and got.step == 2 and got.n == NOTES and got.obases == (PITCH, PITCH + 1)
+    )
+    n = names()
+    n.role = {1: "freq_table", 4: "freq_table"}
+    lo = _art({"layout": "lo|hi", "entries": [1, 2], "regions": [1, 4]})
+    got = tables.pitch_of(lo, view, n)
+    assert got.rids == (1, 4) and got.step == 1 and got.obases == (PITCH, VOICE)
+    hi = _art({"layout": "hi|lo", "entries": [1, 2], "regions": [1, 4]})
+    assert tables.pitch_of(hi, view, n).rids == (4, 1)  # the layout names which half is first
+    assert tables.pitch_of(_art({"entries": []}), view, n) is None
+    assert (
+        tables.pitch_of(_art({"layout": "lo|hi", "entries": [1], "regions": [1]}), view, n) is None
+    )
+
+
+def test_a_byte_the_play_also_reads_as_a_word_is_that_word_s_own_width():
+    got = tables.word_widths(Prog(), "tick")
+    assert got[GLOB] == 1 and VOICE + 6 not in got  # an indexed access names no constant address
+
+
+def test_the_note_the_tuning_is_indexed_by_is_the_cell_the_reads_agree_on():
+    low, _voc = lowered()
+    tune = tables.Tuning((1,), PITCH, (PITCH, PITCH + 1), 2, NOTES, 0)
+    read = ram(PITCH, 1, Bin("<<", ram(VOICE, 4, V("x")), C(1)))
+    p = Proc("p", blocks={"a": Block("a", [Let("f", read)], Return(vals=[]))}, entry="a")
+    assert tables.note_base(low, tune, [p]) == VOICE
+    assert tables.note_base(low, tune, [Proc("q", blocks={}, entry="")]) is None

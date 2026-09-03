@@ -4,38 +4,44 @@ The exemplar [prototype-trackerprog.md](prototype-trackerprog.md) §9 says is
 missing: a **lift** that produces a trackerprog rather than a hand reading of
 one. It answers [trackerprog-backlog.md](trackerprog-backlog.md) **B6** (is the
 schedule recoverable?) and **B7** (lower the tick, do not classify it, then
-recognise what T1 names) on two tunes, rendered by
+recognise what T1 names) on three tunes, rendered by
 `deity_informant/trackerprog/universal.py` and certified against each tune's own
 player on the PcodeVM:
 
 | tune | schedule | hints | refusals | certificate |
 | --- | --- | --- | --- | --- |
 | Commando song 1 (Hubbard) | derived, one datum from the hand's (§2.1) | **0** | 4, named (§3) | **0 divergences over 11,780 ticks** |
-| *Guldkornekspressen Intro* (JCH V20) | derived, four datums from the hand's (§2.1) | **0** | 3, named (§3) | **0 divergences over 2,401 ticks** |
+| *Guldkornekspressen Intro* (JCH V20) | derived, four datums from the hand's (§2.1) | **0** | 1, named (§3) | **0 divergences over 2,401 ticks** |
+| *Je suis Linus le salaud* (GoatTracker 2) | derived, five datums from the hand's (§2.1) | **0** | 13, named (§3) | **113 of 8,236 ticks; the 114th diverges (§5)** |
 
-Neither object has a `program` key. **All three of Commando's T1 accumulators
-land as §5 records** (§2.3) and **none of JCH's five** (§4); §7 states what the
-pass did not change and §8 what a third family would need.
+No object has a `program` key. **All three of Commando's T1 accumulators land as
+§5 records** (§2.3), **none of JCH's five and none of GT2's four** (§4); §7
+states what the pass did not change and §8 what each family cost and what is
+left. §9 is the coverage of the three, one row a family.
 
 ```
 tools/tuneprog_trackerprog.py --out <out>/commando-song1 \
     --sid $HVSC/MUSICIANS/H/Hubbard_Rob/Commando.sid --certify
 tools/tuneprog_trackerprog.py --out <out>/jch-guldkorn-intro \
     --sid $HVSC/MUSICIANS/J/JCH/Guldkornekspressen_Intro.sid --certify
+tools/tuneprog_trackerprog.py --out <out>/gt2-je-suis-linus \
+    --sid $HVSC/MUSICIANS/L/Linus/Je_suis_Linus_le_salaud.sid --certify
 ```
 
 The lift reads `tuneprog.T2.json` at the horizon it was computed over, so an
-output directory whose T2 was written for a prefix lifts that prefix. JCH's is
-recomputed at its certified 2,401 first, and the object is the same one either
-way (`trackerprog/build.artefacts` computes the same plane in memory):
+output directory whose T2 was written for a prefix lifts that prefix. JCH's and
+GT2's are recomputed at their certified horizons first, and each object is the
+same one either way (`trackerprog/build.artefacts` computes the same plane in
+memory):
 
 ```
 tools/tuneprog_score.py --out <out>/jch-guldkorn-intro --calls 2401
+tools/tuneprog_score.py --out <out>/gt2-je-suis-linus --calls 8236
 ```
 
 Contents: 1 the source · 2 the method · 3 the hints · 4 coverage ·
 5 the certificate · 6 against the hand objects · 7 the limits ·
-8 what the second family cost, and what is left.
+8 what each family cost, and what is left · 9 the three families.
 
 ---
 
@@ -62,8 +68,23 @@ sends. Two things it was taken for are not what they looked like:
 
 | expected | what the artefacts say |
 | --- | --- |
-| a tick of several procedures ([§8](#8-what-the-second-family-cost-and-what-is-left) item 1 at #347) | the certified S4 tick is **one** procedure of 142 blocks. `p_10E9`, `p_1409`, `p_1616`, `p_14F7` and `p_14FD` are the *presentation's*; what the S4 leaves in their place is a **join** — one block reached from several sites — and that is what the lowering must state (§2.2) |
+| a tick of several procedures ([§8](#8-what-each-family-cost-and-what-is-left) item 1 at #347) | the certified S4 tick is **one** procedure of 142 blocks. `p_10E9`, `p_1409`, `p_1616`, `p_14F7` and `p_14FD` are the *presentation's*; what the S4 leaves in their place is a **join** — one block reached from several sites — and that is what the lowering must state (§2.2) |
 | `meta.shadow.registers`, a flush of the image the last tick left | the eleven `sid_image` regions are written **and sent inside the same tick**, by the voice's own last blocks (`p_1616`, jch.md:648-659), so the lowering's ranked `sets` rows already state it and no `shadow` is derived. §3.1's flush is the *wrapper's*, which only [*Knob at Night*](prototype-jch-trackerprog.md) §4.1 carries |
+
+*Je suis Linus le salaud* (GoatTracker 2) is the third, and it is the one whose
+tick is **several procedures**: the certified S4 has 14, and the tick's own 27
+blocks call `p_11A4` (204 blocks, itself calling eight one-block procedures)
+three times and `p_1130` three times — once a voice, unrolled in the source. It
+is also the first with a **register file**: no write reaches the chip on the tick
+that makes it, and the tick's first act copies 25 bytes of `sid_image` to
+`$D400`. Its `init` only schedules, so the first `play` call runs the reset and
+spends its own tick. Three things it was taken for and three it turned out to be:
+
+| expected | what the artefacts say |
+| --- | --- |
+| a voice loop the tick already has | the tick has **no** loop over the voices: the run of three calls **is** the pass, and the object's loop is that run rerolled by the one constant its arguments step (§2.5) |
+| the row clock told from a divider by comparing against a **cell** | GT2's clock is compared against a cell too — the `gatetimer` its fetch runs ahead by — so a divider is now the counter compared with the cell **its own reload reads**, which is what §3.6's *rate is a reload plus one* already said (§2.1) |
+| `state0.prologue` as a family's own datum | it is derived: the blocks the tick runs on its **first** call alone, where that call runs no block of the voice loop, are a command every voice takes on a tick of its own (§2.5) |
 
 ## 2. The method
 
@@ -82,9 +103,11 @@ procedure:
 | `tempo.cell`, `step` | the counter a guard on the fetch's own path reads and a store steps by a constant, of the candidates the one whose *own* step stands under fewest guards, and of those the one the most terms of that path read. A counter the voice loop steps is a voice cell; one the tick steps outside it is a scalar the whole tune keeps, declared as one cell per voice that every copy enters equal — which is what §3.6's per-voice `tempo.cell` needs of a tick-level clock |
 | `tempo.boundary` | that path's own guard terms, over the object's cells: **a guard list**, not one term |
 | `tempo.reset` | §3.6's clauses: every other store to the counter the **tick** makes outside the voice loop, each under its own guard path. A counter a *voice* steps is refilled by a row of that voice's phase, as Commando's is, and the clock states no clause |
-| `tempo.rate`, `phase` | the counter a term of that path compares with a second **cell** rather than a constant: that is the divider, its reload plus one, and the residue class the post-init image admits |
+| `tempo.rate`, `phase` | the counter a term of that path compares with the cell **its own reload reads**: that is the divider, its reload plus one, and the residue class the post-init image admits. A counter the path compares with some *other* cell — the lead a fetch runs ahead by — is the clock itself and the compare is its boundary |
 | `row_consumes_tick` | whether the fetch's exit still reaches the first block of the machine segment |
 | stream `rank`s | the order the segments' rows and accumulators stand in, which is program order |
+| `meta.shadow` | §3.1's register file, where T0 states one: every write that does not reach the chip names the image it lands in and the `delta` from it to `$D400`, and the one write that copies the whole file is the flush. The registers, in the order the flush sends them, are the order one tick of the certified program sends them in (`trackerprog/shadow.py`) |
+| `state0.prologue` | the blocks the tick runs on its **first** call alone, where that call runs no block of the voice loop: a tune whose init only schedules runs its reset then and spends the tick (§4.7 of [prototype-goattracker-trackerprog.md](prototype-goattracker-trackerprog.md)). The guard that says *this is the first call* is the phase's own and no row of it repeats it |
 
 **Commando's** derived schedule, datum for datum against the hand's:
 
@@ -130,6 +153,30 @@ Four datums differ and one mechanism is behind three of them: **the lift's row
 phase is the fetch region**, because the fetch is what the score materialises
 (§2.4). The hand reads the row at the fetch and *commits* it two clock steps
 later; the lift has no `stage`, so it consumes the row where the source read it.
+
+**GT2's**, datum for datum against `tools/trackerprog_goattracker.py`'s own
+`meta()`:
+
+| datum | derived | hand | |
+| --- | --- | --- | --- |
+| `voice_order` | `[0, 1, 2]` | `[0, 1, 2]` | same, and it is the run of calls' own step: the arguments go 0, 7, 14 and a voice's copies stand 7 apart |
+| `voices` / `cycles_per_tick` | 3 / 19,656 | the same | same |
+| segments | `prelude` 182 blocks · `row` 37 · `machine` 1 | — | — |
+| `meta.shadow` | 25 registers, `mode_vol` first and `v0.freq_lo` last | 25, descending `$D418`→`$D400` | **identical**, and derived: T0's own image and the order one tick sends it in |
+| `state0.prologue` | 91 rows, the first call's own reset | 8 `sets` and 3 `point`s | **the same datum**, lowered rather than read |
+| `tempo.cell` / `step` | `timer_2` / `−1` | `rowclock` / `−1` | **the same cell**, `$148E`: S6 names it by its role |
+| `tempo.rate` / `phase` | `1` / `0` | none | same: the clock has no divider, and the compare against `gatetimer` is its boundary and not a rate (§1) |
+| `tempo.boundary` | `b110D & $80 != 0` · `phase != 1` · `timer_2 == b14BA` | `rowclock == 0`, `early [rowclock == 2]` | **differs**: the lift's `row` phase is the fetch, so its boundary is the fetch's own guard — the play bit, the step that is not the reload's, and the lead `b14BA` (the hand's `gatetimer`) states |
+| `tempo.reset` | none | 2 clauses (the funk tempo, then the plain reload) | **differs**: GT2's counter is a *voice's*, so its reload is a row of that voice's phase and the clock states no clause (§2.1's rule) |
+| `commit_order` | `(ad, sr, ctrl)` | `(sr, ad, ctrl)` | **differs, and unobservable**: with a shadow every write lands in the image and only the flush reaches the chip, so `commit_order` orders nothing the certificate can see |
+| `meta.tick` | `{stream: prelude0}` `commit` `row` `commit` `machine` | `row` `commit` `machine` `fetch` `prelude` `{stream: exit}` | **differs**: the lift has one row program, no `stage` and no instrument `prelude`, so the phases are the segments its own RPO cut |
+| `row_consumes_tick` | `false` | `[[keys != 0]]` | **differs**, as JCH's does and for the same reason: the lift's row is the fetch, which the source does not return from |
+| `row_command` | `spent` | `held` | **differs**: the lift inlines each visit's own bytes rather than naming the command a voice keeps (§2.4) |
+| `pitch` | base 0, 91 entries | base 0, 96 | **differs**: T2's reach is 91 and the five entries past it are `beyond` words of the bytes the image holds (§2.3) |
+
+Five datums differ; `commit_order` is unobservable under a shadow, two are the
+row phase being the fetch (as on JCH), one is the counter being a voice's own,
+and one is the tuning's reach.
 
 **One thing the RPO segmentation says that the object does not need.** Taking
 B6's rule literally — *maximal* segments between the commit sites — cuts the
@@ -202,10 +249,10 @@ object is unchanged to the byte.
 **The shift is one node, not 2^*k* copies.** `x << k` had been *k* doublings of
 `{"add": [node, node]}` with the subtree copied at each, so a shift by *k* had
 2^*k* leaves and the vibrato step's 16-bit rotate stood as 128 copies of one
-mask: the largest `sets` expression was **1,282 nodes** on `main` and is **36**
-here, against the hand object's 5 (§7's table). One expression of the 196 still
-names an operand twice — the two-stage carry an `ADC` leaves in the S4 IR, 3
-nodes at `machine2` row 3 — and it is the IR's own shape, not the lowering's.
+mask: the largest `sets` expression was **1,282 nodes** on `main` at #346 and is
+**26** here, against the hand object's 4 (§7's table). One expression of the 207
+still names an operand twice — the two-stage carry an `ADC` leaves in the S4 IR,
+3 nodes — and it is the IR's own shape, not the lowering's.
 
 ### 2.3 B7: T1's accumulators, joined
 
@@ -267,39 +314,80 @@ byte the one the walk stops on. 12 of the object's 239 cells are turns of that
 loop; Commando's fetch binds no name inside a loop and its object is unchanged
 to the byte.
 
+### 2.5 A tick of several procedures, and the file its writes land in
+
+`trackerprog/callee.py` and `shadow.py`. #347 item 1 said a callee is a phase and
+inlining it is the whole change; on JCH it was not what it looked like (§8), and
+on GT2 it is, with two facts beside it.
+
+| the S4 IR says | the object says |
+| --- | --- |
+| a `Call` the tick reaches | the callee's blocks, spliced where the call stands: every name and label under the call site's own prefix, each parameter register bound to the argument, and each `Return` the `goto` of what follows. The pass repeats until the tick holds no call |
+| a **run** of calls to one procedure whose live arguments agree but for one constant that steps | **one** copy of the callee inside the loop that constant closes. It is derived from the IR alone: over the parameters the callee reads, a column of constants that steps is the index, a column each call takes from the one before it is carried, a column every call agrees on is invariant, and any other column refuses the reroll. A name an inner call left and something outside the run reads refuses it too |
+| a store whose address is a region T0 names an image of | the register that offset names — `emit` deposits it and the flush sends it — and a 16-bit one the pair `shadow.freq` / `shadow.pw` §5 reads as one cell |
+| the blocks the first call runs and no later call does | `state0.prologue`, a command every voice takes on a tick of its own |
+| a value **every** copy of a per-voice cell takes in one block | one `sets` target `*name`, §3.6's `all` where a row states it. A copy that is neither the committing voice's nor one of a full set is no cell of the object and is refused |
+
+GT2's tick is 27 blocks and 274 after the pass, of which **two** are rerolled
+runs (`report.inlined`): `p_11A4` three times and `p_1130` three times, each
+stepping its argument by 7 — which is the stride a voice's copies stand at, so
+the rerolled loop **is** the voice loop `schedule.derive` then finds. Commando's
+and JCH's ticks hold no call and their objects are untouched by the pass.
+
+**What the register file costs the rest of the object.** Nothing in `universal.py`
+but one target form: a `sets` target `*name` writes every voice's copy
+(`Player.everyvoice`), which is §3.6's command-level `all` written where a row
+can state it. The poison harness measures it at **0 differing of 332,358 over
+thirty builds, 0 sites**. `meta.shadow`, `state0.shadow` and `shadow.<pair>` are
+all mechanisms the player already had and no hand object had exercised from a
+lift.
+
+**A byte no region names is still a byte.** Three vocabularies the first two
+families never needed: memory the play writes that S6 names no region for is a
+global by its address (`#c131E` — GT2's four self-modified `JSR`/`JMP` low bytes
+are exactly that, and a jump table's own edge is then a guard term the object can
+state, `flow.switched`); a byte the play also reads as a **word** is that word's
+half (`#c1295.lo`); and the zero page is memory like any other, which is what
+JCH's `$saved`/`$saved12` were refused for at #349 and are cells for here.
+
 ## 3. The hints
 
 The hints file `--hints` reads is one named datum a line, `meta.commit_order =
-[…]`, of the kinds §3.1 lists. **For both tunes it is empty: 0 lines, of every
-kind.** Every datum either object carries is derived from the certified
-artefacts.
+[…]`, of the kinds §3.1 lists. **For all three tunes it is empty: 0 lines, of
+every kind.** Every datum any of the three objects carries is derived from the
+certified artefacts.
 
 What the lift could not lower it refuses rather than approximates, and each
-certificate carries its own refusals — 4 on Commando, 3 on JCH, all
+certificate carries its own refusals — 4 on Commando, 1 on JCH, 13 on GT2, all
 `unclassified update`:
 
 | tune | refusal | site | what it is |
 | --- | --- | --- | --- |
 | Commando | `unclassified update` | `$5023`, `$5026`, `$5029`, `$502C` | the entry tick's own reset, which zeroes four per-voice cells through a loop index that is **not** the voice index; the lift has no cell for the store and drops it. The horizon is the evidence it costs nothing: 0 divergences over 11,780 ticks with it gone |
-| JCH | `unclassified update` | `$saved`, `$saved12` | the two zero-page bytes the tick saves at entry and restores at exit (`$FB`/`$FC`): the object has no cell for the 6510's own pointer, and the play reads them nowhere else |
 | JCH | `unclassified update` | `V#1` | one copy of the voice index the loop's own latch binds, which is not a value of the object: `{"cell": "voice_index"}` is |
+| GT2 | `unclassified update` | `$1113`, `$1132`, `$1137`, `$113A` | the first call's own reset, again through an index that is not the voice's, and its two copies past the committing voice's. The prologue runs once a voice and the copy the *committing* voice takes is lowered, so the two others state nothing the first does not (§2.5) |
+| GT2 | `unclassified update` | `L1119_8D$i0$u4_L140F_BD#1`, `L1119_8D$i0$u4_L1412_3D#1` | the two reads those copies fed |
+| GT2 | `unclassified update` | `L1189_A9$i1$u14_L11F5_B1#1`, `…L11FC…`, `…L11FF…`, `…L120B…` | the order list read **through the zero-page pointer the walk sets**: the address is computed and no region names it. The score materialises the pattern the walk chose, so the object states the visits and not the walk |
+| GT2 | `unclassified update` | `C#1`, `V#1`, `V#5` | the 6510's own carry and overflow at the tick's entry, and one copy of the voice index; none is a value of the object |
+| JCH, GT2 | (was) `$saved`, `$saved12` | — | the zero page is memory like any other and is a cell here (§2.5); #349's two JCH refusals are gone |
 
 ## 4. Coverage
 
 Every number below is `trackerprog.lift.report.json`, written by the commands at
 the head of this document; none is typed.
 
-| number | Commando | *Guldkorn Intro* |
-| --- | --- | --- |
-| store sites of the tick outside the fetch regions | **86** | **132** |
-| lowered into `sets` rows | **80 rows over 9 streams, 196 assignments** | **115 rows over 4 streams, 401 assignments** |
-| recognised into `Acc` records | **5** — T1's three joined (§2.3), and two `ins.pw` stores T1 names no accumulator for | **0** (§2.3) |
-| refused | **4** (§3) | **3** (§3) |
-| T1 accumulators recognised | **3 of 3**, none refused: `acc_2_lo` (`repeat` + `flag`), `voice[].acc` (`field` + `phase bit`), `rec2[].b5591` (`add` with the carry) | **0 of 5**: 3 `T0 names no write of its own cells`, 2 `width 12 is not a section 5 width` |
-| T2 recognised | the tuning (80 entries, base 16), the instrument selector (13 records, 6 columns), the score (3 order lists, 32 patterns, 572 events) | the tuning (95 entries, base 0), the selector (19 records, 8 columns, named by the values T2 saw the cell hold), the score (3 order lists, 37 patterns, 500 events) |
-| tables materialised as streams of their own bytes (§2.2) | 0 | **19**, 1,877 rows |
-| leaves opened | 437 constants, 324 cells, 32 globals, 10 pitch reads, 7 instrument columns, 0 unnamed | 749 constants, 664 cells, 25 globals, 4 pitch reads, 26 `tabcell` reads, 0 unnamed |
-| score bytes a row supplies | 2 to 4, the row's own bytes and no more | 3 to 8, one a name where the fetch bound one and **one a turn** where its own loop did (§2.4) |
+| number | Commando | *Guldkorn Intro* | *Je suis Linus* |
+| --- | --- | --- | --- |
+| store sites of the tick outside the fetch regions | **86** | **132** | **101** |
+| lowered into `sets` rows | **86 rows over 9 streams, 207 assignments** | **124 rows over 4 streams, 419 assignments** | **257 rows over 4 streams, 496 assignments** |
+| recognised into `Acc` records | **5** — T1's three joined (§2.3), and two `ins.pw` stores T1 names no accumulator for | **0** (§2.3) | **0** (§2.3) |
+| refused | **4** (§3) | **1** (§3) | **13** (§3) |
+| T1 accumulators recognised | **3 of 3**, none refused: `acc_2_lo` (`repeat` + `flag`), `voice[].acc` (`field` + `phase bit`), `rec2[].b5591` (`add` with the carry) | **0 of 5**: 3 `T0 names no write of its own cells`, 2 `width 12 is not a section 5 width` | **0 of 4**: 2 `its rows stand outside the machine's rank order`, 2 `T1 names no second region for the word` |
+| T2 recognised | the tuning (80 entries, base 16), the instrument selector (13 records, 6 columns), the score (3 order lists, 32 patterns, 572 events) | the tuning (95 entries, base 0), the selector (19 records, 8 columns, named by the values T2 saw the cell hold), the score (3 order lists, 37 patterns, 500 events) | the tuning (91 entries, base 0, and 165 `beyond` words with no trap), the selector (**30 records, 9 columns** — the widest of T2's six, which is what makes it the instrument's), the score (3 order lists, 3 patterns, 4,640 events) |
+| tables materialised as streams of their own bytes (§2.2) | 0 | **19**, 1,877 rows | **15**, 778 rows |
+| leaves opened | 438 constants, 331 cells, 43 globals, 10 pitch reads, 7 instrument columns, 0 unnamed | 760 constants, 694 cells, 29 globals, 4 pitch reads, 26 `tabcell` reads, 0 unnamed | 1,213 constants, 1,045 cells, 132 globals, 11 pitch reads, 11 instrument columns, 25 `tabcell` reads, 0 unnamed |
+| score bytes a row supplies | 4 to 6, the row's own bytes and no more | 5 to 10, one a name where the fetch bound one and **one a turn** where its own loop did (§2.4) | 2 to 6, the visit's own bytes |
+| the tick's own callees, inlined | 0 | 0 | **2 runs rerolled** into the voice loop they are, 27 blocks to 274 (§2.5) |
 
 The three records, as the object states them:
 
@@ -328,11 +416,32 @@ against the tune's own player on `deity_informant.PcodeVM`.
 | --- | --- | --- | --- | --- | --- | --- |
 | Commando song 1 | **11,780** | **133,109** | **0** | 8,370 | 3,410 | identical |
 | *Guldkorn Intro* | **2,401** | **63,229** | **0** | 2,282 | 119 | identical |
+| *Je suis Linus* | 8,236 | 205,900 | **1**, at tick **114** | 0 | 1,391 | — |
 
 133,109 is the write count [prototype-commando-floor.md](prototype-commando-floor.md)
 §2.2 measures on the trace, to the write. JCH's 2,401 is the horizon
 `docs/certificates/jch-guldkorn-intro.json` states: complete, period 1,512,
-first repeat 2,400.
+first repeat 2,400; GT2's 8,236 is `docs/certificates/gt2-je-suis-linus.json`'s:
+complete, period 6,720, first repeat 8,235.
+
+**GT2's first divergence, named.** Ticks 0 to 113 are write for write the
+source's — the whole flush of all 25 registers, every tick. On tick **114** one
+register pair differs:
+
+```
+register  voice 1's freq   expected $2BDD (11,229)   got $2AD8 (10,968)
+```
+
+The rest of that tick's 25 writes are identical, and so is every register of
+every tick before it. What it is: the continuous slide of §5's `porta_up` /
+`porta_down`, `ghost[v].freq ±= ptr` with the borrow the 6510's own `SBC`
+leaves, run over the zero-page pair the speed table filled. The object states
+both arms and both carries (`prelude0` rows 149 and 153, `@shadow.freq.lo` /
+`.hi` with `{"sub": [1, {"cell": "tC_22"}]}` for the borrow); the 261 the two
+differ by is one step of that slide, so what is wrong is *which* arm ran on one
+tick and not the arithmetic of either. Diagnosing further is §8's residue 1: the
+carry the tick **entered** with (`C#1`) is one of GT2's thirteen refusals, and no
+cell of the object holds it.
 
 **What the 0 is worth, and what it is not.** A lowering renders the program it
 was lowered from, so 0 divergences over the horizon is close to guaranteed by
@@ -350,29 +459,45 @@ The prints and the objects against each tune's own load band (§9's acceptance
 
 | measure | lines | tokens | statements | blocks | header rows | data rows | `xz -9e` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Commando `trackerprog.lift.md` | 1,145 | 14,862 | 1,104 | 7 | 41 | 1,104 | 5,316 |
-| JCH `trackerprog.lift.md` | 2,895 | 22,496 | 2,849 | 7 | 46 | 2,849 | 7,248 |
+| Commando `trackerprog.lift.md` | 1,166 | 19,557 | 1,125 | 7 | 41 | 1,125 | 6,164 |
+| JCH `trackerprog.lift.md` | 2,920 | 26,694 | 2,874 | 7 | 46 | 2,874 | 7,936 |
+| GT2 `trackerprog.lift.md` | 6,755 | 109,241 | 6,743 | 7 | 12 | 6,743 | 12,508 |
 
 | artefact | raw | `xz -9e` | ratio to the band |
 | --- | --- | --- | --- |
-| Commando, lifted | 138,225 | **5,496** | **2.16×** |
-| — its `score` half | 101,990 | 1,776 | |
-| — everything else | 36,226 | 3,860 | |
+| Commando, lifted | 164,951 | **6,280** | **2.46×** |
+| — its `score` half | 128,707 | 2,404 | |
+| — everything else | 36,235 | 4,004 | |
 | Commando, the hand object | 53,898 | 3,464 | 1.36× |
 | — its load band | 4,039 | 2,548 | |
-| *Guldkorn*, lifted | 156,555 | **7,876** | **3.19×** |
-| — its `score` half | 96,938 | 2,280 | |
-| — everything else | 59,608 | 5,768 | |
+| *Guldkorn*, lifted | 181,385 | **8,552** | **3.46×** |
+| — its `score` half | 120,224 | 2,756 | |
+| — everything else | 61,152 | 5,992 | |
 | *Guldkorn*, the hand object | 87,010 | 4,696 | 1.90× |
 | — its load band | 3,343 | 2,472 | |
+| *Je suis Linus*, lifted | 1,225,775 | **13,208** | **4.71×** |
+| — its `score` half | 1,110,618 | 5,020 | |
+| — everything else | 115,148 | 8,300 | |
+| *Je suis Linus*, the hand object | 228,045 | 6,112 | 2.18× |
+| — its load band | 4,845 | 2,804 | |
 
-Commando is **2.16×** against the hand's 1.36× and §9.1's 1.25×–2.18× band
-(`main` at #346 was 2.31×); its two score halves are within a seventh of each
-other (1,776 against 1,568 over the same 572 events) and the whole difference is
-the sound half, 3,860 against 2,076. *Guldkorn* is **3.19×** against the hand's
-1.90× (`main` at #348 was 3.03×, on an object that diverged): the turn's own
-constants cost 340 compressed bytes in the score half, 2,280 against 1,940, and
-the sound half is 5,768, of which the 19 materialised tables are the new part.
+Commando is **2.46×** against the hand's 1.36× and §9.1's 1.25×–2.18× band
+(`main` at #346 was 2.31×, at #349 2.16×); *Guldkorn* **3.46×** against 1.90×
+(#348 3.03×, #349 3.19×); *Je suis Linus* **4.71×** against 2.18×. All three
+grew this round, and by two named things, neither of them the third family's:
+
+- **the zero page is memory** (§2.5). Commando's fetch writes it and reads it
+  back, so the bytes are cells now and the score supplies each visit's own —
+  4 to 6 constants an event against 2 to 4, and 2,404 compressed score bytes
+  against 1,776. JCH's `$saved`/`$saved12` stop being refusals for the same
+  reason and its score half goes 2,280 to 2,756.
+- **the condition one more turn is taken is a cell** (§8). Each unrolled loop
+  writes it once a turn, which is 6 rows on Commando, 9 on JCH.
+
+GT2's 4.71× is the score half: **4,640 events** against the hand's 2,289,
+because the lift's row is the fetch's own **visit** and GT2 fetches its row
+`gatetimer` steps early — every visit is an event, where the hand's `stage`
+holds one row and commits it later. Its sound half is 8,300 against 3,240.
 **A lowering is bigger than a reading, and that is the trade B7 names.**
 
 ## 6. Against the hand objects
@@ -390,11 +515,11 @@ the sound half is 5,768, of which the 19 materialised tables are the new part.
 | `meta.tempo` | a divider, rate 3, phase 0 | a divider, rate 3, phase 0 | same clock, no `early` |
 | `meta.row` | `{commands}` `{stream rowprog0}` | five steps over the event's own fields | the lift keeps the row's **bytes** where the hand keeps its **fields** |
 | `instruments` | 13 records, the six S6 columns plus `pw` | 9 reached, `adsr`/`wave`/`pw` named | the lift carries the file's table; the hand carries the subtune's reach, named |
-| `streams` | 9, 80 rows of lowered `sets` | 3, 4 rows (`note_on`, `note_off`, `arp`) | the lowering, against the reading |
+| `streams` | 9, 86 rows of lowered `sets` | 3, 4 rows (`note_on`, `note_off`, `arp`) | the lowering, against the reading |
 | `accs` | 5: 3 §5 records joined from T1, 2 reload assignments on `ins.pw` | 7 §5 records | **the three T1 states are records; the four the hand reads and T1 does not are still rows** |
 | `beyond` | 21 words, 0 traps | 12 words, 2 traps | **the lift states more than the hand**: the two traps are the packed row byte, which the lift keeps as a cell (`b54F5`), so it has a word for them |
 | `globals` | the tick-level stream, and `flag C_43` | `flags.C` and its proof | **the same mechanism**: the vibrato's loop leaves §5's carry and the pulse run reads it |
-| `state0` | 117 cells, 19 globals | 4 cells | every SSA temp the object still reads is a cell |
+| `state0` | 123 cells, 28 globals | 4 cells | every SSA temp the object still reads is a cell |
 
 Where the lift's statement is now the hand's: the carry (§5's `flag`, seeded and
 read as a flag by the producer that consumes it), the vibrato's `repeat`, the
@@ -412,11 +537,32 @@ better statement, and §7 says what is left.
 | `meta.tick` / `row_consumes_tick` / `stage` | `{stream}` `row` `machine` / `false` / none | `fetch` `prelude` `row` `machine` / `[[keys != 0]]` / 5 rows | **differs**, §2.1 and §8's #348 item 2, and renders the same writes |
 | `meta.shadow` | none | none | **identical**, and derived: the write-out is the voice's own rows, ranked last |
 | `score.orders` | 26 / 18 / 18 `play` steps, `jump(0)` | 15 / 8 / 8, `jump(0)` | the lift's visits are its own: one per fetch the horizon took, the hand's one per stored order byte |
-| `score.patterns` | 37 patterns, 500 events | 27, 723 | the lift's row is the fetch's own **visit**, carrying every byte the walk read as 3 to 8 constants; the hand's is one byte a row, so a held row is an event of its own |
+| `score.patterns` | 37 patterns, 500 events | 27, 723 | the lift's row is the fetch's own **visit**, carrying every byte the walk read as 5 to 10 constants; the hand's is one byte a row, so a held row is an event of its own |
 | `instruments` | 19 records, 8 columns, named `0, 8, …, 144` | 19, 8 columns | **identical set**, named by what the cell holds (§2.2) |
-| `streams` | 4 lowered (115 rows) and 19 tables (1,877 rows) | 10 (`pulse` 20, `filter` 23, `wavetab` 64, `wave`, `pitch`, `writeout`, `prelude`, `notestage`, `voicebits`, `channel`) | the lowering, against the reading: the hand's `pulse` 20, `filter` 23 and `wavetab` 64 are the same bytes the lift's nineteen tables hold, read the same way (`tabcell`) — records with a `next` link and a hold, against one row a byte |
+| `streams` | 4 lowered (124 rows) and 19 tables (1,877 rows) | 10 (`pulse` 20, `filter` 23, `wavetab` 64, `wave`, `pitch`, `writeout`, `prelude`, `notestage`, `voicebits`, `channel`) | the lowering, against the reading: the hand's `pulse` 20, `filter` 23 and `wavetab` 64 are the same bytes the lift's nineteen tables hold, read the same way (`tabcell`) — records with a `next` link and a hold, against one row a byte |
 | `accs` | 0 | 7 §5 records | §2.3: T1 states five and the join refuses all five, by name |
-| `state0` | 239 cells, 7 globals | 41 cells | every SSA temp the object still reads is a cell; 8 of them are joins (§2.2) and 12 are turns of the fetch's own byte loop (§2.4) |
+| `state0` | 247 cells, 11 globals | 41 cells | every SSA temp the object still reads is a cell; 8 of them are joins (§2.2), 12 turns of the fetch's own byte loop (§2.4) and 2 the loops' own continue conditions (§8) |
+
+### 6.3 *Je suis Linus le salaud*
+
+| section | lifted | hand | verdict |
+| --- | --- | --- | --- |
+| `meta.shadow` | 25 registers, `mode_vol` first, `v0.freq_lo` last | 25, `$D418` down to `$D400` | **identical**, and derived from T0 and one tick of the program (§2.5) |
+| `state0.shadow` | the post-init image's own 25 bytes | the same | **identical** |
+| `state0.prologue` | 91 rows, the first call's reset lowered | 8 `sets` and 3 `point`s, read | **the same tick**: the object spends it either way, and the lift states the reset's arithmetic where the hand states its effect |
+| `meta.voice_order` / `voices` / `cycles_per_tick` | `[0,1,2]` / 3 / 19,656 | the same | **identical** |
+| `meta.commit_order` | `(ad, sr, ctrl)` | `(sr, ad, ctrl)` | **differs and is unobservable**: under a shadow every write lands in the image and only the flush reaches the chip |
+| `meta.tempo` | `timer_2`, step −1, boundary of three terms, no `reset`, no divider | `rowclock`, step −1, boundary `== 0`, `early` 2, two `reset` clauses | **the same counter**; the boundary is the fetch's own guard and the reload is a row of the voice's phase (§2.1) |
+| `meta.tick` / `row_consumes_tick` / `stage` | `{stream}` `commit` `row` `commit` `machine` / `false` / none | six phases / `[[keys != 0]]` / 4 steps | **differs**, as on JCH: the lift's row is the fetch and it has no `stage` |
+| `pitch` | base 0, 91 entries, 165 `beyond` words, 0 traps | base 0, 96 entries | the lift takes T2's reach and states the rest as the bytes the image holds |
+| `instruments` | 30 records, 9 columns | 30, nine columns | **identical set and shape** |
+| `score.orders` | 1 `play` step each, `jump(0)` | 3 order programs of `play(pattern, transpose)` | **differs**: the order list is read through a zero-page pointer the object cannot address (§3), so every visit is the one pattern and the walk is not stated |
+| `score.patterns` | 3 patterns, 4,640 events | 33, 2,289 | the lift's row is the fetch's own **visit** and GT2 fetches `gatetimer` steps early, so a visit is an event; 43 distinct row commands the hand names are inlined bytes here |
+| `streams` | 4 lowered (257 rows) and 15 tables (778 rows) | 8 (`wave` 100, `pulse` 29, `filter` 43, `speed` 18, `note_on`, `hard_restart`, `exit`, `funktempo`) | the lowering, against the reading: the same bytes, read the same way (`tabcell`), one row a byte |
+| `accs` | 0 | 9 §5 records | §2.3: T1 states four and the join refuses all four, by name |
+| `globals` | the tick-level stream, and 2 `commit` registers | the filter stream and three registers | **the same mechanism**, §3.7 |
+| `state0` | 282 cells, 38 globals | 11 cells | every SSA temp the object still reads is a cell: 208 SSA, 7 register, 26 joins, 19 turns, 3 continue conditions, 19 the tune's |
+| `row_command` | `spent` | `held` | **differs**: the lift inlines each visit's bytes rather than naming a command the voice keeps |
 
 ## 7. The limits
 
@@ -424,31 +570,33 @@ The recognition changes what T1 names and nothing else. **The unit of the
 lowering is unchanged**: one IR block is one row, one SSA temp is one cell, and
 the object still carries the tick's arithmetic rather than a reading of it.
 
-| measure | Commando `main` #346 | Commando, this lift | Commando by hand | *Guldkorn*, this lift | *Guldkorn* by hand |
-| --- | --- | --- | --- | --- | --- |
-| streams / rows that carry `sets` | 7 / 84 | 9 / 80 | 3 / 4 | 23 / 115 | 10 / 38 |
-| `sets` assignments | 257 | 196 | 5 | 401 | 80 |
-| accumulators | 3 reload stand-ins | 3 §5 records + 2 stand-ins | 7 §5 records | 0 | 7 §5 records |
-| `state0` cells | 206 (142 SSA · 27 register temps · 23 carry · 14 the tune's) | 117 (85 · 17 · 4 · 11) | 4 | 239 (152 SSA · 17 register · 2 carry · **8 join** · **12 turn** · 48 the tune's) | 41 |
-| largest `sets` expression | 1,282 nodes | 36 | 5 | 40 | 13 |
-| raw / `xz -9e` | 162,579 / 5,892 | 138,225 / 5,496 | 53,898 / 3,464 | 156,555 / 7,876 | 87,010 / 4,696 |
-| ratio to the load band | 2.31× | **2.16×** | 1.36× | **3.19×** | 1.90× |
+| measure | Commando, this lift | Commando by hand | *Guldkorn*, this lift | *Guldkorn* by hand | *Je suis Linus*, this lift | *Je suis Linus* by hand |
+| --- | --- | --- | --- | --- | --- | --- |
+| streams / rows that carry `sets` | 9 / 86 | 3 / 4 | 23 / 2,001 | 10 / 124 | 19 / 1,035 | 8 / 202 |
+| `sets` assignments | 207 | 8 | 419 | 80 | 496 | 209 |
+| accumulators | 3 §5 records + 2 stand-ins | 7 §5 records | 0 | 7 §5 records | 0 | 9 §5 records |
+| `state0` cells | 123 (89 SSA · 18 register · 3 continue · 13 the tune's) | 4 | 247 (157 SSA · 20 register · **8 join** · **12 turn** · 2 continue · 48 the tune's) | 41 | 282 (208 SSA · 7 register · **26 join** · **19 turn** · 3 continue · 19 the tune's) | 11 |
+| largest `sets` expression | 26 nodes | 4 | 29 | 10 | 30 | 5 |
+| raw / `xz -9e` | 164,951 / 6,280 | 53,898 / 3,464 | 181,385 / 8,552 | 87,010 / 4,696 | 1,225,775 / 13,208 | 228,045 / 6,112 |
+| ratio to the load band | **2.46×** | 1.36× | **3.46×** | 1.90× | **4.71×** | 2.18× |
 
-What the pass removed: the vibrato's unrolled loop, the slide's two arms, the
-pulse run's assignment and the register stores the three fed — 19 of the 23
-carry cells and 57 of the 142 SSA temps with them. What the linear shift removed:
-the largest expression, 1,282 nodes down to 36. Together, 24,354 raw bytes and
-396 compressed ones.
+All three objects grew against #349 — Commando 5,496 to 6,280 compressed bytes,
+*Guldkorn* 7,876 to 8,552 — and by two mechanisms, neither of them the third
+family's and both of them what the third family showed the first two were
+missing: **the zero page is memory** (628 of Commando's 784 and 476 of JCH's 676
+are the score half, which now supplies each visit's own zero-page bytes) and
+**the condition one more turn is taken is a cell** (§8), one row a turn.
 
 What remains, and what it would take:
 
 | residue | what it is |
 | --- | --- |
-| 80 and 115 rows of lowered arithmetic | the tick outside the fetch regions that T1 names no accumulator over: Commando's drum, skydive, arpeggio, pulse bounce and note-on; all of JCH's. A second recognition pass would need a plane that states them, and T1 does not |
-| 117 and 239 declared cells | one per SSA temp the rows still read, and on JCH one per join (§2.2) and one per turn of the fetch's byte loop (§2.4). The lowering's own unit; nothing in the recognition changes it |
+| 86, 124 and 257 rows of lowered arithmetic | the tick outside the fetch regions that T1 names no accumulator over: Commando's drum, skydive, arpeggio, pulse bounce and note-on; all of JCH's; all of GT2's. A second recognition pass would need a plane that states them, and T1 does not |
+| 123, 247 and 282 declared cells | one per SSA temp the rows still read, and one per join (§2.2), per turn of a fetch's byte loop (§2.4) and per loop's own continue condition (§8). The lowering's own unit; nothing in the recognition changes it |
 | 2 reload stand-ins | §8's #347 item 3: `ins.pw` is the only instrument-scoped cell the schema can be assigned |
 | `rate: 1` on all three records | T1's countdown is already a row and a guard (§4) |
-| 19 tables, 1,877 rows | JCH's column programs as bytes: the lowering states a table read at a cursor as `tabcell` over the region's own bytes, where the hand states 4-column records with `next` links and holds (jch-trackerprog §4.6). The rows are the same data; the reading is what the lift does not have |
+| 19 and 15 tables, 1,877 and 778 rows | JCH's and GT2's column programs as bytes: the lowering states a table read at a cursor as `tabcell` over the region's own bytes, where the hand states records with `next` links and holds. The rows are the same data; the reading is what the lift does not have |
+| GT2's 4,640 events against the hand's 2,289 | the lift's row is the fetch's own visit and GT2 fetches early, so a visit is an event. `meta.stage` and `row_command: held` are the two data that would fold them, and the lift derives neither |
 
 **T1's plane is horizon-dependent, and that bounds the pass.** Over a 1,200-call
 prefix T1 refuses both of Commando's recurrences as `divergent recurrence` and
@@ -458,7 +606,7 @@ horizon; the join itself is exercised on hand-built rows and T1 records in
 `tests/trackerprog/test_recognise.py`, and over the whole horizon by the command
 at the head of this document.
 
-## 8. What the second family cost, and what is left
+## 8. What each family cost, and what is left
 
 The four things #347 said stood between this and a second family, and what each
 turned out to be:
@@ -488,9 +636,54 @@ and is the only one that was one:
 | 4 | **`width 12`** | unchanged: §5 admits 8, 11, 12 and 16, `recognise.Acc` admits 8 and 16, and JCH's pulse pair is refused by name |
 
 3 and 4 are what keeps JCH's `accs` at 0 against the hand's 7 and its ratio at
-3.19× against 1.90× (§5, §7). Neither is a divergence and neither needs a player
-mechanism or a schema form §3 does not have; both are the recognition, which is
-where a third family would start.
+3.46× against 1.90× (§5, §7). Neither is a divergence and neither needs a player
+mechanism or a schema form §3 does not have; both are the recognition.
+
+**What the third family cost.** GT2 met eleven things the first two did not, and
+ten of them landed; each is family-free and each is on all three tunes:
+
+| # | what it is | where |
+| --- | --- | --- |
+| 1 | a callee inlined where it stands, and a **run** of calls rerolled into the loop its own stepping argument closes — which is how a tick with no voice loop gets one | §2.5 |
+| 2 | §3.1's register file: T0's own image, its flush, the order one tick sends it in, and `state0.shadow` | §2.5 |
+| 3 | `state0.prologue` derived — the blocks the first call runs and no later call does, where that call runs no block of the voice loop | §2.5 |
+| 4 | a divider told from the clock by comparing against the cell **its own reload reads**, not merely against a cell | §2.1 |
+| 5 | a per-voice array at a **stride**: `_grouped` off the stride is another array's byte, and a record S6 splits at the voice stride is per-voice by copy and field | §2.5 |
+| 6 | a jump table's own edges as guard terms (`flow.switched`), and the self-modified bytes they read as globals by address | §2.5 |
+| 7 | a byte the play also reads as a **word** is that word's half; the zero page is memory like any other | §2.5 |
+| 8 | a split tuning: two byte tables, the halves tried nearest-origin first, and the words past them the bytes the image holds | §2.1, §2.3 |
+| 9 | the instrument selector is the **widest** of T2's, and a record stands where the selecting cell's own value puts it — its number in one family, the offset it already is in another | §2.1 |
+| 10 | a value every copy of a per-voice cell takes is one `sets` target `*name`: §3.6's `all`, where a row states it. The one player change this round, **0 differing of 332,358** | §2.5 |
+| 11 | **the condition one more turn is taken, as a cell the turn that ran leaves.** The term is read after the latch's own copy, so reading it as a term is a turn behind and stops the unrolled loop one turn early — 41 turns of a 42-turn reset. A row a turn writes the condition into a cell and the next turn's rows read that | §2.2 |
+
+**What stopped GT2 at tick 114, in the order it meets them:**
+
+| # | residue | state |
+| --- | --- | --- |
+| 1 | **the carry the tick entered with.** `C#1` and `V#1`/`V#5` are the 6510's own flags at the tick's entry; no cell of the object holds them, and the slide's borrow is what the tick-114 divergence is one step of (§5) | refused by name, and the first thing to take |
+| 2 | **the order list read through a zero-page pointer.** Four refusals: the address is computed, so the object states the visits the score materialised and not the walk that chose them. `score.orders` is one `play` a voice as a result | refused by name |
+| 3 | **a `produce` past a join's cell** and **`width 12`** — #348's residues 3 and 4, unchanged, and GT2 adds two of its own: `its rows stand outside the machine's rank order` (2 of its 4 T1 records) and `T1 names no second region for the word` (the other 2) | recognition only |
+| 4 | **`meta.stage` and `row_command: held`** — the two data that would make GT2's 4,640 visits the hand's 2,289 rows. Neither is derived; both are schema forms §3 already has | not attempted |
+
+None of the four needs a player mechanism or a schema form §3 does not have.
+Residue 1 is the one the certificate names, and it is where a fourth pass over
+GT2 starts.
+
+## 9. The three families
+
+Every number is `trackerprog.lift.report.json` and
+`tools/trackerprog_sizes.py --object`; a fourth family extends the table by one
+row.
+
+| family | tune | store sites | rows / `sets` | `Acc` records | T1 joined | refused | hints | `xz -9e` | ratio | hand's ratio | certificate |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Hubbard | Commando song 1 | 86 | 86 / 207 | 5 | **3 of 3** | 4 | **0** | 6,280 | 2.46× | 1.36× | **0 divergences over 11,780 ticks, 133,109 writes** |
+| JCH V20 | *Guldkornekspressen Intro* | 132 | 124 / 419 | 0 | 0 of 5 | 1 | **0** | 8,552 | 3.46× | 1.90× | **0 divergences over 2,401 ticks, 63,229 writes** |
+| GoatTracker 2 | *Je suis Linus le salaud* | 101 | 257 / 496 | 0 | 0 of 4 | 13 | **0** | 13,208 | 4.71× | 2.18× | 113 of 8,236 ticks; tick **114** diverges by one register pair (§5) |
+
+Six families of the nine are unattempted; the two whose planes are on disk
+(SID Wizard's *Emomyst*, and the registry builds with no T1/T2) refuse by name
+(`tests/trackerprog/test_hvsc_lift.py`).
 
 The mechanisms themselves are family-free: `tests/trackerprog/test_assemble.py`
 and `tests/trackerprog/test_recognise.py` exercise them on hand-built IR, rows

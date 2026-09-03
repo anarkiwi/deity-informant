@@ -12,13 +12,14 @@ import json
 from ..tuneprog import accum, pipeline, provenance
 from ..tuneprog.graph import succs
 from ..tuneprog.history import history
-from ..tuneprog.ir import Bin, Const, Load, Store, Tuneprog, Var
+from ..tuneprog.ir import Bin, Const, Let, Load, Store, Tuneprog, Var
 from ..tuneprog.irwalk import addr_split, walk
 from ..tuneprog.recover import Names
-from . import emit, lift as t2lift, lower
+from . import lift as t2lift, unroll
 from .universal import CHIP, REG
 
 BYTE = {"from": "projected", "interval": [0, 0xFF], "witness": "the 8-bit store"}
+EXTERNAL = ("raster", "cia", "sid_readback", "io")
 
 
 def read(out):
@@ -54,97 +55,6 @@ def artefacts(prog, trace, cert, calls=None):
     }
 
 
-def pitch_of(art, view, names):
-    """``(region id, index origin, entries, base note)`` of the tune's own tuning."""
-    rid = next((r for r, k in names.role.items() if k == "freq_table"), None)
-    entries = list((art["t2"].get("pitch") or {}).get("entries") or [])
-    if rid is None or not entries:
-        return None
-    base = view.by_id()[rid].base
-    origins = set()
-    for p in view.procs.values():
-        for b in p.blocks.values():
-            for s in list(b.stmts) + [b.term]:
-                origins |= _origins(s, rid)
-    org = min(origins, default=base)
-    return rid, org, len(entries), (base - org) // 2
-
-
-def _origins(s, rid):
-    """Every constant a statement reads one region at: the table's own index origin."""
-    out = set()
-    for e in (getattr(s, "e", None), getattr(s, "a", None), getattr(s, "v", None)):
-        for x in walk(e) if e is not None else ():
-            if type(x) is Load and x.r == rid:
-                o, i = addr_split(x.a)
-                if o is not None and i is not None:
-                    out.add(o)
-    return out
-
-
-def _shifted(e):
-    """``(term, shift)`` where an index is a left shift by a constant."""
-    if type(e) is Bin and e.op == "<<" and type(e.b) is Const:
-        return e.a, e.b.v
-    return e, 0
-
-
-def note_base(low, rid, org, procs):
-    """The cell every read of the tuning indexes it by: the voice's own note."""
-    got = {}
-    loads = [
-        x
-        for p in procs
-        for b in p.blocks.values()
-        for s in b.stmts
-        for x in walk(getattr(s, "e", None) or Const(0, 1))
-        if type(x) is Load and x.r == rid
-    ]
-    for x in loads:
-        base, idx = addr_split(x.a)
-        if base is None or idx is None or abs(base - org) > 3:
-            continue
-        term, k = _shifted(low.expand(idx, 2))
-        nb = addr_split(term.a)[0] if k == 1 and type(term) is Load else None
-        if nb is not None and addr_split(term.a)[1] is not None:
-            got[nb] = got.get(nb, 0) + 1
-    return max(got, key=got.get, default=None)
-
-
-def instrument_table(art, view, names):
-    """``(cursor address, {region id: column}, stride, entries, keys)`` -- T2's selector.
-
-    ``keys`` is what the cell that selects a record holds for each of them: the
-    values T2 saw it take, which is the record's own number where the tune keeps
-    one and the offset it already is where the tune keeps that.
-    """
-    regs = emit.by_name(view, names)
-    for s in art["t2"]["selectors"] + art["t2"]["streams"]:
-        if s["kind"] != "selector":
-            continue
-        _name, _at, addr = s["cursor"].partition("@$")
-        cols = {regs[c["table"]].id: c["table"] for c in s["columns"] if c["table"] in regs}
-        stride = max(s["columns"][0]["stride"], 1) if s["columns"] else 1
-        seen = sorted(s.get("visited") or ())
-        keys = seen if len(seen) == s["entries"] else list(range(s["entries"]))
-        return int(addr, 16), cols, stride, s["entries"], keys
-    return None
-
-
-def pw_columns(art, view, names):
-    """The instrument-scoped pair the play writes and the chip reads as ``pw``."""
-    regs, out = emit.by_name(view, names), {}
-    for w in art["t0"].get("writes") or ():
-        if w.get("register") not in ("pw_lo", "pw_hi"):
-            continue
-        for c in w.get("cells") or ():
-            r = view.by_id().get(c["region"])
-            if r is not None and r.kind == "state" and r.stride > 1:
-                out[c["region"]] = w["register"][3:]
-    del regs, names
-    return out
-
-
 def registers():
     """``{offset from the chip's own base: register name}``: its own columns.
 
@@ -176,33 +86,6 @@ def divider_phase(img, addr, reload_, rate):
         if d == reload_:
             return t % rate
     return 0
-
-
-def beyond_words(cells, org, n, limit):
-    """§3.2's words past the tuning, by how far past: the cells the fused region holds."""
-    out = []
-    for d in range(limit):
-        halves = []
-        for k in range(2):
-            addr = org + 2 * (n + d) + k
-            got = cells.wordat(addr)
-            if got is None:
-                halves = None
-                break
-            kind, pay = got
-            if kind == "voice":
-                halves.append({"cell": [cells.voicecell(addr - pay[1]), pay[1]]})
-            elif kind == "global":
-                halves.append({"global": pay})
-            else:
-                halves = None
-                break
-        out.append({"u16": halves} if halves else {"trap": "no cell holds %d past" % d})
-    return out
-
-
-# the pinned reads section 8 calls external: the other three kinds are never one
-EXTERNAL = ("raster", "cia", "sid_readback", "io")
 
 
 def pinned_inputs(prog, img):
@@ -252,8 +135,10 @@ def prune(obj):
     live |= {a["cell"].lstrip("#") for a in obj["accs"].values()}
     for st in obj["streams"].values():
         for r in st["rows"]:
-            live |= {s[0].lstrip("@#!") for s in r.get("sets", ())}
+            live |= {s[0].lstrip("@#!*") for s in r.get("sets", ())}
     live |= _reads([obj["streams"], obj["accs"], obj["score"], obj["meta"]])
+    for r in (obj["state0"].get("prologue") or {}).get("rows", ()):
+        live |= {s[0].lstrip("@#!*") for s in r.get("sets", ())} | _reads(r)
     live = {n.split(".")[0] for n in live}
     obj["state0"]["cells"] = {k: v for k, v in obj["state0"]["cells"].items() if k in live}
     obj["state0"]["globals"] = {k: v for k, v in obj["state0"]["globals"].items() if k in live}
@@ -293,15 +178,19 @@ def stream_items(low, seq, trips):
     """A segment as ranked items: runs of guarded rows, and the accumulators between."""
     items, rows = [], []
     for lbl, extra, local, guard, turn in seq:
-        if lbl == lower.RESET:  # the cells the joins of this segment read, before them
+        if lbl == unroll.RESET:  # the cells the joins of this segment read, before them
             rows.append(
                 {"when": [], "sets": [["@" + n, 0] for n in extra], SITES: [None] * len(extra)}
             )
             continue
-        if isinstance(lbl, tuple) and lbl[0] == lower.FLAG:
-            low.lbl, low.local = lbl[2], {}
+        if isinstance(lbl, tuple) and lbl[0] == unroll.FLAG:
+            low.lbl, low.local, low.turn = lbl[2], dict(local), turn
             rows.append(
-                {"when": low.when(lbl[2], extra, guard), "sets": [["@" + lbl[1], 1]], SITES: [None]}
+                {
+                    "when": low.when(lbl[2], extra, guard),
+                    "sets": [["@" + lbl[1], lbl[3] if len(lbl) > 3 else 1]],
+                    SITES: [None],
+                }
             )
             continue
         if lbl is None:
@@ -348,7 +237,7 @@ class Phases:
         self.low.gate = frozenset((id(c), t) for c, t in gate)
         self.low.scope = set(blocks)
         out = []
-        seq = self.low.sequence(blocks, self.trips, reset)
+        seq = unroll.sequence(self.low, blocks, self.trips, reset)
         for it in stream_items(self.low, seq, self.trips):
             if it[0] == "rows":
                 nm = "%s%d" % (name, len(out))
@@ -369,18 +258,32 @@ class Phases:
             st["beyond"] = {"id": "the fused tuning", "words": words}
 
 
-def dce(streams, keep):
+def _needed(t, live, spare):
+    """Whether one ``sets`` target is still read by something the object states.
+
+    A write to the register file leaves at the flush and a global of the tune's
+    own is read where the lift cannot see; the lift's own scratch is neither.
+    """
+    if t.startswith("@shadow."):
+        return True
+    if t[:1] == "@":
+        return t[1:] in live
+    return t[:1] != "#" or t[1:] not in spare or t[1:] in live
+
+
+def dce(streams, keep, spare=()):
     """Drop the ``sets`` whose cell nothing reads: a cell no consumer reads is no cell."""
+    spare = set(spare)
     for _ in range(8):
         live = set(keep)
         for st in streams:
             for r in st["rows"]:
-                live |= _cellnames(r.get("when", [])) | _cellnames([s[1] for s in r["sets"]])
+                live |= _reads(r.get("when", [])) | _reads([s[1] for s in r["sets"]])
         gone = 0
         for st in streams:
             for r in st["rows"]:
                 n = len(r["sets"])
-                at = [k for k, s in enumerate(r["sets"]) if s[0][:1] != "@" or s[0][1:] in live]
+                at = [k for k, s in enumerate(r["sets"]) if _needed(s[0], live, spare)]
                 r["sets"] = [r["sets"][k] for k in at]
                 if SITES in r:  # the join's own bookkeeping, kept beside its row
                     r[SITES] = [r[SITES][k] for k in at]
@@ -428,22 +331,57 @@ def _cellnames(node):
     return out
 
 
-def voice_order(p, head, latches, vidx, n):
-    """The order one pass over the voices takes: the index its pre-header binds."""
+def _chase(src, e):
+    """One name followed through its copies to the value it is."""
+    seen = 0
+    while type(e) is Var and e.n in src and seen < 8:
+        e, seen = src[e.n], seen + 1
+    return e
+
+
+def _step_of(src, e):
+    """The constant a loop index moves by a turn, where its latch states one."""
+    e = _chase(src, e)
+    if type(e) is Bin and e.op in ("+", "-") and type(e.b) is Const:
+        return -e.b.v if e.op == "-" else e.b.v
+    return None
+
+
+def voice_order(p, head, latches, vidx, n, stride=1):
+    """The order one pass over the voices takes: the index, its start and its step.
+
+    A voice's copies stand ``stride`` apart, so the pass visits voice
+    ``(start + j * step) / stride``; the index is the name whose latch and
+    pre-header state a start and a step every voice is a turn of.
+    """
     src = {x.n: x.e for b in p.blocks.values() for x in b.stmts if type(x) is not Store}
-    start = None
+    steps = {}
+    for lbl in sorted(latches):
+        for x in p.blocks[lbl].stmts:
+            got = _step_of(src, x.e) if type(x) is Let and x.n in vidx else None
+            if got:
+                steps[x.n] = got
     for lbl, b in p.blocks.items():
         if lbl in latches or head not in succs(b.term):
             continue
         for x in b.stmts:
-            if getattr(x, "n", None) not in vidx:
+            if getattr(x, "n", None) not in steps:
                 continue
-            e, seen = x.e, 0
-            while type(e) is Var and e.n in src and seen < 8:
-                e, seen = src[e.n], seen + 1
-            if type(e) is Const:
-                start = e.v
-    return [(start or 0) - k for k in range(n)]
+            e = _chase(src, x.e)
+            if type(e) is not Const:
+                continue
+            got = _order(e.v, steps[x.n], n, stride)
+            if got is not None:
+                return got
+    return list(range(n - 1, -1, -1))
+
+
+def _order(start, step, n, stride):
+    """The voices one pass visits, where a start and a step name each of them once."""
+    if start % stride or step % stride:
+        return None
+    got = [((start + j * step) & 0xFF) // stride for j in range(n)]
+    return got if sorted(got) == list(range(n)) else None
 
 
 def _supplied(low, blocks):

@@ -41,7 +41,7 @@ class Recorder(interp.Player):
         # a turn, and the turn is what the loop's own count says
         self.marks = {id(e): (k, t) for k, e, t in marks}
         self.runs, self.trips = {}, {}
-        self.seen, self.turns = set(), {}
+        self.seen, self.turns, self.seq = set(), {}, 0
 
     def ev(self, e, F):
         i = id(e)
@@ -70,6 +70,7 @@ class Recorder(interp.Player):
     def _end(self, F, prev, to, rets=None):
         self.rec["seen"] = sorted(self.seen)
         self.rec["turns"] = dict(self.turns)
+        self.rec["seq"], self.seq = self.seq, self.seq + 1
         super()._end(F, prev, to, rets)
 
 
@@ -94,6 +95,42 @@ def headers(prog, proc, blocks):
     return out
 
 
+class _Seen(dict):
+    """A block map that remembers the labels one run asked it for."""
+
+    def __init__(self, d, log):
+        super().__init__(d)
+        self.log = log
+
+    def __getitem__(self, k):
+        self.log.append(k)
+        return dict.__getitem__(self, k)
+
+
+def firstonly(prog, proc, inputs=None, ticks=3):
+    """The blocks the tick runs on its first call alone, where that call runs no other.
+
+    A tune whose init only schedules runs its reset on the first call and spends
+    that tick, which is what section 4.7's ``state0.prologue`` states.
+    """
+    p = prog.procs[proc]
+    keep, log = p.blocks, []
+    p.blocks = _Seen(keep, log)
+    try:
+        pl = interp.Player(prog, rgn.Fetch(), inputs).run_init()
+        first, later = None, set()
+        for _ in range(max(ticks, 2)):
+            log.clear()
+            pl.tick()
+            if first is None:
+                first = set(log)
+            else:
+                later |= set(log)
+    finally:
+        p.blocks = keep
+    return frozenset(first - later)
+
+
 def run(prog, proc, groups, ticks, inputs=None, envvars=None, loops=(), marks=()):
     """``(recorder, fetches)``: one horizon recorded over the given block groups."""
     F = fetch_of(prog, proc, groups)
@@ -102,15 +139,17 @@ def run(prog, proc, groups, ticks, inputs=None, envvars=None, loops=(), marks=()
     return R, R.fetches, trap, obs
 
 
-def voice_name(records, names, voices):
+def voice_name(records, names, voices, stride=1):
     """The name the fetch's own environment carries the voice in.
 
     The voice loop leaves several names for its index and the score needs the one
-    the fetch itself carries: every voice, and no value that is not one.
+    the fetch itself carries: every voice, and no value that is not one. A voice's
+    copies stand ``stride`` apart, so the index is the voice number times it.
     """
+    want = {k * stride for k in range(voices)}
     for n in names:
         got = [r["env"].get(n) for r in records]
-        if got and len(set(got)) == voices and all(v in range(voices) for v in got):
+        if got and set(got) == want:
             return n
     return None
 
@@ -134,15 +173,16 @@ def bytes_of(low, name, got):
     return []
 
 
-def score_of(records, low, vvar, ordernames, tempo, voices, ordpos=None, keep=None):
+def score_of(records, low, vvar, ordernames, tempo, voices, ordpos=None, keep=None, stride=1):
     """The score the fetches read: per-voice orders of patterns of events.
 
     A visit ends where the fetch stepped the *order* cursor T2 named -- which is
     the pattern's own end, and the only place the score's shape comes from.
     """
     rows = {v: [] for v in range(voices)}
-    for got in records:
+    for got in sorted(records, key=lambda r: r.get("seq", 0)):
         v = got["env"].get(vvar)
+        v = None if v is None or v % stride else v // stride
         if v is None or v not in rows:
             continue
         sets = [
@@ -152,8 +192,11 @@ def score_of(records, low, vvar, ordernames, tempo, voices, ordpos=None, keep=No
             if keep is None or cell in keep
         ]
         pat = next((int(got["temps"][n]) for n in got["seen"] if n in ordernames), 0)
-        dur = next((c[2] for c in got["cmds"] if c[0] == "ram" and c[1] == tempo + v), 0)
-        ends = ordpos is not None and any(c[0] == "ram" and c[1] == ordpos + v for c in got["cmds"])
+        at = v * stride
+        dur = next((c[2] for c in got["cmds"] if c[0] == "ram" and c[1] == tempo + at), 0)
+        ends = ordpos is not None and any(
+            c[0] == "ram" and c[1] == ordpos + at for c in got["cmds"]
+        )
         rows[v].append((pat, dur, sets, ends))
     orders, pats = [], {}
     for v in range(voices):
