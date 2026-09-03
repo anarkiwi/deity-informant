@@ -690,7 +690,7 @@ subtree and pays 2^*k* leaves for it — and a `sets` target may name the
 `putcode` reached for `shadow.` alone. No hand object writes either, so the
 harness measures what that is worth and no more: **0 differing of 332,358** over
 the thirty builds (`--emit-digests` then `--against`). Both are exercised by the
-lift's own certificate ([prototype-lifter.md](prototype-lifter.md) §2.2, §2.3).
+binding's own certificate ([prototype-lifter.md](prototype-lifter.md) §4, §5).
 
 **Bounded** is the invariant, not a hint: `bound × policy` makes the reachable
 value set finite and statically known, and `Player.store` asserts the interval
