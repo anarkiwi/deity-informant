@@ -162,6 +162,13 @@ over 17 streams and 19 steps of `meta.row`, 50 assignments in all**, and **18
 cells** — 10 per-voice and 8 global, every one a cell of the tune's own state
 that S6 names.
 
+A store no §5 cell holds is **named and the object is emitted without it**; the
+certificate is what says whether it was worth a tick. Commando's five are the
+first call's own reset of `cursor_54EC`, `cursor_54EF`, `freq_idx` and `timer`,
+written one copy a voice through a loop index the object cannot address, and
+they are worth **0 ticks of 11,780**: the post-init image already holds what they
+write.
+
 ---
 
 ## 6. Against the hand object
