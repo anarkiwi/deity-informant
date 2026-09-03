@@ -88,6 +88,16 @@ def run(out, sid=None, ticks=None, hint=None, certify=False):
         cert = attest(obj, reference(sid, int(obj["meta"]["song"] or 0), obj["meta"]["horizon"]))
         cert["source"] = {"tune": obj["meta"]["tune"], "song": obj["meta"]["song"]}
         cert["refusals"] = report["refusals"]
+        cov = report["coverage"]
+        # why the object states the records it does: T1's plane, and the rows the
+        # object carries for the producers T1 states no record over
+        cert["records"] = {
+            "t1_accumulators": cov["t1_accumulators"],
+            "bound": cov["accs"],
+            "rows": cov["rows"],
+            "sets": cov["sets"],
+            "cells": cov["cells"],
+        }
         report["certificate"] = cert
         (out / "trackerprog.lift.certificate.json").write_text(json.dumps(cert, indent=1))
     (out / "trackerprog.lift.report.json").write_text(json.dumps(report, indent=1))
