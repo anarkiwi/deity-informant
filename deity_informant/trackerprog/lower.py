@@ -224,6 +224,7 @@ class Lower:
             if e.n in self.v.vidx:
                 return {"cell": "voice_index"}
             got = self.v.fields.get((e.n, None))
+            got = got if self.v.payload or isinstance(got, dict) else None
             if got is not None:
                 return got
             if e.n in self.v.supplied or e.n in self.assigned:
@@ -236,9 +237,14 @@ class Lower:
         raise Unlowerable(repr(e))
 
     def field(self, a, m):
-        """A masked field of a byte the score supplied: the event field it is (§3.6)."""
+        """A masked field of a byte the score supplied: the event field it is (§3.6).
+
+        A fact the row program carries in its payload is read only where a payload
+        stands; everywhere else the field is the player's own cell or nothing.
+        """
         x = self.expand(a)
-        return self.v.fields.get((x.n, m)) if type(x) is Var else None
+        got = self.v.fields.get((x.n, m)) if type(x) is Var else None
+        return got if self.v.payload or isinstance(got, dict) else None
 
     def binop(self, e):
         op, w = e.op, e.w

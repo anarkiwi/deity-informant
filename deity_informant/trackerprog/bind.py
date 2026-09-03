@@ -89,47 +89,17 @@ class Rows:
         return out
 
     def when(self, guard):
-        """One row's guard: the block's own path terms, each read at its own site.
-
-        A term the deciding block reads *before* a store of its own is read at the
-        row as the cell that store left: the row stands after it, and the object
-        has no channel for a value one statement older (§3.3's one guard shape).
-        """
-        low = self.low
-        out, keep = [], (low.lbl, dict(low.sub))
+        """One row's guard: the block's own path terms, each read at its own site."""
+        low, out = self.low, []
         for d, c, t in guard:
             if not low.onpath(d, c, t):
                 continue
-            low.lbl, low.sub = d, self.stored(d)
-            got = low.term(low.expand(c), t)
+            low.lbl = d
+            fact = low.v.terms.get(repr(c)) if low.v.payload else None
+            got = ([fact, "!=" if t else "==", 0] if fact is not None
+                   else low.term(low.expand(c), t))
             if got not in out:
                 out.append(got)
-        low.lbl, low.sub = keep[0], keep[1]
-        return out
-
-    def stored(self, lbl):
-        """``{a value the block stored: the cell it left it in}``, as the row reads it."""
-        low, out = self.low, {}
-        if lbl is None or lbl not in low.proc.blocks:
-            return out
-        low.lbl, low.sub = lbl, {}
-        for s in low.proc.blocks[lbl].stmts:
-            if type(s) is not Store or s.cls != "ram" or s.src in low.v.dropstores:
-                continue
-            base = addr_split(s.a)[0]
-            # a counter alone: a value that is its own cell's is what a later row
-            # has no older epoch of, and a copy is readable where it was copied from
-            if base is None or not low.selfread(s.v, base):
-                continue
-            try:
-                tgt = low.v.target(low, s)
-            except Unlowerable:
-                continue
-            if tgt is None or tgt[0] != "cell":
-                continue
-            name = tgt[1]
-            node = {"global": name[1:]} if name[:1] == "#" else {"cell": name.lstrip("@")}
-            out[repr(low.expand(s.v))] = node
         return out
 
     def sets(self, lbl, drop):
@@ -168,12 +138,13 @@ class Rows:
 
 # ---- the score the fetch regions read, as section 3.6 events -------------------
 def _stores(rec):
-    """``{address: value}``: every ram store one fetch visit made, last writer."""
-    out = {}
-    for cls, a, v, _w, _src in rec["cmds"]:
+    """``{address: value}`` and ``{site: value}``: the ram stores one visit made."""
+    out, sites = {}, {}
+    for cls, a, v, _w, src in rec["cmds"]:
         if cls in ("ram", "chk"):
             out[a] = int(v)
-    return out
+            sites[src] = int(v)
+    return out, sites
 
 
 class Score:
@@ -185,28 +156,33 @@ class Score:
     cell, and ``sounds`` whether it stored a note at all (section 3.6).
     """
 
-    def __init__(self, records, vvar, roles, voices, stride, ordpos, top):
+    def __init__(self, records, vvar, roles, voices, stride, ordpos, top, seed=None):
         self.rows, self.voices, self.top = {v: [] for v in range(voices)}, voices, top
+        self.seed = seed or [0] * voices
         self.supplied = {}
         for rec in sorted(records, key=lambda r: r.get("seq", 0)):
             at = rec["env"].get(vvar)
             if at is None or at % stride or at // stride not in self.rows:
                 continue
-            v, st = at // stride, _stores(rec)
+            v, (st, sites) = at // stride, _stores(rec)
             row = {
                 "dur": st.get(roles["dur"] + at, 0),
                 "note": st.get(roles["note"] + at),
                 "ins": st.get(roles["ins"] + at),
                 "packed": {n: st.get(a + at) for n, a in roles.get("packed", {}).items()},
                 "temps": {n: int(x) for n, x in rec["temps"].items()},
+                "st": st,
+                "sites": sites,
+                "at": at,
                 "ends": ordpos is not None and ordpos + at in st,
+                "next": st.get(ordpos + at) if ordpos is not None else None,
                 "sets": [],
             }
             self.rows[v].append(row)
 
     def facts(self):
         """``{name: [value per visit]}`` for the fields a guard may be read against."""
-        out = {k: [] for k in ("dur", "note", "ins", "sounds", "newins")}
+        out = {k: [] for k in ("dur", "note", "ins", "sounds", "newins", "wraps", "field")}
         temps = {}
         for v in range(self.voices):
             for r in self.rows[v]:
@@ -215,15 +191,22 @@ class Score:
                 out["ins"].append(r["ins"])
                 out["sounds"].append(int(r["note"] is not None))
                 out["newins"].append(int(r["ins"] is not None))
+                out["wraps"].append(int(r["ends"]))
+                out["field"].append(int(r["ins"] is not None or bool(r["sets"])))
                 for n, x in r["temps"].items():
                     temps.setdefault(n, []).append(x)
         return out, temps
 
     def events(self, tie):
-        """``(orders, patterns)``: the visits as per-voice play lists of events."""
+        """``(orders, patterns)``: the visits as per-voice play lists of events.
+
+        A visit belongs to the step of the order program the tune's own cursor was
+        on, so the play list is the score's own list and not the walk the horizon
+        took: a second turn of the same step is the same step (§3.6).
+        """
         orders, pats = [], {}
         for v in range(self.voices):
-            play, cur = [], []
+            play, cur, at = {}, [], self.seed[v]
             for r in self.rows[v]:
                 n = r["note"]
                 cur.append(
@@ -238,11 +221,12 @@ class Score:
                     }
                 )
                 if r["ends"] and cur:
-                    _visit(play, pats, cur)
-                    cur = []
+                    _visit(play, pats, cur, at)
+                    cur, at = [], r["next"] if r["next"] is not None else at + 1
             if cur:
-                _visit(play, pats, cur)
-            orders.append({"play": play, "end": {"jump": 0}})
+                _visit(play, pats, cur, at)
+            orders.append({"play": [play.get(i, 0) for i in range(max(play, default=-1) + 1)],
+                           "end": {"jump": 0}})
         got = sorted(pats.values(), key=lambda x: x[0])
         return orders, {str(k): {"events": rows} for k, rows in got}
 
@@ -252,13 +236,13 @@ def _keyof(e):
     return (e["dur"], e["sounds"], e["note"], e["tie"], e["ins"], repr(e["arm"]))
 
 
-def _visit(play, pats, rows):
+def _visit(play, pats, rows, at):
     """One visit of one pattern, kept once and named by what its events decode to."""
     key = tuple(_keyof(e) for e in rows)
     got = pats.get(key)
     if got is None:
         got = pats[key] = (len(pats), rows)
-    play.append(got[0])
+    play.setdefault(at, got[0])
 
 
 # ---- the fields a guard reads a score byte by ---------------------------------
@@ -280,13 +264,19 @@ def masks_of(low):
 
 
 def _same(a, b):
-    """Whether two value lists agree wherever both are stated."""
+    """Whether two value lists agree wherever both are stated, and say something."""
     got = [(x, y) for x, y in zip(a, b) if x is not None and y is not None]
-    return bool(got) and all(x == y for x, y in got)
+    return len({x for x, _y in got}) > 1 and all(x == y for x, y in got)
 
 
 def _truthy(a, b):
-    return bool(a) and all(bool(x) == bool(y) for x, y in zip(a, b) if x is not None)
+    """Whether two lists have the same truth throughout, and it is not one value.
+
+    A field that never changes over the horizon is matched by every other that
+    never changes, so a constant is no evidence and the match is refused.
+    """
+    got = [(x, y) for x, y in zip(a, b) if x is not None]
+    return len({bool(x) for x, _y in got}) > 1 and all(bool(x) == bool(y) for x, y in got)
 
 
 def fields_of(uses, facts, temps):
@@ -315,6 +305,10 @@ def fields_of(uses, facts, temps):
                 out[(name, mask)] = {"xor": ["sounds", 1]}
             elif _truthy(vals, facts["newins"]):
                 out[(name, mask)] = "newins"
+            elif _truthy(vals, facts["field"]):
+                out[(name, mask)] = "field"
+            elif _truthy(vals, [1 - x for x in facts["field"]]):
+                out[(name, mask)] = {"xor": ["field", 1]}
             elif mask is not None:
                 left.append((name, mask, vals))
     return out, left
@@ -825,11 +819,34 @@ class Binder:
         """Section 3.6's event fields, and what a masked score byte is of them."""
         top = self.pit.base + self.pit.n
         roles = {"dur": self.clockbase, "note": self.voc.notebase, "ins": self.voc.insbase}
+        seed = ([int(self.img[self.orderbase + v * self.cells.stride])
+                 for v in range(self.cells.voices)] if self.orderbase else None)
         self.score = Score(recs, self.vvar, roles, self.cells.voices, self.cells.stride,
-                           self.orderbase, top)
+                           self.orderbase, top, seed)
+        own = {self.clockbase, self.voc.notebase, self.voc.insbase, self.orderbase}
+        self.sc = _scorecells(self.low, self.segs["row"], self.voc.supplied)
+        # the byte the row's own fields are read off is the row and not a command:
+        # a cell it lands in carries no datum the event's fields do not (§3.6)
+        base, temps0 = self.score.facts()
+        packed = {n for n, m in masks_of(self.low)
+                  if n in temps0 and _same([None if v is None else v & (m or 0xFF)
+                                            for v in temps0[n]], base["dur"])}
+        self.packed = packed
+        self.armcells = {k: v for k, v in self.sc.items()
+                         if v[1] not in own and v[2] not in packed}
+        for v in range(self.cells.voices):
+            for r in self.score.rows[v]:
+                r["sets"] = [[cell, r["sites"][src]]
+                             for src, (cell, _base, _n) in sorted(self.armcells.items())
+                             if src in r["sites"]]
         facts, temps = self.score.facts()
         got, left = fields_of(masks_of(self.low), facts, temps)
         self.tiemask, self.voc.fields = tie_of(got, left)
+        rows = [r for v in range(self.cells.voices) for r in self.score.rows[v]]
+        pairs = {(lbl, id(c)): (lbl, c) for lbl, gs in self.low.guards.items()
+                 for _d, c, _t, _w in gs}
+        self.voc.terms = terms_of(self.low, sorted(pairs.values(), key=lambda x: x[0]),
+                                  facts, rows)
         self.left = [(n, m) for n, m, _v in left if (n, m) != self.tiemask]
         return self.voc.fields
 
@@ -858,37 +875,50 @@ class Binder:
         The order is the block's own, with one exception the schema has no other
         channel for: an assignment whose value was *read* before a later store
         moved the cell it reads stands before that store, since a row's ``sets``
-        run in the order they are written.
+        run in the order they are written.  A value the row has since stored is
+        read as the cell it left it in, for the same reason.
         """
-        low, out, got = self.low, [], []
-        when = Rows(low, {}).when(guard + extra)
-        for i, s in enumerate(low.proc.blocks[lbl].stmts):
+        low, out, keep = self.low, [], []
+        stmts = low.proc.blocks[lbl].stmts
+        for i, s in enumerate(stmts):
             if type(s) is not Store:
                 continue
             role = roles.get(s.src)
             if role is not None:
-                got.append((i, role, None))
+                keep.append((i, role, None, None))
                 continue
             if s.src in drop:
                 continue
             tgt = low.v.target(low, s)
+            if tgt is not None:
+                keep.append((i, "reg" if tgt[0] == "reg" else "set", tgt, s))
+        put = {("@" if t[0] in ("copy", "acc") else "") + str(t[1]).lstrip("@")
+               for _i, _k, t, _s in keep if t is not None}
+        put = {x.lstrip("@#!*") for x in put}
+        sub, got = {}, []
+        for i, kind, tgt, s in _epoch(stmts, keep):
             if tgt is None:
+                got.append((i, kind, None, None))
                 continue
-            kind = "reg" if tgt[0] == "reg" else "set"
-            if tgt[0] == "acc":
-                got.append((i, kind, ["@" + tgt[1], low.value(low.expand(s.v))]))
-                continue
-            if tgt[0] == "copy":
-                got.append((i, kind, [tgt[1], low.value(low.expand(s.v))]))
-                continue
-            got.append((i, kind, [tgt[1], low.value(low.expand(s.v))]))
-        got = _copies(low, got)
-        for _i, kind, pair in _epoch(low.proc.blocks[lbl].stmts, got):
+            low.sub = dict(sub)
+            val = low.value(low.expand(s.v))
+            low.sub = {}
+            name = tgt[1] if tgt[0] not in ("copy", "acc") else "@" + str(tgt[1])
+            hit = None
+            if s.cls == "ram" and tgt[0] in ("cell", "acc"):
+                nm = str(name).lstrip("@")
+                node = {"global": nm[1:]} if nm[:1] == "#" else {"cell": nm}
+                if _reads(val) & put:
+                    sub[repr(low.expand(s.v))] = node
+                    hit = (repr(low.expand(s.v)), node)
+            got.append((i, kind, [name, val], hit))
+        for _i, kind, pair, hit in _copies(low, got):
             key = kind if split or pair is None else "set"
             if out and out[-1][0] == key and key == "set" and pair is not None:
                 out[-1][2].append(pair)
+                out[-1][4].append(hit)
             else:
-                out.append((key, when, None if pair is None else [pair]))
+                out.append([key, guard + extra, None if pair is None else [pair], lbl, [hit]])
         return out
 
     def blockrows(self, blocks, order, drop, roles, split=False):
@@ -900,16 +930,88 @@ class Binder:
             guard = tuple(low.eff.get(lbl, ((), ()))[0])
             for extra, pick in R.bindings(lbl, guard, drop):
                 low.pick = {n: self.amb[n][d] for n, d in pick.items()}
-                low.lbl, low.local, low.turn = lbl, {}, None
+                low.lbl, low.local, low.turn, low.sub = lbl, {}, None, {}
                 try:
                     got = self.steps(lbl, drop, roles, guard, extra, split)
                 except Unlowerable as x:
                     low.bad.add("%s: %s" % (lbl, x))
                     continue
-                out += [(lbl, k, w, v) for k, w, v in got]
+                out += got
         low.pick = {}
         return out
 
+    def guards(self, steps, order):
+        """Each step's guard, read where the staged order puts the row that carries it.
+
+        A value an earlier row of the segment has since stored is that cell where
+        the guard reads it, which is what keeps a row's own guard exact without a
+        cell for the epoch.
+        """
+        low, out, sub = self.low, [], {}
+        for kind, guard, pairs, lbl, subs in _staged(steps, order, self.guardfacts):
+            low.sub = {}
+            when, dec = [], set()
+            R = Rows(low, {})
+            for d, c, t in guard:
+                if not low.onpath(d, c, t):
+                    continue
+                low.lbl, low.sub = d, dict(sub, **self.stored(d))
+                fact = low.v.terms.get(repr(c))
+                got = ([fact, "!=" if t else "==", 0] if fact is not None
+                       else low.term(low.expand(c), t))
+                if got not in when:
+                    when.append(got)
+                    dec.add(d)
+            del R
+            out.append((lbl, kind, when, pairs, frozenset(dec)))
+            # a value the row itself takes the inputs of away: the cell it left it
+            # in is where a later guard reads it, and no other value moved
+            put = {x[0].lstrip("@#!*") for x in (pairs or ())}
+            for x, pair in zip(subs, pairs or []):
+                if x is not None and _reads(pair[1]) & put:
+                    sub[x[0]] = x[1]
+        low.sub = {}
+        return out
+
+    def stored(self, lbl):
+        """``{a value the block stored: the cell it left it in}``, as the row reads it."""
+        low, out = self.low, {}
+        if lbl is None or lbl not in low.proc.blocks:
+            return out
+        low.lbl, low.sub = lbl, {}
+        for s in low.proc.blocks[lbl].stmts:
+            if type(s) is not Store or s.cls != "ram" or s.src in low.v.dropstores:
+                continue
+            base = addr_split(s.a)[0]
+            # a counter alone: a value that is its own cell's is what a later row
+            # has no older epoch of, and a copy is readable where it was copied from
+            if base is None or not low.selfread(s.v, base):
+                continue
+            try:
+                tgt = low.v.target(low, s)
+            except Unlowerable:
+                continue
+            if tgt is None or tgt[0] != "cell":
+                continue
+            name = tgt[1]
+            node = {"global": name[1:]} if name[:1] == "#" else {"cell": name.lstrip("@")}
+            out[repr(low.expand(s.v))] = node
+        return out
+
+    def guardfacts(self, step):
+        """``(the cells one step's guard reads, the blocks that decide it)``."""
+        low, reads, dec = self.low, set(), set()
+        for d, c, t in step[1]:
+            if not low.onpath(d, c, t):
+                continue
+            low.lbl, low.sub = d, self.stored(d)
+            try:
+                reads |= _reads(low.term(low.expand(c), t))
+            except Unlowerable:
+                pass
+            dec.add(d)
+        low.sub = {}
+        return reads, frozenset(dec)
 
     def run(self):  # noqa: C901 - one clause per section of the object
         """The bound object, and the report of what each plane supplied."""
@@ -940,7 +1042,7 @@ class Binder:
             accat[a["id"]] = min(order.index(l) for l in A.siteblocks(a))
             drop |= d
         self.accs, self.accat = accs, accat
-        sc = _scorecells(self.low, self.segs["row"], self.voc.supplied)
+        sc = self.sc
         roles = {}
         for lbl in self.segs["row"]:
             for s in self.p.blocks[lbl].stmts:
@@ -955,7 +1057,7 @@ class Binder:
                     drop.add(s.src)
                 elif s.src in sc:
                     roles[s.src] = "arm"
-        self.armcells = {src: sc[src] for src in roles if roles[src] == "arm"}
+
         return self.assemble(order, drop, roles, tables, build, assemble)
 
     def assemble(self, order, drop, roles, tables, build, asm):  # noqa: C901
@@ -963,16 +1065,16 @@ class Binder:
         segs, out = self.segs, _Out()
         low, sch = self.low, self.sch
         tick, pre = [], []
-        low.gate, low.scope = frozenset(), set(segs.get("prelude", []))
-        for i, r in enumerate(_rows_of(
-                self.blockrows(set(segs.get("prelude", [])), order, drop, roles),
+        low.gate, low.scope, low.v.payload = frozenset(), set(segs.get("prelude", [])), False
+        for i, r in enumerate(_rows_of(self.guards(
+                self.blockrows(set(segs.get("prelude", [])), order, drop, roles), order),
                 ("set", "reg"))):
             pre.append(out.stream("prelude%d" % i, [r]))
         low.gate = frozenset((id(c), t) for c, t in sch.boundary)
-        low.scope = set(segs["row"])
+        low.scope, low.v.payload = set(segs["row"]), True
         rowprog, ncmd, nst = [], 0, 0
-        for _lbl, kind, when, sets in self.blockrows(set(segs["row"]), order, drop,
-                                                    roles, True):
+        for _lbl, kind, when, sets, _d in self.guards(
+                self.blockrows(set(segs["row"]), order, drop, roles, True), order):
             if kind == "note":
                 rowprog.append({"note": True, **({"when": when} if when else {})})
             elif kind == "ins":
@@ -991,34 +1093,38 @@ class Binder:
                                 **({"when": when} if when else {})})
         body = set(self.sch.body)
         glob = [l for l in order if l not in body and l not in self.pro]
-        low.gate, low.scope = frozenset(), set(glob)
-        low.gate, low.scope = frozenset(), set(self.pro)
-        prol = _rows_of(self.blockrows(set(self.pro), order, drop, roles), ("set", "reg"))
-        low.gate, low.scope = frozenset(), set(glob)
+        low.gate, low.scope, low.v.payload = frozenset(), set(glob), False
+        low.gate, low.scope, low.v.payload = frozenset(), set(self.pro), False
+        prol = _rows_of(self.guards(self.blockrows(set(self.pro), order, drop, roles), order),
+                        ("set", "reg"))
+        low.gate, low.scope, low.v.payload = frozenset(), set(glob), False
         gl = [out.stream("global%d" % i, [r]) for i, r in enumerate(
-            _rows_of(self.blockrows(set(glob), order, drop, roles), ("set", "reg")))]
+            _rows_of(self.guards(self.blockrows(set(glob), order, drop, roles), order),
+                     ("set", "reg")))]
         low.gate, low.scope = frozenset(), set(segs.get("machine", []))
-        items = []
-        for lbl, kind, when, sets in self.blockrows(set(segs.get("machine", [])), order,
-                                                    drop, roles):
+        low.v.payload = False
+        items, rows = [], []
+        for lbl, kind, when, sets, _d in self.guards(
+                self.blockrows(set(segs.get("machine", [])), order, drop, roles), order):
             if kind in ("set", "reg"):
-                items.append((order.index(lbl), "row",
-                              {"when": when, "sets": [list(x) for x in sets]}))
-        for key, at in self.accat.items():
-            items.append((at, "acc", key))
-        items.sort(key=lambda x: (x[0], x[1] == "acc"))
-        rank, rows, nm = 0, [], 0
-        for _at, kind, x in items:
-            if kind == "row":
-                rows.append(x)
-                continue
-            if rows:
-                out.stream("machine%d" % nm, rows, rank)
-                nm, rank, rows = nm + 1, rank + 1, []
-            self.accs[x]["rank"] = rank
+                rows.append((order.index(lbl), {"when": when,
+                                                "sets": [list(x) for x in sets]}))
+        accat = sorted(self.accat.items(), key=lambda kv: kv[1])
+        rank, run, nm = 0, [], 0
+        for at, row in rows:
+            while accat and accat[0][1] <= at:
+                if run:
+                    out.stream("machine%d" % nm, run, rank)
+                    nm, rank, run = nm + 1, rank + 1, []
+                self.accs[accat[0][0]]["rank"] = rank
+                rank, accat = rank + 1, accat[1:]
+            run.append(row)
+        if run:
+            out.stream("machine%d" % nm, run, rank)
             rank += 1
-        if rows:
-            out.stream("machine%d" % nm, rows, rank)
+        for key, _at in accat:
+            self.accs[key]["rank"] = rank
+            rank += 1
         return self.object(out, pre, rowprog, gl, prol, tables, build, asm)
 
     def object(self, out, pre, rowprog, gl, prol, tables, build, asm):  # noqa: C901
@@ -1032,14 +1138,16 @@ class Binder:
             tick += [{"stream": nm} for nm in pre] if name == "prelude" else [name]
         orders, pats = self.score.events(self.tie)
         self.armsets(pats, out)
-        limit = min(tables.beyond_limit(self.cells, low, self.pit),
-                    _transposed(out.streams) or 1)
-        words = tables.beyond_words(self.cells, low, self.pit, limit)
+        # the words a transposition of the object's own can reach, and the whole
+        # region an instrument whose sound is no pitch reads its own from (§3.2)
+        whole = self.trapped(tables.beyond_words(
+            self.cells, low, self.pit, tables.beyond_limit(self.cells, low, self.pit)))
+        words = whole[:max(_transposed(out.streams), 1)]
         for st in out.streams.values():
             st["beyond"] = {"id": "the fused tuning", "words": words}
         instruments = asm._instruments(art, self.view, self.names, self.ins, self.pwcols,
                                        self.img, self.accs)
-        self.pitched(instruments, words)
+        self.pitched(instruments, whole)
         cellseed, globseed = self.cells.seed(self.img)
         obj = {
             "$trackerprog": 1,
@@ -1113,6 +1221,22 @@ class Binder:
                     continue
                 got = [s for s in e["arm"]["rows"][0]["sets"] if s[0].lstrip("@#") in live]
                 e["arm"] = {"rows": [{"sets": got}]} if got else None
+
+    def trapped(self, words):
+        """A word past the tuning the score's own byte holds: no cell of the object.
+
+        The packed row byte is the event's own fields (§3.6), so the object has no
+        cell for it and the word that would read one is a ``trap``.
+        """
+        names = {self.sc[src][0].lstrip("@#") for src in self.sc
+                 if self.sc[src][2] in getattr(self, "packed", ())}
+        out = []
+        for w in words:
+            hit = [h for h in w.get("u16", ()) if isinstance(h, dict)
+                   and (h.get("cell") or [""])[0] in names]
+            out.append({"trap": "the packed row byte, which the score keeps as an "
+                                "event's own fields"} if hit else w)
+        return out
 
     def pitched(self, instruments, words):
         """An instrument whose sound the tuning has no note for: its own pitch (§3.5)."""
@@ -1214,7 +1338,7 @@ class _Out:
 def _rows_of(steps, kinds):
     """Consecutive steps of one kind as guarded rows of one stream."""
     out = []
-    for _lbl, kind, when, sets in steps:
+    for _lbl, kind, when, sets, _d in steps:
         if kind not in kinds:
             continue
         out.append({"when": when, "sets": [list(x) for x in sets]})
@@ -1230,7 +1354,8 @@ def _epoch(stmts, got):
     pos = {s.n: i for i, s in enumerate(stmts) if type(s) is Let}
     out = list(got)
     for _ in range(len(out) * len(out) + 1):
-        for a, (i, _k, _p) in enumerate(out):
+        for a, x in enumerate(out):
+            i = x[0]
             b = next((k for k in range(a) if _before(stmts, i, out[k][0], pos)), None)
             if b is not None:
                 out.insert(b, out.pop(a))
@@ -1281,7 +1406,8 @@ def _copies(low, got):
     copy that is neither the committing voice's nor one of a full set is no cell.
     """
     at = {}
-    for k, (_i, _kind, pair) in enumerate(got):
+    for k, x in enumerate(got):
+        pair = x[2]
         if pair is not None and isinstance(pair[0], tuple):
             at.setdefault(pair[0][0], []).append(k)
     out, drop = list(got), set()
@@ -1289,15 +1415,18 @@ def _copies(low, got):
         vals = {got[k][2][0][1]: repr(got[k][2][1]) for k in ks}
         full = len(vals) == low.cells.voices and len(set(vals.values())) == 1
         for j, k in enumerate(ks):
-            if full:
-                out[k] = (got[k][0], got[k][1], ["*" + name, got[k][2][1]])
-                if j:
-                    drop.add(k)
-            elif not got[k][2][0][1]:
-                out[k] = (got[k][0], got[k][1], ["@" + name, got[k][2][1]])
-            else:
+            put = ("*" if full else "@") + name
+            if full and j:
+                drop.add(k)
+                continue
+            if not full and got[k][2][0][1]:
                 drop.add(k)
                 low.bad.add(name)
+                continue
+            sub = got[k][3]
+            node = {"cell": name}
+            out[k] = (got[k][0], got[k][1], [put, got[k][2][1]],
+                      None if sub is None else (sub[0], node))
     return [x for k, x in enumerate(out) if k not in drop]
 
 
@@ -1375,3 +1504,489 @@ def _transposed(streams):
                 elif isinstance(x, (list, tuple)):
                     stack += list(x)
     return max(got)
+
+
+def _ev(e, env):
+    """One condition over a byte the score supplied, evaluated; ``None`` where it reads more."""
+    from ..tuneprog.ir import evalbin
+
+    t = type(e)
+    if t is Const:
+        return e.v
+    if t is Var:
+        return env.get(e.n)
+    if t is Bin:
+        a, b = _ev(e.a, env), _ev(e.b, env)
+        return None if a is None or b is None else evalbin(e.op, a, b, e.w or 1)
+    return None
+
+
+def terms_of(low, guards, facts, rows):
+    """``{a guard the score's own byte decides: the row fact it is}`` (§3.6).
+
+    A term whose only input is a byte a fetch read is a fact of the row, and
+    which fact is decided by what the horizon's own visits say -- not by a
+    reading of what the byte means.
+    """
+    out = {}
+    for lbl, c in guards:
+        low.lbl, low.local, low.pick, low.sub = lbl, {}, {}, {}
+        e = low.expand(c)
+        names = {x.n for x in walk(e) if type(x) is Var}
+        if len(names) != 1 or not names <= set(low.v.supplied):
+            continue
+        got = [_ev(e, r["temps"]) for r in rows]
+        if any(v is None for v in got):
+            continue
+        for key in ("wraps", "sounds", "newins", "field"):
+            if _truthy(got, facts[key]):
+                out[repr(c)] = key
+                break
+            if _truthy(got, [1 - x for x in facts[key]]):
+                out[repr(c)] = {"xor": [key, 1]}
+                break
+    return out
+
+
+def _staged(steps, order, facts):
+    """One segment's rows in an order their own guards can be read in.
+
+    A guard the tick decided before a store of the segment is read at the row it
+    guards, so a row whose guard reads a cell an earlier row writes -- and whose
+    guard was decided before that row's own block -- stands before it.
+    """
+    at = {l: i for i, l in enumerate(order)}
+    out = list(steps)
+    for _ in range(len(out) * len(out) + 1):
+        for j, step in enumerate(out):
+            reads, dec = facts(step)
+            if not reads or not dec:
+                continue
+            i = next((i for i in range(j)
+                      if out[i][2] and reads & {x[0].lstrip("@#!*") for x in out[i][2]}
+                      and out[i][3] not in dec
+                      and max(at.get(d, 0) for d in dec) < at.get(out[i][3], 0)
+                      and at.get(out[i][3], 0) <= at.get(step[3], 0)), None)
+            if i is not None:
+                out.insert(i, out.pop(j))
+                break
+        else:
+            return out
+    return out
+
+
+def _epoch(stmts, got):
+    """One block's stores in an order a row's own ``sets`` can be run in.
+
+    A store whose value was *read* before a later store moved the cell it reads
+    stands before that store: the IR names the read where it happened, and a row
+    has no channel for a value read one statement earlier.
+    """
+    pos = {s.n: i for i, s in enumerate(stmts) if type(s) is Let}
+    out = list(got)
+    for _ in range(len(out) * len(out) + 1):
+        for a, x in enumerate(out):
+            i = x[0]
+            b = next((k for k in range(a) if _before(stmts, i, out[k][0], pos)), None)
+            if b is not None:
+                out.insert(b, out.pop(a))
+                break
+        else:
+            return out
+    return out
+
+
+def _deps(stmts, i, pos):
+    """``{address: the statement its value was read at}`` for one store's value."""
+    out, seen, stack = {}, set(), [(stmts[i].v, i)]
+    while stack:
+        e, at = stack.pop()
+        for x in walk(e):
+            if type(x) is Load:
+                b = addr_split(x.a)[0]
+                if b is not None:
+                    out[b] = min(out.get(b, at), at)
+            elif type(x) is Var and x.n in pos and x.n not in seen:
+                seen.add(x.n)
+                stack.append((stmts[pos[x.n]].e, pos[x.n]))
+    return out
+
+
+def _before(stmts, i, j, pos):
+    """Whether store ``i`` must stand before store ``j`` in one row's ``sets``."""
+    if type(stmts[j]) is not Store or stmts[j].cls == "io":
+        return False
+    base = addr_split(stmts[j].a)[0]
+    if base is None:
+        return False
+    got = _deps(stmts, i, pos).get(base)
+    return got is not None and got < j
+
+
+def _carried(low, c):
+    """Whether a guard term reads a name more than one block of the tick binds."""
+    low.lbl, low.local, low.pick = None, {}, {}
+    return any(type(x) is Var and x.n not in low.defs and x.n not in low.v.vidx
+               for x in walk(low.expand(c)))
+
+
+def _copies(low, got):
+    """Fold the copies of one per-voice cell a block writes at constant addresses.
+
+    A value every copy takes is one write every voice makes (§3.6's ``all``); a
+    copy that is neither the committing voice's nor one of a full set is no cell.
+    """
+    at = {}
+    for k, x in enumerate(got):
+        pair = x[2]
+        if pair is not None and isinstance(pair[0], tuple):
+            at.setdefault(pair[0][0], []).append(k)
+    out, drop = list(got), set()
+    for name, ks in at.items():
+        vals = {got[k][2][0][1]: repr(got[k][2][1]) for k in ks}
+        full = len(vals) == low.cells.voices and len(set(vals.values())) == 1
+        for j, k in enumerate(ks):
+            put = ("*" if full else "@") + name
+            if full and j:
+                drop.add(k)
+                continue
+            if not full and got[k][2][0][1]:
+                drop.add(k)
+                low.bad.add(name)
+                continue
+            sub = got[k][3]
+            node = {"cell": name}
+            out[k] = (got[k][0], got[k][1], [put, got[k][2][1]],
+                      None if sub is None else (sub[0], node))
+    return [x for k, x in enumerate(out) if k not in drop]
+
+
+KEEP = ("rowsleft", "dur", "note", "ins", "freq", "orderpos", "tied", "phase", "counter",
+        "voice_index", "lastnote", "wave")
+
+
+def _needed(target):
+    """Whether one ``sets`` target is a register the chip has, and not a cell."""
+    return target[:1] not in "@#!*"
+
+
+def _dce(obj):
+    """Drop the assignments whose cell nothing the object states reads.
+
+    Liveness and not a count of readers: a cell two dead rows pass between them
+    is dead, so the live set grows from the roots -- the registers, the records,
+    the score and the words past the tuning -- through the rows that write them.
+    """
+    rows = [r for st in obj["streams"].values() for r in st["rows"]]
+    rows += [s for s in obj["meta"]["row"] if "sets" in s]
+    nodes = [(r, k) for r in rows for k in range(len(r["sets"]))]
+    live = set(KEEP) | {a["cell"].lstrip("#").split(".")[0] for a in obj["accs"].values()}
+    for part in ("accs", "score", "globals", "instruments"):
+        live |= _reads(obj[part])
+    live |= _reads(obj["meta"]["tempo"]) | _reads([s.get("when") for s in obj["meta"]["row"]])
+    live |= _reads([st.get("beyond") for st in obj["streams"].values()])
+    keep = set()
+    for _ in range(len(nodes) + 1):
+        more = set()
+        for r, k in nodes:
+            if (id(r), k) in keep:
+                continue
+            t = r["sets"][k][0]
+            if _needed(t) or t.lstrip("@#!*").split(".")[0] in live:
+                more.add((id(r), k))
+        if not more:
+            break
+        keep |= more
+        for r, k in nodes:
+            if (id(r), k) in keep:
+                live |= _reads(r["sets"][k][1]) | _reads(r.get("when", []))
+    for r in rows:
+        r["sets"] = [x for k, x in enumerate(r["sets"]) if (id(r), k) in keep]
+    for st in obj["streams"].values():
+        st["rows"] = [r for r in st["rows"] if r["sets"]]
+    obj["meta"]["row"] = [s for s in obj["meta"]["row"] if "sets" not in s or s["sets"]]
+    named = {s["stream"] for s in obj["meta"]["row"] if "stream" in s}
+    named |= {e["stream"] for e in obj["meta"]["tick"] if not isinstance(e, str)}
+    named |= set(obj["globals"].get("streams", ()))
+    obj["streams"] = {k: v for k, v in obj["streams"].items()
+                      if v["rows"] and (k in named or "rank" in v)}
+    obj["meta"]["row"] = [s for s in obj["meta"]["row"]
+                          if "stream" not in s or s["stream"] in obj["streams"]]
+    obj["meta"]["tick"] = [e for e in obj["meta"]["tick"]
+                           if isinstance(e, str) or e["stream"] in obj["streams"]]
+    obj["globals"]["streams"] = [k for k in obj["globals"].get("streams", ())
+                                 if k in obj["streams"]]
+    if not obj["globals"]["streams"]:
+        del obj["globals"]["streams"]
+    return obj
+
+
+def _transposed(streams):
+    """How far past the tuning a transposition of the object's own can reach (§3.2)."""
+    got = [0]
+    for st in streams.values():
+        for r in st["rows"]:
+            stack = [r.get("when", []), [x[1] for x in r["sets"]]]
+            while stack:
+                x = stack.pop()
+                if isinstance(x, dict):
+                    for k, v in x.items():
+                        got.append(v) if k == "transpose" and isinstance(v, int) else stack.append(v)
+                elif isinstance(x, (list, tuple)):
+                    stack += list(x)
+    return max(got)
+
+
+def _ev(e, env):
+    """One condition over a byte the score supplied, evaluated; ``None`` where it reads more."""
+    from ..tuneprog.ir import evalbin
+
+    t = type(e)
+    if t is Const:
+        return e.v
+    if t is Var:
+        return env.get(e.n)
+    if t is Bin:
+        a, b = _ev(e.a, env), _ev(e.b, env)
+        return None if a is None or b is None else evalbin(e.op, a, b, e.w or 1)
+    return None
+
+
+def terms_of(low, guards, facts, rows):
+    """``{a guard the score's own byte decides: the row fact it is}`` (§3.6).
+
+    A term whose only input is a byte a fetch read is a fact of the row, and
+    which fact is decided by what the horizon's own visits say -- not by a
+    reading of what the byte means.
+    """
+    out = {}
+    for lbl, c in guards:
+        low.lbl, low.local, low.pick, low.sub = lbl, {}, {}, {}
+        e = low.expand(c)
+        names = {x.n for x in walk(e) if type(x) is Var}
+        if len(names) != 1 or not names <= set(low.v.supplied):
+            continue
+        got = [_ev(e, r["temps"]) for r in rows]
+        if any(v is None for v in got):
+            continue
+        for key in ("wraps", "sounds", "newins", "field"):
+            if _truthy(got, facts[key]):
+                out[repr(c)] = key
+                break
+            if _truthy(got, [1 - x for x in facts[key]]):
+                out[repr(c)] = {"xor": [key, 1]}
+                break
+    return out
+
+
+def _stale(out, j, dec, at):
+    """The row a guard of row ``j`` would be read one store too late after."""
+    step = out[j]
+    reads = _reads([c for _d, c, _t in step[1]])
+    del reads
+    return None
+
+
+def _epoch(stmts, got):
+    """One block's stores in an order a row's own ``sets`` can be run in.
+
+    A store whose value was *read* before a later store moved the cell it reads
+    stands before that store: the IR names the read where it happened, and a row
+    has no channel for a value read one statement earlier.
+    """
+    pos = {s.n: i for i, s in enumerate(stmts) if type(s) is Let}
+    out = list(got)
+    for _ in range(len(out) * len(out) + 1):
+        for a, x in enumerate(out):
+            i = x[0]
+            b = next((k for k in range(a) if _before(stmts, i, out[k][0], pos)), None)
+            if b is not None:
+                out.insert(b, out.pop(a))
+                break
+        else:
+            return out
+    return out
+
+
+def _deps(stmts, i, pos):
+    """``{address: the statement its value was read at}`` for one store's value."""
+    out, seen, stack = {}, set(), [(stmts[i].v, i)]
+    while stack:
+        e, at = stack.pop()
+        for x in walk(e):
+            if type(x) is Load:
+                b = addr_split(x.a)[0]
+                if b is not None:
+                    out[b] = min(out.get(b, at), at)
+            elif type(x) is Var and x.n in pos and x.n not in seen:
+                seen.add(x.n)
+                stack.append((stmts[pos[x.n]].e, pos[x.n]))
+    return out
+
+
+def _before(stmts, i, j, pos):
+    """Whether store ``i`` must stand before store ``j`` in one row's ``sets``."""
+    if type(stmts[j]) is not Store or stmts[j].cls == "io":
+        return False
+    base = addr_split(stmts[j].a)[0]
+    if base is None:
+        return False
+    got = _deps(stmts, i, pos).get(base)
+    return got is not None and got < j
+
+
+def _carried(low, c):
+    """Whether a guard term reads a name more than one block of the tick binds."""
+    low.lbl, low.local, low.pick = None, {}, {}
+    return any(type(x) is Var and x.n not in low.defs and x.n not in low.v.vidx
+               for x in walk(low.expand(c)))
+
+
+def _copies(low, got):
+    """Fold the copies of one per-voice cell a block writes at constant addresses.
+
+    A value every copy takes is one write every voice makes (§3.6's ``all``); a
+    copy that is neither the committing voice's nor one of a full set is no cell.
+    """
+    at = {}
+    for k, x in enumerate(got):
+        pair = x[2]
+        if pair is not None and isinstance(pair[0], tuple):
+            at.setdefault(pair[0][0], []).append(k)
+    out, drop = list(got), set()
+    for name, ks in at.items():
+        vals = {got[k][2][0][1]: repr(got[k][2][1]) for k in ks}
+        full = len(vals) == low.cells.voices and len(set(vals.values())) == 1
+        for j, k in enumerate(ks):
+            put = ("*" if full else "@") + name
+            if full and j:
+                drop.add(k)
+                continue
+            if not full and got[k][2][0][1]:
+                drop.add(k)
+                low.bad.add(name)
+                continue
+            sub = got[k][3]
+            node = {"cell": name}
+            out[k] = (got[k][0], got[k][1], [put, got[k][2][1]],
+                      None if sub is None else (sub[0], node))
+    return [x for k, x in enumerate(out) if k not in drop]
+
+
+KEEP = ("rowsleft", "dur", "note", "ins", "freq", "orderpos", "tied", "phase", "counter",
+        "voice_index", "lastnote", "wave")
+
+
+def _needed(target):
+    """Whether one ``sets`` target is a register the chip has, and not a cell."""
+    return target[:1] not in "@#!*"
+
+
+def _dce(obj):
+    """Drop the assignments whose cell nothing the object states reads.
+
+    Liveness and not a count of readers: a cell two dead rows pass between them
+    is dead, so the live set grows from the roots -- the registers, the records,
+    the score and the words past the tuning -- through the rows that write them.
+    """
+    rows = [r for st in obj["streams"].values() for r in st["rows"]]
+    rows += [s for s in obj["meta"]["row"] if "sets" in s]
+    nodes = [(r, k) for r in rows for k in range(len(r["sets"]))]
+    live = set(KEEP) | {a["cell"].lstrip("#").split(".")[0] for a in obj["accs"].values()}
+    for part in ("accs", "score", "globals", "instruments"):
+        live |= _reads(obj[part])
+    live |= _reads(obj["meta"]["tempo"]) | _reads([s.get("when") for s in obj["meta"]["row"]])
+    live |= _reads([st.get("beyond") for st in obj["streams"].values()])
+    keep = set()
+    for _ in range(len(nodes) + 1):
+        more = set()
+        for r, k in nodes:
+            if (id(r), k) in keep:
+                continue
+            t = r["sets"][k][0]
+            if _needed(t) or t.lstrip("@#!*").split(".")[0] in live:
+                more.add((id(r), k))
+        if not more:
+            break
+        keep |= more
+        for r, k in nodes:
+            if (id(r), k) in keep:
+                live |= _reads(r["sets"][k][1]) | _reads(r.get("when", []))
+    for r in rows:
+        r["sets"] = [x for k, x in enumerate(r["sets"]) if (id(r), k) in keep]
+    for st in obj["streams"].values():
+        st["rows"] = [r for r in st["rows"] if r["sets"]]
+    obj["meta"]["row"] = [s for s in obj["meta"]["row"] if "sets" not in s or s["sets"]]
+    named = {s["stream"] for s in obj["meta"]["row"] if "stream" in s}
+    named |= {e["stream"] for e in obj["meta"]["tick"] if not isinstance(e, str)}
+    named |= set(obj["globals"].get("streams", ()))
+    obj["streams"] = {k: v for k, v in obj["streams"].items()
+                      if v["rows"] and (k in named or "rank" in v)}
+    obj["meta"]["row"] = [s for s in obj["meta"]["row"]
+                          if "stream" not in s or s["stream"] in obj["streams"]]
+    obj["meta"]["tick"] = [e for e in obj["meta"]["tick"]
+                           if isinstance(e, str) or e["stream"] in obj["streams"]]
+    obj["globals"]["streams"] = [k for k in obj["globals"].get("streams", ())
+                                 if k in obj["streams"]]
+    if not obj["globals"]["streams"]:
+        del obj["globals"]["streams"]
+    return obj
+
+
+def _transposed(streams):
+    """How far past the tuning a transposition of the object's own can reach (§3.2)."""
+    got = [0]
+    for st in streams.values():
+        for r in st["rows"]:
+            stack = [r.get("when", []), [x[1] for x in r["sets"]]]
+            while stack:
+                x = stack.pop()
+                if isinstance(x, dict):
+                    for k, v in x.items():
+                        got.append(v) if k == "transpose" and isinstance(v, int) else stack.append(v)
+                elif isinstance(x, (list, tuple)):
+                    stack += list(x)
+    return max(got)
+
+
+def _ev(e, env):
+    """One condition over a byte the score supplied, evaluated; ``None`` where it reads more."""
+    from ..tuneprog.ir import evalbin
+
+    t = type(e)
+    if t is Const:
+        return e.v
+    if t is Var:
+        return env.get(e.n)
+    if t is Bin:
+        a, b = _ev(e.a, env), _ev(e.b, env)
+        return None if a is None or b is None else evalbin(e.op, a, b, e.w or 1)
+    return None
+
+
+def terms_of(low, guards, facts, rows):
+    """``{a guard the score's own byte decides: the row fact it is}`` (§3.6).
+
+    A term whose only input is a byte a fetch read is a fact of the row, and
+    which fact is decided by what the horizon's own visits say -- not by a
+    reading of what the byte means.
+    """
+    out = {}
+    for lbl, c in guards:
+        low.lbl, low.local, low.pick, low.sub = lbl, {}, {}, {}
+        e = low.expand(c)
+        names = {x.n for x in walk(e) if type(x) is Var}
+        if len(names) != 1 or not names <= set(low.v.supplied):
+            continue
+        got = [_ev(e, r["temps"]) for r in rows]
+        if any(v is None for v in got):
+            continue
+        for key in ("wraps", "sounds", "newins", "field"):
+            if _truthy(got, facts[key]):
+                out[repr(c)] = key
+                break
+            if _truthy(got, [1 - x for x in facts[key]]):
+                out[repr(c)] = {"xor": [key, 1]}
+                break
+    return out
+

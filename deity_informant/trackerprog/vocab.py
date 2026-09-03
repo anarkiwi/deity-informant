@@ -52,6 +52,10 @@ class Vocab:
         self.shadow = ()  # (base, size): the register file every write lands in
         # (score byte, mask) -> the section 3.6 event field that value is
         self.fields = {}
+        # a guard the score's own byte decides -> the row fact it is
+        self.terms = {}
+        # whether the rows being read stand where section 3.6's payload does
+        self.payload = True
 
     # ---- loads -------------------------------------------------------------------
     def load(self, low, x):
