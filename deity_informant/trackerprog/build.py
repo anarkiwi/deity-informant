@@ -270,14 +270,14 @@ def sets_of(parts):
     return [[t, v] for t, v, _s in parts]
 
 
-def row_of(low, lbl, extra, local=None, guard=None):
+def row_of(low, lbl, extra, local=None, guard=None, turn=None):
     """One block as a row of a stream, and the accumulator stores it is split at.
 
     Each row carries the store site of every assignment under ``_sites``, which
     is what :mod:`.recognise` joins T1's accumulator records to and which is
     stripped once the join has run.
     """
-    when, parts = low.row(lbl, extra, local, guard)
+    when, parts = low.row(lbl, extra, local, guard, turn)
     out = []
     for sets, acc in parts:
         if sets:
@@ -292,7 +292,7 @@ def row_of(low, lbl, extra, local=None, guard=None):
 def stream_items(low, seq, trips):
     """A segment as ranked items: runs of guarded rows, and the accumulators between."""
     items, rows = [], []
-    for lbl, extra, local, guard in seq:
+    for lbl, extra, local, guard, turn in seq:
         if lbl == lower.RESET:  # the cells the joins of this segment read, before them
             rows.append(
                 {"when": [], "sets": [["@" + n, 0] for n in extra], SITES: [None] * len(extra)}
@@ -313,7 +313,7 @@ def stream_items(low, seq, trips):
                 }
             )
             continue
-        for got in row_of(low, lbl, extra, local, guard):
+        for got in row_of(low, lbl, extra, local, guard, turn):
             if got[0] == "row":
                 rows.append(got[1])
             else:
@@ -338,16 +338,18 @@ class Phases:
         self.low, self.trips = low, trips
         self.streams, self.accs, self.rank = {}, {}, 0
 
-    def add(self, name, blocks, ranked, gate=()):
+    def add(self, name, blocks, ranked, gate=(), reset=()):
         """One segment, lowered and named; ``ranked`` where the machine phase runs it.
 
         ``gate`` is the guard the phase itself runs under, which its rows do not
-        repeat: the row phase's is ``meta.tempo.boundary``.
+        repeat: the row phase's is ``meta.tempo.boundary``.  ``reset`` is the
+        join flags of a shared plan, cleared once at the head of the first phase.
         """
         self.low.gate = frozenset((id(c), t) for c, t in gate)
         self.low.scope = set(blocks)
         out = []
-        for it in stream_items(self.low, self.low.sequence(blocks, self.trips), self.trips):
+        seq = self.low.sequence(blocks, self.trips, reset)
+        for it in stream_items(self.low, seq, self.trips):
             if it[0] == "rows":
                 nm = "%s%d" % (name, len(out))
                 self.streams[nm] = {"rows": it[1], "all": True}

@@ -37,9 +37,11 @@ class Recorder(interp.Player):
         self.track, self.resets = {}, {}
         for k, node, kind in track:
             (self.resets if kind == "reset" else self.track)[id(node)] = k
-        self.marks = {id(e): k for k, e in marks}
+        # a name an unrolled loop binds carries the loop it turns in: one value
+        # a turn, and the turn is what the loop's own count says
+        self.marks = {id(e): (k, t) for k, e, t in marks}
         self.runs, self.trips = {}, {}
-        self.seen = set()
+        self.seen, self.turns = set(), {}
 
     def ev(self, e, F):
         i = id(e)
@@ -50,17 +52,24 @@ class Recorder(interp.Player):
         if k is not None:
             self.runs[k] = self.runs.get(k, 0) + 1
             self.trips[k] = max(self.trips.get(k, 0), self.runs[k])
-        k = self.marks.get(i)
-        if k is not None:
-            self.seen.add(k)
-        return super().ev(e, F)
+        got = self.marks.get(i)
+        if got is None:
+            return super().ev(e, F)
+        self.seen.add(got[0])
+        v = super().ev(e, F)
+        if got[1] is not None and self.rec is not None:
+            # the head's own test runs after its statements and before the body's
+            h, inhead = got[1]
+            self.turns[(got[0], self.runs.get(h, 0) - (0 if inhead else 1))] = v
+        return v
 
     def _begin(self, key, region, F):
-        self.seen = set()
+        self.seen, self.turns = set(), {}
         super()._begin(key, region, F)
 
     def _end(self, F, prev, to, rets=None):
         self.rec["seen"] = sorted(self.seen)
+        self.rec["turns"] = dict(self.turns)
         super()._end(F, prev, to, rets)
 
 
@@ -106,6 +115,25 @@ def voice_name(records, names, voices):
     return None
 
 
+def bytes_of(low, name, got):
+    """``[(cell, value)]`` one name the fetch bound supplies: one a *turn* where it turns.
+
+    A name an unrolled loop binds takes one value a turn of it, so the visit
+    supplies the constant each turn read into that turn's own cell; a name the
+    fetch binds once supplies one constant into the one cell it is.
+    """
+    cells = low.turns.get(name)
+    if cells:
+        return [
+            (cells[j], int(v))
+            for (n, j), v in sorted(got.get("turns", {}).items())
+            if n == name and 0 <= j < len(cells)
+        ]
+    if name in low.temps and name in got["temps"]:
+        return [(low.temps[name], int(got["temps"][name]))]
+    return []
+
+
 def score_of(records, low, vvar, ordernames, tempo, voices, ordpos=None, keep=None):
     """The score the fetches read: per-voice orders of patterns of events.
 
@@ -118,9 +146,10 @@ def score_of(records, low, vvar, ordernames, tempo, voices, ordpos=None, keep=No
         if v is None or v not in rows:
             continue
         sets = [
-            ["@" + low.temps[n], int(got["temps"][n])]
+            ["@" + cell, val]
             for n in got["seen"]
-            if n in low.temps and n in got["temps"] and (keep is None or low.temps[n] in keep)
+            for cell, val in bytes_of(low, n, got)
+            if keep is None or cell in keep
         ]
         pat = next((int(got["temps"][n]) for n in got["seen"] if n in ordernames), 0)
         dur = next((c[2] for c in got["cmds"] if c[0] == "ram" and c[1] == tempo + v), 0)

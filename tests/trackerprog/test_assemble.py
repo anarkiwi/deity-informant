@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tuneprog"))
 from deity_informant.trackerprog import (
     assemble,
     build,
+    flow,
     lower,
     record,
     report,
@@ -279,7 +280,7 @@ def test_a_leaf_the_vocabulary_has_no_name_for_is_refused():
 # ---- reaching definitions and the SSA ------------------------------------------------
 def test_one_store_of_a_base_reaches_a_later_read():
     p = proc()
-    got = lower.reaching(p, list(p.blocks), frozenset({"x"}))
+    got = flow.reaching(p, list(p.blocks), frozenset({"x"}))
     assert got["mach"][GLOB + 0] if GLOB in got["mach"] else True
     assert VOICE in got["tail"]
 
@@ -398,11 +399,57 @@ def test_an_inner_loop_is_unrolled_to_its_own_bound_and_traps_past_it():
     low, _voc = lowered()
     low.scope = set(low.proc.blocks)
     seq = low.sequence({"mach", "loop", "tail"}, {"loop": 3})
-    assert [l for l, _e, _x, _g in seq].count("loop") == 3
-    assert any(l is None and e for l, e, _x, _g in seq)
+    assert [l for l, _e, _x, _g, _j in seq].count("loop") == 3
+    assert [j for l, _e, _x, _g, j in seq if l == "loop"] == [0, 1, 2]
+    assert any(l is None and e for l, e, _x, _g, _j in seq)
     items = build.stream_items(low, seq, {})
     rows = [r for k, v in items if k == "rows" for r in v]
     assert any("trap" in json.dumps(r["sets"]) for r in rows)
+
+
+def test_a_name_an_unrolled_loop_binds_takes_one_cell_a_turn():
+    """Section 2.4: the score supplies one constant a *turn*, not one a name."""
+    low, voc = lowered()
+    voc.supplied = {"c"}
+    low.scope = set(low.proc.blocks)
+    assert low.turnsof({"mach", "loop", "tail"}) == {"c": ("loop", True)}
+    assert not low.turnsof({"loop"})  # a loop that is the whole segment is no inner one
+    rows = [
+        r
+        for k, v in build.stream_items(low, low.sequence({"mach", "loop", "tail"}, {"loop": 3}), {})
+        if k == "rows"
+        for r in v
+    ]
+    got = [s[1]["cell"] for r in rows for s in r["sets"] if s[0] == "@tc"]
+    assert got == ["tc__0", "tc__1", "tc__2"] and low.turns["c"] == got
+    assert low.turncell("c") is None  # outside a turn the score writes the cell itself
+
+
+def test_the_score_supplies_a_turn_s_own_byte_and_a_name_s_one_value():
+    class Low:  # pylint: disable=too-few-public-methods
+        temps, turns = {"a": "ta", "b": "tb"}, {"b": ["tb__0", "tb__1"]}
+
+    got = {"temps": {"a": 7, "b": 9}, "turns": {("b", 0): 4, ("b", 1): 5, ("b", 2): 6}}
+    assert record.bytes_of(Low(), "a", got) == [("ta", 7)]
+    assert record.bytes_of(Low(), "b", got) == [("tb__0", 4), ("tb__1", 5)]
+    assert record.bytes_of(Low(), "z", got) == []
+
+
+def test_a_join_a_second_segment_reaches_is_raised_where_that_path_stands():
+    """A join's own preds do not stop at a segment's edge (section 2.2)."""
+    low, _voc = lowered()
+    flags = low.planall([["fetch"], ["mach", "loop", "tail"]])
+    assert flags == ["jtail"]
+    assert ("jtail", ()) not in low.flagrows.get("fetch", ())
+    assert [n for n, _c in low.flagrows["fetch"]] == ["jtail"]
+    assert {q for q, v in low.flagrows.items() for n, _c in v if n == "jtail"} == {
+        "fetch",
+        "mach",
+        "loop",
+    }
+    seq = low.sequence({"fetch"}, {}, flags)
+    assert seq[0][0] == lower.RESET and seq[0][1] == ("jtail",)
+    assert low.sequence({"out"}, {})[0][0] != lower.RESET  # a segment the plan does not hold
 
 
 def test_the_dead_sets_are_dropped_and_the_live_ones_kept():
@@ -425,8 +472,8 @@ def test_a_join_several_paths_reach_is_one_cell_and_not_one_guard():
 def test_two_paths_that_differ_in_one_term_and_its_negation_are_the_one_path():
     c, d = Bin("==", V("a"), C(0)), Bin("==", V("b"), C(0))
     arm = lambda t, e=(): (((("head", c, t),) + e), ())
-    assert lower._fold([arm(True), arm(False)]) == [((), ())]
-    assert len(lower._fold([arm(True), (((("head", d, True),)), ())])) == 2
+    assert flow.fold([arm(True), arm(False)]) == [((), ())]
+    assert len(flow.fold([arm(True), (((("head", d, True),)), ())])) == 2
 
 
 def test_the_flag_rows_raise_the_join_s_cell_where_each_path_already_stands():
@@ -586,6 +633,56 @@ def test_the_recorder_names_each_inner_loop_s_own_test_and_its_reset():
     got = record.headers(Prog(), "tick", {"loop", "mach"})
     assert [k for _h, _n, k in got] == ["track"] + ["reset"] * (len(got) - 1)
     assert got[0][0] == "loop"
+
+
+class TurnProg:
+    """A tick whose inner loop binds one name a turn, run from its own image."""
+
+    def __init__(self, turns):
+        head = Block(
+            "head",
+            [Let("c", ram(GLOB, 7)), store(GLOB, 7, Bin("-", V("c"), C(1)), src=0x1010)],
+            If(Bin("!=", V("c"), C(0)), "head", "out"),
+            src=0x1010,
+        )
+        blocks = {
+            "top": Block("top", [], Goto("head"), src=0x1000),
+            "head": head,
+            "out": Block("out", [], Return(vals=[]), src=0x1020),
+        }
+        self.procs = {
+            "tick": Proc("tick", blocks=blocks, entry="top"),
+            "init": Proc("init", blocks={"i": Block("i", [], Return(vals=[]))}, entry="i"),
+        }
+        self.storage = regions()
+        self.img = image()
+        self.img[GLOB] = turns - 1
+        self.meta = {
+            "tick_proc": "tick",
+            "init_proc": "init",
+            "entry": {"kind": "sub"},
+            "load": (0x1000, 0x1100),
+        }
+
+    def image(self):
+        return self.img
+
+
+def test_the_recorder_keeps_the_value_each_turn_of_a_loop_bound_a_name():
+    """Section 2.4: a name an unrolled loop binds is one constant a turn."""
+    prog = TurnProg(3)
+    defs = {s.n: s.e for b in prog.procs["tick"].blocks.values() for s in b.stmts if type(s) is Let}
+    R, fetches, trap, _obs = record.run(
+        prog,
+        "tick",
+        [("top", ["top", "head"], ["out"])],
+        1,
+        loops=record.headers(prog, "tick", {"head", "out"}),
+        marks=[("c", defs["c"], ("head", True))],
+    )
+    assert trap is None and R.trips == {"head": 3}
+    got = fetches[("tick", "top")][0]
+    assert got["turns"] == {("c", 0): 2, ("c", 1): 1, ("c", 2): 0} and got["seen"] == ["c"]
 
 
 def test_a_recorded_region_exports_every_temp_it_binds():

@@ -98,7 +98,8 @@ def lift(art, ticks=None, hints=None):  # noqa: C901 - one clause per derived da
 
     trips = {}
     loops = record.headers(prog, proc, set(sum(segs.values(), []) + glob))
-    marks = [(nm, low.defs[nm]) for nm in voc.supplied if nm in low.defs]
+    turnof = low.turnsof(frozenset(segs["row"]))
+    marks = [(nm, low.defs[nm], turnof.get(nm)) for nm in voc.supplied if nm in low.defs]
     sch.rate, sch.phase = 1, 0
     rowblocks = segs["row"]
     exits = sorted({s for l in rowblocks for s in succs(p.blocks[l].term) if s not in rowblocks})
@@ -128,9 +129,14 @@ def lift(art, ticks=None, hints=None):  # noqa: C901 - one clause per derived da
     voices = cells.voices
 
     ph = build.Phases(low, trips)
-    pre = ph.add("prelude", segs.get("prelude", []), False)
-    rows = ph.add("rowprog", rowblocks, False, gate=sch.boundary)
-    ph.add("machine", segs.get("machine", []), True)
+    groups = [segs.get("prelude", []), rowblocks, segs.get("machine", [])]
+    flags = low.planall(groups)
+    # the join flags are cleared at the head of the first phase that runs on every
+    # tick: the row's is the boundary's, so it takes them only where it is the one
+    at = next((i for i, g in enumerate(groups) if g and i != 1), 1)
+    pre = ph.add("prelude", groups[0], False, reset=flags if at == 0 else ())
+    rows = ph.add("rowprog", rowblocks, False, gate=sch.boundary, reset=flags if at == 1 else ())
+    ph.add("machine", groups[2], True, reset=flags if at == 2 else ())
     gl = ph.add("global", glob, False)
     streams, accs = ph.streams, ph.accs
     limit = max(0, (view.by_id()[rid].size - 2 * n) // 2)
