@@ -73,7 +73,7 @@ oracle.
 `tools/tuneprog_recert.py --shard I/4 --ghidra-dir DIR`: the replay writes the facts (`--ghidra-dir` implies
 `--ghidra-facts`), the job runs `export` and `emulate` per certificate in the cached image, and the last
 recert invocation joins them and exits 1 on any `ours_bigger`. One certificate's export is 13 s and its
-emulate 9 s, so 51 are ~19 min of headless Ghidra, ~5 min a shard, against ~500 CPU-s for the whole replay.
+emulate 9 s, so 54 are ~20 min of headless Ghidra, ~5 min a shard, against ~500 CPU-s for the whole replay.
 
 ## 3. The comparison
 
@@ -138,7 +138,7 @@ sites that produced none is nothing to compare, which is what "Decompiler proces
 Error: Overlapping input varnodes" leave behind (GoatTracker's `row_apply`, *Playful Professor*'s `p_6200`,
 both SID Wizard tunes).
 
-No flag on the four exemplars. Over the 52 certificates two survive, both standing:
+No flag on the four exemplars. Over the 54 certificates six survive, all standing:
 
 * *Deflektor*'s `init`, 2 `goto` against Ghidra's 0 over the same 55 sites (51 printed lines to 35 C lines).
   They are the copy fold's cross-copy edges inside `for v in 0, 1, 2`; Ghidra does not fold and writes the
@@ -148,9 +148,18 @@ No flag on the four exemplars. Over the 52 certificates two survive, both standi
   the three register saves to `$01FA`-`$01FC` that Ghidra's frame analysis folds into one `uStack0000 =
   param_1`; the tune is `stack: residual` ([tuneprog-backlog.md](tuneprog-backlog.md) §2.5). On the like-for-like measure we are the smaller
   side, 8 printed lines to 15 C lines.
+* *Chameleon*'s `p_A08D`, `p_A0E7`, `p_A0F7` and `p_A566`: 2.30 stmts/site vs 0.10 ops/site, 2.56 vs 1.33,
+  2.43 vs 1.29, 2.00 vs 0.89, over 10, 9, 7 and 9 sites. They are the certificate's top four
+  statements-per-site procedures, all of them Walker's small rolled three-voice loops, where 6502 flag
+  plumbing and SSA parallel copies are a fixed overhead a body that short cannot amortise: `N`/`Z`/`C`
+  `Let`s plus `Let`s whose value is a bare `Var` are 18 of the first's 23 statements, 19 of 23, 11 of 17 and
+  15 of 18, against 429 of the certificate's 1,169. `p_A08D` has no `Store` and no `Call`, so Ghidra
+  dead-codes its body to `pcode_ops` 1, `uniques` 0 over the same 10 sites. #324 added the certificate on
+  2026-08-31 without running this oracle, and shard 1 of the nightly was red from that date until the four
+  were recorded ([tuneprog-backlog.md](tuneprog-backlog.md) §2.6).
 
 `tuneprog_recert.py --known CERT:ENTRY` names a flag that is a recorded row, so the nightly gates on a flag
-beside those two rather than on their standing.
+beside those six rather than on their standing.
 
 Ghidra's bodies are disjoint and our procedures are cloned per entry, so the two sides align only as address
 sets: each `per_function` row carries the executed addresses its body owns (`pcs`), and `ghidra_partial` is a
@@ -221,8 +230,8 @@ with the borrow inverted. Both are §1's `subtraction_flags1` patch (ghidra#3189
 with all four traces step for step, registers included (Ghouls'n'Ghosts' 4,154 steps become the 1,475 our own
 VM runs).
 
-Over all 52 certificates the emulator now agrees with every one: 52 exports, 52 `agree`, no `ERROR` row,
-`ours_bigger` 0 beside the two recorded rows. The 52nd, `lft-quintessence`, was run on its own when it
+Over all 54 certificates the emulator now agrees with every one: 54 exports, 54 `agree`, no `ERROR` row,
+`ours_bigger` 0 beside the six recorded rows. `lft-quintessence`, the 52nd, was run on its own when it
 was added: 3 functions, 232 sites, 1,016 raw ops, 1,817 high P-Code ops, 300 C lines, 17 uncovered,
 2 partial, 1 merged, `EMULATE-ORACLE-OK calls=8 steps=1755 sid_mismatch=0 agree=true`, 0 flags. The five the earlier run reported as disagreements were all
 this oracle's own models, and all five are gone:

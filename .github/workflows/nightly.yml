@@ -64,11 +64,13 @@ jobs:
           docker run --rm -v "$PWD:/src" --entrypoint chown di-ghidra:ci \
             -R "$(id -u):$(id -g)" /src/out/gout
       - name: The three oracles
-        # the two ours_bigger flags the oracle stands by are backlog rows
+        # the six ours_bigger flags the oracle stands by are backlog rows
         run: |
           python3 tools/tuneprog_recert.py --out out/recert --resume \
             --shard ${{ matrix.shard }}/4 --ghidra-dir out/gout \
-            --known daglish-deflektor:C810 --known rodger-alien3:81BB
+            --known daglish-deflektor:C810 --known rodger-alien3:81BB \
+            --known walker-chameleon:A08D --known walker-chameleon:A0E7 \
+            --known walker-chameleon:A0F7 --known walker-chameleon:A566
       - uses: actions/upload-artifact@v7
         if: always()
         with:
