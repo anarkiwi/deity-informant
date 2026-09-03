@@ -13,10 +13,14 @@ the row rather than becoming a cell of the object.
 from __future__ import annotations
 
 import itertools
+import operator
 
 from ..tuneprog.graph import cfg, idoms, natural_loops, preds_of, rpo, succs
-from . import emit, region, schedule, tables
-from ..tuneprog.ir import Bin, Const, Let, Load, Store, Var
+from . import build, emit, record, region, schedule, tables
+from .cells import Cells
+from .read import Reader
+from .vocab import Vocab
+from ..tuneprog.ir import Bin, Const, Let, Load, Store, Var, evalbin
 from ..tuneprog.irwalk import addr_split, walk
 from .read import Unlowerable
 from .refuse import Refusal, Refused
@@ -25,6 +29,7 @@ TRAP = "Trap"
 
 MAXCOMBO = 24
 MASK8 = 0xFF
+
 
 def _live(prog, proc, blocks):
     """The blocks of a set the program can reach: a trap is no block of a phase."""
@@ -120,8 +125,12 @@ def _need(got, why, cell, detail):
 
 
 # the event fields section 3.6 lists that a guard may read as a cell of the player
-FACTCELL = {"dur": {"cell": "dur"}, "tie": {"cell": "tied"}, "note": {"cell": "note"},
-            "ins": {"cell": "ins"}}
+FACTCELL = {
+    "dur": {"cell": "dur"},
+    "tie": {"cell": "tied"},
+    "note": {"cell": "note"},
+    "ins": {"cell": "ins"},
+}
 
 
 def ambiguous(proc):
@@ -174,8 +183,9 @@ class Rows:
         names = self.needs(lbl, drop)
         if not names:
             return [((), {})]
-        choice = [[(tuple(self.low.eff.get(d, ((), ()))[0]), d) for d in self.amb[n]]
-                  for n in names]
+        choice = [
+            [(tuple(self.low.eff.get(d, ((), ()))[0]), d) for d in self.amb[n]] for n in names
+        ]
         out = []
         for combo in itertools.islice(itertools.product(*choice), MAXCOMBO):
             gs = list(guard)
@@ -195,8 +205,7 @@ class Rows:
                 continue
             low.lbl = d
             fact = low.v.terms.get(repr(c)) if low.v.payload else None
-            got = ([fact, "!=" if t else "==", 0] if fact is not None
-                   else low.term(low.expand(c), t))
+            got = [fact, "!=" if t else "==", 0] if fact is not None else low.term(low.expand(c), t)
             if got not in out:
                 out.append(got)
         return out
@@ -255,8 +264,7 @@ class Score:
     cell, and ``sounds`` whether it stored a note at all (section 3.6).
     """
 
-    def __init__(self, records, vvar, roles, voices, stride, ordpos, top, seed=None,
-                 own=()):
+    def __init__(self, records, vvar, roles, voices, stride, ordpos, top, seed=None, own=()):
         self.rows, self.voices, self.top = {v: [] for v in range(voices)}, voices, top
         self.seed = seed or [0] * voices
         own = set(own)
@@ -266,6 +274,7 @@ class Score:
             if at is None or at % stride or at // stride not in self.rows:
                 continue
             v, (st, sites) = at // stride, _stores(rec)
+
             # a role the tune keeps in one cell for the whole tune is read there,
             # and one it keeps per voice at the copy the visit's own index names
             def _at(key, at=at):
@@ -331,9 +340,13 @@ class Score:
                     cur, at = [], r["next"] if r["next"] is not None else at + 1
             if cur:
                 _visit(play, pats, cur, at)
-            orders.append({"play": [play.get(i, 0) for i in range(max(play, default=-1) + 1)],
-                           "end": {"jump": 0}})
-        got = sorted(pats.values(), key=lambda x: x[0])
+            orders.append(
+                {
+                    "play": [play.get(i, 0) for i in range(max(play, default=-1) + 1)],
+                    "end": {"jump": 0},
+                }
+            )
+        got = sorted(pats.values(), key=operator.itemgetter(0))
         return orders, {str(k): {"events": rows} for k, rows in got}
 
 
@@ -352,6 +365,14 @@ def _visit(play, pats, rows, at):
 
 
 # ---- the fields a guard reads a score byte by ---------------------------------
+def _mask(low, x):
+    """``(supplied name, mask)`` where one node is a masked field of a score byte."""
+    if type(x) is Bin and x.op == "&" and type(x.b) is Const:
+        got = low.expand(x.a)
+        return (got.n, x.b.v) if type(got) is Var and got.n in low.v.supplied else None
+    return (x.n, None) if type(x) is Var and x.n in low.v.supplied else None
+
+
 def masks_of(low):
     """``{(supplied name, mask)}``: every masked field of a score byte the tick reads."""
     out = set()
@@ -359,13 +380,12 @@ def masks_of(low):
         low.lbl, low.local, low.pick = lbl, {}, {}
         for s in list(b.stmts) + [b.term]:
             for e in (getattr(s, "e", None), getattr(s, "v", None), getattr(s, "c", None)):
-                for x in walk(e) if e is not None else ():
-                    if type(x) is Bin and x.op == "&" and type(x.b) is Const:
-                        got = low.expand(x.a)
-                        if type(got) is Var and got.n in low.v.supplied:
-                            out.add((got.n, x.b.v))
-                    elif type(x) is Var and x.n in low.v.supplied:
-                        out.add((x.n, None))
+                out |= {
+                    got
+                    for x in (walk(e) if e is not None else ())
+                    for got in (_mask(low, x),)
+                    if got is not None
+                }
     return out
 
 
@@ -399,8 +419,11 @@ def fields_of(uses, facts, temps):
         if vals is None:
             continue
         vals = [None if v is None else (v if mask is None else v & mask) for v in vals]
-        for key, node in (("dur", {"cell": "dur"}), ("note", {"cell": "note"}),
-                          ("ins", {"cell": "ins"})):
+        for key, node in (
+            ("dur", {"cell": "dur"}),
+            ("note", {"cell": "note"}),
+            ("ins", {"cell": "ins"}),
+        ):
             if _same(vals, facts[key]):
                 out[(name, mask)] = node
                 break
@@ -450,8 +473,9 @@ def _halving(s, bases):
     """Whether one store halves the word a pair of bases holds."""
     if type(s) is not Store or addr_split(s.a)[0] not in bases:
         return False
-    return any(type(x) is Bin and x.op == ">>" and type(x.b) is Const and x.b.v == 1
-               for x in walk(s.v))
+    return any(
+        type(x) is Bin and x.op == ">>" and type(x.b) is Const and x.b.v == 1 for x in walk(s.v)
+    )
 
 
 def shift_of(low, addr, bases):
@@ -481,7 +505,7 @@ class Accs:
 
     def __init__(self, low, art, names, view):
         self.low, self.names, self.view = low, names, view
-        self.t1 = [a for a in (art["t1"].get("accs") or [])]
+        self.t1 = list(art["t1"].get("accs") or [])
         self.t0 = art["t0"].get("writes") or []
         self.eff = low.eff
         self.blocks = {}
@@ -498,8 +522,11 @@ class Accs:
     def siteblocks(self, a):
         """The blocks one record's own sites stand in."""
         want = {int(s[1:], 16) for s in a["sites"]}
-        return [l for l, b in self.low.proc.blocks.items()
-                if any(type(s) is Store and s.src in want for s in b.stmts)]
+        return [
+            l
+            for l, b in self.low.proc.blocks.items()
+            if any(type(s) is Store and s.src in want for s in b.stmts)
+        ]
 
     def when(self, a):
         """A record's own ``when``: the terms every one of its sites stands under.
@@ -651,9 +678,21 @@ class Accs:
         lo = _addr(a["cell"])
         if got:
             halves = []
-            for addr in ([lo] if a["width"] <= 8 else [lo, next(
-                    (self.view.by_id()[r].base for r in a["regions"]
-                     if r != a["cell"]["region"]), lo + 1)]):
+            for addr in (
+                [lo]
+                if a["width"] <= 8
+                else [
+                    lo,
+                    next(
+                        (
+                            self.view.by_id()[r].base
+                            for r in a["regions"]
+                            if r != a["cell"]["region"]
+                        ),
+                        lo + 1,
+                    ),
+                ]
+            ):
                 hit = got.get(addr)
                 if hit is None:
                     halves = []
@@ -663,13 +702,13 @@ class Accs:
             if len(halves) == 1:
                 return {"reload": halves[0]}
             if halves:
-                return {"reload": _unsplit(*halves)
-                        or {"or": [halves[0], {"shl": [halves[1], 8]}]}}
+                return {"reload": _unsplit(*halves) or {"or": [halves[0], {"shl": [halves[1], 8]}]}}
         low.lbl, low.local, low.pick = blk, {}, {}
         if a["width"] <= 8:
             return {"reload": low.value(low.expand(_reload(low, lo)))}
-        hi = next((self.view.by_id()[r].base for r in a["regions"]
-                   if r != a["cell"]["region"]), lo + 1)
+        hi = next(
+            (self.view.by_id()[r].base for r in a["regions"] if r != a["cell"]["region"]), lo + 1
+        )
         halves = [low.value(low.expand(_reload(low, x))) for x in (lo, hi)]
         return {"reload": _unsplit(*halves) or {"or": [halves[0], {"shl": [halves[1], 8]}]}}
 
@@ -689,13 +728,16 @@ class Accs:
     def record(self, a, rank):
         """One T1 accumulator as section 5's record, and the stores it states."""
         sitewhen = self.when(a)
-        blocks = sorted(self.siteblocks(a), key=lambda l: self.low.rpo.index(l))
+        blocks = sorted(self.siteblocks(a), key=self.low.rpo.index)
         blk = blocks[0]
         produce, psites, pblocks = self.produce(a, sitewhen)
         # a term the step stands under and the produce does not is `delta_when`:
         # the record still produces on a tick its own delta does not apply (§5)
-        keep = set.intersection(*[set(self.eff.get(l, ((), ()))[0]) for l in pblocks]) \
-            if pblocks else set(sitewhen)
+        keep = (
+            set.intersection(*[set(self.eff.get(l, ((), ()))[0]) for l in pblocks])
+            if pblocks
+            else set(sitewhen)
+        )
         when = tuple(t for t in sitewhen if t in keep)
         dwhen = tuple(t for t in sitewhen if t not in keep)
         delta = self.delta(a, blk)
@@ -733,10 +775,6 @@ class Accs:
         return rec, drop, None
 
 
-
-
-
-
 def _unsplit(lo, hi):
     """``(M8(E), M8(E >> 8))`` as ``E``: one word stated once and not twice."""
     if not (isinstance(lo, dict) and "and" in lo and lo["and"][1] == MASK8):
@@ -762,6 +800,8 @@ def _reload(low, addr):
 def _clean(low, node):
     """Whether an expression reads no name the object has no cell of its own for."""
     return not (_reads(node) & {c.lstrip("#") for c in low.temps.values()})
+
+
 # ---- the lift ------------------------------------------------------------------
 def _rename(cells, roles):
     """The player's own slots, bound to the addresses S6 and T2 name (§5)."""
@@ -777,8 +817,10 @@ def _seed(obj, cells, img, keep):
         if base is None or name not in keep or "." in name:
             continue
         n = 1 if name in cells.bcast else cells.voices
-        vals = [int(img[base + (0 if name in cells.bcast else i * cells.stride)])
-                for i in range(cells.voices)]
+        vals = [
+            int(img[base + (0 if name in cells.bcast else i * cells.stride)])
+            for i in range(cells.voices)
+        ]
         del n
         out[name] = vals
     del obj
@@ -822,11 +864,6 @@ class Binder:
     """One certified tune's planes, bound to the player's own slots (§4, §5)."""
 
     def __init__(self, art, ticks=None):
-        from . import build, record
-        from .cells import Cells
-        from .read import Reader
-        from .vocab import Vocab
-
         self.art, self.refusals = art, []
         view, names, t0 = art["view"], art["names"], art["t0"]
         prog, proc = art["prog"], art["prog"].meta["tick_proc"]
@@ -834,8 +871,7 @@ class Binder:
         self.view, self.names, self.t0 = view, names, t0
         self.prog, self.proc, self.p = prog, proc, p
         fetch, self.refusals = region.fetch(prog, emit.tables_of(art["t2"], view, names))
-        rowr = _channels(prog, proc, fetch,
-                         emit.tables_of(art["t2"], view, names, ("pattern",)))
+        rowr = _channels(prog, proc, fetch, emit.tables_of(art["t2"], view, names, ("pattern",)))
         self.rowfb = _rowblocks(prog, proc, rowr)
         order = [l for l in rpo(p) if l in self.rowfb]
         _need(order, "score not cursor-shaped", proc, "the tick reaches no fetch region")
@@ -848,12 +884,20 @@ class Binder:
         _need(self.ins, "command residue", "instruments", "T2 found no instrument selector")
         pit = self.pit
         entry0 = tuple(b + pit.step * pit.base for b in pit.obases)
-        self.cells = Cells(view, names, pitch=(pit.rids, entry0, pit.step, pit.n),
-                           inspw=self.pwcols, words=tables.word_widths(prog, proc))
+        self.cells = Cells(
+            view,
+            names,
+            pitch=(pit.rids, entry0, pit.step, pit.n),
+            inspw=self.pwcols,
+            words=tables.word_widths(prog, proc),
+        )
         self.voc = Vocab(self.cells, prog.reads(), build.registers(), sch.vidx)
         self.voc.pitch, self.voc.inspw = (pit.rids, pit.obases, pit.step, pit.n), self.pwcols
-        self.voc.insbase, self.voc.inscol, self.voc.insstride = self.ins[0], self.ins[1], \
-            self.ins[2]
+        self.voc.insbase, self.voc.inscol, self.voc.insstride = (
+            self.ins[0],
+            self.ins[1],
+            self.ins[2],
+        )
         self.low = Reader(prog, proc, self.cells, self.voc)
         self.voc.notebase = tables.note_base(self.low, pit, [p])
         _need(self.voc.notebase, "unclassified update", "note", "no cell indexes the tuning")
@@ -861,6 +905,12 @@ class Binder:
         self.voc.img = self.img
         self.ticks = ticks or art["t2"]["horizon"]["ticks"]
         self.segs = {n: list(b) for n, b in sch.segments}
+        # what each step of the binding fills in, in the order ``run`` fills it
+        self.orderbase = self.clockbase = self.clockcell = self.vvar = None
+        self.slots, self.trips, self.inputs, self.badinputs, self.trap = {}, {}, {}, [], None
+        self.score, self.sc, self.armcells, self.packed = None, {}, {}, set()
+        self.tiemask, self.left, self.amb = None, [], {}
+        self.pro, self.accs, self.accat = frozenset(), {}, {}
 
     def freqpair(self):
         """The per-voice pair a frequency accumulator moves: the player's ``freq``."""
@@ -908,15 +958,30 @@ class Binder:
         # the clock is the player's ``rowsleft`` only where the row's own length
         # reloads it: a tune whose clock the tick keeps has no ``dur`` field
         rows = set(self.segs["row"])
-        if not any(type(x) is Store and addr_split(x.a)[0] == self.clockbase
-                   for l in rows for x in self.p.blocks[l].stmts):
+        if not any(
+            type(x) is Store and addr_split(x.a)[0] == self.clockbase
+            for l in rows
+            for x in self.p.blocks[l].stmts
+        ):
             self.clockbase = None
-        got = {"note": voc.notebase, "ins": voc.insbase, "rowsleft": self.clockbase,
-               "orderpos": self.orderbase, "freq.lo": lo, "freq.hi": hi}
+        got = {
+            "note": voc.notebase,
+            "ins": voc.insbase,
+            "rowsleft": self.clockbase,
+            "orderpos": self.orderbase,
+            "freq.lo": lo,
+            "freq.hi": hi,
+        }
         _rename(self.cells, got)
-        self.clockcell = ("rowsleft" if self.clockbase else
-                          (self.cells.voicecell(sch.clock[3]) if sch.inloop
-                           else self.cells.scalarcell(sch.clock[3])))
+        self.clockcell = (
+            "rowsleft"
+            if self.clockbase
+            else (
+                self.cells.voicecell(sch.clock[3])
+                if sch.inloop
+                else self.cells.scalarcell(sch.clock[3])
+            )
+        )
         self.slots = {k: v for k, v in got.items() if v is not None}
         voc.subst = {sch.clock[1].n: {"cell": "phase"}}
         drop = {sch.clock[2].src} | {st.src for st, _g in sch.resets}
@@ -930,8 +995,6 @@ class Binder:
 
     def supplied(self):
         """The names no cell of the tune holds: the bytes a fetch read (the score's)."""
-        from .read import Reader
-
         low, got = self.low, set()
         low.gate, low.scope, low.local, low.pick, low.sub = frozenset(), frozenset(), {}, {}, {}
         for lbl in sum(self.segs.values(), []):
@@ -952,18 +1015,22 @@ class Binder:
 
     def visits(self):
         """The horizon recorded over the fetch regions: one visit a row of a voice."""
-        from . import build, record
-
         rowblocks = self.segs["row"]
-        exits = sorted({s for l in rowblocks for s in succs(self.p.blocks[l].term)
-                        if s not in rowblocks})
+        exits = sorted(
+            {s for l in rowblocks for s in succs(self.p.blocks[l].term) if s not in rowblocks}
+        )
         exits = [e for e in exits if type(self.p.blocks[e].term).__name__ != "Trap"]
         inputs, bad = build.pinned_inputs(self.prog, self.img)
         vnames = sorted(self.sch.vidx)
         groups = [(rowblocks[0], rowblocks, exits)]
         R, fetches, trap, _obs = record.run(
-            self.prog, self.proc, groups, self.ticks, inputs=inputs,
-            envvars={(self.proc, rowblocks[0]): vnames})
+            self.prog,
+            self.proc,
+            groups,
+            self.ticks,
+            inputs=inputs,
+            envvars={(self.proc, rowblocks[0]): vnames},
+        )
         self.trips, self.inputs, self.badinputs, self.trap = dict(R.trips), inputs, bad, trap
         recs = fetches[(self.proc, rowblocks[0])]
         self.vvar = record.voice_name(recs, vnames, self.cells.voices, self.cells.stride)
@@ -972,38 +1039,59 @@ class Binder:
     def bind_fields(self, recs):
         """Section 3.6's event fields, and what a masked score byte is of them."""
         top = self.pit.base + self.pit.n
-        roles = {"dur": self.clockbase or -1, "note": self.voc.notebase,
-                 "ins": self.voc.insbase}
-        seed = ([int(self.img[self.orderbase + v * self.cells.stride])
-                 for v in range(self.cells.voices)] if self.orderbase else None)
-        own = {a for a in roles.values()
-               if a is not None and (self.cells.at(a) or (None,))[0] == "voice"}
-        self.score = Score(recs, self.vvar, roles, self.cells.voices, self.cells.stride,
-                           self.orderbase, top, seed, own)
+        roles = {"dur": self.clockbase or -1, "note": self.voc.notebase, "ins": self.voc.insbase}
+        seed = (
+            [
+                int(self.img[self.orderbase + v * self.cells.stride])
+                for v in range(self.cells.voices)
+            ]
+            if self.orderbase
+            else None
+        )
+        own = {
+            a
+            for a in roles.values()
+            if a is not None and (self.cells.at(a) or (None,))[0] == "voice"
+        }
+        self.score = Score(
+            recs,
+            self.vvar,
+            roles,
+            self.cells.voices,
+            self.cells.stride,
+            self.orderbase,
+            top,
+            seed,
+            own,
+        )
         own = {self.clockbase, self.voc.notebase, self.voc.insbase, self.orderbase}
         self.sc = _scorecells(self.low, self.segs["row"], self.voc.supplied)
         # the byte the row's own fields are read off is the row and not a command:
         # a cell it lands in carries no datum the event's fields do not (§3.6)
         base, temps0 = self.score.facts()
-        packed = {n for n, m in masks_of(self.low)
-                  if n in temps0 and _same([None if v is None else v & (m or 0xFF)
-                                            for v in temps0[n]], base["dur"])}
+        packed = {
+            n
+            for n, m in masks_of(self.low)
+            if n in temps0
+            and _same([None if v is None else v & (m or 0xFF) for v in temps0[n]], base["dur"])
+        }
         self.packed = packed
-        self.armcells = {k: v for k, v in self.sc.items()
-                         if v[1] not in own and v[2] not in packed}
+        self.armcells = {k: v for k, v in self.sc.items() if v[1] not in own and v[2] not in packed}
         for v in range(self.cells.voices):
             for r in self.score.rows[v]:
-                r["sets"] = [[cell, r["sites"][src]]
-                             for src, (cell, _base, _n) in sorted(self.armcells.items())
-                             if src in r["sites"]]
+                r["sets"] = [
+                    [cell, r["sites"][src]]
+                    for src, (cell, _base, _n) in sorted(self.armcells.items())
+                    if src in r["sites"]
+                ]
         facts, temps = self.score.facts()
         got, left = fields_of(masks_of(self.low), facts, temps)
         self.tiemask, self.voc.fields = tie_of(got, left)
         rows = [r for v in range(self.cells.voices) for r in self.score.rows[v]]
-        pairs = {(lbl, id(c)): (lbl, c) for lbl, gs in self.low.guards.items()
-                 for _d, c, _t, _w in gs}
-        self.voc.terms = terms_of(self.low, sorted(pairs.values(), key=lambda x: x[0]),
-                                  facts, rows)
+        pairs = {
+            (lbl, id(c)): (lbl, c) for lbl, gs in self.low.guards.items() for _d, c, _t, _w in gs
+        }
+        self.voc.terms = terms_of(self.low, sorted(pairs.values(), key=lambda x: x[0]), facts, rows)
         self.left = [(n, m) for n, m, _v in left if (n, m) != self.tiemask]
         return self.voc.fields
 
@@ -1016,14 +1104,17 @@ class Binder:
     def plan(self, order=()):
         """One guard plan over the segments: a join folds, or its paths raise a cell."""
         body = set(self.sch.body)
-        groups = [self.segs.get("prelude", []), self.segs["row"], self.segs.get("machine", []),
-                  [l for l in order if l not in body]]
+        groups = [
+            self.segs.get("prelude", []),
+            self.segs["row"],
+            self.segs.get("machine", []),
+            [l for l in order if l not in body],
+        ]
         flags = self.low.planall(groups)
         if flags:
-            from .refuse import Refusal
-
-            self.refusals.append(Refusal("unclassified update", ",".join(flags), "",
-                                         "a join no path folds"))
+            self.refusals.append(
+                Refusal("unclassified update", ",".join(flags), "", "a join no path folds")
+            )
         return flags
 
     def steps(self, lbl, drop, roles, guard, extra, split=False):
@@ -1049,8 +1140,11 @@ class Binder:
             tgt = low.v.target(low, s)
             if tgt is not None:
                 keep.append((i, "reg" if tgt[0] == "reg" else "set", tgt, s))
-        put = {("@" if t[0] in ("copy", "acc") else "") + str(t[1]).lstrip("@")
-               for _i, _k, t, _s in keep if t is not None}
+        put = {
+            ("@" if t[0] in ("copy", "acc") else "") + str(t[1]).lstrip("@")
+            for _i, _k, t, _s in keep
+            if t is not None
+        }
         put = {x.lstrip("@#!*") for x in put}
         sub, got = {}, []
         for i, kind, tgt, s in _epoch(stmts, keep):
@@ -1114,8 +1208,11 @@ class Binder:
                     continue
                 low.lbl, low.sub = d, dict(sub, **self.stored(d))
                 fact = low.v.terms.get(repr(c))
-                got = ([fact, "!=" if t else "==", 0] if fact is not None
-                       else low.term(low.expand(c), t))
+                got = (
+                    [fact, "!=" if t else "==", 0]
+                    if fact is not None
+                    else low.term(low.expand(c), t)
+                )
                 if got not in when:
                     when.append(got)
                     dec.add(d)
@@ -1172,8 +1269,6 @@ class Binder:
 
     def run(self):  # noqa: C901 - one clause per section of the object
         """The bound object, and the report of what each plane supplied."""
-        from . import build, record
-
         self.roles()
         self.supplied()
         recs = self.visits()
@@ -1188,8 +1283,9 @@ class Binder:
         for a in A.order(order):
             rec, d, why = A.record(a, 0)
             if rec is None:
-                self.refusals.append(Refusal("unclassified update", a["cell"]["name"],
-                                             ",".join(a["sites"]), why))
+                self.refusals.append(
+                    Refusal("unclassified update", a["cell"]["name"], ",".join(a["sites"]), why)
+                )
                 continue
             nm = _u16name(self.names, a["cell"]["region"]) or a["id"]
             if rec["cell"].lstrip("#").startswith("c"):
@@ -1214,23 +1310,28 @@ class Binder:
                 elif s.src in sc:
                     roles[s.src] = "arm"
 
-        return self.assemble(order, drop, roles, tables, build)
+        return self.assemble(order, drop, roles)
 
-    def assemble(self, order, drop, roles, tables, build):  # noqa: C901
+    def assemble(self, order, drop, roles):  # noqa: C901
         """The object: the phases, the row program, the score and the records."""
         segs, out = self.segs, _Out()
-        low, sch = self.low, self.sch
-        tick, pre = [], []
+        low, sch, pre = self.low, self.sch, []
         low.gate, low.scope, low.v.payload = frozenset(), set(segs.get("prelude", [])), False
-        for i, r in enumerate(_rows_of(self.guards(
-                self.blockrows(set(segs.get("prelude", [])), order, drop, roles), order),
-                ("set", "reg"))):
+        for i, r in enumerate(
+            _rows_of(
+                self.guards(
+                    self.blockrows(set(segs.get("prelude", [])), order, drop, roles), order
+                ),
+                ("set", "reg"),
+            )
+        ):
             pre.append(out.stream("prelude%d" % i, [r]))
         low.gate = frozenset((id(c), t) for c, t in sch.boundary)
         low.scope, low.v.payload = set(segs["row"]), True
         rowprog, ncmd, nst = [], 0, 0
         for _lbl, kind, when, sets, _d in self.guards(
-                self.blockrows(set(segs["row"]), order, drop, roles, True), order):
+            self.blockrows(set(segs["row"]), order, drop, roles, True), order
+        ):
             if kind == "note":
                 rowprog.append({"note": True, **({"when": when} if when else {})})
             elif kind == "ins":
@@ -1240,31 +1341,40 @@ class Binder:
                     rowprog.append({"commands": True})
                 ncmd += 1
             elif kind == "reg":
-                nm = out.stream("note_on%d" % nst,
-                                [{"when": when, "sets": [list(x) for x in sets]}])
+                nm = out.stream(
+                    "note_on%d" % nst, [{"when": when, "sets": [list(x) for x in sets]}]
+                )
                 rowprog.append({"stream": nm})
                 nst += 1
             else:
-                rowprog.append({"sets": [list(x) for x in sets],
-                                **({"when": when} if when else {})})
+                rowprog.append(
+                    {"sets": [list(x) for x in sets], **({"when": when} if when else {})}
+                )
         body = set(self.sch.body)
         glob = [l for l in order if l not in body and l not in self.pro]
         low.gate, low.scope, low.v.payload = frozenset(), set(glob), False
         low.gate, low.scope, low.v.payload = frozenset(), set(self.pro), False
-        prol = _rows_of(self.guards(self.blockrows(set(self.pro), order, drop, roles), order),
-                        ("set", "reg"))
+        prol = _rows_of(
+            self.guards(self.blockrows(set(self.pro), order, drop, roles), order), ("set", "reg")
+        )
         low.gate, low.scope, low.v.payload = frozenset(), set(glob), False
-        gl = [out.stream("global%d" % i, [r]) for i, r in enumerate(
-            _rows_of(self.guards(self.blockrows(set(glob), order, drop, roles), order),
-                     ("set", "reg")))]
+        gl = [
+            out.stream("global%d" % i, [r])
+            for i, r in enumerate(
+                _rows_of(
+                    self.guards(self.blockrows(set(glob), order, drop, roles), order),
+                    ("set", "reg"),
+                )
+            )
+        ]
         low.gate, low.scope = frozenset(), set(segs.get("machine", []))
         low.v.payload = False
-        items, rows = [], []
+        rows = []
         for lbl, kind, when, sets, _d in self.guards(
-                self.blockrows(set(segs.get("machine", [])), order, drop, roles), order):
+            self.blockrows(set(segs.get("machine", [])), order, drop, roles), order
+        ):
             if kind in ("set", "reg"):
-                rows.append((order.index(lbl), {"when": when,
-                                                "sets": [list(x) for x in sets]}))
+                rows.append((order.index(lbl), {"when": when, "sets": [list(x) for x in sets]}))
         accat = sorted(self.accat.items(), key=lambda kv: kv[1])
         rank, run, nm = 0, [], 0
         for at, row in rows:
@@ -1281,34 +1391,41 @@ class Binder:
         for key, _at in accat:
             self.accs[key]["rank"] = rank
             rank += 1
-        return self.object(out, pre, rowprog, gl, prol, tables, build)
+        return self.object(out, pre, rowprog, gl, prol)
 
-    def object(self, out, pre, rowprog, gl, prol, tables, build):  # noqa: C901
+    def object(self, out, pre, rowprog, gl, prol):  # noqa: C901
         """The sections of the object, each the plane that supplied it."""
-        low, sch, art = self.low, self.sch, self.art
+        low, sch, art, tick = self.low, self.sch, self.art, []
         rate = build.divider_rate(sch.divider[1], low, self.img) if sch.divider else 1
-        phase = (build.divider_phase(self.img, sch.divider[0], rate - 1, rate)
-                 if sch.divider and rate > 1 else 0)
-        tick = []
+        phase = (
+            build.divider_phase(self.img, sch.divider[0], rate - 1, rate)
+            if sch.divider and rate > 1
+            else 0
+        )
         for name in sch.tick:
             tick += [{"stream": nm} for nm in pre] if name == "prelude" else [name]
         orders, pats = self.score.events(self.tie)
         self.armsets(pats, out)
         # the words a transposition of the object's own can reach, and the whole
         # region an instrument whose sound is no pitch reads its own from (§3.2)
-        whole = self.trapped(tables.beyond_words(
-            self.cells, low, self.pit, tables.beyond_limit(self.cells, low, self.pit)))
-        words = whole[:max(_transposed(out.streams), 1)]
+        whole = self.trapped(
+            tables.beyond_words(
+                self.cells, low, self.pit, tables.beyond_limit(self.cells, low, self.pit)
+            )
+        )
+        words = whole[: max(_transposed(out.streams), 1)]
         for st in out.streams.values():
             st["beyond"] = {"id": "the fused tuning", "words": words}
-        instruments = _instruments(art, self.view, self.names, self.ins, self.pwcols,
-                                   self.img, self.accs)
+        instruments = _instruments(
+            art, self.view, self.names, self.ins, self.pwcols, self.img, self.accs
+        )
         # a record no cell of the tune ever selects is no record of the object; a
         # score whose row states no instrument selects them all
         got = {r["ins"] for v in range(self.cells.voices) for r in self.score.rows[v]}
         if got - {None}:
-            got |= {int(x) for x in self.img[self.voc.insbase:
-                                             self.voc.insbase + self.cells.voices]}
+            got |= {
+                int(x) for x in self.img[self.voc.insbase : self.voc.insbase + self.cells.voices]
+            }
             instruments = {k: v for k, v in instruments.items() if int(k) in got}
         self.pitched(instruments, whole)
         cellseed, globseed = self.cells.seed(self.img)
@@ -1321,9 +1438,14 @@ class Binder:
                 "cycles_per_tick": self.prog.meta["entry"]["cycles_per_tick"],
                 "voices": self.cells.voices,
                 "horizon": self.ticks,
-                "voice_order": build.voice_order(self.p, sch.head,
-                                                 _latches(self.prog, self.proc, sch),
-                                                 sch.vidx, self.cells.voices, self.cells.stride),
+                "voice_order": build.voice_order(
+                    self.p,
+                    sch.head,
+                    _latches(self.prog, self.proc, sch),
+                    sch.vidx,
+                    self.cells.voices,
+                    self.cells.stride,
+                ),
                 "commit_order": list(sch.commit_order),
                 "instrument": {},
                 "tempo": {
@@ -1342,12 +1464,15 @@ class Binder:
             },
             "pitch": {"base": self.pit.base, "freq": list(art["t2"]["pitch"]["entries"])},
             "streams": {**out.streams, **build.table_streams(self.voc, self.img)},
-            "accs": {k: v for k, v in sorted(self.accs.items(), key=lambda kv: kv[1]["rank"])},
+            "accs": dict(sorted(self.accs.items(), key=lambda kv: kv[1]["rank"])),
             "instruments": instruments,
             "score": {"patterns": pats, "orders": orders},
             "globals": {**self.flags(), **({"streams": gl} if gl else {})},
-            "state0": {"cells": cellseed, "globals": globseed,
-                       **({"prologue": {"rows": prol}} if prol else {})},
+            "state0": {
+                "cells": cellseed,
+                "globals": globseed,
+                **({"prologue": {"rows": prol}} if prol else {}),
+            },
         }
         _merge_halves(obj)
         _dce(obj)
@@ -1361,8 +1486,9 @@ class Binder:
         sets += sum(len(s.get("sets", ())) for s in obj["meta"]["row"])
         t1 = self.art["t1"].get("accs") or []
         return {
-            "store_sites": sum(1 for b in self.p.blocks.values() for x in b.stmts
-                               if type(x) is Store),
+            "store_sites": sum(
+                1 for b in self.p.blocks.values() for x in b.stmts if type(x) is Store
+            ),
             "streams": len(obj["streams"]),
             "rows": len(rows) + len(obj["meta"]["row"]),
             "sets": sets,
@@ -1413,14 +1539,19 @@ class Binder:
         The packed row byte is the event's own fields (§3.6), so the object has no
         cell for it and the word that would read one is a ``trap``.
         """
-        names = {self.sc[src][0].lstrip("@#") for src in self.sc
-                 if self.sc[src][2] in getattr(self, "packed", ())}
+        names = {v[0].lstrip("@#") for v in self.sc.values() if v[2] in self.packed}
         out = []
         for w in words:
-            hit = [h for h in w.get("u16", ()) if isinstance(h, dict)
-                   and (h.get("cell") or [""])[0] in names]
-            out.append({"trap": "the packed row byte, which the score keeps as an "
-                                "event's own fields"} if hit else w)
+            hit = [
+                h
+                for h in w.get("u16", ())
+                if isinstance(h, dict) and (h.get("cell") or [""])[0] in names
+            ]
+            out.append(
+                {"trap": "the packed row byte, which the score keeps as an " "event's own fields"}
+                if hit
+                else w
+            )
         return out
 
     def pitched(self, instruments, words):
@@ -1461,7 +1592,7 @@ def _flags(node):
 def _merge_halves(obj):
     """A cell the object names by its halves, seeded as the one word it is."""
     got = obj["state0"]["cells"]
-    for name in [n for n in got if n.endswith(".lo")]:
+    for name in [n for n in list(got) if n.endswith(".lo")]:
         base = name[:-3]
         hi = got.pop(base + ".hi", None)
         lo = got.pop(name)
@@ -1529,6 +1660,7 @@ def _rows_of(steps, kinds):
         out.append({"when": when, "sets": [list(x) for x in sets]})
     return out
 
+
 def _epoch(stmts, got):
     """One block's stores in an order a row's own ``sets`` can be run in.
 
@@ -1580,8 +1712,10 @@ def _before(stmts, i, j, pos):
 def _carried(low, c):
     """Whether a guard term reads a name more than one block of the tick binds."""
     low.lbl, low.local, low.pick = None, {}, {}
-    return any(type(x) is Var and x.n not in low.defs and x.n not in low.v.vidx
-               for x in walk(low.expand(c)))
+    return any(
+        type(x) is Var and x.n not in low.defs and x.n not in low.v.vidx
+        for x in walk(low.expand(c))
+    )
 
 
 def _copies(low, got):
@@ -1610,13 +1744,29 @@ def _copies(low, got):
                 continue
             sub = got[k][3]
             node = {"cell": name}
-            out[k] = (got[k][0], got[k][1], [put, got[k][2][1]],
-                      None if sub is None else (sub[0], node))
+            out[k] = (
+                got[k][0],
+                got[k][1],
+                [put, got[k][2][1]],
+                None if sub is None else (sub[0], node),
+            )
     return [x for k, x in enumerate(out) if k not in drop]
 
 
-KEEP = ("rowsleft", "dur", "note", "ins", "freq", "orderpos", "tied", "phase", "counter",
-        "voice_index", "lastnote", "wave")
+KEEP = (
+    "rowsleft",
+    "dur",
+    "note",
+    "ins",
+    "freq",
+    "orderpos",
+    "tied",
+    "phase",
+    "counter",
+    "voice_index",
+    "lastnote",
+    "wave",
+)
 
 
 def _tables(obj):
@@ -1678,17 +1828,37 @@ def _dce(obj):
     named |= {e["stream"] for e in obj["meta"]["tick"] if not isinstance(e, str)}
     named |= set(obj["globals"].get("streams", ()))
     named |= {n for n in obj["streams"] if _tables(obj) & {n}}
-    obj["streams"] = {k: v for k, v in obj["streams"].items()
-                      if v["rows"] and (k in named or "rank" in v)}
-    obj["meta"]["row"] = [s for s in obj["meta"]["row"]
-                          if "stream" not in s or s["stream"] in obj["streams"]]
-    obj["meta"]["tick"] = [e for e in obj["meta"]["tick"]
-                           if isinstance(e, str) or e["stream"] in obj["streams"]]
-    obj["globals"]["streams"] = [k for k in obj["globals"].get("streams", ())
-                                 if k in obj["streams"]]
+    obj["streams"] = {
+        k: v for k, v in obj["streams"].items() if v["rows"] and (k in named or "rank" in v)
+    }
+    obj["meta"]["row"] = [
+        s for s in obj["meta"]["row"] if "stream" not in s or s["stream"] in obj["streams"]
+    ]
+    obj["meta"]["tick"] = [
+        e for e in obj["meta"]["tick"] if isinstance(e, str) or e["stream"] in obj["streams"]
+    ]
+    obj["globals"]["streams"] = [
+        k for k in obj["globals"].get("streams", ()) if k in obj["streams"]
+    ]
     if not obj["globals"]["streams"]:
         del obj["globals"]["streams"]
     return obj
+
+
+def _offsets(node, got):
+    """Every constant transposition one part of the object states (§3.2)."""
+    stack = [node]
+    while stack:
+        x = stack.pop()
+        if isinstance(x, dict):
+            for k, v in x.items():
+                if k == "transpose" and isinstance(v, int):
+                    got.append(v)
+                else:
+                    stack.append(v)
+        elif isinstance(x, (list, tuple)):
+            stack += list(x)
+    return got
 
 
 def _transposed(streams):
@@ -1696,21 +1866,12 @@ def _transposed(streams):
     got = [0]
     for st in streams.values():
         for r in st["rows"]:
-            stack = [r.get("when", []), [x[1] for x in r["sets"]]]
-            while stack:
-                x = stack.pop()
-                if isinstance(x, dict):
-                    for k, v in x.items():
-                        got.append(v) if k == "transpose" and isinstance(v, int) else stack.append(v)
-                elif isinstance(x, (list, tuple)):
-                    stack += list(x)
+            _offsets([r.get("when", []), [x[1] for x in r["sets"]]], got)
     return max(got)
 
 
 def _ev(e, env):
     """One condition over a byte the score supplied, evaluated; ``None`` where it reads more."""
-    from ..tuneprog.ir import evalbin
-
     t = type(e)
     if t is Const:
         return e.v
@@ -1763,466 +1924,24 @@ def _staged(steps, order, facts):
             reads, dec = facts(step)
             if not reads or not dec:
                 continue
-            i = next((i for i in range(j)
-                      if out[i][2] and reads & {x[0].lstrip("@#!*") for x in out[i][2]}
-                      and out[i][3] not in dec
-                      and max(at.get(d, 0) for d in dec) < at.get(out[i][3], 0)
-                      and at.get(out[i][3], 0) <= at.get(step[3], 0)), None)
+            i = next(
+                (
+                    i
+                    for i in range(j)
+                    if out[i][2]
+                    and reads & {x[0].lstrip("@#!*") for x in out[i][2]}
+                    and out[i][3] not in dec
+                    and max(at.get(d, 0) for d in dec) < at.get(out[i][3], 0)
+                    and at.get(out[i][3], 0) <= at.get(step[3], 0)
+                ),
+                None,
+            )
             if i is not None:
                 out.insert(i, out.pop(j))
                 break
         else:
             return out
     return out
-
-
-def _epoch(stmts, got):
-    """One block's stores in an order a row's own ``sets`` can be run in.
-
-    A store whose value was *read* before a later store moved the cell it reads
-    stands before that store: the IR names the read where it happened, and a row
-    has no channel for a value read one statement earlier.
-    """
-    pos = {s.n: i for i, s in enumerate(stmts) if type(s) is Let}
-    out = list(got)
-    for _ in range(len(out) * len(out) + 1):
-        for a, x in enumerate(out):
-            i = x[0]
-            b = next((k for k in range(a) if _before(stmts, i, out[k][0], pos)), None)
-            if b is not None:
-                out.insert(b, out.pop(a))
-                break
-        else:
-            return out
-    return out
-
-
-def _deps(stmts, i, pos):
-    """``{address: the statement its value was read at}`` for one store's value."""
-    out, seen, stack = {}, set(), [(stmts[i].v, i)]
-    while stack:
-        e, at = stack.pop()
-        for x in walk(e):
-            if type(x) is Load:
-                b = addr_split(x.a)[0]
-                if b is not None:
-                    out[b] = min(out.get(b, at), at)
-            elif type(x) is Var and x.n in pos and x.n not in seen:
-                seen.add(x.n)
-                stack.append((stmts[pos[x.n]].e, pos[x.n]))
-    return out
-
-
-def _before(stmts, i, j, pos):
-    """Whether store ``i`` must stand before store ``j`` in one row's ``sets``."""
-    if type(stmts[j]) is not Store or stmts[j].cls == "io":
-        return False
-    base = addr_split(stmts[j].a)[0]
-    if base is None:
-        return False
-    got = _deps(stmts, i, pos).get(base)
-    return got is not None and got < j
-
-
-def _carried(low, c):
-    """Whether a guard term reads a name more than one block of the tick binds."""
-    low.lbl, low.local, low.pick = None, {}, {}
-    return any(type(x) is Var and x.n not in low.defs and x.n not in low.v.vidx
-               for x in walk(low.expand(c)))
-
-
-def _copies(low, got):
-    """Fold the copies of one per-voice cell a block writes at constant addresses.
-
-    A value every copy takes is one write every voice makes (§3.6's ``all``); a
-    copy that is neither the committing voice's nor one of a full set is no cell.
-    """
-    at = {}
-    for k, x in enumerate(got):
-        pair = x[2]
-        if pair is not None and isinstance(pair[0], tuple):
-            at.setdefault(pair[0][0], []).append(k)
-    out, drop = list(got), set()
-    for name, ks in at.items():
-        vals = {got[k][2][0][1]: repr(got[k][2][1]) for k in ks}
-        full = len(vals) == low.cells.voices and len(set(vals.values())) == 1
-        for j, k in enumerate(ks):
-            put = ("*" if full else "@") + name
-            if full and j:
-                drop.add(k)
-                continue
-            if not full and got[k][2][0][1]:
-                drop.add(k)
-                low.bad.add(name)
-                continue
-            sub = got[k][3]
-            node = {"cell": name}
-            out[k] = (got[k][0], got[k][1], [put, got[k][2][1]],
-                      None if sub is None else (sub[0], node))
-    return [x for k, x in enumerate(out) if k not in drop]
-
-
-KEEP = ("rowsleft", "dur", "note", "ins", "freq", "orderpos", "tied", "phase", "counter",
-        "voice_index", "lastnote", "wave")
-
-
-def _tables(obj):
-    """The declared streams a ``tabcell`` reads: one row a byte of a const table."""
-    out, stack = set(), [obj["streams"], obj["accs"], obj["meta"], obj["instruments"]]
-    while stack:
-        x = stack.pop()
-        if isinstance(x, dict):
-            for k, v in x.items():
-                if k == "tabcell":
-                    out.add(v[0])
-                stack.append(v)
-        elif isinstance(x, (list, tuple)):
-            stack += list(x)
-    return out
-
-
-def _needed(target):
-    """Whether one ``sets`` target is a register the chip has, and not a cell."""
-    return target[:1] not in "@#!*"
-
-
-def _dce(obj):
-    """Drop the assignments whose cell nothing the object states reads.
-
-    Liveness and not a count of readers: a cell two dead rows pass between them
-    is dead, so the live set grows from the roots -- the registers, the records,
-    the score and the words past the tuning -- through the rows that write them.
-    """
-    rows = [r for st in obj["streams"].values() for r in st["rows"] if "sets" in r]
-    rows += [s for s in obj["meta"]["row"] if "sets" in s]
-    nodes = [(r, k) for r in rows for k in range(len(r["sets"]))]
-    live = set(KEEP) | {a["cell"].lstrip("#").split(".")[0] for a in obj["accs"].values()}
-    for part in ("accs", "score", "globals", "instruments"):
-        live |= _reads(obj[part])
-    live |= _reads(obj["meta"]["tempo"]) | _reads([s.get("when") for s in obj["meta"]["row"]])
-    live |= _reads([st.get("beyond") for st in obj["streams"].values()])
-    keep = set()
-    for _ in range(len(nodes) + 1):
-        more = set()
-        for r, k in nodes:
-            if (id(r), k) in keep:
-                continue
-            t = r["sets"][k][0]
-            if _needed(t) or t.lstrip("@#!*").split(".")[0] in live:
-                more.add((id(r), k))
-        if not more:
-            break
-        keep |= more
-        for r, k in nodes:
-            if (id(r), k) in keep:
-                live |= _reads(r["sets"][k][1]) | _reads(r.get("when", []))
-    for r in rows:
-        r["sets"] = [x for k, x in enumerate(r["sets"]) if (id(r), k) in keep]
-    for st in obj["streams"].values():
-        st["rows"] = [r for r in st["rows"] if r.get("sets") or "sets" not in r]
-    obj["meta"]["row"] = [s for s in obj["meta"]["row"] if "sets" not in s or s["sets"]]
-    named = {s["stream"] for s in obj["meta"]["row"] if "stream" in s}
-    named |= {e["stream"] for e in obj["meta"]["tick"] if not isinstance(e, str)}
-    named |= set(obj["globals"].get("streams", ()))
-    named |= {n for n in obj["streams"] if _tables(obj) & {n}}
-    obj["streams"] = {k: v for k, v in obj["streams"].items()
-                      if v["rows"] and (k in named or "rank" in v)}
-    obj["meta"]["row"] = [s for s in obj["meta"]["row"]
-                          if "stream" not in s or s["stream"] in obj["streams"]]
-    obj["meta"]["tick"] = [e for e in obj["meta"]["tick"]
-                           if isinstance(e, str) or e["stream"] in obj["streams"]]
-    obj["globals"]["streams"] = [k for k in obj["globals"].get("streams", ())
-                                 if k in obj["streams"]]
-    if not obj["globals"]["streams"]:
-        del obj["globals"]["streams"]
-    return obj
-
-
-def _transposed(streams):
-    """How far past the tuning a transposition of the object's own can reach (§3.2)."""
-    got = [0]
-    for st in streams.values():
-        for r in st["rows"]:
-            stack = [r.get("when", []), [x[1] for x in r["sets"]]]
-            while stack:
-                x = stack.pop()
-                if isinstance(x, dict):
-                    for k, v in x.items():
-                        got.append(v) if k == "transpose" and isinstance(v, int) else stack.append(v)
-                elif isinstance(x, (list, tuple)):
-                    stack += list(x)
-    return max(got)
-
-
-def _ev(e, env):
-    """One condition over a byte the score supplied, evaluated; ``None`` where it reads more."""
-    from ..tuneprog.ir import evalbin
-
-    t = type(e)
-    if t is Const:
-        return e.v
-    if t is Var:
-        return env.get(e.n)
-    if t is Bin:
-        a, b = _ev(e.a, env), _ev(e.b, env)
-        return None if a is None or b is None else evalbin(e.op, a, b, e.w or 1)
-    return None
-
-
-def terms_of(low, guards, facts, rows):
-    """``{a guard the score's own byte decides: the row fact it is}`` (§3.6).
-
-    A term whose only input is a byte a fetch read is a fact of the row, and
-    which fact is decided by what the horizon's own visits say -- not by a
-    reading of what the byte means.
-    """
-    out = {}
-    for lbl, c in guards:
-        low.lbl, low.local, low.pick, low.sub = lbl, {}, {}, {}
-        e = low.expand(c)
-        names = {x.n for x in walk(e) if type(x) is Var}
-        if len(names) != 1 or not names <= set(low.v.supplied):
-            continue
-        got = [_ev(e, r["temps"]) for r in rows]
-        if any(v is None for v in got):
-            continue
-        for key in ("wraps", "sounds", "newins", "field"):
-            if _truthy(got, facts[key]):
-                out[repr(c)] = key
-                break
-            if _truthy(got, [1 - x for x in facts[key]]):
-                out[repr(c)] = {"xor": [key, 1]}
-                break
-    return out
-
-
-def _stale(out, j, dec, at):
-    """The row a guard of row ``j`` would be read one store too late after."""
-    step = out[j]
-    reads = _reads([c for _d, c, _t in step[1]])
-    del reads
-    return None
-
-
-def _epoch(stmts, got):
-    """One block's stores in an order a row's own ``sets`` can be run in.
-
-    A store whose value was *read* before a later store moved the cell it reads
-    stands before that store: the IR names the read where it happened, and a row
-    has no channel for a value read one statement earlier.
-    """
-    pos = {s.n: i for i, s in enumerate(stmts) if type(s) is Let}
-    out = list(got)
-    for _ in range(len(out) * len(out) + 1):
-        for a, x in enumerate(out):
-            i = x[0]
-            b = next((k for k in range(a) if _before(stmts, i, out[k][0], pos)), None)
-            if b is not None:
-                out.insert(b, out.pop(a))
-                break
-        else:
-            return out
-    return out
-
-
-def _deps(stmts, i, pos):
-    """``{address: the statement its value was read at}`` for one store's value."""
-    out, seen, stack = {}, set(), [(stmts[i].v, i)]
-    while stack:
-        e, at = stack.pop()
-        for x in walk(e):
-            if type(x) is Load:
-                b = addr_split(x.a)[0]
-                if b is not None:
-                    out[b] = min(out.get(b, at), at)
-            elif type(x) is Var and x.n in pos and x.n not in seen:
-                seen.add(x.n)
-                stack.append((stmts[pos[x.n]].e, pos[x.n]))
-    return out
-
-
-def _before(stmts, i, j, pos):
-    """Whether store ``i`` must stand before store ``j`` in one row's ``sets``."""
-    if type(stmts[j]) is not Store or stmts[j].cls == "io":
-        return False
-    base = addr_split(stmts[j].a)[0]
-    if base is None:
-        return False
-    got = _deps(stmts, i, pos).get(base)
-    return got is not None and got < j
-
-
-def _carried(low, c):
-    """Whether a guard term reads a name more than one block of the tick binds."""
-    low.lbl, low.local, low.pick = None, {}, {}
-    return any(type(x) is Var and x.n not in low.defs and x.n not in low.v.vidx
-               for x in walk(low.expand(c)))
-
-
-def _copies(low, got):
-    """Fold the copies of one per-voice cell a block writes at constant addresses.
-
-    A value every copy takes is one write every voice makes (§3.6's ``all``); a
-    copy that is neither the committing voice's nor one of a full set is no cell.
-    """
-    at = {}
-    for k, x in enumerate(got):
-        pair = x[2]
-        if pair is not None and isinstance(pair[0], tuple):
-            at.setdefault(pair[0][0], []).append(k)
-    out, drop = list(got), set()
-    for name, ks in at.items():
-        vals = {got[k][2][0][1]: repr(got[k][2][1]) for k in ks}
-        full = len(vals) == low.cells.voices and len(set(vals.values())) == 1
-        for j, k in enumerate(ks):
-            put = ("*" if full else "@") + name
-            if full and j:
-                drop.add(k)
-                continue
-            if not full and got[k][2][0][1]:
-                drop.add(k)
-                low.bad.add(name)
-                continue
-            sub = got[k][3]
-            node = {"cell": name}
-            out[k] = (got[k][0], got[k][1], [put, got[k][2][1]],
-                      None if sub is None else (sub[0], node))
-    return [x for k, x in enumerate(out) if k not in drop]
-
-
-KEEP = ("rowsleft", "dur", "note", "ins", "freq", "orderpos", "tied", "phase", "counter",
-        "voice_index", "lastnote", "wave")
-
-
-def _tables(obj):
-    """The declared streams a ``tabcell`` reads: one row a byte of a const table."""
-    out, stack = set(), [obj["streams"], obj["accs"], obj["meta"], obj["instruments"]]
-    while stack:
-        x = stack.pop()
-        if isinstance(x, dict):
-            for k, v in x.items():
-                if k == "tabcell":
-                    out.add(v[0])
-                stack.append(v)
-        elif isinstance(x, (list, tuple)):
-            stack += list(x)
-    return out
-
-
-def _needed(target):
-    """Whether one ``sets`` target is a register the chip has, and not a cell."""
-    return target[:1] not in "@#!*"
-
-
-def _dce(obj):
-    """Drop the assignments whose cell nothing the object states reads.
-
-    Liveness and not a count of readers: a cell two dead rows pass between them
-    is dead, so the live set grows from the roots -- the registers, the records,
-    the score and the words past the tuning -- through the rows that write them.
-    """
-    rows = [r for st in obj["streams"].values() for r in st["rows"] if "sets" in r]
-    rows += [s for s in obj["meta"]["row"] if "sets" in s]
-    nodes = [(r, k) for r in rows for k in range(len(r["sets"]))]
-    live = set(KEEP) | {a["cell"].lstrip("#").split(".")[0] for a in obj["accs"].values()}
-    for part in ("accs", "score", "globals", "instruments"):
-        live |= _reads(obj[part])
-    live |= _reads(obj["meta"]["tempo"]) | _reads([s.get("when") for s in obj["meta"]["row"]])
-    live |= _reads([st.get("beyond") for st in obj["streams"].values()])
-    keep = set()
-    for _ in range(len(nodes) + 1):
-        more = set()
-        for r, k in nodes:
-            if (id(r), k) in keep:
-                continue
-            t = r["sets"][k][0]
-            if _needed(t) or t.lstrip("@#!*").split(".")[0] in live:
-                more.add((id(r), k))
-        if not more:
-            break
-        keep |= more
-        for r, k in nodes:
-            if (id(r), k) in keep:
-                live |= _reads(r["sets"][k][1]) | _reads(r.get("when", []))
-    for r in rows:
-        r["sets"] = [x for k, x in enumerate(r["sets"]) if (id(r), k) in keep]
-    for st in obj["streams"].values():
-        st["rows"] = [r for r in st["rows"] if r.get("sets") or "sets" not in r]
-    obj["meta"]["row"] = [s for s in obj["meta"]["row"] if "sets" not in s or s["sets"]]
-    named = {s["stream"] for s in obj["meta"]["row"] if "stream" in s}
-    named |= {e["stream"] for e in obj["meta"]["tick"] if not isinstance(e, str)}
-    named |= set(obj["globals"].get("streams", ()))
-    named |= {n for n in obj["streams"] if _tables(obj) & {n}}
-    obj["streams"] = {k: v for k, v in obj["streams"].items()
-                      if v["rows"] and (k in named or "rank" in v)}
-    obj["meta"]["row"] = [s for s in obj["meta"]["row"]
-                          if "stream" not in s or s["stream"] in obj["streams"]]
-    obj["meta"]["tick"] = [e for e in obj["meta"]["tick"]
-                           if isinstance(e, str) or e["stream"] in obj["streams"]]
-    obj["globals"]["streams"] = [k for k in obj["globals"].get("streams", ())
-                                 if k in obj["streams"]]
-    if not obj["globals"]["streams"]:
-        del obj["globals"]["streams"]
-    return obj
-
-
-def _transposed(streams):
-    """How far past the tuning a transposition of the object's own can reach (§3.2)."""
-    got = [0]
-    for st in streams.values():
-        for r in st["rows"]:
-            stack = [r.get("when", []), [x[1] for x in r["sets"]]]
-            while stack:
-                x = stack.pop()
-                if isinstance(x, dict):
-                    for k, v in x.items():
-                        got.append(v) if k == "transpose" and isinstance(v, int) else stack.append(v)
-                elif isinstance(x, (list, tuple)):
-                    stack += list(x)
-    return max(got)
-
-
-def _ev(e, env):
-    """One condition over a byte the score supplied, evaluated; ``None`` where it reads more."""
-    from ..tuneprog.ir import evalbin
-
-    t = type(e)
-    if t is Const:
-        return e.v
-    if t is Var:
-        return env.get(e.n)
-    if t is Bin:
-        a, b = _ev(e.a, env), _ev(e.b, env)
-        return None if a is None or b is None else evalbin(e.op, a, b, e.w or 1)
-    return None
-
-
-def terms_of(low, guards, facts, rows):
-    """``{a guard the score's own byte decides: the row fact it is}`` (§3.6).
-
-    A term whose only input is a byte a fetch read is a fact of the row, and
-    which fact is decided by what the horizon's own visits say -- not by a
-    reading of what the byte means.
-    """
-    out = {}
-    for lbl, c in guards:
-        low.lbl, low.local, low.pick, low.sub = lbl, {}, {}, {}
-        e = low.expand(c)
-        names = {x.n for x in walk(e) if type(x) is Var}
-        if len(names) != 1 or not names <= set(low.v.supplied):
-            continue
-        got = [_ev(e, r["temps"]) for r in rows]
-        if any(v is None for v in got):
-            continue
-        for key in ("wraps", "sounds", "newins", "field"):
-            if _truthy(got, facts[key]):
-                out[repr(c)] = key
-                break
-            if _truthy(got, [1 - x for x in facts[key]]):
-                out[repr(c)] = {"xor": [key, 1]}
-                break
-    return out
-
 
 
 def lift(art, ticks=None, hints=None):

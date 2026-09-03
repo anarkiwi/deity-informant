@@ -13,7 +13,7 @@ from ..tuneprog import accum, pipeline, provenance
 from ..tuneprog.graph import succs
 from ..tuneprog.history import history
 from ..tuneprog.ir import Bin, Const, Let, Load, Store, Tuneprog, Var
-from ..tuneprog.irwalk import addr_split, walk
+from ..tuneprog.irwalk import addr_split
 from ..tuneprog.recover import Names
 from . import lift as t2lift
 from .universal import CHIP, REG
@@ -103,8 +103,6 @@ def pinned_inputs(prog, img):
         else:
             out[addr] = int(img[addr])
     return out, bad
-
-
 
 
 def prune(obj):
@@ -218,4 +216,3 @@ def table_streams(voc, img):
         name: {"rows": [{"b": int(img[a])} for a in range(base, top + 1)]}
         for name, (base, top) in sorted(voc.tables.items())
     }
-
