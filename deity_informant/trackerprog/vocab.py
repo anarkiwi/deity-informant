@@ -53,9 +53,10 @@ class Vocab:
 
     # ---- loads -------------------------------------------------------------------
     def load(self, low, x):
+        own, at = addr_split(x.a)
         base, idx = addr_split(low.expand(x.a))
         if base is None:
-            base, idx = addr_split(x.a)
+            base, idx = own, at
         if base is None:
             raise Unlowerable("computed address")
         got = self.imaged(base, x.w, idx is not None and low.isvoice(idx))
@@ -68,7 +69,7 @@ class Vocab:
         got = self.tuning(low, base, idx)
         if got is not None:
             return got
-        raw = addr_split(x.a)[1] if addr_split(x.a)[0] == base else idx
+        raw = at if own == base else idx  # the index's own reading, not its folded value
         if x.r in self.inscol and self.isins(low, raw):
             return {"ins": self.inscol[x.r]}
         if x.r in self.inspw and self.isins(low, raw):
@@ -265,9 +266,10 @@ class Vocab:
             return ("reg", reg)
         if s.src in self.dropstores:
             return None
+        own, at = addr_split(s.a)
         base, idx = addr_split(low.expand(s.a))
         if base is None:
-            base, idx = addr_split(s.a)
+            base, idx = own, at
         if base is None:
             raise Unlowerable("computed address")
         voiced = idx is not None and low.isvoice(idx)
@@ -284,7 +286,6 @@ class Vocab:
             return ("cell", name if name.startswith("#") else "@" + name)
         if low.isvoice(idx):
             return ("cell", "@" + self.cells.voicecell(base))
-        raw = addr_split(s.a)[1] if addr_split(s.a)[0] == base else idx
-        if s.r in self.inspw and self.isins(low, raw):
+        if s.r in self.inspw and self.isins(low, at if own == base else idx):
             return ("acc", "ins.pw." + self.inspw[s.r])
         raise Unlowerable("$%04X[..]" % s.lo)
