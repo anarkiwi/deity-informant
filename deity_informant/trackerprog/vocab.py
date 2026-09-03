@@ -1,6 +1,6 @@
 """B7 -- what the object calls the thing one load or store names.
 
-The leaf half of :mod:`.lower`: a register from T0, an instrument column, the
+The leaf half of :mod:`.read`: a register from T0, an instrument column, the
 tuning through ``transpose``, the instrument's own pulse pair, or a named cell.
 A leaf with no name here is a refusal, and the score supplies the score's bytes.
 """
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from ..tuneprog.ir import Bin, Const, Load, Var
 from ..tuneprog.irwalk import addr_split
-from .lower import Unlowerable, masked
+from .read import Unlowerable, masked
 from .universal import REGNAME
 
 COLUMN = "b"  # the one column a table materialised as a stream of its own bytes has
@@ -50,6 +50,12 @@ class Vocab:
         self.tables = {}  # stream name -> (base, top): a const table read at a cell
         self.rowblocks = frozenset()  # the fetch's own blocks: their bytes are the score
         self.shadow = ()  # (base, size): the register file every write lands in
+        # (score byte, mask) -> the section 3.6 event field that value is
+        self.fields = {}
+        # a guard the score's own byte decides -> the row fact it is
+        self.terms = {}
+        # whether the rows being read stand where section 3.6's payload does
+        self.payload = True
 
     # ---- loads -------------------------------------------------------------------
     def load(self, low, x):
@@ -91,6 +97,10 @@ class Vocab:
         """
         top = x.hi
         if x.w != 1 or top < base or not low.frozen(base, top - base + 1):
+            return None
+        # a read whose address is no constant plus an index is no table of the
+        # tune's: the base a split leaves is an offset and not where bytes live
+        if self.cells.region(base) is None:
             return None
         if low.lbl in self.rowblocks:  # the bytes a fetch read are the score's own
             return None
@@ -164,7 +174,7 @@ class Vocab:
         return False
 
     def cellread(self, low, base):
-        """One per-voice cell as the lowering sees it, for comparing two readings."""
+        """One per-voice cell as the reader sees it, for comparing two readings."""
         v = sorted(self.vidx)[0]
         e = Load("ram", Bin("+", Const(base, 2), Var(v, 1), 2), 1, base, base + 2, -1)
         return low.expand(e)
@@ -259,7 +269,10 @@ class Vocab:
     def target(self, low, s):
         """``(kind, name)`` one store writes, or ``None`` where the object drops it."""
         if s.cls == "io":
+            # the register is the store's own address: a file written through one
+            # indexed store has one region for all of it (section 3.1)
             base = addr_split(low.expand(s.a))[0]
+            base = addr_split(s.a)[0] if base is None else base
             reg = None if base is None else self.regs.get(base - SIDBASE)
             if reg is None:
                 raise Unlowerable("$%04X" % s.src)

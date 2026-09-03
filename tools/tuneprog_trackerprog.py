@@ -24,7 +24,8 @@ for _v in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # pylint: disable=wrong-import-position
-from deity_informant.trackerprog import assemble, build, printer, sizes  # noqa: E402
+from deity_informant.trackerprog import bind, build, printer, sizes  # noqa: E402
+from deity_informant.trackerprog.refuse import Refused  # noqa: E402
 from deity_informant.trackerprog.attest import attest  # noqa: E402
 
 
@@ -72,8 +73,8 @@ def run(out, sid=None, ticks=None, hint=None, certify=False):
     t0 = time.process_time()
     art = build.read(out)
     try:
-        obj, report = assemble.lift(art, ticks=ticks, hints=hint)
-    except assemble.Refused as x:
+        obj, report = bind.lift(art, ticks=ticks, hints=hint)
+    except Refused as x:
         doc = {"emitted": False, "refusals": [r.to_dict() for r in x.refusals]}
         (out / "trackerprog.lift.report.json").write_text(json.dumps(doc, indent=1))
         return None, doc
@@ -87,6 +88,16 @@ def run(out, sid=None, ticks=None, hint=None, certify=False):
         cert = attest(obj, reference(sid, int(obj["meta"]["song"] or 0), obj["meta"]["horizon"]))
         cert["source"] = {"tune": obj["meta"]["tune"], "song": obj["meta"]["song"]}
         cert["refusals"] = report["refusals"]
+        cov = report["coverage"]
+        # why the object states the records it does: T1's plane, and the rows the
+        # object carries for the producers T1 states no record over
+        cert["records"] = {
+            "t1_accumulators": cov["t1_accumulators"],
+            "bound": cov["accs"],
+            "rows": cov["rows"],
+            "sets": cov["sets"],
+            "cells": cov["cells"],
+        }
         report["certificate"] = cert
         (out / "trackerprog.lift.certificate.json").write_text(json.dumps(cert, indent=1))
     (out / "trackerprog.lift.report.json").write_text(json.dumps(report, indent=1))

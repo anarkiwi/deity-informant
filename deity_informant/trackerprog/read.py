@@ -1,25 +1,26 @@
-"""B7 -- the certified tick lowered into section 3.3 rows of ``sets``.
+"""B7 -- the certified tick read at its own sites: expressions, guards and flow.
 
-One block of the S4 IR becomes one guarded row: its guard path is the row's
-``when``, its statements the row's ``sets`` in order, and every SSA temp a named
-cell. Nothing is classified here; a leaf the vocabulary has no name for is
-refused, and the score supplies the bytes a fetch read.
+The half of the binding that reads: one value or one guard term at the site the
+program makes it, expressed over a named cell, an instrument column or a row
+fact; the guard path a block stands under, with a join folded back to the path
+it had; and the flow facts both need -- which ram stores reach a block, when two
+guard paths are one path with a term left out, and the terms a jump table's own
+edges decide.  Nothing here lowers a block into rows.
 """
 
 from __future__ import annotations
 
-from ..tuneprog.accguard import guardpath
-from ..tuneprog.graph import cfg, idoms, natural_loops, preds_of, rpo
+from ..tuneprog.accguard import _domsets, guardpath
+from ..tuneprog.graph import EXIT, cfg, idoms, natural_loops, postdoms, preds_of, rpo, succs
 from ..tuneprog.ir import Bin, Const, If, Let, Load, Store, Switch, Var, evalbin
-from ..tuneprog.irwalk import addr_split
+from ..tuneprog.irwalk import addr_split, walk
 from .cells import ident
-from .flow import edge as switchedge, fold, reaching, switched
 
 MASK = {1: 0xFF, 2: 0xFFFF}
 BINOP = {"&": "and", "|": "or", "^": "xor", "+": "add", "-": "sub", ">>": "shr"}
 CMP = {"==": "==", "!=": "!=", "<": "<"}
 NEG = {"==": "!=", "!=": "==", "<": ">="}
-DEPTH = 8
+DEPTH = 16
 
 
 class Unlowerable(Exception):
@@ -55,7 +56,113 @@ def _shl(node, k, w):
     return masked(node << k if isinstance(node, int) else {"shl": [node, k]}, w)
 
 
-class Lower:
+def switched(proc, guards):
+    """``guards`` with the term each edge of a jump table decides.
+
+    Control dependence over a ``Switch`` is one case: a block one case alone
+    reaches stands under the term that case is, and one several reach under none.
+    """
+    g = cfg(proc)
+    ipd = postdoms(g, proc, EXIT)
+    pd = _domsets(ipd, [n for n in ipd if n in proc.blocks])
+    out = {lbl: list(gs) for lbl, gs in guards.items()}
+    for d, b in proc.blocks.items():
+        if type(b.term) is not Switch:
+            continue
+        for s, c in _cases(b.term):
+            term = (d, Bin("==", b.term.e, Const(c, 2), 1), True, ())
+            for lbl in proc.blocks:
+                if s in pd and lbl in pd[s] and lbl not in pd.get(d, ()):
+                    out[lbl].append(term)
+    return _closed(proc, out)
+
+
+def _cases(t):
+    """``(label, value)`` for each case of a table that reaches its label alone."""
+    got = {}
+    for c, s in t.cases:
+        got.setdefault(s, []).append(c)
+    return [(s, cs[0]) for s, cs in sorted(got.items()) if len(cs) == 1]
+
+
+def edge(term, lbl):
+    """The term the edge of a jump table to one label decides, where it decides one."""
+    got = [c for s, c in _cases(term) if s == lbl]
+    return (Bin("==", term.e, Const(got[0], 2), 1),) if got else ()
+
+
+def _closed(proc, out):
+    """A guard map closed under its own deciders' guards."""
+    for _ in range(len(proc.blocks)):
+        moved = False
+        for lbl, gs in out.items():
+            got = list(gs) + [x for d, _c, _v, _w in gs for x in out.get(d, ()) if x not in gs]
+            moved = moved or len(got) != len(gs)
+            out[lbl] = list(dict.fromkeys(got))
+        if not moved:
+            break
+    return {lbl: tuple(gs) for lbl, gs in out.items()}
+
+
+def fold(ctxs):
+    """Two guards that differ in one term and its negation are the guard without it."""
+    out = list(ctxs)
+    for _ in range(len(out) * len(out) + 1):
+        for i, (g, x) in enumerate(out):
+            got = next(
+                (j for j in range(i + 1, len(out)) if x == out[j][1] and pair(g, out[j][0])), None
+            )
+            if got is None:
+                continue
+            drop = set(g) - set(out[got][0])
+            out = [y for k, y in enumerate(out) if k not in (i, got)]
+            out.append((tuple(t for t in g if t not in drop), x))
+            break
+        else:
+            return out
+    return out
+
+
+def pair(a, b):
+    """Whether two guards differ in exactly one term, and it is the same condition."""
+    x, y = set(a) - set(b), set(b) - set(a)
+    if len(x) != 1 or len(y) != 1:
+        return False
+    (_d1, c1, t1), (_d2, c2, t2) = next(iter(x)), next(iter(y))
+    return c1 is c2 and t1 != t2
+
+
+def reaching(p, order, vidx=frozenset()):
+    """``{label: {address: {expressions}}}``: the ram stores one base address has."""
+    gen = {}
+    for lbl, b in p.blocks.items():
+        d = {}
+        for s in b.stmts:
+            if type(s) is Store and s.cls == "ram":
+                base, idx = addr_split(s.a)
+                if base is not None and (idx is None or (type(idx) is Var and idx.n in vidx)):
+                    d[base] = {s.v}
+        gen[lbl] = d
+    inn = {lbl: {} for lbl in p.blocks}
+    for _ in range(len(p.blocks) + 1):
+        moved = False
+        for lbl in order:
+            out = {}
+            for pr, b in p.blocks.items():
+                if lbl not in succs(b.term):
+                    continue
+                d = dict(inn[pr])
+                d.update(gen[pr])
+                for a, vs in d.items():
+                    out[a] = out.get(a, set()) | vs
+            if out != inn[lbl]:
+                inn[lbl], moved = out, True
+        if not moved:
+            break
+    return inn
+
+
+class Reader:
     """The lowering of one procedure's blocks into guarded rows of ``sets``."""
 
     def __init__(self, prog, proc, cells, vocab):
@@ -76,7 +183,10 @@ class Lower:
         self.temps, self.wide, self.bad = {}, set(), set()
         self.scalars = frozenset()  # the names bound outside the voice loop
         self.lbl, self.gate, self.local, self.scope = None, frozenset(), {}, frozenset()
-        # the turn of an unrolled loop being lowered, and the cells its own turns read
+        # the definition a name two blocks bind takes on the path being read
+        self.pick = {}
+        # a value a block has since stored: read at the row, it is that cell
+        self.sub = {}
         self.turn, self.turns = None, {}
         # one plan over several segments: a join's own preds may stand in another
         self.eff, self.flagrows, self.planned = {}, {}, frozenset()
@@ -117,32 +227,6 @@ class Lower:
         """One temp read where it lives: a global's own name, or the voice's cell."""
         return {"global": c[1:]} if c[:1] == "#" else {"cell": c}
 
-    def turnsof(self, blocks):
-        """``{name: (loop header, whether the head binds it)}`` for one segment.
-
-        A name an unrolled loop binds takes one value a *turn*, so the score
-        supplies one constant per turn of it and not one per name.
-        """
-        out = {}
-        got = sorted(((len(v[0]), h) for h, v in self.loops.items() if h in blocks))
-        for n, h in got:
-            if n >= len(blocks):
-                continue
-            for lbl in self.loops[h][0]:
-                for s in self.proc.blocks[lbl].stmts:
-                    if type(s) is Let:
-                        out.setdefault(s.n, (h, lbl == h))
-        return out
-
-    def turncell(self, n, w=1):
-        """The cell one turn of an unrolled loop reads its own supplied byte in."""
-        if self.turn is None:
-            return None
-        got = self.turns.setdefault(n, [])
-        while len(got) <= self.turn:
-            got.append(self.cells.declare("%s__%d" % (self.temp(n, w).lstrip("#"), len(got)), None))
-        return got[self.turn]
-
     def expand(self, e, depth=DEPTH):
         """One expression with its SSA names and single reaching stores substituted."""
         if depth <= 0:
@@ -152,6 +236,8 @@ class Lower:
             return Const(self.local[e.n], e.w)
         if t is Var and (e.n in self.v.supplied or e.n in self.v.subst):
             return e
+        if t is Var and e.n in self.pick:
+            return self.expand(self.pick[e.n], depth - 1)
         if t is Var and e.n not in self.v.vidx and e.n in self.defs:
             return self.expand(self.defs[e.n], depth - 1)
         if t is Load and e.cls == "ram":
@@ -159,7 +245,7 @@ class Lower:
             ok = idx is None or (type(idx) is Var and idx.n in self.v.vidx)
             if base is not None and ok:
                 vs = self.reach.get(self.lbl, {}).get(base)
-                if vs and len(vs) == 1:
+                if vs and len(vs) == 1 and not self.selfread(next(iter(vs)), base):
                     return self.expand(next(iter(vs)), depth - 1)
         if t is Bin:
             a, b = self.expand(e.a, depth - 1), self.expand(e.b, depth - 1)
@@ -171,6 +257,24 @@ class Lower:
             if type(a) is Const and self.frozen(a.v, e.w):
                 return Const(int.from_bytes(self.v.img[a.v : a.v + e.w], "little"), e.w)
         return e
+
+    def selfread(self, v, base, depth=DEPTH):
+        """Whether a store's own value reads the cell it lands in: a counter, not a copy.
+
+        A cell whose value is its own is state the tune carries between ticks, so
+        the object states the store as a row and no reader folds it away.
+        """
+        seen, stack = set(), [v]
+        while stack and depth:
+            x = stack.pop()
+            for y in walk(x):
+                if type(y) is Load and addr_split(y.a)[0] == base:
+                    return True
+                if type(y) is Var and y.n in self.defs and y.n not in seen:
+                    seen.add(y.n)
+                    stack.append(self.defs[y.n])
+            depth -= 1
+        return False
 
     def chase(self, e, depth=DEPTH):
         """One name followed through its copies alone: no store is folded into it."""
@@ -185,6 +289,9 @@ class Lower:
 
     # ---- expressions -------------------------------------------------------------
     def value(self, e):
+        got = self.sub.get(repr(e)) if self.sub else None
+        if got is not None:
+            return got
         t = type(e)
         if t is Const:
             return e.v
@@ -196,6 +303,10 @@ class Lower:
                 return got
             if e.n in self.v.vidx:
                 return {"cell": "voice_index"}
+            got = self.v.fields.get((e.n, None))
+            got = got if self.v.payload or isinstance(got, dict) else None
+            if got is not None:
+                return got
             if e.n in self.v.supplied or e.n in self.assigned:
                 return self.tref(self.temp(e.n, e.w))
             raise Unlowerable(e.n)
@@ -205,8 +316,22 @@ class Lower:
             return self.binop(e)
         raise Unlowerable(repr(e))
 
+    def field(self, a, m):
+        """A masked field of a byte the score supplied: the event field it is (§3.6).
+
+        A fact the row program carries in its payload is read only where a payload
+        stands; everywhere else the field is the player's own cell or nothing.
+        """
+        x = self.expand(a)
+        got = self.v.fields.get((x.n, m)) if type(x) is Var else None
+        return got if self.v.payload or isinstance(got, dict) else None
+
     def binop(self, e):
         op, w = e.op, e.w
+        if op == "&" and type(e.b) is Const:
+            got = self.field(e.a, e.b.v)
+            if got is not None:
+                return got
         if op == "<<":
             k = self.expand(e.b)
             if type(k) is not Const:
@@ -263,21 +388,11 @@ class Lower:
             return False
         return d in self.scope or id(c) not in self.stated
 
-    def when(self, lbl, extra=(), guard=None):
-        out = []
-        got = guard if guard is not None else [x[:3] for x in self.guards.get(lbl, ())]
-        for d, c, t in got:
-            if not self.onpath(d, c, t):
-                continue
-            out.append(self.term(c, t))
-        return out + [list(x) for x in extra]
-
-    # ---- the guard a join stands under ----------------------------------------------
     def _edge(self, q, lbl):
         """The term the edge from ``q`` to ``lbl`` decides, where it decides one."""
         term = self.proc.blocks[q].term
         if type(term) is Switch:
-            return tuple((q, c, True) for c in switchedge(term, lbl))
+            return tuple((q, c, True) for c in edge(term, lbl))
         if type(term) is not If or term.t == term.f:
             return ()
         return ((q, term.c, lbl == term.t),)
@@ -324,85 +439,6 @@ class Lower:
         return eff, rows
 
     # ---- statements ----------------------------------------------------------------
-    def row(self, lbl, extra=(), local=None, guard=None, turn=None):
-        """One block as a guarded row, and the accumulator stores it must be split at."""
-        self.lbl, self.local, self.turn = lbl, dict(local or {}), turn
-        out, parts = [], []
-        for s in self.proc.blocks[lbl].stmts:
-            got = self.one(s)
-            if got is None:
-                continue
-            if len(got) == 4:  # an accumulator's own store: the row is split at it
-                parts.append((out, got))
-                out = []
-            else:
-                out.append(got)
-        parts.append((out, None))
-        parts = [(self.copies(o), g) for o, g in parts]
-        when = self.when(lbl, extra, guard)
-        return when, parts
-
-    def copies(self, rows):
-        """Fold the copies of one per-voice cell a block writes at constant addresses.
-
-        A value every copy takes is one write every voice makes (§3.6's ``all``);
-        a copy that is neither the committing voice's nor one of a full set is no
-        cell of the object.
-        """
-        at = {}
-        for i, e in enumerate(rows):
-            if type(e[0]) is tuple:
-                at.setdefault(e[0][0], []).append(i)
-        if not at:
-            return rows
-        out, drop = list(rows), set()
-        for name, ks in at.items():
-            vals = {rows[i][0][1]: repr(rows[i][1]) for i in ks}
-            full = len(vals) == self.cells.voices and len(set(vals.values())) == 1
-            for j, i in enumerate(ks):
-                if full:
-                    out[i] = ("*" + name, rows[i][1], rows[i][2])
-                    drop |= {i} if j else set()
-                elif not rows[i][0][1]:
-                    out[i] = ("@" + name, rows[i][1], rows[i][2])
-                else:
-                    drop.add(i)
-                    self.bad.add("$%04X" % rows[i][2])
-        return [e for i, e in enumerate(out) if i not in drop]
-
-    def one(self, s):
-        """One statement: a temp, a cell, a register, or an accumulator's own store.
-
-        A plain assignment carries the site it moves, which is what B7's
-        recognition joins T1's accumulator records to.
-        """
-        t = type(s)
-        self.lbl = self.lbl
-        try:
-            if t is Let:
-                w = getattr(s.e, "w", 1)
-                if s.n in self.v.subst:
-                    return None
-                nm = self.temp(s.n, w)
-                put = nm if nm[:1] == "#" else "@" + nm
-                if s.n in self.v.supplied:
-                    cell = self.turncell(s.n, w)
-                    if cell is None:  # one value a name: the score writes the cell itself
-                        return None
-                    return (put, {"cell": cell}, None)
-                return (put, self.value(s.e), None)
-            if t is Store:
-                got = self.v.target(self, s)
-                if got is None:
-                    return None
-                if got[0] == "acc":
-                    return ("acc", got[1], self.value(s.v), s.src)
-                return (got[1], self.value(s.v), s.src)  # a copy's target is a pair
-        except Unlowerable as x:
-            self.bad.add(s.n if t is Let else "$%04X" % s.src)
-            del x
-        return None
-
     def planall(self, groups):
         """One plan a segment, and the flags every other segment must raise.
 

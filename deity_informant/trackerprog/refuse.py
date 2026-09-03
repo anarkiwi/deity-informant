@@ -26,3 +26,11 @@ class Refusal:
 
     def to_dict(self):
         return asdict(self)
+
+
+class Refused(Exception):
+    """A binding that will not emit: the residue, named (section 8)."""
+
+    def __init__(self, refusals):
+        super().__init__("; ".join(r.why for r in refusals))
+        self.refusals = refusals
