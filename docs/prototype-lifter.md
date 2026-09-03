@@ -158,8 +158,9 @@ nothing is unrolled; three rules keep an SSA temp out of the object:
 | a value read one statement before a store moved the cell it reads stands before that store | inside a row (`_epoch`) and across the rows of a segment (`_staged`), and where the object has since stored that value, the guard reads the cell it left it in |
 
 What is left after liveness is the residue: Commando's object carries **26 rows
-of 50 assignments over 17 streams**, and **18 cells** — 10 per-voice and 8
-global, every one a cell of the tune's own state that S6 names.
+over 17 streams and 19 steps of `meta.row`, 50 assignments in all**, and **18
+cells** — 10 per-voice and 8 global, every one a cell of the tune's own state
+that S6 names.
 
 ---
 
@@ -178,7 +179,7 @@ global, every one a cell of the tune's own state that S6 names.
 | `score.patterns` | 32 patterns, 572 events | 31, 570 | one pattern more: a visit whose fields differ from the stored row's is its own pattern |
 | `instruments` | 10 records, 6 columns and `pw` | 9, `adsr`/`wave`/`pw` | the same set and one more; the columns are named by T2 and not by the family |
 | `accs` | 3 §5 records | 7 | §4: T1 states three, and the other four are rows (§5) |
-| `streams` / rows / `sets` | 17 / 26 / 50 | 3 / 4 / 11 | the residue T1 states no record over |
+| streams / stream rows / `meta.row` steps / `sets` | 17 / 26 / 19 / 50 | 3 / 4 / 7 / 11 | the residue T1 states no record over |
 | `beyond` | 12 words, 2 traps | 12, 2 | **identical**, and derived |
 | `state0` | 10 cells, 8 globals | 4 cells | every one a cell S6 names; six keep S6's own address-derived name where S6 gives no role name |
 | largest `sets` expression | 30 nodes | 4 | the pulse sweep's own bound test |
@@ -241,7 +242,7 @@ top. It is deleted (`lower.py`, `flow.py`, `unroll.py`, `recognise.py`,
 
 | measure | the lowering, at #351 | the binding | the hand |
 | --- | --- | --- | --- |
-| rows / `sets` (Commando) | 86 / 207 | 26 / 50 | 4 / 11 |
+| stream rows / `sets` (Commando) | 86 / 207 | 26 / 50 | 4 / 11 |
 | `state0` cells | 123 | 18 | 4 |
 | `xz -9e`, and the ratio | 6,280 — **2.46×** | 3,608 — **1.42×** | 3,464 — 1.36× |
 | ratio, *Guldkorn* | 3.46× | 1.34× | 1.90× |
