@@ -122,7 +122,7 @@ pre-row segment is not an instrument lead-in has no `prelude` to name.
 | `tempo.boundary` | `c1746 != 0` · `c1746 == 2` · `timer_3 == 0` | `rowclock == 0` | **differs**: the lift's `row` phase is the **fetch** region, so its boundary is the fetch's own guard — where the hand's boundary is the commit and the fetch is its `early` |
 | `tempo.early` / `fetch` | none | `early [rowclock == 2]` | the same datum, in the boundary |
 | `meta.tick` | `{stream: prelude0}` `row` `machine` | `fetch` `prelude` `row` `machine` | **differs**: the lift has one row program and no `stage`, so the phases the hand splits at the fetch are its `row` and the rest |
-| `row_consumes_tick` | `false` | `[[keys != 0]]` | **differs**, and both render the same writes over the horizon: the hand's row phase is the *commit* and spends the tick the note-on returns from, the lift's is the **fetch**, which the source does not return from. §8 item 1 |
+| `row_consumes_tick` | `false` | `[[keys != 0]]` | **differs**, and both render the same writes over the horizon: the hand's row phase is the *commit* and spends the tick the note-on returns from, the lift's is the **fetch**, which the source does not return from. §8, #348's item 2 |
 | `meta.shadow` | none | none (Guldkorn) | same: the write-out is the voice's own last rows, ranked last |
 | `row_command` | `spent` | `spent` | same |
 
@@ -185,7 +185,7 @@ what does not fold the object states as a cell — every path that reaches the
 block raises it where that path already stands, and the block's own guard is the
 one term that reads it. JCH's tick has **8** such cells: they are what the
 presentation's `p_1409` and `p_1616` are, one block reached from three call
-sites, and §8 item 1's "a callee is a phase; inline it" in the shape the S4
+sites, and §8's #347 item 1, "a callee is a phase; inline it", in the shape the S4
 actually leaves.
 
 **And the plan is one over the segments, not one a segment.** A join's own preds
@@ -236,8 +236,8 @@ of its own cells** — their `produce` is the write-out, which the join reaches 
 walking the rank order under the record's own guard and the write-out's rows now
 stand under a join's cell (§2.2) and not under that guard — and two because
 their width is **12**, the pulse pair's own projection, which `recognise.Acc`
-admits at 8 and 16 and no other value. Both are §8's residue and neither is an
-approximation.
+admits at 8 and 16 and no other value. Both are §8's #348 items 3 and 4, and
+neither is an approximation.
 
 **What lies past the tuning is derived, not read.** Commando's frequency table
 is fused with the per-voice arrays (commando-trackerprog §4.2). The lift takes
@@ -317,7 +317,7 @@ carry `rate: 1` and the divider stays where the lowering put it.
 **The two `Acc` records that are still assignments** are the note-on's own
 writes to `ins.pw.hi`/`ins.pw.lo`: T1 states no accumulator over them, so they
 stay `policy: {reload: …}` — §5's record is the only `sets` target the schema
-has for an instrument-scoped cell (§8 item 3), not a reading of anything.
+has for an instrument-scoped cell (§8's #347 item 3), not a reading of anything.
 
 ## 5. The certificate
 
@@ -409,7 +409,7 @@ better statement, and §7 says what is left.
 | `pitch` | base 0, 95 entries | base 0, 96 | one short: the hand asserts the stored table's own length, the lift takes T2's reach |
 | `meta.voice_order` / `commit_order` / `voices` / `cycles_per_tick` | `[2,1,0]` / `(ad,sr,ctrl)` / 3 / 19,656 | the same | **identical** |
 | `meta.tempo` | the counter `c1746`, step −1, one `reset` clause, boundary of three terms | the counter `rowclock`, step −1, one `reset` clause, boundary `== 0` and `early == 2` | **the same counter and the same clause**; the boundary is the fetch's, §2.1 |
-| `meta.tick` / `row_consumes_tick` / `stage` | `{stream}` `row` `machine` / `false` / none | `fetch` `prelude` `row` `machine` / `[[keys != 0]]` / 5 rows | **differs**, §2.1 and §8 item 1, and renders the same writes |
+| `meta.tick` / `row_consumes_tick` / `stage` | `{stream}` `row` `machine` / `false` / none | `fetch` `prelude` `row` `machine` / `[[keys != 0]]` / 5 rows | **differs**, §2.1 and §8's #348 item 2, and renders the same writes |
 | `meta.shadow` | none | none | **identical**, and derived: the write-out is the voice's own rows, ranked last |
 | `score.orders` | 26 / 18 / 18 `play` steps, `jump(0)` | 15 / 8 / 8, `jump(0)` | the lift's visits are its own: one per fetch the horizon took, the hand's one per stored order byte |
 | `score.patterns` | 37 patterns, 500 events | 27, 723 | the lift's row is the fetch's own **visit**, carrying every byte the walk read as 3 to 8 constants; the hand's is one byte a row, so a held row is an event of its own |
@@ -446,7 +446,7 @@ What remains, and what it would take:
 | --- | --- |
 | 80 and 115 rows of lowered arithmetic | the tick outside the fetch regions that T1 names no accumulator over: Commando's drum, skydive, arpeggio, pulse bounce and note-on; all of JCH's. A second recognition pass would need a plane that states them, and T1 does not |
 | 117 and 239 declared cells | one per SSA temp the rows still read, and on JCH one per join (§2.2) and one per turn of the fetch's byte loop (§2.4). The lowering's own unit; nothing in the recognition changes it |
-| 2 reload stand-ins | §8 item 3: `ins.pw` is the only instrument-scoped cell the schema can be assigned |
+| 2 reload stand-ins | §8's #347 item 3: `ins.pw` is the only instrument-scoped cell the schema can be assigned |
 | `rate: 1` on all three records | T1's countdown is already a row and a guard (§4) |
 | 19 tables, 1,877 rows | JCH's column programs as bytes: the lowering states a table read at a cursor as `tabcell` over the region's own bytes, where the hand states 4-column records with `next` links and holds (jch-trackerprog §4.6). The rows are the same data; the reading is what the lift does not have |
 
