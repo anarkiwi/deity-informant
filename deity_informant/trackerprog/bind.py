@@ -420,6 +420,8 @@ class Accs:
         A record's own produce may stand where its step's loop has closed, so the
         block's path is the record's where one is a prefix of the other.
         """
+        if lbl not in self.low.proc.blocks:
+            return False
         got = set(self.eff.get(lbl, ((), ()))[0])
         return set(when) <= got or got <= set(when)
 
@@ -464,6 +466,8 @@ class Accs:
         """
         want = {"freq": ("freq_lo", "freq_hi"), "pw": ("pw_lo", "pw_hi")}.get(reg, (reg,))
         out = set()
+        if lbl not in self.low.proc.blocks:
+            return out
         for s in self.low.proc.blocks[lbl].stmts:
             if type(s) is not Store or s.cls != "io":
                 continue
@@ -760,6 +764,26 @@ class Binder:
             return lo, self.view.by_id()[hi].base
         return None, None
 
+    def copied(self, addr):
+        """The per-voice cell a scalar the tick reads a role off is copied from.
+
+        A family that stages its row moves the byte into a scratch the machine
+        reads, so the cell the player's slot names is the copy's own source.
+        """
+        low, got = self.low, []
+        for lbl, blk in low.proc.blocks.items():
+            for s in blk.stmts:
+                if type(s) is Store and s.cls == "ram" and addr_split(s.a)[0] == addr:
+                    got.append((lbl, s))
+        if len(got) != 1 or self.cells.at(addr) is not None:
+            return addr
+        low.lbl, low.local, low.pick, low.sub = got[0][0], {}, {}, {}
+        e = low.expand(got[0][1].v)
+        base, idx = addr_split(e.a) if type(e) is Load else (None, None)
+        if base is not None and idx is not None and low.isvoice(idx):
+            return base
+        return addr
+
     def roles(self):
         """The player's own slots, bound to the cells S6, T1 and T2 name (§4, §5)."""
         from . import assemble
@@ -768,9 +792,20 @@ class Binder:
         lo, hi = self.freqpair()
         self.orderbase = assemble._order_cursor(self.art, self.view, self.names)
         self.clockbase = sch.clock[3]
+        voc.notebase = self.copied(voc.notebase)
+        voc.insbase = self.copied(voc.insbase)
+        # the clock is the player's ``rowsleft`` only where the row's own length
+        # reloads it: a tune whose clock the tick keeps has no ``dur`` field
+        rows = set(self.segs["row"])
+        if not any(type(x) is Store and addr_split(x.a)[0] == self.clockbase
+                   for l in rows for x in self.p.blocks[l].stmts):
+            self.clockbase = None
         got = {"note": voc.notebase, "ins": voc.insbase, "rowsleft": self.clockbase,
                "orderpos": self.orderbase, "freq.lo": lo, "freq.hi": hi}
         _rename(self.cells, got)
+        self.clockcell = ("rowsleft" if self.clockbase else
+                          (self.cells.voicecell(sch.clock[3]) if sch.inloop
+                           else self.cells.scalarcell(sch.clock[3])))
         self.slots = {k: v for k, v in got.items() if v is not None}
         voc.subst = {sch.clock[1].n: {"cell": "phase"}}
         drop = {sch.clock[2].src} | {st.src for st, _g in sch.resets}
@@ -818,7 +853,8 @@ class Binder:
     def bind_fields(self, recs):
         """Section 3.6's event fields, and what a masked score byte is of them."""
         top = self.pit.base + self.pit.n
-        roles = {"dur": self.clockbase, "note": self.voc.notebase, "ins": self.voc.insbase}
+        roles = {"dur": self.clockbase or -1, "note": self.voc.notebase,
+                 "ins": self.voc.insbase}
         seed = ([int(self.img[self.orderbase + v * self.cells.stride])
                  for v in range(self.cells.voices)] if self.orderbase else None)
         self.score = Score(recs, self.vvar, roles, self.cells.voices, self.cells.stride,
@@ -1147,10 +1183,13 @@ class Binder:
             st["beyond"] = {"id": "the fused tuning", "words": words}
         instruments = asm._instruments(art, self.view, self.names, self.ins, self.pwcols,
                                        self.img, self.accs)
+        # a record no cell of the tune ever selects is no record of the object; a
+        # score whose row states no instrument selects them all
         got = {r["ins"] for v in range(self.cells.voices) for r in self.score.rows[v]}
-        got |= {int(x) for x in self.img[self.voc.insbase:
-                                         self.voc.insbase + self.cells.voices]}
-        instruments = {k: v for k, v in instruments.items() if int(k) in got}
+        if got - {None}:
+            got |= {int(x) for x in self.img[self.voc.insbase:
+                                             self.voc.insbase + self.cells.voices]}
+            instruments = {k: v for k, v in instruments.items() if int(k) in got}
         self.pitched(instruments, whole)
         cellseed, globseed = self.cells.seed(self.img)
         obj = {
@@ -1168,12 +1207,12 @@ class Binder:
                 "commit_order": list(sch.commit_order),
                 "instrument": {},
                 "tempo": {
-                    "cell": "rowsleft",
+                    "cell": self.clockcell,
                     "step": sch.step,
                     "rate": rate,
                     "phase": phase,
                     "boundary": [low.guard(c, t) for c, t in sch.boundary],
-                    **asm._resets(low, "rowsleft", sch),
+                    **asm._resets(low, self.clockcell, sch),
                 },
                 "tick": tick,
                 "row_consumes_tick": sch.row_consumes_tick,
@@ -1182,7 +1221,7 @@ class Binder:
                 "wide": sorted(set(low.wide) | self.wide()),
             },
             "pitch": {"base": self.pit.base, "freq": list(art["t2"]["pitch"]["entries"])},
-            "streams": out.streams,
+            "streams": {**out.streams, **build.table_streams(self.voc, self.img)},
             "accs": {k: v for k, v in sorted(self.accs.items(), key=lambda kv: kv[1]["rank"])},
             "instruments": instruments,
             "score": {"patterns": pats, "orders": orders},
@@ -1197,7 +1236,7 @@ class Binder:
 
     def coverage(self, obj):
         """What each plane supplied, counted from the object the binding emitted."""
-        rows = [r for st in obj["streams"].values() for r in st["rows"]]
+        rows = [r for st in obj["streams"].values() for r in st["rows"] if "sets" in r]
         sets = sum(len(r["sets"]) for r in rows)
         sets += sum(len(s.get("sets", ())) for s in obj["meta"]["row"])
         t1 = self.art["t1"].get("accs") or []
@@ -1460,6 +1499,21 @@ KEEP = ("rowsleft", "dur", "note", "ins", "freq", "orderpos", "tied", "phase", "
         "voice_index", "lastnote", "wave")
 
 
+def _tables(obj):
+    """The declared streams a ``tabcell`` reads: one row a byte of a const table."""
+    out, stack = set(), [obj["streams"], obj["accs"], obj["meta"], obj["instruments"]]
+    while stack:
+        x = stack.pop()
+        if isinstance(x, dict):
+            for k, v in x.items():
+                if k == "tabcell":
+                    out.add(v[0])
+                stack.append(v)
+        elif isinstance(x, (list, tuple)):
+            stack += list(x)
+    return out
+
+
 def _needed(target):
     """Whether one ``sets`` target is a register the chip has, and not a cell."""
     return target[:1] not in "@#!*"
@@ -1472,7 +1526,7 @@ def _dce(obj):
     is dead, so the live set grows from the roots -- the registers, the records,
     the score and the words past the tuning -- through the rows that write them.
     """
-    rows = [r for st in obj["streams"].values() for r in st["rows"]]
+    rows = [r for st in obj["streams"].values() for r in st["rows"] if "sets" in r]
     rows += [s for s in obj["meta"]["row"] if "sets" in s]
     nodes = [(r, k) for r in rows for k in range(len(r["sets"]))]
     live = set(KEEP) | {a["cell"].lstrip("#").split(".")[0] for a in obj["accs"].values()}
@@ -1498,11 +1552,12 @@ def _dce(obj):
     for r in rows:
         r["sets"] = [x for k, x in enumerate(r["sets"]) if (id(r), k) in keep]
     for st in obj["streams"].values():
-        st["rows"] = [r for r in st["rows"] if r["sets"]]
+        st["rows"] = [r for r in st["rows"] if r.get("sets") or "sets" not in r]
     obj["meta"]["row"] = [s for s in obj["meta"]["row"] if "sets" not in s or s["sets"]]
     named = {s["stream"] for s in obj["meta"]["row"] if "stream" in s}
     named |= {e["stream"] for e in obj["meta"]["tick"] if not isinstance(e, str)}
     named |= set(obj["globals"].get("streams", ()))
+    named |= {n for n in obj["streams"] if _tables(obj) & {n}}
     obj["streams"] = {k: v for k, v in obj["streams"].items()
                       if v["rows"] and (k in named or "rank" in v)}
     obj["meta"]["row"] = [s for s in obj["meta"]["row"]
@@ -1691,6 +1746,21 @@ KEEP = ("rowsleft", "dur", "note", "ins", "freq", "orderpos", "tied", "phase", "
         "voice_index", "lastnote", "wave")
 
 
+def _tables(obj):
+    """The declared streams a ``tabcell`` reads: one row a byte of a const table."""
+    out, stack = set(), [obj["streams"], obj["accs"], obj["meta"], obj["instruments"]]
+    while stack:
+        x = stack.pop()
+        if isinstance(x, dict):
+            for k, v in x.items():
+                if k == "tabcell":
+                    out.add(v[0])
+                stack.append(v)
+        elif isinstance(x, (list, tuple)):
+            stack += list(x)
+    return out
+
+
 def _needed(target):
     """Whether one ``sets`` target is a register the chip has, and not a cell."""
     return target[:1] not in "@#!*"
@@ -1703,7 +1773,7 @@ def _dce(obj):
     is dead, so the live set grows from the roots -- the registers, the records,
     the score and the words past the tuning -- through the rows that write them.
     """
-    rows = [r for st in obj["streams"].values() for r in st["rows"]]
+    rows = [r for st in obj["streams"].values() for r in st["rows"] if "sets" in r]
     rows += [s for s in obj["meta"]["row"] if "sets" in s]
     nodes = [(r, k) for r in rows for k in range(len(r["sets"]))]
     live = set(KEEP) | {a["cell"].lstrip("#").split(".")[0] for a in obj["accs"].values()}
@@ -1729,11 +1799,12 @@ def _dce(obj):
     for r in rows:
         r["sets"] = [x for k, x in enumerate(r["sets"]) if (id(r), k) in keep]
     for st in obj["streams"].values():
-        st["rows"] = [r for r in st["rows"] if r["sets"]]
+        st["rows"] = [r for r in st["rows"] if r.get("sets") or "sets" not in r]
     obj["meta"]["row"] = [s for s in obj["meta"]["row"] if "sets" not in s or s["sets"]]
     named = {s["stream"] for s in obj["meta"]["row"] if "stream" in s}
     named |= {e["stream"] for e in obj["meta"]["tick"] if not isinstance(e, str)}
     named |= set(obj["globals"].get("streams", ()))
+    named |= {n for n in obj["streams"] if _tables(obj) & {n}}
     obj["streams"] = {k: v for k, v in obj["streams"].items()
                       if v["rows"] and (k in named or "rank" in v)}
     obj["meta"]["row"] = [s for s in obj["meta"]["row"]
@@ -1903,6 +1974,21 @@ KEEP = ("rowsleft", "dur", "note", "ins", "freq", "orderpos", "tied", "phase", "
         "voice_index", "lastnote", "wave")
 
 
+def _tables(obj):
+    """The declared streams a ``tabcell`` reads: one row a byte of a const table."""
+    out, stack = set(), [obj["streams"], obj["accs"], obj["meta"], obj["instruments"]]
+    while stack:
+        x = stack.pop()
+        if isinstance(x, dict):
+            for k, v in x.items():
+                if k == "tabcell":
+                    out.add(v[0])
+                stack.append(v)
+        elif isinstance(x, (list, tuple)):
+            stack += list(x)
+    return out
+
+
 def _needed(target):
     """Whether one ``sets`` target is a register the chip has, and not a cell."""
     return target[:1] not in "@#!*"
@@ -1915,7 +2001,7 @@ def _dce(obj):
     is dead, so the live set grows from the roots -- the registers, the records,
     the score and the words past the tuning -- through the rows that write them.
     """
-    rows = [r for st in obj["streams"].values() for r in st["rows"]]
+    rows = [r for st in obj["streams"].values() for r in st["rows"] if "sets" in r]
     rows += [s for s in obj["meta"]["row"] if "sets" in s]
     nodes = [(r, k) for r in rows for k in range(len(r["sets"]))]
     live = set(KEEP) | {a["cell"].lstrip("#").split(".")[0] for a in obj["accs"].values()}
@@ -1941,11 +2027,12 @@ def _dce(obj):
     for r in rows:
         r["sets"] = [x for k, x in enumerate(r["sets"]) if (id(r), k) in keep]
     for st in obj["streams"].values():
-        st["rows"] = [r for r in st["rows"] if r["sets"]]
+        st["rows"] = [r for r in st["rows"] if r.get("sets") or "sets" not in r]
     obj["meta"]["row"] = [s for s in obj["meta"]["row"] if "sets" not in s or s["sets"]]
     named = {s["stream"] for s in obj["meta"]["row"] if "stream" in s}
     named |= {e["stream"] for e in obj["meta"]["tick"] if not isinstance(e, str)}
     named |= set(obj["globals"].get("streams", ()))
+    named |= {n for n in obj["streams"] if _tables(obj) & {n}}
     obj["streams"] = {k: v for k, v in obj["streams"].items()
                       if v["rows"] and (k in named or "rank" in v)}
     obj["meta"]["row"] = [s for s in obj["meta"]["row"]
