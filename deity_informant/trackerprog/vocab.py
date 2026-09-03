@@ -50,6 +50,8 @@ class Vocab:
         self.tables = {}  # stream name -> (base, top): a const table read at a cell
         self.rowblocks = frozenset()  # the fetch's own blocks: their bytes are the score
         self.shadow = ()  # (base, size): the register file every write lands in
+        # (score byte, mask) -> the section 3.6 event field that value is
+        self.fields = {}
 
     # ---- loads -------------------------------------------------------------------
     def load(self, low, x):
@@ -259,7 +261,10 @@ class Vocab:
     def target(self, low, s):
         """``(kind, name)`` one store writes, or ``None`` where the object drops it."""
         if s.cls == "io":
+            # the register is the store's own address: a file written through one
+            # indexed store has one region for all of it (section 3.1)
             base = addr_split(low.expand(s.a))[0]
+            base = addr_split(s.a)[0] if base is None else base
             reg = None if base is None else self.regs.get(base - SIDBASE)
             if reg is None:
                 raise Unlowerable("$%04X" % s.src)

@@ -76,6 +76,8 @@ class Lower:
         self.temps, self.wide, self.bad = {}, set(), set()
         self.scalars = frozenset()  # the names bound outside the voice loop
         self.lbl, self.gate, self.local, self.scope = None, frozenset(), {}, frozenset()
+        # the definition a name two blocks bind takes on the path being read
+        self.pick = {}
         # the turn of an unrolled loop being lowered, and the cells its own turns read
         self.turn, self.turns = None, {}
         # one plan over several segments: a join's own preds may stand in another
@@ -152,6 +154,8 @@ class Lower:
             return Const(self.local[e.n], e.w)
         if t is Var and (e.n in self.v.supplied or e.n in self.v.subst):
             return e
+        if t is Var and e.n in self.pick:
+            return self.expand(self.pick[e.n], depth - 1)
         if t is Var and e.n not in self.v.vidx and e.n in self.defs:
             return self.expand(self.defs[e.n], depth - 1)
         if t is Load and e.cls == "ram":
@@ -196,6 +200,9 @@ class Lower:
                 return got
             if e.n in self.v.vidx:
                 return {"cell": "voice_index"}
+            got = self.v.fields.get((e.n, None))
+            if got is not None:
+                return got
             if e.n in self.v.supplied or e.n in self.assigned:
                 return self.tref(self.temp(e.n, e.w))
             raise Unlowerable(e.n)
@@ -205,8 +212,17 @@ class Lower:
             return self.binop(e)
         raise Unlowerable(repr(e))
 
+    def field(self, a, m):
+        """A masked field of a byte the score supplied: the event field it is (§3.6)."""
+        x = self.expand(a)
+        return self.v.fields.get((x.n, m)) if type(x) is Var else None
+
     def binop(self, e):
         op, w = e.op, e.w
+        if op == "&" and type(e.b) is Const:
+            got = self.field(e.a, e.b.v)
+            if got is not None:
+                return got
         if op == "<<":
             k = self.expand(e.b)
             if type(k) is not Const:
