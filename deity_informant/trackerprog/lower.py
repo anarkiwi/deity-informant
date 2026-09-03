@@ -11,7 +11,7 @@ from __future__ import annotations
 from ..tuneprog.accguard import guardpath
 from ..tuneprog.graph import cfg, idoms, natural_loops, preds_of, rpo
 from ..tuneprog.ir import Bin, Const, If, Let, Load, Store, Switch, Var, evalbin
-from ..tuneprog.irwalk import addr_split
+from ..tuneprog.irwalk import addr_split, walk
 from .cells import ident
 from .flow import edge as switchedge, fold, reaching, switched
 
@@ -78,6 +78,8 @@ class Lower:
         self.lbl, self.gate, self.local, self.scope = None, frozenset(), {}, frozenset()
         # the definition a name two blocks bind takes on the path being read
         self.pick = {}
+        # a value a block has since stored: read at the row, it is that cell
+        self.sub = {}
         # the turn of an unrolled loop being lowered, and the cells its own turns read
         self.turn, self.turns = None, {}
         # one plan over several segments: a join's own preds may stand in another
@@ -163,7 +165,7 @@ class Lower:
             ok = idx is None or (type(idx) is Var and idx.n in self.v.vidx)
             if base is not None and ok:
                 vs = self.reach.get(self.lbl, {}).get(base)
-                if vs and len(vs) == 1:
+                if vs and len(vs) == 1 and not self.selfread(next(iter(vs)), base):
                     return self.expand(next(iter(vs)), depth - 1)
         if t is Bin:
             a, b = self.expand(e.a, depth - 1), self.expand(e.b, depth - 1)
@@ -175,6 +177,24 @@ class Lower:
             if type(a) is Const and self.frozen(a.v, e.w):
                 return Const(int.from_bytes(self.v.img[a.v : a.v + e.w], "little"), e.w)
         return e
+
+    def selfread(self, v, base, depth=DEPTH):
+        """Whether a store's own value reads the cell it lands in: a counter, not a copy.
+
+        A cell whose value is its own is state the tune carries between ticks, so
+        the object states the store as a row and no reader folds it away.
+        """
+        seen, stack = set(), [v]
+        while stack and depth:
+            x = stack.pop()
+            for y in walk(x):
+                if type(y) is Load and addr_split(y.a)[0] == base:
+                    return True
+                if type(y) is Var and y.n in self.defs and y.n not in seen:
+                    seen.add(y.n)
+                    stack.append(self.defs[y.n])
+            depth -= 1
+        return False
 
     def chase(self, e, depth=DEPTH):
         """One name followed through its copies alone: no store is folded into it."""
@@ -189,6 +209,9 @@ class Lower:
 
     # ---- expressions -------------------------------------------------------------
     def value(self, e):
+        got = self.sub.get(repr(e)) if self.sub else None
+        if got is not None:
+            return got
         t = type(e)
         if t is Const:
             return e.v

@@ -89,14 +89,47 @@ class Rows:
         return out
 
     def when(self, guard):
-        """One row's guard: the block's own path terms, each read at its own site."""
-        low, out = self.low, []
+        """One row's guard: the block's own path terms, each read at its own site.
+
+        A term the deciding block reads *before* a store of its own is read at the
+        row as the cell that store left: the row stands after it, and the object
+        has no channel for a value one statement older (§3.3's one guard shape).
+        """
+        low = self.low
+        out, keep = [], (low.lbl, dict(low.sub))
         for d, c, t in guard:
             if not low.onpath(d, c, t):
                 continue
+            low.lbl, low.sub = d, self.stored(d)
             got = low.term(low.expand(c), t)
             if got not in out:
                 out.append(got)
+        low.lbl, low.sub = keep[0], keep[1]
+        return out
+
+    def stored(self, lbl):
+        """``{a value the block stored: the cell it left it in}``, as the row reads it."""
+        low, out = self.low, {}
+        if lbl is None or lbl not in low.proc.blocks:
+            return out
+        low.lbl, low.sub = lbl, {}
+        for s in low.proc.blocks[lbl].stmts:
+            if type(s) is not Store or s.cls != "ram" or s.src in low.v.dropstores:
+                continue
+            base = addr_split(s.a)[0]
+            # a counter alone: a value that is its own cell's is what a later row
+            # has no older epoch of, and a copy is readable where it was copied from
+            if base is None or not low.selfread(s.v, base):
+                continue
+            try:
+                tgt = low.v.target(low, s)
+            except Unlowerable:
+                continue
+            if tgt is None or tgt[0] != "cell":
+                continue
+            name = tgt[1]
+            node = {"global": name[1:]} if name[:1] == "#" else {"cell": name.lstrip("@")}
+            out[repr(low.expand(s.v))] = node
         return out
 
     def sets(self, lbl, drop):
@@ -806,9 +839,11 @@ class Binder:
             return False
         return bool(row["temps"].get(self.tiemask[0], 0) & self.tiemask[1])
 
-    def plan(self):
+    def plan(self, order=()):
         """One guard plan over the segments: a join folds, or its paths raise a cell."""
-        groups = [self.segs.get("prelude", []), self.segs["row"], self.segs.get("machine", [])]
+        body = set(self.sch.body)
+        groups = [self.segs.get("prelude", []), self.segs["row"], self.segs.get("machine", []),
+                  [l for l in order if l not in body]]
         flags = self.low.planall(groups)
         if flags:
             from .refuse import Refusal
@@ -888,8 +923,8 @@ class Binder:
         self.amb = ambiguous(self.p)
         pro = record.firstonly(self.prog, self.proc, self.inputs)
         self.pro = pro if pro and not pro & set(self.sch.body) else frozenset()
-        self.plan()
         order = self.low.rpo
+        self.plan(order)
         A = Accs(self.low, self.art, self.names, self.view)
         accs, drop, accat = {}, set(), {}
         for a in A.order(order):
