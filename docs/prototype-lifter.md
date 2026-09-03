@@ -580,10 +580,12 @@ the object still carries the tick's arithmetic rather than a reading of it.
 | raw / `xz -9e` | 164,951 / 6,280 | 53,898 / 3,464 | 181,385 / 8,552 | 87,010 / 4,696 | 1,225,775 / 13,208 | 228,045 / 6,112 |
 | ratio to the load band | **2.46×** | 1.36× | **3.46×** | 1.90× | **4.71×** | 2.18× |
 
-All three objects grew against #349, and by mechanisms none of the three needed
-for itself: the zero page as memory (Commando +784 compressed bytes, JCH +676)
-and the continue condition as a cell (§8). Neither is the third family's; both
-are what the third family showed the first two were missing.
+All three objects grew against #349 — Commando 5,496 to 6,280 compressed bytes,
+*Guldkorn* 7,876 to 8,552 — and by two mechanisms, neither of them the third
+family's and both of them what the third family showed the first two were
+missing: **the zero page is memory** (628 of Commando's 784 and 476 of JCH's 676
+are the score half, which now supplies each visit's own zero-page bytes) and
+**the condition one more turn is taken is a cell** (§8), one row a turn.
 
 What remains, and what it would take:
 
