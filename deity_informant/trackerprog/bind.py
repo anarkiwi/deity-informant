@@ -1147,6 +1147,10 @@ class Binder:
             st["beyond"] = {"id": "the fused tuning", "words": words}
         instruments = asm._instruments(art, self.view, self.names, self.ins, self.pwcols,
                                        self.img, self.accs)
+        got = {r["ins"] for v in range(self.cells.voices) for r in self.score.rows[v]}
+        got |= {int(x) for x in self.img[self.voc.insbase:
+                                         self.voc.insbase + self.cells.voices]}
+        instruments = {k: v for k, v in instruments.items() if int(k) in got}
         self.pitched(instruments, whole)
         cellseed, globseed = self.cells.seed(self.img)
         obj = {
@@ -1190,6 +1194,28 @@ class Binder:
         _dce(obj)
         build.prune(obj)
         return obj
+
+    def coverage(self, obj):
+        """What each plane supplied, counted from the object the binding emitted."""
+        rows = [r for st in obj["streams"].values() for r in st["rows"]]
+        sets = sum(len(r["sets"]) for r in rows)
+        sets += sum(len(s.get("sets", ())) for s in obj["meta"]["row"])
+        t1 = self.art["t1"].get("accs") or []
+        return {
+            "store_sites": sum(1 for b in self.p.blocks.values() for x in b.stmts
+                               if type(x) is Store),
+            "streams": len(obj["streams"]),
+            "rows": len(rows) + len(obj["meta"]["row"]),
+            "sets": sets,
+            "accs": len(obj["accs"]),
+            "t1_accumulators": len(t1),
+            "t1_recognised": len(obj["accs"]),
+            "cells": len(obj["state0"]["cells"]) + len(obj["state0"].get("globals", {})),
+            "patterns": len(obj["score"]["patterns"]),
+            "events": sum(len(p["events"]) for p in obj["score"]["patterns"].values()),
+            "instruments": len(obj["instruments"]),
+            "refused": sorted(self.low.bad),
+        }
 
     def wide(self):
         """The voice cells the object reads as sixteen bits."""
@@ -1990,3 +2016,24 @@ def terms_of(low, guards, facts, rows):
                 break
     return out
 
+
+
+def lift(art, ticks=None, hints=None):
+    """``(object, report)``: one certified tune's planes, bound to the player."""
+    b = Binder(art, ticks)
+    obj = b.run()
+    for k, v in (hints or {}).items():
+        node, parts = obj, k.split(".")
+        for x in parts[:-1]:
+            node = node[x]
+        node[parts[-1]] = v
+    report = {
+        "schedule": b.sch.datums(),
+        "refusals": [r.to_dict() for r in b.refusals],
+        "coverage": b.coverage(obj),
+        "trips": b.trips,
+        "rows": sum(len(s["rows"]) for s in obj["streams"].values()),
+        "accs": len(obj["accs"]),
+        "patterns": len(obj["score"]["patterns"]),
+    }
+    return obj, report
