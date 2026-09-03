@@ -949,7 +949,7 @@ belongs to:
 | refused by design | a CIA #2 source with no schedule (TOD alarm, serial, FLAG, CNT timer): 6 of 7,023 |
 | survey | 7,023-tune stratified sample at 30 s: **91.2 % of HVSC by weight certifies** (76.7 % raw), 2.5 % diverges, 6.2 % refused with a diagnosis, 0.26 % crashes; `--until-period` over 1,338: 99.4 % of certified programs complete by weight ([survey-tuneprog.md](survey-tuneprog.md)) |
 | code | `deity_informant/tuneprog/`, 69 modules, 20,663 lines, the largest 511; 917 hermetic + 203 HVSC + 10 oracle tests, 94 % coverage; SSA 1.0–1.6 statements per instruction |
-| baseline | the Ghidra high-P-Code export with SMC context ([ghidra-highpcode-export.md](ghidra-highpcode-export.md)), 8.3–16.5× our S4 — a baseline, not core. The three Ghidra oracles run nightly over all 51 certificates: 51 exports, the emulator agreeing with every one, no `ERROR` row, and the 2 standing `ours_bigger` flags carried as `--known` ([tuneprog-backlog.md](tuneprog-backlog.md) §2.6), so the gate is clean. Beside it the `sidplayfp` grid oracle |
+| baseline | the Ghidra high-P-Code export with SMC context ([ghidra-highpcode-export.md](ghidra-highpcode-export.md)), 8.3–16.5× our S4 — a baseline, not core. The three Ghidra oracles run nightly over all 54 certificates: 54 exports, the emulator agreeing with every one, no `ERROR` row, and the 6 standing `ours_bigger` flags carried as `--known` ([tuneprog-backlog.md](tuneprog-backlog.md) §2.6), so the gate is clean. Beside it the `sidplayfp` grid oracle |
 | merged PRs | #225–#286, one stage each, every one on green CI with recert reproduced |
 
 Open work, by lever, and the done ledger: [tuneprog-backlog.md](tuneprog-backlog.md).
