@@ -98,6 +98,10 @@ class Vocab:
         top = x.hi
         if x.w != 1 or top < base or not low.frozen(base, top - base + 1):
             return None
+        # a read whose address is no constant plus an index is no table of the
+        # tune's: the base a split leaves is an offset and not where bytes live
+        if self.cells.region(base) is None:
+            return None
         if low.lbl in self.rowblocks:  # the bytes a fetch read are the score's own
             return None
         idx = addr_split(x.a)[1] if addr_split(x.a)[0] == base else idx

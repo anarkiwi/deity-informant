@@ -195,7 +195,7 @@ derives its schedule — `commit_order (ad, sr, ctrl)`, the counter the tick ste
 outside the voice loop, step −1, a boundary of three terms and one `reset`
 clause whose value is the tune's own speed, 3 — and T2's selector gives its 19
 instrument records and its 95-entry tuning. Two of T1's five records render.
-The object is 3,312 compressed bytes, 1.34× its 2,472-byte band.
+The object is 3,232 compressed bytes, 1.31× its 2,472-byte band.
 
 **It diverges at tick 0**, and this is the field it names:
 
@@ -245,7 +245,7 @@ top. It is deleted (`lower.py`, `flow.py`, `unroll.py`, `recognise.py`,
 | stream rows / `sets` (Commando) | 86 / 207 | 26 / 50 | 4 / 11 |
 | `state0` cells | 123 | 18 | 4 |
 | `xz -9e`, and the ratio | 6,280 — **2.46×** | 3,608 — **1.42×** | 3,464 — 1.36× |
-| ratio, *Guldkorn* | 3.46× | 1.34× | 1.90× |
+| ratio, *Guldkorn* | 3.46× | 1.31× | 1.90× |
 | ratio, *Je suis Linus* | 4.71× | refused at B6 | 2.18× |
 | accumulators joined | 3 of 7 Commando, 0 of 7 JCH, 0 of 9 GT2 | 3, 2 | 7, 7 |
 

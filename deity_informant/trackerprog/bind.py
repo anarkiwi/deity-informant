@@ -338,6 +338,12 @@ def lift(art, ticks=None, hints=None):
         for x in parts[:-1]:
             node = node[x]
         node[parts[-1]] = v
+    # a store no cell of section 5 holds is named, and the object is emitted
+    # without it: the certificate is what says whether it was worth a tick
+    b.refusals += [
+        Refusal("unclassified update", x, x, "no section 5 cell holds it")
+        for x in sorted(b.low.bad)
+    ]
     report = {
         "schedule": b.sch.datums(),
         "refusals": [r.to_dict() for r in b.refusals],

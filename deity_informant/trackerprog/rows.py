@@ -110,29 +110,6 @@ class Rows:
             out.append([name, low.value(low.expand(s.v))])
         return out
 
-    def rows(self, blocks, order, drop=()):
-        """One segment as guarded rows in program order, split where a path binds."""
-        low, out = self.low, []
-        for lbl in [l for l in order if l in blocks]:
-            if not any(type(s) is Store for s in low.proc.blocks[lbl].stmts):
-                continue
-            guard = tuple(low.eff.get(lbl, ((), ()))[0])
-            for extra, pick in self.bindings(lbl, guard):
-                low.pick = {n: self.amb[n][d] for n, d in pick.items()}
-                low.lbl, low.local, low.turn = lbl, {}, None
-                try:
-                    row = {"when": self.when(guard + extra), "sets": self.sets(lbl, drop)}
-                except Unlowerable as x:
-                    low.bad.add("%s: %s" % (lbl, x))
-                    continue
-                if row["sets"]:
-                    out.append((lbl, row))
-        low.pick = {}
-        return out
-
-
-# ---- the score the fetch regions read, as section 3.6 events -------------------
-
 
 def _epoch(stmts, got):
     """One block's stores in an order a row's own ``sets`` can be run in.
@@ -300,11 +277,10 @@ def steps(b, lbl, drop, roles, guard, extra, split=False):
         if tgt is not None:
             keep.append((i, "reg" if tgt[0] == "reg" else "set", tgt, s))
     put = {
-        ("@" if t[0] in ("copy", "acc") else "") + str(t[1]).lstrip("@")
+        (t[1][0] if t[0] == "copy" else str(t[1])).lstrip("@#!*")
         for _i, _k, t, _s in keep
         if t is not None
     }
-    put = {x.lstrip("@#!*") for x in put}
     sub, got = {}, []
     for i, kind, tgt, s in _epoch(stmts, keep):
         if tgt is None:
@@ -313,7 +289,7 @@ def steps(b, lbl, drop, roles, guard, extra, split=False):
         low.sub = dict(sub)
         val = low.value(low.expand(s.v))
         low.sub = {}
-        name = tgt[1] if tgt[0] not in ("copy", "acc") else "@" + str(tgt[1])
+        name = tgt[1] if tgt[0] != "acc" else "@" + str(tgt[1])
         hit = None
         if s.cls == "ram" and tgt[0] in ("cell", "acc"):
             nm = str(name).lstrip("@")

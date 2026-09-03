@@ -1,571 +1,334 @@
-"""B7's binding on one synthetic tune: the reader, the flow facts and the object.
-
-Hermetic. The tune is built in the S4 IR -- regions, names, image and a ``tick``
-whose voice loop carries a clock, a fetch at a per-voice pointer and a machine
-segment -- and the whole of :mod:`~deity_informant.trackerprog.bind` runs on it.
-"""
-
-import sys
-from pathlib import Path
+"""B7's binding of one synthetic tune's planes to the player, whole and step by step."""
 
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(ROOT))
-
-from deity_informant.trackerprog import bind, build, read  # noqa: E402
-from deity_informant.trackerprog.cells import Cells  # noqa: E402
-from deity_informant.trackerprog.refuse import Refused  # noqa: E402
-from deity_informant.trackerprog.vocab import Vocab  # noqa: E402
-from deity_informant.tuneprog.ir import (  # noqa: E402
-    Bin,
-    Block,
-    Const,
-    Goto,
-    If,
-    Let,
-    Load,
-    Proc,
-    Return,
-    Rgn,
-    Store,
-    Switch,
-    Var,
+from _bound import (
+    C,
+    CMD,
+    GLOB,
+    INSC,
+    NOTE,
+    NOTES,
+    ORDPOS,
+    PATTERNS,
+    PTRH,
+    PTRL,
+    STAGE,
+    SWEEP,
+    TICKS,
+    TIMER,
+    V,
+    VOICES,
+    art,
+    binder,
+    bound,
+    ram,
+    store,
 )
-from deity_informant.tuneprog.recover import Names  # noqa: E402
-
-FREQ, WAVE, ADSR = 0x2000, 0x2100, 0x2101
-ORD, PAT = 0x2200, 0x2300
-NOTE, INSC, TIMER, ORDPOS = 0x2400, 0x2403, 0x2406, 0x2409
-PTRL, PTRH, SWEEP = 0x240C, 0x240F, 0x2412
-GLOB, SID = 0x2500, 0xD400
-NOTES, VOICES, TICKS = 16, 3, 24
-
-PATTERNS = [
-    0x05, 0x12, 0x07, 0x21, 0x80, 0x11, 0x00, 0x00,
-    0x09, 0x13, 0x0B, 0x22, 0x80, 0x12, 0x00, 0x00,
-]
+from deity_informant.trackerprog import bind
+from deity_informant.trackerprog.refuse import Refused
+from deity_informant.tuneprog.ir import Bin, Block, Goto, If, Return
 
 
-def C(v, w=1):
-    return Const(v, w)
+# ---- the whole binding ----------------------------------------------------------
+def test_the_binding_derives_the_schedule_the_certified_tick_carries():
+    _obj, report = bound()
+    sch = report["schedule"]
+    assert sch["tick"] == ["prelude", "row", "machine"]
+    assert sch["commit_order"] == ["ctrl", "ad", "sr"]
+    assert sch["tempo.step"] == -1 and sch["tempo.rate"] == 1 and sch["tempo.phase"] == 0
+    assert sch["tempo.boundary_terms"] == 1 and sch["tempo.resets"] == 0
+    assert sch["segments"] == [("prelude", 1), ("row", 4), ("machine", 3)]
+    assert not sch["row_consumes_tick"] and report["refusals"] == []
 
 
-def V(n, w=1):
-    return Var(n, w)
+def test_the_object_binds_the_tuning_the_records_and_the_instruments():
+    obj, _report = bound()
+    assert obj["$trackerprog"] == 1 and obj["meta"]["family"] == "bound"
+    assert obj["meta"]["voices"] == 3 and obj["meta"]["voice_order"] == [2, 1, 0]
+    assert obj["meta"]["tempo"]["cell"] == "rowsleft"
+    assert obj["pitch"]["base"] == 0 and len(obj["pitch"]["freq"]) == NOTES
+    assert obj["accs"]["a0"] == {
+        "rank": 0,
+        "cell": "sweep",
+        "target": "pw_lo",
+        "width": 8,
+        "delta": 1,
+        "policy": "free",
+        "bound": {"from": "projected", "interval": [0, 255], "witness": "the 8-bit store"},
+        "rate": 1,
+        "scope": "voice",
+        "produce": [["pw_lo", "byte"]],
+        "when": [],
+    }
+    assert sorted(obj["instruments"]) == ["0", "1", "2"]
+    assert obj["instruments"]["1"] == {
+        "wave": 0x21,
+        "adsr": 0x0B,
+        "pw": [0, 0],
+        "accs": [{"acc": "a0"}],
+    }
 
 
-def ram(addr, r, idx=None, w=1, size=3):
-    a = C(addr, 2) if idx is None else Bin("+", C(addr, 2), idx, 2)
-    return Load("ram", a, w, addr, addr + size - 1, r)
-
-
-def store(addr, r, val, idx=None, src=0, cls="ram", size=3):
-    a = C(addr, 2) if idx is None else Bin("+", C(addr, 2), idx, 2)
-    return Store(cls, a, val, 1, addr, addr + size - 1, r, src)
-
-
-def regions():
-    return [
-        Rgn(1, "freq", FREQ, 2 * NOTES + 8, "const"),
-        Rgn(2, "wave", WAVE, 8, "const", stride=2),
-        Rgn(3, "adsr", ADSR, 8, "const", stride=2),
-        Rgn(4, "note", NOTE, 3, "state"),
-        Rgn(5, "ins", INSC, 3, "state"),
-        Rgn(6, "timer", TIMER, 3, "state"),
-        Rgn(7, "ordpos", ORDPOS, 3, "state"),
-        Rgn(8, "ptrlo", PTRL, 3, "state"),
-        Rgn(9, "ptrhi", PTRH, 3, "state"),
-        Rgn(10, "sweep", SWEEP, 3, "state"),
-        Rgn(11, "scratch", GLOB, 1, "state"),
-        Rgn(12, "orders", ORD, 8, "const"),
-        Rgn(13, "patterns", PAT, 32, "const"),
-        Rgn(20, "sid", SID, 25, "io", stride=7),
+def test_the_machine_segment_is_one_stream_over_the_objects_own_names():
+    obj, _report = bound()
+    st = obj["streams"]["machine0"]
+    assert st["all"] and st["rank"] == 1
+    assert st["beyond"]["words"] == [{"u16": [0x70, 1]}]
+    assert st["rows"][0]["sets"] == [
+        ["freq_lo", {"and": [{"transpose": 0}, 0xFF]}],
+        ["freq_hi", {"and": [{"shr": [{"transpose": 0}, 8]}, 0xFF]}],
+        ["ctrl", {"ins": "wave"}],
+        ["ad", {"ins": "adsr"}],
+        ["sr", {"ins": "adsr"}],
+        ["pw_hi", {"cell": "cmd"}],
+        ["mode_vol", {"global": "scratch"}],
     ]
 
 
-def names():
-    return Names(
-        region={r.id: r.name for r in regions()},
-        role={1: "freq_table"},
-        groups={"voice": {"stride": 1, "n": VOICES, "members": [4, 5, 6, 7, 8, 9, 10]}},
-        view={
-            4: ("voice", "note"),
-            5: ("voice", "ins"),
-            6: ("voice", "timer"),
-            7: ("voice", "ordpos"),
-            8: ("voice", "ptrlo"),
-            9: ("voice", "ptrhi"),
-            10: ("voice", "sweep"),
-        },
-    )
+def test_a_block_outside_the_voice_loop_is_one_stream_of_the_objects_globals():
+    obj, _report = bound()
+    assert obj["globals"]["streams"] == ["global0"]
+    assert obj["streams"]["global0"]["rows"] == [{"when": [], "sets": [["#scratch", 0x0F]]}]
+    assert obj["state0"]["globals"] == {"scratch": 3}
+    assert obj["state0"]["cells"]["sweep"] == [0, 1, 2]
+    assert obj["state0"]["cells"]["rowsleft"] == [0, 0, 0]
 
 
-def image():
-    m = bytearray(0x10000)
-    for i in range(NOTES + 4):
-        w = 0x0100 + 7 * i
-        m[FREQ + 2 * i], m[FREQ + 2 * i + 1] = w & 0xFF, w >> 8
-    m[WAVE : WAVE + 8] = bytes([0x41, 0x0A, 0x21, 0x0B, 0x11, 0x0C, 0x81, 0x0D])
-    m[ORD : ORD + 8] = bytes([0x00, 0x08, 0x00, 0x08, 0, 0, 0, 0])
-    m[PAT : PAT + len(PATTERNS)] = bytes(PATTERNS)
-    for v in range(VOICES):
-        m[PTRH + v], m[SWEEP + v] = PAT >> 8, v
-    return m
-
-
-def tick():
-    """One voice pass: the clock, the fetch at a pointer, and the machine's writes."""
-    idx = V("x")
-    blocks = {
-        "top": Block("top", [Let("x", C(2))], Goto("head"), src=0x1000),
-        "head": Block(
-            "head",
-            [
-                Let("t0", ram(TIMER, 6, idx)),
-                store(TIMER, 6, Bin("-", V("t0"), C(1)), idx, src=0x1010),
-            ],
-            If(Bin("!=", Bin("&", Bin("-", V("t0"), C(1)), C(0x80)), C(0)), "fetch", "join"),
-            src=0x1010,
-        ),
-        "fetch": Block(
-            "fetch",
-            [
-                Let("pl", ram(PTRL, 8, idx)),
-                Let("ph", ram(PTRH, 9, idx)),
-                Let("q", Bin("|", V("pl"), Bin("<<", V("ph"), C(8), 2), 2)),
-                Let("n", Load("ram", V("q", 2), 1, PAT, PAT + 31, 13)),
-                Let("q1", Bin("+", V("q", 2), C(1, 2), 2)),
-                Let("c", Load("ram", V("q1", 2), 1, PAT, PAT + 31, 13)),
-                store(TIMER, 6, Bin("&", V("c"), C(0x0F)), idx, src=0x1020),
-                Let("q2", Bin("+", V("q", 2), C(2, 2), 2)),
-                store(PTRL, 8, Bin("&", V("q2", 2), C(0xFF, 2)), idx, src=0x1024),
-                store(PTRH, 9, Bin(">>", V("q2", 2), C(8, 2), 2), idx, src=0x1028),
-            ],
-            If(Bin("!=", Bin("&", V("n"), C(0x80)), C(0)), "wrap", "keyon"),
-            src=0x1020,
-        ),
-        "keyon": Block(
-            "keyon",
-            [
-                store(NOTE, 4, V("n"), idx, src=0x1030),
-                Let("i", Bin(">>", V("c"), C(4))),
-                store(INSC, 5, V("i"), idx, src=0x1034),
-            ],
-            Goto("join"),
-            src=0x1030,
-        ),
-        "wrap": Block(
-            "wrap",
-            [
-                Let("o", ram(ORDPOS, 7, idx)),
-                Let("o2", Bin("&", Bin("+", V("o"), C(1)), C(3))),
-                store(ORDPOS, 7, V("o2"), idx, src=0x1040),
-                Let("b", ram(ORD, 12, V("o2"), size=8)),
-                store(PTRL, 8, V("b"), idx, src=0x1044),
-                store(PTRH, 9, C(PAT >> 8), idx, src=0x1048),
-            ],
-            Goto("join"),
-            src=0x1040,
-        ),
-        "join": Block("join", [], Goto("mach"), src=0x1050),
-        "mach": Block(
-            "mach",
-            [
-                Let("f", ram(FREQ, 1, Bin("<<", ram(NOTE, 4, idx), C(1)), size=40)),
-                store(SID, 20, V("f"), src=0x1060, cls="io", size=25),
-                Let("g", ram(FREQ + 1, 1, Bin("<<", ram(NOTE, 4, idx), C(1)), size=39)),
-                store(SID + 1, 20, V("g"), src=0x1064, cls="io", size=25),
-                Let("sw", ram(SWEEP, 10, idx)),
-                Let("sw2", Bin("+", V("sw"), C(1))),
-                store(SWEEP, 10, V("sw2"), idx, src=0x1068),
-                store(SID + 2, 20, V("sw2"), src=0x106C, cls="io", size=25),
-                Let("w1", ram(WAVE, 2, Bin("<<", ram(INSC, 5, idx), C(1)), size=8)),
-                store(SID + 4, 20, V("w1"), src=0x1070, cls="io", size=25),
-                Let("a1", ram(ADSR, 3, Bin("<<", ram(INSC, 5, idx), C(1)), size=8)),
-                store(SID + 5, 20, V("a1"), src=0x1074, cls="io", size=25),
-                store(SID + 6, 20, V("a1"), src=0x1078, cls="io", size=25),
-            ],
-            Goto("tail"),
-            src=0x1060,
-        ),
-        "tail": Block("tail", [], If(Bin("==", V("x"), C(0)), "out", "back"), src=0x1080),
-        "back": Block("back", [Let("x", Bin("-", V("x"), C(1)))], Goto("head"), src=0x1084),
-        "out": Block("out", [], Return(vals=[]), src=0x1088),
-    }
-    return Proc("tick", blocks=blocks, entry="top")
-
-
-class View:
-    """The presentation view a binding reads: its regions, its procs and its image."""
-
-    def __init__(self, storage, procs, img):
-        self.storage, self.procs, self.img = storage, procs, img
-
-    def by_id(self):
-        return {r.id: r for r in self.storage}
-
-    def reads(self):
-        return self.img
-
-
-class Prog:
-    """One certified tune as the binding reads it: the tick, its regions, its image."""
-
-    def __init__(self):
-        self.procs = {
-            "tick": tick(),
-            "init": Proc("init", blocks={"i": Block("i", [], Return(vals=[]))}, entry="i"),
-        }
-        self.storage = regions()
-        self.img = image()
-        self.inputs = []
-        self.meta = {
-            "tick_proc": "tick",
-            "init_proc": "init",
-            "name": "synth",
-            "song": 0,
-            "entry": {"kind": "sub", "cycles_per_tick": 19656},
-            "load": (0x1000, 0x2600),
-        }
-
-    def by_id(self):
-        return {r.id: r for r in self.storage}
-
-    def reads(self):
-        return self.img
-
-    def image(self):
-        return self.img
-
-
-def t0():
-    def w(reg, pc, rid):
-        return {"register": reg, "site": {"pc": pc, "block": "mach"}, "cells": [{"region": rid}]}
-
-    return {
-        "writes": [
-            w("freq_lo", "$1060", 4),
-            w("freq_hi", "$1064", 4),
-            w("pw_lo", "$106C", 10),
-            w("ctrl", "$1070", 5),
-            w("ad", "$1074", 5),
-            w("sr", "$1078", 5),
-        ]
-    }
-
-
-def t1():
-    return {
-        "accs": [
-            {
-                "id": "a0",
-                "cell": {"addr": "$%04X" % SWEEP, "region": 10, "copies": VOICES,
-                         "name": "sweep", "width": 8},
-                "regions": [10],
-                "width": 8,
-                "target": {"register": "pw_lo"},
-                "policy": "free",
-                "scope": "voice",
-                "sites": ["$1068"],
-                "delta": {"kind": "const", "value": 1},
-            }
-        ],
-        "refusals": [],
-    }
-
-
-def t2():
-    return {
-        "pitch": {"layout": "u16le", "entries": [0x0100 + 7 * i for i in range(NOTES)]},
-        "selectors": [
-            {
-                "kind": "selector",
-                "cursor": "ins@$%04X" % INSC,
-                "entries": 4,
-                "visited": [0, 1, 2, 3],
-                "columns": [{"table": "wave", "stride": 2}, {"table": "adsr", "stride": 2}],
-            }
-        ],
-        "streams": [],
-        "score": [
-            {
-                "order": [{"table": "orders", "cursor": "ordpos@$%04X" % ORDPOS}],
-                "pattern": [{"table": "patterns", "cursor": "ptrlo@$%04X" % PTRL}],
-            }
-        ],
-        "horizon": {"ticks": TICKS},
-    }
-
-
-def art():
-    prog = Prog()
-    return {
-        "prog": prog,
-        "view": View(regions(), prog.procs, prog.img),
-        "names": names(),
-        "t0": t0(),
-        "t1": t1(),
-        "t2": t2(),
-        "cert": {},
-    }
-
-
-def reader():
-    """A :class:`~.read.Reader` over the tune, with the vocabulary a binding gives it."""
-    view = View(regions(), {"tick": tick()}, image())
-    cells = Cells(view, names(), pitch=((1,), (FREQ, FREQ + 1), 2, NOTES))
-    voc = Vocab(cells, image(), build.registers(), frozenset({"x"}))
-    voc.supplied = {"n", "c"}
-    voc.pitch = ((1,), (FREQ, FREQ + 1), 2, NOTES)
-    voc.notebase, voc.insbase = NOTE, INSC
-    voc.inscol, voc.insstride = {2: "wave", 3: "adsr"}, 2
-    return read.Reader(Prog(), "tick", cells, voc), voc
-
-
-def diamond():
-    """A join two paths reach that no fold makes one: the object states it as a cell."""
-    return Proc(
-        "tick",
-        entry="a",
-        blocks={
-            "a": Block("a", [Let("y", C(1))], If(Bin("!=", V("y"), C(0)), "b", "c"), src=0x2000),
-            "b": Block("b", [store(GLOB, 11, C(1), src=0x2004, size=1)], Goto("e"), src=0x2004),
-            "c": Block("c", [], If(Bin("==", V("y"), C(1)), "d", "e"), src=0x2008),
-            "d": Block("d", [store(GLOB, 11, C(2), src=0x200C, size=1)], Goto("g"), src=0x200C),
-            "g": Block("g", [store(GLOB, 11, C(4), src=0x2018, size=1)], Goto("e"), src=0x2018),
-            "e": Block("e", [store(GLOB, 11, C(3), src=0x2010, size=1)], Goto("f"), src=0x2010),
-            "f": Block("f", [], Return(vals=[]), src=0x2014),
-        },
-    )
-
-
-def dispatch():
-    """A jump table whose edges decide a term, and one label two cases reach."""
-    return Proc(
-        "tick",
-        entry="a",
-        blocks={
-            "a": Block(
-                "a",
-                [Let("y", C(1))],
-                Switch(V("y"), ((0, "b"), (1, "c"), (2, "d"), (3, "d"))),
-                src=0x3000,
-            ),
-            "b": Block("b", [store(GLOB, 11, C(1), src=0x3004, size=1)], Goto("e"), src=0x3004),
-            "c": Block("c", [store(GLOB, 11, C(2), src=0x3008, size=1)], Goto("e"), src=0x3008),
-            "d": Block("d", [store(GLOB, 11, C(3), src=0x300C, size=1)], Goto("e"), src=0x300C),
-            "e": Block("e", [], Return(vals=[]), src=0x3010),
-        },
-    )
-
-
-def other(proc):
-    """A reader over one hand-built procedure, with the tune's own regions under it."""
-    prog = Prog()
-    prog.procs["tick"] = proc
-    view = View(regions(), {"tick": proc}, image())
-    cells = Cells(view, names())
-    voc = Vocab(cells, image(), build.registers(), frozenset())
-    return read.Reader(prog, "tick", cells, voc)
-
-
-# ---- read.py: the leaves and the arithmetic ------------------------------------
-def test_a_left_shift_is_the_adds_the_object_has():
-    assert read._shl(4, 2, 1) == 16
-    assert read._shl({"cell": "a"}, 0, 1) == {"cell": "a"}
-    assert read._shl({"cell": "a"}, 1, 1) == {"and": [{"shl": [{"cell": "a"}, 1]}, 0xFF]}
-
-
-def test_a_value_is_held_to_the_width_the_machine_gives_it():
-    assert read.masked(0x1FF, 1) == 0xFF
-    assert read.masked({"cell": "a"}, 2) == {"and": [{"cell": "a"}, 0xFFFF]}
-    assert read.masked({"cell": "a"}, 4) == {"and": [{"cell": "a"}, 0xFFFF]}
-
-
-def test_one_bit_of_a_mask_is_the_bit_and_a_wider_mask_is_the_zero_test():
-    assert read._bitof(0x80) == 7 and read._bitof(0x81) is None and read._bitof(0) is None
-    e = Bin("!=", Bin("&", V("n"), C(4)), C(0))
-    assert read._truth({"and": [{"cell": "tn"}, 4]}, 0, "!=", 1, e) == {"bit": [{"cell": "tn"}, 2]}
-    got = read._truth({"and": [{"cell": "tn"}, 4]}, 0, "==", 1, e)
-    assert got == {"xor": [{"bit": [{"cell": "tn"}, 2]}, 1]}
-    wide = Bin("!=", Bin("&", V("n"), C(6)), C(0))
-    assert "carry_out" in read._truth({"cell": "tn"}, 0, "!=", 1, wide)
-
-
-def test_a_comparison_in_a_value_position_is_the_chips_own_zero_test():
-    low, _voc = reader()
-    low.lbl = "mach"
-    assert low.value(Bin("!=", Bin("&", V("n"), C(4)), C(0))) == {"bit": [{"cell": "tn"}, 2]}
-    assert "borrow_out" in low.value(Bin("==", V("n"), C(3)))
-    assert low.value(Bin("<", V("n"), C(3)))["carry_out"][1] == 8
-    assert low.value(Bin("<=", V("n"), C(3)))["borrow_out"][1] == 8
-    assert low.value(Bin("carry", V("n"), C(3)))["carry_out"][1] == 8
-    assert low.value(Bin("|", V("n"), C(3))) == {"or": [{"cell": "tn"}, 3]}
-    assert low.value(Bin("+", V("n"), C(3))) == {"and": [{"add": [{"cell": "tn"}, 3]}, 0xFF]}
-    assert low.value(Bin(">>", V("n"), C(3))) == {"shr": [{"cell": "tn"}, 3]}
-
-
-def test_a_name_is_the_cell_the_object_gives_it_or_no_name_at_all():
-    low, voc = reader()
-    low.lbl = "mach"
-    low.local = {"z": 7}
-    assert low.value(V("z")) == 7 and low.expand(V("z")) == C(7)
-    low.local = {}
-    voc.subst = {"t0": {"cell": "phase"}}
-    assert low.value(V("t0")) == {"cell": "phase"}
-    voc.subst = {}
-    assert low.value(V("x")) == {"cell": "voice_index"}
-    assert low.value(V("n")) == {"cell": "tn"} and low.temps["n"] == "tn"
-    low.sub = {repr(V("n")): {"cell": "staged"}}
-    assert low.value(V("n")) == {"cell": "staged"}
-    low.sub = {}
-    with pytest.raises(read.Unlowerable):
-        low.value(V("nosuchname"))
-
-
-def test_a_temp_is_one_cell_a_voice_and_a_scalar_is_the_tunes_own_global():
-    low, _voc = reader()
-    assert low.temp("n", 2) == "tn" and "tn" in low.wide
-    low.scalars = frozenset({"g1"})
-    assert low.temp("g1") == "#tg1"
-    assert read.Reader.tref("#tg1") == {"global": "tg1"}
-    assert read.Reader.tref("tn") == {"cell": "tn"}
-
-
-def test_a_masked_score_byte_is_the_event_field_only_where_a_payload_stands():
-    low, voc = reader()
-    low.lbl = "keyon"
-    voc.fields = {("c", 0x0F): "dur_fact"}
-    assert low.field(V("c"), 0x0F) == "dur_fact"
-    assert low.field(V("n"), 0x0F) is None
-    assert low.value(Bin("&", V("c"), C(0x0F))) == "dur_fact"
-    voc.payload = False
-    assert low.value(Bin("&", V("c"), C(0x0F))) == {"and": [{"cell": "tc"}, 0x0F]}
-
-
-def test_an_operator_the_object_has_no_form_for_is_refused():
-    low, _voc = reader()
-    low.lbl = "mach"
-    with pytest.raises(read.Unlowerable):
-        low.value(Bin("<<", V("n"), V("c")))
-    with pytest.raises(read.Unlowerable):
-        low.value(Bin("%", V("n"), C(3)))
-    with pytest.raises(read.Unlowerable):
-        low.value(object())
-    low.lbl = "fetch"
-    with pytest.raises(read.Unlowerable):
-        low.value(Load("ram", V("q", 2), 1, PAT, PAT + 31, 13))
-
-
-# ---- read.py: expansion, the image and the flow facts ---------------------------
-def test_a_word_the_play_never_writes_is_the_byte_the_image_states():
-    low, _voc = reader()
-    assert low.frozen(PAT, 32) and low.frozen(FREQ, 2)
-    assert not low.frozen(TIMER, 1) and not low.frozen(SWEEP, 3)
-    low.lbl = "mach"
-    assert low.expand(Load("ram", C(FREQ + 2, 2), 1, FREQ, FREQ, 1)) == C(0x07)
-    assert low.expand(Bin("+", C(2), C(3))) == C(5)
-
-
-def test_a_read_of_a_cell_one_store_reaches_is_the_value_that_store_left():
-    low, _voc = reader()
-    low.lbl = "mach"
-    assert low.expand(ram(NOTE, 4, V("x"))) == V("n")
-    assert low.isvoice(V("x")) and not low.isvoice(V("n"))
-    assert low.chase(V("q")).op == "|"
-
-
-def test_a_store_whose_value_reads_its_own_cell_is_a_counter_and_no_copy():
-    low, _voc = reader()
-    p = tick()
-    clock = [s for s in p.blocks["head"].stmts if type(s) is Store][0]
-    keyed = [s for s in p.blocks["keyon"].stmts if type(s) is Store][0]
-    assert low.selfread(clock.v, TIMER)
-    assert not low.selfread(keyed.v, NOTE)
-
-
-def test_one_store_of_a_base_reaches_the_blocks_the_edges_lead_to():
-    p = tick()
-    got = read.reaching(p, list(p.blocks), frozenset({"x"}))
-    assert NOTE in got["mach"] and TIMER in got["fetch"]
-    assert not got["top"]
-
-
-def test_two_paths_that_differ_in_one_term_and_its_negation_are_the_one_path():
-    c, d = Bin("==", V("a"), C(0)), Bin("==", V("b"), C(0))
-    arm = lambda t, e=(): ((("h", c, t),) + e, ())
-    assert read.fold([arm(True), arm(False)]) == [((), ())]
-    assert len(read.fold([arm(True), ((("h", d, True),), ())])) == 2
-    assert read.pair((("h", c, True),), (("h", c, False),))
-    assert not read.pair((("h", c, True),), (("h", d, False),))
-
-
-def test_the_guard_the_schedule_states_is_read_over_the_cells_and_not_the_temps():
-    low, _voc = reader()
-    d, c, t, _w = low.guards["fetch"][0]
-    assert low.guard(c, t) == [
-        {"and": [{"and": [{"sub": [{"cell": "timer"}, 1]}, 0xFF]}, 0x80]},
-        "!=",
-        0,
+def test_the_row_program_is_the_fetchs_own_steps_over_the_rows_facts():
+    obj, _report = bound()
+    assert obj["meta"]["row"] == [
+        {"note": True, "when": [["wraps", "==", 0]]},
+        {"ins": True},
+        {"commands": True},
+        {"stream": "note_on0"},
+        {"sets": [["@cmd", 0], ["#scratch", 0x0E]], "when": [["wraps", "!=", 0]]},
     ]
-    assert low.guard_value(ram(TIMER, 6, V("x"))) == {"cell": "timer"}
-    assert low.onpath(d, c, t)
-    low.stated, low.scope = frozenset({id(c)}), {"fetch"}
-    assert not low.onpath(d, c, t)
-    low.scope = {"head", "fetch"}
-    assert low.onpath(d, c, t)
-    low.gate = frozenset({(id(c), t)})
-    assert not low.onpath(d, c, t)
+    assert obj["streams"]["note_on0"]["rows"] == [
+        {
+            "when": [["wraps", "==", 0]],
+            "sets": [["ctrl", {"and": [{"shr": [{"cell": "tc"}, 4]}, 3]}]],
+        }
+    ]
+    assert obj["meta"]["row_command"] == "spent"
 
 
-def test_a_guard_term_is_a_comparison_of_the_objects_own():
-    low, _voc = reader()
-    low.lbl = "mach"
-    assert low.term(Bin("==", V("n"), C(0)), True)[1] == "=="
-    assert low.term(Bin("==", V("n"), C(0)), False)[1] == "!="
-    assert low.term(Bin("<=", V("n"), C(0)), True) == [0, ">=", {"cell": "tn"}]
-    assert low.term(Bin("<=", V("n"), C(0)), False)[1] == "<"
-    assert low.term(V("n"), True) == [{"cell": "tn"}, "!=", 0]
+def test_the_score_is_the_visits_the_horizon_made_grouped_by_the_order_cursor():
+    obj, _report = bound()
+    assert [o["play"] for o in obj["score"]["orders"]] == [[0, 1, 0]] * VOICES
+    got = obj["score"]["patterns"]["0"]["events"]
+    assert [e["dur"] for e in got] == [2, 1, 1]
+    assert [e["note"] for e in got] == [5, 7, None]
+    assert [e["ins"] for e in got] == [1, 2, None]
+    assert [e["sounds"] for e in got] == [True, True, False]
+    assert [e["tie"] for e in got] == [False, True, False]
+    assert got[0]["arm"] == {"rows": [{"sets": [["@cmd", 5]]}]} and got[2]["arm"] is None
+    assert [e["dur"] for e in obj["score"]["patterns"]["1"]["events"]] == [3, 2, 2]
 
 
-# ---- read.py: the join plan and the jump table ----------------------------------
-def test_a_diamond_folds_to_the_one_path_the_terms_it_states_do_not_decide():
-    low, _voc = reader()
-    eff, rows = low.plan(set(low.proc.blocks))
-    assert eff["join"] == ((), ()) and not rows  # every path folds: no cell
-    assert [t for _d, _c, t in eff["keyon"][0]] == [True, False]
-    other_low = other(diamond())
-    eff, rows = other_low.plan(set(other_low.proc.blocks))
-    assert eff["e"] == ((), ()) and not rows
-    assert len(eff["d"][0]) == 2
+def test_the_coverage_counts_what_each_plane_supplied():
+    obj, report = bound()
+    assert report["coverage"] == {
+        "store_sites": 26,
+        "streams": 3,
+        "rows": 8,
+        "sets": 11,
+        "accs": 1,
+        "t1_accumulators": 1,
+        "t1_recognised": 1,
+        "cells": 5,
+        "patterns": 2,
+        "events": 6,
+        "instruments": 3,
+        "refused": [],
+    }
+    assert report["rows"] == 3 and report["accs"] == 1 and report["patterns"] == 2
+    assert obj["meta"]["horizon"] == TICKS
 
 
-def test_a_joins_own_preds_do_not_stop_at_a_segments_edge():
-    low = other(diamond())
-    assert low.planall([["a", "b", "c", "e"], ["d", "g", "f"]]) == ["je"]
-    assert low.eff["e"][1] == (({"cell": "je"}, "!=", 0),) and low.eff["e"][0] == ()
-    assert {q for q, v in low.flagrows.items() for n, _c in v if n == "je"} == {"b", "c", "g"}
-    assert low.planned == frozenset(low.eff)
-    assert low.planall([["a", "b"], ["c", "d", "e", "f", "g"]]) == []
+def test_a_hint_is_written_where_the_schema_puts_it():
+    obj, _report = bind.lift(art(), ticks=4, hints={"meta.commit_order": ["ad", "sr", "ctrl"]})
+    assert obj["meta"]["commit_order"] == ["ad", "sr", "ctrl"]
 
 
-def test_a_block_one_case_of_a_jump_table_alone_reaches_stands_under_that_term():
-    low = other(dispatch())
-    term = low.proc.blocks["a"].term
-    assert read._cases(term) == [("b", 0), ("c", 1)]
-    assert read.edge(term, "b") == (Bin("==", V("y"), C(0, 2), 1),)
-    assert read.edge(term, "d") == ()
-    assert low._edge("a", "c") == (("a", Bin("==", V("y"), C(1, 2), 1), True),)
-    assert low._edge("a", "e") == ()
-    assert [d for d, _c, _t, _w in low.guards["b"]] == ["a"]
-    assert low.guards["d"] == ()  # two cases reach it: no case is its term
-    assert low._own("c") == (("a", Bin("==", V("y"), C(1, 2), 1), True),)
+# ---- the binder, step by step ----------------------------------------------------
+def test_the_binder_names_the_players_slots_from_s6_t1_and_t2():
+    b = bind.Binder(art(), ticks=TICKS)
+    assert b.freqpair() == (None, None)  # no 16-bit frequency record
+    assert b.copied(CMD) == CMD  # two blocks store it: no copy of one cell
+    assert b.copied(STAGE) == CMD  # one store, of the per-voice cell it copies
+    assert b.copied(NOTE) == NOTE  # one store, of no cell the voice index names
+    b.roles()
+    assert b.slots == {"note": NOTE, "ins": INSC, "rowsleft": TIMER, "orderpos": ORDPOS}
+    assert b.clockcell == "rowsleft" and b.orderbase == ORDPOS
+    assert b.cells.rename[NOTE] == "note" and b.cells.rename[ORDPOS] == "orderpos"
+    assert b.voc.subst == {"t0": {"cell": "phase"}}
+    assert 0x1010 in b.voc.dropstores and 0x1020 in b.voc.dropstores
+    assert b.segs["row"] == ["fetch", "keyon", "wrap", "join"]
 
 
-def test_the_reader_names_every_address_the_play_writes_and_refuses_nothing_yet():
-    low, _voc = reader()
-    assert (TIMER, TIMER + 3) in low.written
-    assert low.refusals() == []
-    low.bad.add("mach: $D400")
-    assert low.refusals() == ["mach: $D400"]
+def test_the_supplied_names_are_the_bytes_no_cell_of_the_tune_holds():
+    b = bind.Binder(art(), ticks=TICKS)
+    b.roles()
+    assert b.supplied() == {"n", "c"}
+    assert b.low.v.supplied == {"n", "c"}
+
+
+def test_the_horizon_is_recorded_over_the_fetch_region_one_visit_a_row():
+    b = bind.Binder(art(), ticks=TICKS)
+    b.roles()
+    b.supplied()
+    recs = b.visits()
+    assert b.vvar == "x" and b.trap is None and not b.badinputs
+    assert len(recs) == 3 * len(set(r["env"]["x"] for r in recs)) * 3
+    assert {r["env"]["x"] for r in recs} == {0, 1, 2}
+    assert all(r["temps"]["c"] in PATTERNS for r in recs)
+
+
+def test_the_fields_of_a_score_byte_are_what_the_horizons_own_visits_say():
+    b = bind.Binder(art(), ticks=TICKS)
+    b.roles()
+    b.supplied()
+    got = b.bind_fields(b.visits())
+    assert got == {
+        ("c", 0x0F): {"cell": "dur"},
+        ("n", None): {"cell": "note"},
+        ("n", 0x80): {"xor": ["sounds", 1]},
+        ("c", 0x40): {"cell": "tied"},
+    }
+    assert b.tiemask == ("c", 0x40) and b.packed == {"c"} and b.left == []
+    assert list(b.voc.terms.values()) == ["wraps"]
+    assert b.sc == {0x1038: ("@cmd", CMD, "n")} and b.armcells == b.sc
+    assert b.tie({"temps": {"c": 0x40}}) and not b.tie({"temps": {"c": 0x11}})
+    b.tiemask = None
+    assert not b.tie({"temps": {"c": 0x40}})
+
+
+def test_a_plan_over_the_segments_folds_every_join_this_tick_has():
+    b = binder()
+    assert not b.plan(b.low.rpo) and not b.refusals
+    assert b.low.eff["join"] == ((), ())
+    assert b.amb == {"x": {"top": C(2), "back": Bin("-", V("x"), C(1))}}
+
+
+def test_a_tick_the_planes_do_not_state_refuses_and_emits_nothing():
+    no_score = art()
+    no_score["t2"]["score"] = []
+    with pytest.raises(Refused) as x:
+        bind.lift(no_score)
+    assert x.value.refusals[0].why == "score not cursor-shaped"
+    no_pitch = art()
+    no_pitch["t2"]["pitch"] = {"entries": []}
+    with pytest.raises(Refused) as x:
+        bind.lift(no_pitch)
+    assert x.value.refusals[0].why == "unclassified update"
+    no_ins = art()
+    no_ins["t2"]["selectors"] = []
+    with pytest.raises(Refused) as x:
+        bind.lift(no_ins)
+    assert x.value.refusals[0].why == "command residue"
+
+
+def test_a_tick_no_counter_steps_has_no_row_clock_and_no_object():
+    a = art()
+    head = a["prog"].procs["tick"].blocks["head"]
+    head.stmts[1] = store(TIMER, 6, C(1), V("x"), src=0x1010)
+    with pytest.raises(Refused) as x:
+        bind.lift(a)
+    assert x.value.refusals[0].why == "unclassified update"
+    assert x.value.refusals[0].detail == "no row clock steps the voice loop"
+
+
+def test_an_instrument_whose_sound_the_tuning_has_no_note_for_states_its_own_pitch():
+    obj, _report = bound()
+    got = obj["score"]["patterns"]["1"]["events"]
+    assert got[1]["sounds"] and got[1]["note"] is None  # one past the tuning's last entry
+    assert obj["instruments"]["2"]["pitch"] == {
+        "value": {"u16": [0x77, 1]},
+        "octave": {"u16": [0, 0]},
+    }
+    assert "pitch" not in obj["instruments"]["1"]
+
+
+# ---- bind.py: the planes a variant of the tune states differently ----------------
+def test_a_sixteen_bit_record_of_the_frequency_pair_is_the_players_own_freq():
+    a = art()
+    a["t1"]["accs"] = [
+        {
+            "id": "f0",
+            "cell": {"addr": "$%04X" % PTRL, "region": 8, "copies": VOICES, "name": "ptrlo"},
+            "regions": [8, 9],
+            "width": 16,
+            "target": {"register": "freq"},
+            "policy": "free",
+            "scope": "voice",
+            "sites": ["$1024"],
+            "delta": {"kind": "const", "value": 1},
+        }
+    ]
+    assert bind.Binder(a, ticks=4).freqpair() == (PTRL, PTRH)
+    a["t1"]["accs"][0]["regions"] = [8]
+    assert bind.Binder(a, ticks=4).freqpair() == (None, None)
+    a["t1"]["accs"][0]["target"] = {"register": "ctrl"}
+    assert bind.Binder(a, ticks=4).freqpair() == (None, None)
+
+
+def test_a_clock_no_row_of_the_tune_reloads_is_that_voices_own_cell_and_no_rowsleft():
+    a = art()
+    fetch = a["prog"].procs["tick"].blocks["fetch"]
+    fetch.stmts = [s for s in fetch.stmts if getattr(s, "src", 0) != 0x1020]
+    b = bind.Binder(a, ticks=4)
+    b.roles()
+    assert b.clockbase is None and b.clockcell == "timer"
+    assert "rowsleft" not in b.slots
+
+
+def test_a_record_no_section_five_form_states_refuses_and_names_its_own_cell():
+    a = art()
+    a["t1"]["accs"].append(
+        {
+            "id": "a1",
+            "cell": {"addr": "$3000", "region": 10, "copies": VOICES, "name": "elsewhere"},
+            "regions": [10],
+            "width": 8,
+            "target": {"register": "pw_lo"},
+            "policy": "free",
+            "scope": "voice",
+            "sites": ["$1068"],
+            "delta": {"kind": "const", "value": 2},
+        }
+    )
+    a["t1"]["accs"].append(
+        {
+            "id": "a2",
+            "cell": {"addr": "$%04X" % SWEEP, "region": 10, "copies": VOICES, "name": "sweep"},
+            "regions": [10],
+            "width": 8,
+            "target": {"register": "pw_lo"},
+            "policy": "free",
+            "scope": "voice",
+            "sites": ["$1068"],
+            "delta": {"kind": "elsewhere"},
+        }
+    )
+    obj, report = bind.lift(a, ticks=TICKS)
+    assert obj["accs"]["a1"]["cell"] == "a1"  # no region names the address it moves
+    assert "a2" not in obj["accs"]
+    assert [r["cell"] for r in report["refusals"]] == ["sweep"]
+    assert report["refusals"][0]["detail"] == "T1's delta is no section 5 form"
+
+
+def test_a_join_no_path_folds_is_a_cell_of_the_object_and_a_refusal():
+    a = art()
+    blocks = a["prog"].procs["tick"].blocks
+    scratch = ram(GLOB, 11, size=1)
+    blocks["out"] = Block("out", [], If(Bin("!=", scratch, C(0)), "ob", "oc"), src=0x1088)
+    blocks["ob"] = Block("ob", [], Goto("oe"), src=0x108C)
+    blocks["oc"] = Block("oc", [], If(Bin("==", scratch, C(1)), "od", "oe"), src=0x1090)
+    blocks["od"] = Block("od", [], Goto("of"), src=0x1094)
+    blocks["oe"] = Block("oe", [store(GLOB, 11, C(1), src=0x10A0, size=1)], Goto("of"), src=0x1098)
+    blocks["of"] = Block("of", [], Return(vals=[]), src=0x109C)
+    _obj, report = bind.lift(a, ticks=4)
+    assert [r["why"] for r in report["refusals"]] == ["unclassified update"]
+    assert report["refusals"][0]["cell"] == "joe,jof"
+    assert report["refusals"][0]["detail"] == "a join no path folds"
