@@ -22,6 +22,8 @@ from _hvsc import COMMANDO, EMOMYST, GULDKORN, LINUS, tune_file  # noqa: E402
 
 pytestmark = pytest.mark.hvsc
 CALLS = 1200
+GT2_LOOPS = 2  # the two runs of calls the tick's own voice loop is
+GT2_REFUSED = 11  # the SMC patch sites, the reset's own copies and the entry carry
 _ART = {}
 
 
@@ -82,7 +84,7 @@ def test_the_coverage_names_what_the_lowering_did_not_recognise():
     _obj, report = assemble.lift(artefacts(COMMANDO), ticks=CALLS)
     cov = report["coverage"]
     assert cov["store_sites"] == 76 and cov["accs"] == 3
-    assert cov["refused"] == ["$5023", "$5026", "$5029", "$502C"]
+    assert cov["refused"] == ["$5023", "$502C"]
     assert {"cell", "ins", "pitch", "global"} <= set(cov["leaves"])
 
 
@@ -116,7 +118,7 @@ def test_jch_derives_the_row_clock_of_section_3_6_and_renders_it_with_no_diverge
     assert sch["tempo.step"] == -1 and sch["tempo.rate"] == 1
     assert sch["tempo.resets"] == 1 and sch["tempo.boundary_terms"] == 3
     assert obj["meta"]["tempo"]["reset"][0]["sets"][0][1] == 3  # the tune's own speed
-    assert report["coverage"]["refused"] == ["$saved", "$saved12", "V#1"]
+    assert report["coverage"]["refused"] == ["V#1"]
     # the fetch's loop turns up to three times a visit and each turn reads its own cell
     assert report["trips"]["L113D_BC"] == 3
     sets = {
@@ -130,8 +132,25 @@ def test_jch_derives_the_row_clock_of_section_3_6_and_renders_it_with_no_diverge
     assert doc["divergence"] is None and doc["ticks"] == CALLS
 
 
-@pytest.mark.parametrize("rel", (LINUS, EMOMYST))
-def test_the_other_families_refuse_with_a_named_datum_rather_than_approximating(rel):
+def test_gt2_inlines_the_ticks_callees_and_writes_through_the_register_file_it_flushes():
+    """The third family (prototype-lifter.md section 2.5).
+
+    Its tick calls one procedure once a voice, so the voice loop is that run of
+    calls rerolled; every write lands in a register file the tick's first act
+    flushes, and the first call runs the reset and spends its own tick.
+    """
+    obj, report = assemble.lift(artefacts(LINUS), ticks=CALLS)
+    assert report["inlined"] == GT2_LOOPS
+    sch = report["schedule"]
+    assert sch["voice_order"] == [0, 1, 2] and sch["commit_order"] == ["ad", "sr", "ctrl"]
+    assert sch["tempo.step"] == -1 and sch["tempo.boundary_terms"] == 3
+    regs = obj["meta"]["shadow"]["registers"]
+    assert len(regs) == 25 and regs[0] == "mode_vol" and regs[-1] == "v0.freq_lo"
+    assert obj["state0"]["prologue"]["rows"] and len(obj["state0"]["shadow"]) == 25
+    assert len(report["coverage"]["refused"]) == GT2_REFUSED
+
+
+def test_the_fourth_family_refuses_with_a_named_datum_rather_than_approximating():
     with pytest.raises(assemble.Refused) as x:
-        assemble.lift(artefacts(rel), ticks=CALLS)
+        assemble.lift(artefacts(EMOMYST), ticks=CALLS)
     assert x.value.refusals and all(r.why and r.detail for r in x.value.refusals)

@@ -745,6 +745,9 @@ class Player(PlayerMixin):
         if t[:1] == "!":  # a flag another producer reads
             k, d = t[1:], self.flags
             return lambda val, prod, edge: d.__setitem__(k, val)
+        if t[:1] == "*":  # §3.6's `all`, where a row states it: one value, every voice
+            put = self.put_to("@" + t[1:])
+            return lambda val, prod, edge: self.everyvoice(put, val, prod, edge)
         if t[:7] == "shadow.":  # the image, written where it is
             put = self.cellput(t)
             return lambda val, prod, edge: put(val)
@@ -754,6 +757,14 @@ class Player(PlayerMixin):
         if t in EDGE:  # an edge write belongs to the act of the tick that made it
             return lambda val, prod, edge: edge.append((t, val & 0xFF, self.act))
         return lambda val, prod, edge: prod.append((t, val & 0xFF))
+
+    def everyvoice(self, put, val, prod, edge):
+        """One value written to every voice's own copy of a cell (§3.6's ``all``)."""
+        keep = self.v
+        for u in range(self.n):
+            self.v = u
+            put(val, prod, edge)
+        self.v = keep
 
     def pitched(self, d, val, prod):
         """The pair the commit sends for a frequency, and the cell where it has one."""
