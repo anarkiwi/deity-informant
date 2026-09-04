@@ -12,7 +12,8 @@ phase -- which the unchanged player renders.
 
 from __future__ import annotations
 
-from ...tuneprog.ir import If, Store, Var
+from ...tuneprog.ir import If, Load, Store, Var
+from ...tuneprog.irwalk import addr_split, walk
 from .. import build, schedule, shadow
 from ..emit import commit_order
 from ..read import Reader
@@ -20,6 +21,7 @@ from ..rows import ambiguous, blockrows, guards
 from ..cells import ident
 from ..shape import _Out, _dce, _merge_halves, _needed
 from ..vocab import Vocab
+from . import l2_regions
 from .ir import Level
 
 EDGE = ("ctrl", "ad", "sr")
@@ -84,10 +86,20 @@ def predicates(low, blocks):
     """
     out = {}
     for lbl in blocks:
-        t = low.proc.blocks[lbl].term
-        if type(t) is If and t.t != t.f:
-            out[lbl] = ("p" + ident(lbl), t.c)
+        b = low.proc.blocks[lbl]
+        if type(b.term) is If and b.term.t != b.term.f:
+            out[lbl] = ("p" + ident(lbl), b.term.c, _late(b, b.term.c))
     return out
+
+
+def _late(blk, cond):
+    """Whether a condition reads a cell of the block at the terminator, past its store.
+
+    A name the block bound is the value it had where it was bound; a load the
+    condition itself makes is the value the block leaves.
+    """
+    put = {addr_split(s.a)[0] for s in blk.stmts if type(s) is Store and s.cls == "ram"}
+    return any(type(x) is Load and addr_split(x.a)[0] in put for x in walk(cond))
 
 
 def guardof(low, terms):
@@ -115,7 +127,7 @@ def picks(amb, lbl, path):
     return out
 
 
-def predrow(seg, lbl, name, cond):
+def predrow(seg, lbl, name, cond, late=False):
     """The row one decision is: the block's own guard, and the cell it leaves it in."""
     low = seg.low
     path = [d for d, _c, _t, _w in low.guards.get(lbl, ())]
@@ -124,6 +136,7 @@ def predrow(seg, lbl, name, cond):
     when = guardof(low, [(d, c, t) for d, c, t, _w in low.guards.get(lbl, ())])
     low.lbl = lbl
     got = {"sets": [["@" + name, low.value(low.expand(cond))]]}
+    del late
     return {**({"when": when} if when else {}), **got}
 
 
@@ -147,23 +160,38 @@ def raised(low, lbl):
     return [list(t) for t in low.eff.get(lbl, ((), ()))[1]]
 
 
-def segrows(seg, blocks, order, preds):
-    """One segment as rows, in program order: each block's decision, then its stores."""
-    low, out = seg.low, []
-    for lbl in [l for l in order if l in blocks]:
-        got, up = preds.get(lbl), raised(low, lbl)
-        rows = [predrow(seg, lbl, *got)] if got is not None else []
-        for _l, kind, when, sets, _d in guards(
-            seg, blockrows(seg, {lbl}, order, set(), {}, True), order
-        ):
-            if kind in ("set", "reg"):
-                rows.append({"when": when, "sets": [list(x) for x in sets]})
-        rows += flagrows(low, lbl)
-        low.pick = {}
-        for r in rows:
-            r["when"] = up + [t for t in (r.get("when") or []) if t not in up]
-        out += rows
-    return out
+def blockstmts(seg, lbl, order, preds):
+    """One block as statements, in program order: its decision, then its stores."""
+    low = seg.low
+    got, up, rows = preds.get(lbl), raised(low, lbl), []
+    for _l, kind, when, sets, _d in guards(
+        seg, blockrows(seg, {lbl}, order, set(), {}, True), order
+    ):
+        if kind in ("set", "reg"):
+            rows.append({"when": when, "sets": [list(x) for x in sets]})
+    if got is not None:
+        # a decision over a cell the block itself moved is read where the block
+        # ends: read-after-write is the list's own order, not a second row
+        rows.insert(len(rows) if got[2] else 0, predrow(seg, lbl, *got))
+    rows += flagrows(low, lbl)
+    low.pick = {}
+    for r in rows:
+        r["when"] = up + [t for t in (r.get("when") or []) if t not in up]
+    return rows
+
+
+def segrows(seg, blocks, order, preds, p=None, head=None):
+    """One segment as a region tree: its loops kept, its blocks in program order."""
+
+    def rows_of(bset, ordering):
+        out = []
+        for lbl in [l for l in ordering if l in bset]:
+            out += blockstmts(seg, lbl, order, preds)
+        return out
+
+    if p is None:
+        return rows_of(blocks, order)
+    return l2_regions.tree(seg.low, p, blocks, order, rows_of, head)
 
 
 def _every(s):
@@ -257,27 +285,27 @@ def phases(l1, fetchblocks=(), ticks=None):  # noqa: C901 - one clause a section
     seg = Segments(low, ambiguous(p))
     flags = low.planall([list(g) for _n, g, _c in segs] + [before, after])
     preds = predicates(low, [l for _n, g, _c in segs for l in g] + before + after)
-    for name, cond in preds.values():
+    for name, cond, _late_ in preds.values():
         voc.terms[repr(cond)] = {"cell": name}
     out, tick, pre, post, commit, staged = _Out(), [], [], [], [], {}
     if flags:
         tick.append({"stream": out.stream("flags", [{"sets": [["@" + n, 0] for n in flags]}])})
     for i, (name, blocks, group) in enumerate(segs):
-        got = segrows(seg, set(blocks), order, preds)
+        got = segrows(seg, set(blocks), order, preds, p, head)
         if got:
             tick.append({"stream": out.stream("%s%d" % (name, i), got)})
         if group:
             tick.append("commit")
     for key, blocks, into in (("pre", before, pre), ("post", after, post)):
         for i, lbl in enumerate(blocks):
-            got, sent = channelrows(segrows(seg, {lbl}, order, preds), key, staged)
+            got, sent = channelrows(segrows(seg, {lbl}, order, preds, p, head), key, staged)
             commit += sent
             if got:
                 into.append(out.stream("%s%d" % (key, i), got))
     cells = l1.facts["cells"]
     cellseed, globseed = cells.seed(prog.reads())
     cellseed[CLOCK] = [0] * cells.voices
-    for name, _c in preds.values():
+    for name, _c, _l in preds.values():
         cellseed[name] = [0] * cells.voices
     for name in flags:
         cellseed[name] = [0] * cells.voices
@@ -351,9 +379,13 @@ def phases(l1, fetchblocks=(), ticks=None):  # noqa: C901 - one clause a section
             "stage_guard": lead(low, _sch(prog, proc, fetchblocks, art["t0"], order), fetchblocks),
             "reader": low,
             "vocab": voc,
-            "predicates": {l: n for l, (n, _c) in preds.items()},
+            "predicates": {l: n for l, (n, _c, _l) in preds.items()},
             "joins": list(flags),
             "refused": sorted(low.bad),
+            "loops": [n for _n, g, _c in segs for n in l2_regions.loops(p, set(g), head)],
+            "unstated_loops": [
+                n for _n, g, _c in segs for n in l2_regions.unstated(low, p, set(g), head)
+            ],
         },
     )
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 from ..tuneprog.graph import cfg, idoms, natural_loops, preds_of
 from . import emit, region, schedule, tables
 from .refuse import Refusal, Refused
+from .tree import body, kept, stmts
 
 TRAP = "Trap"
 KEEP = (
@@ -234,6 +235,13 @@ def _needed(target):
     return target[:1] not in "@#!*"
 
 
+def _control(s):
+    """What a statement no assignment of it can make dead reads: its own control."""
+    if "sets" in s and body(s) is None and "take" not in s:
+        return None
+    return [(s.get("loop") or {}).get("trip"), s.get("take"), s.get("when")]
+
+
 def _dce(obj):
     """Drop the assignments whose cell nothing the object states reads.
 
@@ -241,7 +249,7 @@ def _dce(obj):
     is dead, so the live set grows from the roots -- the registers, the records,
     the score and the words past the tuning -- through the rows that write them.
     """
-    rows = [r for st in obj["streams"].values() for r in st["rows"] if "sets" in r]
+    rows = [r for st in obj["streams"].values() for r in stmts(st["rows"]) if "sets" in r]
     rows += [s for s in obj["meta"]["row"] if "sets" in s]
     nodes = [(r, k) for r in rows for k in range(len(r["sets"]))]
     live = set(KEEP) | {a["cell"].lstrip("#").split(".")[0] for a in obj["accs"].values()}
@@ -249,6 +257,7 @@ def _dce(obj):
         live |= _reads(obj[part])
     live |= _reads(obj["meta"]["tempo"]) | _reads([s.get("when") for s in obj["meta"]["row"]])
     live |= _reads([st.get("beyond") for st in obj["streams"].values()])
+    live |= _reads([_control(s) for st in obj["streams"].values() for s in stmts(st["rows"])])
     keep = set()
     for _ in range(len(nodes) + 1):
         more = set()
@@ -267,7 +276,7 @@ def _dce(obj):
     for r in rows:
         r["sets"] = [x for k, x in enumerate(r["sets"]) if (id(r), k) in keep]
     for st in obj["streams"].values():
-        st["rows"] = [r for r in st["rows"] if r.get("sets") or "sets" not in r]
+        st["rows"] = kept(st["rows"], lambda r: r.get("sets") or "sets" not in r)
     obj["meta"]["row"] = [s for s in obj["meta"]["row"] if "sets" not in s or s["sets"]]
     named = {s["stream"] for s in obj["meta"]["row"] if "stream" in s}
     named |= {e["stream"] for e in obj["meta"]["tick"] if not isinstance(e, str)}

@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tuneprog"))
 
-from deity_informant.trackerprog.passes import expand, l5_select  # noqa: E402
+from deity_informant.trackerprog.passes import expand, l5_select, rir  # noqa: E402
 from deity_informant.trackerprog.universal import render  # noqa: E402
 
 TICKS = 24
@@ -386,8 +386,6 @@ def test_a_beyond_is_the_region_its_reads_stand_in():
 
 def test_the_region_tree_flattens_to_rows_only_where_every_form_has_one():
     """A flat row is still a level's own; a loop, a take and a trap are not."""
-    from deity_informant.trackerprog.passes import rir  # noqa: PLC0415
-
     assert rir.flatten(expand.expand("acc", SLIDE)) == expand.expand("acc", SLIDE)
     assert rir.flatten(expand.expand("acc", CLAMP)) is None
     assert rir.flatten(expand.expand("acc", TRAP)) is None
