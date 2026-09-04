@@ -75,6 +75,9 @@ def run():
                     "inlined_loops": levels[1].facts["inlined_loops"],
                     "prologue": sorted(levels[1].facts["prologue"]),
                     "segments": [[n, len(g)] for n, g in levels[2].facts["segments"]],
+                    "loops": levels[2].facts["loops"],
+                    "unstated_loops": levels[2].facts["unstated_loops"],
+                    "stepped": levels[4].facts["stepped"],
                     "predicates": levels[2].facts["predicates"],
                     "joins": levels[2].facts["joins"],
                     "flush": len(levels[2].facts["flush"]),
@@ -212,3 +215,18 @@ def test_commando_from_the_binding_through_l4_l5_and_l6():
             sort_keys=True,
         )
     )
+
+
+def test_the_inner_loop_of_the_voice_s_pass_is_a_loop_at_every_level():
+    """A block the tick runs several times is stated once and run its own turns."""
+    levels, _got = run()
+    l2 = levels[2]
+    assert l2.facts["loops"] == ["rloop"] and l2.facts["unstated_loops"] == []
+    got = [
+        s
+        for st in l2.obj["streams"].values()
+        for s in st.get("rows", ())
+        if isinstance(s, dict) and "loop" in s
+    ]
+    assert len(got) == 1 and got[0]["loop"]["trip"] == {"cell": "rpt"}
+    assert [s["sets"][0][0] for s in got[0]["loop"]["body"]] == ["@acc"]

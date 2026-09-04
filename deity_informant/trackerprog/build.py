@@ -17,6 +17,7 @@ from ..tuneprog.ir import Bin, Const, Let, Load, Store, Tuneprog, Var
 from ..tuneprog.irwalk import addr_split
 from ..tuneprog.recover import Names
 from . import lift as t2lift
+from .tree import stmts
 from .universal import CHIP, REG
 
 EXTERNAL = ("raster", "cia", "sid_readback", "io")
@@ -111,7 +112,7 @@ def prune(obj):
     live = set(obj["meta"].get("wide", ())) | {obj["meta"]["tempo"]["cell"]}
     live |= {a["cell"].lstrip("#") for a in obj["accs"].values()}
     for st in obj["streams"].values():
-        for r in st["rows"]:
+        for r in stmts(st["rows"]):
             live |= {s[0].lstrip("@#!*") for s in r.get("sets", ())}
     live |= _reads([obj["streams"], obj["accs"], obj["score"], obj["meta"]])
     for r in (obj["state0"].get("prologue") or {}).get("rows", ()):

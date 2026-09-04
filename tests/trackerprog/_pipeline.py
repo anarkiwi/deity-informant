@@ -26,7 +26,7 @@ from deity_informant.tuneprog.recover import Names
 
 FREQ, WAVE, ADSR, WTAB = 0x3000, 0x3100, 0x3110, 0x3120
 ORD, PAT = 0x3200, 0x3240
-NOTE, INS, TIMER, ORDPOS, CURSOR, ACC, DIR, WPOS = (
+NOTE, INS, TIMER, ORDPOS, CURSOR, ACC, DIR, WPOS, RPT = (
     0x3300,
     0x3303,
     0x3306,
@@ -35,6 +35,7 @@ NOTE, INS, TIMER, ORDPOS, CURSOR, ACC, DIR, WPOS = (
     0x330F,
     0x3312,
     0x3315,
+    0x3318,
 )
 GLOB, IMG, SID = 0x3400, 0x3440, 0xD400
 NOTES, VOICES, CHIP, TICKS = 16, 3, 7, 300
@@ -59,6 +60,7 @@ def regions():
         Rgn(9, "acc", ACC, VOICES, "state"),
         Rgn(10, "dir", DIR, VOICES, "state"),
         Rgn(11, "wpos", WPOS, VOICES, "state"),
+        Rgn(16, "rpt", RPT, VOICES, "state"),
         Rgn(12, "scratch", GLOB, 1, "state"),
         Rgn(13, "orders", ORD, 8, "const"),
         Rgn(14, "patterns", PAT, 32, "const"),
@@ -69,7 +71,7 @@ def regions():
 
 
 def names():
-    voice = [4, 5, 6, 7, 8, 9, 10, 11]
+    voice = [4, 5, 6, 7, 8, 9, 10, 11, 16]
     return Names(
         region={r.id: r.name for r in regions()},
         role={1: "freq_table"},
@@ -83,6 +85,7 @@ def names():
             9: ("voice", "acc"),
             10: ("voice", "dir"),
             11: ("voice", "wpos"),
+            16: ("voice", "rpt"),
         },
     )
 
@@ -99,7 +102,7 @@ def image():
     m[PAT : PAT + len(PATTERNS)] = bytes(PATTERNS)
     m[GLOB] = 1
     for v in range(VOICES):
-        m[TIMER + v] = 1
+        m[TIMER + v], m[RPT + v] = 1, 2
     return m
 
 
@@ -210,20 +213,37 @@ def tick():  # noqa: C901 - one clause per block of the tune
         "down": Block(
             "down",
             [Let("a2", Bin("-", V("a"), C(3))), store(ACC, 9, V("a2"), idx, src=0x1054)],
-            If(Bin("<", V("a2"), C(0x20)), "flip", "join"),
+            If(Bin("<", V("a2"), C(0x20)), "flip", "rseed"),
             src=0x1054,
         ),
         "up": Block(
             "up",
             [Let("a2", Bin("+", V("a"), C(3))), store(ACC, 9, V("a2"), idx, src=0x1058)],
-            If(Bin("<", C(0xE0), V("a2")), "flip", "join"),
+            If(Bin("<", C(0xE0), V("a2")), "flip", "rseed"),
             src=0x1058,
         ),
         "flip": Block(
             "flip",
             [store(DIR, 10, Bin("^", ram(DIR, 10, idx), C(1)), idx, src=0x105C)],
-            Goto("join"),
+            Goto("rseed"),
             src=0x105C,
+        ),
+        "rseed": Block(
+            "rseed",
+            [store(RPT, 16, C(2), idx, src=0x1070)],
+            Goto("rloop"),
+            src=0x1070,
+        ),
+        "rloop": Block(
+            "rloop",
+            [
+                Let("ra", ram(ACC, 9, idx)),
+                store(ACC, 9, Bin("+", V("ra"), C(1)), idx, src=0x1074),
+                Let("rc", ram(RPT, 16, idx)),
+                store(RPT, 16, Bin("-", V("rc"), C(1)), idx, src=0x1076),
+            ],
+            If(Bin("!=", ram(RPT, 16, idx), C(0)), "rloop", "join"),
+            src=0x1074,
         ),
         "join": Block(
             "join",

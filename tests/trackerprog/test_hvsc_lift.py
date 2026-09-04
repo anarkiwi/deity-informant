@@ -11,7 +11,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tuneprog"))
 
 from deity_informant.lifter import lift as _lift  # noqa: E402
-from deity_informant.trackerprog import bind, build  # noqa: E402
+from deity_informant.trackerprog import bind, build, emit, record, region  # noqa: E402
+from deity_informant.trackerprog.passes import ir, l1_structure, l2_phases  # noqa: E402
+from deity_informant.trackerprog.read import Unlowerable  # noqa: E402
+from deity_informant.trackerprog.shape import _channels, _rowblocks  # noqa: E402
 from deity_informant.trackerprog.attest import attest  # noqa: E402
 from deity_informant.trackerprog.refuse import Refused  # noqa: E402
 from deity_informant.tuneprog import pipeline  # noqa: E402
@@ -141,3 +144,37 @@ def test_the_certificate_is_the_render_against_the_tunes_own_player():
     obj, _report = bind.lift(artefacts(COMMANDO), ticks=CALLS)
     doc = attest(obj, reference(COMMANDO, int(obj["meta"]["song"] or 0), 8))
     assert doc["ticks"] == 8 and doc["writes"] > 0
+
+
+def _l0(rel, calls=CALLS):
+    """One exemplar's planes with the inputs the tick reads pinned to the image."""
+    art = dict(artefacts(rel, calls))
+    img = record.interp.Player(art["prog"], region.Fetch()).run_init().m
+    art["inputs"], _bad = build.pinned_inputs(art["prog"], img)
+    prog, proc = art["prog"], art["prog"].meta["tick_proc"]
+    fetch, _ref = region.fetch(prog, emit.tables_of(art["t2"], art["view"], art["names"]))
+    pat = emit.tables_of(art["t2"], art["view"], art["names"], ("pattern",))
+    return art, _rowblocks(prog, proc, _channels(prog, proc, fetch, pat))
+
+
+def test_the_structuring_renders_two_families_over_their_own_horizons():
+    """L0 -> L1 on a real tune: one procedure, and the same write list, tick for tick."""
+    for rel in (COMMANDO, GULDKORN):
+        art, _fb = _l0(rel)
+        l0 = ir.Level(0, art=art, prog=art["prog"], proc=art["prog"].meta["tick_proc"])
+        got = ir.validate(l0, l1_structure.structure(art, ticks=3), CALLS)
+        assert got["identical"] and got["divergence"] is None
+        assert got["ticks"] == CALLS and got["writes"] > 0
+
+
+def test_the_phase_normal_form_names_the_decisions_it_cannot_state():
+    """L1 -> L2 on a real tune: the finding, by block and by the read it makes."""
+    for rel in (COMMANDO, GULDKORN):
+        art, fb = _l0(rel)
+        l1 = l1_structure.structure(art, ticks=3)
+        got = l2_phases.unstatable(l1, fb)
+        assert got, rel
+        assert {g["why"] for g in got} >= {"computed address"}
+        assert {g["region"] for g in got if g["why"] == "computed address"} == {"fetch"}
+        with pytest.raises(Unlowerable):
+            l2_phases.phases(l1, fb, ticks=CALLS)

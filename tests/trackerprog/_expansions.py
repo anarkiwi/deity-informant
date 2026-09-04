@@ -43,10 +43,23 @@ def bind(node, ov):
     if isinstance(node, dict):
         if len(node) == 1 and isinstance(node.get("const"), str) and node["const"] in ov:
             return bind(ov[node["const"]], ov)
+        if "sets" in node:
+            got = [[t, bind(v, ov)] for t, v in node["sets"]]
+            return {**{k: bind(v, ov) for k, v in node.items() if k != "sets"}, "sets": got}
         return {k: bind(v, ov) for k, v in node.items()}
     if isinstance(node, list):
         return [bind(x, ov) for x in node]
+    if isinstance(node, str) and node in ov and not isinstance(ov[node], str):
+        return bind(ov[node], ov)
     return node
+
+
+def armed(rows, arm):
+    """One expansion under the arm's own guard, which the player takes before the step."""
+    when = list((arm or {}).get("when") or [])
+    if not when:
+        return rows
+    return [{**r, "when": when + [t for t in (r.get("when") or []) if t not in when]} for r in rows]
 
 
 def _wide(rows):

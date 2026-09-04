@@ -29,10 +29,10 @@ DROPPED = (
 )
 
 
-def attest(obj, reference, ticks=None):
+def attest(obj, reference, ticks=None, renderer=None):
     """Render ``obj`` and compare it with ``reference``, a per-tick write list."""
     n = len(reference) if ticks is None else min(ticks, len(reference))
-    got = render(obj, n)
+    got = (renderer or render)(obj, n)
     out = {
         "compared": list(COMPARED),
         "dropped": list(DROPPED),

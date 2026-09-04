@@ -255,3 +255,85 @@ def test_the_object_a_level_carries_is_a_trackerprog_the_player_reads():
         if "rows" in st and st["rows"] and "sets" in st["rows"][0]
     )
     assert l2.obj["meta"]["row"] == [] and l2.obj["accs"] == {}
+
+
+def _looped(seed=4, step=3):
+    """A voice pass with a counted inner loop: the cell it steps, and the turns it takes."""
+    idx = V("x")
+    blocks = voiceblocks(([store(TIMER, 6, C(seed), idx, src=0x1010)], Goto("lp")))
+    blocks["lp"] = Block(
+        "lp",
+        [
+            Let("a", ram(ACC, 9, idx)),
+            store(ACC, 9, Bin("+", V("a"), C(step)), idx, src=0x1020),
+            Let("n", ram(TIMER, 6, idx)),
+            store(TIMER, 6, Bin("-", V("n"), C(1)), idx, src=0x1024),
+        ],
+        If(Bin("!=", ram(TIMER, 6, idx), C(0)), "lp", "done"),
+        src=0x1020,
+    )
+    blocks["done"] = Block(
+        "done", [sid(0, ram(ACC, 9, idx), V("x7", 2), src=0x1028)], Goto("back"), src=0x1028
+    )
+    return prog_of({"tick": Proc("tick", blocks=blocks, entry="top")})
+
+
+def _loops(obj):
+    return [s for st in obj["streams"].values() for s in st.get("rows", ()) if "loop" in s]
+
+
+def test_an_inner_loop_is_kept_as_a_loop_with_the_trip_its_own_cell_states():
+    """Hubbard: a block the tick runs several times is a loop, not one statement."""
+    _l1, l2 = _take(_looped())
+    got = _loops(l2.obj)
+    assert len(got) == 1
+    assert got[0]["loop"]["trip"] == {"cell": "timer"}
+    assert l2.facts["loops"] == ["lp"] and l2.facts["unstated_loops"] == []
+
+
+def test_a_block_run_several_times_a_tick_renders_every_turn_it_takes():
+    """The one check: the loop's own turns, against the interpreter that ran them."""
+    _l1, l2 = _take(_looped(seed=5, step=2))
+    assert _loops(l2.obj)[0]["loop"]["trip"] == {"cell": "timer"}
+
+
+def test_a_statement_reads_what_the_statement_before_it_wrote():
+    """Read-after-write is the list's own order, and not a second row."""
+    idx = V("x")
+    body = (
+        [
+            Let("a", ram(ACC, 9, idx)),
+            store(ACC, 9, Bin("+", V("a"), C(9)), idx, src=0x1020),
+            sid(0, ram(ACC, 9, idx), V("x7", 2), src=0x1024),
+        ],
+        Goto("back"),
+    )
+    _l1, l2 = _take(_voice(body))
+    rows = [r for st in l2.obj["streams"].values() for r in st.get("rows", ()) if "sets" in r]
+    assert rows[0]["sets"][0][0] == "@acc"
+    assert rows[1]["sets"][0][1] == {"cell": "acc"}
+
+
+def test_a_guard_over_a_value_just_written_is_the_next_statement_of_the_list():
+    """If-conversion by predicate cell: the decision is a statement, then its guard."""
+    idx = V("x")
+    blocks = voiceblocks(
+        (
+            [
+                Let("t", ram(TIMER, 6, idx)),
+                store(TIMER, 6, Bin("-", V("t"), C(1)), idx, src=0x1020),
+            ],
+            If(Bin("==", ram(TIMER, 6, idx), C(0)), "hi", "lo"),
+        )
+    )
+    blocks["hi"] = Block("hi", [sid(0, C(0x20), V("x7", 2), src=0x1030)], Goto("back"), src=0x1030)
+    blocks["lo"] = Block("lo", [sid(0, C(0x10), V("x7", 2), src=0x1034)], Goto("back"), src=0x1034)
+    prog = prog_of({"tick": Proc("tick", blocks=blocks, entry="top")})
+    _l1, l2 = _take(prog)
+    rows = [r for st in l2.obj["streams"].values() for r in st.get("rows", ()) if "sets" in r]
+    pred = [r for r in rows if r["sets"][0][0].startswith("@p")]
+    assert pred, rows
+    name = pred[0]["sets"][0][0][1:]
+    assert rows.index(pred[0]) < min(
+        i for i, r in enumerate(rows) if any(t[0] == {"cell": name} for t in r.get("when") or ())
+    )

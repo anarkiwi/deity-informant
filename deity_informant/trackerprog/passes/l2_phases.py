@@ -15,12 +15,13 @@ from __future__ import annotations
 from ...tuneprog.ir import If, Store, Var
 from .. import build, schedule, shadow
 from ..emit import commit_order
-from ..read import Reader
-from ..rows import ambiguous, blockrows, guards
-from ..cells import ident
+from ..read import Reader, Unlowerable
+from ..rows import ambiguous
 from ..shape import _Out, _dce, _merge_halves, _needed
 from ..vocab import Vocab
+from . import l2_regions
 from .ir import Level
+from .l2_regions import predicates, segrows
 
 EDGE = ("ctrl", "ad", "sr")
 CLOCK = "$phase"  # the counter the player steps where the tune's own rows step theirs
@@ -70,99 +71,6 @@ def cut(order, fetchblocks, sites, p):
                 run = []
         if run:
             out.append((name, run, False))
-    return out
-
-
-def predicates(low, blocks):
-    """One predicate cell a decision: if-conversion's own register.
-
-    A block that decides a term and then moves a cell that term reads has no
-    channel for the value it decided on, so the decision is a cell, assigned
-    where the block makes it and read by every row it guards.  A block the tick
-    does not reach assigns nothing, and the terms that lead to it are cells of
-    the same kind, so its rows stand under a guard no path made true.
-    """
-    out = {}
-    for lbl in blocks:
-        t = low.proc.blocks[lbl].term
-        if type(t) is If and t.t != t.f:
-            out[lbl] = ("p" + ident(lbl), t.c)
-    return out
-
-
-def guardof(low, terms):
-    """One guard list read where it stands, each term the cell its decision left."""
-    when = []
-    for d, c, t in terms:
-        if not low.onpath(d, c, t):
-            continue
-        low.lbl = d
-        fact = low.v.terms.get(repr(c))
-        term = [fact, "!=" if t else "==", 0] if fact is not None else low.term(low.expand(c), t)
-        if term not in when:
-            when.append(term)
-    return when
-
-
-def picks(amb, lbl, path):
-    """A name several blocks bind takes the definition of the block on this path."""
-    out = {}
-    for n, d in amb.items():
-        for q in [lbl] + list(path):
-            if q in d:
-                out[n] = d[q]
-                break
-    return out
-
-
-def predrow(seg, lbl, name, cond):
-    """The row one decision is: the block's own guard, and the cell it leaves it in."""
-    low = seg.low
-    path = [d for d, _c, _t, _w in low.guards.get(lbl, ())]
-    low.lbl, low.local, low.sub, low.turn = lbl, {}, {}, None
-    low.pick = picks(seg.amb, lbl, path)
-    when = guardof(low, [(d, c, t) for d, c, t, _w in low.guards.get(lbl, ())])
-    low.lbl = lbl
-    got = {"sets": [["@" + name, low.value(low.expand(cond))]]}
-    return {**({"when": when} if when else {}), **got}
-
-
-def flagrows(low, lbl):
-    """The rows one block raises for a join no path of the tick folds (B7's ``planall``).
-
-    The reaching condition of a block two paths carry is a disjunction, which the
-    one guard shape of §3.3 cannot state, so every path that reaches it raises a
-    cell where that path already stands and the block's own guard reads it.  The
-    cells are cleared once, at the head of the tick.
-    """
-    out = []
-    for name, ctx in low.flagrows.get(lbl, ()):
-        low.lbl, low.local, low.pick, low.sub, low.turn = lbl, {}, {}, {}, None
-        out.append({"when": guardof(low, ctx[0]), "sets": [["@" + name, 1]]})
-    return out
-
-
-def raised(low, lbl):
-    """The terms a block's own guard carries for a join no path of the tick folds."""
-    return [list(t) for t in low.eff.get(lbl, ((), ()))[1]]
-
-
-def segrows(seg, blocks, order, preds):
-    """One segment as rows, in program order: each block's decision, then its stores."""
-    low, out = seg.low, []
-    for lbl in [l for l in order if l in blocks]:
-        got, up = preds.get(lbl), raised(low, lbl)
-        rows = [predrow(seg, lbl, *got)] if got is not None else []
-        for _l, kind, when, sets, _d in guards(
-            seg, blockrows(seg, {lbl}, order, set(), {}, True), order
-        ):
-            if kind in ("set", "reg"):
-                rows.append({"when": when, "sets": [list(x) for x in sets]})
-        rows += flagrows(low, lbl)
-        low.pick = {}
-        for r in rows:
-            r["when"] = up + [t for t in (r.get("when") or []) if t not in up]
-        out += rows
     return out
 
 
@@ -242,6 +150,28 @@ def reader(l1):
     return low, voc, sh
 
 
+def unstatable(l1, fetchblocks=()):
+    """The decisions of a tick whose condition no value of this level's vocabulary states.
+
+    One entry a block: the label, why the read has no name, and whether the block
+    stands in the fetch region the level cuts the pass at.
+    """
+    low = reader(l1)[0]
+    out = []
+    for lbl in low.rpo:
+        t = low.proc.blocks[lbl].term
+        if type(t) is not If or t.t == t.f:
+            continue
+        low.lbl, low.local, low.pick, low.sub, low.turn = lbl, {}, {}, {}, None
+        try:
+            low.value(low.expand(t.c))
+        except Unlowerable as x:
+            out.append(
+                {"block": lbl, "why": str(x), "region": "fetch" if lbl in fetchblocks else "voice"}
+            )
+    return out
+
+
 def phases(l1, fetchblocks=(), ticks=None):  # noqa: C901 - one clause a section
     """L1 to L2: the phases, their predicated rows, and the tick's own channel."""
     art, prog, proc = l1.art, l1.prog, l1.proc
@@ -257,27 +187,27 @@ def phases(l1, fetchblocks=(), ticks=None):  # noqa: C901 - one clause a section
     seg = Segments(low, ambiguous(p))
     flags = low.planall([list(g) for _n, g, _c in segs] + [before, after])
     preds = predicates(low, [l for _n, g, _c in segs for l in g] + before + after)
-    for name, cond in preds.values():
+    for name, cond in [(n, c) for n, c, _l in preds.values()]:
         voc.terms[repr(cond)] = {"cell": name}
     out, tick, pre, post, commit, staged = _Out(), [], [], [], [], {}
     if flags:
         tick.append({"stream": out.stream("flags", [{"sets": [["@" + n, 0] for n in flags]}])})
     for i, (name, blocks, group) in enumerate(segs):
-        got = segrows(seg, set(blocks), order, preds)
+        got = segrows(seg, set(blocks), order, preds, p, head)
         if got:
             tick.append({"stream": out.stream("%s%d" % (name, i), got)})
         if group:
             tick.append("commit")
     for key, blocks, into in (("pre", before, pre), ("post", after, post)):
         for i, lbl in enumerate(blocks):
-            got, sent = channelrows(segrows(seg, {lbl}, order, preds), key, staged)
+            got, sent = channelrows(segrows(seg, {lbl}, order, preds, p, head), key, staged)
             commit += sent
             if got:
                 into.append(out.stream("%s%d" % (key, i), got))
     cells = l1.facts["cells"]
     cellseed, globseed = cells.seed(prog.reads())
     cellseed[CLOCK] = [0] * cells.voices
-    for name, _c in preds.values():
+    for name, _c, _l in preds.values():
         cellseed[name] = [0] * cells.voices
     for name in flags:
         cellseed[name] = [0] * cells.voices
@@ -351,9 +281,13 @@ def phases(l1, fetchblocks=(), ticks=None):  # noqa: C901 - one clause a section
             "stage_guard": lead(low, _sch(prog, proc, fetchblocks, art["t0"], order), fetchblocks),
             "reader": low,
             "vocab": voc,
-            "predicates": {l: n for l, (n, _c) in preds.items()},
+            "predicates": {l: n for l, (n, _c, _l) in preds.items()},
             "joins": list(flags),
             "refused": sorted(low.bad),
+            "loops": [n for _n, g, _c in segs for n in l2_regions.loops(p, set(g), head)],
+            "unstated_loops": [
+                n for _n, g, _c in segs for n in l2_regions.unstated(low, p, set(g), head)
+            ],
         },
     )
 

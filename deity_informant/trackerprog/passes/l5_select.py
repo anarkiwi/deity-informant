@@ -14,7 +14,7 @@ import copy
 import json
 
 from ..sizes import compact, xz
-from .expand import KINDS, acc_of, expand, ishi
+from .expand import KINDS, acc_of, expand, ishi, row_of
 from .ir import Level
 
 MAXRUN = 6  # the longest run one construct's expansion is, over the thirty builds
@@ -29,7 +29,7 @@ def select(kind, rows):
     if kind in ("prelude", "on_note"):
         return [dict(r) for r in rows]
     if kind == "row":
-        return dict(rows[0]) if len(rows) == 1 else None
+        return row_of(rows)
     if kind == "reset":
         return {"when": rows[0].get("when") or [], "sets": rows[0]["sets"]}
     if kind == "flush":
@@ -69,11 +69,16 @@ def canon_acc(a):
     whose gate has no false arm.
     """
     got = {k: v for k, v in a.items() if k not in DROPPED}
+    if got.get("trap"):
+        return canon({k: v for k, v in got.items() if k in ("trap", "when")})
+    if isinstance(got.get("delta"), dict) and "repeat" in got["delta"]:
+        got.pop("phase", None)  # a repeat never reads one
     if got.get("rate") == 1:
         del got["rate"]
     if not got.get("delta"):
         got.pop("width", None)
         got.pop("delta", None)
+        got.pop("phase", None)  # a record that moves nothing never reads one
     if not got.get("delta") and not got.get("produce") and not isinstance(got.get("policy"), dict):
         got.pop("cell", None)  # a record that only gates moves no cell the rows name
     got["delta_when"] = list(got.pop("step_when", None) or []) + list(got.get("delta_when") or [])
@@ -81,11 +86,27 @@ def canon_acc(a):
         del got["delta_when"]
     if got.get("gate"):
         got["gate"] = {"true": got["gate"].get("true") or []}
+    am = got.get("amplitude")
+    if am:
+        am = {k: v for k, v in am.items() if k != "witness" and not (k == "shift" and not v)}
+        k = am.get("shift")
+        if k and all(isinstance(x, int) for x in am.get("interval", ())):
+            am = {**am, "interval": [x >> k for x in am["interval"]]}
+        got["amplitude"] = am
+    if _stepalone(got):
+        got["when"] = list(got.get("when") or []) + got.pop("delta_when")
     w = got.get("width", 8)
     got["produce"] = [
         [t, "lo" if part == "byte" and w <= 8 else part] for t, part in got.get("produce", ())
     ]
     return canon(got)
+
+
+def _stepalone(got):
+    """Whether every channel of a record stands under its step: one guard, not two."""
+    if not got.get("delta_when") or got.get("gate") or got.get("produce"):
+        return False
+    return got.get("rate", 1) == 1 and not isinstance(got.get("policy"), dict)
 
 
 def canon_of(kind, x):

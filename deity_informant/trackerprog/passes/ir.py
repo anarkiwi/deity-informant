@@ -16,7 +16,7 @@ from ...tuneprog import grid
 from ...tuneprog.ir import TrapError
 from .. import interp, region
 from ..attest import attest
-from ..universal import render as _render
+from .rir import render as _render
 
 LEVELS = {
     1: "structured tick",
@@ -52,12 +52,12 @@ def writes(level, ticks):
     """One level's observable: a per-tick list of ``(register, value)``."""
     if level.obj is not None:
         return _render(level.obj, ticks)
-    return irwrites(level.prog, ticks)
+    return irwrites(level.prog, ticks, (level.art or {}).get("inputs"))
 
 
-def irwrites(prog, ticks):
+def irwrites(prog, ticks, inputs=None):
     """The interpreter's own write list, tick by tick, from the post-init image."""
-    p = interp.Player(prog, region.Fetch())
+    p = interp.Player(prog, region.Fetch(), inputs)
     p.run_init()
     out = []
     for _ in range(ticks):
@@ -78,7 +78,7 @@ def validate(before, after, horizon):
     """Render both levels and compare: the one check every pass answers to."""
     want = writes(before, horizon)
     got = writes(after, horizon)
-    cert = attest(after.obj, want, horizon) if after.obj is not None else None
+    cert = attest(after.obj, want, horizon, _render) if after.obj is not None else None
     out = {
         "from": before.n,
         "to": after.n,
