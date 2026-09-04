@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from ...tuneprog.ir import If, Load, Store, Var
 from ...tuneprog.irwalk import addr_split, walk
-from .. import build, schedule, shadow, tables
+from .. import build, schedule, shadow
 from ..emit import commit_order
 from ..read import Reader, Unlowerable
 from ..rows import ambiguous, blockrows, guards
@@ -260,13 +260,6 @@ def reader(l1):
     pit = l1.facts["pitch"]
     if pit is not None:
         voc.pitch = (pit.rids, pit.obases, pit.step, pit.n)
-    ins = tables.instrument_table(art, art["view"], art["names"])
-    if ins:
-        voc.insbase, voc.inscol, voc.insstride = ins[0], ins[1], ins[2]
-    voc.inspw = tables.pw_columns(art, art["view"], art["names"])
-    voc.img = img
-    if pit is not None:
-        voc.notebase = tables.note_base(PNFReader(prog, proc, cells, voc), pit, [prog.procs[proc]])
     sh = shadow.of(art["t0"], prog, art["view"])
     if sh is not None:
         voc.shadow = (sh.base, sh.size)
