@@ -239,3 +239,58 @@ def test_the_cursors_this_level_did_not_specialise_are_named():
     """The bound of the prototype, stated: a cursor left as the rows that walk it."""
     _l3, l4 = _levels(_tune(_nibbles))
     assert isinstance(l4.facts["cursors"], dict)
+
+
+def _cursortune(mask=7, off=0):
+    """A voice pass that walks a table at a cursor and steps the cursor by one."""
+    idx = V("x")
+    blocks = voiceblocks(
+        (
+            [
+                Let("t", ram(TIMER, 6, idx)),
+                store(TIMER, 6, Bin("-", V("t"), C(1)), idx, src=0x1020),
+            ],
+            Goto("mach"),
+        )
+    )
+    blocks["mach"] = Block(
+        "mach",
+        [
+            Let("c", ram(CURSOR, 8, idx)),
+            Let("w", Load("ram", Bin("+", C(PAT, 2), V("c"), 2), 1, PAT, PAT + 31, 13)),
+            sid(4, V("w"), V("x7", 2), src=0x1050),
+            store(CURSOR, 8, Bin("&", Bin("+", V("c"), C(1 + off)), C(mask)), idx, src=0x1054),
+        ],
+        Goto("back"),
+        src=0x1050,
+    )
+    return prog_of({"tick": Proc("tick", blocks=blocks, entry="top")})
+
+
+def test_a_cursor_over_a_table_is_the_stream_the_player_steps():
+    """defMON, JCH, GoatTracker 2: a cell that steps over a table is a §3.3 stream."""
+    l3, l4 = _levels(_cursortune(), fetchblocks=())
+    assert l4.facts["stepped"] == {"cursor": "T2300"}
+    st = l4.obj["streams"]["T2300"]
+    assert "rank" in st and not st.get("all")
+    assert st["rows"][0]["sets"] == [["ctrl", 5]]
+    assert l4.obj["state0"]["cursors"]["T2300"][0] == {"row": 0, "hold": 0}
+    got = validate(l3, l4, TICKS)
+    assert got["divergence"] is None and got["identical"]
+
+
+def test_the_step_a_cursor_takes_is_the_next_the_row_carries():
+    """The walk's own landing: a step that is not the row after it is stated."""
+    _l3, l4 = _levels(_cursortune(), fetchblocks=())
+    rows = l4.obj["streams"]["T2300"]["rows"]
+    assert [i for i, r in enumerate(rows) if "next" in r][0] == 7
+    assert rows[7]["next"] == 0
+
+
+def test_a_cursor_that_steps_by_two_is_the_same_specialisation():
+    """One pass over cursor kinds: the step is read off, not recognised by family."""
+    l3, l4 = _levels(_cursortune(mask=7, off=1), fetchblocks=())
+    rows = l4.obj["streams"]["T2300"]["rows"]
+    assert [r.get("next") for r in rows[:4]] == [2, 3, 4, 5]
+    got = validate(l3, l4, TICKS)
+    assert got["divergence"] is None and got["identical"]

@@ -21,6 +21,7 @@ import copy
 from .. import build, record, tables
 from ..shape import _instruments
 from ..events import Score
+from . import l4_cursor
 from .ir import Level
 
 MOVED = ("rowsleft", "dur", "note", "ins", "orderpos", "lastnote")
@@ -211,6 +212,7 @@ def specialise(l3, ticks=None):  # noqa: C901 - one clause a construct
         clockreads(obj, cell, step)
         dead.add(step)
     drop_rows(obj, dead)
+    obj, stepped = l4_cursor.specialise(obj, cursor_streams(obj, types), l3.obj["state0"]["cells"])
     return Level(
         4,
         art=l3.art,
@@ -221,7 +223,8 @@ def specialise(l3, ticks=None):  # noqa: C901 - one clause a construct
             **l3.facts,
             "events": sum(len(p["events"]) for p in obj["score"]["patterns"].values()),
             "patterns": len(obj["score"]["patterns"]),
-            "cursors": cursor_streams(obj, types),
+            "cursors": l4_cursor.left(obj, cursor_streams(l3.obj, types), stepped),
+            "stepped": stepped,
             "trips": trips,
             "materialised": sc is not None,
         },
