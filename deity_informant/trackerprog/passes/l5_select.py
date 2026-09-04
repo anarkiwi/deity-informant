@@ -283,6 +283,19 @@ def phase_of(obj):
     return at
 
 
+def pieces(left, got):
+    """The covering in tick order: the runs of rows, and the constructs between them."""
+    out, prev = [], 0
+    for pos, rec in got:
+        if pos > prev:
+            out.append(("rows", left[prev:pos]))
+        out.append(("acc", rec))
+        prev = pos
+    if prev < len(left):
+        out.append(("rows", left[prev:]))
+    return out
+
+
 def select_level(l4, kinds=("acc",)):
     """L4 to L5: the runs a construct covers become that construct, ranked in place."""
     obj = copy.deepcopy(l4.obj)
@@ -291,18 +304,18 @@ def select_level(l4, kinds=("acc",)):
     picked = {}
     if at is not None:
         i, name, left, got = at
-        rank = 0
         obj["meta"]["tick"][i] = "machine"
-        for k, (_pos, rec) in enumerate(got):
-            key = "%s_acc%d" % (name, k)
-            picked[key] = {**rec, "rank": rank}
-            rank += 1
+        del obj["streams"][name]
+        for rank, (kind, x) in enumerate(pieces(left, got)):
+            if kind == "rows":
+                obj["streams"]["%s%d" % (name, rank)] = {"rows": x, "all": True, "rank": rank}
+            else:
+                picked["%s_acc%d" % (name, rank)] = {**x, "rank": rank}
         obj["accs"] = {**obj["accs"], **picked}
-        if left:
-            obj["streams"][name] = {"rows": left, "all": True, "rank": rank}
-        else:
-            del obj["streams"][name]
         arms = [{"acc": k} for k in picked]
+        # a record the accumulators are armed on: an object whose score names no
+        # instrument still has the one every voice enters holding
+        obj["instruments"] = obj["instruments"] or {"0": {}}
         obj["instruments"] = {
             k: {**v, "accs": list(v.get("accs", ())) + arms} for k, v in obj["instruments"].items()
         }

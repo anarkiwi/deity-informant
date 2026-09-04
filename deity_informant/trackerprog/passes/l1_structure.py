@@ -147,7 +147,7 @@ def reroll(prog, proc):
     seeded in the pre-header and moved in the latch, and a counter that closes it.
     """
     p = prog.procs[proc]
-    seen, n = set(), 0
+    seen, n, rolled = set(), 0, []
     for lbl in list(rpo(p)):
         if lbl in seen or lbl not in p.blocks:
             continue
@@ -156,9 +156,10 @@ def reroll(prog, proc):
         k, steps, envs = _match(p, run) if len(run) > 1 else (0, [], [])
         if k < 2 or _escapes(p, run[1:k]):
             continue
-        _close(p, run, k, steps, envs)
+        rolled += _close(p, run, k, steps, envs)
         n += 1
-    return (Tuneprog(prog.meta, prog.storage, prog.inputs, dict(prog.procs, **{proc: p})), n)
+    got = Tuneprog(prog.meta, prog.storage, prog.inputs, dict(prog.procs, **{proc: p}))
+    return got, n, tuple(rolled)
 
 
 def _escapes(p, inner):
@@ -206,6 +207,7 @@ def _close(p, run, k, steps, envs):
         p.entry = head
     for lbl in run[1:k]:
         del p.blocks[lbl]
+    return [(n, d, k) for d, n in sorted(idx.items())]
 
 
 def arrays(cells, p):
@@ -240,11 +242,13 @@ def structure(art, fetchblocks=(), ticks=3):
     """L0 to L1: one procedure, its loops closed, and the facts the levels read."""
     prog, proc = art["prog"], art["prog"].meta["tick_proc"]
     prog, loops = callee.inline(prog, proc)
-    prog, folded = reroll(prog, proc)
+    prog, folded, rolled = reroll(prog, proc)
     p = prog.procs[proc]
     inside = frozenset(fetchblocks) or frozenset(p.blocks)
     head, (body, latches) = schedule.voice_loop(prog, proc, inside)
     vidx = schedule.copies(p, schedule.induction(p, head, latches)) if head else frozenset()
+    # a chain the structuring rerolled at the voice stride, as many turns as
+    # there are voices, is a pass over the voices and its index is a voice index
     pit = tables.pitch_of(art, art["view"], art["names"])
     entry0 = tuple(b + pit.step * pit.base for b in pit.obases) if pit else ()
     cells = Cells(
@@ -253,6 +257,7 @@ def structure(art, fetchblocks=(), ticks=3):
         pitch=(pit.rids, entry0, pit.step, pit.n) if pit else None,
         words=tables.word_widths(prog, proc),
     )
+    vidx |= {n for n, d, k in rolled if d == cells.stride and k == cells.voices}
     pro = record.firstonly(prog, proc, art.get("inputs") or {}, ticks)
     return Level(
         1,
