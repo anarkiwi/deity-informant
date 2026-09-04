@@ -32,7 +32,7 @@ NOTE, INS, TIMER, ORDPOS, CURSOR, ACC, DIR = (
     0x240F,
     0x2412,
 )
-ORD, PAT, GLOB, SID = 0x2200, 0x2300, 0x2500, 0xD400
+ORD, PAT, GLOB, SID, IMG = 0x2200, 0x2300, 0x2500, 0xD400, 0x2540
 NOTES, VOICES, STRIDE = 16, 3, 1
 CHIP = 7
 
@@ -56,7 +56,11 @@ def store(addr, r, val, idx=None, src=0, cls="ram", size=VOICES, w=1):
 
 
 def sid(off, val, idx=None, src=0):
-    """One write to the chip: the register of the voice the index names."""
+    """One write to the chip: the register of the voice the index names.
+
+    The index is the voice's own base in the register file -- the ``7v`` every
+    family of the nine holds in a register -- and not the voice number.
+    """
     return store(SID + off, 20, val, idx, src=src, cls="io", size=25)
 
 
@@ -79,6 +83,7 @@ def regions(split=False):
         Rgn(12, "orders", ORD, 8, "const"),
         Rgn(13, "patterns", PAT, 32, "const"),
         Rgn(20, "sid", SID, 25, "io", stride=CHIP),
+        Rgn(30, "image", IMG, 25, "state", stride=CHIP),
     ]
 
 
@@ -117,6 +122,8 @@ def image(split=False):
     for v in range(VOICES):
         m[TIMER + v], m[CURSOR + v], m[ACC + v] = 1, 0, 0
     m[GLOB] = 0x0F
+    for v in range(VOICES):
+        m[IMG + CHIP * v + 4] = 0x10
     return m
 
 
@@ -194,16 +201,66 @@ def t2_of(split=False):
     }
 
 
+VIDX, VIDX7 = "x", "x7"
+
+
 def voiceblocks(body, head="head", tail="out", src=0x1000):
-    """One voice loop over ``body``: the index, the pass and the latch that closes it."""
+    """One voice loop over ``body``: the two indices, the pass and the latch.
+
+    A voice has two: its own number, which its cells stand at, and its base in
+    the register file, which the chip's own stride puts them at.
+    """
     return {
-        "top": Block("top", [Let("x", C(VOICES - 1))], Goto(head), src=src),
+        "top": Block(
+            "top",
+            [Let(VIDX, C(VOICES - 1)), Let(VIDX7, C(CHIP * (VOICES - 1), 2))],
+            Goto(head),
+            src=src,
+        ),
         head: Block(head, body[0], body[1], src=src + 0x10),
         "back": Block(
             "back",
-            [Let("x", Bin("-", V("x"), C(1)))],
-            If(Bin("!=", V("x"), C(0xFF), 1), head, tail),
+            [
+                Let(VIDX, Bin("-", V(VIDX), C(1))),
+                Let(VIDX7, Bin("-", V(VIDX7, 2), C(CHIP, 2), 2)),
+            ],
+            If(Bin("!=", V(VIDX), C(0xFF), 1), head, tail),
             src=src + 0x80,
         ),
         tail: Block(tail, [], Return(vals=[]), src=src + 0x90),
+    }
+
+
+def flushblocks(nxt, src=0x1F00):
+    """The tick's own first act: the image emptied into the chip, register by register."""
+    return {
+        "fl": Block("fl", [Let("i", C(0, 2))], Goto("fb"), src=src),
+        "fb": Block(
+            "fb",
+            [
+                Store(
+                    "io",
+                    Bin("+", C(SID, 2), V("i", 2), 2),
+                    Load("ram", Bin("+", C(IMG, 2), V("i", 2), 2), 1, IMG, IMG + 24, 30),
+                    1,
+                    SID,
+                    SID + 24,
+                    20,
+                    src,
+                ),
+                Let("i", Bin("+", V("i", 2), C(1, 2), 2)),
+            ],
+            If(Bin("!=", V("i", 2), C(25, 2), 1), "fb", nxt),
+            src=src + 4,
+        ),
+    }
+
+
+def flusht0(regs, pc=0x1F00):
+    """T0 for a shadowed tune: every write lands in the image, and one site empties it."""
+    img = {"region": 30, "delta": (SID - IMG) & 0xFFFF, "flush_pc": "$%04X" % pc}
+    return {
+        "writes": [
+            {"register": r, "site": {"pc": "$%04X" % s, "block": ""}, "image": img} for r, s in regs
+        ]
     }
