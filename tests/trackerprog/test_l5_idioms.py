@@ -170,3 +170,105 @@ def test_the_record_and_the_rows_it_covers_render_the_same():
         want = render(_obj(rows, _cells(), wide=wide), TICKS)
         mine = render(_obj(None, _cells(), {"a": rec}, wide=wide), TICKS)
         assert want == mine, a["cell"]
+
+
+HAND = {
+    "$trackerprog": 1,
+    "meta": {
+        "tune": "hand",
+        "song": 0,
+        "voices": 1,
+        "horizon": 8,
+        "voice_order": [0],
+        "commit_order": ["ctrl", "ad", "sr"],
+        "instrument": {},
+        "tempo": {
+            "cell": "clk",
+            "step": -1,
+            "rate": 1,
+            "phase": 0,
+            "boundary": [[{"cell": "phase"}, "==", 1]],
+            "reset": [{"when": [], "sets": [["@clk", 4]]}],
+        },
+        "tick": ["row", "commit", "machine"],
+        "row": [
+            {"note": True},
+            {"ins": True},
+            {"commands": True},
+            {"hold": True},
+            {"stream": "note_on"},
+            {"sets": [["@c", 1]]},
+        ],
+        "row_consumes_tick": True,
+        "shadow": {"registers": ["v0.ctrl", ["v0.ad", [[{"cell": "c"}, "!=", 0]]]]},
+    },
+    "pitch": {"base": 0, "freq": [0x0100]},
+    "streams": {
+        "note_on": {"all": True, "rows": [{"sets": [["ctrl", {"const": 65}]]}]},
+        "pre": {"all": True, "rows": [{"sets": [["ad", 15]]}]},
+    },
+    "accs": {"a": {**SWEEP, "rank": 0}},
+    "instruments": {"0": {"prelude": "pre", "on_note": "note_on", "accs": [{"acc": "a"}]}},
+    "score": {"patterns": {}, "orders": [{"play": [], "end": "stop"}]},
+    "globals": {},
+    "state0": {"cells": {"c": [0], "clk": [1], "acc": [1]}, "ins": [0], "shadow": [0] * 25},
+}
+
+
+def test_every_construct_of_one_object_is_enumerated_by_its_kind():
+    """The instances a covering may reach: the records, the rows, the flush, the rest."""
+    got = expand.instances(HAND)
+    kinds = {k for k, _key, _spec in got}
+    assert kinds == {"acc", "prelude", "on_note", "row", "flush", "reset", "producer"}
+    assert len([1 for k, _a, _b in got if k == "flush"]) == 2
+    assert len([1 for k, _a, _b in got if k == "row"]) == 6
+
+
+def test_each_kind_expands_and_selects_back_or_says_why_it_does_not():
+    """One code path over every kind: the rows it is, and the construct they are."""
+    seen = {}
+    for kind, _key, spec in expand.instances(HAND):
+        rows = expand.expand(kind, spec)
+        if rows is None:
+            seen.setdefault(kind, []).append(expand.why(kind, spec))
+            assert expand.why(kind, spec)
+            continue
+        back = l5_select.select(kind, rows)
+        assert back is not None, kind
+        assert l5_select.canon_of(kind, back) == l5_select.canon_of(kind, spec), kind
+        assert l5_select.canon(expand.expand(kind, back)) == l5_select.canon(rows)
+    assert set(seen) == {"row"}
+    assert len(seen["row"]) == 5
+
+
+def test_a_flush_entry_with_a_guard_keeps_the_guard_it_had():
+    """JCH: the image is flushed either way, and the entry states which."""
+    got = [(k, s) for k, _key, s in expand.instances(HAND) if k == "flush"]
+    rows = expand.expand("flush", got[1][1])
+    assert rows[0]["when"] == [[{"cell": "c"}, "!=", 0]]
+    assert l5_select.select("flush", rows) == got[1][1]
+
+
+def test_a_clock_reset_clause_is_the_row_it_is():
+    """Every family: what the clock does at its end is guarded assignment."""
+    got = [s for k, _key, s in expand.instances(HAND) if k == "reset"][0]
+    rows = expand.expand("reset", got)
+    assert rows[0]["sets"] == [["@clk", 4]]
+    assert l5_select.canon(l5_select.select("reset", rows)) == l5_select.canon(got)
+
+
+def test_a_producer_is_the_half_of_the_cell_it_sends():
+    """Section 4's producer list: where the value goes, and which half."""
+    got = [s for k, _key, s in expand.instances(HAND) if k == "producer"][0]
+    rows = expand.expand("producer", got)
+    assert rows[0]["sets"][0][0] == "pw_lo"
+    assert l5_select.select("producer", rows) == ["acc", "pw_lo", "lo"]
+
+
+def test_a_construct_no_expansion_states_selects_to_nothing():
+    """Selection is offered no rows where the expansion had none."""
+    assert l5_select.select("acc", None) is None
+    assert l5_select.select("row", [{"note": True}]) == {"note": True}
+    assert l5_select.select("hold", [{}]) is None
+    assert expand.expand("hold", {}) is None
+    assert expand.why("prelude", []) is None

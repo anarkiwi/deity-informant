@@ -10,6 +10,8 @@ induction variable, a per-voice array, a tuning -- with no branch on a family.
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tuneprog"))
 
@@ -35,7 +37,12 @@ from _frag import (  # noqa: E402
     voiceblocks,
 )
 from deity_informant.trackerprog.passes import l1_structure  # noqa: E402
-from deity_informant.trackerprog.passes.ir import Level, validate  # noqa: E402
+from deity_informant.trackerprog.passes.ir import (  # noqa: E402
+    Diverged,
+    Level,
+    irwrites,
+    validate,
+)
 from deity_informant.tuneprog.ir import (  # noqa: E402
     Bin,
     Block,
@@ -46,6 +53,7 @@ from deity_informant.tuneprog.ir import (  # noqa: E402
     Proc,
     Return,
     Store,
+    Trap,
     Var,
 )
 
@@ -259,3 +267,48 @@ def test_a_store_the_structuring_moved_is_the_store_it_was():
     assert len(stores) == 1 and stores[0].lo == SID
     # the envelope is the copies' own, joined: the rerolled store reaches them all
     assert stores[0].hi >= SID + CHIP * (VOICES - 1)
+
+
+def test_a_pass_that_changed_the_observable_is_the_pass_that_failed():
+    """The one check every pass answers to says which tick, and stops there."""
+    prog = _siblings()
+    a = Level(1, prog=prog, proc="tick")
+    obj = {
+        "$trackerprog": 1,
+        "meta": {
+            "tune": "t",
+            "song": 0,
+            "voices": 1,
+            "horizon": 4,
+            "voice_order": [0],
+            "commit_order": ["ctrl", "ad", "sr"],
+            "instrument": {},
+            "tempo": {"cell": "p", "step": 0, "rate": 1, "phase": 0, "boundary": [[0, "!=", 0]]},
+            "tick": ["machine", "commit"],
+            "row": [],
+            "row_consumes_tick": False,
+        },
+        "pitch": {"base": 0, "freq": [1]},
+        "streams": {"m": {"all": True, "rank": 0, "rows": [{"sets": [["ad", 7]]}]}},
+        "accs": {},
+        "instruments": {"0": {}},
+        "score": {"patterns": {}, "orders": [{"play": [], "end": "stop"}]},
+        "globals": {},
+        "state0": {"cells": {"p": [0]}, "ins": [0]},
+    }
+    b = Level(2, obj=obj)
+    with pytest.raises(Diverged):
+        validate(a, b, 4)
+    with pytest.raises(Diverged):
+        validate(b, Level(1, prog=prog, proc="tick"), 4)
+
+
+def test_a_program_the_interpreter_cannot_finish_renders_what_it_reached():
+    """A trap stops the render where it sprang, and the level is what it rendered."""
+    blocks = {
+        "a": Block("a", [], If(Bin("!=", C(0), C(0)), "b", "t"), src=0x1000),
+        "b": Block("b", [], Return(vals=[]), src=0x1004),
+        "t": Block("t", [], Trap("unverified"), src=0x1008),
+    }
+    prog = prog_of({"tick": Proc("tick", blocks=blocks, entry="a")})
+    assert irwrites(prog, 4) == []
