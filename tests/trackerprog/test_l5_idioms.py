@@ -273,3 +273,125 @@ def test_a_construct_no_expansion_states_selects_to_nothing():
     assert l5_select.select("hold", [{}]) is None
     assert expand.expand("hold", {}) is None
     assert expand.why("prelude", []) is None
+
+
+REPEAT = {
+    "cell": "acc",
+    "width": 8,
+    "policy": {"reload": {"cell": "seed"}},
+    "delta": {"repeat": [{"const": 3}, {"cell": "turns"}]},
+    "flag": {"name": "C", "seed": 1},
+    "produce": [["pw_lo", "lo"]],
+}
+REFLECT = {
+    "cell": "acc",
+    "width": 8,
+    "delta": {"const": 5},
+    "policy": "reflect",
+    "phase": {"cell": "dir"},
+    "amplitude": {"interval": [0, 40], "shift": 0},
+    "produce": [["pw_lo", "lo"]],
+}
+CLAMP = {
+    "cell": "freq",
+    "width": 16,
+    "delta": {"const": 0x40},
+    "policy": {"clamp": {"notefreq": None}},
+    "produce": [["freq_lo", "lo"], ["freq_hi", "hi"]],
+}
+GATE_UNDER = {
+    "cell": "acc",
+    "width": 8,
+    "delta": {"const": 1},
+    "policy": "wrap",
+    "step_when": [[{"cell": "seed"}, ">=", 4]],
+    "produce": [["ad", "lo"]],
+    "gate": {"true": [["ctrl", {"const": 65}]], "false": [["ctrl", {"const": 64}]]},
+}
+TRAP = {
+    "cell": "acc",
+    "width": 8,
+    "policy": "wrap",
+    "trap": True,
+    "when": [[{"cell": "seed"}, ">", 200]],
+}
+BEYOND = {
+    "cell": "acc",
+    "width": 8,
+    "policy": {"reload": {"cell": "seed"}},
+    "produce": [["pw_lo", "lo"]],
+    "beyond": {"id": "the arpeggio", "words": [{"const": 7}]},
+}
+
+
+def _trip(a):
+    """One record, its region tree, and the record selection reads back out of it."""
+    stmts = expand.expand("acc", a)
+    assert stmts is not None, a
+    back = l5_select.select("acc", stmts)
+    assert l5_select.canon_of("acc", back) == l5_select.canon_of("acc", a)
+    assert l5_select.canon(expand.expand("acc", back)) == l5_select.canon(stmts)
+    return stmts
+
+
+def test_a_repeat_is_a_loop_whose_trip_the_record_names():
+    """Hubbard: n additions of one step, and the carry each turn leaves."""
+    stmts = _trip(REPEAT)
+    loop = [s for s in stmts if "loop" in s]
+    assert len(loop) == 1
+    assert loop[0]["loop"]["trip"] == {"cell": "turns"}
+    assert [s["sets"][0][0] for s in loop[0]["loop"]["body"]] == ["!C", "@acc"]
+
+
+def test_a_reflect_turns_on_the_value_the_statement_before_it_wrote():
+    """Hubbard, defMON: the turn reads the cell the step just moved."""
+    stmts = _trip(REFLECT)
+    turn = [s for s in stmts if s.get("sets", [[""]])[0][0] == "@dir"]
+    assert len(turn) == 2
+    assert [{"cell": "acc"}, "==", 40] in turn[1]["when"]
+
+
+def test_a_clamp_takes_the_pitch_and_the_take_stops_the_rest_of_the_step():
+    """GoatTracker 2: the tone portamento, whose take is no assignment."""
+    stmts = _trip(CLAMP)
+    take = [s for s in stmts if "take" in s]
+    assert len(take) == 1 and take[0]["take"] == {"cell": "note"}
+    assert [{"cell": "$hit"}, "==", 0] in stmts[-1]["when"]
+
+
+def test_a_gate_under_a_step_when_reads_the_decision_where_it_is_made():
+    """Hubbard's drum: the arm the gate takes is a cell, not a negated guard."""
+    stmts = _trip(GATE_UNDER)
+    assert stmts[0]["sets"][0][0] == "@$stepped"
+    arms = [s for s in stmts if s.get("sets", [[""]])[0][0] == "ctrl"]
+    assert [t[1] for t in (arms[0]["when"] + arms[1]["when"]) if t[0] == {"cell": "$stepped"}] == [
+        "!=",
+        "==",
+    ]
+
+
+def test_a_trap_is_a_statement_the_horizon_never_runs():
+    """Hubbard's skydive: an arm the certified horizon never takes."""
+    stmts = _trip(TRAP)
+    assert len(stmts) == 1 and "trap" in stmts[0]
+    assert stmts[0]["when"] == TRAP["when"]
+
+
+def test_a_beyond_is_the_region_its_reads_stand_in():
+    """Hubbard's arpeggio: what lies past the tuning is the region's, not the row's."""
+    stmts = _trip(BEYOND)
+    assert len(stmts) == 1 and stmts[0]["beyond"] == BEYOND["beyond"]
+    assert [s["sets"][0][0] for s in stmts[0]["region"]] == ["@acc", "pw_lo"]
+
+
+def test_the_region_tree_flattens_to_rows_only_where_every_form_has_one():
+    """A flat row is still a level's own; a loop, a take and a trap are not."""
+    from deity_informant.trackerprog.passes import rir  # noqa: PLC0415
+
+    assert rir.flatten(expand.expand("acc", SLIDE)) == expand.expand("acc", SLIDE)
+    assert rir.flatten(expand.expand("acc", CLAMP)) is None
+    assert rir.flatten(expand.expand("acc", TRAP)) is None
+    assert rir.flatten([{"loop": {"trip": 2, "body": [{"sets": [["@acc", 1]]}]}}]) == [
+        {"sets": [["@acc", 1]]},
+        {"sets": [["@acc", 1]]},
+    ]

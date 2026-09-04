@@ -88,7 +88,7 @@ def canon_acc(a):
         got["gate"] = {"true": got["gate"].get("true") or []}
     am = got.get("amplitude")
     if am:
-        am = {k: v for k, v in am.items() if k != "witness"}
+        am = {k: v for k, v in am.items() if k != "witness" and not (k == "shift" and not v)}
         k = am.get("shift")
         if k and all(isinstance(x, int) for x in am.get("interval", ())):
             am = {**am, "interval": [x >> k for x in am["interval"]]}
