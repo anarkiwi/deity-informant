@@ -92,20 +92,26 @@ def trip(low, p, body):
 
 
 def tree(low, p, blocks, order, rows_of, head=None):
-    """One segment as a region tree: its loops kept, and its blocks in program order."""
-    inside, out, heads = set(), [], loops(p, blocks, head)
+    """One segment as a region tree: its loops kept, and its blocks in program order.
+
+    The blocks between two loops are read as one run, so a guard that reads what
+    another block's row takes away is staged against it (:func:`..rows.guards`).
+    """
+    inside, out, run, heads = set(), [], [], loops(p, blocks, head)
     for lbl in [l for l in order if l in blocks]:
         if lbl in inside:
             continue
         got = heads.get(lbl)
         n = trip(low, p, got[0]) if got is not None else None
-        if n is not None:
-            body = [l for l in order if l in got[0]]
-            out.append({"loop": {"trip": n, "body": rows_of(set(body), body)}})
-            inside |= set(body)
+        if n is None:
+            run.append(lbl)
             continue
-        out += rows_of({lbl}, order)
-    return out
+        body = [l for l in order if l in got[0]]
+        out += rows_of(set(run), run) if run else []
+        out.append({"loop": {"trip": n, "body": rows_of(set(body), body)}})
+        inside |= set(body)
+        run = []
+    return out + (rows_of(set(run), run) if run else [])
 
 
 def unstated(low, p, blocks, head=None):
@@ -114,19 +120,19 @@ def unstated(low, p, blocks, head=None):
 
 
 def predicates(low, blocks):
-    """One predicate cell a decision: if-conversion's own register.
+    """One predicate cell a decision the block's own store takes away.
 
     A block that decides a term and then moves a cell that term reads has no
-    channel for the value it decided on, so the decision is a cell, assigned
-    where the block makes it and read by every row it guards.  A block the tick
-    does not reach assigns nothing, and the terms that lead to it are cells of
-    the same kind, so its rows stand under a guard no path made true.
+    channel for the value it decided on, so that decision is a cell, assigned
+    where the block makes it and read by every row it guards.  Every other term
+    is read at the site that decides it, where the value it reads still stands:
+    a cell a tick did not assign holds the tick before's, which is no predicate.
     """
     out = {}
     for lbl in blocks:
         b = low.proc.blocks[lbl]
-        if type(b.term) is If and b.term.t != b.term.f:
-            out[lbl] = ("p" + ident(lbl), b.term.c, _late(b, b.term.c))
+        if type(b.term) is If and b.term.t != b.term.f and _late(b, b.term.c):
+            out[lbl] = ("p" + ident(lbl), b.term.c, True)
     return out
 
 
@@ -198,34 +204,56 @@ def raised(low, lbl):
     return [list(t) for t in low.eff.get(lbl, ((), ()))[1]]
 
 
-def blockstmts(seg, lbl, order, preds):
-    """One block as statements, in program order: its decision, then its stores."""
+def closing(seg, lbl, preds):
+    """What one block leaves after its stores: the decision it made, and the flags."""
+    got = preds.get(lbl)
+    # a decision over a cell the block itself moved is read where the block ends:
+    # read-after-write is the list's own order, not a second row
+    return ([predrow(seg, lbl, *got)] if got is not None else []) + flagrows(seg.low, lbl)
+
+
+def blockstmts(seg, blocks, order, ordering, preds):
+    """One set of blocks as rows, their stores staged across the whole set.
+
+    A guard that reads what another block's row takes away is read before it, so
+    the staging is over the segment and not over one block: the row order is the
+    one ``rows.guards`` puts them in, with each block's own decision after its
+    last store and a block that stores nothing where program order puts it.
+    """
     low = seg.low
-    got, up, rows = preds.get(lbl), raised(low, lbl), []
-    for _l, kind, when, sets, _d in guards(
-        seg, blockrows(seg, {lbl}, order, set(), {}, True), order
-    ):
-        if kind in ("set", "reg"):
-            rows.append({"when": when, "sets": [list(x) for x in sets]})
-    if got is not None:
-        # a decision over a cell the block itself moved is read where the block
-        # ends: read-after-write is the list's own order, not a second row
-        rows.insert(len(rows) if got[2] else 0, predrow(seg, lbl, *got))
-    rows += flagrows(low, lbl)
+    steps = [
+        (lbl, {"when": when, "sets": [list(x) for x in sets]})
+        for lbl, _kind, when, sets, _d in guards(
+            seg, blockrows(seg, set(blocks), order, set(), {}), order
+        )
+        if sets
+    ]
+    last = {lbl: i for i, (lbl, _r) in enumerate(steps)}
+    at = {l: i for i, l in enumerate(ordering)}
+    quiet = [l for l in ordering if l in blocks and l not in last]
+    out = []
+    for i, (lbl, r) in enumerate(steps):
+        while quiet and at.get(quiet[0], 0) < at.get(lbl, 0):
+            out += [(quiet[0], x) for x in closing(seg, quiet.pop(0), preds)]
+        out.append((lbl, r))
+        if last[lbl] == i:
+            out += [(lbl, x) for x in closing(seg, lbl, preds)]
+    for lbl in quiet:
+        out += [(lbl, x) for x in closing(seg, lbl, preds)]
     low.pick = {}
-    for r in rows:
+    got = []
+    for lbl, r in out:
+        up = raised(low, lbl)
         r["when"] = up + [t for t in (r.get("when") or []) if t not in up]
-    return rows
+        got.append(r)
+    return got
 
 
 def segrows(seg, blocks, order, preds, p=None, head=None):
     """One segment as a region tree: its loops kept, its blocks in program order."""
 
     def rows_of(bset, ordering):
-        out = []
-        for lbl in [l for l in ordering if l in bset]:
-            out += blockstmts(seg, lbl, order, preds)
-        return out
+        return blockstmts(seg, bset, order, ordering, preds)
 
     if p is None:
         return rows_of(blocks, order)

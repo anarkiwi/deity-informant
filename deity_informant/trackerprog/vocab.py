@@ -7,7 +7,7 @@ A leaf with no name here is a refusal, and the score supplies the score's bytes.
 
 from __future__ import annotations
 
-from ..tuneprog.ir import Bin, Const, Load, Var
+from ..tuneprog.ir import Bin, Const, Load, Store, Var
 from ..tuneprog.irwalk import addr_split
 from .read import Unlowerable, masked
 from .universal import REGNAME
@@ -45,6 +45,7 @@ class Vocab:
         self.inscol = {}  # region id -> column name
         self.inspw = {}  # region id -> "lo" | "hi"
         self.insstride = 8
+        self.insstage = {}  # a scalar the tick stages the record's own index in
         self.dropstores = set()
         self.subst = {}  # SSA name -> a node the schedule states outright
         self.tables = {}  # stream name -> (base, top): a const table read at a cell
@@ -98,9 +99,9 @@ class Vocab:
         top = x.hi
         if x.w != 1 or top < base or not low.frozen(base, top - base + 1):
             return None
-        # a read whose address is no constant plus an index is no table of the
-        # tune's: the base a split leaves is an offset and not where bytes live
-        if self.cells.region(base) is None:
+        # a base a split leaves is an offset where the index carries the rest, so
+        # the read is a table of the tune's where its own extent lies in one
+        if self.cells.region(base) is None and self.cells.region(x.lo) is None:
             return None
         if low.lbl in self.rowblocks:  # the bytes a fetch read are the score's own
             return None
@@ -150,12 +151,37 @@ class Vocab:
         """Whether an index selects the record the voice is playing: ``stride * ins``.
 
         A byte the score supplied is no cell of the tune's own, however a fold
-        makes the two values one.
+        makes the two values one; a tick that stages the scaled index in a scalar
+        of its own reads the record at that scalar, which is the same index.
         """
         if self.fromscore(low, idx):
             return False
         e, k = _shift(low.expand(idx))
-        return k == self.insstride and self.sameread(low, e, self.insbase)
+        if self.sameread(low, e, self.insbase):
+            return k == self.insstride
+        if type(e) is Load and e.cls == "ram":
+            base, at = addr_split(e.a)
+            if at is None and base in self.insstage:
+                return k * self.insstage[base] == self.insstride
+        return False
+
+    def staged(self, low):
+        """``{address: multiplier}``: the scalars the tick stages ``ins * k`` in."""
+        out = {}
+        if self.insbase is None:
+            return out
+        for lbl, b in low.proc.blocks.items():
+            low.lbl, low.local, low.pick, low.sub = lbl, {}, {}, {}
+            for s in b.stmts:
+                if type(s) is not Store or s.cls != "ram":
+                    continue
+                base, at = addr_split(s.a)
+                if base is None or at is not None:
+                    continue
+                e, k = _shift(low.expand(s.v))
+                if self.sameread(low, e, self.insbase):
+                    out.setdefault(base, set()).add(k)
+        return {a: ks.pop() for a, ks in out.items() if len(ks) == 1}
 
     def fromscore(self, low, e):
         """Whether an index is a byte the score supplied: no cell of the tune's own.

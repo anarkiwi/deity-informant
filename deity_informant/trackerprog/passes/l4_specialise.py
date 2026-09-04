@@ -176,8 +176,9 @@ def specialise(l3, ticks=None):  # noqa: C901 - one clause a construct
     obj = copy.deepcopy(l3.obj)
     ticks = ticks or obj["meta"]["horizon"]
     sch, types = l3.facts["schedule"], l3.facts["types"]
-    addrs = _addrs(l3)
-    recs, vvar, trips = visits(l3, ticks)
+    done = bool(l3.facts.get("materialised"))
+    addrs = {} if done else _addrs(l3)
+    recs, vvar, trips = ((), None, l3.facts.get("trips") or {}) if done else visits(l3, ticks)
     sc = score_of(l3, recs, vvar, addrs) if recs else None
     got = rowsegment(l3)
     dead = set()
@@ -198,7 +199,7 @@ def specialise(l3, ticks=None):  # noqa: C901 - one clause a construct
         obj["meta"]["tick"] = _once(obj["meta"]["tick"])
         obj["streams"] = {k: v for k, v in obj["streams"].items() if k not in got}
     cell = l3.facts["clock"]["cell"]
-    step = clockrow(obj, cell) if cell else None
+    step = clockrow(obj, cell) if cell and not done else None
     if step is not None and sch.clock:
         low = l3.facts["reader"]
         low.v.subst = {sch.clock[1].n: {"cell": "phase"}}
@@ -223,10 +224,10 @@ def specialise(l3, ticks=None):  # noqa: C901 - one clause a construct
             **l3.facts,
             "events": sum(len(p["events"]) for p in obj["score"]["patterns"].values()),
             "patterns": len(obj["score"]["patterns"]),
+            "materialised": done or sc is not None,
             "cursors": l4_cursor.left(obj, cursor_streams(l3.obj, types), stepped),
             "stepped": stepped,
             "trips": trips,
-            "materialised": sc is not None,
         },
     )
 
