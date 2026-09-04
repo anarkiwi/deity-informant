@@ -38,6 +38,10 @@ Contents: 1 the binding, field by field · 2 the schedule · 3 the score ·
 4 the records · 5 the rows that are left · 6 against the hand object ·
 7 the second family · 8 what was replaced, measured.
 
+The binding is one level of a pipeline: [prototype-passes.md](prototype-passes.md) states the lift as six compiler
+passes, takes this object through the two that follow it (selection and
+canonicalisation) and names, form by form, what a covering can and cannot reach.
+
 ---
 
 ## 1. The binding, field by field
