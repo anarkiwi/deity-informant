@@ -163,6 +163,16 @@ def test_selection_reads_the_construct_back_out_of_its_own_expansion():
     assert r["failed"] == []
 
 
+def test_the_records_no_run_of_rows_can_state_are_named_by_their_own_form():
+    """Commando's seven: which of them a covering could ever reach, and why not."""
+    obj = objects()["commando-song1"]
+    got = {k: expand.acc_why(a) for k, a in obj["accs"].items()}
+    OUT.mkdir(parents=True, exist_ok=True)
+    OUT.joinpath("commando-records.json").write_text(json.dumps(got, indent=1, sort_keys=True))
+    assert {k for k, v in got.items() if v is None} == {"pulse_run", "slide"}
+    assert all(v for k, v in got.items() if k not in ("pulse_run", "slide"))
+
+
 def test_the_counts_are_reported_by_construct_kind_and_family():
     r = got()
     assert set(r["instances"]) <= set(expand.KINDS)

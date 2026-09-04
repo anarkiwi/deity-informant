@@ -13,6 +13,7 @@ from __future__ import annotations
 import copy
 import json
 
+from ..sizes import compact, xz
 from .expand import KINDS, expand, read, width_of
 from .ir import Level
 
@@ -265,21 +266,28 @@ def cover(rows, kind="acc"):
     return out, got
 
 
-def phase_of(obj):
-    """The ``{stream}`` phase selection covers: the one whose rows it can spend.
+def gain(rows, left, got):
+    """What covering one stream is worth: the rows it spends against what it states."""
+    return cost(rows) - cost(left) - sum(cost(canon_of("acc", c)) for _a, c in got)
 
-    An accumulator runs in the machine phase and a tune has one, so selection
-    picks the phase whose covering is worth most and leaves the others alone.
+
+def worth(obj):
+    """The stream selection covers: the one whose covering is worth most.
+
+    A stream the machine phase ranks is covered in its own place; where the tick
+    has no machine phase, a ``{stream}`` phase becomes one.
     """
-    best, at = None, None
-    for i, e in enumerate(obj["meta"]["tick"]):
-        if isinstance(e, str):
+    best, at = 0, None
+    ranked = {k for k, st in obj["streams"].items() if "rank" in st}
+    tick = obj["meta"]["tick"]
+    phased = set() if "machine" in tick else {e["stream"] for e in tick if not isinstance(e, str)}
+    for name in sorted(ranked | phased):
+        st = obj["streams"].get(name)
+        if st is None or not st.get("all"):
             continue
-        rows = obj["streams"][e["stream"]]["rows"]
-        left, got = cover(list(rows))
-        gain = sum(cost(rows) for rows in [rows]) - cost(left) - sum(cost(c) for _a, c in got)
-        if got and (best is None or gain > best):
-            best, at = gain, (i, e["stream"], left, got)
+        left, got = cover(list(st["rows"]))
+        if got and gain(st["rows"], left, got) > best:
+            best, at = gain(st["rows"], left, got), (name, left, got)
     return at
 
 
@@ -296,19 +304,55 @@ def pieces(left, got):
     return out
 
 
-def select_level(l4, kinds=("acc",)):
-    """L4 to L5: the runs a construct covers become that construct, ranked in place."""
+def _slots(obj, name, got):
+    """The machine's own rank order, with the covered stream replaced by its pieces.
+
+    Streams and records share one rank order (§4.1), so the pieces stand where
+    the stream stood and everything else keeps the place it had.
+    """
+    have = [(st["rank"], "stream", k) for k, st in obj["streams"].items() if "rank" in st]
+    have += [(a.get("rank", 0), "acc0", (k, a)) for k, a in obj["accs"].items()]
+    out = []
+    for _rank, kind, key in sorted(have, key=lambda x: (x[0], x[1])):
+        if kind == "stream" and key == name:
+            out += list(got)
+        else:
+            out.append((kind, key))
+    return out
+
+
+def select_level(l4, kinds=("acc",)):  # noqa: C901 - one clause per placing
+    """L4 to L5: the runs a construct covers become that construct, ranked in place.
+
+    The covering is kept where the object it makes is no larger: a size cost over
+    the whole object and not over the run alone, since a record the instruments
+    share states once what the rows state at every arm.
+    """
+    was = copy.deepcopy(l4.obj)
     obj = copy.deepcopy(l4.obj)
     del kinds
-    at = phase_of(obj)
+    at = worth(obj)
     picked = {}
     if at is not None:
-        i, name, left, got = at
-        obj["meta"]["tick"][i] = "machine"
-        del obj["streams"][name]
-        for rank, (kind, x) in enumerate(pieces(left, got)):
+        name, left, got = at
+        run = pieces(left, got)
+        phase = name in {e["stream"] for e in obj["meta"]["tick"] if not isinstance(e, str)}
+        if phase:
+            obj["meta"]["tick"] = [
+                "machine" if not isinstance(e, str) and e["stream"] == name else e
+                for e in obj["meta"]["tick"]
+            ]
+        slots = run if phase else _slots(obj, name, run)
+        # what the stream carried besides its rows is the pieces' too: the words
+        # past the tuning a read of it reaches, its own guard, its divider
+        base = {k: v for k, v in obj["streams"].pop(name).items() if k not in ("rows", "rank")}
+        for rank, (kind, x) in enumerate(slots):
             if kind == "rows":
-                obj["streams"]["%s%d" % (name, rank)] = {"rows": x, "all": True, "rank": rank}
+                obj["streams"]["%s%d" % (name, rank)] = {**base, "rows": x, "rank": rank}
+            elif kind == "stream":
+                obj["streams"][x]["rank"] = rank
+            elif kind == "acc0":
+                obj["accs"][x[0]]["rank"] = rank
             else:
                 picked["%s_acc%d" % (name, rank)] = {**x, "rank": rank}
         obj["accs"] = {**obj["accs"], **picked}
@@ -323,11 +367,18 @@ def select_level(l4, kinds=("acc",)):
             **obj["meta"].get("instrument", {}),
             "accs": list(obj["meta"].get("instrument", {}).get("accs", ())) + arms,
         }
+    kept = picked and xz(compact(obj)) <= xz(compact(was))
     return Level(
         5,
         art=l4.art,
         prog=l4.prog,
         proc=l4.proc,
-        obj=obj,
-        facts={**l4.facts, "selected": picked, "kinds": list(KINDS)},
+        obj=obj if kept else was,
+        facts={
+            **l4.facts,
+            "covered": picked,
+            "selected": picked if kept else {},
+            "xz": [xz(compact(was)), xz(compact(obj))],
+            "kinds": list(KINDS),
+        },
     )

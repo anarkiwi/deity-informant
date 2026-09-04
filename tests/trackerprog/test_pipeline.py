@@ -12,6 +12,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 sys.path.insert(0, str(HERE))
@@ -81,7 +83,9 @@ def run():
                     "events": levels[4].facts["events"],
                     "patterns": levels[4].facts["patterns"],
                     "cursors": levels[4].facts["cursors"],
+                    "covered": sorted(levels[5].facts["covered"]),
                     "selected": sorted(levels[5].facts["selected"]),
+                    "covering_xz": levels[5].facts["xz"],
                     "merged": levels[6].facts["merged"],
                     "propagated": list(levels[6].facts["propagated"]),
                     "renamed": levels[6].facts["renamed"],
@@ -146,11 +150,16 @@ def test_the_specialisation_materialised_the_score():
 
 
 def test_the_selection_covered_a_run_with_a_record():
+    """The covering finds the record, and the object's own size decides it."""
     levels, _got = run()
-    assert levels[5].facts["selected"]
-    assert "machine" in levels[5].obj["meta"]["tick"]
-    for a in levels[5].obj["accs"].values():
-        assert "bound" in a and "rank" in a
+    f = levels[5].facts
+    assert f["covered"]
+    for a in f["covered"].values():
+        assert "bound" in a and "rank" in a and "cell" in a
+    was, now = f["xz"]
+    assert bool(f["selected"]) == (now <= was)
+    if f["selected"]:
+        assert "machine" in levels[5].obj["meta"]["tick"]
 
 
 def test_the_canonical_object_spent_the_cells_the_predication_raised():
@@ -160,3 +169,46 @@ def test_the_canonical_object_spent_the_cells_the_predication_raised():
     for name in f["propagated"]:
         assert name not in levels[6].obj["state0"]["cells"]
     assert sizes.xz(sizes.compact(levels[6].obj)) <= sizes.xz(sizes.compact(levels[5].obj))
+
+
+@pytest.mark.hvsc
+def test_commando_from_the_binding_through_l4_l5_and_l6():
+    """D -- the one real tune: #352's object taken to L6, rendering what it did."""
+    at = ROOT / "out" / "lift-b6" / "commando-song1" / "trackerprog.lift.json"
+    if not at.is_file():
+        pytest.skip("the binding's own output is not on disk")
+    obj = json.loads(at.read_text())
+    n = min(obj["meta"]["horizon"], 600)
+    l4 = ir.Level(4, obj=obj)
+    l5 = l5_select.select_level(l4)
+    l6 = l6_canon.canonicalise(l5)
+    got = {"L4": ir.writes(l4, n), "L5": ir.writes(l5, n), "L6": ir.writes(l6, n)}
+    assert got["L4"] == got["L5"] == got["L6"]
+    a, c = sizes.xz(sizes.compact(l4.obj)), sizes.xz(sizes.compact(l6.obj))
+    assert c <= a
+    OUT.mkdir(parents=True, exist_ok=True)
+    OUT.joinpath("commando.json").write_text(
+        json.dumps(
+            {
+                "levels": {
+                    "L%d"
+                    % lv.n: {
+                        "xz": sizes.xz(sizes.compact(lv.obj)),
+                        "streams": len(lv.obj["streams"]),
+                        "rows": sum(len(s.get("rows", ())) for s in lv.obj["streams"].values()),
+                        "accs": sorted(lv.obj["accs"]),
+                        "cells": len(lv.obj["state0"]["cells"])
+                        + len(lv.obj["state0"].get("globals", {})),
+                    }
+                    for lv in (l4, l5, l6)
+                },
+                "covered": sorted(l5.facts["covered"]),
+                "selected": sorted(l5.facts["selected"]),
+                "covering_xz": l5.facts["xz"],
+                "canon": {k: l6.facts[k] for k in ("merged", "propagated", "dropped", "renamed")},
+                "ticks": n,
+            },
+            indent=1,
+            sort_keys=True,
+        )
+    )
