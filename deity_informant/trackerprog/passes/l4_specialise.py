@@ -64,7 +64,7 @@ def _fetch():
     return region.Fetch()
 
 
-def score_of(l3, recs, vvar, addrs, ticks):
+def score_of(l3, recs, vvar, addrs):
     """§3.6's own score: the visits as events with fields, and the play lists."""
     cells, pit = l3.facts["cells"], l3.facts["pitch"]
     top = (pit.base + pit.n) if pit is not None else 0x100
@@ -79,9 +79,7 @@ def score_of(l3, recs, vvar, addrs, ticks):
     }
     if roles["note"] is None or roles["ins"] is None:
         return None
-    sc = Score(recs, vvar, roles, cells.voices, cells.stride, ordpos, top, seed, own)
-    del ticks
-    return sc
+    return Score(recs, vvar, roles, cells.voices, cells.stride, ordpos, top, seed, own)
 
 
 def clockreads(obj, cell, upto):
@@ -179,7 +177,7 @@ def specialise(l3, ticks=None):  # noqa: C901 - one clause a construct
     sch, types = l3.facts["schedule"], l3.facts["types"]
     addrs = _addrs(l3)
     recs, vvar, trips = visits(l3, ticks)
-    sc = score_of(l3, recs, vvar, addrs, ticks) if recs else None
+    sc = score_of(l3, recs, vvar, addrs) if recs else None
     got = rowsegment(l3)
     dead = set()
     if sc is not None:

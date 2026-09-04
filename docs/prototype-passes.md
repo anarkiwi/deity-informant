@@ -24,12 +24,12 @@ the thirty hand objects · 4 the synthetic program end to end · 5 Commando ·
 | L1 | structured tick: one procedure, callees inlined, runs and sibling copies rerolled, the voice loop and its indices explicit | inlining, rerolling, mem2reg | `passes/l1_structure.py` (+ `callee.py`, #351's own, restored) | 279 (+270) |
 | L2 | phase-normal form: the voice body cut at the fetch regions and the edge writes into phases, each a predicated row list, plus the tick's own pre and post lists | region formation, if-conversion | `passes/l2_phases.py` | 366 |
 | L3 | typed PNF: every cell typed by the slot lattice, every table by its kind | type inference over a finite lattice | `passes/l3_roles.py` | 232 |
-| L4 | materialised PNF: the fetch replayed into §3.6 events with fields, the clock the player's, the walk the score's own play lists; the residual is the row program | partial evaluation | `passes/l4_specialise.py` | 262 |
-| L5 | selected object: runs of predicated rows covered by construct expansions with a size cost; what no construct covers stays as rows | BURS-style covering | `passes/l5_select.py`, `passes/expand.py` | 256, 298 |
-| L6 | canonical trackerprog: adjacent streams merged, cells propagated and their writes dead, implied guard terms dropped, names canonical | scalar optimisation | `passes/l6_canon.py` | 339 |
+| L4 | materialised PNF: the fetch replayed into §3.6 events with fields, the clock the player's, the walk the score's own play lists; the residual is the row program | partial evaluation | `passes/l4_specialise.py` | 260 |
+| L5 | selected object: runs of predicated rows covered by construct expansions with a size cost; what no construct covers stays as rows | BURS-style covering | `passes/l5_select.py`, `passes/expand.py` | 255, 298 |
+| L6 | canonical trackerprog: adjacent streams merged, cells propagated and their writes dead, implied guard terms dropped, names canonical | scalar optimisation | `passes/l6_canon.py` | 336 |
 
 `passes/ir.py` (103) is the level object and the validation; `tools/trackerprog_passes.py`
-(123) runs L4–L6 over a bound object.  New non-test code: **2,535 lines**, 2,142
+(123) runs L4–L6 over a bound object.  New non-test code: **2,529 lines**, 2,136
 of it written here and 393 restored or driving.  Hermetic coverage of all of it,
 `pytest tests/trackerprog -m "not hvsc"`: **95 %**.
 
@@ -286,8 +286,8 @@ Stated as findings, not as work in progress.
 | L4: a small decoder unrolled to its rows over a horizon (Blackbird) | not prototyped, for the same reason: it is the cursor specialisation |
 | L4: the order's `call`, `ret`, `mark` and `loop` (Follin, Galway) | not prototyped. The walk becomes `play` steps and a `jump` end; which opcode a step is, is a recognition the level does not make |
 | L2: an inner loop of the voice's own pass | one block is one row, so a block a tick runs several times is stated once. The synthetic program and the fragments have none |
-| bound: `l2_phases.py` 366, `l6_canon.py` 339 | over the 300 a module was given, by 66 and 39 |
-| bound: 2,535 lines of new non-test code | over the 2,000 given, by 535; 270 of it is #351's `callee.py` restored verbatim and 123 the tool |
+| bound: `l2_phases.py` 366, `l6_canon.py` 336 | over the 300 a module was given, by 66 and 36 |
+| bound: 2,529 lines of new non-test code | over the 2,000 given, by 529; 270 of it is #351's `callee.py` restored verbatim and 123 the tool |
 
 Two levels change no value at all and are validated as such: L3 renames and
 states, and L6's four passes are each conservative — a stream a cursor or a

@@ -193,7 +193,7 @@ def _slots(obj, name, got):
     return out
 
 
-def select_level(l4, kinds=("acc",)):  # noqa: C901 - one clause per placing
+def select_level(l4):  # noqa: C901 - one clause per placing
     """L4 to L5: the runs a construct covers become that construct, ranked in place.
 
     The covering is kept where the object it makes is no larger: a size cost over
@@ -202,7 +202,6 @@ def select_level(l4, kinds=("acc",)):  # noqa: C901 - one clause per placing
     """
     was = copy.deepcopy(l4.obj)
     obj = copy.deepcopy(l4.obj)
-    del kinds
     at = worth(obj)
     picked = {}
     if at is not None:

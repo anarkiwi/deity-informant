@@ -82,7 +82,6 @@ def named(obj):
     A stream a cursor sits on, a table a read indexes, a prelude, a note-on, a
     re-point or the channel names is a stream whose rows keep their numbers.
     """
-    tick = obj["meta"]["tick"]
     o = {k: v for k, v in obj.items() if k != "meta"}
     o["meta"] = {k: v for k, v in obj["meta"].items() if k != "tick"}
     out = set(obj.get("state0", {}).get("cursors", ())) | set(
@@ -106,7 +105,6 @@ def named(obj):
                     stack.append(v)
         elif isinstance(x, (list, tuple)):
             stack += list(x)
-    del tick
     return out
 
 
@@ -237,7 +235,7 @@ def _fold(t):
 def names(obj):
     """A cell named by the register its sole reader writes, where it has one."""
     got, seq, out = {}, order(obj), elsewhere(obj)
-    for name, at in sorted(written(obj).items()):
+    for name in sorted(written(obj)):
         if name in PLAYER or name in out or name.startswith(("shadow.", "ins.")):
             continue
         regs = {
@@ -253,7 +251,6 @@ def names(obj):
                 continue
             if want[1:] not in got.values() and want[1:] not in written(obj):
                 got[name] = want[1:]
-        del at
     return got
 
 
