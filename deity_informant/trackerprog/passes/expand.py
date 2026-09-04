@@ -1,13 +1,13 @@
-"""The construct expansions L5 selects against, and the hermetic snippet that checks them.
+"""The construct expansions L5 selects against, and the §5 record's own inverse.
 
 A construct of the schema is a shorthand for a run of predicated statements, and
-its **expansion** is that run written out as §3.3 rows.  Selection is the inverse:
-a run of rows an expansion covers is the construct it expands to.  Three of the
-schema's forms have no row expansion at all, and each is named where it is met --
-the row language has no loop, so ``repeat``'s ``n`` additions are not rows; a
-``clamp`` takes a pitch, which is one named operation and no assignment (§3.1);
-and a ``reflect`` turns a direction cell on a bound the rows cannot ask about
-without reading the value the same row writes.
+its **expansion** is that run written out as §3.3 rows; ``acc_of`` reads a record
+back out of such a run, which is the expansion's inverse and stands beside it.
+Several of the schema's forms have no row expansion at all and each is named
+where it is met -- the row language has no loop, so ``repeat``'s ``n`` additions
+are not rows; a ``clamp`` takes a pitch, which is one named operation and no
+assignment (§3.1); and a ``reflect`` turns a direction cell on a bound the rows
+cannot ask about without reading the value the same row writes.
 """
 
 from __future__ import annotations
