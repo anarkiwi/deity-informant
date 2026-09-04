@@ -19,7 +19,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(ROOT / "tools"))
 
 from _expansions import armfor, bind, snippet  # noqa: E402
-from deity_informant.trackerprog.passes import expand  # noqa: E402
+from deity_informant.trackerprog.passes import expand, l5_select  # noqa: E402
 from deity_informant.trackerprog.universal import render  # noqa: E402
 
 import trackerprog_poison as TP  # noqa: E402
@@ -70,13 +70,13 @@ def report():
             got["no_expansion"][(kind, expand.why(kind, spec) or "no expansion")] += 1
             continue
         got["expandable"][kind] += 1
-        back = expand.select(kind, rows)
+        back = l5_select.select(kind, rows)
         again = expand.expand(kind, back) if back is not None else None
-        if again is not None and expand.canon(again) == expand.canon(rows):
+        if again is not None and l5_select.canon(again) == l5_select.canon(rows):
             got["equivalent"][kind] += 1
         else:
             got["failed"].append([name, kind, key, "expansion is not the construct's"])
-        if back is not None and expand.canon_of(kind, spec) == expand.canon_of(kind, back):
+        if back is not None and l5_select.canon_of(kind, spec) == l5_select.canon_of(kind, back):
             got["selected"][kind] += 1
         else:
             got["failed"].append([name, kind, key, "selection is not the construct"])
