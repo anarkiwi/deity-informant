@@ -19,7 +19,7 @@ from ..read import Reader, Unlowerable
 from ..rows import ambiguous
 from ..shape import _Out, _dce, _merge_halves, _needed
 from ..vocab import Vocab
-from . import l2_fetch, l2_regions
+from . import l2_fetch, l2_loops, l2_regions
 from .ir import Level
 from .l2_regions import predicates, segrows
 
@@ -338,9 +338,9 @@ def phases(l1, fetchblocks=(), ticks=None):  # noqa: C901 - one clause a section
             "predicates": {l: n for l, (n, _c, _l) in preds.items()},
             "joins": list(flags),
             "refused": sorted(low.bad),
-            "loops": [n for _n, g, _c in resid for n in l2_regions.loops(p, set(g), head)],
+            "loops": [n for _n, g, _c in resid for n in l2_loops.loops(p, set(g), head)],
             "unstated_loops": [
-                n for _n, g, _c in resid for n in l2_regions.unstated(low, p, set(g), head)
+                n for _n, g, _c in resid for n in l2_loops.unstated(low, p, set(g), head, order)
             ],
         },
     )
