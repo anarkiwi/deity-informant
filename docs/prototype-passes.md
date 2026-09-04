@@ -335,7 +335,7 @@ Stated as findings, not as work in progress.
 | L4: a small decoder unrolled to its rows over a horizon (Blackbird) | not prototyped.  The cursor specialisation evaluates a step at every row of a static table; a decoder has no per-row cursor to evaluate at |
 | L4: a cursor's `hold` and `jump` | the specialisation states `next`; a `hold` counted by a cell of the tune's own, and a landing stated on the target rather than the source, are not reached |
 | L5: `{note}` and `{commands}` | no expansion: the run they enter is picked at run time by a cell (§4) |
-| bound: new non-test lines | 1,491 of the 1,500 given |
+| bound: new non-test lines | 1,708 added and 522 deleted against `deity_informant/` and `tools/`, a net **1,186** of the 1,500 given; about 420 of the additions are lines the module splits moved |
 | bound: module size | every module of the package at or under 300; none in the repo over 500 |
 | bound: hermetic coverage | 90 % of the passes package |
 

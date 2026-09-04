@@ -41,7 +41,7 @@ from deity_informant.trackerprog.passes import (  # noqa: E402
 from deity_informant.trackerprog.passes.ir import Level  # noqa: E402
 from deity_informant.trackerprog.shape import _channels, _rowblocks  # noqa: E402
 
-from tuneprog_trackerprog import reference  # noqa: E402
+from tuneprog_trackerprog import reference  # noqa: E402  # pylint: disable=wrong-import-order
 
 
 def measure(obj):
