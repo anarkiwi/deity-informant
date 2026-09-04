@@ -286,6 +286,7 @@ Stated as findings, not as work in progress.
 | L4: a small decoder unrolled to its rows over a horizon (Blackbird) | not prototyped, for the same reason: it is the cursor specialisation |
 | L4: the order's `call`, `ret`, `mark` and `loop` (Follin, Galway) | not prototyped. The walk becomes `play` steps and a `jump` end; which opcode a step is, is a recognition the level does not make |
 | L2: an inner loop of the voice's own pass | one block is one row, so a block a tick runs several times is stated once. The synthetic program and the fragments have none |
+| L1, L2 and L3 have not been run on a real tune | the fragments and the synthetic program of §4 are what they are proven on. §5 takes Commando from the binding, which is already L3 with one L4 shape, so the three passes below it were never asked for a family's own 84-block tick |
 | bound: `l2_phases.py` 366, `l6_canon.py` 336 | over the 300 a module was given, by 66 and 36 |
 | bound: 2,529 lines of new non-test code | over the 2,000 given, by 529; 270 of it is #351's `callee.py` restored verbatim and 123 the tool |
 
