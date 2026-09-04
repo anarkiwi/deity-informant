@@ -238,7 +238,8 @@ def test_each_kind_expands_and_selects_back_or_says_why_it_does_not():
         assert l5_select.canon_of(kind, back) == l5_select.canon_of(kind, spec), kind
         assert l5_select.canon(expand.expand(kind, back)) == l5_select.canon(rows)
     assert set(seen) == {"row"}
-    assert len(seen["row"]) == 5
+    assert len(seen["row"]) == 3
+    assert all("picked at run time" in w for w in seen["row"])
 
 
 def test_a_flush_entry_with_a_guard_keeps_the_guard_it_had():

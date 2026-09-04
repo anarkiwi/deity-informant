@@ -18,8 +18,8 @@ ROOT = HERE.parent.parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(ROOT / "tools"))
 
-from _expansions import armfor, bind, snippet  # noqa: E402
-from deity_informant.trackerprog.passes import expand, l5_select  # noqa: E402
+from _expansions import armed, armfor, bind, snippet  # noqa: E402
+from deity_informant.trackerprog.passes import expand, l5_select, rir  # noqa: E402
 from deity_informant.trackerprog.universal import render  # noqa: E402
 
 import trackerprog_poison as TP  # noqa: E402
@@ -94,7 +94,10 @@ def _render(got, name, key, spec, rows):
     except (KeyError, TypeError, AssertionError):
         got["unarmable"][name] += 1  # the arm that binds its numbers is a row's own
         return
-    mine = render(snippet(obj, TICKS, rows=bind(rows, arm)), TICKS)
+    o = snippet(obj, TICKS, rows=armed(bind(rows, arm), arm))
+    for c in rir.scratch(rows):
+        o["state0"].setdefault("cells", {})[c] = [0] * o["meta"]["voices"]
+    mine = rir.render(o, TICKS)
     if want == mine:
         got["faithful"]["acc"] += 1
     else:
@@ -145,7 +148,9 @@ def test_every_construct_instance_expands_or_is_named_by_the_reason_it_does_not(
     r = got()
     n = sum(r["instances"].values())
     assert n == sum(r["expandable"].values()) + sum(r["no_expansion"].values())
-    assert n > 1000
+    assert n == 1190
+    assert sum(r["expandable"].values()) == 1135
+    assert set(r["expandable"]) == set(expand.KINDS)
     for (kind, reason), _c in r["no_expansion"].items():
         assert reason and kind in expand.KINDS
 
@@ -164,13 +169,12 @@ def test_selection_reads_the_construct_back_out_of_its_own_expansion():
 
 
 def test_the_records_no_run_of_rows_can_state_are_named_by_their_own_form():
-    """Commando's seven: which of them a covering could ever reach, and why not."""
+    """Commando's seven, each with a region tree of its own: none is unreachable."""
     obj = objects()["commando-song1"]
     got = {k: expand.acc_why(a) for k, a in obj["accs"].items()}
     OUT.mkdir(parents=True, exist_ok=True)
     OUT.joinpath("commando-records.json").write_text(json.dumps(got, indent=1, sort_keys=True))
-    assert {k for k, v in got.items() if v is None} == {"pulse_run", "slide"}
-    assert all(v for k, v in got.items() if k not in ("pulse_run", "slide"))
+    assert not [k for k, v in got.items() if v is not None]
 
 
 def test_the_counts_are_reported_by_construct_kind_and_family():
