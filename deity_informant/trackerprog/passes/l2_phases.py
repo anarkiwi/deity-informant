@@ -14,9 +14,9 @@ from __future__ import annotations
 
 from ...tuneprog.ir import If, Load, Store, Var
 from ...tuneprog.irwalk import addr_split, walk
-from .. import build, schedule, shadow
+from .. import build, schedule, shadow, tables
 from ..emit import commit_order
-from ..read import Reader
+from ..read import Reader, Unlowerable
 from ..rows import ambiguous, blockrows, guards
 from ..cells import ident
 from ..shape import _Out, _dce, _merge_halves, _needed
@@ -260,6 +260,13 @@ def reader(l1):
     pit = l1.facts["pitch"]
     if pit is not None:
         voc.pitch = (pit.rids, pit.obases, pit.step, pit.n)
+    ins = tables.instrument_table(art, art["view"], art["names"])
+    if ins:
+        voc.insbase, voc.inscol, voc.insstride = ins[0], ins[1], ins[2]
+    voc.inspw = tables.pw_columns(art, art["view"], art["names"])
+    voc.img = img
+    if pit is not None:
+        voc.notebase = tables.note_base(PNFReader(prog, proc, cells, voc), pit, [prog.procs[proc]])
     sh = shadow.of(art["t0"], prog, art["view"])
     if sh is not None:
         voc.shadow = (sh.base, sh.size)
@@ -268,6 +275,28 @@ def reader(l1):
     # also reaches is a *may* fact read as a must.  The later levels specialise
     low.reach = {lbl: {} for lbl in low.proc.blocks}
     return low, voc, sh
+
+
+def unstatable(l1, fetchblocks=()):
+    """The decisions of a tick whose condition no value of this level's vocabulary states.
+
+    One entry a block: the label, why the read has no name, and whether the block
+    stands in the fetch region the level cuts the pass at.
+    """
+    low = reader(l1)[0]
+    out = []
+    for lbl in low.rpo:
+        t = low.proc.blocks[lbl].term
+        if type(t) is not If or t.t == t.f:
+            continue
+        low.lbl, low.local, low.pick, low.sub, low.turn = lbl, {}, {}, {}, None
+        try:
+            low.value(low.expand(t.c))
+        except Unlowerable as x:
+            out.append(
+                {"block": lbl, "why": str(x), "region": "fetch" if lbl in fetchblocks else "voice"}
+            )
+    return out
 
 
 def phases(l1, fetchblocks=(), ticks=None):  # noqa: C901 - one clause a section

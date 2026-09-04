@@ -52,12 +52,12 @@ def writes(level, ticks):
     """One level's observable: a per-tick list of ``(register, value)``."""
     if level.obj is not None:
         return _render(level.obj, ticks)
-    return irwrites(level.prog, ticks)
+    return irwrites(level.prog, ticks, (level.art or {}).get("inputs"))
 
 
-def irwrites(prog, ticks):
+def irwrites(prog, ticks, inputs=None):
     """The interpreter's own write list, tick by tick, from the post-init image."""
-    p = interp.Player(prog, region.Fetch())
+    p = interp.Player(prog, region.Fetch(), inputs)
     p.run_init()
     out = []
     for _ in range(ticks):
