@@ -12,7 +12,9 @@ from types import SimpleNamespace
 from ...tuneprog.ir import If, Load, Store
 from ...tuneprog.irwalk import addr_split, walk
 from ..cells import ident
+from ..read import Unlowerable
 from ..rows import blockrows, guards
+from ..shape import _reads
 from .l2_loops import carried, closes, exits, loops, seeds, trip
 
 
@@ -48,20 +50,36 @@ def tree(low, p, blocks, order, rows_of, head=None):
 
 
 def predicates(low, blocks):
-    """One predicate cell a decision the block's own store takes away.
+    """One predicate cell a decision no row can read back, and no cell for any other.
 
-    A block that decides a term and then moves a cell that term reads has no
-    channel for the value it decided on, so that decision is a cell, assigned
-    where the block makes it and read by every row it guards.  Every other term
-    is read at the site that decides it, where the value it reads still stands:
-    a cell a tick did not assign holds the tick before's, which is no predicate.
+    A block that decides a term and then moves a cell that term reads, or decides
+    it over a name that is no cell, has no channel for the value it decided on:
+    the decision is a cell.  Every other term is read at the site that decides it,
+    where what it reads still stands -- a cell a tick did not assign holds the
+    tick before's, which is no predicate.
     """
     out = {}
     for lbl in blocks:
         b = low.proc.blocks[lbl]
-        if type(b.term) is If and b.term.t != b.term.f and _late(b, b.term.c):
+        if type(b.term) is not If or b.term.t == b.term.f:
+            continue
+        if _late(b, b.term.c) or _temped(low, lbl, b.term.c):
             out[lbl] = ("p" + ident(lbl), b.term.c, True)
     return out
+
+
+def _temped(low, lbl, cond):
+    """Whether a decision reads a value no cell of the object holds where a row reads it.
+
+    A name one block binds is no cell, so a term over it is read at the block that
+    decides it and nowhere else: the decision itself is the cell.
+    """
+    low.lbl, low.local, low.pick, low.sub = lbl, {}, {}, {}
+    try:
+        got = low.term(low.expand(cond), True)
+    except Unlowerable:
+        return True
+    return bool(_reads(got) & {c.lstrip("#") for c in low.temps.values()})
 
 
 def _late(blk, cond):
@@ -171,7 +189,8 @@ def blockstmts(seg, blocks, order, ordering, preds):
     out = []
     for i, (lbl, r) in enumerate(steps):
         while quiet and at.get(quiet[0], 0) < at.get(lbl, 0):
-            out += [(quiet[0], x) for x in closing(seg, quiet.pop(0), preds)]
+            q = quiet.pop(0)
+            out += [(q, x) for x in closing(seg, q, preds)]
         out.append((lbl, r))
         if last[lbl] == i:
             out += [(lbl, x) for x in closing(seg, lbl, preds)]

@@ -213,6 +213,11 @@ def phases(l1, fetchblocks=(), ticks=None):  # noqa: C901 - one clause a section
     rowprog, rowstreams = fx.program(seg, order) if fx is not None else ([], {})
     if flags:
         tick.append({"stream": out.stream("flags", [{"sets": [["@" + n, 0] for n in flags]}])})
+    records = fx.instruments() if fx is not None else {}
+    # the player's own machine phase is what a row that spends its tick leaves
+    # unrun, and it reads the record the voice's ``ins`` names: with no record
+    # there is none to read, and a ``{stream}`` entry is the same phase
+    ranked = fx is not None and fx.sch.row_consumes_tick and bool(records)
     rank = 0
     for i, (name, blocks, group) in enumerate(segs):
         if fx is not None and name == "row":
@@ -220,7 +225,7 @@ def phases(l1, fetchblocks=(), ticks=None):  # noqa: C901 - one clause a section
         else:
             low.scope = set(named[name])  # a term the phase decides is the phase's own
             got = segrows(seg, set(blocks), order, preds, p, head)
-            if got and name == "machine":
+            if got and name == "machine" and ranked:
                 # the machine is the player's own phase: a row that spends its
                 # tick (§3.6) leaves it unrun, which a ``{stream}`` entry cannot say
                 out.stream("machine%d" % i, got, rank)
@@ -278,7 +283,7 @@ def phases(l1, fetchblocks=(), ticks=None):  # noqa: C901 - one clause a section
         ),
         "streams": {**out.streams, **rowstreams, **build.table_streams(voc, prog.reads())},
         "accs": {},
-        "instruments": fx.instruments() if fx is not None else {},
+        "instruments": records,
         "score": (
             dict(zip(("orders", "patterns"), fx.score.events(fx.tie)))
             if fx is not None
