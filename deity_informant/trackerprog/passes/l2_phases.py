@@ -288,6 +288,7 @@ def phases(l1, fetchblocks=(), ticks=None):  # noqa: C901 - one clause a section
         facts={
             **l1.facts,
             "segments": [(n, tuple(g)) for n, g, _c in segs],
+            "fetchblocks": frozenset(fetchblocks),
             "channel": (tuple(before), tuple(after)),
             "flush": tuple(sh.registers) if sh is not None else (),
             "stage_guard": lead(low, _sch(prog, proc, fetchblocks, art["t0"], order), fetchblocks),
