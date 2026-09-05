@@ -18,12 +18,13 @@ from ..shape import _reads
 from .l2_loops import carried, closes, exits, loops, seeds, trip
 
 
-def tree(low, p, blocks, order, rows_of, head=None):
+def tree(seg, p, blocks, order, rows_of, head=None):
     """One segment as a region tree: its loops kept, and its blocks in program order.
 
     The blocks between two loops are read as one run, so a guard that reads what
     another block's row takes away is staged against it (:func:`..rows.guards`).
     """
+    low = seg.low
     inside, out, run, heads = set(), [], [], loops(p, blocks, head)
     for lbl in [l for l in order if l in blocks]:
         if lbl in inside:
@@ -39,9 +40,9 @@ def tree(low, p, blocks, order, rows_of, head=None):
         gate = low.gate
         low.gate = gate | {(id(c), t) for _l, c, t in exits(p, got[0])}
         keep = carried(low, p, got[0], got[1])
-        out += _carry(low, seeds(low, p, got[0], lbl, keep))
+        out += _carry(seg, seeds(low, p, got[0], lbl, keep))
         out.append(
-            {"loop": {"trip": n, "body": rows_of(set(body), body) + _carry(low, closes(low, keep))}}
+            {"loop": {"trip": n, "body": rows_of(set(body), body) + _carry(seg, closes(low, keep))}}
         )
         low.gate = gate
         inside |= set(body)
@@ -158,13 +159,32 @@ def raised(low, lbl):
     return [list(t) for t in low.eff.get(lbl, ((), ()))[1]]
 
 
-def _carry(low, got):
-    """One row an assignment of a carried name is, in the cell its readers name."""
-    out = []
-    for n, val, w in got:
+def _carry(seg, got):
+    """One row an assignment of a carried name is, in the cell its readers name.
+
+    The row stands on the path of the block that made the assignment: a seed the
+    entering path never took is a value that path never computed, and the level
+    has no more channel for it than the block had.
+    """
+    low, out = seg.low, []
+    for n, val, w, lbl in got:
         c = low.temp(n, w)
-        out.append({"sets": [[c if c[:1] == "#" else "@" + c, val]]})
+        when = _when(seg, lbl)
+        row = {"sets": [[c if c[:1] == "#" else "@" + c, val]]}
+        out.append({**({"when": when} if when else {}), **row})
     return out
+
+
+def _when(seg, lbl):
+    """One block's own guard, read where the block stands."""
+    low = seg.low
+    path = [d for d, _c, _t, _w in low.guards.get(lbl, ())]
+    low.lbl, low.local, low.sub, low.turn = lbl, {}, {}, None
+    low.pick = picks(seg.amb, lbl, path)
+    got = guardof(low, [(d, c, t) for d, c, t, _w in low.guards.get(lbl, ())])
+    up = raised(low, lbl)
+    low.pick = {}
+    return up + [t for t in got if t not in up]
 
 
 def _predrows(seg, lbl, preds, late):
@@ -253,4 +273,4 @@ def segrows(seg, blocks, order, preds, p=None, head=None):
 
     if p is None:
         return rows_of(blocks, order)
-    return tree(seg.low, p, blocks, order, rows_of, head)
+    return tree(seg, p, blocks, order, rows_of, head)

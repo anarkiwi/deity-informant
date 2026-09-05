@@ -213,7 +213,7 @@ def seeds(low, p, body, head, got):
         for s in p.blocks[lbl].stmts:
             if type(s) is Let and s.n in got:
                 low.lbl, low.local, low.pick, low.sub = lbl, {}, {}, {}
-                out.append((s.n, low.value(low.expand(s.e)), s.e.w))
+                out.append((s.n, low.value(low.expand(s.e)), s.e.w, lbl))
     return out
 
 
@@ -222,7 +222,7 @@ def closes(low, got):
     out = []
     for n, (lbl, e) in sorted(got.items()):
         low.lbl, low.local, low.pick, low.sub = lbl, {}, {}, {}
-        out.append((n, low.value(low.expand(e)), e.w))
+        out.append((n, low.value(low.expand(e)), e.w, lbl))
     return out
 
 
