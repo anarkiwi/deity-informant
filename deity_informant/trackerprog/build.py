@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 
+from .. import c64
 from ..tuneprog import accum, pipeline, provenance
 from ..tuneprog.graph import succs
 from ..tuneprog.history import history
@@ -87,6 +88,20 @@ def divider_phase(img, addr, reload_, rate):
         if d == reload_:
             return t % rate
     return 0
+
+
+def initpins(prog):
+    """The reads init makes of RAM the tune never wrote: the byte a machine powered on with.
+
+    Init runs before the post-init image ``pinned_inputs`` reads off it exists, and
+    ``uninit_ram`` is no external input, so the value is the power-on fill's.
+    """
+    ram = c64.poweron_ram()
+    return {
+        a: int(ram[a])
+        for _site, a, kind, _reads, _phase in prog.inputs
+        if kind == "uninit_ram" and a < 0x10000
+    }
 
 
 def pinned_inputs(prog, img):

@@ -40,6 +40,8 @@ from deity_informant.trackerprog.passes import (  # noqa: E402
 )
 from deity_informant.trackerprog.passes.ir import Level  # noqa: E402
 from deity_informant.trackerprog.shape import _channels, _rowblocks  # noqa: E402
+from deity_informant.tuneprog.ir import Tuneprog  # noqa: E402
+from deity_informant.tuneprog.tracedata import Trace  # noqa: E402
 
 from tuneprog_trackerprog import reference  # noqa: E402  # pylint: disable=wrong-import-order
 
@@ -64,9 +66,23 @@ def fetchblocks(art):
 
 
 def planes(out, ticks=None):
-    """The tune's certified planes, with the inputs the tick reads pinned to the image."""
-    art = build.read(Path(out))
-    img = record.interp.Player(art["prog"], region.Fetch()).run_init().m
+    """The tune's certified planes, with the inputs the tick reads pinned to the image.
+
+    A directory keeps either the derived planes or the trace they are derived
+    from; where T1 and T2 are not on disk they are computed from the trace, so
+    any certified output directory is a subject.
+    """
+    out = Path(out)
+    if (out / "tuneprog.T1.json").exists():
+        art = build.read(out)
+    else:
+        art = build.artefacts(
+            Tuneprog.load(out / "tuneprog.S4.json"),
+            Trace.load(out),
+            json.loads((out / "certificate.json").read_text()),
+        )
+    ini = build.initpins(art["prog"])
+    img = record.interp.Player(art["prog"], region.Fetch(), ini).run_init().m
     art["inputs"], _bad = build.pinned_inputs(art["prog"], img)
     return art, ticks or art["t2"]["horizon"]["ticks"]
 
