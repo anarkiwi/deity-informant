@@ -100,7 +100,7 @@ def _repeat(loop, rest, a, when):
     a["width"] = m.bit_length()
     if len(body) > 1:
         got = (rest[0].get("sets") or [[None, None]])[0] if rest else [None, None]
-        if not isinstance(got[0], str) or got[0][:1] not in "@#":
+        if not isinstance(got[0], str) or got[0][:1] != "!":
             return False
         a["flag"] = {"name": got[0][1:], "seed": got[1]}
     _stepguard(loop, when, a)

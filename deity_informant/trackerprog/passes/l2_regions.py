@@ -241,7 +241,7 @@ def segrows(seg, blocks, order, preds, p=None, head=None):
     """One segment as a region tree: its loops kept, its blocks in program order."""
     if p is not None:
         keep = {}
-        for h, (b, lat) in loops(p, blocks, head).items():
+        for _h, (b, lat) in loops(p, blocks, head).items():
             keep.update(carried(seg.low, p, b, lat))
         if keep:  # a name the level gives a cell is read there, not split per path
             seg = SimpleNamespace(

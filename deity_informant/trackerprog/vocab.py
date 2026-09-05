@@ -305,6 +305,10 @@ class Vocab:
             return ("reg", reg)
         if s.src in self.dropstores:
             return None
+        return self.moved(low, s)
+
+    def moved(self, low, s):
+        """``(kind, name)`` the cell one ram store leaves its value in, dropped or not."""
         own, at = addr_split(s.a)
         base, idx = addr_split(low.expand(s.a))
         if base is None:

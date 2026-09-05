@@ -19,7 +19,7 @@ from ..read import Reader, Unlowerable
 from ..rows import ambiguous
 from ..shape import _Out, _dce, _merge_halves, _needed
 from ..vocab import Vocab
-from . import l2_fetch, l2_loops, l2_regions
+from . import l2_fetch, l2_loops
 from .ir import Level
 from .l2_regions import predicates, segrows
 
