@@ -269,22 +269,41 @@ produce, and each red cell carries the cause the level itself raised.
 | jch-guldkorn-intro | 2,401 | **ok** | diverges at tick 0 |
 | sw-emomyst | 1,200 | **ok** | `computed address` (voice) |
 | bb-quintessence-full | 10,426 | **ok** | `$12EF[..]` (voice) |
-| defmon-automatas | — | `external input: $D012` | — |
-| walker-chameleon | 1,200 | `external input: $D41B` | — |
+| defmon-automatas | 1,200 | **ok** | `computed address` (voice) |
+| walker-chameleon | 1,200 | **ok** | `maximum recursion depth exceeded` |
 
-**L1 holds on eight of the ten subjects over their whole horizons.  L2 holds on
-none of them, and no level above L2 has ever run on a real tune**: §1's L3 to L6
-are stated of the synthetic program (§5) and of the binding (below), and of
-nothing else.  The columns for them are left out of the table because every cell
-in them is unreached rather than red.
+**L1 holds on all ten subjects over their whole horizons.  L2 holds on none of
+them, and no level above L2 has ever run on a real tune**: §1's L3 to L6 are
+stated of the synthetic program (§5) and of the binding (below), and of nothing
+else.  The columns for them are left out of the table because every cell in them
+is unreached rather than red.
 
 The ten red cells are three causes:
 
 | the cause | tunes | |
 | --- | --- | --- |
-| a read of the **voice's own pass** no declared table names | Follin, Galway, GoatTracker 2, SID Wizard, Blackbird | `computed address`, and `$12EF[..]` on Blackbird |
+| a read of the **voice's own pass** no declared table names | Follin, Galway, GoatTracker 2, SID Wizard, defMON, Blackbird | `computed address`, and `$12EF[..]` on Blackbird |
 | the level renders and **parts from L1** | Commando (both subtunes), JCH | tick 1, tick 1, tick 0 |
-| an **external input** the machine model refuses | defMON `$D012` (the raster), Walker `$D41B` (the oscillator readback) | §8's own boundary, before the levels begin |
+| the level's own recursion | Walker | an implementation limit, not an idiom |
+
+**The chip's own reads are the run the oracle made.**  A raster line or an
+oscillator readback is no value of the tune's own: `PcodeVM` answers `$D012` with
+`(cycles // 63) % 312` and `$D41B` with `(cycles >> 3) & 0xFF`, over *executed*
+cycles, which a per-tick object does not count and cannot recover.  So the levels
+replay what the oracle read, in order and per address (`build.observed_inputs`,
+`interp.Player(observed=...)`), and a read past the certified run traps by name.
+That is what carries defMON, whose init busy-waits 2,227 times on `$D012`, and
+Walker, whose play reads `$D41B` once a tick on eight of its ticks; both reach L1
+where both stopped before it.
+
+**defMON's model detect is pinned to one arm.**  `JSR $14CB` reads `$D41B` once
+at init and takes bit 0 of it to choose the SID model's cutoff scaling
+(`prototype-automatas.md` §2): the run's own value is `$C4`, bit 0 is 0, and the
+arm it takes writes `$02` to `$10CE` and `$EA` (`NOP`) to `$10D4`.  The other arm
+is **not in these planes** — S4 residualises it `untaken` at `$14E7`, because the
+trace never ran it — so `--pin D41B=C5` reaches the trap and not the other model.
+Certifying both, which `prototype-automatas.md` §3 lists as a should-have, is a
+re-trace under the tracer's own `override` policy and not a pin downstream of it.
 
 **What excising the fetch closed, and what it did not.**  The fetch region is the
 specialiser's input and not code to predicate, so `passes/l2_fetch.py` excises it
@@ -337,7 +356,8 @@ Stated as findings, not as work in progress.
 | L2 on a real tune | **holds on none of the ten subjects** (§6).  The fetch region's own idiom is closed and Commando and JCH render; the voice region's is open on Follin, Galway, GoatTracker 2, SID Wizard and Blackbird |
 | L2's render where it does render | not L1 tick for tick: Commando parts at tick 1 and JCH at tick 0 (§6) |
 | L3, L4, L5 and L6 on a real tune | **never run**.  No tune reaches L3, so every claim §1 makes above L2 is stated of the synthetic program (§5) and of the binding, and of nothing else |
-| L1 on a real tune | holds on eight of ten over their whole horizons; defMON and Walker read an external input (`$D012`, `$D41B`) the machine model refuses before the levels begin |
+| L1 on a real tune | holds on **all ten** over their whole horizons.  The chip's own reads are replayed from the run the oracle made, since `$D012` and `$D41B` are functions of executed cycles a per-tick object cannot count (§6) |
+| defMON under the other SID model | not reached.  The planes carry only the arm the trace ran; the other is `untaken` at `$14E7`, so both models want a re-trace under the tracer's `override` policy, not a pin below it (§6) |
 | L4: the order's `call`, `ret`, `mark` and `loop` (Follin, Galway) | not prototyped.  The walk becomes `play` steps and a `jump` end; recognising which opcode a step is means replaying the tune's own order interpreter and reading its stack, which this pass does not do |
 | L4: a small decoder unrolled to its rows over a horizon (Blackbird) | not prototyped.  The cursor specialisation evaluates a step at every row of a static table; a decoder has no per-row cursor to evaluate at |
 | L4: a cursor's `hold` and `jump` | the specialisation states `next`; a `hold` counted by a cell of the tune's own, and a landing stated on the target rather than the source, are not reached |

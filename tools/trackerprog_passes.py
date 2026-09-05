@@ -65,25 +65,29 @@ def fetchblocks(art):
     return _rowblocks(prog, proc, _channels(prog, proc, fetch, pat))
 
 
-def planes(out, ticks=None):
+def planes(out, ticks=None, pin=None):
     """The tune's certified planes, with the inputs the tick reads pinned to the image.
 
     A directory keeps either the derived planes or the trace they are derived
-    from; where T1 and T2 are not on disk they are computed from the trace, so
-    any certified output directory is a subject.
+    from; where T1 and T2 are not on disk they are computed from the trace.
+    ``pin`` states an external read outright and takes the run's own value's place,
+    which is how a tune that reads the chip to decide something is certified both ways.
     """
     out = Path(out)
+    trace = Trace.load(out) if (out / "trace.json").exists() else None
     if (out / "tuneprog.T1.json").exists():
         art = build.read(out)
     else:
         art = build.artefacts(
             Tuneprog.load(out / "tuneprog.S4.json"),
-            Trace.load(out),
+            trace,
             json.loads((out / "certificate.json").read_text()),
         )
-    ini = build.initpins(art["prog"])
-    img = record.interp.Player(art["prog"], region.Fetch(), ini).run_init().m
-    art["inputs"], _bad = build.pinned_inputs(art["prog"], img)
+    art["observed"] = build.observed_inputs(trace) if trace is not None else {}
+    ini = {**build.initpins(art["prog"]), **(pin or {})}
+    player = record.interp.Player(art["prog"], region.Fetch(), ini, observed=art["observed"])
+    art["inputs"], _bad = build.pinned_inputs(art["prog"], player.run_init().m)
+    art["inputs"].update(pin or {})
     return art, ticks or art["t2"]["horizon"]["ticks"]
 
 
@@ -95,9 +99,14 @@ def _decisions(art):
     )
 
 
-def from_l0(out, ticks=None):
+def _pins(got):
+    """``{address: value}`` from ``ADDR=VALUE`` arguments, both read as hexadecimal."""
+    return {int(a, 16): int(v, 16) for a, _, v in (x.partition("=") for x in got or ())}
+
+
+def from_l0(out, ticks=None, pin=None):
     """``(levels, report)``: the planes taken L0 to L6, each level validated."""
-    art, n = planes(out, ticks)
+    art, n = planes(out, ticks, pin)
     fb = fetchblocks(art)
     levels = [Level(0, art=art, prog=art["prog"], proc=art["prog"].meta["tick_proc"])]
     steps = (
@@ -180,6 +189,12 @@ def main(argv=None):
     ap.add_argument("--ticks", type=int, help="ticks to render (default: the object's horizon)")
     ap.add_argument("--certify", action="store_true", help="compare with the PcodeVM")
     ap.add_argument("--l0", action="store_true", help="run the whole pipeline from the planes")
+    ap.add_argument(
+        "--pin",
+        action="append",
+        metavar="ADDR=VALUE",
+        help="state one external read outright, e.g. --pin D41B=C5 (hex)",
+    )
     a = ap.parse_args(argv)
     if a.l0:
         return _l0(a)
@@ -222,7 +237,7 @@ def _l0(a):
     """The whole pipeline over each output directory, one line a level."""
     rc = 0
     for name in a.out:
-        levels, rep = from_l0(Path(name), a.ticks)
+        levels, rep = from_l0(Path(name), a.ticks, _pins(a.pin))
         if a.certify and a.sid and levels[-1].obj is not None:
             want = reference(a.sid, int(levels[-1].obj["meta"]["song"] or 0), rep["ticks"])
             got = attest(levels[-1].obj, want, rep["ticks"], rir.render)

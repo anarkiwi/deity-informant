@@ -71,7 +71,11 @@ with S5/S6 carried far enough to print Automatas readably.
 
 - Should-have: writer-derived enumeration of unobserved opcode-cell variants
   (`$10D4` gets `NOP` and `ASL`, unexecuted arm unverified); pinned-input
-  override, so the tune certifies under both SID models; `$D012` busy-wait
+  override, so the tune certifies under both SID models -- the levels now replay
+  the run's own `$D41B` (`$C4`, bit 0 clear, so `$10CE` = `$02` and `$10D4` =
+  `NOP`) and `tools/trackerprog_passes.py --pin` states it outright, but the
+  other arm is `untaken` at `$14E7` in these planes and wants a re-trace under
+  `override` (prototype-passes.md section 6); `$D012` busy-wait
   printed as `while input() != c`.
 - Stretch, landed: copy folding of write-band and row-advance blocks into
   `for v`; 16-bit arithmetic folding.
