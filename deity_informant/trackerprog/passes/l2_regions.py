@@ -206,7 +206,7 @@ def blockstmts(seg, blocks, order, ordering, preds):
     steps = [
         (lbl, {"when": when, "sets": [list(x) for x in sets]})
         for lbl, _kind, when, sets, _d in guards(
-            seg, blockrows(seg, set(blocks), order, set(), {}), order
+            seg, blockrows(seg, set(blocks), order, set(), {}, True), order
         )
         if sets
     ]
