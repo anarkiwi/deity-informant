@@ -63,8 +63,9 @@ def predicates(low, blocks):
         b = low.proc.blocks[lbl]
         if type(b.term) is not If or b.term.t == b.term.f:
             continue
-        if _late(b, b.term.c) or _temped(low, lbl, b.term.c):
-            out[lbl] = ("p" + ident(lbl), b.term.c, True)
+        late = _late(b, b.term.c)
+        if late or _temped(low, lbl, b.term.c):
+            out[lbl] = ("p" + ident(lbl), b.term.c, late)
     return out
 
 
@@ -117,7 +118,7 @@ def picks(amb, lbl, path):
     return out
 
 
-def predrow(seg, lbl, name, cond, late=False):
+def predrow(seg, lbl, name, cond):
     """The row one decision is: the block's own guard, and the cell it leaves it in."""
     low = seg.low
     path = [d for d, _c, _t, _w in low.guards.get(lbl, ())]
@@ -126,7 +127,6 @@ def predrow(seg, lbl, name, cond, late=False):
     when = guardof(low, [(d, c, t) for d, c, t, _w in low.guards.get(lbl, ())])
     low.lbl = lbl
     got = {"sets": [["@" + name, low.value(low.expand(cond))]]}
-    del late
     return {**({"when": when} if when else {}), **got}
 
 
@@ -159,12 +159,31 @@ def _carry(low, got):
     return out
 
 
-def closing(seg, lbl, preds):
-    """What one block leaves after its stores: the decision it made, and the flags."""
+def _predrows(seg, lbl, preds, late):
+    """The block's decision, where it is the kind of decision this side of the stores takes."""
     got = preds.get(lbl)
+    return [predrow(seg, lbl, got[0], got[1])] if got is not None and got[2] is late else []
+
+
+def opening(seg, lbl, preds):
+    """The decision a block makes over a name it bound, read before its own stores.
+
+    The name held what the cells held where the block bound it, so the row that
+    leaves that decision in a cell stands ahead of the rows that move them.
+    """
+    return _predrows(seg, lbl, preds, False)
+
+
+def closing(seg, lbl, preds):
+    """What one block leaves after its stores: the decision it reads back, and the flags."""
     # a decision over a cell the block itself moved is read where the block ends:
     # read-after-write is the list's own order, not a second row
-    return ([predrow(seg, lbl, *got)] if got is not None else []) + flagrows(seg.low, lbl)
+    return _predrows(seg, lbl, preds, True) + flagrows(seg.low, lbl)
+
+
+def _quiet(seg, lbl, preds):
+    """A block with no store of its own has no side to take: its rows stand where it does."""
+    return opening(seg, lbl, preds) + closing(seg, lbl, preds)
 
 
 def blockstmts(seg, blocks, order, ordering, preds):
@@ -184,18 +203,23 @@ def blockstmts(seg, blocks, order, ordering, preds):
         if sets
     ]
     last = {lbl: i for i, (lbl, _r) in enumerate(steps)}
+    first = {}
+    for i, (lbl, _r) in enumerate(steps):
+        first.setdefault(lbl, i)
     at = {l: i for i, l in enumerate(ordering)}
     quiet = [l for l in ordering if l in blocks and l not in last]
     out = []
     for i, (lbl, r) in enumerate(steps):
         while quiet and at.get(quiet[0], 0) < at.get(lbl, 0):
             q = quiet.pop(0)
-            out += [(q, x) for x in closing(seg, q, preds)]
+            out += [(q, x) for x in _quiet(seg, q, preds)]
+        if first[lbl] == i:
+            out += [(lbl, x) for x in opening(seg, lbl, preds)]
         out.append((lbl, r))
         if last[lbl] == i:
             out += [(lbl, x) for x in closing(seg, lbl, preds)]
     for lbl in quiet:
-        out += [(lbl, x) for x in closing(seg, lbl, preds)]
+        out += [(lbl, x) for x in _quiet(seg, lbl, preds)]
     low.pick = {}
     got = []
     for lbl, r in out:
