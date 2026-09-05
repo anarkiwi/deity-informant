@@ -252,72 +252,56 @@ L4 specialised **no** cursor here: the tick has several `{stream}` phases and th
 prototype ranks a cursor's stream only where there is one to become the machine.
 
 ---
+## 6. The nine families from L0
 
-## 6. Commando and JCH from L0
+`tools/trackerprog_surface.py` takes every certified exemplar through the
+pipeline and writes `out/surface/surface.json`.  A tune stops at its first red
+level, since every level after it would read an object that level did not
+produce, and each red cell carries the cause the level itself raised.
 
-```
-tools/trackerprog_passes.py --l0 --out out/lift-b6/commando-song1 \
-                                 --out out/lift-b6/jch-guldkorn-intro
-  commando-song1     L1: ok, 11780 ticks, 133109 writes
-  commando-song1     L2: diverged, L1 -> L2: {'tick': 1, …}
-  jch-guldkorn-intro L1: ok, 2401 ticks, 63229 writes
-  jch-guldkorn-intro L2: diverged, L1 -> L2: {'tick': 0, …}
-```
+| tune | ticks | L1 | L2 |
+| --- | --- | --- | --- |
+| commando-song1 | 11,780 | **ok** | diverges at tick 1 |
+| commando-base | 11,780 | **ok** | diverges at tick 1 |
+| follin-song0 | 12,997 | **ok** | `computed address` (voice) |
+| galway-comic-bakery | 9,450 | **ok** | `computed address` (voice) |
+| gt2-je-suis-linus | 8,236 | **ok** | `computed address` (voice) |
+| jch-guldkorn-intro | 2,401 | **ok** | diverges at tick 0 |
+| sw-emomyst | 1,200 | **ok** | `computed address` (voice) |
+| bb-quintessence-full | 10,426 | **ok** | `$12EF[..]` (voice) |
+| defmon-automatas | — | `external input: $D012` | — |
+| walker-chameleon | 1,200 | `external input: $D41B` | — |
 
-**L0 → L1 holds on both tunes over their whole horizons**: identical write
-lists, no divergence, 11,780 ticks and 133,109 writes on Commando and 2,401 and
-63,229 on JCH.  The structuring is proven on two real families.
+**L1 holds on eight of the ten subjects over their whole horizons.  L2 holds on
+none of them, and no level above L2 has ever run on a real tune**: §1's L3 to L6
+are stated of the synthetic program (§5) and of the binding (below), and of
+nothing else.  The columns for them are left out of the table because every cell
+in them is unreached rather than red.
 
-**L1 → L2 completes on both.**  The order the levels are given in is what
-changed: a fetch region is the specialiser's input and not code to predicate, so
-`passes/l2_fetch.py` excises it at the L1 → L2 boundary and replays it — its
-visits §3.6's events, its other statements `meta.row` — and L2 predicates the
-residual.  That is [prototype-lifter.md](prototype-lifter.md)'s own order, the
-fetch materialised before the lowering, stated as a pass.  Both tunes
-materialise, neither leaves a loop unstated, and each reaches an object:
+The ten red cells are three causes:
 
-| tune | streams | rows | cells | xz | the binding's streams · rows · xz |
-| --- | --- | --- | --- | --- | --- |
-| commando-song1 | 15 | 59 | 30 | 3,724 | 17 · 26 · 3,608 |
-| jch-guldkorn-intro | 25 | 1,962 | 72 | 5,156 | 13 · 857 · 3,232 |
+| the cause | tunes | |
+| --- | --- | --- |
+| a read of the **voice's own pass** no declared table names | Follin, Galway, GoatTracker 2, SID Wizard, Blackbird | `computed address`, and `$12EF[..]` on Blackbird |
+| the level renders and **parts from L1** | Commando (both subtunes), JCH | tick 1, tick 1, tick 0 |
+| an **external input** the machine model refuses | defMON `$D012` (the raster), Walker `$D41B` (the oscillator readback) | §8's own boundary, before the levels begin |
 
-The objects are larger than the bindings' because they are the residual
-predicated and nothing more: L3 to L6 have not run on them.
+**What excising the fetch closed, and what it did not.**  The fetch region is the
+specialiser's input and not code to predicate, so `passes/l2_fetch.py` excises it
+at the L1 → L2 boundary and replays it — its visits §3.6's events, its other
+statements `meta.row` — and L2 predicates the residual.  That closed the *fetch*
+region's own idiom, and Commando and JCH, whose unstatable decisions all lay
+there, moved from a refusal to a render.  The five families of the first class
+carry theirs in the **voice** region, which is the residual L2 must state, and
+that idiom is untouched.  The distinction was invisible while two tunes were
+measured, and the measurement is the finding: one idiom of the boundary is
+closed and the other is open on five families.
 
-**Neither object renders L1 tick for tick, and that is where the boundary now
-stands.**  The tool's own validation parts Commando's L2 from L1 at tick 1 and
-JCH's at tick 0.  The level reaches the shape and not yet the tune, and it is
-stated as a finding.
-
-What L2 cannot state it refuses by name rather than fitting: on JCH nothing, on
-Commando five — `L5023_9D: $54EC[..]`, `cursor_54EC`, `cursor_54EF`, `freq_idx`
-and `timer` — which are one idiom and not five.  `L5023_9D` is a prologue block
-standing outside every segment: a loop that clears the four per-voice arrays at
-`$54EC`, `$54EF`, `$54F2` and `$54FB`, whose counter no voice index of the
-vocabulary reads.  The four cells it clears are the other four names, and a
-refused write is a write the object does not make.
-
-`l2_phases.unstatable` names every decision of the tick whose condition no value
-of L2's vocabulary states.  It is now a census of the tick as written and not a
-statement about what the level reaches — the tool writes it only where the level
-fails, and it no longer does:
-
-| tune | decisions | unstatable | in the fetch region | in the voice's own pass |
-| --- | --- | --- | --- | --- |
-| commando-song1 | 43 | 4 (`computed address`) | 4 | none |
-| jch-guldkorn-intro | 55 | 10 (`computed address`) | 10 | none |
-
-Every one is a fetch region's own byte read (Commando `L5086_BC`, `L508F_C9`,
-`L50DC_C8`, `L5133_BD`; JCH `L110F_BD`, `L113D_BC`, `L1144_4C`, `L1147_F0`,
-`L1149_C9`, `L118F_FE`, `L119B_A9`, `L122B_C9`, `L1243_68`, `L1273_C9`).  The
-fetch reads the score through a **pointer the order sets**, so the base is not a
-constant and §3.3's `tabcell` — which names one declared stream — cannot state
-it.  It is not asked to: those blocks are the specialisation's input, and what
-the read *is* is the score at the voice's own cursor in the pattern the order
-names.  The reads at an index the vocabulary did not name (Commando `L526B_AD`
-and `L5285_38` over `$5592`, the instrument record's pulse-width high column at
-a per-voice cursor; JCH `L1479_AC` and `L13C1_BC` over `$185F`) are stated by
-the level's vocabulary now, and the census names none of them.
+`l2_phases.unstatable` is the census of the tick as written, by block and by the
+read it makes.  On the two tunes that render it names only the fetch region's own
+byte reads — 4 of Commando's 43 decisions and 10 of JCH's 55 — which the
+specialisation is not asked to lower.  On the five it names the voice region's,
+which it is.
 
 For the record, from the binding (which is L3 with one L4 shape) through L5 and
 L6, unchanged by this work:
@@ -350,10 +334,10 @@ Stated as findings, not as work in progress.
 
 | | |
 | --- | --- |
-| L2 on a real tune | **completes**, on both Commando and JCH: the fetch specialised at the boundary, the residual predicated, both materialised and no loop left unstated |
-| L2's render on a real tune | not L1 tick for tick: Commando parts at tick 1, JCH at tick 0.  The level reaches an object of the binding's shape and not yet the tune (§6) |
-| L2's refusals on a real tune | JCH none; Commando five names of one idiom — a prologue loop clearing four per-voice arrays at a counter no voice index of the vocabulary reads (§6) |
-| L2's static census | 4 of Commando's 43 decisions and 10 of JCH's 55 have no value of the vocabulary to state them, every one of them a fetch region's own byte read.  The lowering is no longer asked for them: they are the specialisation's input |
+| L2 on a real tune | **holds on none of the ten subjects** (§6).  The fetch region's own idiom is closed and Commando and JCH render; the voice region's is open on Follin, Galway, GoatTracker 2, SID Wizard and Blackbird |
+| L2's render where it does render | not L1 tick for tick: Commando parts at tick 1 and JCH at tick 0 (§6) |
+| L3, L4, L5 and L6 on a real tune | **never run**.  No tune reaches L3, so every claim §1 makes above L2 is stated of the synthetic program (§5) and of the binding, and of nothing else |
+| L1 on a real tune | holds on eight of ten over their whole horizons; defMON and Walker read an external input (`$D012`, `$D41B`) the machine model refuses before the levels begin |
 | L4: the order's `call`, `ret`, `mark` and `loop` (Follin, Galway) | not prototyped.  The walk becomes `play` steps and a `jump` end; recognising which opcode a step is means replaying the tune's own order interpreter and reading its stack, which this pass does not do |
 | L4: a small decoder unrolled to its rows over a horizon (Blackbird) | not prototyped.  The cursor specialisation evaluates a step at every row of a static table; a decoder has no per-row cursor to evaluate at |
 | L4: a cursor's `hold` and `jump` | the specialisation states `next`; a `hold` counted by a cell of the tune's own, and a landing stated on the target rather than the source, are not reached |
