@@ -22,18 +22,19 @@ end · 6 Commando and JCH from L0 · 7 what the prototype does not do.
 | --- | --- | --- | --- | --- |
 | L0 | S4 IR + S6 names + the image | the tuneprog pipeline | — | — |
 | L1 | structured tick: one procedure, callees inlined, runs and sibling copies rerolled, the voice loop and its indices explicit | inlining, rerolling, mem2reg | `passes/l1_structure.py` (+ `callee.py`) | 279 (+270) |
-| L2 | phase-normal form: a **region tree** per phase — the voice body cut at the fetch regions and the edge writes, natural loops kept as loops, statements ordered so a later one reads what an earlier one wrote | region formation, if-conversion | `passes/l2_phases.py`, `passes/l2_regions.py` | 300, 232 |
+| L2 | phase-normal form: the fetch region excised at the boundary and replayed — its visits §3.6's events, its other statements `meta.row` — and a **region tree** per phase over the residual: the voice body cut at the fetch regions and the edge writes, natural loops kept as loops, statements ordered so a later one reads what an earlier one wrote | specialisation of the fetch, region formation, if-conversion | `passes/l2_phases.py`, `l2_fetch.py`, `l2_regions.py`, `l2_loops.py` | 405, 387, 276, 241 |
 | L3 | typed PNF: every cell typed by the slot lattice, every table by its kind | type inference over a finite lattice | `passes/l3_roles.py` | 232 |
-| L4 | materialised PNF: the fetch replayed into §3.6 events, the clock the player's, a cursor over a table specialised into the stream it is | partial evaluation | `passes/l4_specialise.py`, `passes/l4_cursor.py` | 263, 177 |
-| L5 | selected object: runs of statements covered by construct expansions with a size cost; what no construct covers stays statements | BURS-style covering | `passes/l5_select.py`, `passes/expand.py`, `accex.py`, `accof.py` | 276, 156, 216, 299 |
+| L4 | materialised PNF: the clock the player's, a cursor over a table specialised into the stream it is, and the score materialised where the fetch region did not already state it | partial evaluation | `passes/l4_specialise.py`, `passes/l4_cursor.py` | 264, 177 |
+| L5 | selected object: runs of statements covered by construct expansions with a size cost; what no construct covers stays statements | BURS-style covering | `passes/l5_select.py`, `passes/expand.py`, `accex.py`, `accof.py` | 276, 156, 216, 309 |
 | L6 | canonical trackerprog: adjacent streams merged, cells propagated and their writes dead, implied guard terms dropped, names canonical | scalar optimisation | `passes/l6_canon.py`, `l6_names.py`, `l6_reads.py` | 150, 101, 116 |
 
 `passes/rir.py` (241) is the region tree and the player that renders it,
 `passes/ir.py` (103) the level object and the validation, `trackerprog/tree.py`
 (38) the walk over a statement list that is a tree, and
-`tools/trackerprog_passes.py` (249) runs the pipeline.  Every module of the
-package is at or under 300 lines.  Hermetic coverage of the package,
-`pytest tests/trackerprog -m "not hvsc"`: **90 %**.
+`tools/trackerprog_passes.py` (249) runs the pipeline.  Three modules of the
+package are over 300 lines — `l2_phases.py` 405, `l2_fetch.py` 387 and
+`accof.py` 309 — and the rest are at or under it.  Hermetic coverage of the
+package, `pytest tests/trackerprog -m "not hvsc"`, 330 green: **85 %**.
 
 ---
 
@@ -228,21 +229,24 @@ and **an inner loop whose turns a per-voice cell counts**.
 
 | level | xz | streams | rows | cells |
 | --- | --- | --- | --- | --- |
-| L2 | 1,380 | 13 | 153 | 18 |
-| L3 | 1,384 | 13 | 153 | 18 |
-| L4 | 1,460 | 12 | 149 | 18 |
-| L5 | 1,460 | 12 | 149 | 18 |
-| L6 | 1,440 | 11 | 148 | 17 |
+| L2 | 1,300 | 5 | 28 | 10 |
+| L3 | 1,300 | 5 | 28 | 10 |
+| L4 | 1,300 | 5 | 28 | 10 |
+| L5 | 1,300 | 5 | 28 | 10 |
+| L6 | 1,300 | 5 | 28 | 10 |
 
 From `out/passes/pipeline.json`: L1 rerolled 1 chain and found a 5-block
 prologue; L2 cut four segments (`prelude` 1 · `row` 3 · `machine` 7 · `machine`
-1), kept **one loop with `trip {cell: rpt}` and left none unstated**, raised 9
-predicate cells and 3 join flags and read the flush's 25 registers; L3 typed
-`rowsleft`, `ins`, `orderpos`, `note`, two cursors and three shadow halves and
-called the clock a divider stepping −1; L4 materialised 16 events over 4 patterns
-and made the clock `meta.tempo`; L5's covering found two records and the object's
-own size declined them (1,460 against 1,640); L6 merged one stream and spent the
-predicate `phead`.
+1), kept **one loop with `trip {cell: rpt}` and left none unstated**, raised 5
+predicate cells and 3 join flags, read the flush's 25 registers and materialised
+the fetch — 16 events over 4 patterns, and the clock `meta.tempo`; L3 typed
+`rowsleft`, `ins`, `orderpos`, `note`, one cursor and three shadow halves and
+called the clock a divider stepping −1; L4 left the object as it stood; L5's
+covering found two records and the object's own size declined them (1,300
+against 1,464); L6 merged no stream and spent no cell — no cell the predication
+raised here holds state no row of the tick moves, and no rule of the level may
+spend one that does.  The object L2 states is the object L6 emits: the four
+levels after it are validated and change nothing on this tune.
 
 L4 specialised **no** cursor here: the tick has several `{stream}` phases and the
 prototype ranks a cursor's stream only where there is one to become the machine.
@@ -255,49 +259,65 @@ prototype ranks a cursor's stream only where there is one to become the machine.
 tools/trackerprog_passes.py --l0 --out out/lift-b6/commando-song1 \
                                  --out out/lift-b6/jch-guldkorn-intro
   commando-song1     L1: ok, 11780 ticks, 133109 writes
-  commando-song1     L2: failed, Unlowerable: computed address
+  commando-song1     L2: diverged, L1 -> L2: {'tick': 1, …}
   jch-guldkorn-intro L1: ok, 2401 ticks, 63229 writes
-  jch-guldkorn-intro L2: failed, Unlowerable: computed address
+  jch-guldkorn-intro L2: diverged, L1 -> L2: {'tick': 0, …}
 ```
 
 **L0 → L1 holds on both tunes over their whole horizons**: identical write
 lists, no divergence, 11,780 ticks and 133,109 writes on Commando and 2,401 and
 63,229 on JCH.  The structuring is proven on two real families.
 
-**L1 → L2 fails on both, at one idiom.**  `l2_phases.unstatable` names every
-decision of the tick whose condition no value of L2's vocabulary states, and the
-tool writes them to `trackerprog.l0.report.json`:
+**L1 → L2 completes on both.**  The order the levels are given in is what
+changed: a fetch region is the specialiser's input and not code to predicate, so
+`passes/l2_fetch.py` excises it at the L1 → L2 boundary and replays it — its
+visits §3.6's events, its other statements `meta.row` — and L2 predicates the
+residual.  That is [prototype-lifter.md](prototype-lifter.md)'s own order, the
+fetch materialised before the lowering, stated as a pass.  Both tunes
+materialise, neither leaves a loop unstated, and each reaches an object:
+
+| tune | streams | rows | cells | xz | the binding's streams · rows · xz |
+| --- | --- | --- | --- | --- | --- |
+| commando-song1 | 15 | 59 | 30 | 3,724 | 17 · 26 · 3,608 |
+| jch-guldkorn-intro | 25 | 1,962 | 72 | 5,156 | 13 · 857 · 3,232 |
+
+The objects are larger than the bindings' because they are the residual
+predicated and nothing more: L3 to L6 have not run on them.
+
+**Neither object renders L1 tick for tick, and that is where the boundary now
+stands.**  The tool's own validation parts Commando's L2 from L1 at tick 1 and
+JCH's at tick 0.  The level reaches the shape and not yet the tune, and it is
+stated as a finding.
+
+What L2 cannot state it refuses by name rather than fitting: on JCH nothing, on
+Commando five — `L5023_9D: $54EC[..]`, `cursor_54EC`, `cursor_54EF`, `freq_idx`
+and `timer` — which are one idiom and not five.  `L5023_9D` is a prologue block
+standing outside every segment: a loop that clears the four per-voice arrays at
+`$54EC`, `$54EF`, `$54F2` and `$54FB`, whose counter no voice index of the
+vocabulary reads.  The four cells it clears are the other four names, and a
+refused write is a write the object does not make.
+
+`l2_phases.unstatable` names every decision of the tick whose condition no value
+of L2's vocabulary states.  It is now a census of the tick as written and not a
+statement about what the level reaches — the tool writes it only where the level
+fails, and it no longer does:
 
 | tune | decisions | unstatable | in the fetch region | in the voice's own pass |
 | --- | --- | --- | --- | --- |
-| commando-song1 | 43 | 7 | 4 (`computed address`) | 2 (`$5592[..]`), 1 (`$5596[..]`) |
-| jch-guldkorn-intro | 55 | 12 | 10 (`computed address`) | 2 (`$185F[..]`) |
+| commando-song1 | 43 | 4 (`computed address`) | 4 | none |
+| jch-guldkorn-intro | 55 | 10 (`computed address`) | 10 | none |
 
-The idiom, in both tunes and in both places, is **a read whose address no
-declared table names**:
-
-1. *the fetch region's own byte reads* (Commando `L5086_BC`, `L508F_C9`,
-   `L50DC_C8`, `L5133_BD`; JCH `L110F_BD`, `L113D_BC`, `L1144_4C`, `L1147_F0`,
-   `L1149_C9`, `L118F_FE`, `L119B_A9`, `L122B_C9`, `L1243_68`, `L1273_C9`).  The
-   fetch reads the score through a **pointer the order sets**, so the base is not
-   a constant and §3.3's `tabcell` — which names one declared stream — cannot
-   state it.  What the read *is* is the score at the voice's own cursor in the
-   pattern the order names, which is the **two-level cursor nest L4
-   materialises**.  L2 is asked to lower it three passes before the level that
-   states it.
-2. *a table read at an index that is not the slot the vocabulary names*
-   (Commando `L526B_AD`, `L5285_38` reading `$5592`, the instrument record's
-   pulse-width high column, at a per-voice cursor and not at the instrument
-   selector; JCH `L1479_AC`, `L13C1_BC` reading `$185F`).  The read is of a
-   region the play itself writes, so it is no const table either.
-
-This is the pipeline's own boundary on a real tune, and it is stated as a finding
-and not worked around: nothing here lowers the read, fits it, refuses it by name
-or branches on the family.  The order the levels are given in is what fails —
-§1's L2 is asked for rows over a region whose data §1's L4 supplies — and
-[prototype-lifter.md](prototype-lifter.md)'s binding is the same pipeline with
-the fetch materialised **before** the lowering, which is why it reaches an object
-at all.
+Every one is a fetch region's own byte read (Commando `L5086_BC`, `L508F_C9`,
+`L50DC_C8`, `L5133_BD`; JCH `L110F_BD`, `L113D_BC`, `L1144_4C`, `L1147_F0`,
+`L1149_C9`, `L118F_FE`, `L119B_A9`, `L122B_C9`, `L1243_68`, `L1273_C9`).  The
+fetch reads the score through a **pointer the order sets**, so the base is not a
+constant and §3.3's `tabcell` — which names one declared stream — cannot state
+it.  It is not asked to: those blocks are the specialisation's input, and what
+the read *is* is the score at the voice's own cursor in the pattern the order
+names.  The reads at an index the vocabulary did not name (Commando `L526B_AD`
+and `L5285_38` over `$5592`, the instrument record's pulse-width high column at
+a per-voice cursor; JCH `L1479_AC` and `L13C1_BC` over `$185F`) are stated by
+the level's vocabulary now, and the census names none of them.
 
 For the record, from the binding (which is L3 with one L4 shape) through L5 and
 L6, unchanged by this work:
@@ -330,14 +350,17 @@ Stated as findings, not as work in progress.
 
 | | |
 | --- | --- |
-| L2 on a real tune | **fails**, on both Commando and JCH, at the one idiom of §6: a read whose address no declared table names.  7 of Commando's 43 decisions and 12 of JCH's 55 |
+| L2 on a real tune | **completes**, on both Commando and JCH: the fetch specialised at the boundary, the residual predicated, both materialised and no loop left unstated |
+| L2's render on a real tune | not L1 tick for tick: Commando parts at tick 1, JCH at tick 0.  The level reaches an object of the binding's shape and not yet the tune (§6) |
+| L2's refusals on a real tune | JCH none; Commando five names of one idiom — a prologue loop clearing four per-voice arrays at a counter no voice index of the vocabulary reads (§6) |
+| L2's static census | 4 of Commando's 43 decisions and 10 of JCH's 55 have no value of the vocabulary to state them, every one of them a fetch region's own byte read.  The lowering is no longer asked for them: they are the specialisation's input |
 | L4: the order's `call`, `ret`, `mark` and `loop` (Follin, Galway) | not prototyped.  The walk becomes `play` steps and a `jump` end; recognising which opcode a step is means replaying the tune's own order interpreter and reading its stack, which this pass does not do |
 | L4: a small decoder unrolled to its rows over a horizon (Blackbird) | not prototyped.  The cursor specialisation evaluates a step at every row of a static table; a decoder has no per-row cursor to evaluate at |
 | L4: a cursor's `hold` and `jump` | the specialisation states `next`; a `hold` counted by a cell of the tune's own, and a landing stated on the target rather than the source, are not reached |
 | L5: `{note}` and `{commands}` | no expansion: the run they enter is picked at run time by a cell (§4) |
-| bound: new non-test lines | 1,708 added and 522 deleted against `deity_informant/` and `tools/`, a net **1,186** of the 1,500 given; about 420 of the additions are lines the module splits moved |
-| bound: module size | every module of the package at or under 300; none in the repo over 500 |
-| bound: hermetic coverage | 90 % of the passes package |
+| bound: new non-test lines | 1,708 added and 522 deleted against `deity_informant/` and `tools/`, a net **1,186** of the 1,500 given; about 420 of the additions are lines the module splits moved.  The level order's own change adds 1,025 more and deletes 170, a net **855** |
+| bound: module size | the L2 work is four modules — `l2_phases` 405, `l2_fetch` 387, `l2_regions` 276, `l2_loops` 241 — and three modules of the package (those two and `accof` 309) are over the 300 the earlier level order held to |
+| bound: hermetic coverage | 85 % of the passes package, 330 green |
 
 Two levels change no value at all and are validated as such: L3 renames and
 states, and L6's four passes are each conservative.
