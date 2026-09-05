@@ -322,7 +322,7 @@ class Fetch:
         words = self.words()
         if not words:
             return
-        n = max(max(_offsets([obj["streams"], obj["meta"]["row"], obj["score"]], [0])), 1)
+        n = max(*_offsets([obj["streams"], obj["meta"]["row"], obj["score"]], [0]), 1)
         for st in obj["streams"].values():
             st["beyond"] = {"id": "the fused tuning", "words": words[:n]}
 

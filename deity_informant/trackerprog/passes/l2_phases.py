@@ -35,6 +35,7 @@ class PNFReader(Reader):
     """
 
     deep = True
+    reaching = {}  # the reaching stores, kept while ``reach`` reads every cell as the cell
 
     def value(self, e):
         if self.deep and type(e) is Var and e.n in self.defs and e.n not in self.v.vidx:

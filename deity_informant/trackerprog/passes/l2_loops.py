@@ -193,15 +193,15 @@ def carried(low, p, body, latches):
     A name is no cell, so a loop that carries one has no channel for the turn it
     is on; the level gives it the cell the reader already names it by.
     """
-    read = set()
+    seen = set()
     for lbl in body:
         b = p.blocks[lbl]
         for x in [getattr(s, "e", None) for s in b.stmts] + [getattr(b.term, "c", None)]:
-            read |= {y.n for y in _walk(x) if type(y) is Var}
+            seen |= {y.n for y in _walk(x) if type(y) is Var}
     out = {}
     for lbl in latches:
         for s in p.blocks[lbl].stmts:
-            if type(s) is Let and s.n in read and s.n not in low.defs:
+            if type(s) is Let and s.n in seen and s.n not in low.defs:
                 out[s.n] = (lbl, s.e)
     return out
 
