@@ -15,6 +15,7 @@ from _frag import (  # noqa: E402
     C,
     CHIP,
     CURSOR,
+    DIR,
     FREQ,
     IMG,
     INS,
@@ -106,21 +107,38 @@ def _tune(reset=None, step=-1, extra=(), fetch_extra=()):
 
 
 def test_the_reserved_cells_are_typed_from_their_uses():
-    """Every family: note indexes the tuning, ins the selector, rowsleft the clock."""
-    _l1, _l2, l3 = _levels(_tune())
+    """Every family: note indexes the tuning, ins the selector, rowsleft the clock.
+
+    The fetch is specialised before L2, so the slots it binds are named there:
+    the tune's ``timer`` is the player's ``rowsleft`` and the score owns the rest.
+    """
+    _l1, l2, l3 = _levels(_tune())
     ty = l3.facts["types"]
     assert ty.get("note") == "note"
     assert ty.get("ins") == "ins"
     assert ty.get("rowsleft") == "rowsleft"
-    assert l3.facts["renamed"].get("timer") == "rowsleft"
+    assert l2.facts["cells"].rename[TIMER] == "rowsleft"
+    assert sorted(l2.obj["state0"]["cells"]) == ["rowsleft"]
 
 
 def test_a_stream_cursor_over_a_table_is_typed_a_cursor():
-    """defMON, JCH and GoatTracker 2: a cell a declared table is read at."""
-    _l1, _l2, l3 = _levels(_tune())
+    """defMON, JCH and GoatTracker 2: a cell a declared table is read at.
+
+    The fetch's own cursor is the score's play list before L2, so the cursor this
+    level types is one stepped outside the row, over a table declared const.
+    """
+    idx = V("x")
+    prog = _tune(
+        extra=[
+            Let("p", ram(DIR, 10, idx)),
+            store(DIR, 10, Bin("&", Bin("+", V("p"), C(1)), C(7)), idx, src=0x102A),
+            sid(5, ram(ORD, 12, V("p"), size=8), V("x7", 2), src=0x102C),
+        ]
+    )
+    _l1, _l2, l3 = _levels(prog)
     ty = l3.facts["types"]
     assert any(r.startswith("cursor:") for r in ty.values())
-    assert ty["cursor"].startswith("cursor:")
+    assert ty["dir"] == "cursor:T%04X" % ORD
 
 
 def test_the_order_s_own_cursor_is_typed_orderpos():
@@ -153,15 +171,22 @@ def test_the_clock_is_a_counter_where_its_own_clauses_zero_it():
 
 
 def test_a_cell_the_fetch_writes_and_a_later_phase_reads_is_a_staging_cell():
-    """SID Wizard: the row's instrument staged into a cell of the tune's own."""
+    """SID Wizard: the row's instrument staged into a cell of the tune's own.
+
+    The staging is the row program's own step before L2: ``meta.row`` stores the
+    row's instrument nibble into the cell, and a phase outside the row reads it.
+    """
     idx = V("x")
     prog = _tune(
         fetch_extra=[store(ACC, 9, ram(INS, 5, idx), idx, src=0x104C)],
         extra=[sid(4, ram(ACC, 9, idx), V("x7", 2), src=0x1026)],
     )
-    _l1, _l2, l3 = _levels(prog)
+    _l1, l2, l3 = _levels(prog)
     assert l3.facts["types"].get("acc") in ("staging", "private")
-    assert "staging" in l3.facts["types"].values()
+    sets = [s for x in l2.obj["meta"]["row"] if isinstance(x, dict) for s in x.get("sets", ())]
+    assert [t for t, _v in sets] == ["@acc"]
+    later = [k for k in l2.obj["streams"] if not k.startswith("row")]
+    assert "acc" in l3_roles.readby(l2.obj, later)
 
 
 def test_the_image_s_own_halves_are_typed_shadow():
