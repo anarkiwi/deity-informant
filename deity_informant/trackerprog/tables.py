@@ -94,10 +94,14 @@ def note_base(low, tune, procs):
         base, idx = addr_split(x.a)
         if base is None or idx is None or all(abs(base - b) > 3 for b in tune.obases):
             continue
-        term, k = _shifted(low.expand(idx, 2))
-        nb = addr_split(term.a)[0] if k == want and type(term) is Load else None
-        if nb is not None and addr_split(term.a)[1] is not None:
-            got[nb] = got.get(nb, 0) + 1
+        # the index as the tune wrote it names the cell; expanding is for a read
+        # the reader has already forwarded past that cell into the fetch's own term
+        for cand in (idx, low.expand(idx, 2)):
+            term, k = _shifted(cand)
+            nb = addr_split(term.a)[0] if k == want and type(term) is Load else None
+            if nb is not None and addr_split(term.a)[1] is not None:
+                got[nb] = got.get(nb, 0) + 1
+                break
     return max(got, key=got.get, default=None)
 
 

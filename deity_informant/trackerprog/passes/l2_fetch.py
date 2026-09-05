@@ -113,6 +113,10 @@ class Fetch:
         """The player's slots, bound to the cells S6, T1 and T2 name (sections 4, 5)."""
         low, voc, sch = self.low, self.v, self.sch
         lo, hi = freqpair(self.art, self.cells.voices)
+        if voc.notebase is None:
+            pit = self.l1.facts["pitch"]
+            # the cell the tuning is indexed by is the tune's own, not the binding's
+            voc.notebase = tables.note_base(low, pit, [low.proc]) if pit else None
         voc.notebase = copied(low, voc.notebase) if voc.notebase is not None else None
         voc.insbase = copied(low, voc.insbase) if voc.insbase is not None else None
         clock = sch.clock[3] if sch.clock else None
@@ -353,6 +357,8 @@ def specialise(l1, low, rowblocks, blocks, ticks):
     if not fx.sch.clock:
         return None
     fx.bind()
+    if fx.slots.get("note") is None or fx.slots.get("ins") is None:
+        return None  # a region whose visits name no note and no record is no score
     low.v.supplied = supplied(low, [l for l in low.rpo if l in blocks])
     recs, vvar, trips = visits(l1, low, rowblocks, ticks)
     if not recs:
