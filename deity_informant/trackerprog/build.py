@@ -17,6 +17,7 @@ from ..tuneprog.history import history
 from ..tuneprog.ir import Bin, Const, Let, Load, Store, Tuneprog, Var
 from ..tuneprog.irwalk import addr_split
 from ..tuneprog.recover import Names
+from ..tuneprog.tracedata import input_kind
 from . import lift as t2lift
 from .tree import stmts
 from .universal import CHIP, REG
@@ -102,6 +103,20 @@ def initpins(prog):
         for _site, a, kind, _reads, _phase in prog.inputs
         if kind == "uninit_ram" and a < 0x10000
     }
+
+
+def observed_inputs(trace):
+    """``{address: [value]}``: what each external read returned, in the order it did.
+
+    A raster or an oscillator readback is no value of the tune's own, so the run
+    the oracle made is the run the levels replay; a read past its end is past
+    what was certified and traps by name.
+    """
+    out = {}
+    for _call, _site, _w, addr, value in trace.inputs:
+        if input_kind(addr) in EXTERNAL:
+            out.setdefault(addr, []).append(int(value))
+    return out
 
 
 def pinned_inputs(prog, img):

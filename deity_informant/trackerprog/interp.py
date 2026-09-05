@@ -14,6 +14,8 @@ that is :mod:`.universal`, which reads a trackerprog and no program at all.
 
 from __future__ import annotations
 
+from collections import deque
+
 from ..lifter import STATUS_BITS
 from ..tuneprog import grid
 from ..tuneprog.graph import EXIT
@@ -53,8 +55,9 @@ class Player:
     or ``{region key: [fetch, ...]}`` to *replay* them.
     """
 
-    def __init__(self, prog, fetch, inputs=None, fetches=None, envvars=None):
+    def __init__(self, prog, fetch, inputs=None, fetches=None, envvars=None, observed=None):
         self.prog, self.fetch = prog, fetch
+        self.observed = {a: deque(v) for a, v in (observed or {}).items()}
         self.envvars = envvars or {}
         self.m = bytearray(prog.image())
         lo, hi = prog.meta.get("load") or (0, 0)
@@ -93,6 +96,10 @@ class Player:
                 x = self.m[b]
             elif b in self.inputs:
                 x = self.inputs[b]
+            elif self.observed.get(b):
+                x = self.observed[b].popleft()
+            elif b in self.observed:
+                raise TrapError("external input past the certified run", "$%04X" % b)
             else:
                 raise TrapError("external input", "$%04X" % b)
             v |= x << (8 * i)

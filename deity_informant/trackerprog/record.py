@@ -107,7 +107,7 @@ class _Seen(dict):
         return dict.__getitem__(self, k)
 
 
-def firstonly(prog, proc, inputs=None, ticks=3):
+def firstonly(prog, proc, inputs=None, ticks=3, observed=None):
     """The blocks the tick runs on its first call alone, where that call runs no other.
 
     A tune whose init only schedules runs its reset on the first call and spends
@@ -117,7 +117,7 @@ def firstonly(prog, proc, inputs=None, ticks=3):
     keep, log = p.blocks, []
     p.blocks = _Seen(keep, log)
     try:
-        pl = interp.Player(prog, rgn.Fetch(), inputs).run_init()
+        pl = interp.Player(prog, rgn.Fetch(), inputs, observed=observed).run_init()
         first, later = None, set()
         for _ in range(max(ticks, 2)):
             log.clear()

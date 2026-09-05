@@ -258,7 +258,7 @@ def structure(art, fetchblocks=(), ticks=3):
         words=tables.word_widths(prog, proc),
     )
     vidx |= {n for n, d, k in rolled if d == cells.stride and k == cells.voices}
-    pro = record.firstonly(prog, proc, art.get("inputs") or {}, ticks)
+    pro = record.firstonly(prog, proc, art.get("inputs") or {}, ticks, art.get("observed"))
     return Level(
         1,
         art=art,

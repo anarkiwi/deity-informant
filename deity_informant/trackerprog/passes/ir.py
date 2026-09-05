@@ -52,12 +52,17 @@ def writes(level, ticks):
     """One level's observable: a per-tick list of ``(register, value)``."""
     if level.obj is not None:
         return _render(level.obj, ticks)
-    return irwrites(level.prog, ticks, (level.art or {}).get("inputs"))
+    art = level.art or {}
+    return irwrites(level.prog, ticks, art.get("inputs"), art.get("observed"))
 
 
-def irwrites(prog, ticks, inputs=None):
-    """The interpreter's own write list, tick by tick, from the post-init image."""
-    p = interp.Player(prog, region.Fetch(), inputs)
+def irwrites(prog, ticks, inputs=None, observed=None):
+    """The interpreter's own write list, tick by tick, from the post-init image.
+
+    ``observed`` is what each external read returned over the certified run, which
+    the render replays: a read past its end is past what the oracle attested.
+    """
+    p = interp.Player(prog, region.Fetch(), inputs, observed=observed)
     p.run_init()
     out = []
     for _ in range(ticks):
