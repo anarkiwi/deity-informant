@@ -54,7 +54,8 @@ def predicates(low, blocks):
 
     A block that decides a term and then moves a cell that term reads, or decides
     it over a name that is no cell, has no channel for the value it decided on:
-    the decision is a cell.  Every other term is read at the site that decides it,
+    the decision is a cell, and ``late`` says which side of the block's own stores
+    its row stands on.  Every other term is read at the site that decides it,
     where what it reads still stands -- a cell a tick did not assign holds the
     tick before's, which is no predicate.
     """
@@ -64,9 +65,17 @@ def predicates(low, blocks):
         if type(b.term) is not If or b.term.t == b.term.f:
             continue
         late = _late(b, b.term.c)
-        if late or _temped(low, lbl, b.term.c):
+        # a name the block bound is a read of the cell it was bound from, so the
+        # block's own store moves it exactly as a load at the terminator would
+        if late or _late(b, _expand(low, lbl, b.term.c)) or _temped(low, lbl, b.term.c):
             out[lbl] = ("p" + ident(lbl), b.term.c, late)
     return out
+
+
+def _expand(low, lbl, cond):
+    """The decision as reads of cells: every name the blocks bound put back."""
+    low.lbl, low.local, low.pick, low.sub = lbl, {}, {}, {}
+    return low.expand(cond)
 
 
 def _temped(low, lbl, cond):
@@ -75,9 +84,8 @@ def _temped(low, lbl, cond):
     A name one block binds is no cell, so a term over it is read at the block that
     decides it and nowhere else: the decision itself is the cell.
     """
-    low.lbl, low.local, low.pick, low.sub = lbl, {}, {}, {}
     try:
-        got = low.term(low.expand(cond), True)
+        got = low.term(_expand(low, lbl, cond), True)
     except Unlowerable:
         return True
     return bool(_reads(got) & {c.lstrip("#") for c in low.temps.values()})
