@@ -176,6 +176,9 @@ class Fetch:
     def fields(self, recs, vvar):
         """Section 3.6's event fields, and what a masked score byte is of them."""
         low, cells = self.low, self.cells
+        # the fields are read off the region's own stores: a byte a visit staged in
+        # a cell is that byte where a guard masks it, and no cell of the tune's own
+        low.reach = region_reach(low, self.rowblocks)
         pit = self.l1.facts["pitch"]
         top = (pit.base + pit.n) if pit is not None else 0x100
         img = self.l1.prog.reads()
@@ -207,6 +210,7 @@ class Fetch:
         rows = [r for v in range(cells.voices) for r in self.score.rows[v]]
         pairs = {(l, id(c)): (l, c) for l, gs in low.guards.items() for _d, c, _t, _w in gs}
         self.v.terms = terms_of(low, sorted(pairs.values(), key=lambda x: x[0]), facts, rows)
+        low.reach = region_reach(low, frozenset())
 
     def _arms(self, own):
         """The cells a visit's own stores arm: what the event carries besides its fields."""
