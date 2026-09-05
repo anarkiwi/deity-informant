@@ -39,6 +39,9 @@ class Vocab:
     def __init__(self, cells, img, regs, vidx):
         self.cells, self.img, self.regs, self.vidx = cells, img, regs, vidx
         self.supplied = set()
+        # whether the level is still finding which bytes the score supplies, where
+        # every read a fetch makes is a candidate and none can be told apart yet
+        self.finding = False
         self.pitch = ()  # the tuning: region ids, the halves' origins, step, entries
         self.notebase = None
         self.insbase = None
@@ -103,9 +106,11 @@ class Vocab:
         # the read is a table of the tune's where its own extent lies in one
         if self.cells.region(base) is None and self.cells.region(x.lo) is None:
             return None
-        if low.lbl in self.rowblocks:  # the bytes a fetch read are the score's own
-            return None
         idx = addr_split(x.a)[1] if addr_split(x.a)[0] == base else idx
+        # the bytes a fetch read are the score's own, which is a read at a byte no
+        # cell of the tune holds; a read at a cell is the declared table it names
+        if low.lbl in self.rowblocks and (self.finding or self.fromscore(low, idx)):
+            return None
         name = "T%04X" % base
         # one stream a table: every read of it, so the rows are the whole extent
         self.tables[name] = (base, max(top, self.tables.get(name, (0, 0))[1]))

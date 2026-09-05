@@ -64,7 +64,7 @@ def region_reach(low, blocks):
 def supplied(low, blocks, region):
     """The names no cell of the tune holds: the bytes a fetch read (the score's)."""
     got, deep = set(), low.deep
-    low.deep = False
+    low.deep, low.v.finding = False, True
     low.reach = region_reach(low, region)
     low.bad.clear()
     low.gate, low.scope, low.local, low.pick, low.sub = frozenset(), frozenset(), {}, {}, {}
@@ -82,7 +82,7 @@ def supplied(low, blocks, region):
     low.bad.clear()
     low.temps.clear()
     low.wide.clear()
-    low.deep = deep
+    low.deep, low.v.finding = deep, False
     low.reach = region_reach(low, frozenset())
     return got
 
