@@ -236,8 +236,10 @@ def phases(l1, fetchblocks=(), ticks=None):  # noqa: C901 - one clause a section
                 rank, tick = rank + 1, tick + ["machine"]
             elif got:
                 tick.append({"stream": out.stream("%s%d" % (name, i), got)})
-        if group and name != "machine":
-            tick.append("commit")  # B6: the machine's own acts are the tick's last
+        if group and tick[-1:] != ["machine"]:
+            # B6: the machine's own acts are the tick's last, so the phase the
+            # player runs commits itself; a segment cut on an edge write does not
+            tick.append("commit")
     tick = _once(tick)
     for key, blocks, into in (("pre", before, pre), ("post", after, post)):
         low.scope = set(blocks)
