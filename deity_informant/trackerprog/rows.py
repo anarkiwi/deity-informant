@@ -258,6 +258,9 @@ def _dropped(low, stmts, drop, roles):
 
     A store the row program states outright is dropped from the rows, but the tick
     still makes it, so a read that stands after it of what it stored is that cell.
+    Only a store that advances its **own** cell says so: what it stored is that
+    cell because it was read from it, where a constant it happens to leave there
+    is the constant and nothing more.
     """
     out = []
     for i, s in enumerate(stmts):
@@ -267,9 +270,12 @@ def _dropped(low, stmts, drop, roles):
             continue
         try:
             tgt = low.v.moved(low, s)
+            val = low.value(low.expand(s.v))
         except Unlowerable:
             continue
         name = str(tgt[1] if tgt[0] != "acc" else "@" + str(tgt[1])).lstrip("@")
+        if name not in _reads(val):
+            continue
         node = {"global": name[1:]} if name[:1] == "#" else {"cell": name}
         out.append((i, repr(low.expand(s.v)), node))
     return out
