@@ -52,10 +52,20 @@ def copied(low, addr):
     return base if base is not None and idx is not None and low.isvoice(idx) else addr
 
 
-def supplied(low, blocks):
+def region_reach(low, blocks):
+    """The reaching stores of one region only.
+
+    Outside a fetch every cell read is the cell (``l2_phases.reader``); inside it
+    what a store carries is the score's own byte, which is the read to follow.
+    """
+    return {lbl: (low.reaching.get(lbl, {}) if lbl in blocks else {}) for lbl in low.proc.blocks}
+
+
+def supplied(low, blocks, region):
     """The names no cell of the tune holds: the bytes a fetch read (the score's)."""
     got, deep = set(), low.deep
     low.deep = False
+    low.reach = region_reach(low, region)
     low.bad.clear()
     low.gate, low.scope, low.local, low.pick, low.sub = frozenset(), frozenset(), {}, {}, {}
     for lbl in blocks:
@@ -73,6 +83,7 @@ def supplied(low, blocks):
     low.temps.clear()
     low.wide.clear()
     low.deep = deep
+    low.reach = region_reach(low, frozenset())
     return got
 
 
@@ -110,13 +121,13 @@ class Fetch:
         self.trips, self._words = {}, None
 
     def bind(self):
-        """The player's slots, bound to the cells S6, T1 and T2 name (sections 4, 5)."""
+        """The player's slots, bound to the cells S6, T1 and T2 name (sections 4, 5).
+
+        ``False`` where the region's visits name no note and no record: it is no
+        score, and nothing of the level's own vocabulary has been moved to say so.
+        """
         low, voc, sch = self.low, self.v, self.sch
         lo, hi = freqpair(self.art, self.cells.voices)
-        if voc.notebase is None:
-            pit = self.l1.facts["pitch"]
-            # the cell the tuning is indexed by is the tune's own, not the binding's
-            voc.notebase = tables.note_base(low, pit, [low.proc]) if pit else None
         voc.notebase = copied(low, voc.notebase) if voc.notebase is not None else None
         voc.insbase = copied(low, voc.insbase) if voc.insbase is not None else None
         clock = sch.clock[3] if sch.clock else None
@@ -134,6 +145,8 @@ class Fetch:
             "freq.lo": lo,
             "freq.hi": hi,
         }
+        if got["note"] is None or got["ins"] is None:
+            return False
         _rename(self.cells, got)
         self.slots = {k: v for k, v in got.items() if v is not None}
         self.clockcell = self._clockcell(clock)
@@ -148,6 +161,7 @@ class Fetch:
         voc.dropstores = set(self.drop)
         voc.rowblocks = self.rowblocks
         low.stated = frozenset(id(c) for c in sch.spent)
+        return True
 
     def _clockcell(self, clock):
         """The cell ``meta.tempo`` steps: the player's ``rowsleft``, or the tune's own."""
@@ -216,6 +230,7 @@ class Fetch:
         low, roles = self.low, self._roles()
         low.gate = frozenset((id(c), t) for c, t in self.sch.boundary)
         low.scope, low.v.payload, low.deep = set(self.rowblocks), True, False
+        low.reach = region_reach(low, self.rowblocks)
         out, ncmd, nst, streams = [], 0, 0, {}
         for _l, kind, when, sets, _d in guards(
             seg, blockrows(seg, set(self.rowblocks), order, self.drop, roles, True), order
@@ -237,6 +252,7 @@ class Fetch:
             else:
                 out.append({"sets": [list(x) for x in sets], **({"when": when} if when else {})})
         low.gate, low.scope, low.v.payload, low.deep = frozenset(), frozenset(), False, True
+        low.reach = region_reach(low, frozenset())
         return out, streams
 
     def _roles(self):
@@ -356,10 +372,9 @@ def specialise(l1, low, rowblocks, blocks, ticks):
     fx = Fetch(l1, low, rowblocks, ticks)
     if not fx.sch.clock:
         return None
-    fx.bind()
-    if fx.slots.get("note") is None or fx.slots.get("ins") is None:
-        return None  # a region whose visits name no note and no record is no score
-    low.v.supplied = supplied(low, [l for l in low.rpo if l in blocks])
+    if not fx.bind():
+        return None
+    low.v.supplied = supplied(low, [l for l in low.rpo if l in blocks], rowblocks)
     recs, vvar, trips = visits(l1, low, rowblocks, ticks)
     if not recs:
         return None

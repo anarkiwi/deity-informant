@@ -162,6 +162,10 @@ def reader(l1):
         voc.insstage = voc.staged(low)
     if pit is not None:
         voc.notebase = tables.note_base(low, pit, [prog.procs[proc]])
+    # every cell read is the cell: a store forwarded into a block a second path
+    # also reaches is a *may* fact read as a must.  ``l2_fetch.region_reach``
+    # turns it back on over the fetch's own region, where a store is the byte
+    low.reaching, low.reach = low.reach, {lbl: {} for lbl in low.proc.blocks}
     return low, voc, sh
 
 
