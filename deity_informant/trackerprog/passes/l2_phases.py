@@ -13,13 +13,13 @@ phase -- which the unchanged player renders.
 from __future__ import annotations
 
 from ...tuneprog.ir import If, Store, Var
-from .. import build, schedule, shadow
+from .. import build, schedule, shadow, tables
 from ..emit import commit_order
 from ..read import Reader, Unlowerable
 from ..rows import ambiguous
 from ..shape import _Out, _dce, _merge_halves, _needed
 from ..vocab import Vocab
-from . import l2_regions
+from . import l2_fetch, l2_loops
 from .ir import Level
 from .l2_regions import predicates, segrows
 
@@ -28,10 +28,17 @@ CLOCK = "$phase"  # the counter the player steps where the tune's own rows step 
 
 
 class PNFReader(Reader):
-    """The reader phase-normal form uses: a name in a value position is its cell."""
+    """The reader phase-normal form uses: a name in a value position is its cell.
+
+    ``deep`` is off where the level reads the fetch's own region: there a name is
+    the cell the binding holds it in, and only a byte no cell holds is the score's.
+    """
+
+    deep = True
+    reaching = {}  # the reaching stores, kept while ``reach`` reads every cell as the cell
 
     def value(self, e):
-        if type(e) is Var and e.n in self.defs and e.n not in self.v.vidx:
+        if self.deep and type(e) is Var and e.n in self.defs and e.n not in self.v.vidx:
             if e.n not in self.v.supplied and e.n not in self.v.subst and e.n not in self.local:
                 got = self.expand(e)
                 if got is not e and got != e:
@@ -133,20 +140,33 @@ def _channel(order, body, head):
 
 
 def reader(l1):
-    """The expression reader over the structured tick, with its own vocabulary."""
+    """The expression reader over the structured tick, with its own vocabulary.
+
+    The leaf names of the binding, so a table read at a role cell's index has the
+    form section 3.3 gives it: an instrument column at ``ins``, the tuning at
+    ``note``, a declared table at the cursor a row steps.
+    """
     art, prog, proc = l1.art, l1.prog, l1.proc
     cells, img = l1.facts["cells"], prog.reads()
     voc = Vocab(cells, img, build.registers(), l1.facts["vidx"])
     pit = l1.facts["pitch"]
     if pit is not None:
         voc.pitch = (pit.rids, pit.obases, pit.step, pit.n)
-    sh = shadow.of(art["t0"], prog, art["view"])
+    sh = shadow.of(art["t0"], prog, art["view"]) if art.get("t0") else None
     if sh is not None:
         voc.shadow = (sh.base, sh.size)
     low = PNFReader(prog, proc, cells, voc)
+    ins = tables.instrument_table(art, art["view"], art["names"]) if art.get("t2") else None
+    if ins:
+        voc.insbase, voc.inscol, voc.insstride = ins[0], ins[1], ins[2]
+        voc.inspw = tables.pw_columns(art, art["view"], art["names"])
+        voc.insstage = voc.staged(low)
+    if pit is not None:
+        voc.notebase = tables.note_base(low, pit, [prog.procs[proc]])
     # every cell read is the cell: a store forwarded into a block a second path
-    # also reaches is a *may* fact read as a must.  The later levels specialise
-    low.reach = {lbl: {} for lbl in low.proc.blocks}
+    # also reaches is a *may* fact read as a must.  ``l2_fetch.region_reach``
+    # turns it back on over the fetch's own region, where a store is the byte
+    low.reaching, low.reach = low.reach, {lbl: {} for lbl in low.proc.blocks}
     return low, voc, sh
 
 
@@ -182,23 +202,48 @@ def phases(l1, fetchblocks=(), ticks=None):  # noqa: C901 - one clause a section
     sites = edge_sites(art["t0"])
     flush = sh.blocks if sh is not None else frozenset()
     inner = [l for l in order if l in body and l not in flush]
-    segs = cut(inner, fetchblocks, sites, p)
+    segs = _onerow(cut(inner, fetchblocks, sites, p))
+    rowb = frozenset(l for n, g, _c in segs for l in g if n == "row")
     before, after = _channel(order, body | flush, head)
     seg = Segments(low, ambiguous(p))
-    flags = low.planall([list(g) for _n, g, _c in segs] + [before, after])
-    preds = predicates(low, [l for _n, g, _c in segs for l in g] + before + after)
+    inseg = {l for _n, g, _c in segs for l in g}
+    fx = l2_fetch.specialise(l1, low, rowb, inseg, ticks or _horizon(art))
+    resid = [(n, g, c) for n, g, c in segs if fx is None or n != "row"]
+    named = _named(segs)
+    flags = low.planall(list(named.values()) + [before, after])
+    preds = predicates(low, [l for _n, g, _c in resid for l in g] + before + after)
     for name, cond in [(n, c) for n, c, _l in preds.values()]:
-        voc.terms[repr(cond)] = {"cell": name}
+        voc.terms.setdefault(repr(cond), {"cell": name})
     out, tick, pre, post, commit, staged = _Out(), [], [], [], [], {}
+    rowprog, rowstreams = fx.program(seg, order) if fx is not None else ([], {})
     if flags:
         tick.append({"stream": out.stream("flags", [{"sets": [["@" + n, 0] for n in flags]}])})
+    records = fx.instruments() if fx is not None else {}
+    # the player's own machine phase is what a row that spends its tick leaves
+    # unrun, and it reads the record the voice's ``ins`` names: with no record
+    # there is none to read, and a ``{stream}`` entry is the same phase
+    ranked = fx is not None and fx.sch.row_consumes_tick and bool(records)
+    rank = 0
     for i, (name, blocks, group) in enumerate(segs):
-        got = segrows(seg, set(blocks), order, preds, p, head)
-        if got:
-            tick.append({"stream": out.stream("%s%d" % (name, i), got)})
-        if group:
+        if fx is not None and name == "row":
+            tick.append("row")
+        else:
+            low.scope = set(named[name])  # a term the phase decides is the phase's own
+            got = segrows(seg, set(blocks), order, preds, p, head)
+            if got and name == "machine" and ranked:
+                # the machine is the player's own phase: a row that spends its
+                # tick (§3.6) leaves it unrun, which a ``{stream}`` entry cannot say
+                out.stream("machine%d" % i, got, rank)
+                rank, tick = rank + 1, tick + ["machine"]
+            elif got:
+                tick.append({"stream": out.stream("%s%d" % (name, i), got)})
+        if group and tick[-1:] != ["machine"]:
+            # B6: the machine's own acts are the tick's last, so the phase the
+            # player runs commits itself; a segment cut on an edge write does not
             tick.append("commit")
+    tick = _once(tick)
     for key, blocks, into in (("pre", before, pre), ("post", after, post)):
+        low.scope = set(blocks)
         for i, lbl in enumerate(blocks):
             got, sent = channelrows(segrows(seg, {lbl}, order, preds, p, head), key, staged)
             commit += sent
@@ -227,10 +272,14 @@ def phases(l1, fetchblocks=(), ticks=None):  # noqa: C901 - one clause a section
             ),
             "commit_order": list(commit_order(art["t0"])),
             "instrument": {},
-            "tempo": {"cell": CLOCK, "step": 0, "rate": 1, "phase": 0, "boundary": [[0, "!=", 0]]},
+            "tempo": (
+                fx.tempo()
+                if fx is not None
+                else {"cell": CLOCK, "step": 0, "rate": 1, "phase": 0, "boundary": [[0, "!=", 0]]}
+            ),
             "tick": tick,
-            "row_consumes_tick": False,
-            "row": [],
+            "row_consumes_tick": fx.sch.row_consumes_tick if fx is not None else False,
+            "row": rowprog,
             "wide": sorted(low.wide),
             **({"shadow": {"registers": list(sh.registers)}} if sh is not None else {}),
         },
@@ -239,10 +288,14 @@ def phases(l1, fetchblocks=(), ticks=None):  # noqa: C901 - one clause a section
             if pit is not None
             else {"base": 0, "freq": []}
         ),
-        "streams": {**out.streams, **build.table_streams(voc, prog.reads())},
+        "streams": {**out.streams, **rowstreams, **build.table_streams(voc, prog.reads())},
         "accs": {},
-        "instruments": {},
-        "score": {"patterns": {}, "orders": [[] for _ in range(cells.voices)]},
+        "instruments": records,
+        "score": (
+            dict(zip(("orders", "patterns"), fx.score.events(fx.tie)))
+            if fx is not None
+            else {"patterns": {}, "orders": [[] for _ in range(cells.voices)]}
+        ),
         # both lists go through the one liveness the shape module runs, and are
         # split back after it: a stream the channel names is live either way
         "globals": {"streams": pre + post, **({"commit": commit} if commit else {})},
@@ -252,6 +305,12 @@ def phases(l1, fetchblocks=(), ticks=None):  # noqa: C901 - one clause a section
             **({"shadow": shadow.seed(prog.reads(), sh)} if sh is not None else {}),
         },
     }
+    if fx is not None:
+        fx.beyond(obj)
+    # a cell the level names by its halves is the one word the player reads
+    obj["meta"]["wide"] = sorted(
+        set(obj["meta"]["wide"]) | {n[:-3] for n in obj["state0"]["cells"] if n.endswith(".lo")}
+    )
     _merge_halves(obj)
     # a write into the image is observable: the flush sends it, so liveness has
     # the image itself for a root, as it has the registers
@@ -276,6 +335,13 @@ def phases(l1, fetchblocks=(), ticks=None):  # noqa: C901 - one clause a section
             **l1.facts,
             "segments": [(n, tuple(g)) for n, g, _c in segs],
             "fetchblocks": frozenset(fetchblocks),
+            "fetch": fx,
+            "materialised": fx is not None,
+            "events": (
+                sum(len(v["events"]) for v in obj["score"]["patterns"].values()) if fx else 0
+            ),
+            "patterns": len(obj["score"]["patterns"]),
+            "trips": fx.trips if fx is not None else {},
             "channel": (tuple(before), tuple(after)),
             "flush": tuple(sh.registers) if sh is not None else (),
             "stage_guard": lead(low, _sch(prog, proc, fetchblocks, art["t0"], order), fetchblocks),
@@ -284,12 +350,51 @@ def phases(l1, fetchblocks=(), ticks=None):  # noqa: C901 - one clause a section
             "predicates": {l: n for l, (n, _c, _l) in preds.items()},
             "joins": list(flags),
             "refused": sorted(low.bad),
-            "loops": [n for _n, g, _c in segs for n in l2_regions.loops(p, set(g), head)],
+            "loops": [n for _n, g, _c in resid for n in l2_loops.loops(p, set(g), head)],
             "unstated_loops": [
-                n for _n, g, _c in segs for n in l2_regions.unstated(low, p, set(g), head)
+                n for _n, g, _c in resid for n in l2_loops.unstated(low, p, set(g), head, order)
             ],
         },
     )
+
+
+def _once(tick):
+    """``meta.tick`` with the run of phases the score replaced stated once."""
+    out = []
+    for e in tick:
+        if e in ("row", "machine") and out and out[-1] == e:
+            continue
+        out.append(e)
+    return out
+
+
+def _named(segs):
+    """``{phase: its blocks}``: B6's own segments, whatever the edge writes cut."""
+    out = {}
+    for name, blocks, _group in segs:
+        out.setdefault(name, []).extend(blocks)
+    return out
+
+
+def _onerow(segs):
+    """The fetch region is one phase: an edge write inside it ends its own group."""
+    out, run = [], []
+    for name, blocks, group in segs:
+        if name != "row":
+            if run:
+                out.append(("row", [l for g in run for l in g[0]], any(g[1] for g in run)))
+                run = []
+            out.append((name, blocks, group))
+            continue
+        run.append((blocks, group))
+    if run:
+        out.append(("row", [l for g in run for l in g[0]], any(g[1] for g in run)))
+    return out
+
+
+def _horizon(art):
+    """The certified horizon, where T2 states one."""
+    return ((art.get("t2") or {}).get("horizon") or {}).get("ticks")
 
 
 def _sch(prog, proc, fetchblocks, t0, order):

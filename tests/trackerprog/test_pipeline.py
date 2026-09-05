@@ -30,6 +30,13 @@ from deity_informant.trackerprog.passes import (  # noqa: E402
     l5_select,
     l6_canon,
 )
+from deity_informant.trackerprog.passes.l6_reads import (  # noqa: E402
+    elsewhere,
+    order,
+    rowat,
+    written,
+)
+from deity_informant.trackerprog.shape import _reads  # noqa: E402
 
 TICKS = SYNTH.TICKS
 FETCH = ("fetch", "wrap", "key")
@@ -166,12 +173,28 @@ def test_the_selection_covered_a_run_with_a_record():
 
 
 def test_the_canonical_object_spent_the_cells_the_predication_raised():
+    """What L6 spends is gone, and what it leaves standing no rule of it may spend.
+
+    A propagation is sound where the value the cell holds is state no row moves,
+    so a raised decision whose own value reads a cell a row writes between its
+    definition and its readers stands: the slide and the prologue keep three.
+    """
     levels, _got = run()
-    f = levels[6].facts
-    assert f["propagated"] or f["merged"]
+    obj, f = levels[6].obj, levels[6].facts
     for name in f["propagated"]:
-        assert name not in levels[6].obj["state0"]["cells"]
-    assert sizes.xz(sizes.compact(levels[6].obj)) <= sizes.xz(sizes.compact(levels[5].obj))
+        assert name not in obj["state0"]["cells"]
+    seq, wrote, out = order(obj), written(obj), elsewhere(obj)
+    raised = {f["renamed"].get(n, n) for n in levels[2].facts["predicates"].values()}
+    standing = sorted(raised & set(obj["state0"]["cells"]))
+    assert standing
+    for name in standing:
+        at = wrote.get(name)
+        if at is None:  # written nowhere the tick's own rows run: no rule reaches it
+            assert name in out
+            continue
+        val = [v for k in at for t, v in rowat(obj, seq[k])["sets"] if t.lstrip("@#!*") == name]
+        assert all(_reads(v) & set(wrote) for v in val)
+    assert sizes.xz(sizes.compact(obj)) <= sizes.xz(sizes.compact(levels[5].obj))
 
 
 @pytest.mark.hvsc

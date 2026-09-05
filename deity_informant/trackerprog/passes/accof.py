@@ -90,12 +90,21 @@ def _stepguard(s, when, a, drop=None):
 def _repeat(loop, rest, a, when):
     """The closed triangle: the step it repeats, its count and the carry it leaves."""
     body = loop["loop"]["body"]
-    add = body[-1]["sets"][0][1]
-    a["delta"] = {"repeat": [add["and"][0]["add"][1], loop["loop"]["trip"]]}
-    a["width"] = add["and"][1].bit_length()
+    add = ((body[-1].get("sets") or [[None, None]])[0][1]) if body else None
+    if not isinstance(add, dict) or not isinstance(add.get("and"), list):
+        return False
+    x, m = add["and"]
+    if not isinstance(x, dict) or not isinstance(x.get("add"), list) or not isinstance(m, int):
+        return False
+    a["delta"] = {"repeat": [x["add"][1], loop["loop"]["trip"]]}
+    a["width"] = m.bit_length()
     if len(body) > 1:
-        a["flag"] = {"name": rest[0]["sets"][0][0][1:], "seed": rest[0]["sets"][0][1]}
+        got = (rest[0].get("sets") or [[None, None]])[0] if rest else [None, None]
+        if not isinstance(got[0], str) or got[0][:1] != "!":
+            return False
+        a["flag"] = {"name": got[0][1:], "seed": got[1]}
     _stepguard(loop, when, a)
+    return True
 
 
 def _clamp(rest, a, when):
@@ -258,7 +267,8 @@ def record(stmts):
     if prod and "emit" not in a:
         a["produce"] = _produce(prod[0])
     gate = _gatearms([s for s in tail if s not in prod], unstept)
-    _policy(body[span[0] : span[1]] if span else [], a, base, guard + stept + moves)
+    if _policy(body[span[0] : span[1]] if span else [], a, base, guard + stept + moves) is False:
+        return None
     if gate:
         a["gate"] = _gate(gate, unstept)
     if when:

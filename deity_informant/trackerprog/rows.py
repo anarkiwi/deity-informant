@@ -253,6 +253,34 @@ def _staged(seq, order, facts):
     return out
 
 
+def _dropped(low, stmts, drop, roles):
+    """``[(index, expression, node)]``: the cells the stores a level drops still move.
+
+    A store the row program states outright is dropped from the rows, but the tick
+    still makes it, so a read that stands after it of what it stored is that cell.
+    Only a store that advances its **own** cell says so: what it stored is that
+    cell because it was read from it, where a constant it happens to leave there
+    is the constant and nothing more.
+    """
+    out = []
+    for i, s in enumerate(stmts):
+        if type(s) is not Store or s.cls != "ram" or roles.get(s.src) is not None:
+            continue
+        if s.src not in drop:
+            continue
+        try:
+            tgt = low.v.moved(low, s)
+            val = low.value(low.expand(s.v))
+        except Unlowerable:
+            continue
+        name = str(tgt[1] if tgt[0] != "acc" else "@" + str(tgt[1])).lstrip("@")
+        if name not in _reads(val):
+            continue
+        node = {"global": name[1:]} if name[:1] == "#" else {"cell": name}
+        out.append((i, repr(low.expand(s.v)), node))
+    return out
+
+
 def steps(b, lbl, drop, roles, guard, extra, split=False):
     """One block as ordered steps: its role stores, its cells, its registers.
 
@@ -281,12 +309,12 @@ def steps(b, lbl, drop, roles, guard, extra, split=False):
         for _i, _k, t, _s in keep
         if t is not None
     }
-    sub, got = {}, []
+    sub, got, gone = {}, [], _dropped(low, stmts, drop, roles)
     for i, kind, tgt, s in _epoch(stmts, keep):
         if tgt is None:
             got.append((i, kind, None, None))
             continue
-        low.sub = dict(sub)
+        low.sub = {**{k: v for j, k, v in gone if j < i}, **sub}
         val = low.value(low.expand(s.v))
         low.sub = {}
         name = tgt[1] if tgt[0] != "acc" else "@" + str(tgt[1])

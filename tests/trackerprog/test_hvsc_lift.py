@@ -13,7 +13,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tuneprog"))
 from deity_informant.lifter import lift as _lift  # noqa: E402
 from deity_informant.trackerprog import bind, build, emit, record, region  # noqa: E402
 from deity_informant.trackerprog.passes import ir, l1_structure, l2_phases  # noqa: E402
-from deity_informant.trackerprog.read import Unlowerable  # noqa: E402
 from deity_informant.trackerprog.shape import _channels, _rowblocks  # noqa: E402
 from deity_informant.trackerprog.attest import attest  # noqa: E402
 from deity_informant.trackerprog.refuse import Refused  # noqa: E402
@@ -167,8 +166,26 @@ def test_the_structuring_renders_two_families_over_their_own_horizons():
         assert got["ticks"] == CALLS and got["writes"] > 0
 
 
-def test_the_phase_normal_form_names_the_decisions_it_cannot_state():
-    """L1 -> L2 on a real tune: the finding, by block and by the read it makes."""
+def _at(d):
+    """The tick a divergence names, or the whole horizon where there is none."""
+    return CALLS if d is None else d["tick"]
+
+
+def _reach(before, after):
+    """The tick a rendering of one level first parts from another's, or ``None``."""
+    want = ir.writes(before, CALLS)
+    return attest(after.obj, want, CALLS, ir._render)["divergence"]
+
+
+def test_the_phase_normal_form_states_the_decisions_the_census_names():
+    """L1 -> L2 on a real tune: the fetch specialised before the level lowers it.
+
+    The static census still names the one idiom -- a read whose address no
+    declared table names -- in the fetch region and nowhere else, because it
+    reads the tick as written.  The level itself no longer meets it: the region
+    is the specialiser's input, so the reads are section 3.6's events and what
+    L2 predicates is the residual.
+    """
     for rel in (COMMANDO, GULDKORN):
         art, fb = _l0(rel)
         l1 = l1_structure.structure(art, ticks=3)
@@ -176,5 +193,29 @@ def test_the_phase_normal_form_names_the_decisions_it_cannot_state():
         assert got, rel
         assert {g["why"] for g in got} >= {"computed address"}
         assert {g["region"] for g in got if g["why"] == "computed address"} == {"fetch"}
-        with pytest.raises(Unlowerable):
-            l2_phases.phases(l1, fb, ticks=CALLS)
+        l2 = l2_phases.phases(l1, fb, ticks=CALLS)
+        assert l2.facts["materialised"], rel
+        assert l2.facts["unstated_loops"] == [], rel
+
+
+def test_the_level_reaches_what_the_binding_reaches_on_both_families():
+    """L2 renders each exemplar at least as far as the binding of the same planes.
+
+    The binding is this pipeline with the fetch materialised before the lowering
+    (prototype-lifter.md), so it is the yardstick the level order was changed to
+    meet: neither object is L1 tick for tick, and L2 parts from it no sooner.
+    """
+    for rel in (COMMANDO, GULDKORN):
+        art, fb = _l0(rel)
+        l1 = l1_structure.structure(art, ticks=3)
+        l2 = l2_phases.phases(l1, fb, ticks=CALLS)
+        obj, _report = bind.lift(art, ticks=CALLS)
+        mine, theirs = _reach(l1, l2), _reach(l1, ir.Level(4, obj=obj))
+        assert _at(mine) >= _at(theirs), (rel, mine, theirs)
+
+
+def test_the_second_family_states_every_read_its_fetch_makes():
+    """Guldkornekspressen: nothing of the tick is refused once the fetch is the score."""
+    art, fb = _l0(GULDKORN)
+    l1 = l1_structure.structure(art, ticks=3)
+    assert l2_phases.phases(l1, fb, ticks=CALLS).facts["refused"] == []
