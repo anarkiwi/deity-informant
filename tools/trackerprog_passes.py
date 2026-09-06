@@ -141,6 +141,9 @@ def from_l0(out, ticks=None, pin=None):
             got["pass"] = "ok"
         except ir.Diverged as x:
             got.update({"pass": "diverged", "why": str(x)[:400]})
+        except Exception as x:  # pylint: disable=broad-except
+            # a level that renders badly is a red cell of the surface, not a crash
+            got.update({"pass": "failed", "why": "%s: %s" % (type(x).__name__, x)})
         if levels[-1].obj is not None:
             got.update(measure(levels[-1].obj))
         rep["levels"][name] = got
