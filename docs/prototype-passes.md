@@ -259,6 +259,16 @@ pipeline and writes `out/surface/surface.json`.  A tune stops at its first red
 level, since every level after it would read an object that level did not
 produce, and each red cell carries the cause the level itself raised.
 
+The table below is of the output directories named in it, at the horizons they
+were certified over.  **Planes rebuilt from the same tune do not always give the
+same cell**: at 1,200 calls Commando parts at tick 3 rather than tick 1, and
+*Quintessence* stops at L1 on `$1301` — a read its own trace records under no
+input kind — where the directory reaches L1.  What CI holds to is therefore the
+level each family reaches from planes it builds itself
+(`tests/trackerprog/test_surface.py`), which is L2 for seven of the nine;
+*Comic Bakery*, whose levels take minutes where the rest take seconds, and
+*Quintessence* are left to the tool until each is understood.
+
 | tune | ticks | L1 | L2 |
 | --- | --- | --- | --- |
 | commando-song1 | 11,780 | **ok** | diverges at tick 1 |
@@ -357,6 +367,8 @@ Stated as findings, not as work in progress.
 | L2's render where it does render | not L1 tick for tick: Commando parts at tick 1 and JCH at tick 0 (§6) |
 | L3, L4, L5 and L6 on a real tune | **never run**.  No tune reaches L3, so every claim §1 makes above L2 is stated of the synthetic program (§5) and of the binding, and of nothing else |
 | L1 on a real tune | holds on **all ten** over their whole horizons.  The chip's own reads are replayed from the run the oracle made, since `$D012` and `$D41B` are functions of executed cycles a per-tick object cannot count (§6) |
+| the surface CI holds to | the level each of seven families reaches from planes the test builds itself (`tests/trackerprog/test_surface.py`), so a cell cannot move without the expectation and §6 moving with it.  *Comic Bakery* and *Quintessence* are not among them (§6) |
+| L2's own robustness | at a 400-call horizon Commando's L2 score names an instrument its record table does not carry (`KeyError: '7'`), where at 1,200 it renders and parts.  The object should be self-consistent at every horizon |
 | defMON under the other SID model | not reached.  The planes carry only the arm the trace ran; the other is `untaken` at `$14E7`, so both models want a re-trace under the tracer's `override` policy, not a pin below it (§6) |
 | L4: the order's `call`, `ret`, `mark` and `loop` (Follin, Galway) | not prototyped.  The walk becomes `play` steps and a `jump` end; recognising which opcode a step is means replaying the tune's own order interpreter and reading its stack, which this pass does not do |
 | L4: a small decoder unrolled to its rows over a horizon (Blackbird) | not prototyped.  The cursor specialisation evaluates a step at every row of a static table; a decoder has no per-row cursor to evaluate at |

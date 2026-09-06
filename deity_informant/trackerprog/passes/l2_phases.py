@@ -13,6 +13,7 @@ phase -- which the unchanged player renders.
 from __future__ import annotations
 
 from ...tuneprog.ir import If, Store, Var
+from ...tuneprog.irwalk import walk
 from .. import build, schedule, shadow, tables
 from ..emit import commit_order
 from ..read import Reader, Unlowerable
@@ -25,6 +26,16 @@ from .l2_regions import predicates, segrows
 
 EDGE = ("ctrl", "ad", "sr")
 CLOCK = "$phase"  # the counter the player steps where the tune's own rows step theirs
+
+
+def _occurs(name, e):
+    """Whether an expansion gave back the very name it was asked to expand.
+
+    A cell a store steps by a constant expands to its own read, so the expansion
+    reintroduces the name and is no expansion: the level reads it as the cell it
+    is, or refuses it by name, rather than unrolling the step forever.
+    """
+    return any(type(x) is Var and x.n == name for x in walk(e))
 
 
 class PNFReader(Reader):
@@ -41,7 +52,7 @@ class PNFReader(Reader):
         if self.deep and type(e) is Var and e.n in self.defs and e.n not in self.v.vidx:
             if e.n not in self.v.supplied and e.n not in self.v.subst and e.n not in self.local:
                 got = self.expand(e)
-                if got is not e and got != e:
+                if got is not e and got != e and not _occurs(e.n, got):
                     return super().value(got)
         return super().value(e)
 
