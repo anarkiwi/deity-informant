@@ -229,6 +229,17 @@ def test_every_patch_applies_to_the_spec_the_build_resolves():
     assert '@include "6510_context.sinc"' in smc.patch_base(text)
 
 
+def test_smc_indirect_operands_keep_a_wrapping_zero_page_pointer():
+    """SMC twins must not widen an indirect pointer byte before it wraps."""
+    source = (build6510.LANGDIR / "6510_illegal.sinc").read_text()
+    generated = smc.smc_sinc(source)
+    assert "local zp:1 = *:1 smcp + X" in generated
+    assert "local zp:1 = *:1 smcp;" in generated
+    assert "illegalReadZpPointer(tmp, zp)" in generated
+    assert "local smcop:1 = *:1 smcp;" in generated
+    assert "illegalReadZpPointer(ea, zp)" in generated
+
+
 def test_a_patch_site_that_drifted_is_an_error():
     text = build6510.find_base_slaspec().read_text()
     with pytest.raises(ValueError):
