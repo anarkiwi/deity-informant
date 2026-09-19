@@ -32,11 +32,16 @@ MODES = {
     "abs": ("imm16", "", "tmp:2 = %s; export *:1 tmp;" % WORD),
     "absx": ("imm16,X", " & X", "tmp:2 = %s + zext(X); export *:1 tmp;" % WORD),
     "absy": ("imm16,Y", " & Y", "tmp:2 = %s + zext(Y); export *:1 tmp;" % WORD),
-    "indx": ("(imm8,X)", " & X", "addr:2 = zext(%s + X); tmp:2 = *:2 addr; export *:1 tmp;" % BYTE),
+    "indx": (
+        "(imm8,X)",
+        " & X",
+        "local zp:1 = %s + X; tmp:2 = 0; illegalReadZpPointer(tmp, zp); export *:1 tmp;" % BYTE,
+    ),
     "indy": (
         "(imm8),Y",
         " & Y",
-        "addr:2 = zext(%s); tmp:2 = *:2 addr; tmp = tmp + zext(Y); export *:1 tmp;" % BYTE,
+        "local zp:1 = %s; tmp:2 = 0; illegalReadZpPointer(tmp, zp); "
+        "tmp = tmp + zext(Y); export *:1 tmp;" % BYTE,
     ),
 }
 
@@ -121,7 +126,9 @@ def _blocks(text):
 
 def _operand_size(disp, token):
     """Bytes of the local replacing ``token``: 2 where the body assigns it to an address."""
-    return 2 if token == "imm16" or disp in ("imm8", "(imm8),Y") else 1
+    # An indirect zero-page operand remains one byte: its pointer fetch must wrap
+    # from $FF to $00, which illegalReadZpPointer enforces in the generated twin too.
+    return 2 if token == "imm16" or disp == "imm8" else 1
 
 
 def _twin(block):
