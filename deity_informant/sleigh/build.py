@@ -1,13 +1,16 @@
-#!/usr/bin/env python3
 """Compile the 6510 SLEIGH module (stock 6502 legal set + our illegal .sinc).
 
 Resolves the stock ``6502.slaspec`` from a Ghidra install (``$GHIDRA_INSTALL_DIR``)
 or a pypcode install, copies it beside ``6510.slaspec`` (it is Ghidra's,
-Apache-2.0, and deliberately not committed here), then runs the SLEIGH compiler
-to emit ``6510.sla``.
+Apache-2.0, and deliberately not shipped here) in a work directory, then runs the
+SLEIGH compiler there to emit ``6510.sla``. The package's ``languages/`` sources
+are never written.
 
 Usage:
-    python build.py [--sleigh PATH] [--magic 0xEE] [--install DIR]
+    deity-informant emit-sleigh [-o DIR] [--magic 0xEE]
+    python -m deity_informant.sleigh.build [--sleigh PATH] [--magic M] [--out DIR] [--install DIR]
+
+``--out DIR`` keeps the work directory (default: a temporary one).
 
 ``--install DIR`` also copies the finished module (``6510.*`` + ``6510.sla``)
 into ``DIR`` so Ghidra or pypcode can discover the ``6510:LE:16:default``
@@ -22,12 +25,14 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
-import smc
+from .smc import CONTEXT, patch_base, smc_sinc
 
-HERE = Path(__file__).resolve().parent
-LANGDIR = HERE / "data" / "languages"
+LANGDIR = Path(__file__).resolve().parent / "languages"
+
+SOURCES = ("6510.slaspec", "6510_illegal.sinc", "6510.ldefs", "6510.pspec", "6510.cspec")
 GENERATED = ("6502.slaspec", "6510_context.sinc", "6510_smc.sinc")
 
 
@@ -76,36 +81,45 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--sleigh", help="path to the SLEIGH compiler")
     ap.add_argument("--magic", help="override the ANE/LXA magic constant, e.g. 0x00")
+    ap.add_argument("--out", help="build in this directory and keep it")
     ap.add_argument("--install", help="also copy the built module into this languages dir")
     args = ap.parse_args(argv)
+    if args.out:
+        return build(Path(args.out), args)
+    with tempfile.TemporaryDirectory() as work:
+        return build(Path(work), args)
 
+
+def build(work, args):
+    """Compile the module in ``work``; install it into ``args.install`` if given."""
     base = find_base_slaspec()
     sleigh = args.sleigh or find_sleigh()
+    work.mkdir(parents=True, exist_ok=True)
+    for name in SOURCES:
+        shutil.copy(LANGDIR / name, work / name)
     # generated build artifacts; SLEIGH wants context defined before constructors
-    (LANGDIR / "6502.slaspec").write_text(smc.patch_base(base.read_text()))
-    (LANGDIR / "6510_context.sinc").write_text(smc.CONTEXT)
-    (LANGDIR / "6510_smc.sinc").write_text(
-        smc.smc_sinc((LANGDIR / "6510_illegal.sinc").read_text())
-    )
+    (work / "6502.slaspec").write_text(patch_base(base.read_text()))
+    (work / "6510_context.sinc").write_text(CONTEXT)
+    (work / "6510_smc.sinc").write_text(smc_sinc((LANGDIR / "6510_illegal.sinc").read_text()))
 
     cmd = [sleigh]
     if args.magic:
         cmd.append(f"-D MAGIC={args.magic}")
     cmd += ["6510.slaspec", "6510.sla"]
     print("compiling:", " ".join(cmd))
-    r = subprocess.run(cmd, cwd=LANGDIR, capture_output=True, text=True, check=False)
+    r = subprocess.run(cmd, cwd=work, capture_output=True, text=True, check=False)
     errs = [ln for ln in (r.stdout + r.stderr).splitlines() if "ERROR" in ln]
     if r.returncode != 0 or errs:
         sys.stderr.write("\n".join(errs) or (r.stdout + r.stderr))
         raise SystemExit(f"\nSLEIGH compile failed (exit {r.returncode})")
-    sla = LANGDIR / "6510.sla"
+    sla = work / "6510.sla"
     print(f"built {sla} ({sla.stat().st_size} bytes)")
 
     if args.install:
         dst = Path(args.install)
         dst.mkdir(parents=True, exist_ok=True)
         for name in ("6510.sla", "6510.ldefs", "6510.pspec", "6510.cspec"):
-            shutil.copy(LANGDIR / name, dst / name)
+            shutil.copy(work / name, dst / name)
         # Ghidra (unlike pypcode) compiles the .slaspec at load time and validates
         # the .sla against it, so the SLEIGH sources must be installed too -- ours
         # plus the stock 6502 @include sources. Copy .slaspec/.sinc only, never the
@@ -113,7 +127,7 @@ def main(argv=None):
         for src in list(base.parent.glob("*.slaspec")) + list(base.parent.glob("*.sinc")):
             shutil.copy(src, dst / src.name)
         for name in ("6510.slaspec", "6510_illegal.sinc") + GENERATED:
-            shutil.copy(LANGDIR / name, dst / name)
+            shutil.copy(work / name, dst / name)
         # Ghidra discovers a Processor module only via a Module.manifest at the
         # module root (`.../<name>/data/languages` -> root is two levels up); without
         # it analyzeHeadless reports "Unsupported language". pypcode ignores it.

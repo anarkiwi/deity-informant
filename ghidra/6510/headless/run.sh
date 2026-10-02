@@ -3,7 +3,7 @@
 # demo imported and its illegal LAX/ISC decoded under the headless analyzer.
 #
 # Requires: GHIDRA_INSTALL_DIR set, the 6510 module installed into it
-# (build.py --install), deity_informant importable. See Dockerfile.ghidra.
+# (deity-informant emit-sleigh -o ...), deity_informant importable. See Dockerfile.ghidra.
 set -eu
 
 : "${GHIDRA_INSTALL_DIR:?set GHIDRA_INSTALL_DIR to a Ghidra install}"
@@ -14,7 +14,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 # the illegal-opcode decode smoke test
-python3 examples/hello_world.py --write "$WORK/hello.prg"
+python3 -m deity_informant.hello_world --write "$WORK/hello.prg"
 OUT="$WORK/headless.log"
 "$HEADLESS" "$WORK" hello \
     -import "$WORK/hello.prg" \

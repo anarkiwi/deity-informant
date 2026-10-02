@@ -38,6 +38,9 @@ deity-informant = "deity_informant.cli:main"
 [tool.setuptools.packages.find]
 include = ["deity_informant*"]
 
+[tool.setuptools.package-data]
+"deity_informant.sleigh" = ["languages/*"]
+
 [tool.coverage.run]
 source = ["deity_informant"]
 

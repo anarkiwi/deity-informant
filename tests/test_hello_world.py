@@ -8,7 +8,7 @@ decodes the demo's illegals (stock-6502 rejection is covered in test_coverage).
 
 from deity_informant import ILLEGAL_OPCODES, PcodeVM, lift, run_sub
 
-from examples.hello_world import EXPECTED, ORG, PROGRAM, STA_PC
+from deity_informant.hello_world import EXPECTED, ORG, PROGRAM, STA_PC
 
 import _common as H
 

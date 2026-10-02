@@ -14,7 +14,7 @@ self-modifying code:
 
 The message is stored EOR-``$FF`` (bit-inverted) and decrypted with ``EOR #$FF``.
 
-Run ``python examples/hello_world.py`` -- it prints ``HELLO, WORLD!`` and the
+Run ``python -m deity_informant.hello_world`` -- it prints ``HELLO, WORLD!`` and the
 illegal opcodes it executed. The same program is verified through the 6510
 SLEIGH spec (Ghidra's engine) in ``tests/test_hello_world.py``.
 """
@@ -24,7 +24,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from deity_informant import ILLEGAL_OPCODES, OPS, PcodeVM, lift, run_sub
+from . import ILLEGAL_OPCODES, OPS, PcodeVM, lift, run_sub
 
 ORG = 0x1000
 

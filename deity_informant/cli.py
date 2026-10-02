@@ -4,19 +4,18 @@ Subcommands:
   disasm       linear-lift a code region and print mnemonics (illegals included)
   pcode        dump the raw P-Code op list for one instruction
   run          drive a playroutine through PcodeVM and print the $D400.. grid
-  emit-sleigh  build the 6510 Ghidra/pypcode SLEIGH module (delegates to build.py)
+  emit-sleigh  build the 6510 Ghidra/pypcode SLEIGH module (deity_informant.sleigh.build)
 """
 
 from __future__ import annotations
 
 import argparse
-import subprocess
-import sys
 from pathlib import Path
 
 from jennings.devices.mpu6502 import MPU as _MPU
 from jennings.disassembler import Disassembler as _Disassembler
 
+from .sleigh import build
 from .lifter import OPS, MODE_LEN, ILLEGAL_OPCODES, lift
 from .vm import PcodeVM, run_sub
 
@@ -76,16 +75,8 @@ def cmd_run(args):
 
 
 def cmd_emit_sleigh(args):
-    build = Path(__file__).resolve().parent.parent / "ghidra" / "6510" / "build.py"
-    if not build.is_file():
-        sys.stderr.write("ghidra/6510/build.py not found (run from a source checkout)\n")
-        return 1
-    cmd = [sys.executable, str(build)]
-    if args.out:
-        cmd += ["--install", args.out]
-    if args.magic:
-        cmd += ["--magic", args.magic]
-    return subprocess.call(cmd)
+    argv = ["--install", args.out] if args.out else []
+    return build.main(argv + (["--magic", args.magic] if args.magic else []))
 
 
 def main(argv=None):

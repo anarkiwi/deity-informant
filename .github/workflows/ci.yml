@@ -17,11 +17,11 @@ jobs:
       - name: Install
         run: pip install -e ".[dev]"
       - name: Format
-        run: black --check deity_informant/ tests/ examples/ ghidra/
+        run: black --check deity_informant/ tests/
       - name: Lint
-        run: pylint deity_informant/ examples/ ghidra/6510/build.py
+        run: pylint deity_informant/
       - name: Build 6510 SLEIGH module (pypcode-bundled compiler)
-        run: python ghidra/6510/build.py
+        run: deity-informant emit-sleigh
       - name: Test
         run: pytest tests/ -n auto --cov=deity_informant --cov-fail-under=85
 

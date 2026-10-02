@@ -4,7 +4,7 @@ Two products from one opcode table:
 
 * **standalone** -- ``lift`` + ``PcodeVM`` run 6510 code (including every
   documented NMOS illegal) as raw P-Code, with no Ghidra and no py65.
-* **Ghidra / pypcode backend** -- the ``6510`` SLEIGH module under ``ghidra/6510``
+* **Ghidra / pypcode backend** -- the ``6510`` SLEIGH module in :mod:`deity_informant.sleigh`
   (stock 6502 legal set + a generated illegal ``.sinc``) so Ghidra's disassembler
   *and* decompiler, and pypcode, become illegal-aware.
 
