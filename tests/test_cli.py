@@ -1,5 +1,7 @@
 """CLI smoke tests: disasm / pcode / run over a hand-assembled illegal snippet."""
 
+import pytest
+
 from deity_informant import cli
 
 
@@ -54,3 +56,12 @@ def test_run_frames(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert out.count("frame") == 3
+
+
+def test_emit_sleigh_installs_the_module(tmp_path):
+    pytest.importorskip("pypcode")
+    dst = tmp_path / "6510" / "data" / "languages"
+    assert cli.main(["emit-sleigh", "-o", str(dst)]) == 0
+    assert (dst / "6510.sla").stat().st_size > 0
+    assert {"6510.ldefs", "6510_smc.sinc", "6502.slaspec"} <= {p.name for p in dst.iterdir()}
+    assert (tmp_path / "6510" / "Module.manifest").is_file()

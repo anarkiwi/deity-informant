@@ -8,14 +8,13 @@ also compiles+loads the 6510 spec and asserts it decodes every illegal opcode
 """
 
 import re
-from pathlib import Path
 
 import pytest
 
 from deity_informant import ILLEGAL_OPCODES
+from deity_informant.sleigh import LANGDIR
 
-ROOT = Path(__file__).resolve().parent.parent
-SINC = ROOT / "ghidra" / "6510" / "data" / "languages" / "6510_illegal.sinc"
+SINC = LANGDIR / "6510_illegal.sinc"
 
 
 def _sinc_opcodes():

@@ -10,14 +10,16 @@ SID tune decompilation (tuneprog, trackerprog) built on this toolkit lives in [a
 - `deity_informant/vm.py` — `PcodeVM` interpreter over a flat 64 KiB image (SID/VIC/CIA volatile IO modeled); `run_sub`/`run_irq`/`run_irq_driven` drivers.
 - `deity_informant/c64.py` — power-on RAM, PSID/RSID loader, IRQ vector discovery, ROM-free IRQ dispatch stubs.
 - `deity_informant/cli.py` — `deity-informant` console script.
-- `ghidra/6510/` — SLEIGH module (`6510.slaspec` = stock 6502 + generated `6510_illegal.sinc`), `build.py`, and a headless Ghidra integration test (`headless/`, run via `Dockerfile.ghidra`).
-- `examples/hello_world.py` — 33-byte C64 program using `LAX`/`ISC` + self-modifying code; the fixture for the VM and Ghidra tests.
+- `deity_informant/sleigh/` — SLEIGH module (`languages/6510.slaspec` = stock 6502 + `6510_illegal.sinc`), `smc.py` (SMC context constructors), `build.py`, and `pypcode_context()` (a loaded pypcode `Context` for the 6510).
+- `ghidra/6510/headless/` — headless Ghidra integration test, run via `Dockerfile.ghidra`.
+- `deity_informant/hello_world.py` — 33-byte C64 program using `LAX`/`ISC` + self-modifying code; the fixture for the VM and Ghidra tests.
 - `tools/doclinks.py` — every `[text](target)` in `docs/` and `README.md` resolved: the file, and the `#anchor` against the target's own headings.
 
 ## Install
 
 ```bash
-pip install -e ".[dev]"          # test/lint tooling, py65, pypcode
+pip install deity-informant         # from PyPI; the SLEIGH sources ship as package data
+pip install -e ".[dev]"             # from a checkout: + test/lint tooling, py65, pypcode
 ```
 
 ## CLI
@@ -39,7 +41,7 @@ vm = PcodeVM(mem); run_sub(vm, entry, {}, lift)   # execute a subroutine to its 
 ## Ghidra
 
 ```bash
-python ghidra/6510/build.py --install "$GHIDRA_INSTALL_DIR/Ghidra/Processors/6510/data/languages"
+deity-informant emit-sleigh -o "$GHIDRA_INSTALL_DIR/Ghidra/Processors/6510/data/languages"
 ```
 
 Resolves the stock `6502.slaspec` + SLEIGH compiler from `$GHIDRA_INSTALL_DIR` or a `pypcode` install; the stock spec's `JSR`/`RTS` return address and `SBC` borrow are patched to the hardware's. Import a C64 image as Raw Binary, language `6510:LE:16:default`. `docker build -f Dockerfile.ghidra -t di-ghidra . && docker run --rm di-ghidra` runs the headless integration test.
@@ -47,8 +49,8 @@ Resolves the stock `6502.slaspec` + SLEIGH compiler from `$GHIDRA_INSTALL_DIR` o
 ## Tests
 
 ```bash
-black --check deity_informant/ tests/ examples/ ghidra/ && pylint deity_informant/ examples/ ghidra/6510/build.py
-python ghidra/6510/build.py
+black --check deity_informant/ tests/ && pylint deity_informant/
+deity-informant emit-sleigh
 pytest tests/ -n auto --cov=deity_informant --cov-fail-under=85
 ```
 

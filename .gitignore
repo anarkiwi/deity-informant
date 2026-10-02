@@ -8,10 +8,6 @@ __pycache__/
 build/
 dist/
 
-# SLEIGH build artifacts (base spec is Ghidra's, fetched at build time; .sla is generated)
-ghidra/6510/data/languages/6502.slaspec
-ghidra/6510/data/languages/*.sla
-
 # fetched fixtures / reference material (never committed)
 *.sid
 *.prg
@@ -27,5 +23,3 @@ core.*
 # agent worktrees / local harness state
 .claude/
 .nfs*
-ghidra/6510/data/languages/6510_smc.sinc
-ghidra/6510/data/languages/6510_context.sinc

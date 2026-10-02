@@ -26,9 +26,10 @@ COPY --from=ghidra /opt/ghidra /opt/ghidra
 ENV GHIDRA_INSTALL_DIR=/opt/ghidra
 WORKDIR /src
 COPY . /src
-# Install the toolkit, then compile+install the 6510 language into the Ghidra
+# Install the toolkit as a wheel (the SLEIGH sources are its package data), then
+# compile+install the 6510 language into the Ghidra
 # tree so -processor 6510:LE:16:default resolves under headless.
-RUN pip3 install --break-system-packages -e . \
-    && python3 ghidra/6510/build.py --install \
-        "$GHIDRA_INSTALL_DIR/Ghidra/Processors/6510/data/languages"
+RUN pip3 install --break-system-packages . \
+    && deity-informant emit-sleigh \
+        -o "$GHIDRA_INSTALL_DIR/Ghidra/Processors/6510/data/languages"
 CMD ["sh", "ghidra/6510/headless/run.sh"]
