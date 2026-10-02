@@ -23,45 +23,13 @@ jobs:
       - name: Build 6510 SLEIGH module (pypcode-bundled compiler)
         run: python ghidra/6510/build.py
       - name: Test
-        run: pytest tests/ -m "not oracle and not hvsc" -n auto --cov=deity_informant --cov-fail-under=85
-
-  oracle:
-    # Byte-exact SID register-grid comparison of deity's VM against the
-    # Dockerized sidplayfp/sidtrace oracle. Separate job so a flaky oracle or
-    # HVSC fetch never blocks the hermetic unit CI above. HVSC .sid tunes and
-    # the sidtrace CSVs are cached, never committed.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      - name: Install
-        run: pip install -e ".[dev,oracle]"
-      - name: Cache HVSC tunes
-        uses: actions/cache@v6
-        with:
-          path: .oracle-cache/hvsc
-          key: hvsc-${{ hashFiles('deity_informant/tuneprog/tunes.py') }}
-      - name: Pull sidtrace oracle image
-        run: docker pull anarkiwi/sidtrace:latest
-      - name: Cache oracle CSVs
-        uses: actions/cache@v6
-        with:
-          path: .oracle-cache/csv
-          key: oracle-csv-${{ hashFiles('deity_informant/tuneprog/tunes.py', 'tests/test_oracle.py') }}
-      - name: Oracle test
-        run: pytest tests/ -m oracle -n auto
-      - name: tuneprog front end, certificates and printed form on HVSC exemplars
-        run: pytest tests/ -m hvsc -n auto
+        run: pytest tests/ -n auto --cov=deity_informant --cov-fail-under=85
 
   ghidra-integration:
-    # End-to-end tests under the actual Ghidra headless analyzer (not just libsla/
-    # pypcode), all four in ghidra/6510/headless/run.sh: the illegal LAX/ISC decode,
-    # the hello-world SMC export (the self-modified STA must decompile as a store
-    # through its own operand cell), the complexity/coverage oracle, and the P-Code
-    # emulator semantic oracle. Ghidra + JDK live in a multistage image
-    # (Dockerfile.ghidra); the ~500MB Ghidra layer is GHA-cached.
+    # The illegal LAX/ISC decode under the actual Ghidra headless analyzer (not
+    # just libsla/pypcode), ghidra/6510/headless/run.sh; the facts-driven export
+    # and emulator oracles live in anarkiwi/trackerprog. Ghidra + JDK live in a
+    # multistage image (Dockerfile.ghidra); the Ghidra layer is GHA-cached.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
