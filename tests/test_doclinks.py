@@ -28,6 +28,6 @@ def test_an_anchor_is_the_headings_own_slug():
 
 def test_a_target_that_is_pseudocode_is_not_a_link():
     """``tick0cmd[newfx](A=newparam[X])`` names no file: no separator, no extension."""
-    assert doclinks.PATH.search("prototype-trackerprog.md")
+    assert doclinks.PATH.search("docs/overview.md")
     assert doclinks.PATH.search("certificates/x.json")
     assert not doclinks.PATH.search("A=newparam[X]")
