@@ -32,16 +32,6 @@ from .vm import (
     run_irq,
     run_irq_driven,
 )
-from . import c64
-from .c64 import (
-    poweron_ram,
-    installed_handler,
-    installed_vector,
-    install_kernal_irq_stubs,
-    install_irq_entry,
-    irq_stubs,
-    load_psid,
-)
 
 try:
     __version__ = version("deity-informant")
@@ -61,13 +51,5 @@ __all__ = [
     "run_sub",
     "run_irq",
     "run_irq_driven",
-    "c64",
-    "poweron_ram",
-    "installed_handler",
-    "installed_vector",
-    "install_kernal_irq_stubs",
-    "install_irq_entry",
-    "irq_stubs",
-    "load_psid",
     "__version__",
 ]
