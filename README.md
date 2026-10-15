@@ -2,7 +2,7 @@
 
 NMOS 6510 toolkit: a 6510 -> raw-P-Code lifter + pure-Python P-Code VM (all 105 documented illegal opcodes are first-class), and a `6510` Ghidra/pypcode SLEIGH processor module. The `jennings` package supplies the opcode table, assembler and disassembler, and its py65-compatible `MPU` executes on this lifter + VM.
 
-SID tune decompilation (tuneprog, trackerprog) built on this toolkit lives in [anarkiwi/trackerprog](https://github.com/anarkiwi/trackerprog).
+SID tune decompilation (tuneprog, trackerprog) built on this toolkit lives in [anarkiwi/trackerprog](https://github.com/anarkiwi/trackerprog); the C64 machine model (power-on RAM, interrupt-vector discovery, ROM-free IRQ dispatch) in [anarkiwi/vagrant-moses](https://github.com/anarkiwi/vagrant-moses).
 
 ## Components
 
