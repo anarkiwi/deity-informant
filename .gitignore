@@ -22,4 +22,5 @@ core.*
 
 # agent worktrees / local harness state
 .claude/
+.worktrees/
 .nfs*
