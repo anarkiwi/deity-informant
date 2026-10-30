@@ -250,11 +250,26 @@ def run_sub(vm, pc, cache, lifter):
     return pc
 
 
+def vector(addr):
+    """Handler resolver reading the 16-bit vector at ``addr`` from ``vm.mem`` when the
+    interrupt is taken, so code that rewrites its own vector is followed."""
+
+    def resolve(vm):
+        return vm.mem[addr] | (vm.mem[(addr + 1) & 0xFFFF] << 8)
+
+    return resolve
+
+
+def _handler(vm, handler):
+    return handler(vm) if callable(handler) else handler
+
+
 def run_irq(vm, handler, cache, lifter):
     """Enter ``handler`` like a hardware IRQ; run until its RTI unwinds the frame.
 
     Pushes the CPU interrupt frame (return address then status), sets I, and runs
-    from ``handler`` until the balancing RTI climbs the stack back.
+    from ``handler`` (an address, or a resolver such as :func:`vector` called at
+    entry) until the balancing RTI climbs the stack back.
     """
     reg = vm.reg
     start = reg[3]
@@ -262,7 +277,7 @@ def run_irq(vm, handler, cache, lifter):
     vm._push(0x00)  # sentinel return lo
     vm._push_status()
     reg[10] = 1  # I set on IRQ entry
-    pc = handler
+    pc = _handler(vm, handler)
     n = 0
     while reg[3] < start:
         pc = vm.step(pc, cache, lifter)
@@ -279,7 +294,7 @@ def _take_irq(vm, handler, ret_pc, enter):
     vm._push_status()
     reg[10] = 1  # I set on IRQ entry
     enter(vm)
-    return handler
+    return _handler(vm, handler)
 
 
 def run_irq_driven(vm, handler, total, sources, cache, lifter, idle_pc=0):
@@ -290,6 +305,8 @@ def run_irq_driven(vm, handler, total, sources, cache, lifter, idle_pc=0):
     to the next fire). While a handler runs with I clear, a due source nests --
     modelling defMON's ``CLI`` mid-play, so a raster split delays the CIA play's
     later SID writes exactly as on hardware. Advances until ``total`` cycles.
+    ``handler`` is an address, or a resolver such as :func:`vector` called at each
+    entry (after ``enter``), so a playroutine that chains handlers is followed.
     """
     reg = vm.reg
     while True:

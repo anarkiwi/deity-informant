@@ -3,7 +3,7 @@
 import pytest
 
 import deity_informant as P
-from deity_informant import PcodeVM, run_sub, run_irq, run_irq_driven, lift
+from deity_informant import PcodeVM, run_sub, run_irq, run_irq_driven, lift, vector
 
 import _common as H
 
@@ -96,6 +96,41 @@ def test_run_irq_driven_fires_source():
     sources = [{"period": 20000, "next": 100, "enter": enter}]
     run_irq_driven(vm, handler, 5000_0, sources, {}, lift)
     assert vm.mem[0xD405] == 0x81  # handler observed the raised source
+
+
+def _chain_vm():
+    # A: INC $0400; vector <- B; RTI.  B: INC $0401; vector <- A; RTI.
+    def handler(counter, nxt_hi):
+        return bytes(
+            [0xEE, counter, 0x04, 0xA9, 0, 0x8D, 0xFE, 0xFF, 0xA9, nxt_hi, 0x8D, 0xFF, 0xFF, 0x40]
+        )
+
+    vm = _vm(handler(0x00, 0x31), org=0x3000)
+    vm.mem[0x3100:0x310E] = handler(0x01, 0x30)
+    vm.mem[0xFFFE], vm.mem[0xFFFF] = 0x00, 0x30
+    return vm
+
+
+def test_run_irq_driven_follows_rewritten_vector():
+    vm = _chain_vm()
+    sources = [{"period": 20000, "next": 100, "enter": lambda m: None}]
+    run_irq_driven(vm, vector(0xFFFE), 100_000, sources, {}, lift)
+    assert (vm.mem[0x0400], vm.mem[0x0401]) == (3, 2)
+
+
+def test_run_irq_driven_fixed_handler_ignores_vector():
+    vm = _chain_vm()
+    sources = [{"period": 20000, "next": 100, "enter": lambda m: None}]
+    run_irq_driven(vm, 0x3000, 100_000, sources, {}, lift)
+    assert (vm.mem[0x0400], vm.mem[0x0401]) == (5, 0)
+
+
+def test_run_irq_resolves_vector_at_entry():
+    vm = _chain_vm()
+    for _ in range(3):
+        run_irq(vm, vector(0xFFFE), {}, lift)
+    assert (vm.mem[0x0400], vm.mem[0x0401]) == (2, 1)
+    assert vector(0xFFFE)(vm) == 0x3100
 
 
 # ---- remaining illegal semantics (lifter branch coverage) --------------------
