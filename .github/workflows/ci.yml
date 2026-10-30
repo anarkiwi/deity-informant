@@ -27,8 +27,7 @@ jobs:
 
   ghidra-integration:
     # The illegal LAX/ISC decode under the actual Ghidra headless analyzer (not
-    # just libsla/pypcode), ghidra/6510/headless/run.sh; the facts-driven export
-    # and emulator oracles live in anarkiwi/trackerprog. Ghidra + JDK live in a
+    # just libsla/pypcode), ghidra/6510/headless/run.sh. Ghidra + JDK live in a
     # multistage image (Dockerfile.ghidra); the Ghidra layer is GHA-cached.
     runs-on: ubuntu-latest
     steps:
