@@ -31,6 +31,7 @@ from .vm import (
     run_sub,
     run_irq,
     run_irq_driven,
+    vector,
 )
 
 try:
@@ -51,5 +52,6 @@ __all__ = [
     "run_sub",
     "run_irq",
     "run_irq_driven",
+    "vector",
     "__version__",
 ]
