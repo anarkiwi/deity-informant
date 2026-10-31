@@ -207,6 +207,23 @@ def test_shx_stores_x_and_high_plus_one():
     assert vmem[base + y] == (x & (((base >> 8) + 1) & 0xFF))
 
 
+def test_sha_indy_high_byte_follows_pointer_under_cache():
+    # SHA $93 (zp),Y: H+1 is the run-time pointer high byte, not a lifted constant.
+    vm = P.PcodeVM(bytearray(0x10000))
+    vm.volatile = False
+    mem = vm.mem
+    mem[PC], mem[PC + 1] = 0x93, ZP
+    H.load_regs(vm, 0xFF, 0xFF, 0x03)
+    cache, recs = {}, []
+    for hi in (0x20, 0x40, 0xFE):
+        mem[ZP], mem[ZP + 1] = 0x10, hi
+        recs.append(P.lift(mem, PC))
+        vm.step(PC, cache, P.lift)
+        assert mem[(hi << 8) | 0x13] == hi + 1
+    assert len(cache) == 1
+    assert recs[0] == recs[1] == recs[2]
+
+
 def test_las_loads_a_x_sp_from_mem_and_sp():
     base, y, sp = 0x2000, 0x03, 0xC0
     mem = bytearray(0x10000)

@@ -142,12 +142,14 @@ def _ror(e, val):
 
 
 # ---- addressing modes (MODE_LEN / MEM_MODES canonical in jennings.opcodes) ----
-def _ea(e, mem, pc, mode, pmap=None):
+def _ea(e, mem, pc, mode, pmap=None, phis=None):
     """Emit P-Code computing the effective address; return its varnode.
 
     ``pmap`` (optional) collects ``{id(const): (srcs, fn)}`` recording which
     operand-derived address constants come from which instruction-byte offsets;
     purely additive (emitted ops and return value are identical without it).
+    ``phis`` (optional list) receives the pointer high-byte LOAD varnode of an
+    ``indy`` address, likewise without changing the emitted ops.
     """
     lo = mem[(pc + 1) & 0xFFFF]
     hi = mem[(pc + 2) & 0xFFFF]
@@ -175,6 +177,8 @@ def _ea(e, mem, pc, mode, pmap=None):
     if mode == "indy":
         plo = e.op("LOAD", e.tmp(), reg(C(lo, 2), [1], "id"))
         phi = e.op("LOAD", e.tmp(), reg(C((lo + 1) & 0xFF, 2), [1], "hi1"))
+        if phis is not None:
+            phis.append(phi)
         base = e.op(
             "INT_OR",
             e.tmp(2),
@@ -726,7 +730,8 @@ def lift(mem, pc):
     e = Emit()
     ctrl = ("next",)
     pmap = {}
-    eav = _ea(e, mem, pc, mode, pmap) if mode in MEM_MODES else None
+    phis = []
+    eav = _ea(e, mem, pc, mode, pmap, phis) if mode in MEM_MODES else None
     imm = mem[(pc + 1) & 0xFFFF]
 
     def immc():
@@ -940,13 +945,10 @@ def lift(mem, pc):
         # Stable form: store reg & (high(base)+1) -- the address-high AND quirk
         # (NMS pp.43-50). Page-cross / RDY-drop-off instabilities are
         # non-deterministic and intentionally not modelled.
-        if mode in ("absy", "absx"):
-            base = mem[(pc + 1) & 0xFFFF] | (mem[(pc + 2) & 0xFFFF] << 8)
-        else:  # indy ($93 SHA): base is the 16-bit pointer read from zero page
-            zp = mem[(pc + 1) & 0xFFFF]
-            base = mem[zp] | (mem[(zp + 1) & 0xFF] << 8)
-        h1 = C(((base >> 8) + 1) & 0xFF)
-        if mode in ("absy", "absx"):
+        if mode == "indy":  # $93 SHA: H is the zero-page pointer's loaded high byte
+            h1 = e.op("INT_ADD", e.tmp(), phis[0], C(1))
+        else:
+            h1 = C(mem[(pc + 2) & 0xFFFF] + 1)
             pmap[id(h1)] = ([2], "hi1")
         if mn == "SHA":
             val = e.op("INT_AND", e.tmp(), e.op("INT_AND", e.tmp(), A, X), h1)
