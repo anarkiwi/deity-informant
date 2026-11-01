@@ -455,7 +455,7 @@ def irq_song(row, img, mc, cap):
     return row | label("frames", img, row, min(row["calls"], cap or row["calls"]), mc), None
 
 
-def run_song(path, row, mc, cap=0, defer=False):
+def run_song(path, row, mc, cap=0, defer=()):
     """``(row, compressed facts line or None)`` of one planned song."""
     row = dict(row)
     try:
@@ -463,9 +463,11 @@ def run_song(path, row, mc, cap=0, defer=False):
             return row, None
         img = sidfile(Path(path).read_bytes())[1]
         if row["kind"] == "RSID" or not row["play"]:
+            if "irq" in defer:
+                return row | {"deferred": True}, None
             row, rec = irq_song(row, img, mc, cap)
         else:
-            row, rec = psid_song(row, img, mc, cap, defer)
+            row, rec = psid_song(row, img, mc, cap, "banked" in defer)
     except Exception as e:  # pylint: disable=broad-exception-caught
         return {**row, "error": repr(e)[:300]}, None
     if rec is None:
@@ -720,7 +722,10 @@ def main(argv=None):  # pylint: disable=too-many-locals
     ap.add_argument("--sample", type=int, default=0, help="random tunes (0: all)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument(
-        "--defer-banked", action="store_true", help="leave banked songs for a later run"
+        "--defer",
+        type=lambda v: tuple(v.split(",")),
+        default=(),
+        help="banked,irq: leave those songs for a later run",
     )
     args = ap.parse_args(argv)
     root, out = Path(args.root), Path(args.out)
@@ -770,7 +775,7 @@ def main(argv=None):  # pylint: disable=too-many-locals
                     ran((p, r), (r, None))
             todo = [(p, r) for p, r in todo if "error" not in r]
             timeouts = [args.timeout + args.call_timeout * r["calls"] for _, r in todo]
-            jobs = [(p, r, args.max_cycles, args.label_calls, args.defer_banked) for p, r in todo]
+            jobs = [(p, r, args.max_cycles, args.label_calls, args.defer) for p, r in todo]
             _pool_map(pool, run_song, jobs, timeouts, "corpus", ran)
     s = summary(list(rows.values()))
     s["wall_s"] = time.perf_counter() - t0
