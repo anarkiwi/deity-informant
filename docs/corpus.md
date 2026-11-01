@@ -32,8 +32,8 @@ PSID with a play routine:
    `bank_evidence`.
 3. Flat: lift, `wplift.check` over all calls (`exact`, `mismatch`, `deopts`; `no-return`
    when both stop the same way), lifted `Program.call` and jennings `run_to_rts` timed over
-   the same calls (`timing`), scenario cells from the jennings CPU oracle (`smc.oracle.run_cpu`)
-   over the first `--label-calls` calls.
+   the same calls (`timing`), scenario cells from the vagrant-moses machine oracle with play
+   called as sidplay does (`oracle` `calls`) over the first `--label-calls` calls.
 4. Banked: one vagrant-moses machine run (init and every call, sidplay's $01 per phase) gives
    the facts, the call records the bank-aware lift is checked against (`c64.check`) and the
    cells over every call; `configs` lists the bank configurations seen. Speed is the banked reference and the
@@ -45,11 +45,12 @@ context is seen busy; `irq` records the vector path after init
 (`kernal` when the KERNAL is banked in, so IRQs go through $0314, else `hardware` via RAM
 $FFFE), both vectors, interrupts taken, whether init returned, and the main context's
 instructions until then and the frame it first stored outside page 1 or touched I/O
-(`first_busy_frame`; `idle` when it never did). A second, fully hooked machine oracle run labels
-the first `--label-calls` frames. These songs are skipped for lifting (`irq-driven`). RSIDs flagged as BASIC tunes are skipped (the machine
+(`first_busy_frame`; `idle` when it never did). A second machine oracle run labels the first
+`--label-calls` frames (`oracle` `frames`). These songs are skipped for lifting (`irq-driven`). RSIDs flagged as BASIC tunes are skipped (the machine
 has the ROM-less ROM set).
 
-Labelling goes through `label(oracle, ...)` (the oracle passes are the Python-bound stage).
+Labelling goes through `label(oracle, ...)`; it uses vagrant-moses' native SMC recorder when
+installed (`label_backend` `native`), else the Python classifier.
 Every labelled row has `cells` (scenario sids), `cells_first` (the call or frame each was
 first seen at), `label_calls`, and `reasons` (`smc.expect.lift_reason` per cell, `lift-exact`
 when the lifter can reproduce it).

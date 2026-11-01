@@ -41,7 +41,7 @@ from deity_informant.smc.classify import (  # noqa: E402
 )
 from deity_informant.smc.expect import lift_reason  # noqa: E402
 from deity_informant.smc.machine import _ENTRY, MachineOracle, _Mem, _frames  # noqa: E402
-from deity_informant.smc.oracle import run_cpu, writer_of  # noqa: E402
+from deity_informant.smc.oracle import Run, writer_of  # noqa: E402
 import wplift  # noqa: E402 pylint: disable=wrong-import-order
 from smclabel import iomap, sidfile  # noqa: E402 pylint: disable=wrong-import-order
 
@@ -283,7 +283,8 @@ def _banked(row, img, mc, ev):
     facts = host.facts()
     row["mode"], row["bank_evidence"] = "banked", ev
     row["facts_ms"] = 1e3 * (time.perf_counter() - t)
-    row |= _label_row("machine", host.cls, n, t)
+    cls = host.cls
+    row |= _label_row("calls", Run(cls.cells, cls.unclassified, True, cls.first), n, t)
     last = inits[-1]
     row |= {"init_halt": last["halt"], "calls_run": n}
     if last["halt"] != "return":
@@ -341,35 +342,21 @@ def psid_song(row, img, mc, cap):
     t_lift, _ = _timed(_lifted_run(prog, mc), bytearray(mem), n)
     t_jen, _ = _timed(_jennings_run(play, mc), bytearray(mem), n)
     row["timing"] = _timing(n, cycles, t_ref, t_lift, t_jen)
-    row |= label("cpu", img, row, min(n, cap or n), mc)
+    row |= label("calls", img, row, min(n, cap or n), mc)
     return row, {"state": _diff(img, mem), "reg": list(r["reg"]), "facts": facts}
 
 
-class _Frames(MachineOracle):
-    """The machine oracle with each cell's first-seen index the frame of the interrupt-driven
-    phase it was seen in."""
-
-    def __init__(self, image, ntsc=False):
-        super().__init__(image, ntsc=ntsc)
-        self.cpf, self.t0 = mm.video(ntsc).cycles_per_frame, None
-
-    def _decode(self, mc):
-        if self.irq_driven and self.call_cycles == 0:
-            self.t0 = mc.cycle if self.t0 is None else self.t0
-            self.cls.index = (mc.cycle - self.t0) // self.cpf
-        super()._decode(mc)
-
-
 def label(oracle, img, row, n, mc):
-    """The scenario-cell row fields of a song's first ``n`` play calls (``cpu``: the jennings
-    CPU oracle) or interrupt-driven frames (``machine``: the vagrant-moses machine oracle)."""
+    """The scenario-cell row fields of a song's first ``n`` play calls (``calls``: play called
+    as sidplay does) or interrupt-driven frames (``frames``), on the vagrant-moses machine."""
     t = time.perf_counter()
     init = (row["init"], row["song"] - 1)
-    if oracle == "cpu":
-        run = run_cpu(img, [row["play"]], [(0, 0)] * n, [init], mc)
+    o = MachineOracle(img, ntsc=row["clock"] == "NTSC")
+    if oracle == "calls":
+        ports = {"init": iomap(row["init"]), "call": iomap(row["play"])}
+        run = o.run([(row["play"], 0)] * n, init=[init], call_cycles=mc, ports=ports)
     else:
-        o = _Frames(img, ntsc=row["clock"] == "NTSC")
-        run = o.run([], init=[init], frames=n, irq_setup=True, call_cycles=mc)
+        run = o.run([], init=[init], frames=n, irq_setup=True, call_cycles=mc, index_frames=True)
     return _label_row(oracle, run, n, t)
 
 
@@ -381,7 +368,8 @@ def _label_row(oracle, run, n, t0):
         "cells": sids,
         "reasons": reasons,
         "cells_first": {c.sid: int(i) for c, i in run.first.items()},
-        "unclassified": len(run.unclassified),
+        "unclassified": run.n_unclassified,
+        "label_backend": "python" if run.count is None else "native",
         "label_ms": 1e3 * (time.perf_counter() - t0),
     }
 
@@ -463,7 +451,7 @@ def irq_song(row, img, mc, cap):
     o = _IrqScan(img, ntsc=row["clock"] == "NTSC")
     row["irq"] = o.scan((row["init"], row["song"] - 1), row["calls"], mc)
     row |= {"calls_run": o.irqs, "facts_ms": 1e3 * (time.perf_counter() - t)}
-    return row | label("machine", img, row, min(row["calls"], cap or row["calls"]), mc), None
+    return row | label("frames", img, row, min(row["calls"], cap or row["calls"]), mc), None
 
 
 def run_song(path, row, mc, cap=0):

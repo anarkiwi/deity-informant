@@ -9,6 +9,7 @@ per cell and per lift-gap reason, how many tunes need it.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import random
@@ -84,7 +85,7 @@ def label_tune(path, frames, max_cycles):
         "path": str(path),
         "kind": kind,
         "cells": sorted(c.sid for c in run.cells),
-        "unclassified": len(run.unclassified),
+        "unclassified": run.n_unclassified,
         "returned": run.returned,
     }
 
@@ -137,10 +138,8 @@ def main(argv=None):
     if args.sample:
         paths = random.Random(args.seed).sample(paths, min(args.sample, len(paths)))
     rows = []
-    out = (
-        open(args.out, "w", encoding="utf-8") if args.out else None
-    )  # noqa: SIM115  pylint: disable=consider-using-with
-    with ProcessPool(max_workers=args.jobs) as pool:
+    with contextlib.ExitStack() as stack, ProcessPool(max_workers=args.jobs) as pool:
+        out = stack.enter_context(open(args.out, "w", encoding="utf-8")) if args.out else None
         fut = pool.map(
             _job, [(p, args.frames, args.max_cycles) for p in paths], timeout=args.timeout
         )
@@ -155,8 +154,6 @@ def main(argv=None):
             rows.append(row)
             if out:
                 out.write(json.dumps(row) + "\n")
-    if out:
-        out.close()
     print(json.dumps(summary(rows), indent=1))
     return 0
 
