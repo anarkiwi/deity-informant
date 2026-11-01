@@ -14,6 +14,7 @@ Unintended Opcodes".
 
 from __future__ import annotations
 
+from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
 
 from .lifter import (
@@ -35,7 +36,7 @@ from .vm import (
 )
 
 try:
-    from . import _native
+    _native = import_module("._native", __name__)
 except ImportError:  # pragma: no cover - sdist install: no native extension
     _native = None
 
