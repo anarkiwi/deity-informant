@@ -4,7 +4,7 @@
 //! elimination with callee register summaries.
 
 use crate::analysis::{iv_op, Iv};
-use crate::ir::{fold, k, mask, mem, other, r1, Block, Function, LOp, ALL_REGS, CY, NREG};
+use crate::ir::{fold, k, mask, mem, other, r1, reg, Block, Function, LOp, ALL_REGS, CY, E, NREG};
 use di_pcode::{reg as R, Opc, Space, Vn};
 use fixedbitset::FixedBitSet;
 use rustc_hash::FxHashMap;
@@ -48,6 +48,7 @@ impl Ctx<'_> {
 
 /// Optimize function `fi` to a fixpoint (bounded).
 pub fn optimize(f: &mut Function, cx: &Ctx, fi: usize) {
+    pin_resume(f, cx, fi);
     let mut last = usize::MAX;
     for _ in 0..8 {
         cleanup(f);
@@ -64,6 +65,21 @@ pub fn optimize(f: &mut Function, cx: &Ctx, fi: usize) {
         last = n;
     }
     renumber_temps(f);
+}
+
+/// Replace each side exit's continuation by the registers it reads in the emitted code, where
+/// its uses are those of the instructions the reference resumes with after the deopt.
+fn pin_resume(f: &mut Function, cx: &Ctx, fi: usize) {
+    if cx.cycles || f.blocks.iter().all(|b| b.resume.is_none()) {
+        return;
+    }
+    let live_in = live(f, cx, fi).solve(&mut |_, _| {});
+    for b in &mut f.blocks {
+        if let Some(r) = b.resume.take() {
+            let l = &live_in[r as usize];
+            b.resume_live = Some((0..NREG).fold(0, |m, i| m | (l.contains(i) as u32) << i));
+        }
+    }
 }
 
 fn key(v: Vn) -> u32 {
@@ -93,23 +109,38 @@ pub fn sp_effect(b: &Block, mut depth: impl FnMut(u32) -> u32) -> (i32, i32) {
     (net, low)
 }
 
-/// SP offset `h` after `op` (a `CALL` returns with SP 2 above its call); an SP-setting op
-/// restarts at 0.
-fn sp_step(op: &LOp, h: i32) -> i32 {
+/// SP offset `h` after `op` (a `CALL` returns with SP 2 above its call); `None` when `op`
+/// sets SP to a value not relative to it.
+fn sp_rel(op: &LOp, h: i32) -> Option<i32> {
     if op.opc == Opc::Call {
-        return h + 2;
+        return Some(h + 2);
     }
     if op.out != r1(R::SP) {
-        return h;
+        return Some(h);
     }
     let c = op.ins[1].off() as i32;
     let c = if c < 0x80 { c } else { c - 0x100 };
     match op.opc {
-        _ if op.ins[0] != op.out || op.ins[1].space() != Space::Const => 0,
-        Opc::IntAdd => h + c,
-        Opc::IntSub => h - c,
-        _ => 0,
+        _ if op.ins[0] != op.out || op.ins[1].space() != Space::Const => None,
+        Opc::IntAdd => Some(h + c),
+        Opc::IntSub => Some(h - c),
+        _ => None,
     }
+}
+
+/// [`sp_rel`] where an SP-setting op restarts at 0.
+fn sp_step(op: &LOp, h: i32) -> i32 {
+    sp_rel(op, h).unwrap_or(0)
+}
+
+/// SP offset after `op` relative to the function entry, `None` while unknown: an SP-setting
+/// op makes it unknown, except `SP = E + c` (an outermost function's SP dispatch), which
+/// makes it `c + 2`.
+fn sp_abs(op: &LOp, h: Option<i32>) -> Option<i32> {
+    if op.out == r1(R::SP) && op.ins[0] == reg(E, 2) && op.ins[1].space() == Space::Const {
+        return Some(op.ins[1].off() as i16 as i32 + 2);
+    }
+    h.and_then(|h| sp_rel(op, h))
 }
 
 fn preds(f: &Function) -> Vec<u32> {
@@ -1122,8 +1153,8 @@ struct Live<'a> {
     nregs: usize,
     cps: FixedBitSet,
     /// Stack height at each block's start (functions with stack slots, whose heights are
-    /// static).
-    hin: Vec<i32>,
+    /// static between SP-setting ops), `None` while unknown.
+    hin: Vec<Option<i32>>,
 }
 
 impl Live<'_> {
@@ -1135,13 +1166,15 @@ impl Live<'_> {
         }
     }
     /// Everything a deopt at height `h` hands over: all registers and the stack slots pushed
-    /// above it.
-    fn all(&self, live: &mut FixedBitSet, h: i32) {
+    /// above it (every slot when `h` is unknown).
+    fn all(&self, live: &mut FixedBitSet, h: Option<i32>) {
         live.insert_range(0..NREG);
         self.slots(live, h);
     }
-    fn slots(&self, live: &mut FixedBitSet, h: i32) {
-        live.insert_range(NREG..NREG + (-h).clamp(0, self.nregs as i32 - NREG as i32) as usize);
+    fn slots(&self, live: &mut FixedBitSet, h: Option<i32>) {
+        let n = self.nregs as i32 - NREG as i32;
+        let d = h.map_or(n, |h| (-h).clamp(0, n));
+        live.insert_range(NREG..NREG + d as usize);
     }
     /// Backward over block `b` from `live` (its live-out); which ops to keep, calling `call`
     /// with each `CALL`'s callee and registers live after it.
@@ -1158,7 +1191,7 @@ impl Live<'_> {
         let mut h = self.hin[b];
         for op in &blk.ops {
             hs.push(h);
-            h = sp_step(op, h);
+            h = sp_abs(op, h);
         }
         for (i, op) in blk.ops.iter().enumerate().rev() {
             let h = hs[i];
@@ -1173,19 +1206,24 @@ impl Live<'_> {
                         }
                     }
                     Self::regs(live, s.uses);
-                    self.slots(live, h + 2);
+                    self.slots(live, h.map(|h| h + 2));
                 }
                 Opc::Return if !self.f.top => {
                     live.clear();
                     Self::regs(live, self.cx.sum(self.fi as u32).liveout);
                 }
                 Opc::Return | Opc::BranchInd => self.all(live, h),
-                _ if op.is_deopt() => match blk.resume {
-                    Some(r) if !self.cx.cycles => {
+                _ if op.is_deopt() => match (blk.resume_live, blk.resume) {
+                    _ if self.cx.cycles => self.all(live, h),
+                    (Some(m), _) => {
+                        Self::regs(live, m);
+                        self.slots(live, h);
+                    }
+                    (None, Some(r)) => {
                         live.union_with(&live_in[r as usize]);
                         self.slots(live, h);
                     }
-                    _ => self.all(live, h),
+                    (None, None) => self.all(live, h),
                 },
                 _ => {}
             }
@@ -1244,7 +1282,7 @@ impl Live<'_> {
 }
 
 fn live<'a>(f: &'a Function, cx: &'a Ctx<'a>, fi: usize) -> Live<'a> {
-    let mut hin = vec![0; f.blocks.len()];
+    let mut hin = vec![Some(0); f.blocks.len()];
     if f.nslots > 0 {
         let mut seen = FixedBitSet::with_capacity(f.blocks.len());
         let mut work = vec![0usize];
@@ -1252,7 +1290,7 @@ fn live<'a>(f: &'a Function, cx: &'a Ctx<'a>, fi: usize) -> Live<'a> {
         while let Some(b) = work.pop() {
             let mut h = hin[b];
             for op in &f.blocks[b].ops {
-                h = sp_step(op, h);
+                h = sp_abs(op, h);
                 let ts: &[u32] = match op.opc {
                     Opc::Branch | Opc::CBranch => std::slice::from_ref(&op.aux),
                     _ => &[],

@@ -6,7 +6,7 @@
 use crate::analysis::{
     is_stack_op, operand_bytes, page1_check, Access, Check, Entry, Graph, Iv, Tg,
 };
-use crate::func::{Ctl, Exit, Plan, H};
+use crate::func::{Arm, Ctl, Exit, Plan, H};
 use crate::ir::{cy, k, mem, other, r1, reg, tmp, Block, Function, LOp, E, NREG};
 use di_pcode::{reg as R, CtrlKind, Op, Opc, PenKind, Slot, Space, Template, Vn};
 use fixedbitset::FixedBitSet;
@@ -63,8 +63,11 @@ struct Em<'a, 'b> {
     sh: &'a Shared<'b>,
     plan: &'a Plan,
     f: Function,
-    blk: FxHashMap<u16, u32>,
-    queue: VecDeque<u16>,
+    blk: FxHashMap<(u16, H), u32>,
+    queue: VecDeque<(u16, H)>,
+    /// Height of the node being emitted and the successors of its current variant.
+    nh: H,
+    succ: &'a [(u16, H)],
     cur: usize,
     next: u32,
     /// Cycles accounted but not yet added to `CY`: a constant and 4-byte values.
@@ -85,6 +88,8 @@ pub struct Counts {
     pub code_guards: usize,
     pub stack_guards: usize,
     pub slot_ops: usize,
+    /// Dispatches on SP after SP-setting instructions.
+    pub sp_dispatch: usize,
 }
 
 /// Emit planned function `fi`.
@@ -100,6 +105,8 @@ pub fn emit(sh: &Shared, plan: &Plan, entry: Option<&Entry>, fi: usize) -> (Func
         },
         blk: FxHashMap::default(),
         queue: VecDeque::new(),
+        nh: H::Known(0),
+        succ: &[],
         cur: 0,
         next: 0,
         pend: (0, Vec::new()),
@@ -115,17 +122,20 @@ pub fn emit(sh: &Shared, plan: &Plan, entry: Option<&Entry>, fi: usize) -> (Func
             em.emit(Opc::Copy, r1(*i), k(v as u32, 1), NONE, 0);
         }
     }
-    let b = em.block(plan.pc);
+    let b = em.block((plan.pc, H::Known(0)));
     em.emit(Opc::Branch, NONE, NONE, NONE, b);
-    while let Some(pc) = em.queue.pop_front() {
-        em.cur = em.blk[&pc] as usize;
+    while let Some(key) = em.queue.pop_front() {
+        em.cur = em.blk[&key] as usize;
         em.next = 0;
-        em.node(pc);
+        em.node(key);
+    }
+    if em.n.sp_dispatch > 0 && em.f.nslots > 0 {
+        em.preload();
     }
     (em.f, em.n)
 }
 
-impl Em<'_, '_> {
+impl<'a> Em<'a, '_> {
     fn new_block(&mut self, pc: u16) -> u32 {
         self.f.blocks.push(Block {
             pc,
@@ -133,22 +143,35 @@ impl Em<'_, '_> {
         });
         (self.f.blocks.len() - 1) as u32
     }
-    /// The block of the instruction at `pc`, queued for emission on first use; a deopt to
-    /// `pc` if the plan does not reach it.
-    fn block(&mut self, pc: u16) -> u32 {
-        if let Some(&b) = self.blk.get(&pc) {
+    /// The block of node `key`, queued for emission on first use; a deopt to its start if
+    /// the plan has no such node.
+    fn block(&mut self, key: (u16, H)) -> u32 {
+        if let Some(&b) = self.blk.get(&key) {
             return b;
         }
+        let pc = key.0;
         let b = self.new_block(pc);
-        self.blk.insert(pc, b);
-        if self.plan.nodes.contains_key(&pc) {
-            self.queue.push_back(pc);
+        self.blk.insert(key, b);
+        if self.plan.nodes.contains_key(&key) {
+            self.queue.push_back(key);
         } else {
             let save = std::mem::replace(&mut self.cur, b as usize);
             self.deopt(k(pc as u32, 2));
             self.cur = save;
         }
         b
+    }
+    /// The node the current variant transfers to at `pc`.
+    fn key(&self, pc: u16) -> (u16, H) {
+        self.succ
+            .iter()
+            .copied()
+            .find(|s| s.0 == pc)
+            .unwrap_or((pc, H::Unknown))
+    }
+    /// The block of the current variant's successor at `pc`.
+    fn to(&mut self, pc: u16) -> u32 {
+        self.block(self.key(pc))
     }
     /// A temporary; numbering restarts per instruction start, as temporaries never outlive
     /// the blocks one instruction start emits.
@@ -190,11 +213,10 @@ impl Em<'_, '_> {
         self.n.slot_ops += 1;
         Some(reg((NREG as u32 + i) as u16, 1))
     }
-    /// Whether the instruction at `pc` runs with stack bytes the lift keeps out of memory
-    /// above SP: a callee (its elided return address) or below its entry height.
-    fn elided_live(&self, pc: u16) -> bool {
-        self.sh.private
-            && (!self.plan.top || matches!(self.plan.nodes[&pc].h, H::Known(h) if h < 0))
+    /// Whether the current node runs with stack bytes the lift keeps out of memory above SP:
+    /// a callee (its elided return address) or below its entry height.
+    fn elided_live(&self) -> bool {
+        self.sh.private && (!self.plan.top || matches!(self.nh, H::Known(h) if h < 0))
     }
     /// Deopt to `pc` before the access at `addr` when it reaches page 1.
     fn page1_guard(&mut self, addr: Vn, pc: u16) {
@@ -253,11 +275,12 @@ impl Em<'_, '_> {
         self.cur = cont as usize;
     }
     fn table(&mut self, ts: &[u16]) -> u32 {
-        let mut t: Vec<(u16, u32)> = ts
+        let keys: Vec<(u16, H)> = ts
             .iter()
-            .filter(|t| self.plan.nodes.contains_key(t))
-            .map(|&t| (t, self.block(t)))
+            .map(|&t| self.key(t))
+            .filter(|k| self.plan.nodes.contains_key(k))
             .collect();
+        let mut t: Vec<(u16, u32)> = keys.into_iter().map(|k| (k.0, self.block(k))).collect();
         t.sort_unstable();
         self.f.tables.push(t);
         (self.f.tables.len() - 1) as u32
@@ -265,7 +288,7 @@ impl Em<'_, '_> {
     fn goto(&mut self, t: &Tg, calc: impl FnOnce(&mut Self) -> Vn) {
         match t {
             Tg::At(a) => {
-                let b = self.block(*a);
+                let b = self.to(*a);
                 self.emit(Opc::Branch, NONE, NONE, NONE, b);
             }
             Tg::Calc(ts) => {
@@ -322,24 +345,25 @@ impl Em<'_, '_> {
         self.side_exit(c, true, |em| em.deopt(pc));
     }
 
-    fn node(&mut self, pc: u16) {
+    fn node(&mut self, key: (u16, H)) {
         let (plan, sh) = (self.plan, self.sh);
-        let node = &plan.nodes[&pc];
+        let pc = key.0;
+        let arms = &plan.nodes[&key].arms;
         let vars = &sh.g.vars[&pc];
+        self.nh = key.1;
         if !sh.g.cells.contains(pc as usize) {
-            let (ctl, exit) = &node.ctl[0];
-            self.insn(pc, &vars[0].op, &vars[0].acc, ctl, *exit);
+            self.insn(pc, &vars[0].op, &vars[0].acc, &arms[0]);
             return;
         }
         let v = self.load(k(pc as u32, 2), Iv::exact(pc as u32), 0);
-        for (var, (ctl, exit)) in vars.iter().zip(&node.ctl) {
+        for (var, arm) in vars.iter().zip(arms) {
             let c = self.op(Opc::IntEqual, 1, v, k(var.op as u32, 1));
             let vb = self.new_block(pc);
             let cont = self.new_block(pc);
             self.emit(Opc::CBranch, NONE, c, NONE, vb);
             self.emit(Opc::Branch, NONE, NONE, NONE, cont);
             self.cur = vb as usize;
-            self.insn(pc, &var.op, &var.acc, ctl, *exit);
+            self.insn(pc, &var.op, &var.acc, arm);
             self.cur = cont as usize;
         }
         self.deopt(k(pc as u32, 2));
@@ -397,7 +421,7 @@ impl Em<'_, '_> {
                 if !stack
                     && ac.addr.meets(0x100, 0x200)
                     && page1_check(opc, ai) == Check::Own
-                    && self.elided_live(pc)
+                    && self.elided_live()
                 {
                     self.page1_guard(a, pc);
                 }
@@ -415,11 +439,13 @@ impl Em<'_, '_> {
         chk
     }
 
-    fn insn(&mut self, pc: u16, op: &u8, acc: &[Access], ctl: &Ctl, exit: Exit) {
+    fn insn(&mut self, pc: u16, op: &u8, acc: &[Access], arm: &'a Arm) {
+        let (ctl, exit) = (&arm.ctl, arm.exit);
+        self.succ = &arm.succ;
         let t = Template::of(*op);
         self.n.insns += 1;
         self.n.raw += t.n as usize;
-        self.h = match self.plan.nodes[&pc].h {
+        self.h = match self.nh {
             H::Known(h) if self.promote => Some(h),
             _ => None,
         };
@@ -488,9 +514,13 @@ impl Em<'_, '_> {
                 self.check(chk, k(next as u32, 2));
                 let sets_sp = crate::analysis::stack_delta(*op).is_none();
                 self.exit_or(exit, k(*n as u32, 2), |em| {
-                    let b = em.block(*n);
-                    em.f.blocks[b as usize].check |= sets_sp;
-                    em.emit(Opc::Branch, NONE, NONE, NONE, b);
+                    if sets_sp && em.plan.top {
+                        em.sp_dispatch(*n);
+                    } else {
+                        let b = em.to(*n);
+                        em.f.blocks[b as usize].check |= sets_sp;
+                        em.emit(Opc::Branch, NONE, NONE, NONE, b);
+                    }
                 });
             }
             Ctl::Br { t: tg, f } => {
@@ -516,13 +546,13 @@ impl Em<'_, '_> {
                             self.pend.1.push(z);
                         }
                         self.flush();
-                        let (bt, bf) = (self.block(*a), self.block(*f));
+                        let (bt, bf) = (self.to(*a), self.to(*f));
                         self.emit(Opc::CBranch, NONE, c, NONE, bt);
                         self.emit(Opc::Branch, NONE, NONE, NONE, bf);
                     }
                     Tg::Calc(ts) => {
                         self.flush();
-                        let (x, bf) = (self.new_block(pc), self.block(*f));
+                        let (x, bf) = (self.new_block(pc), self.to(*f));
                         self.emit(Opc::CBranch, NONE, c, NONE, x);
                         self.emit(Opc::Branch, NONE, NONE, NONE, bf);
                         self.cur = x as usize;
@@ -570,7 +600,7 @@ impl Em<'_, '_> {
                         (w, self.op(Opc::IntOr, 2, page, inc), Iv::full(2))
                     }
                 };
-                if iv.meets(0x100, 0x200) && self.elided_live(pc) {
+                if iv.meets(0x100, 0x200) && self.elided_live() {
                     self.page1_guard(lo_a, pc);
                     self.page1_guard(hi_a, pc);
                 }
@@ -612,7 +642,7 @@ impl Em<'_, '_> {
                         em.deopt(t);
                     });
                 }
-                let b = self.block(*ret);
+                let b = self.to(*ret);
                 self.emit(Opc::Branch, NONE, NONE, NONE, b);
             }
             Ctl::PushJmp { t: tg, ret } => {
@@ -687,6 +717,49 @@ impl Em<'_, '_> {
                 self.deopt(k(pc as u32, 2));
             }
         }
+    }
+
+    /// Load every stack slot from memory before the entry, so a pull after an SP-setting
+    /// instruction of a byte this call has not pushed reads what memory holds.
+    fn preload(&mut self) {
+        let body = self.new_block(self.plan.pc);
+        self.f.blocks.swap(0, body as usize);
+        (self.cur, self.next) = (0, 0);
+        for i in 0..self.f.nslots {
+            let a = self.op(Opc::IntSub, 2, reg(E, 2), k(i + 2, 2));
+            let a = self.op(Opc::IntAnd, 2, a, k(0xff, 2));
+            let a = self.op(Opc::IntOr, 2, a, k(0x100, 2));
+            let v = self.load(a, PAGE1, mem::STACK);
+            self.emit(Opc::Copy, reg((NREG as u32 + i) as u16, 1), v, NONE, 0);
+        }
+        self.emit(Opc::Branch, NONE, NONE, NONE, body);
+    }
+
+    /// After an SP-setting instruction of an outermost plan: branch to the successor node at
+    /// `pc` whose height SP is at relative to the entry (`E` is the entry SP + 2, compared
+    /// without wrapping), restating SP as `E + height - 2` so its height is static again, else
+    /// deopt.
+    fn sp_dispatch(&mut self, pc: u16) {
+        self.n.sp_dispatch += 1;
+        let s = self.zext(r1(R::SP), 2);
+        let d = self.op(Opc::IntSub, 2, s, reg(E, 2));
+        for &key in self.succ {
+            if key.0 != pc || !self.plan.nodes.contains_key(&key) {
+                continue;
+            }
+            let H::Known(x) = key.1 else { unreachable!() };
+            let rel = k((x - 2) as u32 & 0xffff, 2);
+            let c = self.op(Opc::IntEqual, 1, d, rel);
+            let arm = self.new_block(pc);
+            self.f.blocks[arm as usize].check = true;
+            self.emit(Opc::CBranch, NONE, c, NONE, arm);
+            let save = std::mem::replace(&mut self.cur, arm as usize);
+            self.emit(Opc::IntAdd, r1(R::SP), reg(E, 2), rel, 0);
+            let b = self.block(key);
+            self.emit(Opc::Branch, NONE, NONE, NONE, b);
+            self.cur = save;
+        }
+        self.deopt(k(pc as u32, 2));
     }
 
     /// Exit to `pc` per `exit`, otherwise continue with `cont`.

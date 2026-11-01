@@ -128,8 +128,11 @@ pub fn eval(op: &LOp, a: u32, b: u32) -> u32 {
 #[derive(Clone, Debug, Default)]
 pub struct Block {
     /// A side exit's continuation: the block that runs in place of its deopt, whose
-    /// liveness the deopt inherits when cycles are not counted.
+    /// liveness in the emitted code the deopt inherits when cycles are not counted.
     pub resume: Option<u32>,
+    /// The registers (bits below `NREG`) the emitted continuation of a side exit reads,
+    /// replacing `resume` once optimization starts.
+    pub resume_live: Option<u32>,
     /// The address of the instruction the block starts at (the deopt PC of a cycle-budget
     /// check).
     pub pc: u16,
@@ -204,7 +207,7 @@ pub struct Stats {
     pub code_bytes: usize,
     /// Stores checked against constant code.
     pub code_guards: usize,
-    /// `JSR`s lifted as `CALL`.
+    /// `CALL`s emitted (one per `JSR` node).
     pub calls: usize,
     /// Only pushes and pulls reach page 1, given the page-1 guards: stack traffic is removed.
     pub stack_private: bool,
@@ -219,6 +222,14 @@ pub struct Stats {
     pub stack_ops: usize,
     /// Instruction starts the facts saw that the lift did not reach.
     pub unreached: usize,
+    /// Plan nodes whose stack height relative to their function's entry is unknown.
+    pub unknown_heights: usize,
+    /// Functions in a call-graph cycle.
+    pub recursive: usize,
+    /// Plan nodes beyond the first per instruction start (one per further stack height).
+    pub split_nodes: usize,
+    /// Dispatches on SP after SP-setting instructions.
+    pub sp_dispatch: usize,
 }
 
 /// A lifted program: functions plus what the executor needs to check and leave it.

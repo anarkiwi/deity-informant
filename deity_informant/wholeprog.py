@@ -9,7 +9,7 @@ from __future__ import annotations
 from . import _native
 from .trace import Facts
 
-__all__ = ["REGS", "lift", "lift_many", "reference_call", "entry_spec"]
+__all__ = ["REGS", "lift", "lift_many", "plans", "reference_call", "entry_spec"]
 
 #: Register-file indices of ``lift()`` registers by name.
 REGS = {"a": 0, "x": 1, "y": 2, "sp": 3, "c": 8, "z": 9, "i": 10, "d": 11, "v": 13, "n": 14}
@@ -50,6 +50,15 @@ def lift(image, entries, volatile=(), facts=None, optimize=True, cycles=False):
         _facts(facts),
         optimize,
         cycles,
+    )
+
+
+def plans(image, entries, facts=None):
+    """The functions the lift plans for ``entries``: ``[{"pc", "top", "balanced", "heights"}]``,
+    ``heights`` per instruction start: the heights it is planned at relative to its function's
+    entry, ``None`` where unknown."""
+    return _native_or_raise().plan_program(
+        bytes(image), [entry_spec(e) for e in entries], _facts(facts)
     )
 
 

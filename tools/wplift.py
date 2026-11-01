@@ -41,24 +41,27 @@ def image_of(path, org):
     return img
 
 
-def check(img, prog, calls, volatile):
+def check(img, prog, calls, volatile, progress=True):
     """Run ``calls`` on the reference and the lift; the first mismatch or None."""
     entries = prog.entries
     m1, m2 = bytearray(img), bytearray(img)
     s1 = s2 = {"reg": None, "cycles": 0}
     keys = ("log", "reg", "pc", "halt") + (("cycles",) if prog.cycles else ())
-    for n, (pc, a) in enumerate(tqdm(calls, desc="check", unit="call")):
+    for n, (pc, a) in enumerate(tqdm(calls, desc="check", unit="call", disable=not progress)):
         kw = {"log": True, "synth": True}
         r = wholeprog.reference_call(
             m1, pc, a=a, volatile=volatile, clocked=prog.cycles, **kw, **s1
         )
+        if r["halt"] != "return" and not prog.cycles:
+            return n, "no-return"
         o = prog.call(m2, entries.index(pc), a=a, **kw, **s2)
         for k in keys:
             if r[k] != o[k]:
-                return n, k
+                return n, k, r[k] if k == "reg" else None, o[k] if k == "reg" else None
         sp = r["reg"][3]
-        if any(m1[i] != m2[i] for i in range(0x10000) if not 0x100 <= i <= 0x100 + sp):
-            return n, "memory"
+        bad = [i for i in range(0x10000) if m1[i] != m2[i] and not 0x100 <= i <= 0x100 + sp]
+        if bad:
+            return n, "memory@%04x" % bad[0]
         s1 = {"reg": list(r["reg"]), "cycles": r["cycles"]}
         s2 = {"reg": list(o["reg"]), "cycles": o["cycles"] if prog.cycles else r["cycles"]}
     return None

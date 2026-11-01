@@ -8,7 +8,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyDict, PyList};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 /// A 64 KiB bytearray as the bus: volatile ranges optionally logged as
@@ -113,6 +113,13 @@ fn facts(d: Option<&Bound<'_, PyDict>>) -> PyResult<Facts> {
     }
     if let Some(p) = get("page1")? {
         f.page1 = p.extract()?;
+    }
+    if let Some(h) = get("heights")? {
+        f.heights = match h.cast::<PyDict>() {
+            Ok(m) => m.extract::<HashMap<u16, Vec<i16>>>()?.into_iter().collect(),
+            Err(_) => h.extract()?,
+        };
+        f.heights.sort_unstable_by_key(|e| e.0);
     }
     Ok(f)
 }
@@ -299,6 +306,10 @@ impl Program {
         d.set_item("slot_ops", s.slot_ops)?;
         d.set_item("stack_ops", s.stack_ops)?;
         d.set_item("unreached", s.unreached)?;
+        d.set_item("unknown_heights", s.unknown_heights)?;
+        d.set_item("recursive", s.recursive)?;
+        d.set_item("split_nodes", s.split_nodes)?;
+        d.set_item("sp_dispatch", s.sp_dispatch)?;
         Ok(d)
     }
 
@@ -426,7 +437,7 @@ pub fn reference_call<'py>(
 
 /// Lift ``entries`` of the program in ``image`` (64 KiB entry state): ``entries`` as
 /// ``[(pc, [(reg, values)])]``, ``volatile`` as ``[(lo, hi)]``, ``facts`` as a dict with
-/// ``starts``, ``edges``, ``writes`` and ``page1``; ``optimize=False`` keeps the emitted
+/// ``starts``, ``edges``, ``writes``, ``page1`` and ``heights``; ``optimize=False`` keeps the emitted
 /// P-Code; ``cycles=True`` counts cycles.
 #[pyfunction]
 #[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false))]
@@ -446,6 +457,45 @@ pub fn lift_program(
     Ok(Program::new(py.detach(|| {
         di_lift::lift_with(&img, &es, &volatile, &f, opts)
     })))
+}
+
+/// The function plans the lift starts from: ``[{"pc", "top", "balanced", "heights"}]`` with
+/// ``heights`` mapping each instruction start to the stack heights it is planned at relative
+/// to the function entry (pushes negative), ``None`` where unknown.
+#[pyfunction]
+#[pyo3(signature = (image, entries, facts=None))]
+pub fn plan_program<'py>(
+    py: Python<'py>,
+    image: &[u8],
+    entries: Vec<PyEntry>,
+    facts: Option<&Bound<'py, PyDict>>,
+) -> PyResult<Bound<'py, PyList>> {
+    let img = self::image(image)?;
+    let es = self::entries(entries);
+    let f = self::facts(facts)?;
+    let g = di_lift::analysis::discover(&img, &es, &f);
+    let pcs: Vec<u16> = es.iter().map(|e| e.pc).collect();
+    let out = PyList::empty(py);
+    for p in di_lift::func::plan_all(&g, &pcs, &f) {
+        let d = PyDict::new(py);
+        d.set_item("pc", p.pc)?;
+        d.set_item("top", p.top)?;
+        d.set_item("balanced", p.balanced)?;
+        let mut hs: BTreeMap<u16, Vec<Option<i32>>> = BTreeMap::new();
+        for &(pc, h) in p.nodes.keys() {
+            hs.entry(pc).or_default().push(match h {
+                di_lift::func::H::Known(x) => Some(x),
+                di_lift::func::H::Unknown => None,
+            });
+        }
+        let h = PyDict::new(py);
+        for (pc, v) in hs {
+            h.set_item(pc, v)?;
+        }
+        d.set_item("heights", h)?;
+        out.append(d)?;
+    }
+    Ok(out)
 }
 
 /// Lift ``[(image, entries, volatile, facts)]`` in parallel (rayon), with a progress bar on

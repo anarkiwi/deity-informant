@@ -2,8 +2,8 @@
 
 :func:`collect` runs a host-supplied driver twice over a copy of an entry-state image: a traced
 pass for instruction starts and ``(pc, next pc)`` transfers, then an observed pass for the
-values stored to executed code bytes and the instructions whose accesses other than pushes and
-pulls reach page 1.
+values stored to each address and the instructions whose accesses other than pushes and pulls
+reach page 1. Heights are SP at an instruction's start minus SP at its call's entry.
 """
 
 from __future__ import annotations
@@ -22,13 +22,15 @@ __all__ = ["Facts", "Session", "collect"]
 
 @dataclass
 class Facts:
-    """Executed ``starts``, ``(pc, next)`` transfer ``edges``, code-byte ``writes`` and the
-    ``page1`` instructions whose non-stack accesses reached $0100-$01FF."""
+    """Executed ``starts``, ``(pc, next)`` transfer ``edges``, stored values ``writes``, the
+    ``page1`` instructions whose non-stack accesses reached $0100-$01FF and the stack
+    ``heights`` each start was seen at (relative to its call's entry, pushes negative)."""
 
     starts: list = field(default_factory=list)
     edges: list = field(default_factory=list)
     writes: dict = field(default_factory=dict)
     page1: list = field(default_factory=list)
+    heights: dict = field(default_factory=dict)
 
     def to_dict(self):
         return {
@@ -36,6 +38,7 @@ class Facts:
             "edges": [list(e) for e in self.edges],
             "writes": {int(a): sorted(v) for a, v in self.writes.items()},
             "page1": list(self.page1),
+            "heights": {int(a): sorted(v) for a, v in self.heights.items()},
         }
 
     @classmethod
@@ -45,6 +48,7 @@ class Facts:
             edges=[(int(p), int(q)) for p, q in d.get("edges", [])],
             writes={int(a): sorted(int(x) for x in v) for a, v in d.get("writes", {}).items()},
             page1=[int(p) for p in d.get("page1", [])],
+            heights={int(a): sorted(int(x) for x in v) for a, v in d.get("heights", {}).items()},
         )
 
     def dumps(self):
@@ -69,8 +73,13 @@ class Session:
         if self.traces is None:
             self.mpu.run_to_rts(pc, a, self.max_cycles)
         else:
-            tr = self.mpu.run_to_rts_traced(pc, a, self.max_cycles)
-            self.traces.append(np.frombuffer(tr.pc, dtype=np.uint16).copy())
+            sp0 = (self.mpu.sp - 2) & 0xFF
+            tr = self.mpu.run_to_rts_traced(pc, a, self.max_cycles, regs=True)
+            pcs = np.frombuffer(tr.pc, dtype=np.uint16).copy()
+            sp = np.frombuffer(tr.sp, dtype=np.uint8)
+            h = np.zeros(len(pcs), np.int16)
+            h[1:] = sp[:-1].astype(np.int16) - sp0
+            self.traces.append((pcs, h))
         if self._bar is not None:
             self._bar.update()
 
@@ -85,11 +94,15 @@ def collect(image, driver, max_cycles=10_000_000, progress=False, total=None):
     driver(s)
     if pbar is not None:
         pbar.close()
-    pcs = np.concatenate(s.traces) if s.traces else np.zeros(0, np.uint16)
+    pcs = np.concatenate([t for t, _ in s.traces]) if s.traces else np.zeros(0, np.uint16)
+    hs = np.concatenate([h for _, h in s.traces]) if s.traces else np.zeros(0, np.int16)
     starts = np.unique(pcs)
-    pairs = [(t[:-1].astype(np.uint32) << 16) | t[1:] for t in s.traces if len(t) > 1]
+    ph = np.unique((pcs.astype(np.int32) << 9) | (hs.astype(np.int32) + 0x100))
+    heights = defaultdict(list)
+    for k, v in zip((ph >> 9).tolist(), ((ph & 0x1FF) - 0x100).tolist()):
+        heights[k].append(v)
+    pairs = [(t[:-1].astype(np.uint32) << 16) | t[1:] for t, _ in s.traces if len(t) > 1]
     edges = np.unique(np.concatenate(pairs)) if pairs else np.zeros(0, np.uint32)
-    code = np.unique(np.concatenate([starts + k for k in range(3)]).astype(np.uint16))
     writes = defaultdict(set)
     page1 = set()
     pbar = tqdm(total=total, desc="facts writes", unit="call") if progress else None
@@ -98,15 +111,12 @@ def collect(image, driver, max_cycles=10_000_000, progress=False, total=None):
     def on_write(a, v):
         if 0x100 <= a < 0x200:
             page1.add(s.mpu.pc)
-        if a in codeset:
-            writes[a].add(v)
+        writes[a].add(v)
 
-    codeset = set(code.tolist())
     s.mem.observe_data_access(
         on_read=lambda a: page1.add(s.mpu.pc),
         on_write=on_write,
         reads=range(0x100, 0x200),
-        writes=[range(0x100, 0x200)] + [int(a) for a in code],
     )
     driver(s)
     if pbar is not None:
@@ -116,4 +126,5 @@ def collect(image, driver, max_cycles=10_000_000, progress=False, total=None):
         edges=[(int(e >> 16), int(e & 0xFFFF)) for e in edges],
         writes={a: sorted(v) for a, v in sorted(writes.items())},
         page1=sorted(page1),
+        heights={a: sorted(v) for a, v in heights.items()},
     )
