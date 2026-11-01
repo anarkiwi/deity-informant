@@ -6,8 +6,11 @@ use di_pcode::{binop, Opc, Space, Vn};
 pub const E: u16 = 16;
 /// Cycles since the entry started, at the start of the next unaccounted instruction (4 bytes).
 pub const CY: u16 = 17;
-/// Register varnodes: the `lift()` file (0-15), `E` and `CY`.
+/// Register varnodes: the `lift()` file (0-15), `E` and `CY`; a function's promoted stack
+/// slots follow (`NREG + i` holds the byte `i` below its entry SP).
 pub const NREG: usize = 18;
+/// Bit mask of the registers below [`NREG`].
+pub const ALL_REGS: u32 = (1 << NREG) - 1;
 
 /// A register varnode.
 pub const fn reg(i: u16, size: u8) -> Vn {
@@ -124,6 +127,9 @@ pub fn eval(op: &LOp, a: u32, b: u32) -> u32 {
 /// A basic block: ops ending in a terminator (`CBRANCH` falls through to the next op).
 #[derive(Clone, Debug, Default)]
 pub struct Block {
+    /// A side exit's continuation: the block that runs in place of its deopt, whose
+    /// liveness the deopt inherits when cycles are not counted.
+    pub resume: Option<u32>,
     /// The address of the instruction the block starts at (the deopt PC of a cycle-budget
     /// check).
     pub pc: u16,
@@ -164,6 +170,17 @@ pub struct Function {
     /// deopts there.
     pub tables: Vec<Vec<(u16, u32)>>,
     pub ntemps: u32,
+    /// Promoted stack slots (registers `NREG..NREG + nslots`).
+    pub nslots: u32,
+    /// In a call-graph cycle: checks its own stack depth at entry.
+    pub recursive: bool,
+}
+
+impl Function {
+    /// Registers including promoted stack slots.
+    pub fn nregs(&self) -> usize {
+        NREG + self.nslots as usize
+    }
 }
 
 /// Counts describing a lift.
@@ -189,8 +206,17 @@ pub struct Stats {
     pub code_guards: usize,
     /// `JSR`s lifted as `CALL`.
     pub calls: usize,
-    /// No access other than pushes and pulls can reach page 1: stack traffic may be removed.
+    /// Only pushes and pulls reach page 1, given the page-1 guards: stack traffic is removed.
     pub stack_private: bool,
+    /// Accesses checked at run time not to reach page 1.
+    pub stack_guards: usize,
+    /// Accesses that reached page 1 in the facts or cannot be checked (each keeps the stack
+    /// in memory).
+    pub page1_sites: usize,
+    /// Pushes and pulls lifted as stack-slot registers.
+    pub slot_ops: usize,
+    /// Pushes and pulls left as memory accesses after optimization.
+    pub stack_ops: usize,
     /// Instruction starts the facts saw that the lift did not reach.
     pub unreached: usize,
 }
@@ -207,6 +233,8 @@ pub struct Program {
     pub volatile: Vec<(u32, u32)>,
     /// `CALL` pushes no return address; a deopt writes those of the active frames.
     pub elide_ret: bool,
+    /// Cycles are counted (`CY`, cycle-budget checks, volatile accesses at their cycle).
+    pub cycles: bool,
     pub stats: Stats,
 }
 
@@ -224,6 +252,7 @@ impl std::fmt::Display for Program {
                     i @ 8..=14 => ["C", "Z", "I", "D", "B", "V", "N"][i as usize - 8].into(),
                     16 => "E".into(),
                     17 => "CY".into(),
+                    i if i >= NREG as u32 => format!("s{}", i - NREG as u32),
                     i => format!("r{i}"),
                 },
                 Space::Unique => format!("t{}:{}", v.off(), v.size()),

@@ -2,7 +2,7 @@
 //! and the reference `reference_call` with the same bus.
 
 use di_lift::ir::{mem, other, Program as LProgram};
-use di_lift::{Entry, Exec, Facts, Job, Runner};
+use di_lift::{Entry, Exec, Facts, Job, Opts, Runner};
 use di_pcode::{reg as R, Bus, Cpu, Halt, Opc, Space, Vn};
 use indicatif::{ProgressBar, ProgressStyle};
 use pyo3::exceptions::PyValueError;
@@ -12,13 +12,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// A 64 KiB bytearray as the bus: volatile ranges optionally logged as
-/// `(addr, value, cycle, is_write)` and optionally read as `(cycle ^ addr) & 0xff`.
+/// `(addr, value, cycle, is_write)` and optionally read as `(cycle ^ n ^ addr) & 0xff` for
+/// the `n`th volatile access.
 struct PyBus<'a> {
     mem: &'a mut [u8; 0x10000],
     volatile: &'a [(u32, u32)],
     log: Option<Vec<(u16, u8, u64, bool)>>,
     synth: bool,
     now: u64,
+    n: u64,
 }
 
 impl PyBus<'_> {
@@ -33,8 +35,9 @@ impl Bus for PyBus<'_> {
     #[inline]
     fn read(&mut self, a: u16) -> u8 {
         if self.volatile(a) {
+            self.n += 1;
             let v = if self.synth {
-                (self.now as u8) ^ (a as u8)
+                (self.now ^ self.n) as u8 ^ a as u8
             } else {
                 self.mem[a as usize]
             };
@@ -49,6 +52,7 @@ impl Bus for PyBus<'_> {
     #[inline]
     fn write(&mut self, a: u16, v: u8) {
         let vol = self.volatile(a);
+        self.n += vol as u64;
         if let (Some(l), true) = (self.log.as_mut(), vol) {
             l.push((a, v, self.now, true));
         }
@@ -61,6 +65,21 @@ impl Bus for PyBus<'_> {
     #[inline]
     fn now(&mut self, c: u64) {
         self.now = c;
+    }
+}
+
+/// A bus that ignores cycles.
+struct Unclocked<'a, 'b>(&'a mut PyBus<'b>);
+
+impl Bus for Unclocked<'_, '_> {
+    fn read(&mut self, a: u16) -> u8 {
+        self.0.read(a)
+    }
+    fn write(&mut self, a: u16, v: u8) {
+        self.0.write(a, v)
+    }
+    fn fetch(&mut self, a: u16) -> u8 {
+        self.0.fetch(a)
     }
 }
 
@@ -91,6 +110,9 @@ fn facts(d: Option<&Bound<'_, PyDict>>) -> PyResult<Facts> {
             Ok(m) => m.extract::<HashMap<u16, Vec<u8>>>()?.into_iter().collect(),
             Err(_) => w.extract()?,
         };
+    }
+    if let Some(p) = get("page1")? {
+        f.page1 = p.extract()?;
     }
     Ok(f)
 }
@@ -247,6 +269,7 @@ impl Program {
             let d = PyDict::new(py);
             d.set_item("pc", f.pc)?;
             d.set_item("entry", f.top)?;
+            d.set_item("recursive", f.recursive)?;
             d.set_item("blocks", blocks)?;
             d.set_item("tables", f.tables.clone())?;
             fs.append(d)?;
@@ -271,8 +294,18 @@ impl Program {
         d.set_item("code_guards", s.code_guards)?;
         d.set_item("calls", s.calls)?;
         d.set_item("stack_private", s.stack_private)?;
+        d.set_item("stack_guards", s.stack_guards)?;
+        d.set_item("page1_sites", s.page1_sites)?;
+        d.set_item("slot_ops", s.slot_ops)?;
+        d.set_item("stack_ops", s.stack_ops)?;
         d.set_item("unreached", s.unreached)?;
         Ok(d)
+    }
+
+    /// Whether the program counts cycles.
+    #[getter]
+    fn cycles(&self) -> bool {
+        self.prog.cycles
     }
 
     /// Entry PCs in request order.
@@ -289,7 +322,9 @@ impl Program {
 
     /// ``run_to_rts`` of entry ``entry`` with ``A = a``: push the dummy return, run until it
     /// returns, ``max_cycles`` elapse, or a JAM. ``reg``/``cycles`` set the starting state.
-    /// Returns ``{"reg", "pc", "cycles", "halt", "deopt", "log"}``.
+    /// Returns ``{"reg", "pc", "cycles", "halt", "deopt", "log"}``. Without cycle counting
+    /// the lifted code runs to its return and ``cycles`` counts only the reference
+    /// interpreter's part after a deopt.
     #[pyo3(signature = (mem, entry=0, a=0, reg=None, cycles=0, max_cycles=10_000_000, log=false, synth=false))]
     #[allow(clippy::too_many_arguments)]
     fn call<'py>(
@@ -316,6 +351,7 @@ impl Program {
                 log: log.then(Vec::new),
                 synth,
                 now: cycles,
+                n: 0,
             };
             let mut run = Runner::new(&self.exec);
             run.invalid = st.0;
@@ -341,9 +377,10 @@ impl Program {
     }
 }
 
-/// ``run_to_rts`` on the reference interpreter with the same bus as ``Program.call``.
+/// ``run_to_rts`` on the reference interpreter with the same bus as ``Program.call``;
+/// ``clocked=False`` gives volatile accesses no cycle, as a program lifted without cycles.
 #[pyfunction]
-#[pyo3(signature = (mem, pc, a=0, reg=None, cycles=0, max_cycles=10_000_000, volatile=vec![], log=false, synth=false))]
+#[pyo3(signature = (mem, pc, a=0, reg=None, cycles=0, max_cycles=10_000_000, volatile=vec![], log=false, synth=false, clocked=true))]
 #[allow(clippy::too_many_arguments)]
 pub fn reference_call<'py>(
     py: Python<'py>,
@@ -356,6 +393,7 @@ pub fn reference_call<'py>(
     volatile: Vec<(u32, u32)>,
     log: bool,
     synth: bool,
+    clocked: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     let mut cpu = cpu_of(reg, cycles);
     let (h, lg) = with_mem(mem, |m| {
@@ -365,6 +403,7 @@ pub fn reference_call<'py>(
             log: log.then(Vec::new),
             synth,
             now: cycles,
+            n: 0,
         };
         let start = cpu.r(R::SP);
         for v in [0u8, 1] {
@@ -375,16 +414,22 @@ pub fn reference_call<'py>(
         cpu.set_r(R::A, a);
         cpu.pc = pc;
         let end = cpu.cycles.saturating_add(max_cycles).saturating_add(1);
-        (cpu.run_clocked(&mut bus, start as i32 - 1, end), bus.log)
+        let h = if clocked {
+            cpu.run_clocked(&mut bus, start as i32 - 1, end)
+        } else {
+            cpu.run_clocked(&mut Unclocked(&mut bus), start as i32 - 1, end)
+        };
+        (h, bus.log)
     })?;
     result(py, &cpu, h, None, lg)
 }
 
 /// Lift ``entries`` of the program in ``image`` (64 KiB entry state): ``entries`` as
 /// ``[(pc, [(reg, values)])]``, ``volatile`` as ``[(lo, hi)]``, ``facts`` as a dict with
-/// ``starts``, ``edges`` and ``writes``; ``optimize=False`` keeps the emitted P-Code.
+/// ``starts``, ``edges``, ``writes`` and ``page1``; ``optimize=False`` keeps the emitted
+/// P-Code; ``cycles=True`` counts cycles.
 #[pyfunction]
-#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true))]
+#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false))]
 pub fn lift_program(
     py: Python<'_>,
     image: &[u8],
@@ -392,20 +437,28 @@ pub fn lift_program(
     volatile: Vec<(u32, u32)>,
     facts: Option<&Bound<'_, PyDict>>,
     optimize: bool,
+    cycles: bool,
 ) -> PyResult<Program> {
     let img = self::image(image)?;
     let es = self::entries(entries);
     let f = self::facts(facts)?;
+    let opts = Opts { optimize, cycles };
     Ok(Program::new(py.detach(|| {
-        di_lift::lift_with(&img, &es, &volatile, &f, optimize)
+        di_lift::lift_with(&img, &es, &volatile, &f, opts)
     })))
 }
 
 /// Lift ``[(image, entries, volatile, facts)]`` in parallel (rayon), with a progress bar on
 /// stderr unless ``progress`` is false.
 #[pyfunction]
-#[pyo3(signature = (jobs, progress=true))]
-pub fn lift_many(py: Python<'_>, jobs: Vec<PyJob<'_>>, progress: bool) -> PyResult<Vec<Program>> {
+#[pyo3(signature = (jobs, progress=true, optimize=true, cycles=false))]
+pub fn lift_many(
+    py: Python<'_>,
+    jobs: Vec<PyJob<'_>>,
+    progress: bool,
+    optimize: bool,
+    cycles: bool,
+) -> PyResult<Vec<Program>> {
     let jobs: Vec<Job> = jobs
         .into_iter()
         .map(|(img, e, v, f)| {
@@ -426,7 +479,8 @@ pub fn lift_many(py: Python<'_>, jobs: Vec<PyJob<'_>>, progress: bool) -> PyResu
         ProgressStyle::with_template("lift {bar:40} {pos}/{len} [{elapsed}<{eta}, {per_sec}]")
             .unwrap(),
     );
-    let progs = py.detach(|| di_lift::lift_many(&jobs, || bar.inc(1)));
+    let opts = Opts { optimize, cycles };
+    let progs = py.detach(|| di_lift::lift_many(&jobs, opts, || bar.inc(1)));
     bar.finish();
     Ok(progs.into_iter().map(Program::new).collect())
 }

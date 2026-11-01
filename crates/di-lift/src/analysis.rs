@@ -16,12 +16,14 @@ pub struct Entry {
 }
 
 /// What running the program showed: executed instruction starts, executed `(pc, next pc)`
-/// transfers, and the values stored to code bytes.
+/// transfers, the values stored to code bytes, and the instructions whose accesses other than
+/// pushes and pulls reached page 1.
 #[derive(Clone, Debug, Default)]
 pub struct Facts {
     pub starts: Vec<u16>,
     pub edges: Vec<(u16, u16)>,
     pub writes: Vec<(u16, Vec<u8>)>,
+    pub page1: Vec<u16>,
 }
 
 /// An unsigned interval of a value.
@@ -279,6 +281,38 @@ pub fn stack_delta(op: u8) -> Option<i32> {
 /// Opcodes whose template accesses are pushes and pulls.
 pub fn is_stack_op(op: u8) -> bool {
     matches!(op, 0x48 | 0x08 | 0x68 | 0x28)
+}
+
+/// How a run-time page-1 check covers access `i` of `op`'s template.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Check {
+    /// Checked before it: no earlier op of the instruction has an effect.
+    Own,
+    /// Covered by the check of an earlier access to the same address.
+    Same,
+    /// Not checkable at the instruction boundary.
+    No,
+}
+
+pub fn page1_check(op: u8, i: usize) -> Check {
+    let ops = Template::of(op).ops();
+    let mut addrs: Vec<Vn> = Vec::new();
+    let mut effect = false;
+    for o in ops {
+        if matches!(o.opc, Opc::Load | Opc::Store) {
+            if addrs.len() == i {
+                return match (addrs.contains(&o.ins[0]), effect) {
+                    (true, _) => Check::Same,
+                    (false, false) => Check::Own,
+                    _ => Check::No,
+                };
+            }
+            addrs.push(o.ins[0]);
+        }
+        addrs.retain(|&a| a != o.out);
+        effect |= o.opc == Opc::Store || o.out.space() == Space::Reg;
+    }
+    Check::No
 }
 
 struct Ctx<'a> {

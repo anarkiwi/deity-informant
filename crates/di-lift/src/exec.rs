@@ -1,7 +1,7 @@
 //! Executing a lifted program over a [`Bus`], leaving for the reference [`Cpu`] at deopts.
 
-use crate::ir::{mask, mem, other, Program, CY, E, NREG};
-use crate::opt::checkpoints;
+use crate::ir::{mask, mem, other, Function, Program, CY, E, NREG};
+use crate::opt::{checkpoints, sp_effect, sp_offsets};
 use di_pcode::{reg as R, Bus, Cpu, Halt, Opc, Space, Vn};
 use fixedbitset::FixedBitSet;
 use rustc_hash::FxHashMap;
@@ -45,26 +45,51 @@ pub struct Exec {
     constcode: FixedBitSet,
     img: Box<[u8]>,
     elide_ret: bool,
+    cycles: bool,
+    /// Per function: first value-file index and count of its stack slots.
+    slots: Vec<(u32, u32)>,
 }
 
-fn operand(v: Vn, temps: u32) -> u32 {
+fn operand(v: Vn, temps: u32, slots: u32) -> u32 {
     match v.space() {
         Space::Const => IMM | v.off(),
+        Space::Reg if v.off() >= NREG as u32 => slots + v.off() - NREG as u32,
         Space::Reg => v.off(),
         Space::Unique => temps + v.off(),
         Space::Ram => unreachable!("lifted programs address memory through LOAD/STORE"),
     }
 }
 
+/// A bus whose accesses carry no cycle.
+struct NoClock<'a, B>(&'a mut B);
+
+impl<B: Bus> Bus for NoClock<'_, B> {
+    fn read(&mut self, a: u16) -> u8 {
+        self.0.read(a)
+    }
+    fn write(&mut self, a: u16, v: u8) {
+        self.0.write(a, v)
+    }
+    fn fetch(&mut self, a: u16) -> u8 {
+        self.0.fetch(a)
+    }
+}
+
 impl Exec {
     pub fn new(p: &Program) -> Self {
+        let mut slots = Vec::with_capacity(p.functions.len());
+        let mut next = NREG as u32;
+        for f in &p.functions {
+            slots.push((next, f.nslots));
+            next += f.nslots;
+        }
         let mut x = Exec {
             ops: Vec::new(),
             blocks: Vec::new(),
             tables: Vec::new(),
             fentry: Vec::new(),
             entries: p.entries.clone(),
-            width: NREG
+            width: next as usize
                 + p.functions
                     .iter()
                     .map(|f| f.ntemps as usize)
@@ -74,18 +99,34 @@ impl Exec {
             constcode: FixedBitSet::with_capacity(0x10000),
             img: vec![0u8; 0x10000].into_boxed_slice(),
             elide_ret: p.elide_ret,
+            cycles: p.cycles,
+            slots,
         };
         for &(a, v) in &p.code {
             x.constcode.insert(a as usize);
             x.img[a as usize] = v;
         }
-        let t0 = NREG as u32;
-        for f in &p.functions {
+        let t0 = next;
+        let cps: Vec<FixedBitSet> = p
+            .functions
+            .iter()
+            .map(|f| checkpoints(f, p.cycles))
+            .collect();
+        let all_bounds: Vec<Vec<(u32, u32)>> = if p.cycles {
+            p.functions
+                .iter()
+                .zip(&cps)
+                .map(|(f, c)| bounds(f, c))
+                .collect()
+        } else {
+            depths(&p.functions, &cps)
+        };
+        for (fi, f) in p.functions.iter().enumerate() {
             let base = x.blocks.len() as u32;
             let tbase = x.tables.len() as u32;
             x.fentry.push(base);
-            let cps = checkpoints(f);
-            let bounds = bounds(f, &cps);
+            let (cps, bounds) = (&cps[fi], &all_bounds[fi]);
+            let sbase = x.slots[fi].0;
             for (bi, b) in f.blocks.iter().enumerate() {
                 let (check, depth) = if cps.contains(bi) {
                     bounds[bi]
@@ -104,16 +145,18 @@ impl Exec {
                         Opc::BranchInd => tbase + op.aux,
                         _ => op.aux,
                     };
-                    let opd = |v: Vn| if v.is_none() { IMM } else { operand(v, t0) };
+                    let opd = |v: Vn| {
+                        if v.is_none() {
+                            IMM
+                        } else {
+                            operand(v, t0, sbase)
+                        }
+                    };
                     x.ops.push(X {
                         opc: op.opc,
                         osz: op.out.size() as u8,
                         asz: op.ins[0].size() as u8,
-                        out: if op.out.is_none() {
-                            0
-                        } else {
-                            operand(op.out, t0)
-                        },
+                        out: if op.out.is_none() { 0 } else { opd(op.out) },
                         a: opd(op.ins[0]),
                         b: opd(op.ins[1]),
                         aux,
@@ -137,19 +180,7 @@ fn bounds(f: &crate::ir::Function, cps: &FixedBitSet) -> Vec<(u32, u32)> {
         .blocks
         .iter()
         .map(|b| {
-            let (mut net, mut low) = (0i32, 0i32);
-            for op in &b.ops {
-                if op.out == crate::ir::r1(R::SP) {
-                    let c = op.ins[1].off() as i32;
-                    net = match op.opc {
-                        _ if op.ins[0] != op.out || op.ins[1].space() != Space::Const => 0,
-                        Opc::IntAdd => net + if c < 0x80 { c } else { c - 0x100 },
-                        Opc::IntSub => net - if c < 0x80 { c } else { c - 0x100 },
-                        _ => 0,
-                    };
-                    low = low.min(net);
-                }
-            }
+            let (net, low) = sp_effect(b, |_| 0);
             (b.maxcyc, net, low)
         })
         .collect();
@@ -187,6 +218,52 @@ fn bounds(f: &crate::ir::Function, cps: &FixedBitSet) -> Vec<(u32, u32)> {
         .collect()
 }
 
+/// Without cycles: per block, at checkpoints, the deepest stack growth before the next one,
+/// counting the growth of the callees that do not check their own depth (those neither
+/// outermost nor recursive) at their call sites.
+fn depths(fs: &[Function], cps: &[FixedBitSet]) -> Vec<Vec<(u32, u32)>> {
+    fn grow(
+        fs: &[Function],
+        cps: &[FixedBitSet],
+        memo: &mut [Option<u32>],
+        fi: usize,
+        root: usize,
+    ) -> u32 {
+        let f = &fs[fi];
+        let mut low = 0i32;
+        for (b, o) in sp_offsets(f, &cps[fi], root) {
+            let l = sp_effect(&f.blocks[b], |c| entry(fs, cps, memo, c as usize)).1;
+            low = low.min(o + l);
+        }
+        (-low) as u32
+    }
+    fn entry(fs: &[Function], cps: &[FixedBitSet], memo: &mut [Option<u32>], fi: usize) -> u32 {
+        if cps[fi].contains(0) {
+            return 0;
+        }
+        if let Some(d) = memo[fi] {
+            return d;
+        }
+        let d = grow(fs, cps, memo, fi, 0);
+        memo[fi] = Some(d);
+        d
+    }
+    let mut memo = vec![None; fs.len()];
+    (0..fs.len())
+        .map(|fi| {
+            (0..fs[fi].blocks.len())
+                .map(|b| {
+                    if cps[fi].contains(b) {
+                        (0, grow(fs, cps, &mut memo, fi, b))
+                    } else {
+                        (NOCHECK, 0)
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
 impl Exec {
     /// Every byte the program treats as constant code holds its lifted value in `bus`.
     pub fn matches<B: Bus>(&self, bus: &mut B) -> bool {
@@ -207,8 +284,8 @@ pub struct Outcome {
 pub struct Runner<'a> {
     x: &'a Exec,
     f: Vec<u32>,
-    /// Active `CALL`s: resume op, return address, SP before the `JSR`.
-    frames: Vec<(u32, u16, u8)>,
+    /// Active `CALL`s: resume op, return address, SP before the `JSR`, callee.
+    frames: Vec<(u32, u16, u8, u32)>,
     pub invalid: bool,
     /// Deopts per PC.
     pub deopts: FxHashMap<u16, u64>,
@@ -277,6 +354,7 @@ impl<'a> Runner<'a> {
         f[CY as usize] = 0;
         self.frames.clear();
         let x = self.x;
+        let cyc = x.cycles;
         let ops = &x.ops[..];
         let get = |f: &[u32], o: u32| {
             if o & IMM != 0 {
@@ -289,7 +367,7 @@ impl<'a> Runner<'a> {
             ($b:expr) => {{
                 let blk = x.blocks[$b as usize];
                 if blk.check != NOCHECK
-                    && (self.f[CY as usize] as u64 + blk.check as u64 >= budget as u64
+                    && (cyc && self.f[CY as usize] as u64 + blk.check as u64 >= budget as u64
                         || self.f[R::SP] < blk.depth)
                 {
                     break (blk.pc, false);
@@ -298,7 +376,7 @@ impl<'a> Runner<'a> {
             }};
         }
         let first = x.blocks[x.fentry[fi as usize] as usize];
-        let (dpc, exit) = if first.check >= budget || (sp as u32) < first.depth {
+        let (dpc, exit) = if cyc && first.check >= budget || (sp as u32) < first.depth {
             (first.pc, false)
         } else {
             let mut ip = first.start as usize;
@@ -311,13 +389,13 @@ impl<'a> Runner<'a> {
                         f[o.out as usize] = get(f, o.a) & mask(o.osz as u32)
                     }
                     Opc::Load => {
-                        if o.aux & mem::VOLATILE != 0 {
+                        if cyc && o.aux & mem::VOLATILE != 0 {
                             bus.now(c0 + f[CY as usize] as u64);
                         }
                         f[o.out as usize] = bus.read(get(f, o.a) as u16) as u32;
                     }
                     Opc::Store => {
-                        if o.aux & mem::VOLATILE != 0 {
+                        if cyc && o.aux & mem::VOLATILE != 0 {
                             bus.now(c0 + f[CY as usize] as u64);
                         }
                         bus.write(get(f, o.a) as u16, get(f, o.b) as u8);
@@ -338,11 +416,11 @@ impl<'a> Runner<'a> {
                     }
                     Opc::Call => {
                         let sp = (f[R::SP] as u8).wrapping_add(2);
-                        self.frames.push((ip as u32, get(f, o.a) as u16, sp));
+                        self.frames.push((ip as u32, get(f, o.a) as u16, sp, o.aux));
                         ip = enter!(x.fentry[o.aux as usize]);
                     }
                     Opc::Return => match self.frames.pop() {
-                        Some((r, _, _)) => ip = r as usize,
+                        Some((r, ..)) => ip = r as usize,
                         None => break (get(f, o.a) as u16, true),
                     },
                     Opc::CallOther => {
@@ -369,7 +447,9 @@ impl<'a> Runner<'a> {
         }
         cpu.set_reg(reg);
         cpu.pc = dpc;
-        cpu.cycles = c0 + f[CY as usize] as u64;
+        if cyc {
+            cpu.cycles = c0 + f[CY as usize] as u64;
+        }
         if exit {
             return Outcome {
                 halt: Halt::Sp,
@@ -377,9 +457,22 @@ impl<'a> Runner<'a> {
             };
         }
         if self.x.elide_ret {
-            for &(_, ra, sp) in &self.frames {
-                bus.write(0x100 | sp as u16, (ra >> 8) as u8);
-                bus.write(0x100 | sp.wrapping_sub(1) as u16, ra as u8);
+            // Each active frame's pushed bytes (entry SP down to the SP it called or deopted
+            // at) and the return addresses of the `CALL`s.
+            let mut e = sp as u8;
+            let mut fun = fi;
+            for j in 0..=self.frames.len() {
+                let cut = self.frames.get(j).map_or(f[R::SP] as u8, |fr| fr.2);
+                let (base, n) = self.x.slots[fun as usize];
+                for i in 0..(e as i32 - cut as i32).clamp(0, n as i32) as u32 {
+                    let a = 0x100 | e.wrapping_sub(i as u8) as u16;
+                    bus.write(a, f[(base + i) as usize] as u8);
+                }
+                if let Some(&(_, ra, s, c)) = self.frames.get(j) {
+                    bus.write(0x100 | s as u16, (ra >> 8) as u8);
+                    bus.write(0x100 | s.wrapping_sub(1) as u16, ra as u8);
+                    (e, fun) = (s.wrapping_sub(2), c);
+                }
             }
         }
         self.fallback(cpu, bus, dpc, sp_above, end)
@@ -395,8 +488,13 @@ impl<'a> Runner<'a> {
     ) -> Outcome {
         *self.deopts.entry(pc).or_default() += 1;
         cpu.pc = pc;
+        let halt = if self.x.cycles {
+            cpu.run_clocked(bus, sp_above, end)
+        } else {
+            cpu.run_clocked(&mut NoClock(bus), sp_above, end)
+        };
         Outcome {
-            halt: cpu.run_clocked(bus, sp_above, end),
+            halt,
             deopt: Some(pc),
         }
     }

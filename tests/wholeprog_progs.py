@@ -322,3 +322,55 @@ init:   LDA #lo(tgt)
 .org $1800
 cnt:    .byte 0
 """
+
+GUARDED = """
+entry:  STA $FC
+        LDA #$FB
+        STA $FB
+        LDX idx
+        JSR sub
+        STA $C0B0
+        RTS
+sub:    PHA
+        LDY #$00
+loop:   LDA ($FB),Y
+        STA $C0B1,Y
+        INY
+        CPY #$05
+        BNE loop
+        .byte $BD,$50,$00
+        STA $C0B6
+        PLA
+        RTS
+.org $1810
+idx:    .byte $20
+.org $18FB
+        .byte 1,2,3,4,5
+"""
+
+RECURSE = """
+entry:  LDX #$04
+        JSR rec
+        STA $C0C0
+        RTS
+rec:    DEX
+        BEQ done
+        TXA
+        PHA
+        JSR rec
+        PLA
+        STA $C0C1
+done:   LDA #$07
+        RTS
+"""
+
+DEADFLAGS = """
+entry:  SEC
+        LDA $C0D0
+        JSR sub
+        STA $C0D1
+        RTS
+sub:    CLC
+        ADC #$01
+        RTS
+"""

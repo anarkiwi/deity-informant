@@ -13,7 +13,7 @@ The C64 machine model (power-on RAM, interrupt-vector discovery, ROM-free IRQ di
 - `ghidra/6510/headless/` — headless Ghidra integration test, run via `Dockerfile.ghidra`.
 - `deity_informant/hello_world.py` — 33-byte C64 program using `LAX`/`ISC` + self-modifying code; the fixture for the VM and Ghidra tests.
 - `crates/` — Rust P-Code IR templated from `lift()` and a reference interpreter, shipped in wheels as `deity_informant._native`; see [docs/native.md](docs/native.md).
-- `deity_informant/wholeprog.py`, `deity_informant/trace.py` — whole-program lifting of entry points to optimized, executable, exact P-Code (self-modifying code as memory reads, balanced calls as `CALL`/`RETURN`, cycles as ops, guarded deopts), and the run-time facts it uses; see [docs/wholeprog.md](docs/wholeprog.md).
+- `deity_informant/wholeprog.py`, `deity_informant/trace.py` — whole-program lifting of entry points to optimized, executable, exact P-Code (self-modifying code as memory reads, balanced calls as `CALL`/`RETURN`, the hardware stack as registers, optional cycle counting, guarded deopts), and the run-time facts it uses; see [docs/wholeprog.md](docs/wholeprog.md).
 - `tools/wplift.py` — lift an image file whole and check it against the reference interpreter.
 - `tools/gen_pcode.py` — regenerates the native templates (`--check` verifies they are current).
 - `tools/doclinks.py` — every `[text](target)` in `docs/` and `README.md` resolved: the file, and the `#anchor` against the target's own headings.

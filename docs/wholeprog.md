@@ -2,11 +2,12 @@
 
 `deity_informant.wholeprog` lifts the entry points of a 6502/6510 program to optimized,
 executable P-Code: code bytes the program writes become memory reads, provably balanced
-`JSR`/`RTS` pairs become `CALL`/`RETURN`, pushes consumed by pulls become temporaries, cycles
-are counted by ordinary ops, and every assumption is guarded by an exit (deopt) to the
-reference interpreter at an instruction boundary. Results are exact against
-`di_pcode::Cpu`: the volatile access stream (address, value, cycle), final registers and
-cycles, and RAM except dead stack bytes below SP. Nothing in it knows a host.
+`JSR`/`RTS` pairs become `CALL`/`RETURN` with no return address in memory, pushes and pulls
+become stack-slot registers, cycles are optionally counted by ordinary ops, and every
+assumption is guarded by an exit (deopt) to the reference interpreter at an instruction
+boundary. Results are exact against `di_pcode::Cpu`: the volatile access stream (address,
+value, and with cycle counting the cycle), final registers (and cycles), and RAM except dead
+stack bytes below SP. Nothing in it knows a host.
 
 The Rust core is `crates/di-lift`; `deity_informant._native` exposes it.
 
@@ -16,15 +17,15 @@ The Rust core is `crates/di-lift`; `deity_informant._native` exposes it.
 from deity_informant import trace, wholeprog
 
 facts = trace.collect(state, lambda s: [s.call(play) for _ in range(3000)])
-prog = wholeprog.lift(state, [play], volatile=[(lo, hi)], facts=facts)
-prog.functions        # [{"pc", "entry", "blocks": [{"pc", "ops"}], "tables"}]
+prog = wholeprog.lift(state, [play], volatile=[(lo, hi)], facts=facts)   # cycles=False
+prog.functions        # [{"pc", "entry", "recursive", "blocks": [{"pc", "ops"}], "tables"}]
 prog.stats            # insns, raw_ops, emitted_ops, ops, cells, code_guards, calls, ...
 r = prog.call(mem, 0, a=0, reg=None, cycles=0, max_cycles=10_000_000, log=True)
 r["reg"], r["pc"], r["cycles"], r["halt"], r["deopt"], r["log"]
 prog.deopts           # {pc: count}
 prog.matches(mem)     # constant code still holds its lifted bytes
 progs = wholeprog.lift_many([(state, [play], [(lo, hi)], facts), ...])   # rayon, progress bar
-wholeprog.reference_call(mem, play, volatile=[(lo, hi)], log=True)       # Cpu, same bus
+wholeprog.reference_call(mem, play, volatile=[(lo, hi)], log=True, clocked=False)
 ```
 
 Inputs:
@@ -34,21 +35,28 @@ Inputs:
 | `image` | 64 KiB memory every entry starts from (e.g. after an init routine ran). |
 | `entries` | `pc` or `(pc, {"a": [values], ...})`; a single value is assumed (guarded) at entry. |
 | `volatile` | `[(lo, hi)]` address ranges whose accesses are kept verbatim, in order, at their cycle. |
-| `facts` | `trace.Facts` (or its dict): executed `starts`, `(pc, next)` `edges`, code-byte `writes`. |
+| `facts` | `trace.Facts` (or its dict): executed `starts`, `(pc, next)` `edges`, code-byte `writes`, `page1` sites. |
+| `cycles` | Count cycles (default off): `CY`, cycle-budget checks, volatile accesses at their cycle. |
+| `optimize` | Optimize (default on); off keeps the emitted P-Code. |
 
 `trace.collect(image, driver)` runs `driver(session)` twice on the jennings native core over a
 copy of `image`: `session.call(pc, a)` is `run_to_rts`; `session.mem`/`session.mpu` are the
 core. The traced pass gives starts and transfers, the observed pass the values stored to
-executed code bytes. `Facts.dumps()`/`loads()` serialize them as JSON.
+executed code bytes and the instructions whose accesses other than pushes and pulls reached
+page 1 (`page1`). `Facts.dumps()`/`loads()` serialize them as JSON.
 
 `call` is `run_to_rts`: push the dummy return `$0001`, set A, run until SP rises above its
 start, `max_cycles` elapse or a JAM (`halt` is `return`, `cycles` or `jam`). With `log=True`
 the bus records `(addr, value, cycle, is_write)` for volatile addresses; `synth=True` makes
-volatile reads return `(cycle ^ addr) & 0xff`, which makes any cycle error visible.
+the `n`th volatile access read `(cycle ^ n ^ addr) & 0xff`, which makes any cycle or ordering
+error visible. Without cycle counting the lifted code runs to its return regardless of
+`max_cycles`, volatile accesses carry the starting cycle, and `cycles` counts only what the
+reference runs after a deopt; `reference_call(..., clocked=False)` gives the same stream.
 
 `tools/wplift.py IMAGE --org A --entry PC ... --calls PC:A*N,... --volatile LO-HI --check`
-lifts an image file, optionally saves or reuses facts and dumps the program, and checks it
-against the reference.
+lifts an image file (`--init PC:A` runs an init routine on the reference first, so the entries
+are lifted from its result; `--cycles` to count cycles), optionally saves or reuses facts and dumps
+the program, and checks it against the reference.
 
 ## Pipeline
 
@@ -69,19 +77,37 @@ against the reference.
    instruction whose height reaches +2 (the entry's own return) exits; where heights are
    unknown (after `TXS`/`TAS`/`LAS` or a height conflict), SP is compared with the exit
    threshold at run time.
-3. **Emission** (`emit.rs`). Each instruction's template with constants bound; a cell operand
+3. **Stack privacy** (`lib.rs`). The stack is private when every function's heights are
+   static, no volatile range, code cell or reached instruction lies in page 1, and no access
+   other than a push or pull that may reach page 1 (by its address interval) did so in the
+   facts or cannot be checked at its instruction boundary (an earlier op of the instruction
+   has an effect). Then `CALL`s push no return address and, in every function outside a
+   call-graph cycle, the byte at offset `d <= 0` from the entry SP is register `NREG - d`:
+   pushes and pulls are copies, and `RTS` jumps through return addresses an inline `JSR`
+   pushed become branches once the values are known. Where the lift keeps stack bytes out of
+   memory above SP (in a callee, or below the entry height), each such access is preceded by
+   a page-1 check that deopts before the instruction.
+4. **Emission** (`emit.rs`). Each instruction's template with constants bound; a cell operand
    byte is a `LOAD` of its address, read once before the instruction's ops; an opcode cell is
    a `CBRANCH` chain over its value set (entry byte, observed and statically stored values)
-   ending in a deopt. Cycles accumulate as constants and penalty values (page crosses from
-   the effective address, taken branches) and are added to `CY` before any possibly volatile
-   access, so each sees its instruction's start cycle, and at block ends.
-4. **Optimization** (`opt.rs`), to a fixpoint: CFG cleanup (constant branches, threading,
+   ending in a deopt. With cycle counting, cycles accumulate as constants and penalty values
+   (page crosses from the effective address, taken branches) and are added to `CY` before any
+   possibly volatile access, so each sees its instruction's start cycle, and at block ends;
+   without it none of this is emitted.
+5. **Optimization** (`opt.rs`), to a fixpoint: CFG cleanup (constant branches, threading,
    merging, unreachable blocks); temporaries renumbered per extended basic block; register
-   constant propagation across blocks; value numbering over extended basic blocks (constant
-   folding with interval and algebraic rules, copy propagation, common subexpressions,
-   store-to-load forwarding with alias analysis over constant, stack-relative and interval
-   addresses, removal of pushes their block's pulls consume); combining adds to a register;
-   liveness-based dead-code elimination over registers and temporaries.
+   and stack-slot constant propagation across blocks and across calls (keeping what the
+   callee cannot write); value numbering over extended basic blocks (constant folding with
+   interval and algebraic rules, copy propagation, common subexpressions, store-to-load
+   forwarding with alias analysis over constant, stack-relative and interval addresses);
+   combining adds to a register; liveness-based dead-code elimination over registers, stack
+   slots and temporaries. Without cycle counting the functions are then summarized (registers
+   each may and must define by fixpoints over the call graph, then the registers each uses
+   and its callers read after it returns by a least fixpoint of liveness over the whole
+   program, so recursion converges like a loop) and optimized again: a `CALL` uses and kills
+   only its callee's registers, a callee computes only what its callers read, and a deopt
+   whose continuation is lifted (a checked access, a code check) needs only what that
+   continuation reads.
 
 ## Guards
 
@@ -90,15 +116,19 @@ against the reference.
 | Opcode cell holds a value of its set | dispatch chain | deopt before the instruction |
 | Computed target is in the table | `BRANCHIND` table lookup | deopt at the target |
 | A store may hit constant code | `codechk(addr, value)` after the store, when the address interval meets constant code | deopt after the instruction; the program stays invalid until its constant code matches again |
-| A callee that may store into page 1 returns to its caller | the return-address bytes are compared after `CALL` | deopt at the address the `RTS` pulled |
+| An access that may reach page 1 does not, while stack bytes are kept out of memory | the address's page is compared with 1 before the access (`stats["stack_guards"]`) | deopt before the instruction |
+| A callee that may store into page 1 returns to its caller (stack not private) | the return-address bytes are compared after `CALL` | deopt at the address the `RTS` pulled |
 | Entry register value | compare at entry | deopt at the entry |
-| Cycle budget, stack wrap | at the entry, loop headers, `CALL` returns and after SP-setting instructions: the longest cycle path and deepest stack growth to the next such block | deopt at the block |
+| Stack wrap | without cycles: at outermost and recursive entries (counting the deepest growth of the callees that do not check), after SP-setting instructions and at blocks reached at different SP offsets; with cycles: as below | deopt at the block |
+| Cycle budget (cycles only) | at the entry, loop headers, `CALL` returns and after SP-setting instructions: the longest cycle path and deepest stack growth to the next such block | deopt at the block |
 
-A deopt sets the reference `Cpu` to the architectural state (registers, PC, cycles), writes
-the return addresses of active `CALL` frames when the program elides them, and runs it to the
-entry's return. Removed stack traffic (elided `JSR` return addresses, consumed pushes) is
-limited to programs where no access other than pushes and pulls can reach page 1
-(`stats["stack_private"]`) and no instruction sets SP.
+A deopt sets the reference `Cpu` to the architectural state (registers, PC, and with cycle
+counting cycles), writes the stack bytes each active frame pushed (from its slot registers)
+and the return addresses of active `CALL`s when the program elides them, and runs it to the
+entry's return. `stats["stack_private"]` tells whether stack traffic was removed;
+`page1_sites` counts the accesses that prevented it, `slot_ops` the pushes and pulls lifted as
+slots and `stack_ops` the stack accesses left in memory (an entry's `RTS` reads its caller's
+return address).
 
 ## IR
 
@@ -116,13 +146,21 @@ aux]` with varnodes `[space, offset, size]` (`c` constant, `r` register, `u` tem
 | `CALLOTHER` | `deopt(pc)`, `codechk(addr, value)` | operation name |
 
 Registers are `lift()`'s file (A X Y SP = 0-3, C Z I D B V N = 8-14) plus `E` (16, 2 bytes:
-the entry returns once `SP >= E`) and `CY` (17, 4 bytes: cycles since the entry started).
-Block 0 of each function is its entry; the executor (`exec.rs`) runs the program over any
-`di_pcode::Bus`, calling `Bus::now(cycle)` before possibly volatile accesses.
+the entry returns once `SP >= E`), `CY` (17, 4 bytes: cycles since the entry started, with
+cycle counting) and per function its stack slots (18 + `i`: the byte `i` below its entry SP,
+printed `s<i>`). Block 0 of each function is its entry; the executor (`exec.rs`) runs the
+program over any `di_pcode::Bus`, relocating each function's slots in its value file and,
+with cycle counting, calling `Bus::now(cycle)` before possibly volatile accesses.
 
 ## Limitations
 
 - Instruction bytes in volatile ranges are treated as memory.
-- Code the reference runs after a deopt to an address outside the program may read stack
-  bytes below SP that the lift did not write.
+- With the stack private, stack bytes below SP (popped pushes, returned frames) are not in
+  memory: an access that reads them, whether lifted code that never did in the facts or the
+  reference after a deopt, sees what the program last stored there itself.
+- One access that reached page 1 in the facts keeps the whole program's stack in memory: it
+  may read the frames of any active function and stack bytes below SP.
+- Recursive functions keep their pushes and pulls in memory (their return addresses are
+  still elided).
+- Without cycle counting, lifted code that loops forever does not return.
 - The host must keep constant code unchanged between calls, or check `matches` and re-lift.

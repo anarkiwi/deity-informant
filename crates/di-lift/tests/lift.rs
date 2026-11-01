@@ -2,7 +2,7 @@ mod common;
 #[allow(dead_code)]
 mod progs;
 use common::*;
-use di_lift::{lift, lift_many, Entry, Facts, Job};
+use di_lift::{lift, lift_many, lift_with, Entry, Facts, Job, Opts};
 
 const IO: (u16, u16) = (0xc000, 0xc100);
 
@@ -104,7 +104,11 @@ fn cycles_budget_and_stack_wrap() {
         pc: progs::TIMING_ENTRY,
         regs: vec![],
     }];
-    let p = lift(&img, &es, &[(0xc000, 0xc100)], &f);
+    let cyc = Opts {
+        optimize: true,
+        cycles: true,
+    };
+    let p = lift_with(&img, &es, &[(0xc000, 0xc100)], &f, cyc);
     assert!(diff_capped(&img, &p, &calls(10, |_| 0), IO, 150) > 0);
     let img = image(progs::WRAP);
     let es = [Entry {
@@ -112,8 +116,10 @@ fn cycles_budget_and_stack_wrap() {
         regs: vec![],
     }];
     let f = facts(&img, &[(progs::WRAP_ENTRY, 0); 4], 1_000_000);
-    let p = lift(&img, &es, &[(0xc000, 0xc100)], &f);
-    diff(&img, &p, &calls(6, |_| 0), IO);
+    for opts in [cyc, Opts::default()] {
+        let p = lift_with(&img, &es, &[(0xc000, 0xc100)], &f, opts);
+        diff(&img, &p, &calls(6, |_| 0), IO);
+    }
 }
 
 #[test]
@@ -144,9 +150,41 @@ fn batch() {
         })
         .collect();
     let n = std::sync::atomic::AtomicUsize::new(0);
-    let ps = lift_many(&jobs, || {
+    let ps = lift_many(&jobs, Opts::default(), || {
         n.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     });
     assert_eq!(n.into_inner(), 4);
     assert!(ps.iter().all(|p| p.stats == ps[0].stats));
+}
+
+#[test]
+fn guarded_stack_and_forced_page1_access() {
+    let img = image(progs::GUARDED);
+    let pc = [progs::GUARDED_ENTRY];
+    let p = check(&img, &pc, &calls(4, |_| 0x18), IO);
+    let s = &p.stats;
+    assert!(s.stack_private && s.page1_sites == 0);
+    assert_eq!((s.stack_guards, s.slot_ops, s.stack_ops), (2, 2, 2));
+    let f = facts(&img, &[(pc[0], 0x18); 4], 1_000_000);
+    let forced = calls(6, |i| if i % 2 == 1 { 0x01 } else { 0x18 });
+    for cycles in [true, false] {
+        let opts = Opts {
+            optimize: true,
+            cycles,
+        };
+        let p = lift_with(&img, &entries(&pc), &[(0xc000, 0xc100)], &f, opts);
+        assert_eq!(diff(&img, &p, &forced, IO), 3);
+    }
+}
+
+#[test]
+fn recursion() {
+    let p = check(
+        &image(progs::RECURSE),
+        &[progs::RECURSE_ENTRY],
+        &calls(3, |_| 0),
+        IO,
+    );
+    assert!(p.stats.stack_private && p.functions[1].recursive && !p.functions[0].recursive);
+    assert_eq!(p.functions[1].nslots, 0);
 }

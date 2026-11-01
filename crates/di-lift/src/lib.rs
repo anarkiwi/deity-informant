@@ -17,11 +17,29 @@ pub use analysis::{Entry, Facts};
 pub use exec::{Exec, Outcome, Runner};
 pub use ir::{Block, Function, LOp, Program, Stats};
 
-use analysis::{discover, is_stack_op, Flow, Iv};
+use analysis::{discover, is_stack_op, page1_check, Check, Flow, Iv};
 use fixedbitset::FixedBitSet;
 use func::{Ctl, H};
 use rayon::prelude::*;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
+
+/// Lift options.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Opts {
+    /// Optimize (otherwise the emitted P-Code as is).
+    pub optimize: bool,
+    /// Count cycles: `CY`, cycle-budget checks, volatile accesses at their cycle.
+    pub cycles: bool,
+}
+
+impl Default for Opts {
+    fn default() -> Self {
+        Opts {
+            optimize: true,
+            cycles: false,
+        }
+    }
+}
 
 /// Lift `entries` of the program in `img` (the memory every entry starts from).
 pub fn lift(
@@ -30,16 +48,32 @@ pub fn lift(
     volatile: &[(u32, u32)],
     facts: &Facts,
 ) -> Program {
-    lift_with(img, entries, volatile, facts, true)
+    lift_with(img, entries, volatile, facts, Opts::default())
 }
 
-/// [`lift`], optionally without optimization (the emitted P-Code as is).
+/// Function indices reachable from each function through one or more calls.
+fn recursive(callees: &[Vec<u32>]) -> FixedBitSet {
+    let mut rec = FixedBitSet::with_capacity(callees.len());
+    for i in 0..callees.len() {
+        let mut seen = FixedBitSet::with_capacity(callees.len());
+        let mut work: Vec<u32> = callees[i].clone();
+        while let Some(c) = work.pop() {
+            if !seen.put(c as usize) {
+                work.extend(&callees[c as usize]);
+            }
+        }
+        rec.set(i, seen.contains(i));
+    }
+    rec
+}
+
+/// [`lift`] with options.
 pub fn lift_with(
     img: &[u8; 0x10000],
     entries: &[Entry],
     volatile: &[(u32, u32)],
     facts: &Facts,
-    optimize: bool,
+    opts: Opts,
 ) -> Program {
     let g = discover(img, entries, facts);
     let pcs: Vec<u16> = entries.iter().map(|e| e.pc).collect();
@@ -53,7 +87,10 @@ pub fn lift_with(
     let mut constcode = g.code.clone();
     constcode.difference_with(&g.cells);
     let page1 = |iv: Iv| iv.meets(0x100, 0x200);
-    // Accesses other than pushes and pulls that may reach page 1, per function.
+    let seen: FxHashSet<u16> = facts.page1.iter().copied().collect();
+    // Accesses other than pushes and pulls that may reach page 1: per function whether a load
+    // or store may, and program-wide those that did in the facts or cannot be checked.
+    let mut sites = 0;
     let touches: Vec<(bool, bool)> = plans
         .iter()
         .map(|p| {
@@ -63,9 +100,11 @@ pub fn lift_with(
                     if is_stack_op(v.op) {
                         continue;
                     }
-                    for a in &v.acc {
+                    for (i, a) in v.acc.iter().enumerate() {
                         if page1(a.addr) {
                             *(if a.store { &mut store } else { &mut load }) = true;
+                            sites +=
+                                (seen.contains(pc) || page1_check(v.op, i) == Check::No) as usize;
                         }
                     }
                     if let Flow::JmpInd(_) = v.flow {
@@ -74,7 +113,9 @@ pub fn lift_with(
                             img[pc.wrapping_add(2) as usize],
                         ]);
                         let cell = (1..3).any(|i| g.cells.contains(pc.wrapping_add(i) as usize));
-                        load |= cell || (0x100..0x200).contains(&w) || (0xff..0x1ff).contains(&w);
+                        let fixed = !cell && ((0x100..0x200).contains(&w));
+                        load |= cell || fixed;
+                        sites += (fixed || cell && seen.contains(pc)) as usize;
                     }
                 }
             }
@@ -82,12 +123,11 @@ pub fn lift_with(
         })
         .collect();
     let private = !volatile.iter().any(|&(lo, hi)| lo < 0x200 && 0x100 < hi)
-        && !g.cells.ones().any(|a| (0x100..0x200).contains(&a))
+        && !g.code.ones().any(|a| (0x100..0x200).contains(&a))
         && plans
             .iter()
             .all(|p| p.nodes.values().all(|n| n.h != H::Unknown))
-        && touches.iter().all(|&(l, s)| !l && !s);
-    // A callee's return checks its return address when its calls may store into page 1.
+        && sites == 0;
     let callees: Vec<Vec<u32>> = plans
         .iter()
         .map(|p| {
@@ -101,6 +141,13 @@ pub fn lift_with(
                 .collect()
         })
         .collect();
+    let recursive = recursive(&callees);
+    let mut promote = FixedBitSet::with_capacity(plans.len());
+    if private {
+        promote.insert_range(..);
+        promote.difference_with(&recursive);
+    }
+    // A callee's return checks its return address when its calls may store into page 1.
     let mut ret_guard = FixedBitSet::with_capacity(plans.len());
     if !private {
         for (i, t) in touches.iter().enumerate() {
@@ -125,14 +172,11 @@ pub fn lift_with(
         volatile,
         constcode: emit::prefix(&constcode),
         private,
+        promote,
+        recursive,
+        cycles: opts.cycles,
         fidx,
         ret_guard,
-    };
-    let cx = opt::Ctx {
-        img,
-        constcode: &constcode,
-        volatile,
-        private,
     };
     let mut stats = Stats {
         cells: g.cells.count_ones(..),
@@ -143,6 +187,7 @@ pub fn lift_with(
             .count(),
         code_bytes: constcode.count_ones(..),
         stack_private: private,
+        page1_sites: sites,
         unreached: facts
             .starts
             .iter()
@@ -150,29 +195,54 @@ pub fn lift_with(
             .count(),
         ..Stats::default()
     };
-    let functions = plans
+    let mut functions: Vec<Function> = plans
         .iter()
         .enumerate()
         .map(|(i, p)| {
-            let (mut f, insns, raw, guards) = emit::emit(&sh, p, entries.get(i));
-            stats.insns += insns;
-            stats.raw_ops += raw;
-            stats.code_guards += guards;
-            stats.calls += p
-                .nodes
-                .values()
-                .flat_map(|n| &n.ctl)
-                .filter(|(c, _)| matches!(c, Ctl::Call { .. }))
-                .count();
+            let (f, n) = emit::emit(&sh, p, entries.get(i), i);
+            stats.insns += n.insns;
+            stats.raw_ops += n.raw;
+            stats.code_guards += n.code_guards;
+            stats.stack_guards += n.stack_guards;
+            stats.slot_ops += n.slot_ops;
+            stats.calls += callees[i].len();
             stats.emitted_ops += f.blocks.iter().map(|b| b.ops.len()).sum::<usize>();
-            if optimize {
-                opt::optimize(&mut f, &cx);
-            }
-            stats.blocks += f.blocks.len();
-            stats.ops += f.blocks.iter().map(|b| b.ops.len()).sum::<usize>();
             f
         })
         .collect();
+    if opts.optimize {
+        let mut cx = opt::Ctx {
+            img,
+            constcode: &constcode,
+            volatile,
+            cycles: opts.cycles,
+            sums: None,
+        };
+        let run = |fs: &mut Vec<Function>, cx: &opt::Ctx| {
+            fs.iter_mut()
+                .enumerate()
+                .for_each(|(i, f)| opt::optimize(f, cx, i))
+        };
+        run(&mut functions, &cx);
+        // Callee summaries matter only where deopts may leave registers dead: no cycles.
+        if !opts.cycles && functions.len() > 1 {
+            let sums = opt::summarize(&functions, &cx);
+            cx.sums = Some(&sums);
+            run(&mut functions, &cx);
+        }
+    }
+    let ops = || {
+        functions
+            .iter()
+            .flat_map(|f| &f.blocks)
+            .flat_map(|b| &b.ops)
+    };
+    stats.blocks = functions.iter().map(|f| f.blocks.len()).sum();
+    stats.ops = ops().count();
+    stats.stack_ops = ops()
+        .filter(|o| matches!(o.opc, di_pcode::Opc::Load | di_pcode::Opc::Store))
+        .filter(|o| o.aux & ir::mem::STACK != 0)
+        .count();
     Program {
         functions,
         entries: pcs
@@ -183,6 +253,7 @@ pub fn lift_with(
         code: constcode.ones().map(|a| (a as u16, img[a])).collect(),
         volatile: volatile.to_vec(),
         elide_ret: private,
+        cycles: opts.cycles,
         stats,
     }
 }
@@ -196,10 +267,10 @@ pub struct Job {
 }
 
 /// Lift many programs in parallel; `tick` runs after each one.
-pub fn lift_many(jobs: &[Job], tick: impl Fn() + Sync) -> Vec<Program> {
+pub fn lift_many(jobs: &[Job], opts: Opts, tick: impl Fn() + Sync) -> Vec<Program> {
     jobs.par_iter()
         .map(|j| {
-            let p = lift(&j.img, &j.entries, &j.volatile, &j.facts);
+            let p = lift_with(&j.img, &j.entries, &j.volatile, &j.facts, opts);
             tick();
             p
         })
