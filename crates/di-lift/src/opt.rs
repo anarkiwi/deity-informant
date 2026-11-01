@@ -46,11 +46,12 @@ impl Ctx<'_> {
     }
 }
 
-/// Optimize function `fi` to a fixpoint (bounded).
+/// Optimize function `fi` to a fixpoint: no pass adds ops, so the rounds end once one leaves
+/// the op count unchanged.
 pub fn optimize(f: &mut Function, cx: &Ctx, fi: usize) {
     pin_resume(f, cx, fi);
     let mut last = usize::MAX;
-    for _ in 0..8 {
+    loop {
         cleanup(f);
         rename(f);
         let consts = propagate(f, cx);
@@ -59,6 +60,7 @@ pub fn optimize(f: &mut Function, cx: &Ctx, fi: usize) {
         combine_adds(f);
         dce(f, cx, fi);
         let n: usize = f.blocks.iter().map(|b| b.ops.len()).sum();
+        debug_assert!(n <= last);
         if n == last {
             break;
         }
@@ -157,33 +159,11 @@ fn preds(f: &Function) -> Vec<u32> {
     p
 }
 
-/// Blocks where the executor checks the stack depth (and with cycles, the cycle budget), so
-/// all registers must be architectural. With cycles: the entry, `CALL` returns, loop headers
-/// and blocks after SP-setting instructions. Without: the entry of an outermost or recursive
-/// function, blocks after SP-setting instructions, and blocks reached at different SP
-/// offsets from the others.
-pub fn checkpoints(f: &Function, cycles: bool) -> FixedBitSet {
-    let n = f.blocks.len();
-    let mut cp = FixedBitSet::with_capacity(n);
-    for (i, b) in f.blocks.iter().enumerate() {
-        cp.set(i, b.check);
-    }
-    if !cycles {
-        cp.set(0, f.top || f.recursive);
-        let net: Vec<i32> = f.blocks.iter().map(|b| sp_effect(b, |_| 0).0).collect();
-        while let Some(s) = sp_conflict(f, &cp, &net) {
-            cp.insert(s);
-        }
-        return cp;
-    }
-    cp.insert(0);
-    for b in &f.blocks {
-        if let Some(r) = b.call_return() {
-            cp.insert(r as usize);
-        }
-    }
-    // Iterative DFS: an edge to a block on the stack is a back edge.
-    let mut state = vec![0u8; n];
+/// Targets of the back edges of a depth-first search from the entry: every cycle of the CFG
+/// (through `BRANCHIND` tables too) contains one.
+pub fn loop_heads(f: &Function) -> FixedBitSet {
+    let mut heads = FixedBitSet::with_capacity(f.blocks.len());
+    let mut state = vec![0u8; f.blocks.len()];
     let mut stack: Vec<(u32, Vec<u32>)> = vec![(0, f.blocks[0].succs(&f.tables).collect())];
     state[0] = 1;
     while let Some((_, succ)) = stack.last_mut() {
@@ -194,14 +174,51 @@ pub fn checkpoints(f: &Function, cycles: bool) -> FixedBitSet {
                     let ss = f.blocks[s as usize].succs(&f.tables).collect();
                     stack.push((s, ss));
                 }
-                1 => {
-                    cp.insert(s as usize);
-                }
+                1 => heads.insert(s as usize),
                 _ => {}
             }
         } else {
             let (b, _) = stack.pop().unwrap();
             state[b as usize] = 2;
+        }
+    }
+    heads
+}
+
+/// Blocks where the executor's iteration budget (without cycles) is spent: loop heads and
+/// the entry of a recursive function. They need not be checkpoints: an exhausted budget ends
+/// the call without handing its state to the reference.
+pub fn budget_points(f: &Function) -> FixedBitSet {
+    let mut b = loop_heads(f);
+    b.set(0, f.recursive);
+    b
+}
+
+/// Blocks where the executor checks the stack depth (and with cycles, the cycle budget), so
+/// all registers must be architectural. With cycles: the entry, `CALL` returns, loop heads
+/// and blocks after SP-setting instructions. Without: the entry of an outermost or recursive
+/// function, blocks after SP-setting instructions, and blocks reached at different SP
+/// offsets from the others (each conflict adds a checkpoint, so that loop ends).
+pub fn checkpoints(f: &Function, cycles: bool) -> FixedBitSet {
+    let mut cp = FixedBitSet::with_capacity(f.blocks.len());
+    for (i, b) in f.blocks.iter().enumerate() {
+        cp.set(i, b.check);
+    }
+    if !cycles {
+        if f.top || f.recursive {
+            cp.insert(0);
+        }
+        let net: Vec<i32> = f.blocks.iter().map(|b| sp_effect(b, |_| 0).0).collect();
+        while let Some(s) = sp_conflict(f, &cp, &net) {
+            cp.insert(s);
+        }
+        return cp;
+    }
+    cp.insert(0);
+    cp.union_with(&loop_heads(f));
+    for b in &f.blocks {
+        if let Some(r) = b.call_return() {
+            cp.insert(r as usize);
         }
     }
     cp
@@ -257,7 +274,8 @@ pub fn sp_offsets(f: &Function, cp: &FixedBitSet, root: usize) -> Vec<(usize, i3
 }
 
 /// Fold constant branches, thread empty blocks, drop unreachable blocks and merge
-/// straight-line chains.
+/// straight-line chains; each round removes an op or a block or retargets an edge past a
+/// forwarding block, and none adds ops, so the rounds end.
 pub fn cleanup(f: &mut Function) {
     loop {
         let mut changed = false;
@@ -428,7 +446,8 @@ fn meet(a: L, b: L) -> L {
     }
 }
 
-/// Constant registers at each block entry, by forward dataflow over every CFG edge.
+/// Constant registers at each block entry, by forward dataflow over every CFG edge; values
+/// only descend the three-level lattice, so the worklist empties.
 fn propagate(f: &Function, cx: &Ctx) -> Vec<Vec<(u16, u32)>> {
     let n = f.blocks.len();
     let nr = f.nregs();
@@ -1256,7 +1275,7 @@ impl Live<'_> {
         }
         live
     }
-    /// Live-in per block, to a fixpoint.
+    /// Live-in per block, to a least fixpoint: the transfer is monotone over finite sets.
     fn solve(&self, call: &mut dyn FnMut(u32, u32)) -> Vec<FixedBitSet> {
         let n = self.f.blocks.len();
         let mut live_in = vec![FixedBitSet::new(); n];
@@ -1340,7 +1359,8 @@ fn dce(f: &mut Function, cx: &Ctx, fi: usize) {
 
 /// Register summaries of `fs` (whose `CALL`s index it): may- and must-defined registers by
 /// fixpoints over the call graph, then used and live-out registers by a least fixpoint of
-/// liveness over all functions together (recursion converges like loops).
+/// liveness over all functions together (recursion converges like loops); may-define and
+/// the liveness sets only grow and must-define only shrinks over finite masks.
 pub fn summarize(fs: &[Function], cx: &Ctx) -> Vec<Summary> {
     let n = fs.len();
     let reg_bit = |v: Vn| -> u32 {
@@ -1414,7 +1434,8 @@ pub fn summarize(fs: &[Function], cx: &Ctx) -> Vec<Summary> {
     }
 }
 
-/// Registers written on every path from `f`'s entry to a `RETURN` (all when none returns).
+/// Registers written on every path from `f`'s entry to a `RETURN` (all when none returns),
+/// by a decreasing fixpoint of intersections.
 fn must_def(f: &Function, mustdef: &[u32], bit: &dyn Fn(Vn) -> u32) -> u32 {
     let n = f.blocks.len();
     let mut inn = vec![ALL_REGS; n];

@@ -49,9 +49,14 @@ page 1 (`page1`). `Facts.dumps()`/`loads()` serialize them as JSON.
 start, `max_cycles` elapse or a JAM (`halt` is `return`, `cycles` or `jam`). With `log=True`
 the bus records `(addr, value, cycle, is_write)` for volatile addresses; `synth=True` makes
 the `n`th volatile access read `(cycle ^ n ^ addr) & 0xff`, which makes any cycle or ordering
-error visible. Without cycle counting the lifted code runs to its return regardless of
-`max_cycles`, volatile accesses carry the starting cycle, and `cycles` counts only what the
-reference runs after a deopt; `reference_call(..., clocked=False)` gives the same stream.
+error visible. Without cycle counting volatile accesses carry the starting cycle, `cycles`
+counts only what the reference runs after a deopt (`reference_call(..., clocked=False)` gives
+the same stream), and `max_cycles` is an iteration budget: the executor allows
+`max_cycles // 2 + 1` passes through loop heads and recursive entries (every instruction takes
+at least 2 cycles), so when it runs out the reference has run past `max_cycles` on the same
+path and the call ends with halt `cycles` (registers, PC and stack bytes are then not the
+reference's). A deopt hands the reference what remains of `max_cycles` after the cycles the
+lifted code is known to have covered.
 
 `tools/wplift.py IMAGE --org A --entry PC ... --calls PC:A*N,... --volatile LO-HI --check`
 lifts an image file (`--init PC:A` runs an init routine on the reference first, so the entries
@@ -140,6 +145,7 @@ the program, and checks it against the reference.
 | An unexecuted start with an uncheckable page-1 access is not reached | none: edges to it are the deopt | deopt at the start |
 | Stack wrap | without cycles: at outermost and recursive entries (counting the deepest growth of the callees that do not check), after SP-setting instructions and at blocks reached at different SP offsets; with cycles: as below | deopt at the block |
 | Cycle budget (cycles only) | at the entry, loop headers, `CALL` returns and after SP-setting instructions: the longest cycle path and deepest stack growth to the next such block | deopt at the block |
+| Iteration budget (without cycles; `stats["budget_checks"]`) | the executor spends one unit entering each loop head (target of a depth-first back edge of the final CFG, through `BRANCHIND` tables too) and recursive entry; no ops are emitted and optimization is unaffected | halt `cycles` |
 
 A deopt sets the reference `Cpu` to the architectural state (registers, PC, and with cycle
 counting cycles), writes the stack bytes each active frame pushed (from its slot registers)
@@ -187,5 +193,6 @@ with cycle counting, calling `Bus::now(cycle)` before possibly volatile accesses
   the facts of its callers' frames.
 - Recursive functions keep their pushes and pulls in memory (their return addresses are
   still elided).
-- Without cycle counting, lifted code that loops forever does not return.
+- Without cycle counting, a call that does not return within `max_cycles` ends with the
+  reference's halt (`cycles`) but not its state.
 - The host must keep constant code unchanged between calls, or check `matches` and re-lift.

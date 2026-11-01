@@ -63,7 +63,8 @@ def facts_for(img, pcs, calls):
 def differential(img, prog, pcs, calls, synth=True, max_cycles=10_000_000, mem=None, reg=None):
     """Run ``calls`` on the reference and the lifted program from registers ``reg``;
     everything observable must match (RAM except the dead stack below SP; cycles only when
-    the program counts them). The final memory."""
+    the program counts them). Without cycle counting a call the reference does not return
+    from is compared by its halt and ends the run. The final memory."""
     m1 = bytearray(img if mem is None else mem)
     m2 = bytearray(m1)
     s1 = s2 = {"reg": reg, "cycles": 0}
@@ -74,6 +75,9 @@ def differential(img, prog, pcs, calls, synth=True, max_cycles=10_000_000, mem=N
             m1, pcs[e], a=a, volatile=[IO], clocked=prog.cycles, **kw, **s1
         )
         o = prog.call(m2, e, a=a, **kw, **s2)
+        if not prog.cycles and r["halt"] == "cycles":
+            assert o["halt"] == "cycles", n
+            break
         for k in keys:
             assert r[k] == o[k], (n, k, r[k], o[k])
         sp = r["reg"][3]
@@ -390,3 +394,16 @@ def test_page1_range_guard(cycles):
     assert (st["kept_bytes"], st["sp_guards"]) == (2, 1)
     differential(img, prog, pcs, [(0, 2)] + calls)
     assert sum(prog.deopts.values()) == 1
+
+
+@pytest.mark.parametrize("cycles", [False, True])
+@pytest.mark.parametrize("name", ["SPIN", "INDSPIN", "POPREC", "COUNT"])
+def test_budget_ends_calls(name, cycles):
+    img, labels = assemble(source(name))
+    pc = [labels["entry"]]
+    facts = trace.collect(img, lambda s: [s.call(pc[0]) for _ in range(2)], 100_000)
+    prog = wholeprog.lift(img, pc, [IO], facts, cycles=cycles)
+    assert (prog.stats["budget_checks"] > 0) == (not cycles)
+    for cap, halt in ((100_000, "return" if name == "COUNT" else "cycles"), (1_000, "cycles")):
+        differential(img, prog, pc, [(0, 0)] * 2, max_cycles=cap)
+        assert prog.call(bytearray(img), 0, max_cycles=cap)["halt"] == halt

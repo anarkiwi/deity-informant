@@ -413,7 +413,8 @@ pub fn operand_bytes(
     })
 }
 
-/// Discover the program reachable from `entries` relative to `img`.
+/// Discover the program reachable from `entries` relative to `img`; the cell fixpoint ends as
+/// cells and their value sets only grow within the 64 KiB image.
 pub fn discover(img: &[u8; 0x10000], entries: &[Entry], facts: &Facts) -> Graph {
     let mut edges: FxHashMap<u16, Vec<u16>> = FxHashMap::default();
     for &(p, q) in &facts.edges {

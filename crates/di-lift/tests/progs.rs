@@ -211,3 +211,24 @@ pub const PXTABLE: &[(u16, &[u8])] = &[
     ),
 ];
 pub const PXTABLE_ENTRY: u16 = 0x1000;
+pub const SPIN: &[(u16, &[u8])] = &[(0x1000, &[141, 224, 192, 76, 3, 16])];
+pub const SPIN_ENTRY: u16 = 0x1000;
+pub const INDSPIN: &[(u16, &[u8])] = &[(0x1000, &[141, 225, 192, 108, 16, 24]), (0x1810, &[3, 16])];
+pub const INDSPIN_ENTRY: u16 = 0x1000;
+pub const POPREC: &[(u16, &[u8])] = &[(
+    0x1000,
+    &[
+        141, 226, 192, 32, 7, 16, 96, 104, 104, 141, 227, 192, 32, 7, 16,
+    ],
+)];
+pub const POPREC_ENTRY: u16 = 0x1000;
+pub const COUNT: &[(u16, &[u8])] = &[
+    (
+        0x1000,
+        &[
+            162, 0, 160, 0, 200, 208, 253, 232, 224, 4, 208, 248, 108, 16, 24, 142, 228, 192, 96,
+        ],
+    ),
+    (0x1810, &[15, 16]),
+];
+pub const COUNT_ENTRY: u16 = 0x1000;

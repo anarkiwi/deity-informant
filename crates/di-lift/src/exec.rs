@@ -1,7 +1,7 @@
 //! Executing a lifted program over a [`Bus`], leaving for the reference [`Cpu`] at deopts.
 
 use crate::ir::{mask, mem, other, Function, Program, CY, E, NREG};
-use crate::opt::{checkpoints, sp_effect, sp_offsets};
+use crate::opt::{budget_points, checkpoints, sp_effect, sp_offsets};
 use di_pcode::{reg as R, Bus, Cpu, Halt, Opc, Space, Vn};
 use fixedbitset::FixedBitSet;
 use rustc_hash::FxHashMap;
@@ -30,6 +30,8 @@ struct XBlock {
     check: u32,
     /// Bytes the stack may grow by before the next check.
     depth: u32,
+    /// Spends one unit of the iteration budget (without cycles).
+    budget: bool,
 }
 
 /// A lifted program compiled for execution.
@@ -129,6 +131,11 @@ impl Exec {
             let tbase = x.tables.len() as u32;
             x.fentry.push(base);
             let (cps, bounds) = (&cps[fi], &all_bounds[fi]);
+            let spend = if p.cycles {
+                FixedBitSet::with_capacity(f.blocks.len())
+            } else {
+                budget_points(f)
+            };
             let sbase = x.slots[fi].0;
             for (bi, b) in f.blocks.iter().enumerate() {
                 let (check, depth) = if cps.contains(bi) {
@@ -141,6 +148,7 @@ impl Exec {
                     pc: b.pc,
                     check,
                     depth,
+                    budget: spend.contains(bi),
                 });
                 for op in &b.ops {
                     let aux = match op.opc {
@@ -274,6 +282,14 @@ impl Exec {
     }
 }
 
+/// Why the lifted code stopped: a deopt, the entry's return, or the iteration budget ran out.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Stop {
+    Deopt,
+    Exit,
+    Budget,
+}
+
 /// Why a run ended, and where it deopted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Outcome {
@@ -328,7 +344,10 @@ impl<'a> Runner<'a> {
 
     /// Run entry `entry` from `cpu` (its PC is set to the entry's) until SP exceeds
     /// `sp_above` or at least `max_cycles` have elapsed (checked before each instruction), or a
-    /// JAM. The lifted code assumes the entry returns at SP + 2.
+    /// JAM. The lifted code assumes the entry returns at SP + 2. Without cycles it spends one
+    /// of `max_cycles / 2 + 1` iterations at each budget point: when none is left the
+    /// reference has run past `max_cycles` on the same path, so the run ends there with
+    /// [`Halt::Cycles`] (registers, PC and stack bytes are not the reference's then).
     pub fn run<B: Bus>(
         &mut self,
         entry: usize,
@@ -349,6 +368,8 @@ impl<'a> Runner<'a> {
             return self.fallback(cpu, bus, pc, sp_above, end);
         }
         let budget = (end - c0).min(SPAN) as u32;
+        let start_iters = if self.x.cycles { 0 } else { max_cycles / 2 + 1 };
+        let mut iters = start_iters;
         let f = &mut self.f;
         for (i, v) in cpu.reg().into_iter().enumerate() {
             f[i] = v as u32;
@@ -373,14 +394,20 @@ impl<'a> Runner<'a> {
                     && (cyc && self.f[CY as usize] as u64 + blk.check as u64 >= budget as u64
                         || self.f[R::SP] < blk.depth)
                 {
-                    break (blk.pc, false);
+                    break (blk.pc, Stop::Deopt);
+                }
+                if blk.budget {
+                    if iters == 0 {
+                        break (blk.pc, Stop::Budget);
+                    }
+                    iters -= 1;
                 }
                 blk.start as usize
             }};
         }
         let first = x.blocks[x.fentry[fi as usize] as usize];
-        let (dpc, exit) = if cyc && first.check >= budget || (sp as u32) < first.depth {
-            (first.pc, false)
+        let (dpc, stop) = if cyc && first.check >= budget || (sp as u32) < first.depth {
+            (first.pc, Stop::Deopt)
         } else {
             let mut ip = first.start as usize;
             loop {
@@ -414,7 +441,7 @@ impl<'a> Runner<'a> {
                         let tb = &x.tables[o.aux as usize];
                         match tb.binary_search_by_key(&t, |e| e.0) {
                             Ok(i) => ip = enter!(tb[i].1),
-                            Err(_) => break (t, false),
+                            Err(_) => break (t, Stop::Deopt),
                         }
                     }
                     Opc::Call => {
@@ -424,11 +451,11 @@ impl<'a> Runner<'a> {
                     }
                     Opc::Return => match self.frames.pop() {
                         Some((r, ..)) => ip = r as usize,
-                        None => break (get(f, o.a) as u16, true),
+                        None => break (get(f, o.a) as u16, Stop::Exit),
                     },
                     Opc::CallOther => {
                         if o.aux == other::DEOPT {
-                            break (get(f, o.a) as u16, false);
+                            break (get(f, o.a) as u16, Stop::Deopt);
                         }
                         let a = get(f, o.a) as usize;
                         let hit = x.constcode.contains(a) && x.img[a] as u32 != get(f, o.b);
@@ -453,9 +480,15 @@ impl<'a> Runner<'a> {
         if cyc {
             cpu.cycles = c0 + f[CY as usize] as u64;
         }
-        if exit {
+        if stop == Stop::Exit {
             return Outcome {
                 halt: Halt::Sp,
+                deopt: None,
+            };
+        }
+        if stop == Stop::Budget {
+            return Outcome {
+                halt: Halt::Cycles,
                 deopt: None,
             };
         }
@@ -482,7 +515,9 @@ impl<'a> Runner<'a> {
                 }
             }
         }
-        self.fallback(cpu, bus, dpc, sp_above, end)
+        // Every budget point after the first follows an instruction of at least 2 cycles.
+        let spent = 2 * (start_iters - iters).saturating_sub(1);
+        self.fallback(cpu, bus, dpc, sp_above, end.saturating_sub(spent))
     }
 
     fn fallback<B: Bus>(

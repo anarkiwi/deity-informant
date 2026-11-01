@@ -327,6 +327,7 @@ impl Program {
         d.set_item("sp_dispatch", s.sp_dispatch)?;
         d.set_item("sp_guards", s.sp_guards)?;
         d.set_item("kept_bytes", s.kept_bytes)?;
+        d.set_item("budget_checks", s.budget_checks)?;
         Ok(d)
     }
 

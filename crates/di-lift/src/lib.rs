@@ -390,6 +390,12 @@ pub fn lift_with(
             .flat_map(|b| &b.ops)
     };
     stats.blocks = functions.iter().map(|f| f.blocks.len()).sum();
+    if !opts.cycles {
+        stats.budget_checks = functions
+            .iter()
+            .map(|f| opt::budget_points(f).count_ones(..))
+            .sum();
+    }
     stats.ops = ops().count();
     stats.stack_ops = ops()
         .filter(|o| matches!(o.opc, di_pcode::Opc::Load | di_pcode::Opc::Store))
