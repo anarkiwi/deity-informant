@@ -24,3 +24,7 @@ core.*
 .claude/
 .worktrees/
 .nfs*
+
+# rust
+target/
+*.so

@@ -1,0 +1,14 @@
+[workspace]
+members = ["crates/di-pcode", "crates/di-py"]
+resolver = "2"
+
+[workspace.package]
+version = "0.6.2"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["Josh Bailey <josh@overlyspecific.com>"]
+repository = "https://github.com/anarkiwi/deity-informant"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1

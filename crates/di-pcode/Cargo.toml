@@ -1,0 +1,10 @@
+[package]
+name = "di-pcode"
+description = "Compact 6502/6510 P-Code IR templated from deity-informant's lifter, and its reference interpreter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]

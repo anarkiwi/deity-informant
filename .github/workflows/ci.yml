@@ -17,13 +17,78 @@ jobs:
       - name: Install
         run: pip install -e ".[dev]"
       - name: Format
-        run: black --check deity_informant/ tests/
+        run: black --check deity_informant/ tests/ tools/
       - name: Lint
         run: pylint deity_informant/
       - name: Build 6510 SLEIGH module (pypcode-bundled compiler)
         run: deity-informant emit-sleigh
       - name: Test
         run: pytest tests/ -n auto --cov=deity_informant --cov-fail-under=85
+
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # cargo test links the abi3 cdylib's test harness against libpython.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --locked
+      - name: Bench smoke
+        run: cargo run --release --locked -p di-pcode --example bench -- sort 1000000
+
+  native:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/native.Dockerfile
+          build-args: PYTHON_VERSION=${{ matrix.python }}
+          tags: di-native:${{ matrix.python }}
+          load: true
+          cache-from: type=gha,scope=native-${{ matrix.python }}
+          cache-to: type=gha,scope=native-${{ matrix.python }},mode=max
+      - name: Test
+        run: docker run --rm di-native:${{ matrix.python }}
+
+  sdist:
+    runs-on: ubuntu-latest
+    container: python:3.12-slim-trixie
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build sdist
+        run: |
+          pip install build
+          python -m build --sdist
+      - name: Install without a Rust toolchain
+        run: |
+          if command -v cargo; then exit 1; fi
+          python -m venv /tmp/venv
+          /tmp/venv/bin/pip install dist/*.tar.gz pytest numpy
+      # Tests run from a copy without the in-tree package so imports resolve to the install.
+      - name: Test pure-Python install
+        run: |
+          mkdir /tmp/sd && cp -r tests /tmp/sd/
+          cd /tmp/sd
+          /tmp/venv/bin/python -c "import deity_informant as d; assert not d.NATIVE"
+          /tmp/venv/bin/pytest -q tests/test_vm.py tests/test_lifter.py tests/test_native.py
 
   ghidra-integration:
     # The illegal LAX/ISC decode under the actual Ghidra headless analyzer (not
