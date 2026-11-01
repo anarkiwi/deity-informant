@@ -39,9 +39,10 @@ def _facts(f):
     return (f if isinstance(f, Facts) else Facts.from_dict(f)).to_dict()
 
 
-def lift(image, entries, volatile=(), facts=None, optimize=True, cycles=False):
+def lift(image, entries, volatile=(), facts=None, optimize=True, cycles=False, bank=None):
     """Lift ``entries`` of the program in ``image`` (the memory each entry starts from);
-    ``cycles=True`` counts cycles and stamps volatile accesses with them."""
+    ``cycles=True`` counts cycles and stamps volatile accesses with them; ``bank`` is a bank
+    map (e.g. ``deity_informant.c64.bank_map()``) memory is seen through."""
     n = _native_or_raise()
     return n.lift_program(
         bytes(image),
@@ -50,15 +51,16 @@ def lift(image, entries, volatile=(), facts=None, optimize=True, cycles=False):
         _facts(facts),
         optimize,
         cycles,
+        bank,
     )
 
 
-def plans(image, entries, facts=None):
+def plans(image, entries, facts=None, bank=None):
     """The functions the lift plans for ``entries``: ``[{"pc", "top", "balanced", "heights"}]``,
     ``heights`` per instruction start: the heights it is planned at relative to its function's
     entry, ``None`` where unknown."""
     return _native_or_raise().plan_program(
-        bytes(image), [entry_spec(e) for e in entries], _facts(facts)
+        bytes(image), [entry_spec(e) for e in entries], _facts(facts), bank
     )
 
 
@@ -77,7 +79,8 @@ def lift_many(jobs, progress=True, optimize=True, cycles=False):
 
 
 def reference_call(mem, pc, **kw):
-    """``run_to_rts`` on the reference interpreter with ``Program.call``'s bus."""
+    """``run_to_rts`` on the reference interpreter with ``Program.call``'s bus; ``bank`` sees
+    memory through a bank map, its devices on ``io``."""
     if "volatile" in kw:
         kw["volatile"] = _ranges(kw["volatile"])
     return _native_or_raise().reference_call(mem, pc, **kw)

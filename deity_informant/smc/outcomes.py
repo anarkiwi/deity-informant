@@ -2,13 +2,14 @@
 
 A flat CPU program is lifted from facts over its calls and run differentially against
 ``wholeprog.reference_call``; the outcome is ``exact_nodeopt``, ``exact_deopt``, ``inexact`` or
-``not_runnable``. A machine program is not lifted (the lifter is flat): its outcome is the
-cell's lift reason.
+``not_runnable``. A machine program whose cells the lifter models (banking) is lifted through
+the C64 bank map from machine facts and checked call by call against the machine; any other
+machine program's outcome is its cells' lift reason.
 """
 
 from __future__ import annotations
 
-from deity_informant import trace, wholeprog
+from deity_informant import c64, trace, wholeprog
 
 from .expect import lift_reason
 from .space import Cell
@@ -32,11 +33,20 @@ def _facts(prog):
     return trace.collect(prog.image, driver)
 
 
-def _machine_outcome(prog):
+def _machine_outcome(prog, max_cycles):
     reasons = {lift_reason(Cell(*_parse(sid))) for sid in prog.sids}
     reasons.discard(None)
-    order = ("lift-no-dma", "lift-no-interrupts", "lift-no-banking", "lift-no-brk")
-    return next((r for r in order if r in reasons), "lift-no-banking")
+    if reasons:
+        return next(r for r in ("lift-no-dma", "lift-no-interrupts") if r in reasons), 0
+    wit = prog.wit
+    image, labels = wit.image()
+    entry = labels[wit.entry]
+    calls = [(entry, c[-1] if len(c) > 1 else 0) for c in wit.calls]
+    res = c64.lift_check(image, entry, calls, calls, max_cycles=max_cycles)
+    deopts = sum(res.prog.deopts.values())
+    if res.bad is not None:
+        return ("not_runnable" if res.bad[1] == "no-return" else "inexact"), deopts
+    return ("exact_deopt" if deopts else "exact_nodeopt"), deopts
 
 
 def _parse(sid):
@@ -46,9 +56,9 @@ def _parse(sid):
 
 
 def classify(prog, max_cycles=2_000_000):
-    """``(outcome, deopts)`` for ``prog``; machine programs report their lift reason."""
+    """``(outcome, deopts)`` for ``prog``."""
     if getattr(prog, "oracle", "cpu") == "machine":
-        return _machine_outcome(prog), 0
+        return _machine_outcome(prog, max_cycles)
     image = bytearray(prog.image)
     for p, a in prog.init:
         wholeprog.reference_call(image, prog.labels.get(p, p), a=a, volatile=[IO])

@@ -9,12 +9,12 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from jennings.opcodes import MODE_LEN, OPCODES
+from jennings.opcodes import MEM_MODES, MODE_LEN, OPCODES
 from vagrant_moses.bus import banking
 
 from .space import Cell
 
-__all__ = ["Classifier", "view", "insn_reads", "expected_writes", "IO_WINDOW"]
+__all__ = ["Classifier", "view", "insn_reads", "expected_writes", "expected_reads", "IO_WINDOW"]
 
 IO_WINDOW = (0xD000, 0xDFFF)
 _KVEC = range(0x0314, 0x031A)
@@ -81,6 +81,17 @@ def expected_writes(mem, pc, x, y, sp):
     if mode == "indy":
         return {((mem[b1] | mem[(b1 + 1) & 0xFF] << 8) + y) & 0xFFFF}
     return set()
+
+
+def expected_reads(mem, pc, x, y, sp, store=False):
+    """The data addresses an instruction at ``pc`` reads (pointer bytes, operand), by its
+    addressing form; ``store`` marks a store that does not read its operand. Stack pulls and
+    return-address reads are not data reads."""
+    mn, mode = OPCODES[mem[pc]]
+    out = {a for a, role in insn_reads(mem, pc, x, sp) if role == "ptr_indirect"}
+    if mode in MEM_MODES and mn not in ("JSR", "JMP") and not store:
+        out |= expected_writes(mem, pc, x, y, sp)
+    return out
 
 
 class Classifier:

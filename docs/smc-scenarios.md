@@ -11,9 +11,10 @@ expectation table. It lives in the `deity_informant.smc` package
 
 During a lifted call the lifter (`deity_informant.wholeprog`, `crates/di-lift`) assumes: code
 bytes keep their lift-time values except known cells; control values (vectors, return
-addresses) behave as in the facts; a fixed flat memory map; and nothing but the instruction
-stream changes state. A scenario is a causal path that violates one of these at a fetch. Its
-feature tuple is `(writer x channel, target role, timing, mapping)`.
+addresses) behave as in the facts; memory is flat or seen through a host's bank map (the
+C64's from `deity_informant.c64`); and nothing but the instruction stream changes state. A
+scenario is a causal path that violates one of these at a fetch. Its feature tuple is
+`(writer x channel, target role, timing, mapping)`.
 
 ## Axes and their derivation
 
@@ -91,23 +92,27 @@ fixpoint; plus that the CPU oracle module names jennings and not the lifter. The
 
 Each flat CPU corpus program is lifted (`wholeprog.lift`) and differentially checked against
 the reference, classified `exact_nodeopt`, `exact_deopt`, `inexact` or `not_runnable`; every
-flat CPU witness lifts exactly. A machine-level cell is not lifted (the lifter is flat RAM):
-its expected outcome is the reason the flat lifter cannot model it. Every non-exact cell is
-marked `pytest.mark.xfail(strict=True)`, so a cell that starts lifting exactly (the lifter
-gains banking/interrupt support) XPASSes and forces a table update.
+flat CPU witness lifts exactly. A machine program whose cells only need banking is lifted
+through the C64 bank map from machine facts and checked call by call against the machine
+oracle (`c64.lift_check`); the banking witnesses lift exactly. Any other machine cell's
+expected outcome is the reason the lifter cannot model it. Every non-exact cell is marked
+`pytest.mark.xfail(strict=True)`, so a cell that starts lifting exactly XPASSes and forces a
+table update.
 
 ### Lift-gap summary
 
 | Lift reason | Meaning |
 |---|---|
-| `lift-no-banking` | a non-flat mapping, a `cpu_port` writer, or a `bank_reg`/`hw_vector`/`kernal_vector` role — the lifter has a fixed flat map. |
-| `lift-no-interrupts` | an `irq_push`/`nmi_push` writer or `async` timing — the lifter models no interrupt between instructions. |
+| `lift-no-interrupts` | an `irq_push`/`nmi_push` writer, `async` timing, or a `kernal_vector` role (the KERNAL fetches its RAM vectors on its interrupt path) — the lifter models no interrupt between instructions. |
 | `lift-no-dma` | a `reu_dma` writer or `reu_reg` role — the lifter models no DMA. |
 
-Unwitnessed feasible cells additionally carry a gap reason: `machine-not-synthesized` (a
-banking/interrupt cell the machine gadgets do not individually place), `reu-no-oracle` (no
-REU device yet) and `placement-not-synthesized` (a flat CPU cell the generator does not place,
-e.g. stack-page code or SH* value aiming).
+Banking cells (a non-flat mapping, a `cpu_port` writer, a `bank_reg`/`hw_vector` role) carry
+their lift outcome like flat CPU cells. Unwitnessed feasible cells additionally carry a gap
+reason: `machine-not-synthesized` (a banking/interrupt cell the machine gadgets do not
+individually place), `reu-no-oracle` (no REU device yet) and `placement-not-synthesized` (a
+flat CPU cell the generator does not place, e.g. stack-page code or SH* value aiming). A cell
+witnessed by several programs records `inexact` if any witness is, else `exact_deopt` or
+`exact_nodeopt` from its exact witnesses, and a lift reason only when no witness lifts.
 
 ## Labelling real tunes
 
@@ -115,5 +120,5 @@ e.g. stack-page code or SH* value aiming).
 machine oracle (PSID called per frame, RSID driven by the tune's own IRQ) and records the
 feature cells it exercises, pebble-parallel with a per-tune timeout. Its summary counts, per
 cell and per lift-gap reason, how many tunes need it — a 500-tune sample found most SMC is
-flat-liftable, with banking and interrupts the next most-needed categories, which is what the
-lifter would gain most from supporting next.
+flat-liftable, with banking and interrupts the next most-needed categories. `tools/wpbank.py`
+checks bank-aware lifts of the banking tunes against the machine.

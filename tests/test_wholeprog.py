@@ -8,7 +8,8 @@ from jennings.devices.mpu6502 import NativeMPU
 from jennings.memory import NativeMemory
 
 import wholeprog_progs as W
-from deity_informant import NATIVE, trace, wholeprog
+from deity_informant import NATIVE, c64, trace, wholeprog
+from deity_informant.smc import machine
 from wholeprog_progs import CODEHIT, GEN, INVALIDATE, IO, JMPIND, PATCH, TOGGLE, WRAP, assemble
 
 pytestmark = pytest.mark.skipif(not NATIVE, reason="needs the native extension")
@@ -60,7 +61,18 @@ def facts_for(img, pcs, calls):
     return trace.collect(img, lambda s: [s.call(pcs[e], a) for e, a in calls])
 
 
-def differential(img, prog, pcs, calls, synth=True, max_cycles=10_000_000, mem=None, reg=None):
+def differential(
+    img,
+    prog,
+    pcs,
+    calls,
+    synth=True,
+    max_cycles=10_000_000,
+    mem=None,
+    reg=None,
+    bank=None,
+    volatile=(IO,),
+):  # pylint: disable=too-many-arguments,too-many-positional-arguments
     """Run ``calls`` on the reference and the lifted program from registers ``reg``;
     everything observable must match (RAM except the dead stack below SP; cycles only when
     the program counts them). Without cycle counting a call the reference does not return
@@ -72,7 +84,7 @@ def differential(img, prog, pcs, calls, synth=True, max_cycles=10_000_000, mem=N
     for n, (e, a) in enumerate(calls):
         kw = {"log": True, "synth": synth, "max_cycles": max_cycles}
         r = wholeprog.reference_call(
-            m1, pcs[e], a=a, volatile=[IO], clocked=prog.cycles, **kw, **s1
+            m1, pcs[e], a=a, volatile=list(volatile), clocked=prog.cycles, bank=bank, **kw, **s1
         )
         o = prog.call(m2, e, a=a, **kw, **s2)
         if not prog.cycles and r["halt"] == "cycles":
@@ -407,3 +419,40 @@ def test_budget_ends_calls(name, cycles):
     for cap, halt in ((100_000, "return" if name == "COUNT" else "cycles"), (1_000, "cycles")):
         differential(img, prog, pc, [(0, 0)] * 2, max_cycles=cap)
         assert prog.call(bytearray(img), 0, max_cycles=cap)["halt"] == halt
+
+
+BANKED = {
+    "bankrd": ("BANKRD", [0, 0], []),
+    "romram": ("ROMRAM", [0, 1, 2], []),
+    "romcallk": ("ROMCALLK", [0, 0], []),
+    "bankseen": ("BANKSEEN", [0, 0], [1]),
+}
+
+
+def banked_image(name):
+    """A banked program over the machine's power-on RAM: its code page and its data bytes."""
+    from vagrant_moses.c64 import poweron_ram  # pylint: disable=import-outside-toplevel
+
+    img, labels = assemble(source(BANKED[name][0]))
+    base = bytearray(poweron_ram())
+    for a in range(0x10000):
+        if img[a] or 0x1000 <= a < 0x1100:
+            base[a] = img[a]
+    return base, labels["entry"]
+
+
+@pytest.mark.skipif(not machine.core(), reason="needs vagrant-moses' native machine")
+@pytest.mark.parametrize("cycles", [False, True])
+@pytest.mark.parametrize("name", sorted(BANKED))
+def test_banked_lift_matches_machine(name, cycles):
+    img, pc = banked_image(name)
+    _, seen, forced = BANKED[name]
+    runs = [(pc, a) for a in forced + seen]
+    res = c64.lift_check(img, pc, [(pc, a) for a in seen], runs, cycles=cycles)
+    prog = res.prog
+    assert res.bad is None, res.bad
+    assert (sum(prog.deopts.values()) > 0) == bool(forced) and prog.stats["bank_dispatch"] > 0
+    post = bytearray(img)
+    post[c64.IDLE] = 0x60
+    calls = [(0, a) for a in forced + seen]
+    differential(post, prog, [pc], calls, bank=c64.bank_map(), volatile=[c64.SID])

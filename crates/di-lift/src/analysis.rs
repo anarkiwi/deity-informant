@@ -2,6 +2,7 @@
 //! (code bytes the program writes) by a fixpoint over static store analysis and observed
 //! writes, and per-access address intervals.
 
+use crate::bank::{Back, BankMap};
 use crate::ir::mask;
 use di_pcode::{CtrlKind, Op, Opc, Operands, Slot, Space, Template, Vn};
 use fixedbitset::FixedBitSet;
@@ -19,7 +20,9 @@ pub struct Entry {
 /// transfers, the values stored to each address, the instructions whose accesses reached page
 /// 1 with the lowest and highest page-1 address each reached, the stack heights each instruction start was seen at
 /// (SP minus SP at its call's entry as integers: pushes negative, an SP set below a wrap far
-/// negative), and per entry the SP values (after its return address) it was called at.
+/// negative), per entry the SP values (after its return address) it was called at, the bank
+/// configurations each instruction start ran in, and per entry the port registers
+/// `(dir, data)` at its calls.
 #[derive(Clone, Debug, Default)]
 pub struct Facts {
     pub starts: Vec<u16>,
@@ -28,6 +31,8 @@ pub struct Facts {
     pub page1: Vec<(u16, u16, u16)>,
     pub heights: Vec<(u16, Vec<i16>)>,
     pub entry_sp: Vec<(u16, Vec<u8>)>,
+    pub banks: Vec<(u16, Vec<u8>)>,
+    pub entry_port: Vec<(u16, Vec<(u8, u8)>)>,
 }
 
 /// An unsigned interval of a value.
@@ -269,6 +274,12 @@ pub struct Graph {
     pub code: FixedBitSet,
     /// Observed transfers per site.
     pub edges: FxHashMap<u16, Vec<u16>>,
+    /// The image with instruction bytes as fetched (from ROM where decoded so).
+    pub img: Box<[u8; 0x10000]>,
+    /// Instruction bytes fetched from ROM (constant, never cells).
+    pub rom_code: FixedBitSet,
+    /// The configuration each start was decoded in.
+    pub cfg: FxHashMap<u16, u8>,
 }
 
 /// Stack-pointer effect of a `Next` instruction: pushes and pulls by count, `None` for an
@@ -324,6 +335,8 @@ struct Ctx<'a> {
     cells: &'a FixedBitSet,
     edges: &'a FxHashMap<u16, Vec<u16>>,
     values: &'a FxHashMap<u16, BTreeSet<u8>>,
+    /// The `BRK` vector as the instruction's configuration maps it.
+    brk: u16,
 }
 
 impl Ctx<'_> {
@@ -382,7 +395,7 @@ impl Ctx<'_> {
             },
             CtrlKind::Rts => Flow::Rts(self.facts(pc, [])),
             CtrlKind::Rti => Flow::Rti(self.facts(pc, [])),
-            CtrlKind::Brk => Flow::Brk(self.facts(pc, [self.word(0xfffe)])),
+            CtrlKind::Brk => Flow::Brk(self.facts(pc, [self.brk])),
             CtrlKind::Jam => Flow::Jam,
         }
     }
@@ -413,9 +426,26 @@ pub fn operand_bytes(
     })
 }
 
+/// The configuration an entry runs in: the first its calls were seen at, else the image's.
+pub fn entry_config(m: &BankMap, img: &[u8; 0x10000], facts: &Facts, pc: u16) -> u8 {
+    let seen = facts.entry_port.iter().find(|e| e.0 == pc);
+    let (d, v) = seen
+        .and_then(|e| e.1.first().copied())
+        .unwrap_or((img[m.dir as usize], img[m.data as usize]));
+    m.config(d, v)
+}
+
 /// Discover the program reachable from `entries` relative to `img`; the cell fixpoint ends as
-/// cells and their value sets only grow within the 64 KiB image.
-pub fn discover(img: &[u8; 0x10000], entries: &[Entry], facts: &Facts) -> Graph {
+/// cells and their value sets only grow within the 64 KiB image. With a bank map each start
+/// is decoded in the configuration it first ran in (else the one it is first reached in), its
+/// bytes from ROM where that configuration maps ROM.
+pub fn discover(
+    img: &[u8; 0x10000],
+    entries: &[Entry],
+    facts: &Facts,
+    bank: Option<&BankMap>,
+) -> Graph {
+    let seen: FxHashMap<u16, u8> = facts.banks.iter().map(|(p, c)| (*p, c[0])).collect();
     let mut edges: FxHashMap<u16, Vec<u16>> = FxHashMap::default();
     for &(p, q) in &facts.edges {
         edges.entry(p).or_default().push(q);
@@ -432,18 +462,40 @@ pub fn discover(img: &[u8; 0x10000], entries: &[Entry], facts: &Facts) -> Graph 
     let mut cells = FixedBitSet::with_capacity(0x10000);
     let mut values = observed.clone();
     loop {
-        let ctx = Ctx {
-            img,
-            cells: &cells,
-            edges: &edges,
-            values: &values,
-        };
+        let mut cimg = Box::new(*img);
+        let mut rom_code = FixedBitSet::with_capacity(0x10000);
+        let mut cfg: FxHashMap<u16, u8> = FxHashMap::default();
         let mut vars: FxHashMap<u16, Vec<Var>> = FxHashMap::default();
-        let mut work: Vec<u16> = entries.iter().map(|e| e.pc).collect();
-        while let Some(pc) = work.pop() {
+        let mut work: Vec<(u16, u8)> = entries
+            .iter()
+            .map(|e| (e.pc, bank.map_or(0, |m| entry_config(m, img, facts, e.pc))))
+            .collect();
+        while let Some((pc, c)) = work.pop() {
             if vars.contains_key(&pc) {
                 continue;
             }
+            let c = seen.get(&pc).copied().unwrap_or(c);
+            if let Some(m) = bank.filter(|m| m.back(c, pc) == Back::Rom) {
+                for i in 0..Template::of(m.rom[pc as usize]).len as u16 {
+                    let a = pc.wrapping_add(i);
+                    if m.back(c, a) == Back::Rom {
+                        cimg[a as usize] = m.rom[a as usize];
+                        rom_code.insert(a as usize);
+                    }
+                }
+            }
+            cfg.insert(pc, c);
+            let vec = |a: u16| match bank {
+                Some(m) if m.back(c, a) == Back::Rom => m.rom[a as usize],
+                _ => img[a as usize],
+            };
+            let ctx = Ctx {
+                img: &cimg,
+                cells: &cells,
+                edges: &edges,
+                values: &values,
+                brk: u16::from_le_bytes([vec(0xfffe), vec(0xffff)]),
+            };
             let vs: Vec<Var> = ctx
                 .opcodes(pc)
                 .into_iter()
@@ -453,7 +505,7 @@ pub fn discover(img: &[u8; 0x10000], entries: &[Entry], facts: &Facts) -> Graph 
                     acc: Vec::new(),
                 })
                 .collect();
-            work.extend(vs.iter().flat_map(|v| flow_succs(&v.flow)));
+            work.extend(vs.iter().flat_map(|v| flow_succs(&v.flow)).map(|t| (t, c)));
             vars.insert(pc, vs);
         }
         let mut code = FixedBitSet::with_capacity(0x10000);
@@ -464,10 +516,10 @@ pub fn discover(img: &[u8; 0x10000], entries: &[Entry], facts: &Facts) -> Graph 
                 }
             }
         }
-        let written = analyze_accesses(img, &cells, &mut vars);
+        let written = analyze_accesses(&cimg, &cells, &mut vars);
         let mut next = FixedBitSet::with_capacity(0x10000);
         let mut nvalues = observed.clone();
-        for a in code.ones() {
+        for a in code.ones().filter(|&a| !rom_code.contains(a)) {
             let a16 = a as u16;
             let st = written.get(&a16);
             if observed.contains_key(&a16) || st.is_some() {
@@ -489,6 +541,9 @@ pub fn discover(img: &[u8; 0x10000], entries: &[Entry], facts: &Facts) -> Graph 
                 cells,
                 code,
                 edges,
+                img: cimg,
+                rom_code,
+                cfg,
             };
         }
         cells = next;

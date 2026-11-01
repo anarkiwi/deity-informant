@@ -7,6 +7,7 @@
 //! assumption is guarded by a deopt to the reference interpreter. [`Runner`] executes one.
 
 pub mod analysis;
+pub mod bank;
 pub mod emit;
 pub mod exec;
 pub mod func;
@@ -14,6 +15,7 @@ pub mod ir;
 pub mod opt;
 
 pub use analysis::{Entry, Facts};
+pub use bank::{Back, BankMap, Banked};
 pub use exec::{Exec, Outcome, Runner};
 pub use ir::{Block, Function, LOp, Program, Stats};
 
@@ -109,7 +111,7 @@ fn unguarded<'a>(
     p: &'a func::Plan,
     seen: &'a FxHashMap<u16, (u16, u16)>,
 ) -> impl Iterator<Item = (Iv, H)> + 'a {
-    p.nodes.iter().flat_map(move |(&(pc, h), node)| {
+    p.nodes.iter().flat_map(move |(&(pc, h, _), node)| {
         g.vars[&pc].iter().zip(&node.arms).flat_map(move |(v, a)| {
             let acc = a.acc.iter().enumerate().filter(move |&(i, ac)| {
                 !is_stack_op(v.op)
@@ -154,12 +156,14 @@ fn sites(
 }
 
 /// Plans for `entries` of the discovered program `g`: with facts, an unexecuted instruction
-/// start whose page-1 access cannot be checked is not planned (edges to it deopt).
+/// start whose page-1 access cannot be checked is not planned (edges to it deopt). With a
+/// bank map an entry is entered in each configuration its calls were seen in.
 pub fn plan(
     img: &[u8; 0x10000],
     g: &analysis::Graph,
     entries: &[u16],
     facts: &Facts,
+    bank: Option<&BankMap>,
 ) -> Vec<func::Plan> {
     let starts: FxHashSet<u16> = facts.starts.iter().copied().collect();
     let banned: FxHashSet<u16> = g
@@ -173,7 +177,27 @@ pub fn plan(
         })
         .map(|(&pc, _)| pc)
         .collect();
-    func::plan_all(g, entries, &func::Seen::new(facts, banned))
+    let roots: Vec<(u16, Vec<u8>)> = entries
+        .iter()
+        .map(|&pc| {
+            let mut cs: Vec<u8> = match bank {
+                None => vec![0],
+                Some(m) => facts
+                    .entry_port
+                    .iter()
+                    .filter(|e| e.0 == pc)
+                    .flat_map(|e| e.1.iter().map(|&(d, v)| m.config(d, v)))
+                    .collect(),
+            };
+            if cs.is_empty() {
+                cs.push(g.cfg[&pc]);
+            }
+            cs.sort_unstable();
+            cs.dedup();
+            (pc, cs)
+        })
+        .collect();
+    func::plan_all(g, &roots, &func::Seen::new(facts, banned, bank))
 }
 
 /// [`lift`] with options.
@@ -184,18 +208,31 @@ pub fn lift_with(
     facts: &Facts,
     opts: Opts,
 ) -> Program {
-    let g = discover(img, entries, facts);
+    lift_banked(img, entries, volatile, facts, opts, None)
+}
+
+/// [`lift_with`] over memory seen through `bank` (flat when `None`).
+pub fn lift_banked(
+    img: &[u8; 0x10000],
+    entries: &[Entry],
+    volatile: &[(u32, u32)],
+    facts: &Facts,
+    opts: Opts,
+    bank: Option<&BankMap>,
+) -> Program {
+    let g = discover(img, entries, facts, bank);
+    let img: &[u8; 0x10000] = &g.img;
     let pcs: Vec<u16> = entries.iter().map(|e| e.pc).collect();
-    let mut plans = plan(img, &g, &pcs, facts);
-    let fidx: FxHashMap<u16, u32> = plans
+    let mut plans = plan(img, &g, &pcs, facts, bank);
+    let fidx: FxHashMap<(u16, u8), u32> = plans
         .iter()
         .enumerate()
         .skip(entries.len())
-        .map(|(i, p)| (p.pc, i as u32))
+        .map(|(i, p)| ((p.pc, p.entry[0]), i as u32))
         .collect();
     let callees: Vec<Vec<u32>> = plans
         .iter()
-        .map(|p| p.callees().map(|f| fidx[&f]).collect())
+        .map(|p| p.callees().map(|k| fidx[&k]).collect())
         .collect();
     let recursive = recursive(&callees);
     let seen: FxHashMap<u16, (u16, u16)> = facts
@@ -240,6 +277,7 @@ pub fn lift_with(
         .collect();
     let mut constcode = g.code.clone();
     constcode.difference_with(&g.cells);
+    constcode.difference_with(&g.rom_code);
     let page1 = |iv: Iv| iv.meets(0x100, 0x200);
     // Per function whether a load or store other than a push or pull may reach page 1.
     let touches: Vec<(bool, bool)> = plans
@@ -317,6 +355,7 @@ pub fn lift_with(
         recursive,
         cycles: opts.cycles,
         fidx,
+        bank,
         ret_guard,
         slots,
         seen,
@@ -350,13 +389,22 @@ pub fn lift_with(
         .iter()
         .enumerate()
         .map(|(i, p)| {
-            let (f, n) = emit::emit(&sh, p, entries.get(i), i);
+            let port = facts
+                .entry_port
+                .iter()
+                .find(|e| e.0 == p.pc && p.top)
+                .and_then(|e| match e.1[..] {
+                    [r] => Some(r),
+                    _ => None,
+                });
+            let (f, n) = emit::emit(&sh, p, entries.get(i), port, i);
             stats.insns += n.insns;
             stats.raw_ops += n.raw;
             stats.code_guards += n.code_guards;
             stats.stack_guards += n.stack_guards;
             stats.slot_ops += n.slot_ops;
             stats.sp_dispatch += n.sp_dispatch;
+            stats.bank_dispatch += n.bank_dispatch;
             stats.calls += callees[i].len();
             stats.emitted_ops += f.blocks.iter().map(|b| b.ops.len()).sum::<usize>();
             f
@@ -411,6 +459,7 @@ pub fn lift_with(
         code: constcode.ones().map(|a| (a as u16, img[a])).collect(),
         volatile: volatile.to_vec(),
         elide_ret: private,
+        bank: bank.cloned(),
         cycles: opts.cycles,
         stats,
     }

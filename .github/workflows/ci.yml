@@ -9,6 +9,8 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      VAGRANT_MOSES_ROMCACHE: ${{ github.workspace }}/.romcache
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -16,6 +18,18 @@ jobs:
           python-version: "3.12"
       - name: Install
         run: pip install -e ".[dev]"
+      - name: C64 ROM cache key
+        id: roms
+        run: >-
+          python -c "from vagrant_moses.roms import ROMS;
+          print('key=c64-roms-' + '-'.join(r.sha256 for r in ROMS.values()))" >> "$GITHUB_OUTPUT"
+      - name: C64 ROM cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VAGRANT_MOSES_ROMCACHE }}
+          key: ${{ steps.roms.outputs.key }}
+      - name: Fetch and verify C64 ROMs
+        run: python -c "from vagrant_moses.roms import ROMS, fetch_rom; [fetch_rom(n) for n in ROMS]"
       - name: Format
         run: black --check deity_informant/ tests/ tools/
       - name: Lint
@@ -52,8 +66,27 @@ jobs:
       fail-fast: false
       matrix:
         python: ["3.11", "3.12", "3.13"]
+    env:
+      VAGRANT_MOSES_ROMCACHE: ${{ github.workspace }}/.romcache
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install vagrant-moses
+        run: pip install "vagrant-moses>=0.8.0"
+      - name: C64 ROM cache key
+        id: roms
+        run: >-
+          python -c "from vagrant_moses.roms import ROMS;
+          print('key=c64-roms-' + '-'.join(r.sha256 for r in ROMS.values()))" >> "$GITHUB_OUTPUT"
+      - name: C64 ROM cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VAGRANT_MOSES_ROMCACHE }}
+          key: ${{ steps.roms.outputs.key }}
+      - name: Fetch and verify C64 ROMs
+        run: python -c "from vagrant_moses.roms import ROMS, fetch_rom; [fetch_rom(n) for n in ROMS]"
       - uses: docker/setup-buildx-action@v4
       - name: Build
         uses: docker/build-push-action@v7
@@ -65,8 +98,12 @@ jobs:
           load: true
           cache-from: type=gha,scope=native-${{ matrix.python }}
           cache-to: type=gha,scope=native-${{ matrix.python }},mode=max
+      # The ROMs are copied into the container, never into an image layer or the build cache.
       - name: Test
-        run: docker run --rm di-native:${{ matrix.python }}
+        run: |
+          docker create --name di-native -e C64_ROMS=/roms di-native:${{ matrix.python }}
+          docker cp "$VAGRANT_MOSES_ROMCACHE" di-native:/roms
+          docker start -a di-native
 
   sdist:
     runs-on: ubuntu-latest

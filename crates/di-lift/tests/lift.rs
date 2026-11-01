@@ -448,3 +448,63 @@ fn finite_loop_under_a_budget() {
         assert!(diff_at(&img, &p, &calls(1, |_| 0), IO, cpu.cycles, 0xff) > 0);
     }
 }
+
+const SID: (u16, u16) = (0xd400, 0xd800);
+
+/// Check a banked program over the C64-like map with facts from `seen` (exact, no deopts,
+/// both cycle modes), then lifted from those facts run `forced` then `seen` exactly with
+/// deopts when `forced` is not empty; the optimized functional lift.
+fn banked(prog: &[(u16, &[u8])], pc: u16, seen: &[u8], forced: &[u8]) -> Program {
+    let (img, m) = (c64_image(prog), c64_like());
+    let p = check_in(&img, &[pc], &acc_calls(seen), SID, Some(&m));
+    assert!(p.bank.is_some());
+    let fc: Vec<(u16, u8)> = seen.iter().map(|&a| (pc, a)).collect();
+    let f = facts_in(&img, &fc, 1_000_000, Some(&m));
+    let runs: Vec<(usize, u8)> = acc_calls(forced)
+        .into_iter()
+        .chain(acc_calls(seen))
+        .collect();
+    for cycles in [true, false] {
+        let opts = Opts {
+            optimize: true,
+            cycles,
+        };
+        let q = di_lift::lift_banked(
+            &img,
+            &entries(&[pc]),
+            &[(0xd400, 0xd800)],
+            &f,
+            opts,
+            Some(&m),
+        );
+        assert_eq!(diff(&img, &q, &runs, SID) > 0, !forced.is_empty());
+    }
+    p
+}
+
+#[test]
+fn bank_switch_reads_ram_under_rom_and_io() {
+    let p = banked(progs::BANKRD, progs::BANKRD_ENTRY, &[0, 0], &[]);
+    assert!(p.stats.bank_dispatch > 0);
+    let text = p.to_string();
+    assert!(
+        text.contains("volatile") && !text.contains("bank"),
+        "{text}"
+    );
+}
+
+#[test]
+fn code_in_ram_under_rom() {
+    banked(progs::ROMRAM, progs::ROMRAM_ENTRY, &[0, 1, 2], &[]);
+}
+
+#[test]
+fn rom_code_called_from_ram() {
+    let p = banked(progs::ROMCALL, progs::ROMCALL_ENTRY, &[0, 0], &[]);
+    assert!(p.stats.calls > 0 || p.stats.insns > 10);
+}
+
+#[test]
+fn unseen_configuration_deopts() {
+    banked(progs::BANKSEEN, progs::BANKSEEN_ENTRY, &[0, 0], &[1]);
+}

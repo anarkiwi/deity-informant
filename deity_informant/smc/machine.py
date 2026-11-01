@@ -11,6 +11,7 @@ import numpy as np
 from vagrant_moses import machine as vm
 from vagrant_moses import memmap as mm
 from vagrant_moses.bus import port_read
+from vagrant_moses.c64 import poweron_ram
 from vagrant_moses.roms import rom_less
 
 from .classify import Classifier, expected_writes, insn_reads, view
@@ -23,14 +24,34 @@ _ENTRY = {"nmi_entry": "nmi", "video_irq_entry": "irq", "cia_irq_entry": "irq", 
 _PUSH = {"nmi": "nmi_push", "irq": "irq_push", "brk": "brk_push"}
 _VEC = {"nmi": mm.CPU_NMI_VECTOR, "irq": mm.CPU_IRQ_VECTOR, "brk": mm.CPU_IRQ_VECTOR}
 _BASES = {mm.BASIC_BASE: (0xA, 0xB), mm.CHARGEN_BASE: (0xD,), mm.KERNAL_BASE: (0xE, 0xF)}
-_ROM_PAGE = {
-    page: (base, data) for base, data in rom_less().items() for page in _BASES.get(base, ())
-}
 
 
 def core():
     """Whether vagrant-moses' native machine (shipped in its wheels) is available."""
     return vm.NATIVE
+
+
+def _rom_pages(roms):
+    """``{4 KiB page: (base, bytes)}`` of the ROM set ``roms`` (base -> bytes)."""
+    return {page: (base, data) for base, data in roms.items() for page in _BASES.get(base, ())}
+
+
+def _machine(ntsc, sids, roms):
+    """The native machine; ``roms`` (base -> bytes, every base) replaces the ROM-less set."""
+    if roms is None:
+        return vm.Machine(ntsc, sids=sids, backend="native")
+    # pylint: disable=protected-access,c-extension-no-member
+    vm._jennings()
+    images = []
+    for base in (mm.BASIC_BASE, mm.CHARGEN_BASE, mm.KERNAL_BASE):
+        image = bytearray(0x10000)
+        image[base : base + len(roms[base])] = roms[base]
+        images.append(bytes(image))
+    lines, cycles_per_line = mm.video(ntsc).geometry
+    return vm._core.Machine(
+        ntsc, sids, False, None, vm._native_layouts(), bytes(poweron_ram()), tuple(images),
+        lines, cycles_per_line,
+    )  # fmt: skip
 
 
 def _frames(events, sp):
@@ -57,14 +78,19 @@ class _Mem:
 
 
 class MachineOracle:
-    """One machine run over ``image`` (64 KiB RAM at power-on), driven call by call."""
+    """One machine run over ``image`` (64 KiB RAM at power-on), driven call by call.
 
-    def __init__(self, image, ntsc=False, devices=None, sentinel=SENTINEL):
+    ``roms`` (base -> bytes) overrides vagrant-moses' ROM-less ROM set per ROM.
+    """
+
+    def __init__(self, image, ntsc=False, devices=None, sentinel=SENTINEL, roms=None):
         if not core():
             raise ImportError("vagrant-moses native machine is not available")
         img = bytearray(image)
         img[sentinel : sentinel + 3] = bytes([0x4C, sentinel & 0xFF, sentinel >> 8])
-        self.m = vm.Machine(ntsc, sids=dict(devices or {}), backend="native")
+        full = {**rom_less(), **roms} if roms else None
+        self.rom_page = _rom_pages(full or rom_less())
+        self.m = _machine(ntsc, dict(devices or {}), full)
         self.ram = np.frombuffer(self.m.ram, dtype=np.uint8)
         self.ram[:] = np.frombuffer(bytes(img), dtype=np.uint8)
         self.shadow = self.ram.copy()
@@ -95,7 +121,7 @@ class MachineOracle:
             m = self.m
             return (port_read(m.port_dir, m.port_data) if addr else m.port_dir), v
         if v == "rom":
-            base, data = _ROM_PAGE[addr >> 12]
+            base, data = self.rom_page[addr >> 12]
             return data[addr - base], v
         return int(self.ram[addr]), v
 

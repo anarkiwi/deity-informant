@@ -2577,7 +2577,7 @@
    "cpu_port.zp.bank_reg.same_call_earlier.flat",
    "cpu_port.zp.opcode.same_call_earlier.rom_vs_ram"
   ],
-  "outcome": "lift-no-banking",
+  "outcome": "exact_nodeopt",
   "deopts": 0
  },
  {
@@ -2591,7 +2591,7 @@
    "cpu.abs.operand.same_call_earlier.ram_under_rom",
    "cpu_port.zp.bank_reg.same_call_earlier.flat"
   ],
-  "outcome": "lift-no-banking",
+  "outcome": "exact_nodeopt",
   "deopts": 0
  },
  {

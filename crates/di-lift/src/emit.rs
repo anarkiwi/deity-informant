@@ -6,7 +6,8 @@
 use crate::analysis::{
     is_stack_op, operand_bytes, page1_check, Access, Check, Entry, Graph, Iv, Tg,
 };
-use crate::func::{Arm, Ctl, Exit, Plan, H};
+use crate::bank::{Back, BankMap};
+use crate::func::{Arm, Ctl, Exit, Key, Plan, H};
 use crate::ir::{cy, k, mem, other, r1, reg, tmp, Block, Function, LOp, E, NREG};
 use di_pcode::{reg as R, CtrlKind, Op, Opc, PenKind, Slot, Space, Template, Vn};
 use fixedbitset::FixedBitSet;
@@ -34,8 +35,10 @@ pub struct Shared<'a> {
     pub recursive: FixedBitSet,
     /// Count cycles.
     pub cycles: bool,
-    /// Function index of each callee.
-    pub fidx: FxHashMap<u16, u32>,
+    /// Function index of each callee per entry configuration.
+    pub fidx: FxHashMap<(u16, u8), u32>,
+    /// The bank map (none: flat memory).
+    pub bank: Option<&'a BankMap>,
     /// Callees whose returns must check their return address (they may store into page 1).
     pub ret_guard: FixedBitSet,
     /// Per function: the slot indices whose stack bytes it keeps in slot registers.
@@ -67,11 +70,13 @@ struct Em<'a, 'b> {
     sh: &'a Shared<'b>,
     plan: &'a Plan,
     f: Function,
-    blk: FxHashMap<(u16, H), u32>,
-    queue: VecDeque<(u16, H)>,
+    blk: FxHashMap<Key, u32>,
+    queue: VecDeque<Key>,
     /// Height of the node being emitted and the successors of its current variant.
     nh: H,
-    succ: &'a [(u16, H)],
+    /// Configuration of the node being emitted.
+    nc: u8,
+    succ: &'a [Key],
     cur: usize,
     next: u32,
     /// Cycles accounted but not yet added to `CY`: a constant and 4-byte values.
@@ -95,10 +100,20 @@ pub struct Counts {
     pub slot_ops: usize,
     /// Dispatches on SP after SP-setting instructions.
     pub sp_dispatch: usize,
+    /// Dispatches on the bank configuration at entries and after port writes.
+    pub bank_dispatch: usize,
 }
 
 /// Emit planned function `fi`.
-pub fn emit(sh: &Shared, plan: &Plan, entry: Option<&Entry>, fi: usize) -> (Function, Counts) {
+/// `entry_port` is the port registers every call of an outermost plan was seen entered with,
+/// when they were always the same.
+pub fn emit(
+    sh: &Shared,
+    plan: &Plan,
+    entry: Option<&Entry>,
+    entry_port: Option<(u8, u8)>,
+    fi: usize,
+) -> (Function, Counts) {
     let mut em = Em {
         sh,
         plan,
@@ -111,6 +126,7 @@ pub fn emit(sh: &Shared, plan: &Plan, entry: Option<&Entry>, fi: usize) -> (Func
         blk: FxHashMap::default(),
         queue: VecDeque::new(),
         nh: H::Known(0),
+        nc: 0,
         succ: &[],
         cur: 0,
         next: 0,
@@ -132,8 +148,14 @@ pub fn emit(sh: &Shared, plan: &Plan, entry: Option<&Entry>, fi: usize) -> (Func
             em.emit(Opc::Copy, r1(*i), k(v as u32, 1), NONE, 0);
         }
     }
-    let b = em.block((plan.pc, H::Known(0)));
-    em.emit(Opc::Branch, NONE, NONE, NONE, b);
+    let roots: Vec<Key> = plan.roots().collect();
+    match (sh.bank, plan.top) {
+        (Some(m), true) => em.entry_port(m, entry_port, &roots),
+        _ => {
+            let b = em.block(roots[0]);
+            em.emit(Opc::Branch, NONE, NONE, NONE, b);
+        }
+    }
     while let Some(key) = em.queue.pop_front() {
         em.cur = em.blk[&key] as usize;
         em.next = 0;
@@ -158,7 +180,7 @@ impl<'a> Em<'a, '_> {
     }
     /// The block of node `key`, queued for emission on first use; a deopt to its start if
     /// the plan has no such node.
-    fn block(&mut self, key: (u16, H)) -> u32 {
+    fn block(&mut self, key: Key) -> u32 {
         if let Some(&b) = self.blk.get(&key) {
             return b;
         }
@@ -175,12 +197,12 @@ impl<'a> Em<'a, '_> {
         b
     }
     /// The node the current variant transfers to at `pc`.
-    fn key(&self, pc: u16) -> (u16, H) {
+    fn key(&self, pc: u16) -> Key {
         self.succ
             .iter()
             .copied()
             .find(|s| s.0 == pc)
-            .unwrap_or((pc, H::Unknown))
+            .unwrap_or((pc, H::Unknown, self.nc))
     }
     /// The block of the current variant's successor at `pc`.
     fn to(&mut self, pc: u16) -> u32 {
@@ -212,10 +234,68 @@ impl<'a> Em<'a, '_> {
         }
     }
     fn load(&mut self, addr: Vn, iv: Iv, flags: u32) -> Vn {
-        let flags = flags | self.vflag(iv);
         let t = self.temp(1);
-        self.emit(Opc::Load, t, addr, NONE, flags);
+        self.load_into(t, addr, iv, flags);
         t
+    }
+    /// `out = LOAD addr` (interval `iv`) as the current configuration maps it: a ROM byte
+    /// is a constant, a read of the port's data cell is computed from its registers.
+    fn load_into(&mut self, out: Vn, addr: Vn, iv: Iv, flags: u32) {
+        let Some(m) = self.sh.bank else {
+            let f = flags | self.vflag(iv);
+            return self.emit(Opc::Load, out, addr, NONE, f);
+        };
+        match self.backing(m, iv) {
+            Some(Back::Rom) => match iv.value() {
+                Some(a) => self.emit(Opc::Copy, out, k(m.rom[a as usize] as u32, 1), NONE, 0),
+                None => self.emit(Opc::Load, out, addr, NONE, flags | mem::ROM),
+            },
+            _ if iv.value() == Some(m.data as u32) => {
+                let (d, v) = self.port_regs(m);
+                let hi = self.op(Opc::IntAnd, 1, v, d);
+                let nd = self.op(Opc::IntXor, 1, d, k(0xff, 1));
+                let lo = self.op(Opc::IntAnd, 1, nd, k(m.pull as u32, 1));
+                self.emit(Opc::IntOr, out, hi, lo, 0);
+            }
+            b => {
+                let f = flags | self.bflags(b, iv);
+                self.emit(Opc::Load, out, addr, NONE, f);
+            }
+        }
+    }
+    /// The port's direction and data registers (the RAM under its cells).
+    fn port_regs(&mut self, m: &BankMap) -> (Vn, Vn) {
+        let (d, v) = (self.temp(1), self.temp(1));
+        self.emit(Opc::Load, d, k(m.dir as u32, 2), NONE, mem::RAM);
+        self.emit(Opc::Load, v, k(m.data as u32, 2), NONE, mem::RAM);
+        (d, v)
+    }
+    /// Access flags for interval `iv` with uniform backing `b` (`None`: mixed, resolved per
+    /// address in the current configuration at run time).
+    fn bflags(&mut self, b: Option<Back>, iv: Iv) -> u32 {
+        match b {
+            Some(Back::Ram | Back::Rom) => mem::RAM,
+            Some(Back::Io) => mem::IO | self.vflag(iv),
+            None => mem::BANK | (self.nc as u32) << 8 | self.vflag(iv),
+        }
+    }
+    /// The backing of every page of `iv` in the current configuration, if it is one.
+    fn backing(&self, m: &BankMap, iv: Iv) -> Option<Back> {
+        let b = m.back(self.nc, iv.lo as u16);
+        let port = iv.meets(m.data as u32, m.data as u32 + 1) && iv.value().is_none();
+        ((iv.lo >> 8..=iv.hi.min(0xffff) >> 8).all(|p| m.back(self.nc, (p << 8) as u16) == b)
+            && !port)
+            .then_some(b)
+    }
+    /// Store flags for interval `iv` in the current configuration.
+    fn store_flags(&mut self, iv: Iv) -> u32 {
+        match self.sh.bank {
+            None => self.vflag(iv),
+            Some(m) => {
+                let b = self.backing(m, iv);
+                self.bflags(b, iv)
+            }
+        }
     }
     /// The stack-slot register of the byte at offset `d` from the entry SP, if promoted and
     /// a slot (other bytes stay in memory).
@@ -294,7 +374,7 @@ impl<'a> Em<'a, '_> {
         self.cur = cont as usize;
     }
     fn table(&mut self, ts: &[u16]) -> u32 {
-        let keys: Vec<(u16, H)> = ts
+        let keys: Vec<Key> = ts
             .iter()
             .map(|&t| self.key(t))
             .filter(|k| self.plan.nodes.contains_key(k))
@@ -326,7 +406,7 @@ impl<'a> Em<'a, '_> {
             self.emit(Opc::Copy, s, v, NONE, 0);
         } else {
             let a = self.sp_addr();
-            let flags = mem::STACK | self.vflag(PAGE1);
+            let flags = mem::STACK | self.store_flags(PAGE1);
             self.emit(Opc::Store, NONE, a, v, flags);
             if self.sh.hits_code(PAGE1) {
                 chk.push(self.op(Opc::CallOther, 1, a, v));
@@ -364,12 +444,12 @@ impl<'a> Em<'a, '_> {
         self.side_exit(c, true, |em| em.deopt(pc));
     }
 
-    fn node(&mut self, key: (u16, H)) {
+    fn node(&mut self, key: Key) {
         let (plan, sh) = (self.plan, self.sh);
         let pc = key.0;
         let arms = &plan.nodes[&key].arms;
         let vars = &sh.g.vars[&pc];
-        self.nh = key.1;
+        (self.nh, self.nc) = (key.1, key.2);
         if !sh.g.cells.contains(pc as usize) {
             self.insn(pc, &vars[0].op, &arms[0]);
             return;
@@ -445,7 +525,18 @@ impl<'a> Em<'a, '_> {
                     }
                 }
                 ai += 1;
-                aux = self.vflag(ac.addr) | if stack { mem::STACK } else { 0 };
+                aux = match (stack, op.opc) {
+                    (true, Opc::Load) => {
+                        self.load_into(out, a, ac.addr, mem::STACK);
+                        continue;
+                    }
+                    (true, _) => self.store_flags(ac.addr) | mem::STACK,
+                    (false, Opc::Load) => {
+                        self.load_into(out, a, ac.addr, 0);
+                        continue;
+                    }
+                    _ => self.store_flags(ac.addr),
+                };
                 if op.opc == Opc::Store && self.sh.hits_code(ac.addr) {
                     self.emit(Opc::Store, out, a, b, aux);
                     chk.push(self.op(Opc::CallOther, 1, a, b));
@@ -535,6 +626,9 @@ impl<'a> Em<'a, '_> {
                 self.exit_or(exit, k(*n as u32, 2), |em| {
                     if sets_sp && em.plan.top {
                         em.sp_dispatch(*n);
+                    } else if arm.port {
+                        let keys = em.succ.to_vec();
+                        em.bank_dispatch(*n, &keys);
                     } else {
                         let b = em.to(*n);
                         em.f.blocks[b as usize].check |= sets_sp;
@@ -631,7 +725,7 @@ impl<'a> Em<'a, '_> {
                 let tb = self.table(ts);
                 self.emit(Opc::BranchInd, NONE, tgt, NONE, tb);
             }
-            Ctl::Call { f, ret } => {
+            Ctl::Call { f, ret, c } => {
                 let ra = ret.wrapping_sub(1) as u32;
                 if self.sh.private {
                     self.emit(Opc::IntSub, r1(R::SP), r1(R::SP), k(2, 1), 0);
@@ -642,7 +736,7 @@ impl<'a> Em<'a, '_> {
                 self.account(cyc, maxpen);
                 self.check(chk, k(*f as u32, 2));
                 self.flush();
-                let fi = self.sh.fidx[f];
+                let fi = self.sh.fidx[&(*f, *c)];
                 self.emit(Opc::Call, NONE, k(ra, 2), NONE, fi);
                 let rb = self.new_block(*ret);
                 self.emit(Opc::Branch, NONE, NONE, NONE, rb);
@@ -661,8 +755,13 @@ impl<'a> Em<'a, '_> {
                         em.deopt(t);
                     });
                 }
-                let b = self.to(*ret);
-                self.emit(Opc::Branch, NONE, NONE, NONE, b);
+                if arm.port {
+                    let keys = self.succ.to_vec();
+                    self.bank_dispatch(*ret, &keys);
+                } else {
+                    let b = self.to(*ret);
+                    self.emit(Opc::Branch, NONE, NONE, NONE, b);
+                }
             }
             Ctl::PushJmp { t: tg, ret } => {
                 let ra = ret.wrapping_sub(1) as u32;
@@ -781,6 +880,56 @@ impl<'a> Em<'a, '_> {
             self.cur = save;
         }
         self.deopt(k(pc as u32, 2));
+    }
+
+    /// Branch to the node of `keys` at `pc` whose configuration the port registers select,
+    /// else deopt at `pc`.
+    fn bank_dispatch(&mut self, pc: u16, keys: &[Key]) {
+        let m = self.sh.bank.unwrap();
+        self.n.bank_dispatch += 1;
+        let (d, v) = self.port_regs(m);
+        let nd = self.op(Opc::IntXor, 1, d, k(0xff, 1));
+        let e = self.op(Opc::IntOr, 1, v, nd);
+        let e = self.op(Opc::IntAnd, 1, e, k(m.mask as u32, 1));
+        for &key in keys {
+            if key.0 != pc || !self.plan.nodes.contains_key(&key) {
+                continue;
+            }
+            let b = self.block(key);
+            for sel in m.selectors(key.2) {
+                let hit = self.op(Opc::IntEqual, 1, e, k(sel as u32, 1));
+                self.emit(Opc::CBranch, NONE, hit, NONE, b);
+            }
+        }
+        self.deopt(k(pc as u32, 2));
+    }
+
+    /// An outermost entry: with the port registers its calls were always entered with, check
+    /// them and restate them (so their configuration folds), else dispatch on them.
+    fn entry_port(&mut self, m: &BankMap, regs: Option<(u8, u8)>, roots: &[Key]) {
+        let pc = self.plan.pc;
+        if let Some((d0, v0)) = regs {
+            let (d, v) = self.port_regs(m);
+            let bd = self.op(Opc::IntNotEqual, 1, d, k(d0 as u32, 1));
+            let bv = self.op(Opc::IntNotEqual, 1, v, k(v0 as u32, 1));
+            let bad = self.op(Opc::IntOr, 1, bd, bv);
+            self.side_exit(bad, true, |em| em.deopt(k(pc as u32, 2)));
+            self.emit(
+                Opc::Store,
+                NONE,
+                k(m.dir as u32, 2),
+                k(d0 as u32, 1),
+                mem::RAM,
+            );
+            self.emit(
+                Opc::Store,
+                NONE,
+                k(m.data as u32, 2),
+                k(v0 as u32, 1),
+                mem::RAM,
+            );
+        }
+        self.bank_dispatch(pc, roots);
     }
 
     /// Exit to `pc` per `exit`, otherwise continue with `cont`.

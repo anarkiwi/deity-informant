@@ -98,7 +98,7 @@ def test_feasible_cells_witnessed_or_explained():
             if rec["lift"] != reason:
                 bad.append((sid, "lift", rec["lift"], reason))
         elif rec["witnessed"]:
-            if rec["lift"] not in EXACT:
+            if rec["lift"] not in EXACT + LIFT_REASONS:
                 bad.append((sid, "witnessed-not-exact", rec["lift"]))
         elif rec["lift"] != "placement-not-synthesized":
             bad.append((sid, "unwitnessed-flat", rec["lift"]))
@@ -166,15 +166,17 @@ def test_synthesizer_covers_its_domain():
     assert len(covered & domain) >= 100
 
 
-# ---- machine-level witnesses label and classify to lift gaps -----------------
+# ---- machine-level witnesses: banking lifts exactly, the rest classify to a gap ----
 @has_machine
-def test_machine_programs_classify_to_lift_gap():
+@native
+def test_machine_programs_lift_or_classify_to_gap():
     progs = generate.machine()
     assert progs
     for prog in progs:
         assert prog.oracle == "machine" and prog.sids
         outcome, _ = classify(prog)
-        assert outcome in LIFT_REASONS, (prog.name, outcome)
+        reasons = {lift_reason(BYSID[s]) for s in prog.sids} - {None}
+        assert outcome in (LIFT_REASONS if reasons else EXACT), (prog.name, outcome)
 
 
 @has_machine

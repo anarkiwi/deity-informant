@@ -11,3 +11,4 @@ target
 **/*.so
 dist
 .claude
+.romcache

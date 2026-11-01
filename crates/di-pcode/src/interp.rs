@@ -19,6 +19,16 @@ pub trait Bus {
     /// does not.
     #[inline(always)]
     fn now(&mut self, _cycles: u64) {}
+    /// RAM at `addr`, bypassing any device decoded there (a bank map's RAM pages).
+    #[inline(always)]
+    fn ram_read(&mut self, addr: u16) -> u8 {
+        self.read(addr)
+    }
+    /// Write RAM at `addr`, bypassing any device decoded there.
+    #[inline(always)]
+    fn ram_write(&mut self, addr: u16, val: u8) {
+        self.write(addr, val)
+    }
 }
 
 impl Bus for [u8; 0x10000] {

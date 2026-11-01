@@ -2,7 +2,7 @@
 //! and the reference `reference_call` with the same bus.
 
 use di_lift::ir::{mem, other, Program as LProgram};
-use di_lift::{Entry, Exec, Facts, Job, Opts, Runner};
+use di_lift::{Back, BankMap, Banked, Entry, Exec, Facts, Job, Opts, Runner};
 use di_pcode::{reg as R, Bus, Cpu, Halt, Opc, Space, Vn};
 use indicatif::{ProgressBar, ProgressStyle};
 use pyo3::exceptions::PyValueError;
@@ -13,9 +13,11 @@ use std::sync::Arc;
 
 /// A 64 KiB bytearray as the bus: volatile ranges optionally logged as
 /// `(addr, value, cycle, is_write)` and optionally read as `(cycle ^ n ^ addr) & 0xff` for
-/// the `n`th volatile access.
+/// the `n`th volatile access. With `dev` (banked memory) device accesses reach that register
+/// file and `ram_*` the bytearray.
 struct PyBus<'a> {
     mem: &'a mut [u8; 0x10000],
+    dev: Option<Box<[u8; 0x10000]>>,
     volatile: &'a [(u32, u32)],
     log: Option<Vec<(u16, u8, u64, bool)>>,
     synth: bool,
@@ -23,7 +25,21 @@ struct PyBus<'a> {
     n: u64,
 }
 
-impl PyBus<'_> {
+impl<'a> PyBus<'a> {
+    fn new(mem: &'a mut [u8; 0x10000], volatile: &'a [(u32, u32)], log: bool, synth: bool) -> Self {
+        PyBus {
+            mem,
+            dev: None,
+            volatile,
+            log: log.then(Vec::new),
+            synth,
+            now: 0,
+            n: 0,
+        }
+    }
+    fn device(&mut self) -> &mut [u8; 0x10000] {
+        self.dev.as_deref_mut().unwrap_or(self.mem)
+    }
     fn volatile(&self, a: u16) -> bool {
         self.volatile
             .iter()
@@ -39,14 +55,14 @@ impl Bus for PyBus<'_> {
             let v = if self.synth {
                 (self.now ^ self.n) as u8 ^ a as u8
             } else {
-                self.mem[a as usize]
+                self.device()[a as usize]
             };
             if let Some(l) = &mut self.log {
                 l.push((a, v, self.now, false));
             }
             v
         } else {
-            self.mem[a as usize]
+            self.device()[a as usize]
         }
     }
     #[inline]
@@ -56,6 +72,14 @@ impl Bus for PyBus<'_> {
         if let (Some(l), true) = (self.log.as_mut(), vol) {
             l.push((a, v, self.now, true));
         }
+        self.device()[a as usize] = v;
+    }
+    #[inline]
+    fn ram_read(&mut self, a: u16) -> u8 {
+        self.mem[a as usize]
+    }
+    #[inline]
+    fn ram_write(&mut self, a: u16, v: u8) {
         self.mem[a as usize] = v;
     }
     #[inline]
@@ -81,6 +105,61 @@ impl Bus for Unclocked<'_, '_> {
     fn fetch(&mut self, a: u16) -> u8 {
         self.0.fetch(a)
     }
+    fn ram_read(&mut self, a: u16) -> u8 {
+        self.0.ram_read(a)
+    }
+    fn ram_write(&mut self, a: u16, v: u8) {
+        self.0.ram_write(a, v)
+    }
+}
+
+/// A bank map from its dict: ``dir``, ``data``, ``mask``, ``pull``, ``lut`` (configuration per
+/// effective port value), ``configs`` (per configuration 256 page kinds: 0 RAM, 1 ROM,
+/// 2 I/O) and ``rom`` (64 KiB of ROM bytes at their addresses).
+fn bank_of(d: Option<&Bound<'_, PyDict>>) -> PyResult<Option<BankMap>> {
+    let Some(d) = d else { return Ok(None) };
+    let get = |k: &str| {
+        d.get_item(k)?
+            .ok_or_else(|| PyValueError::new_err(format!("bank map lacks {k}")))
+    };
+    let configs: Vec<Vec<u8>> = get("configs")?.extract()?;
+    let configs = configs
+        .into_iter()
+        .map(|c| {
+            let c: [u8; 256] = c
+                .try_into()
+                .map_err(|_| PyValueError::new_err("a configuration maps 256 pages"))?;
+            c.map(|b| match b {
+                0 => Ok(Back::Ram),
+                1 => Ok(Back::Rom),
+                2 => Ok(Back::Io),
+                _ => Err(PyValueError::new_err("page kind must be 0, 1 or 2")),
+            })
+            .into_iter()
+            .collect::<PyResult<Vec<Back>>>()
+            .map(|v| v.try_into().unwrap())
+        })
+        .collect::<PyResult<Vec<[Back; 256]>>>()?;
+    let lut: Vec<u8> = get("lut")?.extract()?;
+    if lut.iter().any(|&c| c as usize >= configs.len()) {
+        return Err(PyValueError::new_err("lut names a missing configuration"));
+    }
+    let mask: u8 = get("mask")?.extract()?;
+    if lut.len() <= mask as usize {
+        return Err(PyValueError::new_err(
+            "lut must cover every masked port value",
+        ));
+    }
+    let rom: Vec<u8> = get("rom")?.extract()?;
+    Ok(Some(BankMap {
+        dir: get("dir")?.extract()?,
+        data: get("data")?.extract()?,
+        mask,
+        pull: get("pull")?.extract()?,
+        lut,
+        configs,
+        rom: image(&rom)?,
+    }))
 }
 
 fn image(b: &[u8]) -> PyResult<Box<[u8; 0x10000]>> {
@@ -135,6 +214,24 @@ fn facts(d: Option<&Bound<'_, PyDict>>) -> PyResult<Facts> {
             Err(_) => s.extract()?,
         };
         f.entry_sp.sort_unstable_by_key(|e| e.0);
+    }
+    if let Some(b) = get("banks")? {
+        f.banks = match b.cast::<PyDict>() {
+            Ok(m) => m.extract::<HashMap<u16, Vec<u8>>>()?.into_iter().collect(),
+            Err(_) => b.extract()?,
+        };
+        f.banks.sort_unstable_by_key(|e| e.0);
+    }
+    if let Some(p) = get("entry_port")? {
+        f.entry_port = match p.cast::<PyDict>() {
+            Ok(m) => m
+                .extract::<HashMap<u16, Vec<[u8; 2]>>>()?
+                .into_iter()
+                .map(|(a, v)| (a, v.into_iter().map(|[d, x]| (d, x)).collect()))
+                .collect(),
+            Err(_) => p.extract()?,
+        };
+        f.entry_port.sort_unstable_by_key(|e| e.0);
     }
     Ok(f)
 }
@@ -326,6 +423,7 @@ impl Program {
         d.set_item("split_nodes", s.split_nodes)?;
         d.set_item("sp_dispatch", s.sp_dispatch)?;
         d.set_item("sp_guards", s.sp_guards)?;
+        d.set_item("bank_dispatch", s.bank_dispatch)?;
         d.set_item("kept_bytes", s.kept_bytes)?;
         d.set_item("budget_checks", s.budget_checks)?;
         Ok(d)
@@ -353,8 +451,9 @@ impl Program {
     /// returns, ``max_cycles`` elapse, or a JAM. ``reg``/``cycles`` set the starting state.
     /// Returns ``{"reg", "pc", "cycles", "halt", "deopt", "log"}``. Without cycle counting
     /// the lifted code runs to its return and ``cycles`` counts only the reference
-    /// interpreter's part after a deopt.
-    #[pyo3(signature = (mem, entry=0, a=0, reg=None, cycles=0, max_cycles=10_000_000, log=false, synth=false))]
+    /// interpreter's part after a deopt. A banked program's devices read and write ``io``
+    /// (a 64 KiB register file, updated in place; a copy of ``mem`` when absent).
+    #[pyo3(signature = (mem, entry=0, a=0, reg=None, cycles=0, max_cycles=10_000_000, log=false, synth=false, io=None))]
     #[allow(clippy::too_many_arguments)]
     fn call<'py>(
         &self,
@@ -367,21 +466,18 @@ impl Program {
         max_cycles: u64,
         log: bool,
         synth: bool,
+        io: Option<&Bound<'py, PyByteArray>>,
     ) -> PyResult<Bound<'py, PyDict>> {
         if entry >= self.prog.entries.len() {
             return Err(PyValueError::new_err("no such entry"));
         }
         let mut cpu = cpu_of(reg, cycles);
         let mut st = self.state.lock().unwrap();
-        let (o, lg) = with_mem(mem, |m| {
-            let mut bus = PyBus {
-                mem: m,
-                volatile: &self.prog.volatile,
-                log: log.then(Vec::new),
-                synth,
-                now: cycles,
-                n: 0,
-            };
+        let dev = devices(self.prog.bank.is_some(), mem, io)?;
+        let (o, lg, dev) = with_mem(mem, |m| {
+            let mut bus = PyBus::new(m, &self.prog.volatile, log, synth);
+            bus.now = cycles;
+            bus.dev = dev;
             let mut run = Runner::new(&self.exec);
             run.invalid = st.0;
             let o = run.call(entry, a, &mut cpu, &mut bus, max_cycles);
@@ -389,8 +485,9 @@ impl Program {
             for (k, v) in run.deopts {
                 *st.1.entry(k).or_default() += v;
             }
-            (o, bus.log)
+            (o, bus.log, bus.dev)
         })?;
+        store_devices(io, dev)?;
         result(py, &cpu, o.halt, o.deopt, lg)
     }
 
@@ -406,10 +503,34 @@ impl Program {
     }
 }
 
+/// The device register file of a banked run: ``io`` or a copy of ``mem``.
+fn devices(
+    banked: bool,
+    mem: &Bound<'_, PyByteArray>,
+    io: Option<&Bound<'_, PyByteArray>>,
+) -> PyResult<Option<Box<[u8; 0x10000]>>> {
+    if !banked {
+        return Ok(None);
+    }
+    with_mem(io.unwrap_or(mem), |d| Some(Box::new(*d)))
+}
+
+/// Write a banked run's device register file back to ``io``.
+fn store_devices(
+    io: Option<&Bound<'_, PyByteArray>>,
+    dev: Option<Box<[u8; 0x10000]>>,
+) -> PyResult<()> {
+    if let (Some(io), Some(d)) = (io, dev) {
+        with_mem(io, |m| *m = *d)?;
+    }
+    Ok(())
+}
+
 /// ``run_to_rts`` on the reference interpreter with the same bus as ``Program.call``;
 /// ``clocked=False`` gives volatile accesses no cycle, as a program lifted without cycles.
+/// ``bank`` (a bank map dict, see ``lift_program``) sees memory through it, devices on ``io``.
 #[pyfunction]
-#[pyo3(signature = (mem, pc, a=0, reg=None, cycles=0, max_cycles=10_000_000, volatile=vec![], log=false, synth=false, clocked=true))]
+#[pyo3(signature = (mem, pc, a=0, reg=None, cycles=0, max_cycles=10_000_000, volatile=vec![], log=false, synth=false, clocked=true, bank=None, io=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn reference_call<'py>(
     py: Python<'py>,
@@ -423,42 +544,49 @@ pub fn reference_call<'py>(
     log: bool,
     synth: bool,
     clocked: bool,
+    bank: Option<&Bound<'py, PyDict>>,
+    io: Option<&Bound<'py, PyByteArray>>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let mut cpu = cpu_of(reg, cycles);
-    let (h, lg) = with_mem(mem, |m| {
-        let mut bus = PyBus {
-            mem: m,
-            volatile: &volatile,
-            log: log.then(Vec::new),
-            synth,
-            now: cycles,
-            n: 0,
-        };
+    let bank = bank_of(bank)?;
+    let dev = devices(bank.is_some(), mem, io)?;
+    let (h, lg, dev) = with_mem(mem, |m| {
+        let mut bus = PyBus::new(m, &volatile, log, synth);
+        bus.now = cycles;
+        bus.dev = dev;
         let start = cpu.r(R::SP);
         for v in [0u8, 1] {
             let sp = cpu.r(R::SP);
-            bus.write(0x100 | sp as u16, v);
+            bus.ram_write(0x100 | sp as u16, v);
             cpu.set_r(R::SP, sp.wrapping_sub(1));
         }
         cpu.set_r(R::A, a);
         cpu.pc = pc;
         let end = cpu.cycles.saturating_add(max_cycles).saturating_add(1);
-        let h = if clocked {
-            cpu.run_clocked(&mut bus, start as i32 - 1, end)
-        } else {
-            cpu.run_clocked(&mut Unclocked(&mut bus), start as i32 - 1, end)
+        let above = start as i32 - 1;
+        let h = match (&bank, clocked) {
+            (Some(b), true) => cpu.run_clocked(&mut Banked::new(b, &mut bus), above, end),
+            (Some(b), false) => {
+                cpu.run_clocked(&mut Banked::new(b, &mut Unclocked(&mut bus)), above, end)
+            }
+            (None, true) => cpu.run_clocked(&mut bus, above, end),
+            (None, false) => cpu.run_clocked(&mut Unclocked(&mut bus), above, end),
         };
-        (h, bus.log)
+        (h, bus.log, bus.dev)
     })?;
+    store_devices(io, dev)?;
     result(py, &cpu, h, None, lg)
 }
 
 /// Lift ``entries`` of the program in ``image`` (64 KiB entry state): ``entries`` as
 /// ``[(pc, [(reg, values)])]``, ``volatile`` as ``[(lo, hi)]``, ``facts`` as a dict with
 /// ``starts``, ``edges``, ``writes``, ``page1`` and ``heights``; ``optimize=False`` keeps the emitted
-/// P-Code; ``cycles=True`` counts cycles.
+/// P-Code; ``cycles=True`` counts cycles. ``bank`` is a bank map: ``dir``/``data`` port
+/// cells, ``mask`` and ``pull`` bits, ``lut`` (configuration per effective port value),
+/// ``configs`` (per configuration 256 page kinds: 0 RAM, 1 ROM, 2 I/O) and ``rom``.
 #[pyfunction]
-#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false))]
+#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None))]
+#[allow(clippy::too_many_arguments)]
 pub fn lift_program(
     py: Python<'_>,
     image: &[u8],
@@ -467,13 +595,15 @@ pub fn lift_program(
     facts: Option<&Bound<'_, PyDict>>,
     optimize: bool,
     cycles: bool,
+    bank: Option<&Bound<'_, PyDict>>,
 ) -> PyResult<Program> {
     let img = self::image(image)?;
     let es = self::entries(entries);
     let f = self::facts(facts)?;
+    let bank = bank_of(bank)?;
     let opts = Opts { optimize, cycles };
     Ok(Program::new(py.detach(|| {
-        di_lift::lift_with(&img, &es, &volatile, &f, opts)
+        di_lift::lift_banked(&img, &es, &volatile, &f, opts, bank.as_ref())
     })))
 }
 
@@ -481,26 +611,28 @@ pub fn lift_program(
 /// ``heights`` mapping each instruction start to the stack heights it is planned at relative
 /// to the function entry (pushes negative), ``None`` where unknown.
 #[pyfunction]
-#[pyo3(signature = (image, entries, facts=None))]
+#[pyo3(signature = (image, entries, facts=None, bank=None))]
 pub fn plan_program<'py>(
     py: Python<'py>,
     image: &[u8],
     entries: Vec<PyEntry>,
     facts: Option<&Bound<'py, PyDict>>,
+    bank: Option<&Bound<'py, PyDict>>,
 ) -> PyResult<Bound<'py, PyList>> {
     let img = self::image(image)?;
     let es = self::entries(entries);
     let f = self::facts(facts)?;
-    let g = di_lift::analysis::discover(&img, &es, &f);
+    let bank = bank_of(bank)?;
+    let g = di_lift::analysis::discover(&img, &es, &f, bank.as_ref());
     let pcs: Vec<u16> = es.iter().map(|e| e.pc).collect();
     let out = PyList::empty(py);
-    for p in di_lift::plan(&img, &g, &pcs, &f) {
+    for p in di_lift::plan(&g.img, &g, &pcs, &f, bank.as_ref()) {
         let d = PyDict::new(py);
         d.set_item("pc", p.pc)?;
         d.set_item("top", p.top)?;
         d.set_item("balanced", p.balanced)?;
         let mut hs: BTreeMap<u16, Vec<Option<i32>>> = BTreeMap::new();
-        for &(pc, h) in p.nodes.keys() {
+        for &(pc, h, _) in p.nodes.keys() {
             hs.entry(pc).or_default().push(match h {
                 di_lift::func::H::Known(x) => Some(x),
                 di_lift::func::H::Unknown => None,
