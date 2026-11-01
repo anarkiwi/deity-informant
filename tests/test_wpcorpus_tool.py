@@ -149,3 +149,15 @@ def test_parsers(tmp_path):
 
 def _sleep(*_):
     time.sleep(30)
+
+
+def test_defer_banked(tmp_path):
+    """Deferred banked songs write no row, so a later run without the flag lifts them."""
+    root, out = tree(tmp_path / "hvsc"), tmp_path / "out"
+    args = [str(root), "--out", str(out), "--jobs", "2", "--default-length", "0.5"]
+    assert wpcorpus.main(args + ["--defer-banked"]) == 0
+    first = rows_of(out)
+    assert ("banked.sid", 1) not in first and first["flat.sid", 1]["mode"] == "flat"
+    assert wpcorpus.main(args) == 0
+    rows = rows_of(out)
+    assert rows["banked.sid", 1]["mode"] == "banked" and len(rows) == len(first) + 1
