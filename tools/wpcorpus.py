@@ -306,8 +306,9 @@ def _banked(row, img, mc, ev):
     return row, {"state": _diff(img, last["ram"]), "reg": list(last["reg"]), "facts": facts}
 
 
-def psid_song(row, img, mc, cap):
-    """A PSID song with a play routine: ``(row, facts record or None)``."""
+def psid_song(row, img, mc, cap, defer=False):
+    """A PSID song with a play routine: ``(row, facts record or None)``; ``defer`` returns a
+    banked song unrun (``deferred``) so a later resumed run lifts it."""
     init, play, a = row["init"], row["play"], row["song"] - 1
     vol = volatile_of(row)
     mem, r = flat_init(img, row, mc)
@@ -316,7 +317,7 @@ def psid_song(row, img, mc, cap):
     if r["halt"] != "return":
         ev = bank_evidence(phases)
         if ev:
-            return _banked(row, img, mc, ev)
+            return (row | {"deferred": True}, None) if defer else _banked(row, img, mc, ev)
         return row | {"mode": "flat", "bank_evidence": ev, "skip": "init " + r["halt"]}, None
     t_ref, (n, cycles, halt) = _timed(_ref_run(play, vol, mc), bytearray(mem), row["calls"])
     t = time.perf_counter()
@@ -325,7 +326,7 @@ def psid_song(row, img, mc, cap):
     phases.append((mem, facts, iomap(play)))
     ev = bank_evidence(phases)
     if ev:
-        return _banked(row, img, mc, ev)
+        return (row | {"deferred": True}, None) if defer else _banked(row, img, mc, ev)
     row |= {
         "mode": "flat",
         "bank_evidence": ev,
@@ -454,7 +455,7 @@ def irq_song(row, img, mc, cap):
     return row | label("frames", img, row, min(row["calls"], cap or row["calls"]), mc), None
 
 
-def run_song(path, row, mc, cap=0):
+def run_song(path, row, mc, cap=0, defer=False):
     """``(row, compressed facts line or None)`` of one planned song."""
     row = dict(row)
     try:
@@ -464,7 +465,7 @@ def run_song(path, row, mc, cap=0):
         if row["kind"] == "RSID" or not row["play"]:
             row, rec = irq_song(row, img, mc, cap)
         else:
-            row, rec = psid_song(row, img, mc, cap)
+            row, rec = psid_song(row, img, mc, cap, defer)
     except Exception as e:  # pylint: disable=broad-exception-caught
         return {**row, "error": repr(e)[:300]}, None
     if rec is None:
@@ -718,6 +719,9 @@ def main(argv=None):  # pylint: disable=too-many-locals
     ap.add_argument("--jobs", type=int, default=os.cpu_count())
     ap.add_argument("--sample", type=int, default=0, help="random tunes (0: all)")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument(
+        "--defer-banked", action="store_true", help="leave banked songs for a later run"
+    )
     args = ap.parse_args(argv)
     root, out = Path(args.root), Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -752,6 +756,8 @@ def main(argv=None):  # pylint: disable=too-many-locals
                 if not isinstance(res, tuple):
                     res = ({**a[1], "error": "timeout" if res is None else repr(res)[:300]}, None)
                 row, rec = res
+                if row.get("deferred"):
+                    return
                 if rec is not None:
                     ff.write(rec)
                     ff.flush()
@@ -764,7 +770,7 @@ def main(argv=None):  # pylint: disable=too-many-locals
                     ran((p, r), (r, None))
             todo = [(p, r) for p, r in todo if "error" not in r]
             timeouts = [args.timeout + args.call_timeout * r["calls"] for _, r in todo]
-            jobs = [(p, r, args.max_cycles, args.label_calls) for p, r in todo]
+            jobs = [(p, r, args.max_cycles, args.label_calls, args.defer_banked) for p, r in todo]
             _pool_map(pool, run_song, jobs, timeouts, "corpus", ran)
     s = summary(list(rows.values()))
     s["wall_s"] = time.perf_counter() - t0
