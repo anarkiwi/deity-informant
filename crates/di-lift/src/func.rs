@@ -173,7 +173,7 @@ impl Plan {
             .any(|i| slots.contains(i) && (self.sets_sp || (i as i32) < -h))
     }
     /// Slot indices a pull may read before this call pushed them (only after SP is set): a
-    /// forward must-analysis of the pushed slots over the nodes.
+    /// forward must-analysis of the pushed slots over the nodes, whose sets only shrink.
     pub fn pulled_unpushed(&self, g: &Graph) -> FixedBitSet {
         let mut out = FixedBitSet::with_capacity(0x100);
         if !self.sets_sp {
@@ -219,7 +219,8 @@ impl Plan {
     }
     /// Refine every node's access intervals for entry SP `s` by a forward interval dataflow
     /// over the nodes, SP being `s` plus the node height at each; a register that grows at
-    /// a node already processed in reverse postorder (a loop header) widens to unknown.
+    /// a node already processed in reverse postorder (a loop header) widens to unknown, so
+    /// after its first visit each register of a node changes at most once more.
     pub fn refine(&mut self, g: &Graph, img: &[u8; 0x10000], s: u8) {
         self.sp = Some(s);
         let keys: Vec<(u16, H)> = self.nodes.keys().copied().collect();
@@ -522,7 +523,10 @@ impl Planner<'_> {
     }
 }
 
-/// Plan the function entered at `pc` given the `JSR` targets lifted as calls.
+/// Plan the function entered at `pc` given the `JSR` targets lifted as calls; the worklist
+/// ends as nodes are only added (finitely many heights per start: the facts' or the first
+/// static one outermost, one known then at most unknown in a callee) and return sites only
+/// grow.
 pub fn plan(g: &Graph, pc: u16, top: bool, calls: &FxHashSet<u16>, seen: &Seen) -> Plan {
     let mut pl = Planner {
         top,

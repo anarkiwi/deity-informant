@@ -238,6 +238,8 @@ pub struct Stats {
     pub sp_guards: usize,
     /// Stack bytes outermost functions push that stay in memory rather than in slots.
     pub kept_bytes: usize,
+    /// Blocks spending the iteration budget (without cycles): loop heads, recursive entries.
+    pub budget_checks: usize,
 }
 
 /// A lifted program: functions plus what the executor needs to check and leave it.

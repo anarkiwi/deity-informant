@@ -387,3 +387,64 @@ fn indexed_page1_table_range_guard() {
     assert!(s.page1_sites == 0 && s.slot_ops > 0 && s.stack_guards > 0);
     assert_eq!((s.kept_bytes, s.sp_guards), (2, 1));
 }
+
+/// Lift `prog` with facts from `n` calls capped at `max` cycles and run them with that cap in
+/// both cycle modes, each ending with `halt` like the reference; the total deopts.
+fn capped(prog: &[(u16, &[u8])], pc: u16, n: usize, max: u64, halt: di_pcode::Halt) -> u64 {
+    let img = image(prog);
+    let f = facts(&img, &vec![(pc, 0); n], max);
+    let mut deopts = 0;
+    for cycles in [true, false] {
+        let opts = Opts {
+            optimize: true,
+            cycles,
+        };
+        let p = lift_with(&img, &entries(&[pc]), &[(0xc000, 0xc100)], &f, opts);
+        assert_eq!(p.stats.budget_checks > 0, !cycles);
+        let start = std::time::Instant::now();
+        deopts += diff_at(&img, &p, &calls(n, |_| 0), IO, max, 0xff);
+        assert!(start.elapsed() < std::time::Duration::from_secs(10));
+        let mut cpu = di_pcode::Cpu::new();
+        let o = di_lift::Runner::new(&di_lift::Exec::new(&p)).call(
+            0,
+            0,
+            &mut cpu,
+            &mut TBus::new(&img, IO),
+            max,
+        );
+        assert_eq!(o.halt, halt);
+    }
+    deopts
+}
+
+#[test]
+fn infinite_loops_end_with_the_budget() {
+    let cycles = di_pcode::Halt::Cycles;
+    capped(progs::SPIN, progs::SPIN_ENTRY, 3, 100_000, cycles);
+    capped(progs::INDSPIN, progs::INDSPIN_ENTRY, 3, 100_000, cycles);
+    capped(progs::POPREC, progs::POPREC_ENTRY, 3, 100_000, cycles);
+}
+
+#[test]
+fn finite_loop_under_a_budget() {
+    let (pc, sp) = (progs::COUNT_ENTRY, di_pcode::Halt::Sp);
+    assert_eq!(capped(progs::COUNT, pc, 3, 1_000_000, sp), 0);
+    capped(progs::COUNT, pc, 3, 1_000, di_pcode::Halt::Cycles);
+    let img = image(progs::COUNT);
+    let mut cpu = di_pcode::Cpu::new();
+    ref_call(&mut cpu, &mut TBus::new(&img, IO), pc, 0, 1_000_000);
+    for cycles in [true, false] {
+        let opts = Opts {
+            optimize: true,
+            cycles,
+        };
+        let p = lift_with(
+            &img,
+            &entries(&[pc]),
+            &[(0xc000, 0xc100)],
+            &Facts::default(),
+            opts,
+        );
+        assert!(diff_at(&img, &p, &calls(1, |_| 0), IO, cpu.cycles, 0xff) > 0);
+    }
+}

@@ -624,3 +624,40 @@ cnt:    .byte 0
 .org $0141
         .byte lo(t0-1),hi(t0-1)
 """
+
+SPIN = """
+entry:  STA $C0E0
+spin:   JMP spin
+"""
+
+INDSPIN = """
+entry:  STA $C0E1
+ind:    JMP (ptr)
+.org $1810
+ptr:    .byte lo(ind),hi(ind)
+"""
+
+POPREC = """
+entry:  STA $C0E2
+        JSR rec
+        RTS
+rec:    PLA
+        PLA
+        STA $C0E3
+        JSR rec
+"""
+
+COUNT = """
+entry:  LDX #$00
+        LDY #$00
+loop:   INY
+        BNE loop
+        INX
+        CPX #$04
+        BNE loop
+        JMP (ptr)
+done:   STX $C0E4
+        RTS
+.org $1810
+ptr:    .byte lo(done),hi(done)
+"""

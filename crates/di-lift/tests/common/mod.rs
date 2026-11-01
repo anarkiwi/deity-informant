@@ -155,7 +155,9 @@ pub fn facts(img: &[u8; 0x10000], calls: &[(u16, u8)], max: u64) -> Facts {
     }
 }
 
-/// Run `calls` on both and compare everything observable; the total deopts.
+/// Run `calls` on both and compare everything observable; the total deopts. Without cycles a
+/// call the reference does not return from in time is compared by its halt only, and ends the
+/// run (the lift stops at a later instruction boundary).
 pub fn diff(img: &[u8; 0x10000], prog: &Program, calls: &[(usize, u8)], vol: (u16, u16)) -> u64 {
     diff_capped(img, prog, calls, vol, 1_000_000)
 }
@@ -191,6 +193,9 @@ pub fn diff_at(
         let h1 = ref_call(&mut rc, &mut rb, prog.entries[e].0, acc, max);
         let o = run.call(e, acc, &mut lc, &mut lb, max);
         assert_eq!(h1, o.halt, "halt, call {n}");
+        if !prog.cycles && h1 == Halt::Cycles {
+            break;
+        }
         if !prog.cycles {
             lc.cycles = rc.cycles;
         }

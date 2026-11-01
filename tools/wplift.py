@@ -42,7 +42,9 @@ def image_of(path, org):
 
 
 def check(img, prog, calls, volatile, progress=True):
-    """Run ``calls`` on the reference and the lift; the first mismatch or None."""
+    """Run ``calls`` on the reference and the lift; the first mismatch or None. Without cycle
+    counting a call the reference does not return from ends the check: the lift must stop
+    with the same halt (``no-return``), at a later instruction boundary."""
     entries = prog.entries
     m1, m2 = bytearray(img), bytearray(img)
     s1 = s2 = {"reg": None, "cycles": 0}
@@ -52,9 +54,9 @@ def check(img, prog, calls, volatile, progress=True):
         r = wholeprog.reference_call(
             m1, pc, a=a, volatile=volatile, clocked=prog.cycles, **kw, **s1
         )
-        if r["halt"] != "return" and not prog.cycles:
-            return n, "no-return"
         o = prog.call(m2, entries.index(pc), a=a, **kw, **s2)
+        if r["halt"] != "return" and not prog.cycles:
+            return (n, "no-return") if o["halt"] == r["halt"] else (n, "halt", r["halt"], o["halt"])
         for k in keys:
             if r[k] != o[k]:
                 return n, k, r[k] if k == "reg" else None, o[k] if k == "reg" else None
