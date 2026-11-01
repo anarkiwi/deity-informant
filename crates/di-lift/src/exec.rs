@@ -46,8 +46,10 @@ pub struct Exec {
     img: Box<[u8]>,
     elide_ret: bool,
     cycles: bool,
-    /// Per function: first value-file index and count of its stack slots.
+    /// Per function: first value-file index and count of its stack slots, and which slots
+    /// hold stack bytes.
     slots: Vec<(u32, u32)>,
+    slotted: Vec<FixedBitSet>,
 }
 
 fn operand(v: Vn, temps: u32, slots: u32) -> u32 {
@@ -101,6 +103,7 @@ impl Exec {
             elide_ret: p.elide_ret,
             cycles: p.cycles,
             slots,
+            slotted: p.functions.iter().map(|f| f.slotted.clone()).collect(),
         };
         for &(a, v) in &p.code {
             x.constcode.insert(a as usize);
@@ -464,7 +467,11 @@ impl<'a> Runner<'a> {
             for j in 0..=self.frames.len() {
                 let cut = self.frames.get(j).map_or(f[R::SP] as u8, |fr| fr.2);
                 let (base, n) = self.x.slots[fun as usize];
+                let slotted = &self.x.slotted[fun as usize];
                 for i in 0..(e as i32 - cut as i32).clamp(0, n as i32) as u32 {
+                    if !slotted.contains(i as usize) {
+                        continue;
+                    }
                     let a = 0x100 | e.wrapping_sub(i as u8) as u16;
                     bus.write(a, f[(base + i) as usize] as u8);
                 }

@@ -16,17 +16,18 @@ pub struct Entry {
 }
 
 /// What running the program showed: executed instruction starts, executed `(pc, next pc)`
-/// transfers, the values stored to each address, the instructions whose accesses other than
-/// pushes and pulls reached page 1, and the stack heights each instruction start was seen at
+/// transfers, the values stored to each address, the instructions whose accesses reached page
+/// 1 with the lowest and highest page-1 address each reached, the stack heights each instruction start was seen at
 /// (SP minus SP at its call's entry as integers: pushes negative, an SP set below a wrap far
-/// negative).
+/// negative), and per entry the SP values (after its return address) it was called at.
 #[derive(Clone, Debug, Default)]
 pub struct Facts {
     pub starts: Vec<u16>,
     pub edges: Vec<(u16, u16)>,
     pub writes: Vec<(u16, Vec<u8>)>,
-    pub page1: Vec<u16>,
+    pub page1: Vec<(u16, u16, u16)>,
     pub heights: Vec<(u16, Vec<i16>)>,
+    pub entry_sp: Vec<(u16, Vec<u8>)>,
 }
 
 /// An unsigned interval of a value.

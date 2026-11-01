@@ -1,8 +1,10 @@
 """Lift the play routine of many PSID tunes and tabulate what keeps their stack in memory.
 
-``python tools/wpsurvey.py ROOT [--sample N] [--calls K] [--max-cycles C] [--jobs J] [--out F]``
+``python tools/wpsurvey.py ROOT [--sample N] [--calls K] [--max-cycles C] [--timeout S] [--jobs J]
+[--out F]``
 walks ``ROOT`` for ``*.sid``, runs each tune's init on the reference, collects facts over
 ``K`` play calls from that state and lifts play. One JSON line per tune; a summary at the end.
+A tune taking longer than ``S`` seconds is killed and reported in ``timeouts``.
 """
 
 import argparse
@@ -12,9 +14,11 @@ import random
 import struct
 import sys
 from collections import Counter
-from multiprocessing import Pool
+from concurrent.futures import TimeoutError as FutureTimeout
+from concurrent.futures import as_completed
 from pathlib import Path
 
+from pebble import ProcessPool
 from tqdm import tqdm
 
 from deity_informant import trace, wholeprog
@@ -78,8 +82,10 @@ def summary(rows):
         "lifted": len(ok),
         "skipped": Counter(r["skip"] for r in rows if "skip" in r),
         "errors": sum("error" in r for r in rows),
+        "timeouts": [r["path"] for r in rows if r.get("error") == "timeout"],
         "stack_private": sum(r["stack_private"] for r in ok),
         "page1_sites": sum(r["page1_sites"] > 0 for r in ok),
+        "kept_bytes": sum(r["kept_bytes"] > 0 for r in ok),
         "unknown_heights": sum(r["unknown_heights"] > 0 for r in ok),
         "recursive": sum(r["recursive"] > 0 for r in ok),
         "unreached": sum(r["unreached"] > 0 for r in ok),
@@ -107,6 +113,7 @@ def main(argv=None):
     ap.add_argument("--calls", type=int, default=500)
     ap.add_argument("--max-cycles", type=int, default=1_000_000, help="per call")
     ap.add_argument("--check", type=int, default=0, help="calls checked against the reference")
+    ap.add_argument("--timeout", type=float, default=60, help="seconds per tune")
     ap.add_argument("--jobs", type=int, default=os.cpu_count())
     ap.add_argument("--out")
     args = ap.parse_args(argv)
@@ -115,11 +122,18 @@ def main(argv=None):
         paths = random.Random(args.seed).sample(paths, min(args.sample, len(paths)))
     out = open(args.out, "w", encoding="utf-8") if args.out else None  # noqa: SIM115
     rows = []
-    with Pool(args.jobs) as pool:
-        it = pool.imap_unordered(
-            _job, [(p, args.calls, args.max_cycles, args.check) for p in paths], chunksize=4
-        )
-        for r in tqdm(it, total=len(paths), desc="survey", unit="tune"):
+    with ProcessPool(max_workers=args.jobs) as pool:
+        futs = {
+            pool.schedule(
+                _job, args=((p, args.calls, args.max_cycles, args.check),), timeout=args.timeout
+            ): p
+            for p in paths
+        }
+        for f in tqdm(as_completed(futs), total=len(paths), desc="survey", unit="tune"):
+            try:
+                r = f.result()
+            except FutureTimeout:
+                r = {"path": str(futs[f]), "error": "timeout"}
             rows.append(r)
             if out:
                 out.write(json.dumps(r) + "\n")

@@ -320,3 +320,70 @@ fn cell_fixpoint_terminates() {
     let p = lift(&img, &e, &[], &Facts::default());
     assert_eq!(p.stats.opcode_cells, 1);
 }
+
+/// Lift with facts from `seen` and run `seen` from SP `sp` (an entry SP the facts never
+/// saw) exactly with deopts in both cycle modes.
+fn forced_entry_sp(prog: &[(u16, &[u8])], pc: u16, seen: &[u8], sp: u8) {
+    let img = image(prog);
+    let fc: Vec<(u16, u8)> = seen.iter().map(|&a| (pc, a)).collect();
+    let f = facts(&img, &fc, 1_000_000);
+    for cycles in [true, false] {
+        let opts = Opts {
+            optimize: true,
+            cycles,
+        };
+        let q = lift_with(&img, &entries(&[pc]), &[(0xc000, 0xc100)], &f, opts);
+        assert!(diff_at(&img, &q, &acc_calls(seen), IO, 1_000_000, sp) > 0);
+    }
+}
+
+#[test]
+fn unexecuted_uncheckable_sites_deopt() {
+    let p = private_heights(
+        progs::UNEXEC,
+        progs::UNEXEC_ENTRY,
+        &[0, 1, 0x40],
+        &[0, 1, 0x40],
+        &[0x80],
+    );
+    assert!(p.stats.slot_ops > 0 && p.stats.page1_sites == 0);
+}
+
+#[test]
+fn frame_pointer_locals() {
+    let seen: Vec<u8> = (0..8).collect();
+    let p = check(
+        &image(progs::FRAME),
+        &[progs::FRAME_ENTRY],
+        &acc_calls(&seen),
+        IO,
+    );
+    let s = &p.stats;
+    assert!(s.stack_private && s.page1_sites == 0 && s.slot_ops > 0);
+    assert_eq!(s.sp_guards, 1);
+    forced_entry_sp(progs::FRAME, progs::FRAME_ENTRY, &seen, 0xf0);
+}
+
+#[test]
+fn page1_resume_table() {
+    let seen = vec![0; 12];
+    let p = check(
+        &image(progs::PTABLE),
+        &[progs::PTABLE_ENTRY],
+        &acc_calls(&seen),
+        IO,
+    );
+    let s = &p.stats;
+    assert!(s.stack_private && s.page1_sites == 0 && s.slot_ops > 0);
+    assert_eq!(s.sp_guards, 1);
+    forced_entry_sp(progs::PTABLE, progs::PTABLE_ENTRY, &seen, 0xf0);
+}
+
+#[test]
+fn indexed_page1_table_range_guard() {
+    let seen: Vec<u8> = (0..12).map(|i| i & 1).collect();
+    let p = private_heights(progs::PXTABLE, progs::PXTABLE_ENTRY, &seen, &seen, &[2]);
+    let s = &p.stats;
+    assert!(s.page1_sites == 0 && s.slot_ops > 0 && s.stack_guards > 0);
+    assert_eq!((s.kept_bytes, s.sp_guards), (2, 1));
+}

@@ -517,3 +517,110 @@ tbl:    .byte $EA,$00,$EA,$60
         .org $1800
         .byte $01
 """
+
+UNEXEC = """
+entry:  CMP #$C0
+        BCS tas
+        CMP #$80
+        BCS ind
+        PHA
+        STA $C0D8
+        PLA
+        RTS
+tas:    .byte $9B,$00,$01
+        RTS
+ind:    JMP ($0180)
+done:   STA $C0D9
+        RTS
+.org $0180
+        .byte lo(done),hi(done)
+"""
+
+# Locals addressed absolute,X from a frame pointer (`.byte`: the assembler would pick
+# zero page,X, which wraps within page 0).
+FRAME = """
+entry:  TSX
+        INX
+        PHA
+        LDA #$00
+        PHA
+        PHP
+        LDA $C0D0
+        BMI neg
+        .byte $FE,$FE,$00
+        JMP join
+neg:    .byte $DE,$FE,$00
+join:   PLP
+        .byte $BD,$FF,$00
+        STA $C0D1
+        .byte $BD,$FE,$00
+        STA $C0D2
+        PLA
+        PLA
+        RTS
+"""
+
+PTABLE = """
+entry:  TSX
+        STX $FB
+        LDA cnt
+        INC cnt
+        AND #$03
+        BNE run
+        LDA #hi(t0-1)
+        STA $0142
+        LDA #lo(t0-1)
+        STA $0141
+run:    LDX #$40
+        TXS
+        RTS
+t0:     STA $C0DA
+        JSR pause
+        STA $C0DB
+        JMP t0
+pause:  PHA
+        PLA
+        LDX $FB
+        TXS
+        RTS
+.org $1800
+cnt:    .byte 0
+.org $0141
+        .byte lo(t0-1),hi(t0-1)
+"""
+
+# A resume table at $0141 written through an index loaded from a table (an unbounded
+# interval), around ordinary pushes.
+PXTABLE = """
+entry:  TSX
+        STX $FB
+        TAY
+        PHA
+        LDX xs,Y
+        LDA cnt
+        INC cnt
+        AND #$03
+        BNE run
+        LDA #hi(t0-1)
+        STA $0142,X
+        LDA #lo(t0-1)
+        STA $0141,X
+run:    PLA
+        LDX #$40
+        TXS
+        RTS
+t0:     STA $C0DA
+        JSR pause
+        STA $C0DB
+        JMP t0
+pause:  PHA
+        PLA
+        LDX $FB
+        TXS
+        RTS
+xs:     .byte 0,0,2
+.org $1800
+cnt:    .byte 0
+.org $0141
+        .byte lo(t0-1),hi(t0-1)
+"""

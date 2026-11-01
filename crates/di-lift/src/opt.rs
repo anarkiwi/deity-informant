@@ -1171,6 +1171,13 @@ impl Live<'_> {
         live.insert_range(0..NREG);
         self.slots(live, h);
     }
+    /// What a deopt whose continuation is lifted hands over: what `reads` marks, SP (which
+    /// locates the stack bytes handed over) and the stack slots pushed above `h`.
+    fn soft(&self, live: &mut FixedBitSet, h: Option<i32>, reads: impl FnOnce(&mut FixedBitSet)) {
+        reads(live);
+        live.insert(R::SP);
+        self.slots(live, h);
+    }
     fn slots(&self, live: &mut FixedBitSet, h: Option<i32>) {
         let n = self.nregs as i32 - NREG as i32;
         let d = h.map_or(n, |h| (-h).clamp(0, n));
@@ -1215,14 +1222,8 @@ impl Live<'_> {
                 Opc::Return | Opc::BranchInd => self.all(live, h),
                 _ if op.is_deopt() => match (blk.resume_live, blk.resume) {
                     _ if self.cx.cycles => self.all(live, h),
-                    (Some(m), _) => {
-                        Self::regs(live, m);
-                        self.slots(live, h);
-                    }
-                    (None, Some(r)) => {
-                        live.union_with(&live_in[r as usize]);
-                        self.slots(live, h);
-                    }
+                    (Some(m), _) => self.soft(live, h, |l| Self::regs(l, m)),
+                    (None, Some(r)) => self.soft(live, h, |l| l.union_with(&live_in[r as usize])),
                     (None, None) => self.all(live, h),
                 },
                 _ => {}

@@ -35,7 +35,7 @@ Inputs:
 | `image` | 64 KiB memory every entry starts from (e.g. after an init routine ran). |
 | `entries` | `pc` or `(pc, {"a": [values], ...})`; a single value is assumed (guarded) at entry. |
 | `volatile` | `[(lo, hi)]` address ranges whose accesses are kept verbatim, in order, at their cycle. |
-| `facts` | `trace.Facts` (or its dict): executed `starts`, `(pc, next)` `edges`, stored values `writes` per address, `page1` sites, stack `heights` per start. |
+| `facts` | `trace.Facts` (or its dict): executed `starts`, `(pc, next)` `edges`, stored values `writes` per address, `page1` sites with the `[lo, hi]` page-1 addresses each reached, stack `heights` per start, `entry_sp` values per entry. |
 | `cycles` | Count cycles (default off): `CY`, cycle-budget checks, volatile accesses at their cycle. |
 | `optimize` | Optimize (default on); off keeps the emitted P-Code. |
 
@@ -82,16 +82,25 @@ the program, and checks it against the reference.
    inline `JSR`s pushed at the height it lands on. At an entry, the instruction whose height
    reaches +2 (the entry's own return) exits; after an SP-setting instruction SP is compared
    with the exit threshold at run time.
-3. **Stack privacy** (`lib.rs`). The stack is private when every plan node's height is
-   known, no volatile range, code cell or reached instruction lies in page 1, and no access
-   other than a push or pull that may reach page 1 (by its address interval) did so in the
-   facts or cannot be checked at its instruction boundary (an earlier op of the instruction
-   has an effect). Then `CALL`s push no return address and, in every function outside a
-   call-graph cycle, the byte at offset `d <= 0` from the entry SP is register `NREG - d`:
-   pushes and pulls are copies, and `RTS` jumps through return addresses an inline `JSR`
-   pushed become branches once the values are known. Where the lift keeps stack bytes out of
-   memory above SP (in a callee, or below the entry height), each such access is preceded by
-   a page-1 check that deopts before the instruction.
+3. **Stack privacy** (`lib.rs`). With facts, an unexecuted start whose page-1 access cannot
+   be checked at its instruction boundary (an earlier op of the instruction has an effect,
+   or a fixed page-1 `JMP (ind)` pointer) is not planned. An access other than a push or pull
+   is *unguarded* when it may reach page 1 (by its address interval) and did so in the facts
+   or cannot be checked. Each function's slots are the stack bytes it pushes (offset `d <= 0`
+   from the entry SP is register `NREG - d`) minus, in an outermost plan, the bytes its
+   unguarded accesses may hit and those a pull may read before the call pushed them (after
+   an SP-setting instruction: a must-analysis of pushed bytes). Those stay in memory, so
+   unguarded accesses in an outermost plan never block privacy. An entry called at a single
+   SP is specialized to it when that keeps more slots: an interval dataflow over its nodes,
+   with SP the entry SP plus the node height, then locates each access, and an unguarded
+   access the facts saw whose interval is wider than the page-1 range it reached is guarded
+   to that range, which is then all it may hit. The stack is private
+   when every plan node's height is known, no volatile range, code cell or reached
+   instruction lies in page 1, and no callee has an unguarded access. Then `CALL`s push no
+   return address, pushes and pulls of slots are copies, and `RTS` jumps through return
+   addresses an inline `JSR` pushed become branches once the values are known. An access
+   that may hit a slot kept above SP (or any slot once SP may be set), or any page-1 byte in
+   a callee, is preceded by a page-1 check that deopts before the instruction.
 4. **Emission** (`emit.rs`). Each instruction's template with constants bound; a cell operand
    byte is a `LOAD` of its address, read once before the instruction's ops; an opcode cell is
    a `CBRANCH` chain over its value set (entry byte, observed and statically stored values)
@@ -126,6 +135,9 @@ the program, and checks it against the reference.
 | An access that may reach page 1 does not, while stack bytes are kept out of memory | the address's page is compared with 1 before the access (`stats["stack_guards"]`) | deopt before the instruction |
 | A callee that may store into page 1 returns to its caller (stack not private) | the return-address bytes are compared after `CALL` | deopt at the address the `RTS` pulled |
 | Entry register value | compare at entry | deopt at the entry |
+| Entry SP of a specialized entry (`stats["sp_guards"]`) | compare at entry | deopt at the entry |
+| A seen page-1 access of a specialized entry stays in the page-1 range the facts saw | the address is compared with the range before the access (`stats["stack_guards"]`) | deopt before the instruction |
+| An unexecuted start with an uncheckable page-1 access is not reached | none: edges to it are the deopt | deopt at the start |
 | Stack wrap | without cycles: at outermost and recursive entries (counting the deepest growth of the callees that do not check), after SP-setting instructions and at blocks reached at different SP offsets; with cycles: as below | deopt at the block |
 | Cycle budget (cycles only) | at the entry, loop headers, `CALL` returns and after SP-setting instructions: the longest cycle path and deepest stack growth to the next such block | deopt at the block |
 
@@ -136,7 +148,8 @@ entry's return. `stats["stack_private"]` tells whether stack traffic was removed
 `page1_sites` counts the accesses that prevented it, `unknown_heights` the plan nodes of unknown
 height, `slot_ops` the pushes and pulls lifted as slots and `stack_ops` the stack accesses left
 in memory (an entry's `RTS` reads its caller's return address); `split_nodes` counts plan nodes
-beyond the first per instruction start.
+beyond the first per instruction start, and `kept_bytes` the stack bytes outermost functions
+push that stay in memory (bytes their page-1 accesses may hit).
 
 ## IR
 
@@ -166,8 +179,10 @@ with cycle counting, calling `Bus::now(cycle)` before possibly volatile accesses
 - With the stack private, stack bytes below SP (popped pushes, returned frames) are not in
   memory: an access that reads them, whether lifted code that never did in the facts or the
   reference after a deopt, sees what the program last stored there itself.
-- One access that reached page 1 in the facts keeps the whole program's stack in memory: it
-  may read the frames of any active function and stack bytes below SP.
+- One access in a callee that reached page 1 in the facts keeps the whole program's stack in
+  memory: it may read the frames of any active function and stack bytes below SP. In an
+  outermost plan such accesses keep only the bytes they may hit in memory (all of its pushes
+  unless the entry is specialized to its SP).
 - A callee whose height conflicts at an executed start is inlined, so its heights come from
   the facts of its callers' frames.
 - Recursive functions keep their pushes and pulls in memory (their return addresses are

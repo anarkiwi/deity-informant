@@ -112,7 +112,15 @@ fn facts(d: Option<&Bound<'_, PyDict>>) -> PyResult<Facts> {
         };
     }
     if let Some(p) = get("page1")? {
-        f.page1 = p.extract()?;
+        f.page1 = match p.cast::<PyDict>() {
+            Ok(m) => m
+                .extract::<HashMap<u16, [u16; 2]>>()?
+                .into_iter()
+                .map(|(a, [lo, hi])| (a, lo, hi))
+                .collect(),
+            Err(_) => p.extract()?,
+        };
+        f.page1.sort_unstable();
     }
     if let Some(h) = get("heights")? {
         f.heights = match h.cast::<PyDict>() {
@@ -120,6 +128,13 @@ fn facts(d: Option<&Bound<'_, PyDict>>) -> PyResult<Facts> {
             Err(_) => h.extract()?,
         };
         f.heights.sort_unstable_by_key(|e| e.0);
+    }
+    if let Some(s) = get("entry_sp")? {
+        f.entry_sp = match s.cast::<PyDict>() {
+            Ok(m) => m.extract::<HashMap<u16, Vec<u8>>>()?.into_iter().collect(),
+            Err(_) => s.extract()?,
+        };
+        f.entry_sp.sort_unstable_by_key(|e| e.0);
     }
     Ok(f)
 }
@@ -310,6 +325,8 @@ impl Program {
         d.set_item("recursive", s.recursive)?;
         d.set_item("split_nodes", s.split_nodes)?;
         d.set_item("sp_dispatch", s.sp_dispatch)?;
+        d.set_item("sp_guards", s.sp_guards)?;
+        d.set_item("kept_bytes", s.kept_bytes)?;
         Ok(d)
     }
 
@@ -476,7 +493,7 @@ pub fn plan_program<'py>(
     let g = di_lift::analysis::discover(&img, &es, &f);
     let pcs: Vec<u16> = es.iter().map(|e| e.pc).collect();
     let out = PyList::empty(py);
-    for p in di_lift::func::plan_all(&g, &pcs, &f) {
+    for p in di_lift::plan(&img, &g, &pcs, &f) {
         let d = PyDict::new(py);
         d.set_item("pc", p.pc)?;
         d.set_item("top", p.top)?;
