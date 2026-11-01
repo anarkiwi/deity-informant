@@ -1,7 +1,8 @@
 """Lift a program image whole and check the lift against the reference interpreter.
 
 ``python tools/wplift.py IMAGE --org 0x1000 --entry 0x1003 --calls 0x1003:0*3000
---volatile 0xC000-0xC100 [--facts F.json] [--save-facts F.json] [--dump OUT.txt] [--check]``
+--volatile 0xC000-0xC100 [--init PC[:A]] [--facts F.json] [--save-facts F.json] [--dump OUT.txt]
+[--cycles] [--check]``
 """
 
 import argparse
@@ -45,18 +46,21 @@ def check(img, prog, calls, volatile):
     entries = prog.entries
     m1, m2 = bytearray(img), bytearray(img)
     s1 = s2 = {"reg": None, "cycles": 0}
+    keys = ("log", "reg", "pc", "halt") + (("cycles",) if prog.cycles else ())
     for n, (pc, a) in enumerate(tqdm(calls, desc="check", unit="call")):
         kw = {"log": True, "synth": True}
-        r = wholeprog.reference_call(m1, pc, a=a, volatile=volatile, **kw, **s1)
+        r = wholeprog.reference_call(
+            m1, pc, a=a, volatile=volatile, clocked=prog.cycles, **kw, **s1
+        )
         o = prog.call(m2, entries.index(pc), a=a, **kw, **s2)
-        for k in ("log", "reg", "pc", "cycles", "halt"):
+        for k in keys:
             if r[k] != o[k]:
                 return n, k
         sp = r["reg"][3]
         if any(m1[i] != m2[i] for i in range(0x10000) if not 0x100 <= i <= 0x100 + sp):
             return n, "memory"
         s1 = {"reg": list(r["reg"]), "cycles": r["cycles"]}
-        s2 = {"reg": list(o["reg"]), "cycles": o["cycles"]}
+        s2 = {"reg": list(o["reg"]), "cycles": o["cycles"] if prog.cycles else r["cycles"]}
     return None
 
 
@@ -67,14 +71,18 @@ def main(argv=None):
     ap.add_argument("--entry", type=num, action="append", required=True)
     ap.add_argument("--calls", type=calls_spec, default=None)
     ap.add_argument("--volatile", action="append", default=[])
+    ap.add_argument("--init", type=calls_spec, help="run PC[:A] on the reference first")
     ap.add_argument("--facts")
     ap.add_argument("--save-facts")
     ap.add_argument("--dump")
     ap.add_argument("--raw", action="store_true", help="skip optimization")
+    ap.add_argument("--cycles", action="store_true", help="count cycles")
     ap.add_argument("--check", action="store_true")
     args = ap.parse_args(argv)
     img = image_of(args.image, args.org)
     vol = [tuple(num(x) for x in v.split("-")) for v in args.volatile]
+    for pc, a in args.init or ():
+        wholeprog.reference_call(img, pc, a=a, volatile=vol)
     calls = args.calls or [(e, 0) for e in args.entry]
     if args.facts:
         facts = trace.Facts.loads(Path(args.facts).read_text(encoding="utf-8"))
@@ -85,7 +93,7 @@ def main(argv=None):
     if args.save_facts:
         Path(args.save_facts).write_text(facts.dumps(), encoding="utf-8")
     t = time.perf_counter()
-    prog = wholeprog.lift(img, args.entry, vol, facts, optimize=not args.raw)
+    prog = wholeprog.lift(img, args.entry, vol, facts, optimize=not args.raw, cycles=args.cycles)
     print(json.dumps({"lift_ms": round(1e3 * (time.perf_counter() - t), 2), **prog.stats}))
     if args.dump:
         Path(args.dump).write_text(str(prog), encoding="utf-8")

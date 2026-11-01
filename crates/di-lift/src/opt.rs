@@ -1,35 +1,62 @@
 //! Optimization of lifted functions: CFG cleanup, register constant propagation across
 //! blocks, value numbering over extended basic blocks (constant folding, copy propagation,
-//! common subexpressions, store-to-load forwarding, removal of consumed pushes), and
-//! liveness-based dead-code elimination.
+//! common subexpressions, store-to-load forwarding), and liveness-based dead-code
+//! elimination with callee register summaries.
 
 use crate::analysis::{iv_op, Iv};
-use crate::ir::{fold, k, mask, mem, other, Block, Function, LOp, CY, NREG};
-use di_pcode::{Opc, Space, Vn};
+use crate::ir::{fold, k, mask, mem, other, r1, Block, Function, LOp, ALL_REGS, CY, NREG};
+use di_pcode::{reg as R, Opc, Space, Vn};
 use fixedbitset::FixedBitSet;
 use rustc_hash::FxHashMap;
 
-/// What the optimizer may assume about memory.
+/// What the optimizer may assume.
 pub struct Ctx<'a> {
     pub img: &'a [u8; 0x10000],
     /// Constant code bytes.
     pub constcode: &'a FixedBitSet,
     pub volatile: &'a [(u32, u32)],
-    /// Only pushes and pulls reach page 1: a push consumed by a pull in its block is dead.
-    pub private: bool,
+    /// Cycles are counted: every deopt needs the full architectural state.
+    pub cycles: bool,
+    /// Register summaries per function (`None`: a `CALL` uses and may define everything).
+    pub sums: Option<&'a [Summary]>,
 }
 
-/// Optimize `f` to a fixpoint (bounded).
-pub fn optimize(f: &mut Function, cx: &Ctx) {
+/// Registers (bits below [`NREG`]) a function reads before writing them, writes on every
+/// path to its return, may write, and that its callers read after it returns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Summary {
+    pub uses: u32,
+    pub mustdef: u32,
+    pub maydef: u32,
+    pub liveout: u32,
+}
+
+impl Summary {
+    const ALL: Summary = Summary {
+        uses: ALL_REGS,
+        mustdef: 0,
+        maydef: ALL_REGS,
+        liveout: ALL_REGS,
+    };
+}
+
+impl Ctx<'_> {
+    fn sum(&self, f: u32) -> Summary {
+        self.sums.map_or(Summary::ALL, |s| s[f as usize])
+    }
+}
+
+/// Optimize function `fi` to a fixpoint (bounded).
+pub fn optimize(f: &mut Function, cx: &Ctx, fi: usize) {
     let mut last = usize::MAX;
     for _ in 0..8 {
         cleanup(f);
         rename(f);
-        let consts = propagate(f);
+        let consts = propagate(f, cx);
         number(f, cx, &consts);
         cleanup(f);
         combine_adds(f);
-        dce(f, &checkpoints(f));
+        dce(f, cx, fi);
         let n: usize = f.blocks.iter().map(|b| b.ops.len()).sum();
         if n == last {
             break;
@@ -43,12 +70,45 @@ fn key(v: Vn) -> u32 {
     (v.space() as u32) << 16 | v.off()
 }
 
-/// Index of a register or temporary in liveness sets.
-fn lidx(v: Vn) -> Option<usize> {
+/// Index of a register or temporary in liveness sets of a function with `nregs` registers.
+fn lidx(v: Vn, nregs: usize) -> Option<usize> {
     match v.space() {
         Space::Reg => Some(v.off() as usize),
-        Space::Unique => Some(NREG + v.off() as usize),
+        Space::Unique => Some(nregs + v.off() as usize),
         _ => None,
+    }
+}
+
+/// Net SP change of a block and the lowest SP change within it; `depth(f)` is how far a
+/// `CALL` of function `f` may grow the stack beyond its return address without checking.
+pub fn sp_effect(b: &Block, mut depth: impl FnMut(u32) -> u32) -> (i32, i32) {
+    let (mut net, mut low) = (0i32, 0i32);
+    for op in &b.ops {
+        if op.opc == Opc::Call {
+            low = low.min(net - depth(op.aux) as i32);
+        }
+        net = sp_step(op, net);
+        low = low.min(net);
+    }
+    (net, low)
+}
+
+/// SP offset `h` after `op` (a `CALL` returns with SP 2 above its call); an SP-setting op
+/// restarts at 0.
+fn sp_step(op: &LOp, h: i32) -> i32 {
+    if op.opc == Opc::Call {
+        return h + 2;
+    }
+    if op.out != r1(R::SP) {
+        return h;
+    }
+    let c = op.ins[1].off() as i32;
+    let c = if c < 0x80 { c } else { c - 0x100 };
+    match op.opc {
+        _ if op.ins[0] != op.out || op.ins[1].space() != Space::Const => 0,
+        Opc::IntAdd => h + c,
+        Opc::IntSub => h - c,
+        _ => 0,
     }
 }
 
@@ -66,14 +126,24 @@ fn preds(f: &Function) -> Vec<u32> {
     p
 }
 
-/// Blocks where all registers must be architectural: the entry, `CALL` returns and loop
-/// headers (the executor's cycle-budget checks).
-pub fn checkpoints(f: &Function) -> FixedBitSet {
+/// Blocks where the executor checks the stack depth (and with cycles, the cycle budget), so
+/// all registers must be architectural. With cycles: the entry, `CALL` returns, loop headers
+/// and blocks after SP-setting instructions. Without: the entry of an outermost or recursive
+/// function, blocks after SP-setting instructions, and blocks reached at different SP
+/// offsets from the others.
+pub fn checkpoints(f: &Function, cycles: bool) -> FixedBitSet {
     let n = f.blocks.len();
     let mut cp = FixedBitSet::with_capacity(n);
-    cp.insert(0);
     for (i, b) in f.blocks.iter().enumerate() {
         cp.set(i, b.check);
+    }
+    if !cycles {
+        cp.set(0, f.top || f.recursive);
+        let net: Vec<i32> = f.blocks.iter().map(|b| sp_effect(b, |_| 0).0).collect();
+        while let Some(s) = sp_conflict(f, &cp, &net) {
+            cp.insert(s);
+        }
+        return cp;
     }
     cp.insert(0);
     for b in &f.blocks {
@@ -104,6 +174,55 @@ pub fn checkpoints(f: &Function) -> FixedBitSet {
         }
     }
     cp
+}
+
+/// SP offset of every block relative to the checkpoint (or entry) it is reached from without
+/// crossing another; the first block reached at two offsets.
+fn sp_conflict(f: &Function, cp: &FixedBitSet, net: &[i32]) -> Option<usize> {
+    let mut off: Vec<Option<i32>> = vec![None; f.blocks.len()];
+    let mut work: Vec<usize> = cp.ones().chain([0]).collect();
+    for &r in &work {
+        off[r] = Some(0);
+    }
+    while let Some(b) = work.pop() {
+        let o = off[b].unwrap() + net[b];
+        for s in f.blocks[b].succs(&f.tables) {
+            let s = s as usize;
+            if cp.contains(s) {
+                continue;
+            }
+            match off[s] {
+                None => {
+                    off[s] = Some(o);
+                    work.push(s);
+                }
+                Some(x) if x != o => return Some(s),
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+/// SP offset of each block reachable from `root` without crossing a checkpoint, relative to
+/// `root` (offsets are consistent once [`checkpoints`] holds).
+pub fn sp_offsets(f: &Function, cp: &FixedBitSet, root: usize) -> Vec<(usize, i32)> {
+    let mut seen = FixedBitSet::with_capacity(f.blocks.len());
+    let mut out = vec![(root, 0)];
+    seen.insert(root);
+    let mut i = 0;
+    while i < out.len() {
+        let (b, o) = out[i];
+        let o = o + sp_effect(&f.blocks[b], |_| 0).0;
+        for s in f.blocks[b].succs(&f.tables) {
+            let s = s as usize;
+            if !cp.contains(s) && !seen.put(s) {
+                out.push((s, o));
+            }
+        }
+        i += 1;
+    }
+    out
 }
 
 /// Fold constant branches, thread empty blocks, drop unreachable blocks and merge
@@ -162,6 +281,9 @@ pub fn cleanup(f: &mut Function) {
             for e in t.iter_mut() {
                 e.1 = resolve(e.1);
             }
+        }
+        for b in &mut f.blocks {
+            b.resume = b.resume.map(resolve);
         }
         // Merge `A: ... BRANCH B` with B when A is B's only predecessor.
         let p = preds(f);
@@ -251,6 +373,9 @@ fn prune(f: &mut Function) -> bool {
             }
         }
     }
+    for b in &mut nb {
+        b.resume = b.resume.map(|r| map[r as usize]).filter(|&r| r != u32::MAX);
+    }
     f.blocks = nb;
     f.tables = nt;
     true
@@ -273,10 +398,11 @@ fn meet(a: L, b: L) -> L {
 }
 
 /// Constant registers at each block entry, by forward dataflow over every CFG edge.
-fn propagate(f: &Function) -> Vec<Vec<(u16, u32)>> {
+fn propagate(f: &Function, cx: &Ctx) -> Vec<Vec<(u16, u32)>> {
     let n = f.blocks.len();
-    let mut inn = vec![[L::Top; NREG]; n];
-    inn[0] = [L::Bot; NREG];
+    let nr = f.nregs();
+    let mut inn = vec![vec![L::Top; nr]; n];
+    inn[0] = vec![L::Bot; nr];
     let mut work: Vec<u32> = (0..n as u32).rev().collect();
     let mut queued = FixedBitSet::with_capacity(n);
     queued.insert_range(..);
@@ -290,10 +416,10 @@ fn propagate(f: &Function) -> Vec<Vec<(u16, u32)>> {
             }
         }
         let blk = &f.blocks[b as usize];
-        let mut after_call = false;
+        let mut clobber = 0u32;
         for op in &blk.ops {
             if op.opc == Opc::Call {
-                after_call = true;
+                clobber |= cx.sum(op.aux).maydef;
             }
             if op.out.is_none() || op.out.space() == Space::Const {
                 continue;
@@ -319,20 +445,22 @@ fn propagate(f: &Function) -> Vec<Vec<(u16, u32)>> {
                 None => env.remove(&key(op.out)),
             };
         }
-        let out: [L; NREG] = std::array::from_fn(|i| {
-            if after_call {
-                return L::Bot;
-            }
-            env.get(&key(crate::ir::reg(i as u16, 1)))
-                .map_or(L::Bot, |&v| L::K(v))
-        });
+        let out: Vec<L> = (0..nr)
+            .map(|i| {
+                if i < NREG && clobber >> i & 1 != 0 {
+                    return L::Bot;
+                }
+                env.get(&key(crate::ir::reg(i as u16, 1)))
+                    .map_or(L::Bot, |&v| L::K(v))
+            })
+            .collect();
         let mut succ: Vec<u32> = blk.succs(&f.tables).collect();
         succ.sort_unstable();
         succ.dedup();
         for s in succ {
-            let cur = inn[s as usize];
-            let new: [L; NREG] = std::array::from_fn(|i| meet(cur[i], out[i]));
-            if new != cur {
+            let cur = &inn[s as usize];
+            let new: Vec<L> = cur.iter().zip(&out).map(|(&c, &o)| meet(c, o)).collect();
+            if new != *cur {
                 inn[s as usize] = new;
                 if !queued.put(s as usize) {
                     work.push(s);
@@ -389,8 +517,8 @@ enum MemKey {
     Other(u32),
 }
 
-/// A known memory byte: key, value, and the tracked push (block, index) that stored it.
-type Known = (MemKey, Val, Option<(u32, usize)>);
+/// A known memory byte: key and value.
+type Known = (MemKey, Val);
 
 #[derive(Default)]
 struct St {
@@ -442,15 +570,6 @@ impl St {
             }
         }
     }
-}
-
-/// A push within the current block: its op index, and whether a pull consumed it, a later
-/// push overwrote it, or another access may have read it.
-struct Push {
-    key: MemKey,
-    at: usize,
-    dead: bool,
-    seen: bool,
 }
 
 struct Lvn<'a> {
@@ -804,7 +923,7 @@ fn number(f: &mut Function, cx: &Ctx, consts: &[Vec<(u16, u32)>]) {
                 continue;
             }
             stack.push((b, Some(st.undo.len())));
-            number_block(&mut lv, &mut f.blocks[b as usize], b, &f.tables, &mut st);
+            number_block(&mut lv, &mut f.blocks[b as usize], &f.tables, &mut st);
             for s in ebb_children(f, &root, b) {
                 stack.push((s, None));
             }
@@ -812,11 +931,10 @@ fn number(f: &mut Function, cx: &Ctx, consts: &[Vec<(u16, u32)>]) {
     }
 }
 
-fn number_block(lv: &mut Lvn, blk: &mut Block, bi: u32, tables: &[Vec<(u16, u32)>], st: &mut St) {
+fn number_block(lv: &mut Lvn, blk: &mut Block, tables: &[Vec<(u16, u32)>], st: &mut St) {
     let cx = lv.cx;
     let ops = std::mem::take(&mut blk.ops);
     let mut out: Vec<LOp> = Vec::with_capacity(ops.len());
-    let mut pushes: Vec<Push> = Vec::new();
     for mut op in ops {
         let arity = op.opc.arity();
         let a = if arity > 0 {
@@ -845,27 +963,12 @@ fn number_block(lv: &mut Lvn, blk: &mut Block, bi: u32, tables: &[Vec<(u16, u32)
                 let hit = (!op.volatile())
                     .then(|| st.mem.iter().find(|e| e.0 == mk).copied())
                     .flatten();
-                if let Some((_, v, push)) = hit {
-                    // Without a varnode still holding the value the load stays, reading the
-                    // stored byte, so that store must stay too.
-                    let held = !lv.vn(st, v, 1, Vn::NONE).is_none();
-                    if let Some((_, i)) = push.filter(|p| p.0 == bi) {
-                        if held {
-                            pushes[i].dead = true;
-                        } else {
-                            pushes[i].seen = true;
-                        }
-                    }
+                if let Some((_, v)) = hit {
                     result = Some((v, false));
                 } else {
-                    for pu in pushes.iter_mut() {
-                        if lv.alias(pu.key, mk) {
-                            pu.seen = true;
-                        }
-                    }
                     let s = lv.leaf(1, Iv::full(1));
                     if !op.volatile() {
-                        st.remember((mk, Val::S(s), None));
+                        st.remember((mk, Val::S(s)));
                     }
                     result = Some((Val::S(s), true));
                 }
@@ -878,22 +981,8 @@ fn number_block(lv: &mut Lvn, blk: &mut Block, bi: u32, tables: &[Vec<(u16, u32)
                 }
                 let mk = lv.memkey(a);
                 st.forget(|e| lv.alias(e, mk));
-                for pu in pushes.iter_mut() {
-                    if pu.key == mk && !pu.seen {
-                        pu.dead = true;
-                    }
-                }
-                let push = (cx.private && op.aux & mem::STACK != 0 && !op.volatile()).then(|| {
-                    pushes.push(Push {
-                        key: mk,
-                        at: out.len(),
-                        dead: false,
-                        seen: false,
-                    });
-                    (bi, pushes.len() - 1)
-                });
                 if !op.volatile() {
-                    st.remember((mk, b, push));
+                    st.remember((mk, b));
                 }
             }
             Opc::CBranch => {
@@ -956,15 +1045,6 @@ fn number_block(lv: &mut Lvn, blk: &mut Block, bi: u32, tables: &[Vec<(u16, u32)
         if op.is_term() {
             break;
         }
-    }
-    let mut dead: Vec<usize> = pushes
-        .iter()
-        .filter(|p| p.dead && !p.seen)
-        .map(|p| p.at)
-        .collect();
-    dead.sort_unstable();
-    for i in dead.into_iter().rev() {
-        out.remove(i);
     }
     blk.ops = out;
 }
@@ -1034,15 +1114,82 @@ fn combine_adds(f: &mut Function) {
     }
 }
 
-/// Remove ops whose results are never used, by liveness over registers and temporaries.
-fn dce(f: &mut Function, cps: &FixedBitSet) {
-    let n = f.blocks.len();
-    let width = NREG + f.ntemps as usize;
-    let all = |s: &mut FixedBitSet| s.insert_range(0..NREG);
-    let transfer = |blk: &Block, live: &mut FixedBitSet| -> Vec<bool> {
+/// Per-function liveness over registers, promoted stack slots and temporaries.
+struct Live<'a> {
+    f: &'a Function,
+    cx: &'a Ctx<'a>,
+    fi: usize,
+    nregs: usize,
+    cps: FixedBitSet,
+    /// Stack height at each block's start (functions with stack slots, whose heights are
+    /// static).
+    hin: Vec<i32>,
+}
+
+impl Live<'_> {
+    fn regs(live: &mut FixedBitSet, m: u32) {
+        for i in 0..NREG {
+            if m >> i & 1 != 0 {
+                live.insert(i);
+            }
+        }
+    }
+    /// Everything a deopt at height `h` hands over: all registers and the stack slots pushed
+    /// above it.
+    fn all(&self, live: &mut FixedBitSet, h: i32) {
+        live.insert_range(0..NREG);
+        self.slots(live, h);
+    }
+    fn slots(&self, live: &mut FixedBitSet, h: i32) {
+        live.insert_range(NREG..NREG + (-h).clamp(0, self.nregs as i32 - NREG as i32) as usize);
+    }
+    /// Backward over block `b` from `live` (its live-out); which ops to keep, calling `call`
+    /// with each `CALL`'s callee and registers live after it.
+    fn transfer(
+        &self,
+        b: usize,
+        live: &mut FixedBitSet,
+        live_in: &[FixedBitSet],
+        call: &mut dyn FnMut(u32, u32),
+    ) -> Vec<bool> {
+        let blk = &self.f.blocks[b];
         let mut keep = vec![true; blk.ops.len()];
+        let mut hs = Vec::with_capacity(blk.ops.len());
+        let mut h = self.hin[b];
+        for op in &blk.ops {
+            hs.push(h);
+            h = sp_step(op, h);
+        }
         for (i, op) in blk.ops.iter().enumerate().rev() {
-            if let Some(o) = lidx(op.out) {
+            let h = hs[i];
+            match op.opc {
+                Opc::Call => {
+                    let s = self.cx.sum(op.aux);
+                    let after = (0..NREG).fold(0u32, |m, r| m | (live.contains(r) as u32) << r);
+                    call(op.aux, after);
+                    for r in 0..NREG {
+                        if s.mustdef >> r & 1 != 0 {
+                            live.remove(r);
+                        }
+                    }
+                    Self::regs(live, s.uses);
+                    self.slots(live, h + 2);
+                }
+                Opc::Return if !self.f.top => {
+                    live.clear();
+                    Self::regs(live, self.cx.sum(self.fi as u32).liveout);
+                }
+                Opc::Return | Opc::BranchInd => self.all(live, h),
+                _ if op.is_deopt() => match blk.resume {
+                    Some(r) if !self.cx.cycles => {
+                        live.union_with(&live_in[r as usize]);
+                        self.slots(live, h);
+                    }
+                    _ => self.all(live, h),
+                },
+                _ => {}
+            }
+            if let Some(o) = lidx(op.out, self.nregs) {
                 if !op.effectful() && !live.contains(o) {
                     keep[i] = false;
                     continue;
@@ -1050,49 +1197,217 @@ fn dce(f: &mut Function, cps: &FixedBitSet) {
                 live.remove(o);
             }
             for v in op.inputs() {
-                if let Some(x) = lidx(*v) {
+                if let Some(x) = lidx(*v, self.nregs) {
                     live.insert(x);
                 }
             }
-            if op.volatile() {
+            if op.volatile() && self.cx.cycles {
                 live.insert(CY as usize);
             }
-            // A `BRANCHIND` to an address outside its table deopts there.
-            if matches!(op.opc, Opc::Call | Opc::Return | Opc::BranchInd) || op.is_deopt() {
-                all(live);
-            }
+        }
+        if self.cps.contains(b) {
+            self.all(live, self.hin[b]);
         }
         keep
+    }
+    fn live_out(&self, b: usize, live_in: &[FixedBitSet]) -> FixedBitSet {
+        let mut live = FixedBitSet::with_capacity(self.nregs + self.f.ntemps as usize);
+        for s in self.f.blocks[b].succs(&self.f.tables) {
+            live.union_with(&live_in[s as usize]);
+        }
+        live
+    }
+    /// Live-in per block, to a fixpoint.
+    fn solve(&self, call: &mut dyn FnMut(u32, u32)) -> Vec<FixedBitSet> {
+        let n = self.f.blocks.len();
+        let mut live_in = vec![FixedBitSet::new(); n];
+        loop {
+            let mut changed = false;
+            for b in (0..n).rev() {
+                let mut live = self.live_out(b, &live_in);
+                self.transfer(b, &mut live, &live_in, &mut |_, _| {});
+                if live != live_in[b] {
+                    live_in[b] = live;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        for b in 0..n {
+            let mut live = self.live_out(b, &live_in);
+            self.transfer(b, &mut live, &live_in, call);
+        }
+        live_in
+    }
+}
+
+fn live<'a>(f: &'a Function, cx: &'a Ctx<'a>, fi: usize) -> Live<'a> {
+    let mut hin = vec![0; f.blocks.len()];
+    if f.nslots > 0 {
+        let mut seen = FixedBitSet::with_capacity(f.blocks.len());
+        let mut work = vec![0usize];
+        seen.insert(0);
+        while let Some(b) = work.pop() {
+            let mut h = hin[b];
+            for op in &f.blocks[b].ops {
+                h = sp_step(op, h);
+                let ts: &[u32] = match op.opc {
+                    Opc::Branch | Opc::CBranch => std::slice::from_ref(&op.aux),
+                    _ => &[],
+                };
+                let tab = (op.opc == Opc::BranchInd).then(|| &f.tables[op.aux as usize]);
+                for t in ts
+                    .iter()
+                    .copied()
+                    .chain(tab.into_iter().flatten().map(|e| e.1))
+                {
+                    if !seen.put(t as usize) {
+                        hin[t as usize] = h;
+                        work.push(t as usize);
+                    }
+                }
+            }
+        }
+    }
+    Live {
+        f,
+        cx,
+        fi,
+        nregs: f.nregs(),
+        cps: checkpoints(f, cx.cycles),
+        hin,
+    }
+}
+
+/// Remove ops whose results are never used, by liveness.
+fn dce(f: &mut Function, cx: &Ctx, fi: usize) {
+    let keeps: Vec<Vec<bool>> = {
+        let lv = live(f, cx, fi);
+        let live_in = lv.solve(&mut |_, _| {});
+        (0..f.blocks.len())
+            .map(|b| {
+                let mut l = lv.live_out(b, &live_in);
+                lv.transfer(b, &mut l, &live_in, &mut |_, _| {})
+            })
+            .collect()
     };
-    let mut live_in = vec![FixedBitSet::with_capacity(width); n];
+    for (b, keep) in f.blocks.iter_mut().zip(keeps) {
+        let mut it = keep.iter();
+        b.ops.retain(|_| *it.next().unwrap());
+    }
+}
+
+/// Register summaries of `fs` (whose `CALL`s index it): may- and must-defined registers by
+/// fixpoints over the call graph, then used and live-out registers by a least fixpoint of
+/// liveness over all functions together (recursion converges like loops).
+pub fn summarize(fs: &[Function], cx: &Ctx) -> Vec<Summary> {
+    let n = fs.len();
+    let reg_bit = |v: Vn| -> u32 {
+        if v.space() == Space::Reg && (v.off() as usize) < NREG {
+            1 << v.off()
+        } else {
+            0
+        }
+    };
+    let callees: Vec<Vec<u32>> = fs
+        .iter()
+        .map(|f| {
+            f.blocks
+                .iter()
+                .flat_map(|b| &b.ops)
+                .filter(|o| o.opc == Opc::Call)
+                .map(|o| o.aux)
+                .collect()
+        })
+        .collect();
+    let mut maydef: Vec<u32> = fs
+        .iter()
+        .map(|f| {
+            f.blocks
+                .iter()
+                .flat_map(|b| &b.ops)
+                .fold(0, |m, o| m | reg_bit(o.out))
+        })
+        .collect();
+    let mut mustdef = vec![ALL_REGS; n];
     loop {
         let mut changed = false;
-        for b in (0..n).rev() {
-            let mut live = FixedBitSet::with_capacity(width);
-            for s in f.blocks[b].succs(&f.tables) {
-                live.union_with(&live_in[s as usize]);
-            }
-            transfer(&f.blocks[b], &mut live);
-            if cps.contains(b) {
-                all(&mut live);
-            }
-            if live != live_in[b] {
-                live_in[b] = live;
-                changed = true;
-            }
+        for i in 0..n {
+            let m = callees[i]
+                .iter()
+                .fold(maydef[i], |m, &c| m | maydef[c as usize]);
+            let d = must_def(&fs[i], &mustdef, &reg_bit);
+            changed |= m != maydef[i] || d != mustdef[i];
+            maydef[i] = m;
+            mustdef[i] = d;
         }
         if !changed {
             break;
         }
     }
-    for b in 0..n {
-        let mut live = FixedBitSet::with_capacity(width);
-        for s in f.blocks[b].succs(&f.tables) {
-            live.union_with(&live_in[s as usize]);
+    let mut sums: Vec<Summary> = (0..n)
+        .map(|i| Summary {
+            uses: 0,
+            mustdef: mustdef[i],
+            maydef: maydef[i],
+            liveout: if fs[i].top { ALL_REGS } else { 0 },
+        })
+        .collect();
+    loop {
+        let mut next = sums.clone();
+        {
+            let cx2 = Ctx {
+                sums: Some(&sums),
+                ..*cx
+            };
+            for (i, f) in fs.iter().enumerate() {
+                let lv = live(f, &cx2, i);
+                let li = lv.solve(&mut |c, after| next[c as usize].liveout |= after);
+                next[i].uses = (0..NREG).fold(0, |m, r| m | (li[0].contains(r) as u32) << r);
+            }
         }
-        let keep = transfer(&f.blocks[b], &mut live);
-        let mut it = keep.iter();
-        f.blocks[b].ops.retain(|_| *it.next().unwrap());
+        if next == sums {
+            return sums;
+        }
+        sums = next;
+    }
+}
+
+/// Registers written on every path from `f`'s entry to a `RETURN` (all when none returns).
+fn must_def(f: &Function, mustdef: &[u32], bit: &dyn Fn(Vn) -> u32) -> u32 {
+    let n = f.blocks.len();
+    let mut inn = vec![ALL_REGS; n];
+    inn[0] = 0;
+    let mut ret = ALL_REGS;
+    loop {
+        let mut changed = false;
+        let mut meet = |inn: &mut Vec<u32>, t: u32, v: u32| {
+            let m = inn[t as usize] & v;
+            changed |= m != inn[t as usize];
+            inn[t as usize] = m;
+        };
+        for b in 0..n {
+            let mut cur = inn[b];
+            for op in &f.blocks[b].ops {
+                cur |= bit(op.out);
+                match op.opc {
+                    Opc::Call => cur |= mustdef[op.aux as usize],
+                    Opc::Branch | Opc::CBranch => meet(&mut inn, op.aux, cur),
+                    Opc::BranchInd => {
+                        for &(_, t) in &f.tables[op.aux as usize] {
+                            meet(&mut inn, t, cur);
+                        }
+                    }
+                    Opc::Return => ret &= cur,
+                    _ => {}
+                }
+            }
+        }
+        if !changed {
+            return ret;
+        }
     }
 }
 

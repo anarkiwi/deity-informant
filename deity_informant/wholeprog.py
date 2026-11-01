@@ -39,8 +39,9 @@ def _facts(f):
     return (f if isinstance(f, Facts) else Facts.from_dict(f)).to_dict()
 
 
-def lift(image, entries, volatile=(), facts=None, optimize=True):
-    """Lift ``entries`` of the program in ``image`` (the memory each entry starts from)."""
+def lift(image, entries, volatile=(), facts=None, optimize=True, cycles=False):
+    """Lift ``entries`` of the program in ``image`` (the memory each entry starts from);
+    ``cycles=True`` counts cycles and stamps volatile accesses with them."""
     n = _native_or_raise()
     return n.lift_program(
         bytes(image),
@@ -48,10 +49,11 @@ def lift(image, entries, volatile=(), facts=None, optimize=True):
         _ranges(volatile),
         _facts(facts),
         optimize,
+        cycles,
     )
 
 
-def lift_many(jobs, progress=True):
+def lift_many(jobs, progress=True, optimize=True, cycles=False):
     """Lift ``[(image, entries, volatile, facts)]`` in parallel with a progress bar."""
     n = _native_or_raise()
     return n.lift_many(
@@ -60,6 +62,8 @@ def lift_many(jobs, progress=True):
             for img, ents, vol, f in jobs
         ],
         progress,
+        optimize,
+        cycles,
     )
 
 

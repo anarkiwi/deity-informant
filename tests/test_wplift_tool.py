@@ -24,10 +24,15 @@ def test_wplift_roundtrip(tmp_path, capsys):
     calls = ["--calls", ",".join("%#x:%d" % (e, a) for a in range(4))]
     facts = tmp_path / "f.json"
     assert wplift.main(common + calls + ["--save-facts", str(facts), "--check"]) == 0
+    assert wplift.main(common + calls + ["--facts", str(facts), "--cycles", "--check"]) == 0
     dump = tmp_path / "p.txt"
     assert wplift.main(common + calls + ["--facts", str(facts), "--dump", str(dump), "--raw"]) == 0
     lines = [json.loads(ln) for ln in capsys.readouterr().out.splitlines()]
     assert lines[1]["exact"] and lines[0]["ops"] < lines[0]["emitted_ops"]
-    assert lines[2]["ops"] == lines[2]["emitted_ops"]
+    assert lines[3]["exact"] and lines[2]["ops"] > lines[0]["ops"]
+    assert lines[4]["ops"] == lines[4]["emitted_ops"]
     assert "BRANCHIND" in dump.read_text()
+    init = ["--init", "%#x:1" % e, "--facts", str(facts), "--check"]
+    assert wplift.main(common + calls + init) == 0
+    assert json.loads(capsys.readouterr().out.splitlines()[-1])["exact"]
     assert wplift.calls_spec("0x10:2*3,0x20") == [(0x10, 2)] * 3 + [(0x20, 0)]

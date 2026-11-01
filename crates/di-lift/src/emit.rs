@@ -1,10 +1,13 @@
 //! Emitting planned functions as P-Code blocks: templates with code cells read from memory,
-//! opcode-cell dispatch, stack control as `CALL`/`RETURN`/`BRANCHIND`, cycle accounting in
-//! the `CY` register, and guards that deopt when an assumption fails.
+//! opcode-cell dispatch, stack control as `CALL`/`RETURN`/`BRANCHIND`, pushes and pulls as
+//! stack-slot registers, optional cycle accounting in the `CY` register, and guards that
+//! deopt when an assumption fails.
 
-use crate::analysis::{is_stack_op, operand_bytes, Access, Entry, Graph, Iv, Tg};
-use crate::func::{Ctl, Exit, Plan};
-use crate::ir::{cy, k, mem, other, r1, reg, tmp, Block, Function, LOp, E};
+use crate::analysis::{
+    is_stack_op, operand_bytes, page1_check, Access, Check, Entry, Graph, Iv, Tg,
+};
+use crate::func::{Ctl, Exit, Plan, H};
+use crate::ir::{cy, k, mem, other, r1, reg, tmp, Block, Function, LOp, E, NREG};
 use di_pcode::{reg as R, CtrlKind, Op, Opc, PenKind, Slot, Space, Template, Vn};
 use fixedbitset::FixedBitSet;
 use rustc_hash::FxHashMap;
@@ -23,8 +26,14 @@ pub struct Shared<'a> {
     pub volatile: &'a [(u32, u32)],
     /// Prefix counts of constant code bytes (`code - cells`).
     pub constcode: Vec<u32>,
-    /// No access other than pushes and pulls reaches page 1.
+    /// Only pushes and pulls reach page 1, given a check before every other access that may.
     pub private: bool,
+    /// Functions whose pushes and pulls are stack-slot registers.
+    pub promote: FixedBitSet,
+    /// Functions in a call-graph cycle.
+    pub recursive: FixedBitSet,
+    /// Count cycles.
+    pub cycles: bool,
     /// Function index of each callee.
     pub fidx: FxHashMap<u16, u32>,
     /// Callees whose returns must check their return address (they may store into page 1).
@@ -60,20 +69,33 @@ struct Em<'a, 'b> {
     next: u32,
     /// Cycles accounted but not yet added to `CY`: a constant and 4-byte values.
     pend: (u32, Vec<Vn>),
-    /// Instruction variants and their template ops.
-    insns: usize,
-    raw: usize,
-    guards: usize,
+    /// Stack height of the current instruction relative to the function entry, when its
+    /// pushes and pulls are stack slots.
+    h: Option<i32>,
+    promote: bool,
+    n: Counts,
 }
 
-/// Emit one planned function; `(function, instruction variants, template ops, code guards)`.
-pub fn emit(sh: &Shared, plan: &Plan, entry: Option<&Entry>) -> (Function, usize, usize, usize) {
+/// What emitting a function produced.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Counts {
+    /// Instruction variants and their template ops.
+    pub insns: usize,
+    pub raw: usize,
+    pub code_guards: usize,
+    pub stack_guards: usize,
+    pub slot_ops: usize,
+}
+
+/// Emit planned function `fi`.
+pub fn emit(sh: &Shared, plan: &Plan, entry: Option<&Entry>, fi: usize) -> (Function, Counts) {
     let mut em = Em {
         sh,
         plan,
         f: Function {
             pc: plan.pc,
             top: plan.top,
+            recursive: sh.recursive.contains(fi),
             ..Function::default()
         },
         blk: FxHashMap::default(),
@@ -81,15 +103,15 @@ pub fn emit(sh: &Shared, plan: &Plan, entry: Option<&Entry>) -> (Function, usize
         cur: 0,
         next: 0,
         pend: (0, Vec::new()),
-        insns: 0,
-        raw: 0,
-        guards: 0,
+        h: None,
+        promote: sh.promote.contains(fi),
+        n: Counts::default(),
     };
     em.new_block(plan.pc);
     for (i, vals) in entry.into_iter().flat_map(|e| &e.regs) {
         if let [v] = vals[..] {
             let bad = em.op(Opc::IntNotEqual, 1, r1(*i), k(v as u32, 1));
-            em.side_exit(bad, |em| em.deopt(k(plan.pc as u32, 2)));
+            em.side_exit(bad, true, |em| em.deopt(k(plan.pc as u32, 2)));
             em.emit(Opc::Copy, r1(*i), k(v as u32, 1), NONE, 0);
         }
     }
@@ -100,14 +122,7 @@ pub fn emit(sh: &Shared, plan: &Plan, entry: Option<&Entry>) -> (Function, usize
         em.next = 0;
         em.node(pc);
     }
-    let Em {
-        f,
-        insns,
-        raw,
-        guards,
-        ..
-    } = em;
-    (f, insns, raw, guards)
+    (em.f, em.n)
 }
 
 impl Em<'_, '_> {
@@ -166,6 +181,28 @@ impl Em<'_, '_> {
         self.emit(Opc::Load, t, addr, NONE, flags);
         t
     }
+    /// The stack-slot register of the byte at offset `d` from the entry SP, if promoted.
+    fn slot(&mut self, d: i32) -> Option<Vn> {
+        let i = u32::try_from(-d)
+            .ok()
+            .filter(|&i| i < 0x100 && self.h.is_some())?;
+        self.f.nslots = self.f.nslots.max(i + 1);
+        self.n.slot_ops += 1;
+        Some(reg((NREG as u32 + i) as u16, 1))
+    }
+    /// Whether the instruction at `pc` runs with stack bytes the lift keeps out of memory
+    /// above SP: a callee (its elided return address) or below its entry height.
+    fn elided_live(&self, pc: u16) -> bool {
+        self.sh.private
+            && (!self.plan.top || matches!(self.plan.nodes[&pc].h, H::Known(h) if h < 0))
+    }
+    /// Deopt to `pc` before the access at `addr` when it reaches page 1.
+    fn page1_guard(&mut self, addr: Vn, pc: u16) {
+        let page = self.op(Opc::IntAnd, 2, addr, k(0xff00, 2));
+        let hit = self.op(Opc::IntEqual, 1, page, k(0x100, 2));
+        self.n.stack_guards += 1;
+        self.side_exit(hit, true, |em| em.deopt(k(pc as u32, 2)));
+    }
     fn vflag(&mut self, iv: Iv) -> u32 {
         if self.sh.volatile(iv) {
             self.flush();
@@ -176,6 +213,9 @@ impl Em<'_, '_> {
     }
     /// Add the pending cycles to `CY`.
     fn flush(&mut self) {
+        if !self.sh.cycles {
+            return;
+        }
         let (mut c, dy) = std::mem::take(&mut self.pend);
         while c != 0 {
             let part = c.min(0xffff);
@@ -187,6 +227,9 @@ impl Em<'_, '_> {
         }
     }
     fn account(&mut self, cyc: u32, maxpen: u32) {
+        if !self.sh.cycles {
+            return;
+        }
         self.pend.0 += cyc;
         self.f.blocks[self.cur].maxcyc += cyc + maxpen;
     }
@@ -194,10 +237,12 @@ impl Em<'_, '_> {
         self.emit(Opc::CallOther, NONE, pc, NONE, other::DEOPT);
     }
     /// Leave through a new block when `cond` holds (the block sees the pending cycles), and
-    /// continue in a fresh block.
-    fn side_exit(&mut self, cond: Vn, body: impl FnOnce(&mut Self)) {
+    /// continue in a fresh block. A `soft` exit's deopt state is what the continuation would
+    /// run from.
+    fn side_exit(&mut self, cond: Vn, soft: bool, body: impl FnOnce(&mut Self)) {
         let pc = self.f.blocks[self.cur].pc;
         let (x, cont) = (self.new_block(pc), self.new_block(pc));
+        self.f.blocks[x as usize].resume = soft.then_some(cont);
         self.emit(Opc::CBranch, NONE, cond, NONE, x);
         self.emit(Opc::Branch, NONE, NONE, NONE, cont);
         let pend = self.pend.clone();
@@ -235,17 +280,26 @@ impl Em<'_, '_> {
         self.op(Opc::IntOr, 2, z, k(0x100, 2))
     }
     fn push(&mut self, v: Vn, chk: &mut Vec<Vn>) {
-        let a = self.sp_addr();
-        let flags = mem::STACK | self.vflag(PAGE1);
-        self.emit(Opc::Store, NONE, a, v, flags);
-        if self.sh.hits_code(PAGE1) {
-            chk.push(self.op(Opc::CallOther, 1, a, v));
-            self.f.blocks[self.cur].ops.last_mut().unwrap().aux = other::CODECHK;
+        if let Some(s) = self.h.and_then(|h| self.slot(h)) {
+            self.emit(Opc::Copy, s, v, NONE, 0);
+        } else {
+            let a = self.sp_addr();
+            let flags = mem::STACK | self.vflag(PAGE1);
+            self.emit(Opc::Store, NONE, a, v, flags);
+            if self.sh.hits_code(PAGE1) {
+                chk.push(self.op(Opc::CallOther, 1, a, v));
+                self.f.blocks[self.cur].ops.last_mut().unwrap().aux = other::CODECHK;
+            }
         }
         self.emit(Opc::IntSub, r1(R::SP), r1(R::SP), k(1, 1), 0);
+        self.h = self.h.map(|h| h - 1);
     }
     fn pull(&mut self) -> Vn {
         self.emit(Opc::IntAdd, r1(R::SP), r1(R::SP), k(1, 1), 0);
+        self.h = self.h.map(|h| h + 1);
+        if let Some(s) = self.h.and_then(|h| self.slot(h)) {
+            return self.op(Opc::Copy, 1, s, NONE);
+        }
         let a = self.sp_addr();
         self.load(a, PAGE1, mem::STACK)
     }
@@ -264,8 +318,8 @@ impl Em<'_, '_> {
         for &d in &chk[1..] {
             c = self.op(Opc::IntOr, 1, c, d);
         }
-        self.guards += chk.len();
-        self.side_exit(c, |em| em.deopt(pc));
+        self.n.code_guards += chk.len();
+        self.side_exit(c, true, |em| em.deopt(pc));
     }
 
     fn node(&mut self, pc: u16) {
@@ -291,10 +345,14 @@ impl Em<'_, '_> {
         self.deopt(k(pc as u32, 2));
     }
 
-    /// Instantiate template `ops` with operand values from `slot`, temporaries renamed and
-    /// accesses flagged; the code checks of its stores.
+    /// Instantiate template `ops` of opcode `opc` at `pc` with operand values from `slot`,
+    /// temporaries renamed, accesses flagged, pushes and pulls as stack slots where promoted
+    /// and page-1 checks where private; the code checks of its stores.
+    #[allow(clippy::too_many_arguments)]
     fn ops(
         &mut self,
+        pc: u16,
+        opc: u8,
         ops: &[Op],
         acc: &[Access],
         stack: bool,
@@ -318,12 +376,31 @@ impl Em<'_, '_> {
             let b = map(self, op.ins[1]);
             let out = map(self, op.out);
             let mut aux = 0;
+            if stack && matches!(op.opc, Opc::Load | Opc::Store) {
+                let h = self.h.map(|h| h + (op.opc == Opc::Load) as i32);
+                if let Some(s) = h.and_then(|d| self.slot(d)) {
+                    match op.opc {
+                        Opc::Store => self.emit(Opc::Copy, s, b, NONE, 0),
+                        _ => self.emit(Opc::Copy, out, s, NONE, 0),
+                    }
+                    self.h = self.h.map(|h| h + if op.opc == Opc::Load { 1 } else { -1 });
+                    continue;
+                }
+                self.h = self.h.map(|h| h + if op.opc == Opc::Load { 1 } else { -1 });
+            }
             if matches!(op.opc, Opc::Load | Opc::Store) {
                 let ac = acc.get(ai).copied().unwrap_or(Access {
                     store: op.opc == Opc::Store,
                     addr: Iv::full(2),
                     val: Iv::full(1),
                 });
+                if !stack
+                    && ac.addr.meets(0x100, 0x200)
+                    && page1_check(opc, ai) == Check::Own
+                    && self.elided_live(pc)
+                {
+                    self.page1_guard(a, pc);
+                }
                 ai += 1;
                 aux = self.vflag(ac.addr) | if stack { mem::STACK } else { 0 };
                 if op.opc == Opc::Store && self.sh.hits_code(ac.addr) {
@@ -340,8 +417,12 @@ impl Em<'_, '_> {
 
     fn insn(&mut self, pc: u16, op: &u8, acc: &[Access], ctl: &Ctl, exit: Exit) {
         let t = Template::of(*op);
-        self.insns += 1;
-        self.raw += t.n as usize;
+        self.n.insns += 1;
+        self.n.raw += t.n as usize;
+        self.h = match self.plan.nodes[&pc].h {
+            H::Known(h) if self.promote => Some(h),
+            _ => None,
+        };
         let next = pc.wrapping_add(t.len as u16);
         let bytes = operand_bytes(self.sh.img, &self.sh.g.cells, pc, t.len);
         // Operand bytes that are cells are read once, before the instruction's ops.
@@ -375,9 +456,11 @@ impl Em<'_, '_> {
             v
         };
         let mut umap = FxHashMap::default();
-        let mut chk = self.ops(t.ops(), acc, is_stack_op(*op), &mut slot, &mut umap);
+        let stack = is_stack_op(*op);
+        let mut chk = self.ops(pc, *op, t.ops(), acc, stack, &mut slot, &mut umap);
         // Penalties use the registers the instruction leaves.
         let maxpen = match t.pen {
+            _ if !self.sh.cycles => 0,
             PenKind::Ax | PenKind::Ay => {
                 let idx = r1(if t.pen == PenKind::Ax { R::X } else { R::Y });
                 let c = self.op(Opc::IntCarry, 1, ob[0], idx);
@@ -423,13 +506,15 @@ impl Em<'_, '_> {
                 self.account(cyc, maxpen);
                 match tg {
                     Tg::At(a) => {
-                        let z = self.zext(c, 4);
-                        let z = if (a ^ f) & 0xff00 != 0 {
-                            self.op(Opc::IntLeft, 4, z, k(1, 1))
-                        } else {
-                            z
-                        };
-                        self.pend.1.push(z);
+                        if self.sh.cycles {
+                            let z = self.zext(c, 4);
+                            let z = if (a ^ f) & 0xff00 != 0 {
+                                self.op(Opc::IntLeft, 4, z, k(1, 1))
+                            } else {
+                                z
+                            };
+                            self.pend.1.push(z);
+                        }
                         self.flush();
                         let (bt, bf) = (self.block(*a), self.block(*f));
                         self.emit(Opc::CBranch, NONE, c, NONE, bt);
@@ -448,12 +533,14 @@ impl Em<'_, '_> {
                         let hi = self.op(Opc::IntAnd, 2, neg, k(0xff00, 2));
                         let ext = self.op(Opc::IntOr, 2, o, hi);
                         let tgt = self.op(Opc::IntAdd, 2, k(*f as u32, 2), ext);
-                        let d = self.op(Opc::IntXor, 2, tgt, k(*f as u32, 2));
-                        let d = self.op(Opc::IntAnd, 2, d, k(0xff00, 2));
-                        let d = self.op(Opc::IntNotEqual, 1, d, k(0, 2));
-                        let d = self.zext(d, 4);
-                        self.pend = (1, vec![d]);
-                        self.flush();
+                        if self.sh.cycles {
+                            let d = self.op(Opc::IntXor, 2, tgt, k(*f as u32, 2));
+                            let d = self.op(Opc::IntAnd, 2, d, k(0xff00, 2));
+                            let d = self.op(Opc::IntNotEqual, 1, d, k(0, 2));
+                            let d = self.zext(d, 4);
+                            self.pend = (1, vec![d]);
+                            self.flush();
+                        }
                         let tb = self.table(ts);
                         self.emit(Opc::BranchInd, NONE, tgt, NONE, tb);
                     }
@@ -483,6 +570,10 @@ impl Em<'_, '_> {
                         (w, self.op(Opc::IntOr, 2, page, inc), Iv::full(2))
                     }
                 };
+                if iv.meets(0x100, 0x200) && self.elided_live(pc) {
+                    self.page1_guard(lo_a, pc);
+                    self.page1_guard(hi_a, pc);
+                }
                 let lo = self.load(lo_a, iv, 0);
                 let hi = self.load(hi_a, iv, 0);
                 let tgt = self.word(lo, hi);
@@ -516,7 +607,7 @@ impl Em<'_, '_> {
                     let hi = self.load(a, PAGE1, mem::STACK);
                     let w = self.word(lo, hi);
                     let bad = self.op(Opc::IntNotEqual, 1, w, k(ra, 2));
-                    self.side_exit(bad, |em| {
+                    self.side_exit(bad, false, |em| {
                         let t = em.op(Opc::IntAdd, 2, w, k(1, 2));
                         em.deopt(t);
                     });
@@ -548,7 +639,8 @@ impl Em<'_, '_> {
                 if matches!(ctl, Ctl::Rti(_)) {
                     let plp = Template::of(0x28);
                     let mut none = |_: &mut Self, _: Slot, _: u8| -> Vn { unreachable!() };
-                    let _ = self.ops(plp.ops(), &[], true, &mut none, &mut FxHashMap::default());
+                    let mut u = FxHashMap::default();
+                    let _ = self.ops(pc, 0x28, plp.ops(), &[], true, &mut none, &mut u);
                 }
                 let lo = self.pull();
                 let hi = self.pull();
@@ -574,7 +666,8 @@ impl Em<'_, '_> {
                     addr: PAGE1,
                     val: Iv::full(1),
                 }];
-                chk.extend(self.ops(php.ops(), &acc, true, &mut none, &mut FxHashMap::default()));
+                let mut u = FxHashMap::default();
+                chk.extend(self.ops(pc, 0x08, php.ops(), &acc, true, &mut none, &mut u));
                 self.emit(Opc::Copy, r1(R::I), k(1, 1), NONE, 0);
                 let vec = Iv {
                     lo: 0xfffe,
@@ -607,7 +700,7 @@ impl Em<'_, '_> {
                 self.flush();
                 let s = self.zext(r1(R::SP), 2);
                 let c = self.op(Opc::IntLessEqual, 1, reg(E, 2), s);
-                self.side_exit(c, |em| em.emit(Opc::Return, NONE, pc, NONE, 0));
+                self.side_exit(c, false, |em| em.emit(Opc::Return, NONE, pc, NONE, 0));
                 cont(self);
             }
             Exit::No => {

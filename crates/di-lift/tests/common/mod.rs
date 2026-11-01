@@ -1,18 +1,23 @@
 //! Differential harness: the lifted program against the reference `Cpu`.
 
-use di_lift::{lift, lift_with, Entry, Exec, Facts, Program, Runner};
+use di_lift::{lift_with, Entry, Exec, Facts, Opts, Program, Runner};
 use di_pcode::{reg as R, Bus, Cpu, Halt};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Flat memory whose volatile range reads a function of the cycle count and logs accesses.
+/// Flat memory whose volatile range reads a function of the cycle count and access count and
+/// logs accesses; without `clock` accesses carry no cycle.
 #[derive(Clone)]
 pub struct TBus {
     pub mem: Box<[u8; 0x10000]>,
     pub vol: (u16, u16),
     pub now: u64,
+    pub clock: bool,
+    pub n: u64,
     pub log: Vec<(u16, u8, u64, bool)>,
     /// Observed code facts.
     pub writes: BTreeMap<u16, BTreeSet<u8>>,
+    /// A page-1 access since the flag was cleared.
+    pub page1: bool,
 }
 
 impl TBus {
@@ -21,8 +26,11 @@ impl TBus {
             mem: Box::new(*img),
             vol,
             now: 0,
+            clock: true,
+            n: 0,
             log: Vec::new(),
             writes: BTreeMap::new(),
+            page1: false,
         }
     }
     fn volatile(&self, a: u16) -> bool {
@@ -32,8 +40,10 @@ impl TBus {
 
 impl Bus for TBus {
     fn read(&mut self, a: u16) -> u8 {
+        self.page1 |= a >> 8 == 1;
         if self.volatile(a) {
-            let v = (self.now as u8) ^ (a as u8);
+            self.n += 1;
+            let v = (self.now ^ self.n) as u8 ^ a as u8;
             self.log.push((a, v, self.now, false));
             v
         } else {
@@ -41,7 +51,9 @@ impl Bus for TBus {
         }
     }
     fn write(&mut self, a: u16, v: u8) {
+        self.page1 |= a >> 8 == 1;
         if self.volatile(a) {
+            self.n += 1;
             self.log.push((a, v, self.now, true));
         }
         self.writes.entry(a).or_default().insert(v);
@@ -51,8 +63,15 @@ impl Bus for TBus {
         self.mem[a as usize]
     }
     fn now(&mut self, c: u64) {
-        self.now = c;
+        if self.clock {
+            self.now = c;
+        }
     }
+}
+
+/// Whether `op`'s page-1 accesses are all pushes and pulls.
+fn stack_only(op: u8) -> bool {
+    matches!(op, 0x48 | 0x08 | 0x68 | 0x28 | 0x20 | 0x60 | 0x40 | 0x00)
 }
 
 /// `run_to_rts` on the reference interpreter.
@@ -75,6 +94,7 @@ pub fn facts(img: &[u8; 0x10000], calls: &[(u16, u8)], max: u64) -> Facts {
     let mut cpu = Cpu::new();
     let mut starts = BTreeSet::new();
     let mut edges = BTreeSet::new();
+    let mut page1 = BTreeSet::new();
     for &(pc, acc) in calls {
         let start = cpu.r(R::SP);
         for v in [0u8, 1] {
@@ -88,8 +108,13 @@ pub fn facts(img: &[u8; 0x10000], calls: &[(u16, u8)], max: u64) -> Facts {
         while cpu.r(R::SP) < start && cpu.cycles < end {
             let p = cpu.pc;
             starts.insert(p);
+            let op = bus.mem[p as usize];
+            bus.page1 = false;
             if cpu.step(&mut bus).is_err() {
                 break;
+            }
+            if bus.page1 && !stack_only(op) {
+                page1.insert(p);
             }
             edges.insert((p, cpu.pc));
         }
@@ -107,6 +132,7 @@ pub fn facts(img: &[u8; 0x10000], calls: &[(u16, u8)], max: u64) -> Facts {
             .filter(|(a, _)| code.contains(a))
             .map(|(a, v)| (a, v.into_iter().collect()))
             .collect(),
+        page1: page1.into_iter().collect(),
     }
 }
 
@@ -126,11 +152,15 @@ pub fn diff_capped(
     let x = Exec::new(prog);
     let mut run = Runner::new(&x);
     let (mut rb, mut lb) = (TBus::new(img, vol), TBus::new(img, vol));
+    rb.clock = prog.cycles;
     let (mut rc, mut lc) = (Cpu::new(), Cpu::new());
     for (n, &(e, acc)) in calls.iter().enumerate() {
         let h1 = ref_call(&mut rc, &mut rb, prog.entries[e].0, acc, max);
         let o = run.call(e, acc, &mut lc, &mut lb, max);
         assert_eq!(h1, o.halt, "halt, call {n}");
+        if !prog.cycles {
+            lc.cycles = rc.cycles;
+        }
         assert_eq!(rc, lc, "state, call {n}");
         assert_eq!(rb.log, lb.log, "volatile stream, call {n}");
         let sp = rc.r(R::SP) as usize;
@@ -143,27 +173,33 @@ pub fn diff_capped(
     run.deopts.values().sum()
 }
 
+pub fn entries(pcs: &[u16]) -> Vec<Entry> {
+    pcs.iter().map(|&pc| Entry { pc, regs: vec![] }).collect()
+}
+
 /// Lift with facts from the reference and check `calls` with zero deopts, optimized and as
-/// emitted.
-pub fn check(
-    img: &[u8; 0x10000],
-    entries: &[u16],
-    calls: &[(usize, u8)],
-    vol: (u16, u16),
-) -> Program {
-    let fc: Vec<(u16, u8)> = calls.iter().map(|&(e, a)| (entries[e], a)).collect();
+/// emitted, with and without cycles; the optimized functional lift.
+pub fn check(img: &[u8; 0x10000], pcs: &[u16], calls: &[(usize, u8)], vol: (u16, u16)) -> Program {
+    let fc: Vec<(u16, u8)> = calls.iter().map(|&(e, a)| (pcs[e], a)).collect();
     let f = facts(img, &fc, 1_000_000);
-    let es: Vec<Entry> = entries
-        .iter()
-        .map(|&pc| Entry { pc, regs: vec![] })
-        .collect();
+    let es = entries(pcs);
     let v = [(vol.0 as u32, vol.1 as u32)];
-    let raw = lift_with(img, &es, &v, &f, false);
-    assert_eq!(diff(img, &raw, calls, vol), 0, "deopts (emitted)");
-    let prog = lift(img, &es, &v, &f);
-    assert_eq!(diff(img, &prog, calls, vol), 0, "deopts");
-    assert!(prog.stats.ops < prog.stats.emitted_ops);
-    prog
+    let mut out = None;
+    for cycles in [true, false] {
+        for optimize in [false, true] {
+            let prog = lift_with(img, &es, &v, &f, Opts { optimize, cycles });
+            assert_eq!(
+                diff(img, &prog, calls, vol),
+                0,
+                "deopts {cycles} {optimize}"
+            );
+            if optimize {
+                assert!(prog.stats.ops < prog.stats.emitted_ops);
+            }
+            out = Some(prog);
+        }
+    }
+    out.unwrap()
 }
 
 pub fn image(parts: &[(u16, &[u8])]) -> Box<[u8; 0x10000]> {
