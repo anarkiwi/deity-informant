@@ -73,18 +73,18 @@ def test_corpus(tmp_path):
         2 * 985248 / 0x41
     )
     assert f1["mode"] == "flat" and f1["exact"] and f1["returned"] and not f1["deopts"]
-    assert f1["oracle"] == "cpu" and f1["reasons"] == [] and f1["stats"]["stack_private"]
+    assert f1["oracle"] == "calls" and f1["reasons"] == [] and f1["stats"]["stack_private"]
     assert f1["label_calls"] == 10 and set(f1["cells_first"]) == set(f1["cells"])
     assert f1["clock"] == "PAL" and f1["sid_models"] == [1, 0, 0] and f1["speed"] == 1
     assert set(f1["timing"]) >= {"jennings_s", "lifted_s", "reference_s", "cycles"}
     b = rows["banked.sid", 1]
     assert b["length_default"] and b["calls"] == 25 and b["rate_src"] == "vbi"
     assert b["mode"] == "banked" and b["bank_evidence"] == ["port-write"] and b["exact"]
-    assert b["oracle"] == "machine" and b["configs"] and b["timing"]["jennings_s"] is None
+    assert b["oracle"] == "calls" and b["configs"] and b["timing"]["jennings_s"] is None
     i = rows["irq.sid", 1]
     assert i["skip"] == "irq-driven" and i["irq"]["path"] == "kernal" and i["irq"]["idle"]
     assert i["irq"]["kernal_vector"] == 0x1010 and i["irq"]["irqs"] > 0 and i["calls_run"] > 0
-    assert i["oracle"] == "machine" and i["label_calls"] == 10 and i["irq"]["init_returned"]
+    assert i["oracle"] == "frames" and i["label_calls"] == 10 and i["irq"]["init_returned"]
     assert set(i["cells_first"]) == set(i["cells"]) and i["cells"]
     assert rows["basic.sid", 1]["skip"] == "needs the C64 BASIC ROM"
     assert rows["bad.sid", 0]["skip"] == "not a sid file"

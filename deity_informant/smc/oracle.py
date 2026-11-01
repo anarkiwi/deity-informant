@@ -36,13 +36,19 @@ def writer_of(op):
 
 @dataclass
 class Run:
-    """An oracle run: observed cells, unclassified events, whether every call returned and the
-    call each cell was first seen at."""
+    """An oracle run: observed cells, unclassified events, whether every call returned, the
+    call each cell was first seen at and, where ``unclassified`` is a sample, their ``count``."""
 
     cells: set = field(default_factory=set)
     unclassified: list = field(default_factory=list)
     returned: bool = True
     first: dict = field(default_factory=dict)
+    count: int = None
+
+    @property
+    def n_unclassified(self):
+        """How many unclassified events: ``count`` where only a sample is kept."""
+        return len(self.unclassified) if self.count is None else self.count
 
 
 def _call(mpu, mem, shadow, cls, writes, pc, a, max_cycles):

@@ -65,6 +65,15 @@ Labels come from emulators other than the code under test, never from the lifter
   through the live bank map, so banking, interrupt and port scenarios are labelled with the
   same classifier. The native machine ships in vagrant-moses' wheels (`vagrant-moses[cpu]`,
   in the `dev` extra); `deity_informant.smc.machine.core()` reports whether it is present.
+  Two backends label the run: `python` (the reference: the decode hook and `Classifier`) and
+  `native`, vagrant-moses' SMC recorder (`vagrant_moses.smc`, see its `docs/native.md`), which
+  keeps writers and checks fetches inside the machine and whose event keys `native_cells` maps
+  to the same cells and first-seen indices. `MachineOracle` picks `native` when the recorder is
+  installed, the class keeps the stock decode hook and no device reports DMA; `backend=` forces
+  either. `run(..., index_frames=True)` indexes first-seen cells by interrupt-driven frame.
+  `tools/smcequiv.py --corpus --hvsc ROOT --sample N --frames F` checks the two agree (cells,
+  first-seen indices, unclassified counts, returns) and reports each one's per-call/frame cost;
+  `tests/test_smc_native.py` asserts it over the corpus.
   The REU plugs in as a DMA device once vagrant-moses lands its model; until then REU cells
   are gaps.
 

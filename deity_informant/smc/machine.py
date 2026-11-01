@@ -1,26 +1,39 @@
 """The machine-level oracle: label a program from a cycle-exact vagrant-moses C64 run.
 
-The native :class:`vagrant_moses._core.Machine` (6510 on jennings-core, $01-banked PLA, VIC-II
-and CIAs, ROM-less ROM set) runs calls from a trapped sentinel. A decode hook diffs RAM per
-instruction to attribute writes, follows interrupt entries/RTI as contexts, and classifies fetches.
+The native machine runs calls from a trapped sentinel. Backend ``python`` (the reference) diffs RAM
+per instruction from a decode hook into :class:`Classifier`; ``native`` maps the events of
+vagrant-moses' SMC recorder to the same cells, and is the default where the recorder exists.
 """
 
 from __future__ import annotations
+
 
 import numpy as np
 from vagrant_moses import machine as vm
 from vagrant_moses import memmap as mm
 from vagrant_moses.bus import port_read
-from vagrant_moses.c64 import poweron_ram
 from vagrant_moses.roms import rom_less
 
 from .classify import Classifier, expected_writes, insn_reads, view
 from .oracle import Run, writer_of
+from .space import Cell
 
-__all__ = ["core", "MachineOracle", "run_machine", "SENTINEL"]
+try:
+    from vagrant_moses.smc import AVAILABLE as SMC_NATIVE
+    from vagrant_moses.smc import Recorder
+except ImportError:  # a vagrant-moses without the recorder
+    SMC_NATIVE, Recorder = False, None
+
+__all__ = ["core", "MachineOracle", "run_machine", "SENTINEL", "SMC_NATIVE", "native_cells"]
 
 SENTINEL = 0xCFF0
-_ENTRY = {"nmi_entry": "nmi", "video_irq_entry": "irq", "cia_irq_entry": "irq", "brk_entry": "brk"}
+_ENTRY = {
+    "nmi_entry": "nmi",
+    "video_irq_entry": "irq",
+    "cia_irq_entry": "irq",
+    "reu_irq_entry": "irq",
+    "brk_entry": "brk",
+}
 _PUSH = {"nmi": "nmi_push", "irq": "irq_push", "brk": "brk_push"}
 _VEC = {"nmi": mm.CPU_NMI_VECTOR, "irq": mm.CPU_IRQ_VECTOR, "brk": mm.CPU_IRQ_VECTOR}
 _BASES = {mm.BASIC_BASE: (0xA, 0xB), mm.CHARGEN_BASE: (0xD,), mm.KERNAL_BASE: (0xE, 0xF)}
@@ -37,21 +50,8 @@ def _rom_pages(roms):
 
 
 def _machine(ntsc, sids, roms):
-    """The native machine; ``roms`` (base -> bytes, every base) replaces the ROM-less set."""
-    if roms is None:
-        return vm.Machine(ntsc, sids=sids, backend="native")
-    # pylint: disable=protected-access,c-extension-no-member
-    vm._jennings()
-    images = []
-    for base in (mm.BASIC_BASE, mm.CHARGEN_BASE, mm.KERNAL_BASE):
-        image = bytearray(0x10000)
-        image[base : base + len(roms[base])] = roms[base]
-        images.append(bytes(image))
-    lines, cycles_per_line = mm.video(ntsc).geometry
-    return vm._core.Machine(
-        ntsc, sids, False, None, vm._native_layouts(), bytes(poweron_ram()), tuple(images),
-        lines, cycles_per_line,
-    )  # fmt: skip
+    """The native machine; ``roms`` (base -> bytes) replaces the ROM-less set."""
+    return vm.Machine(ntsc, sids=sids, backend="native", roms=roms)
 
 
 def _frames(events, sp):
@@ -77,15 +77,54 @@ class _Mem:
         return self.fetched[k] if k < len(self.fetched) else int(self.ram[addr])
 
 
+def _writer(writer, op):
+    """``(writer, channel, rmw)`` of a native event's writer; ``ctl`` for a call frame's
+    return address, ``None`` when the writer has no channel."""
+    if writer == "cpu":
+        return writer_of(op)
+    if writer == "cpu_port":
+        if op is None:
+            return ("cpu_port", "reset", False)
+        w = writer_of(op)
+        return None if w is None or w[0] != "cpu" else ("cpu_port", w[1], w[2])
+    return (writer, "dma" if writer == "reu_dma" else "sp_rel", False)
+
+
+def native_cells(events):
+    """``(cells, first, unclassified)`` of the recorder's events, ``first`` keeping the
+    earliest index of the events a cell merges."""
+    cells, first, bad = set(), {}, []
+    for writer, op, role, timing, mapping, index in events:
+        w = _writer(writer, op)
+        if w is None:
+            bad.append(("write-form", op, role))
+        elif w[0] != "ctl":
+            cell = Cell(*w, role, timing, mapping)
+            cells.add(cell)
+            first.setdefault(cell, index)
+    return cells, first, bad
+
+
 class MachineOracle:
     """One machine run over ``image`` (64 KiB RAM at power-on), driven call by call.
 
-    ``roms`` (base -> bytes) overrides vagrant-moses' ROM-less ROM set per ROM.
+    ``roms`` (base -> bytes) overrides vagrant-moses' ROM-less ROM set per ROM. ``backend``
+    (``native``/``python``, default: ``native`` when the recorder is available, the class keeps
+    this decode hook and no device reports DMA) picks who labels the run.
     """
 
-    def __init__(self, image, ntsc=False, devices=None, sentinel=SENTINEL, roms=None):
+    # pylint: disable=too-many-arguments,too-many-positional-arguments
+
+    def __init__(self, image, ntsc=False, devices=None, sentinel=SENTINEL, roms=None, backend=None):
         if not core():
             raise ImportError("vagrant-moses native machine is not available")
+        dma = any(hasattr(d, "attach") for d in (devices or {}).values())
+        if backend is None:
+            plain = type(self)._decode is MachineOracle._decode
+            backend = "native" if SMC_NATIVE and plain and not dma else "python"
+        if backend not in ("native", "python") or (backend == "native" and not SMC_NATIVE):
+            raise ValueError(f"backend {backend!r} is not available")
+        self.native = backend == "native"
         img = bytearray(image)
         img[sentinel : sentinel + 3] = bytes([0x4C, sentinel & 0xFF, sentinel >> 8])
         full = {**rom_less(), **roms} if roms else None
@@ -107,6 +146,8 @@ class MachineOracle:
         self.timeout = False
         self.call_start = 0
         self.call_cycles = 0
+        self.t0, self.cpf = None, mm.video(ntsc).cycles_per_frame
+        self.rec = Recorder(self.m, img, banked=True) if self.native else None
         for dev in (devices or {}).values():
             if hasattr(dev, "attach"):
                 dev.attach(self)
@@ -170,6 +211,9 @@ class MachineOracle:
         events = [name for _, name in mc.events]
         if events:
             mc.clear_events()
+        if self.t0 is not None:
+            self.t0 = mc.cycle if self.t0 < 0 else self.t0
+            self.cls.index = (mc.cycle - self.t0) // self.cpf
         if self.prev is not None and pc == self.sentinel == self.prev[0] and not events:
             return
         if self.prev is not None:
@@ -207,7 +251,8 @@ class MachineOracle:
             mc.stop = True
 
     def _trap(self, mc):
-        self._sweep()
+        if not self.native:
+            self._sweep()
         if not self.queue:
             if self.irq_driven:
                 mc.watch = set()
@@ -215,6 +260,8 @@ class MachineOracle:
             return False
         phase, pc, a = self.queue.pop(0)
         port = self.ports.get(phase)
+        if self.native:
+            return self._native_call(mc, phase, pc, a, port)
         if port is not None and port != mc.port_data:
             mc[mm.CPU_PORT] = port
             self.shadow[mm.CPU_PORT] = self.ram[mm.CPU_PORT]
@@ -236,17 +283,49 @@ class MachineOracle:
         self._decode(mc)
         return True
 
-    def run(self, calls, init=(), frames=0, call_cycles=200_000, irq_setup=False, ports=None):
+    def _native_call(self, mc, phase, pc, a, port):
+        """The trap's call set-up, its host writes and call boundary told to the recorder."""
+        rec = self.rec
+        mc.clear_events()
+        if port is not None and port != mc.port_data:
+            rec.host_write(mm.CPU_PORT, port)
+        if phase == "call":
+            if rec.call < 0:
+                rec.begin()
+            else:
+                rec.next_call()
+        r = mc.mpu
+        sp, ret = r.sp, self.sentinel - 1
+        for k, v in ((0, ret >> 8), (1, ret & 0xFF)):
+            rec.host_write(0x100 | ((sp - k) & 0xFF), v)
+        r.sp, r.a, r.pc = (sp - 2) & 0xFF, a, pc
+        rec.deadline = mc.cycle + self.call_cycles if self.call_cycles else None
+        return True
+
+    # pylint: disable-next=too-many-arguments,too-many-positional-arguments
+    def run(
+        self,
+        calls,
+        init=(),
+        frames=0,
+        call_cycles=200_000,
+        irq_setup=False,
+        ports=None,
+        index_frames=False,
+    ):
         """Run ``init`` then ``calls`` (``[(pc, a)]``); with ``frames``, interrupts drive play.
 
         ``ports`` maps ``"init"``/``"call"`` to the $01 value the host sets before each such call.
+        ``index_frames``: a cell's first-seen index is the frame of the interrupt-driven phase
+        (cycles since its first decode over cycles per frame) instead of the call.
         """
         self.ports = dict(ports or {})
         self.queue = [("init", pc, a) for pc, a in init] + [("call", pc, a) for pc, a in calls]
         self.irq_driven = frames > 0
         self.call_cycles = call_cycles
         m = self.m
-        m.set_decode_hook(self._decode)  # pylint: disable=no-member
+        if not self.native:
+            m.set_decode_hook(self._decode)  # pylint: disable=no-member
         m.set_trap(self._trap, {self.sentinel})  # pylint: disable=no-member
         t = self.call_start = m.reset(self.sentinel)
         self.shadow[:] = self.ram
@@ -260,17 +339,42 @@ class MachineOracle:
             self.call_cycles = min(call_cycles, frame_cycles)
         m.run(t + self.call_cycles * (len(self.queue) + 1))
         if self.irq_driven:
-            if self.cls.call < 0:
-                self.cls.start_calls(m.bits)
-            self.call_cycles = 0
+            self._frames_phase(index_frames)
             m.stop = False
             m.run(m.cycle + frame_cycles)
+        if self.native:
+            return self._native_run()
         m.set_decode_hook(None)  # pylint: disable=no-member
         if self.prev is not None:
             self._attribute([], m.mpu.sp)
         self._sweep()
         done = not m.jammed and (self.irq_driven or not (self.queue or self.timeout))
         return Run(self.cls.cells, self.cls.unclassified, done, self.cls.first)
+
+    def _frames_phase(self, index_frames):
+        """Calls start (if init did not) and the per-call budget ends: interrupts drive play."""
+        self.call_cycles = 0
+        if self.native:
+            if self.rec.call < 0:
+                self.rec.begin()
+            self.rec.deadline = None
+            if index_frames:
+                self.rec.frame_clock(self.cpf)
+            return
+        if self.cls.call < 0:
+            self.cls.start_calls(self.m.bits)
+        if index_frames:
+            self.t0 = -1
+
+    def _native_run(self):
+        m, rec = self.m, self.rec
+        m.clear_events()  # pylint: disable=no-member
+        rec.finish()
+        self.timeout = rec.timed_out
+        cells, first, bad = native_cells(rec.events())
+        count, sample = rec.unclassified()
+        done = not m.jammed and (self.irq_driven or not (self.queue or self.timeout))
+        return Run(cells, bad + sample, done, first, count + len(bad))
 
 
 def run_machine(image, calls, init=(), **kw):
