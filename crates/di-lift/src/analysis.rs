@@ -1,0 +1,535 @@
+//! Whole-program discovery: reachable instruction variants from the entries, code cells
+//! (code bytes the program writes) by a fixpoint over static store analysis and observed
+//! writes, and per-access address intervals.
+
+use crate::ir::mask;
+use di_pcode::{CtrlKind, Op, Opc, Operands, Slot, Space, Template, Vn};
+use fixedbitset::FixedBitSet;
+use rustc_hash::{FxHashMap, FxHashSet};
+use std::collections::BTreeSet;
+
+/// An entry point and optional live-in register values (`lift()` register index, values).
+#[derive(Clone, Debug, Default)]
+pub struct Entry {
+    pub pc: u16,
+    pub regs: Vec<(usize, Vec<u8>)>,
+}
+
+/// What running the program showed: executed instruction starts, executed `(pc, next pc)`
+/// transfers, and the values stored to code bytes.
+#[derive(Clone, Debug, Default)]
+pub struct Facts {
+    pub starts: Vec<u16>,
+    pub edges: Vec<(u16, u16)>,
+    pub writes: Vec<(u16, Vec<u8>)>,
+}
+
+/// An unsigned interval of a value.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Iv {
+    pub lo: u32,
+    pub hi: u32,
+}
+
+impl Iv {
+    pub const fn exact(v: u32) -> Self {
+        Iv { lo: v, hi: v }
+    }
+    pub const fn full(size: u32) -> Self {
+        Iv {
+            lo: 0,
+            hi: mask(size),
+        }
+    }
+    pub fn value(self) -> Option<u32> {
+        (self.lo == self.hi).then_some(self.lo)
+    }
+    pub fn meets(self, lo: u32, hi: u32) -> bool {
+        self.lo < hi && lo <= self.hi
+    }
+}
+
+/// Interval of `opc(a, b)` with an `out`-sized result and `a` of `size0` bytes.
+pub fn iv_op(opc: Opc, a: Iv, b: Iv, out: u32, size0: u32) -> Iv {
+    let m = mask(out);
+    if let (Some(x), Some(y)) = (a.value(), b.value()) {
+        return Iv::exact(di_pcode::binop(opc, x, y, mask(size0)) & m);
+    }
+    let full = Iv::full(out);
+    let r = match opc {
+        Opc::IntAdd if a.hi as u64 + b.hi as u64 <= m as u64 => Iv {
+            lo: a.lo + b.lo,
+            hi: a.hi + b.hi,
+        },
+        Opc::IntSub if a.lo >= b.hi => Iv {
+            lo: a.lo - b.hi,
+            hi: a.hi - b.lo,
+        },
+        Opc::IntAnd => Iv {
+            lo: 0,
+            hi: a.hi.min(b.hi),
+        },
+        Opc::IntOr => match (a.value(), b.value()) {
+            (Some(c), None) | (None, Some(c))
+                if {
+                    let x = if a.value().is_some() { b } else { a };
+                    c != 0 && x.hi < c.isolate_lowest_one()
+                } =>
+            {
+                let x = if a.value().is_some() { b } else { a };
+                Iv {
+                    lo: x.lo | c,
+                    hi: x.hi | c,
+                }
+            }
+            _ => Iv {
+                lo: a.lo.max(b.lo),
+                hi: m,
+            },
+        },
+        Opc::IntLeft => match b.value() {
+            Some(s) if s < 32 && (a.hi as u64) << s <= m as u64 => Iv {
+                lo: a.lo << s,
+                hi: a.hi << s,
+            },
+            _ => full,
+        },
+        Opc::IntRight => match b.value() {
+            Some(s) if s < 32 => Iv {
+                lo: a.lo >> s,
+                hi: a.hi >> s,
+            },
+            _ => full,
+        },
+        Opc::IntEqual | Opc::IntNotEqual | Opc::IntLess | Opc::IntLessEqual | Opc::IntCarry => {
+            Iv { lo: 0, hi: 1 }
+        }
+        _ => full,
+    };
+    if r.hi > m {
+        full
+    } else {
+        r
+    }
+}
+
+/// Interval of operand slot `slot` of an instruction whose operand bytes are `b` (`None`
+/// for a cell).
+pub fn slot_iv(slot: Slot, b: [Option<u8>; 2], size: u32) -> Iv {
+    let byte = |x: Option<u8>| x.map_or(Iv::full(1), |v| Iv::exact(v as u32));
+    let inc = |x: Option<u8>| x.map_or(Iv::full(1), |v| Iv::exact(v.wrapping_add(1) as u32));
+    let iv = match slot {
+        Slot::Fixed => unreachable!(),
+        Slot::B1 => byte(b[0]),
+        Slot::Word => match b {
+            [Some(lo), Some(hi)] => Iv::exact(u16::from_le_bytes([lo, hi]) as u32),
+            [lo, None] => Iv {
+                lo: lo.unwrap_or(0) as u32,
+                hi: lo.map_or(0xffff, |v| 0xff00 | v as u32),
+            },
+            [None, Some(hi)] => Iv {
+                lo: (hi as u32) << 8,
+                hi: (hi as u32) << 8 | 0xff,
+            },
+        },
+        Slot::B1Inc => inc(b[0]),
+        Slot::B2Inc => inc(b[1]),
+    };
+    if iv.hi > mask(size) {
+        Iv::full(size)
+    } else {
+        iv
+    }
+}
+
+/// Register intervals (the `lift()` file).
+pub type Env = [Iv; 16];
+
+pub const TOP_ENV: Env = {
+    let mut e = [Iv { lo: 0, hi: 0xff }; 16];
+    let mut i = 8;
+    while i < 15 {
+        e[i] = Iv { lo: 0, hi: 1 };
+        i += 1;
+    }
+    e
+};
+
+/// A memory access of an instruction's template: address interval and value interval
+/// (stores).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Access {
+    pub store: bool,
+    pub addr: Iv,
+    pub val: Iv,
+}
+
+/// Abstractly execute `ops` from `env` with operand bytes `b` (`None` for cells); the
+/// memory accesses in op order.
+pub fn absint(ops: &[Op], b: [Option<u8>; 2], env: &mut Env, acc: &mut Vec<Access>) {
+    let mut uniq = [Iv::full(4); di_pcode::UNIQUE_SIZE];
+    for op in ops {
+        let get = |v: Vn, u: &[Iv], env: &Env| -> Iv {
+            match v.space() {
+                Space::Const if v.slot() == Slot::Fixed => Iv::exact(v.off()),
+                Space::Const => slot_iv(v.slot(), b, v.size()),
+                Space::Reg => env[v.off() as usize],
+                Space::Unique => u[v.off() as usize],
+                Space::Ram => Iv::full(v.size()),
+            }
+        };
+        let a = get(op.ins[0], &uniq, env);
+        let r = match op.opc {
+            Opc::Store => {
+                acc.push(Access {
+                    store: true,
+                    addr: a,
+                    val: get(op.ins[1], &uniq, env),
+                });
+                continue;
+            }
+            Opc::Load => {
+                acc.push(Access {
+                    store: false,
+                    addr: a,
+                    val: Iv::full(1),
+                });
+                Iv::full(op.out.size())
+            }
+            Opc::Copy | Opc::IntZext => a,
+            o => iv_op(
+                o,
+                a,
+                get(op.ins[1], &uniq, env),
+                op.out.size(),
+                op.ins[0].size(),
+            ),
+        };
+        match op.out.space() {
+            Space::Reg => env[op.out.off() as usize] = r,
+            Space::Unique => uniq[op.out.off() as usize] = r,
+            _ => {}
+        }
+    }
+}
+
+/// A transfer target: static, or computed from code cells with its candidate targets.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Tg {
+    At(u16),
+    Calc(Vec<u16>),
+}
+
+impl Tg {
+    pub fn all(&self) -> &[u16] {
+        match self {
+            Tg::At(t) => std::slice::from_ref(t),
+            Tg::Calc(v) => v,
+        }
+    }
+}
+
+/// Control of an instruction variant; computed targets carry their candidates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Flow {
+    Next(u16),
+    Br { t: Tg, f: u16 },
+    Jmp(Tg),
+    JmpInd(Vec<u16>),
+    Jsr { t: Tg, ret: u16 },
+    Rts(Vec<u16>),
+    Rti(Vec<u16>),
+    Brk(Vec<u16>),
+    Jam,
+}
+
+/// One decoded instruction variant.
+#[derive(Clone, Debug)]
+pub struct Var {
+    pub op: u8,
+    pub flow: Flow,
+    /// Accesses of the template's `LOAD`/`STORE` ops in order.
+    pub acc: Vec<Access>,
+}
+
+/// The discovered program.
+#[derive(Debug)]
+pub struct Graph {
+    /// Variants per instruction start (more than one only at opcode cells).
+    pub vars: FxHashMap<u16, Vec<Var>>,
+    /// Code bytes the program writes.
+    pub cells: FixedBitSet,
+    /// Every byte of a reached instruction.
+    pub code: FixedBitSet,
+    /// Observed transfers per site.
+    pub edges: FxHashMap<u16, Vec<u16>>,
+}
+
+/// Stack-pointer effect of a `Next` instruction: pushes and pulls by count, `None` for an
+/// instruction that sets SP (TXS, TAS, LAS).
+pub fn stack_delta(op: u8) -> Option<i32> {
+    match op {
+        0x48 | 0x08 => Some(-1),
+        0x68 | 0x28 => Some(1),
+        0x9a | 0x9b | 0xbb => None,
+        _ => Some(0),
+    }
+}
+
+/// Opcodes whose template accesses are pushes and pulls.
+pub fn is_stack_op(op: u8) -> bool {
+    matches!(op, 0x48 | 0x08 | 0x68 | 0x28)
+}
+
+struct Ctx<'a> {
+    img: &'a [u8; 0x10000],
+    cells: &'a FixedBitSet,
+    edges: &'a FxHashMap<u16, Vec<u16>>,
+    values: &'a FxHashMap<u16, BTreeSet<u8>>,
+}
+
+impl Ctx<'_> {
+    fn facts(&self, pc: u16, more: impl IntoIterator<Item = u16>) -> Vec<u16> {
+        let mut v: Vec<u16> = self
+            .edges
+            .get(&pc)
+            .into_iter()
+            .flatten()
+            .copied()
+            .chain(more)
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+    fn tg(&self, pc: u16, cell: bool, image: u16) -> Tg {
+        if cell {
+            Tg::Calc(self.facts(pc, [image]))
+        } else {
+            Tg::At(image)
+        }
+    }
+    fn word(&self, a: u16) -> u16 {
+        u16::from_le_bytes([self.img[a as usize], self.img[a.wrapping_add(1) as usize]])
+    }
+    fn opcodes(&self, pc: u16) -> Vec<u8> {
+        let mut v = BTreeSet::from([self.img[pc as usize]]);
+        if self.cells.contains(pc as usize) {
+            v.extend(self.values.get(&pc).into_iter().flatten());
+        }
+        v.into_iter().collect()
+    }
+    fn flow(&self, pc: u16, op: u8) -> Flow {
+        let t = Template::of(op);
+        let (a1, a2) = (pc.wrapping_add(1), pc.wrapping_add(2));
+        let next = pc.wrapping_add(t.len as u16);
+        let opnd = t.len > 1 && self.cells.contains(a1 as usize)
+            || t.len > 2 && self.cells.contains(a2 as usize);
+        let w = self.word(a1);
+        match t.ctrl {
+            CtrlKind::Next => Flow::Next(next),
+            CtrlKind::Br { .. } => Flow::Br {
+                t: self.tg(
+                    pc,
+                    opnd,
+                    next.wrapping_add(self.img[a1 as usize] as i8 as u16),
+                ),
+                f: next,
+            },
+            CtrlKind::Jmp => Flow::Jmp(self.tg(pc, opnd, w)),
+            CtrlKind::JmpInd => Flow::JmpInd(self.facts(pc, [])),
+            CtrlKind::Jsr => Flow::Jsr {
+                t: self.tg(pc, opnd, w),
+                ret: next,
+            },
+            CtrlKind::Rts => Flow::Rts(self.facts(pc, [])),
+            CtrlKind::Rti => Flow::Rti(self.facts(pc, [])),
+            CtrlKind::Brk => Flow::Brk(self.facts(pc, [self.word(0xfffe)])),
+            CtrlKind::Jam => Flow::Jam,
+        }
+    }
+}
+
+/// Successor addresses of a flow (every candidate).
+pub fn flow_succs(f: &Flow) -> Vec<u16> {
+    match f {
+        Flow::Next(n) => vec![*n],
+        Flow::Br { t, f } => t.all().iter().copied().chain([*f]).collect(),
+        Flow::Jmp(t) => t.all().to_vec(),
+        Flow::Jsr { t, ret } => t.all().iter().copied().chain([*ret]).collect(),
+        Flow::JmpInd(v) | Flow::Rts(v) | Flow::Rti(v) | Flow::Brk(v) => v.clone(),
+        Flow::Jam => vec![],
+    }
+}
+
+/// Operand bytes of the instruction at `pc` (`None` for cells or past its length).
+pub fn operand_bytes(
+    img: &[u8; 0x10000],
+    cells: &FixedBitSet,
+    pc: u16,
+    len: u8,
+) -> [Option<u8>; 2] {
+    std::array::from_fn(|i| {
+        let a = pc.wrapping_add(i as u16 + 1);
+        (len as usize > i + 1 && !cells.contains(a as usize)).then(|| img[a as usize])
+    })
+}
+
+/// Discover the program reachable from `entries` relative to `img`.
+pub fn discover(img: &[u8; 0x10000], entries: &[Entry], facts: &Facts) -> Graph {
+    let mut edges: FxHashMap<u16, Vec<u16>> = FxHashMap::default();
+    for &(p, q) in &facts.edges {
+        edges.entry(p).or_default().push(q);
+    }
+    for v in edges.values_mut() {
+        v.sort_unstable();
+        v.dedup();
+    }
+    let observed: FxHashMap<u16, BTreeSet<u8>> = facts
+        .writes
+        .iter()
+        .map(|(a, v)| (*a, v.iter().copied().collect()))
+        .collect();
+    let mut cells = FixedBitSet::with_capacity(0x10000);
+    let mut values = observed.clone();
+    loop {
+        let ctx = Ctx {
+            img,
+            cells: &cells,
+            edges: &edges,
+            values: &values,
+        };
+        let mut vars: FxHashMap<u16, Vec<Var>> = FxHashMap::default();
+        let mut work: Vec<u16> = entries.iter().map(|e| e.pc).collect();
+        while let Some(pc) = work.pop() {
+            if vars.contains_key(&pc) {
+                continue;
+            }
+            let vs: Vec<Var> = ctx
+                .opcodes(pc)
+                .into_iter()
+                .map(|op| Var {
+                    op,
+                    flow: ctx.flow(pc, op),
+                    acc: Vec::new(),
+                })
+                .collect();
+            work.extend(vs.iter().flat_map(|v| flow_succs(&v.flow)));
+            vars.insert(pc, vs);
+        }
+        let mut code = FixedBitSet::with_capacity(0x10000);
+        for (&pc, vs) in &vars {
+            for v in vs {
+                for i in 0..Template::of(v.op).len as u16 {
+                    code.insert(pc.wrapping_add(i) as usize);
+                }
+            }
+        }
+        let written = analyze_accesses(img, &cells, &mut vars);
+        let mut next = FixedBitSet::with_capacity(0x10000);
+        let mut nvalues = observed.clone();
+        for a in code.ones() {
+            let a16 = a as u16;
+            let st = written.get(&a16);
+            if observed.contains_key(&a16) || st.is_some() {
+                next.insert(a);
+                nvalues
+                    .entry(a16)
+                    .or_default()
+                    .extend(st.into_iter().flatten());
+            }
+        }
+        if next == cells && nvalues == values {
+            return Graph {
+                vars,
+                cells,
+                code,
+                edges,
+            };
+        }
+        cells = next;
+        values = nvalues;
+    }
+}
+
+/// Fill each variant's accesses by abstract interpretation along single-predecessor chains;
+/// the statically known stores `addr -> values` (empty set: unknown value).
+fn analyze_accesses(
+    img: &[u8; 0x10000],
+    cells: &FixedBitSet,
+    vars: &mut FxHashMap<u16, Vec<Var>>,
+) -> FxHashMap<u16, BTreeSet<u8>> {
+    let mut preds: FxHashMap<u16, u32> = FxHashMap::default();
+    for vs in vars.values() {
+        let succ: FxHashSet<u16> = vs.iter().flat_map(|v| flow_succs(&v.flow)).collect();
+        for s in succ {
+            *preds.entry(s).or_default() += 1;
+        }
+    }
+    let chained: FxHashSet<u16> = vars
+        .values()
+        .filter(|vs| vs.len() == 1)
+        .filter_map(|vs| single_next(&vs[0].flow))
+        .filter(|n| preds.get(n) == Some(&1))
+        .collect();
+    let mut order: Vec<u16> = vars.keys().copied().collect();
+    order.sort_unstable();
+    let roots: Vec<u16> = order
+        .iter()
+        .filter(|p| !chained.contains(p))
+        .chain(order.iter())
+        .copied()
+        .collect();
+    let mut seen: FxHashSet<u16> = FxHashSet::default();
+    let mut written: FxHashMap<u16, BTreeSet<u8>> = FxHashMap::default();
+    let mut stack = Vec::new();
+    for root in roots {
+        stack.push((root, TOP_ENV));
+        while let Some((pc, env)) = stack.pop() {
+            if !seen.insert(pc) {
+                continue;
+            }
+            let vs = vars.get_mut(&pc).unwrap();
+            let single = vs.len() == 1;
+            for v in vs.iter_mut() {
+                let t = Template::of(v.op);
+                let mut e = env;
+                v.acc.clear();
+                absint(
+                    t.ops(),
+                    operand_bytes(img, cells, pc, t.len),
+                    &mut e,
+                    &mut v.acc,
+                );
+                for a in &v.acc {
+                    if let (true, Some(addr)) = (a.store, a.addr.value()) {
+                        let s = written.entry(addr as u16).or_default();
+                        if let Some(x) = a.val.value() {
+                            s.insert(x as u8);
+                        }
+                    }
+                }
+                match single_next(&v.flow) {
+                    Some(n) if single && chained.contains(&n) => stack.push((n, e)),
+                    _ => {}
+                }
+            }
+        }
+    }
+    written
+}
+
+/// The fall-through successor of a straight-line instruction.
+fn single_next(f: &Flow) -> Option<u16> {
+    match f {
+        Flow::Next(n) => Some(*n),
+        Flow::Jmp(Tg::At(t)) => Some(*t),
+        _ => None,
+    }
+}
+
+/// Operands of an instruction with constant bytes in place of cells (for slot values that
+/// are fully constant).
+pub fn operands(b: [Option<u8>; 2]) -> Operands {
+    Operands::new(b[0].unwrap_or(0), b[1].unwrap_or(0))
+}

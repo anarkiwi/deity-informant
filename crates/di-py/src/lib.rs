@@ -1,5 +1,7 @@
 //! `deity_informant._native`: the di-pcode IR and reference interpreter for Python.
 
+mod wholeprog;
+
 use di_pcode::{instantiate_bytes, Ctrl, Insn, Op, Pen, Slot, Space, Vn};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::intern;
@@ -218,6 +220,10 @@ impl Cpu {
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lift, m)?)?;
     m.add_class::<Cpu>()?;
+    m.add_class::<wholeprog::Program>()?;
+    m.add_function(wrap_pyfunction!(wholeprog::lift_program, m)?)?;
+    m.add_function(wrap_pyfunction!(wholeprog::lift_many, m)?)?;
+    m.add_function(wrap_pyfunction!(wholeprog::reference_call, m)?)?;
     m.add("UNIQUE_SIZE", di_pcode::UNIQUE_SIZE)?;
     Ok(())
 }

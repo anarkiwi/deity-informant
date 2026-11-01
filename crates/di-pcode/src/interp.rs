@@ -1,7 +1,8 @@
 //! Reference interpreter over the IR, step-for-step equal to `deity_informant.vm.PcodeVM`.
 
 use crate::ir::{
-    CtrlKind, Insn, Op, Opc, Operands, PenKind, Template, Vn, FILE, IMM, SLOT_BASE, UNIQ_BASE,
+    binop, CtrlKind, Insn, Op, Opc, Operands, PenKind, Template, Vn, FILE, IMM, SLOT_BASE,
+    UNIQ_BASE,
 };
 
 /// Memory as the interpreter sees it. The host decides what each address does.
@@ -13,6 +14,11 @@ pub trait Bus {
     fn fetch(&mut self, addr: u16) -> u8 {
         self.read(addr)
     }
+    /// The cycle count at the start of the instruction whose accesses follow. Drivers that
+    /// model timing ([`crate::Cpu::run_clocked`], lifted programs) call it; plain stepping
+    /// does not.
+    #[inline(always)]
+    fn now(&mut self, _cycles: u64) {}
 }
 
 impl Bus for [u8; 0x10000] {
@@ -41,6 +47,17 @@ pub mod reg {
     pub const N: usize = 14;
     /// `(register, bit)` of each flag in the status byte NV-BDIZC.
     pub const STATUS_BITS: [(usize, u8); 6] = [(C, 0), (Z, 1), (I, 2), (D, 3), (V, 6), (N, 7)];
+}
+
+/// Why [`Cpu::run_clocked`] stopped.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Halt {
+    /// SP rose above the threshold (the entry returned).
+    Sp,
+    /// The cycle budget ran out.
+    Cycles,
+    /// A JAM executed.
+    Jam,
 }
 
 /// A JAM opcode executed at `pc`.
@@ -172,24 +189,7 @@ impl Cpu {
                     }
                     continue;
                 }
-                opc => {
-                    let b = get(f, bus, op.ins[1]);
-                    match opc {
-                        Opc::IntAdd => a.wrapping_add(b),
-                        Opc::IntSub => a.wrapping_sub(b),
-                        Opc::IntAnd => a & b,
-                        Opc::IntOr => a | b,
-                        Opc::IntXor => a ^ b,
-                        Opc::IntLeft => a.checked_shl(b).unwrap_or(0),
-                        Opc::IntRight => a.checked_shr(b).unwrap_or(0),
-                        Opc::IntEqual => (a == b) as u32,
-                        Opc::IntNotEqual => (a != b) as u32,
-                        Opc::IntLess => (a < b) as u32,
-                        Opc::IntLessEqual => (a <= b) as u32,
-                        Opc::IntCarry => (a as u64 + b as u64 > op.ins[0].mask() as u64) as u32,
-                        _ => unreachable!(),
-                    }
-                }
+                opc => binop(opc, a, get(f, bus, op.ins[1]), op.ins[0].mask()),
             };
             let (out, val) = (op.out, val & op.out.mask());
             match out.index() {
@@ -318,6 +318,24 @@ impl Cpu {
             insn.b1,
             insn.b2,
         )
+    }
+
+    /// Step until SP rises above `sp_above` or at least `max_cycles` have elapsed (both
+    /// checked before each instruction) or a JAM executes, telling the bus each
+    /// instruction's start cycle: `run_to_rts`'s loop.
+    pub fn run_clocked<B: Bus>(&mut self, bus: &mut B, sp_above: i32, end: u64) -> Halt {
+        loop {
+            if self.r(reg::SP) as i32 > sp_above {
+                return Halt::Sp;
+            }
+            if self.cycles >= end {
+                return Halt::Cycles;
+            }
+            bus.now(self.cycles);
+            if self.step(bus).is_err() {
+                return Halt::Jam;
+            }
+        }
     }
 
     /// Step up to `max_steps` instructions; the count executed (a JAM counts) and the JAM.

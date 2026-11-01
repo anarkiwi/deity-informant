@@ -13,6 +13,8 @@ The C64 machine model (power-on RAM, interrupt-vector discovery, ROM-free IRQ di
 - `ghidra/6510/headless/` — headless Ghidra integration test, run via `Dockerfile.ghidra`.
 - `deity_informant/hello_world.py` — 33-byte C64 program using `LAX`/`ISC` + self-modifying code; the fixture for the VM and Ghidra tests.
 - `crates/` — Rust P-Code IR templated from `lift()` and a reference interpreter, shipped in wheels as `deity_informant._native`; see [docs/native.md](docs/native.md).
+- `deity_informant/wholeprog.py`, `deity_informant/trace.py` — whole-program lifting of entry points to optimized, executable, exact P-Code (self-modifying code as memory reads, balanced calls as `CALL`/`RETURN`, cycles as ops, guarded deopts), and the run-time facts it uses; see [docs/wholeprog.md](docs/wholeprog.md).
+- `tools/wplift.py` — lift an image file whole and check it against the reference interpreter.
 - `tools/gen_pcode.py` — regenerates the native templates (`--check` verifies they are current).
 - `tools/doclinks.py` — every `[text](target)` in `docs/` and `README.md` resolved: the file, and the `#anchor` against the target's own headings.
 
@@ -38,6 +40,11 @@ deity-informant emit-sleigh [-o DIR] [--magic 0xEE]                    # build/i
 ```python
 from deity_informant import lift, PcodeVM, run_sub
 vm = PcodeVM(mem); run_sub(vm, entry, {}, lift)   # execute a subroutine to its RTS
+
+from deity_informant import trace, wholeprog      # whole-program P-Code (native)
+facts = trace.collect(mem, lambda s: [s.call(entry) for _ in range(100)])
+prog = wholeprog.lift(mem, [entry], volatile=[(lo, hi)], facts=facts)
+prog.functions, prog.stats, prog.call(bytearray(mem), 0)
 ```
 
 ## Ghidra

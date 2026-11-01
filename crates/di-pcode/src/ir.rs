@@ -13,7 +13,7 @@ pub enum Space {
 }
 
 /// Instruction-operand expression a constant is bound to (`lift()`'s `prov`).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 #[repr(u8)]
 pub enum Slot {
     /// Not operand-derived.
@@ -116,6 +116,17 @@ impl Vn {
     pub const fn is_none(self) -> bool {
         self.size() == 0
     }
+    /// A varnode outside the interpreter's value file: lifted-program registers beyond the
+    /// `lift()` file, temporaries of any offset and constants.
+    #[inline(always)]
+    pub const fn raw(space: Space, off: u16, size: u8) -> Self {
+        Vn(off as u32 | (space as u32) << 16 | (size as u32) << 18 | (IMM as u32) << 24)
+    }
+    /// This varnode without its slot and value-file index.
+    #[inline(always)]
+    pub fn canon(self) -> Self {
+        Vn::raw(self.space(), self.off() as u16, self.size() as u8)
+    }
     /// All-ones mask of the varnode's size.
     #[inline(always)]
     pub const fn mask(self) -> u32 {
@@ -155,7 +166,7 @@ pub const fn m(addr: u16, size: u8) -> Vn {
 }
 
 /// P-Code opcodes the lifter emits (and `PcodeVM` interprets).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 #[repr(u8)]
 pub enum Opc {
     Copy,
@@ -174,6 +185,18 @@ pub enum Opc {
     IntCarry,
     Load,
     Store,
+    /// Lifted-program control: jump to the block in `aux`.
+    Branch,
+    /// Jump to the block in `aux` when input 0 is non-zero.
+    CBranch,
+    /// Jump to the address in input 0 through the block's target table.
+    BranchInd,
+    /// Call the function in `aux`; input 0 is the return address the call stands for.
+    Call,
+    /// Return from the function; at the outermost frame input 0 is the exit PC.
+    Return,
+    /// A host-defined operation named by `aux` (`deopt`, `codechk`).
+    CallOther,
 }
 
 impl Opc {
@@ -196,14 +219,48 @@ impl Opc {
             Opc::IntCarry => "INT_CARRY",
             Opc::Load => "LOAD",
             Opc::Store => "STORE",
+            Opc::Branch => "BRANCH",
+            Opc::CBranch => "CBRANCH",
+            Opc::BranchInd => "BRANCHIND",
+            Opc::Call => "CALL",
+            Opc::Return => "RETURN",
+            Opc::CallOther => "CALLOTHER",
         }
     }
     /// Number of inputs (`b` is [`Vn::NONE`] for unary ops).
     pub const fn arity(self) -> usize {
         match self {
-            Opc::Copy | Opc::IntZext | Opc::Load => 1,
+            Opc::Branch => 0,
+            Opc::Copy
+            | Opc::IntZext
+            | Opc::Load
+            | Opc::CBranch
+            | Opc::BranchInd
+            | Opc::Call
+            | Opc::Return => 1,
             _ => 2,
         }
+    }
+}
+
+/// A binary arithmetic or comparison op on values already masked to their sizes; `mask0`
+/// is input 0's mask (for `INT_CARRY`). The result is not masked to the output size.
+#[inline(always)]
+pub fn binop(opc: Opc, a: u32, b: u32, mask0: u32) -> u32 {
+    match opc {
+        Opc::IntAdd => a.wrapping_add(b),
+        Opc::IntSub => a.wrapping_sub(b),
+        Opc::IntAnd => a & b,
+        Opc::IntOr => a | b,
+        Opc::IntXor => a ^ b,
+        Opc::IntLeft => a.checked_shl(b).unwrap_or(0),
+        Opc::IntRight => a.checked_shr(b).unwrap_or(0),
+        Opc::IntEqual => (a == b) as u32,
+        Opc::IntNotEqual => (a != b) as u32,
+        Opc::IntLess => (a < b) as u32,
+        Opc::IntLessEqual => (a <= b) as u32,
+        Opc::IntCarry => (a as u64 + b as u64 > mask0 as u64) as u32,
+        _ => unreachable!("not a binary op"),
     }
 }
 
