@@ -95,7 +95,8 @@ def expected_reads(mem, pc, x, y, sp, store=False):
 
 
 class Classifier:
-    """Owner map and port state over one run; ``cells`` are the observed scenario tuples."""
+    """Owner map and port state over one run; ``cells`` are the observed scenario tuples,
+    ``first`` the call (or the host's ``index``, when set) each was first seen at."""
 
     def __init__(self, base, banked=False):
         self.base = bytes(base)
@@ -106,6 +107,8 @@ class Classifier:
         self.call = -1
         self.ctx = "main"
         self.cells = set()
+        self.first = {}
+        self.index = None
         self.unclassified = []
 
     def start_calls(self, bits=None):
@@ -133,7 +136,9 @@ class Classifier:
         return "same_insn" if wpc == pc and ctx == self.ctx else "same_call_earlier"
 
     def _emit(self, writer, channel, rmw, role, timing, mapping):
-        self.cells.add(Cell(writer, channel, rmw, role, timing, mapping))
+        cell = Cell(writer, channel, rmw, role, timing, mapping)
+        self.cells.add(cell)
+        self.first.setdefault(cell, self.call if self.index is None else self.index)
 
     def _port_emit(self, role, pc, mapping):
         channel, rmw, call, ctx, wpc = self.port

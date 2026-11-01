@@ -11,6 +11,7 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -60,10 +61,10 @@ def check(img, prog, calls, volatile, progress=True):
         for k in keys:
             if r[k] != o[k]:
                 return n, k, r[k] if k == "reg" else None, o[k] if k == "reg" else None
-        sp = r["reg"][3]
-        bad = [i for i in range(0x10000) if m1[i] != m2[i] and not 0x100 <= i <= 0x100 + sp]
-        if bad:
-            return n, "memory@%04x" % bad[0]
+        diff = np.frombuffer(m1, np.uint8) != np.frombuffer(m2, np.uint8)
+        diff[0x100 : 0x101 + r["reg"][3]] = False
+        if diff.any():
+            return n, "memory@%04x" % int(np.argmax(diff))
         s1 = {"reg": list(r["reg"]), "cycles": r["cycles"]}
         s2 = {"reg": list(o["reg"]), "cycles": o["cycles"] if prog.cycles else r["cycles"]}
     return None

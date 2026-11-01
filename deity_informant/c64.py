@@ -127,17 +127,19 @@ class _Host(MachineOracle):
 
     # pylint: disable=too-many-instance-attributes
 
-    def __init__(self, image, sid=SID, roms=None):
+    def __init__(self, image, sid=SID, roms=None, ntsc=False):
         self.sid = sid
         devices = {
             b: _Sid(b, bytearray(image[b : b + 0x20]), self) for b in range(sid[0], sid[1], 0x20)
         }
-        super().__init__(image, devices=devices, roms=roms)
+        super().__init__(image, ntsc=ntsc, devices=devices, roms=roms)
         self.cur = None
         self.log = []
         self.last = None
         self.sp0 = 0
         self.trace = []
+        self.folded = (np.zeros(0, np.int64), np.zeros(0, np.int64))
+        self.pending, self.npending = [], 0
         self.snaps = []
         self.writes = defaultdict(set)
         self.page1 = {}
@@ -188,12 +190,37 @@ class _Host(MachineOracle):
         super()._decode(mc)
         r = mc.mpu
         if self.cur == "call" and r.pc != self.sentinel and not self.timeout:
-            self.trace[-1].append((r.pc, r.sp - self.sp0, mc.bits))
+            self.trace.append((r.pc, r.sp - self.sp0, mc.bits))
             self.last = (r.pc, self.prev[1], r.a, r.x, r.y, r.sp, mc.bits)
+
+    def _fold(self, merge=False):
+        """Fold the current call's trace into the unique ``(pc, height, bits)`` keys and
+        ``(pc, next)`` edges seen so far (sets, so memory saturates over long runs)."""
+        if self.trace:
+            t = np.array(self.trace, np.int64)
+            self.trace = []
+            pc = t[:, 0]
+            self.npending += len(pc)
+            self.pending.append(
+                ((pc << 24) | ((t[:, 1] & 0xFFFF) << 8) | t[:, 2], (pc[:-1] << 16) | pc[1:])
+            )
+        if self.pending and (merge or self.npending > 1 << 18):
+            keys, edges = zip(*self.pending)
+            self.folded = tuple(
+                np.unique(np.concatenate((old, *new)))
+                for old, new in zip(self.folded, (keys, edges))
+            )
+            self.pending, self.npending = [], 0
+
+    def _ram(self):
+        """The RAM a call record keeps."""
+        return bytes(self.ram)
 
     def _snap(self, halt):
         if self.cur is not None:
-            self.snaps.append((self.cur, halt, _reg(self.m.mpu), self.log, bytes(self.ram)))
+            if self.cur == "call":
+                self._fold()
+            self.snaps.append((self.cur, halt, _reg(self.m.mpu), self.log, self._ram()))
             self.cur, self.log = None, []
 
     def _trap(self, mc):
@@ -204,7 +231,6 @@ class _Host(MachineOracle):
             if phase == "call":
                 self.sp0 = (mc.mpu.sp - 2) & 0xFF
                 self.entry_sp[pc].add(self.sp0)
-                self.trace.append([])
         ok = super()._trap(mc)
         if self.cur == "call":
             self.entry_port[mc.mpu.pc].add((mc.port_dir, mc.port_data))
@@ -221,8 +247,9 @@ class _Host(MachineOracle):
 
     def facts(self):
         """The calls' :class:`~deity_informant.trace.Facts`."""
-        rows = [np.array(t, np.int64).reshape(-1, 3) for t in self.trace]
-        pcs, hs, bs = (np.concatenate(rows) if rows else np.zeros((0, 3), np.int64)).T
+        self._fold(merge=True)
+        keys, edges = self.folded
+        pcs, hs, bs = keys >> 24, ((keys >> 8) & 0xFFFF) - ((keys >> 8) & 0x8000) * 2, keys & 0xFF
 
         def grouped(keys, vals):
             u = np.unique((keys << 16) | (vals & 0xFFFF))
@@ -231,8 +258,6 @@ class _Host(MachineOracle):
                 out[k].append(v - 0x10000 if v & 0x8000 else v)
             return dict(out)
 
-        pairs = [(t[:-1, 0] << 16) | t[1:, 0] for t in rows if len(t) > 1]
-        edges = np.unique(np.concatenate(pairs)) if pairs else np.zeros(0, np.int64)
         return Facts(
             starts=np.unique(pcs).tolist(),
             edges=[(int(e >> 16), int(e & 0xFFFF)) for e in edges],
