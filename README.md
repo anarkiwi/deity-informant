@@ -12,6 +12,8 @@ The C64 machine model (power-on RAM, interrupt-vector discovery, ROM-free IRQ di
 - `deity_informant/sleigh/` — SLEIGH module (`languages/6510.slaspec` = stock 6502 + `6510_illegal.sinc`), `smc.py` (SMC context constructors), `build.py`, and `pypcode_context()` (a loaded pypcode `Context` for the 6510).
 - `ghidra/6510/headless/` — headless Ghidra integration test, run via `Dockerfile.ghidra`.
 - `deity_informant/hello_world.py` — 33-byte C64 program using `LAX`/`ISC` + self-modifying code; the fixture for the VM and Ghidra tests.
+- `crates/` — Rust P-Code IR templated from `lift()` and a reference interpreter, shipped in wheels as `deity_informant._native`; see [docs/native.md](docs/native.md).
+- `tools/gen_pcode.py` — regenerates the native templates (`--check` verifies they are current).
 - `tools/doclinks.py` — every `[text](target)` in `docs/` and `README.md` resolved: the file, and the `#anchor` against the target's own headings.
 
 ## Install
@@ -19,6 +21,7 @@ The C64 machine model (power-on RAM, interrupt-vector discovery, ROM-free IRQ di
 ```bash
 pip install deity-informant         # from PyPI; the SLEIGH sources ship as package data
 pip install -e ".[dev]"             # from a checkout: + test/lint tooling, py65, pypcode
+maturin develop --release           # + the native extension (Rust toolchain required)
 ```
 
 ## CLI
@@ -48,7 +51,8 @@ Resolves the stock `6502.slaspec` + SLEIGH compiler from `$GHIDRA_INSTALL_DIR` o
 ## Tests
 
 ```bash
-black --check deity_informant/ tests/ && pylint deity_informant/
+black --check deity_informant/ tests/ tools/ && pylint deity_informant/
+cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
 deity-informant emit-sleigh
 pytest tests/ -n auto --cov=deity_informant --cov-fail-under=85
 ```

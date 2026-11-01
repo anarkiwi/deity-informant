@@ -7,3 +7,7 @@
 .hypothesis
 .coverage
 out
+target
+**/*.so
+dist
+.claude

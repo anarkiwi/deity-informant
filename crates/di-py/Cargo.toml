@@ -1,0 +1,15 @@
+[package]
+name = "di-py"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "_native"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+di-pcode = { path = "../di-pcode" }
+pyo3 = { version = "0.30", features = ["abi3-py310"] }

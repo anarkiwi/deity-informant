@@ -35,6 +35,13 @@ from .vm import (
 )
 
 try:
+    from . import _native
+except ImportError:  # pragma: no cover - sdist install: no native extension
+    _native = None
+
+NATIVE = _native is not None
+
+try:
     __version__ = version("deity-informant")
 except PackageNotFoundError:  # pragma: no cover - source tree without install metadata
     __version__ = "0+unknown"
@@ -53,5 +60,6 @@ __all__ = [
     "run_irq",
     "run_irq_driven",
     "vector",
+    "NATIVE",
     "__version__",
 ]

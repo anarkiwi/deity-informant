@@ -26,7 +26,7 @@ dependencies = ["jennings>=0.1.0", "numpy", "networkx"]
 
 [project.optional-dependencies]
 ghidra = ["pypcode"]
-dev = ["pytest", "pytest-xdist", "pytest-cov", "build", "black", "pylint", "py65", "pypcode"]
+dev = ["pytest", "pytest-xdist", "pytest-cov", "build", "black", "pylint", "py65", "pypcode", "maturin"]
 
 [project.urls]
 Homepage = "https://github.com/anarkiwi/deity-informant"
@@ -41,6 +41,15 @@ include = ["deity_informant*"]
 [tool.setuptools.package-data]
 "deity_informant.sleigh" = ["languages/*"]
 
+# Wheels carry the native IR as `deity_informant._native`: `maturin build --release` (CI) or
+# `maturin develop`. The sdist builds with setuptools above and installs pure Python only.
+[tool.maturin]
+manifest-path = "crates/di-py/Cargo.toml"
+module-name = "deity_informant._native"
+python-source = "."
+python-packages = ["deity_informant"]
+features = ["pyo3/extension-module"]
+
 [tool.coverage.run]
 source = ["deity_informant"]
 
@@ -49,6 +58,7 @@ line-length = 100
 
 [tool.pylint.main]
 jobs = 0
+extension-pkg-allow-list = ["deity_informant._native"]
 
 [tool.pylint.format]
 max-line-length = 100

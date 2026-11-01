@@ -1,0 +1,40 @@
+; Bubble sort of 256 bytes at ($FB) refilled from an 8-bit LFSR at $FD; entry $1040.
+; "ADDR: BYTES" per line, ';' starts a comment.
+00FB: 00 20 01        ; ptr = $2000, LFSR seed 1
+1000: A9 00           ; sort:   LDA #$00
+1002: 85 FB           ;         STA $FB
+1004: A9 20           ;         LDA #$20
+1006: 85 FC           ;         STA $FC
+1008: A2 00           ; outer:  LDX #$00
+100A: A0 00           ;         LDY #$00
+100C: B1 FB           ; inner:  LDA ($FB),Y
+100E: C8              ;         INY
+100F: D1 FB           ;         CMP ($FB),Y
+1011: 90 05           ;         BCC next
+1013: F0 03           ;         BEQ next
+1015: 20 30 10        ;         JSR swap
+1018: C0 FF           ; next:   CPY #$FF
+101A: D0 F0           ;         BNE inner
+101C: 8A              ;         TXA
+101D: D0 E9           ;         BNE outer
+101F: 60              ;         RTS
+1030: 48              ; swap:   PHA
+1031: B1 FB           ;         LDA ($FB),Y
+1033: 88              ;         DEY
+1034: 91 FB           ;         STA ($FB),Y
+1036: C8              ;         INY
+1037: 68              ;         PLA
+1038: 91 FB           ;         STA ($FB),Y
+103A: E8              ;         INX
+103B: 60              ;         RTS
+1040: A0 00           ; main:   LDY #$00
+1042: A5 FD           ; fill:   LDA $FD
+1044: 0A              ;         ASL A
+1045: 90 02           ;         BCC keep
+1047: 49 1D           ;         EOR #$1D
+1049: 85 FD           ; keep:   STA $FD
+104B: 91 FB           ;         STA ($FB),Y
+104D: C8              ;         INY
+104E: D0 F2           ;         BNE fill
+1050: 20 00 10        ;         JSR sort
+1053: 4C 40 10        ;         JMP main
