@@ -16,6 +16,7 @@ The C64 machine model (power-on RAM, interrupt-vector discovery, ROM-free IRQ di
 - `deity_informant/wholeprog.py`, `deity_informant/trace.py` — whole-program lifting of entry points to optimized, executable, exact P-Code (self-modifying code as memory reads, balanced calls as `CALL`/`RETURN`, the hardware stack as registers, optional cycle counting, guarded deopts), and the run-time facts it uses; see [docs/wholeprog.md](docs/wholeprog.md).
 - `tools/wplift.py` — lift an image file whole and check it against the reference interpreter.
 - `tools/wpsurvey.py` — lift the play routines of a directory of PSID tunes and tabulate stack privacy, its blockers and (optionally) exactness.
+- `deity_informant/smc/`, `tools/smcgen.py`, `tools/smclabel.py` — progressively generate every SMC scenario (writer, role, timing, mapping) for the lifter, label it with independent CPU (jennings) and machine (vagrant-moses) oracles, and drive lift tests against a strict-xfail expectation table; see [docs/smc-scenarios.md](docs/smc-scenarios.md).
 - `tools/gen_pcode.py` — regenerates the native templates (`--check` verifies they are current).
 - `tools/doclinks.py` — every `[text](target)` in `docs/` and `README.md` resolved: the file, and the `#anchor` against the target's own headings.
 

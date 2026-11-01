@@ -1,0 +1,2611 @@
+[
+ {
+  "name": "zp.opcode.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        LDA #$60\n        STA $40\n        JMP rd\n        .org $0040\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.zp.opcode.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp.opcode.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        LDA #$60\n        STA $40\n        RTS\n        .org $0040\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.zp.opcode.earlier_call.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp.opcode.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        LDA #$60\n        STA $40\n        RTS\n        .org $0040\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.zp.opcode.pre_lift.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp.operand.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        LDA #$2A\n        STA $41\n        JMP rd\n        .org $0040\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.zp.operand.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp.operand.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        LDA #$2A\n        STA $41\n        RTS\n        .org $0040\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.zp.operand.earlier_call.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp.operand.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        LDA #$2A\n        STA $41\n        RTS\n        .org $0040\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.zp.operand.pre_lift.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp.ptr_indirect.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        LDA #$20\n        STA $F0\n        JMP rd\nrd:     LDY #$00\n        LDA ($F0),Y\n        STA $C000\n        RTS\n        .org $1420\ntarg:   .byte $42",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.zp.ptr_indirect.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp.ptr_indirect.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        LDA #$20\n        STA $F0\n        RTS\nrd:     LDY #$00\n        LDA ($F0),Y\n        STA $C000\n        RTS\n        .org $1420\ntarg:   .byte $42",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.zp.ptr_indirect.earlier_call.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp.ptr_indirect.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        LDA #$20\n        STA $F0\n        RTS\nrd:     LDY #$00\n        LDA ($F0),Y\n        STA $C000\n        RTS\n        .org $1420\ntarg:   .byte $42",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.zp.ptr_indirect.pre_lift.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp_indexed_wrap.opcode.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        LDA #$60\n        LDX #$01\n        STA $3F,X\n        JMP rd\n        .org $0040\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.zp_indexed_wrap.opcode.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp_indexed_wrap.opcode.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        LDA #$60\n        LDX #$01\n        STA $3F,X\n        RTS\n        .org $0040\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.zp_indexed_wrap.opcode.earlier_call.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp_indexed_wrap.opcode.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        LDA #$60\n        LDX #$01\n        STA $3F,X\n        RTS\n        .org $0040\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.zp_indexed_wrap.opcode.pre_lift.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp_indexed_wrap.operand.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        LDA #$2A\n        LDX #$01\n        STA $40,X\n        JMP rd\n        .org $0040\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.zp_indexed_wrap.operand.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp_indexed_wrap.operand.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        LDA #$2A\n        LDX #$01\n        STA $40,X\n        RTS\n        .org $0040\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.zp_indexed_wrap.operand.earlier_call.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp_indexed_wrap.operand.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        LDA #$2A\n        LDX #$01\n        STA $40,X\n        RTS\n        .org $0040\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.zp_indexed_wrap.operand.pre_lift.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp_indexed_wrap.ptr_indirect.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        LDA #$20\n        LDX #$01\n        STA $EF,X\n        JMP rd\nrd:     LDY #$00\n        LDA ($F0),Y\n        STA $C000\n        RTS\n        .org $1420\ntarg:   .byte $42",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.zp_indexed_wrap.ptr_indirect.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp_indexed_wrap.ptr_indirect.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        LDA #$20\n        LDX #$01\n        STA $EF,X\n        RTS\nrd:     LDY #$00\n        LDA ($F0),Y\n        STA $C000\n        RTS\n        .org $1420\ntarg:   .byte $42",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.zp_indexed_wrap.ptr_indirect.earlier_call.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp_indexed_wrap.ptr_indirect.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        LDA #$20\n        LDX #$01\n        STA $EF,X\n        RTS\nrd:     LDY #$00\n        LDA ($F0),Y\n        STA $C000\n        RTS\n        .org $1420\ntarg:   .byte $42",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.zp_indexed_wrap.ptr_indirect.pre_lift.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs.opcode.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        LDA #$60\n        STA $1400\n        JMP rd\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs.opcode.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs.opcode.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        LDA #$60\n        STA $1400\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs.opcode.earlier_call.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs.opcode.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        LDA #$60\n        STA $1400\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.abs.opcode.pre_lift.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs.operand.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        LDA #$2A\n        STA $1401\n        JMP rd\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs.operand.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs.operand.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        LDA #$2A\n        STA $1401\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs.operand.earlier_call.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs.operand.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        LDA #$2A\n        STA $1401\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.abs.operand.pre_lift.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs.ptr_indirect.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        LDA #$D0\n        STA $1430\n        JMP rd\nrd:     JMP (iptr)\n        .org $14C0\nland:   LDA #$55\n        STA $C000\n        RTS\n        .org $14D0\nalt:    LDA #$56\n        STA $C000\n        RTS\n        .org $1430\niptr:   .byte lo(land), hi(land)",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs.ptr_indirect.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs.ptr_indirect.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        LDA #$D0\n        STA $1430\n        RTS\nrd:     JMP (iptr)\n        .org $14C0\nland:   LDA #$55\n        STA $C000\n        RTS\n        .org $14D0\nalt:    LDA #$56\n        STA $C000\n        RTS\n        .org $1430\niptr:   .byte lo(land), hi(land)",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs.ptr_indirect.earlier_call.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs.ptr_indirect.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        LDA #$D0\n        STA $1430\n        RTS\nrd:     JMP (iptr)\n        .org $14C0\nland:   LDA #$55\n        STA $C000\n        RTS\n        .org $14D0\nalt:    LDA #$56\n        STA $C000\n        RTS\n        .org $1430\niptr:   .byte lo(land), hi(land)",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.abs.ptr_indirect.pre_lift.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs.ret_addr.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:  JSR sub\n        STA $C001\n        RTS\nsub:    LDA #lo(dest-1)\n        STA $01FC\n        LDA #hi(dest-1)\n        STA $01FD\n        RTS\ndest:   LDA #$77\n        STA $C002\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs.ret_addr.same_call_earlier.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 2
+ },
+ {
+  "name": "abs_indexed.opcode.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        LDA #$60\n        LDX #$01\n        STA $13FF,X\n        JMP rd\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs_indexed.opcode.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs_indexed.opcode.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        LDA #$60\n        LDX #$01\n        STA $13FF,X\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs_indexed.opcode.earlier_call.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs_indexed.opcode.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        LDA #$60\n        LDX #$01\n        STA $13FF,X\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.abs_indexed.opcode.pre_lift.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs_indexed.operand.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        LDA #$2A\n        LDX #$01\n        STA $1400,X\n        JMP rd\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs_indexed.operand.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs_indexed.operand.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        LDA #$2A\n        LDX #$01\n        STA $1400,X\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs_indexed.operand.earlier_call.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs_indexed.operand.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        LDA #$2A\n        LDX #$01\n        STA $1400,X\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.abs_indexed.operand.pre_lift.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs_indexed.ptr_indirect.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        LDA #$D0\n        LDX #$01\n        STA $142F,X\n        JMP rd\nrd:     JMP (iptr)\n        .org $14C0\nland:   LDA #$55\n        STA $C000\n        RTS\n        .org $14D0\nalt:    LDA #$56\n        STA $C000\n        RTS\n        .org $1430\niptr:   .byte lo(land), hi(land)",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs_indexed.ptr_indirect.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs_indexed.ptr_indirect.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        LDA #$D0\n        LDX #$01\n        STA $142F,X\n        RTS\nrd:     JMP (iptr)\n        .org $14C0\nland:   LDA #$55\n        STA $C000\n        RTS\n        .org $14D0\nalt:    LDA #$56\n        STA $C000\n        RTS\n        .org $1430\niptr:   .byte lo(land), hi(land)",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs_indexed.ptr_indirect.earlier_call.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs_indexed.ptr_indirect.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        LDA #$D0\n        LDX #$01\n        STA $142F,X\n        RTS\nrd:     JMP (iptr)\n        .org $14C0\nland:   LDA #$55\n        STA $C000\n        RTS\n        .org $14D0\nalt:    LDA #$56\n        STA $C000\n        RTS\n        .org $1430\niptr:   .byte lo(land), hi(land)",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.abs_indexed.ptr_indirect.pre_lift.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs_indexed.ret_addr.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:  JSR sub\n        STA $C001\n        RTS\nsub:    TSX\n        LDA #lo(dest-1)\n        STA $0101,X\n        LDA #hi(dest-1)\n        STA $0102,X\n        RTS\ndest:   LDA #$77\n        STA $C002\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs_indexed.ret_addr.same_call_earlier.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 2
+ },
+ {
+  "name": "indirect.opcode.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        LDA #$00\n        STA $F0\n        LDA #$14\n        STA $F1\n        LDY #$00\n        LDA #$60\n        STA ($F0),Y\n        JMP rd\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.indirect.opcode.same_call_earlier.flat",
+   "cpu.zp.ptr_indirect.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "indirect.opcode.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        LDA #$00\n        STA $F0\n        LDA #$14\n        STA $F1\n        LDY #$00\n        LDA #$60\n        STA ($F0),Y\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.indirect.opcode.earlier_call.flat",
+   "cpu.zp.ptr_indirect.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "indirect.opcode.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        LDA #$00\n        STA $F0\n        LDA #$14\n        STA $F1\n        LDY #$00\n        LDA #$60\n        STA ($F0),Y\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.indirect.opcode.pre_lift.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "indirect.operand.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        LDA #$01\n        STA $F0\n        LDA #$14\n        STA $F1\n        LDY #$00\n        LDA #$2A\n        STA ($F0),Y\n        JMP rd\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.indirect.operand.same_call_earlier.flat",
+   "cpu.zp.ptr_indirect.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "indirect.operand.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        LDA #$01\n        STA $F0\n        LDA #$14\n        STA $F1\n        LDY #$00\n        LDA #$2A\n        STA ($F0),Y\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.indirect.operand.earlier_call.flat",
+   "cpu.zp.ptr_indirect.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "indirect.operand.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        LDA #$01\n        STA $F0\n        LDA #$14\n        STA $F1\n        LDY #$00\n        LDA #$2A\n        STA ($F0),Y\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.indirect.operand.pre_lift.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "indirect.ptr_indirect.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        LDA #$30\n        STA $F0\n        LDA #$14\n        STA $F1\n        LDY #$00\n        LDA #$D0\n        STA ($F0),Y\n        JMP rd\nrd:     JMP (iptr)\n        .org $14C0\nland:   LDA #$55\n        STA $C000\n        RTS\n        .org $14D0\nalt:    LDA #$56\n        STA $C000\n        RTS\n        .org $1430\niptr:   .byte lo(land), hi(land)",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.indirect.ptr_indirect.same_call_earlier.flat",
+   "cpu.zp.ptr_indirect.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "indirect.ptr_indirect.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        LDA #$30\n        STA $F0\n        LDA #$14\n        STA $F1\n        LDY #$00\n        LDA #$D0\n        STA ($F0),Y\n        RTS\nrd:     JMP (iptr)\n        .org $14C0\nland:   LDA #$55\n        STA $C000\n        RTS\n        .org $14D0\nalt:    LDA #$56\n        STA $C000\n        RTS\n        .org $1430\niptr:   .byte lo(land), hi(land)",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.indirect.ptr_indirect.earlier_call.flat",
+   "cpu.zp.ptr_indirect.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "indirect.ptr_indirect.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        LDA #$30\n        STA $F0\n        LDA #$14\n        STA $F1\n        LDY #$00\n        LDA #$D0\n        STA ($F0),Y\n        RTS\nrd:     JMP (iptr)\n        .org $14C0\nland:   LDA #$55\n        STA $C000\n        RTS\n        .org $14D0\nalt:    LDA #$56\n        STA $C000\n        RTS\n        .org $1430\niptr:   .byte lo(land), hi(land)",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.indirect.ptr_indirect.pre_lift.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "indirect.ret_addr.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:  JSR sub\n        STA $C001\n        RTS\nsub:    LDA #$FC\n        STA $F0\n        LDA #$01\n        STA $F1\n        LDY #$00\n        LDA #lo(dest-1)\n        STA ($F0),Y\n        INY\n        LDA #hi(dest-1)\n        STA ($F0),Y\n        RTS\ndest:   LDA #$77\n        STA $C002\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.indirect.ret_addr.same_call_earlier.flat",
+   "cpu.zp.ptr_indirect.same_call_earlier.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 2
+ },
+ {
+  "name": "unstable_high.opcode.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        LDX #$60\n        LDY #$00\n        SHX $1400,Y\n        JMP rd\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.unstable_high.opcode.same_call_earlier.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 2
+ },
+ {
+  "name": "unstable_high.opcode.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        LDX #$60\n        LDY #$00\n        SHX $1400,Y\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.unstable_high.opcode.earlier_call.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 2
+ },
+ {
+  "name": "unstable_high.opcode.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        LDX #$60\n        LDY #$00\n        SHX $1400,Y\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.unstable_high.opcode.pre_lift.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 1
+ },
+ {
+  "name": "unstable_high.operand.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        LDX #$2A\n        LDY #$00\n        SHX $1401,Y\n        JMP rd\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.unstable_high.operand.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "unstable_high.operand.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        LDX #$2A\n        LDY #$00\n        SHX $1401,Y\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.unstable_high.operand.earlier_call.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "unstable_high.operand.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        LDX #$2A\n        LDY #$00\n        SHX $1401,Y\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.unstable_high.operand.pre_lift.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp_rmw.opcode.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        INC $40\n        JMP rd\n        .org $0040\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.zp_rmw.opcode.same_call_earlier.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 2
+ },
+ {
+  "name": "zp_rmw.opcode.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        INC $40\n        RTS\n        .org $0040\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.zp_rmw.opcode.earlier_call.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 2
+ },
+ {
+  "name": "zp_rmw.opcode.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        INC $40\n        RTS\n        .org $0040\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.zp_rmw.opcode.pre_lift.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 1
+ },
+ {
+  "name": "zp_rmw.operand.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        INC $41\n        JMP rd\n        .org $0040\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.zp_rmw.operand.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp_rmw.operand.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        INC $41\n        RTS\n        .org $0040\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.zp_rmw.operand.earlier_call.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp_rmw.operand.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        INC $41\n        RTS\n        .org $0040\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.zp_rmw.operand.pre_lift.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp_rmw.ptr_indirect.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        INC $F0\n        JMP rd\nrd:     LDY #$00\n        LDA ($F0),Y\n        STA $C000\n        RTS\n        .org $1420\ntarg:   .byte $42",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.zp_rmw.ptr_indirect.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp_rmw.ptr_indirect.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        INC $F0\n        RTS\nrd:     LDY #$00\n        LDA ($F0),Y\n        STA $C000\n        RTS\n        .org $1420\ntarg:   .byte $42",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.zp_rmw.ptr_indirect.earlier_call.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp_rmw.ptr_indirect.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        INC $F0\n        RTS\nrd:     LDY #$00\n        LDA ($F0),Y\n        STA $C000\n        RTS\n        .org $1420\ntarg:   .byte $42",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.zp_rmw.ptr_indirect.pre_lift.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs_rmw.opcode.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        INC $1400\n        JMP rd\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs_rmw.opcode.same_call_earlier.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 2
+ },
+ {
+  "name": "abs_rmw.opcode.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        INC $1400\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs_rmw.opcode.earlier_call.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 2
+ },
+ {
+  "name": "abs_rmw.opcode.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        INC $1400\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.abs_rmw.opcode.pre_lift.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 1
+ },
+ {
+  "name": "abs_rmw.operand.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        INC $1401\n        JMP rd\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs_rmw.operand.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs_rmw.operand.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        INC $1401\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs_rmw.operand.earlier_call.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs_rmw.operand.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        INC $1401\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.abs_rmw.operand.pre_lift.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs_rmw.operand.same_insn",
+  "oracle": "cpu",
+  "source": "entry:  LDX #$02\nloop:   INC loop+1\n        DEX\n        BNE loop\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs_rmw.operand.same_insn.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs_rmw.ptr_indirect.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        INC $1430\n        JMP rd\nrd:     JMP (iptr)\n        .org $14C0\nland:   LDA #$55\n        STA $C000\n        RTS\n        .org $14D0\nalt:    LDA #$56\n        STA $C000\n        RTS\n        .org $1430\niptr:   .byte lo(land), hi(land)",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs_rmw.ptr_indirect.same_call_earlier.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 2
+ },
+ {
+  "name": "abs_rmw.ptr_indirect.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        INC $1430\n        RTS\nrd:     JMP (iptr)\n        .org $14C0\nland:   LDA #$55\n        STA $C000\n        RTS\n        .org $14D0\nalt:    LDA #$56\n        STA $C000\n        RTS\n        .org $1430\niptr:   .byte lo(land), hi(land)",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs_rmw.ptr_indirect.earlier_call.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 2
+ },
+ {
+  "name": "abs_rmw.ptr_indirect.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        INC $1430\n        RTS\nrd:     JMP (iptr)\n        .org $14C0\nland:   LDA #$55\n        STA $C000\n        RTS\n        .org $14D0\nalt:    LDA #$56\n        STA $C000\n        RTS\n        .org $1430\niptr:   .byte lo(land), hi(land)",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.abs_rmw.ptr_indirect.pre_lift.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 1
+ },
+ {
+  "name": "abs_rmw.ret_addr.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:  JSR sub\n        STA $C001\n        RTS\nsub:    LDA #lo(dest-2)\n        STA $01FC\n        LDA #hi(dest-1)\n        STA $01FD\n        INC $01FC\n        RTS\ndest:   LDA #$77\n        STA $C002\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs.ret_addr.same_call_earlier.flat",
+   "cpu.abs_rmw.ret_addr.same_call_earlier.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 2
+ },
+ {
+  "name": "abs_indexed_rmw.opcode.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        LDX #$01\n        INC $13FF,X\n        JMP rd\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs_indexed_rmw.opcode.same_call_earlier.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 2
+ },
+ {
+  "name": "abs_indexed_rmw.opcode.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        LDX #$01\n        INC $13FF,X\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs_indexed_rmw.opcode.earlier_call.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 2
+ },
+ {
+  "name": "abs_indexed_rmw.opcode.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        LDX #$01\n        INC $13FF,X\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.abs_indexed_rmw.opcode.pre_lift.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 1
+ },
+ {
+  "name": "abs_indexed_rmw.operand.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        LDX #$01\n        INC $1400,X\n        JMP rd\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs_indexed_rmw.operand.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs_indexed_rmw.operand.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        LDX #$01\n        INC $1400,X\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs_indexed_rmw.operand.earlier_call.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs_indexed_rmw.operand.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        LDX #$01\n        INC $1400,X\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.abs_indexed_rmw.operand.pre_lift.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs_indexed_rmw.operand.same_insn",
+  "oracle": "cpu",
+  "source": "entry:  LDY #$02\n        LDX #$00\nloop:   INC loop+1,X\n        DEY\n        BNE loop\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs_indexed_rmw.operand.same_insn.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "abs_indexed_rmw.ptr_indirect.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        LDX #$01\n        INC $142F,X\n        JMP rd\nrd:     JMP (iptr)\n        .org $14C0\nland:   LDA #$55\n        STA $C000\n        RTS\n        .org $14D0\nalt:    LDA #$56\n        STA $C000\n        RTS\n        .org $1430\niptr:   .byte lo(land), hi(land)",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs_indexed_rmw.ptr_indirect.same_call_earlier.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 2
+ },
+ {
+  "name": "abs_indexed_rmw.ptr_indirect.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        LDX #$01\n        INC $142F,X\n        RTS\nrd:     JMP (iptr)\n        .org $14C0\nland:   LDA #$55\n        STA $C000\n        RTS\n        .org $14D0\nalt:    LDA #$56\n        STA $C000\n        RTS\n        .org $1430\niptr:   .byte lo(land), hi(land)",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs_indexed_rmw.ptr_indirect.earlier_call.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 2
+ },
+ {
+  "name": "abs_indexed_rmw.ptr_indirect.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        LDX #$01\n        INC $142F,X\n        RTS\nrd:     JMP (iptr)\n        .org $14C0\nland:   LDA #$55\n        STA $C000\n        RTS\n        .org $14D0\nalt:    LDA #$56\n        STA $C000\n        RTS\n        .org $1430\niptr:   .byte lo(land), hi(land)",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.abs_indexed_rmw.ptr_indirect.pre_lift.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 1
+ },
+ {
+  "name": "abs_indexed_rmw.ret_addr.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:  JSR sub\n        STA $C001\n        RTS\nsub:    LDA #lo(dest-2)\n        STA $01FC\n        LDA #hi(dest-1)\n        STA $01FD\n        LDX #$01\n        INC $01FB,X\n        RTS\ndest:   LDA #$77\n        STA $C002\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.abs.ret_addr.same_call_earlier.flat",
+   "cpu.abs_indexed_rmw.ret_addr.same_call_earlier.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 2
+ },
+ {
+  "name": "zp_indexed_wrap_rmw.opcode.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        LDX #$01\n        INC $3F,X\n        JMP rd\n        .org $0040\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.zp_indexed_wrap_rmw.opcode.same_call_earlier.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 2
+ },
+ {
+  "name": "zp_indexed_wrap_rmw.opcode.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        LDX #$01\n        INC $3F,X\n        RTS\n        .org $0040\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.zp_indexed_wrap_rmw.opcode.earlier_call.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 2
+ },
+ {
+  "name": "zp_indexed_wrap_rmw.opcode.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        LDX #$01\n        INC $3F,X\n        RTS\n        .org $0040\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.zp_indexed_wrap_rmw.opcode.pre_lift.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 1
+ },
+ {
+  "name": "zp_indexed_wrap_rmw.operand.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        LDX #$01\n        INC $40,X\n        JMP rd\n        .org $0040\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.zp_indexed_wrap_rmw.operand.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp_indexed_wrap_rmw.operand.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        LDX #$01\n        INC $40,X\n        RTS\n        .org $0040\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.zp_indexed_wrap_rmw.operand.earlier_call.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp_indexed_wrap_rmw.operand.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        LDX #$01\n        INC $40,X\n        RTS\n        .org $0040\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.zp_indexed_wrap_rmw.operand.pre_lift.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp_indexed_wrap_rmw.ptr_indirect.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        LDX #$01\n        INC $EF,X\n        JMP rd\nrd:     LDY #$00\n        LDA ($F0),Y\n        STA $C000\n        RTS\n        .org $1420\ntarg:   .byte $42",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.zp_indexed_wrap_rmw.ptr_indirect.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp_indexed_wrap_rmw.ptr_indirect.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        LDX #$01\n        INC $EF,X\n        RTS\nrd:     LDY #$00\n        LDA ($F0),Y\n        STA $C000\n        RTS\n        .org $1420\ntarg:   .byte $42",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.zp_indexed_wrap_rmw.ptr_indirect.earlier_call.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "zp_indexed_wrap_rmw.ptr_indirect.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        LDX #$01\n        INC $EF,X\n        RTS\nrd:     LDY #$00\n        LDA ($F0),Y\n        STA $C000\n        RTS\n        .org $1420\ntarg:   .byte $42",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.zp_indexed_wrap_rmw.ptr_indirect.pre_lift.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "indirect_rmw.opcode.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        LDA #$00\n        STA $F0\n        LDA #$14\n        STA $F1\n        LDY #$00\n        DCP ($F0),Y\n        JMP rd\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.indirect_rmw.opcode.same_call_earlier.flat",
+   "cpu.zp.ptr_indirect.same_call_earlier.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 2
+ },
+ {
+  "name": "indirect_rmw.opcode.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        LDA #$00\n        STA $F0\n        LDA #$14\n        STA $F1\n        LDY #$00\n        DCP ($F0),Y\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.indirect_rmw.opcode.earlier_call.flat",
+   "cpu.zp.ptr_indirect.same_call_earlier.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 2
+ },
+ {
+  "name": "indirect_rmw.opcode.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        LDA #$00\n        STA $F0\n        LDA #$14\n        STA $F1\n        LDY #$00\n        DCP ($F0),Y\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.indirect_rmw.opcode.pre_lift.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 1
+ },
+ {
+  "name": "indirect_rmw.operand.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        LDA #$01\n        STA $F0\n        LDA #$14\n        STA $F1\n        LDY #$00\n        DCP ($F0),Y\n        JMP rd\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.indirect_rmw.operand.same_call_earlier.flat",
+   "cpu.zp.ptr_indirect.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "indirect_rmw.operand.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        LDA #$01\n        STA $F0\n        LDA #$14\n        STA $F1\n        LDY #$00\n        DCP ($F0),Y\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.indirect_rmw.operand.earlier_call.flat",
+   "cpu.zp.ptr_indirect.same_call_earlier.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "indirect_rmw.operand.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        LDA #$01\n        STA $F0\n        LDA #$14\n        STA $F1\n        LDY #$00\n        DCP ($F0),Y\n        RTS\n        .org $1400\nrd:     LDA #$11\n        STA $C000\n        RTS",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.indirect_rmw.operand.pre_lift.flat"
+  ],
+  "outcome": "exact_nodeopt",
+  "deopts": 0
+ },
+ {
+  "name": "indirect_rmw.ptr_indirect.same_call_earlier",
+  "oracle": "cpu",
+  "source": "entry:\n        LDA #$30\n        STA $F0\n        LDA #$14\n        STA $F1\n        LDY #$00\n        DCP ($F0),Y\n        JMP rd\nrd:     JMP (iptr)\n        .org $14C0\nland:   LDA #$55\n        STA $C000\n        RTS\n        .org $14D0\nalt:    LDA #$56\n        STA $C000\n        RTS\n        .org $1430\niptr:   .byte lo(land), hi(land)",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.indirect_rmw.ptr_indirect.same_call_earlier.flat",
+   "cpu.zp.ptr_indirect.same_call_earlier.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 2
+ },
+ {
+  "name": "indirect_rmw.ptr_indirect.earlier_call",
+  "oracle": "cpu",
+  "source": "entry:  CMP #$00\n        BEQ w\n        JMP rd\nw:\n        LDA #$30\n        STA $F0\n        LDA #$14\n        STA $F1\n        LDY #$00\n        DCP ($F0),Y\n        RTS\nrd:     JMP (iptr)\n        .org $14C0\nland:   LDA #$55\n        STA $C000\n        RTS\n        .org $14D0\nalt:    LDA #$56\n        STA $C000\n        RTS\n        .org $1430\niptr:   .byte lo(land), hi(land)",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "cpu.indirect_rmw.ptr_indirect.earlier_call.flat",
+   "cpu.zp.ptr_indirect.same_call_earlier.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 2
+ },
+ {
+  "name": "indirect_rmw.ptr_indirect.pre_lift",
+  "oracle": "cpu",
+  "source": "entry:  JMP rd\nini:\n        LDA #$30\n        STA $F0\n        LDA #$14\n        STA $F1\n        LDY #$00\n        DCP ($F0),Y\n        RTS\nrd:     JMP (iptr)\n        .org $14C0\nland:   LDA #$55\n        STA $C000\n        RTS\n        .org $14D0\nalt:    LDA #$56\n        STA $C000\n        RTS\n        .org $1430\niptr:   .byte lo(land), hi(land)",
+  "entries": [
+   "entry",
+   "ini"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ]
+  ],
+  "init": [
+   [
+    "ini",
+    0
+   ]
+  ],
+  "cells": [
+   "cpu.indirect_rmw.ptr_indirect.pre_lift.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 1
+ },
+ {
+  "name": "fuzz0043",
+  "oracle": "cpu",
+  "source": "entry:\n        LDA #$B4\n        STA s0+1\ns0:  LDA #$00\n        LDA #$3E\n        STA s1+1\ns1:  LDA #$00\n        INC $E1\n        INC $F6\n        LDA #$EA\n        STA s4\ns4:  NOP\n        LDX #$01\n        LDA #$BB\n        STA s5,X\ns5:  NOP\n        NOP\n        NOP\n        NOP\n        RTS",
+  "entries": [
+   "entry"
+  ],
+  "calls": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "init": [],
+  "cells": [
+   "brk_push.sp_rel.ret_addr.earlier_call.flat",
+   "cpu.abs.opcode.same_call_earlier.flat",
+   "cpu.abs.operand.same_call_earlier.flat",
+   "cpu.abs_indexed.opcode.same_call_earlier.flat"
+  ],
+  "outcome": "exact_deopt",
+  "deopts": 2
+ },
+ {
+  "name": "machine.rom_vs_ram",
+  "oracle": "machine",
+  "source": "\nentry:  LDA #$35\n        STA $01\n        LDA #$00\n        STA $E475\n        LDA #$37\n        STA $01\n        JSR $E475\n        STA $C000\n        RTS\n",
+  "cells": [
+   "cpu_port.zp.bank_reg.same_call_earlier.flat",
+   "cpu_port.zp.opcode.same_call_earlier.rom_vs_ram"
+  ],
+  "outcome": "lift-no-banking",
+  "deopts": 0
+ },
+ {
+  "name": "machine.ram_under_rom",
+  "oracle": "machine",
+  "source": "\nentry:  LDA #$A9\n        STA $E47E\n        LDA #$42\n        STA $E47F\n        LDA #$60\n        STA $E480\n        LDA #$35\n        STA $01\n        JSR $E47E\n        LDX #$37\n        STX $01\n        STA $C000\n        RTS\n",
+  "cells": [
+   "cpu.abs.opcode.earlier_call.ram_under_rom",
+   "cpu.abs.opcode.same_call_earlier.ram_under_rom",
+   "cpu.abs.operand.earlier_call.ram_under_rom",
+   "cpu.abs.operand.same_call_earlier.ram_under_rom",
+   "cpu_port.zp.bank_reg.same_call_earlier.flat"
+  ],
+  "outcome": "lift-no-banking",
+  "deopts": 0
+ },
+ {
+  "name": "machine.irq_patch",
+  "oracle": "machine",
+  "source": "\nplay:   LDX #$00\nloop:   INX\n        BNE loop\n        RTS\nhdlr:   LDA #$99\n        STA tgt+1\n        LDA #lo(alt)\n        STA $0314\n        LDA #$01\n        STA $DC0D\n        LDA #$FF\n        STA $D019\n        JMP $EA81\nalt:    JMP $EA81\ntgt:    LDA #$11\n",
+  "cells": [
+   "cpu.abs.kernal_vector.async.flat",
+   "cpu_port.reset.hw_vector.pre_lift.rom_vs_ram",
+   "cpu_port.reset.opcode.pre_lift.rom_vs_ram",
+   "cpu_port.reset.operand.pre_lift.rom_vs_ram",
+   "irq_push.sp_rel.ret_addr.async.flat"
+  ],
+  "outcome": "lift-no-interrupts",
+  "deopts": 0
+ }
+]
