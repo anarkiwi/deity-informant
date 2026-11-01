@@ -1,5 +1,7 @@
 """Whole-program lifting: lifted programs against the reference interpreter and jennings."""
 
+import threading
+
 import pytest
 
 from jennings.devices.mpu6502 import NativeMPU
@@ -7,7 +9,7 @@ from jennings.memory import NativeMemory
 
 import wholeprog_progs as W
 from deity_informant import NATIVE, trace, wholeprog
-from wholeprog_progs import GEN, INVALIDATE, IO, JMPIND, PATCH, TOGGLE, WRAP, assemble
+from wholeprog_progs import CODEHIT, GEN, INVALIDATE, IO, JMPIND, PATCH, TOGGLE, WRAP, assemble
 
 pytestmark = pytest.mark.skipif(not NATIVE, reason="needs the native extension")
 
@@ -25,7 +27,25 @@ PROGRAMS = {
     "guarded": ("GUARDED", ["entry"], [(0, 0x18)] * 4),
     "recurse": ("RECURSE", ["entry"], [(0, 0)] * 3),
     "deadflags": ("DEADFLAGS", ["entry"], [(0, 0)] * 3),
+    "correlated": ("CORRELATED", ["entry"], [(0, a) for a in range(16)]),
+    "brkzero": ("BRKZERO", ["entry"], [(0, a) for a in range(3)]),
+    "sprestore": ("SPRESTORE", ["entry"], [(0, a) for a in range(3)]),
+    "dataincode": ("DATAINCODE", ["entry"], [(0, 0)] * 4),
+    "dropret": ("DROPRET", ["entry"], [(0, a) for a in range(3)]),
+    "pushrts": ("PUSHRTS", ["entry"], [(0, a) for a in range(4)]),
+    "sptable": ("SPTABLE", ["entry"], [(0, a) for a in range(4)]),
 }
+
+# Facts inputs and inputs reaching a stack height the facts never saw, per program.
+UNSEEN = {
+    "correlated": ([0], [5]),
+    "brkzero": (range(3), [0x40, 0x80]),
+    "sprestore": (range(3), [0x80]),
+    "dropret": (range(3), [0x80]),
+    "pushrts": (range(4), [0x81]),
+    "sptable": ([0], [1]),
+}
+SP_DISPATCH = {"sprestore": 1, "sptable": 3}
 
 
 def source(name):
@@ -291,3 +311,54 @@ def test_matches_jennings(name, cycles):
     assert log == ref
     assert (mpu.a, mpu.x, mpu.y, mpu.sp) == tuple(st["reg"][:4])
     assert not cycles or mpu.processorCycles == st["cycles"]
+
+
+@pytest.mark.parametrize("cycles", [False, True])
+@pytest.mark.parametrize("name", sorted(UNSEEN))
+def test_heights_from_facts(name, cycles):
+    _img, _pcs, _calls, prog = lifted(name, cycles=cycles)
+    st = prog.stats
+    assert st["stack_private"] and st["unknown_heights"] == 0
+    assert (st["split_nodes"] > 0) == (name in ("correlated", "sptable"))
+    assert st["sp_dispatch"] == SP_DISPATCH.get(name, 0)
+    seen, unseen = UNSEEN[name]
+    img, pcs, calls, prog = lifted(name, fact_calls=[(0, a) for a in seen], cycles=cycles)
+    assert prog.stats["stack_private"]
+    differential(img, prog, pcs, [(0, a) for a in unseen] + calls)
+    assert sum(prog.deopts.values()) >= len(unseen)
+
+
+@pytest.mark.parametrize("cycles", [False, True])
+def test_soft_deopt_resumes_with_folded_register(cycles):
+    img, labels = assemble(CODEHIT)
+    pc = [labels["entry"]]
+    prog = wholeprog.lift(img, pc, [IO], facts_for(img, pc, [(0, 0)]), cycles=cycles)
+    assert prog.stats["code_guards"] > 0
+    differential(img, prog, pc, [(0, 0), (0, 1), (0, 0)])
+    assert sum(prog.deopts.values()) > 0
+
+
+@pytest.mark.parametrize("cycles", [False, True])
+def test_data_written_in_unexecuted_code(cycles):
+    img, pcs, calls, prog = lifted("dataincode", cycles=cycles)
+    assert prog.stats["cells"] > 0
+    differential(img, prog, pcs, calls)
+    assert not prog.deopts
+    facts = facts_for(img, pcs, calls)
+    executed = {a + k for a in facts.starts for k in range(3)}
+    facts.writes = {a: v for a, v in facts.writes.items() if a in executed}
+    prog = wholeprog.lift(img, pcs, [IO], facts, cycles=cycles)
+    differential(img, prog, pcs, calls)
+    assert sum(prog.deopts.values()) == len(calls)
+
+
+def test_cell_fixpoint_terminates():
+    """A store that makes its own cell decode a jump back to it gains and loses the value it
+    stores with each round of discovery."""
+    img = bytearray(0x10000)
+    img[0x1000:0x100A] = bytes([0xA9, 0x4C, 0x8D, 0x05, 0x10, 0xA9, 0x02, 0x10, 0x00, 0x60])
+    out = []
+    t = threading.Thread(target=lambda: out.append(wholeprog.lift(img, [0x1000])), daemon=True)
+    t.start()
+    t.join(30)
+    assert out and out[0].stats["opcode_cells"] == 1

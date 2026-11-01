@@ -1,13 +1,14 @@
 //! Functions and stack heights: which `JSR`s become `CALL`s (callees that return at the
-//! height they were entered, never touching the return address), the stack height of every
-//! instruction relative to its function's entry, and the control each instruction lifts to.
+//! height they were entered, never touching the return address), the stack heights each
+//! instruction is planned at relative to its function's entry (several in an outermost plan,
+//! from the heights the facts saw), and the control each instruction lifts to.
 
-use crate::analysis::{stack_delta, Flow, Graph, Tg, Var};
+use crate::analysis::{stack_delta, Facts, Flow, Graph, Tg, Var};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Stack height relative to the function entry (pushes are negative).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum H {
     Known(i32),
     Unknown,
@@ -67,20 +68,51 @@ pub enum Ctl {
     Jam,
 }
 
-/// A planned instruction start: its height and per-variant control.
+/// One instruction variant: its lifted control, exit, and the `(pc, height)` nodes it
+/// transfers to.
+#[derive(Clone, Debug)]
+pub struct Arm {
+    pub ctl: Ctl,
+    pub exit: Exit,
+    pub succ: Vec<(u16, H)>,
+}
+
+/// A planned instruction start at one height: per-variant control.
 #[derive(Clone, Debug)]
 pub struct Node {
-    pub h: H,
-    pub ctl: Vec<(Ctl, Exit)>,
+    pub arms: Vec<Arm>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Plan {
     pub pc: u16,
     pub top: bool,
-    pub nodes: BTreeMap<u16, Node>,
+    /// Nodes by instruction start and height: several heights per start only in an
+    /// outermost plan.
+    pub nodes: BTreeMap<(u16, H), Node>,
     /// A callee returning at its entry height with no access above it.
     pub balanced: bool,
+}
+
+impl Plan {
+    /// Distinct instruction starts, ascending.
+    pub fn pcs(&self) -> impl Iterator<Item = u16> + '_ {
+        let mut last = None;
+        self.nodes
+            .keys()
+            .map(|k| k.0)
+            .filter(move |&p| last.replace(p) != Some(p))
+    }
+    /// Functions `CALL`ed, once per call site and height.
+    pub fn callees(&self) -> impl Iterator<Item = u16> + '_ {
+        self.nodes
+            .values()
+            .flat_map(|n| &n.arms)
+            .filter_map(|a| match a.ctl {
+                Ctl::Call { f, .. } => Some(f),
+                _ => None,
+            })
+    }
 }
 
 struct Step {
@@ -194,19 +226,106 @@ fn step(
     s
 }
 
+/// What the facts say about instruction starts: the heights each was executed at relative to
+/// its outermost entry, and which were executed.
+pub struct Seen {
+    heights: FxHashMap<u16, Vec<i32>>,
+    starts: FxHashSet<u16>,
+}
+
+impl Seen {
+    pub fn new(f: &Facts) -> Self {
+        Seen {
+            heights: f
+                .heights
+                .iter()
+                .map(|(p, h)| (*p, h.iter().map(|&x| x as i32).collect()))
+                .collect(),
+            starts: f.starts.iter().copied().collect(),
+        }
+    }
+}
+
+struct Planner<'a> {
+    top: bool,
+    seen: &'a Seen,
+    nodes: BTreeSet<(u16, H)>,
+    /// Per instruction start: its node height in a callee, the first static height reaching
+    /// it in an outermost plan.
+    first: FxHashMap<u16, H>,
+}
+
+impl Planner<'_> {
+    /// The nodes an edge to `t` at height `h` enters: in an outermost plan each height `t`
+    /// was executed at when `h` is unknown; in a callee `t`'s node when its height covers `h`.
+    fn resolve(&self, t: u16, h: H) -> Vec<H> {
+        match (self.top, h, self.first.get(&t)) {
+            (true, H::Unknown, _) => self
+                .seen
+                .heights
+                .get(&t)
+                .into_iter()
+                .flatten()
+                .map(|&x| H::Known(x))
+                .collect(),
+            (false, _, Some(&o)) if H::merge(Some(o), h) == o => vec![o],
+            _ => vec![h],
+        }
+    }
+    /// Record the edge to `t` at `h`; the nodes it creates. An outermost plan admits the
+    /// heights `t` was executed at (or the first static one if it never was); a callee merges
+    /// per start, a conflict making an executed start unknown and leaving any other to deopt.
+    fn admit(&mut self, t: u16, h: H) -> Vec<(u16, H)> {
+        let mut out = Vec::new();
+        if self.top {
+            for x in self.resolve(t, h) {
+                let ok = match self.seen.heights.get(&t) {
+                    Some(xs) => matches!(x, H::Known(v) if xs.contains(&v)),
+                    None => *self.first.entry(t).or_insert(x) == x,
+                };
+                if ok && self.nodes.insert((t, x)) {
+                    out.push((t, x));
+                }
+            }
+            return out;
+        }
+        let m = match self.first.get(&t) {
+            None => h,
+            Some(&o) if H::merge(Some(o), h) == o => return out,
+            Some(&o) if self.seen.starts.contains(&t) => {
+                self.nodes.remove(&(t, o));
+                H::Unknown
+            }
+            Some(_) => return out,
+        };
+        self.first.insert(t, m);
+        self.nodes.insert((t, m));
+        out.push((t, m));
+        out
+    }
+}
+
 /// Plan the function entered at `pc` given the `JSR` targets lifted as calls.
-pub fn plan(g: &Graph, pc: u16, top: bool, calls: &FxHashSet<u16>) -> Plan {
-    let mut heights: FxHashMap<u16, H> = FxHashMap::default();
+pub fn plan(g: &Graph, pc: u16, top: bool, calls: &FxHashSet<u16>, seen: &Seen) -> Plan {
+    let mut pl = Planner {
+        top,
+        seen,
+        nodes: BTreeSet::new(),
+        first: FxHashMap::default(),
+    };
     let mut rets: FxHashMap<i32, BTreeSet<u16>> = FxHashMap::default();
     let mut all_rets: BTreeSet<u16> = BTreeSet::new();
-    let mut pulls: FxHashSet<u16> = FxHashSet::default();
-    let mut work = vec![pc];
-    heights.insert(pc, H::Known(0));
-    while let Some(p) = work.pop() {
-        let h = heights[&p];
-        for v in g.vars.get(&p).into_iter().flatten() {
+    let mut pulls: FxHashSet<(u16, H)> = FxHashSet::default();
+    pl.first.insert(pc, H::Known(0));
+    pl.nodes.insert((pc, H::Known(0)));
+    let mut work = vec![(pc, H::Known(0))];
+    while let Some((p, h)) = work.pop() {
+        if !pl.nodes.contains(&(p, h)) {
+            continue;
+        }
+        for v in &g.vars[&p] {
             if matches!(v.flow, Flow::Rts(_) | Flow::Rti(_)) {
-                pulls.insert(p);
+                pulls.insert((p, h));
             }
             let s = step(v, h, top, calls, &rets, &all_rets);
             if let Some((hr, r)) = s.ret {
@@ -219,31 +338,35 @@ pub fn plan(g: &Graph, pc: u16, top: bool, calls: &FxHashSet<u16>) -> Plan {
                 }
             }
             for (t, ht) in s.succ {
-                if !g.vars.contains_key(&t) {
-                    continue;
-                }
-                let old = heights.get(&t).copied();
-                let m = H::merge(old, ht);
-                if old != Some(m) {
-                    heights.insert(t, m);
-                    work.push(t);
+                if g.vars.contains_key(&t) {
+                    work.extend(pl.admit(t, ht));
                 }
             }
         }
     }
     let mut balanced = true;
-    let nodes = heights
+    let nodes = pl
+        .nodes
         .iter()
-        .map(|(&p, &h)| {
-            let ctl = g.vars[&p]
+        .map(|&(p, h)| {
+            let arms = g.vars[&p]
                 .iter()
                 .map(|v| {
                     let s = step(v, h, top, calls, &rets, &all_rets);
                     balanced &= !s.unbalanced;
-                    (s.ctl, s.exit)
+                    let succ = s
+                        .succ
+                        .iter()
+                        .flat_map(|&(t, ht)| pl.resolve(t, ht).into_iter().map(move |x| (t, x)))
+                        .collect();
+                    Arm {
+                        ctl: s.ctl,
+                        exit: s.exit,
+                        succ,
+                    }
                 })
                 .collect();
-            (p, Node { h, ctl })
+            ((p, h), Node { arms })
         })
         .collect();
     Plan {
@@ -256,7 +379,8 @@ pub fn plan(g: &Graph, pc: u16, top: bool, calls: &FxHashSet<u16>) -> Plan {
 
 /// Plans for `entries` (outermost) and every callee they reach, entries first; the call
 /// targets are the static `JSR` targets whose plans are balanced, by a decreasing fixpoint.
-pub fn plan_all(g: &Graph, entries: &[u16]) -> Vec<Plan> {
+pub fn plan_all(g: &Graph, entries: &[u16], facts: &Facts) -> Vec<Plan> {
+    let seen = Seen::new(facts);
     let mut calls: FxHashSet<u16> = g
         .vars
         .values()
@@ -270,7 +394,7 @@ pub fn plan_all(g: &Graph, entries: &[u16]) -> Vec<Plan> {
         let bad: Vec<u16> = calls
             .iter()
             .copied()
-            .filter(|&c| !plan(g, c, false, &calls).balanced)
+            .filter(|&c| !plan(g, c, false, &calls, &seen).balanced)
             .collect();
         if bad.is_empty() {
             break;
@@ -279,22 +403,17 @@ pub fn plan_all(g: &Graph, entries: &[u16]) -> Vec<Plan> {
             calls.remove(&b);
         }
     }
-    let mut plans: Vec<Plan> = entries.iter().map(|&e| plan(g, e, true, &calls)).collect();
-    let mut seen: FxHashSet<u16> = FxHashSet::default();
+    let mut plans: Vec<Plan> = entries
+        .iter()
+        .map(|&e| plan(g, e, true, &calls, &seen))
+        .collect();
+    let mut done: FxHashSet<u16> = FxHashSet::default();
     let mut i = 0;
     while i < plans.len() {
-        let callees: Vec<u16> = plans[i]
-            .nodes
-            .values()
-            .flat_map(|n| &n.ctl)
-            .filter_map(|(c, _)| match c {
-                Ctl::Call { f, .. } => Some(*f),
-                _ => None,
-            })
-            .collect();
+        let callees: Vec<u16> = plans[i].callees().collect();
         for f in callees {
-            if seen.insert(f) {
-                plans.push(plan(g, f, false, &calls));
+            if done.insert(f) {
+                plans.push(plan(g, f, false, &calls, &seen));
             }
         }
         i += 1;

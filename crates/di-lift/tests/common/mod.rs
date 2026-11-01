@@ -88,13 +88,15 @@ pub fn ref_call(cpu: &mut Cpu, bus: &mut TBus, pc: u16, acc: u8, max: u64) -> Ha
     cpu.run_clocked(bus, start as i32 - 1, end)
 }
 
-/// Facts from running `calls` on the reference: starts, transfers, writes to code bytes.
+/// Facts from running `calls` on the reference: starts, transfers, stored values, page-1
+/// sites and heights.
 pub fn facts(img: &[u8; 0x10000], calls: &[(u16, u8)], max: u64) -> Facts {
     let mut bus = TBus::new(img, (0, 0));
     let mut cpu = Cpu::new();
     let mut starts = BTreeSet::new();
     let mut edges = BTreeSet::new();
     let mut page1 = BTreeSet::new();
+    let mut heights: BTreeMap<u16, BTreeSet<i16>> = BTreeMap::new();
     for &(pc, acc) in calls {
         let start = cpu.r(R::SP);
         for v in [0u8, 1] {
@@ -108,6 +110,8 @@ pub fn facts(img: &[u8; 0x10000], calls: &[(u16, u8)], max: u64) -> Facts {
         while cpu.r(R::SP) < start && cpu.cycles < end {
             let p = cpu.pc;
             starts.insert(p);
+            let h = cpu.r(R::SP) as i16 - start.wrapping_sub(2) as i16;
+            heights.entry(p).or_default().insert(h);
             let op = bus.mem[p as usize];
             bus.page1 = false;
             if cpu.step(&mut bus).is_err() {
@@ -119,20 +123,19 @@ pub fn facts(img: &[u8; 0x10000], calls: &[(u16, u8)], max: u64) -> Facts {
             edges.insert((p, cpu.pc));
         }
     }
-    let code: BTreeSet<u16> = starts
-        .iter()
-        .flat_map(|&p| [p, p.wrapping_add(1), p.wrapping_add(2)])
-        .collect();
     Facts {
         starts: starts.into_iter().collect(),
         edges: edges.into_iter().collect(),
         writes: bus
             .writes
             .into_iter()
-            .filter(|(a, _)| code.contains(a))
             .map(|(a, v)| (a, v.into_iter().collect()))
             .collect(),
         page1: page1.into_iter().collect(),
+        heights: heights
+            .into_iter()
+            .map(|(p, h)| (p, h.into_iter().collect()))
+            .collect(),
     }
 }
 

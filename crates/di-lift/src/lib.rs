@@ -19,7 +19,7 @@ pub use ir::{Block, Function, LOp, Program, Stats};
 
 use analysis::{discover, is_stack_op, page1_check, Check, Flow, Iv};
 use fixedbitset::FixedBitSet;
-use func::{Ctl, H};
+use func::H;
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -77,7 +77,7 @@ pub fn lift_with(
 ) -> Program {
     let g = discover(img, entries, facts);
     let pcs: Vec<u16> = entries.iter().map(|e| e.pc).collect();
-    let plans = func::plan_all(&g, &pcs);
+    let plans = func::plan_all(&g, &pcs, facts);
     let fidx: FxHashMap<u16, u32> = plans
         .iter()
         .enumerate()
@@ -95,8 +95,8 @@ pub fn lift_with(
         .iter()
         .map(|p| {
             let (mut load, mut store) = (false, false);
-            for pc in p.nodes.keys() {
-                for v in &g.vars[pc] {
+            for pc in p.pcs() {
+                for v in &g.vars[&pc] {
                     if is_stack_op(v.op) {
                         continue;
                     }
@@ -104,7 +104,7 @@ pub fn lift_with(
                         if page1(a.addr) {
                             *(if a.store { &mut store } else { &mut load }) = true;
                             sites +=
-                                (seen.contains(pc) || page1_check(v.op, i) == Check::No) as usize;
+                                (seen.contains(&pc) || page1_check(v.op, i) == Check::No) as usize;
                         }
                     }
                     if let Flow::JmpInd(_) = v.flow {
@@ -115,7 +115,7 @@ pub fn lift_with(
                         let cell = (1..3).any(|i| g.cells.contains(pc.wrapping_add(i) as usize));
                         let fixed = !cell && ((0x100..0x200).contains(&w));
                         load |= cell || fixed;
-                        sites += (fixed || cell && seen.contains(pc)) as usize;
+                        sites += (fixed || cell && seen.contains(&pc)) as usize;
                     }
                 }
             }
@@ -126,20 +126,11 @@ pub fn lift_with(
         && !g.code.ones().any(|a| (0x100..0x200).contains(&a))
         && plans
             .iter()
-            .all(|p| p.nodes.values().all(|n| n.h != H::Unknown))
+            .all(|p| p.nodes.keys().all(|k| k.1 != H::Unknown))
         && sites == 0;
     let callees: Vec<Vec<u32>> = plans
         .iter()
-        .map(|p| {
-            p.nodes
-                .values()
-                .flat_map(|n| &n.ctl)
-                .filter_map(|(c, _)| match c {
-                    Ctl::Call { f, .. } => Some(fidx[f]),
-                    _ => None,
-                })
-                .collect()
-        })
+        .map(|p| p.callees().map(|f| fidx[&f]).collect())
         .collect();
     let recursive = recursive(&callees);
     let mut promote = FixedBitSet::with_capacity(plans.len());
@@ -188,6 +179,12 @@ pub fn lift_with(
         code_bytes: constcode.count_ones(..),
         stack_private: private,
         page1_sites: sites,
+        unknown_heights: plans
+            .iter()
+            .map(|p| p.nodes.keys().filter(|k| k.1 == H::Unknown).count())
+            .sum(),
+        split_nodes: plans.iter().map(|p| p.nodes.len() - p.pcs().count()).sum(),
+        recursive: sh.recursive.count_ones(..),
         unreached: facts
             .starts
             .iter()
@@ -205,6 +202,7 @@ pub fn lift_with(
             stats.code_guards += n.code_guards;
             stats.stack_guards += n.stack_guards;
             stats.slot_ops += n.slot_ops;
+            stats.sp_dispatch += n.sp_dispatch;
             stats.calls += callees[i].len();
             stats.emitted_ops += f.blocks.iter().map(|b| b.ops.len()).sum::<usize>();
             f

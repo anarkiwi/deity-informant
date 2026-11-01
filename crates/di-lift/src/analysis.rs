@@ -16,14 +16,17 @@ pub struct Entry {
 }
 
 /// What running the program showed: executed instruction starts, executed `(pc, next pc)`
-/// transfers, the values stored to code bytes, and the instructions whose accesses other than
-/// pushes and pulls reached page 1.
+/// transfers, the values stored to each address, the instructions whose accesses other than
+/// pushes and pulls reached page 1, and the stack heights each instruction start was seen at
+/// (SP minus SP at its call's entry as integers: pushes negative, an SP set below a wrap far
+/// negative).
 #[derive(Clone, Debug, Default)]
 pub struct Facts {
     pub starts: Vec<u16>,
     pub edges: Vec<(u16, u16)>,
     pub writes: Vec<(u16, Vec<u8>)>,
     pub page1: Vec<u16>,
+    pub heights: Vec<(u16, Vec<i16>)>,
 }
 
 /// An unsigned interval of a value.
@@ -472,6 +475,11 @@ pub fn discover(img: &[u8; 0x10000], entries: &[Entry], facts: &Facts) -> Graph 
                     .or_default()
                     .extend(st.into_iter().flatten());
             }
+        }
+        // Monotone: cells and their values only grow, so the fixpoint terminates.
+        next.union_with(&cells);
+        for (a, v) in &values {
+            nvalues.entry(*a).or_default().extend(v);
         }
         if next == cells && nvalues == values {
             return Graph {

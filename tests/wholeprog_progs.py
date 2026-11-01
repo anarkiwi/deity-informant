@@ -374,3 +374,146 @@ sub:    CLC
         ADC #$01
         RTS
 """
+
+CORRELATED = """
+entry:  STA $FB
+        LDX #$03
+loop:   LDA $FB
+        AND bits,X
+        BEQ s1
+        TXA
+        PHA
+s1:     JSR sub
+        LDA $FB
+        AND bits,X
+        BEQ s2
+        PLA
+        STA $C0E0
+s2:     DEX
+        BPL loop
+        RTS
+sub:    PHA
+        TXA
+        PHA
+        LDA $C0E1
+        STA $C0E2
+        PLA
+        TAX
+        PLA
+        RTS
+.org $1800
+bits:   .byte 1,2,4,8
+"""
+
+BRKZERO = """
+entry:  JSR sub
+        CMP #$80
+        BCS trap
+        STA $C0E8
+        RTS
+sub:    CMP #$40
+        BEQ trap
+        RTS
+trap:   BRK
+"""
+
+SPRESTORE = """
+entry:  TSX
+        STX $FB
+        PHA
+        PHA
+        STA $C0F0
+        CMP #$80
+        BCC keep
+        DEX
+keep:   TXS
+        TSX
+        CPX $FB
+        BEQ done
+        PLA
+done:   STA $C0F1
+        RTS
+"""
+
+DROPRET = """
+entry:  JSR sub
+        STA $C0F8
+        RTS
+sub:    CMP #$80
+        BCS keep
+        PLA
+        PLA
+keep:   LDA #$11
+        STA $C0F9
+        RTS
+"""
+
+PUSHRTS = """
+entry:  STA $FB
+        BIT $FB
+        BPL go
+        PHA
+go:     AND #$01
+        TAX
+        LDA th,X
+        PHA
+        LDA tl,X
+        PHA
+        RTS
+t0:     STX $C0FA
+        JMP fin
+t1:     LDA $C0FB
+        STA $C0FC
+fin:    BIT $FB
+        BPL done
+        PLA
+done:   RTS
+th:     .byte hi(t0-1),hi(t1-1)
+tl:     .byte lo(t0-1),lo(t1-1)
+"""
+
+SPTABLE = """
+entry:  TSX
+        STX $FB
+        AND #$01
+        ASL A
+        TAX
+        TXS
+        RTS
+t0:     LDA #$01
+        JMP fin
+t1:     LDA #$02
+fin:    LDX $FB
+        TXS
+        STA $C0E4
+        RTS
+.org $0101
+        .byte lo(t0-1),hi(t0-1),lo(t1-1),hi(t1-1)
+"""
+
+CODEHIT = """
+entry:  TAY
+        LDX xs,Y
+        LDA #$00
+        STA tgt+1,X
+        STA $1800,X
+        LDA #$07
+tgt:    STA $C0E6
+        RTS
+xs:     .byte $40,$00
+"""
+
+DATAINCODE = """
+entry:  TAY
+        BEQ skip
+        JMP tbl
+skip:   LDX $1800
+        INC tbl,X
+        LDA tbl,X
+        STA $C000
+        RTS
+        .byte $00,$00
+tbl:    .byte $EA,$00,$EA,$60
+        .org $1800
+        .byte $01
+"""

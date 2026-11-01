@@ -35,4 +35,9 @@ def test_wplift_roundtrip(tmp_path, capsys):
     init = ["--init", "%#x:1" % e, "--facts", str(facts), "--check"]
     assert wplift.main(common + calls + init) == 0
     assert json.loads(capsys.readouterr().out.splitlines()[-1])["exact"]
+    loop = tmp_path / "loop.bin"
+    loop.write_bytes(bytes([0x4C, 0x00, 0x10]))
+    spin = [str(loop), "--org", "0x1000", "--entry", "0x1000", "--calls", "0x1000:0", "--check"]
+    assert wplift.main(spin) == 1
+    assert json.loads(capsys.readouterr().out.splitlines()[-1])["mismatch"] == [0, "no-return"]
     assert wplift.calls_spec("0x10:2*3,0x20") == [(0x10, 2)] * 3 + [(0x20, 0)]

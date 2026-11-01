@@ -2,7 +2,7 @@ mod common;
 #[allow(dead_code)]
 mod progs;
 use common::*;
-use di_lift::{lift, lift_many, lift_with, Entry, Facts, Job, Opts};
+use di_lift::{lift, lift_many, lift_with, Entry, Facts, Job, Opts, Program};
 
 const IO: (u16, u16) = (0xc000, 0xc100);
 
@@ -187,4 +187,136 @@ fn recursion() {
     );
     assert!(p.stats.stack_private && p.functions[1].recursive && !p.functions[0].recursive);
     assert_eq!(p.functions[1].nslots, 0);
+}
+
+fn acc_calls(accs: &[u8]) -> Vec<(usize, u8)> {
+    accs.iter().map(|&a| (0, a)).collect()
+}
+
+/// Lift with facts from `seen` (exact without deopts, stack private, every height known),
+/// then with facts from `fseen` run `forced` and `seen` exactly with deopts in both cycle
+/// modes; the optimized functional lift from `seen`.
+fn private_heights(
+    prog: &[(u16, &[u8])],
+    pc: u16,
+    seen: &[u8],
+    fseen: &[u8],
+    forced: &[u8],
+) -> Program {
+    let img = image(prog);
+    let p = check(&img, &[pc], &acc_calls(seen), IO);
+    assert!(p.stats.stack_private && p.stats.unknown_heights == 0);
+    let fc: Vec<(u16, u8)> = fseen.iter().map(|&a| (pc, a)).collect();
+    let f = facts(&img, &fc, 1_000_000);
+    let runs: Vec<(usize, u8)> = acc_calls(forced)
+        .into_iter()
+        .chain(acc_calls(seen))
+        .collect();
+    for cycles in [true, false] {
+        let opts = Opts {
+            optimize: true,
+            cycles,
+        };
+        let q = lift_with(&img, &entries(&[pc]), &[(0xc000, 0xc100)], &f, opts);
+        assert!(q.stats.stack_private);
+        assert!(diff(&img, &q, &runs, IO) > 0);
+    }
+    p
+}
+
+#[test]
+fn correlated_pushes_split_heights() {
+    let all: Vec<u8> = (0..16).collect();
+    let p = private_heights(progs::CORRELATED, progs::CORRELATED_ENTRY, &all, &[0], &[5]);
+    let s = &p.stats;
+    assert!(s.split_nodes > 0 && s.calls > 0 && s.slot_ops > 0);
+    assert_eq!((s.stack_ops, p.functions.len()), (2, 2));
+}
+
+#[test]
+fn brk_chain_on_untaken_path() {
+    let p = private_heights(
+        progs::BRKZERO,
+        progs::BRKZERO_ENTRY,
+        &[0, 1, 2],
+        &[0, 1, 2],
+        &[0x40, 0x80],
+    );
+    assert_eq!(p.stats.calls, 1);
+}
+
+#[test]
+fn sp_restore_dispatch() {
+    let p = private_heights(
+        progs::SPRESTORE,
+        progs::SPRESTORE_ENTRY,
+        &[0, 1, 2],
+        &[0, 1, 2],
+        &[0x80],
+    );
+    assert_eq!(p.stats.sp_dispatch, 1);
+}
+
+#[test]
+fn dropped_return_address() {
+    private_heights(
+        progs::DROPRET,
+        progs::DROPRET_ENTRY,
+        &[0, 1, 2],
+        &[0, 1, 2],
+        &[0x80],
+    );
+}
+
+#[test]
+fn pushed_address_jump_table() {
+    private_heights(
+        progs::PUSHRTS,
+        progs::PUSHRTS_ENTRY,
+        &[0, 1, 2, 3],
+        &[0, 1, 2, 3],
+        &[0x81],
+    );
+}
+
+#[test]
+fn sp_set_below_wrap() {
+    let p = private_heights(
+        progs::SPTABLE,
+        progs::SPTABLE_ENTRY,
+        &[0, 1, 2, 3],
+        &[0],
+        &[1],
+    );
+    assert_eq!(p.stats.sp_dispatch, 3);
+}
+
+#[test]
+fn soft_deopt_resumes_with_folded_register() {
+    let img = image(progs::CODEHIT);
+    let pc = progs::CODEHIT_ENTRY;
+    let f = facts(&img, &[(pc, 0)], 1_000_000);
+    for cycles in [false, true] {
+        let opts = Opts {
+            optimize: true,
+            cycles,
+        };
+        let p = lift_with(&img, &entries(&[pc]), &[(0xc000, 0xc100)], &f, opts);
+        assert!(p.stats.code_guards > 0);
+        assert!(diff(&img, &p, &acc_calls(&[0, 1, 0]), IO) > 0);
+    }
+}
+
+/// A store that makes its own cell decode a jump back to it: discovery still terminates.
+#[test]
+fn cell_fixpoint_terminates() {
+    let mut img = Box::new([0u8; 0x10000]);
+    img[0x1000..0x100a]
+        .copy_from_slice(&[0xa9, 0x4c, 0x8d, 0x05, 0x10, 0xa9, 0x02, 0x10, 0x00, 0x60]);
+    let e = [Entry {
+        pc: 0x1000,
+        regs: vec![],
+    }];
+    let p = lift(&img, &e, &[], &Facts::default());
+    assert_eq!(p.stats.opcode_cells, 1);
 }
