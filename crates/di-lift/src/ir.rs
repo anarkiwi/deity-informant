@@ -62,6 +62,18 @@ pub mod mem {
     pub const VOLATILE: u32 = 1;
     /// A push or pull of the hardware stack.
     pub const STACK: u32 = 2;
+    /// RAM under a bank window, bypassing any device there (the bus's `ram_*`).
+    pub const RAM: u32 = 4;
+    /// A read of the bank map's ROM image.
+    pub const ROM: u32 = 8;
+    /// Resolved per address in the bank configuration held in bits 8-15.
+    pub const BANK: u32 = 16;
+    /// A device in a bank's I/O window.
+    pub const IO: u32 = 32;
+    /// The configuration of a [`BANK`] access.
+    pub const fn config(aux: u32) -> u8 {
+        (aux >> 8) as u8
+    }
 }
 
 /// One lifted op: `out = opc(ins[0], ins[1])`; `aux` is the target block (`BRANCH`,
@@ -97,6 +109,11 @@ impl LOp {
     }
     pub fn volatile(&self) -> bool {
         matches!(self.opc, Opc::Load | Opc::Store) && self.aux & mem::VOLATILE != 0
+    }
+    /// A memory access the optimizer may forward and remember: not volatile, not a ROM
+    /// read or device, not resolved per configuration at run time.
+    pub fn plain(&self) -> bool {
+        self.aux & (mem::VOLATILE | mem::ROM | mem::BANK | mem::IO) == 0
     }
     /// Has an effect beyond writing `out`.
     pub fn effectful(&self) -> bool {
@@ -236,6 +253,8 @@ pub struct Stats {
     pub sp_dispatch: usize,
     /// Entries specialized to (and guarded on) the SP they were called at.
     pub sp_guards: usize,
+    /// Dispatches on the bank configuration (entries, after port writes and `CALL`s).
+    pub bank_dispatch: usize,
     /// Stack bytes outermost functions push that stay in memory rather than in slots.
     pub kept_bytes: usize,
     /// Blocks spending the iteration budget (without cycles): loop heads, recursive entries.
@@ -256,6 +275,8 @@ pub struct Program {
     pub elide_ret: bool,
     /// Cycles are counted (`CY`, cycle-budget checks, volatile accesses at their cycle).
     pub cycles: bool,
+    /// The bank map memory is seen through (none: flat).
+    pub bank: Option<crate::bank::BankMap>,
     pub stats: Stats,
 }
 
@@ -301,6 +322,11 @@ impl std::fmt::Display for Program {
                         Opc::BranchInd => format!(" {:x?}", f.tables[op.aux as usize]),
                         Opc::Call => format!(" fn{}", op.aux),
                         Opc::Load | Opc::Store if op.aux & mem::VOLATILE != 0 => " volatile".into(),
+                        Opc::Load | Opc::Store if op.aux & mem::ROM != 0 => " rom".into(),
+                        Opc::Load | Opc::Store if op.aux & mem::RAM != 0 => " ram".into(),
+                        Opc::Load | Opc::Store if op.aux & mem::BANK != 0 => {
+                            format!(" bank{}", mem::config(op.aux))
+                        }
                         _ => String::new(),
                     };
                     let out = if op.out.is_none() {

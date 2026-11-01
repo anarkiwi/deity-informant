@@ -661,3 +661,92 @@ done:   STX $C0E4
 .org $1810
 ptr:    .byte lo(done),hi(done)
 """
+
+# Banked (C64 map, ROM-less image of the tests' bank map): RAM under KERNAL, BASIC and I/O
+# read with $01 switched mid-call, a ROM byte and the port read back, the SID written with
+# I/O in.
+BANKRD = """
+entry:  LDA #$34
+        STA $01
+        LDA $E000
+        STA $C000
+        LDA $A000
+        STA $C001
+        LDA $D400
+        STA $C002
+        LDA #$37
+        STA $01
+        LDA $E000
+        STA $D400
+        LDA $01
+        STA $C003
+        RTS
+.org $A000
+        .byte $A5
+.org $D400
+        .byte $D4
+.org $E000
+        .byte $E7
+"""
+
+# Code written into RAM under the KERNAL (ROM in), run with it banked out; a store into the
+# ROM window lands in that RAM.
+ROMRAM = """
+entry:  LDA #$A9
+        STA $E100
+        LDA $C010
+        STA $E101
+        LDA #$60
+        STA $E102
+        LDA #$35
+        STA $01
+        JSR $E100
+        STA $C011
+        LDA #$37
+        STA $01
+        RTS
+"""
+
+# ROM code called from RAM code: the bank map's ROM routine at $E000 (`LDA #$42; RTS`).
+ROMCALL = """
+entry:  JSR $E000
+        STA $C020
+        LDA #$36
+        STA $01
+        LDA $E000
+        STA $C021
+        LDA #$37
+        STA $01
+        RTS
+"""
+
+# A configuration the facts never saw at `skip` (input 1) deopts there.
+BANKSEEN = """
+entry:  CMP #$01
+        BNE skip
+        LDA #$35
+        STA $01
+skip:   LDA $E000
+        STA $C030
+        LDA #$37
+        STA $01
+        RTS
+.org $E000
+        .byte $E5
+"""
+
+# ROM code (a ROM-less KERNAL stub's NOPs and RTS) called from RAM code, then the RAM under it
+# read with BASIC/KERNAL out.
+ROMCALLK = """
+entry:  JSR $E4F0
+        STA $C020
+        LDA #$36
+        STA $01
+        LDA $E4F0
+        STA $C021
+        LDA #$37
+        STA $01
+        RTS
+.org $E4F0
+        .byte $5A
+"""

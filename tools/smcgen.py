@@ -43,9 +43,10 @@ def build(seed, fuzz_rounds, progress=True):
             oracle[sid] = prog.oracle
 
     def _merge(outs):
-        if "inexact" in outs:
-            return "inexact"
-        return "exact_deopt" if "exact_deopt" in outs else "exact_nodeopt"
+        """Any inexact witness wins, then any exact one; a gap only when no witness lifts."""
+        return next(
+            (o for o in ("inexact", "exact_deopt", "exact_nodeopt") if o in outs), min(outs)
+        )
 
     outcome_of = {sid: _merge(outs) for sid, outs in seen.items()}
     by_sid = {c.sid: c for c in cells()}

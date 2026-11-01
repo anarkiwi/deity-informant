@@ -1,5 +1,6 @@
 //! Executing a lifted program over a [`Bus`], leaving for the reference [`Cpu`] at deopts.
 
+use crate::bank::{BankMap, Banked};
 use crate::ir::{mask, mem, other, Function, Program, CY, E, NREG};
 use crate::opt::{budget_points, checkpoints, sp_effect, sp_offsets};
 use di_pcode::{reg as R, Bus, Cpu, Halt, Opc, Space, Vn};
@@ -52,7 +53,11 @@ pub struct Exec {
     /// hold stack bytes.
     slots: Vec<(u32, u32)>,
     slotted: Vec<FixedBitSet>,
+    bank: Option<BankMap>,
 }
+
+/// Access flags that resolve memory other than through `Bus::read`/`write`.
+const SPACES: u32 = mem::RAM | mem::ROM | mem::BANK;
 
 fn operand(v: Vn, temps: u32, slots: u32) -> u32 {
     match v.space() {
@@ -76,6 +81,12 @@ impl<B: Bus> Bus for NoClock<'_, B> {
     }
     fn fetch(&mut self, a: u16) -> u8 {
         self.0.fetch(a)
+    }
+    fn ram_read(&mut self, a: u16) -> u8 {
+        self.0.ram_read(a)
+    }
+    fn ram_write(&mut self, a: u16, v: u8) {
+        self.0.ram_write(a, v)
     }
 }
 
@@ -106,6 +117,7 @@ impl Exec {
             cycles: p.cycles,
             slots,
             slotted: p.functions.iter().map(|f| f.slotted.clone()).collect(),
+            bank: p.bank.clone(),
         };
         for &(a, v) in &p.code {
             x.constcode.insert(a as usize);
@@ -278,7 +290,7 @@ fn depths(fs: &[Function], cps: &[FixedBitSet]) -> Vec<Vec<(u32, u32)>> {
 impl Exec {
     /// Every byte the program treats as constant code holds its lifted value in `bus`.
     pub fn matches<B: Bus>(&self, bus: &mut B) -> bool {
-        self.code.iter().all(|&(a, v)| bus.read(a) == v)
+        self.code.iter().all(|&(a, v)| bus.ram_read(a) == v)
     }
 }
 
@@ -334,7 +346,7 @@ impl<'a> Runner<'a> {
         let start = cpu.r(R::SP);
         for v in [0x00, 0x01] {
             let sp = cpu.r(R::SP);
-            bus.write(0x100 | sp as u16, v);
+            bus.ram_write(0x100 | sp as u16, v);
             cpu.set_r(R::SP, sp.wrapping_sub(1));
         }
         cpu.set_r(R::A, acc);
@@ -422,13 +434,32 @@ impl<'a> Runner<'a> {
                         if cyc && o.aux & mem::VOLATILE != 0 {
                             bus.now(c0 + f[CY as usize] as u64);
                         }
-                        f[o.out as usize] = bus.read(get(f, o.a) as u16) as u32;
+                        let a = get(f, o.a) as u16;
+                        f[o.out as usize] = if o.aux & SPACES == 0 {
+                            bus.read(a)
+                        } else if o.aux & mem::RAM != 0 {
+                            bus.ram_read(a)
+                        } else if o.aux & mem::ROM != 0 {
+                            x.bank.as_ref().unwrap().rom[a as usize]
+                        } else {
+                            x.bank.as_ref().unwrap().read(mem::config(o.aux), bus, a)
+                        } as u32;
                     }
                     Opc::Store => {
                         if cyc && o.aux & mem::VOLATILE != 0 {
                             bus.now(c0 + f[CY as usize] as u64);
                         }
-                        bus.write(get(f, o.a) as u16, get(f, o.b) as u8);
+                        let (a, v) = (get(f, o.a) as u16, get(f, o.b) as u8);
+                        if o.aux & SPACES == 0 {
+                            bus.write(a, v)
+                        } else if o.aux & mem::RAM != 0 {
+                            bus.ram_write(a, v)
+                        } else {
+                            x.bank
+                                .as_ref()
+                                .unwrap()
+                                .write(mem::config(o.aux), bus, a, v)
+                        }
                     }
                     Opc::Branch => ip = enter!(o.aux),
                     Opc::CBranch => {
@@ -506,11 +537,11 @@ impl<'a> Runner<'a> {
                         continue;
                     }
                     let a = 0x100 | e.wrapping_sub(i as u8) as u16;
-                    bus.write(a, f[(base + i) as usize] as u8);
+                    bus.ram_write(a, f[(base + i) as usize] as u8);
                 }
                 if let Some(&(_, ra, s, c)) = self.frames.get(j) {
-                    bus.write(0x100 | s as u16, (ra >> 8) as u8);
-                    bus.write(0x100 | s.wrapping_sub(1) as u16, ra as u8);
+                    bus.ram_write(0x100 | s as u16, (ra >> 8) as u8);
+                    bus.ram_write(0x100 | s.wrapping_sub(1) as u16, ra as u8);
                     (e, fun) = (s.wrapping_sub(2), c);
                 }
             }
@@ -530,10 +561,13 @@ impl<'a> Runner<'a> {
     ) -> Outcome {
         *self.deopts.entry(pc).or_default() += 1;
         cpu.pc = pc;
-        let halt = if self.x.cycles {
-            cpu.run_clocked(bus, sp_above, end)
-        } else {
-            cpu.run_clocked(&mut NoClock(bus), sp_above, end)
+        let halt = match (&self.x.bank, self.x.cycles) {
+            (Some(m), true) => cpu.run_clocked(&mut Banked::new(m, bus), sp_above, end),
+            (Some(m), false) => {
+                cpu.run_clocked(&mut Banked::new(m, &mut NoClock(bus)), sp_above, end)
+            }
+            (None, true) => cpu.run_clocked(bus, sp_above, end),
+            (None, false) => cpu.run_clocked(&mut NoClock(bus), sp_above, end),
         };
         Outcome {
             halt,

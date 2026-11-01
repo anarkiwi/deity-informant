@@ -32,37 +32,37 @@
  "cpu.abs.hw_vector.earlier_call.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.hw_vector.earlier_call.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.hw_vector.pre_lift.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.hw_vector.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.hw_vector.same_call_earlier.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.hw_vector.same_call_earlier.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.kernal_vector.async.flat": {
@@ -74,19 +74,19 @@
  "cpu.abs.kernal_vector.earlier_call.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "lift-no-interrupts",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.kernal_vector.pre_lift.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "lift-no-interrupts",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.kernal_vector.same_call_earlier.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "lift-no-interrupts",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.opcode.async.flat": {
@@ -116,13 +116,13 @@
  "cpu.abs.opcode.earlier_call.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.opcode.earlier_call.ram_under_rom": {
   "witnessed": true,
   "oracle": "machine",
-  "lift": "lift-no-banking",
+  "lift": "exact_nodeopt",
   "gap": null
  },
  "cpu.abs.opcode.pre_lift.flat": {
@@ -134,13 +134,13 @@
  "cpu.abs.opcode.pre_lift.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.opcode.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.opcode.same_call_earlier.flat": {
@@ -152,13 +152,13 @@
  "cpu.abs.opcode.same_call_earlier.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.opcode.same_call_earlier.ram_under_rom": {
   "witnessed": true,
   "oracle": "machine",
-  "lift": "lift-no-banking",
+  "lift": "exact_nodeopt",
   "gap": null
  },
  "cpu.abs.opcode.same_insn.flat": {
@@ -170,13 +170,13 @@
  "cpu.abs.opcode.same_insn.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.opcode.same_insn.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.operand.async.flat": {
@@ -206,13 +206,13 @@
  "cpu.abs.operand.earlier_call.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.operand.earlier_call.ram_under_rom": {
   "witnessed": true,
   "oracle": "machine",
-  "lift": "lift-no-banking",
+  "lift": "exact_nodeopt",
   "gap": null
  },
  "cpu.abs.operand.pre_lift.flat": {
@@ -224,13 +224,13 @@
  "cpu.abs.operand.pre_lift.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.operand.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.operand.same_call_earlier.flat": {
@@ -242,13 +242,13 @@
  "cpu.abs.operand.same_call_earlier.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.operand.same_call_earlier.ram_under_rom": {
   "witnessed": true,
   "oracle": "machine",
-  "lift": "lift-no-banking",
+  "lift": "exact_nodeopt",
   "gap": null
  },
  "cpu.abs.operand.same_insn.flat": {
@@ -260,13 +260,13 @@
  "cpu.abs.operand.same_insn.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.operand.same_insn.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.ptr_indirect.async.flat": {
@@ -296,13 +296,13 @@
  "cpu.abs.ptr_indirect.earlier_call.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.ptr_indirect.earlier_call.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.ptr_indirect.pre_lift.flat": {
@@ -314,13 +314,13 @@
  "cpu.abs.ptr_indirect.pre_lift.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.ptr_indirect.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.ptr_indirect.same_call_earlier.flat": {
@@ -332,13 +332,13 @@
  "cpu.abs.ptr_indirect.same_call_earlier.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.ptr_indirect.same_call_earlier.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs.ret_addr.async.flat": {
@@ -428,37 +428,37 @@
  "cpu.abs_indexed.hw_vector.earlier_call.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.hw_vector.earlier_call.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.hw_vector.pre_lift.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.hw_vector.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.hw_vector.same_call_earlier.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.hw_vector.same_call_earlier.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.kernal_vector.async.flat": {
@@ -470,19 +470,19 @@
  "cpu.abs_indexed.kernal_vector.earlier_call.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "lift-no-interrupts",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.kernal_vector.pre_lift.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "lift-no-interrupts",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.kernal_vector.same_call_earlier.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "lift-no-interrupts",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.opcode.async.flat": {
@@ -512,13 +512,13 @@
  "cpu.abs_indexed.opcode.earlier_call.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.opcode.earlier_call.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.opcode.pre_lift.flat": {
@@ -530,13 +530,13 @@
  "cpu.abs_indexed.opcode.pre_lift.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.opcode.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.opcode.same_call_earlier.flat": {
@@ -548,13 +548,13 @@
  "cpu.abs_indexed.opcode.same_call_earlier.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.opcode.same_call_earlier.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.opcode.same_insn.flat": {
@@ -566,13 +566,13 @@
  "cpu.abs_indexed.opcode.same_insn.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.opcode.same_insn.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.operand.async.flat": {
@@ -602,13 +602,13 @@
  "cpu.abs_indexed.operand.earlier_call.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.operand.earlier_call.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.operand.pre_lift.flat": {
@@ -620,13 +620,13 @@
  "cpu.abs_indexed.operand.pre_lift.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.operand.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.operand.same_call_earlier.flat": {
@@ -638,13 +638,13 @@
  "cpu.abs_indexed.operand.same_call_earlier.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.operand.same_call_earlier.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.operand.same_insn.flat": {
@@ -656,13 +656,13 @@
  "cpu.abs_indexed.operand.same_insn.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.operand.same_insn.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.ptr_indirect.async.flat": {
@@ -692,13 +692,13 @@
  "cpu.abs_indexed.ptr_indirect.earlier_call.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.ptr_indirect.earlier_call.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.ptr_indirect.pre_lift.flat": {
@@ -710,13 +710,13 @@
  "cpu.abs_indexed.ptr_indirect.pre_lift.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.ptr_indirect.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.ptr_indirect.same_call_earlier.flat": {
@@ -728,13 +728,13 @@
  "cpu.abs_indexed.ptr_indirect.same_call_earlier.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.ptr_indirect.same_call_earlier.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed.ret_addr.async.flat": {
@@ -824,37 +824,37 @@
  "cpu.abs_indexed_rmw.hw_vector.earlier_call.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.hw_vector.earlier_call.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.hw_vector.pre_lift.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.hw_vector.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.hw_vector.same_call_earlier.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.hw_vector.same_call_earlier.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.kernal_vector.async.flat": {
@@ -866,19 +866,19 @@
  "cpu.abs_indexed_rmw.kernal_vector.earlier_call.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "lift-no-interrupts",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.kernal_vector.pre_lift.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "lift-no-interrupts",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.kernal_vector.same_call_earlier.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "lift-no-interrupts",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.opcode.async.flat": {
@@ -908,13 +908,13 @@
  "cpu.abs_indexed_rmw.opcode.earlier_call.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.opcode.earlier_call.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.opcode.pre_lift.flat": {
@@ -926,13 +926,13 @@
  "cpu.abs_indexed_rmw.opcode.pre_lift.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.opcode.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.opcode.same_call_earlier.flat": {
@@ -944,13 +944,13 @@
  "cpu.abs_indexed_rmw.opcode.same_call_earlier.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.opcode.same_call_earlier.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.opcode.same_insn.flat": {
@@ -962,13 +962,13 @@
  "cpu.abs_indexed_rmw.opcode.same_insn.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.opcode.same_insn.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.operand.async.flat": {
@@ -998,13 +998,13 @@
  "cpu.abs_indexed_rmw.operand.earlier_call.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.operand.earlier_call.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.operand.pre_lift.flat": {
@@ -1016,13 +1016,13 @@
  "cpu.abs_indexed_rmw.operand.pre_lift.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.operand.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.operand.same_call_earlier.flat": {
@@ -1034,13 +1034,13 @@
  "cpu.abs_indexed_rmw.operand.same_call_earlier.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.operand.same_call_earlier.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.operand.same_insn.flat": {
@@ -1052,13 +1052,13 @@
  "cpu.abs_indexed_rmw.operand.same_insn.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.operand.same_insn.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.ptr_indirect.async.flat": {
@@ -1088,13 +1088,13 @@
  "cpu.abs_indexed_rmw.ptr_indirect.earlier_call.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.ptr_indirect.earlier_call.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.ptr_indirect.pre_lift.flat": {
@@ -1106,13 +1106,13 @@
  "cpu.abs_indexed_rmw.ptr_indirect.pre_lift.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.ptr_indirect.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.ptr_indirect.same_call_earlier.flat": {
@@ -1124,13 +1124,13 @@
  "cpu.abs_indexed_rmw.ptr_indirect.same_call_earlier.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.ptr_indirect.same_call_earlier.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_indexed_rmw.ret_addr.async.flat": {
@@ -1220,37 +1220,37 @@
  "cpu.abs_rmw.hw_vector.earlier_call.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.hw_vector.earlier_call.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.hw_vector.pre_lift.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.hw_vector.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.hw_vector.same_call_earlier.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.hw_vector.same_call_earlier.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.kernal_vector.async.flat": {
@@ -1262,19 +1262,19 @@
  "cpu.abs_rmw.kernal_vector.earlier_call.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "lift-no-interrupts",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.kernal_vector.pre_lift.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "lift-no-interrupts",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.kernal_vector.same_call_earlier.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "lift-no-interrupts",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.opcode.async.flat": {
@@ -1304,13 +1304,13 @@
  "cpu.abs_rmw.opcode.earlier_call.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.opcode.earlier_call.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.opcode.pre_lift.flat": {
@@ -1322,13 +1322,13 @@
  "cpu.abs_rmw.opcode.pre_lift.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.opcode.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.opcode.same_call_earlier.flat": {
@@ -1340,13 +1340,13 @@
  "cpu.abs_rmw.opcode.same_call_earlier.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.opcode.same_call_earlier.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.opcode.same_insn.flat": {
@@ -1358,13 +1358,13 @@
  "cpu.abs_rmw.opcode.same_insn.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.opcode.same_insn.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.operand.async.flat": {
@@ -1394,13 +1394,13 @@
  "cpu.abs_rmw.operand.earlier_call.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.operand.earlier_call.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.operand.pre_lift.flat": {
@@ -1412,13 +1412,13 @@
  "cpu.abs_rmw.operand.pre_lift.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.operand.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.operand.same_call_earlier.flat": {
@@ -1430,13 +1430,13 @@
  "cpu.abs_rmw.operand.same_call_earlier.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.operand.same_call_earlier.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.operand.same_insn.flat": {
@@ -1448,13 +1448,13 @@
  "cpu.abs_rmw.operand.same_insn.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.operand.same_insn.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.ptr_indirect.async.flat": {
@@ -1484,13 +1484,13 @@
  "cpu.abs_rmw.ptr_indirect.earlier_call.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.ptr_indirect.earlier_call.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.ptr_indirect.pre_lift.flat": {
@@ -1502,13 +1502,13 @@
  "cpu.abs_rmw.ptr_indirect.pre_lift.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.ptr_indirect.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.ptr_indirect.same_call_earlier.flat": {
@@ -1520,13 +1520,13 @@
  "cpu.abs_rmw.ptr_indirect.same_call_earlier.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.ptr_indirect.same_call_earlier.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.abs_rmw.ret_addr.async.flat": {
@@ -1616,37 +1616,37 @@
  "cpu.indirect.hw_vector.earlier_call.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.hw_vector.earlier_call.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.hw_vector.pre_lift.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.hw_vector.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.hw_vector.same_call_earlier.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.hw_vector.same_call_earlier.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.kernal_vector.async.flat": {
@@ -1658,19 +1658,19 @@
  "cpu.indirect.kernal_vector.earlier_call.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "lift-no-interrupts",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.kernal_vector.pre_lift.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "lift-no-interrupts",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.kernal_vector.same_call_earlier.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "lift-no-interrupts",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.opcode.async.flat": {
@@ -1700,13 +1700,13 @@
  "cpu.indirect.opcode.earlier_call.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.opcode.earlier_call.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.opcode.pre_lift.flat": {
@@ -1718,13 +1718,13 @@
  "cpu.indirect.opcode.pre_lift.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.opcode.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.opcode.same_call_earlier.flat": {
@@ -1736,13 +1736,13 @@
  "cpu.indirect.opcode.same_call_earlier.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.opcode.same_call_earlier.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.opcode.same_insn.flat": {
@@ -1754,13 +1754,13 @@
  "cpu.indirect.opcode.same_insn.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.opcode.same_insn.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.operand.async.flat": {
@@ -1790,13 +1790,13 @@
  "cpu.indirect.operand.earlier_call.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.operand.earlier_call.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.operand.pre_lift.flat": {
@@ -1808,13 +1808,13 @@
  "cpu.indirect.operand.pre_lift.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.operand.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.operand.same_call_earlier.flat": {
@@ -1826,13 +1826,13 @@
  "cpu.indirect.operand.same_call_earlier.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.operand.same_call_earlier.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.operand.same_insn.flat": {
@@ -1844,13 +1844,13 @@
  "cpu.indirect.operand.same_insn.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.operand.same_insn.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.ptr_indirect.async.flat": {
@@ -1880,13 +1880,13 @@
  "cpu.indirect.ptr_indirect.earlier_call.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.ptr_indirect.earlier_call.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.ptr_indirect.pre_lift.flat": {
@@ -1898,13 +1898,13 @@
  "cpu.indirect.ptr_indirect.pre_lift.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.ptr_indirect.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.ptr_indirect.same_call_earlier.flat": {
@@ -1916,13 +1916,13 @@
  "cpu.indirect.ptr_indirect.same_call_earlier.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.ptr_indirect.same_call_earlier.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect.ret_addr.async.flat": {
@@ -2012,37 +2012,37 @@
  "cpu.indirect_rmw.hw_vector.earlier_call.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.hw_vector.earlier_call.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.hw_vector.pre_lift.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.hw_vector.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.hw_vector.same_call_earlier.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.hw_vector.same_call_earlier.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.kernal_vector.async.flat": {
@@ -2054,19 +2054,19 @@
  "cpu.indirect_rmw.kernal_vector.earlier_call.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "lift-no-interrupts",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.kernal_vector.pre_lift.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "lift-no-interrupts",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.kernal_vector.same_call_earlier.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "lift-no-interrupts",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.opcode.async.flat": {
@@ -2096,13 +2096,13 @@
  "cpu.indirect_rmw.opcode.earlier_call.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.opcode.earlier_call.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.opcode.pre_lift.flat": {
@@ -2114,13 +2114,13 @@
  "cpu.indirect_rmw.opcode.pre_lift.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.opcode.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.opcode.same_call_earlier.flat": {
@@ -2132,13 +2132,13 @@
  "cpu.indirect_rmw.opcode.same_call_earlier.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.opcode.same_call_earlier.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.opcode.same_insn.flat": {
@@ -2150,13 +2150,13 @@
  "cpu.indirect_rmw.opcode.same_insn.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.opcode.same_insn.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.operand.async.flat": {
@@ -2186,13 +2186,13 @@
  "cpu.indirect_rmw.operand.earlier_call.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.operand.earlier_call.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.operand.pre_lift.flat": {
@@ -2204,13 +2204,13 @@
  "cpu.indirect_rmw.operand.pre_lift.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.operand.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.operand.same_call_earlier.flat": {
@@ -2222,13 +2222,13 @@
  "cpu.indirect_rmw.operand.same_call_earlier.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.operand.same_call_earlier.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.operand.same_insn.flat": {
@@ -2240,13 +2240,13 @@
  "cpu.indirect_rmw.operand.same_insn.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.operand.same_insn.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.ptr_indirect.async.flat": {
@@ -2276,13 +2276,13 @@
  "cpu.indirect_rmw.ptr_indirect.earlier_call.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.ptr_indirect.earlier_call.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.ptr_indirect.pre_lift.flat": {
@@ -2294,13 +2294,13 @@
  "cpu.indirect_rmw.ptr_indirect.pre_lift.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.ptr_indirect.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.ptr_indirect.same_call_earlier.flat": {
@@ -2312,13 +2312,13 @@
  "cpu.indirect_rmw.ptr_indirect.same_call_earlier.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.ptr_indirect.same_call_earlier.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.indirect_rmw.ret_addr.async.flat": {
@@ -2516,37 +2516,37 @@
  "cpu.unstable_high.hw_vector.earlier_call.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.hw_vector.earlier_call.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.hw_vector.pre_lift.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.hw_vector.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.hw_vector.same_call_earlier.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.hw_vector.same_call_earlier.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.kernal_vector.async.flat": {
@@ -2558,19 +2558,19 @@
  "cpu.unstable_high.kernal_vector.earlier_call.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "lift-no-interrupts",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.kernal_vector.pre_lift.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "lift-no-interrupts",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.kernal_vector.same_call_earlier.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "lift-no-interrupts",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.opcode.async.flat": {
@@ -2600,13 +2600,13 @@
  "cpu.unstable_high.opcode.earlier_call.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.opcode.earlier_call.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.opcode.pre_lift.flat": {
@@ -2618,13 +2618,13 @@
  "cpu.unstable_high.opcode.pre_lift.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.opcode.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.opcode.same_call_earlier.flat": {
@@ -2636,13 +2636,13 @@
  "cpu.unstable_high.opcode.same_call_earlier.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.opcode.same_call_earlier.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.opcode.same_insn.flat": {
@@ -2654,13 +2654,13 @@
  "cpu.unstable_high.opcode.same_insn.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.opcode.same_insn.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.operand.async.flat": {
@@ -2690,13 +2690,13 @@
  "cpu.unstable_high.operand.earlier_call.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.operand.earlier_call.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.operand.pre_lift.flat": {
@@ -2708,13 +2708,13 @@
  "cpu.unstable_high.operand.pre_lift.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.operand.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.operand.same_call_earlier.flat": {
@@ -2726,13 +2726,13 @@
  "cpu.unstable_high.operand.same_call_earlier.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.operand.same_call_earlier.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.operand.same_insn.flat": {
@@ -2744,13 +2744,13 @@
  "cpu.unstable_high.operand.same_insn.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.operand.same_insn.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.ptr_indirect.async.flat": {
@@ -2780,13 +2780,13 @@
  "cpu.unstable_high.ptr_indirect.earlier_call.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.ptr_indirect.earlier_call.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.ptr_indirect.pre_lift.flat": {
@@ -2798,13 +2798,13 @@
  "cpu.unstable_high.ptr_indirect.pre_lift.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.ptr_indirect.pre_lift.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.ptr_indirect.same_call_earlier.flat": {
@@ -2816,13 +2816,13 @@
  "cpu.unstable_high.ptr_indirect.same_call_earlier.ram_under_io": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.ptr_indirect.same_call_earlier.ram_under_rom": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu.unstable_high.ret_addr.async.flat": {
@@ -3242,13 +3242,13 @@
  "cpu_port.abs.bank_reg.earlier_call.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs.bank_reg.same_call_earlier.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs.hw_vector.async.rom_vs_ram": {
@@ -3260,19 +3260,19 @@
  "cpu_port.abs.hw_vector.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs.hw_vector.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs.hw_vector.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs.opcode.async.rom_vs_ram": {
@@ -3284,19 +3284,19 @@
  "cpu_port.abs.opcode.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs.opcode.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs.opcode.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs.operand.async.rom_vs_ram": {
@@ -3308,19 +3308,19 @@
  "cpu_port.abs.operand.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs.operand.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs.operand.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs.ptr_indirect.async.rom_vs_ram": {
@@ -3332,19 +3332,19 @@
  "cpu_port.abs.ptr_indirect.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs.ptr_indirect.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs.ptr_indirect.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed.bank_reg.async.flat": {
@@ -3356,13 +3356,13 @@
  "cpu_port.abs_indexed.bank_reg.earlier_call.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed.bank_reg.same_call_earlier.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed.hw_vector.async.rom_vs_ram": {
@@ -3374,19 +3374,19 @@
  "cpu_port.abs_indexed.hw_vector.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed.hw_vector.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed.hw_vector.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed.opcode.async.rom_vs_ram": {
@@ -3398,19 +3398,19 @@
  "cpu_port.abs_indexed.opcode.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed.opcode.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed.opcode.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed.operand.async.rom_vs_ram": {
@@ -3422,19 +3422,19 @@
  "cpu_port.abs_indexed.operand.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed.operand.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed.operand.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed.ptr_indirect.async.rom_vs_ram": {
@@ -3446,19 +3446,19 @@
  "cpu_port.abs_indexed.ptr_indirect.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed.ptr_indirect.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed.ptr_indirect.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed_rmw.bank_reg.async.flat": {
@@ -3470,13 +3470,13 @@
  "cpu_port.abs_indexed_rmw.bank_reg.earlier_call.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed_rmw.bank_reg.same_call_earlier.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed_rmw.hw_vector.async.rom_vs_ram": {
@@ -3488,19 +3488,19 @@
  "cpu_port.abs_indexed_rmw.hw_vector.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed_rmw.hw_vector.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed_rmw.hw_vector.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed_rmw.opcode.async.rom_vs_ram": {
@@ -3512,19 +3512,19 @@
  "cpu_port.abs_indexed_rmw.opcode.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed_rmw.opcode.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed_rmw.opcode.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed_rmw.operand.async.rom_vs_ram": {
@@ -3536,19 +3536,19 @@
  "cpu_port.abs_indexed_rmw.operand.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed_rmw.operand.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed_rmw.operand.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed_rmw.ptr_indirect.async.rom_vs_ram": {
@@ -3560,19 +3560,19 @@
  "cpu_port.abs_indexed_rmw.ptr_indirect.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed_rmw.ptr_indirect.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_indexed_rmw.ptr_indirect.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_rmw.bank_reg.async.flat": {
@@ -3584,13 +3584,13 @@
  "cpu_port.abs_rmw.bank_reg.earlier_call.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_rmw.bank_reg.same_call_earlier.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_rmw.hw_vector.async.rom_vs_ram": {
@@ -3602,19 +3602,19 @@
  "cpu_port.abs_rmw.hw_vector.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_rmw.hw_vector.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_rmw.hw_vector.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_rmw.opcode.async.rom_vs_ram": {
@@ -3626,19 +3626,19 @@
  "cpu_port.abs_rmw.opcode.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_rmw.opcode.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_rmw.opcode.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_rmw.operand.async.rom_vs_ram": {
@@ -3650,19 +3650,19 @@
  "cpu_port.abs_rmw.operand.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_rmw.operand.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_rmw.operand.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_rmw.ptr_indirect.async.rom_vs_ram": {
@@ -3674,19 +3674,19 @@
  "cpu_port.abs_rmw.ptr_indirect.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_rmw.ptr_indirect.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.abs_rmw.ptr_indirect.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect.bank_reg.async.flat": {
@@ -3698,13 +3698,13 @@
  "cpu_port.indirect.bank_reg.earlier_call.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect.bank_reg.same_call_earlier.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect.hw_vector.async.rom_vs_ram": {
@@ -3716,19 +3716,19 @@
  "cpu_port.indirect.hw_vector.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect.hw_vector.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect.hw_vector.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect.opcode.async.rom_vs_ram": {
@@ -3740,19 +3740,19 @@
  "cpu_port.indirect.opcode.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect.opcode.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect.opcode.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect.operand.async.rom_vs_ram": {
@@ -3764,19 +3764,19 @@
  "cpu_port.indirect.operand.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect.operand.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect.operand.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect.ptr_indirect.async.rom_vs_ram": {
@@ -3788,19 +3788,19 @@
  "cpu_port.indirect.ptr_indirect.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect.ptr_indirect.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect.ptr_indirect.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect_rmw.bank_reg.async.flat": {
@@ -3812,13 +3812,13 @@
  "cpu_port.indirect_rmw.bank_reg.earlier_call.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect_rmw.bank_reg.same_call_earlier.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect_rmw.hw_vector.async.rom_vs_ram": {
@@ -3830,19 +3830,19 @@
  "cpu_port.indirect_rmw.hw_vector.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect_rmw.hw_vector.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect_rmw.hw_vector.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect_rmw.opcode.async.rom_vs_ram": {
@@ -3854,19 +3854,19 @@
  "cpu_port.indirect_rmw.opcode.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect_rmw.opcode.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect_rmw.opcode.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect_rmw.operand.async.rom_vs_ram": {
@@ -3878,19 +3878,19 @@
  "cpu_port.indirect_rmw.operand.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect_rmw.operand.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect_rmw.operand.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect_rmw.ptr_indirect.async.rom_vs_ram": {
@@ -3902,43 +3902,43 @@
  "cpu_port.indirect_rmw.ptr_indirect.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect_rmw.ptr_indirect.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.indirect_rmw.ptr_indirect.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.reset.hw_vector.pre_lift.rom_vs_ram": {
   "witnessed": true,
   "oracle": "machine",
-  "lift": "lift-no-banking",
+  "lift": "lift-no-interrupts",
   "gap": null
  },
  "cpu_port.reset.opcode.pre_lift.rom_vs_ram": {
   "witnessed": true,
   "oracle": "machine",
-  "lift": "lift-no-banking",
+  "lift": "lift-no-interrupts",
   "gap": null
  },
  "cpu_port.reset.operand.pre_lift.rom_vs_ram": {
   "witnessed": true,
   "oracle": "machine",
-  "lift": "lift-no-banking",
+  "lift": "lift-no-interrupts",
   "gap": null
  },
  "cpu_port.reset.ptr_indirect.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.unstable_high.bank_reg.async.flat": {
@@ -3950,13 +3950,13 @@
  "cpu_port.unstable_high.bank_reg.earlier_call.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.unstable_high.bank_reg.same_call_earlier.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.unstable_high.hw_vector.async.rom_vs_ram": {
@@ -3968,19 +3968,19 @@
  "cpu_port.unstable_high.hw_vector.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.unstable_high.hw_vector.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.unstable_high.hw_vector.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.unstable_high.opcode.async.rom_vs_ram": {
@@ -3992,19 +3992,19 @@
  "cpu_port.unstable_high.opcode.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.unstable_high.opcode.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.unstable_high.opcode.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.unstable_high.operand.async.rom_vs_ram": {
@@ -4016,19 +4016,19 @@
  "cpu_port.unstable_high.operand.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.unstable_high.operand.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.unstable_high.operand.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.unstable_high.ptr_indirect.async.rom_vs_ram": {
@@ -4040,19 +4040,19 @@
  "cpu_port.unstable_high.ptr_indirect.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.unstable_high.ptr_indirect.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.unstable_high.ptr_indirect.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp.bank_reg.async.flat": {
@@ -4064,13 +4064,13 @@
  "cpu_port.zp.bank_reg.earlier_call.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp.bank_reg.same_call_earlier.flat": {
   "witnessed": true,
   "oracle": "machine",
-  "lift": "lift-no-banking",
+  "lift": "exact_nodeopt",
   "gap": null
  },
  "cpu_port.zp.hw_vector.async.rom_vs_ram": {
@@ -4082,19 +4082,19 @@
  "cpu_port.zp.hw_vector.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp.hw_vector.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp.hw_vector.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp.opcode.async.rom_vs_ram": {
@@ -4106,19 +4106,19 @@
  "cpu_port.zp.opcode.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp.opcode.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp.opcode.same_call_earlier.rom_vs_ram": {
   "witnessed": true,
   "oracle": "machine",
-  "lift": "lift-no-banking",
+  "lift": "exact_nodeopt",
   "gap": null
  },
  "cpu_port.zp.operand.async.rom_vs_ram": {
@@ -4130,19 +4130,19 @@
  "cpu_port.zp.operand.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp.operand.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp.operand.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp.ptr_indirect.async.rom_vs_ram": {
@@ -4154,19 +4154,19 @@
  "cpu_port.zp.ptr_indirect.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp.ptr_indirect.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp.ptr_indirect.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap.bank_reg.async.flat": {
@@ -4178,13 +4178,13 @@
  "cpu_port.zp_indexed_wrap.bank_reg.earlier_call.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap.bank_reg.same_call_earlier.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap.hw_vector.async.rom_vs_ram": {
@@ -4196,19 +4196,19 @@
  "cpu_port.zp_indexed_wrap.hw_vector.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap.hw_vector.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap.hw_vector.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap.opcode.async.rom_vs_ram": {
@@ -4220,19 +4220,19 @@
  "cpu_port.zp_indexed_wrap.opcode.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap.opcode.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap.opcode.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap.operand.async.rom_vs_ram": {
@@ -4244,19 +4244,19 @@
  "cpu_port.zp_indexed_wrap.operand.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap.operand.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap.operand.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap.ptr_indirect.async.rom_vs_ram": {
@@ -4268,19 +4268,19 @@
  "cpu_port.zp_indexed_wrap.ptr_indirect.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap.ptr_indirect.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap.ptr_indirect.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap_rmw.bank_reg.async.flat": {
@@ -4292,13 +4292,13 @@
  "cpu_port.zp_indexed_wrap_rmw.bank_reg.earlier_call.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap_rmw.bank_reg.same_call_earlier.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap_rmw.hw_vector.async.rom_vs_ram": {
@@ -4310,19 +4310,19 @@
  "cpu_port.zp_indexed_wrap_rmw.hw_vector.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap_rmw.hw_vector.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap_rmw.hw_vector.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap_rmw.opcode.async.rom_vs_ram": {
@@ -4334,19 +4334,19 @@
  "cpu_port.zp_indexed_wrap_rmw.opcode.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap_rmw.opcode.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap_rmw.opcode.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap_rmw.operand.async.rom_vs_ram": {
@@ -4358,19 +4358,19 @@
  "cpu_port.zp_indexed_wrap_rmw.operand.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap_rmw.operand.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap_rmw.operand.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap_rmw.ptr_indirect.async.rom_vs_ram": {
@@ -4382,19 +4382,19 @@
  "cpu_port.zp_indexed_wrap_rmw.ptr_indirect.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap_rmw.ptr_indirect.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_indexed_wrap_rmw.ptr_indirect.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_rmw.bank_reg.async.flat": {
@@ -4406,13 +4406,13 @@
  "cpu_port.zp_rmw.bank_reg.earlier_call.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_rmw.bank_reg.same_call_earlier.flat": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_rmw.hw_vector.async.rom_vs_ram": {
@@ -4424,19 +4424,19 @@
  "cpu_port.zp_rmw.hw_vector.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_rmw.hw_vector.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_rmw.hw_vector.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_rmw.opcode.async.rom_vs_ram": {
@@ -4448,19 +4448,19 @@
  "cpu_port.zp_rmw.opcode.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_rmw.opcode.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_rmw.opcode.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_rmw.operand.async.rom_vs_ram": {
@@ -4472,19 +4472,19 @@
  "cpu_port.zp_rmw.operand.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_rmw.operand.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_rmw.operand.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_rmw.ptr_indirect.async.rom_vs_ram": {
@@ -4496,19 +4496,19 @@
  "cpu_port.zp_rmw.ptr_indirect.earlier_call.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_rmw.ptr_indirect.pre_lift.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "cpu_port.zp_rmw.ptr_indirect.same_call_earlier.rom_vs_ram": {
   "witnessed": false,
   "oracle": null,
-  "lift": "lift-no-banking",
+  "lift": "placement-not-synthesized",
   "gap": "machine-not-synthesized"
  },
  "irq_push.sp_rel.ret_addr.async.flat": {

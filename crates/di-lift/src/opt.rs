@@ -1010,14 +1010,15 @@ fn number_block(lv: &mut Lvn, blk: &mut Block, tables: &[Vec<(u16, u32)>], st: &
                     }
                 }
                 let mk = lv.memkey(a);
-                let hit = (!op.volatile())
+                let hit = op
+                    .plain()
                     .then(|| st.mem.iter().find(|e| e.0 == mk).copied())
                     .flatten();
                 if let Some((_, v)) = hit {
                     result = Some((v, false));
                 } else {
                     let s = lv.leaf(1, Iv::full(1));
-                    if !op.volatile() {
+                    if op.plain() {
                         st.remember((mk, Val::S(s)));
                     }
                     result = Some((Val::S(s), true));
@@ -1031,7 +1032,7 @@ fn number_block(lv: &mut Lvn, blk: &mut Block, tables: &[Vec<(u16, u32)>], st: &
                 }
                 let mk = lv.memkey(a);
                 st.forget(|e| lv.alias(e, mk));
-                if !op.volatile() {
+                if op.plain() {
                     st.remember((mk, b));
                 }
             }

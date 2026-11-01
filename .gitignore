@@ -13,6 +13,7 @@ dist/
 *.prg
 *.pdf
 nomoresecrets.pdf
+.romcache/
 
 # local artifacts
 .venv/

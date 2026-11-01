@@ -26,7 +26,9 @@ class Facts:
     ``page1`` instructions whose accesses reached $0100-$01FF with the ``[lo, hi]`` page-1
     addresses each reached, the stack
     ``heights`` each start was seen at (relative to its call's entry, pushes negative), and
-    the ``entry_sp`` values (SP after the call's return address) each entry was called at."""
+    the ``entry_sp`` values (SP after the call's return address) each entry was called at; on a
+    banked host, the bank configuration indices ``banks`` each start ran in and the
+    ``entry_port`` ``[dir, data]`` port register values each entry was called with."""
 
     starts: list = field(default_factory=list)
     edges: list = field(default_factory=list)
@@ -34,6 +36,8 @@ class Facts:
     page1: dict = field(default_factory=dict)
     heights: dict = field(default_factory=dict)
     entry_sp: dict = field(default_factory=dict)
+    banks: dict = field(default_factory=dict)
+    entry_port: dict = field(default_factory=dict)
 
     def to_dict(self):
         return {
@@ -43,6 +47,8 @@ class Facts:
             "page1": {int(a): list(r) for a, r in self.page1.items()},
             "heights": {int(a): sorted(v) for a, v in self.heights.items()},
             "entry_sp": {int(a): sorted(v) for a, v in self.entry_sp.items()},
+            "banks": {int(a): sorted(v) for a, v in self.banks.items()},
+            "entry_port": {int(a): sorted(map(list, v)) for a, v in self.entry_port.items()},
         }
 
     @classmethod
@@ -54,6 +60,11 @@ class Facts:
             page1={int(a): [int(lo), int(hi)] for a, (lo, hi) in d.get("page1", {}).items()},
             heights={int(a): sorted(int(x) for x in v) for a, v in d.get("heights", {}).items()},
             entry_sp={int(a): sorted(int(x) for x in v) for a, v in d.get("entry_sp", {}).items()},
+            banks={int(a): sorted(int(x) for x in v) for a, v in d.get("banks", {}).items()},
+            entry_port={
+                int(a): sorted([int(p), int(q)] for p, q in v)
+                for a, v in d.get("entry_port", {}).items()
+            },
         )
 
     def dumps(self):
