@@ -12,9 +12,9 @@ pub mod ir;
 mod templates_gen;
 
 pub use decode::{decode_range, instantiate, instantiate_bytes, MAX_OPS};
-pub use interp::{reg, Bus, Cpu, Jam};
+pub use interp::{reg, Bus, Cpu, Halt, Jam};
 pub use ir::{
-    Ctrl, CtrlKind, Insn, Op, Opc, Operands, Pen, PenKind, Slot, Space, Template, Vn, FILE,
+    binop, Ctrl, CtrlKind, Insn, Op, Opc, Operands, Pen, PenKind, Slot, Space, Template, Vn, FILE,
     UNIQ_BASE,
 };
 pub use templates_gen::{BINDS, OPS, TEMPLATES, UNIQUE_SIZE};

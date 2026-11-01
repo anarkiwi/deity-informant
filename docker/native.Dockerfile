@@ -23,9 +23,10 @@ FROM toolchain AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/di-pcode/Cargo.toml crates/di-pcode/
+COPY crates/di-lift/Cargo.toml crates/di-lift/
 COPY crates/di-py/Cargo.toml crates/di-py/
-RUN mkdir -p crates/di-pcode/src crates/di-py/src \
-    && touch crates/di-pcode/src/lib.rs crates/di-py/src/lib.rs \
+RUN mkdir -p crates/di-pcode/src crates/di-lift/src crates/di-py/src \
+    && touch crates/di-pcode/src/lib.rs crates/di-lift/src/lib.rs crates/di-py/src/lib.rs \
     && cargo fetch --locked
 COPY pyproject.toml README.md LICENSE ./
 COPY crates crates

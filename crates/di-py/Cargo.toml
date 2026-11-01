@@ -12,4 +12,6 @@ path = "src/lib.rs"
 
 [dependencies]
 di-pcode = { path = "../di-pcode" }
+di-lift = { path = "../di-lift" }
+indicatif = "0.18"
 pyo3 = { version = "0.30", features = ["abi3-py310"] }
