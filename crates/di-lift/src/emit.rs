@@ -38,6 +38,10 @@ pub struct Shared<'a> {
     pub fidx: FxHashMap<u16, u32>,
     /// Callees whose returns must check their return address (they may store into page 1).
     pub ret_guard: FixedBitSet,
+    /// Per function: the slot indices whose stack bytes it keeps in slot registers.
+    pub slots: Vec<FixedBitSet>,
+    /// The `[lo, hi]` page-1 addresses each instruction reached in the facts.
+    pub seen: FxHashMap<u16, (u16, u16)>,
 }
 
 impl Shared<'_> {
@@ -76,6 +80,7 @@ struct Em<'a, 'b> {
     /// pushes and pulls are stack slots.
     h: Option<i32>,
     promote: bool,
+    slots: &'a FixedBitSet,
     n: Counts,
 }
 
@@ -112,9 +117,14 @@ pub fn emit(sh: &Shared, plan: &Plan, entry: Option<&Entry>, fi: usize) -> (Func
         pend: (0, Vec::new()),
         h: None,
         promote: sh.promote.contains(fi),
+        slots: &sh.slots[fi],
         n: Counts::default(),
     };
     em.new_block(plan.pc);
+    if let Some(s) = plan.sp {
+        let bad = em.op(Opc::IntNotEqual, 1, r1(R::SP), k(s as u32, 1));
+        em.side_exit(bad, true, |em| em.deopt(k(plan.pc as u32, 2)));
+    }
     for (i, vals) in entry.into_iter().flat_map(|e| &e.regs) {
         if let [v] = vals[..] {
             let bad = em.op(Opc::IntNotEqual, 1, r1(*i), k(v as u32, 1));
@@ -131,6 +141,9 @@ pub fn emit(sh: &Shared, plan: &Plan, entry: Option<&Entry>, fi: usize) -> (Func
     }
     if em.n.sp_dispatch > 0 && em.f.nslots > 0 {
         em.preload();
+    }
+    if em.promote {
+        em.f.slotted = em.slots.clone();
     }
     (em.f, em.n)
 }
@@ -204,24 +217,30 @@ impl<'a> Em<'a, '_> {
         self.emit(Opc::Load, t, addr, NONE, flags);
         t
     }
-    /// The stack-slot register of the byte at offset `d` from the entry SP, if promoted.
+    /// The stack-slot register of the byte at offset `d` from the entry SP, if promoted and
+    /// a slot (other bytes stay in memory).
     fn slot(&mut self, d: i32) -> Option<Vn> {
         let i = u32::try_from(-d)
             .ok()
-            .filter(|&i| i < 0x100 && self.h.is_some())?;
+            .filter(|&i| i < 0x100 && self.h.is_some() && self.slots.contains(i as usize))?;
         self.f.nslots = self.f.nslots.max(i + 1);
         self.n.slot_ops += 1;
         Some(reg((NREG as u32 + i) as u16, 1))
     }
-    /// Whether the current node runs with stack bytes the lift keeps out of memory above SP:
-    /// a callee (its elided return address) or below its entry height.
-    fn elided_live(&self) -> bool {
-        self.sh.private && (!self.plan.top || matches!(self.nh, H::Known(h) if h < 0))
+    /// Whether an access at `addr` from the current node may hit a stack byte kept out of
+    /// memory (none unless the stack is private).
+    fn kept(&self, addr: Iv) -> bool {
+        self.sh.private && self.plan.kept(self.slots, self.nh, addr)
     }
-    /// Deopt to `pc` before the access at `addr` when it reaches page 1.
-    fn page1_guard(&mut self, addr: Vn, pc: u16) {
+    /// Deopt to `pc` before the access at `addr` when it reaches page 1 (outside `allow`).
+    fn page1_guard(&mut self, addr: Vn, pc: u16, allow: Option<Iv>) {
         let page = self.op(Opc::IntAnd, 2, addr, k(0xff00, 2));
-        let hit = self.op(Opc::IntEqual, 1, page, k(0x100, 2));
+        let mut hit = self.op(Opc::IntEqual, 1, page, k(0x100, 2));
+        if let Some(r) = allow {
+            let off = self.op(Opc::IntSub, 2, addr, k(r.lo, 2));
+            let out = self.op(Opc::IntLess, 1, k(r.hi - r.lo, 2), off);
+            hit = self.op(Opc::IntAnd, 1, hit, out);
+        }
         self.n.stack_guards += 1;
         self.side_exit(hit, true, |em| em.deopt(k(pc as u32, 2)));
     }
@@ -352,7 +371,7 @@ impl<'a> Em<'a, '_> {
         let vars = &sh.g.vars[&pc];
         self.nh = key.1;
         if !sh.g.cells.contains(pc as usize) {
-            self.insn(pc, &vars[0].op, &vars[0].acc, &arms[0]);
+            self.insn(pc, &vars[0].op, &arms[0]);
             return;
         }
         let v = self.load(k(pc as u32, 2), Iv::exact(pc as u32), 0);
@@ -363,7 +382,7 @@ impl<'a> Em<'a, '_> {
             self.emit(Opc::CBranch, NONE, c, NONE, vb);
             self.emit(Opc::Branch, NONE, NONE, NONE, cont);
             self.cur = vb as usize;
-            self.insn(pc, &var.op, &var.acc, arm);
+            self.insn(pc, &var.op, arm);
             self.cur = cont as usize;
         }
         self.deopt(k(pc as u32, 2));
@@ -418,12 +437,12 @@ impl<'a> Em<'a, '_> {
                     addr: Iv::full(2),
                     val: Iv::full(1),
                 });
-                if !stack
-                    && ac.addr.meets(0x100, 0x200)
-                    && page1_check(opc, ai) == Check::Own
-                    && self.elided_live()
-                {
-                    self.page1_guard(a, pc);
+                if !stack && page1_check(opc, ai) == Check::Own && self.sh.private {
+                    match self.plan.narrowed(&self.sh.seen, pc, opc, ai, ac.addr) {
+                        Some(r) => self.page1_guard(a, pc, Some(r)),
+                        None if self.kept(ac.addr) => self.page1_guard(a, pc, None),
+                        None => {}
+                    }
                 }
                 ai += 1;
                 aux = self.vflag(ac.addr) | if stack { mem::STACK } else { 0 };
@@ -439,8 +458,8 @@ impl<'a> Em<'a, '_> {
         chk
     }
 
-    fn insn(&mut self, pc: u16, op: &u8, acc: &[Access], arm: &'a Arm) {
-        let (ctl, exit) = (&arm.ctl, arm.exit);
+    fn insn(&mut self, pc: u16, op: &u8, arm: &'a Arm) {
+        let (ctl, exit, acc) = (&arm.ctl, arm.exit, &arm.acc[..]);
         self.succ = &arm.succ;
         let t = Template::of(*op);
         self.n.insns += 1;
@@ -600,9 +619,9 @@ impl<'a> Em<'a, '_> {
                         (w, self.op(Opc::IntOr, 2, page, inc), Iv::full(2))
                     }
                 };
-                if iv.meets(0x100, 0x200) && self.elided_live() {
-                    self.page1_guard(lo_a, pc);
-                    self.page1_guard(hi_a, pc);
+                if self.kept(iv) {
+                    self.page1_guard(lo_a, pc, None);
+                    self.page1_guard(hi_a, pc, None);
                 }
                 let lo = self.load(lo_a, iv, 0);
                 let hi = self.load(hi_a, iv, 0);
@@ -719,13 +738,15 @@ impl<'a> Em<'a, '_> {
         }
     }
 
-    /// Load every stack slot from memory before the entry, so a pull after an SP-setting
-    /// instruction of a byte this call has not pushed reads what memory holds.
+    /// Load every stack slot from memory before the entry, so the stack bytes a deopt after an
+    /// SP-setting instruction writes back hold memory's values where this call did not push.
     fn preload(&mut self) {
         let body = self.new_block(self.plan.pc);
         self.f.blocks.swap(0, body as usize);
         (self.cur, self.next) = (0, 0);
-        for i in 0..self.f.nslots {
+        let (pushed, n) = (self.slots, self.f.nslots as usize);
+        for i in pushed.ones().take_while(|&i| i < n) {
+            let i = i as u32;
             let a = self.op(Opc::IntSub, 2, reg(E, 2), k(i + 2, 2));
             let a = self.op(Opc::IntAnd, 2, a, k(0xff, 2));
             let a = self.op(Opc::IntOr, 2, a, k(0x100, 2));

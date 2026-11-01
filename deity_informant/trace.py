@@ -23,22 +23,26 @@ __all__ = ["Facts", "Session", "collect"]
 @dataclass
 class Facts:
     """Executed ``starts``, ``(pc, next)`` transfer ``edges``, stored values ``writes``, the
-    ``page1`` instructions whose non-stack accesses reached $0100-$01FF and the stack
-    ``heights`` each start was seen at (relative to its call's entry, pushes negative)."""
+    ``page1`` instructions whose accesses reached $0100-$01FF with the ``[lo, hi]`` page-1
+    addresses each reached, the stack
+    ``heights`` each start was seen at (relative to its call's entry, pushes negative), and
+    the ``entry_sp`` values (SP after the call's return address) each entry was called at."""
 
     starts: list = field(default_factory=list)
     edges: list = field(default_factory=list)
     writes: dict = field(default_factory=dict)
-    page1: list = field(default_factory=list)
+    page1: dict = field(default_factory=dict)
     heights: dict = field(default_factory=dict)
+    entry_sp: dict = field(default_factory=dict)
 
     def to_dict(self):
         return {
             "starts": list(self.starts),
             "edges": [list(e) for e in self.edges],
             "writes": {int(a): sorted(v) for a, v in self.writes.items()},
-            "page1": list(self.page1),
+            "page1": {int(a): list(r) for a, r in self.page1.items()},
             "heights": {int(a): sorted(v) for a, v in self.heights.items()},
+            "entry_sp": {int(a): sorted(v) for a, v in self.entry_sp.items()},
         }
 
     @classmethod
@@ -47,8 +51,9 @@ class Facts:
             starts=[int(s) for s in d.get("starts", [])],
             edges=[(int(p), int(q)) for p, q in d.get("edges", [])],
             writes={int(a): sorted(int(x) for x in v) for a, v in d.get("writes", {}).items()},
-            page1=[int(p) for p in d.get("page1", [])],
+            page1={int(a): [int(lo), int(hi)] for a, (lo, hi) in d.get("page1", {}).items()},
             heights={int(a): sorted(int(x) for x in v) for a, v in d.get("heights", {}).items()},
+            entry_sp={int(a): sorted(int(x) for x in v) for a, v in d.get("entry_sp", {}).items()},
         )
 
     def dumps(self):
@@ -68,12 +73,14 @@ class Session:
         self.max_cycles = max_cycles
         self.traces = [] if traced else None
         self._bar = pbar
+        self.entry_sp = defaultdict(set)
 
     def call(self, pc, a=0):
         if self.traces is None:
             self.mpu.run_to_rts(pc, a, self.max_cycles)
         else:
             sp0 = (self.mpu.sp - 2) & 0xFF
+            self.entry_sp[pc].add(sp0)
             tr = self.mpu.run_to_rts_traced(pc, a, self.max_cycles, regs=True)
             pcs = np.frombuffer(tr.pc, dtype=np.uint16).copy()
             sp = np.frombuffer(tr.sp, dtype=np.uint8)
@@ -90,7 +97,7 @@ def collect(image, driver, max_cycles=10_000_000, progress=False, total=None):
     ``progress`` shows calls per pass (``total`` per pass, if known).
     """
     pbar = tqdm(total=total, desc="facts trace", unit="call") if progress else None
-    s = Session(image, max_cycles, True, pbar)
+    s = traced = Session(image, max_cycles, True, pbar)
     driver(s)
     if pbar is not None:
         pbar.close()
@@ -104,17 +111,22 @@ def collect(image, driver, max_cycles=10_000_000, progress=False, total=None):
     pairs = [(t[:-1].astype(np.uint32) << 16) | t[1:] for t, _ in s.traces if len(t) > 1]
     edges = np.unique(np.concatenate(pairs)) if pairs else np.zeros(0, np.uint32)
     writes = defaultdict(set)
-    page1 = set()
+    page1 = {}
+
+    def on_page1(a):
+        lo, hi = page1.get(s.mpu.pc, (a, a))
+        page1[s.mpu.pc] = (min(lo, a), max(hi, a))
+
     pbar = tqdm(total=total, desc="facts writes", unit="call") if progress else None
     s = Session(image, max_cycles, False, pbar)
 
     def on_write(a, v):
         if 0x100 <= a < 0x200:
-            page1.add(s.mpu.pc)
+            on_page1(a)
         writes[a].add(v)
 
     s.mem.observe_data_access(
-        on_read=lambda a: page1.add(s.mpu.pc),
+        on_read=on_page1,
         on_write=on_write,
         reads=range(0x100, 0x200),
     )
@@ -125,6 +137,7 @@ def collect(image, driver, max_cycles=10_000_000, progress=False, total=None):
         starts=starts.tolist(),
         edges=[(int(e >> 16), int(e & 0xFFFF)) for e in edges],
         writes={a: sorted(v) for a, v in sorted(writes.items())},
-        page1=sorted(page1),
+        page1={p: list(r) for p, r in sorted(page1.items())},
         heights={a: sorted(v) for a, v in heights.items()},
+        entry_sp={a: sorted(v) for a, v in traced.entry_sp.items()},
     )

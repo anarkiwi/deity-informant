@@ -3,7 +3,12 @@
 //! instruction is planned at relative to its function's entry (several in an outermost plan,
 //! from the heights the facts saw), and the control each instruction lifts to.
 
-use crate::analysis::{stack_delta, Facts, Flow, Graph, Tg, Var};
+use crate::analysis::{
+    absint, operand_bytes, page1_check, stack_delta, Access, Check, Env, Facts, Flow, Graph, Iv,
+    Tg, Var, TOP_ENV,
+};
+use di_pcode::{reg as R, Template};
+use fixedbitset::FixedBitSet;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -68,16 +73,16 @@ pub enum Ctl {
     Jam,
 }
 
-/// One instruction variant: its lifted control, exit, and the `(pc, height)` nodes it
-/// transfers to.
+/// One instruction variant: its lifted control, exit, the `(pc, height)` nodes it
+/// transfers to, and its template accesses at this node.
 #[derive(Clone, Debug)]
 pub struct Arm {
     pub ctl: Ctl,
     pub exit: Exit,
     pub succ: Vec<(u16, H)>,
+    pub acc: Vec<Access>,
 }
 
-/// A planned instruction start at one height: per-variant control.
 #[derive(Clone, Debug)]
 pub struct Node {
     pub arms: Vec<Arm>,
@@ -92,6 +97,10 @@ pub struct Plan {
     pub nodes: BTreeMap<(u16, H), Node>,
     /// A callee returning at its entry height with no access above it.
     pub balanced: bool,
+    /// The SP an outermost plan is specialized to at entry (after its return address).
+    pub sp: Option<u8>,
+    /// Some node sets SP (`TXS`, `TAS`, `LAS`).
+    pub sets_sp: bool,
 }
 
 impl Plan {
@@ -103,6 +112,199 @@ impl Plan {
             .map(|k| k.0)
             .filter(move |&p| last.replace(p) != Some(p))
     }
+    /// Slot indices (offset `-i` from the entry SP) the plan pushes to.
+    pub fn pushed(&self, g: &Graph) -> FixedBitSet {
+        let mut p = FixedBitSet::with_capacity(0x100);
+        for (&(pc, h), n) in &self.nodes {
+            let H::Known(h) = h else { continue };
+            for (v, a) in g.vars[&pc].iter().zip(&n.arms) {
+                for i in -h..-h + stack_bytes(v.op, &a.ctl).0 {
+                    if (0..0x100).contains(&i) {
+                        p.insert(i as usize);
+                    }
+                }
+            }
+        }
+        p
+    }
+    /// The page-1 range an access `i` of `op` at `pc` (interval `addr`) is guarded to in an
+    /// outermost plan specialized to its entry SP: the `[lo, hi]` the facts (`seen`) saw it
+    /// reach, when a check before the instruction covers it and its interval is wider.
+    pub fn narrowed(
+        &self,
+        seen: &FxHashMap<u16, (u16, u16)>,
+        pc: u16,
+        op: u8,
+        i: usize,
+        addr: Iv,
+    ) -> Option<Iv> {
+        let &(lo, hi) = seen.get(&pc)?;
+        let r = Iv {
+            lo: lo as u32,
+            hi: hi as u32,
+        };
+        let wider = addr.lo.max(0x100) < r.lo || addr.hi.min(0x1ff) > r.hi;
+        (self.top && self.sp.is_some() && wider && page1_check(op, i) != Check::No).then_some(r)
+    }
+    /// Slot indices an access at `addr` may hit: located from the entry SP when the plan is
+    /// specialized to it, else any.
+    pub fn offsets(&self, addr: Iv) -> std::ops::Range<usize> {
+        let (lo, hi) = (addr.lo.max(0x100) as i64, addr.hi.min(0x1ff) as i64);
+        match self.sp {
+            _ if lo > hi => 0..0,
+            Some(s) => {
+                let i = |a: i64| (s as i64 + 0x100 - a).max(0) as usize;
+                i(hi)..i(lo - 1)
+            }
+            None => 0..0x100,
+        }
+    }
+    /// Whether an access at `addr` from a node at height `h` may hit a stack byte kept out of
+    /// memory: in a callee any page-1 byte; in an outermost plan one of `slots` above SP, or
+    /// anywhere below the entry once SP may be set (a later pull may read it).
+    pub fn kept(&self, slots: &FixedBitSet, h: H, addr: Iv) -> bool {
+        if !addr.meets(0x100, 0x200) {
+            return false;
+        }
+        let (true, H::Known(h)) = (self.top, h) else {
+            return true;
+        };
+        self.offsets(addr)
+            .any(|i| slots.contains(i) && (self.sets_sp || (i as i32) < -h))
+    }
+    /// Slot indices a pull may read before this call pushed them (only after SP is set): a
+    /// forward must-analysis of the pushed slots over the nodes.
+    pub fn pulled_unpushed(&self, g: &Graph) -> FixedBitSet {
+        let mut out = FixedBitSet::with_capacity(0x100);
+        if !self.sets_sp {
+            return out;
+        }
+        let mut w: FxHashMap<(u16, H), FixedBitSet> = FxHashMap::default();
+        let entry = (self.pc, H::Known(0));
+        w.insert(entry, FixedBitSet::with_capacity(0x100));
+        let mut work = vec![entry];
+        while let Some(k) = work.pop() {
+            let (pc, H::Known(h)) = k else { continue };
+            let cur = w[&k].clone();
+            for (v, a) in g.vars[&pc].iter().zip(&self.nodes[&k].arms) {
+                let (push, pull) = stack_bytes(v.op, &a.ctl);
+                let mut next = cur.clone();
+                for i in (-h - pull..-h).filter(|i| (0..0x100).contains(i)) {
+                    if !cur.contains(i as usize) {
+                        out.insert(i as usize);
+                    }
+                }
+                for i in (-h..-h + push).filter(|i| (0..0x100).contains(i)) {
+                    next.insert(i as usize);
+                }
+                for s in a.succ.iter().filter(|s| self.nodes.contains_key(s)) {
+                    let changed = match w.get_mut(s) {
+                        None => {
+                            w.insert(*s, next.clone());
+                            true
+                        }
+                        Some(o) => {
+                            let before = o.count_ones(..);
+                            o.intersect_with(&next);
+                            o.count_ones(..) != before
+                        }
+                    };
+                    if changed {
+                        work.push(*s);
+                    }
+                }
+            }
+        }
+        out
+    }
+    /// Refine every node's access intervals for entry SP `s` by a forward interval dataflow
+    /// over the nodes, SP being `s` plus the node height at each; a register that grows at
+    /// a node already processed in reverse postorder (a loop header) widens to unknown.
+    pub fn refine(&mut self, g: &Graph, img: &[u8; 0x10000], s: u8) {
+        self.sp = Some(s);
+        let keys: Vec<(u16, H)> = self.nodes.keys().copied().collect();
+        let idx: FxHashMap<(u16, H), usize> =
+            keys.iter().enumerate().map(|(i, &k)| (k, i)).collect();
+        let succ = |i: usize| -> Vec<usize> {
+            self.nodes[&keys[i]]
+                .arms
+                .iter()
+                .flat_map(|a| &a.succ)
+                .filter_map(|k| idx.get(k).copied())
+                .collect()
+        };
+        let entry = idx[&(self.pc, H::Known(0))];
+        let mut rank = vec![usize::MAX; keys.len()];
+        let mut post = Vec::with_capacity(keys.len());
+        let mut stack = vec![(entry, succ(entry))];
+        rank[entry] = 0;
+        while let Some((i, ss)) = stack.last_mut() {
+            match ss.pop() {
+                Some(j) if rank[j] == usize::MAX => {
+                    rank[j] = 0;
+                    stack.push((j, succ(j)));
+                }
+                Some(_) => {}
+                None => {
+                    post.push(*i);
+                    stack.pop();
+                }
+            }
+        }
+        for (r, &i) in post.iter().rev().enumerate() {
+            rank[i] = r;
+        }
+        let mut env: Vec<Option<Env>> = vec![None; keys.len()];
+        let mut done = vec![false; keys.len()];
+        env[entry] = Some(TOP_ENV);
+        let mut work = BTreeSet::from([(0, entry)]);
+        while let Some((_, i)) = work.pop_first() {
+            done[i] = true;
+            let (pc, h) = keys[i];
+            let mut e = env[i].unwrap();
+            e[R::SP] = match h {
+                H::Known(x) if (0..0x100).contains(&(s as i32 + x)) => {
+                    Iv::exact((s as i32 + x) as u32)
+                }
+                _ => TOP_ENV[R::SP],
+            };
+            let node = self.nodes.get_mut(&keys[i]).unwrap();
+            for (v, arm) in g.vars[&pc].iter().zip(&mut node.arms) {
+                let t = Template::of(v.op);
+                let mut x = e;
+                arm.acc.clear();
+                absint(
+                    t.ops(),
+                    operand_bytes(img, &g.cells, pc, t.len),
+                    &mut x,
+                    &mut arm.acc,
+                );
+                if matches!(arm.ctl, Ctl::Call { .. }) {
+                    x = TOP_ENV;
+                }
+                for j in arm.succ.iter().filter_map(|k| idx.get(k).copied()) {
+                    let new = match env[j] {
+                        None => x,
+                        Some(o) => std::array::from_fn(|r| {
+                            let m = Iv {
+                                lo: o[r].lo.min(x[r].lo),
+                                hi: o[r].hi.max(x[r].hi),
+                            };
+                            if m != o[r] && done[j] {
+                                TOP_ENV[r]
+                            } else {
+                                m
+                            }
+                        }),
+                    };
+                    if env[j] != Some(new) {
+                        env[j] = Some(new);
+                        work.insert((rank[j], j));
+                    }
+                }
+            }
+        }
+    }
     /// Functions `CALL`ed, once per call site and height.
     pub fn callees(&self) -> impl Iterator<Item = u16> + '_ {
         self.nodes
@@ -112,6 +314,18 @@ impl Plan {
                 Ctl::Call { f, .. } => Some(f),
                 _ => None,
             })
+    }
+}
+
+/// Bytes instruction `op` lifted to `ctl` pushes and pulls (a `CALL` pushes none).
+fn stack_bytes(op: u8, ctl: &Ctl) -> (i32, i32) {
+    match (ctl, stack_delta(op)) {
+        (Ctl::PushJmp { .. }, _) => (2, 0),
+        (Ctl::Brk(_), _) => (3, 0),
+        (Ctl::Rts(_), _) => (0, 2),
+        (Ctl::Rti(_), _) => (0, 3),
+        (Ctl::Next(_), Some(d)) => ((d < 0) as i32, (d > 0) as i32),
+        _ => (0, 0),
     }
 }
 
@@ -227,14 +441,16 @@ fn step(
 }
 
 /// What the facts say about instruction starts: the heights each was executed at relative to
-/// its outermost entry, and which were executed.
+/// its outermost entry and which were executed, and the starts not to plan.
 pub struct Seen {
     heights: FxHashMap<u16, Vec<i32>>,
     starts: FxHashSet<u16>,
+    /// Starts that are not planned: edges to them deopt.
+    banned: FxHashSet<u16>,
 }
 
 impl Seen {
-    pub fn new(f: &Facts) -> Self {
+    pub fn new(f: &Facts, banned: FxHashSet<u16>) -> Self {
         Seen {
             heights: f
                 .heights
@@ -242,6 +458,7 @@ impl Seen {
                 .map(|(p, h)| (*p, h.iter().map(|&x| x as i32).collect()))
                 .collect(),
             starts: f.starts.iter().copied().collect(),
+            banned,
         }
     }
 }
@@ -338,7 +555,7 @@ pub fn plan(g: &Graph, pc: u16, top: bool, calls: &FxHashSet<u16>, seen: &Seen) 
                 }
             }
             for (t, ht) in s.succ {
-                if g.vars.contains_key(&t) {
+                if g.vars.contains_key(&t) && !pl.seen.banned.contains(&t) {
                     work.extend(pl.admit(t, ht));
                 }
             }
@@ -363,6 +580,7 @@ pub fn plan(g: &Graph, pc: u16, top: bool, calls: &FxHashSet<u16>, seen: &Seen) 
                         ctl: s.ctl,
                         exit: s.exit,
                         succ,
+                        acc: v.acc.clone(),
                     }
                 })
                 .collect();
@@ -374,13 +592,18 @@ pub fn plan(g: &Graph, pc: u16, top: bool, calls: &FxHashSet<u16>, seen: &Seen) 
         top,
         nodes,
         balanced,
+        sp: None,
+        sets_sp: pl.nodes.iter().any(|(p, _)| {
+            g.vars[p]
+                .iter()
+                .any(|v| matches!(v.flow, Flow::Next(_)) && stack_delta(v.op).is_none())
+        }),
     }
 }
 
 /// Plans for `entries` (outermost) and every callee they reach, entries first; the call
 /// targets are the static `JSR` targets whose plans are balanced, by a decreasing fixpoint.
-pub fn plan_all(g: &Graph, entries: &[u16], facts: &Facts) -> Vec<Plan> {
-    let seen = Seen::new(facts);
+pub fn plan_all(g: &Graph, entries: &[u16], seen: &Seen) -> Vec<Plan> {
     let mut calls: FxHashSet<u16> = g
         .vars
         .values()
@@ -394,7 +617,7 @@ pub fn plan_all(g: &Graph, entries: &[u16], facts: &Facts) -> Vec<Plan> {
         let bad: Vec<u16> = calls
             .iter()
             .copied()
-            .filter(|&c| !plan(g, c, false, &calls, &seen).balanced)
+            .filter(|&c| !plan(g, c, false, &calls, seen).balanced)
             .collect();
         if bad.is_empty() {
             break;
@@ -405,7 +628,7 @@ pub fn plan_all(g: &Graph, entries: &[u16], facts: &Facts) -> Vec<Plan> {
     }
     let mut plans: Vec<Plan> = entries
         .iter()
-        .map(|&e| plan(g, e, true, &calls, &seen))
+        .map(|&e| plan(g, e, true, &calls, seen))
         .collect();
     let mut done: FxHashSet<u16> = FxHashSet::default();
     let mut i = 0;
@@ -413,7 +636,7 @@ pub fn plan_all(g: &Graph, entries: &[u16], facts: &Facts) -> Vec<Plan> {
         let callees: Vec<u16> = plans[i].callees().collect();
         for f in callees {
             if done.insert(f) {
-                plans.push(plan(g, f, false, &calls, &seen));
+                plans.push(plan(g, f, false, &calls, seen));
             }
         }
         i += 1;

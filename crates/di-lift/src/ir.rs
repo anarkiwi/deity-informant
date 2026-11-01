@@ -1,6 +1,7 @@
 //! Lifted-program IR: functions of basic blocks of P-Code ops over di-pcode varnodes.
 
 use di_pcode::{binop, Opc, Space, Vn};
+use fixedbitset::FixedBitSet;
 
 /// Exit threshold: the entry returns once `SP >= E` (2 bytes).
 pub const E: u16 = 16;
@@ -175,6 +176,9 @@ pub struct Function {
     pub ntemps: u32,
     /// Promoted stack slots (registers `NREG..NREG + nslots`).
     pub nslots: u32,
+    /// The slot indices whose stack bytes the function keeps in slot registers (the bytes of
+    /// the others stay in memory).
+    pub slotted: FixedBitSet,
     /// In a call-graph cycle: checks its own stack depth at entry.
     pub recursive: bool,
 }
@@ -230,6 +234,10 @@ pub struct Stats {
     pub split_nodes: usize,
     /// Dispatches on SP after SP-setting instructions.
     pub sp_dispatch: usize,
+    /// Entries specialized to (and guarded on) the SP they were called at.
+    pub sp_guards: usize,
+    /// Stack bytes outermost functions push that stay in memory rather than in slots.
+    pub kept_bytes: usize,
 }
 
 /// A lifted program: functions plus what the executor needs to check and leave it.

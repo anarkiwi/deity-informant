@@ -34,6 +34,10 @@ PROGRAMS = {
     "dropret": ("DROPRET", ["entry"], [(0, a) for a in range(3)]),
     "pushrts": ("PUSHRTS", ["entry"], [(0, a) for a in range(4)]),
     "sptable": ("SPTABLE", ["entry"], [(0, a) for a in range(4)]),
+    "unexec": ("UNEXEC", ["entry"], [(0, a) for a in (0, 1, 0x40)]),
+    "frame": ("FRAME", ["entry"], [(0, a) for a in range(8)]),
+    "ptable": ("PTABLE", ["entry"], [(0, 0)] * 12),
+    "pxtable": ("PXTABLE", ["entry"], [(0, i & 1) for i in range(12)]),
 }
 
 # Facts inputs and inputs reaching a stack height the facts never saw, per program.
@@ -56,13 +60,13 @@ def facts_for(img, pcs, calls):
     return trace.collect(img, lambda s: [s.call(pcs[e], a) for e, a in calls])
 
 
-def differential(img, prog, pcs, calls, synth=True, max_cycles=10_000_000, mem=None):
-    """Run ``calls`` on the reference and the lifted program; everything observable must
-    match (RAM except the dead stack below SP; cycles only when the program counts them).
-    The final memory."""
+def differential(img, prog, pcs, calls, synth=True, max_cycles=10_000_000, mem=None, reg=None):
+    """Run ``calls`` on the reference and the lifted program from registers ``reg``;
+    everything observable must match (RAM except the dead stack below SP; cycles only when
+    the program counts them). The final memory."""
     m1 = bytearray(img if mem is None else mem)
     m2 = bytearray(m1)
-    s1 = s2 = {"reg": None, "cycles": 0}
+    s1 = s2 = {"reg": reg, "cycles": 0}
     keys = ("log", "reg", "pc", "halt") + (("cycles",) if prog.cycles else ())
     for n, (e, a) in enumerate(calls):
         kw = {"log": True, "synth": synth, "max_cycles": max_cycles}
@@ -362,3 +366,27 @@ def test_cell_fixpoint_terminates():
     t.start()
     t.join(30)
     assert out and out[0].stats["opcode_cells"] == 1
+
+
+@pytest.mark.parametrize("cycles", [False, True])
+@pytest.mark.parametrize("name", ["unexec", "frame", "ptable"])
+def test_page1_stack_private(name, cycles):
+    img, pcs, calls, prog = lifted(name, cycles=cycles)
+    st = prog.stats
+    assert st["stack_private"] and st["page1_sites"] == 0 and st["slot_ops"] > 0
+    assert st["sp_guards"] == (name != "unexec")
+    if name == "unexec":
+        differential(img, prog, pcs, [(0, 0x80)] + calls)
+    else:
+        differential(img, prog, pcs, calls, reg=[0, 0, 0, 0xF0] + [0] * 12)
+    assert sum(prog.deopts.values()) > 0
+
+
+@pytest.mark.parametrize("cycles", [False, True])
+def test_page1_range_guard(cycles):
+    img, pcs, calls, prog = lifted("pxtable", cycles=cycles)
+    st = prog.stats
+    assert st["stack_private"] and st["slot_ops"] > 0 and st["stack_guards"] > 0
+    assert (st["kept_bytes"], st["sp_guards"]) == (2, 1)
+    differential(img, prog, pcs, [(0, 2)] + calls)
+    assert sum(prog.deopts.values()) == 1

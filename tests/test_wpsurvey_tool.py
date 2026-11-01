@@ -2,6 +2,7 @@
 
 import json
 import struct
+import time
 import sys
 from pathlib import Path
 
@@ -43,7 +44,18 @@ def test_survey_main(tmp_path, capsys):
     s = json.loads(capsys.readouterr().out)
     assert s["tunes"] == 3 and s["lifted"] == 1 and s["stack_private"] == 1
     assert s["skipped"] == {"not psid-callable": 2}
-    assert s["checked"] == 1 and not s["inexact"] and not s["deopting"]
+    assert s["checked"] == 1 and not s["inexact"] and not s["deopting"] and not s["kept_bytes"]
     rows = {Path(r["path"]).name: r for r in map(json.loads, out.read_text().splitlines())}
     assert rows["a.sid"]["calls"] == 1 and rows["a.sid"]["stack_insns"] == {"PHA": 1, "PLA": 1}
     assert wpsurvey._job(("missing.sid", 1))["error"]  # pylint: disable=protected-access
+
+
+def test_survey_timeout(tmp_path, capsys, monkeypatch):
+    (tmp_path / "a.sid").write_bytes(psid())
+    monkeypatch.setattr(wpsurvey, "_job", _sleep)
+    assert wpsurvey.main([str(tmp_path), "--jobs", "1", "--timeout", "0.5"]) == 0
+    assert json.loads(capsys.readouterr().out)["timeouts"] == [str(tmp_path / "a.sid")]
+
+
+def _sleep(_):
+    time.sleep(30)
