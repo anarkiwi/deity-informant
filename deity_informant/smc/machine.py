@@ -270,7 +270,7 @@ class MachineOracle:
             self._attribute([], m.mpu.sp)
         self._sweep()
         done = not m.jammed and (self.irq_driven or not (self.queue or self.timeout))
-        return Run(self.cls.cells, self.cls.unclassified, done)
+        return Run(self.cls.cells, self.cls.unclassified, done, self.cls.first)
 
 
 def run_machine(image, calls, init=(), **kw):

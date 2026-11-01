@@ -83,6 +83,8 @@ class Session:
         self.mpu = NativeMPU(memory=self.mem)
         self.max_cycles = max_cycles
         self.traces = [] if traced else None
+        self.folded = (np.zeros(0, np.int32), np.zeros(0, np.uint32))
+        self.pending = 0
         self._bar = pbar
         self.entry_sp = defaultdict(set)
 
@@ -95,11 +97,29 @@ class Session:
             tr = self.mpu.run_to_rts_traced(pc, a, self.max_cycles, regs=True)
             pcs = np.frombuffer(tr.pc, dtype=np.uint16).copy()
             sp = np.frombuffer(tr.sp, dtype=np.uint8)
-            h = np.zeros(len(pcs), np.int16)
-            h[1:] = sp[:-1].astype(np.int16) - sp0
-            self.traces.append((pcs, h))
+            h = np.zeros(len(pcs), np.int32)
+            h[1:] = sp[:-1].astype(np.int32) - sp0
+            p32 = pcs.astype(np.uint32)
+            self.traces.append(
+                ((pcs.astype(np.int32) << 9) | (h + 0x100), (p32[:-1] << 16) | p32[1:])
+            )
+            self.pending += len(pcs)
+            if self.pending > 1 << 20:
+                self.fold()
         if self._bar is not None:
             self._bar.update()
+
+    def fold(self):
+        """``(height keys, edges)``: the unique ``pc << 9 | height + 256`` and
+        ``pc << 16 | next`` over every traced call so far."""
+        if self.traces:
+            keys, edges = zip(*self.traces)
+            self.folded = tuple(
+                np.unique(np.concatenate((old, *new)))
+                for old, new in zip(self.folded, (keys, edges))
+            )
+            self.traces, self.pending = [], 0
+        return self.folded
 
 
 def collect(image, driver, max_cycles=10_000_000, progress=False, total=None):
@@ -112,15 +132,11 @@ def collect(image, driver, max_cycles=10_000_000, progress=False, total=None):
     driver(s)
     if pbar is not None:
         pbar.close()
-    pcs = np.concatenate([t for t, _ in s.traces]) if s.traces else np.zeros(0, np.uint16)
-    hs = np.concatenate([h for _, h in s.traces]) if s.traces else np.zeros(0, np.int16)
-    starts = np.unique(pcs)
-    ph = np.unique((pcs.astype(np.int32) << 9) | (hs.astype(np.int32) + 0x100))
+    ph, edges = s.fold()
+    starts = np.unique(ph >> 9)
     heights = defaultdict(list)
     for k, v in zip((ph >> 9).tolist(), ((ph & 0x1FF) - 0x100).tolist()):
         heights[k].append(v)
-    pairs = [(t[:-1].astype(np.uint32) << 16) | t[1:] for t, _ in s.traces if len(t) > 1]
-    edges = np.unique(np.concatenate(pairs)) if pairs else np.zeros(0, np.uint32)
     writes = defaultdict(set)
     page1 = {}
 

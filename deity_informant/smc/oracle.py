@@ -36,11 +36,13 @@ def writer_of(op):
 
 @dataclass
 class Run:
-    """An oracle run: observed cells, unclassified events and whether every call returned."""
+    """An oracle run: observed cells, unclassified events, whether every call returned and the
+    call each cell was first seen at."""
 
     cells: set = field(default_factory=set)
     unclassified: list = field(default_factory=list)
     returned: bool = True
+    first: dict = field(default_factory=dict)
 
 
 def _call(mpu, mem, shadow, cls, writes, pc, a, max_cycles):
@@ -97,7 +99,7 @@ def run_cpu(image, entries, calls, init=(), max_cycles=200_000):
         if n:
             cls.next_call()
         ok &= _call(mpu, mem, shadow, cls, writes, entries[e], a, max_cycles)
-    return Run(cls.cells, cls.unclassified, ok)
+    return Run(cls.cells, cls.unclassified, ok, cls.first)
 
 
 def label(image, entries, calls, init=()):
