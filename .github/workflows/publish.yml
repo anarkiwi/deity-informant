@@ -24,7 +24,6 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-      # abi3-py310: one cp310-abi3 wheel per platform serves every supported Python.
       - uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
