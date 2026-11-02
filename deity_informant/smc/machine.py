@@ -132,6 +132,9 @@ class MachineOracle:
 
     # pylint: disable=too-many-arguments,too-many-positional-arguments
 
+    #: Whether a native run of calls hands them to vagrant-moses' call queue where it exists.
+    native_queue = True
+
     def __init__(
         self,
         image,
@@ -376,7 +379,8 @@ class MachineOracle:
         if self.irq_driven:
             self.call_cycles = min(call_cycles, frame_cycles)
         limit = t + self.call_cycles * (len(self.queue) + 1)
-        if self.native and CALLS and not self.irq_driven and self.returns == self.sentinel:
+        queue = self.native_queue and not self.irq_driven and self.returns == self.sentinel
+        if self.native and CALLS and queue:
             self._queue_native()
             m.run(limit)
             self.queue = self.queue[len(self.queue) - self.calls.left :]

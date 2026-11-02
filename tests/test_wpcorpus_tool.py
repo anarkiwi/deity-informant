@@ -224,3 +224,38 @@ def test_paths_and_sid_model(tmp_path):
         "8580",
         "6581",
     ]
+
+
+def test_flat_evidence():
+    assert wpcorpus.unfaithful(0x35) == [range(2)]
+    assert wpcorpus.unfaithful(0x37) == [range(2)] + [
+        range(p << 12, (p + 1) << 12) for p in (0xA, 0xB, 0xE, 0xF)
+    ]
+    assert range(0xD000, 0xE000) in wpcorpus.unfaithful(0x34)
+    assert range(0xE000, 0xF000) not in wpcorpus.unfaithful(0x37, store=True)
+    img = bytearray(0x10000)
+    # LDA $D41B; TAX; LDA $E000,X; STA $D400; RTS
+    img[0x1000:0x100B] = bytes.fromhex("ad1bd4aabd00e08d00d460")
+    last = {"ram": bytes(img), "reg": [0, 0, 0, 0xFF] + [0] * 12}
+    records = [{"log": [(0xD41B, 5, False), (0xD400, 0, True)]}] * 2
+    vol = [(0xD000, 0xE000)]
+    for port, ev in ((0x37, ["data-in-rom"]), (0x35, []), (0x34, ["data-in-ram", "store-in-ram"])):
+        assert wpcorpus.flat_evidence(last, records, 2, 0x1000, port, vol, 10_000) == ev
+
+
+def test_flat_play_from_machine_init(tmp_path):
+    # init $1000: LDA #$42; STA $C000; RTS; play $1006: LDA $E000; STA $D400; RTS (KERNAL in)
+    root = tmp_path / "hvsc"
+    root.mkdir()
+    code = bytes.fromhex("a9428d00c060" "ad00e08d00d460" "ad00c08d00d460")
+    for name, play in (("rom.sid", 0x1006), ("ram.sid", 0x100D)):
+        (root / name).write_bytes(sid(code, play))
+    out = tmp_path / "out"
+    assert (
+        wpcorpus.main([str(root), "--out", str(out), "--jobs", "1", "--default-length", "0.1"]) == 0
+    )
+    rows = rows_of(out)
+    rom, ram = rows["rom.sid", 1], rows["ram.sid", 1]
+    assert rom["mode"] == "banked" and rom["bank_evidence"] == ["data-in-rom"] and rom["exact"]
+    assert ram["mode"] == "flat" and ram["exact"] and ram["outcome"] == "exact"
+    assert ram["init_halt"] == "return"

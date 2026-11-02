@@ -14,7 +14,8 @@ from collections import Counter
 
 
 def outcome(row):
-    """A row's outcome: ``exact``, ``mismatch <kind>``, ``skip <why>``, ``error`` or ``-``."""
+    """A row's outcome: ``exact``, ``mismatch <kind>``, the agreement it stopped at
+    (``halted <halt>``, ``interrupt <sources>``), ``skip <why>``, ``error`` or ``-``."""
     if row is None:
         return "-"
     if "error" in row:
@@ -23,6 +24,8 @@ def outcome(row):
         return "skip " + row["skip"]
     if row.get("exact"):
         return "exact"
+    if row.get("stop"):
+        return " ".join(row["stop"][1:])
     if row.get("mismatch"):
         return "mismatch " + str(row["mismatch"][1])
     return "-"

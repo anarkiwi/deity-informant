@@ -62,6 +62,7 @@ def departure(s, call):
         return wholeprog.reference_call(
             bytearray(mem), s["play"], reg=list(pre["reg"]), volatile=[c64.DEVICES],
             max_cycles=max(0, steps[i][6] - c0 - 1), bank=bank, reads=feed,
+            ret=s["host"].sentinel - 1,
         )  # fmt: skip
 
     def same(i):

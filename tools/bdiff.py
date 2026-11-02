@@ -62,18 +62,19 @@ def diff(s, width=3):
     play, port, prog = s["play"], s["ports"]["call"], s["prog"]
     last = s["inits"][-1]
     mem, reg = bytearray(last["ram"]), list(last["reg"])
+    ret = s["host"].sentinel - 1
     for n, ref in enumerate(tqdm(s["records"], desc="calls", leave=False)):
         mem[1] = port
         pre, feed = bytes(mem), c64.reads(ref)
-        o = prog.call(mem, 0, reg=reg, log=True, max_cycles=MC, reads=feed)
+        o = prog.call(mem, 0, reg=reg, log=True, max_cycles=MC, reads=feed, ret=ret)
         bad = c64.mismatch(ref, {**o, "ram": mem})
-        if bad is None:
+        if bad is None or bad[0] in c64.AGREE:
             reg = list(o["reg"])
             continue
         back = bytearray(pre)
         r = wholeprog.reference_call(
             back, play, reg=reg, volatile=[c64.DEVICES], log=True, max_cycles=MC,
-            bank=wpcorpus._bank(), clocked=False, reads=feed,  # pylint: disable=W0212
+            bank=wpcorpus._bank(), clocked=False, reads=feed, ret=ret,  # pylint: disable=W0212
         )  # fmt: skip
         logs = (_entries(ref["log"]), _entries(o["log"]), _entries(r["log"]))
         at = bad[1] if bad[0] == "log" else 0

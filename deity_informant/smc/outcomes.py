@@ -45,7 +45,8 @@ def _machine_outcome(prog, max_cycles):
     res = c64.lift_check(image, entry, calls, calls, max_cycles=max_cycles)
     deopts = sum(res.prog.deopts.values())
     if res.bad is not None:
-        return ("not_runnable" if res.bad[1] == "no-return" else "inexact"), deopts
+        out = {"halted": "not_runnable", "interrupt": "lift-no-interrupts"}
+        return out.get(res.bad[1], "inexact"), deopts
     return ("exact_deopt" if deopts else "exact_nodeopt"), deopts
 
 

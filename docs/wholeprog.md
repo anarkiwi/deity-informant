@@ -60,11 +60,20 @@ to `Program.check`, the same comparison in one native loop. A banked `Program.ca
 `mem`, RAM accesses to `mem`; `reads=` (bytes) replays its volatile reads in order (0 past the
 end). `c64.check` lifts with `c64.DEVICES` volatile and replays each call's machine reads
 (`c64.reads(record)`), so a lift is exact against the machine's devices by construction: one
-reading another address, or more or fewer times, differs in the log. The machine's SID is
+reading another address, or more or fewer times, differs in the log. Each call pushes the
+machine's return address (`ret=`, its sentinel - 1), so the frame and the return match the
+machine's. `c64.check` reports the first mismatch, or one of two agreements
+(`c64.outcome`): `halted` when the run's last record stopped without returning and the lift
+reaches that halt (a `jam` with the same log, registers and memory; for the machine's
+`cycles` cap, every logged access in order with the lift still running at the end of the
+shorter record), `interrupt` when the lift differs in a call the machine entered an IRQ or
+NMI in (`c64._Host.interrupts`; a run on vagrant-moses' call queue runs again to that call
+with a trap per call to see them), which lifts do not model. The machine's SID is
 vagrant-moses' bus model (unreadable registers read the decaying data-bus latch).
 
-`call` is `run_to_rts`: push the dummy return `$0001`, set A, run until SP rises above its
-start, `max_cycles` elapse or a JAM (`halt` is `return`, `cycles` or `jam`). With `log=True`
+`call` is `run_to_rts`: push the dummy return `$0001` (or `ret`), set A, run until SP rises
+above its start (with `ret`, only at `ret + 1`, as a host trapping that address sees the
+return: a stack that wraps is not one), `max_cycles` elapse or a JAM (`halt` is `return`, `cycles` or `jam`). With `log=True`
 the bus records `(addr, value, cycle, is_write)` for volatile addresses; `synth=True` makes
 the `n`th volatile access read `(cycle ^ n ^ addr) & 0xff`, which makes any cycle or ordering
 error visible. Without cycle counting volatile accesses carry the starting cycle, `cycles`
