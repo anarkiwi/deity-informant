@@ -1,6 +1,8 @@
 //! Differential harness: the lifted program against the reference `Cpu`.
 
-use di_lift::{lift_banked, Back, BankMap, Banked, Entry, Exec, Facts, Opts, Program, Runner};
+use di_lift::{
+    lift_banked, Back, Backend, BankMap, Banked, Entry, Exec, Facts, Opts, Program, Runner,
+};
 use di_pcode::{reg as R, Bus, Cpu, Halt};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -20,6 +22,8 @@ pub struct TBus {
     pub writes: BTreeMap<u16, BTreeSet<u8>>,
     /// The lowest and highest page-1 address accessed since it was cleared.
     pub page1: Option<(u16, u16)>,
+    /// Offer [`Bus::flat`] memory (bypassing `writes` and `page1` for flat accesses).
+    pub flat: bool,
 }
 
 impl TBus {
@@ -34,6 +38,7 @@ impl TBus {
             log: Vec::new(),
             writes: BTreeMap::new(),
             page1: None,
+            flat: false,
         }
     }
     fn touch(&mut self, a: u16) {
@@ -84,6 +89,11 @@ impl Bus for TBus {
         if self.clock {
             self.now = c;
         }
+    }
+    fn flat(&mut self) -> Option<(*mut u8, *mut u8)> {
+        let ram = self.mem.as_mut_ptr();
+        self.flat
+            .then(|| (self.dev.as_mut().map_or(ram, |d| d.as_mut_ptr()), ram))
     }
 }
 
@@ -252,33 +262,60 @@ pub fn diff_at(
     sp: u8,
 ) -> u64 {
     let x = Exec::new(prog);
-    let mut run = Runner::new(&x);
+    assert_eq!(x.jit().is_some(), !prog.cycles, "native code");
+    let mut runs = [Backend::Interp, Backend::Jit].map(|backend| {
+        let mut r = Runner::new(&x);
+        r.backend = backend;
+        r
+    });
     let bank = prog.bank.as_ref();
-    let (mut rb, mut lb) = (tbus(img, vol, bank), tbus(img, vol, bank));
+    let mut rb = tbus(img, vol, bank);
     rb.clock = prog.cycles;
-    let (mut rc, mut lc) = (Cpu::new(), Cpu::new());
+    let mut lbs = [false, true].map(|flat| {
+        let mut b = tbus(img, vol, bank);
+        b.flat = flat;
+        b
+    });
+    let mut rc = Cpu::new();
     rc.set_r(R::SP, sp);
-    lc.set_r(R::SP, sp);
+    let mut lcs = [rc, rc];
     for (n, &(e, acc)) in calls.iter().enumerate() {
         let h1 = ref_call_in(&mut rc, &mut rb, prog.entries[e].0, acc, max, bank);
-        let o = run.call(e, acc, &mut lc, &mut lb, max);
-        assert_eq!(h1, o.halt, "halt, call {n}");
-        if !prog.cycles && h1 == Halt::Cycles {
-            break;
-        }
-        if !prog.cycles {
-            lc.cycles = rc.cycles;
-        }
-        assert_eq!(rc, lc, "state, call {n}");
-        assert_eq!(rb.log, lb.log, "volatile stream, call {n}");
-        let sp = rc.r(R::SP) as usize;
-        for a in 0..0x10000 {
-            if !(0x100..=0x100 + sp).contains(&a) {
-                assert_eq!(rb.mem[a], lb.mem[a], "memory {a:04X}, call {n}");
+        let mut stop = false;
+        for ((run, lb), lc) in runs.iter_mut().zip(&mut lbs).zip(&mut lcs) {
+            let o = run.call(e, acc, lc, lb, max);
+            assert_eq!(h1, o.halt, "halt, call {n}, {:?}", run.backend);
+            if !prog.cycles && h1 == Halt::Cycles {
+                stop = true;
+                continue;
+            }
+            if !prog.cycles {
+                lc.cycles = rc.cycles;
+            }
+            assert_eq!(rc, *lc, "state, call {n}, {:?}", run.backend);
+            assert_eq!(
+                rb.log, lb.log,
+                "volatile stream, call {n}, {:?}",
+                run.backend
+            );
+            let sp = rc.r(R::SP) as usize;
+            for a in 0..0x10000 {
+                if !(0x100..=0x100 + sp).contains(&a) {
+                    assert_eq!(
+                        rb.mem[a], lb.mem[a],
+                        "memory {a:04X}, call {n}, {:?}",
+                        run.backend
+                    );
+                }
             }
         }
+        assert_eq!(runs[0].deopts, runs[1].deopts, "deopts, call {n}");
+        assert_eq!(runs[0].invalid, runs[1].invalid, "invalidation, call {n}");
+        if stop {
+            break;
+        }
     }
-    run.deopts.values().sum()
+    runs[0].deopts.values().sum()
 }
 
 pub fn entries(pcs: &[u16]) -> Vec<Entry> {

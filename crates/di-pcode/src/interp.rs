@@ -29,6 +29,13 @@ pub trait Bus {
     fn ram_write(&mut self, addr: u16, val: u8) {
         self.write(addr, val)
     }
+    /// Flat memory standing for this bus, for compiled code to access directly: what
+    /// `read`/`write` reach at non-volatile addresses and what `ram_read`/`ram_write` reach,
+    /// each 64 KiB and without side effects. `None` routes every access through the bus.
+    #[inline(always)]
+    fn flat(&mut self) -> Option<(*mut u8, *mut u8)> {
+        None
+    }
 }
 
 impl Bus for [u8; 0x10000] {
@@ -39,6 +46,10 @@ impl Bus for [u8; 0x10000] {
     #[inline(always)]
     fn write(&mut self, addr: u16, val: u8) {
         self[addr as usize] = val;
+    }
+    fn flat(&mut self) -> Option<(*mut u8, *mut u8)> {
+        let p = self.as_mut_ptr();
+        Some((p, p))
     }
 }
 

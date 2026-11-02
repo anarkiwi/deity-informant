@@ -12,12 +12,14 @@ pub mod emit;
 pub mod exec;
 pub mod func;
 pub mod ir;
+pub mod jit;
 pub mod opt;
 
 pub use analysis::{Entry, Facts};
 pub use bank::{Back, BankMap, Banked};
-pub use exec::{Exec, Outcome, Runner};
+pub use exec::{Backend, Exec, Outcome, Runner};
 pub use ir::{Block, Function, LOp, Program, Stats};
+pub use jit::Jit;
 
 use analysis::{discover, is_stack_op, page1_check, Check, Flow, Iv};
 use fixedbitset::FixedBitSet;

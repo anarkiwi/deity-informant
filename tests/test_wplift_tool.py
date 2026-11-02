@@ -43,3 +43,9 @@ def test_wplift_roundtrip(tmp_path, capsys):
     assert out["mismatch"] == [0, "no-return"] and not out["deopts"]
     assert wplift.main(spin + ["--cycles"]) == 0
     assert wplift.calls_spec("0x10:2*3,0x20") == [(0x10, 2)] * 3 + [(0x20, 0)]
+    capsys.readouterr()
+    for backend, compiled in (("jit", True), ("interp", False)):
+        args = common + calls + ["--facts", str(facts), "--check", "--backend", backend]
+        assert wplift.main(args) == 0
+        stats, check = (json.loads(ln) for ln in capsys.readouterr().out.splitlines())
+        assert (stats["compile_ms"] is not None) == compiled and check["exact"]
