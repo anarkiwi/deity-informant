@@ -1,5 +1,6 @@
 """Whole-program lifting: lifted programs against the reference interpreter and jennings."""
 
+import dataclasses
 import threading
 
 import pytest
@@ -310,6 +311,17 @@ def test_facts_roundtrip():
     p1 = wholeprog.lift(img, [labels["entry"]], [IO], f)
     p2 = wholeprog.lift(img, [labels["entry"]], [IO], g.to_dict())
     assert p1.stats == p2.stats
+
+
+def test_bank_facts_need_a_bank_map():
+    """A flat lift ignores the configurations the machine saw each start run in."""
+    img, pcs, calls, prog = lifted("toggle")
+    f = facts_for(img, pcs, calls)
+    seen = dataclasses.replace(f, banks={pc: [7] for pc in f.starts})
+    flat = wholeprog.lift(img, pcs, [IO], seen)
+    assert flat.stats == prog.stats
+    differential(img, flat, pcs, calls)
+    assert not flat.deopts
 
 
 @pytest.mark.parametrize("cycles", [False, True])

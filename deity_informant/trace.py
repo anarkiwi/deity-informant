@@ -128,14 +128,10 @@ class Session:
         return np.flatnonzero(self.keys), self.edges
 
 
-def collect(
-    image, driver, max_cycles=10_000_000, progress=False, total=None, skip=None
-):  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def collect(image, driver, max_cycles=10_000_000, progress=False, total=None):
     """Facts from running ``driver(session)`` twice on ``image`` (64 KiB).
 
-    ``progress`` shows calls per pass (``total`` per pass, if known). ``skip(starts, ports)``,
-    when given, sees the traced pass's instruction starts and the set of CPU port addresses
-    ($00/$01) the driver stores to, from a store-only pass; true returns None, not the facts.
+    ``progress`` shows calls per pass (``total`` per pass, if known).
     """
     pbar = tqdm(total=total, desc="facts trace", unit="call") if progress else None
     s = traced = Session(image, max_cycles, True, pbar)
@@ -147,12 +143,6 @@ def collect(
     heights = defaultdict(list)
     for k, v in zip((ph >> 9).tolist(), ((ph & 0x1FF) - 0x100).tolist()):
         heights[k].append(v)
-    if skip is not None:
-        ports, s = set(), Session(image, max_cycles, False, None)
-        s.mem.observe_data_access(on_read=None, on_write=lambda a, v: ports.add(a), writes=range(2))
-        driver(s)
-        if skip(starts.tolist(), ports):
-            return None
     writes = defaultdict(set)
     page1 = {}
 

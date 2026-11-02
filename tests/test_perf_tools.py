@@ -1,15 +1,18 @@
-"""tools/profsum.py and tools/corpusequiv.py: profile summaries and run equivalence."""
+"""tools/profsum.py, corpusequiv.py and factsequiv.py: profile summaries and run equivalence."""
 
 import json
 import sys
 from pathlib import Path
 
+import pytest
 import zstandard
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 # pylint: disable=wrong-import-position,import-error
 import corpusequiv  # noqa: E402
 import profsum  # noqa: E402
+
+from deity_informant import NATIVE, trace  # noqa: E402
 
 
 def test_profsum(tmp_path, capsys):
@@ -71,3 +74,34 @@ def test_corpusequiv(tmp_path, capsys):
     assert corpusequiv.main([before, other]) == 1
     out = capsys.readouterr().out
     assert "2 differ" in out and "a #1: exact, facts" in out and "i #1: cells" in out
+
+
+@pytest.mark.skipif(not NATIVE, reason="needs the native extension")
+def test_factsequiv(tmp_path, capsys):
+    import factsequiv  # pylint: disable=import-outside-toplevel
+
+    code = bytes.fromhex("a9018d00d4a9028d01d460")  # LDA #1; STA $D400; LDA #2; STA $D401; RTS
+    hdr = b"PSID" + (2).to_bytes(2, "big") + (0x7C).to_bytes(2, "big") + bytes(2)
+    hdr += b"".join(v.to_bytes(2, "big") for v in (0x1000, 0x1000, 1, 1)) + bytes(4)
+    data = hdr + bytes(0x7C - len(hdr)) + (0x1000).to_bytes(2, "little") + code
+    (tmp_path / "t.sid").write_bytes(data)
+    img = factsequiv.wpcorpus.sidfile(data)[1]
+    facts = trace.collect(img, lambda s: s.call(0x1000), 10_000).to_dict()
+    row = {"path": "t.sid", "mode": "flat", "play": 0x1000, "extra_sids": []}
+    rec = {"path": "t.sid", "state": [], "facts": facts}
+    variants = {
+        "same": rec,
+        "state": rec | {"state": [[0x1005, "60"]]},
+        "facts": rec | {"facts": facts | {"writes": {0x1001: [5]}}},
+    }
+    rows, recs = [], []
+    for song, (cause, after) in enumerate(variants.items(), 1):
+        got, diff = factsequiv.attribute(img, row, rec, after)
+        assert got == cause and diff == ([0x1005] if cause == "state" else [])
+        rows.append(row | {"song": song})
+        recs.append(after | {"song": song})
+    before = _run(tmp_path / "b", rows, [rec | {"song": r["song"]} for r in rows])
+    after = _run(tmp_path / "a", rows, recs)
+    assert factsequiv.main([str(tmp_path), before, after, "--list"]) == 0
+    out = capsys.readouterr().out
+    assert "3 flat songs: facts 1, same 1, state 1" in out and "t.sid #2: state" in out
