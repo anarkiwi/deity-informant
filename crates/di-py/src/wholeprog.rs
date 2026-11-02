@@ -670,7 +670,8 @@ impl Program {
     /// Multi-byte carry chains: ``{"function", "pc", "kind", "fused", "x", "y", "r"}`` with
     /// ``kind`` ``add``/``sub``/``shl``/``shr``, ``pc`` the start of the instruction block, and
     /// per byte (least significant first) of each operand and the stored result its place:
-    /// ``["abs", addr]``, ``["x"|"y", base]`` (indexed) or ``None``.
+    /// ``["abs", addr]``, ``["x"|"y", base]`` (indexed), ``["v", base, op]`` (indexed by the
+    /// value of the block's op ``op``) or ``None``.
     #[getter]
     fn chains<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         use di_lift::wide::{Kind, Place};
@@ -680,6 +681,7 @@ impl Program {
                 Place::Indexed(r, a) => (["a", "x", "y"][r as usize], a)
                     .into_pyobject(py)?
                     .into_any(),
+                Place::Value(i, a) => ("v", a, i).into_pyobject(py)?.into_any(),
                 Place::Other => py.None().into_bound(py),
             })
         };

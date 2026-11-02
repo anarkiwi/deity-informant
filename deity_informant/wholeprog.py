@@ -36,7 +36,9 @@ def _ranges(r):
 def _facts(f):
     if f is None:
         return None
-    return (f if isinstance(f, Facts) else Facts.from_dict(f)).to_dict()
+    d = (f if isinstance(f, Facts) else Facts.from_dict(f)).to_dict()
+    d.pop("ea", None)
+    return d
 
 
 BACKEND = "jit"

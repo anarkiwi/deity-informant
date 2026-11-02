@@ -55,7 +55,7 @@ Inputs:
 | `image` | 64 KiB memory every entry starts from (e.g. after an init routine ran). |
 | `entries` | `pc` or `(pc, {"a": [values], ...})`; a single value is assumed (guarded) at entry. |
 | `volatile` | `[(lo, hi)]` address ranges whose accesses are kept verbatim, in order, at their cycle. |
-| `facts` | `trace.Facts` (or its dict): executed `starts`, `(pc, next)` `edges`, stored values `writes` per address, `page1` sites with the `[lo, hi]` page-1 addresses each reached, stack `heights` per start, `entry_sp` values per entry, with a bank map the configurations (`banks`) each start ran in and the port registers (`entry_port`) each entry was called with. |
+| `facts` | `trace.Facts` (or its dict): executed `starts`, `(pc, next)` `edges`, stored values `writes` per address, `page1` sites with the `[lo, hi]` page-1 addresses each reached, stack `heights` per start, `entry_sp` values per entry, with a bank map the configurations (`banks`) each start ran in and the port registers (`entry_port`) each entry was called with. The effective-address evidence `ea` ([layout](layout.md#effective-address-evidence)) is ignored. |
 | `bank` | A bank map memory is seen through (default flat): the port's direction and data cells, `mask` and `pull` bits, `lut` (configuration per effective port value, undriven bits high) and per configuration each 256-byte page as RAM, a constant ROM image or I/O. `deity_informant.c64.bank_map()` is the C64's (ROM-less ROMs, or `c64.real_roms()`). |
 | `cycles` | Count cycles (default off): `CY`, cycle-budget checks, volatile accesses at their cycle. |
 | `optimize` | Optimize (default on); off keeps the emitted P-Code. |
@@ -335,7 +335,8 @@ carry-out of the link below (as Ghidra's decompiler matches double-precision `IN
 `INT_LESS` forms, `double.cc`), through negations of the carry (branches over the carried
 byte) and the borrow of `DEC`'s `LDA lo; BNE` test. Bytes may be in memory, registers or stack
 slots; `stats["chains"]` counts the chains and `Program.chains` lists them with the place of
-each operand and result byte (`["abs", a]`, `["x"|"y", base]` indexed, `None`).
+each operand and result byte (`["abs", a]`, `["x"|"y", base]` indexed, `["v", base, op]`
+indexed by the value of the block's op `op`, `None`).
 
 Two plain one-byte loads of adjacent bytes combined into a word (`ZEXT(lo) | ZEXT(hi) << 8`,
 as every `(zp),Y` and `(zp,X)` pointer is built) become one 2-byte load where nothing between

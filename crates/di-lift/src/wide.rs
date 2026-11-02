@@ -77,11 +77,13 @@ impl Spec {
     }
 }
 
-/// Where a byte operand lives: a constant address, or `X`/`Y` plus a constant.
+/// Where a byte operand lives: a constant address, `X`/`Y` plus a constant, or a value the
+/// block computes (the index of its op) plus a constant.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Place {
     Abs(u16),
     Indexed(u8, u16),
+    Value(u32, u16),
     Other,
 }
 
@@ -501,6 +503,7 @@ impl<'a> View<'a> {
                 Some(R::In(k)) if k >> 16 & 0xff == Space::Reg as u32 && (k & 0xffff) < 3 => {
                     Place::Indexed((k & 0xffff) as u8, c as u16)
                 }
+                Some(R::Op(i)) => Place::Value(i, c as u16),
                 _ => Place::Other,
             },
         }
@@ -1003,7 +1006,7 @@ fn ifconv(f: &Function, preds: &[u32], b: usize, tmps: &mut Temps) -> Option<(Bl
         let below = match at {
             Place::Abs(a) => Place::Abs(a.wrapping_sub(1)),
             Place::Indexed(r, a) => Place::Indexed(r, a.wrapping_sub(1)),
-            Place::Other => continue,
+            Place::Value(..) | Place::Other => continue,
         };
         let stores_below = |ops: &[LOp]| {
             let w = View::new(ops);
