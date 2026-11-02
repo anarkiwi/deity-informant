@@ -133,8 +133,11 @@ def program(seed):
 
 @pytest.mark.parametrize("cycles", [False, True])
 # Seeds past 60: a deopt at a pointer access left a register the instruction reads unset; a
-# code check's deopt handed over only the registers the unchanged code reads (8342).
-@pytest.mark.parametrize("seed", [*range(60), 2, 17, 27, 103, 165, 192, 193, 265, 8342])
+# code check's deopt handed over only the registers the unchanged code reads (8342); windows
+# of index 0 (159, 352) and a pair checked after its first store only (930, 1444, 2031).
+@pytest.mark.parametrize(
+    "seed", [*range(60), 2, 17, 27, 103, 165, 192, 193, 265, 8342, 159, 352, 930, 1444, 2031]
+)
 def test_random_pointer_programs_are_exact(seed, cycles):
     src, calls, hi = program(seed)
     img, labels = assemble(src)
