@@ -1,6 +1,6 @@
 //! Whole-program lifting of 6502/6510 code to optimized, executable P-Code.
 //!
-//! [`lift`] takes a 64 KiB entry-state image, entry points, volatile address ranges and
+//! [`lift`] takes the entry-state memory image, entry points, volatile address ranges and
 //! [`Facts`] from running the program, and returns a [`Program`]: functions of basic blocks
 //! of P-Code in which code bytes the program writes are memory reads, `JSR`/`RTS` pairs that
 //! provably balance are `CALL`/`RETURN`, cycles are counted in a register, and every
@@ -34,6 +34,8 @@ pub struct Opts {
     pub optimize: bool,
     /// Count cycles: `CY`, cycle-budget checks, volatile accesses at their cycle.
     pub cycles: bool,
+    /// Interrupts may be taken at each volatile access: no memory value is carried across one.
+    pub interrupts: bool,
 }
 
 impl Default for Opts {
@@ -41,6 +43,7 @@ impl Default for Opts {
         Opts {
             optimize: true,
             cycles: false,
+            interrupts: false,
         }
     }
 }
@@ -418,6 +421,7 @@ pub fn lift_banked(
             constcode: &constcode,
             volatile,
             cycles: opts.cycles,
+            interrupts: opts.interrupts,
             sums: None,
         };
         let run = |fs: &mut Vec<Function>, cx: &opt::Ctx| {

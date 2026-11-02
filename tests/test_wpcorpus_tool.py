@@ -101,8 +101,10 @@ def test_corpus(tmp_path):
         ("flat.sid", 1, "flat"),
         ("flat.sid", 2, "flat"),
         ("banked.sid", 1, "banked"),
+        ("irq.sid", 1, "banked"),
     }
     assert all(r["facts"]["starts"] and r["state"] for r in recs)
+    assert [r["entries"] for r in recs if r["path"].endswith("irq.sid")] == [[0xFF48]]
     s = json.loads((out / "summary.json").read_text())
     assert s["rows"] == 5 and s["by_kind"]["PSID"]["lifted"] == 4
     assert s["by_kind"]["PSID"]["exact"] == 4 and s["by_kind"]["PSID"]["skipped"] == {}
@@ -118,7 +120,7 @@ def test_corpus(tmp_path):
     (out / "facts.jsonl.zst").write_bytes((out / "facts.jsonl.zst").read_bytes()[:-5])
     (out / "rows.jsonl").write_text((out / "rows.jsonl").read_text()[:-10])
     assert wpcorpus.main(args) == 0
-    assert len(rows_of(out)) == 5 and len(facts_of(out)) == 3
+    assert len(rows_of(out)) == 5 and len(facts_of(out)) == 4
 
 
 def test_timeout_and_errors(tmp_path, monkeypatch):
@@ -305,3 +307,15 @@ def test_irq_skip():
     assert wpcorpus.irq_skip(base | {"jammed": True}) == "init jam"
     assert wpcorpus.irq_skip(base | {"idle": False}) == "async main"
     assert wpcorpus.irq_skip(base | {"irqs": 0}) == "no interrupts"
+
+
+def test_frame_run_stops_at_its_budget(tmp_path, monkeypatch):
+    monkeypatch.setattr(machine, "WINDOW", 50_000)
+    root = tree(tmp_path / "hvsc")
+    wpcorpus._worker(str(root / "DOCUMENTS" / "Songlengths.md5"))  # pylint: disable=W0212
+    row = wpcorpus.plan(str(root / "irq.sid"), "irq.sid", 60, 20_000)[0]
+    full, _ = wpcorpus.run_song(str(root / "irq.sid"), row, 20_000, 10)
+    cut, rec = wpcorpus.run_song(str(root / "irq.sid"), row, 20_000, 10, allowance=1e-6)
+    assert full["outcome"] == "exact" and cut["calls_run"] < full["calls_run"]
+    assert cut["outcome"] == "halted" and cut["stop"] == [cut["calls_run"], "halted", "budget"]
+    assert rec and cut["has_facts"] and not cut["exact"]

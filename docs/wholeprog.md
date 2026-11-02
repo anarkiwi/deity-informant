@@ -56,6 +56,7 @@ Inputs:
 | `bank` | A bank map memory is seen through (default flat): the port's direction and data cells, `mask` and `pull` bits, `lut` (configuration per effective port value, undriven bits high) and per configuration each 256-byte page as RAM, a constant ROM image or I/O. `deity_informant.c64.bank_map()` is the C64's (ROM-less ROMs, or `c64.real_roms()`). |
 | `cycles` | Count cycles (default off): `CY`, cycle-budget checks, volatile accesses at their cycle. |
 | `optimize` | Optimize (default on); off keeps the emitted P-Code. |
+| `interrupts` | A volatile access is a point an interrupt may be taken at (default off): no memory value is carried across one. |
 
 `trace.collect(image, driver)` runs `driver(session)` twice on the jennings native core over a
 copy of `image`: `session.call(pc, a)` is `run_to_rts`; `session.mem`/`session.mpu` are the
@@ -98,7 +99,17 @@ vagrant-moses' bus model (unreadable registers read the decaying data-bus latch)
 
 `call(..., irq=True)` (with `ret`, the interrupted PC less one) enters as an interrupt: it
 pushes the PC, the status (B clear) and sets I, and the entry returns by `RTI` to the PC; the
-lifted code assumes the exit at SP + 3 (`deity_informant.frames`).
+lifted code assumes the exit at SP + 3 (`deity_informant.frames`). `nested=[(pos, entry, a, reg)]`
+takes interrupts inside the call: before the volatile access number `pos` of the call (counting
+those of the interrupts it ran; at the return when it makes no more) entry `entry` runs as an
+interrupt with registers `reg` and `A = a`, on the same memory and device log. A handler that
+does not return ends the call with its halt. A lift with `interrupts` keeps no memory value
+across a volatile access; without it, a handler that changes a value the interrupted code holds
+makes the lift differ from the reference interpreter (`reference_call(..., nested=)`, whose
+entries are addresses) given the same events. Registers and private stack bytes are the lift's
+either way. `Program.check(..., starts=, nested=)` checks records of such calls (7 bytes per
+record: entry u16, a, x, y, sp, p; 16 per interrupt: record u32, pos u32, entry u16, a, x, y,
+sp, p, pad).
 
 `call` is `run_to_rts`: push the dummy return `$0001` (or `ret`), set A, run until SP rises
 above its start (with `ret`, only at `ret + 1`, as a host trapping that address sees the

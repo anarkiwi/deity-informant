@@ -17,6 +17,9 @@ pub struct Ctx<'a> {
     pub volatile: &'a [(u32, u32)],
     /// Cycles are counted: every deopt needs the full architectural state.
     pub cycles: bool,
+    /// A volatile access is a point an interrupt may be taken at: memory values are not kept
+    /// across it.
+    pub interrupts: bool,
     /// Register summaries per function (`None`: a `CALL` uses and may define everything).
     pub sums: Option<&'a [Summary]>,
 }
@@ -1022,6 +1025,9 @@ fn number_block(lv: &mut Lvn, blk: &mut Block, tables: &[Vec<(u16, u32)>], st: &
                         op.aux &= !mem::VOLATILE;
                     }
                 }
+                if cx.interrupts && op.volatile() {
+                    st.forget(|_| true);
+                }
                 let mk = lv.memkey(a);
                 let hit = op
                     .plain()
@@ -1042,6 +1048,9 @@ fn number_block(lv: &mut Lvn, blk: &mut Block, tables: &[Vec<(u16, u32)>], st: &
                     if !cx.volatile.iter().any(|&(lo, hi)| (lo..hi).contains(&x)) {
                         op.aux &= !mem::VOLATILE;
                     }
+                }
+                if cx.interrupts && op.volatile() {
+                    st.forget(|_| true);
                 }
                 let mk = lv.memkey(a);
                 if op.plain() && st.mem.contains(&(mk, b)) {

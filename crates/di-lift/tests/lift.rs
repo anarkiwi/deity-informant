@@ -27,6 +27,44 @@ fn copy_loop() {
 }
 
 #[test]
+fn interrupts_keep_no_memory_value_across_a_volatile_access() {
+    let img = image(&[
+        (
+            0x1000,
+            &[
+                0xad, 0x00, 0x02, 0x8d, 0x00, 0xc0, 0xf0, 0x01, 0xea, 0xad, 0x00, 0x02, 0x8d, 0x01,
+                0xc0, 0x60,
+            ],
+        ),
+        (
+            0x1100,
+            &[
+                0xa9, 0x01, 0x8d, 0x00, 0x02, 0x8d, 0x01, 0x02, 0xae, 0x00, 0x03, 0xf0, 0x08, 0xa9,
+                0x02, 0x8d, 0x01, 0x02, 0x8d, 0x00, 0xc0, 0x60,
+            ],
+        ),
+        (0x0300, &[1]),
+    ]);
+    let f = facts_in(&img, &[(0x1000, 0), (0x1100, 0)], 1_000_000, None);
+    let loads = |interrupts| {
+        let opts = Opts {
+            interrupts,
+            ..Opts::default()
+        };
+        let p = lift_with(
+            &img,
+            &entries(&[0x1000, 0x1100]),
+            &[(0xc000, 0xc100)],
+            &f,
+            opts,
+        );
+        assert_eq!(diff(&img, &p, &[(0, 0), (1, 0), (0, 0)], IO), 0);
+        p.to_string().matches("LOAD").count()
+    };
+    assert_eq!(loads(true), loads(false) + 1);
+}
+
+#[test]
 fn operand_cells() {
     let p = check(
         &image(progs::PATCH),
@@ -107,6 +145,7 @@ fn cycles_budget_and_stack_wrap() {
     let cyc = Opts {
         optimize: true,
         cycles: true,
+        ..Opts::default()
     };
     let p = lift_with(&img, &es, &[(0xc000, 0xc100)], &f, cyc);
     assert!(diff_capped(&img, &p, &calls(10, |_| 0), IO, 150) > 0);
@@ -171,6 +210,7 @@ fn guarded_stack_and_forced_page1_access() {
         let opts = Opts {
             optimize: true,
             cycles,
+            ..Opts::default()
         };
         let p = lift_with(&img, &entries(&pc), &[(0xc000, 0xc100)], &f, opts);
         assert_eq!(diff(&img, &p, &forced, IO), 3);
@@ -216,6 +256,7 @@ fn private_heights(
         let opts = Opts {
             optimize: true,
             cycles,
+            ..Opts::default()
         };
         let q = lift_with(&img, &entries(&[pc]), &[(0xc000, 0xc100)], &f, opts);
         assert!(q.stats.stack_private);
@@ -300,6 +341,7 @@ fn soft_deopt_resumes_with_folded_register() {
         let opts = Opts {
             optimize: true,
             cycles,
+            ..Opts::default()
         };
         let p = lift_with(&img, &entries(&[pc]), &[(0xc000, 0xc100)], &f, opts);
         assert!(p.stats.code_guards > 0);
@@ -331,6 +373,7 @@ fn forced_entry_sp(prog: &[(u16, &[u8])], pc: u16, seen: &[u8], sp: u8) {
         let opts = Opts {
             optimize: true,
             cycles,
+            ..Opts::default()
         };
         let q = lift_with(&img, &entries(&[pc]), &[(0xc000, 0xc100)], &f, opts);
         assert!(diff_at(&img, &q, &acc_calls(seen), IO, 1_000_000, sp) > 0);
@@ -398,6 +441,7 @@ fn capped(prog: &[(u16, &[u8])], pc: u16, n: usize, max: u64, halt: di_pcode::Ha
         let opts = Opts {
             optimize: true,
             cycles,
+            ..Opts::default()
         };
         let p = lift_with(&img, &entries(&[pc]), &[(0xc000, 0xc100)], &f, opts);
         assert_eq!(p.stats.budget_checks > 0, !cycles);
@@ -437,6 +481,7 @@ fn finite_loop_under_a_budget() {
         let opts = Opts {
             optimize: true,
             cycles,
+            ..Opts::default()
         };
         let p = lift_with(
             &img,
@@ -468,6 +513,7 @@ fn banked(prog: &[(u16, &[u8])], pc: u16, seen: &[u8], forced: &[u8]) -> Program
         let opts = Opts {
             optimize: true,
             cycles,
+            ..Opts::default()
         };
         let q = di_lift::lift_banked(
             &img,
