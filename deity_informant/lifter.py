@@ -7,7 +7,8 @@ family), with correct cycle counts. JAM/KIL halt. An unimplemented opcode is a
 hard error, never a silent skip.
 
 Semantics and cycle counts follow "No More Secrets - NMOS 6510 Unintended
-Opcodes" (v0.91); indexed accesses make the NMOS throw-away read of their unfixed address. The static cycle tables below are frozen (no runtime py65
+Opcodes" (v0.91); indexed accesses make the NMOS throw-away read of their
+unfixed address. The static cycle tables below are frozen (no runtime py65
 dependency) and were cross-checked against the NMS reference chart.
 """
 
