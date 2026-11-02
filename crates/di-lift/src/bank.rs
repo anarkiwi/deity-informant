@@ -1,7 +1,7 @@
 //! A host's bank map: a port (direction and data cells, both also backed by RAM) selects a
 //! configuration that maps each 256-byte page to RAM, a constant ROM image or I/O.
 
-use di_pcode::Bus;
+use di_pcode::{Bus, Cpu, Lead};
 
 /// What backs a page in one configuration.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -99,6 +99,15 @@ impl<B: Bus> Bus for Banked<'_, B> {
     }
     fn fetch(&mut self, addr: u16) -> u8 {
         self.read(addr)
+    }
+    fn lead(&mut self, pc: u16) -> Lead {
+        match self.map.back(self.cfg, pc) {
+            Back::Io => self.inner.lead(pc),
+            _ => Lead::Fetch,
+        }
+    }
+    fn boundary(&mut self, cpu: &Cpu) {
+        self.inner.boundary(cpu)
     }
     fn now(&mut self, c: u64) {
         self.inner.now(c)

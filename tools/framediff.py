@@ -73,7 +73,7 @@ def main(argv=None):
         events = frames.nested(prog, host, n)
         for m in range(1, len(events) + 1):
             kw = {"a": int(host.frames[n]["a"]), "reg": frames.regs(host.frames[n])}
-            kw |= {"reads": c64.reads(rec), "ret": host.sentinel - 1, "irq": True, "log": True}
+            kw |= {"reads": c64.read_entries(rec), "ret": host.sentinel - 1, "irq": True, "log": True}
             lo = prog.call(bytearray(before), prog.entries.index(int(host.frames[n]["at"])),
                            nested=events[:m], **kw)  # fmt: skip
             ro = frames.wholeprog.reference_call(

@@ -300,7 +300,7 @@ def _call(prog, host, k, rec, mem, bank=None):
     device reads replayed and its interrupts taken: on ``prog``, or on the reference
     interpreter through the bank map ``bank`` when ``prog`` is None."""
     e = host.frames[k]
-    kw = {"a": int(e["a"]), "reg": regs(e), "log": True, "reads": c64.reads(rec), "irq": True}
+    kw = {"a": int(e["a"]), "reg": regs(e), "log": True, "reads": c64.read_entries(rec), "irq": True}
     kw |= {"ret": host.sentinel - 1, "nested": nested(prog, host, k)}
     if prog is not None:
         at = {pc: i for i, pc in enumerate(prog.entries)}
@@ -365,7 +365,7 @@ def timed(prog, host, bank, max_cycles=2_000_000, until=None):
     and interrupts, after one warm-up frame. The reference stops at the ``time.perf_counter``
     time ``until``; the lift runs the frames it did."""
     first = next(host.stream.chunks())
-    recs = [(c64.reads(r), r) for r in first]
+    recs = [(c64.read_entries(r), r) for r in first]
     ents = host.frames
     at = {pc: i for i, pc in enumerate(prog.entries)}
     kw = {"max_cycles": max_cycles, "ret": host.sentinel - 1, "irq": True}

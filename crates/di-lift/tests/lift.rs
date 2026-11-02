@@ -27,44 +27,6 @@ fn copy_loop() {
 }
 
 #[test]
-fn interrupts_keep_no_memory_value_across_a_volatile_access() {
-    let img = image(&[
-        (
-            0x1000,
-            &[
-                0xad, 0x00, 0x02, 0x8d, 0x00, 0xc0, 0xf0, 0x01, 0xea, 0xad, 0x00, 0x02, 0x8d, 0x01,
-                0xc0, 0x60,
-            ],
-        ),
-        (
-            0x1100,
-            &[
-                0xa9, 0x01, 0x8d, 0x00, 0x02, 0x8d, 0x01, 0x02, 0xae, 0x00, 0x03, 0xf0, 0x08, 0xa9,
-                0x02, 0x8d, 0x01, 0x02, 0x8d, 0x00, 0xc0, 0x60,
-            ],
-        ),
-        (0x0300, &[1]),
-    ]);
-    let f = facts_in(&img, &[(0x1000, 0), (0x1100, 0)], 1_000_000, None);
-    let loads = |interrupts| {
-        let opts = Opts {
-            interrupts,
-            ..Opts::default()
-        };
-        let p = lift_with(
-            &img,
-            &entries(&[0x1000, 0x1100]),
-            &[(0xc000, 0xc100)],
-            &f,
-            opts,
-        );
-        assert_eq!(diff(&img, &p, &[(0, 0), (1, 0), (0, 0)], IO), 0);
-        p.to_string().matches("LOAD").count()
-    };
-    assert_eq!(loads(true), loads(false) + 1);
-}
-
-#[test]
 fn operand_cells() {
     let p = check(
         &image(progs::PATCH),

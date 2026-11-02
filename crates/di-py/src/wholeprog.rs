@@ -3,7 +3,7 @@
 
 use di_lift::ir::{mem, other, Program as LProgram};
 use di_lift::{Back, Backend, BankMap, Banked, Entry, Exec, Facts, Job, Opts, Outcome, Runner};
-use di_pcode::{reg as R, Bus, Cpu, Halt, Opc, Space, Vn, RETURN};
+use di_pcode::{reg as R, Bus, Cpu, Halt, Lead, Opc, Space, Vn, RETURN};
 use indicatif::{ProgressBar, ProgressStyle};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -25,19 +25,26 @@ struct PyBus<'a> {
     log: Option<Vec<(u16, u8, u64, bool)>>,
     synth: bool,
     reads: Option<&'a [u8]>,
+    read_addrs: Option<&'a [u16]>,
     now: u64,
     n: u64,
     r: usize,
     pending: VecDeque<Interrupt>,
     nest: Option<Nest<'a>>,
+    retired: Vec<u64>,
+    taken: usize,
+    boundary_bad: Option<usize>,
 }
 
-/// An interrupt entry the machine took inside a call: after `pos` volatile accesses of the
-/// call (those of the interrupt handlers it took included, in the order the machine made
-/// them), entry `entry` runs as an interrupt with registers `reg` and `a`.
+/// An interrupt entry the machine took inside a call: entry `entry` runs as an interrupt with
+/// registers `reg` and `a` after `icount` instructions of the context it interrupts (the call,
+/// or the handler `depth` levels down) have retired, and after `pos` volatile accesses of the
+/// call (those of the interrupt handlers it took included, in the order the machine made them).
 #[derive(Clone, Copy)]
 struct Interrupt {
+    icount: u64,
     pos: u64,
+    depth: usize,
     entry: usize,
     a: u8,
     reg: [u8; 16],
@@ -67,41 +74,59 @@ impl<'a> PyBus<'a> {
             log: log.then(Vec::new),
             synth,
             reads: None,
+            read_addrs: None,
             now: 0,
             n: 0,
             r: 0,
             pending: VecDeque::new(),
             nest: None,
+            retired: vec![0],
+            taken: 0,
+            boundary_bad: None,
         }
     }
-    /// Runs the pending interrupts due before the next volatile access.
-    fn interrupts(&mut self) {
-        while self.pending.front().is_some_and(|e| e.pos <= self.n) {
-            let (Some(ev), Some(nest)) = (self.pending.pop_front(), self.nest.as_ref()) else {
-                return;
-            };
-            let (max_cycles, ret, bank, clocked) =
-                (nest.max_cycles, nest.ret, nest.bank, nest.clocked);
-            let mut cpu = cpu_of(Some(ev.reg), self.now);
-            let Some(exec) = nest.exec else {
-                let to = (ev.entry as u16, ev.a, ret, true);
-                let h = reference_run(&mut cpu, self, bank, clocked, to, max_cycles);
-                if let Some(nest) = self.nest.as_mut() {
-                    nest.bad = nest.bad.or((h != Halt::Sp).then_some(h));
-                }
-                continue;
-            };
-            let mut run = Runner::new(exec);
-            (run.backend, run.invalid) = (nest.backend, nest.invalid);
-            (run.ret, run.irq) = (ret, true);
-            let o = run.call(ev.entry, ev.a, &mut cpu, self, max_cycles);
+    /// The call returned: an interrupt not yet taken never found its boundary.
+    fn finish(&mut self) {
+        if !self.pending.is_empty() {
+            self.boundary_bad.get_or_insert(self.taken);
+        }
+    }
+    /// Takes the front interrupt, its handler running on the lifted program (or the reference
+    /// interpreter) as an interrupt with the machine's registers. At an instruction boundary
+    /// (`at`) the registers and volatile access count must be the machine's.
+    fn take(&mut self, at: Option<&Cpu>) {
+        let (Some(ev), Some(nest)) = (self.pending.pop_front(), self.nest.as_ref()) else {
+            return;
+        };
+        let (exec, max_cycles, ret, bank) = (nest.exec, nest.max_cycles, nest.ret, nest.bank);
+        let (clocked, backend, invalid) = (nest.clocked, nest.backend, nest.invalid);
+        if at.is_some_and(|c| ev.pos != self.n || differs(c, &ev.reg)) {
+            self.boundary_bad.get_or_insert(self.taken);
+        }
+        self.taken += 1;
+        let mut cpu = cpu_of(Some(ev.reg), self.now);
+        let inner = self.pending.front().is_some_and(|e| e.depth > ev.depth);
+        self.retired.push(0);
+        let Some(exec) = exec else {
+            let to = (ev.entry as u16, ev.a, ret, true);
+            let h = reference_run(&mut cpu, self, bank, clocked, to, max_cycles);
+            self.retired.pop();
             if let Some(nest) = self.nest.as_mut() {
-                nest.invalid |= run.invalid;
-                for (k, v) in run.deopts {
-                    *nest.deopts.entry(k).or_default() += v;
-                }
-                nest.bad = nest.bad.or((o.halt != Halt::Sp).then_some(o.halt));
+                nest.bad = nest.bad.or((h != Halt::Sp).then_some(h));
             }
+            return;
+        };
+        let mut run = Runner::new(exec);
+        (run.backend, run.invalid, run.precise) = (backend, invalid, inner);
+        (run.ret, run.irq) = (ret, true);
+        let o = run.call(ev.entry, ev.a, &mut cpu, self, max_cycles);
+        self.retired.pop();
+        if let Some(nest) = self.nest.as_mut() {
+            nest.invalid |= run.invalid;
+            for (k, v) in run.deopts {
+                *nest.deopts.entry(k).or_default() += v;
+            }
+            nest.bad = nest.bad.or((o.halt != Halt::Sp).then_some(o.halt));
         }
     }
     fn device(&mut self) -> &mut [u8; 0x10000] {
@@ -114,11 +139,34 @@ impl<'a> PyBus<'a> {
     }
 }
 
+/// Whether the registers of `cpu` (the flags bar B) differ from the register file `reg`.
+fn differs(cpu: &Cpu, reg: &[u8; 16]) -> bool {
+    let mine = cpu.reg();
+    [0, 1, 2, 3, 8, 9, 10, 11, 13, 14]
+        .iter()
+        .any(|&i| mine[i] != reg[i])
+}
+
 impl Bus for PyBus<'_> {
+    #[inline]
+    fn boundary(&mut self, cpu: &Cpu) {
+        if self.pending.is_empty() {
+            return;
+        }
+        let d = self.retired.len() - 1;
+        let n = self.retired[d];
+        while self
+            .pending
+            .front()
+            .is_some_and(|e| e.depth == d && e.icount == n)
+        {
+            self.take(Some(cpu));
+        }
+        self.retired[d] = n + 1;
+    }
     #[inline]
     fn read(&mut self, a: u16) -> u8 {
         if self.volatile(a) {
-            self.interrupts();
             self.n += 1;
             let v = if let Some(r) = self.reads {
                 self.r += 1;
@@ -139,9 +187,6 @@ impl Bus for PyBus<'_> {
     #[inline]
     fn write(&mut self, a: u16, v: u8) {
         let vol = self.volatile(a);
-        if vol {
-            self.interrupts();
-        }
         self.n += vol as u64;
         if let (Some(l), true) = (self.log.as_mut(), vol) {
             l.push((a, v, self.now, true));
@@ -161,6 +206,19 @@ impl Bus for PyBus<'_> {
     #[inline]
     fn fetch(&mut self, a: u16) -> u8 {
         self.mem[a as usize]
+    }
+    fn lead(&mut self, pc: u16) -> Lead {
+        let ahead = |k: usize| self.read_addrs?.get(self.r + k).copied();
+        match (self.volatile(pc), ahead(0), ahead(1)) {
+            (true, Some(a), b) if a == pc.wrapping_add(1) => {
+                if b == Some(pc) {
+                    Lead::Implied
+                } else {
+                    Lead::Brk
+                }
+            }
+            _ => Lead::Fetch,
+        }
     }
     #[inline]
     fn now(&mut self, c: u64) {
@@ -185,6 +243,12 @@ impl Bus for Unclocked<'_, '_> {
     fn fetch(&mut self, a: u16) -> u8 {
         self.0.fetch(a)
     }
+    fn lead(&mut self, pc: u16) -> Lead {
+        self.0.lead(pc)
+    }
+    fn boundary(&mut self, cpu: &Cpu) {
+        self.0.boundary(cpu)
+    }
     fn ram_read(&mut self, a: u16) -> u8 {
         self.0.ram_read(a)
     }
@@ -193,6 +257,41 @@ impl Bus for Unclocked<'_, '_> {
     }
     fn flat(&mut self) -> Option<(*mut u8, *mut u8)> {
         self.0.flat()
+    }
+}
+
+/// Volatile reads to replay: their values (bytes), or ``(address, value)`` pairs, whose
+/// addresses let the interpreter place an opcode fetch among the machine's throw-away reads.
+struct Replay {
+    vals: Vec<u8>,
+    addrs: Option<Vec<u16>>,
+}
+
+#[derive(FromPyObject)]
+pub enum ReplayArg {
+    Values(Vec<u8>),
+    Entries(Vec<(u16, u8)>),
+}
+
+impl From<ReplayArg> for Replay {
+    fn from(a: ReplayArg) -> Self {
+        match a {
+            ReplayArg::Values(vals) => Replay { vals, addrs: None },
+            ReplayArg::Entries(e) => {
+                let (addrs, vals) = e.into_iter().unzip();
+                Replay {
+                    vals,
+                    addrs: Some(addrs),
+                }
+            }
+        }
+    }
+}
+
+impl<'a> PyBus<'a> {
+    fn replay(&mut self, r: &'a Option<Replay>) {
+        self.reads = r.as_ref().map(|r| &r.vals[..]);
+        self.read_addrs = r.as_ref().and_then(|r| r.addrs.as_deref());
     }
 }
 
@@ -407,14 +506,22 @@ fn result<'py>(
     Ok(d)
 }
 
-/// An interrupt entry as Python gives it: `(pos, entry, a, reg)`.
-type NestedArg = (u64, usize, u8, [u8; 16]);
+/// An interrupt entry as Python gives it: `(icount, pos, entry, a, reg, depth)`; `entry` is the
+/// lifted program's entry number, or the entry's address for the reference interpreter.
+type NestedArg = (u64, u64, usize, u8, [u8; 16], usize);
 
 fn interrupts_of(nested: Option<Vec<NestedArg>>) -> VecDeque<Interrupt> {
     nested
         .into_iter()
         .flatten()
-        .map(|(pos, entry, a, reg)| Interrupt { pos, entry, a, reg })
+        .map(|(icount, pos, entry, a, reg, depth)| Interrupt {
+            icount,
+            pos,
+            depth,
+            entry,
+            a,
+            reg,
+        })
         .collect()
 }
 
@@ -602,11 +709,18 @@ impl Program {
     /// write a copy of ``mem``; ``reads`` (bytes) replays the volatile reads in order.
     /// ``backend`` overrides :attr:`backend` for this call. With ``irq`` the call enters as
     /// an interrupt: it pushes the PC ``ret + 1``, the status (B clear) and sets I, and returns
-    /// by ``RTI`` to ``ret + 1``. ``nested`` lists interrupt entries taken inside the call,
-    /// ``(pos, entry, a, reg)``: entry ``entry`` runs as an interrupt (as ``irq``, returning to
-    /// ``ret + 1``) with registers ``reg`` and ``a`` before the volatile access number ``pos``
-    /// of the call, counting the accesses of the interrupts it ran (or at the call's return,
-    /// when it made no more); a handler that does not return ends the call with its halt.
+    /// by ``RTI`` to ``ret + 1``. ``nested`` lists the interrupt entries the machine took inside
+    /// the call in its order, ``(icount, pos, entry, a, reg, depth)``: entry ``entry`` runs as
+    /// an interrupt (as ``irq``, returning to ``ret + 1``) with registers ``reg`` and ``A = a``
+    /// at the boundary after ``icount`` instructions of the context it interrupts (``depth``
+    /// 0: the call, ``n``: the handler of the last interrupt taken at depth ``n - 1``) have
+    /// retired. A call with interrupts runs on the reference interpreter, instruction by
+    /// instruction, and its handlers on the lifted program (a handler interrupted in turn
+    /// on the reference too). The result's ``boundary`` is None, or the index of the first
+    /// interrupt whose boundary was not the machine's: ``reg`` differs from the registers the
+    /// interpreter has there or ``pos`` from the volatile accesses it has made (those of the
+    /// handlers it ran included), or it never came. A handler that does not return ends the
+    /// call with its halt.
     #[pyo3(signature = (mem, entry=0, a=0, reg=None, cycles=0, max_cycles=10_000_000, log=false, synth=false, reads=None, backend=None, ret=None, irq=false, nested=None))]
     #[allow(clippy::too_many_arguments)]
     fn call<'py>(
@@ -620,7 +734,7 @@ impl Program {
         max_cycles: u64,
         log: bool,
         synth: bool,
-        reads: Option<Vec<u8>>,
+        reads: Option<ReplayArg>,
         backend: Option<&str>,
         ret: Option<u16>,
         irq: bool,
@@ -629,14 +743,15 @@ impl Program {
         let backend = self.backend_or(backend)?;
         self.entry(entry)?;
         for e in nested.iter().flatten() {
-            self.entry(e.1)?;
+            self.entry(e.2)?;
         }
+        let reads: Option<Replay> = reads.map(Into::into);
         let mut cpu = cpu_of(reg, cycles);
         let dev = devices(self.prog.bank.is_some(), mem)?;
-        let (o, lg) = with_mem(mem, |m| {
+        let (o, lg, bad) = with_mem(mem, |m| {
             let mut bus = PyBus::new(m, &self.prog.volatile, log, synth);
             bus.dev = dev;
-            bus.reads = reads.as_deref();
+            bus.replay(&reads);
             bus.pending = interrupts_of(nested);
             let o = self.run(
                 &mut bus,
@@ -645,9 +760,11 @@ impl Program {
                 max_cycles,
                 backend,
             );
-            (o, bus.log)
+            (o, bus.log, bus.boundary_bad)
         })?;
-        result(py, &cpu, o.halt, o.deopt, lg)
+        let d = result(py, &cpu, o.halt, o.deopt, lg)?;
+        d.set_item("boundary", bad)?;
+        Ok(d)
     }
 
     /// ``deity_informant.c64.check`` over packed machine records (``vagrant_moses.smc.Records``
@@ -661,7 +778,7 @@ impl Program {
     ///
     /// With ``starts`` (7 bytes per record: entry u16, then a, x, y, sp, p) each record is an
     /// interrupt entered as :meth:`call` with ``irq`` from those registers (``reg`` and ``accs``
-    /// are unused), and ``nested`` (16 bytes per interrupt taken inside a record: record u32,
+    /// are unused), and ``nested`` (20 bytes per interrupt taken inside a record: record u32, icount u32,
     /// pos u32, entry u16, a, x, y, sp, p, a pad byte, in record order) lists the entries taken
     /// inside it as :meth:`call`'s ``nested`` does.
     #[pyo3(signature = (mem, reg, records, first, port=None, max_cycles=10_000_000, accs=None, ret=None, starts=None, nested=None))]
@@ -689,13 +806,13 @@ impl Program {
         let mut events = nested
             .as_deref()
             .unwrap_or_default()
-            .as_chunks::<16>()
+            .as_chunks::<20>()
             .0
             .iter();
         let mut event = events.next();
         let entries = starts.into_iter().flatten().map(|s| [s[0], s[1]]);
-        let entries = entries.chain(events.clone().map(|e| [e[8], e[9]]));
-        for e in entries.chain(event.map(|e| [e[8], e[9]])) {
+        let entries = entries.chain(events.clone().map(|e| [e[12], e[13]]));
+        for e in entries.chain(event.map(|e| [e[12], e[13]])) {
             self.entry(u16::from_le_bytes(e) as usize)?;
         }
         let banked = self.prog.bank.is_some();
@@ -708,7 +825,7 @@ impl Program {
                     refm[a as usize] = v;
                 }
             }
-            let mut reads = Vec::new();
+            let (mut vals, mut addrs) = (Vec::new(), Vec::new());
             for k in first..r.len() {
                 let n = k - first;
                 for (a, v) in r.delta(k) {
@@ -718,8 +835,11 @@ impl Program {
                     m[1] = p;
                 }
                 let a = accs.as_ref().and_then(|v| v.get(n).copied()).unwrap_or(0);
-                reads.clear();
-                reads.extend(r.log(k).filter(|e| !e.2).map(|e| e.1));
+                (vals.clear(), addrs.clear());
+                for (a, v, _) in r.log(k).filter(|e| !e.2) {
+                    vals.push(v);
+                    addrs.push(a);
+                }
                 let (entry, a, irq) = match starts {
                     Some(s) => {
                         let s = &s[k];
@@ -729,23 +849,27 @@ impl Program {
                     None => (0, a, false),
                 };
                 let mut cpu = cpu_of(Some(reg), 0);
+                let mut events_of_k = VecDeque::new();
                 let dev = banked.then(|| Box::new(*m));
                 let mut bus = PyBus::new(m, &self.prog.volatile, true, false);
                 bus.dev = dev;
-                bus.reads = Some(&reads);
+                (bus.reads, bus.read_addrs) = (Some(&vals[..]), Some(&addrs[..]));
                 while let Some(e) =
                     event.filter(|e| u32::from_le_bytes([e[0], e[1], e[2], e[3]]) as usize <= k)
                 {
                     if u32::from_le_bytes([e[0], e[1], e[2], e[3]]) as usize == k {
-                        bus.pending.push_back(Interrupt {
-                            pos: u32::from_le_bytes([e[4], e[5], e[6], e[7]]) as u64,
-                            entry: u16::from_le_bytes([e[8], e[9]]) as usize,
-                            a: e[10],
-                            reg: start_reg(&e[10..15]),
+                        events_of_k.push_back(Interrupt {
+                            icount: u32::from_le_bytes([e[4], e[5], e[6], e[7]]) as u64,
+                            pos: u32::from_le_bytes([e[8], e[9], e[10], e[11]]) as u64,
+                            entry: u16::from_le_bytes([e[12], e[13]]) as usize,
+                            a: e[14],
+                            reg: start_reg(&e[14..19]),
+                            depth: e[19] as usize,
                         });
                     }
                     event = events.next();
                 }
+                bus.pending = std::mem::take(&mut events_of_k);
                 let o = self.run(
                     &mut bus,
                     &mut cpu,
@@ -754,6 +878,9 @@ impl Program {
                     backend,
                 );
                 let out = bus.log.take().unwrap_or_default();
+                if let Some(i) = bus.boundary_bad {
+                    return Some((n, Bad::Boundary(("boundary", i))));
+                }
                 if let Some(bad) = mismatch(&r, k, o.halt, &out, &cpu.reg(), m, &refm) {
                     return Some((n, bad));
                 }
@@ -840,6 +967,7 @@ impl Program {
         run.invalid = invalid;
         run.ret = ret;
         run.irq = irq;
+        run.precise = !bus.pending.is_empty();
         if !bus.pending.is_empty() {
             bus.nest = Some(Nest {
                 exec: Some(&self.exec),
@@ -855,7 +983,7 @@ impl Program {
         }
         let mut o = run.call(entry, a, cpu, bus, max_cycles);
         if o.halt == Halt::Sp {
-            bus.interrupts();
+            bus.finish();
         }
         let mut st = self.state.lock().unwrap();
         st.0 = run.invalid;
@@ -939,19 +1067,20 @@ pub fn reference_call<'py>(
     synth: bool,
     clocked: bool,
     bank: Option<&Bound<'py, PyDict>>,
-    reads: Option<Vec<u8>>,
+    reads: Option<ReplayArg>,
     ret: Option<u16>,
     irq: bool,
     nested: Option<Vec<NestedArg>>,
 ) -> PyResult<Bound<'py, PyDict>> {
+    let reads: Option<Replay> = reads.map(Into::into);
     let mut cpu = cpu_of(reg, cycles);
     let bank = bank_of(bank)?;
     let banked = bank.is_some();
-    let (h, lg) = with_mem(mem, |m| {
+    let (h, lg, bad) = with_mem(mem, |m| {
         let mut bus = PyBus::new(m, &volatile, log, synth);
         bus.now = cycles;
         bus.dev = banked.then(|| Box::new(*bus.mem));
-        bus.reads = reads.as_deref();
+        bus.replay(&reads);
         bus.pending = interrupts_of(nested);
         if !bus.pending.is_empty() {
             bus.nest = Some(Nest {
@@ -975,7 +1104,7 @@ pub fn reference_call<'py>(
             max_cycles,
         );
         if h == Halt::Sp {
-            bus.interrupts();
+            bus.finish();
         }
         h = bus
             .nest
@@ -983,9 +1112,11 @@ pub fn reference_call<'py>(
             .and_then(|n| n.bad)
             .filter(|_| h == Halt::Sp)
             .unwrap_or(h);
-        (h, bus.log)
+        (h, bus.log, bus.boundary_bad)
     })?;
-    result(py, &cpu, h, None, lg)
+    let d = result(py, &cpu, h, None, lg)?;
+    d.set_item("boundary", bad)?;
+    Ok(d)
 }
 
 /// ``run_to_rts`` of ``pc`` with ``A = a`` and return address ``ret`` (as ``Program.call``)
@@ -1065,7 +1196,7 @@ pub fn reference_calls(
 /// cells, ``mask`` and ``pull`` bits, ``lut`` (configuration per effective port value),
 /// ``configs`` (per configuration 256 page kinds: 0 RAM, 1 ROM, 2 I/O) and ``rom``.
 #[pyfunction]
-#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, interrupts=false))]
+#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn lift_program(
     py: Python<'_>,
@@ -1076,17 +1207,12 @@ pub fn lift_program(
     optimize: bool,
     cycles: bool,
     bank: Option<&Bound<'_, PyDict>>,
-    interrupts: bool,
 ) -> PyResult<Program> {
     let img = self::image(image)?;
     let es = self::entries(entries);
     let f = self::facts(facts)?;
     let bank = bank_of(bank)?;
-    let opts = Opts {
-        optimize,
-        cycles,
-        interrupts,
-    };
+    let opts = Opts { optimize, cycles };
     Ok(Program::new(py.detach(|| {
         di_lift::lift_banked(&img, &es, &volatile, &f, opts, bank.as_ref())
     })))
@@ -1276,6 +1402,7 @@ enum Bad {
     Log((&'static str, usize)),
     Reg((&'static str, Vec<u32>, Vec<u32>)),
     Memory((&'static str, usize)),
+    Boundary((&'static str, usize)),
 }
 
 /// ``c64.mismatch`` of a lifted call (halt, log, registers, memory ``m``) against record

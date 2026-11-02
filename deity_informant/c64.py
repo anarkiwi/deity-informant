@@ -76,6 +76,8 @@ __all__ = [
     "AGREE",
     "outcome",
     "reads",
+    "read_entries",
+    "read_entries",
     "lift_check",
     "LiftCheck",
     "IDLE",
@@ -867,8 +869,14 @@ def outcome(bad):
 
 
 def reads(rec):
-    """The values a machine record's device reads returned, in order: what a check replays."""
+    """The values a machine record's device reads returned, in order."""
     return bytes(v for _, v, w in rec["log"] or () if not w)
+
+
+def read_entries(rec):
+    """The ``(address, value)`` of a machine record's device reads, in order: what a check
+    replays, the addresses placing an instruction's opcode fetch among its other reads."""
+    return [(a, v) for a, v, w in rec["log"] or () if not w]
 
 
 def check(
@@ -901,7 +909,7 @@ def check(
                 mem[1] = port
             a = accs[n] if n < len(accs) else 0
             o = prog.call(
-                mem, 0, a=a, reg=reg, log=True, max_cycles=max_cycles, reads=reads(ref), ret=ret
+                mem, 0, a=a, reg=reg, log=True, max_cycles=max_cycles, reads=read_entries(ref), ret=ret
             )
             bad = mismatch(ref, {**o, "ram": mem})
             if bad is not None:

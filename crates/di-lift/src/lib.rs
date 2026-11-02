@@ -36,8 +36,6 @@ pub struct Opts {
     pub optimize: bool,
     /// Count cycles: `CY`, cycle-budget checks, volatile accesses at their cycle.
     pub cycles: bool,
-    /// Interrupts may be taken at each volatile access: no memory value is carried across one.
-    pub interrupts: bool,
 }
 
 impl Default for Opts {
@@ -45,7 +43,6 @@ impl Default for Opts {
         Opts {
             optimize: true,
             cycles: false,
-            interrupts: false,
         }
     }
 }
@@ -445,7 +442,6 @@ pub fn lift_banked(
             constcode: &constcode,
             volatile,
             cycles: opts.cycles,
-            interrupts: opts.interrupts,
             sums: None,
         };
         let run = |fs: &mut Vec<Function>, cx: &opt::Ctx| {
