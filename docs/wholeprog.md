@@ -37,6 +37,7 @@ prog = wholeprog.lift(state, [play], volatile=[(lo, hi)], facts=facts)   # cycle
 prog.functions        # [{"pc", "entry", "recursive", "blocks": [{"pc", "ops"}], "tables"}]
 prog.stats            # insns, raw_ops, emitted_ops, ops, cells, code_guards, calls, ...
 prog.chains           # [{"function", "pc", "kind", "fused", "x", "y", "r"}] carry chains
+prog.induction        # [{"head", "reg", "addr", "lo", "hi", "step", "trips"}] loop counters
 prog.guard_evals      # conditional branches to a deopt the interpreter backend has run
 r = prog.call(mem, 0, a=0, reg=None, cycles=0, max_cycles=10_000_000, log=True)  # backend=
 prog.backend          # "jit" (default) or "interp"; prog.compile() -> compile seconds
@@ -225,7 +226,7 @@ the program, and checks it against the reference.
 | An edge reaches a start at a stack height the plan has no node for (never seen there) | none: the edge is the deopt | deopt at the start |
 | After an SP-setting instruction, SP is at a height the facts saw the next start at | SP dispatch: `SP - E` compared per height without wrapping (`stats["sp_dispatch"]`), SP restated as `E + height - 2`; a function with a dispatch loads its stack slots from memory at entry | deopt at the next start |
 | A store may hit constant code | `codechk(addr, value)` after the store, when the address interval (*Static proofs*) meets constant code | deopt after the instruction; the program stays invalid until its constant code matches again |
-| A zero-page pointer high byte that accesses rely on stays at least 2 (*Pointer high bytes*) | an entry compares the bytes some access reads before the entry stores them; a store that may write one and may store less than 2 compares the value after the instruction (`stats["ptr_guards"]`) | deopt at the entry; deopt after the store |
+| A zero-page pointer pair that accesses rely on stays outside the window of their indices (*Pointer windows*) | an entry reads back the pairs some access reads before every path to it stores their high byte; a store that may write a byte of one and may leave it in its window reads the pair back after the instruction, a pair's two stores on one instruction chain once after the second (`stats["ptr_guards"]`) | deopt at the entry; deopt after the store |
 | An access that may reach page 1 (by its address interval) does not, while stack bytes are kept out of memory | the address's page is compared with 1 before the access (`stats["stack_guards"]`) | deopt before the instruction |
 | A callee that may store into page 1 returns to its caller (stack not private) | the return-address bytes are compared after `CALL` | deopt at the address the `RTS` pulled |
 | Entry register value | compare at entry | deopt at the entry |
@@ -267,23 +268,52 @@ the facts, so a proof holds on every execution that stays in lifted code.
   remains valid after any deopt and from any memory state. The stack-privacy decision still
   uses the facts' page-1 accesses as before.
 
-- **Pointer high bytes.** The address of a `(zp),Y` or `(zp,X)` access is the pointer plus a
-  byte, which is outside page 1 whenever the pointer's high byte is at least 2 (the sum wraps
-  past $FFFF into page 0). The analysis (`analysis::Access::hi`) names the zero-page bytes an
-  access's address is built from; `ptr.rs` chooses the bytes to protect, those whose accesses
-  outnumber the checks they cost, never one that is volatile, code, stored below 2 in the facts
-  (its checks would fail on every call) or read by an access that reached page 1 in the facts.
-  An access whose bytes are all protected needs no page-1 guard, so a callee's pointer reads
-  and writes no longer keep the whole stack in memory. The invariant holds because
-  - every lifted store whose address interval meets a protected byte, except one that writes
-    back the byte it just loaded, and whose value may be below 2, checks the value and deopts
-    after the instruction (the interval is sound, so no other lifted store reaches the byte);
-  - every entry checks the protected bytes some access it reaches reads before a store on every
-    path has defined them (`St::stored` in `vsa.rs`, an intersection over paths and a union over
-    a balanced call), as memory may have been written by the host or by the reference after a
-    deopt, which ends the call;
+- **Pointer windows.** The address of a `(zp),Y` or `(zp,X)` access is a zero-page pointer
+  `p = mem[q] | mem[q+1] << 8` plus an index `i <= m` (the upper bound of `Y` at a `(zp),Y`
+  access; 0 for `(zp,X)`, whose index selects the pair), which is outside page 1 whenever `p`
+  is outside the window `[$100 - m, $1FF]`: below it `p + i` stays in page 0, from `$200` up it
+  stays at or above `$200` or wraps past `$FFFF` into page 0. A high byte of at least 2 is
+  outside every window, and a high byte of 0 is outside it when `lo + m < $100`, so pointers
+  into zero page qualify. The analysis (`analysis::Access::ptr`, a tag on the template's op
+  chain) names the pair's low and high byte addresses and the index; a pointer whose low byte
+  is not a known pair of its high byte needs `m = $100` (high byte at least 2) when indexed.
+  `ptr.rs` protects pairs with the window of the largest index of the accesses they free,
+  when those accesses outnumber the checks they cost, never one with a byte that is volatile,
+  code or a port register, whose high byte the facts saw stored as 1 or as 0 with a stored low
+  byte past `$FF - m` (its checks would fail on every call), nor for an access that reached
+  page 1 in the facts. An access whose pairs all hold windows covering its index needs no
+  page-1 guard. The invariant holds because
+  - every lifted store whose address interval meets a byte of a protected pair, except one
+    that writes back the byte it just loaded, reads the pair back after its instruction and
+    deopts when it is in its window, unless the value interval proves it is not: a high byte
+    that is not 1 (nor 0, for `m > 0`), a low byte when `m` is 0 or `$100` (the low byte does
+    not matter), or a low byte `v` with `v + m < $100` when every path to the store stored the
+    high byte (so the pair held its window before);
+  - two stores of a pair on one straight instruction chain (fall-through instructions of one
+    variant, as `LDA lo,X; STA q; LDA hi,X; STA q+1`) with nothing between them that reads
+    through the pair or may store into it are read back once, after the second: the pointer
+    between them is transient and no access sees it;
+  - every entry reads back the pairs some access it reaches reads before a store on every path
+    has stored their high byte (`St::stored` in `vsa.rs`, an intersection over paths and a
+    union over a balanced call), as memory may have been written by the host or by the
+    reference after a deopt, which ends the call;
   - lifted code is never interrupted: a call with interrupts runs on the reference, and each
-    handler it enters is a lifted entry that checks its own protected bytes.
+    handler it enters is a lifted entry that checks its own pairs.
+
+  A read-back is two byte loads combined into a word (one 2-byte load where nothing between
+  may store into them, *Carry chains*), so value numbering folds it where the stored bytes are
+  known; a deopt fires when `(p - ($100 - m)) & $FFFF < $100 + m`.
+- **Induction variables.** `scev.rs` finds, per loop head entered only at its head, each index
+  register and each byte a loop instruction loads and stores back (`INC`/`DEC`) that changes by
+  one constant on every path from the head to each instruction start of the loop, and by a
+  nonzero step around it (`INX`/`DEY`, transfers, `ADC #k`/`SBC #k` with the carry known). Its
+  start is the hull of its intervals on the entry edges (the byte's: a forward analysis of its
+  stores, any value at entries and widened at loop heads). When the loop's one back edge is a
+  conditional branch whose flag is set on the straight chain before it from the variable
+  alone (evaluated on each of its 256 values), the trip bound is the most head visits from any
+  start (`DEX; BPL`, `INY; CPY #n; BNE`, `CPX #n; BCC`, `DEC c; BNE`). The `Y` interval a trip
+  bound gives at an instruction of the loop narrows the one the interval analysis gives
+  (so the index `m` of a pointer access), and `Program.induction` lists the variables.
 
 A deopt sets the reference `Cpu` to the architectural state (registers, PC, and with cycle
 counting cycles), writes the stack bytes each active frame pushed (from its slot registers)
@@ -306,6 +336,10 @@ carry-out of the link below (as Ghidra's decompiler matches double-precision `IN
 byte) and the borrow of `DEC`'s `LDA lo; BNE` test. Bytes may be in memory, registers or stack
 slots; `stats["chains"]` counts the chains and `Program.chains` lists them with the place of
 each operand and result byte (`["abs", a]`, `["x"|"y", base]` indexed, `None`).
+
+Two plain one-byte loads of adjacent bytes combined into a word (`ZEXT(lo) | ZEXT(hi) << 8`,
+as every `(zp),Y` and `(zp,X)` pointer is built) become one 2-byte load where nothing between
+the loads and the combination may store into either byte and that leaves an op dead.
 
 A chain whose operand bytes are adjacent plain loads (or a constant) is fused
 (`stats["fused_chains"]`): at its first redefined op the operands are loaded wide and the
