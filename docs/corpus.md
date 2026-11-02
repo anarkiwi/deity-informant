@@ -119,7 +119,7 @@ rather than duplicated (e.g. `--redo "needs the C64 BASIC ROM"` for rows of earl
 
 `tools/wpsong.py ROOT PATH [--song N --calls N --label-calls N --out ROW.json]` runs one song
 through the pipeline in-process (for `py-spy record`, whose raw output `tools/profsum.py
-PROFILE --within FRAME --match FRAME...` summarises). `tools/corpusequiv.py BEFORE AFTER` lists
+PROFILE --within FRAME --match FRAME...` summarises). `tools/corpussum.py ROWS [--paths FILE] [--diff OTHER]` prints a rows file's counts by kind, skip, mode and outcome, the non-exact songs, speedup and cost percentiles, stats coverage and the interrupt breakdown (`--diff`: outcome moves to a second file). `tools/corpusequiv.py BEFORE AFTER` lists
 the songs whose rows (bar `*_ms` and `timing.*_s`) or facts differ between two runs and the
 `song_ms` speedup per mode. `tools/factsequiv.py ROOT BEFORE AFTER [--list]` lifts each flat
 song of both runs from every pairing of their post-init states and facts, attributing a change
