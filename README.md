@@ -17,6 +17,7 @@ The C64 machine model (power-on RAM, interrupt-vector discovery, ROM-free IRQ di
 - `tools/wplift.py` — lift an image file whole and check it against the reference interpreter.
 - `deity_informant/c64.py`, `tools/wpbank.py` — the C64 host of bank-aware lifting: the 6510 port/PLA bank map (ROM-less or verified real ROMs), facts and per-call reference records from vagrant-moses' cycle-exact machine, and a check of bank-aware play lifts of HVSC tunes against it.
 - `tools/wpcorpus.py` — run every HVSC song once for its full length: flat or bank-aware lift, check, scenario cells, IRQ paths and speed per song, resumable; see [docs/corpus.md](docs/corpus.md).
+- `tools/sidcmp.py` — compare the machine's SID register changes for interrupt-driven songs, booted as sidplayfp does, with sidplayfp's (`anarkiwi/sidtrace`); see [docs/corpus.md](docs/corpus.md#boot-environment).
 - `tools/wpsurvey.py` — lift the play routines of a directory of PSID tunes and tabulate stack privacy, its blockers and (optionally) exactness.
 - `deity_informant/smc/`, `tools/smcgen.py`, `tools/smclabel.py` — progressively generate every SMC scenario (writer, role, timing, mapping) for the lifter, label it with independent CPU (jennings) and machine (vagrant-moses) oracles, and drive lift tests against a strict-xfail expectation table; see [docs/smc-scenarios.md](docs/smc-scenarios.md).
 - `tools/gen_pcode.py` — regenerates the native templates (`--check` verifies they are current).

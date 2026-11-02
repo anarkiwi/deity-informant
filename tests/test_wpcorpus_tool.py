@@ -36,7 +36,7 @@ def tree(tmp_path, basic=False):
     files = {
         "flat.sid": sid(FLAT, 0x100B, songs=2, speed=3),
         "banked.sid": sid(BANKED, 0x1001),
-        "irq.sid": sid(IRQ, 0, magic=b"RSID"),
+        "irq.sid": sid(IRQ, 0, speed=1),
         "bad.sid": b"PSID",
     }
     if basic:
@@ -100,7 +100,7 @@ def test_corpus(tmp_path):
     s = json.loads((out / "summary.json").read_text())
     assert s["rows"] == 5 and s["by_kind"]["PSID"]["lifted"] == 3
     assert s["by_kind"]["PSID"]["exact"] == 3
-    assert s["by_kind"]["RSID"]["skipped"] == {"irq-driven": 1}
+    assert s["by_kind"]["PSID"]["skipped"] == {"irq-driven": 1}
     assert s["irq"]["songs"] == 1 and s["speed"]["lifted_calls_s"]["n"] == 3 and not s["failures"]
     assert s["first_seen"]["capped_songs"] == 3 and s["first_seen"]["indices"]["n"] > 0
     assert {"reference", "lifted", "jennings", "check", "cpu_label", "irq_scan"} <= set(
@@ -123,7 +123,7 @@ def test_timeout_and_errors(tmp_path, monkeypatch):
     assert wpcorpus.main(args) == 0
     assert rows_of(out)["banked.sid", 1]["error"] == "timeout"
     s = json.loads((out / "summary.json").read_text())
-    assert s["by_kind"]["PSID"]["timeouts"] == 3 and len(s["failures"]) >= 3
+    assert s["by_kind"]["PSID"]["timeouts"] == 4 and len(s["failures"]) >= 4
     monkeypatch.undo()
     assert "error" in wpcorpus.run_song(str(root / "missing.sid"), {"path": "m", "song": 1}, 9)[0]
 
@@ -179,9 +179,10 @@ BUSY = bytes.fromhex(
     [(IRQ, 120, 2_000_000), (BUSY, 60, 5000), (BUSY, 2, 5000), (b"\x02", 10, 5000), (FLAT, 5, 300)],
 )
 def test_irq_scan_backends_agree(code, frames, mc):
-    img = wpcorpus.sidfile(sid(code, 0, magic=b"RSID"))[1]
+    img = wpcorpus.sidfile(sid(code, 0))[1]
+    boot = wpcorpus.c64.boot(img, 0x1000, 0x1000 + len(code), 0x1000, 1, kind="PSID")
     scans = [
-        wpcorpus._IrqScan(img, backend=b).scan((0x1000, 0), frames, mc)  # pylint: disable=W0212
+        wpcorpus._IrqScan(boot.image, backend=b).scan(boot, frames, mc)  # pylint: disable=W0212
         for b in ("python", "native")
     ]
     assert scans[0] == scans[1]

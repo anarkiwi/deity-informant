@@ -25,13 +25,16 @@ from vagrant_moses.c64 import poweron_ram
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # pylint: disable=wrong-import-position
+from deity_informant.c64 import iomap  # noqa: E402
 from deity_informant.smc.expect import lift_reason  # noqa: E402
 from deity_informant.smc.machine import MachineOracle, core  # noqa: E402
 from deity_informant.smc.space import Cell  # noqa: E402
 
 
 def sidfile(data):
-    """``(kind, image, init, play, songs)`` for a PSID/RSID file, or ``None``."""
+    """``(kind, image, init, play, songs)`` for a PSID/RSID file, or ``None``; ``$02A6`` is the
+    video flag of its clock (SID_file_format.txt) before the data loads, NTSC only for an
+    NTSC-only header."""
     if data[:4] not in (b"PSID", b"RSID") or len(data) < 0x7C:
         return None
     off, load, init, play, songs = struct.unpack(">HHHHH", data[6:16])
@@ -41,17 +44,9 @@ def sidfile(data):
     if load + len(body) > 0x10000 or load == 0:
         return None
     img = bytearray(poweron_ram())
+    img[0x02A6] = int(data[5] < 2 or (data[0x77] >> 2) & 3 != 2)
     img[load : load + len(body)] = body
     return data[:4].decode(), img, init or load, play, max(songs, 1)
-
-
-def iomap(addr):
-    """The $01 value a PSID host banks in for code at ``addr`` (sidplay's I/O map)."""
-    if addr < 0xA000:
-        return 0x37
-    if addr < 0xD000:
-        return 0x36
-    return 0x35 if addr >= 0xE000 else 0x34
 
 
 def _parse(sid):

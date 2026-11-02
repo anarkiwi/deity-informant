@@ -371,16 +371,14 @@ def label(oracle, img, row, n, mc, boot=None):
     as sidplay does) or interrupt-driven frames (``frames``), on the vagrant-moses machine;
     ``boot`` (:class:`c64.Boot`) replaces ``img`` and the row's init."""
     t = time.perf_counter()
-    init, roms, io = (row["init"], row["song"] - 1), None, ()
-    if boot is not None:
-        img, roms, init, io = boot
-    o = MachineOracle(img, ntsc=row["clock"] == "NTSC", roms=roms)
+    o = MachineOracle(img if boot is None else boot.image, ntsc=row["clock"] == "NTSC",
+                      roms=None if boot is None else boot.roms)  # fmt: skip
     if oracle == "calls":
         ports = {"init": iomap(row["init"]), "call": iomap(row["play"])}
-        run = o.run([(row["play"], 0)] * n, init=[init], call_cycles=mc, ports=ports)
+        run = o.run([(row["play"], 0)] * n, init=[(row["init"], row["song"] - 1)],
+                    call_cycles=mc, ports=ports)  # fmt: skip
     else:
-        run = o.run([], init=[init], frames=n, irq_setup=True, call_cycles=mc, index_frames=True,
-                    io=io)  # fmt: skip
+        run = o.run([], frames=n, call_cycles=mc, index_frames=True, **boot.run_kw())
     return _label_row(oracle, run, n, t)
 
 
@@ -487,9 +485,10 @@ class _IrqScan(MachineOracle):
             self.main["first_busy_frame"] = (mc.cycle - self.t0) // self.cpf
             mc.set_decode_hook(None)  # pylint: disable=no-member
 
-    def scan(self, init, frames, mc, io=()):
-        """Run ``init`` then ``frames`` interrupt-driven frames; the ``irq`` row field."""
-        self.run([], init=[init], frames=frames, irq_setup=True, call_cycles=mc, io=io)
+    def scan(self, boot, frames, mc):
+        """Run ``boot`` (:class:`c64.Boot`) then ``frames`` interrupt-driven frames; the ``irq``
+        row field."""
+        self.run([], frames=frames, call_cycles=mc, **boot.run_kw())
         self.irqs += self._entries(self.m.events)
         return {
             **(self.vector or {}),
@@ -514,24 +513,23 @@ _real_roms = lru_cache(maxsize=1)(c64.real_roms)
 
 
 def irq_boot(row, data):
-    """The :class:`c64.Boot` of an interrupt-driven song of the file ``data``: an RSID with the
-    C64 BASIC flag runs its program on the real ROMs (:func:`c64.basic_boot`)."""
-    img = sidfile(data)[1]
-    if row["kind"] == "RSID" and row["flags"] & 2:
-        ntsc = row["clock"] == "NTSC"
-        return c64.basic_boot(img, *load_span(data), row["song"], ntsc, _real_roms())
-    return c64.Boot(img, None, (row["init"], row["song"] - 1), ())
+    """The :class:`c64.Boot` of an interrupt-driven song of the file ``data`` (an RSID, on the
+    real ROMs, or a PSID without a play address)."""
+    kind = "BASIC" if row["kind"] == "RSID" and row["flags"] & 2 else row["kind"]
+    roms = _real_roms() if row["kind"] == "RSID" else None
+    return c64.boot(sidfile(data)[1], *load_span(data), row["init"], row["song"],
+                    row["clock"] == "NTSC", kind, bool(row["speed"]), roms)  # fmt: skip
 
 
 def irq_song(row, boot, mc, cap):
     """An interrupt-driven song on the machine from ``boot`` (:func:`irq_boot`): its IRQ facts
     over all ``calls`` frames, its cells over the first ``cap`` (0: all)."""
     row["skip"] = "irq-driven"
-    if boot.roms is not None:
+    if row["kind"] == "RSID" and row["flags"] & 2:
         row["basic"] = True
     t = time.perf_counter()
     o = _IrqScan(boot.image, ntsc=row["clock"] == "NTSC", roms=boot.roms)
-    row["irq"] = o.scan(boot.init, row["calls"], mc, boot.io)
+    row["irq"] = o.scan(boot, row["calls"], mc)
     row |= {"calls_run": o.irqs, "facts_ms": 1e3 * (time.perf_counter() - t)}
     n = min(row["calls"], cap or row["calls"])
     return row | label("frames", boot.image, row, n, mc, boot), None

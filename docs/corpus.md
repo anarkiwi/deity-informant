@@ -42,8 +42,8 @@ PSID with a play routine:
    `configs` lists the bank configurations seen. Speed is the banked reference and the
    lifted program (jennings has no bank map).
 
-RSID, or PSID without play: the machine runs init (with the KERNAL's CIA 1 timer) and then the
-tune's own interrupts for the song's frames, scanned by vagrant-moses' native `smc.Scan` (else,
+RSID, or PSID without play: the machine starts the song as sidplayfp does (below), runs init and
+then the tune's own interrupts for the song's frames, scanned by vagrant-moses' native `smc.Scan` (else,
 as the reference, a minimal decode hook dropped once the main context is seen busy;
 `tools/traceequiv.py --irq` checks they agree); `irq` records the vector path after init
 (`kernal` when the KERNAL is banked in, so IRQs go through $0314, else `hardware` via RAM
@@ -52,13 +52,37 @@ instructions until then and the frame it first stored outside page 1 or touched 
 (`first_busy_frame`; `idle` when it never did). A second machine oracle run labels the first
 `--label-calls` frames (`oracle` `frames`). These songs are skipped for lifting (`irq-driven`).
 
-RSIDs with the C64 BASIC flag (`basic`) run on the real ROMs (`c64.real_roms`) as sidplayfp
-starts them (`c64.basic_boot`, after `psiddrv.cpp` and `SID_file_format.txt`): RAM
-$0000-$03FF is libsidplayfp's booted-KERNAL image (`poweron.bin`) with $02A6 the video flag,
-the BASIC end pointers ($2D/$2F/$31, $AC/$AE) cover the loaded program, the VIC is set to the
-RSID environment, and the BASIC ROM's statement loop (NEWSTT, $A7AE) jumps to a hook at $BF53
-that stores the song number (0-based) in $030C before continuing the interpreter at $A7B1;
-init enters that hook with the song in A, which runs the program from $0801 as RUN does.
+### Boot environment
+
+`wpcorpus.irq_boot` builds the start (`c64.boot`) from HVSC `SID_file_format.txt` ("The SID
+file environment") and libsidplayfp (`psiddrv::install`, `psiddrv.a65`,
+`SidTuneBase::placeSidTuneInC64mem`). RSIDs run on the real ROMs (`c64.real_roms`), PSIDs on
+the ROM-less set.
+
+- RAM: $0000-$03FE cleared; for an RSID, libsidplayfp's booted-KERNAL image (`poweron.bin`).
+  $02A6 is the video flag (1 PAL, 0 NTSC; for every PSID image too, `smclabel.sidfile`).
+  $0314 is the KERNAL's IRQ exit $EA7E (the code of the driver's `irqret`) except under BASIC
+  ($EA31); a PSID's BRK/NMI vectors go to the ROM-less KERNAL's JAM at $FCE2 (the driver's
+  `exception`). $2D/$2F/$31 and $AC/$AE cover the load range, then the data loads.
+- I/O, each access in the cycle the driver's cold start makes it (`c64.driver_io`, made from a
+  trap at the CPU's first fetch after a reset to that cycle): interrupts off and acknowledged,
+  $D418=$0F, CIA 1 timer A latched at $4025 (PAL) / $4295 (NTSC), raster line $137 with
+  $D011=$9B for an RSID (line 0 for a PSID), then for an RSID or a CIA-speed PSID timer A
+  started with its interrupt, else the raster interrupt enabled. Init's first opcode is fetched
+  in the cycle sidplayfp's is (147 cycles after the reset on PAL, 145 on NTSC).
+- CPU: $01=$37 for an RSID (a PSID: `iomap` of init), the song (0-based) in A; an RSID runs init
+  with I clear, a PSID with I set (`sei` in place of the driver's `plp`). Init returns into code
+  before the sentinel that takes the driver's path after `jsr init` cycle for cycle (`lda`,
+  `beq idle`; a PSID's `cli` too), so interrupts land on the same idle-loop phase.
+- BASIC flag (`basic`): the BASIC ROM's statement loop (NEWSTT, $A7AE) jumps to a hook at $BF53
+  that stores the song number (0-based) in $030C before continuing the interpreter at $A7B1;
+  init enters that hook, which runs the program from $0801 as RUN does.
+
+Where sidplayfp differs from real hardware or the spec it is followed: the SID volume write, the
+driver's IRQ exit, and a VBI PSID's CIA timer left stopped. Not reproduced: the driver's own
+bytes in RAM, its STOP vector ($0328) and NEWSTT trap for an RSID without the BASIC flag.
+`tools/sidcmp.py` compares the SID register changes of interrupt-driven songs with sidplayfp
+(the `anarkiwi/sidtrace` image, with the same ROMs).
 
 Labelling goes through `label(oracle, ...)`; it uses vagrant-moses' native SMC recorder when
 installed (`label_backend` `native`), else the Python classifier.

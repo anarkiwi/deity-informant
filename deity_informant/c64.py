@@ -18,7 +18,7 @@ from vagrant_moses.bus import banking, port_read
 from vagrant_moses.roms import BASIC_RUN, RomFetchError, load_roms, poweron_writes, rom_less
 
 from .smc.classify import expected_reads, expected_writes, view
-from .smc.machine import SENTINEL, SMC_NATIVE, MachineOracle, _Mem
+from .smc.machine import READ, READ_BACK, SENTINEL, SMC_NATIVE, MachineOracle, _Mem
 from .smc.oracle import writer_of
 from . import wholeprog
 from .trace import Facts
@@ -40,8 +40,12 @@ __all__ = [
     "ROM_NAMES",
     "SID",
     "bank_map",
-    "basic_boot",
+    "boot",
     "Boot",
+    "driver_io",
+    "iomap",
+    "READ",
+    "READ_BACK",
     "real_roms",
     "machine_facts",
     "machine_record",
@@ -136,54 +140,130 @@ def real_roms(**kwargs):
 #: BASIC's NEWSTT (per statement), sidplayfp's subtune hook in free BASIC ROM, its stop-key test
 #: and the SYS accumulator ``SAREG`` the hook loads with the song.
 NEWSTT, SUBTUNE_HOOK, STOP_TEST, SAREG = 0xA7AE, 0xBF53, 0xA82C, 0x030C
+#: The KERNAL IRQ's exit (acknowledge CIA 1, restore A/X/Y, RTI): the code of ``psiddrv.a65``'s
+#: ``irqret``, where sidplayfp points ``$0314`` for an RSID without the BASIC flag or a PSID.
+IRQ_EXIT = 0xEA7E
+#: The ROM-less KERNAL's reset entry, a JAM (``KernalRomBank::set``): ``psiddrv.a65``'s
+#: ``exception``, where sidplayfp points a PSID's BRK and NMI vectors.
+JAM = 0xFCE2
 
 
 class Boot(NamedTuple):
-    """A machine start: RAM ``image``, ``roms`` by base, the ``init`` call ``(pc, a)`` and the
-    host's ``io`` writes (:meth:`~deity_informant.smc.machine.MachineOracle.run`)."""
+    """A machine start: RAM ``image``, ``roms`` by base, the ``init`` call ``(pc, a)``, the
+    host's ``io`` accesses ``(cycle, addr, value)`` and the cycle init starts (from the reset),
+    the ``port`` ($01) init runs with and the address it ``returns`` to."""
 
     image: bytearray
-    roms: dict
+    roms: Optional[dict]
     init: tuple
     io: tuple
+    start: int
+    port: int
+    returns: int
+
+    def run_kw(self):
+        """The :meth:`~deity_informant.smc.machine.MachineOracle.run` arguments of this start."""
+        return {"init": [self.init], "ports": {"init": self.port}, "io": self.io,
+                "start": self.start, "returns": self.returns}  # fmt: skip
 
 
-def basic_boot(image, load, end, song, ntsc=False, roms=None):
-    """The :class:`Boot` of an RSID with the C64 BASIC flag as sidplayfp starts it.
+def iomap(addr):
+    """The $01 value sidplayfp banks in for PSID code at ``addr`` (``psiddrv::iomap``)."""
+    if addr < 0xA000:
+        return 0x37
+    if addr < 0xD000:
+        return 0x36
+    return 0x35 if addr >= 0xE000 else 0x34
 
-    RAM ``$0000-$03FF`` is its booted-KERNAL image (``psiddrv::install``) with ``$02A6`` the
-    video flag; the variable pointers and ``$AC``/``$AE`` take the load range ``[load, end)``
-    (``SidTuneBase::placeSidTuneInC64mem``). The BASIC ROM's hook at ``$BF53`` stores the song
-    (0-based) in ``$030C`` before each statement, as SID_file_format.txt requires (``NEWSTT``
-    jumps to it, ``BasicRomBank::installTrap``/``setSubtune``); ``init`` enters it at ``$BF55``
-    with the song in A, which runs the program from ``TXTPTR`` as RUN does. ``io`` sets the VIC
-    to the RSID environment (raster IRQ at line $137, not enabled; the screen on, as
-    ``psiddrv.a65`` writes it). ``roms`` default to :func:`real_roms`.
+
+@lru_cache(maxsize=None)
+def driver_io(ntsc, init_iomap=0, cia=True):
+    """``(io, start)``: the I/O accesses of libsidplayfp's ``psiddrv.a65`` cold start, each in
+    the cycle its instruction makes it, and the cycle init's first opcode is fetched (from the
+    reset), for a tune without a play routine at the tune's clock. ``init_iomap`` is 0 for an
+    RSID, else the PSID's; ``cia`` starts CIA 1 timer A with its IRQ, else enables the raster's."""
+    latch = mm.video(ntsc).kernal_latch
+    raster = (0x1B, 0x00) if init_iomap else (0x9B, 0x37)
+    ops = [(2,), (2,), (4, mm.VIC_IRQ_ENABLE, 0), (4, mm.VIC_IRQ_STATUS, READ),
+           (4, mm.VIC_IRQ_STATUS, READ_BACK), (2,), (4, mm.CIA1_ICR, 0x7F), (4, mm.CIA2_ICR, 0x7F),
+           (4, mm.CIA1_ICR, READ), (4, mm.CIA2_ICR, READ), (2,), (4, mm.SID_BASE + 0x18, 0x0F),
+           (4,)]  # fmt: skip
+    ops += [(3,), (2,), (2,)] if ntsc else [(2,), (2,), (2,), (3,)]
+    ops += [(4, mm.CIA1_TIMER_A_LO, latch & 0xFF), (4, mm.CIA1_TIMER_A_HI, latch >> 8)]
+    ops += [(2,), (2,), (4,), (4,)] + ([(2,), (2,), (2,)] if init_iomap else [(3,)])
+    ops += [(4, mm.VIC_CONTROL_1, raster[0]), (4, mm.VIC_RASTER, raster[1]), (4,)]
+    ops += [(2,), (4,), (3,)] if init_iomap else [(3,)]
+    ops += [(4,)]
+    if cia:
+        ops += [(3,), (2,), (2,), (4, mm.CIA1_ICR, 0x81), (4, mm.CIA1_CRA, 0x01)]
+    else:
+        ops += [(2,), (2,), (4, mm.VIC_IRQ_ENABLE, 0x81), (3,)]
+    ops += [(4,)] + ([(3,)] if init_iomap else [(2,), (2,)])
+    ops += [(3,), (4,), (3,), (4,), (4,), (6,), (5,)]
+    io, t = [], 0
+    for n, *access in ops:
+        t += n
+        if access:
+            io.append((t - 1, *access))
+    return tuple(io), t
+
+
+def boot(image, load, end, init, song, ntsc=False, kind="RSID", cia=True, roms=None):
+    """The :class:`Boot` of a song without a play routine as sidplayfp starts it (``psiddrv``,
+    ``SidTuneBase::placeSidTuneInC64mem``, SID_file_format.txt; see docs/corpus.md): ``kind``
+    ``RSID``, ``BASIC`` (an RSID with the C64 BASIC flag) or ``PSID`` (``cia`` its speed bit),
+    its data at ``[load, end)`` of ``image``. An RSID's ``roms`` default to :func:`real_roms`.
 
     Raises:
       vagrant_moses.roms.RomFetchError: a ROM or the booted-KERNAL image is unavailable.
     """
-    runs = poweron_writes()
-    if runs is None:
-        raise RomFetchError("poweron: unavailable (offline, not cached)")
+    rsid = kind != "PSID"
     img = bytearray(image)
-    img[:0x400] = bytes(0x400)
-    for addr, data in runs:
-        img[addr : addr + len(data)] = data
+    img[:0x3FF] = bytes(0x3FF)
+    if rsid:
+        runs = poweron_writes()
+        if runs is None:
+            raise RomFetchError("poweron: unavailable (offline, not cached)")
+        for addr, data in runs:
+            img[addr : addr + len(data)] = data
+        roms = dict(roms or real_roms())
     img[0x02A6] = 0 if ntsc else 1
+    vectors = () if kind == "BASIC" else (IRQ_EXIT,) if rsid else (IRQ_EXIT, JAM, JAM)
+    vec = b"".join(v.to_bytes(2, "little") for v in vectors)
+    img[mm.RAM_IRQ_VECTOR_LO : mm.RAM_IRQ_VECTOR_LO + len(vec)] = vec
     for addr, v in ((0x2D, end), (0x2F, end), (0x31, end), (0xAC, load), (0xAE, end)):
-        img[addr : addr + 2] = v.to_bytes(2, "little")
-    roms = dict(roms or real_roms())
-    basic = bytearray(roms[mm.BASIC_BASE])
-    for addr, code in (
-        (NEWSTT, b"\x4c" + SUBTUNE_HOOK.to_bytes(2, "little")),
-        (SUBTUNE_HOOK, bytes([0xA9, song - 1, 0x8D]) + SAREG.to_bytes(2, "little") + b"\x20"
-         + STOP_TEST.to_bytes(2, "little") + b"\x4c" + BASIC_RUN.to_bytes(2, "little")),
-    ):  # fmt: skip
-        basic[addr - mm.BASIC_BASE : addr - mm.BASIC_BASE + len(code)] = code
-    roms[mm.BASIC_BASE] = bytes(basic)
-    io = ((mm.VIC_CONTROL_1, 0x9B), (mm.VIC_RASTER, 0x37))
-    return Boot(img, roms, (SUBTUNE_HOOK + 2, song - 1), io)
+        img[addr : addr + 2] = (v & 0xFFFF).to_bytes(2, "little")
+    img[load:end] = image[load:end]
+    if kind == "BASIC":
+        basic = bytearray(roms[mm.BASIC_BASE])
+        for addr, code in (
+            (NEWSTT, b"\x4c" + SUBTUNE_HOOK.to_bytes(2, "little")),
+            (SUBTUNE_HOOK, bytes([0xA9, song - 1, 0x8D]) + SAREG.to_bytes(2, "little") + b"\x20"
+             + STOP_TEST.to_bytes(2, "little") + b"\x4c" + BASIC_RUN.to_bytes(2, "little")),
+        ):  # fmt: skip
+            basic[addr - mm.BASIC_BASE : addr - mm.BASIC_BASE + len(code)] = code
+        roms[mm.BASIC_BASE] = bytes(basic)
+        init = SUBTUNE_HOOK + 2
+    port = 0 if rsid else iomap(init)
+    io, start = driver_io(ntsc, port, cia or rsid)
+    code, ret = _driver_tail(rsid, init)
+    img[SENTINEL - len(code) : SENTINEL] = code
+    if not rsid:
+        init, start = SENTINEL - len(code), start - 5
+    return Boot(img, roms, (init, song - 1), io, start, port or mm.BANK_DEFAULT, ret)
+
+
+def _driver_tail(rsid, init):
+    """``(code, returns)``: code before the sentinel standing in for ``psiddrv.a65``'s, cycle for
+    cycle, and where init returns in it. An RSID's init returns to ``lda``/``beq idle``; a PSID's
+    enters by ``sei``/``jmp init`` (``plp``'s I flag, ``jmp (initvec)``) and returns to
+    ``lda``/``beq``/``lda``/``beq run``/``cli``; each ``lda`` reads a byte of the code."""
+    s = SENTINEL
+    if rsid:
+        return bytes([0xAD, *(s - 1).to_bytes(2, "little"), 0xF0, 0x00]), s - 5
+    tail = bytes([0xAD, *(s - 11).to_bytes(2, "little"), 0xF0, 0x00])
+    tail += bytes([0xAD, *(s - 2).to_bytes(2, "little"), 0xF0, 0x00, 0x58])
+    return bytes([0x78, 0x4C, *init.to_bytes(2, "little")]) + tail, s - len(tail)
 
 
 def _reg(r):

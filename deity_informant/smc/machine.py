@@ -27,6 +27,8 @@ except ImportError:  # a vagrant-moses without the recorder
 __all__ = ["core", "MachineOracle", "run_machine", "SENTINEL", "SMC_NATIVE", "native_cells"]
 
 SENTINEL = 0xCFF0
+#: A host I/O access in :meth:`MachineOracle.run`: a read; a write of the value last read.
+READ, READ_BACK = None, -1
 _ENTRY = {
     "nmi_entry": "nmi",
     "video_irq_entry": "irq",
@@ -143,6 +145,7 @@ class MachineOracle:
         self.dma = []
         self.irq_driven = False
         self.ports = {}
+        self.returns = sentinel
         self.timeout = False
         self.call_start = 0
         self.call_cycles = 0
@@ -273,7 +276,7 @@ class MachineOracle:
             else:
                 self.cls.next_call()
         r = mc.mpu
-        sp, ret = r.sp, self.sentinel - 1
+        sp, ret = r.sp, (self.returns if phase == "init" else self.sentinel) - 1
         for k, v in ((0, ret >> 8), (1, ret & 0xFF)):
             addr = 0x100 | ((sp - k) & 0xFF)
             self.ram[addr] = self.shadow[addr] = v
@@ -295,7 +298,7 @@ class MachineOracle:
             else:
                 rec.next_call()
         r = mc.mpu
-        sp, ret = r.sp, self.sentinel - 1
+        sp, ret = r.sp, (self.returns if phase == "init" else self.sentinel) - 1
         for k, v in ((0, ret >> 8), (1, ret & 0xFF)):
             rec.host_write(0x100 | ((sp - k) & 0xFF), v)
         r.sp, r.a, r.pc = (sp - 2) & 0xFF, a, pc
@@ -313,26 +316,32 @@ class MachineOracle:
         ports=None,
         index_frames=False,
         io=(),
+        start=0,
+        returns=None,
     ):
         """Run ``init`` then ``calls`` (``[(pc, a)]``); with ``frames``, interrupts drive play.
 
         ``ports`` maps ``"init"``/``"call"`` to the $01 value the host sets before each such call.
         ``index_frames``: a cell's first-seen index is the frame of the interrupt-driven phase
         (cycles since its first decode over cycles per frame) instead of the call. ``io``:
-        ``(addr, value)`` host I/O writes after the reset, before ``irq_setup``'s CIA setup.
+        ``(cycle, addr, value)`` host I/O accesses as a CPU access in that cycle after the reset
+        would make them (``value`` :data:`READ` reads, :data:`READ_BACK` writes back the value
+        last read); init starts ``start`` cycles after the reset, then ``irq_setup``'s CIA setup.
+        Init returns to ``returns`` (default: the sentinel), code that runs on to the sentinel.
         """
         self.ports = dict(ports or {})
+        self.returns = returns or self.sentinel
         self.queue = [("init", pc, a) for pc, a in init] + [("call", pc, a) for pc, a in calls]
         self.irq_driven = frames > 0
         self.call_cycles = call_cycles
         m = self.m
+        t = m.reset(self.sentinel)
+        self._host_io(t, io)
         if not self.native:
             m.set_decode_hook(self._decode)  # pylint: disable=no-member
         m.set_trap(self._trap, {self.sentinel})  # pylint: disable=no-member
-        t = self.call_start = m.reset(self.sentinel)
+        t = self.call_start = m.reset(self.sentinel, t + start)
         self.shadow[:] = self.ram
-        for reg, v in io:
-            m.io_write(reg, v)
         if irq_setup:
             latch = mm.video(m.ntsc).kernal_latch
             for reg, v in ((mm.CIA1_TIMER_A_LO, latch & 0xFF), (mm.CIA1_TIMER_A_HI, latch >> 8),
@@ -354,6 +363,27 @@ class MachineOracle:
         self._sweep()
         done = not m.jammed and (self.irq_driven or not (self.queue or self.timeout))
         return Run(self.cls.cells, self.cls.unclassified, done, self.cls.first)
+
+    def _host_io(self, t0, io):
+        """Make ``io`` (:meth:`run`): each access from a trap at the CPU's first fetch after a
+        reset to its cycle, where the chips' clock is that cycle's as for a CPU access."""
+        pending, last = list(io)[::-1], 0
+
+        def access(mc):
+            nonlocal last
+            _, reg, v = pending.pop()
+            if v is READ:
+                last = mc.io_read(reg)
+            else:
+                mc.io_write(reg, last if v == READ_BACK else v)
+            mc.stop = True
+            return False
+
+        m = self.m
+        m.set_trap(access, {self.sentinel})  # pylint: disable=no-member
+        for at, _, _ in io:
+            m.reset(self.sentinel, t0 + at)
+            m.run(t0 + at + 1)
 
     def _frames_phase(self, index_frames):
         """Calls start (if init did not) and the per-call budget ends: interrupts drive play."""

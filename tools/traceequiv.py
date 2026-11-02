@@ -96,7 +96,7 @@ def compare_irq(data, song, max_cycles=2_000_000):
         o = wpcorpus._IrqScan(  # pylint: disable=protected-access
             boot.image, ntsc=song["clock"] == "NTSC", backend=b, roms=boot.roms
         )
-        res[b] = o.scan(boot.init, song["calls"], max_cycles, boot.io)
+        res[b] = o.scan(boot, song["calls"], max_cycles)
         row[b + "_s"] = time.perf_counter() - t
     row |= {"irq": res["python"], "equal": res["python"] == res["native"]}
     return row | {"scan_equal": row["equal"]}
