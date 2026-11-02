@@ -53,7 +53,10 @@ halt, registers, I/O accesses (`c64.DEVICES`, $D000-$DFFF, as the machine perfor
 HVSC tunes against it. Both collect through vagrant-moses' native trace beside its SMC recorder
 (`c64.TRACE_NATIVE`; opcode table `c64.trace_table()`), else, and as the reference, a Python
 decode hook and the machine's I/O hook; `tools/traceequiv.py ROWS --hvsc ROOT` checks the two agree on
-banked HVSC songs (facts, every record, `c64.check`, cells) and reports each one's cost per call. A banked `Program.call`/`reference_call` sends non-volatile device accesses to a copy of
+banked HVSC songs (facts, every record, `c64.check`, cells) and reports each one's cost per call.
+Natively the calls run from vagrant-moses' call queue (`smc.Calls`) with no Python per call;
+the records stay packed (`c64.CallRecords`, RAM as per-call changes) and `c64.check` hands them
+to `Program.check`, the same comparison in one native loop. A banked `Program.call`/`reference_call` sends non-volatile device accesses to a copy of
 `mem`, RAM accesses to `mem`; `reads=` (bytes) replays its volatile reads in order (0 past the
 end). `c64.check` lifts with `c64.DEVICES` volatile and replays each call's machine reads
 (`c64.reads(record)`), so a lift is exact against the machine's devices by construction: one

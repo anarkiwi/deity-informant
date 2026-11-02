@@ -7,7 +7,7 @@ use di_pcode::{reg as R, Bus, Cpu, Halt, Opc, Space, Vn};
 use indicatif::{ProgressBar, ProgressStyle};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyByteArray, PyDict, PyList};
+use pyo3::types::{PyByteArray, PyBytes, PyDict, PyList};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -536,6 +536,66 @@ impl Program {
         result(py, &cpu, o.halt, o.deopt, lg)
     }
 
+    /// ``deity_informant.c64.check`` over packed machine records (``vagrant_moses.smc.Records``
+    /// fields): entry 0 runs once per record from ``first`` on, from ``mem`` and ``reg``, with A
+    /// from ``accs`` (0 past its end), ``port`` (when given) stored to $01 first and the
+    /// record's device reads replayed; the machine's RAM is ``mem`` as it starts plus each
+    /// record's changes. ``[call, *mismatch]`` of the first mismatch, or None.
+    #[pyo3(signature = (mem, reg, records, first, port=None, max_cycles=10_000_000, accs=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn check<'py>(
+        &self,
+        py: Python<'py>,
+        mem: &Bound<'py, PyByteArray>,
+        reg: [u8; 16],
+        records: Records<'py>,
+        first: usize,
+        port: Option<u8>,
+        max_cycles: u64,
+        accs: Option<Vec<u8>>,
+    ) -> PyResult<Option<Bound<'py, PyList>>> {
+        let backend = self.backend_or(None)?;
+        let r = records.view()?;
+        let banked = self.prog.bank.is_some();
+        let bad = with_mem(mem, |m| {
+            let mut refm = Box::new(*m);
+            let (mut reg, mut reads) = (reg, Vec::new());
+            for k in first..r.len() {
+                let n = k - first;
+                for (a, v) in r.delta(k) {
+                    refm[a as usize] = v;
+                }
+                if let Some(p) = port {
+                    m[1] = p;
+                }
+                let a = accs.as_ref().and_then(|v| v.get(n).copied()).unwrap_or(0);
+                reads.clear();
+                reads.extend(r.log(k).filter(|e| !e.2).map(|e| e.1));
+                let mut cpu = cpu_of(Some(reg), 0);
+                let dev = banked.then(|| Box::new(*m));
+                let mut bus = PyBus::new(m, &self.prog.volatile, true, false);
+                bus.dev = dev;
+                bus.reads = Some(&reads);
+                let o = self.run(&mut bus, &mut cpu, 0, a, max_cycles, backend);
+                let out = bus.log.take().unwrap_or_default();
+                if let Some(bad) = mismatch(&r, k, o.halt, &out, &cpu.reg(), m, &refm) {
+                    return Some((n, bad));
+                }
+                reg = cpu.reg();
+            }
+            None
+        })?;
+        bad.map(|(n, b)| {
+            let l = PyList::empty(py);
+            l.append(n)?;
+            for x in b.into_pyobject(py)?.try_iter()? {
+                l.append(x?)?;
+            }
+            Ok(l)
+        })
+        .transpose()
+    }
+
     /// A :class:`Session` over ``mem``: repeated ``call``s from one CPU state (``reg``),
     /// cheaper than ``Program.call`` per call. A banked program's devices start as a copy of
     /// ``mem`` and persist across the session's calls.
@@ -677,33 +737,89 @@ pub fn reference_call<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     let mut cpu = cpu_of(reg, cycles);
     let bank = bank_of(bank)?;
-    let dev = devices(bank.is_some(), mem)?;
+    let banked = bank.is_some();
     let (h, lg) = with_mem(mem, |m| {
         let mut bus = PyBus::new(m, &volatile, log, synth);
         bus.now = cycles;
-        bus.dev = dev;
+        bus.dev = banked.then(|| Box::new(*bus.mem));
         bus.reads = reads.as_deref();
-        let start = cpu.r(R::SP);
-        for v in [0u8, 1] {
-            let sp = cpu.r(R::SP);
-            bus.ram_write(0x100 | sp as u16, v);
-            cpu.set_r(R::SP, sp.wrapping_sub(1));
-        }
-        cpu.set_r(R::A, a);
-        cpu.pc = pc;
-        let end = cpu.cycles.saturating_add(max_cycles).saturating_add(1);
-        let above = start as i32 - 1;
-        let h = match (&bank, clocked) {
-            (Some(b), true) => cpu.run_clocked(&mut Banked::new(b, &mut bus), above, end),
-            (Some(b), false) => {
-                cpu.run_clocked(&mut Banked::new(b, &mut Unclocked(&mut bus)), above, end)
-            }
-            (None, true) => cpu.run_clocked(&mut bus, above, end),
-            (None, false) => cpu.run_clocked(&mut Unclocked(&mut bus), above, end),
-        };
+        let h = reference_run(
+            &mut cpu,
+            &mut bus,
+            bank.as_ref(),
+            clocked,
+            pc,
+            a,
+            max_cycles,
+        );
         (h, bus.log)
     })?;
     result(py, &cpu, h, None, lg)
+}
+
+/// ``run_to_rts`` of ``pc`` with ``A = a`` on the reference interpreter over ``bus``.
+fn reference_run(
+    cpu: &mut Cpu,
+    bus: &mut PyBus<'_>,
+    bank: Option<&BankMap>,
+    clocked: bool,
+    pc: u16,
+    a: u8,
+    max_cycles: u64,
+) -> Halt {
+    let start = cpu.r(R::SP);
+    for v in [0u8, 1] {
+        let sp = cpu.r(R::SP);
+        bus.ram_write(0x100 | sp as u16, v);
+        cpu.set_r(R::SP, sp.wrapping_sub(1));
+    }
+    cpu.set_r(R::A, a);
+    cpu.pc = pc;
+    let end = cpu.cycles.saturating_add(max_cycles).saturating_add(1);
+    let above = start as i32 - 1;
+    match (bank, clocked) {
+        (Some(b), true) => cpu.run_clocked(&mut Banked::new(b, bus), above, end),
+        (Some(b), false) => cpu.run_clocked(&mut Banked::new(b, &mut Unclocked(bus)), above, end),
+        (None, true) => cpu.run_clocked(bus, above, end),
+        (None, false) => cpu.run_clocked(&mut Unclocked(bus), above, end),
+    }
+}
+
+/// ``n`` :func:`reference_call` s of ``pc`` (A 0) on ``mem``, each from the registers the last
+/// left (the first from ``reg``) and ``port`` (when given) stored to $01 before it:
+/// ``(calls, cycles, halt)``, stopping after the first that does not return.
+#[pyfunction]
+#[pyo3(signature = (mem, pc, n, reg=None, max_cycles=10_000_000, volatile=vec![], bank=None, port=None))]
+#[allow(clippy::too_many_arguments)]
+pub fn reference_calls(
+    mem: &Bound<'_, PyByteArray>,
+    pc: u16,
+    n: u64,
+    reg: Option<[u8; 16]>,
+    max_cycles: u64,
+    volatile: Vec<(u32, u32)>,
+    bank: Option<&Bound<'_, PyDict>>,
+    port: Option<u8>,
+) -> PyResult<(u64, u64, &'static str)> {
+    let bank = bank_of(bank)?;
+    with_mem(mem, |m| {
+        let (mut reg, mut cycles) = (reg, 0);
+        for i in 1..=n {
+            if let Some(p) = port {
+                m[1] = p;
+            }
+            let mut cpu = cpu_of(reg, 0);
+            let dev = bank.is_some().then(|| Box::new(*m));
+            let mut bus = PyBus::new(m, &volatile, false, false);
+            bus.dev = dev;
+            let h = reference_run(&mut cpu, &mut bus, bank.as_ref(), true, pc, 0, max_cycles);
+            (reg, cycles) = (Some(cpu.reg()), cycles + cpu.cycles);
+            if h != Halt::Sp {
+                return (i, cycles, halt_name(h));
+            }
+        }
+        (n, cycles, "return")
+    })
 }
 
 /// Lift ``entries`` of the program in ``image`` (the whole address space at entry): ``entries`` as
@@ -811,4 +927,148 @@ pub fn lift_many(
     let progs = py.detach(|| di_lift::lift_many(&jobs, opts, || bar.inc(1)));
     bar.finish();
     Ok(progs.into_iter().map(Program::new).collect())
+}
+
+/// Packed machine records (``vagrant_moses.smc.Records``) as Python passes them.
+#[derive(FromPyObject)]
+pub struct Records<'py> {
+    meta: Bound<'py, PyBytes>,
+    log: Bound<'py, PyBytes>,
+    log_end: Bound<'py, PyBytes>,
+    idx: Bound<'py, PyBytes>,
+    vals: Bound<'py, PyBytes>,
+    delta_end: Bound<'py, PyBytes>,
+}
+
+struct RecView<'a> {
+    meta: &'a [u8],
+    log: &'a [u8],
+    log_end: Vec<usize>,
+    idx: &'a [u8],
+    vals: &'a [u8],
+    delta_end: Vec<usize>,
+}
+
+fn ends(b: &[u8]) -> Vec<usize> {
+    b.as_chunks::<8>()
+        .0
+        .iter()
+        .map(|&c| u64::from_le_bytes(c) as usize)
+        .collect()
+}
+
+impl Records<'_> {
+    fn view(&self) -> PyResult<RecView<'_>> {
+        let r = RecView {
+            meta: self.meta.as_bytes(),
+            log: self.log.as_bytes(),
+            log_end: ends(self.log_end.as_bytes()),
+            idx: self.idx.as_bytes(),
+            vals: self.vals.as_bytes(),
+            delta_end: ends(self.delta_end.as_bytes()),
+        };
+        let n = r.meta.len() / 7;
+        let ok = r.meta.len() == 7 * n
+            && r.log_end.len() == n
+            && r.delta_end.len() == n
+            && r.log_end.last().map_or(0, |&e| 4 * e) == r.log.len()
+            && r.delta_end.last().map_or(0, |&e| e) == r.vals.len()
+            && 2 * r.vals.len() == r.idx.len()
+            && r.log_end.windows(2).all(|w| w[0] <= w[1])
+            && r.delta_end.windows(2).all(|w| w[0] <= w[1]);
+        if !ok {
+            return Err(PyValueError::new_err("malformed records"));
+        }
+        Ok(r)
+    }
+}
+
+impl RecView<'_> {
+    fn len(&self) -> usize {
+        self.meta.len() / 7
+    }
+    fn span(ends: &[usize], k: usize) -> std::ops::Range<usize> {
+        (if k > 0 { ends[k - 1] } else { 0 })..ends[k]
+    }
+    fn log(&self, k: usize) -> impl Iterator<Item = (u16, u8, bool)> + '_ {
+        Self::span(&self.log_end, k).map(|i| {
+            let e = &self.log[4 * i..4 * i + 4];
+            (u16::from_le_bytes([e[0], e[1]]), e[2], e[3] != 0)
+        })
+    }
+    fn delta(&self, k: usize) -> impl Iterator<Item = (u16, u8)> + '_ {
+        Self::span(&self.delta_end, k).map(|i| {
+            (
+                u16::from_le_bytes([self.idx[2 * i], self.idx[2 * i + 1]]),
+                self.vals[i],
+            )
+        })
+    }
+    /// The ``Program.call`` register file of record ``k``.
+    fn reg(&self, k: usize) -> [u8; 16] {
+        let m = &self.meta[7 * k..7 * k + 7];
+        let mut r = [0; 16];
+        r[..4].copy_from_slice(&m[2..6]);
+        for (i, bit) in FLAGS {
+            r[i] = m[6] >> bit & 1;
+        }
+        r
+    }
+}
+
+/// ``(register index, P bit)`` of the flags ``Program.call`` keeps one per register.
+const FLAGS: [(usize, u8); 6] = [(8, 0), (9, 1), (10, 2), (11, 3), (13, 6), (14, 7)];
+/// The register-file indices ``c64.mismatch`` compares: A X Y SP and C Z I D V N.
+const REGS: [usize; 10] = [0, 1, 2, 3, 8, 9, 10, 11, 13, 14];
+const HALTS: [&str; 3] = ["return", "cycles", "jam"];
+
+/// A mismatch's fields after its call index, as ``c64.mismatch`` gives them.
+#[derive(IntoPyObject)]
+enum Bad {
+    NoReturn((&'static str,)),
+    Halt((&'static str, &'static str, &'static str)),
+    Log((&'static str, usize)),
+    Reg((&'static str, Vec<u32>, Vec<u32>)),
+    Memory((&'static str, usize)),
+}
+
+/// ``c64.mismatch`` of a lifted call (halt, log, registers, memory ``m``) against record
+/// ``k`` with machine RAM ``refm``.
+fn mismatch(
+    r: &RecView<'_>,
+    k: usize,
+    halt: Halt,
+    log: &[(u16, u8, u64, bool)],
+    reg: &[u8; 16],
+    m: &[u8; 0x10000],
+    refm: &[u8; 0x10000],
+) -> Option<Bad> {
+    let (want, got) = (HALTS[r.meta[7 * k + 1] as usize], halt_name(halt));
+    if want != "return" || got != "return" {
+        return Some(if want == got {
+            Bad::NoReturn(("no-return",))
+        } else {
+            Bad::Halt(("halt", want, got))
+        });
+    }
+    let (n, mut i) = (r.log_end[k] - RecView::span(&r.log_end, k).start, 0);
+    for (e, &(a, v, _, w)) in r.log(k).zip(log) {
+        if e != (a, v, w) {
+            return Some(Bad::Log(("log", i)));
+        }
+        i += 1;
+    }
+    if n != log.len() {
+        return Some(Bad::Log(("log", n.min(log.len()))));
+    }
+    let want = r.reg(k);
+    if REGS.iter().any(|&i| want[i] != reg[i]) {
+        let pick = |x: &[u8; 16]| REGS.iter().map(|&i| x[i] as u32).collect();
+        return Some(Bad::Reg(("reg", pick(&want), pick(reg))));
+    }
+    [0..0x100, 0x101 + want[3] as usize..0x10000]
+        .into_iter()
+        .find(|s| m[s.clone()] != refm[s.clone()])
+        .and_then(|s| s.into_iter().find(|&a| m[a] != refm[a]))
+        .map(|a| Bad::Memory(("memory", a)))
 }

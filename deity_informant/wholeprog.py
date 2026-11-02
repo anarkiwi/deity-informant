@@ -9,7 +9,7 @@ from __future__ import annotations
 from . import _native
 from .trace import Facts
 
-__all__ = ["REGS", "lift", "lift_many", "plans", "reference_call", "entry_spec"]
+__all__ = ["REGS", "lift", "lift_many", "plans", "reference_call", "reference_calls", "entry_spec"]
 
 #: Register-file indices of ``lift()`` registers by name.
 REGS = {"a": 0, "x": 1, "y": 2, "sp": 3, "c": 8, "z": 9, "i": 10, "d": 11, "v": 13, "n": 14}
@@ -96,3 +96,12 @@ def reference_call(mem, pc, **kw):
     if "volatile" in kw:
         kw["volatile"] = _ranges(kw["volatile"])
     return _native_or_raise().reference_call(mem, pc, **kw)
+
+
+def reference_calls(mem, pc, n, **kw):
+    """``n`` :func:`reference_call` s of ``pc`` with A 0, each from the registers the last
+    left (the first from ``reg``), ``port`` (when given) stored to $01 before each:
+    ``(calls, cycles, halt)``, stopping after the first that does not return."""
+    if "volatile" in kw:
+        kw["volatile"] = _ranges(kw["volatile"])
+    return _native_or_raise().reference_calls(mem, pc, n, **kw)

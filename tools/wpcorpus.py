@@ -23,6 +23,7 @@ from concurrent.futures import as_completed  # noqa: E402
 from dataclasses import replace  # noqa: E402
 from functools import lru_cache  # noqa: E402
 from pathlib import Path  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
 
 import numpy as np  # noqa: E402
 import zstandard  # noqa: E402
@@ -192,15 +193,9 @@ def _timed(fn, mem, n):
 
 def _ref_run(play, vol, mc, bank=None, port=None):
     def run(mem, n):
-        reg, cycles = None, 0
-        for i in range(n):
-            if port is not None:
-                mem[1] = port
-            o = wholeprog.reference_call(mem, play, reg=reg, volatile=vol, max_cycles=mc, bank=bank)
-            reg, cycles = o["reg"], cycles + o["cycles"]
-            if o["halt"] != "return":
-                return i + 1, cycles, o["halt"]
-        return n, cycles, "return"
+        return wholeprog.reference_calls(
+            mem, play, n, volatile=vol, max_cycles=mc, bank=bank, port=port
+        )
 
     return run
 
@@ -223,38 +218,6 @@ def _jennings_run(play, mc):
             s.call(play)
 
     return run
-
-
-class _Records(c64._Host):  # pylint: disable=protected-access
-    """A machine run keeping each call's RAM as its change from the previous record."""
-
-    base = None
-
-    def _ram(self, _delta=None):
-        prev, self.base = self.base, self.ram.copy() if _delta is None else True
-        if self.cur != "call" or prev is None:
-            return self.ram.tobytes()
-        if _delta is not None:
-            return _delta
-        idx = np.flatnonzero(self.base != prev)
-        return idx, self.base[idx]
-
-    def split(self):
-        """``(init records, call records, calls)``, the call records a generator."""
-        snaps = self.snaps
-        inits = [
-            {"halt": h, "reg": r, "log": lg, "ram": m} for p, h, r, lg, m in snaps if p != "call"
-        ]
-
-        def calls():
-            ram = bytearray(inits[-1]["ram"])
-            arr = np.frombuffer(ram, np.uint8)
-            for p, h, r, lg, delta in snaps:
-                if p == "call":
-                    arr[delta[0]] = delta[1]
-                    yield {"halt": h, "reg": r, "log": lg, "ram": ram}
-
-        return inits, calls(), sum(s[0] == "call" for s in snaps)
 
 
 _BANK = []
@@ -295,16 +258,17 @@ def _lifted_row(prog, lift_ms, bad):
 
 def machine_check(prog, row, img, n, mc):
     """``prog`` against ``n`` machine play calls after init, replaying the machine's device
-    reads (:func:`c64.check`): ``[call, *mismatch]``, ``["init", halt]`` or None."""
+    reads (:func:`c64.check`): ``([call, *mismatch]``, ``["init", halt]`` or None``, the
+    run's SMC labelling)``."""
     init, play = row["init"], row["play"]
     ports = {"init": iomap(init), "call": iomap(play)}
-    host = _Records(img, ntsc=row["clock"] == "NTSC", model=sid_model(row))
+    host = c64._Host(img, ntsc=row["clock"] == "NTSC", model=sid_model(row), facts=False)
     host.drive([(play, 0)] * n, [(init, row["song"] - 1)], mc, ports)
     inits, records, _ = host.split()
     last = inits[-1]
     if last["halt"] != "return":
-        return ["init", last["halt"]]
-    return c64.check(prog, last["ram"], last["reg"], records, ports["call"], mc)
+        return ["init", last["halt"]], host.result
+    return c64.check(prog, last["ram"], last["reg"], records, ports["call"], mc), host.result
 
 
 def _banked(row, img, mc, ev):
@@ -312,7 +276,7 @@ def _banked(row, img, mc, ev):
     init, play = row["init"], row["play"]
     ports = {"init": iomap(init), "call": iomap(play)}
     t = time.perf_counter()
-    host = _Records(img, ntsc=row["clock"] == "NTSC", model=sid_model(row))
+    host = c64._Host(img, ntsc=row["clock"] == "NTSC", model=sid_model(row))
     host.drive([(play, 0)] * row["calls"], [(init, row["song"] - 1)], mc, ports)
     inits, records, n = host.split()
     facts = host.facts()
@@ -331,7 +295,7 @@ def _banked(row, img, mc, ev):
     bad = c64.check(prog, last["ram"], last["reg"], records, ports["call"], mc)
     row |= _lifted_row(prog, lift_ms, bad) | {"check_ms": 1e3 * (time.perf_counter() - t)}
     row["configs"] = sorted({b for bs in facts.banks.values() for b in bs})
-    row["returned"] = n == row["calls"] and host.snaps[-1][1] == "return"
+    row["returned"] = n == row["calls"] and host.last_halt == "return"
     port, vol = ports["call"], [c64.DEVICES]
     t_ref, (nr, cycles, _) = _timed(
         _ref_run(play, vol, mc, _bank(), port), bytearray(last["ram"]), n
@@ -356,10 +320,15 @@ def psid_song(row, img, mc, cap, defer=False):
         return row | {"mode": "flat", "bank_evidence": ev, "skip": "init " + r["halt"]}, None
     t_ref, (n, cycles, halt) = _timed(_ref_run(play, vol, mc), bytearray(mem), row["calls"])
     t = time.perf_counter()
-    facts = trace.collect(mem, lambda s: [s.call(play) for _ in range(n)], mc)
+    ev = []
+
+    def banked(starts, ports):
+        probe = SimpleNamespace(starts=starts, writes=dict.fromkeys(ports))
+        ev.extend(bank_evidence(phases + [(mem, probe, iomap(play))]))
+        return bool(ev)
+
+    facts = trace.collect(mem, lambda s: [s.call(play) for _ in range(n)], mc, skip=banked)
     facts_ms = 1e3 * (time.perf_counter() - t)
-    phases.append((mem, facts, iomap(play)))
-    ev = bank_evidence(phases)
     if ev:
         return (row | {"deferred": True}, None) if defer else _banked(row, img, mc, ev)
     row |= {
@@ -374,12 +343,15 @@ def psid_song(row, img, mc, cap, defer=False):
     lift_ms = 1e3 * (time.perf_counter() - t)
     row["compile_ms"] = _compiled(prog)
     t = time.perf_counter()
-    bad = machine_check(prog, row, img, n, mc)
+    bad, run = machine_check(prog, row, img, n, mc)
     row |= _lifted_row(prog, lift_ms, bad) | {"check_ms": 1e3 * (time.perf_counter() - t)}
     t_lift, _ = _timed(_lifted_run(prog, mc), bytearray(mem), n)
     t_jen, _ = _timed(_jennings_run(play, mc), bytearray(mem), n)
     row["timing"] = _timing(n, cycles, t_ref, t_lift, t_jen)
-    row |= label("calls", img, row, min(n, cap or n), mc)
+    if cap and cap < n:
+        row |= label("calls", img, row, cap, mc)
+    else:
+        row |= _label_row("calls", run, n, t)
     return row, {"state": _diff(img, mem), "reg": list(r["reg"]), "facts": facts}
 
 
@@ -436,7 +408,7 @@ class _IrqScan(MachineOracle):
     def __init__(self, image, ntsc=False, backend=None, roms=None):
         backend = backend or ("native" if c64.TRACE_NATIVE else "python")
         super().__init__(image, ntsc=ntsc, roms=roms, backend=backend)
-        self.irqs, self.vector, self.ctx = 0, None, []
+        self.irqs, self.vector, self.ctx, self.result = 0, None, [], None
         self.main = Counter()
         self.cpf, self.t0 = mm.video(ntsc).cycles_per_frame, None
         self.sc = Scan(self.rec, _scan_table(), self.sentinel) if self.native else None
@@ -503,10 +475,13 @@ class _IrqScan(MachineOracle):
             self.main["first_busy_frame"] = (mc.cycle - self.t0) // self.cpf
             mc.set_decode_hook(None)  # pylint: disable=no-member
 
-    def scan(self, boot, frames, mc):
+    def scan(self, boot, frames, mc, cells=False):
         """Run ``boot`` (:class:`c64.Boot`) then ``frames`` interrupt-driven frames; the ``irq``
-        row field."""
-        self.run([], frames=frames, call_cycles=mc, **boot.run_kw())
+        row field. With ``cells`` the run's SMC labelling, its cells indexed by frame, is kept
+        as :attr:`result`."""
+        self.result = self.run(
+            [], frames=frames, call_cycles=mc, index_frames=cells, **boot.run_kw()
+        )
         self.irqs += self._entries(self.m.events)
         return {
             **(self.vector or {}),
@@ -547,15 +522,17 @@ def irq_song(row, boot, mc, cap):
         row["basic"] = True
     t = time.perf_counter()
     o = _IrqScan(boot.image, ntsc=row["clock"] == "NTSC", roms=boot.roms)
-    row["irq"] = o.scan(boot, row["calls"], mc)
+    full = not cap or cap >= row["calls"]
+    row["irq"] = o.scan(boot, row["calls"], mc, full)
     row |= {"calls_run": o.irqs, "facts_ms": 1e3 * (time.perf_counter() - t)}
-    n = min(row["calls"], cap or row["calls"])
-    return row | label("frames", boot.image, row, n, mc, boot), None
+    if not full:
+        return row | label("frames", boot.image, row, cap, mc, boot), None
+    return row | _label_row("frames", o.result, row["calls"], t), None
 
 
 def run_song(path, row, mc, cap=0, defer=()):
     """``(row, compressed facts line or None)`` of one planned song."""
-    row = dict(row)
+    row, t0 = dict(row), time.perf_counter()
     try:
         if "skip" in row:
             return row, None
@@ -568,6 +545,7 @@ def run_song(path, row, mc, cap=0, defer=()):
             row, rec = psid_song(row, sidfile(data)[1], mc, cap, "banked" in defer)
     except Exception as e:  # pylint: disable=broad-exception-caught
         return {**row, "error": repr(e)[:300]}, None
+    row["song_ms"] = 1e3 * (time.perf_counter() - t0)
     if rec is None:
         return row, None
     rec = {"path": row["path"], "song": row["song"], "mode": row["mode"], **rec}

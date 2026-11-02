@@ -23,10 +23,10 @@ import wpcorpus  # noqa: E402 pylint: disable=wrong-import-order
 
 
 def stepper(call):
-    """A ``wpcorpus._Records`` class (Python backend) keeping ``steps``, per instruction of
+    """A ``c64._Host`` class (Python backend) keeping ``steps``, per instruction of
     play call ``call``: ``(pc, a, x, y, sp, p, cycle, bits)``."""
 
-    class Steps(wpcorpus._Records):  # pylint: disable=protected-access
+    class Steps(c64._Host):  # pylint: disable=protected-access
         """The machine run, its steps of one call."""
 
         def __init__(self, *a, **kw):

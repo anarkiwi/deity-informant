@@ -83,7 +83,8 @@ class Session:
         self.mpu = NativeMPU(memory=self.mem)
         self.max_cycles = max_cycles
         self.traces = [] if traced else None
-        self.folded = (np.zeros(0, np.int32), np.zeros(0, np.uint32))
+        self.keys = np.zeros(1 << 25, bool)
+        self.edges = np.zeros(0, np.uint32)
         self.pending = 0
         self._bar = pbar
         self.entry_sp = defaultdict(set)
@@ -94,16 +95,11 @@ class Session:
         else:
             sp0 = (self.mpu.sp - 2) & 0xFF
             self.entry_sp[pc].add(sp0)
-            tr = self.mpu.run_to_rts_traced(pc, a, self.max_cycles, regs=True)
-            pcs = np.frombuffer(tr.pc, dtype=np.uint16).copy()
-            sp = np.frombuffer(tr.sp, dtype=np.uint8)
-            h = np.zeros(len(pcs), np.int32)
-            h[1:] = sp[:-1].astype(np.int32) - sp0
-            p32 = pcs.astype(np.uint32)
-            self.traces.append(
-                ((pcs.astype(np.int32) << 9) | (h + 0x100), (p32[:-1] << 16) | p32[1:])
+            pcs, _, regs = self.mpu._core.run_to_rts_traced(  # pylint: disable=protected-access
+                pc, a, self.max_cycles, True
             )
-            self.pending += len(pcs)
+            self.traces.append((pcs, regs[3], sp0))
+            self.pending += len(regs[3])
             if self.pending > 1 << 20:
                 self.fold()
         if self._bar is not None:
@@ -113,19 +109,33 @@ class Session:
         """``(height keys, edges)``: the unique ``pc << 9 | height + 256`` and
         ``pc << 16 | next`` over every traced call so far."""
         if self.traces:
-            keys, edges = zip(*self.traces)
-            self.folded = tuple(
-                np.unique(np.concatenate((old, *new)))
-                for old, new in zip(self.folded, (keys, edges))
-            )
+            pcs, sps, sp0 = zip(*self.traces)
+            n = np.fromiter(map(len, sps), np.int64, len(sps))
+            first = (np.cumsum(n) - n)[n > 0]
+            pc = np.frombuffer(b"".join(pcs), np.uint16).astype(np.int32)
+            sp = np.frombuffer(b"".join(sps), np.uint8).astype(np.int32)
+            h = np.empty_like(sp)
+            h[1:] = sp[:-1]
+            h -= np.repeat(np.array(sp0, np.int32), n)
+            h[first] = 0
+            p32 = pc.astype(np.uint32)
+            edges = (p32[:-1] << 16) | p32[1:]
+            keep = np.ones(len(edges), bool)
+            keep[first[1:] - 1] = False
+            self.keys[(pc << 9) | (h + 0x100)] = True
+            self.edges = np.unique(np.concatenate((self.edges, edges[keep])))
             self.traces, self.pending = [], 0
-        return self.folded
+        return np.flatnonzero(self.keys), self.edges
 
 
-def collect(image, driver, max_cycles=10_000_000, progress=False, total=None):
+def collect(
+    image, driver, max_cycles=10_000_000, progress=False, total=None, skip=None
+):  # pylint: disable=too-many-arguments,too-many-positional-arguments
     """Facts from running ``driver(session)`` twice on ``image`` (64 KiB).
 
-    ``progress`` shows calls per pass (``total`` per pass, if known).
+    ``progress`` shows calls per pass (``total`` per pass, if known). ``skip(starts, ports)``,
+    when given, sees the traced pass's instruction starts and the set of CPU port addresses
+    ($00/$01) the driver stores to, from a store-only pass; true returns None, not the facts.
     """
     pbar = tqdm(total=total, desc="facts trace", unit="call") if progress else None
     s = traced = Session(image, max_cycles, True, pbar)
@@ -137,6 +147,12 @@ def collect(image, driver, max_cycles=10_000_000, progress=False, total=None):
     heights = defaultdict(list)
     for k, v in zip((ph >> 9).tolist(), ((ph & 0x1FF) - 0x100).tolist()):
         heights[k].append(v)
+    if skip is not None:
+        ports, s = set(), Session(image, max_cycles, False, None)
+        s.mem.observe_data_access(on_read=None, on_write=lambda a, v: ports.add(a), writes=range(2))
+        driver(s)
+        if skip(starts.tolist(), ports):
+            return None
     writes = defaultdict(set)
     page1 = {}
 
