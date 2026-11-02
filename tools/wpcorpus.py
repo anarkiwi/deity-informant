@@ -177,6 +177,56 @@ def bank_evidence(phases):
     return sorted(ev)
 
 
+def _flat_view(addr):
+    """What the flat model sees at ``addr``: the device window, else RAM."""
+    lo, hi = c64.DEVICES
+    return "io" if lo <= addr < hi and addr >= 2 else "ram"
+
+
+def unfaithful(port, store=False):
+    """The ``range`` objects where the CPU under $01 value ``port`` does not see what the flat
+    model does (:func:`_flat_view`): the port registers and the 4 KiB pages banked otherwise;
+    for a ``store``, only those it does not reach as the flat model does (RAM under ROM is
+    reached as RAM)."""
+    pages = (range(p << 12, (p + 1) << 12) for p in range(16))
+    seen = ((r, view(port & 7, r[2]), _flat_view(r[2])) for r in pages)
+    return [range(2)] + [r for r, v, f in seen if v != f and not (store and f == "ram")]
+
+
+# pylint: disable-next=too-many-arguments,too-many-positional-arguments
+def flat_evidence(last, records, n, play, port, vol, mc):
+    """The bank evidence of the flat model's first ``n`` play calls from the machine's post-init
+    record ``last``, each replaying its machine record's device reads: the data loads
+    (``data-in-*``) and stores (``store-in-*``) it makes where the CPU under $01 value ``port``
+    does not see what the flat model does (:func:`unfaithful`). Until the first, the flat model
+    runs as the machine does, so a flat lift that differs from the machine without one is
+    itself wrong."""
+    s = _regs(trace.Session(last["ram"], mc, False, None), last["reg"])
+    feed, seen = [], set()
+    s.mem.subscribe_to_read([a for lo, hi in vol for a in range(lo, hi)],
+                            lambda _: feed.pop() if feed else 0)  # fmt: skip
+    s.mem.observe_data_access(
+        on_read=lambda a: seen.add(f"data-in-{view(port & 7, a)}"),
+        on_write=lambda a, _: seen.add(f"store-in-{view(port & 7, a)}"),
+        reads=unfaithful(port),
+        writes=unfaithful(port, store=True),
+    )
+    for _, rec in zip(range(n), records):
+        feed[:] = c64.reads(rec)[::-1]
+        s.call(play)
+        if seen:
+            break
+    return sorted(seen)
+
+
+def _regs(s, reg):
+    """Jennings session ``s`` from the ``Program.call`` register file ``reg``."""
+    m = s.mpu
+    m.a, m.x, m.y, m.sp = reg[:4]
+    m.p = sum(reg[i] << bit for i, bit in c64._FLAGS) | 0x30  # pylint: disable=protected-access
+    return s
+
+
 def _cells(cells):
     return sorted(c.sid for c in cells), sorted({lift_reason(c) or "lift-exact" for c in cells})
 
@@ -244,12 +294,17 @@ def _compiled(prog):
 
 
 def _lifted_row(prog, lift_ms, bad):
+    """The lift's row fields; a :func:`c64.check` result ``bad`` is its ``outcome`` and either
+    its ``mismatch`` or the ``stop`` the lift agrees with (:data:`c64.AGREE`)."""
+    out = c64.outcome(bad)
     return {
         "lift_ms": lift_ms,
         "backend": prog.backend,
         "stats": prog.stats,
         "exact": bad is None,
-        "mismatch": bad,
+        "outcome": out,
+        "mismatch": bad if out == "mismatch" else None,
+        "stop": bad if out in c64.AGREE else None,
         "deopts": sum(prog.deopts.values()),
     }
 
@@ -293,15 +348,28 @@ def psid_song(row, img, mc, cap, defer=False):
         row |= label("calls", img, row, cap, mc)
     if facts is None:
         return row | {"skip": "init " + last["halt"]}, None
-    t = time.perf_counter()
-    bank, vol = (_bank(), [c64.DEVICES]) if banked else (None, volatile_of(row))
-    prog = wholeprog.lift(last["ram"], [play], vol, facts, bank=bank)
-    lift_ms = 1e3 * (time.perf_counter() - t)
-    row["compile_ms"] = _compiled(prog)
-    t = time.perf_counter()
     port = ports["call"]
-    bad = c64.check(prog, last["ram"], last["reg"], records, port, mc)
-    row |= _lifted_row(prog, lift_ms, bad) | {"check_ms": 1e3 * (time.perf_counter() - t)}
+
+    def lifted(banked):
+        t = time.perf_counter()
+        bank, vol = (_bank(), [c64.DEVICES]) if banked else (None, volatile_of(row))
+        prog = wholeprog.lift(last["ram"], [play], vol, facts, bank=bank)
+        lift_ms = 1e3 * (time.perf_counter() - t)
+        row["compile_ms"] = _compiled(prog)
+        t = time.perf_counter()
+        ret = host.sentinel - 1
+        bad = c64.check(prog, last["ram"], last["reg"], records, port, mc, ret=ret,
+                        irq=host.interrupts)  # fmt: skip
+        row.update(_lifted_row(prog, lift_ms, bad), check_ms=1e3 * (time.perf_counter() - t))
+        return prog, bank, vol, bad
+
+    prog, bank, vol, bad = lifted(banked)
+    if not banked and c64.outcome(bad) == "mismatch":
+        ev = flat_evidence(last, records, bad[0] + 1, play, port, vol, mc)
+        if ev:
+            row |= {"mode": "banked", "bank_evidence": ev}
+            banked = True
+            prog, bank, vol, bad = lifted(banked)
     row["returned"] = n == row["calls"] and host.last_halt == "return"
     if banked:
         row["configs"] = sorted({b for bs in facts.banks.values() for b in bs})
@@ -573,7 +641,7 @@ def _q(xs):
 def _failure(r):
     if "error" in r:
         return r["error"]
-    if r.get("exact") is False and r["mismatch"][1] != "no-return":
+    if r.get("mismatch"):
         return "inexact " + json.dumps(r["mismatch"])[:120]
     return None
 
@@ -588,7 +656,7 @@ def _kind(rs):
         "exact": sum(r["exact"] for r in ok),
         "deopting": sum(r["deopts"] > 0 for r in ok),
         "inexact": sum(_failure(r) is not None for r in ok),
-        "no_return": sum(r["mismatch"] is not None and r["mismatch"][1] == "no-return" for r in ok),
+        **{k: sum(r.get("outcome") == k for r in ok) for k in c64.AGREE},
         "timeouts": sum(r.get("error") == "timeout" for r in rs),
         "errors": sum("error" in r and r["error"] != "timeout" for r in rs),
         "skipped": dict(Counter(r["skip"] for r in rs if "skip" in r).most_common()),

@@ -37,8 +37,14 @@ PSID with a play routine:
    that entry (`smclabel.iomap`): `bank_evidence`. A machine init that does not return skips
    the song (`init <halt>`).
 3. Lift from the machine's post-init state, flat or (`banked`) through the bank map with the
-   facts' bank configurations (`configs`), and `c64.check` over the records (`exact`,
-   `mismatch`, `deopts`; `no-return` when both stop the same way). Timed from that state
+   facts' bank configurations (`configs`), and `c64.check` over the records, each call
+   returning to the machine's sentinel (`exact`; `outcome` `exact`, `mismatch` (`mismatch`)
+   or an agreement in `stop`: `halted` at the run's last record, `interrupt` in a call the
+   machine entered an interrupt in; `deopts`). A flat lift that differs replays the machine's
+   device reads through the flat model (`wpcorpus.flat_evidence`) up to that call: a data
+   load or store where the CPU under sidplay's $01 sees something else (`data-in-rom`,
+   `store-in-ram`, ...) is bank evidence, and the song lifts banked; without one the flat
+   model ran as the machine did and the mismatch stands. Timed from that state
    (`timing`): the reference over the calls run (`reference_s`, with the bank map when
    banked), then the lifted program and, for flat songs, jennings `run_to_rts` (jennings has
    no bank map) over the calls the reference ran.

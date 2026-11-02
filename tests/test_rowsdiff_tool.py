@@ -29,6 +29,7 @@ def test_compare(tmp_path, capsys):
             {"path": "a", "song": 2, "exact": False, "mismatch": [0, "memory", 5]},
             {"path": "c", "song": 1, "error": "boom"},
             {"path": "d", "song": 1, "exact": True},
+            {"path": "e", "song": 1, "exact": False, "stop": [4, "interrupt", "video_irq"]},
         ],
     )
     assert rowsdiff.main([before, after]) == 0
@@ -36,3 +37,4 @@ def test_compare(tmp_path, capsys):
     assert "| a | 1 | mismatch log | exact | None |" in out
     assert "| a | 2 | exact | mismatch memory | [0, 'memory', 5] |" in out
     assert "| c | 1 | skip init cycles | error | None |" in out and "1  - -> exact" in out
+    assert "1  - -> interrupt video_irq" in out

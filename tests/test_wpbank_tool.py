@@ -64,8 +64,32 @@ def test_mismatch():
     assert c64.mismatch(ref, {**out, "ram": dead}) is None
     dead[0x1FE] = 5
     assert c64.mismatch(ref, {**out, "ram": dead}) == ("memory", 0x1FE)
-    assert c64.mismatch(record("cycles"), {**out, "halt": "cycles"}) == ("no-return",)
     assert c64.mismatch(record("jam"), out) == ("halt", "jam", "return")
+
+
+def test_machine_halts():
+    one, two = (0xD400, 1, 0, True), (0xD401, 0, 0, False)
+    cap = record("cycles", log=[(0xD400, 1, True), (0xD401, 0, False)])
+    run = {**record(), "halt": "cycles", "log": [one, two]}
+    assert c64.mismatch(cap, run) == ("halted", "cycles")
+    assert c64.mismatch(cap, {**run, "log": [one]}) == ("halted", "cycles")
+    assert c64.mismatch(cap, {**run, "halt": "return", "log": [one, two, one]}) == (
+        "halted",
+        "cycles",
+    )
+    assert c64.mismatch(cap, {**run, "halt": "return"}) == ("halt", "cycles", "return")
+    assert c64.mismatch(cap, {**run, "halt": "return", "log": [one]}) == (
+        "halt",
+        "cycles",
+        "return",
+    )
+    assert c64.mismatch(cap, {**run, "log": [two]}) == ("log", 0)
+    jam = record("jam", log=[(0xD400, 1, True)])
+    stop = {**record(), "halt": "jam", "log": [one]}
+    assert c64.mismatch(jam, stop) == ("halted", "jam")
+    assert c64.mismatch(jam, {**stop, "log": [one, two]}) == ("log", 1)
+    assert c64.mismatch(jam, {**stop, "ram": b"\1" + bytes(0xFFFF)}) == ("memory", 0)
+    assert c64.mismatch(jam, {**stop, "halt": "cycles"}) == ("halt", "jam", "cycles")
 
 
 class FakeProg:
@@ -74,8 +98,8 @@ class FakeProg:
     def __init__(self):
         self.ports = []
 
-    def call(self, mem, entry, a, reg, log, max_cycles, reads):  # pylint: disable=R0913,R0917
-        assert entry == 0 and a == 0 and log and max_cycles and reads == b""
+    def call(self, mem, entry, a, reg, log, max_cycles, reads, ret):  # pylint: disable=R0913,R0917
+        assert entry == 0 and a == 0 and log and max_cycles and reads == b"" and ret is None
         self.ports.append(mem[1])
         mem[0xC000] += 1
         reg = list(reg)
@@ -98,6 +122,9 @@ def test_check():
     assert c64.check(FakeProg(), img, reg0, refs, 0x36) == [0, "memory", 1]
     refs[2]["reg"][1] = 7
     assert c64.check(FakeProg(), img, reg0, refs, 0x35)[:2] == [2, "reg"]
+    refs[2]["irq"] = ["video_irq"]
+    assert c64.check(FakeProg(), img, reg0, refs, 0x35) == [2, "interrupt", "video_irq"]
+    assert c64.check(FakeProg(), img, reg0, refs, 0x35, irq=lambda k: [])[:2] == [2, "reg"]
 
 
 def test_bank_check_skips(tmp_path):
@@ -125,16 +152,19 @@ def test_main(tmp_path, capsys):
 def test_summary():
     rows = [
         {"tune": "a", "exact": True, "mismatch": None, "deopts": 0, "stack_private": 1,
-         "configs": [5, 7]},
+         "configs": [5, 7], "outcome": "exact"},
         {"tune": "b", "exact": False, "mismatch": [3, "log", 0], "deopts": 2,
-         "stack_private": 0, "configs": [7]},
+         "stack_private": 0, "configs": [7], "outcome": "mismatch"},
+        {"tune": "e", "exact": False, "mismatch": [3, "halted", "jam"], "deopts": 0,
+         "stack_private": 0, "configs": [7], "outcome": "halted"},
         {"tune": "c", "skip": "irq-driven"},
         {"tune": "d", "error": "timeout"},
     ]  # fmt: skip
     s = wpbank.summary(rows)
-    assert (s["tunes"], s["checked"], s["exact"], s["errors"]) == (4, 2, 1, 1)
+    assert (s["tunes"], s["checked"], s["exact"], s["errors"]) == (5, 3, 1, 1)
     assert s["inexact"] == ["b"] and s["timeouts"] == ["d"] and s["mismatch_kinds"] == {"log": 1}
-    assert s["configs"] == {7: 2, 5: 1} and s["deopting"] == 1 and s["stack_private"] == 1
+    assert s["outcomes"] == {"exact": 1, "mismatch": 1, "halted": 1}
+    assert s["configs"] == {7: 3, 5: 1} and s["deopting"] == 1 and s["stack_private"] == 1
 
 
 @pytest.mark.skipif(not BANKED, reason="needs the native bank-aware lifter")

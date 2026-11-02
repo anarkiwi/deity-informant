@@ -43,6 +43,10 @@ PROGRAM = {
     0x1830: "ad05d4ad06d460",  # LDA $D405; LDA $D406; RTS
     0x1840: "ad06d460",  # LDA $D406; RTS
     0x1850: "a9408d0fd4a9218d12d460",  # LDA #$40; STA $D40F; LDA #$21; STA $D412; RTS
+    # CIA 1 timer A one-shot IRQ after 32 cycles, CLI, wait in a DEX loop, SEI; RTS
+    0x1880: "a97f8d0ddca9208d04dca9008d05dca9818d0ddca9198d0edc58a220cad0fd7860",
+    0x18C0: "ad0ddc40",  # LDA $DC0D; RTI
+    0xFFFE: "c018",
 }
 
 
@@ -186,6 +190,7 @@ def _backend_run(backend, calls, init, ports, mc):
         ([(0x1400, 0)] * 2, [(0x1100, 0)], {"init": 0x37, "call": 0x35}, 2_000_000),
         ([(0x1000, 0), (0x1200, 0)], [(0x1100, 0)], None, 1000),
         ([(0x1300, 0), (0x1000, 0)], (), None, 2_000_000),
+        ([(0x1880, 0)] * 2, [(0x1100, 0)], {"call": 0x35}, 2_000_000),
     ],
 )
 def test_trace_backends_agree(calls, init, ports, mc):
@@ -232,6 +237,24 @@ def test_device_read_differences_are_mismatches():
     assert c64.check(two.prog, ram, reg, one.records, 0x35)[:3] == [0, "log", 1]
     assert c64.check(one.prog, ram, reg, two.records, 0x35)[:3] == [0, "log", 1]
     assert c64.check(other.prog, ram, reg, one.records, 0x35)[:3] == [0, "log", 0]
+
+
+@pytest.mark.skipif(not NATIVE, reason="needs the native extension")
+def test_halts_and_interrupts_are_outcomes():
+    irq = _lift_check(0x1880)
+    assert irq.bad == [0, "interrupt", "cia_irq"] and c64.outcome(irq.bad) == "interrupt"
+    ports = {"init": 0x35, "call": 0x35}
+    for queue in (True, False):
+        h = c64._Host(image())  # pylint: disable=protected-access
+        h.native_queue = queue
+        h.drive([(0x1100, 0), (0x1880, 0)], [(0x1100, 0)], 2_000_000, ports)
+        assert [h.interrupts(k) for k in range(2)] == [[], ["cia_irq"]]
+    assert _lift_check(0x1300).bad == [0, "halted", "jam"]
+    ports = {"init": 0x35, "call": 0x35}
+    spin = c64.lift_check(image(), 0x1200, [(0x1200, 0)], [(0x1200, 0)], [(0x1100, 0)], ports,
+                          max_cycles=1000)  # fmt: skip
+    assert spin.bad == [0, "halted", "cycles"] and c64.outcome(spin.bad) == "halted"
+    assert c64.outcome(None) == "exact" and c64.outcome([0, "log", 1]) == "mismatch"
 
 
 @pytest.mark.skipif(not NATIVE, reason="needs the native extension")

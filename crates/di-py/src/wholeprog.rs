@@ -3,7 +3,7 @@
 
 use di_lift::ir::{mem, other, Program as LProgram};
 use di_lift::{Back, Backend, BankMap, Banked, Entry, Exec, Facts, Job, Opts, Outcome, Runner};
-use di_pcode::{reg as R, Bus, Cpu, Halt, Opc, Space, Vn};
+use di_pcode::{reg as R, Bus, Cpu, Halt, Opc, Space, Vn, RETURN};
 use indicatif::{ProgressBar, ProgressStyle};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -499,14 +499,16 @@ impl Program {
         self.state.lock().unwrap().1.clone()
     }
 
-    /// ``run_to_rts`` of entry ``entry`` with ``A = a``: push the dummy return, run until it
-    /// returns, ``max_cycles`` elapse, or a JAM. ``reg``/``cycles`` set the starting state.
+    /// ``run_to_rts`` of entry ``entry`` with ``A = a``: push the return address (``ret``,
+    /// else ``$0001``), run until it returns (SP above its start; with ``ret``, at ``ret + 1``
+    /// as a host trapping that address sees it), ``max_cycles`` elapse, or a JAM.
+    /// ``reg``/``cycles`` set the starting state.
     /// Returns ``{"reg", "pc", "cycles", "halt", "deopt", "log"}``. Without cycle counting
     /// the lifted code runs to its return and ``cycles`` counts only the reference
     /// interpreter's part after a deopt. A banked program's non-volatile devices read and
     /// write a copy of ``mem``; ``reads`` (bytes) replays the volatile reads in order.
     /// ``backend`` overrides :attr:`backend` for this call.
-    #[pyo3(signature = (mem, entry=0, a=0, reg=None, cycles=0, max_cycles=10_000_000, log=false, synth=false, reads=None, backend=None))]
+    #[pyo3(signature = (mem, entry=0, a=0, reg=None, cycles=0, max_cycles=10_000_000, log=false, synth=false, reads=None, backend=None, ret=None))]
     #[allow(clippy::too_many_arguments)]
     fn call<'py>(
         &self,
@@ -521,6 +523,7 @@ impl Program {
         synth: bool,
         reads: Option<Vec<u8>>,
         backend: Option<&str>,
+        ret: Option<u16>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let backend = self.backend_or(backend)?;
         self.entry(entry)?;
@@ -530,7 +533,7 @@ impl Program {
             let mut bus = PyBus::new(m, &self.prog.volatile, log, synth);
             bus.dev = dev;
             bus.reads = reads.as_deref();
-            let o = self.run(&mut bus, &mut cpu, entry, a, max_cycles, backend);
+            let o = self.run(&mut bus, &mut cpu, (entry, a, ret), max_cycles, backend);
             (o, bus.log)
         })?;
         result(py, &cpu, o.halt, o.deopt, lg)
@@ -540,8 +543,9 @@ impl Program {
     /// fields): entry 0 runs once per record from ``first`` on, from ``mem`` and ``reg``, with A
     /// from ``accs`` (0 past its end), ``port`` (when given) stored to $01 first and the
     /// record's device reads replayed; the machine's RAM is ``mem`` as it starts plus each
-    /// record's changes. ``[call, *mismatch]`` of the first mismatch, or None.
-    #[pyo3(signature = (mem, reg, records, first, port=None, max_cycles=10_000_000, accs=None))]
+    /// record's changes; ``ret`` as :meth:`call`. ``[call, *mismatch]`` of the first record the
+    /// lift differs from or reaches the halt of, or None.
+    #[pyo3(signature = (mem, reg, records, first, port=None, max_cycles=10_000_000, accs=None, ret=None))]
     #[allow(clippy::too_many_arguments)]
     fn check<'py>(
         &self,
@@ -553,6 +557,7 @@ impl Program {
         port: Option<u8>,
         max_cycles: u64,
         accs: Option<Vec<u8>>,
+        ret: Option<u16>,
     ) -> PyResult<Option<Bound<'py, PyList>>> {
         let backend = self.backend_or(None)?;
         let r = records.view()?;
@@ -576,7 +581,7 @@ impl Program {
                 let mut bus = PyBus::new(m, &self.prog.volatile, true, false);
                 bus.dev = dev;
                 bus.reads = Some(&reads);
-                let o = self.run(&mut bus, &mut cpu, 0, a, max_cycles, backend);
+                let o = self.run(&mut bus, &mut cpu, (0, a, ret), max_cycles, backend);
                 let out = bus.log.take().unwrap_or_default();
                 if let Some(bad) = mismatch(&r, k, o.halt, &out, &cpu.reg(), m, &refm) {
                     return Some((n, bad));
@@ -645,13 +650,13 @@ impl Program {
         }
         Ok(())
     }
-    /// ``run_to_rts`` of `entry` over `bus` from `cpu`, keeping the invalidation and deopts.
+    /// ``run_to_rts`` of `entry` with A `a` and return address `ret` over `bus` from `cpu`,
+    /// keeping the invalidation and deopts.
     fn run(
         &self,
         bus: &mut PyBus<'_>,
         cpu: &mut Cpu,
-        entry: usize,
-        a: u8,
+        (entry, a, ret): (usize, u8, Option<u16>),
         max_cycles: u64,
         backend: Backend,
     ) -> Outcome {
@@ -660,6 +665,7 @@ impl Program {
         let mut run = Runner::new(&self.exec);
         run.backend = backend;
         run.invalid = st.0;
+        run.ret = ret;
         let o = run.call(entry, a, cpu, bus, max_cycles);
         st.0 = run.invalid;
         for (k, v) in run.deopts {
@@ -692,7 +698,7 @@ impl Session {
         let o = with_mem(self.mem.bind(py), |m| {
             let mut bus = PyBus::new(m, &p.prog.volatile, false, false);
             bus.dev = dev.take();
-            let o = p.run(&mut bus, cpu, entry, a, mc, b);
+            let o = p.run(&mut bus, cpu, (entry, a, None), mc, b);
             *dev = bus.dev;
             o
         })?;
@@ -716,9 +722,9 @@ fn devices(banked: bool, mem: &Bound<'_, PyByteArray>) -> PyResult<Option<Box<[u
 /// ``run_to_rts`` on the reference interpreter with the same bus as ``Program.call``;
 /// ``clocked=False`` gives volatile accesses no cycle, as a program lifted without cycles.
 /// ``bank`` (a bank map dict, see ``lift_program``) sees memory through it; ``reads`` as
-/// ``Program.call``.
+/// ``Program.call``, ``ret`` as ``Program.call``.
 #[pyfunction]
-#[pyo3(signature = (mem, pc, a=0, reg=None, cycles=0, max_cycles=10_000_000, volatile=vec![], log=false, synth=false, clocked=true, bank=None, reads=None))]
+#[pyo3(signature = (mem, pc, a=0, reg=None, cycles=0, max_cycles=10_000_000, volatile=vec![], log=false, synth=false, clocked=true, bank=None, reads=None, ret=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn reference_call<'py>(
     py: Python<'py>,
@@ -734,6 +740,7 @@ pub fn reference_call<'py>(
     clocked: bool,
     bank: Option<&Bound<'py, PyDict>>,
     reads: Option<Vec<u8>>,
+    ret: Option<u16>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let mut cpu = cpu_of(reg, cycles);
     let bank = bank_of(bank)?;
@@ -748,8 +755,7 @@ pub fn reference_call<'py>(
             &mut bus,
             bank.as_ref(),
             clocked,
-            pc,
-            a,
+            (pc, a, ret),
             max_cycles,
         );
         (h, bus.log)
@@ -757,18 +763,18 @@ pub fn reference_call<'py>(
     result(py, &cpu, h, None, lg)
 }
 
-/// ``run_to_rts`` of ``pc`` with ``A = a`` on the reference interpreter over ``bus``.
+/// ``run_to_rts`` of ``pc`` with ``A = a`` and return address ``ret`` (as ``Program.call``)
+/// on the reference interpreter over ``bus``.
 fn reference_run(
     cpu: &mut Cpu,
     bus: &mut PyBus<'_>,
     bank: Option<&BankMap>,
     clocked: bool,
-    pc: u16,
-    a: u8,
+    (pc, a, ret): (u16, u8, Option<u16>),
     max_cycles: u64,
 ) -> Halt {
     let start = cpu.r(R::SP);
-    for v in [0u8, 1] {
+    for v in ret.unwrap_or(RETURN).to_be_bytes() {
         let sp = cpu.r(R::SP);
         bus.ram_write(0x100 | sp as u16, v);
         cpu.set_r(R::SP, sp.wrapping_sub(1));
@@ -778,10 +784,12 @@ fn reference_run(
     let end = cpu.cycles.saturating_add(max_cycles).saturating_add(1);
     let above = start as i32 - 1;
     match (bank, clocked) {
-        (Some(b), true) => cpu.run_clocked(&mut Banked::new(b, bus), above, end),
-        (Some(b), false) => cpu.run_clocked(&mut Banked::new(b, &mut Unclocked(bus)), above, end),
-        (None, true) => cpu.run_clocked(bus, above, end),
-        (None, false) => cpu.run_clocked(&mut Unclocked(bus), above, end),
+        (Some(b), true) => cpu.run_clocked(&mut Banked::new(b, bus), above, end, ret),
+        (Some(b), false) => {
+            cpu.run_clocked(&mut Banked::new(b, &mut Unclocked(bus)), above, end, ret)
+        }
+        (None, true) => cpu.run_clocked(bus, above, end, ret),
+        (None, false) => cpu.run_clocked(&mut Unclocked(bus), above, end, ret),
     }
 }
 
@@ -812,7 +820,14 @@ pub fn reference_calls(
             let dev = bank.is_some().then(|| Box::new(*m));
             let mut bus = PyBus::new(m, &volatile, false, false);
             bus.dev = dev;
-            let h = reference_run(&mut cpu, &mut bus, bank.as_ref(), true, pc, 0, max_cycles);
+            let h = reference_run(
+                &mut cpu,
+                &mut bus,
+                bank.as_ref(),
+                true,
+                (pc, 0, None),
+                max_cycles,
+            );
             (reg, cycles) = (Some(cpu.reg()), cycles + cpu.cycles);
             if h != Halt::Sp {
                 return (i, cycles, halt_name(h));
@@ -1025,7 +1040,7 @@ const HALTS: [&str; 3] = ["return", "cycles", "jam"];
 /// A mismatch's fields after its call index, as ``c64.mismatch`` gives them.
 #[derive(IntoPyObject)]
 enum Bad {
-    NoReturn((&'static str,)),
+    Halted((&'static str, &'static str)),
     Halt((&'static str, &'static str, &'static str)),
     Log((&'static str, usize)),
     Reg((&'static str, Vec<u32>, Vec<u32>)),
@@ -1044,31 +1059,36 @@ fn mismatch(
     refm: &[u8; 0x10000],
 ) -> Option<Bad> {
     let (want, got) = (HALTS[r.meta[7 * k + 1] as usize], halt_name(halt));
-    if want != "return" || got != "return" {
-        return Some(if want == got {
-            Bad::NoReturn(("no-return",))
+    let n = r.log_end[k] - RecView::span(&r.log_end, k).start;
+    let same = r
+        .log(k)
+        .zip(log)
+        .take_while(|(e, &(a, v, _, w))| *e == (a, v, w));
+    let i = same.count();
+    if want == "cycles" {
+        return Some(if i < n.min(log.len()) {
+            Bad::Log(("log", i))
+        } else if log.len() > n || got == "cycles" {
+            Bad::Halted(("halted", want))
         } else {
             Bad::Halt(("halt", want, got))
         });
     }
-    let (n, mut i) = (r.log_end[k] - RecView::span(&r.log_end, k).start, 0);
-    for (e, &(a, v, _, w)) in r.log(k).zip(log) {
-        if e != (a, v, w) {
-            return Some(Bad::Log(("log", i)));
-        }
-        i += 1;
+    if got != want {
+        return Some(Bad::Halt(("halt", want, got)));
     }
-    if n != log.len() {
-        return Some(Bad::Log(("log", n.min(log.len()))));
+    if i < n.max(log.len()) {
+        return Some(Bad::Log(("log", i)));
     }
-    let want = r.reg(k);
-    if REGS.iter().any(|&i| want[i] != reg[i]) {
+    let want_reg = r.reg(k);
+    if REGS.iter().any(|&i| want_reg[i] != reg[i]) {
         let pick = |x: &[u8; 16]| REGS.iter().map(|&i| x[i] as u32).collect();
-        return Some(Bad::Reg(("reg", pick(&want), pick(reg))));
+        return Some(Bad::Reg(("reg", pick(&want_reg), pick(reg))));
     }
-    [0..0x100, 0x101 + want[3] as usize..0x10000]
+    [0..0x100, 0x101 + want_reg[3] as usize..0x10000]
         .into_iter()
         .find(|s| m[s.clone()] != refm[s.clone()])
         .and_then(|s| s.into_iter().find(|&a| m[a] != refm[a]))
         .map(|a| Bad::Memory(("memory", a)))
+        .or((want != "return").then_some(Bad::Halted(("halted", want))))
 }

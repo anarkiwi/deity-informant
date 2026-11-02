@@ -549,3 +549,20 @@ def test_reads_replay_volatile_reads_in_order():
     lifted = prog.call(bytearray(img), 0, reads=b"\x12\x34", log=True)["log"]
     assert [e[:2] for e in lifted] == [e[:2] for e in o["log"]]
     assert wholeprog.reference_call(bytearray(img), 0x1000, **kw)["reg"][2] == 0x77
+
+
+def test_calls_return_past_their_return_address():
+    img = bytearray(0x10000)
+    img[0x1000:0x1003] = bytes.fromhex("a90560")  # LDA #5; RTS
+    img[0x1100:0x1103] = bytes.fromhex("686802")  # PLA; PLA; JAM
+    prog = wholeprog.lift(img, [0x1000, 0x1100])
+    for run in (
+        lambda m, e, **kw: prog.call(m, e, **kw),
+        lambda m, e, **kw: wholeprog.reference_call(m, (0x1000, 0x1100)[e], **kw),
+    ):
+        mem = bytearray(img)
+        o = run(mem, 0, ret=0xCFEF)
+        assert (o["halt"], o["pc"], mem[0x1FE], mem[0x1FF]) == ("return", 0xCFF0, 0xEF, 0xCF)
+        assert run(bytearray(img), 0)["pc"] == 2
+        assert run(bytearray(img), 1)["halt"] == "return"
+        assert run(bytearray(img), 1, ret=0xCFEF)["halt"] == "jam"

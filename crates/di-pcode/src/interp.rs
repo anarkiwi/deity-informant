@@ -70,10 +70,13 @@ pub mod reg {
     pub const STATUS_BITS: [(usize, u8); 6] = [(C, 0), (Z, 1), (I, 2), (D, 3), (V, 6), (N, 7)];
 }
 
+/// The return address `run_to_rts` pushes by default: its entry returns to `RETURN + 1`.
+pub const RETURN: u16 = 0x0001;
+
 /// Why [`Cpu::run_clocked`] stopped.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Halt {
-    /// SP rose above the threshold (the entry returned).
+    /// The entry returned: SP rose above the threshold (at its return address, if given).
     Sp,
     /// The cycle budget ran out.
     Cycles,
@@ -341,12 +344,20 @@ impl Cpu {
         )
     }
 
-    /// Step until SP rises above `sp_above` or at least `max_cycles` have elapsed (both
-    /// checked before each instruction) or a JAM executes, telling the bus each
-    /// instruction's start cycle: `run_to_rts`'s loop.
-    pub fn run_clocked<B: Bus>(&mut self, bus: &mut B, sp_above: i32, end: u64) -> Halt {
+    /// Step until the entry returns (SP above `sp_above`; with the return address `ret` it
+    /// was called with, at `ret + 1`, as a host trapping that address sees the return) or at
+    /// least `max_cycles` have elapsed (both checked before each instruction) or a JAM
+    /// executes, telling the bus each instruction's start cycle: `run_to_rts`'s loop.
+    pub fn run_clocked<B: Bus>(
+        &mut self,
+        bus: &mut B,
+        sp_above: i32,
+        end: u64,
+        ret: Option<u16>,
+    ) -> Halt {
+        let back = ret.map(|r| r.wrapping_add(1));
         loop {
-            if self.r(reg::SP) as i32 > sp_above {
+            if self.r(reg::SP) as i32 > sp_above && back.is_none_or(|b| self.pc == b) {
                 return Halt::Sp;
             }
             if self.cycles >= end {

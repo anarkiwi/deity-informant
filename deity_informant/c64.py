@@ -22,7 +22,7 @@ from vagrant_moses.c64 import poweron_ram
 from vagrant_moses.roms import BASIC_RUN, RomFetchError, load_roms, poweron_writes, rom_less
 
 from .smc.classify import expected_reads, expected_writes, view
-from .smc.machine import READ, READ_BACK, SENTINEL, SMC_NATIVE, MachineOracle, _Mem
+from .smc.machine import _ENTRY, READ, READ_BACK, SENTINEL, SMC_NATIVE, MachineOracle, _Mem
 from .smc.oracle import writer_of
 from . import wholeprog
 from .trace import Facts
@@ -59,6 +59,8 @@ __all__ = [
     "machine_session",
     "mismatch",
     "check",
+    "AGREE",
+    "outcome",
     "reads",
     "lift_check",
     "LiftCheck",
@@ -386,6 +388,7 @@ class _Host(MachineOracle):
         self, image, window=DEVICES, roms=None, ntsc=False, backend=None, model="6581", facts=True
     ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self.window = window
+        self.ctor = (image, window, roms, ntsc, backend, model)
         backend = backend or ("native" if TRACE_NATIVE else "python")
         if backend == "native" and not TRACE_NATIVE:
             raise ValueError("backend 'native' is not available")
@@ -414,6 +417,8 @@ class _Host(MachineOracle):
         self.folded = (np.zeros(0, np.int64), np.zeros(0, np.int64))
         self.pending, self.npending = [], 0
         self.snaps = []
+        self.irqs, self.events = [], []
+        self.driven = None
         self.records = None
         self.writes = defaultdict(set)
         self.page1 = {}
@@ -459,6 +464,7 @@ class _Host(MachineOracle):
                 self.writes[addr].add(_STORED[mn](a, x, y))
 
     def _decode(self, mc):
+        self.events += [n for _, n in mc.events]
         if self.last is not None:
             self._effects(*self.last)
             self.last = None
@@ -504,7 +510,9 @@ class _Host(MachineOracle):
             self.tr.phase(Tracer.NONE)
             ram = self._ram((np.frombuffer(idx, "<u2"), np.frombuffer(vals, np.uint8)))
         self.snaps.append((self.cur, halt, _reg(self.m.mpu), log, ram))
-        self.cur, self.log = None, []
+        events = self.events + [n for _, n in self.m.events]
+        self.irqs.append(sorted({n[:-6] for n in events if _ENTRY.get(n) in ("irq", "nmi")}))
+        self.cur, self.log, self.events = None, [], []
 
     def _trap(self, mc):
         self._snap("return")
@@ -521,9 +529,14 @@ class _Host(MachineOracle):
             self.entry_port[mc.mpu.pc].add((mc.port_dir, mc.port_data))
         return ok
 
+    def _native_run(self):
+        self.events += [n for _, n in self.m.events]
+        return super()._native_run()
+
     def drive(self, calls, init=(), max_cycles=2_000_000, ports=None):
         """Run ``init`` then ``calls``; a call that does not return ends the run. The run's
         SMC labelling is kept as :attr:`result`."""
+        self.driven = (list(calls), init, max_cycles, ports)
         self.result = super().run(calls, init, call_cycles=max_cycles, ports=ports)
         if self.calls is not None:
             self.calls.close()
@@ -539,6 +552,17 @@ class _Host(MachineOracle):
             self.last = None
         self._snap("jam" if self.m.jammed else "cycles")
         return self
+
+    def interrupts(self, k):
+        """The sources (``video_irq``, ``cia_irq``, ``nmi``, ...) of the interrupts the machine
+        entered during call ``k``; a run on vagrant-moses' call queue, which keeps no trap per
+        call to see them, runs again up to that call without it."""
+        if self.records is None:
+            return [q for s, q in zip(self.snaps, self.irqs) if s[0] == "call"][k]
+        calls, init, max_cycles, ports = self.driven
+        again = _Host(*self.ctor, facts=False)
+        again.native_queue = False
+        return again.drive(calls[: k + 1], init, max_cycles, ports).interrupts(k)
 
     def split(self):
         """``(init records, call records, calls)``: the init records as
@@ -638,22 +662,49 @@ REGS = (0, 1, 2, 3, 8, 9, 10, 11, 13, 14)
 
 def mismatch(ref, out):
     """The first difference of a lifted call result ``out`` from the machine record ``ref``,
-    or None: ``("no-return",)`` when both stop without returning, else ``(field, ...)``.
-    The dead stack ``$0100-$0100+SP`` is not compared."""
-    if ref["halt"] != "return" or out["halt"] != "return":
-        return ("no-return",) if out["halt"] == ref["halt"] else ("halt", ref["halt"], out["halt"])
+    ``("halted", halt)`` when the lift reaches the machine's halt, or None.
+
+    Every access the machine logged before a ``cycles`` halt (its budget, not the program,
+    ended the call) must open the lift's log, and the lift must still be running at the end of
+    the shorter of the two records: its log goes on past the machine's (a replayed read past
+    the record's reads, or any other access) or it stops on its own budget. A lift that stops
+    otherwise within the machine's record differs in its halt. A ``jam`` halt is reached
+    when the lift jams with the machine's log, registers and memory. The dead stack
+    ``$0100-$0100+SP`` is not compared."""
+    halt, got = ref["halt"], out["halt"]
     log = [(a, v, w) for a, v, _, w in out["log"] or ()]
     want = [tuple(e) for e in ref["log"]]
+    k = next((i for i, (p, q) in enumerate(zip(log, want)) if p != q), min(len(log), len(want)))
+    if halt == "cycles":
+        if k < min(len(log), len(want)):
+            return ("log", k)
+        return ("halted", halt) if len(log) > len(want) or got == "cycles" else ("halt", halt, got)
+    if got != halt:
+        return ("halt", halt, got)
     if log != want:
-        return ("log", next((i for i, (p, q) in enumerate(zip(log, want)) if p != q),
-                            min(len(log), len(want))))  # fmt: skip
+        return ("log", k)
     reg = [out["reg"][i] for i in REGS]
     if reg != [ref["reg"][i] for i in REGS]:
         return ("reg", [ref["reg"][i] for i in REGS], reg)
     diff = np.frombuffer(bytes(ref["ram"]), np.uint8) != np.frombuffer(bytes(out["ram"]), np.uint8)
     diff[0x100 : 0x101 + ref["reg"][3]] = False
     bad = np.flatnonzero(diff)
-    return ("memory", int(bad[0])) if bad.size else None
+    if bad.size:
+        return ("memory", int(bad[0]))
+    return None if halt == "return" else ("halted", halt)
+
+
+#: :func:`check` outcomes that are not mismatches: the lift reaches the machine's halt
+#: (``halted``), or differs in a call the machine entered an interrupt in, which lifts do not
+#: model (``interrupt``).
+AGREE = ("halted", "interrupt")
+
+
+def outcome(bad):
+    """A :func:`check` result's outcome: ``exact``, one of :data:`AGREE` or ``mismatch``."""
+    if bad is None:
+        return "exact"
+    return bad[1] if bad[1] in AGREE else "mismatch"
 
 
 def reads(rec):
@@ -662,27 +713,40 @@ def reads(rec):
 
 
 def check(
-    prog, image, reg, records, port=None, max_cycles=2_000_000, accs=()
+    prog, image, reg, records, port=None, max_cycles=2_000_000, accs=(), ret=None, irq=None
 ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
     """Run ``prog``'s entry 0 from ``image`` and registers ``reg`` once per machine record,
     with A from ``accs`` (0 past its end) and ``port`` (when given) stored to $01 before each
-    call, its volatile reads replaying the record's (:func:`reads`); ``[call, *mismatch]`` of
-    the first, or None. A lift reading another address, or more or fewer times, than the
-    machine differs in the log."""
+    call, its volatile reads replaying the record's (:func:`reads`): ``[call, *mismatch]`` of
+    the first record the lift differs from (:func:`mismatch`), ``[call, "interrupt",
+    *sources]`` when the machine entered interrupts in that call (``irq(call)``, else the
+    record's ``irq``), ``[call, "halted", halt]`` when the lift reaches the halt of the record
+    ending the run, or None (see :func:`outcome`). With ``ret``, each call pushes that return
+    address and returns only past it, as the machine pushing its sentinel's (``sentinel - 1``)
+    does. A lift reading another address, or more or fewer times, than the machine differs in
+    the log."""
     mem = bytearray(image)
     if isinstance(records, CallRecords):
         accs = bytes(a & 0xFF for a in accs)
-        return prog.check(mem, list(reg), records.packed, records.first, port, max_cycles, accs)
-    for n, ref in enumerate(records):
-        if port is not None:
-            mem[1] = port
-        a = accs[n] if n < len(accs) else 0
-        o = prog.call(mem, 0, a=a, reg=reg, log=True, max_cycles=max_cycles, reads=reads(ref))
-        bad = mismatch(ref, {**o, "ram": mem})
-        if bad is not None:
-            return [n, *bad]
-        reg = list(o["reg"])
-    return None
+        bad = prog.check(mem, list(reg), records.packed, records.first, port, max_cycles, accs, ret)
+    else:
+        bad = None
+        for n, ref in enumerate(records):
+            if port is not None:
+                mem[1] = port
+            a = accs[n] if n < len(accs) else 0
+            o = prog.call(
+                mem, 0, a=a, reg=reg, log=True, max_cycles=max_cycles, reads=reads(ref), ret=ret
+            )
+            bad = mismatch(ref, {**o, "ram": mem})
+            if bad is not None:
+                bad = [n, *bad]
+                break
+            reg = list(o["reg"])
+    if outcome(bad) != "mismatch":
+        return bad
+    src = irq(bad[0]) if irq is not None else records[bad[0]].get("irq")
+    return [bad[0], "interrupt", *src] if src else bad
 
 
 #: An `RTS` beside the oracle's sentinel, run as the init call when none is given so the first
@@ -691,9 +755,8 @@ IDLE = SENTINEL + 3
 
 
 class LiftCheck(NamedTuple):
-    """A :func:`lift_check`: the first mismatch (``[call, *mismatch]``) or None, the lifted
-    program (None when init did not return), its facts, the machine's call records and its
-    last init record."""
+    """A :func:`lift_check`: the :func:`check` result, the lifted program (None when init did
+    not return), its facts, the machine's call records and its last init record."""
 
     bad: Optional[list]
     prog: object
@@ -719,7 +782,9 @@ def lift_check(
     image = bytearray(image)
     if init is None:
         image[IDLE], init = 0x60, [(IDLE, 0)]
-    inits, records = machine_session(image, calls, init, ports, max_cycles, roms=roms)
+    host = _Host(image, roms=roms).drive(calls, init, max_cycles, ports)
+    inits, records, _ = host.split()
+    records = list(records)
     last = inits[-1]
     if last["halt"] != "return":
         return LiftCheck(None, None, None, records, last)
@@ -729,5 +794,8 @@ def lift_check(
     )
     port = (ports or {}).get("call")
     accs = [a for _, a in calls]
-    bad = check(prog, last["ram"], last["reg"], records, port, max_cycles, accs)
+    ret = host.sentinel - 1
+    bad = check(
+        prog, last["ram"], last["reg"], records, port, max_cycles, accs, ret, host.interrupts
+    )
     return LiftCheck(bad, prog, facts, records, last)

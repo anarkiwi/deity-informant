@@ -4,7 +4,7 @@ use crate::bank::{BankMap, Banked};
 use crate::ir::{mask, mem, other, Function, Program, CY, E, NREG};
 use crate::jit::Jit;
 use crate::opt::{budget_points, checkpoints, sp_effect, sp_offsets};
-use di_pcode::{reg as R, Bus, Cpu, Halt, Opc, Space, Vn};
+use di_pcode::{reg as R, Bus, Cpu, Halt, Opc, Space, Vn, RETURN};
 use fixedbitset::FixedBitSet;
 use rustc_hash::FxHashMap;
 use std::sync::{Arc, OnceLock};
@@ -386,6 +386,9 @@ pub struct Runner<'a> {
     pub backend: Backend,
     /// Deopts per PC.
     pub deopts: FxHashMap<u16, u64>,
+    /// The return address [`Runner::call`] pushes, the entry returning only past it (default
+    /// [`RETURN`], returning when SP rises above the entry's).
+    pub ret: Option<u16>,
 }
 
 impl<'a> Runner<'a> {
@@ -403,11 +406,12 @@ impl<'a> Runner<'a> {
             invalid: false,
             backend: Backend::default(),
             deopts: FxHashMap::default(),
+            ret: None,
         }
     }
 
-    /// `run_to_rts`: push the dummy return `$0001`, set A and run entry `entry` until it
-    /// returns (SP back above its start), at most `max_cycles` past the start or a JAM.
+    /// `run_to_rts`: push the return address [`Runner::ret`], set A and run entry `entry`
+    /// until it returns past it, at most `max_cycles` past the start or a JAM.
     pub fn call<B: Bus>(
         &mut self,
         entry: usize,
@@ -417,7 +421,7 @@ impl<'a> Runner<'a> {
         max_cycles: u64,
     ) -> Outcome {
         let start = cpu.r(R::SP);
-        for v in [0x00, 0x01] {
+        for v in self.ret.unwrap_or(RETURN).to_be_bytes() {
             let sp = cpu.r(R::SP);
             bus.ram_write(0x100 | sp as u16, v);
             cpu.set_r(R::SP, sp.wrapping_sub(1));
@@ -583,7 +587,7 @@ impl<'a> Runner<'a> {
         if cyc {
             cpu.cycles = c0 + f[CY as usize] as u64;
         }
-        if stop == Stop::Exit {
+        if stop == Stop::Exit && self.ret.is_none_or(|r| dpc == r.wrapping_add(1)) {
             return Outcome {
                 halt: Halt::Sp,
                 deopt: None,
@@ -639,13 +643,14 @@ impl<'a> Runner<'a> {
     ) -> Outcome {
         *self.deopts.entry(pc).or_default() += 1;
         cpu.pc = pc;
+        let ret = self.ret;
         let halt = match (&self.x.bank, self.x.cycles) {
-            (Some(m), true) => cpu.run_clocked(&mut Banked::new(m, bus), sp_above, end),
+            (Some(m), true) => cpu.run_clocked(&mut Banked::new(m, bus), sp_above, end, ret),
             (Some(m), false) => {
-                cpu.run_clocked(&mut Banked::new(m, &mut NoClock(bus)), sp_above, end)
+                cpu.run_clocked(&mut Banked::new(m, &mut NoClock(bus)), sp_above, end, ret)
             }
-            (None, true) => cpu.run_clocked(bus, sp_above, end),
-            (None, false) => cpu.run_clocked(&mut NoClock(bus), sp_above, end),
+            (None, true) => cpu.run_clocked(bus, sp_above, end, ret),
+            (None, false) => cpu.run_clocked(&mut NoClock(bus), sp_above, end, ret),
         };
         Outcome {
             halt,

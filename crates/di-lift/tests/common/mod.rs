@@ -126,8 +126,8 @@ pub fn ref_call_in(
     cpu.pc = pc;
     let end = cpu.cycles + max + 1;
     match bank {
-        Some(m) => cpu.run_clocked(&mut Banked::new(m, bus), start as i32 - 1, end),
-        None => cpu.run_clocked(bus, start as i32 - 1, end),
+        Some(m) => cpu.run_clocked(&mut Banked::new(m, bus), start as i32 - 1, end, None),
+        None => cpu.run_clocked(bus, start as i32 - 1, end, None),
     }
 }
 
