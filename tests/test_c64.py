@@ -37,6 +37,12 @@ PROGRAM = {
     0x1700: "ad05d41869018d05d460",  # LDA $D405; CLC; ADC #1; STA $D405; RTS
     0x1780: "a9408d05d460",  # LDA #$40; STA $D405; RTS
     0x17A0: "ee05d460",  # INC $D405; RTS
+    0x1800: "a9558d00d4ad05d48d00c060",  # LDA #$55; STA $D400; LDA $D405; STA $C000; RTS
+    0x1810: "ad1bd4ae1cd460",  # LDA $D41B; LDX $D41C; RTS
+    0x1820: "ad12d0ae04dcac00de60",  # LDA $D012; LDX $DC04; LDY $DE00; RTS
+    0x1830: "ad05d4ad06d460",  # LDA $D405; LDA $D406; RTS
+    0x1840: "ad06d460",  # LDA $D406; RTS
+    0x1850: "a9408d0fd4a9218d12d460",  # LDA #$40; STA $D40F; LDA #$21; STA $D412; RTS
 }
 
 
@@ -139,8 +145,8 @@ def test_machine_record_halts_and_reads():
     assert c64.machine_record(img, [(0x1200, 0)], max_cycles=1000)[0]["halt"] == "cycles"
     assert [r["halt"] for r in c64.machine_record(img, [(0x1300, 0), (0x1000, 0)])] == ["jam"]
     (r,) = c64.machine_record(img, [(0x1400, 0)], ports={"call": 0x35})
-    assert r["log"] == [(0xD418, 7, True), (0xD418, 7, False), (0xD438, 0x99, False)]
-    assert r["reg"][:2] == [7, 0x99]
+    assert r["log"] == [(0xD418, 7, True), (0xD418, 7, False), (0xD438, 7, False)]
+    assert r["reg"][:2] == [7, 7]
 
 
 @native
@@ -157,7 +163,9 @@ def _backend_run(backend, calls, init, ports, mc):
     inits = [s for s in snaps if s[0] != "call"]
     bad = None
     if inits and inits[-1][1] == "return":
-        prog = wholeprog.lift(inits[-1][4], [calls[0][0]], [c64.SID], facts, bank=c64.bank_map())
+        prog = wholeprog.lift(
+            inits[-1][4], [calls[0][0]], [c64.DEVICES], facts, bank=c64.bank_map()
+        )
         records = [dict(zip(("halt", "reg", "log", "ram"), s[1:])) for s in snaps if s[0] == "call"]
         bad = c64.check(prog, inits[-1][4], inits[-1][2], records, (ports or {}).get("call"), mc)
     return facts.to_dict(), snaps, bad, h.result.cells
@@ -181,20 +189,45 @@ def test_trace_backends_agree(calls, init, ports, mc):
     assert py == nat
 
 
-@pytest.mark.skipif(not NATIVE, reason="needs the native extension")
-def test_device_file_carries_sid_registers():
-    img = image()
+def _lift_check(entry, calls=2, init=0x1100):
     ports = {"init": 0x35, "call": 0x35}
-    res = c64.lift_check(img, 0x1700, [(0x1700, 0)] * 2, [(0x1700, 0)] * 3, [(0x1780, 0)], ports)
+    return c64.lift_check(image(), entry, [(entry, 0)], [(entry, 0)] * calls, [(init, 0)], ports)
+
+
+@pytest.mark.skipif(not NATIVE, reason="needs the native extension")
+def test_sid_registers_carry_across_calls():
+    res = _lift_check(0x1700, 3, 0x1780)
     assert res.bad is None and [r["log"][-1] for r in res.records] == [
         (0xD405, v, True) for v in (0x41, 0x42, 0x43)
     ]
-    io = c64.device_file(img, res.init["ram"], [res.init])
-    assert (
-        io[0xD405] == 0x40 and io[0xD406] == img[0xD406] and io[0xC000] == res.init["ram"][0xC000]
-    )
-    ram, reg = res.init["ram"], res.init["reg"]
-    assert c64.check(res.prog, ram, reg, res.records, 0x35)[:2] == [0, "log"]
+
+
+@pytest.mark.skipif(not NATIVE, reason="needs the native extension")
+def test_unreadable_sid_register_reads_bus_latch():
+    res = _lift_check(0x1800)
+    assert res.bad is None and image()[0xD405] != 0x55
+    assert res.records[0]["log"] == [(0xD400, 0x55, True), (0xD405, 0x55, False)]
+    assert res.records[0]["ram"][0xC000] == 0x55
+
+
+@pytest.mark.skipif(not NATIVE, reason="needs the native extension")
+def test_readable_and_other_device_reads_replay():
+    for entry in (0x1810, 0x1820):
+        res = _lift_check(entry, 3)
+        assert res.bad is None and all(len(r["log"]) == 2 + (entry == 0x1820) for r in res.records)
+    osc3 = [r["log"][0] for r in _lift_check(0x1810, 3, 0x1850).records]
+    assert {a for a, _, _ in osc3} == {0xD41B} and len({v for _, v, _ in osc3}) > 1
+    raster = [r["log"][0] for r in _lift_check(0x1820, 3).records]
+    assert {a for a, _, _ in raster} == {0xD012} and len({v for _, v, _ in raster}) > 1
+
+
+@pytest.mark.skipif(not NATIVE, reason="needs the native extension")
+def test_device_read_differences_are_mismatches():
+    one, two, other = (_lift_check(e) for e in (0x1700, 0x1830, 0x1840))
+    ram, reg = one.init["ram"], one.init["reg"]
+    assert c64.check(two.prog, ram, reg, one.records, 0x35)[:3] == [0, "log", 1]
+    assert c64.check(one.prog, ram, reg, two.records, 0x35)[:3] == [0, "log", 1]
+    assert c64.check(other.prog, ram, reg, one.records, 0x35)[:3] == [0, "log", 0]
 
 
 @pytest.mark.skipif(not NATIVE, reason="needs the native extension")
@@ -346,3 +379,15 @@ def test_psid_boot_environment():
     assert boot.image[c64.SENTINEL - 15 : c64.SENTINEL - 11] == bytes.fromhex("78 4c f0 ff")
     io, start = c64.driver_io(True, 0x35, False)
     assert boot.io == io and boot.start == start - 5 and io[-1][1:] == (0xD01A, 0x81)
+
+
+@pytest.mark.skipif(not NATIVE, reason="needs the native extension")
+def test_sentinel_moves_off_tune_code():
+    img = image()
+    assert c64.sentinel_for(img) == c64.SENTINEL
+    code = bytes.fromhex("ee00c060")  # INC $C000; RTS
+    img[c64.SENTINEL : c64.SENTINEL + len(code)] = code
+    s = c64.sentinel_for(img)
+    assert s + 3 <= 0xD000 and not set(range(s, s + 3)) & set(range(0xCFF0, 0xCFF4))
+    (rec,) = c64.machine_record(img, [(c64.SENTINEL, 0)])
+    assert rec["halt"] == "return" and rec["ram"][0xC000] == (img[0xC000] + 1) & 0xFF

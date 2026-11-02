@@ -92,7 +92,7 @@ def lift_many(jobs, progress=True, optimize=True, cycles=False):
 
 def reference_call(mem, pc, **kw):
     """``run_to_rts`` on the reference interpreter with ``Program.call``'s bus; ``bank`` sees
-    memory through a bank map, its devices on ``io``."""
+    memory through a bank map; ``reads`` replays its volatile reads as ``Program.call``."""
     if "volatile" in kw:
         kw["volatile"] = _ranges(kw["volatile"])
     return _native_or_raise().reference_call(mem, pc, **kw)

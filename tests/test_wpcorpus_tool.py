@@ -210,3 +210,17 @@ def test_basic_rsid_redo(tmp_path, real):  # pylint: disable=unused-argument
     lines = (out / "rows.jsonl").read_text().splitlines()
     assert len(lines) == len(old) == len(rows_of(out))
     assert rows_of(out)["basic.sid", 2]["irq"] == rows["basic.sid", 2]["irq"]
+
+
+def test_paths_and_sid_model(tmp_path):
+    root, out = tree(tmp_path / "hvsc"), tmp_path / "out"
+    (tmp_path / "paths").write_text("banked.sid\nbanked.sid\n")
+    args = [str(root), "--out", str(out), "--jobs", "1", "--paths", str(tmp_path / "paths")]
+    assert wpcorpus.main(args + ["--default-length", "0.5"]) == 0
+    assert set(rows_of(out)) == {("banked.sid", 1)}
+    assert [wpcorpus.sid_model({"sid_models": [m, 0, 0]}) for m in range(4)] == [
+        "6581",
+        "6581",
+        "8580",
+        "6581",
+    ]

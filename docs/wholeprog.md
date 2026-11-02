@@ -49,14 +49,16 @@ address (the lift uses those of reached code bytes) and the instructions whose a
 page 1 (`page1`). `Facts.dumps()`/`loads()` serialize them as JSON. For banked programs
 `c64.machine_facts(image, calls, init, ports)` records the same facts plus `banks` and
 `entry_port` on vagrant-moses' native C64 machine; `c64.machine_session` records each call's
-halt, registers, SID accesses and RAM there, and `tools/wpbank.py` checks bank-aware lifts of
+halt, registers, I/O accesses (`c64.DEVICES`, $D000-$DFFF, as the machine performed them) and RAM there, and `tools/wpbank.py` checks bank-aware lifts of
 HVSC tunes against it. Both collect through vagrant-moses' native trace beside its SMC recorder
 (`c64.TRACE_NATIVE`; opcode table `c64.trace_table()`), else, and as the reference, a Python
-decode hook and SID devices; `tools/traceequiv.py ROWS --hvsc ROOT` checks the two agree on
-banked HVSC songs (facts, every record, `c64.check`, cells) and reports each one's cost per call. A banked `Program.call`/`reference_call` sends device accesses to `io`
-(a 64 KiB register file, a copy of `mem` when absent), RAM accesses to `mem`. `c64.check` keeps
-one register file across the calls, from `c64.device_file`: the SID registers as the machine
-holds them after init (the image's bytes with init's logged writes).
+decode hook and the machine's I/O hook; `tools/traceequiv.py ROWS --hvsc ROOT` checks the two agree on
+banked HVSC songs (facts, every record, `c64.check`, cells) and reports each one's cost per call. A banked `Program.call`/`reference_call` sends non-volatile device accesses to a copy of
+`mem`, RAM accesses to `mem`; `reads=` (bytes) replays its volatile reads in order (0 past the
+end). `c64.check` lifts with `c64.DEVICES` volatile and replays each call's machine reads
+(`c64.reads(record)`), so a lift is exact against the machine's devices by construction: one
+reading another address, or more or fewer times, differs in the log. The machine's SID is
+vagrant-moses' bus model (unreadable registers read the decaying data-bus latch).
 
 `call` is `run_to_rts`: push the dummy return `$0001`, set A, run until SP rises above its
 start, `max_cycles` elapse or a JAM (`halt` is `return`, `cycles` or `jam`). With `log=True`
