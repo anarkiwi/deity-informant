@@ -46,6 +46,7 @@ __all__ = [
     "machine_session",
     "mismatch",
     "check",
+    "device_file",
     "lift_check",
     "LiftCheck",
     "IDLE",
@@ -396,18 +397,33 @@ def mismatch(ref, out):
     return ("memory", int(bad[0])) if bad.size else None
 
 
+def device_file(image, ram, inits, sid=SID):
+    """The device register file a banked lift's calls start from, as the machine holds it
+    after the ``inits`` records: ``ram``, its ``sid`` window ``image``'s bytes with each
+    logged write applied."""
+    io = bytearray(ram)
+    io[sid[0] : sid[1]] = image[sid[0] : sid[1]]
+    for rec in inits:
+        for a, v, w in rec["log"] or ():
+            if w:
+                io[a] = v
+    return io
+
+
 def check(
-    prog, image, reg, records, port=None, max_cycles=2_000_000, accs=()
+    prog, image, reg, records, port=None, max_cycles=2_000_000, accs=(), io=None
 ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
     """Run ``prog``'s entry 0 from ``image`` and registers ``reg`` once per machine record,
     with A from ``accs`` (0 past its end) and ``port`` (when given) stored to $01 before each
-    call; ``[call, *mismatch]`` of the first, or None."""
+    call, its devices on ``io`` (:func:`device_file`; a copy of ``image`` when absent) kept
+    across the calls; ``[call, *mismatch]`` of the first, or None."""
     mem = bytearray(image)
+    io = bytearray(image) if io is None else io
     for n, ref in enumerate(records):
         if port is not None:
             mem[1] = port
         a = accs[n] if n < len(accs) else 0
-        o = prog.call(mem, 0, a=a, reg=reg, log=True, max_cycles=max_cycles)
+        o = prog.call(mem, 0, a=a, reg=reg, log=True, max_cycles=max_cycles, io=io)
         bad = mismatch(ref, {**o, "ram": mem})
         if bad is not None:
             return [n, *bad]
@@ -457,5 +473,6 @@ def lift_check(
     prog = wholeprog.lift(last["ram"], [entry], [SID], facts, cycles=cycles, bank=bank_map(roms))
     port = (ports or {}).get("call")
     accs = [a for _, a in calls]
-    bad = check(prog, last["ram"], last["reg"], records, port, max_cycles, accs)
+    io = device_file(image, last["ram"], inits)
+    bad = check(prog, last["ram"], last["reg"], records, port, max_cycles, accs, io)
     return LiftCheck(bad, prog, facts, records, last)

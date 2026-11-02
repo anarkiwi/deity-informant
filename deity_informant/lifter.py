@@ -740,6 +740,13 @@ def lift(mem, pc):
         pmap[id(vn)] = ([1], "id")
         return vn
 
+    def rmw():
+        """A read-modify-write's operand, written back unchanged before the result as the
+        NMOS bus does."""
+        cur = e.op("LOAD", e.tmp(), eav)
+        e.op("STORE", None, eav, cur)
+        return cur
+
     def rd():
         if mode == "imm":
             return immc()
@@ -784,12 +791,11 @@ def lift(mem, pc):
             e.op("COPY", A, r)
             e.nz(A)
         else:
-            r = fn(e, e.op("LOAD", e.tmp(), eav))
+            r = fn(e, rmw())
             e.op("STORE", None, eav, r)
             e.nz(r)
     elif mn in ("INC", "DEC"):
-        cur = e.op("LOAD", e.tmp(), eav)
-        r = e.op("INT_ADD" if mn == "INC" else "INT_SUB", e.tmp(), cur, C(1))
+        r = e.op("INT_ADD" if mn == "INC" else "INT_SUB", e.tmp(), rmw(), C(1))
         e.op("STORE", None, eav, r)
         e.nz(r)
     elif mn in ("INX", "DEX", "INY", "DEY"):
@@ -869,7 +875,7 @@ def lift(mem, pc):
     # ---- illegal combos ----
     elif mn in ("SLO", "RLA", "SRE", "RRA"):
         shift = {"SLO": _asl, "RLA": _rol, "SRE": _lsr, "RRA": _ror}[mn]
-        r = shift(e, e.op("LOAD", e.tmp(), eav))
+        r = shift(e, rmw())
         e.op("STORE", None, eav, r)
         if mn == "SLO":
             e.op("INT_OR", A, A, r)
@@ -883,11 +889,11 @@ def lift(mem, pc):
         else:  # RRA = ROR then ADC
             _adc(e, r)
     elif mn == "DCP":
-        r = e.op("INT_SUB", e.tmp(), e.op("LOAD", e.tmp(), eav), C(1))
+        r = e.op("INT_SUB", e.tmp(), rmw(), C(1))
         e.op("STORE", None, eav, r)
         _cmp(e, A, r)
     elif mn == "ISC":
-        r = e.op("INT_ADD", e.tmp(), e.op("LOAD", e.tmp(), eav), C(1))
+        r = e.op("INT_ADD", e.tmp(), rmw(), C(1))
         e.op("STORE", None, eav, r)
         _sbc(e, r)
     elif mn == "SAX":

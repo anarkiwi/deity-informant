@@ -134,6 +134,21 @@ def ops_of(fn):
     return [op for b in fn["blocks"] for op in b["ops"]]
 
 
+@pytest.mark.parametrize("optimize", [False, True])
+def test_rmw_writes_back_before_result(optimize):
+    img = bytearray(0x10000)
+    img[0x1000:0x1007] = bytes.fromhex("ee00c0ee04d460")  # INC $C000; INC $D404; RTS
+    prog = wholeprog.lift(img, [0x1000], [c64.SID], optimize=optimize)
+    stores = [op[3] for f in prog.functions for op in ops_of(f) if op[0] == "STORE"]
+    assert stores == [None] * (1 if optimize else 2) + ["volatile"] * 2
+    want = [(0xD404, 0, False), (0xD404, 0, True), (0xD404, 1, True)]
+    for mem, out in (
+        (m := bytearray(img), prog.call(m, 0, log=True)),
+        (r := bytearray(img), wholeprog.reference_call(r, 0x1000, volatile=[c64.SID], log=True)),
+    ):
+        assert [(a, v, w) for a, v, _, w in out["log"]] == want and mem[0xC000] == 1
+
+
 def test_representation():
     prog = lifted("jumptab")[3]
     fns = prog.functions

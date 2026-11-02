@@ -35,6 +35,9 @@ PROGRAM = {
     0x1600: "a202a003a98085fba90185fca95591fb81f9b1fb8f90018e20d0ee21d094f096f0b9f001" "08286c7001",
     0x1650: "60",
     0x0170: "5016",
+    0x1700: "ad05d41869018d05d460",  # LDA $D405; CLC; ADC #1; STA $D405; RTS
+    0x1780: "a9408d05d460",  # LDA #$40; STA $D405; RTS
+    0x17A0: "ee05d460",  # INC $D405; RTS
 }
 
 
@@ -191,6 +194,33 @@ def _backend_run(backend, calls, init, ports, mc):
 def test_trace_backends_agree(calls, init, ports, mc):
     py, nat = (_backend_run(b, calls, init, ports, mc) for b in ("python", "native"))
     assert py == nat
+
+
+@pytest.mark.skipif(not NATIVE, reason="needs the native extension")
+def test_device_file_carries_sid_registers():
+    img = image()
+    ports = {"init": 0x35, "call": 0x35}
+    res = c64.lift_check(img, 0x1700, [(0x1700, 0)] * 2, [(0x1700, 0)] * 3, [(0x1780, 0)], ports)
+    assert res.bad is None and [r["log"][-1] for r in res.records] == [
+        (0xD405, v, True) for v in (0x41, 0x42, 0x43)
+    ]
+    io = c64.device_file(img, res.init["ram"], [res.init])
+    assert (
+        io[0xD405] == 0x40 and io[0xD406] == img[0xD406] and io[0xC000] == res.init["ram"][0xC000]
+    )
+    ram, reg = res.init["ram"], res.init["reg"]
+    assert c64.check(res.prog, ram, reg, res.records, 0x35)[:2] == [0, "log"]
+
+
+@pytest.mark.skipif(not NATIVE, reason="needs the native extension")
+def test_rmw_bus_writes_match_machine():
+    ports = {"init": 0x35, "call": 0x35}
+    res = c64.lift_check(image(), 0x17A0, [(0x17A0, 0)], [(0x17A0, 0)] * 2, [(0x1780, 0)], ports)
+    assert res.bad is None and res.records[1]["log"] == [
+        (0xD405, 0x41, False),
+        (0xD405, 0x41, True),
+        (0xD405, 0x42, True),
+    ]
 
 
 def test_trace_table_and_backend_choice():
