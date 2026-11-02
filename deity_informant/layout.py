@@ -82,6 +82,24 @@ class _Values:
                     return tb[1], th[1]
         return None
 
+    def word_bytes(self, i):
+        """``(lo, hi)`` byte-load ids of the bytes a 2-byte ``LOAD`` reads, where both were
+        loaded as bytes, or None."""
+        t = self.nodes[i]
+        if t[0] != "LOAD" or t[2] != 2:
+            return None
+        c, rest = self.terms(t[1])
+        if len(rest) > 1:
+            return None
+        k = self.ids.get(("c", (c + 1) & 0xFFFF))
+        if rest:
+            hi = [self.ids.get(("INT_ADD", *o, 2)) for o in ((rest[0], k), (k, rest[0]))]
+            hi = next((h for h in hi if h is not None), None)
+        else:
+            hi = k
+        lo, hl = self.ids.get(("LOAD", t[1], 1)), self.ids.get(("LOAD", hi, 1))
+        return (lo, hl) if None not in (k, hi, lo, hl) else None
+
     def terms(self, i):
         """``(constant, [other terms])`` of a sum."""
         t = self.nodes[i]
@@ -122,7 +140,7 @@ def _block_pointers(vals, uniq, stored, blk, found):
         for t in vals.terms(i)[1]:
             for p in (p for p, n in at(t) if n == 2 and p is not None):
                 pointers[p].add(pc)
-            pair = vals.ptr16(t)
+            pair = vals.ptr16(t) or vals.word_bytes(t)
             for p, n in at(pair[0]) if pair else ():
                 if n == 1 and p is not None and (_next(p), 1) in at(pair[1]):
                     pointers[p].add(pc)
