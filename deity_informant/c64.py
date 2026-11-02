@@ -535,6 +535,7 @@ class _Host(MachineOracle):
         model="6581",
         facts=True,
         spill=SPILL,
+        sentinel=None,
     ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self.window = window
         self.ctor = (image, window, roms, ntsc, backend, model)
@@ -548,7 +549,7 @@ class _Host(MachineOracle):
             image,
             ntsc=ntsc,
             devices=sids,
-            sentinel=sentinel_for(image),
+            sentinel=sentinel or sentinel_for(image),
             roms=roms,
             backend=backend,
             on_io=hook,

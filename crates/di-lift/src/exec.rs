@@ -394,6 +394,9 @@ pub struct Runner<'a> {
     /// The return address [`Runner::call`] pushes, the entry returning only past it (default
     /// [`RETURN`], returning when SP rises above the entry's).
     pub ret: Option<u16>,
+    /// Whether [`Runner::call`] enters as an interrupt: [`Runner::ret`] is the interrupted PC
+    /// less one, pushed with the status as the hardware does, the entry returning by `RTI`.
+    pub irq: bool,
 }
 
 impl<'a> Runner<'a> {
@@ -412,6 +415,7 @@ impl<'a> Runner<'a> {
             backend: Backend::default(),
             deopts: FxHashMap::default(),
             ret: None,
+            irq: false,
         }
     }
 
@@ -426,11 +430,7 @@ impl<'a> Runner<'a> {
         max_cycles: u64,
     ) -> Outcome {
         let start = cpu.r(R::SP);
-        for v in self.ret.unwrap_or(RETURN).to_be_bytes() {
-            let sp = cpu.r(R::SP);
-            bus.ram_write(0x100 | sp as u16, v);
-            cpu.set_r(R::SP, sp.wrapping_sub(1));
-        }
+        cpu.push_frame(bus, self.ret.unwrap_or(RETURN), self.irq);
         cpu.set_r(R::A, acc);
         cpu.pc = self.x.entries[entry].0;
         self.run(entry, cpu, bus, start as i32 - 1, max_cycles)
@@ -438,7 +438,7 @@ impl<'a> Runner<'a> {
 
     /// Run entry `entry` from `cpu` (its PC is set to the entry's) until SP exceeds
     /// `sp_above` or at least `max_cycles` have elapsed (checked before each instruction), or a
-    /// JAM. The lifted code assumes the entry returns at SP + 2. Without cycles it spends one
+    /// JAM. The lifted code assumes the entry returns at SP + 2 (SP + 3 for an interrupt). Without cycles it spends one
     /// of `max_cycles / 2 + 1` iterations at each budget point: when none is left the
     /// reference has run past `max_cycles` on the same path, so the run ends there with
     /// [`Halt::Cycles`] (registers, PC and stack bytes are not the reference's then).
@@ -458,7 +458,7 @@ impl<'a> Runner<'a> {
         if self.invalid {
             self.invalid = !self.x.matches(bus);
         }
-        if self.invalid || sp_above != sp + 1 || sp > 0xfd || sp > sp_above {
+        if self.invalid || sp_above != sp + 1 + self.irq as i32 || sp > 0xfd || sp > sp_above {
             return self.fallback(cpu, bus, pc, sp_above, end);
         }
         let budget = (end - c0).min(SPAN) as u32;

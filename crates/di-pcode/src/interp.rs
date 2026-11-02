@@ -179,6 +179,23 @@ impl Cpu {
             .fold(0x20 | (brk as u8) << 4, |p, &(i, s)| p | self.r(i) << s)
     }
 
+    /// Push the frame a host call enters with: the two bytes `ret` that an `RTS` pulls (it
+    /// returns to `ret + 1`), or for an `irq` entry the three the hardware pushes: the
+    /// interrupted PC `ret + 1` and the status with B clear, then I is set (an `RTI` returns
+    /// to `ret + 1`).
+    pub fn push_frame<B: Bus>(&mut self, bus: &mut B, ret: u16, irq: bool) {
+        let p = self.status(false);
+        let at = if irq { ret.wrapping_add(1) } else { ret };
+        for v in at.to_be_bytes().into_iter().chain(irq.then_some(p)) {
+            let sp = self.r(reg::SP);
+            bus.ram_write(0x100 | sp as u16, v);
+            self.set_r(reg::SP, sp.wrapping_sub(1));
+        }
+        if irq {
+            self.set_r(reg::I, 1);
+        }
+    }
+
     pub fn set_status(&mut self, p: u8) {
         for (i, s) in reg::STATUS_BITS {
             self.set_r(i, (p >> s) & 1);

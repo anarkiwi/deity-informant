@@ -39,7 +39,7 @@ except ImportError:  # a vagrant-moses without the scan
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from deity_informant import c64, trace, wholeprog  # noqa: E402
+from deity_informant import c64, frames, trace, wholeprog  # noqa: E402
 from deity_informant.smc.classify import (  # noqa: E402
     expected_reads,
     expected_writes,
@@ -510,12 +510,12 @@ class _IrqScan(MachineOracle):
             self.main["first_busy_frame"] = (mc.cycle - self.t0) // self.cpf
             mc.set_decode_hook(None)  # pylint: disable=no-member
 
-    def scan(self, boot, frames, mc, cells=False):
-        """Run ``boot`` (:class:`c64.Boot`) then ``frames`` interrupt-driven frames; the ``irq``
+    def scan(self, boot, nframes, mc, cells=False):
+        """Run ``boot`` (:class:`c64.Boot`) then ``nframes`` interrupt-driven frames; the ``irq``
         row field. With ``cells`` the run's SMC labelling, its cells indexed by frame, is kept
         as :attr:`result`."""
         self.result = self.run(
-            [], frames=frames, call_cycles=mc, index_frames=cells, **boot.run_kw()
+            [], frames=nframes, call_cycles=mc, index_frames=cells, **boot.run_kw()
         )
         self.irqs += self._entries(self.m.events)
         return {
@@ -549,10 +549,52 @@ def irq_boot(row, data):
                     row["clock"] == "NTSC", kind, bool(row["speed"]), roms)  # fmt: skip
 
 
+def irq_skip(irq):
+    """Why an interrupt-driven song's scan (the ``irq`` field) leaves it unlifted, or None: its
+    init jams, its main context does real work beside the interrupts (``async main``) or no
+    interrupt is taken."""
+    if irq["jammed"]:
+        return "init jam"
+    if not irq["idle"]:
+        return "async main"
+    return None if irq["irqs"] else "no interrupts"
+
+
+def frame_song(row, boot, mc):
+    """The lift fields of an idle-main interrupt-driven song: one machine run records its
+    frames (IRQ entry to RTI), they are lifted banked through the song's ROMs and checked and
+    timed frame by frame; a run with an interrupt outside a frame is skipped."""
+    t = time.perf_counter()
+    host = frames.FrameHost(boot.image, roms=boot.roms, ntsc=row["clock"] == "NTSC",
+                            model=sid_model(row))  # fmt: skip
+    host.drive_frames(boot, row["calls"], mc)
+    n = len(host.stream)
+    row |= {"facts_ms": 1e3 * (time.perf_counter() - t), "calls_run": n}
+    if host.foreign:
+        return row | {"skip": "interrupt outside a frame: " + ",".join(sorted(host.foreign))}
+    if host.dirty:
+        return row | {"skip": "async main"}
+    if not n:
+        return row | {"skip": "no frames"}
+    t = time.perf_counter()
+    facts = host.facts()
+    prog = frames.lift(host, boot.roms, facts)
+    lift_ms = 1e3 * (time.perf_counter() - t)
+    row["compile_ms"] = _compiled(prog)
+    t = time.perf_counter()
+    bad = frames.check(prog, host, mc)
+    row |= {"mode": "banked", "bank_evidence": [], "returned": host.last_halt == "return",
+            "configs": sorted({b for bs in facts.banks.values() for b in bs}),
+            **_lifted_row(prog, lift_ms, bad)}  # fmt: skip
+    row["check_ms"] = 1e3 * (time.perf_counter() - t)
+    t_ref, t_lift, cycles = frames.timed(prog, host, c64.bank_map(boot.roms), mc)
+    return row | {"timing": _timing(n, cycles, t_ref, t_lift, None)}
+
+
 def irq_song(row, boot, mc, cap):
     """An interrupt-driven song on the machine from ``boot`` (:func:`irq_boot`): its IRQ facts
-    over all ``calls`` frames, its cells over the first ``cap`` (0: all)."""
-    row["skip"] = "irq-driven"
+    over all ``calls`` frames, its cells over the first ``cap`` (0: all); an idle-main song is
+    then lifted and checked by :func:`frame_song`, any other skipped with its reason."""
     if row["kind"] == "RSID" and row["flags"] & 2:
         row["basic"] = True
     t = time.perf_counter()
@@ -561,8 +603,12 @@ def irq_song(row, boot, mc, cap):
     row["irq"] = o.scan(boot, row["calls"], mc, full)
     row |= {"calls_run": o.irqs, "facts_ms": 1e3 * (time.perf_counter() - t)}
     if not full:
-        return row | label("frames", boot.image, row, cap, mc, boot), None
-    return row | _label_row("frames", o.result, row["calls"], t), None
+        row |= label("frames", boot.image, row, cap, mc, boot)
+    else:
+        row |= _label_row("frames", o.result, row["calls"], t)
+    if why := irq_skip(row["irq"]):
+        return row | {"skip": why}, None
+    return frame_song(row, boot, mc), None
 
 
 def run_song(path, row, mc, cap=0, defer=()):
