@@ -7,13 +7,12 @@ name = "deity-informant"
 version = "0.6.2"
 description = "NMOS 6510 illegal-opcode toolkit: a standalone 6510 -> raw-P-Code lifter + pure-Python P-Code VM, and a 6510 Ghidra/pypcode SLEIGH processor module."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Josh Bailey", email = "josh@overlyspecific.com" }]
 keywords = ["6502", "6510", "ghidra", "sleigh", "pcode", "illegal-opcodes", "decompiler"]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Operating System :: POSIX :: Linux",
