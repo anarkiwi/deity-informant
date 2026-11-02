@@ -1,9 +1,6 @@
 """deity_informant.c64: the bank map, and facts and records from the native C64 machine."""
 
 import hashlib
-import os
-import socket
-from urllib.parse import urlparse
 
 import numpy as np
 import pytest
@@ -14,10 +11,12 @@ pytest.importorskip("vagrant_moses")
 from vagrant_moses import machine as vm  # noqa: E402
 from vagrant_moses.bus import port_read  # noqa: E402
 from vagrant_moses.c64 import poweron_ram  # noqa: E402
-from vagrant_moses.roms import DEFAULT_ROM_MIRROR, ROMS, RomFetchError, rom_less  # noqa: E402
+from vagrant_moses.roms import ROMS, rom_less  # noqa: E402
 
 from deity_informant import NATIVE, c64, trace, wholeprog  # noqa: E402
-from deity_informant.smc.machine import core  # noqa: E402
+from deity_informant.smc.machine import MachineOracle, core  # noqa: E402
+
+import _common as H  # noqa: E402 pylint: disable=wrong-import-order
 
 native = pytest.mark.skipif(not core(), reason="needs vagrant-moses' native machine")
 
@@ -48,20 +47,6 @@ def image():
         img[addr : addr + len(b)] = b
     img[0xE000], img[0xD438] = 0x42, 0x99
     return img
-
-
-@pytest.fixture(scope="session", name="real")
-def fixture_real():
-    """The verified real ROMs; skips only when their mirror is unreachable."""
-    try:
-        return c64.real_roms()
-    except RomFetchError as e:
-        host = urlparse(os.environ.get("C64_ROM_MIRROR", DEFAULT_ROM_MIRROR)).hostname
-        try:
-            socket.getaddrinfo(host, 443)
-        except OSError:
-            pytest.skip(f"real ROMs unavailable offline ({e})")
-        raise
 
 
 def test_port_read_model():
@@ -231,3 +216,20 @@ def test_trace_table_and_backend_choice():
     if not c64.TRACE_NATIVE:
         with pytest.raises(ValueError):
             c64._Host(image(), backend="native")  # pylint: disable=protected-access
+
+
+@native
+@pytest.mark.parametrize("song,ntsc", [(1, False), (3, True)])
+def test_basic_boot_runs_the_program_with_the_song(real, song, ntsc):
+    prog = H.SONG_POKE
+    img = bytearray(poweron_ram())
+    img[0x0801 : 0x0801 + len(prog)] = prog
+    boot = c64.basic_boot(img, 0x0801, 0x0801 + len(prog), song, ntsc, real)
+    end = (0x0801 + len(prog)).to_bytes(2, "little")
+    assert boot.image[0x2B:0x2D] == b"\x01\x08" and boot.image[0x2D:0x2F] == end
+    assert boot.image[0x02A6] == (not ntsc) and boot.init == (0xBF55, song - 1)
+    assert boot.roms[0xA000] != real[0xA000] and real[0xA000] == c64.real_roms()[0xA000]
+    o = MachineOracle(boot.image, ntsc=ntsc, roms=boot.roms, backend="python")
+    o.run([], init=[boot.init], frames=5, irq_setup=True, io=boot.io)
+    assert o.ram[4096] == song and o.ram[c64.SAREG] == song - 1
+    assert o.ram[0x39] | o.ram[0x3A] << 8 == 20 and not o.m.jammed

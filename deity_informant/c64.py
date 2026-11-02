@@ -15,7 +15,7 @@ import numpy as np
 from jennings.opcodes import MEM_MODES, OPCODES
 from vagrant_moses import memmap as mm
 from vagrant_moses.bus import banking, port_read
-from vagrant_moses.roms import load_roms, rom_less
+from vagrant_moses.roms import BASIC_RUN, RomFetchError, load_roms, poweron_writes, rom_less
 
 from .smc.classify import expected_reads, expected_writes, view
 from .smc.machine import SENTINEL, SMC_NATIVE, MachineOracle, _Mem
@@ -40,6 +40,8 @@ __all__ = [
     "ROM_NAMES",
     "SID",
     "bank_map",
+    "basic_boot",
+    "Boot",
     "real_roms",
     "machine_facts",
     "machine_record",
@@ -129,6 +131,59 @@ def real_roms(**kwargs):
       vagrant_moses.roms.RomFetchError: a ROM is unavailable or failed its checksum.
     """
     return load_roms(ROM_NAMES, **kwargs)
+
+
+#: BASIC's NEWSTT (per statement), sidplayfp's subtune hook in free BASIC ROM, its stop-key test
+#: and the SYS accumulator ``SAREG`` the hook loads with the song.
+NEWSTT, SUBTUNE_HOOK, STOP_TEST, SAREG = 0xA7AE, 0xBF53, 0xA82C, 0x030C
+
+
+class Boot(NamedTuple):
+    """A machine start: RAM ``image``, ``roms`` by base, the ``init`` call ``(pc, a)`` and the
+    host's ``io`` writes (:meth:`~deity_informant.smc.machine.MachineOracle.run`)."""
+
+    image: bytearray
+    roms: dict
+    init: tuple
+    io: tuple
+
+
+def basic_boot(image, load, end, song, ntsc=False, roms=None):
+    """The :class:`Boot` of an RSID with the C64 BASIC flag as sidplayfp starts it.
+
+    RAM ``$0000-$03FF`` is its booted-KERNAL image (``psiddrv::install``) with ``$02A6`` the
+    video flag; the variable pointers and ``$AC``/``$AE`` take the load range ``[load, end)``
+    (``SidTuneBase::placeSidTuneInC64mem``). The BASIC ROM's hook at ``$BF53`` stores the song
+    (0-based) in ``$030C`` before each statement, as SID_file_format.txt requires (``NEWSTT``
+    jumps to it, ``BasicRomBank::installTrap``/``setSubtune``); ``init`` enters it at ``$BF55``
+    with the song in A, which runs the program from ``TXTPTR`` as RUN does. ``io`` sets the VIC
+    to the RSID environment (raster IRQ at line $137, not enabled; the screen on, as
+    ``psiddrv.a65`` writes it). ``roms`` default to :func:`real_roms`.
+
+    Raises:
+      vagrant_moses.roms.RomFetchError: a ROM or the booted-KERNAL image is unavailable.
+    """
+    runs = poweron_writes()
+    if runs is None:
+        raise RomFetchError("poweron: unavailable (offline, not cached)")
+    img = bytearray(image)
+    img[:0x400] = bytes(0x400)
+    for addr, data in runs:
+        img[addr : addr + len(data)] = data
+    img[0x02A6] = 0 if ntsc else 1
+    for addr, v in ((0x2D, end), (0x2F, end), (0x31, end), (0xAC, load), (0xAE, end)):
+        img[addr : addr + 2] = v.to_bytes(2, "little")
+    roms = dict(roms or real_roms())
+    basic = bytearray(roms[mm.BASIC_BASE])
+    for addr, code in (
+        (NEWSTT, b"\x4c" + SUBTUNE_HOOK.to_bytes(2, "little")),
+        (SUBTUNE_HOOK, bytes([0xA9, song - 1, 0x8D]) + SAREG.to_bytes(2, "little") + b"\x20"
+         + STOP_TEST.to_bytes(2, "little") + b"\x4c" + BASIC_RUN.to_bytes(2, "little")),
+    ):  # fmt: skip
+        basic[addr - mm.BASIC_BASE : addr - mm.BASIC_BASE + len(code)] = code
+    roms[mm.BASIC_BASE] = bytes(basic)
+    io = ((mm.VIC_CONTROL_1, 0x9B), (mm.VIC_RASTER, 0x37))
+    return Boot(img, roms, (SUBTUNE_HOOK + 2, song - 1), io)
 
 
 def _reg(r):

@@ -50,8 +50,15 @@ as the reference, a minimal decode hook dropped once the main context is seen bu
 $FFFE), both vectors, interrupts taken, whether init returned, and the main context's
 instructions until then and the frame it first stored outside page 1 or touched I/O
 (`first_busy_frame`; `idle` when it never did). A second machine oracle run labels the first
-`--label-calls` frames (`oracle` `frames`). These songs are skipped for lifting (`irq-driven`). RSIDs flagged as BASIC tunes are skipped (the machine
-has the ROM-less ROM set).
+`--label-calls` frames (`oracle` `frames`). These songs are skipped for lifting (`irq-driven`).
+
+RSIDs with the C64 BASIC flag (`basic`) run on the real ROMs (`c64.real_roms`) as sidplayfp
+starts them (`c64.basic_boot`, after `psiddrv.cpp` and `SID_file_format.txt`): RAM
+$0000-$03FF is libsidplayfp's booted-KERNAL image (`poweron.bin`) with $02A6 the video flag,
+the BASIC end pointers ($2D/$2F/$31, $AC/$AE) cover the loaded program, the VIC is set to the
+RSID environment, and the BASIC ROM's statement loop (NEWSTT, $A7AE) jumps to a hook at $BF53
+that stores the song number (0-based) in $030C before continuing the interpreter at $A7B1;
+init enters that hook with the song in A, which runs the program from $0801 as RUN does.
 
 Labelling goes through `label(oracle, ...)`; it uses vagrant-moses' native SMC recorder when
 installed (`label_backend` `native`), else the Python classifier.
@@ -73,4 +80,6 @@ when the lifter can reproduce it).
   reference cycle), and the failure list.
 
 A rerun skips the (path, song) keys already in `rows.jsonl` (a torn last line or facts frame
-is cut off, and a lifted row whose facts were lost runs again).
+is cut off, and a lifted row whose facts were lost runs again). `--redo REASON` (repeatable) drops
+the rows whose `skip` is `REASON` from `rows.jsonl` first, so they run again and are replaced
+rather than duplicated (e.g. `--redo "needs the C64 BASIC ROM"` for rows of earlier runs).
