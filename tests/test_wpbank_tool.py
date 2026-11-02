@@ -74,8 +74,8 @@ class FakeProg:
     def __init__(self):
         self.ports = []
 
-    def call(self, mem, entry, a, reg, log, max_cycles):  # pylint: disable=too-many-arguments
-        assert entry == 0 and a == 0 and log and max_cycles
+    def call(self, mem, entry, a, reg, log, max_cycles, io):  # pylint: disable=R0913,R0917
+        assert entry == 0 and a == 0 and log and max_cycles and len(io) == 0x10000
         self.ports.append(mem[1])
         mem[0xC000] += 1
         reg = list(reg)

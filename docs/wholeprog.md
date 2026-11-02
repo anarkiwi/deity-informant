@@ -7,7 +7,8 @@ become stack-slot registers, cycles are optionally counted by ordinary ops, and 
 assumption is guarded by an exit (deopt) to the reference interpreter at an instruction
 boundary. Results are exact against `di_pcode::Cpu`: the volatile access stream (address,
 value, and with cycle counting the cycle), final registers (and cycles), and RAM except dead
-stack bytes below SP. Nothing in it knows a host.
+stack bytes below SP. A read-modify-write writes its operand back unchanged before the
+result, as the NMOS bus does, so a device sees both writes. Nothing in it knows a host.
 
 The Rust core is `crates/di-lift`; `deity_informant._native` exposes it.
 
@@ -52,7 +53,9 @@ HVSC tunes against it. Both collect through vagrant-moses' native trace beside i
 (`c64.TRACE_NATIVE`; opcode table `c64.trace_table()`), else, and as the reference, a Python
 decode hook and SID devices; `tools/traceequiv.py ROWS --hvsc ROOT` checks the two agree on
 banked HVSC songs (facts, every record, `c64.check`, cells) and reports each one's cost per call. A banked `Program.call`/`reference_call` sends device accesses to `io`
-(a 64 KiB register file, a copy of `mem` when absent), RAM accesses to `mem`.
+(a 64 KiB register file, a copy of `mem` when absent), RAM accesses to `mem`. `c64.check` keeps
+one register file across the calls, from `c64.device_file`: the SID registers as the machine
+holds them after init (the image's bytes with init's logged writes).
 
 `call` is `run_to_rts`: push the dummy return `$0001`, set A, run until SP rises above its
 start, `max_cycles` elapse or a JAM (`halt` is `return`, `cycles` or `jam`). With `log=True`

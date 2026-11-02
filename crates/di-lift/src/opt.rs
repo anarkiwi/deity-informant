@@ -1031,6 +1031,9 @@ fn number_block(lv: &mut Lvn, blk: &mut Block, tables: &[Vec<(u16, u32)>], st: &
                     }
                 }
                 let mk = lv.memkey(a);
+                if op.plain() && st.mem.contains(&(mk, b)) {
+                    continue;
+                }
                 st.forget(|e| lv.alias(e, mk));
                 if op.plain() {
                     st.remember((mk, b));

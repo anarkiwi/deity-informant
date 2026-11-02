@@ -301,7 +301,8 @@ def _banked(row, img, mc, ev):
     prog = wholeprog.lift(last["ram"], [play], [c64.SID], facts, bank=_bank())
     lift_ms = 1e3 * (time.perf_counter() - t)
     t = time.perf_counter()
-    bad = c64.check(prog, last["ram"], last["reg"], records, ports["call"], mc)
+    io = c64.device_file(img, last["ram"], inits)
+    bad = c64.check(prog, last["ram"], last["reg"], records, ports["call"], mc, io=io)
     row |= _lifted_row(prog, lift_ms, bad) | {"check_ms": 1e3 * (time.perf_counter() - t)}
     row["configs"] = sorted({b for bs in facts.banks.values() for b in bs})
     row["returned"] = n == row["calls"] and host.snaps[-1][1] == "return"

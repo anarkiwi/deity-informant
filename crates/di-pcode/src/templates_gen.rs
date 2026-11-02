@@ -6,7 +6,7 @@ use crate::ir::{c, cs, r, u, CtrlKind, Op, Opc as O, PenKind, Slot, Template, Vn
 pub const UNIQUE_SIZE: usize = 34;
 
 /// Every opcode's op templates, concatenated.
-pub static OPS: [Op; 2080] = [
+pub static OPS: [Op; 2146] = [
     // 00 BRK impl
     // 01 ORA indx
     Op::new(O::IntAdd, u(0, 1), cs(Slot::B1, 1), r(1)),
@@ -37,6 +37,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntZext, u(14, 2), u(2, 1), Vn::NONE),
     Op::new(O::IntOr, u(8, 2), u(10, 2), u(14, 2)),
     Op::new(O::Load, u(16, 1), u(8, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(8, 2), u(16, 1)),
     Op::new(O::IntAnd, u(17, 1), u(16, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(8), u(17, 1), c(0x0, 1)),
     Op::new(O::IntLeft, u(19, 1), u(16, 1), c(0x1, 1)),
@@ -56,6 +57,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntNotEqual, r(14), u(1, 1), c(0x0, 1)),
     // 06 ASL zp
     Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, cs(Slot::B1, 2), u(0, 1)),
     Op::new(O::IntAnd, u(1, 1), u(0, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(8), u(1, 1), c(0x0, 1)),
     Op::new(O::IntLeft, u(3, 1), u(0, 1), c(0x1, 1)),
@@ -66,6 +68,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntNotEqual, r(14), u(4, 1), c(0x0, 1)),
     // 07 SLO zp
     Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, cs(Slot::B1, 2), u(0, 1)),
     Op::new(O::IntAnd, u(1, 1), u(0, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(8), u(1, 1), c(0x0, 1)),
     Op::new(O::IntLeft, u(3, 1), u(0, 1), c(0x1, 1)),
@@ -122,6 +125,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntNotEqual, r(14), u(1, 1), c(0x0, 1)),
     // 0E ASL abs
     Op::new(O::Load, u(0, 1), cs(Slot::Word, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, cs(Slot::Word, 2), u(0, 1)),
     Op::new(O::IntAnd, u(1, 1), u(0, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(8), u(1, 1), c(0x0, 1)),
     Op::new(O::IntLeft, u(3, 1), u(0, 1), c(0x1, 1)),
@@ -132,6 +136,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntNotEqual, r(14), u(4, 1), c(0x0, 1)),
     // 0F SLO abs
     Op::new(O::Load, u(0, 1), cs(Slot::Word, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, cs(Slot::Word, 2), u(0, 1)),
     Op::new(O::IntAnd, u(1, 1), u(0, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(8), u(1, 1), c(0x0, 1)),
     Op::new(O::IntLeft, u(3, 1), u(0, 1), c(0x1, 1)),
@@ -167,6 +172,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntZext, u(12, 2), r(2), Vn::NONE),
     Op::new(O::IntAdd, u(10, 2), u(2, 2), u(12, 2)),
     Op::new(O::Load, u(14, 1), u(10, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(10, 2), u(14, 1)),
     Op::new(O::IntAnd, u(15, 1), u(14, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(8), u(15, 1), c(0x0, 1)),
     Op::new(O::IntLeft, u(17, 1), u(14, 1), c(0x1, 1)),
@@ -192,6 +198,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntAdd, u(2, 1), cs(Slot::B1, 1), r(1)),
     Op::new(O::IntZext, u(0, 2), u(2, 1), Vn::NONE),
     Op::new(O::Load, u(3, 1), u(0, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(3, 1)),
     Op::new(O::IntAnd, u(4, 1), u(3, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(8), u(4, 1), c(0x0, 1)),
     Op::new(O::IntLeft, u(6, 1), u(3, 1), c(0x1, 1)),
@@ -204,6 +211,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntAdd, u(2, 1), cs(Slot::B1, 1), r(1)),
     Op::new(O::IntZext, u(0, 2), u(2, 1), Vn::NONE),
     Op::new(O::Load, u(3, 1), u(0, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(3, 1)),
     Op::new(O::IntAnd, u(4, 1), u(3, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(8), u(4, 1), c(0x0, 1)),
     Op::new(O::IntLeft, u(6, 1), u(3, 1), c(0x1, 1)),
@@ -228,6 +236,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntZext, u(2, 2), r(2), Vn::NONE),
     Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
     Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
     Op::new(O::IntAnd, u(5, 1), u(4, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(8), u(5, 1), c(0x0, 1)),
     Op::new(O::IntLeft, u(7, 1), u(4, 1), c(0x1, 1)),
@@ -253,6 +262,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
     Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
     Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
     Op::new(O::IntAnd, u(5, 1), u(4, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(8), u(5, 1), c(0x0, 1)),
     Op::new(O::IntLeft, u(7, 1), u(4, 1), c(0x1, 1)),
@@ -265,6 +275,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
     Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
     Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
     Op::new(O::IntAnd, u(5, 1), u(4, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(8), u(5, 1), c(0x0, 1)),
     Op::new(O::IntLeft, u(7, 1), u(4, 1), c(0x1, 1)),
@@ -304,6 +315,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntZext, u(14, 2), u(2, 1), Vn::NONE),
     Op::new(O::IntOr, u(8, 2), u(10, 2), u(14, 2)),
     Op::new(O::Load, u(16, 1), u(8, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(8, 2), u(16, 1)),
     Op::new(O::Copy, u(17, 1), r(8), Vn::NONE),
     Op::new(O::IntAnd, u(18, 1), u(16, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(8), u(18, 1), c(0x0, 1)),
@@ -331,6 +343,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntNotEqual, r(14), u(1, 1), c(0x0, 1)),
     // 26 ROL zp
     Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, cs(Slot::B1, 2), u(0, 1)),
     Op::new(O::Copy, u(1, 1), r(8), Vn::NONE),
     Op::new(O::IntAnd, u(2, 1), u(0, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(8), u(2, 1), c(0x0, 1)),
@@ -343,6 +356,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntNotEqual, r(14), u(6, 1), c(0x0, 1)),
     // 27 RLA zp
     Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, cs(Slot::B1, 2), u(0, 1)),
     Op::new(O::Copy, u(1, 1), r(8), Vn::NONE),
     Op::new(O::IntAnd, u(2, 1), u(0, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(8), u(2, 1), c(0x0, 1)),
@@ -409,6 +423,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntNotEqual, r(14), u(1, 1), c(0x0, 1)),
     // 2E ROL abs
     Op::new(O::Load, u(0, 1), cs(Slot::Word, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, cs(Slot::Word, 2), u(0, 1)),
     Op::new(O::Copy, u(1, 1), r(8), Vn::NONE),
     Op::new(O::IntAnd, u(2, 1), u(0, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(8), u(2, 1), c(0x0, 1)),
@@ -421,6 +436,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntNotEqual, r(14), u(6, 1), c(0x0, 1)),
     // 2F RLA abs
     Op::new(O::Load, u(0, 1), cs(Slot::Word, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, cs(Slot::Word, 2), u(0, 1)),
     Op::new(O::Copy, u(1, 1), r(8), Vn::NONE),
     Op::new(O::IntAnd, u(2, 1), u(0, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(8), u(2, 1), c(0x0, 1)),
@@ -458,6 +474,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntZext, u(12, 2), r(2), Vn::NONE),
     Op::new(O::IntAdd, u(10, 2), u(2, 2), u(12, 2)),
     Op::new(O::Load, u(14, 1), u(10, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(10, 2), u(14, 1)),
     Op::new(O::Copy, u(15, 1), r(8), Vn::NONE),
     Op::new(O::IntAnd, u(16, 1), u(14, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(8), u(16, 1), c(0x0, 1)),
@@ -485,6 +502,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntAdd, u(2, 1), cs(Slot::B1, 1), r(1)),
     Op::new(O::IntZext, u(0, 2), u(2, 1), Vn::NONE),
     Op::new(O::Load, u(3, 1), u(0, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(3, 1)),
     Op::new(O::Copy, u(4, 1), r(8), Vn::NONE),
     Op::new(O::IntAnd, u(5, 1), u(3, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(8), u(5, 1), c(0x0, 1)),
@@ -499,6 +517,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntAdd, u(2, 1), cs(Slot::B1, 1), r(1)),
     Op::new(O::IntZext, u(0, 2), u(2, 1), Vn::NONE),
     Op::new(O::Load, u(3, 1), u(0, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(3, 1)),
     Op::new(O::Copy, u(4, 1), r(8), Vn::NONE),
     Op::new(O::IntAnd, u(5, 1), u(3, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(8), u(5, 1), c(0x0, 1)),
@@ -525,6 +544,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntZext, u(2, 2), r(2), Vn::NONE),
     Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
     Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
     Op::new(O::Copy, u(5, 1), r(8), Vn::NONE),
     Op::new(O::IntAnd, u(6, 1), u(4, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(8), u(6, 1), c(0x0, 1)),
@@ -552,6 +572,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
     Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
     Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
     Op::new(O::Copy, u(5, 1), r(8), Vn::NONE),
     Op::new(O::IntAnd, u(6, 1), u(4, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(8), u(6, 1), c(0x0, 1)),
@@ -566,6 +587,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
     Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
     Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
     Op::new(O::Copy, u(5, 1), r(8), Vn::NONE),
     Op::new(O::IntAnd, u(6, 1), u(4, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(8), u(6, 1), c(0x0, 1)),
@@ -607,6 +629,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntZext, u(14, 2), u(2, 1), Vn::NONE),
     Op::new(O::IntOr, u(8, 2), u(10, 2), u(14, 2)),
     Op::new(O::Load, u(16, 1), u(8, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(8, 2), u(16, 1)),
     Op::new(O::IntAnd, u(17, 1), u(16, 1), c(0x1, 1)),
     Op::new(O::Copy, r(8), u(17, 1), Vn::NONE),
     Op::new(O::IntRight, u(18, 1), u(16, 1), c(0x1, 1)),
@@ -625,6 +648,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntNotEqual, r(14), u(1, 1), c(0x0, 1)),
     // 46 LSR zp
     Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, cs(Slot::B1, 2), u(0, 1)),
     Op::new(O::IntAnd, u(1, 1), u(0, 1), c(0x1, 1)),
     Op::new(O::Copy, r(8), u(1, 1), Vn::NONE),
     Op::new(O::IntRight, u(2, 1), u(0, 1), c(0x1, 1)),
@@ -634,6 +658,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntNotEqual, r(14), u(3, 1), c(0x0, 1)),
     // 47 SRE zp
     Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, cs(Slot::B1, 2), u(0, 1)),
     Op::new(O::IntAnd, u(1, 1), u(0, 1), c(0x1, 1)),
     Op::new(O::Copy, r(8), u(1, 1), Vn::NONE),
     Op::new(O::IntRight, u(2, 1), u(0, 1), c(0x1, 1)),
@@ -677,6 +702,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntNotEqual, r(14), u(1, 1), c(0x0, 1)),
     // 4E LSR abs
     Op::new(O::Load, u(0, 1), cs(Slot::Word, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, cs(Slot::Word, 2), u(0, 1)),
     Op::new(O::IntAnd, u(1, 1), u(0, 1), c(0x1, 1)),
     Op::new(O::Copy, r(8), u(1, 1), Vn::NONE),
     Op::new(O::IntRight, u(2, 1), u(0, 1), c(0x1, 1)),
@@ -686,6 +712,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntNotEqual, r(14), u(3, 1), c(0x0, 1)),
     // 4F SRE abs
     Op::new(O::Load, u(0, 1), cs(Slot::Word, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, cs(Slot::Word, 2), u(0, 1)),
     Op::new(O::IntAnd, u(1, 1), u(0, 1), c(0x1, 1)),
     Op::new(O::Copy, r(8), u(1, 1), Vn::NONE),
     Op::new(O::IntRight, u(2, 1), u(0, 1), c(0x1, 1)),
@@ -720,6 +747,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntZext, u(12, 2), r(2), Vn::NONE),
     Op::new(O::IntAdd, u(10, 2), u(2, 2), u(12, 2)),
     Op::new(O::Load, u(14, 1), u(10, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(10, 2), u(14, 1)),
     Op::new(O::IntAnd, u(15, 1), u(14, 1), c(0x1, 1)),
     Op::new(O::Copy, r(8), u(15, 1), Vn::NONE),
     Op::new(O::IntRight, u(16, 1), u(14, 1), c(0x1, 1)),
@@ -744,6 +772,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntAdd, u(2, 1), cs(Slot::B1, 1), r(1)),
     Op::new(O::IntZext, u(0, 2), u(2, 1), Vn::NONE),
     Op::new(O::Load, u(3, 1), u(0, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(3, 1)),
     Op::new(O::IntAnd, u(4, 1), u(3, 1), c(0x1, 1)),
     Op::new(O::Copy, r(8), u(4, 1), Vn::NONE),
     Op::new(O::IntRight, u(5, 1), u(3, 1), c(0x1, 1)),
@@ -755,6 +784,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntAdd, u(2, 1), cs(Slot::B1, 1), r(1)),
     Op::new(O::IntZext, u(0, 2), u(2, 1), Vn::NONE),
     Op::new(O::Load, u(3, 1), u(0, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(3, 1)),
     Op::new(O::IntAnd, u(4, 1), u(3, 1), c(0x1, 1)),
     Op::new(O::Copy, r(8), u(4, 1), Vn::NONE),
     Op::new(O::IntRight, u(5, 1), u(3, 1), c(0x1, 1)),
@@ -778,6 +808,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntZext, u(2, 2), r(2), Vn::NONE),
     Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
     Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
     Op::new(O::IntAnd, u(5, 1), u(4, 1), c(0x1, 1)),
     Op::new(O::Copy, r(8), u(5, 1), Vn::NONE),
     Op::new(O::IntRight, u(6, 1), u(4, 1), c(0x1, 1)),
@@ -802,6 +833,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
     Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
     Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
     Op::new(O::IntAnd, u(5, 1), u(4, 1), c(0x1, 1)),
     Op::new(O::Copy, r(8), u(5, 1), Vn::NONE),
     Op::new(O::IntRight, u(6, 1), u(4, 1), c(0x1, 1)),
@@ -813,6 +845,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
     Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
     Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
     Op::new(O::IntAnd, u(5, 1), u(4, 1), c(0x1, 1)),
     Op::new(O::Copy, r(8), u(5, 1), Vn::NONE),
     Op::new(O::IntRight, u(6, 1), u(4, 1), c(0x1, 1)),
@@ -862,6 +895,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntZext, u(14, 2), u(2, 1), Vn::NONE),
     Op::new(O::IntOr, u(8, 2), u(10, 2), u(14, 2)),
     Op::new(O::Load, u(16, 1), u(8, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(8, 2), u(16, 1)),
     Op::new(O::Copy, u(17, 1), r(8), Vn::NONE),
     Op::new(O::IntAnd, u(18, 1), u(16, 1), c(0x1, 1)),
     Op::new(O::Copy, r(8), u(18, 1), Vn::NONE),
@@ -905,6 +939,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntNotEqual, r(14), u(10, 1), c(0x0, 1)),
     // 66 ROR zp
     Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, cs(Slot::B1, 2), u(0, 1)),
     Op::new(O::Copy, u(1, 1), r(8), Vn::NONE),
     Op::new(O::IntAnd, u(2, 1), u(0, 1), c(0x1, 1)),
     Op::new(O::Copy, r(8), u(2, 1), Vn::NONE),
@@ -917,6 +952,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntNotEqual, r(14), u(6, 1), c(0x0, 1)),
     // 67 RRA zp
     Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, cs(Slot::B1, 2), u(0, 1)),
     Op::new(O::Copy, u(1, 1), r(8), Vn::NONE),
     Op::new(O::IntAnd, u(2, 1), u(0, 1), c(0x1, 1)),
     Op::new(O::Copy, r(8), u(2, 1), Vn::NONE),
@@ -1010,6 +1046,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntNotEqual, r(14), u(10, 1), c(0x0, 1)),
     // 6E ROR abs
     Op::new(O::Load, u(0, 1), cs(Slot::Word, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, cs(Slot::Word, 2), u(0, 1)),
     Op::new(O::Copy, u(1, 1), r(8), Vn::NONE),
     Op::new(O::IntAnd, u(2, 1), u(0, 1), c(0x1, 1)),
     Op::new(O::Copy, r(8), u(2, 1), Vn::NONE),
@@ -1022,6 +1059,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntNotEqual, r(14), u(6, 1), c(0x0, 1)),
     // 6F RRA abs
     Op::new(O::Load, u(0, 1), cs(Slot::Word, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, cs(Slot::Word, 2), u(0, 1)),
     Op::new(O::Copy, u(1, 1), r(8), Vn::NONE),
     Op::new(O::IntAnd, u(2, 1), u(0, 1), c(0x1, 1)),
     Op::new(O::Copy, r(8), u(2, 1), Vn::NONE),
@@ -1081,6 +1119,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntZext, u(12, 2), r(2), Vn::NONE),
     Op::new(O::IntAdd, u(10, 2), u(2, 2), u(12, 2)),
     Op::new(O::Load, u(14, 1), u(10, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(10, 2), u(14, 1)),
     Op::new(O::Copy, u(15, 1), r(8), Vn::NONE),
     Op::new(O::IntAnd, u(16, 1), u(14, 1), c(0x1, 1)),
     Op::new(O::Copy, r(8), u(16, 1), Vn::NONE),
@@ -1130,6 +1169,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntAdd, u(2, 1), cs(Slot::B1, 1), r(1)),
     Op::new(O::IntZext, u(0, 2), u(2, 1), Vn::NONE),
     Op::new(O::Load, u(3, 1), u(0, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(3, 1)),
     Op::new(O::Copy, u(4, 1), r(8), Vn::NONE),
     Op::new(O::IntAnd, u(5, 1), u(3, 1), c(0x1, 1)),
     Op::new(O::Copy, r(8), u(5, 1), Vn::NONE),
@@ -1144,6 +1184,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntAdd, u(2, 1), cs(Slot::B1, 1), r(1)),
     Op::new(O::IntZext, u(0, 2), u(2, 1), Vn::NONE),
     Op::new(O::Load, u(3, 1), u(0, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(3, 1)),
     Op::new(O::Copy, u(4, 1), r(8), Vn::NONE),
     Op::new(O::IntAnd, u(5, 1), u(3, 1), c(0x1, 1)),
     Op::new(O::Copy, r(8), u(5, 1), Vn::NONE),
@@ -1192,6 +1233,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntZext, u(2, 2), r(2), Vn::NONE),
     Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
     Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
     Op::new(O::Copy, u(5, 1), r(8), Vn::NONE),
     Op::new(O::IntAnd, u(6, 1), u(4, 1), c(0x1, 1)),
     Op::new(O::Copy, r(8), u(6, 1), Vn::NONE),
@@ -1241,6 +1283,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
     Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
     Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
     Op::new(O::Copy, u(5, 1), r(8), Vn::NONE),
     Op::new(O::IntAnd, u(6, 1), u(4, 1), c(0x1, 1)),
     Op::new(O::Copy, r(8), u(6, 1), Vn::NONE),
@@ -1255,6 +1298,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
     Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
     Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
     Op::new(O::Copy, u(5, 1), r(8), Vn::NONE),
     Op::new(O::IntAnd, u(6, 1), u(4, 1), c(0x1, 1)),
     Op::new(O::Copy, r(8), u(6, 1), Vn::NONE),
@@ -1694,6 +1738,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntZext, u(14, 2), u(2, 1), Vn::NONE),
     Op::new(O::IntOr, u(8, 2), u(10, 2), u(14, 2)),
     Op::new(O::Load, u(17, 1), u(8, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(8, 2), u(17, 1)),
     Op::new(O::IntSub, u(16, 1), u(17, 1), c(0x1, 1)),
     Op::new(O::Store, Vn::NONE, u(8, 2), u(16, 1)),
     Op::new(O::IntLessEqual, r(8), u(16, 1), r(0)),
@@ -1716,14 +1761,16 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntAnd, u(2, 1), u(1, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(14), u(2, 1), c(0x0, 1)),
     // C6 DEC zp
-    Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
-    Op::new(O::IntSub, u(1, 1), u(0, 1), c(0x1, 1)),
+    Op::new(O::Load, u(1, 1), cs(Slot::B1, 2), Vn::NONE),
     Op::new(O::Store, Vn::NONE, cs(Slot::B1, 2), u(1, 1)),
-    Op::new(O::IntEqual, r(9), u(1, 1), c(0x0, 1)),
-    Op::new(O::IntAnd, u(2, 1), u(1, 1), c(0x80, 1)),
+    Op::new(O::IntSub, u(0, 1), u(1, 1), c(0x1, 1)),
+    Op::new(O::Store, Vn::NONE, cs(Slot::B1, 2), u(0, 1)),
+    Op::new(O::IntEqual, r(9), u(0, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(2, 1), u(0, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(14), u(2, 1), c(0x0, 1)),
     // C7 DCP zp
     Op::new(O::Load, u(1, 1), cs(Slot::B1, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, cs(Slot::B1, 2), u(1, 1)),
     Op::new(O::IntSub, u(0, 1), u(1, 1), c(0x1, 1)),
     Op::new(O::Store, Vn::NONE, cs(Slot::B1, 2), u(0, 1)),
     Op::new(O::IntLessEqual, r(8), u(0, 1), r(0)),
@@ -1769,14 +1816,16 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntAnd, u(2, 1), u(1, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(14), u(2, 1), c(0x0, 1)),
     // CE DEC abs
-    Op::new(O::Load, u(0, 1), cs(Slot::Word, 2), Vn::NONE),
-    Op::new(O::IntSub, u(1, 1), u(0, 1), c(0x1, 1)),
+    Op::new(O::Load, u(1, 1), cs(Slot::Word, 2), Vn::NONE),
     Op::new(O::Store, Vn::NONE, cs(Slot::Word, 2), u(1, 1)),
-    Op::new(O::IntEqual, r(9), u(1, 1), c(0x0, 1)),
-    Op::new(O::IntAnd, u(2, 1), u(1, 1), c(0x80, 1)),
+    Op::new(O::IntSub, u(0, 1), u(1, 1), c(0x1, 1)),
+    Op::new(O::Store, Vn::NONE, cs(Slot::Word, 2), u(0, 1)),
+    Op::new(O::IntEqual, r(9), u(0, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(2, 1), u(0, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(14), u(2, 1), c(0x0, 1)),
     // CF DCP abs
     Op::new(O::Load, u(1, 1), cs(Slot::Word, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, cs(Slot::Word, 2), u(1, 1)),
     Op::new(O::IntSub, u(0, 1), u(1, 1), c(0x1, 1)),
     Op::new(O::Store, Vn::NONE, cs(Slot::Word, 2), u(0, 1)),
     Op::new(O::IntLessEqual, r(8), u(0, 1), r(0)),
@@ -1811,6 +1860,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntZext, u(12, 2), r(2), Vn::NONE),
     Op::new(O::IntAdd, u(10, 2), u(2, 2), u(12, 2)),
     Op::new(O::Load, u(15, 1), u(10, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(10, 2), u(15, 1)),
     Op::new(O::IntSub, u(14, 1), u(15, 1), c(0x1, 1)),
     Op::new(O::Store, Vn::NONE, u(10, 2), u(14, 1)),
     Op::new(O::IntLessEqual, r(8), u(14, 1), r(0)),
@@ -1834,16 +1884,18 @@ pub static OPS: [Op; 2080] = [
     // D6 DEC zpx
     Op::new(O::IntAdd, u(2, 1), cs(Slot::B1, 1), r(1)),
     Op::new(O::IntZext, u(0, 2), u(2, 1), Vn::NONE),
-    Op::new(O::Load, u(3, 1), u(0, 2), Vn::NONE),
-    Op::new(O::IntSub, u(4, 1), u(3, 1), c(0x1, 1)),
+    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
     Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
-    Op::new(O::IntEqual, r(9), u(4, 1), c(0x0, 1)),
-    Op::new(O::IntAnd, u(5, 1), u(4, 1), c(0x80, 1)),
+    Op::new(O::IntSub, u(3, 1), u(4, 1), c(0x1, 1)),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(3, 1)),
+    Op::new(O::IntEqual, r(9), u(3, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(5, 1), u(3, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(14), u(5, 1), c(0x0, 1)),
     // D7 DCP zpx
     Op::new(O::IntAdd, u(2, 1), cs(Slot::B1, 1), r(1)),
     Op::new(O::IntZext, u(0, 2), u(2, 1), Vn::NONE),
     Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
     Op::new(O::IntSub, u(3, 1), u(4, 1), c(0x1, 1)),
     Op::new(O::Store, Vn::NONE, u(0, 2), u(3, 1)),
     Op::new(O::IntLessEqual, r(8), u(3, 1), r(0)),
@@ -1867,6 +1919,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntZext, u(2, 2), r(2), Vn::NONE),
     Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
     Op::new(O::Load, u(5, 1), u(0, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(5, 1)),
     Op::new(O::IntSub, u(4, 1), u(5, 1), c(0x1, 1)),
     Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
     Op::new(O::IntLessEqual, r(8), u(4, 1), r(0)),
@@ -1890,16 +1943,18 @@ pub static OPS: [Op; 2080] = [
     // DE DEC absx
     Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
     Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::IntSub, u(5, 1), u(4, 1), c(0x1, 1)),
+    Op::new(O::Load, u(5, 1), u(0, 2), Vn::NONE),
     Op::new(O::Store, Vn::NONE, u(0, 2), u(5, 1)),
-    Op::new(O::IntEqual, r(9), u(5, 1), c(0x0, 1)),
-    Op::new(O::IntAnd, u(6, 1), u(5, 1), c(0x80, 1)),
+    Op::new(O::IntSub, u(4, 1), u(5, 1), c(0x1, 1)),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
+    Op::new(O::IntEqual, r(9), u(4, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(6, 1), u(4, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(14), u(6, 1), c(0x0, 1)),
     // DF DCP absx
     Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
     Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
     Op::new(O::Load, u(5, 1), u(0, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(5, 1)),
     Op::new(O::IntSub, u(4, 1), u(5, 1), c(0x1, 1)),
     Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
     Op::new(O::IntLessEqual, r(8), u(4, 1), r(0)),
@@ -1955,6 +2010,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntZext, u(14, 2), u(2, 1), Vn::NONE),
     Op::new(O::IntOr, u(8, 2), u(10, 2), u(14, 2)),
     Op::new(O::Load, u(17, 1), u(8, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(8, 2), u(17, 1)),
     Op::new(O::IntAdd, u(16, 1), u(17, 1), c(0x1, 1)),
     Op::new(O::Store, Vn::NONE, u(8, 2), u(16, 1)),
     Op::new(O::IntSub, u(18, 1), c(0x1, 1), r(8)),
@@ -2001,14 +2057,16 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntAnd, u(16, 1), r(0), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(14), u(16, 1), c(0x0, 1)),
     // E6 INC zp
-    Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
-    Op::new(O::IntAdd, u(1, 1), u(0, 1), c(0x1, 1)),
+    Op::new(O::Load, u(1, 1), cs(Slot::B1, 2), Vn::NONE),
     Op::new(O::Store, Vn::NONE, cs(Slot::B1, 2), u(1, 1)),
-    Op::new(O::IntEqual, r(9), u(1, 1), c(0x0, 1)),
-    Op::new(O::IntAnd, u(2, 1), u(1, 1), c(0x80, 1)),
+    Op::new(O::IntAdd, u(0, 1), u(1, 1), c(0x1, 1)),
+    Op::new(O::Store, Vn::NONE, cs(Slot::B1, 2), u(0, 1)),
+    Op::new(O::IntEqual, r(9), u(0, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(2, 1), u(0, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(14), u(2, 1), c(0x0, 1)),
     // E7 ISC zp
     Op::new(O::Load, u(1, 1), cs(Slot::B1, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, cs(Slot::B1, 2), u(1, 1)),
     Op::new(O::IntAdd, u(0, 1), u(1, 1), c(0x1, 1)),
     Op::new(O::Store, Vn::NONE, cs(Slot::B1, 2), u(0, 1)),
     Op::new(O::IntSub, u(2, 1), c(0x1, 1), r(8)),
@@ -2097,14 +2155,16 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntAnd, u(16, 1), r(0), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(14), u(16, 1), c(0x0, 1)),
     // EE INC abs
-    Op::new(O::Load, u(0, 1), cs(Slot::Word, 2), Vn::NONE),
-    Op::new(O::IntAdd, u(1, 1), u(0, 1), c(0x1, 1)),
+    Op::new(O::Load, u(1, 1), cs(Slot::Word, 2), Vn::NONE),
     Op::new(O::Store, Vn::NONE, cs(Slot::Word, 2), u(1, 1)),
-    Op::new(O::IntEqual, r(9), u(1, 1), c(0x0, 1)),
-    Op::new(O::IntAnd, u(2, 1), u(1, 1), c(0x80, 1)),
+    Op::new(O::IntAdd, u(0, 1), u(1, 1), c(0x1, 1)),
+    Op::new(O::Store, Vn::NONE, cs(Slot::Word, 2), u(0, 1)),
+    Op::new(O::IntEqual, r(9), u(0, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(2, 1), u(0, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(14), u(2, 1), c(0x0, 1)),
     // EF ISC abs
     Op::new(O::Load, u(1, 1), cs(Slot::Word, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, cs(Slot::Word, 2), u(1, 1)),
     Op::new(O::IntAdd, u(0, 1), u(1, 1), c(0x1, 1)),
     Op::new(O::Store, Vn::NONE, cs(Slot::Word, 2), u(0, 1)),
     Op::new(O::IntSub, u(2, 1), c(0x1, 1), r(8)),
@@ -2163,6 +2223,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntZext, u(12, 2), r(2), Vn::NONE),
     Op::new(O::IntAdd, u(10, 2), u(2, 2), u(12, 2)),
     Op::new(O::Load, u(15, 1), u(10, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(10, 2), u(15, 1)),
     Op::new(O::IntAdd, u(14, 1), u(15, 1), c(0x1, 1)),
     Op::new(O::Store, Vn::NONE, u(10, 2), u(14, 1)),
     Op::new(O::IntSub, u(16, 1), c(0x1, 1), r(8)),
@@ -2210,16 +2271,18 @@ pub static OPS: [Op; 2080] = [
     // F6 INC zpx
     Op::new(O::IntAdd, u(2, 1), cs(Slot::B1, 1), r(1)),
     Op::new(O::IntZext, u(0, 2), u(2, 1), Vn::NONE),
-    Op::new(O::Load, u(3, 1), u(0, 2), Vn::NONE),
-    Op::new(O::IntAdd, u(4, 1), u(3, 1), c(0x1, 1)),
+    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
     Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
-    Op::new(O::IntEqual, r(9), u(4, 1), c(0x0, 1)),
-    Op::new(O::IntAnd, u(5, 1), u(4, 1), c(0x80, 1)),
+    Op::new(O::IntAdd, u(3, 1), u(4, 1), c(0x1, 1)),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(3, 1)),
+    Op::new(O::IntEqual, r(9), u(3, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(5, 1), u(3, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(14), u(5, 1), c(0x0, 1)),
     // F7 ISC zpx
     Op::new(O::IntAdd, u(2, 1), cs(Slot::B1, 1), r(1)),
     Op::new(O::IntZext, u(0, 2), u(2, 1), Vn::NONE),
     Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
     Op::new(O::IntAdd, u(3, 1), u(4, 1), c(0x1, 1)),
     Op::new(O::Store, Vn::NONE, u(0, 2), u(3, 1)),
     Op::new(O::IntSub, u(5, 1), c(0x1, 1), r(8)),
@@ -2267,6 +2330,7 @@ pub static OPS: [Op; 2080] = [
     Op::new(O::IntZext, u(2, 2), r(2), Vn::NONE),
     Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
     Op::new(O::Load, u(5, 1), u(0, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(5, 1)),
     Op::new(O::IntAdd, u(4, 1), u(5, 1), c(0x1, 1)),
     Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
     Op::new(O::IntSub, u(6, 1), c(0x1, 1), r(8)),
@@ -2314,16 +2378,18 @@ pub static OPS: [Op; 2080] = [
     // FE INC absx
     Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
     Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::IntAdd, u(5, 1), u(4, 1), c(0x1, 1)),
+    Op::new(O::Load, u(5, 1), u(0, 2), Vn::NONE),
     Op::new(O::Store, Vn::NONE, u(0, 2), u(5, 1)),
-    Op::new(O::IntEqual, r(9), u(5, 1), c(0x0, 1)),
-    Op::new(O::IntAnd, u(6, 1), u(5, 1), c(0x80, 1)),
+    Op::new(O::IntAdd, u(4, 1), u(5, 1), c(0x1, 1)),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
+    Op::new(O::IntEqual, r(9), u(4, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(6, 1), u(4, 1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(14), u(6, 1), c(0x0, 1)),
     // FF ISC absx
     Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
     Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
     Op::new(O::Load, u(5, 1), u(0, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(0, 2), u(5, 1)),
     Op::new(O::IntAdd, u(4, 1), u(5, 1), c(0x1, 1)),
     Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
     Op::new(O::IntSub, u(6, 1), c(0x1, 1), r(8)),
@@ -2346,23 +2412,24 @@ pub static OPS: [Op; 2080] = [
 ];
 
 /// Every opcode's operand-bound input positions (`op << 1 | input`), concatenated.
-pub static BINDS: [u8; 247] = [
-    0, 0, 0, 0, 0, 10, 0, 10, 1, 1, 0, 0, 0, 10, 0, 10,
-    0, 2, 0, 2, 0, 0, 0, 0, 2, 2, 2, 2, 2, 2, 0, 0,
-    0, 0, 0, 14, 0, 14, 1, 1, 0, 0, 0, 14, 0, 14, 0, 2,
-    0, 2, 0, 0, 0, 0, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0,
-    0, 8, 0, 8, 1, 1, 0, 0, 8, 0, 8, 0, 2, 0, 2, 0,
-    0, 0, 0, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0, 14, 0,
-    14, 1, 3, 9, 1, 0, 0, 14, 0, 14, 0, 2, 0, 2, 0, 0,
+pub static BINDS: [u8; 271] = [
+    0, 0, 0, 0, 0, 2, 12, 0, 2, 12, 1, 1, 0, 0, 0, 2,
+    12, 0, 2, 12, 0, 2, 0, 2, 0, 0, 0, 0, 2, 2, 2, 2,
+    2, 2, 0, 0, 0, 0, 0, 2, 16, 0, 2, 16, 1, 1, 0, 0,
+    0, 2, 16, 0, 2, 16, 0, 2, 0, 2, 0, 0, 0, 0, 2, 2,
+    2, 2, 2, 2, 0, 0, 0, 0, 0, 2, 10, 0, 2, 10, 1, 1,
+    0, 0, 2, 10, 0, 2, 10, 0, 2, 0, 2, 0, 0, 0, 0, 2,
+    2, 2, 2, 2, 2, 0, 0, 0, 0, 0, 2, 16, 0, 2, 16, 1,
+    3, 9, 1, 0, 0, 2, 16, 0, 2, 16, 0, 2, 0, 2, 0, 0,
     0, 0, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0, 2, 5, 0,
     0, 0, 2, 0, 2, 0, 2, 0, 0, 0, 0, 2, 2, 7, 2, 5,
     2, 2, 5, 2, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0,
     0, 0, 0, 0, 2, 0, 2, 0, 0, 0, 0, 2, 2, 2, 2, 2,
-    2, 0, 3, 0, 0, 0, 0, 0, 4, 0, 4, 0, 3, 2, 5, 0,
-    0, 0, 4, 0, 4, 0, 2, 0, 2, 0, 0, 0, 0, 2, 2, 2,
-    2, 2, 2, 0, 3, 0, 0, 0, 0, 0, 4, 0, 4, 2, 12, 17,
-    2, 12, 17, 0, 0, 0, 4, 0, 4, 0, 2, 0, 2, 0, 0, 0,
-    0, 2, 2, 2, 2, 2, 2,
+    2, 0, 3, 0, 0, 0, 0, 0, 2, 6, 0, 2, 6, 0, 3, 2,
+    5, 0, 0, 0, 2, 6, 0, 2, 6, 0, 2, 0, 2, 0, 0, 0,
+    0, 2, 2, 2, 2, 2, 2, 0, 3, 0, 0, 0, 0, 0, 2, 6,
+    0, 2, 6, 2, 12, 17, 2, 12, 17, 0, 0, 0, 2, 6, 0, 2,
+    6, 0, 2, 0, 2, 0, 0, 0, 0, 2, 2, 2, 2, 2, 2,
 ];
 
 /// Per-opcode templates.
@@ -2370,257 +2437,257 @@ pub static TEMPLATES: [Template; 256] = [
     Template { start: 0, n: 0, bind: 0, nbind: 0, len: 1, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Brk, iy_base: 0 }, // 00 BRK impl
     Template { start: 0, n: 15, bind: 0, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 01 ORA indx
     Template { start: 15, n: 0, bind: 1, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 02 JAM impl
-    Template { start: 15, n: 20, bind: 1, nbind: 1, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 03 SLO indx
-    Template { start: 35, n: 1, bind: 2, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 04 NOP zp
-    Template { start: 36, n: 5, bind: 3, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 05 ORA zp
-    Template { start: 41, n: 9, bind: 4, nbind: 2, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 06 ASL zp
-    Template { start: 50, n: 10, bind: 6, nbind: 2, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 07 SLO zp
-    Template { start: 60, n: 15, bind: 8, nbind: 0, len: 1, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 08 PHP impl
-    Template { start: 75, n: 4, bind: 8, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 09 ORA imm
-    Template { start: 79, n: 8, bind: 9, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 0A ASL acc
-    Template { start: 87, n: 6, bind: 9, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 0B ANC imm
-    Template { start: 93, n: 1, bind: 10, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 0C NOP abs
-    Template { start: 94, n: 5, bind: 11, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 0D ORA abs
-    Template { start: 99, n: 9, bind: 12, nbind: 2, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 0E ASL abs
-    Template { start: 108, n: 10, bind: 14, nbind: 2, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 0F SLO abs
-    Template { start: 118, n: 0, bind: 16, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 14, pol: 0 }, iy_base: 0 }, // 10 BPL rel
-    Template { start: 118, n: 13, bind: 16, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 2 }, // 11 ORA indy
-    Template { start: 131, n: 0, bind: 18, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 12 JAM impl
-    Template { start: 131, n: 18, bind: 18, nbind: 2, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 13 SLO indy
-    Template { start: 149, n: 3, bind: 20, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 14 NOP zpx
-    Template { start: 152, n: 7, bind: 21, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 15 ORA zpx
-    Template { start: 159, n: 11, bind: 22, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 16 ASL zpx
-    Template { start: 170, n: 12, bind: 23, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 17 SLO zpx
-    Template { start: 182, n: 1, bind: 24, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 18 CLC impl
-    Template { start: 183, n: 7, bind: 24, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // 19 ORA absy
-    Template { start: 190, n: 0, bind: 25, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 1A NOP impl
-    Template { start: 190, n: 12, bind: 25, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 1B SLO absy
-    Template { start: 202, n: 3, bind: 26, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 1C NOP absx
-    Template { start: 205, n: 7, bind: 27, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 1D ORA absx
-    Template { start: 212, n: 11, bind: 28, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 1E ASL absx
-    Template { start: 223, n: 12, bind: 29, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 1F SLO absx
-    Template { start: 235, n: 0, bind: 30, nbind: 0, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Jsr, iy_base: 0 }, // 20 JSR abs
-    Template { start: 235, n: 15, bind: 30, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 21 AND indx
-    Template { start: 250, n: 0, bind: 31, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 22 JAM impl
-    Template { start: 250, n: 22, bind: 31, nbind: 1, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 23 RLA indx
-    Template { start: 272, n: 7, bind: 32, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 24 BIT zp
-    Template { start: 279, n: 5, bind: 33, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 25 AND zp
-    Template { start: 284, n: 11, bind: 34, nbind: 2, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 26 ROL zp
-    Template { start: 295, n: 12, bind: 36, nbind: 2, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 27 RLA zp
-    Template { start: 307, n: 15, bind: 38, nbind: 0, len: 1, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 28 PLP impl
-    Template { start: 322, n: 4, bind: 38, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 29 AND imm
-    Template { start: 326, n: 10, bind: 39, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 2A ROL acc
-    Template { start: 336, n: 6, bind: 39, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 2B ANC imm
-    Template { start: 342, n: 7, bind: 40, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 2C BIT abs
-    Template { start: 349, n: 5, bind: 41, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 2D AND abs
-    Template { start: 354, n: 11, bind: 42, nbind: 2, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 2E ROL abs
-    Template { start: 365, n: 12, bind: 44, nbind: 2, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 2F RLA abs
-    Template { start: 377, n: 0, bind: 46, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 14, pol: 1 }, iy_base: 0 }, // 30 BMI rel
-    Template { start: 377, n: 13, bind: 46, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 2 }, // 31 AND indy
-    Template { start: 390, n: 0, bind: 48, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 32 JAM impl
-    Template { start: 390, n: 20, bind: 48, nbind: 2, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 33 RLA indy
-    Template { start: 410, n: 3, bind: 50, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 34 NOP zpx
-    Template { start: 413, n: 7, bind: 51, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 35 AND zpx
-    Template { start: 420, n: 13, bind: 52, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 36 ROL zpx
-    Template { start: 433, n: 14, bind: 53, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 37 RLA zpx
-    Template { start: 447, n: 1, bind: 54, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 38 SEC impl
-    Template { start: 448, n: 7, bind: 54, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // 39 AND absy
-    Template { start: 455, n: 0, bind: 55, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 3A NOP impl
-    Template { start: 455, n: 14, bind: 55, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 3B RLA absy
-    Template { start: 469, n: 3, bind: 56, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 3C NOP absx
-    Template { start: 472, n: 7, bind: 57, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 3D AND absx
-    Template { start: 479, n: 13, bind: 58, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 3E ROL absx
-    Template { start: 492, n: 14, bind: 59, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 3F RLA absx
-    Template { start: 506, n: 0, bind: 60, nbind: 0, len: 1, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Rti, iy_base: 0 }, // 40 RTI impl
-    Template { start: 506, n: 15, bind: 60, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 41 EOR indx
-    Template { start: 521, n: 0, bind: 61, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 42 JAM impl
-    Template { start: 521, n: 19, bind: 61, nbind: 1, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 43 SRE indx
-    Template { start: 540, n: 1, bind: 62, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 44 NOP zp
-    Template { start: 541, n: 5, bind: 63, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 45 EOR zp
-    Template { start: 546, n: 8, bind: 64, nbind: 2, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 46 LSR zp
-    Template { start: 554, n: 9, bind: 66, nbind: 2, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 47 SRE zp
-    Template { start: 563, n: 4, bind: 68, nbind: 0, len: 1, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 48 PHA impl
-    Template { start: 567, n: 4, bind: 68, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 49 EOR imm
-    Template { start: 571, n: 7, bind: 69, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 4A LSR acc
-    Template { start: 578, n: 7, bind: 69, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 4B ALR imm
-    Template { start: 585, n: 0, bind: 70, nbind: 0, len: 3, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Jmp, iy_base: 0 }, // 4C JMP abs
-    Template { start: 585, n: 5, bind: 70, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 4D EOR abs
-    Template { start: 590, n: 8, bind: 71, nbind: 2, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 4E LSR abs
-    Template { start: 598, n: 9, bind: 73, nbind: 2, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 4F SRE abs
-    Template { start: 607, n: 0, bind: 75, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 13, pol: 0 }, iy_base: 0 }, // 50 BVC rel
-    Template { start: 607, n: 13, bind: 75, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 2 }, // 51 EOR indy
-    Template { start: 620, n: 0, bind: 77, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 52 JAM impl
-    Template { start: 620, n: 17, bind: 77, nbind: 2, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 53 SRE indy
-    Template { start: 637, n: 3, bind: 79, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 54 NOP zpx
-    Template { start: 640, n: 7, bind: 80, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 55 EOR zpx
-    Template { start: 647, n: 10, bind: 81, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 56 LSR zpx
-    Template { start: 657, n: 11, bind: 82, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 57 SRE zpx
-    Template { start: 668, n: 1, bind: 83, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 58 CLI impl
-    Template { start: 669, n: 7, bind: 83, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // 59 EOR absy
-    Template { start: 676, n: 0, bind: 84, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 5A NOP impl
-    Template { start: 676, n: 11, bind: 84, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 5B SRE absy
-    Template { start: 687, n: 3, bind: 85, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 5C NOP absx
-    Template { start: 690, n: 7, bind: 86, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 5D EOR absx
-    Template { start: 697, n: 10, bind: 87, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 5E LSR absx
-    Template { start: 707, n: 11, bind: 88, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 5F SRE absx
-    Template { start: 718, n: 0, bind: 89, nbind: 0, len: 1, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Rts, iy_base: 0 }, // 60 RTS impl
-    Template { start: 718, n: 26, bind: 89, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 61 ADC indx
-    Template { start: 744, n: 0, bind: 90, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 62 JAM impl
-    Template { start: 744, n: 33, bind: 90, nbind: 1, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 63 RRA indx
-    Template { start: 777, n: 1, bind: 91, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 64 NOP zp
-    Template { start: 778, n: 16, bind: 92, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 65 ADC zp
-    Template { start: 794, n: 11, bind: 93, nbind: 2, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 66 ROR zp
-    Template { start: 805, n: 23, bind: 95, nbind: 2, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 67 RRA zp
-    Template { start: 828, n: 8, bind: 97, nbind: 0, len: 1, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 68 PLA impl
-    Template { start: 836, n: 15, bind: 97, nbind: 3, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 69 ADC imm
-    Template { start: 851, n: 10, bind: 100, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 6A ROR acc
-    Template { start: 861, n: 14, bind: 100, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 6B ARR imm
-    Template { start: 875, n: 0, bind: 101, nbind: 0, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::JmpInd, iy_base: 0 }, // 6C JMP ind
-    Template { start: 875, n: 16, bind: 101, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 6D ADC abs
-    Template { start: 891, n: 11, bind: 102, nbind: 2, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 6E ROR abs
-    Template { start: 902, n: 23, bind: 104, nbind: 2, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 6F RRA abs
-    Template { start: 925, n: 0, bind: 106, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 13, pol: 1 }, iy_base: 0 }, // 70 BVS rel
-    Template { start: 925, n: 24, bind: 106, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 2 }, // 71 ADC indy
-    Template { start: 949, n: 0, bind: 108, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 72 JAM impl
-    Template { start: 949, n: 31, bind: 108, nbind: 2, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 73 RRA indy
-    Template { start: 980, n: 3, bind: 110, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 74 NOP zpx
-    Template { start: 983, n: 18, bind: 111, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 75 ADC zpx
-    Template { start: 1001, n: 13, bind: 112, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 76 ROR zpx
-    Template { start: 1014, n: 25, bind: 113, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 77 RRA zpx
-    Template { start: 1039, n: 1, bind: 114, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 78 SEI impl
-    Template { start: 1040, n: 18, bind: 114, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // 79 ADC absy
-    Template { start: 1058, n: 0, bind: 115, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 7A NOP impl
-    Template { start: 1058, n: 25, bind: 115, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 7B RRA absy
-    Template { start: 1083, n: 3, bind: 116, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 7C NOP absx
-    Template { start: 1086, n: 18, bind: 117, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 7D ADC absx
-    Template { start: 1104, n: 13, bind: 118, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 7E ROR absx
-    Template { start: 1117, n: 25, bind: 119, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 7F RRA absx
-    Template { start: 1142, n: 0, bind: 120, nbind: 0, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 80 NOP imm
-    Template { start: 1142, n: 11, bind: 120, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 81 STA indx
-    Template { start: 1153, n: 0, bind: 121, nbind: 0, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 82 NOP imm
-    Template { start: 1153, n: 12, bind: 121, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 83 SAX indx
-    Template { start: 1165, n: 1, bind: 122, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 84 STY zp
-    Template { start: 1166, n: 1, bind: 123, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 85 STA zp
-    Template { start: 1167, n: 1, bind: 124, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 86 STX zp
-    Template { start: 1168, n: 2, bind: 125, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 87 SAX zp
-    Template { start: 1170, n: 4, bind: 126, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 88 DEY impl
-    Template { start: 1174, n: 0, bind: 126, nbind: 0, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 89 NOP imm
-    Template { start: 1174, n: 4, bind: 126, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 8A TXA impl
-    Template { start: 1178, n: 6, bind: 126, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 8B ANE imm
-    Template { start: 1184, n: 1, bind: 127, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 8C STY abs
-    Template { start: 1185, n: 1, bind: 128, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 8D STA abs
-    Template { start: 1186, n: 1, bind: 129, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 8E STX abs
-    Template { start: 1187, n: 2, bind: 130, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 8F SAX abs
-    Template { start: 1189, n: 0, bind: 131, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 8, pol: 0 }, iy_base: 0 }, // 90 BCC rel
-    Template { start: 1189, n: 9, bind: 131, nbind: 2, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 91 STA indy
-    Template { start: 1198, n: 0, bind: 133, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 92 JAM impl
-    Template { start: 1198, n: 12, bind: 133, nbind: 2, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 93 SHA indy
-    Template { start: 1210, n: 3, bind: 135, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 94 STY zpx
-    Template { start: 1213, n: 3, bind: 136, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 95 STA zpx
-    Template { start: 1216, n: 3, bind: 137, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 96 STX zpy
-    Template { start: 1219, n: 4, bind: 138, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 97 SAX zpy
-    Template { start: 1223, n: 4, bind: 139, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 98 TYA impl
-    Template { start: 1227, n: 3, bind: 139, nbind: 1, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 99 STA absy
-    Template { start: 1230, n: 1, bind: 140, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 9A TXS impl
-    Template { start: 1231, n: 5, bind: 140, nbind: 2, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 9B TAS absy
-    Template { start: 1236, n: 4, bind: 142, nbind: 2, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 9C SHY absx
-    Template { start: 1240, n: 3, bind: 144, nbind: 1, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 9D STA absx
-    Template { start: 1243, n: 4, bind: 145, nbind: 2, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 9E SHX absy
-    Template { start: 1247, n: 5, bind: 147, nbind: 2, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 9F SHA absy
-    Template { start: 1252, n: 4, bind: 149, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A0 LDY imm
-    Template { start: 1256, n: 15, bind: 150, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A1 LDA indx
-    Template { start: 1271, n: 4, bind: 151, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A2 LDX imm
-    Template { start: 1275, n: 16, bind: 152, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A3 LAX indx
-    Template { start: 1291, n: 5, bind: 153, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A4 LDY zp
-    Template { start: 1296, n: 5, bind: 154, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A5 LDA zp
-    Template { start: 1301, n: 5, bind: 155, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A6 LDX zp
-    Template { start: 1306, n: 6, bind: 156, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A7 LAX zp
-    Template { start: 1312, n: 4, bind: 157, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A8 TAY impl
-    Template { start: 1316, n: 4, bind: 157, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A9 LDA imm
-    Template { start: 1320, n: 4, bind: 158, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // AA TAX impl
-    Template { start: 1324, n: 7, bind: 158, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // AB LXA imm
-    Template { start: 1331, n: 5, bind: 159, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // AC LDY abs
-    Template { start: 1336, n: 5, bind: 160, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // AD LDA abs
-    Template { start: 1341, n: 5, bind: 161, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // AE LDX abs
-    Template { start: 1346, n: 6, bind: 162, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // AF LAX abs
-    Template { start: 1352, n: 0, bind: 163, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 8, pol: 1 }, iy_base: 0 }, // B0 BCS rel
-    Template { start: 1352, n: 13, bind: 163, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 2 }, // B1 LDA indy
-    Template { start: 1365, n: 0, bind: 165, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // B2 JAM impl
-    Template { start: 1365, n: 14, bind: 165, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 2 }, // B3 LAX indy
-    Template { start: 1379, n: 7, bind: 167, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // B4 LDY zpx
-    Template { start: 1386, n: 7, bind: 168, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // B5 LDA zpx
-    Template { start: 1393, n: 7, bind: 169, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // B6 LDX zpy
-    Template { start: 1400, n: 8, bind: 170, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // B7 LAX zpy
-    Template { start: 1408, n: 1, bind: 171, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // B8 CLV impl
-    Template { start: 1409, n: 7, bind: 171, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // B9 LDA absy
-    Template { start: 1416, n: 4, bind: 172, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // BA TSX impl
-    Template { start: 1420, n: 10, bind: 172, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // BB LAS absy
-    Template { start: 1430, n: 7, bind: 173, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // BC LDY absx
-    Template { start: 1437, n: 7, bind: 174, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // BD LDA absx
-    Template { start: 1444, n: 7, bind: 175, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // BE LDX absy
-    Template { start: 1451, n: 8, bind: 176, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // BF LAX absy
-    Template { start: 1459, n: 5, bind: 177, nbind: 2, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C0 CPY imm
-    Template { start: 1464, n: 16, bind: 179, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C1 CMP indx
-    Template { start: 1480, n: 0, bind: 180, nbind: 0, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C2 NOP imm
-    Template { start: 1480, n: 18, bind: 180, nbind: 1, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C3 DCP indx
-    Template { start: 1498, n: 6, bind: 181, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C4 CPY zp
-    Template { start: 1504, n: 6, bind: 182, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C5 CMP zp
-    Template { start: 1510, n: 6, bind: 183, nbind: 2, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C6 DEC zp
-    Template { start: 1516, n: 8, bind: 185, nbind: 2, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C7 DCP zp
-    Template { start: 1524, n: 4, bind: 187, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C8 INY impl
-    Template { start: 1528, n: 5, bind: 187, nbind: 2, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C9 CMP imm
-    Template { start: 1533, n: 4, bind: 189, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // CA DEX impl
-    Template { start: 1537, n: 6, bind: 189, nbind: 2, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // CB SBX imm
-    Template { start: 1543, n: 6, bind: 191, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // CC CPY abs
-    Template { start: 1549, n: 6, bind: 192, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // CD CMP abs
-    Template { start: 1555, n: 6, bind: 193, nbind: 2, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // CE DEC abs
-    Template { start: 1561, n: 8, bind: 195, nbind: 2, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // CF DCP abs
-    Template { start: 1569, n: 0, bind: 197, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 9, pol: 0 }, iy_base: 0 }, // D0 BNE rel
-    Template { start: 1569, n: 14, bind: 197, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 2 }, // D1 CMP indy
-    Template { start: 1583, n: 0, bind: 199, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // D2 JAM impl
-    Template { start: 1583, n: 16, bind: 199, nbind: 2, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // D3 DCP indy
-    Template { start: 1599, n: 3, bind: 201, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // D4 NOP zpx
-    Template { start: 1602, n: 8, bind: 202, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // D5 CMP zpx
-    Template { start: 1610, n: 8, bind: 203, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // D6 DEC zpx
-    Template { start: 1618, n: 10, bind: 204, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // D7 DCP zpx
-    Template { start: 1628, n: 1, bind: 205, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // D8 CLD impl
-    Template { start: 1629, n: 8, bind: 205, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // D9 CMP absy
-    Template { start: 1637, n: 0, bind: 206, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // DA NOP impl
-    Template { start: 1637, n: 10, bind: 206, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // DB DCP absy
-    Template { start: 1647, n: 3, bind: 207, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // DC NOP absx
-    Template { start: 1650, n: 8, bind: 208, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // DD CMP absx
-    Template { start: 1658, n: 8, bind: 209, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // DE DEC absx
-    Template { start: 1666, n: 10, bind: 210, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // DF DCP absx
-    Template { start: 1676, n: 5, bind: 211, nbind: 2, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E0 CPX imm
-    Template { start: 1681, n: 28, bind: 213, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E1 SBC indx
-    Template { start: 1709, n: 0, bind: 214, nbind: 0, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E2 NOP imm
-    Template { start: 1709, n: 30, bind: 214, nbind: 1, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E3 ISC indx
-    Template { start: 1739, n: 6, bind: 215, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E4 CPX zp
-    Template { start: 1745, n: 18, bind: 216, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E5 SBC zp
-    Template { start: 1763, n: 6, bind: 217, nbind: 2, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E6 INC zp
-    Template { start: 1769, n: 20, bind: 219, nbind: 2, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E7 ISC zp
-    Template { start: 1789, n: 4, bind: 221, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E8 INX impl
-    Template { start: 1793, n: 17, bind: 221, nbind: 3, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E9 SBC imm
-    Template { start: 1810, n: 0, bind: 224, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // EA NOP impl
-    Template { start: 1810, n: 17, bind: 224, nbind: 3, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // EB SBC imm
-    Template { start: 1827, n: 6, bind: 227, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // EC CPX abs
-    Template { start: 1833, n: 18, bind: 228, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // ED SBC abs
-    Template { start: 1851, n: 6, bind: 229, nbind: 2, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // EE INC abs
-    Template { start: 1857, n: 20, bind: 231, nbind: 2, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // EF ISC abs
-    Template { start: 1877, n: 0, bind: 233, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 9, pol: 1 }, iy_base: 0 }, // F0 BEQ rel
-    Template { start: 1877, n: 26, bind: 233, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 2 }, // F1 SBC indy
-    Template { start: 1903, n: 0, bind: 235, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // F2 JAM impl
-    Template { start: 1903, n: 28, bind: 235, nbind: 2, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // F3 ISC indy
-    Template { start: 1931, n: 3, bind: 237, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // F4 NOP zpx
-    Template { start: 1934, n: 20, bind: 238, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // F5 SBC zpx
-    Template { start: 1954, n: 8, bind: 239, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // F6 INC zpx
-    Template { start: 1962, n: 22, bind: 240, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // F7 ISC zpx
-    Template { start: 1984, n: 1, bind: 241, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // F8 SED impl
-    Template { start: 1985, n: 20, bind: 241, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // F9 SBC absy
-    Template { start: 2005, n: 0, bind: 242, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // FA NOP impl
-    Template { start: 2005, n: 22, bind: 242, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // FB ISC absy
-    Template { start: 2027, n: 3, bind: 243, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // FC NOP absx
-    Template { start: 2030, n: 20, bind: 244, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // FD SBC absx
-    Template { start: 2050, n: 8, bind: 245, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // FE INC absx
-    Template { start: 2058, n: 22, bind: 246, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // FF ISC absx
+    Template { start: 15, n: 21, bind: 1, nbind: 1, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 03 SLO indx
+    Template { start: 36, n: 1, bind: 2, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 04 NOP zp
+    Template { start: 37, n: 5, bind: 3, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 05 ORA zp
+    Template { start: 42, n: 10, bind: 4, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 06 ASL zp
+    Template { start: 52, n: 11, bind: 7, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 07 SLO zp
+    Template { start: 63, n: 15, bind: 10, nbind: 0, len: 1, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 08 PHP impl
+    Template { start: 78, n: 4, bind: 10, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 09 ORA imm
+    Template { start: 82, n: 8, bind: 11, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 0A ASL acc
+    Template { start: 90, n: 6, bind: 11, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 0B ANC imm
+    Template { start: 96, n: 1, bind: 12, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 0C NOP abs
+    Template { start: 97, n: 5, bind: 13, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 0D ORA abs
+    Template { start: 102, n: 10, bind: 14, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 0E ASL abs
+    Template { start: 112, n: 11, bind: 17, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 0F SLO abs
+    Template { start: 123, n: 0, bind: 20, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 14, pol: 0 }, iy_base: 0 }, // 10 BPL rel
+    Template { start: 123, n: 13, bind: 20, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 2 }, // 11 ORA indy
+    Template { start: 136, n: 0, bind: 22, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 12 JAM impl
+    Template { start: 136, n: 19, bind: 22, nbind: 2, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 13 SLO indy
+    Template { start: 155, n: 3, bind: 24, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 14 NOP zpx
+    Template { start: 158, n: 7, bind: 25, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 15 ORA zpx
+    Template { start: 165, n: 12, bind: 26, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 16 ASL zpx
+    Template { start: 177, n: 13, bind: 27, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 17 SLO zpx
+    Template { start: 190, n: 1, bind: 28, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 18 CLC impl
+    Template { start: 191, n: 7, bind: 28, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // 19 ORA absy
+    Template { start: 198, n: 0, bind: 29, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 1A NOP impl
+    Template { start: 198, n: 13, bind: 29, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 1B SLO absy
+    Template { start: 211, n: 3, bind: 30, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 1C NOP absx
+    Template { start: 214, n: 7, bind: 31, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 1D ORA absx
+    Template { start: 221, n: 12, bind: 32, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 1E ASL absx
+    Template { start: 233, n: 13, bind: 33, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 1F SLO absx
+    Template { start: 246, n: 0, bind: 34, nbind: 0, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Jsr, iy_base: 0 }, // 20 JSR abs
+    Template { start: 246, n: 15, bind: 34, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 21 AND indx
+    Template { start: 261, n: 0, bind: 35, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 22 JAM impl
+    Template { start: 261, n: 23, bind: 35, nbind: 1, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 23 RLA indx
+    Template { start: 284, n: 7, bind: 36, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 24 BIT zp
+    Template { start: 291, n: 5, bind: 37, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 25 AND zp
+    Template { start: 296, n: 12, bind: 38, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 26 ROL zp
+    Template { start: 308, n: 13, bind: 41, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 27 RLA zp
+    Template { start: 321, n: 15, bind: 44, nbind: 0, len: 1, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 28 PLP impl
+    Template { start: 336, n: 4, bind: 44, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 29 AND imm
+    Template { start: 340, n: 10, bind: 45, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 2A ROL acc
+    Template { start: 350, n: 6, bind: 45, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 2B ANC imm
+    Template { start: 356, n: 7, bind: 46, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 2C BIT abs
+    Template { start: 363, n: 5, bind: 47, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 2D AND abs
+    Template { start: 368, n: 12, bind: 48, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 2E ROL abs
+    Template { start: 380, n: 13, bind: 51, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 2F RLA abs
+    Template { start: 393, n: 0, bind: 54, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 14, pol: 1 }, iy_base: 0 }, // 30 BMI rel
+    Template { start: 393, n: 13, bind: 54, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 2 }, // 31 AND indy
+    Template { start: 406, n: 0, bind: 56, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 32 JAM impl
+    Template { start: 406, n: 21, bind: 56, nbind: 2, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 33 RLA indy
+    Template { start: 427, n: 3, bind: 58, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 34 NOP zpx
+    Template { start: 430, n: 7, bind: 59, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 35 AND zpx
+    Template { start: 437, n: 14, bind: 60, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 36 ROL zpx
+    Template { start: 451, n: 15, bind: 61, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 37 RLA zpx
+    Template { start: 466, n: 1, bind: 62, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 38 SEC impl
+    Template { start: 467, n: 7, bind: 62, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // 39 AND absy
+    Template { start: 474, n: 0, bind: 63, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 3A NOP impl
+    Template { start: 474, n: 15, bind: 63, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 3B RLA absy
+    Template { start: 489, n: 3, bind: 64, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 3C NOP absx
+    Template { start: 492, n: 7, bind: 65, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 3D AND absx
+    Template { start: 499, n: 14, bind: 66, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 3E ROL absx
+    Template { start: 513, n: 15, bind: 67, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 3F RLA absx
+    Template { start: 528, n: 0, bind: 68, nbind: 0, len: 1, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Rti, iy_base: 0 }, // 40 RTI impl
+    Template { start: 528, n: 15, bind: 68, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 41 EOR indx
+    Template { start: 543, n: 0, bind: 69, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 42 JAM impl
+    Template { start: 543, n: 20, bind: 69, nbind: 1, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 43 SRE indx
+    Template { start: 563, n: 1, bind: 70, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 44 NOP zp
+    Template { start: 564, n: 5, bind: 71, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 45 EOR zp
+    Template { start: 569, n: 9, bind: 72, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 46 LSR zp
+    Template { start: 578, n: 10, bind: 75, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 47 SRE zp
+    Template { start: 588, n: 4, bind: 78, nbind: 0, len: 1, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 48 PHA impl
+    Template { start: 592, n: 4, bind: 78, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 49 EOR imm
+    Template { start: 596, n: 7, bind: 79, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 4A LSR acc
+    Template { start: 603, n: 7, bind: 79, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 4B ALR imm
+    Template { start: 610, n: 0, bind: 80, nbind: 0, len: 3, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Jmp, iy_base: 0 }, // 4C JMP abs
+    Template { start: 610, n: 5, bind: 80, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 4D EOR abs
+    Template { start: 615, n: 9, bind: 81, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 4E LSR abs
+    Template { start: 624, n: 10, bind: 84, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 4F SRE abs
+    Template { start: 634, n: 0, bind: 87, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 13, pol: 0 }, iy_base: 0 }, // 50 BVC rel
+    Template { start: 634, n: 13, bind: 87, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 2 }, // 51 EOR indy
+    Template { start: 647, n: 0, bind: 89, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 52 JAM impl
+    Template { start: 647, n: 18, bind: 89, nbind: 2, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 53 SRE indy
+    Template { start: 665, n: 3, bind: 91, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 54 NOP zpx
+    Template { start: 668, n: 7, bind: 92, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 55 EOR zpx
+    Template { start: 675, n: 11, bind: 93, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 56 LSR zpx
+    Template { start: 686, n: 12, bind: 94, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 57 SRE zpx
+    Template { start: 698, n: 1, bind: 95, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 58 CLI impl
+    Template { start: 699, n: 7, bind: 95, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // 59 EOR absy
+    Template { start: 706, n: 0, bind: 96, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 5A NOP impl
+    Template { start: 706, n: 12, bind: 96, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 5B SRE absy
+    Template { start: 718, n: 3, bind: 97, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 5C NOP absx
+    Template { start: 721, n: 7, bind: 98, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 5D EOR absx
+    Template { start: 728, n: 11, bind: 99, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 5E LSR absx
+    Template { start: 739, n: 12, bind: 100, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 5F SRE absx
+    Template { start: 751, n: 0, bind: 101, nbind: 0, len: 1, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Rts, iy_base: 0 }, // 60 RTS impl
+    Template { start: 751, n: 26, bind: 101, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 61 ADC indx
+    Template { start: 777, n: 0, bind: 102, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 62 JAM impl
+    Template { start: 777, n: 34, bind: 102, nbind: 1, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 63 RRA indx
+    Template { start: 811, n: 1, bind: 103, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 64 NOP zp
+    Template { start: 812, n: 16, bind: 104, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 65 ADC zp
+    Template { start: 828, n: 12, bind: 105, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 66 ROR zp
+    Template { start: 840, n: 24, bind: 108, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 67 RRA zp
+    Template { start: 864, n: 8, bind: 111, nbind: 0, len: 1, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 68 PLA impl
+    Template { start: 872, n: 15, bind: 111, nbind: 3, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 69 ADC imm
+    Template { start: 887, n: 10, bind: 114, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 6A ROR acc
+    Template { start: 897, n: 14, bind: 114, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 6B ARR imm
+    Template { start: 911, n: 0, bind: 115, nbind: 0, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::JmpInd, iy_base: 0 }, // 6C JMP ind
+    Template { start: 911, n: 16, bind: 115, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 6D ADC abs
+    Template { start: 927, n: 12, bind: 116, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 6E ROR abs
+    Template { start: 939, n: 24, bind: 119, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 6F RRA abs
+    Template { start: 963, n: 0, bind: 122, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 13, pol: 1 }, iy_base: 0 }, // 70 BVS rel
+    Template { start: 963, n: 24, bind: 122, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 2 }, // 71 ADC indy
+    Template { start: 987, n: 0, bind: 124, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 72 JAM impl
+    Template { start: 987, n: 32, bind: 124, nbind: 2, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 73 RRA indy
+    Template { start: 1019, n: 3, bind: 126, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 74 NOP zpx
+    Template { start: 1022, n: 18, bind: 127, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 75 ADC zpx
+    Template { start: 1040, n: 14, bind: 128, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 76 ROR zpx
+    Template { start: 1054, n: 26, bind: 129, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 77 RRA zpx
+    Template { start: 1080, n: 1, bind: 130, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 78 SEI impl
+    Template { start: 1081, n: 18, bind: 130, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // 79 ADC absy
+    Template { start: 1099, n: 0, bind: 131, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 7A NOP impl
+    Template { start: 1099, n: 26, bind: 131, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 7B RRA absy
+    Template { start: 1125, n: 3, bind: 132, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 7C NOP absx
+    Template { start: 1128, n: 18, bind: 133, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 7D ADC absx
+    Template { start: 1146, n: 14, bind: 134, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 7E ROR absx
+    Template { start: 1160, n: 26, bind: 135, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 7F RRA absx
+    Template { start: 1186, n: 0, bind: 136, nbind: 0, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 80 NOP imm
+    Template { start: 1186, n: 11, bind: 136, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 81 STA indx
+    Template { start: 1197, n: 0, bind: 137, nbind: 0, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 82 NOP imm
+    Template { start: 1197, n: 12, bind: 137, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 83 SAX indx
+    Template { start: 1209, n: 1, bind: 138, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 84 STY zp
+    Template { start: 1210, n: 1, bind: 139, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 85 STA zp
+    Template { start: 1211, n: 1, bind: 140, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 86 STX zp
+    Template { start: 1212, n: 2, bind: 141, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 87 SAX zp
+    Template { start: 1214, n: 4, bind: 142, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 88 DEY impl
+    Template { start: 1218, n: 0, bind: 142, nbind: 0, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 89 NOP imm
+    Template { start: 1218, n: 4, bind: 142, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 8A TXA impl
+    Template { start: 1222, n: 6, bind: 142, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 8B ANE imm
+    Template { start: 1228, n: 1, bind: 143, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 8C STY abs
+    Template { start: 1229, n: 1, bind: 144, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 8D STA abs
+    Template { start: 1230, n: 1, bind: 145, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 8E STX abs
+    Template { start: 1231, n: 2, bind: 146, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 8F SAX abs
+    Template { start: 1233, n: 0, bind: 147, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 8, pol: 0 }, iy_base: 0 }, // 90 BCC rel
+    Template { start: 1233, n: 9, bind: 147, nbind: 2, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 91 STA indy
+    Template { start: 1242, n: 0, bind: 149, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 92 JAM impl
+    Template { start: 1242, n: 12, bind: 149, nbind: 2, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 93 SHA indy
+    Template { start: 1254, n: 3, bind: 151, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 94 STY zpx
+    Template { start: 1257, n: 3, bind: 152, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 95 STA zpx
+    Template { start: 1260, n: 3, bind: 153, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 96 STX zpy
+    Template { start: 1263, n: 4, bind: 154, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 97 SAX zpy
+    Template { start: 1267, n: 4, bind: 155, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 98 TYA impl
+    Template { start: 1271, n: 3, bind: 155, nbind: 1, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 99 STA absy
+    Template { start: 1274, n: 1, bind: 156, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 9A TXS impl
+    Template { start: 1275, n: 5, bind: 156, nbind: 2, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 9B TAS absy
+    Template { start: 1280, n: 4, bind: 158, nbind: 2, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 9C SHY absx
+    Template { start: 1284, n: 3, bind: 160, nbind: 1, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 9D STA absx
+    Template { start: 1287, n: 4, bind: 161, nbind: 2, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 9E SHX absy
+    Template { start: 1291, n: 5, bind: 163, nbind: 2, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 9F SHA absy
+    Template { start: 1296, n: 4, bind: 165, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A0 LDY imm
+    Template { start: 1300, n: 15, bind: 166, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A1 LDA indx
+    Template { start: 1315, n: 4, bind: 167, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A2 LDX imm
+    Template { start: 1319, n: 16, bind: 168, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A3 LAX indx
+    Template { start: 1335, n: 5, bind: 169, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A4 LDY zp
+    Template { start: 1340, n: 5, bind: 170, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A5 LDA zp
+    Template { start: 1345, n: 5, bind: 171, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A6 LDX zp
+    Template { start: 1350, n: 6, bind: 172, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A7 LAX zp
+    Template { start: 1356, n: 4, bind: 173, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A8 TAY impl
+    Template { start: 1360, n: 4, bind: 173, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A9 LDA imm
+    Template { start: 1364, n: 4, bind: 174, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // AA TAX impl
+    Template { start: 1368, n: 7, bind: 174, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // AB LXA imm
+    Template { start: 1375, n: 5, bind: 175, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // AC LDY abs
+    Template { start: 1380, n: 5, bind: 176, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // AD LDA abs
+    Template { start: 1385, n: 5, bind: 177, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // AE LDX abs
+    Template { start: 1390, n: 6, bind: 178, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // AF LAX abs
+    Template { start: 1396, n: 0, bind: 179, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 8, pol: 1 }, iy_base: 0 }, // B0 BCS rel
+    Template { start: 1396, n: 13, bind: 179, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 2 }, // B1 LDA indy
+    Template { start: 1409, n: 0, bind: 181, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // B2 JAM impl
+    Template { start: 1409, n: 14, bind: 181, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 2 }, // B3 LAX indy
+    Template { start: 1423, n: 7, bind: 183, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // B4 LDY zpx
+    Template { start: 1430, n: 7, bind: 184, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // B5 LDA zpx
+    Template { start: 1437, n: 7, bind: 185, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // B6 LDX zpy
+    Template { start: 1444, n: 8, bind: 186, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // B7 LAX zpy
+    Template { start: 1452, n: 1, bind: 187, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // B8 CLV impl
+    Template { start: 1453, n: 7, bind: 187, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // B9 LDA absy
+    Template { start: 1460, n: 4, bind: 188, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // BA TSX impl
+    Template { start: 1464, n: 10, bind: 188, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // BB LAS absy
+    Template { start: 1474, n: 7, bind: 189, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // BC LDY absx
+    Template { start: 1481, n: 7, bind: 190, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // BD LDA absx
+    Template { start: 1488, n: 7, bind: 191, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // BE LDX absy
+    Template { start: 1495, n: 8, bind: 192, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // BF LAX absy
+    Template { start: 1503, n: 5, bind: 193, nbind: 2, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C0 CPY imm
+    Template { start: 1508, n: 16, bind: 195, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C1 CMP indx
+    Template { start: 1524, n: 0, bind: 196, nbind: 0, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C2 NOP imm
+    Template { start: 1524, n: 19, bind: 196, nbind: 1, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C3 DCP indx
+    Template { start: 1543, n: 6, bind: 197, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C4 CPY zp
+    Template { start: 1549, n: 6, bind: 198, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C5 CMP zp
+    Template { start: 1555, n: 7, bind: 199, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C6 DEC zp
+    Template { start: 1562, n: 9, bind: 202, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C7 DCP zp
+    Template { start: 1571, n: 4, bind: 205, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C8 INY impl
+    Template { start: 1575, n: 5, bind: 205, nbind: 2, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C9 CMP imm
+    Template { start: 1580, n: 4, bind: 207, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // CA DEX impl
+    Template { start: 1584, n: 6, bind: 207, nbind: 2, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // CB SBX imm
+    Template { start: 1590, n: 6, bind: 209, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // CC CPY abs
+    Template { start: 1596, n: 6, bind: 210, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // CD CMP abs
+    Template { start: 1602, n: 7, bind: 211, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // CE DEC abs
+    Template { start: 1609, n: 9, bind: 214, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // CF DCP abs
+    Template { start: 1618, n: 0, bind: 217, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 9, pol: 0 }, iy_base: 0 }, // D0 BNE rel
+    Template { start: 1618, n: 14, bind: 217, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 2 }, // D1 CMP indy
+    Template { start: 1632, n: 0, bind: 219, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // D2 JAM impl
+    Template { start: 1632, n: 17, bind: 219, nbind: 2, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // D3 DCP indy
+    Template { start: 1649, n: 3, bind: 221, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // D4 NOP zpx
+    Template { start: 1652, n: 8, bind: 222, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // D5 CMP zpx
+    Template { start: 1660, n: 9, bind: 223, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // D6 DEC zpx
+    Template { start: 1669, n: 11, bind: 224, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // D7 DCP zpx
+    Template { start: 1680, n: 1, bind: 225, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // D8 CLD impl
+    Template { start: 1681, n: 8, bind: 225, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // D9 CMP absy
+    Template { start: 1689, n: 0, bind: 226, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // DA NOP impl
+    Template { start: 1689, n: 11, bind: 226, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // DB DCP absy
+    Template { start: 1700, n: 3, bind: 227, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // DC NOP absx
+    Template { start: 1703, n: 8, bind: 228, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // DD CMP absx
+    Template { start: 1711, n: 9, bind: 229, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // DE DEC absx
+    Template { start: 1720, n: 11, bind: 230, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // DF DCP absx
+    Template { start: 1731, n: 5, bind: 231, nbind: 2, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E0 CPX imm
+    Template { start: 1736, n: 28, bind: 233, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E1 SBC indx
+    Template { start: 1764, n: 0, bind: 234, nbind: 0, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E2 NOP imm
+    Template { start: 1764, n: 31, bind: 234, nbind: 1, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E3 ISC indx
+    Template { start: 1795, n: 6, bind: 235, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E4 CPX zp
+    Template { start: 1801, n: 18, bind: 236, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E5 SBC zp
+    Template { start: 1819, n: 7, bind: 237, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E6 INC zp
+    Template { start: 1826, n: 21, bind: 240, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E7 ISC zp
+    Template { start: 1847, n: 4, bind: 243, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E8 INX impl
+    Template { start: 1851, n: 17, bind: 243, nbind: 3, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E9 SBC imm
+    Template { start: 1868, n: 0, bind: 246, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // EA NOP impl
+    Template { start: 1868, n: 17, bind: 246, nbind: 3, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // EB SBC imm
+    Template { start: 1885, n: 6, bind: 249, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // EC CPX abs
+    Template { start: 1891, n: 18, bind: 250, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // ED SBC abs
+    Template { start: 1909, n: 7, bind: 251, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // EE INC abs
+    Template { start: 1916, n: 21, bind: 254, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // EF ISC abs
+    Template { start: 1937, n: 0, bind: 257, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 9, pol: 1 }, iy_base: 0 }, // F0 BEQ rel
+    Template { start: 1937, n: 26, bind: 257, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 2 }, // F1 SBC indy
+    Template { start: 1963, n: 0, bind: 259, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // F2 JAM impl
+    Template { start: 1963, n: 29, bind: 259, nbind: 2, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // F3 ISC indy
+    Template { start: 1992, n: 3, bind: 261, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // F4 NOP zpx
+    Template { start: 1995, n: 20, bind: 262, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // F5 SBC zpx
+    Template { start: 2015, n: 9, bind: 263, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // F6 INC zpx
+    Template { start: 2024, n: 23, bind: 264, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // F7 ISC zpx
+    Template { start: 2047, n: 1, bind: 265, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // F8 SED impl
+    Template { start: 2048, n: 20, bind: 265, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // F9 SBC absy
+    Template { start: 2068, n: 0, bind: 266, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // FA NOP impl
+    Template { start: 2068, n: 23, bind: 266, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // FB ISC absy
+    Template { start: 2091, n: 3, bind: 267, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // FC NOP absx
+    Template { start: 2094, n: 20, bind: 268, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // FD SBC absx
+    Template { start: 2114, n: 9, bind: 269, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // FE INC absx
+    Template { start: 2123, n: 23, bind: 270, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // FF ISC absx
 ];
