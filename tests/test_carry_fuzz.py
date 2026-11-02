@@ -144,8 +144,9 @@ def _mem(img, words):
 
 
 @pytest.mark.parametrize("cycles", [False, True])
-# Seeds past 80 fail when the fusion's alias, store-order or liveness checks are dropped.
-@pytest.mark.parametrize("seed", [*range(80), 745, 1491, 2551, 4236, 2054])
+# Seeds past 80 fail when the fusion's alias, store-order or liveness checks are dropped, or a
+# merged join loses the temporaries its successors read.
+@pytest.mark.parametrize("seed", [*range(80), 745, 1491, 2551, 4236, 2054, 292, 334])
 def test_random_carry_programs_are_exact(seed, cycles):
     src, calls = program(seed)
     img, labels = assemble(src)

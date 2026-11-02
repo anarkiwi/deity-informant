@@ -50,8 +50,7 @@ impl Ctx<'_> {
 /// the op count unchanged.
 pub fn optimize(f: &mut Function, cx: &Ctx, fi: usize) {
     pin_resume(f, cx, fi);
-    let mut last = usize::MAX;
-    loop {
+    let round = |f: &mut Function| {
         cleanup(f);
         rename(f);
         let consts = propagate(f, cx);
@@ -59,24 +58,25 @@ pub fn optimize(f: &mut Function, cx: &Ctx, fi: usize) {
         cleanup(f);
         combine_adds(f);
         dce(f, cx, fi);
-        if !cx.cycles {
-            let fused = crate::wide::fuse(f, &mut |g| dce(g, cx, fi), &mut |g| {
-                cleanup(g);
-                rename(g);
-                let consts = propagate(g, cx);
-                number(g, cx, &consts);
-                cleanup(g);
-                combine_adds(g);
-                dce(g, cx, fi);
-            });
-            f.chains.extend(fused);
-        }
+    };
+    let mut last = usize::MAX;
+    loop {
+        round(f);
         let n: usize = f.blocks.iter().map(|b| b.ops.len()).sum();
         debug_assert!(n <= last);
         if n == last {
-            break;
+            // Carry chains are fused once the rest has converged, then optimized again.
+            let fused = if cx.cycles {
+                Vec::new()
+            } else {
+                crate::wide::fuse(f, &|g, c| block_costs(g, cx, fi, c), &mut |g| round(g))
+            };
+            if fused.is_empty() {
+                break;
+            }
+            f.chains.extend(fused);
         }
-        last = n;
+        last = f.blocks.iter().map(|b| b.ops.len()).sum();
     }
     renumber_temps(f);
 }
@@ -1261,15 +1261,26 @@ impl Live<'_> {
         live_in: &[FixedBitSet],
         call: &mut dyn FnMut(u32, u32),
     ) -> Vec<bool> {
+        self.transfer_ops(b, &self.f.blocks[b].ops, live, live_in, call)
+    }
+    /// [`Self::transfer`] of block `b` with `ops` in place of its own.
+    fn transfer_ops(
+        &self,
+        b: usize,
+        ops: &[LOp],
+        live: &mut FixedBitSet,
+        live_in: &[FixedBitSet],
+        call: &mut dyn FnMut(u32, u32),
+    ) -> Vec<bool> {
         let blk = &self.f.blocks[b];
-        let mut keep = vec![true; blk.ops.len()];
-        let mut hs = Vec::with_capacity(blk.ops.len());
+        let mut keep = vec![true; ops.len()];
+        let mut hs = Vec::with_capacity(ops.len());
         let mut h = self.hin[b];
-        for op in &blk.ops {
+        for op in ops {
             hs.push(h);
             h = sp_abs(op, h);
         }
-        for (i, op) in blk.ops.iter().enumerate().rev() {
+        for (i, op) in ops.iter().enumerate().rev() {
             let h = hs[i];
             match op.opc {
                 Opc::Call => {
@@ -1390,6 +1401,21 @@ fn live<'a>(f: &'a Function, cx: &'a Ctx<'a>, fi: usize) -> Live<'a> {
 }
 
 /// Remove ops whose results are never used, by liveness.
+/// Per `(b, ops)`, the ops `dce` would keep of block `b` of `f` holding `ops` instead, by the
+/// liveness of `f` (which `ops` can only shrink, so each count is an upper bound).
+fn block_costs(f: &Function, cx: &Ctx, fi: usize, cands: &[(usize, Vec<LOp>)]) -> Vec<usize> {
+    let lv = live(f, cx, fi);
+    let live_in = lv.solve(&mut |_, _| {});
+    cands
+        .iter()
+        .map(|(b, ops)| {
+            let mut l = lv.live_out(*b, &live_in);
+            let keep = lv.transfer_ops(*b, ops, &mut l, &live_in, &mut |_, _| {});
+            keep.iter().filter(|&&k| k).count()
+        })
+        .collect()
+}
+
 fn dce(f: &mut Function, cx: &Ctx, fi: usize) {
     let keeps: Vec<Vec<bool>> = {
         let lv = live(f, cx, fi);

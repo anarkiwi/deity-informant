@@ -118,8 +118,12 @@ fn key(v: Vn) -> u32 {
 impl<'a> View<'a> {
     fn new(ops: &'a [LOp]) -> View<'a> {
         let mut def: FxHashMap<u32, u32> = FxHashMap::default();
-        let mut ins = Vec::with_capacity(ops.len());
+        let mut ins: Vec<[R; 2]> = Vec::with_capacity(ops.len());
         let mut uses = vec![Vec::new(); ops.len()];
+        // Plain one-byte loads by address since the last store that may reach them; a reload
+        // is the first load's value.
+        let mut avail: Vec<(R, u32)> = Vec::new();
+        let mut canon: Vec<u32> = Vec::with_capacity(ops.len());
         for (i, op) in ops.iter().enumerate() {
             let mut r = [K0; 2];
             for (j, &v) in op.inputs().iter().enumerate() {
@@ -127,6 +131,7 @@ impl<'a> View<'a> {
                     Space::Const => R::K(v.off()),
                     _ => match def.get(&key(v)) {
                         Some(&d) if ops[d as usize].out.size() == v.size() => {
+                            let d = canon[d as usize];
                             uses[d as usize].push(i as u32);
                             R::Op(d)
                         }
@@ -136,11 +141,44 @@ impl<'a> View<'a> {
                 };
             }
             ins.push(r);
+            let mut c = i as u32;
+            match op.opc {
+                Opc::Load if op.aux == 0 && op.out.size() == 1 => {
+                    match avail.iter().find(|e| e.0 == r[0]) {
+                        Some(&(_, j)) => c = j,
+                        None => avail.push((r[0], i as u32)),
+                    }
+                }
+                Opc::Store => {
+                    let at = Self::split(&ins, ops, r[0]);
+                    let w = op.ins[1].size();
+                    avail.retain(|e| {
+                        let (b, o) = Self::split(&ins, ops, e.0);
+                        b == at.0 && o.wrapping_sub(at.1) & 0xffff >= w
+                    });
+                }
+                Opc::Call => avail.clear(),
+                _ => {}
+            }
+            canon.push(c);
             if !op.out.is_none() {
                 def.insert(key(op.out), i as u32);
             }
         }
         View { ops, ins, uses }
+    }
+    /// `a` as a base and offset, from the ops resolved so far.
+    fn split(ins: &[[R; 2]], ops: &[LOp], a: R) -> (Option<R>, u32) {
+        match a {
+            R::K(c) => (None, c),
+            R::Op(i) if ops[i as usize].opc == Opc::IntAdd && ops[i as usize].out.size() == 2 => {
+                match ins[i as usize] {
+                    [b, R::K(c)] | [R::K(c), b] => (Some(b), c),
+                    _ => (Some(a), 0),
+                }
+            }
+            _ => (Some(a), 0),
+        }
     }
     fn op(&self, r: R) -> Option<(&LOp, [R; 2])> {
         match r {
@@ -156,18 +194,15 @@ impl<'a> View<'a> {
         }
     }
     /// Operands of `r = opc(a, b)` in both orders when `opc` commutes.
-    fn bin(&self, r: R, opc: Opc) -> Vec<(R, R)> {
-        match self.op(r) {
+    fn bin(&self, r: R, opc: Opc) -> impl Iterator<Item = (R, R)> {
+        let (n, a, b) = match self.op(r) {
             Some((op, [a, b])) if op.opc == opc => {
                 let comm = matches!(opc, Opc::IntAdd | Opc::IntOr | Opc::IntAnd | Opc::IntXor);
-                if comm && a != b {
-                    vec![(a, b), (b, a)]
-                } else {
-                    vec![(a, b)]
-                }
+                (1 + (comm && a != b) as usize, a, b)
             }
-            _ => Vec::new(),
-        }
+            _ => (0, K0, K0),
+        };
+        [(a, b), (b, a)].into_iter().take(n)
     }
     fn is(&self, r: R, opc: Opc, size: u32) -> Option<[R; 2]> {
         self.op(r)
@@ -250,7 +285,7 @@ impl<'a> View<'a> {
                     if let (Some([x, y]), Some([s, c])) =
                         (self.is(p, Opc::IntCarry, 1), self.is(q, Opc::IntCarry, 1))
                     {
-                        if self.bin(s, Opc::IntAdd).contains(&(x, y)) && self.bool(c) {
+                        if self.bin(s, Opc::IntAdd).any(|e| e == (x, y)) && self.bool(c) {
                             out.push(add(x, y, c));
                         }
                     }
@@ -284,7 +319,7 @@ impl<'a> View<'a> {
                 }
             }
             (Opc::IntNotEqual, false) if b == K0 => {
-                if let Some((x, R::K(0x80))) = self.bin(a, Opc::IntAnd).first().copied() {
+                if let Some((x, _)) = self.bin(a, Opc::IntAnd).find(|e| e.1 == R::K(0x80)) {
                     out.push(Spec {
                         kind: Kind::Shl,
                         x,
@@ -422,14 +457,7 @@ impl<'a> View<'a> {
     }
     /// An address as a base (none: a constant) and an offset.
     fn addr(&self, a: R) -> (Option<R>, u32) {
-        match a {
-            R::K(c) => (None, c),
-            _ => match self.is(a, Opc::IntAdd, 2) {
-                Some([b, R::K(c)]) => (Some(b), c),
-                Some([R::K(c), b]) => (Some(b), c),
-                _ => (Some(a), 0),
-            },
-        }
+        Self::split(&self.ins, self.ops, a)
     }
     /// The `w1` bytes at `a1` and the `w2` bytes at `a2` may overlap.
     fn alias(&self, a1: R, w1: u32, a2: R, w2: u32) -> bool {
@@ -907,22 +935,16 @@ pub fn recognize(f: &Function) -> Vec<Chain> {
     out
 }
 
-/// If-convert the carry-propagating successor of block `b`: the converted block and where its
-/// update stores.
-fn ifconv(f: &Function, b: usize, tmps: &mut Temps) -> Option<(Block, Place)> {
+/// If-convert the carry-propagating successor of block `b` (with the join when only the two
+/// reach it): the converted block, where its update stores and the update's op.
+fn ifconv(f: &Function, preds: &[u32], b: usize, tmps: &mut Temps) -> Option<(Block, Place, u32)> {
     let blk = &f.blocks[b];
     let n = blk.ops.len();
     let (cb, br) = (blk.ops.get(n.checked_sub(2)?)?, blk.ops[n - 1]);
     if cb.opc != Opc::CBranch || br.opc != Opc::Branch {
         return None;
     }
-    let preds = |t: u32| {
-        f.blocks
-            .iter()
-            .flat_map(|x| x.succs(&f.tables))
-            .filter(|&s| s == t)
-            .count()
-    };
+    let preds = |t: u32| preds[t as usize];
     for (side, join, taken) in [(br.aux, cb.aux, false), (cb.aux, br.aux, true)] {
         let s = &f.blocks[side as usize];
         if side as usize == b
@@ -975,6 +997,7 @@ fn ifconv(f: &Function, b: usize, tmps: &mut Temps) -> Option<(Block, Place)> {
             0,
         ));
         let mut map: FxHashMap<u32, Vn> = FxHashMap::default();
+        let mut upd_at = 0;
         // The byte below must be stored before the join or in it.
         let at = v.place(sa);
         let below = match at {
@@ -996,6 +1019,7 @@ fn ifconv(f: &Function, b: usize, tmps: &mut Temps) -> Option<(Block, Place)> {
             }
             if i as u32 == pos(sv).unwrap() {
                 o.ins[1] = p;
+                upd_at = ops.len() as u32;
             }
             if o.out.space() == Space::Unique {
                 let t = tmps.get(o.out.size());
@@ -1004,64 +1028,115 @@ fn ifconv(f: &Function, b: usize, tmps: &mut Temps) -> Option<(Block, Place)> {
             }
             ops.push(o);
         }
-        ops.push(LOp::new(Opc::Branch, Vn::NONE, Vn::NONE, Vn::NONE, join));
-        return Some((Block { ops, ..blk.clone() }, at));
+        // A join reached only from here and the side block continues the block.
+        let j = &f.blocks[join as usize];
+        let merge = join as usize != b
+            && preds(join) == 2
+            && !j.check
+            && j.resume.is_none()
+            && j.replay.is_none();
+        // The join keeps its temporaries: the blocks it reaches read them, and it reads none of
+        // the block's.
+        if merge {
+            ops.extend_from_slice(&j.ops);
+        } else {
+            ops.push(LOp::new(Opc::Branch, Vn::NONE, Vn::NONE, Vn::NONE, join));
+        }
+        return Some((Block { ops, ..blk.clone() }, at, upd_at));
     }
     None
+}
+
+/// Edges into each block of `f`.
+fn edges_in(f: &Function) -> Vec<u32> {
+    let mut n = vec![0u32; f.blocks.len()];
+    for s in f.blocks.iter().flat_map(|b| b.succs(&f.tables)) {
+        n[s as usize] += 1;
+    }
+    n
 }
 
 fn count(f: &Function) -> usize {
     f.blocks.iter().map(|b| b.ops.len()).sum()
 }
 
-/// Fuse the chains of `f` within blocks whose wide form leaves fewer ops after `dce`.
-fn straight(f: &mut Function, dce: &mut dyn FnMut(&mut Function)) -> Vec<Chain> {
+/// The ops dead-code elimination would keep of each block `b` of a function holding `ops`.
+pub type Costs<'c> = dyn Fn(&Function, &[(usize, Vec<LOp>)]) -> Vec<usize> + 'c;
+
+/// Fuse the chains of `f` (only in the blocks starting at `only`, if given) whose wide form
+/// leaves fewer ops in their block.
+fn straight(f: &mut Function, costs: &Costs, only: Option<u16>, tmps: &mut Temps) -> Vec<Chain> {
     let mut done = Vec::new();
-    let mut b = 0;
-    while b < f.blocks.len() {
-        let mut tmps = Temps::of(f);
-        let blk = f.blocks[b].clone();
-        let fused = chains(&View::new(&blk.ops))
-            .into_iter()
-            .find_map(|(base, links)| {
-                let (ops, chain) = rewrite(&blk, base, &links, &mut tmps)?;
-                let mut g = f.clone();
-                g.blocks[b].ops = ops;
-                g.ntemps = g.ntemps.max(tmps.0 as u32);
-                dce(&mut g);
-                (count(&g) < count(f)).then_some((g, chain))
-            });
-        match fused {
-            Some((g, chain)) => {
-                *f = g;
-                done.push(chain);
+    loop {
+        // Each block's own ops, then its rewrites with the index of its own.
+        let mut cands: Vec<(usize, Vec<LOp>)> = Vec::new();
+        let mut info: Vec<Option<(usize, Chain)>> = Vec::new();
+        for (b, blk) in f.blocks.iter().enumerate() {
+            if only.is_some_and(|pc| blk.pc != pc) {
+                continue;
             }
-            None => b += 1,
+            let own = cands.len();
+            for (spec, links) in chains(&View::new(&blk.ops)) {
+                if let Some((ops, chain)) = rewrite(blk, spec, &links, tmps) {
+                    if cands.len() == own {
+                        cands.push((b, blk.ops.clone()));
+                        info.push(None);
+                    }
+                    cands.push((b, ops));
+                    info.push(Some((own, chain)));
+                }
+            }
         }
+        if cands.is_empty() {
+            return done;
+        }
+        f.ntemps = f.ntemps.max(tmps.0 as u32);
+        let cost = costs(f, &cands);
+        let best =
+            (0..cands.len()).find(|&i| info[i].as_ref().is_some_and(|x| cost[i] < cost[x.0]));
+        let Some(i) = best else {
+            return done;
+        };
+        let (b, ops) = cands.swap_remove(i);
+        f.blocks[b].ops = ops;
+        done.extend(info.swap_remove(i).map(|x| x.1));
     }
-    done
 }
 
-/// Fuse the chains of `f` whose wide form leaves fewer ops after `dce`, if-converting a carry
-/// propagation (and re-optimizing with `round`) when that completes a fused chain storing the
-/// propagated byte; the fused chains.
-pub fn fuse(
-    f: &mut Function,
-    dce: &mut dyn FnMut(&mut Function),
-    round: &mut dyn FnMut(&mut Function),
-) -> Vec<Chain> {
-    let mut done = straight(f, dce);
+/// Fuse the chains of `f` whose wide form leaves fewer ops, if-converting a carry propagation
+/// (and re-optimizing with `round`) when that completes a fused chain storing the propagated
+/// byte; the fused chains.
+pub fn fuse(f: &mut Function, costs: &Costs, round: &mut dyn FnMut(&mut Function)) -> Vec<Chain> {
+    let mut tmps = Temps::of(f);
+    let mut done = straight(f, costs, None, &mut tmps);
+    let mut tried: FxHashSet<u16> = FxHashSet::default();
+    let mut preds = edges_in(f);
     let mut b = 0;
     while b < f.blocks.len() {
-        let mut tmps = Temps::of(f);
-        if let Some((blk, at)) = ifconv(f, b, &mut tmps) {
+        let pc = f.blocks[b].pc;
+        let conv = ifconv(f, &preds, b, &mut tmps).filter(|_| tried.insert(pc));
+        // The converted block itself must hold a chain through the update, rewritable with a
+        // wide store, before the function is re-optimized to cost it.
+        let conv = conv.filter(|(blk, _, upd)| {
+            chains(&View::new(&blk.ops))
+                .into_iter()
+                .any(|(spec, links)| {
+                    links.iter().any(|l| l.r == Some(*upd))
+                        && rewrite(blk, spec, &links, &mut tmps).is_some_and(|c| !c.1.r.is_empty())
+                })
+        });
+        if let Some((blk, at, _)) = conv {
             let mut g = f.clone();
             g.blocks[b] = blk;
             g.ntemps = g.ntemps.max(tmps.0 as u32);
             round(&mut g);
-            let fused = straight(&mut g, dce);
+            let mut t = Temps::of(&g);
+            let fused = straight(&mut g, costs, Some(pc), &mut t);
+            round(&mut g);
             if fused.iter().any(|c| c.r.contains(&at)) && count(&g) < count(f) {
                 *f = g;
+                preds = edges_in(f);
+                tmps = t;
                 done.extend(fused);
                 b = 0;
                 continue;

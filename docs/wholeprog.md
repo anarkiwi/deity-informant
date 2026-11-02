@@ -315,14 +315,18 @@ its value (`V`, `N`, `Z` of the top byte, an intermediate carry pushed or branch
 result's byte stores, when adjacent and nothing between them can read or write their bytes or
 leave the block, become one wide store. Loads move up only past stores that cannot reach their
 bytes (by base and offset, else by address interval), never past a `CALL`. The fused chain is
-kept when dead-code elimination then leaves fewer ops, which it does when the intermediate
-carries flow only into the next link.
+kept when dead-code elimination (by the function's liveness) would then leave fewer ops in its
+block, which it does when the intermediate carries flow only into the next link. Fusion runs
+once the other passes have converged, and they run again after it.
 
 A carry branch over a block that only increments or decrements one byte (`BCC`/`BNE` over
 `INC hi`, `BNE`/`BCS` over `DEC hi`) is if-converted into its predecessor as `hi ± carry` when
 that block writes no register (the flags it sets are dead at the join) and its load and store
-are plain, so the byte is re-stored unchanged when the carry is clear; the conversion is kept
-only when it completes a fused chain storing that byte.
+are plain, so the byte is re-stored unchanged when the carry is clear; a join only the two
+blocks reach continues the converted block (`LDA lo; BNE; DEC hi; DEC lo`). A conversion whose
+block holds a chain through the update is re-optimized and kept only when that completes a
+fused chain storing the byte with fewer ops. Chains are matched with reloads of a byte no store
+may have reached read as the first load.
 
 Links emitted at an instruction where the interval analysis finds the decimal flag may be set
 carry `ir::DECIMAL` and are never fused: entries are guarded to run with `D` clear, so only
