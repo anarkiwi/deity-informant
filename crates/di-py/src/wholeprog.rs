@@ -542,9 +542,11 @@ impl Program {
     /// ``deity_informant.c64.check`` over packed machine records (``vagrant_moses.smc.Records``
     /// fields): entry 0 runs once per record from ``first`` on, from ``mem`` and ``reg``, with A
     /// from ``accs`` (0 past its end), ``port`` (when given) stored to $01 first and the
-    /// record's device reads replayed; the machine's RAM is ``mem`` as it starts plus each
-    /// record's changes; ``ret`` as :meth:`call`. ``[call, *mismatch]`` of the first record the
-    /// lift differs from or reaches the halt of, or None.
+    /// record's device reads replayed; the machine's RAM is the records' ``origin`` plus each
+    /// record's changes (``mem`` when there are none); ``ret`` as :meth:`call`. ``(bad, reg)``:
+    /// ``[call, *mismatch]`` of the first record the lift differs from or reaches the halt of,
+    /// or None, and the lift's registers after its last call, so the records of one run checked
+    /// in pieces check as one.
     #[pyo3(signature = (mem, reg, records, first, port=None, max_cycles=10_000_000, accs=None, ret=None))]
     #[allow(clippy::too_many_arguments)]
     fn check<'py>(
@@ -558,13 +560,20 @@ impl Program {
         max_cycles: u64,
         accs: Option<Vec<u8>>,
         ret: Option<u16>,
-    ) -> PyResult<Option<Bound<'py, PyList>>> {
+    ) -> PyResult<(Option<Bound<'py, PyList>>, [u8; 16])> {
         let backend = self.backend_or(None)?;
         let r = records.view()?;
         let banked = self.prog.bank.is_some();
+        let origin = <&[u8; 0x10000]>::try_from(records.origin.as_bytes()).ok();
+        let mut reg = reg;
         let bad = with_mem(mem, |m| {
-            let mut refm = Box::new(*m);
-            let (mut reg, mut reads) = (reg, Vec::new());
+            let mut refm = Box::new(*origin.unwrap_or(m));
+            for k in 0..first.min(r.len()) {
+                for (a, v) in r.delta(k) {
+                    refm[a as usize] = v;
+                }
+            }
+            let mut reads = Vec::new();
             for k in first..r.len() {
                 let n = k - first;
                 for (a, v) in r.delta(k) {
@@ -590,15 +599,17 @@ impl Program {
             }
             None
         })?;
-        bad.map(|(n, b)| {
-            let l = PyList::empty(py);
-            l.append(n)?;
-            for x in b.into_pyobject(py)?.try_iter()? {
-                l.append(x?)?;
-            }
-            Ok(l)
-        })
-        .transpose()
+        let bad = bad
+            .map(|(n, b)| {
+                let l = PyList::empty(py);
+                l.append(n)?;
+                for x in b.into_pyobject(py)?.try_iter()? {
+                    l.append(x?)?;
+                }
+                Ok::<_, PyErr>(l)
+            })
+            .transpose()?;
+        Ok((bad, reg))
     }
 
     /// A :class:`Session` over ``mem``: repeated ``call``s from one CPU state (``reg``),
@@ -947,6 +958,7 @@ pub fn lift_many(
 /// Packed machine records (``vagrant_moses.smc.Records``) as Python passes them.
 #[derive(FromPyObject)]
 pub struct Records<'py> {
+    origin: Bound<'py, PyBytes>,
     meta: Bound<'py, PyBytes>,
     log: Bound<'py, PyBytes>,
     log_end: Bound<'py, PyBytes>,

@@ -8,6 +8,10 @@ vagrant-moses' SMC recorder to the same cells, and is the default where the reco
 from __future__ import annotations
 
 
+import weakref
+from collections import deque
+from itertools import groupby, repeat
+
 import numpy as np
 from vagrant_moses import machine as vm
 from vagrant_moses import memmap as mm
@@ -36,9 +40,13 @@ __all__ = [
     "SENTINEL",
     "SMC_NATIVE",
     "native_cells",
+    "Queue",
+    "weak",
 ]
 
 SENTINEL = 0xCFF0
+#: Cycles a run makes between its :meth:`MachineOracle._window` calls.
+WINDOW = 1 << 22
 #: A host I/O access in :meth:`MachineOracle.run`: a read; a write of the value last read.
 READ, READ_BACK = None, -1
 _ENTRY = {
@@ -69,6 +77,78 @@ def _machine(ntsc, sids, roms, on_io=None):
     (when given) sees every I/O access as ``(addr, value, is_write)``."""
     kw = {} if on_io is None else {"on_io": on_io}
     return vm.Machine(ntsc, sids=sids, backend="native", roms=roms, **kw)
+
+
+class Queue:
+    """Calls in order, held as runs ``[call, times]`` of equal calls so that a long run of one
+    call takes constant memory; ``runs`` adds such runs after ``calls``."""
+
+    def __init__(self, calls=(), runs=()):
+        self.runs, self.n = deque(), 0
+        for call, group in groupby(calls):
+            self.add(call, sum(1 for _ in group))
+        for call, times in runs:
+            self.add(call, times)
+
+    def add(self, call, times=1):
+        """Queue ``call`` ``times`` times."""
+        if times > 0:
+            if self.runs and self.runs[-1][0] == call:
+                self.runs[-1][1] += times
+            else:
+                self.runs.append([call, times])
+            self.n += times
+
+    def __len__(self):
+        return self.n
+
+    def __iter__(self):
+        return (c for call, times in self.runs for c in repeat(call, times))
+
+    def __getitem__(self, k):
+        for call, times in self.runs:
+            if k < times:
+                return call
+            k -= times
+        raise IndexError(k)
+
+    def head(self, k):
+        """The first ``k`` calls."""
+        out = Queue()
+        for call, times in self.runs:
+            if k <= 0:
+                break
+            out.add(call, min(times, k))
+            k -= times
+        return out
+
+    def drop(self, k):
+        """Remove the first ``k`` calls."""
+        self.n -= k
+        while k:
+            run = self.runs[0]
+            if run[1] > k:
+                run[1] -= k
+                return
+            k -= self.runs.popleft()[1]
+
+    def pop(self):
+        """Remove and return the first call."""
+        call = self.runs[0][0]
+        self.drop(1)
+        return call
+
+
+def weak(method):
+    """``method`` called through a weak reference to its object, for a hook the machine keeps:
+    the object's RAM array (a buffer the GC does not traverse) would otherwise close an
+    uncollectable cycle through the machine."""
+    ref = weakref.WeakMethod(method)
+
+    def call(*args):
+        return ref()(*args)
+
+    return call
 
 
 def _frames(events, sp):
@@ -164,7 +244,7 @@ class MachineOracle:
         self.shadow = self.ram.copy()
         self.cls = Classifier(img, banked=True)
         self.sentinel = sentinel
-        self.queue = []
+        self.queue = Queue()
         self.prev = None
         self.bits = None
         self.stack = []
@@ -289,7 +369,7 @@ class MachineOracle:
                 mc.watch = set()
             mc.stop = True
             return False
-        phase, pc, a = self.queue.pop(0)
+        phase, pc, a = self.queue.pop()
         port = self.ports.get(phase)
         if self.native:
             return self._native_call(mc, phase, pc, a, port)
@@ -359,15 +439,18 @@ class MachineOracle:
         """
         self.ports = dict(ports or {})
         self.returns = returns or self.sentinel
-        self.queue = [("init", pc, a) for pc, a in init] + [("call", pc, a) for pc, a in calls]
+        calls = calls if isinstance(calls, Queue) else Queue(calls)
+        self.queue = Queue(("init", pc, a) for pc, a in init)
+        for (pc, a), times in calls.runs:
+            self.queue.add(("call", pc, a), times)
         self.irq_driven = frames > 0
         self.call_cycles = call_cycles
         m = self.m
         t = m.reset(self.sentinel)
         self._host_io(t, io)
         if not self.native:
-            m.set_decode_hook(self._decode)  # pylint: disable=no-member
-        m.set_trap(self._trap, {self.sentinel})  # pylint: disable=no-member
+            m.set_decode_hook(weak(self._decode))  # pylint: disable=no-member
+        m.set_trap(weak(self._trap), {self.sentinel})  # pylint: disable=no-member
         t = self.call_start = m.reset(self.sentinel, t + start)
         self.shadow[:] = self.ram
         if irq_setup:
@@ -382,14 +465,14 @@ class MachineOracle:
         queue = self.native_queue and not self.irq_driven and self.returns == self.sentinel
         if self.native and CALLS and queue:
             self._queue_native()
-            m.run(limit)
-            self.queue = self.queue[len(self.queue) - self.calls.left :]
+            self._run(limit)
+            self.queue.drop(len(self.queue) - self.calls.left)
         else:
-            m.run(limit)
+            self._run(limit)
         if self.irq_driven:
             self._frames_phase(index_frames)
             m.stop = False
-            m.run(m.cycle + frame_cycles)
+            self._run(m.cycle + frame_cycles)
         if self.native:
             return self._native_run()
         m.set_decode_hook(None)  # pylint: disable=no-member
@@ -398,6 +481,19 @@ class MachineOracle:
         self._sweep()
         done = not m.jammed and (self.irq_driven or not (self.queue or self.timeout))
         return Run(self.cls.cells, self.cls.unclassified, done, self.cls.first)
+
+    def _run(self, limit):
+        """Run the machine to cycle ``limit`` or until it stops, :data:`WINDOW` cycles at a
+        time, :meth:`_window` after each."""
+        m = self.m
+        while True:
+            m.run(min(limit, m.cycle + WINDOW))
+            self._window()
+            if m.stop or m.jammed or m.cycle >= limit:
+                return
+
+    def _window(self):
+        """Between two windows of a run: what the run holds may be handed on here."""
 
     def _host_io(self, t0, io):
         """Make ``io`` (:meth:`run`): each access from a trap at the CPU's first fetch after a
@@ -422,11 +518,11 @@ class MachineOracle:
 
     def _queue_native(self):
         """Hand the queue to vagrant-moses: its sentinel trap starts each call natively."""
-        q = np.array([(_PHASE[ph], pc, a) for ph, pc, a in self.queue], np.int64).reshape(-1, 3)
+        runs = list(self.queue.runs)
+        q = np.array([(_PHASE[ph], pc, a) for (ph, pc, a), _ in runs], np.int64).reshape(-1, 3)
         packed = np.stack([q[:, 0], q[:, 1] & 0xFF, q[:, 1] >> 8, q[:, 2] & 0xFF], 1)
-        self.calls = Calls(
-            self.rec, packed.astype(np.uint8).tobytes(), self.sentinel, self.ports, self.call_cycles
-        )
+        self.calls = Calls(self.rec, packed.astype(np.uint8).tobytes(), self.sentinel, self.ports,
+                           self.call_cycles, [t for _, t in runs])  # fmt: skip
 
     def _frames_phase(self, index_frames):
         """Calls start (if init did not) and the per-call budget ends: interrupts drive play."""

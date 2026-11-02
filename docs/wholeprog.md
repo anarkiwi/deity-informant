@@ -69,9 +69,19 @@ HVSC tunes against it. Both collect through vagrant-moses' native trace beside i
 (`c64.TRACE_NATIVE`; opcode table `c64.trace_table()`), else, and as the reference, a Python
 decode hook and the machine's I/O hook; `tools/traceequiv.py ROWS --hvsc ROOT` checks the two agree on
 banked HVSC songs (facts, every record, `c64.check`, cells) and reports each one's cost per call.
-Natively the calls run from vagrant-moses' call queue (`smc.Calls`) with no Python per call;
-the records stay packed (`c64.CallRecords`, RAM as per-call changes) and `c64.check` hands them
-to `Program.check`, the same comparison in one native loop. A banked `Program.call`/`reference_call` sends non-volatile device accesses to a copy of
+Natively the calls run from vagrant-moses' call queue (`smc.Calls`) with no Python per call,
+a run of one call queued once with its count (`smc.machine.Queue`). The machine runs
+`smc.machine.WINDOW` cycles at a time; after each window the records taken so far (packed:
+`c64.CallRecords`, RAM as per-call changes) join a `c64.CallStream` and the SID writes logged
+so far join the chip's pending writes, each a `c64.Spill` holding `c64.SPILL` bytes in memory
+and the rest zstd-compressed in an unlinked temporary file, so a song's memory does not grow
+with its length. The chip is clocked through its pending writes only when the program reads
+it, `c64.SPAN` cycles of its (dropped) audio at a time. `c64.check` hands each window's records
+to `Program.check`, the same comparison in one native loop, carrying the lift's registers and
+memory across windows; the machine's RAM is each window's `origin` plus its records' changes.
+Machines, their chips and their views take part in Python's cyclic GC (vagrant-moses
+0.12.0); the hooks a `MachineOracle` gives its machine hold it weakly (`smc.machine.weak`),
+since its numpy view of the machine's RAM would close a cycle the GC cannot see. A banked `Program.call`/`reference_call` sends non-volatile device accesses to a copy of
 `mem`, RAM accesses to `mem`; `reads=` (bytes) replays its volatile reads in order (0 past the
 end). `c64.check` lifts with `c64.DEVICES` volatile and replays each call's machine reads
 (`c64.reads(record)`), so a lift is exact against the machine's devices by construction: one

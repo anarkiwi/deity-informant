@@ -7,6 +7,7 @@ bytes and control reads are checked against the lift-time image by the shared cl
 
 from __future__ import annotations
 
+import weakref
 from dataclasses import dataclass, field
 from functools import lru_cache
 
@@ -96,7 +97,8 @@ def run_cpu(image, entries, calls, init=(), max_cycles=200_000):
     shadow = bytearray(image)
     cls = Classifier(image)
     writes = []
-    mem.subscribe_to_write(range(0x10000), lambda ad, v: writes.append((mpu.steps, ad, v)))
+    proxy = weakref.proxy(mpu)
+    mem.subscribe_to_write(range(0x10000), lambda ad, v: writes.append((proxy.steps, ad, v)))
     ok = True
     for pc, a in init:
         ok &= _call(mpu, mem, shadow, cls, writes, pc, a, max_cycles)

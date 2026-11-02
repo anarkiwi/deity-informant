@@ -9,6 +9,7 @@ reach page 1. Heights are SP at an instruction's start minus SP at its call's en
 from __future__ import annotations
 
 import json
+import weakref
 from collections import defaultdict
 from dataclasses import dataclass, field
 
@@ -146,12 +147,13 @@ def collect(image, driver, max_cycles=10_000_000, progress=False, total=None):
     writes = defaultdict(set)
     page1 = {}
 
-    def on_page1(a):
-        lo, hi = page1.get(s.mpu.pc, (a, a))
-        page1[s.mpu.pc] = (min(lo, a), max(hi, a))
-
     pbar = tqdm(total=total, desc="facts writes", unit="call") if progress else None
     s = Session(image, max_cycles, False, pbar)
+    mpu = weakref.proxy(s.mpu)
+
+    def on_page1(a):
+        lo, hi = page1.get(mpu.pc, (a, a))
+        page1[mpu.pc] = (min(lo, a), max(hi, a))
 
     def on_write(a, v):
         if 0x100 <= a < 0x200:
