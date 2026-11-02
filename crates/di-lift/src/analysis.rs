@@ -449,6 +449,7 @@ pub fn discover(
     entries: &[Entry],
     facts: &Facts,
     bank: Option<&BankMap>,
+    matched: bool,
 ) -> Graph {
     let seen: FxHashMap<u16, u8> = match bank {
         Some(_) => facts.banks.iter().map(|(p, c)| (*p, c[0])).collect(),
@@ -524,7 +525,8 @@ pub fn discover(
                 }
             }
         }
-        let written = analyze_accesses(&cimg, &cells, &mut vars);
+        let written = static_stores(&cimg, &cells, &vars);
+        crate::vsa::analyze(&cimg, &cells, &mut vars, entries, matched);
         let mut next = FixedBitSet::with_capacity(0x10000);
         let mut nvalues = observed.clone();
         for a in code.ones().filter(|&a| !rom_code.contains(a)) {
@@ -559,12 +561,12 @@ pub fn discover(
     }
 }
 
-/// Fill each variant's accesses by abstract interpretation along single-predecessor chains;
-/// the statically known stores `addr -> values` (empty set: unknown value).
-fn analyze_accesses(
+/// The statically known stores `addr -> values` (empty set: unknown value) by abstract
+/// interpretation along single-predecessor chains.
+fn static_stores(
     img: &[u8; 0x10000],
     cells: &FixedBitSet,
-    vars: &mut FxHashMap<u16, Vec<Var>>,
+    vars: &FxHashMap<u16, Vec<Var>>,
 ) -> FxHashMap<u16, BTreeSet<u8>> {
     let mut preds: FxHashMap<u16, u32> = FxHashMap::default();
     for vs in vars.values() {
@@ -590,25 +592,26 @@ fn analyze_accesses(
     let mut seen: FxHashSet<u16> = FxHashSet::default();
     let mut written: FxHashMap<u16, BTreeSet<u8>> = FxHashMap::default();
     let mut stack = Vec::new();
+    let mut acc = Vec::new();
     for root in roots {
         stack.push((root, TOP_ENV));
         while let Some((pc, env)) = stack.pop() {
             if !seen.insert(pc) {
                 continue;
             }
-            let vs = vars.get_mut(&pc).unwrap();
+            let vs = &vars[&pc];
             let single = vs.len() == 1;
-            for v in vs.iter_mut() {
+            for v in vs {
                 let t = Template::of(v.op);
                 let mut e = env;
-                v.acc.clear();
+                acc.clear();
                 absint(
                     t.ops(),
                     operand_bytes(img, cells, pc, t.len),
                     &mut e,
-                    &mut v.acc,
+                    &mut acc,
                 );
-                for a in &v.acc {
+                for a in &acc {
                     if let (true, Some(addr)) = (a.store, a.addr.value()) {
                         let s = written.entry(addr as u16).or_default();
                         if let Some(x) = a.val.value() {

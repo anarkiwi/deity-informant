@@ -1100,10 +1100,10 @@ pub fn plan_program<'py>(
     let es = self::entries(entries);
     let f = self::facts(facts)?;
     let bank = bank_of(bank)?;
-    let g = di_lift::analysis::discover(&img, &es, &f, bank.as_ref());
+    let g = di_lift::analysis::discover(&img, &es, &f, bank.as_ref(), true);
     let pcs: Vec<u16> = es.iter().map(|e| e.pc).collect();
     let out = PyList::empty(py);
-    for p in di_lift::plan(&g.img, &g, &pcs, &f, bank.as_ref()) {
+    for p in di_lift::plan(&g.img, &g, &pcs, &f, bank.as_ref(), &[]) {
         let d = PyDict::new(py);
         d.set_item("pc", p.pc)?;
         d.set_item("top", p.top)?;

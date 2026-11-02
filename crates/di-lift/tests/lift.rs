@@ -554,3 +554,63 @@ fn rom_code_called_from_ram() {
 fn unseen_configuration_deopts() {
     banked(progs::BANKSEEN, progs::BANKSEEN_ENTRY, &[0, 0], &[1]);
 }
+
+const SUB: (u16, &[u8]) = (0x1120, &[0xa9, 0x07, 0x8d, 0x00, 0xc0, 0x60]);
+
+/// Stores indexed by a register a loop bounds never reach the constant code that lies within
+/// 256 bytes of their table.
+#[test]
+fn bounded_index_stores_need_no_code_guard() {
+    let up: &[u8] = &[
+        0xa2, 0x00, 0x8a, 0x9d, 0xe0, 0x10, 0xe8, 0xe0, 0x20, 0xd0, 0xf7, 0x20, 0x20, 0x11, 0x60,
+    ];
+    let down: &[u8] = &[
+        0xa2, 0x07, 0x9d, 0xe0, 0x10, 0xca, 0x10, 0xfa, 0x20, 0x20, 0x11, 0x60,
+    ];
+    for code in [up, down] {
+        let p = check(
+            &image(&[(0x1000, code), SUB]),
+            &[0x1000],
+            &calls(3, |_| 0),
+            IO,
+        );
+        assert_eq!(p.stats.code_guards, 0);
+    }
+}
+
+/// A routine called with `X` = 0, 1, 2 that leaves `X` as it found it (its own callee too)
+/// is analysed per call site.
+#[test]
+fn registers_survive_calls_per_call_site() {
+    let entry: &[u8] = &[
+        0xa2, 0x00, 0x20, 0x20, 0x10, 0xe8, 0x20, 0x20, 0x10, 0xe8, 0x20, 0x20, 0x10, 0x60,
+    ];
+    let voice: &[u8] = &[
+        0xa9, 0x05, 0x9d, 0xe0, 0x10, 0x20, 0x40, 0x11, 0x9d, 0xe8, 0x10, 0x60,
+    ];
+    let img = image(&[
+        (0x1000, entry),
+        (0x1020, voice),
+        (0x1140, &[0xa9, 0x09, 0x60]),
+    ]);
+    let p = check(&img, &[0x1000], &calls(3, |_| 0), IO);
+    assert_eq!((p.stats.code_guards, p.stats.calls), (0, 4));
+}
+
+/// An index the program does not bound keeps its guard, and a store through it that reaches
+/// constant code deopts exactly.
+#[test]
+fn unbounded_index_store_keeps_its_guard() {
+    let entry: &[u8] = &[0xaa, 0xa9, 0xea, 0x9d, 0xe0, 0x10, 0x20, 0x20, 0x11, 0x60];
+    let img = image(&[(0x1000, entry), SUB]);
+    let f = facts(&img, &[(0x1000, 0)], 1_000_000);
+    for cycles in [false, true] {
+        let opts = Opts {
+            optimize: true,
+            cycles,
+        };
+        let p = lift_with(&img, &entries(&[0x1000]), &[(0xc000, 0xc100)], &f, opts);
+        assert_eq!(p.stats.code_guards, 1);
+        assert!(diff(&img, &p, &acc_calls(&[0, 0x41, 0]), IO) > 0);
+    }
+}
