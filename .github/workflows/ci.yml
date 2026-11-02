@@ -75,7 +75,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install vagrant-moses
-        run: pip install "vagrant-moses>=0.9.3"
+        run: pip install "vagrant-moses>=0.9.3,<0.10"
       - name: C64 ROM cache key
         id: roms
         run: >-
