@@ -12,7 +12,7 @@ from math import gcd
 
 from .trace import EA, Facts
 
-__all__ = ["UnionFind", "build", "pointer_uses"]
+__all__ = ["UnionFind", "address_bytes", "build", "elements", "pointer_uses", "table_entries"]
 
 _REG = {"zpx": "x", "absx": "x", "indx": "x", "zpy": "y", "absy": "y", "indy": "y"}
 
@@ -426,7 +426,8 @@ def build(prog, facts, image, volatile=()):
     for r in regions:
         if r["kind"] == "pointer" and r["base"] in ptrs:
             t, y, _ = ptrs[r["base"]]
-            r["targets"] = t.values() or [t.lo, t.hi]
+            vals = t.values()
+            r |= {"targets": vals} if vals is not None else {"target_range": [t.lo, t.hi]}
             r["index"] = y.to_list()
     tables = defaultdict(lambda: (set(), set()))
     ptr = {r["base"] for r in regions if r["kind"] == "pointer"}
@@ -455,3 +456,32 @@ def build(prog, facts, image, volatile=()):
         if io(_span(r)[0]):
             r["io"] = True
     return {"regions": regions, "conflicts": conflicts}
+
+
+def table_entries(r):
+    """``[(lo, hi)]`` byte addresses of an address table's entries at the index values its
+    extent spans; empty without index evidence."""
+    if "extent" not in r:
+        return []
+    (lo, hi), a, s = r["words"][0], r["extent"][0], r["stride"]
+    return [(a + lo + k * s, a + hi + k * s) for k in range(r["count"])]
+
+
+def elements(r):
+    """Start addresses of a record's or array's elements (``count`` of them, ``stride`` apart,
+    aligned to ``base``)."""
+    b, s = r["base"], r["stride"]
+    a = b + (r["extent"][0] - b) // s * s
+    return [a + k * s for k in range(r["count"])]
+
+
+def address_bytes(regions):
+    """``{address: "lo"|"hi"}`` of the address bytes a map implies: table entries and the
+    bytes of pointers."""
+    out = {}
+    for r in regions:
+        pairs = table_entries(r) if r["kind"] == "address_table" else []
+        pairs += [(r["base"], r["base"] + 1)] if r["kind"] == "pointer" else []
+        for lo, hi in pairs:
+            out[lo], out[hi] = "lo", "hi"
+    return out

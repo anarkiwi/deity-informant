@@ -1,6 +1,7 @@
 #!/bin/sh
 # Ghidra headless integration test for the 6510 SLEIGH module: the hello-world
-# demo imported and its illegal LAX/ISC decoded under the headless analyzer.
+# demo imported and its illegal LAX/ISC decoded under the headless analyzer, and
+# the layout-map export (tools/ghidra_layout.py --selftest, ApplyLayout.java).
 #
 # Requires: GHIDRA_INSTALL_DIR set, the 6510 module installed into it
 # (deity-informant emit-sleigh -o ...), deity_informant importable. See Dockerfile.ghidra.
@@ -28,3 +29,7 @@ grep -q "PCODE-INTEGRATION-OK" "$OUT" || fail "OK marker missing (see log above)
 grep -qi "INSN 1002 LAX" "$OUT" || fail "LAX did not decode at \$1002"
 grep -qi "INSN 100C ISC" "$OUT" || fail "ISC did not decode at \$100C"
 echo "GHIDRA HEADLESS INTEGRATION: PASS (6510 decoded LAX+ISC under Ghidra headless)"
+
+LAYOUT="$WORK/layout.log"
+python3 tools/ghidra_layout.py --selftest 2>&1 | tee "$LAYOUT"
+grep -q "GHIDRA LAYOUT SELFTEST: PASS" "$LAYOUT" || fail "layout selftest failed (see log above)"

@@ -1,0 +1,10 @@
+#!/bin/sh
+# Identify the players of the files named on stdin (paths under /in), one name per line.
+set -e
+w=$(mktemp -d)
+i=0
+while IFS= read -r p; do
+    ln -s "/in/$p" "$w/$(printf %06d "$i").sid"
+    i=$((i + 1))
+done
+cd "$w" && exec sidid -m -u -d "$@"

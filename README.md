@@ -10,11 +10,12 @@ The C64 machine model (power-on RAM, interrupt-vector discovery, ROM-free IRQ di
 - `deity_informant/vm.py` — `PcodeVM` interpreter over a flat 64 KiB image (SID/VIC/CIA volatile IO modeled); `run_sub`/`run_irq`/`run_irq_driven` drivers (handler fixed, or resolved per entry via `vector(addr)`).
 - `deity_informant/cli.py` — `deity-informant` console script.
 - `deity_informant/sleigh/` — SLEIGH module (`languages/6510.slaspec` = stock 6502 + `6510_illegal.sinc`), `smc.py` (SMC context constructors), `build.py`, and `pypcode_context()` (a loaded pypcode `Context` for the 6510).
-- `ghidra/6510/headless/` — headless Ghidra integration test, run via `Dockerfile.ghidra`.
+- `ghidra/6510/headless/` — headless Ghidra integration tests (LAX/ISC decode, layout export), run via `Dockerfile.ghidra`.
 - `deity_informant/hello_world.py` — 33-byte C64 program using `LAX`/`ISC` + self-modifying code; the fixture for the VM and Ghidra tests.
 - `crates/` — Rust P-Code IR templated from `lift()` and a reference interpreter, shipped in wheels as `deity_informant._native`; see [docs/native.md](docs/native.md).
 - `deity_informant/wholeprog.py`, `deity_informant/trace.py` — whole-program lifting of entry points to optimized, executable, exact P-Code (self-modifying code as memory reads, balanced calls as `CALL`/`RETURN`, the hardware stack as registers, optional cycle counting, guarded deopts), run as Cranelift native code or interpreted, and the run-time facts it uses; see [docs/wholeprog.md](docs/wholeprog.md).
 - `deity_informant/layout.py`, `tools/layout.py` — memory layout recovery (words, pointers, address tables, record and parallel arrays) from carry chains, pointer arithmetic and effective-address facts; see [docs/layout.md](docs/layout.md).
+- `tools/ghidra_layout.py`, `ghidra/6510/headless/ApplyLayout.java` — headless Ghidra export of layout maps (struct types, typed data, labels, data references) with a read-back check; see [docs/layout.md](docs/layout.md#ghidra-export).
 - `tools/wplift.py` — lift an image file whole and check it against the reference interpreter.
 - `deity_informant/c64.py`, `tools/wpbank.py` — the C64 host of bank-aware lifting: the 6510 port/PLA bank map (ROM-less or verified real ROMs), facts and per-call reference records from vagrant-moses' cycle-exact machine, and a check of bank-aware play lifts of HVSC tunes against it.
 - `tools/wpcorpus.py` — run every HVSC song once for its full length: flat or bank-aware lift, check, scenario cells, IRQ paths and speed per song, resumable; see [docs/corpus.md](docs/corpus.md).
@@ -22,6 +23,7 @@ The C64 machine model (power-on RAM, interrupt-vector discovery, ROM-free IRQ di
 - `tools/wpsurvey.py` — lift the play routines of a directory of PSID tunes and tabulate stack privacy, its blockers and (optionally) exactness.
 - `deity_informant/smc/`, `tools/smcgen.py`, `tools/smclabel.py` — progressively generate every SMC scenario (writer, role, timing, mapping) for the lifter, label it with independent CPU (jennings) and machine (vagrant-moses) oracles, and drive lift tests against a strict-xfail expectation table; see [docs/smc-scenarios.md](docs/smc-scenarios.md).
 - `tools/gen_pcode.py` — regenerates the native templates (`--check` verifies they are current).
+- `tools/vtools.py`, `tools/sidid.py`, `tools/sidreloc.py`, `tools/gtruth.py` — layout-validation references on the `di-vtools` image: SIDId player names, sidreloc's address bytes, GoatTracker 2 ground-truth layouts from source; see [docs/validation.md](docs/validation.md).
 - `tools/doclinks.py` — every `[text](target)` in `docs/` and `README.md` resolved: the file, and the `#anchor` against the target's own headings.
 
 ## Install

@@ -77,8 +77,9 @@ partial overlap is reported and merged to the hull.
 ## Map
 
 `build` returns `{"regions": [...], "conflicts": [...]}` (JSON); `tools/layout.py` adds
-`tune` (`init`, `play`, `songs`, `song`, `calls`) and `init_halt`. Addresses and offsets are
-integers. A region:
+`tune` (`init`, `play`, `songs`, `song`, `calls`), `init_halt`, `starts` (the instruction
+addresses the play calls executed) and `accessed` (`[lo, hi]` runs of the data addresses they
+accessed). Addresses and offsets are integers. A region:
 
 | Field | Kinds | Meaning |
 |---|---|---|
@@ -91,14 +92,57 @@ integers. A region:
 | `fields` | all | `[{"offset", "width"}]`: within an element (record, array, interleaved table), the members' offsets from `base` (parallel array, split table), or the atoms (word, pointer) |
 | `words` | parallel array, table | offset tuples (least significant first) of bytes forming one value |
 | `index` | arrays, tables | index registers seen (`x`, `y`, `xy`); a pointer's: its `Y` index as a `Strided` list |
-| `targets` | pointer, table | pointer values seen, or the table's entries; `[lo, hi]` when too many |
+| `targets` | pointer, table | pointer values seen, or the table's entries |
+| `target_range` | pointer | `[lo, hi]` of the pointer values when too many to keep (no `targets`) |
 | `pointers` | table | zero-page pointers the table feeds |
 | `written` | table | the run wrote an entry byte (no `targets`) |
 | `io` | any | the region starts in a volatile range |
 | `evidence` | all | `chain@PC` (block of a chain), `ops@PC` (block of a pointer use or table feed), `ea@PC` (instruction) |
 
-A parallel array is listed with its member arrays and records, which follow it. Conflicts:
+A parallel array is listed with its member arrays and records, which follow it.
+`layout.table_entries(r)` gives a table's `(lo, hi)` entry addresses (`extent[0] + words[0] +
+k * stride`, `k < count`), `layout.elements(r)` an array's or record's element starts (`base +
+k * stride` from the first element the extent reaches) and `layout.address_bytes(regions)` the
+address bytes the map implies (`lo`/`hi` of table entries and pointers). Conflicts:
 `{"kind": "atoms"|"fields", "base", "spans": [[offset, width], ...], "evidence"}` for
 partially overlapping atoms or fields, and `{"kind": "strides", "regions": [i, j],
 "strides": [s, t]}` for overlapping array or record regions (indices into `regions`) whose
 strides do not divide.
+
+## Ghidra export
+
+`tools/ghidra_layout.py` applies a map to a Ghidra program and reads back what Ghidra holds:
+
+```bash
+python tools/ghidra_layout.py SIDFILE LAYOUT.json [--out DUMP.json] [--image di-ghidra]
+python tools/ghidra_layout.py --selftest
+```
+
+imports the tune's loaded body as Raw Binary (`6510:LE:16:default`, no analysis) at its load
+address, runs `ghidra/6510/headless/ApplyLayout.java` on the map's plan, prints the counts of
+planned and skipped items, each skip and every mismatch of `check(plan, dump)`, and exits
+nonzero on a mismatch. Ghidra runs in place when `$GHIDRA_INSTALL_DIR` holds it (the
+`di-ghidra` image, where `ghidra/6510/headless/run.sh` runs the selftest), else in the
+`di-ghidra` image as the calling user with a work dir under `out/` (`Dockerfile.ghidra`).
+`--selftest` applies `fixture()`, a synthetic image with a region of every kind, a word
+overlapping a table and an array whose field outruns its stride, and checks the dump against
+both the plan and a hand-written expectation.
+
+`plan(m, image, load)` is generic; the script creates an uninitialized block for every gap of
+`$0000-$FFFF` outside the image, so zero page, RAM and I/O take labels, data and references:
+
+| Key | Entries | Region source |
+|---|---|---|
+| `types` | `{name, size, fields: [{offset, type, count, name}]}` structs | `rec_XXXX_t` (fields `f<offset>`), array or table elements narrower than their stride (`arr_XXXX_t`, `tab_XXXX[_lo\|_hi]_t`) |
+| `data` | `{addr, type, count, name}`, `type` `byte`, `word`, `pointer` (16-bit) or a struct; `count > 1` an array | word and pointer atoms (a pointer's 2-byte atom at its base a `pointer`), table halves or pointer entries over `layout.table_entries`, records and arrays from `layout.elements(r)[0]` |
+| `labels` | `{addr, name}` | `word_`, `ptr_`, `tab_` (split: `_lo`/`_hi`), `rec_`, `arr_`, `par_` + the base in hex |
+| `refs` | `{from, to}` data references | a pointer's `targets` (none for a `target_range`); each entry byte of a table to the address the image holds there, when the run wrote none and both bytes are in the image |
+| `comments` | `{addr, text}` plate comments | a parallel array's member addresses |
+
+Regions in a volatile range (`io`) get labels only. Data are applied in plan order: address
+tables, pointers, words, records, arrays (each by base), so on overlap the earlier region's
+data stand. The dump holds every defined data item (`addr`, `type`, `count`, `length`), the
+plan's structs as Ghidra holds them, the user labels, the memory references from the plan's
+sources and `skipped`: `{what, key, reason}` for each type, field (`[struct, offset]`), data
+(`addr`), label, reference or comment Ghidra refused (a field past its struct's end, a
+conflicting code unit), never aborting.

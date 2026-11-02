@@ -26,7 +26,8 @@ from wpcorpus import flat_init, header, volatile_of  # noqa: E402 pylint: disabl
 
 def song_layout(data, song=1, calls=1000, max_cycles=2_000_000, progress=True):
     """The layout map (``layout.build``) of a PSID file's play routine for ``song``, with the
-    ``tune`` header fields and the init's ``init_halt``."""
+    ``tune`` header fields, the init's ``init_halt``, and the play calls' executed ``starts`` and
+    ``accessed`` data addresses."""
     hdr, tune = header(data), sidfile(data)
     if hdr is None or tune is None or hdr["kind"] != "PSID" or not hdr["play"]:
         raise ValueError("not a PSID tune with a play routine")
@@ -43,7 +44,30 @@ def song_layout(data, song=1, calls=1000, max_cycles=2_000_000, progress=True):
     )
     prog = wholeprog.lift(state, [play], volatile=vol, facts=facts)
     tune = {k: hdr[k] for k in ("init", "play", "songs")} | {"song": song, "calls": calls}
-    return layout.build(prog, facts, state, vol) | {"tune": tune, "init_halt": r["halt"]}
+    m = layout.build(prog, facts, state, vol)
+    return m | {
+        "tune": tune,
+        "init_halt": r["halt"],
+        "starts": sorted(facts.starts),
+        "accessed": accessed(facts.ea),
+    }
+
+
+def accessed(ea):
+    """Maximal ``[lo, hi]`` runs of the data addresses in effective-address evidence (an
+    interval whose members were dropped counts whole)."""
+    pts = set()
+    for ops in ea.values():
+        for rec in ops.values():
+            a = trace.EA.strided(rec, "addr")
+            pts.update(a.values() or range(a.lo, a.hi + 1))
+    runs = []
+    for v in sorted(pts):
+        if runs and runs[-1][1] == v - 1:
+            runs[-1][1] = v
+        else:
+            runs.append([v, v])
+    return runs
 
 
 def summary(m):
