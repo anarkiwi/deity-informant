@@ -14,6 +14,7 @@ pub mod func;
 pub mod ir;
 pub mod jit;
 pub mod opt;
+pub mod vsa;
 
 pub use analysis::{Entry, Facts};
 pub use bank::{Back, BankMap, Banked};
@@ -157,25 +158,30 @@ fn sites(
         .count()
 }
 
-/// Plans for `entries` of the discovered program `g`: with facts, an unexecuted instruction
-/// start whose page-1 access cannot be checked is not planned (edges to it deopt). With a
-/// bank map an entry is entered in each configuration its calls were seen in.
+/// Plans for `entries` of the discovered program `g`: an unexecuted instruction start in a
+/// device (a volatile range, or I/O under the bank map), and with facts one whose page-1 access
+/// cannot be checked, is not planned (edges to it deopt). With a bank map an entry is entered
+/// in each configuration its calls were seen in.
 pub fn plan(
     img: &[u8; 0x10000],
     g: &analysis::Graph,
     entries: &[u16],
     facts: &Facts,
     bank: Option<&BankMap>,
+    volatile: &[(u32, u32)],
 ) -> Vec<func::Plan> {
     let starts: FxHashSet<u16> = facts.starts.iter().copied().collect();
     let banned: FxHashSet<u16> = g
         .vars
         .iter()
         .filter(|&(pc, vs)| {
-            !starts.is_empty()
-                && !starts.contains(pc)
+            let device = volatile
+                .iter()
+                .any(|&(lo, hi)| (lo..hi).contains(&(*pc as u32)))
+                || bank.is_some_and(|m| m.back(g.cfg[pc], *pc) == Back::Io);
+            !starts.contains(pc)
                 && !entries.contains(pc)
-                && vs.iter().any(|v| unchecked(img, g, *pc, v))
+                && (device || !starts.is_empty() && vs.iter().any(|v| unchecked(img, g, *pc, v)))
         })
         .map(|(&pc, _)| pc)
         .collect();
@@ -222,94 +228,105 @@ pub fn lift_banked(
     opts: Opts,
     bank: Option<&BankMap>,
 ) -> Program {
-    let g = discover(img, entries, facts, bank);
-    let img: &[u8; 0x10000] = &g.img;
-    let pcs: Vec<u16> = entries.iter().map(|e| e.pc).collect();
-    let mut plans = plan(img, &g, &pcs, facts, bank);
-    let fidx: FxHashMap<(u16, u8), u32> = plans
-        .iter()
-        .enumerate()
-        .skip(entries.len())
-        .map(|(i, p)| ((p.pc, p.entry[0]), i as u32))
-        .collect();
-    let callees: Vec<Vec<u32>> = plans
-        .iter()
-        .map(|p| p.callees().map(|k| fidx[&k]).collect())
-        .collect();
-    let recursive = recursive(&callees);
-    let seen: FxHashMap<u16, (u16, u16)> = facts
-        .page1
-        .iter()
-        .map(|&(p, lo, hi)| (p, (lo, hi)))
-        .collect();
-    // An entry called at one SP is specialized to it when that keeps more of its pushes out
-    // of memory.
-    for p in plans.iter_mut().take(entries.len()) {
-        let sp = facts.entry_sp.iter().find(|e| e.0 == p.pc);
-        if let Some(&[s]) = sp.map(|e| &e.1[..]) {
-            let pushed = p.pushed(&g);
-            let mut r = p.clone();
-            r.refine(&g, img, s);
-            let kept = |q: &func::Plan| {
-                let mut k = pushed.clone();
-                k.difference_with(&exposed(img, &g, q, &seen));
-                k.count_ones(..)
-            };
-            if kept(&r) > kept(p) {
-                *p = r;
+    let mut matched = true;
+    let (g, plans, fidx, callees, recursive, slots, constcode, touches, seen, sites, private) = loop {
+        let g = discover(img, entries, facts, bank, matched);
+        let img: &[u8; 0x10000] = &g.img;
+        let pcs: Vec<u16> = entries.iter().map(|e| e.pc).collect();
+        let mut plans = plan(img, &g, &pcs, facts, bank, volatile);
+        let fidx: FxHashMap<(u16, u8), u32> = plans
+            .iter()
+            .enumerate()
+            .skip(entries.len())
+            .map(|(i, p)| ((p.pc, p.entry[0]), i as u32))
+            .collect();
+        let callees: Vec<Vec<u32>> = plans
+            .iter()
+            .map(|p| p.callees().map(|k| fidx[&k]).collect())
+            .collect();
+        let recursive = recursive(&callees);
+        let seen: FxHashMap<u16, (u16, u16)> = facts
+            .page1
+            .iter()
+            .map(|&(p, lo, hi)| (p, (lo, hi)))
+            .collect();
+        // An entry called at one SP is specialized to it when that keeps more of its pushes out
+        // of memory.
+        for p in plans.iter_mut().take(entries.len()) {
+            let sp = facts.entry_sp.iter().find(|e| e.0 == p.pc);
+            if let Some(&[s]) = sp.map(|e| &e.1[..]) {
+                let pushed = p.pushed(&g);
+                let mut r = p.clone();
+                r.refine(&g, img, s);
+                let kept = |q: &func::Plan| {
+                    let mut k = pushed.clone();
+                    k.difference_with(&exposed(img, &g, q, &seen));
+                    k.count_ones(..)
+                };
+                if kept(&r) > kept(p) {
+                    *p = r;
+                }
             }
         }
-    }
-    // Slots: the bytes a function pushes, except in an outermost plan those an access other
-    // than a push or pull may hit and those a pull may read before the call pushed them.
-    let slots: Vec<FixedBitSet> = plans
-        .iter()
-        .enumerate()
-        .map(|(i, p)| {
-            let mut s = FixedBitSet::with_capacity(0x100);
-            if !recursive.contains(i) {
-                s = p.pushed(&g);
-                if p.top {
-                    s.difference_with(&exposed(img, &g, p, &seen));
-                    s.difference_with(&p.pulled_unpushed(&g));
-                }
-            }
-            s
-        })
-        .collect();
-    let mut constcode = g.code.clone();
-    constcode.difference_with(&g.cells);
-    constcode.difference_with(&g.rom_code);
-    let page1 = |iv: Iv| iv.meets(0x100, 0x200);
-    // Per function whether a load or store other than a push or pull may reach page 1.
-    let touches: Vec<(bool, bool)> = plans
-        .iter()
-        .map(|p| {
-            let (mut load, mut store) = (false, false);
-            for pc in p.pcs() {
-                for v in &g.vars[&pc] {
-                    if !is_stack_op(v.op) {
-                        for a in v.acc.iter().filter(|a| !a.dummy && page1(a.addr)) {
-                            *(if a.store { &mut store } else { &mut load }) = true;
-                        }
-                    }
-                    load |= matches!(v.flow, Flow::JmpInd(_)) && page1(ind_ptr(img, &g, pc).0);
-                }
-            }
-            (load, store)
-        })
-        .collect();
-    let sites: usize = plans
-        .iter()
-        .zip(&slots)
-        .map(|(p, s)| sites(img, &g, p, s, &seen))
-        .sum();
-    let private = !volatile.iter().any(|&(lo, hi)| lo < 0x200 && 0x100 < hi)
-        && !g.code.ones().any(|a| (0x100..0x200).contains(&a))
-        && plans
+        // Slots: the bytes a function pushes, except in an outermost plan those an access other
+        // than a push or pull may hit and those a pull may read before the call pushed them.
+        let slots: Vec<FixedBitSet> = plans
             .iter()
-            .all(|p| p.nodes.keys().all(|k| k.1 != H::Unknown))
-        && sites == 0;
+            .enumerate()
+            .map(|(i, p)| {
+                let mut s = FixedBitSet::with_capacity(0x100);
+                if !recursive.contains(i) {
+                    s = p.pushed(&g);
+                    if p.top {
+                        s.difference_with(&exposed(img, &g, p, &seen));
+                        s.difference_with(&p.pulled_unpushed(&g));
+                    }
+                }
+                s
+            })
+            .collect();
+        let mut constcode = g.code.clone();
+        constcode.difference_with(&g.cells);
+        constcode.difference_with(&g.rom_code);
+        let page1 = |iv: Iv| iv.meets(0x100, 0x200);
+        // Per function whether a load or store other than a push or pull may reach page 1.
+        let touches: Vec<(bool, bool)> = plans
+            .iter()
+            .map(|p| {
+                let (mut load, mut store) = (false, false);
+                for pc in p.pcs() {
+                    for v in &g.vars[&pc] {
+                        if !is_stack_op(v.op) {
+                            for a in v.acc.iter().filter(|a| !a.dummy && page1(a.addr)) {
+                                *(if a.store { &mut store } else { &mut load }) = true;
+                            }
+                        }
+                        load |= matches!(v.flow, Flow::JmpInd(_)) && page1(ind_ptr(img, &g, pc).0);
+                    }
+                }
+                (load, store)
+            })
+            .collect();
+        let sites: usize = plans
+            .iter()
+            .zip(&slots)
+            .map(|(p, s)| sites(img, &g, p, s, &seen))
+            .sum();
+        let private = !volatile.iter().any(|&(lo, hi)| lo < 0x200 && 0x100 < hi)
+            && !g.code.ones().any(|a| (0x100..0x200).contains(&a))
+            && plans
+                .iter()
+                .all(|p| p.nodes.keys().all(|k| k.1 != H::Unknown))
+            && sites == 0;
+        if private || !matched {
+            break (
+                g, plans, fidx, callees, recursive, slots, constcode, touches, seen, sites, private,
+            );
+        }
+        matched = false;
+    };
+    let img: &[u8; 0x10000] = &g.img;
+    let pcs: Vec<u16> = entries.iter().map(|e| e.pc).collect();
     let mut promote = FixedBitSet::with_capacity(plans.len());
     if private {
         promote.insert_range(..);

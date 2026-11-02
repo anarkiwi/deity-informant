@@ -131,6 +131,8 @@ the program, and checks it against the reference.
    earlier routine is constant. With a bank map each start is decoded in the configuration
    the facts first saw it in (else the one it is first reached in), its bytes from ROM where
    that configuration maps ROM; ROM bytes are constant code, never cells.
+   The same analysis (`vsa.rs`) gives every access its address interval, which the guards
+   consult (see *Static proofs*).
 2. **Functions and stack heights** (`func.rs`). Per function, plan nodes keyed by
    instruction start and stack height relative to its entry. In an outermost plan a start
    gets a node per height the facts saw it at (SP minus the host call's entry SP as
@@ -199,18 +201,46 @@ the program, and checks it against the reference.
 | Computed target is in the table | `BRANCHIND` table lookup | deopt at the target |
 | An edge reaches a start at a stack height the plan has no node for (never seen there) | none: the edge is the deopt | deopt at the start |
 | After an SP-setting instruction, SP is at a height the facts saw the next start at | SP dispatch: `SP - E` compared per height without wrapping (`stats["sp_dispatch"]`), SP restated as `E + height - 2`; a function with a dispatch loads its stack slots from memory at entry | deopt at the next start |
-| A store may hit constant code | `codechk(addr, value)` after the store, when the address interval meets constant code | deopt after the instruction; the program stays invalid until its constant code matches again |
-| An access that may reach page 1 does not, while stack bytes are kept out of memory | the address's page is compared with 1 before the access (`stats["stack_guards"]`) | deopt before the instruction |
+| A store may hit constant code | `codechk(addr, value)` after the store, when the address interval (*Static proofs*) meets constant code | deopt after the instruction; the program stays invalid until its constant code matches again |
+| An access that may reach page 1 (by its address interval) does not, while stack bytes are kept out of memory | the address's page is compared with 1 before the access (`stats["stack_guards"]`) | deopt before the instruction |
 | A callee that may store into page 1 returns to its caller (stack not private) | the return-address bytes are compared after `CALL` | deopt at the address the `RTS` pulled |
 | Entry register value | compare at entry | deopt at the entry |
 | Entry SP of a specialized entry (`stats["sp_guards"]`) | compare at entry | deopt at the entry |
 | The port registers an entry was always called with (banked) | compare at entry; restated so later configurations fold | deopt at the entry |
 | The bank configuration after a port store or a port-writing `CALL`, and at an entry called in several, is one the facts saw there (`stats["bank_dispatch"]`) | dispatch on the effective port value; folds when the stored value is known | deopt at the next start |
 | A seen page-1 access of a specialized entry stays in the page-1 range the facts saw | the address is compared with the range before the access (`stats["stack_guards"]`) | deopt before the instruction |
-| An unexecuted start with an uncheckable page-1 access is not reached | none: edges to it are the deopt | deopt at the start |
+| An unexecuted start with an uncheckable page-1 access, or in a device (a volatile range, or I/O under the bank map), is not reached | none: edges to it are the deopt | deopt at the start |
 | Stack wrap | without cycles: at outermost and recursive entries (counting the deepest growth of the callees that do not check), after SP-setting instructions and at blocks reached at different SP offsets; with cycles: as below | deopt at the block |
 | Cycle budget (cycles only) | at the entry, loop headers, `CALL` returns and after SP-setting instructions: the longest cycle path and deepest stack growth to the next such block | deopt at the block |
 | Iteration budget (without cycles; `stats["budget_checks"]`) | the executor spends one unit entering each loop head (target of a depth-first back edge of the final CFG, through `BRANCHIND` tables too) and recursive entry; no ops are emitted and optimization is unaffected | halt `cycles` |
+
+## Static proofs
+
+A guard is emitted only for an access whose address interval may meet what the guard protects
+(constant code, or page 1 where stack bytes are kept out of memory). The interval comes from
+a flow-sensitive interval analysis over the whole discovered program (`vsa.rs`), not from
+the facts, so a proof holds on every execution that stays in lifted code.
+
+- **Domain.** One interval per register at every instruction start and call context. The flags
+  that compare a register with a constant (`CMP`/`CPX`/`CPY`, `INX`/`DEX`, loads and
+  transfers) are kept as predicates on the register, so a conditional branch narrows it on
+  each edge before intervals are hulled (`DEX; BPL` keeps `[0, n]` from a loop that counts
+  down from `n`). An edge whose flag is already known is not taken. Loop heads widen to the
+  next constant a `CMP`/`CPX`/`CPY` immediate compares with, `$7F`/`$80` or the extremes.
+- **Calls.** A callee is analysed in the context of each `JSR` return site and its `RTS`s
+  return there; it also records each of `A`/`X`/`Y` as its entry value plus an offset where
+  that holds, so a caller keeps a register through any depth of calls that preserve it.
+  An `RTS` whose function's pushes and pulls do not balance (or any `RTS`/`RTI` reached by a
+  return that did not go to its call's site) reaches every return site and carries nothing.
+  The same happens everywhere when the stack is not private: other stores may then rewrite
+  return addresses, so the lift analyses the program again without the call pairing.
+- **Unknown.** Memory contents (a loaded value is its full range), so addresses built from
+  zero-page pointers or table lookups keep their guards; the stack; `SP`.
+- **Dependencies.** The analysis assumes the entries are called with the registers they
+  declare (guarded at entry) and that control follows the edges the lift contains (every
+  other edge deopts). It reads no runtime fact beyond those edges and no data byte, so it
+  remains valid after any deopt and from any memory state. The stack-privacy decision still
+  uses the facts' page-1 accesses as before.
 
 A deopt sets the reference `Cpu` to the architectural state (registers, PC, and with cycle
 counting cycles), writes the stack bytes each active frame pushed (from its slot registers)
