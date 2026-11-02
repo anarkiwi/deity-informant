@@ -1,0 +1,185 @@
+diff -ruN a/src/asm/parse.c b/src/asm/parse.c
+--- a/src/asm/parse.c
++++ b/src/asm/parse.c
+@@ -44,6 +44,7 @@
+ {
+     const char *symbol;
+     struct expr *expr;
++    int label;
+ };
+ 
+ static int sym_entry_cmp(const void *a, const void *b)
+@@ -159,6 +160,7 @@
+         exit(1);
+     }
+     e->expr = arg;
++    e->label = 0;
+ 
+     se = vec_insert(s_sym_table, -(pos + 2), e);
+     LOG(LOG_DEBUG, ("creating symdef: "));
+@@ -235,6 +237,7 @@
+     }
+ 
+     e->expr = pc_get();
++    e->label = 1;
+ 
+     se = vec_insert(s_sym_table, -(pos + 2), e);
+     LOG(LOG_DEBUG, ("creating label: "));
+@@ -672,6 +675,107 @@
+     }
+ }
+ 
++static const char *expr_opname(int op)
++{
++    switch(op)
++    {
++    case PLUS: return "+";
++    case MINUS: return "-";
++    case MULT: return "*";
++    case DIV: return "/";
++    case MOD: return "%";
++    case LT: return "<";
++    case GT: return ">";
++    case EQ: return "==";
++    case NEQ: return "!=";
++    case LOR: return "||";
++    case LAND: return "&&";
++    case vNEG: return "neg";
++    case LNOT: return "!";
++    }
++    return "?";
++}
++
++static void expr_json(FILE *f, struct expr *e)
++{
++    switch(e->expr_op)
++    {
++    case NUMBER:
++        fprintf(f, "%d", e->type.number);
++        break;
++    case SYMBOL:
++        fprintf(f, "\"%s\"", e->type.symref);
++        break;
++    case vNEG:
++    case LNOT:
++        fprintf(f, "[\"%s\",", expr_opname(e->expr_op));
++        expr_json(f, e->type.arg1);
++        fprintf(f, "]");
++        break;
++    default:
++        fprintf(f, "[\"%s\",", expr_opname(e->expr_op));
++        expr_json(f, e->type.arg1);
++        fprintf(f, ",");
++        expr_json(f, e->expr_arg2);
++        fprintf(f, "]");
++    }
++}
++
++static void atom_json(FILE *f, struct atom *atom, int offset)
++{
++    struct vec_iterator i[1];
++    struct expr **exprp;
++    const char *sep = "";
++
++    fprintf(f, "{\"off\":%d,\"type\":%d", offset, atom->type);
++    switch(atom->type)
++    {
++    case ATOM_TYPE_OP_ARG_NONE:
++        fprintf(f, ",\"op\":%d", atom->u.op.code);
++        break;
++    case ATOM_TYPE_OP_ARG_U8:
++    case ATOM_TYPE_OP_ARG_I8:
++    case ATOM_TYPE_OP_ARG_UI8:
++    case ATOM_TYPE_OP_ARG_U16:
++        fprintf(f, ",\"op\":%d,\"arg\":", atom->u.op.code);
++        expr_json(f, atom->u.op.arg);
++        break;
++    case ATOM_TYPE_RES:
++        fprintf(f, ",\"res\":");
++        expr_json(f, atom->u.res.value);
++        break;
++    case ATOM_TYPE_WORD_EXPRS:
++    case ATOM_TYPE_BYTE_EXPRS:
++        fprintf(f, ",\"exprs\":[");
++        vec_get_iterator(atom->u.exprs, i);
++        while((exprp = vec_iterator_next(i)) != NULL)
++        {
++            fprintf(f, "%s", sep);
++            expr_json(f, *exprp);
++            sep = ",";
++        }
++        fprintf(f, "]");
++        break;
++    }
++}
++
++static void symbols_json(FILE *f)
++{
++    struct vec_iterator i[1];
++    struct sym_entry *se;
++    i32 value;
++
++    vec_get_iterator(s_sym_table, i);
++    while((se = vec_iterator_next(i)) != NULL)
++    {
++        if(se->expr != NULL && resolve_expr2(se->expr, &value) == NULL)
++        {
++            fprintf(f, "{\"sym\":\"%s\",\"value\":%d,\"label\":%d}\n",
++                    se->symbol, value, se->label);
++        }
++    }
++}
++
+ void output_atoms(struct membuf *out, struct vec *atoms)
+ {
+     struct vec_iterator i[1];
+@@ -685,12 +789,18 @@
+     i32 value;
+     i32 value2;
+ 
++    FILE *listing = NULL;
++    int offset;
++
+     dump_sym_table(LOG_DEBUG, s_sym_table);
++    if(getenv("GT2_LISTING")) listing = fopen(getenv("GT2_LISTING"), "w");
+ 
+     vec_get_iterator(atoms, i);
+     while((atomp = vec_iterator_next(i)) != NULL)
+     {
+         atom = *atomp;
++        offset = membuf_memlen(out);
++        if(listing) atom_json(listing, atom, offset);
+ 
+         LOG(LOG_DEBUG, ("yadda\n"));
+ 
+@@ -846,5 +956,11 @@
+                             atom->type, atom));
+             exit(1);
+         }
++        if(listing) fprintf(listing, ",\"len\":%d}\n", membuf_memlen(out) - offset);
++    }
++    if(listing)
++    {
++        symbols_json(listing);
++        fclose(listing);
+     }
+ }
+diff -ruN a/src/greloc.c b/src/greloc.c
+--- a/src/greloc.c
++++ b/src/greloc.c
+@@ -1395,11 +1395,12 @@
+     insertbytes(&pattwork[pattoffset[c]], pattsize[c]);
+   }
+ 
+-  /* {
+-    FILE *handle = fopen("debug.s", "wb");
++  if (getenv("GT2_SOURCE"))
++  {
++    FILE *handle = fopen(getenv("GT2_SOURCE"), "wb");
+     fwrite(membuf_get(&src), membuf_memlen(&src), 1, handle);
+     fclose(handle);
+-  } */
++  }
+ 
+   // Assemble; on error fail in a rude way (the parser does so too)
+   if (assemble(&src, &dest)) exit(1);

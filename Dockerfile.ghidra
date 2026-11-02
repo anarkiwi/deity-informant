@@ -1,7 +1,9 @@
 # Ghidra headless integration test for the 6510 SLEIGH module.
 # Multistage: the Ghidra download is an isolated cached layer so source edits do
 # not re-fetch it. Final stage installs the 6510 module and runs the headless
-# analyzer over the hello-world demo (ghidra/6510/headless/run.sh).
+# analyzer over the hello-world demo and the layout-export selftest
+# (ghidra/6510/headless/run.sh); the 6510 module is world-readable so a non-root
+# --user can load it.
 
 ARG GHIDRA_VERSION=12.1.2
 ARG GHIDRA_ZIP=ghidra_12.1.2_PUBLIC_20260605.zip
@@ -31,5 +33,6 @@ COPY . /src
 # tree so -processor 6510:LE:16:default resolves under headless.
 RUN pip3 install --break-system-packages . \
     && deity-informant emit-sleigh \
-        -o "$GHIDRA_INSTALL_DIR/Ghidra/Processors/6510/data/languages"
+        -o "$GHIDRA_INSTALL_DIR/Ghidra/Processors/6510/data/languages" \
+    && chmod -R a+rX "$GHIDRA_INSTALL_DIR/Ghidra/Processors/6510"
 CMD ["sh", "ghidra/6510/headless/run.sh"]

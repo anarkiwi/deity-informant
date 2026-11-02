@@ -306,6 +306,12 @@ def test_player_layout():
     assert by["parallel_array", flo]["words"] == [[0, fhi - flo]]
     rec = by["record", 0x1800]
     assert (rec["count"], rec["extent"], rec["index"]) == (3, [0x1800, 0x1814], "x")
+    assert layout.elements(rec) == [0x1800, 0x1807, 0x180E]
+    assert layout.elements(rec | {"base": 0x1802, "extent": [0x1800, 0x1814]}) == [
+        0x17FB,
+        0x1802,
+        0x1809,
+    ]
     assert by["record", 0xC000]["io"] and "io" not in rec
     assert m["conflicts"] == []
     assert json.loads(json.dumps(m)) == m
@@ -329,6 +335,10 @@ def test_split_table_layout():
     t = next(r for r in m["regions"] if r["kind"] == "address_table")
     assert t["targets"] == [lab["d0"], lab["d1"], lab["d2"]] and t["words"] == [[0, 3]]
     assert (t["count"], t["extent"], t["pointers"]) == (3, [tlo, thi + 2], [0xFB])
+    assert layout.table_entries(t) == [(tlo + k, thi + k) for k in range(3)]
+    want = {tlo + k: "lo" for k in range(3)} | {thi + k: "hi" for k in range(3)}
+    assert layout.address_bytes(m["regions"]) == want | {0xFB: "lo", 0xFC: "hi"}
+    assert layout.table_entries({k: v for k, v in t.items() if k != "extent"}) == []
 
 
 @native
@@ -399,6 +409,8 @@ def test_tool(tmp_path, capsys):
         "pointer": 1,
         "conflicts": 0,
     }
+    assert set(m["starts"]) >= {lab["play"], lab["ok"]} and lab["d0"] not in m["starts"]
+    assert [lab["tlo"], lab["d2"]] in m["accessed"] and [0x30, 0x30] in m["accessed"]
     text = capsys.readouterr().out
     assert "address_table  $%04X-$%04X" % (lab["tlo"], lab["thi"] + 2) in text
     with pytest.raises(ValueError):
