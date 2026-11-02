@@ -23,6 +23,11 @@ HARDWARE = bytes.fromhex("78a9358501a9308dfeffa9108dffff58" "4c0f10").ljust(0x30
 HARDWARE += bytes.fromhex("ad0ddcee000240")
 
 
+# the interrupted code counts in $0300 beside the KERNAL-path handler at $1020
+BUSY = bytes.fromhex("78a9208d1403a9108d150358" "ee00034c0c10").ljust(0x20, b"\xea")
+BUSY += bytes.fromhex("ad0ddc8d00d468a868aa6840")
+
+
 def boot_of(code):
     hdr = b"PSID" + struct.pack(">HHHHHHHI", 2, 0x7C, 0x1000, 0x1000, 0, 1, 1, 1)
     hdr += bytes(0x60) + struct.pack(">HBBBB", 0x14, 0, 0, 0, 0)
@@ -74,3 +79,8 @@ def test_irq_call_matches_reference():
         assert o["halt"] == r["halt"] == "return" and o["pc"] == r["pc"] == 0x1234
         assert o["reg"] == r["reg"] and mem == ref and mem[0x200] == 1
         assert bytes(mem[0x1EE:0x1F1]) == bytes([0xA1, 0x34, 0x12])
+
+
+def test_interrupted_code_that_works_is_dirty():
+    assert not run(KERNAL)[1].dirty
+    assert run(BUSY)[1].dirty

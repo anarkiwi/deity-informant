@@ -58,11 +58,14 @@ class FrameHost(c64._Host):  # pylint: disable=protected-access,too-many-instanc
     """A machine run of an interrupt-driven song's frames (:meth:`drive_frames`): one record
     per frame in :attr:`stream`, entry states in :attr:`frames`, the RAM at the first entry in
     :attr:`image`, interrupts entered inside a frame in :attr:`nested` by frame, and those
-    entered outside any (the run is then no sequence of frames) in :attr:`foreign`."""
+    entered outside any (the run is then no sequence of frames) in :attr:`foreign`; :attr:`dirty`
+    is set when RAM outside page 1 changed between two frames (the interrupted code does real
+    work)."""
 
     def __init__(self, *args, **kw):
-        super().__init__(*args, **kw)
+        super().__init__(*args, sentinel=c64.SENTINEL, **kw)
         self.entries, self.nested, self.foreign = [], {}, set()
+        self.end, self.dirty = None, False
         self.image, self.chunk, self.resume, self.limit = None, None, 0, 0
 
     def drive_frames(self, boot, frames, max_cycles=2_000_000):
@@ -75,7 +78,8 @@ class FrameHost(c64._Host):  # pylint: disable=protected-access,too-many-instanc
         )
         if self.cur == "call" and (self.m.jammed or self.rec.timed_out):
             self._close("jam" if self.m.jammed else "cycles")
-        self._window()
+        super()._window()
+        self._flush()
         self.records = self.stream
         return self
 
@@ -85,6 +89,12 @@ class FrameHost(c64._Host):  # pylint: disable=protected-access,too-many-instanc
             self._snap("cycles")
         self.m.clear_events()  # pylint: disable=no-member
         self.m.set_trap(weak(self._frame_trap), self._watch(self.m))  # pylint: disable=no-member
+        self.m.on_port_write(weak(self._port))  # pylint: disable=no-member
+
+    def _port(self, mc):
+        """The CPU port changed: the vectors' targets may be another view of memory."""
+        if self.cur != "call":
+            mc.watch = self._watch(mc)
 
     def _watch(self, mc):
         """Where a frame starts (the targets of the IRQ and NMI vectors) or, inside one, ends."""
@@ -95,21 +105,23 @@ class FrameHost(c64._Host):  # pylint: disable=protected-access,too-many-instanc
 
     def _window(self):
         super()._window()
-        if self.cur != "call" and self.chunk is not None and self.chunk.meta:
+        if self.cur != "call":
+            self._flush()
+
+    def _flush(self):
+        """Move the closed records to the stream."""
+        if self.chunk is not None and self.chunk.meta:
             self.stream.add(self.chunk.records())
             self.chunk = None
 
     def _frame_trap(self, mc):
-        r, events = mc.mpu, list(mc.events)
-        mc.clear_events()
         if self.cur == "call":
-            if nested := _sources(events):
-                self.nested[len(self.entries) - 1] = sorted(set(nested))
             self._close("return")
-            r.pc = self.resume
+            mc.mpu.pc = self.resume
             mc.watch = self._watch(mc)
             return True
-        entered = _sources(events)
+        entered = _sources(mc.events)
+        mc.clear_events()
         if not entered or entered[-1] == "brk":
             self.foreign |= set(entered)
             return False
@@ -123,6 +135,10 @@ class FrameHost(c64._Host):  # pylint: disable=protected-access,too-many-instanc
         at = [0x100 | (sp + k) & 0xFF for k in (1, 2, 3)]
         p, lo, hi = (int(self.ram[a]) for a in at)
         self.resume = lo | hi << 8
+        if self.end is not None and not self.dirty:
+            diff = self.ram.view(np.uint64) != self.end
+            diff[0x20:0x40] = False
+            self.dirty = bool(diff.any())
         self.entries.append((r.pc, self.resume, r.a, r.x, r.y, (sp + 3) & 0xFF, p))
         if self.image is None:
             self.image = bytes(self.ram)
@@ -139,11 +155,15 @@ class FrameHost(c64._Host):  # pylint: disable=protected-access,too-many-instanc
 
     def _close(self, halt):
         """Close the open frame's record with the machine's registers as they are."""
+        if nested := _sources(self.m.events):
+            self.nested[len(self.entries) - 1] = sorted(set(nested))
+        self.m.clear_events()  # pylint: disable=no-member
         log, idx, vals = self.tr.snap()
         self.tr.phase(c64.Tracer.NONE)
         r = self.m.mpu
         self.chunk.add(halt, (r.a, r.x, r.y, r.sp, r.p), log, idx, vals)
         self.rec.deadline = None
+        self.end = np.frombuffer(bytes(self.ram), np.uint64)
         self.cur = None
 
     @property

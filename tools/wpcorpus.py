@@ -572,6 +572,8 @@ def frame_song(row, boot, mc):
     row |= {"facts_ms": 1e3 * (time.perf_counter() - t), "calls_run": n}
     if host.foreign:
         return row | {"skip": "interrupt outside a frame: " + ",".join(sorted(host.foreign))}
+    if host.dirty:
+        return row | {"skip": "async main"}
     if not n:
         return row | {"skip": "no frames"}
     t = time.perf_counter()
