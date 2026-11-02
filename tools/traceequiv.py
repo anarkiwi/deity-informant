@@ -48,7 +48,7 @@ def run(img, song, backend, max_cycles=2_000_000):
     init, play = song["init"], song["play"]
     ports = {"init": iomap(init), "call": iomap(play)}
     t = time.perf_counter()
-    host = wpcorpus._Records(  # pylint: disable=protected-access
+    host = c64._Host(  # pylint: disable=protected-access
         img, ntsc=song["clock"] == "NTSC", backend=backend
     )
     host.drive([(play, 0)] * song["calls"], [(init, song["song"] - 1)], max_cycles, ports)

@@ -31,11 +31,12 @@ PSID with a play routine:
 2. Play facts (`trace.collect`) over those calls. The song needs the bank map when the init or
    play facts store to $00/$01, or an executed start fetches an opcode, operand or vector from
    a window that is not RAM under sidplay's $01 for that entry (`smclabel.iomap`):
-   `bank_evidence`.
+   `bank_evidence`, decided from the traced pass and a store-only pass before the full facts.
 3. Flat: lift, `wplift.check` over all calls (`exact`, `mismatch`, `deopts`; `no-return`
    when both stop the same way), the lifted `Program.session` and jennings `run_to_rts` timed
    over the same calls (`timing`), scenario cells from the vagrant-moses machine oracle with play
-   called as sidplay does (`oracle` `calls`) over the first `--label-calls` calls.
+   called as sidplay does (`oracle` `calls`) over the first `--label-calls` calls: the
+   machine run the check replays when that covers every call, else a run of its own.
 4. Banked: one vagrant-moses machine run (init and every call, sidplay's $01 per phase) gives
    the facts, the call records the bank-aware lift is checked against (`c64.check`) and the
    cells over every call, natively where vagrant-moses has the trace (`c64.TRACE_NATIVE`);
@@ -49,8 +50,8 @@ as the reference, a minimal decode hook dropped once the main context is seen bu
 (`kernal` when the KERNAL is banked in, so IRQs go through $0314, else `hardware` via RAM
 $FFFE), both vectors, interrupts taken, whether init returned, and the main context's
 instructions until then and the frame it first stored outside page 1 or touched I/O
-(`first_busy_frame`; `idle` when it never did). A second machine oracle run labels the first
-`--label-calls` frames (`oracle` `frames`). These songs are skipped for lifting (`irq-driven`).
+(`first_busy_frame`; `idle` when it never did). The scan run's recorder labels the frames
+(`oracle` `frames`); a smaller `--label-calls` labels the first that many in a second run. These songs are skipped for lifting (`irq-driven`).
 
 ### Boot environment
 
@@ -92,8 +93,8 @@ when the lifter can reproduce it).
 
 ## Output
 
-- `rows.jsonl`: one row per (path, song), appended as songs finish. Failures carry `error`
-  (the exception, or `timeout`).
+- `rows.jsonl`: one row per (path, song), appended as songs finish, `song_ms` its wall time.
+  Failures carry `error` (the exception, or `timeout`).
 - `facts.jsonl.zst`: one zstd frame per lifted song with the post-init state as runs that
   differ from the loaded image (`[[addr, hex]]`), its registers and the facts, enough to
   re-lift or re-check without re-tracing.
@@ -107,3 +108,11 @@ A rerun skips the (path, song) keys already in `rows.jsonl` (a torn last line or
 is cut off, and a lifted row whose facts were lost runs again). `--redo REASON` (repeatable) drops
 the rows whose `skip` is `REASON` from `rows.jsonl` first, so they run again and are replaced
 rather than duplicated (e.g. `--redo "needs the C64 BASIC ROM"` for rows of earlier runs).
+
+## Tools
+
+`tools/wpsong.py ROOT PATH [--song N --calls N --label-calls N --out ROW.json]` runs one song
+through the pipeline in-process (for `py-spy record`, whose raw output `tools/profsum.py
+PROFILE --within FRAME --match FRAME...` summarises). `tools/corpusequiv.py BEFORE AFTER` lists
+the songs whose rows (bar `*_ms` and `timing.*_s`) or facts differ between two runs and the
+`song_ms` speedup per mode.

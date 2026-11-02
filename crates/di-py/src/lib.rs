@@ -226,6 +226,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(wholeprog::lift_many, m)?)?;
     m.add_function(wrap_pyfunction!(wholeprog::plan_program, m)?)?;
     m.add_function(wrap_pyfunction!(wholeprog::reference_call, m)?)?;
+    m.add_function(wrap_pyfunction!(wholeprog::reference_calls, m)?)?;
     m.add("UNIQUE_SIZE", di_pcode::UNIQUE_SIZE)?;
     Ok(())
 }

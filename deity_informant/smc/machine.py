@@ -23,8 +23,20 @@ try:
     from vagrant_moses.smc import Recorder
 except ImportError:  # a vagrant-moses without the recorder
     SMC_NATIVE, Recorder = False, None
+try:
+    from vagrant_moses.smc import CALLS, Calls
+except ImportError:  # a vagrant-moses without the call queue
+    CALLS, Calls = False, None
 
-__all__ = ["core", "MachineOracle", "run_machine", "SENTINEL", "SMC_NATIVE", "native_cells"]
+__all__ = [
+    "CALLS",
+    "core",
+    "MachineOracle",
+    "run_machine",
+    "SENTINEL",
+    "SMC_NATIVE",
+    "native_cells",
+]
 
 SENTINEL = 0xCFF0
 #: A host I/O access in :meth:`MachineOracle.run`: a read; a write of the value last read.
@@ -38,6 +50,7 @@ _ENTRY = {
 }
 _PUSH = {"nmi": "nmi_push", "irq": "irq_push", "brk": "brk_push"}
 _VEC = {"nmi": mm.CPU_NMI_VECTOR, "irq": mm.CPU_IRQ_VECTOR, "brk": mm.CPU_IRQ_VECTOR}
+_PHASE = {"init": 1, "call": 2}
 _BASES = {mm.BASIC_BASE: (0xA, 0xB), mm.CHARGEN_BASE: (0xD,), mm.KERNAL_BASE: (0xE, 0xF)}
 
 
@@ -162,6 +175,7 @@ class MachineOracle:
         self.call_cycles = 0
         self.t0, self.cpf = None, mm.video(ntsc).cycles_per_frame
         self.rec = Recorder(self.m, img, banked=True) if self.native else None
+        self.calls = None
         for dev in (devices or {}).values():
             if hasattr(dev, "attach"):
                 dev.attach(self)
@@ -361,7 +375,13 @@ class MachineOracle:
         frame_cycles = frames * mm.video(m.ntsc).cycles_per_frame
         if self.irq_driven:
             self.call_cycles = min(call_cycles, frame_cycles)
-        m.run(t + self.call_cycles * (len(self.queue) + 1))
+        limit = t + self.call_cycles * (len(self.queue) + 1)
+        if self.native and CALLS and not self.irq_driven and self.returns == self.sentinel:
+            self._queue_native()
+            m.run(limit)
+            self.queue = self.queue[len(self.queue) - self.calls.left :]
+        else:
+            m.run(limit)
         if self.irq_driven:
             self._frames_phase(index_frames)
             m.stop = False
@@ -395,6 +415,14 @@ class MachineOracle:
         for at, _, _ in io:
             m.reset(self.sentinel, t0 + at)
             m.run(t0 + at + 1)
+
+    def _queue_native(self):
+        """Hand the queue to vagrant-moses: its sentinel trap starts each call natively."""
+        q = np.array([(_PHASE[ph], pc, a) for ph, pc, a in self.queue], np.int64).reshape(-1, 3)
+        packed = np.stack([q[:, 0], q[:, 1] & 0xFF, q[:, 1] >> 8, q[:, 2] & 0xFF], 1)
+        self.calls = Calls(
+            self.rec, packed.astype(np.uint8).tobytes(), self.sentinel, self.ports, self.call_cycles
+        )
 
     def _frames_phase(self, index_frames):
         """Calls start (if init did not) and the per-call budget ends: interrupts drive play."""

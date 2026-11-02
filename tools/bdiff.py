@@ -26,13 +26,13 @@ MC = 2_000_000
 
 def session(data, song, calls, host=None):
     """A banked machine run of ``song`` of the SID file ``data`` over ``calls`` play calls on
-    ``host`` (a ``wpcorpus._Records`` class): ``{"img", "play", "ports", "inits", "records",
+    ``host`` (a ``c64._Host`` class): ``{"img", "play", "ports", "inits", "records",
     "prog", "host"}``."""
     _, img, init, play, _ = wpcorpus.sidfile(data)
     hdr = wpcorpus.header(data)
     ports = {"init": wpcorpus.iomap(init), "call": wpcorpus.iomap(play)}
     model = wpcorpus.sid_model({"sid_models": [(hdr["flags"] >> 4) & 3]})
-    h = (host or wpcorpus._Records)(  # pylint: disable=protected-access
+    h = (host or c64._Host)(  # pylint: disable=protected-access
         img, ntsc=hdr["clock"] == "NTSC", model=model
     )
     h.drive([(play, 0)] * calls, [(init, song - 1)], MC, ports)

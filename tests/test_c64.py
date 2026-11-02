@@ -14,7 +14,7 @@ from vagrant_moses.c64 import poweron_ram  # noqa: E402
 from vagrant_moses.roms import ROMS, rom_less  # noqa: E402
 
 from deity_informant import NATIVE, c64, trace, wholeprog  # noqa: E402
-from deity_informant.smc.machine import MachineOracle, core  # noqa: E402
+from deity_informant.smc.machine import CALLS, MachineOracle, core  # noqa: E402
 
 import _common as H  # noqa: E402 pylint: disable=wrong-import-order
 
@@ -159,7 +159,7 @@ def test_machine_real_roms(real):
 
 def _backend_run(backend, calls, init, ports, mc):
     h = c64._Host(image(), backend=backend).drive(calls, init, mc, ports)  # pylint: disable=W0212
-    facts, snaps = h.facts(), h.snaps
+    facts, snaps = h.facts(), h.all_snaps()
     inits = [s for s in snaps if s[0] != "call"]
     bad = None
     if inits and inits[-1][1] == "return":
@@ -168,6 +168,10 @@ def _backend_run(backend, calls, init, ports, mc):
         )
         records = [dict(zip(("halt", "reg", "log", "ram"), s[1:])) for s in snaps if s[0] == "call"]
         bad = c64.check(prog, inits[-1][4], inits[-1][2], records, (ports or {}).get("call"), mc)
+        last, split, _ = h.split()
+        assert last[-1]["ram"] == inits[-1][4]
+        port = (ports or {}).get("call")
+        assert c64.check(prog, inits[-1][4], inits[-1][2], split, port, mc) == bad
     return facts.to_dict(), snaps, bad, h.result.cells
 
 
@@ -391,3 +395,64 @@ def test_sentinel_moves_off_tune_code():
     assert s + 3 <= 0xD000 and not set(range(s, s + 3)) & set(range(0xCFF0, 0xCFF4))
     (rec,) = c64.machine_record(img, [(c64.SENTINEL, 0)])
     assert rec["halt"] == "return" and rec["ram"][0xC000] == (img[0xC000] + 1) & 0xFF
+
+
+def _tampered(packed, field, k, value):
+    b = bytearray(getattr(packed, field))
+    b[k] = value
+    return c64.CallRecords(packed._replace(**{field: bytes(b)}))
+
+
+@pytest.mark.skipif(
+    not (NATIVE and c64.TRACE_NATIVE and CALLS), reason="needs the native trace and call queue"
+)
+def test_native_check_reports_as_the_python_check():
+    h = c64._Host(image()).drive(  # pylint: disable=protected-access
+        [(0x1600, 0)] * 3, [(0x1100, 0)], ports={"call": 0x35}
+    )
+    inits, recs, n = h.split()
+    assert isinstance(recs, c64.CallRecords) and n == len(recs) == 3
+    assert recs[-1] == list(recs)[-1] and recs[0]["halt"] == h.last_halt == "return"
+    last = inits[-1]
+    prog = wholeprog.lift(last["ram"], [0x1600], [c64.DEVICES], h.facts(), bank=c64.bank_map())
+    p = recs.packed
+    m1 = 7 * (recs.first + 1)
+    cases = [
+        recs,
+        _tampered(p, "meta", m1 + 1, 1),
+        _tampered(p, "meta", m1 + 2, recs.meta[recs.first + 1, 2] ^ 1),
+    ]
+    d0 = int(recs.delta_end[recs.first - 1])
+    i = d0 + int(np.flatnonzero(recs.idx[d0:] >> 8 != 1)[0])
+    cases.append(_tampered(p, "vals", i, p.vals[i] ^ 1))
+    if p.log:
+        cases.append(_tampered(p, "log", len(p.log) - 2, p.log[-2] ^ 1))
+    if len(p.log_end) > 1:
+        ends = np.frombuffer(p.log_end, "<u8").copy()
+        ends[recs.first :] = ends[recs.first - 1]
+        log = p.log[: 4 * int(ends[-1])]
+        cases.append(c64.CallRecords(p._replace(log_end=ends.tobytes(), log=log)))
+    got = set()
+    for r in cases:
+        fast = c64.check(prog, last["ram"], last["reg"], r, 0x35)
+        assert fast == c64.check(prog, last["ram"], last["reg"], list(r), 0x35)
+        got.add(None if fast is None else fast[1])
+    assert {None, "halt", "reg", "memory"} <= got
+    with pytest.raises(ValueError):
+        prog.check(bytearray(last["ram"]), last["reg"], p._replace(vals=b""), recs.first)
+
+
+@pytest.mark.skipif(not NATIVE, reason="needs the native extension")
+def test_reference_calls_are_reference_calls_in_a_loop():
+    img, bank = image(), c64.bank_map()
+    for kw in ({}, {"bank": bank, "port": 0x36}):
+        mem, reg, cycles = bytearray(img), None, 0
+        for _ in range(3):
+            if "port" in kw:
+                mem[1] = kw["port"]
+            o = wholeprog.reference_call(mem, 0x1000, reg=reg, bank=kw.get("bank"))
+            reg, cycles = o["reg"], cycles + o["cycles"]
+        out = bytearray(img)
+        assert wholeprog.reference_calls(out, 0x1000, 3, **kw) == (3, cycles, "return")
+        assert out == mem
+    assert wholeprog.reference_calls(bytearray(img), 0x1000, 2, max_cycles=1)[::2] == (1, "cycles")

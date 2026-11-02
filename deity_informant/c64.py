@@ -7,6 +7,7 @@ entry ports; :func:`machine_session` records each call's halt, registers, I/O lo
 
 from __future__ import annotations
 
+import inspect
 from collections import defaultdict
 from functools import lru_cache
 from typing import NamedTuple, Optional
@@ -34,6 +35,8 @@ except ImportError:  # a vagrant-moses without the trace
 
 #: Whether the native trace collects facts and records (else the reference decode hook).
 TRACE_NATIVE = bool(SMC_NATIVE and _TRACE)
+#: Whether the native trace can keep only its records (``Tracer(facts=False)``).
+_TRACE_RECORDS_ONLY = TRACE_NATIVE and "facts" in inspect.signature(Tracer).parameters
 
 __all__ = [
     "RAM",
@@ -295,6 +298,66 @@ def sentinel_for(image):
     return SENTINEL if ok[SENTINEL] else int(np.flatnonzero(ok)[-1])
 
 
+_HALTS = ("return", "cycles", "jam")
+_PHASES = (None, "init", "call")
+
+
+class CallRecords:
+    """A native call queue's records (``vagrant_moses.smc.Records``), one per init and call,
+    the inits first (``first`` is the first call's); it iterates and indexes the call records
+    as :func:`machine_session` gives them."""
+
+    def __init__(self, packed):
+        self.packed = packed
+        self.meta = np.frombuffer(packed.meta, np.uint8).reshape(-1, 7)
+        self.first = int(np.count_nonzero(self.meta[:, 0] != _PHASES.index("call")))
+        self.log = np.frombuffer(packed.log, np.uint8).reshape(-1, 4)
+        self.log_end = np.frombuffer(packed.log_end, "<u8").astype(np.int64)
+        self.idx = np.frombuffer(packed.idx, "<u2")
+        self.vals = np.frombuffer(packed.vals, np.uint8)
+        self.delta_end = np.frombuffer(packed.delta_end, "<u8").astype(np.int64)
+
+    def __len__(self):
+        return len(self.meta) - self.first
+
+    def _start(self, ends, k):
+        return int(ends[k - 1]) if k else 0
+
+    def reg(self, k):
+        """Record ``k``'s ``Program.call`` register file."""
+        a, x, y, sp, p = (int(v) for v in self.meta[k, 2:])
+        reg = [a, x, y, sp] + [0] * 12
+        for i, bit in _FLAGS:
+            reg[i] = (p >> bit) & 1
+        return reg
+
+    def slice(self, lo, hi):
+        """The snaps of records ``lo`` to ``hi``, RAM as each record left it."""
+        ram = np.frombuffer(self.packed.origin, np.uint8).copy()
+        d0 = self._start(self.delta_end, lo)
+        ram[self.idx[:d0]] = self.vals[:d0]
+        for k in range(lo, hi):
+            d = slice(self._start(self.delta_end, k), int(self.delta_end[k]))
+            ram[self.idx[d]] = self.vals[d]
+            lg = self.log[self._start(self.log_end, k) : int(self.log_end[k])]
+            log = [(int(a) | int(b) << 8, int(v), bool(w)) for a, b, v, w in lg]
+            phase, halt = _PHASES[self.meta[k, 0]], _HALTS[self.meta[k, 1]]
+            yield phase, halt, self.reg(k), log, ram.tobytes()
+
+    def snaps(self):
+        """Every record as an :attr:`_Host.snaps` tuple ``(phase, halt, reg, log, ram)``."""
+        return self.slice(0, len(self.meta))
+
+    def __iter__(self):
+        for _, halt, reg, log, ram in self.slice(self.first, len(self.meta)):
+            yield {"halt": halt, "reg": reg, "log": log, "ram": ram}
+
+    def __getitem__(self, k):
+        k = self.first + range(len(self))[k]
+        _, halt, reg, log, ram = next(self.slice(k, k + 1))
+        return {"halt": halt, "reg": reg, "log": log, "ram": ram}
+
+
 class _Chip:
     """The $D400 SID: vagrant-moses' bus model, a libresidfp chip answering $D419-$D41C."""
 
@@ -312,14 +375,15 @@ class _Host(MachineOracle):
     """A machine run recording, per queued call, facts (calls only) and a snapshot at its end.
 
     The SID at $D400 is a :class:`_Chip` of ``model`` (``6581``/``8580``); every CPU access
-    to ``window`` is logged as the machine performed it. ``backend`` ``native`` collects
-    facts and logs in vagrant-moses' trace beside its SMC recorder, ``python`` (the
-    reference) from this decode hook and the machine's I/O hook; default ``native``."""
+    to ``window`` is logged as the machine performed it; ``facts`` false (native) keeps only
+    the records. ``backend`` ``native`` collects facts and logs in vagrant-moses' trace
+    beside its SMC recorder, ``python`` (the reference) from this decode hook and the
+    machine's I/O hook; the default is ``native`` where the trace exists."""
 
     # pylint: disable=too-many-instance-attributes,too-many-arguments,too-many-positional-arguments
 
     def __init__(
-        self, image, window=DEVICES, roms=None, ntsc=False, backend=None, model="6581"
+        self, image, window=DEVICES, roms=None, ntsc=False, backend=None, model="6581", facts=True
     ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self.window = window
         backend = backend or ("native" if TRACE_NATIVE else "python")
@@ -336,8 +400,11 @@ class _Host(MachineOracle):
             backend=backend,
             on_io=hook,
         )
+        only = {"facts": facts} if _TRACE_RECORDS_ONLY else {}
         self.tr = (
-            Tracer(self.rec, trace_table(), self.sentinel, window) if backend == "native" else None
+            Tracer(self.rec, trace_table(), self.sentinel, window, **only)
+            if backend == "native"
+            else None
         )
         self.cur = None
         self.log = []
@@ -347,6 +414,7 @@ class _Host(MachineOracle):
         self.folded = (np.zeros(0, np.int64), np.zeros(0, np.int64))
         self.pending, self.npending = [], 0
         self.snaps = []
+        self.records = None
         self.writes = defaultdict(set)
         self.page1 = {}
         self.entry_sp = defaultdict(set)
@@ -457,11 +525,47 @@ class _Host(MachineOracle):
         """Run ``init`` then ``calls``; a call that does not return ends the run. The run's
         SMC labelling is kept as :attr:`result`."""
         self.result = super().run(calls, init, call_cycles=max_cycles, ports=ports)
+        if self.calls is not None:
+            self.calls.close()
+            self.records = CallRecords(self.calls.records())
+            sp, port = self.calls.entries()
+            for pc, v in sp:
+                self.entry_sp[pc].add(v)
+            for pc, d, v in port:
+                self.entry_port[pc].add((d, v))
+            return self
         if self.last is not None:
             self._effects(*self.last)
             self.last = None
         self._snap("jam" if self.m.jammed else "cycles")
         return self
+
+    def split(self):
+        """``(init records, call records, calls)``: the init records as
+        :func:`machine_session` gives them, the call records a :class:`CallRecords` from the
+        native call queue, else those dicts."""
+        recs = self.records
+        if recs is None:  # the reference backend's snaps
+            out = ([], [])
+            for phase, *rec in self.snaps:
+                out[phase == "call"].append(dict(zip(("halt", "reg", "log", "ram"), rec)))
+            return *out, len(out[1])
+        inits = [
+            {"halt": h, "reg": r, "log": lg, "ram": ram}
+            for _, h, r, lg, ram in recs.slice(0, recs.first)
+        ]
+        return inits, recs, len(recs)
+
+    @property
+    def last_halt(self):
+        """The halt of the run's last record."""
+        if self.records is None:
+            return self.snaps[-1][1]
+        return _HALTS[self.records.meta[-1, 1]]
+
+    def all_snaps(self):
+        """:attr:`snaps`, or the native records as those tuples."""
+        return self.snaps if self.records is None else list(self.records.snaps())
 
     def facts(self):
         """The calls' :class:`~deity_informant.trace.Facts`."""
@@ -517,11 +621,8 @@ def machine_session(
     as it returned or stopped: ``halt`` ``"return"``/``"cycles"``/``"jam"``, ``reg`` the
     ``Program.call`` register file, ``log`` the ``(addr, value, is_write)`` I/O accesses to
     ``window`` in order, ``ram`` all of RAM with the port registers at $00/$01."""
-    host = _Host(image, window, roms).drive(calls, init, max_cycles, ports)
-    out = ([], [])
-    for phase, halt, reg, log, ram in host.snaps:
-        out[phase == "call"].append({"halt": halt, "reg": reg, "log": log, "ram": ram})
-    return out
+    inits, records, _ = _Host(image, window, roms).drive(calls, init, max_cycles, ports).split()
+    return inits, list(records)
 
 
 def machine_record(
@@ -569,6 +670,9 @@ def check(
     the first, or None. A lift reading another address, or more or fewer times, than the
     machine differs in the log."""
     mem = bytearray(image)
+    if isinstance(records, CallRecords):
+        accs = bytes(a & 0xFF for a in accs)
+        return prog.check(mem, list(reg), records.packed, records.first, port, max_cycles, accs)
     for n, ref in enumerate(records):
         if port is not None:
             mem[1] = port
