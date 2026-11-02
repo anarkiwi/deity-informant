@@ -12,18 +12,22 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-/// A 64 KiB bytearray as the bus: volatile ranges optionally logged as
-/// `(addr, value, cycle, is_write)` and optionally read as `(cycle ^ n ^ addr) & 0xff` for
-/// the `n`th volatile access. With `dev` (banked memory) device accesses reach that register
-/// file and `ram_*` the bytearray.
+/// A full-address-space bytearray as the bus: volatile ranges optionally logged as
+/// `(addr, value, cycle, is_write)`; the `n`th volatile read gives `reads[n]` when replaying
+/// (0 past its end; volatile writes then reach only the log), else `(cycle ^ n ^ addr) & 0xff`
+/// with `synth`, else the device byte.
+/// With `dev` (banked memory) device accesses reach that register file and `ram_*` the
+/// bytearray.
 struct PyBus<'a> {
     mem: &'a mut [u8; 0x10000],
     dev: Option<Box<[u8; 0x10000]>>,
     volatile: &'a [(u32, u32)],
     log: Option<Vec<(u16, u8, u64, bool)>>,
     synth: bool,
+    reads: Option<&'a [u8]>,
     now: u64,
     n: u64,
+    r: usize,
 }
 
 impl<'a> PyBus<'a> {
@@ -34,8 +38,10 @@ impl<'a> PyBus<'a> {
             volatile,
             log: log.then(Vec::new),
             synth,
+            reads: None,
             now: 0,
             n: 0,
+            r: 0,
         }
     }
     fn device(&mut self) -> &mut [u8; 0x10000] {
@@ -53,7 +59,10 @@ impl Bus for PyBus<'_> {
     fn read(&mut self, a: u16) -> u8 {
         if self.volatile(a) {
             self.n += 1;
-            let v = if self.synth {
+            let v = if let Some(r) = self.reads {
+                self.r += 1;
+                r.get(self.r - 1).copied().unwrap_or(0)
+            } else if self.synth {
                 (self.now ^ self.n) as u8 ^ a as u8
             } else {
                 self.device()[a as usize]
@@ -73,7 +82,9 @@ impl Bus for PyBus<'_> {
         if let (Some(l), true) = (self.log.as_mut(), vol) {
             l.push((a, v, self.now, true));
         }
-        self.device()[a as usize] = v;
+        if !(vol && self.reads.is_some()) {
+            self.device()[a as usize] = v;
+        }
     }
     #[inline]
     fn ram_read(&mut self, a: u16) -> u8 {
@@ -123,7 +134,7 @@ impl Bus for Unclocked<'_, '_> {
 
 /// A bank map from its dict: ``dir``, ``data``, ``mask``, ``pull``, ``lut`` (configuration per
 /// effective port value), ``configs`` (per configuration 256 page kinds: 0 RAM, 1 ROM,
-/// 2 I/O) and ``rom`` (64 KiB of ROM bytes at their addresses).
+/// 2 I/O) and ``rom`` (ROM bytes at their addresses over the whole address space).
 fn bank_of(d: Option<&Bound<'_, PyDict>>) -> PyResult<Option<BankMap>> {
     let Some(d) = d else { return Ok(None) };
     let get = |k: &str| {
@@ -278,7 +289,7 @@ fn vn<'py>(py: Python<'py>, v: Vn) -> PyResult<Bound<'py, PyAny>> {
 }
 
 /// A lifted program. ``functions`` lists each function's blocks of P-Code ops as
-/// ``[mnemonic, out, [inputs], aux]``; ``call``/``run`` execute it over a 64 KiB bytearray.
+/// ``[mnemonic, out, [inputs], aux]``; ``call``/``run`` execute it over a full-address-space bytearray.
 #[pyclass(module = "deity_informant._native", frozen)]
 pub struct Program {
     prog: Arc<LProgram>,
@@ -492,10 +503,10 @@ impl Program {
     /// returns, ``max_cycles`` elapse, or a JAM. ``reg``/``cycles`` set the starting state.
     /// Returns ``{"reg", "pc", "cycles", "halt", "deopt", "log"}``. Without cycle counting
     /// the lifted code runs to its return and ``cycles`` counts only the reference
-    /// interpreter's part after a deopt. A banked program's devices read and write ``io``
-    /// (a 64 KiB register file, updated in place; a copy of ``mem`` when absent).
+    /// interpreter's part after a deopt. A banked program's non-volatile devices read and
+    /// write a copy of ``mem``; ``reads`` (bytes) replays the volatile reads in order.
     /// ``backend`` overrides :attr:`backend` for this call.
-    #[pyo3(signature = (mem, entry=0, a=0, reg=None, cycles=0, max_cycles=10_000_000, log=false, synth=false, io=None, backend=None))]
+    #[pyo3(signature = (mem, entry=0, a=0, reg=None, cycles=0, max_cycles=10_000_000, log=false, synth=false, reads=None, backend=None))]
     #[allow(clippy::too_many_arguments)]
     fn call<'py>(
         &self,
@@ -508,34 +519,32 @@ impl Program {
         max_cycles: u64,
         log: bool,
         synth: bool,
-        io: Option<&Bound<'py, PyByteArray>>,
+        reads: Option<Vec<u8>>,
         backend: Option<&str>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let backend = self.backend_or(backend)?;
         self.entry(entry)?;
         let mut cpu = cpu_of(reg, cycles);
-        let mut dev = devices(self.prog.bank.is_some(), mem, io)?;
+        let dev = devices(self.prog.bank.is_some(), mem)?;
         let (o, lg) = with_mem(mem, |m| {
             let mut bus = PyBus::new(m, &self.prog.volatile, log, synth);
-            bus.dev = dev.take();
+            bus.dev = dev;
+            bus.reads = reads.as_deref();
             let o = self.run(&mut bus, &mut cpu, entry, a, max_cycles, backend);
-            dev = bus.dev;
             (o, bus.log)
         })?;
-        store_devices(io, dev)?;
         result(py, &cpu, o.halt, o.deopt, lg)
     }
 
     /// A :class:`Session` over ``mem``: repeated ``call``s from one CPU state (``reg``),
-    /// cheaper than ``Program.call`` per call. A banked program's devices start as ``io``
-    /// (a copy of ``mem`` when absent) and persist across the session's calls.
-    #[pyo3(signature = (mem, max_cycles=10_000_000, reg=None, io=None, backend=None))]
+    /// cheaper than ``Program.call`` per call. A banked program's devices start as a copy of
+    /// ``mem`` and persist across the session's calls.
+    #[pyo3(signature = (mem, max_cycles=10_000_000, reg=None, backend=None))]
     fn session(
         slf: &Bound<'_, Self>,
         mem: &Bound<'_, PyByteArray>,
         max_cycles: u64,
         reg: Option<[u8; 16]>,
-        io: Option<&Bound<'_, PyByteArray>>,
         backend: Option<&str>,
     ) -> PyResult<Session> {
         let p = slf.get();
@@ -543,7 +552,7 @@ impl Program {
         Ok(Session {
             prog: slf.clone().unbind(),
             mem: mem.clone().unbind(),
-            dev: devices(p.prog.bank.is_some(), mem, io)?,
+            dev: devices(p.prog.bank.is_some(), mem)?,
             cpu: cpu_of(reg, 0),
             max_cycles,
             backend: p.backend_or(backend)?,
@@ -636,34 +645,20 @@ impl Session {
     }
 }
 
-/// The device register file of a banked run: ``io`` or a copy of ``mem``.
-fn devices(
-    banked: bool,
-    mem: &Bound<'_, PyByteArray>,
-    io: Option<&Bound<'_, PyByteArray>>,
-) -> PyResult<Option<Box<[u8; 0x10000]>>> {
+/// The device register file of a banked run: a copy of ``mem``.
+fn devices(banked: bool, mem: &Bound<'_, PyByteArray>) -> PyResult<Option<Box<[u8; 0x10000]>>> {
     if !banked {
         return Ok(None);
     }
-    with_mem(io.unwrap_or(mem), |d| Some(Box::new(*d)))
-}
-
-/// Write a banked run's device register file back to ``io``.
-fn store_devices(
-    io: Option<&Bound<'_, PyByteArray>>,
-    dev: Option<Box<[u8; 0x10000]>>,
-) -> PyResult<()> {
-    if let (Some(io), Some(d)) = (io, dev) {
-        with_mem(io, |m| *m = *d)?;
-    }
-    Ok(())
+    with_mem(mem, |d| Some(Box::new(*d)))
 }
 
 /// ``run_to_rts`` on the reference interpreter with the same bus as ``Program.call``;
 /// ``clocked=False`` gives volatile accesses no cycle, as a program lifted without cycles.
-/// ``bank`` (a bank map dict, see ``lift_program``) sees memory through it, devices on ``io``.
+/// ``bank`` (a bank map dict, see ``lift_program``) sees memory through it; ``reads`` as
+/// ``Program.call``.
 #[pyfunction]
-#[pyo3(signature = (mem, pc, a=0, reg=None, cycles=0, max_cycles=10_000_000, volatile=vec![], log=false, synth=false, clocked=true, bank=None, io=None))]
+#[pyo3(signature = (mem, pc, a=0, reg=None, cycles=0, max_cycles=10_000_000, volatile=vec![], log=false, synth=false, clocked=true, bank=None, reads=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn reference_call<'py>(
     py: Python<'py>,
@@ -678,15 +673,16 @@ pub fn reference_call<'py>(
     synth: bool,
     clocked: bool,
     bank: Option<&Bound<'py, PyDict>>,
-    io: Option<&Bound<'py, PyByteArray>>,
+    reads: Option<Vec<u8>>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let mut cpu = cpu_of(reg, cycles);
     let bank = bank_of(bank)?;
-    let dev = devices(bank.is_some(), mem, io)?;
-    let (h, lg, dev) = with_mem(mem, |m| {
+    let dev = devices(bank.is_some(), mem)?;
+    let (h, lg) = with_mem(mem, |m| {
         let mut bus = PyBus::new(m, &volatile, log, synth);
         bus.now = cycles;
         bus.dev = dev;
+        bus.reads = reads.as_deref();
         let start = cpu.r(R::SP);
         for v in [0u8, 1] {
             let sp = cpu.r(R::SP);
@@ -705,13 +701,12 @@ pub fn reference_call<'py>(
             (None, true) => cpu.run_clocked(&mut bus, above, end),
             (None, false) => cpu.run_clocked(&mut Unclocked(&mut bus), above, end),
         };
-        (h, bus.log, bus.dev)
+        (h, bus.log)
     })?;
-    store_devices(io, dev)?;
     result(py, &cpu, h, None, lg)
 }
 
-/// Lift ``entries`` of the program in ``image`` (64 KiB entry state): ``entries`` as
+/// Lift ``entries`` of the program in ``image`` (the whole address space at entry): ``entries`` as
 /// ``[(pc, [(reg, values)])]``, ``volatile`` as ``[(lo, hi)]``, ``facts`` as a dict with
 /// ``starts``, ``edges``, ``writes``, ``page1`` and ``heights``; ``optimize=False`` keeps the emitted
 /// P-Code; ``cycles=True`` counts cycles. ``bank`` is a bank map: ``dir``/``data`` port

@@ -47,13 +47,15 @@ def core():
 
 
 def _rom_pages(roms):
-    """``{4 KiB page: (base, bytes)}`` of the ROM set ``roms`` (base -> bytes)."""
+    """``{addr >> 12: (base, bytes)}`` of the ROM set ``roms`` (base -> bytes)."""
     return {page: (base, data) for base, data in roms.items() for page in _BASES.get(base, ())}
 
 
-def _machine(ntsc, sids, roms):
-    """The native machine; ``roms`` (base -> bytes) replaces the ROM-less set."""
-    return vm.Machine(ntsc, sids=sids, backend="native", roms=roms)
+def _machine(ntsc, sids, roms, on_io=None):
+    """The native machine; ``roms`` (base -> bytes) replaces the ROM-less set, ``on_io``
+    (when given) sees every I/O access as ``(addr, value, is_write)``."""
+    kw = {} if on_io is None else {"on_io": on_io}
+    return vm.Machine(ntsc, sids=sids, backend="native", roms=roms, **kw)
 
 
 def _frames(events, sp):
@@ -108,7 +110,7 @@ def native_cells(events):
 
 
 class MachineOracle:
-    """One machine run over ``image`` (64 KiB RAM at power-on), driven call by call.
+    """One machine run over ``image`` (all of RAM at power-on), driven call by call.
 
     ``roms`` (base -> bytes) overrides vagrant-moses' ROM-less ROM set per ROM. ``backend``
     (``native``/``python``, default: ``native`` when the recorder is available, the class keeps
@@ -117,7 +119,16 @@ class MachineOracle:
 
     # pylint: disable=too-many-arguments,too-many-positional-arguments
 
-    def __init__(self, image, ntsc=False, devices=None, sentinel=SENTINEL, roms=None, backend=None):
+    def __init__(
+        self,
+        image,
+        ntsc=False,
+        devices=None,
+        sentinel=SENTINEL,
+        roms=None,
+        backend=None,
+        on_io=None,
+    ):
         if not core():
             raise ImportError("vagrant-moses native machine is not available")
         dma = any(hasattr(d, "attach") for d in (devices or {}).values())
@@ -131,7 +142,7 @@ class MachineOracle:
         img[sentinel : sentinel + 3] = bytes([0x4C, sentinel & 0xFF, sentinel >> 8])
         full = {**rom_less(), **roms} if roms else None
         self.rom_page = _rom_pages(full or rom_less())
-        self.m = _machine(ntsc, dict(devices or {}), full)
+        self.m = _machine(ntsc, dict(devices or {}), full, on_io)
         self.ram = np.frombuffer(self.m.ram, dtype=np.uint8)
         self.ram[:] = np.frombuffer(bytes(img), dtype=np.uint8)
         self.shadow = self.ram.copy()

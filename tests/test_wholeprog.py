@@ -519,3 +519,21 @@ def test_session_matches_call():
         s.call(len(pcs))
     with pytest.raises(ValueError):
         prog.session(bytearray(10))
+
+
+def test_reads_replay_volatile_reads_in_order():
+    img = bytearray(0x10000)
+    code = bytes.fromhex("ad05d4ae12d0ac05d4ad00c060")  # LDA $D405; LDX $D012; LDY $D405; LDA $C000
+    img[0x1000 : 0x1000 + len(code)] = code
+    img[0xD405] = 0x77
+    kw = {"volatile": [(0xD000, 0xE000)], "log": True}
+    o = wholeprog.reference_call(bytearray(img), 0x1000, reads=b"\x12\x34", **kw)
+    assert list(o["reg"][:3]) == [0, 0x34, 0] and [e[:2] for e in o["log"]] == [
+        (0xD405, 0x12),
+        (0xD012, 0x34),
+        (0xD405, 0),
+    ]
+    prog = wholeprog.lift(img, [0x1000], [(0xD000, 0xE000)])
+    lifted = prog.call(bytearray(img), 0, reads=b"\x12\x34", log=True)["log"]
+    assert [e[:2] for e in lifted] == [e[:2] for e in o["log"]]
+    assert wholeprog.reference_call(bytearray(img), 0x1000, **kw)["reg"][2] == 0x77

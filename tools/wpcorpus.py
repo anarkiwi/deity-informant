@@ -50,7 +50,6 @@ from deity_informant.smc.classify import (  # noqa: E402
 from deity_informant.smc.expect import lift_reason  # noqa: E402
 from deity_informant.smc.machine import _ENTRY, MachineOracle, _Mem, _frames  # noqa: E402
 from deity_informant.smc.oracle import writer_of  # noqa: E402
-import wplift  # noqa: E402 pylint: disable=wrong-import-order
 from smclabel import iomap, sidfile  # noqa: E402 pylint: disable=wrong-import-order
 
 CLOCKS = ("unknown", "PAL", "NTSC", "PAL/NTSC")
@@ -106,9 +105,15 @@ def latch_of(log, ntsc):
     return lohi[0] | lohi[1] << 8, wrote
 
 
+def sid_model(row):
+    """The SID model a song's header asks for: ``8580`` when only it, else ``6581``."""
+    return "8580" if row.get("sid_models", [0])[0] == 2 else "6581"
+
+
 def volatile_of(row):
-    """The SID windows: $D400-$D7FF plus extra SIDs outside it."""
-    return [c64.SID] + [(a, a + 0x20) for a in row["extra_sids"] if not 0xD400 <= a < 0xD800]
+    """The device window $D000-$DFFF plus extra SIDs outside it."""
+    lo, hi = c64.DEVICES
+    return [c64.DEVICES] + [(a, a + 0x20) for a in row["extra_sids"] if not lo <= a < hi]
 
 
 def flat_init(img, row, mc):
@@ -288,12 +293,26 @@ def _lifted_row(prog, lift_ms, bad):
     }
 
 
+def machine_check(prog, row, img, n, mc):
+    """``prog`` against ``n`` machine play calls after init, replaying the machine's device
+    reads (:func:`c64.check`): ``[call, *mismatch]``, ``["init", halt]`` or None."""
+    init, play = row["init"], row["play"]
+    ports = {"init": iomap(init), "call": iomap(play)}
+    host = _Records(img, ntsc=row["clock"] == "NTSC", model=sid_model(row))
+    host.drive([(play, 0)] * n, [(init, row["song"] - 1)], mc, ports)
+    inits, records, _ = host.split()
+    last = inits[-1]
+    if last["halt"] != "return":
+        return ["init", last["halt"]]
+    return c64.check(prog, last["ram"], last["reg"], records, ports["call"], mc)
+
+
 def _banked(row, img, mc, ev):
     """The bank-aware lift of a PSID song: one machine run for facts, records and cells."""
     init, play = row["init"], row["play"]
     ports = {"init": iomap(init), "call": iomap(play)}
     t = time.perf_counter()
-    host = _Records(img, ntsc=row["clock"] == "NTSC")
+    host = _Records(img, ntsc=row["clock"] == "NTSC", model=sid_model(row))
     host.drive([(play, 0)] * row["calls"], [(init, row["song"] - 1)], mc, ports)
     inits, records, n = host.split()
     facts = host.facts()
@@ -305,16 +324,15 @@ def _banked(row, img, mc, ev):
     if last["halt"] != "return":
         return row | {"skip": "init " + last["halt"]}, None
     t = time.perf_counter()
-    prog = wholeprog.lift(last["ram"], [play], [c64.SID], facts, bank=_bank())
+    prog = wholeprog.lift(last["ram"], [play], [c64.DEVICES], facts, bank=_bank())
     lift_ms = 1e3 * (time.perf_counter() - t)
     row["compile_ms"] = _compiled(prog)
     t = time.perf_counter()
-    io = c64.device_file(img, last["ram"], inits)
-    bad = c64.check(prog, last["ram"], last["reg"], records, ports["call"], mc, io=io)
+    bad = c64.check(prog, last["ram"], last["reg"], records, ports["call"], mc)
     row |= _lifted_row(prog, lift_ms, bad) | {"check_ms": 1e3 * (time.perf_counter() - t)}
     row["configs"] = sorted({b for bs in facts.banks.values() for b in bs})
     row["returned"] = n == row["calls"] and host.snaps[-1][1] == "return"
-    port, vol = ports["call"], [c64.SID]
+    port, vol = ports["call"], [c64.DEVICES]
     t_ref, (nr, cycles, _) = _timed(
         _ref_run(play, vol, mc, _bank(), port), bytearray(last["ram"]), n
     )
@@ -356,7 +374,7 @@ def psid_song(row, img, mc, cap, defer=False):
     lift_ms = 1e3 * (time.perf_counter() - t)
     row["compile_ms"] = _compiled(prog)
     t = time.perf_counter()
-    bad = wplift.check(mem, prog, [(play, 0)] * n, vol, progress=False)
+    bad = machine_check(prog, row, img, n, mc)
     row |= _lifted_row(prog, lift_ms, bad) | {"check_ms": 1e3 * (time.perf_counter() - t)}
     t_lift, _ = _timed(_lifted_run(prog, mc), bytearray(mem), n)
     t_jen, _ = _timed(_jennings_run(play, mc), bytearray(mem), n)
@@ -806,6 +824,7 @@ def main(argv=None):  # pylint: disable=too-many-locals
     ap.add_argument("--sample", type=int, default=0, help="random tunes (0: all)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--backend", choices=("jit", "interp"), default="jit", help="lifted engine")
+    ap.add_argument("--paths", help="file of tune paths relative to ROOT, one per line")
     ap.add_argument(
         "--defer",
         type=lambda v: tuple(v.split(",")),
@@ -824,7 +843,11 @@ def main(argv=None):  # pylint: disable=too-many-locals
     out.mkdir(parents=True, exist_ok=True)
     rows_path, facts_path = out / "rows.jsonl", out / "facts.jsonl.zst"
     lengths = args.songlengths or root / "DOCUMENTS" / "Songlengths.md5"
-    paths = sorted(root.rglob("*.sid"))
+    if args.paths:
+        lines = Path(args.paths).read_text(encoding="utf-8").split()
+        paths = sorted({root / p for p in lines})
+    else:
+        paths = sorted(root.rglob("*.sid"))
     if args.sample:
         paths = random.Random(args.seed).sample(paths, min(args.sample, len(paths)))
     t0 = time.perf_counter()

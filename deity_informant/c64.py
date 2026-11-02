@@ -2,7 +2,7 @@
 
 :func:`bank_map` describes the 6510 port and PLA configurations for the native lifter;
 :func:`machine_facts` records a run's :class:`~deity_informant.trace.Facts` with banks and
-entry ports; :func:`machine_session` records each call's halt, registers, SID log and RAM.
+entry ports; :func:`machine_session` records each call's halt, registers, I/O log and RAM.
 """
 
 from __future__ import annotations
@@ -12,9 +12,12 @@ from functools import lru_cache
 from typing import NamedTuple, Optional
 
 import numpy as np
+import pylibresidfp
 from jennings.opcodes import MEM_MODES, OPCODES
+import vagrant_moses as vm
 from vagrant_moses import memmap as mm
 from vagrant_moses.bus import banking, port_read
+from vagrant_moses.c64 import poweron_ram
 from vagrant_moses.roms import BASIC_RUN, RomFetchError, load_roms, poweron_writes, rom_less
 
 from .smc.classify import expected_reads, expected_writes, view
@@ -39,6 +42,7 @@ __all__ = [
     "PULL",
     "ROM_NAMES",
     "SID",
+    "DEVICES",
     "bank_map",
     "boot",
     "Boot",
@@ -52,10 +56,11 @@ __all__ = [
     "machine_session",
     "mismatch",
     "check",
-    "device_file",
+    "reads",
     "lift_check",
     "LiftCheck",
     "IDLE",
+    "sentinel_for",
     "TRACE_NATIVE",
     "FORMS",
     "trace_table",
@@ -66,6 +71,9 @@ RAM, ROM, IO = 0, 1, 2
 PULL = port_read(0, 0)
 ROM_NAMES = ("basic", "chargen", "kernal")
 SID = (mm.SID_BASE, mm.SID_LAST + 1)
+#: The I/O window the machine logs and banked lifts treat as volatile: VIC, SID, colour RAM,
+#: CIAs and the expansion area.
+DEVICES = (0xD000, 0xE000)
 _MASK = mm.LORAM | mm.HIRAM | mm.CHAREN
 _PUSHES = {"PHA": 1, "PHP": 1, "JSR": 2, "BRK": 3}
 _STORED = {
@@ -274,49 +282,63 @@ def _reg(r):
     return reg
 
 
-class _Sid:
-    """A 32-byte SID window at ``base``: reads give the last value written there (else the
-    image byte); every access goes to the host."""
+def sentinel_for(image):
+    """Where a run of ``image`` puts the oracle's return trap: :data:`SENTINEL` unless
+    ``image`` defines any of its 3 bytes, else the highest such run below $D000 above the
+    stack that still holds power-on RAM."""
+    free = (
+        np.frombuffer(bytes(image), np.uint8)[:0xD000]
+        == np.frombuffer(poweron_ram(), np.uint8)[:0xD000]
+    )
+    ok = np.lib.stride_tricks.sliding_window_view(free, 3).all(1)
+    ok[:0x200] = False
+    return SENTINEL if ok[SENTINEL] else int(np.flatnonzero(ok)[-1])
 
-    __slots__ = ("base", "regs", "host")
 
-    def __init__(self, base, regs, host):
-        self.base, self.regs, self.host = base, regs, host
+class _Chip:
+    """The $D400 SID: vagrant-moses' bus model, a libresidfp chip answering $D419-$D41C."""
 
-    def read(self, _cycle, reg):
-        v = self.regs[reg]
-        self.host.access(self.base + reg, v, False)
-        return v
+    def __init__(self, model):
+        self.chip = pylibresidfp.SID(model, filter=False)
+        self.sid = vm.NativeSid(model, self.read)
 
-    def write(self, _cycle, reg, value):
-        self.regs[reg] = value
-        self.host.access(self.base + reg, value, True)
+    def read(self, cycle, reg):
+        """Register ``reg`` at machine cycle ``cycle``, after the writes logged since."""
+        w = np.array(self.sid.drain_writes(), np.int64).reshape(-1, 3)
+        return self.chip.serve(w, cycle, reg)
 
 
 class _Host(MachineOracle):
     """A machine run recording, per queued call, facts (calls only) and a snapshot at its end.
 
-    ``backend`` ``native`` collects them in vagrant-moses' trace beside its SMC recorder,
-    ``python`` (the reference) from this decode hook and Python SID devices; the default is
-    ``native`` where the trace exists."""
+    The SID at $D400 is a :class:`_Chip` of ``model`` (``6581``/``8580``); every CPU access
+    to ``window`` is logged as the machine performed it. ``backend`` ``native`` collects
+    facts and logs in vagrant-moses' trace beside its SMC recorder, ``python`` (the
+    reference) from this decode hook and the machine's I/O hook; default ``native``."""
 
     # pylint: disable=too-many-instance-attributes,too-many-arguments,too-many-positional-arguments
 
-    def __init__(self, image, sid=SID, roms=None, ntsc=False, backend=None):
-        self.sid = sid
+    def __init__(
+        self, image, window=DEVICES, roms=None, ntsc=False, backend=None, model="6581"
+    ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        self.window = window
         backend = backend or ("native" if TRACE_NATIVE else "python")
-        if backend == "native":
-            if not TRACE_NATIVE:
-                raise ValueError("backend 'native' is not available")
-            super().__init__(image, ntsc=ntsc, roms=roms, backend="native")
-            self.tr = Tracer(self.rec, trace_table(), self.sentinel, sid, image)
-        else:
-            devices = {
-                b: _Sid(b, bytearray(image[b : b + 0x20]), self)
-                for b in range(sid[0], sid[1], 0x20)
-            }
-            super().__init__(image, ntsc=ntsc, devices=devices, roms=roms, backend="python")
-            self.tr = None
+        if backend == "native" and not TRACE_NATIVE:
+            raise ValueError("backend 'native' is not available")
+        sids = {mm.SID_BASE: _Chip(model).sid}
+        hook = None if backend == "native" else self.access
+        super().__init__(
+            image,
+            ntsc=ntsc,
+            devices=sids,
+            sentinel=sentinel_for(image),
+            roms=roms,
+            backend=backend,
+            on_io=hook,
+        )
+        self.tr = (
+            Tracer(self.rec, trace_table(), self.sentinel, window) if backend == "native" else None
+        )
         self.cur = None
         self.log = []
         self.last = None
@@ -332,8 +354,8 @@ class _Host(MachineOracle):
         self.result = None
 
     def access(self, addr, value, write):
-        """A SID access by the running instruction."""
-        if self.cur is None:
+        """An I/O access by the running instruction."""
+        if self.cur is None or not self.window[0] <= addr < self.window[1]:
             return
         self.log.append((addr, value, write))
         if write and self.cur == "call":
@@ -348,7 +370,7 @@ class _Host(MachineOracle):
     def _effects(self, pc, fetched, a, x, y, sp, bits):
         """Record the stores and page-1 data accesses of the call instruction just executed,
         addressed over the RAM it started from. Values come from RAM after it; I/O stores
-        outside the SID windows from the register a plain store wrote."""
+        outside the logged window from the register a plain store wrote."""
         mem = _Mem(pc, fetched, self.shadow)
         mn = OPCODES[fetched[0]][0]
         w = writer_of(fetched[0])
@@ -361,7 +383,7 @@ class _Host(MachineOracle):
             self._page1(pc, addrs)
         else:
             return
-        lo, hi = self.sid
+        lo, hi = self.window
         for addr in addrs:
             if view(bits, addr) != "io" or addr < 2:
                 self.writes[addr].add(int(self.ram[addr]))
@@ -482,19 +504,20 @@ class _Host(MachineOracle):
 
 def machine_facts(image, calls, init=(), ports=None, max_cycles=2_000_000, roms=None):
     """:class:`~deity_informant.trace.Facts` of ``calls`` (``[(pc, a)]``, after ``init``)
-    over ``image`` (64 KiB) on the native machine; ``ports`` as ``MachineOracle.run``.
+    over ``image`` (the whole address space) on the native machine; ``ports`` as
+    ``MachineOracle.run``.
     ``banks`` holds effective port bits (:func:`bank_map` configuration indices)."""
     return _Host(image, roms=roms).drive(calls, init, max_cycles, ports).facts()
 
 
 def machine_session(
-    image, calls, init=(), ports=None, max_cycles=2_000_000, sid=SID, roms=None
+    image, calls, init=(), ports=None, max_cycles=2_000_000, window=DEVICES, roms=None
 ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
     """``(init records, call records)`` of one run, ``{"halt", "reg", "log", "ram"}`` per call
     as it returned or stopped: ``halt`` ``"return"``/``"cycles"``/``"jam"``, ``reg`` the
-    ``Program.call`` register file, ``log`` the ``(addr, value, is_write)`` ``sid``-range
-    accesses in order, ``ram`` the 64 KiB RAM with the port registers at $00/$01."""
-    host = _Host(image, sid, roms).drive(calls, init, max_cycles, ports)
+    ``Program.call`` register file, ``log`` the ``(addr, value, is_write)`` I/O accesses to
+    ``window`` in order, ``ram`` all of RAM with the port registers at $00/$01."""
+    host = _Host(image, window, roms).drive(calls, init, max_cycles, ports)
     out = ([], [])
     for phase, halt, reg, log, ram in host.snaps:
         out[phase == "call"].append({"halt": halt, "reg": reg, "log": log, "ram": ram})
@@ -502,10 +525,10 @@ def machine_session(
 
 
 def machine_record(
-    image, calls, init=(), ports=None, max_cycles=2_000_000, sid=SID, roms=None
+    image, calls, init=(), ports=None, max_cycles=2_000_000, window=DEVICES, roms=None
 ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
     """The call records of :func:`machine_session`."""
-    return machine_session(image, calls, init, ports, max_cycles, sid, roms)[1]
+    return machine_session(image, calls, init, ports, max_cycles, window, roms)[1]
 
 
 #: Register-file indices :func:`mismatch` compares: A X Y SP and the flags C Z I D V N.
@@ -532,33 +555,25 @@ def mismatch(ref, out):
     return ("memory", int(bad[0])) if bad.size else None
 
 
-def device_file(image, ram, inits, sid=SID):
-    """The device register file a banked lift's calls start from, as the machine holds it
-    after the ``inits`` records: ``ram``, its ``sid`` window ``image``'s bytes with each
-    logged write applied."""
-    io = bytearray(ram)
-    io[sid[0] : sid[1]] = image[sid[0] : sid[1]]
-    for rec in inits:
-        for a, v, w in rec["log"] or ():
-            if w:
-                io[a] = v
-    return io
+def reads(rec):
+    """The values a machine record's device reads returned, in order: what a check replays."""
+    return bytes(v for _, v, w in rec["log"] or () if not w)
 
 
 def check(
-    prog, image, reg, records, port=None, max_cycles=2_000_000, accs=(), io=None
+    prog, image, reg, records, port=None, max_cycles=2_000_000, accs=()
 ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
     """Run ``prog``'s entry 0 from ``image`` and registers ``reg`` once per machine record,
     with A from ``accs`` (0 past its end) and ``port`` (when given) stored to $01 before each
-    call, its devices on ``io`` (:func:`device_file`; a copy of ``image`` when absent) kept
-    across the calls; ``[call, *mismatch]`` of the first, or None."""
+    call, its volatile reads replaying the record's (:func:`reads`); ``[call, *mismatch]`` of
+    the first, or None. A lift reading another address, or more or fewer times, than the
+    machine differs in the log."""
     mem = bytearray(image)
-    io = bytearray(image) if io is None else io
     for n, ref in enumerate(records):
         if port is not None:
             mem[1] = port
         a = accs[n] if n < len(accs) else 0
-        o = prog.call(mem, 0, a=a, reg=reg, log=True, max_cycles=max_cycles, io=io)
+        o = prog.call(mem, 0, a=a, reg=reg, log=True, max_cycles=max_cycles, reads=reads(ref))
         bad = mismatch(ref, {**o, "ram": mem})
         if bad is not None:
             return [n, *bad]
@@ -605,9 +620,10 @@ def lift_check(
     if last["halt"] != "return":
         return LiftCheck(None, None, None, records, last)
     facts = machine_facts(image, fact_calls, init, ports, max_cycles, roms)
-    prog = wholeprog.lift(last["ram"], [entry], [SID], facts, cycles=cycles, bank=bank_map(roms))
+    prog = wholeprog.lift(
+        last["ram"], [entry], [DEVICES], facts, cycles=cycles, bank=bank_map(roms)
+    )
     port = (ports or {}).get("call")
     accs = [a for _, a in calls]
-    io = device_file(image, last["ram"], inits)
-    bad = check(prog, last["ram"], last["reg"], records, port, max_cycles, accs, io)
+    bad = check(prog, last["ram"], last["reg"], records, port, max_cycles, accs)
     return LiftCheck(bad, prog, facts, records, last)
