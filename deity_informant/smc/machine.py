@@ -357,6 +357,7 @@ class MachineOracle:
         if self.native:
             if self.rec.call < 0:
                 self.rec.begin()
+            self.timeout = self.rec.timed_out
             self.rec.deadline = None
             if index_frames:
                 self.rec.frame_clock(self.cpf)
@@ -370,7 +371,7 @@ class MachineOracle:
         m, rec = self.m, self.rec
         m.clear_events()  # pylint: disable=no-member
         rec.finish()
-        self.timeout = rec.timed_out
+        self.timeout |= rec.timed_out
         cells, first, bad = native_cells(rec.events())
         count, sample = rec.unclassified()
         done = not m.jammed and (self.irq_driven or not (self.queue or self.timeout))

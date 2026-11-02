@@ -16,7 +16,7 @@ from vagrant_moses.bus import port_read  # noqa: E402
 from vagrant_moses.c64 import poweron_ram  # noqa: E402
 from vagrant_moses.roms import DEFAULT_ROM_MIRROR, ROMS, RomFetchError, rom_less  # noqa: E402
 
-from deity_informant import c64, trace  # noqa: E402
+from deity_informant import c64, trace, wholeprog  # noqa: E402
 from deity_informant.smc.machine import core  # noqa: E402
 
 native = pytest.mark.skipif(not core(), reason="needs vagrant-moses' native machine")
@@ -30,6 +30,11 @@ PROGRAM = {
     0x1300: "02",  # JAM
     0x1400: "a9078d18d4ad18d4ae38d460",  # LDA #7; STA $D418; LDA $D418; LDX $D438; RTS
     0x1500: "ad00e08d00c060",  # LDA $E000; STA $C000; RTS
+    # ($FB) = $0180: STA ($FB),Y; STA ($F9,X); LDA ($FB),Y; SAX $0190; STX $D020; INC $D021;
+    # STY $F0,X; STX $F0,Y; LDA $01F0,Y; PHP; PLP; JMP ($0170) -> $1650: RTS
+    0x1600: "a202a003a98085fba90185fca95591fb81f9b1fb8f90018e20d0ee21d094f096f0b9f001" "08286c7001",
+    0x1650: "60",
+    0x0170: "5016",
 }
 
 
@@ -156,3 +161,41 @@ def test_machine_real_roms(real):
     (r,) = c64.machine_record(img, [(0x1500, 0)], ports={"call": 0x37}, roms=real)
     (s,) = c64.machine_record(img, [(0x1500, 0)], ports={"call": 0x37})
     assert r["ram"][0xC000] == real[0xE000][0] != s["ram"][0xC000] == rom_less()[0xE000][0]
+
+
+def _backend_run(backend, calls, init, ports, mc):
+    h = c64._Host(image(), backend=backend).drive(calls, init, mc, ports)  # pylint: disable=W0212
+    facts, snaps = h.facts(), h.snaps
+    inits = [s for s in snaps if s[0] != "call"]
+    bad = None
+    if inits and inits[-1][1] == "return":
+        prog = wholeprog.lift(inits[-1][4], [calls[0][0]], [c64.SID], facts, bank=c64.bank_map())
+        records = [dict(zip(("halt", "reg", "log", "ram"), s[1:])) for s in snaps if s[0] == "call"]
+        bad = c64.check(prog, inits[-1][4], inits[-1][2], records, (ports or {}).get("call"), mc)
+    return facts.to_dict(), snaps, bad, h.result.cells
+
+
+@pytest.mark.skipif(not c64.TRACE_NATIVE, reason="needs vagrant-moses' native trace")
+@pytest.mark.parametrize(
+    "calls,init,ports,mc",
+    [
+        ([(0x1000, 0)] * 2, [(0x1100, 0)], {"call": 0x36}, 2_000_000),
+        ([(0x1600, 0)] * 3, [(0x1100, 0)], {"call": 0x35}, 2_000_000),
+        ([(0x1400, 0)] * 2, [(0x1100, 0)], {"init": 0x37, "call": 0x35}, 2_000_000),
+        ([(0x1000, 0), (0x1200, 0)], [(0x1100, 0)], None, 1000),
+        ([(0x1300, 0), (0x1000, 0)], (), None, 2_000_000),
+    ],
+)
+def test_trace_backends_agree(calls, init, ports, mc):
+    py, nat = (_backend_run(b, calls, init, ports, mc) for b in ("python", "native"))
+    assert py == nat
+
+
+def test_trace_table_and_backend_choice():
+    t = np.frombuffer(c64.trace_table(), "<u2")
+    assert t[0x8D] == 4 | 1 << 5 | 1 << 6 and t[0x8F] == 4 | 1 << 5 | 4 << 6
+    assert t[0xB1] == 8 | 1 << 4 and t[0xEE] == 4 | 3 << 4 and t[0x6C] == 9
+    assert t[0x20] == 4 | 1 << 5 | 2 << 9 and t[0x00] == 1 << 5 | 3 << 9 and t[0xA9] == 0
+    if not c64.TRACE_NATIVE:
+        with pytest.raises(ValueError):
+            c64._Host(image(), backend="native")  # pylint: disable=protected-access

@@ -162,3 +162,24 @@ def test_defer_banked(tmp_path):
     assert wpcorpus.main(args) == 0
     rows = rows_of(out)
     assert rows["banked.sid", 1]["mode"] == "banked" and any("irq" in r for r in rows.values())
+
+
+# init banks the KERNAL out, points RAM $FFFE at $1030 (LDA $DC0D; RTI) and never returns: the
+# main context counts in page 1 until it stores to $D020
+BUSY = bytes.fromhex(
+    "78a9358501a9308dfeffa9108dffff58" "ee5001d0fbee5101ad5101c940d0f1" "8d20d04c1010"
+).ljust(0x30, b"\xea") + bytes.fromhex("ad0ddc40")
+
+
+@pytest.mark.skipif(not wpcorpus.c64.TRACE_NATIVE, reason="needs vagrant-moses' native scan")
+@pytest.mark.parametrize(
+    "code,frames,mc",
+    [(IRQ, 120, 2_000_000), (BUSY, 60, 5000), (BUSY, 2, 5000), (b"\x02", 10, 5000), (FLAT, 5, 300)],
+)
+def test_irq_scan_backends_agree(code, frames, mc):
+    img = wpcorpus.sidfile(sid(code, 0, magic=b"RSID"))[1]
+    scans = [
+        wpcorpus._IrqScan(img, backend=b).scan((0x1000, 0), frames, mc)  # pylint: disable=W0212
+        for b in ("python", "native")
+    ]
+    assert scans[0] == scans[1]
