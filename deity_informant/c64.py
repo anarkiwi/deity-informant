@@ -8,12 +8,16 @@ entry ports; :func:`machine_session` records each call's halt, registers, I/O lo
 from __future__ import annotations
 
 import inspect
+import os
+import tempfile
 from collections import defaultdict
 from functools import lru_cache
+from itertools import islice
 from typing import NamedTuple, Optional
 
 import numpy as np
 import pylibresidfp
+import zstandard
 from jennings.opcodes import MEM_MODES, OPCODES
 import vagrant_moses as vm
 from vagrant_moses import memmap as mm
@@ -22,16 +26,26 @@ from vagrant_moses.c64 import poweron_ram
 from vagrant_moses.roms import BASIC_RUN, RomFetchError, load_roms, poweron_writes, rom_less
 
 from .smc.classify import expected_reads, expected_writes, view
-from .smc.machine import _ENTRY, READ, READ_BACK, SENTINEL, SMC_NATIVE, MachineOracle, _Mem
+from .smc.machine import (
+    _ENTRY,
+    READ,
+    READ_BACK,
+    SENTINEL,
+    SMC_NATIVE,
+    MachineOracle,
+    Queue,
+    _Mem,
+    weak,
+)
 from .smc.oracle import writer_of
 from . import wholeprog
 from .trace import Facts
 
 try:
     from vagrant_moses.smc import TRACE as _TRACE
-    from vagrant_moses.smc import Tracer
+    from vagrant_moses.smc import Records, Tracer
 except ImportError:  # a vagrant-moses without the trace
-    _TRACE, Tracer = False, None
+    _TRACE, Records, Tracer = False, None, None
 
 #: Whether the native trace collects facts and records (else the reference decode hook).
 TRACE_NATIVE = bool(SMC_NATIVE and _TRACE)
@@ -304,6 +318,108 @@ _HALTS = ("return", "cycles", "jam")
 _PHASES = (None, "init", "call")
 
 
+#: Bytes a :class:`Spill` holds in memory before it moves them to disk.
+SPILL = 1 << 24
+#: Cycles the SID chip renders at a time: its audio, which is dropped, is held per render.
+SPAN = 1 << 24
+
+
+class Spill:
+    """Byte chunks in the order added, held in memory up to ``budget`` bytes, then moved to an
+    unlinked temporary file as one zstd frame: memory stays bounded however many are added.
+    Iterating yields them in order."""
+
+    def __init__(self, budget=SPILL):
+        self.budget = budget
+        self.held, self.size, self.file, self.frames = [], 0, None, []
+
+    def append(self, chunk):
+        """Add ``chunk`` (bytes)."""
+        self.held.append(chunk)
+        self.size += len(chunk)
+        if self.size > self.budget:
+            if self.file is None:
+                self.file = tempfile.TemporaryFile()  # pylint: disable=consider-using-with
+            sizes = np.array([len(c) for c in self.held], "<u8")
+            frame = zstandard.ZstdCompressor().compress(b"".join(self.held))
+            end = self.frames[-1][1] if self.frames else 0
+            os.pwrite(self.file.fileno(), frame, end)
+            self.frames.append((end, end + len(frame), sizes))
+            self.held, self.size = [], 0
+
+    def __iter__(self):
+        z = zstandard.ZstdDecompressor()
+        for lo, hi, sizes in list(self.frames):
+            data = memoryview(z.decompress(os.pread(self.file.fileno(), hi - lo, lo)))
+            ends = np.cumsum(sizes).tolist()
+            for n, e in zip(sizes.tolist(), ends):
+                yield bytes(data[e - n : e])
+        yield from list(self.held)
+
+    def clear(self):
+        """Drop every chunk."""
+        if self.file is not None:
+            self.file.close()
+        self.held, self.size, self.file, self.frames = [], 0, None, []
+
+
+def _pack(rec):
+    """A ``vagrant_moses.smc.Records`` as one chunk of bytes."""
+    return np.array([len(f) for f in rec], "<u8").tobytes() + b"".join(rec)
+
+
+def _unpack(chunk):
+    """The ``vagrant_moses.smc.Records`` of a :func:`_pack` chunk."""
+    sizes = np.frombuffer(chunk, "<u8", len(Records._fields)).tolist()
+    ends = (8 * len(sizes) + np.cumsum(sizes)).tolist()
+    return Records(*(chunk[e - n : e] for n, e in zip(sizes, ends)))
+
+
+class CallStream:
+    """A native call queue's records taken window by window, a :class:`CallRecords` each, kept
+    in a :class:`Spill`: it iterates and indexes the call records across them as
+    :class:`CallRecords` does."""
+
+    def __init__(self, budget=SPILL):
+        self.spill = Spill(budget)
+        self.n, self.halt = 0, None
+
+    def add(self, rec):
+        """Add the records ``rec`` (``vagrant_moses.smc.Records``) taken after the last."""
+        if rec.meta:
+            r = CallRecords(rec)
+            self.n += len(r)
+            self.halt = _HALTS[r.meta[-1, 1]]
+            self.spill.append(_pack(rec))
+
+    def chunks(self):
+        """The :class:`CallRecords` in order."""
+        return (CallRecords(_unpack(c)) for c in self.spill)
+
+    def inits(self):
+        """The init records as :func:`machine_session` gives them."""
+        out = []
+        for r in self.chunks():
+            out += [{"halt": h, "reg": g, "log": lg, "ram": ram}
+                    for _, h, g, lg, ram in r.slice(0, r.first)]  # fmt: skip
+            if len(r):
+                break
+        return out
+
+    def __len__(self):
+        return self.n
+
+    def snaps(self):
+        """Every record as an :attr:`_Host.snaps` tuple ``(phase, halt, reg, log, ram)``."""
+        return (s for r in self.chunks() for s in r.snaps())
+
+    def __iter__(self):
+        return (rec for r in self.chunks() for rec in r)
+
+    def __getitem__(self, k):
+        return next(islice(self, range(self.n)[k], None))
+
+
 class CallRecords:
     """A native call queue's records (``vagrant_moses.smc.Records``), one per init and call,
     the inits first (``first`` is the first call's); it iterates and indexes the call records
@@ -361,16 +477,39 @@ class CallRecords:
 
 
 class _Chip:
-    """The $D400 SID: vagrant-moses' bus model, a libresidfp chip answering $D419-$D41C."""
+    """The $D400 SID: vagrant-moses' bus model, a libresidfp chip answering $D419-$D41C. The
+    writes the chip has not yet been clocked through are kept in a :class:`Spill`."""
 
-    def __init__(self, model):
+    def __init__(self, model, budget=SPILL):
         self.chip = pylibresidfp.SID(model, filter=False)
-        self.sid = vm.NativeSid(model, self.read)
+        self.sid = vm.NativeSid(model, self.read, rows=False)
+        self.writes = Spill(budget)
+
+    def flush(self):
+        """Move the writes logged so far to :attr:`writes`."""
+        w = self.sid.drain_packed()
+        if w:
+            self.writes.append(w)
+
+    def _clock(self, writes, until):
+        """Clock the chip through ``writes`` to cycle ``until``, :data:`SPAN` cycles at a time."""
+        cuts = np.arange(self.chip.cycle + SPAN, until, SPAN)
+        parts = np.split(writes, np.searchsorted(writes[:, 0], cuts, "right"))
+        for part, end in zip(parts, [*cuts.tolist(), until]):
+            self.chip.run(part, end)
 
     def read(self, cycle, reg):
         """Register ``reg`` at machine cycle ``cycle``, after the writes logged since."""
-        w = np.array(self.sid.drain_writes(), np.int64).reshape(-1, 3)
-        return self.chip.serve(w, cycle, reg)
+        self.flush()
+        for w in self.writes:
+            w = np.frombuffer(w, "<i8").reshape(-1, 3)
+            self._clock(w, int(w[-1, 0]))
+        self.writes.clear()
+        self._clock(_NO_WRITES, cycle)
+        return self.chip.read(reg)
+
+
+_NO_WRITES = np.zeros((0, 3), np.int64)
 
 
 class _Host(MachineOracle):
@@ -380,20 +519,31 @@ class _Host(MachineOracle):
     to ``window`` is logged as the machine performed it; ``facts`` false (native) keeps only
     the records. ``backend`` ``native`` collects facts and logs in vagrant-moses' trace
     beside its SMC recorder, ``python`` (the reference) from this decode hook and the
-    machine's I/O hook; the default is ``native`` where the trace exists."""
+    machine's I/O hook; the default is ``native`` where the trace exists. A native call
+    queue's records are taken window by window into a :class:`CallStream`, which, like the
+    chip's pending writes, holds ``spill`` bytes in memory at most."""
 
     # pylint: disable=too-many-instance-attributes,too-many-arguments,too-many-positional-arguments
 
     def __init__(
-        self, image, window=DEVICES, roms=None, ntsc=False, backend=None, model="6581", facts=True
+        self,
+        image,
+        window=DEVICES,
+        roms=None,
+        ntsc=False,
+        backend=None,
+        model="6581",
+        facts=True,
+        spill=SPILL,
     ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self.window = window
         self.ctor = (image, window, roms, ntsc, backend, model)
         backend = backend or ("native" if TRACE_NATIVE else "python")
         if backend == "native" and not TRACE_NATIVE:
             raise ValueError("backend 'native' is not available")
-        sids = {mm.SID_BASE: _Chip(model).sid}
-        hook = None if backend == "native" else self.access
+        self.chip = _Chip(model, spill)
+        sids = {mm.SID_BASE: self.chip.sid}
+        hook = None if backend == "native" else weak(self.access)
         super().__init__(
             image,
             ntsc=ntsc,
@@ -420,6 +570,8 @@ class _Host(MachineOracle):
         self.irqs, self.events = [], []
         self.driven = None
         self.records = None
+        self.stream = CallStream(spill)
+        self.keep = True
         self.writes = defaultdict(set)
         self.page1 = {}
         self.entry_sp = defaultdict(set)
@@ -509,6 +661,9 @@ class _Host(MachineOracle):
             log, idx, vals = self.tr.snap()
             self.tr.phase(Tracer.NONE)
             ram = self._ram((np.frombuffer(idx, "<u2"), np.frombuffer(vals, np.uint8)))
+        if not self.keep:
+            self.snaps.clear()
+            self.irqs.clear()
         self.snaps.append((self.cur, halt, _reg(self.m.mpu), log, ram))
         events = self.events + [n for _, n in self.m.events]
         self.irqs.append(sorted({n[:-6] for n in events if _ENTRY.get(n) in ("irq", "nmi")}))
@@ -533,14 +688,21 @@ class _Host(MachineOracle):
         self.events += [n for _, n in self.m.events]
         return super()._native_run()
 
+    def _window(self):
+        self.chip.flush()
+        if self.calls is not None:
+            self.stream.add(self.calls.take())
+
     def drive(self, calls, init=(), max_cycles=2_000_000, ports=None):
         """Run ``init`` then ``calls``; a call that does not return ends the run. The run's
         SMC labelling is kept as :attr:`result`."""
-        self.driven = (list(calls), init, max_cycles, ports)
+        calls = calls if isinstance(calls, Queue) else Queue(calls)
+        self.driven = (calls, init, max_cycles, ports)
         self.result = super().run(calls, init, call_cycles=max_cycles, ports=ports)
         if self.calls is not None:
             self.calls.close()
-            self.records = CallRecords(self.calls.records())
+            self.stream.add(self.calls.take())
+            self.records = self.stream
             sp, port = self.calls.entries()
             for pc, v in sp:
                 self.entry_sp[pc].add(v)
@@ -556,17 +718,17 @@ class _Host(MachineOracle):
     def interrupts(self, k):
         """The sources (``video_irq``, ``cia_irq``, ``nmi``, ...) of the interrupts the machine
         entered during call ``k``; a run on vagrant-moses' call queue, which keeps no trap per
-        call to see them, runs again up to that call without it."""
+        call to see them, runs again up to that call without it, keeping only its last record."""
         if self.records is None:
             return [q for s, q in zip(self.snaps, self.irqs) if s[0] == "call"][k]
         calls, init, max_cycles, ports = self.driven
         again = _Host(*self.ctor, facts=False)
-        again.native_queue = False
-        return again.drive(calls[: k + 1], init, max_cycles, ports).interrupts(k)
+        again.native_queue, again.keep = False, False
+        return again.drive(calls.head(k + 1), init, max_cycles, ports).irqs[-1]
 
     def split(self):
         """``(init records, call records, calls)``: the init records as
-        :func:`machine_session` gives them, the call records a :class:`CallRecords` from the
+        :func:`machine_session` gives them, the call records a :class:`CallStream` from the
         native call queue, else those dicts."""
         recs = self.records
         if recs is None:  # the reference backend's snaps
@@ -574,18 +736,14 @@ class _Host(MachineOracle):
             for phase, *rec in self.snaps:
                 out[phase == "call"].append(dict(zip(("halt", "reg", "log", "ram"), rec)))
             return *out, len(out[1])
-        inits = [
-            {"halt": h, "reg": r, "log": lg, "ram": ram}
-            for _, h, r, lg, ram in recs.slice(0, recs.first)
-        ]
-        return inits, recs, len(recs)
+        return recs.inits(), recs, len(recs)
 
     @property
     def last_halt(self):
         """The halt of the run's last record."""
         if self.records is None:
             return self.snaps[-1][1]
-        return _HALTS[self.records.meta[-1, 1]]
+        return self.records.halt
 
     def all_snaps(self):
         """:attr:`snaps`, or the native records as those tuples."""
@@ -726,9 +884,15 @@ def check(
     does. A lift reading another address, or more or fewer times, than the machine differs in
     the log."""
     mem = bytearray(image)
-    if isinstance(records, CallRecords):
-        accs = bytes(a & 0xFF for a in accs)
-        bad = prog.check(mem, list(reg), records.packed, records.first, port, max_cycles, accs, ret)
+    if isinstance(records, (CallRecords, CallStream)):
+        accs, n, reg = bytes(a & 0xFF for a in accs), 0, list(reg)
+        for r in records.chunks() if isinstance(records, CallStream) else [records]:
+            a = accs[n : n + len(r)]
+            bad, reg = prog.check(mem, reg, r.packed, r.first, port, max_cycles, a, ret)
+            if bad is not None:
+                bad[0] += n
+                break
+            n += len(r)
     else:
         bad = None
         for n, ref in enumerate(records):

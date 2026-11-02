@@ -1,15 +1,18 @@
 """tools/wpcorpus.py: planning, flat/banked/IRQ rows, resumption and the summary."""
 
+import gc
 import hashlib
 import json
 import struct
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 import pytest
 
 from deity_informant import NATIVE
+from deity_informant.smc import machine
 from deity_informant.smc.machine import core
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
@@ -259,3 +262,36 @@ def test_flat_play_from_machine_init(tmp_path):
     assert rom["mode"] == "banked" and rom["bank_evidence"] == ["data-in-rom"] and rom["exact"]
     assert ram["mode"] == "flat" and ram["exact"] and ram["outcome"] == "exact"
     assert ram["init_halt"] == "return"
+
+
+_LIVE = {"_Host", "_Chip", "_IrqScan", "Machine", "NativeSid", "Memory", "Session", "NativeMemory"}
+
+
+def _live():
+    gc.collect()
+    return Counter(t for o in gc.get_objects() if (t := type(o).__name__) in _LIVE)
+
+
+def test_songs_in_one_worker_leave_no_machine_behind(tmp_path):
+    root = tree(tmp_path / "hvsc")
+    wpcorpus._worker(str(root / "DOCUMENTS" / "Songlengths.md5"))  # pylint: disable=W0212
+    songs = [(n, r) for n in ("flat.sid", "banked.sid", "irq.sid")
+             for r in wpcorpus.plan(str(root / n), n, 0.5, 20_000)]  # fmt: skip
+    before, rows = _live(), []
+    for _ in range(3):
+        rows.append([wpcorpus.run_song(str(root / n), r, 20_000, 10)[0] for n, r in songs])
+    assert _live() == before
+    assert all("error" not in r for r in rows[0]) and {r.get("mode") for r in rows[0]} >= {
+        "flat",
+        "banked",
+    }
+
+
+@pytest.mark.skipif(not wpcorpus.c64.TRACE_NATIVE, reason="needs vagrant-moses' native scan")
+def test_irq_scan_counts_interrupts_across_windows(monkeypatch):
+    img = wpcorpus.sidfile(sid(IRQ, 0))[1]
+    boot = wpcorpus.c64.boot(img, 0x1000, 0x1000 + len(IRQ), 0x1000, 1, kind="PSID")
+    want = wpcorpus._IrqScan(boot.image).scan(boot, 50, 2_000_000)  # pylint: disable=W0212
+    monkeypatch.setattr(machine, "WINDOW", 997)
+    assert wpcorpus._IrqScan(boot.image).scan(boot, 50, 2_000_000) == want  # pylint: disable=W0212
+    assert want["irqs"] > 40

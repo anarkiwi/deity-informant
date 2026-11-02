@@ -1,6 +1,8 @@
 """deity_informant.c64: the bank map, and facts and records from the native C64 machine."""
 
+import gc
 import hashlib
+from collections import Counter
 
 import numpy as np
 import pytest
@@ -14,7 +16,8 @@ from vagrant_moses.c64 import poweron_ram  # noqa: E402
 from vagrant_moses.roms import ROMS, rom_less  # noqa: E402
 
 from deity_informant import NATIVE, c64, trace, wholeprog  # noqa: E402
-from deity_informant.smc.machine import CALLS, MachineOracle, core  # noqa: E402
+from deity_informant.smc import machine, oracle  # noqa: E402
+from deity_informant.smc.machine import CALLS, MachineOracle, Queue, core  # noqa: E402
 
 import _common as H  # noqa: E402 pylint: disable=wrong-import-order
 
@@ -433,9 +436,11 @@ def test_native_check_reports_as_the_python_check():
     h = c64._Host(image()).drive(  # pylint: disable=protected-access
         [(0x1600, 0)] * 3, [(0x1100, 0)], ports={"call": 0x35}
     )
-    inits, recs, n = h.split()
-    assert isinstance(recs, c64.CallRecords) and n == len(recs) == 3
-    assert recs[-1] == list(recs)[-1] and recs[0]["halt"] == h.last_halt == "return"
+    inits, stream, n = h.split()
+    assert isinstance(stream, c64.CallStream) and n == len(stream) == 3
+    (recs,) = stream.chunks()
+    assert recs[-1] == list(stream)[-1] == stream[-1]
+    assert stream[0]["halt"] == recs[0]["halt"] == h.last_halt == "return"
     last = inits[-1]
     prog = wholeprog.lift(last["ram"], [0x1600], [c64.DEVICES], h.facts(), bank=c64.bank_map())
     p = recs.packed
@@ -479,3 +484,70 @@ def test_reference_calls_are_reference_calls_in_a_loop():
         assert wholeprog.reference_calls(out, 0x1000, 3, **kw) == (3, cycles, "return")
         assert out == mem
     assert wholeprog.reference_calls(bytearray(img), 0x1000, 2, max_cycles=1)[::2] == (1, "cycles")
+
+
+_PORTS = {"init": 0x35, "call": 0x35}
+
+
+def _osc3_run(**kw):
+    """Calls reading OSC3 after an init starting voice 3, on the machine: the call records,
+    the cells, the facts and the lift's check against the records as dicts and as taken."""
+    h = c64._Host(image(), **kw)  # pylint: disable=protected-access
+    inits, recs, _ = h.drive([(0x1810, 0)] * 40, [(0x1850, 0)], ports=_PORTS).split()
+    last, facts = inits[-1], h.facts()
+    prog = wholeprog.lift(last["ram"], [0x1810], [c64.DEVICES], facts, bank=c64.bank_map())
+    checks = [c64.check(prog, last["ram"], last["reg"], r, 0x35) for r in (recs, list(recs))]
+    return list(recs), sorted(c.sid for c in h.result.cells), facts, checks, h
+
+
+@pytest.mark.skipif(not (NATIVE and CALLS), reason="needs the native extension and call queue")
+def test_windows_spills_and_chip_spans_leave_a_run_as_it_was(monkeypatch):
+    *want, _ = _osc3_run()
+    assert len({r["log"][0][1] for r in want[0]}) > 1 and want[3][0] == want[3][1]
+    monkeypatch.setattr(machine, "WINDOW", 97)
+    monkeypatch.setattr(c64, "SPAN", 101)
+    *got, h = _osc3_run(spill=64)
+    assert got == want and h.stream.spill.frames and len(list(h.stream.chunks())) > 2
+
+
+def test_spill_moves_chunks_past_its_budget_to_disk_in_order():
+    sp = c64.Spill(10)
+    chunks = [bytes([k]) * k for k in range(1, 9)]
+    for c in chunks:
+        sp.append(c)
+    assert list(sp) == chunks and len(sp.frames) == 2 and sp.size <= 10
+    sp.clear()
+    assert not list(sp) and sp.file is None
+
+
+def test_queue_holds_runs_of_equal_calls():
+    q = Queue([1, 1, 2], runs=[(2, 3), (3, 0), (4, 2)])
+    assert list(q.runs) == [[1, 2], [2, 4], [4, 2]] and len(q) == 8
+    assert list(q) == [1, 1, 2, 2, 2, 2, 4, 4] and q[2] == 2 and q[7] == 4
+    with pytest.raises(IndexError):
+        q[8]  # pylint: disable=pointless-statement
+    assert list(q.head(3)) == [1, 1, 2] and not q.head(0)
+    assert q.pop() == 1
+    q.drop(4)
+    assert list(q) == [2, 4, 4] and len(q) == 3
+
+
+_LIVE = {"_Host", "_Chip", "Machine", "NativeSid", "Memory", "Session", "NativeMemory"}
+
+
+def _live():
+    gc.collect()
+    return Counter(t for o in gc.get_objects() if (t := type(o).__name__) in _LIVE)
+
+
+@pytest.mark.skipif(not (NATIVE and CALLS), reason="needs the native extension and call queue")
+def test_runs_leave_no_machine_behind():
+    """Machines, their chips and jennings sessions are freed once their runs are done."""
+    before = _live()
+    for _ in range(3):
+        _, _, _, _, h = _osc3_run()
+        assert h.interrupts(3) == []
+        trace.collect(image(), lambda s: s.call(0x1850), 100_000)
+        oracle.run_cpu(image(), [0x1810], [(0, 0)] * 3, [(0x1850, 0)])
+        del h
+    assert _live() == before

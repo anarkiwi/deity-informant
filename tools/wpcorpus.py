@@ -47,7 +47,7 @@ from deity_informant.smc.classify import (  # noqa: E402
     view,
 )
 from deity_informant.smc.expect import lift_reason  # noqa: E402
-from deity_informant.smc.machine import _ENTRY, MachineOracle, _Mem, _frames  # noqa: E402
+from deity_informant.smc.machine import _ENTRY, MachineOracle, Queue, _Mem, _frames  # noqa: E402
 from deity_informant.smc.oracle import writer_of  # noqa: E402
 from smclabel import iomap, sidfile  # noqa: E402 pylint: disable=wrong-import-order
 
@@ -326,7 +326,7 @@ def psid_song(row, img, mc, cap, defer=False):
     ports = {"init": iomap(init), "call": iomap(play)}
     t = time.perf_counter()
     host = c64._Host(img, ntsc=row["clock"] == "NTSC", model=sid_model(row))
-    host.drive([(play, 0)] * row["calls"], [(init, a)], mc, ports)
+    host.drive(Queue(runs=[((play, 0), row["calls"])]), [(init, a)], mc, ports)
     inits, records, n = host.split()
     last = inits[-1]
     facts = host.facts() if last["halt"] == "return" else None
@@ -436,6 +436,7 @@ class _IrqScan(MachineOracle):
         backend = backend or ("native" if c64.TRACE_NATIVE else "python")
         super().__init__(image, ntsc=ntsc, roms=roms, backend=backend)
         self.irqs, self.vector, self.ctx, self.result = 0, None, [], None
+        self.counting = False
         self.main = Counter()
         self.cpf, self.t0 = mm.video(ntsc).cycles_per_frame, None
         self.sc = Scan(self.rec, _scan_table(), self.sentinel) if self.native else None
@@ -444,7 +445,14 @@ class _IrqScan(MachineOracle):
         if self.native:
             self.m.clear_events()  # pylint: disable=no-member
             self.sc.start(self.cpf)
+            self.counting = True
         super()._frames_phase(index_frames)
+
+    def _window(self):
+        if self.native:
+            if self.counting:
+                self.irqs += self._entries(self.m.events)
+            self.m.clear_events()  # pylint: disable=no-member
 
     def _native_run(self):
         self.irqs += self._entries(self.m.events)
