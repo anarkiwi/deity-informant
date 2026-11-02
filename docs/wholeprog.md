@@ -48,7 +48,10 @@ page 1 (`page1`). `Facts.dumps()`/`loads()` serialize them as JSON. For banked p
 `c64.machine_facts(image, calls, init, ports)` records the same facts plus `banks` and
 `entry_port` on vagrant-moses' native C64 machine; `c64.machine_session` records each call's
 halt, registers, SID accesses and RAM there, and `tools/wpbank.py` checks bank-aware lifts of
-HVSC tunes against it. A banked `Program.call`/`reference_call` sends device accesses to `io`
+HVSC tunes against it. Both collect through vagrant-moses' native trace beside its SMC recorder
+(`c64.TRACE_NATIVE`; opcode table `c64.trace_table()`), else, and as the reference, a Python
+decode hook and SID devices; `tools/traceequiv.py ROWS --hvsc ROOT` checks the two agree on
+banked HVSC songs (facts, every record, `c64.check`, cells) and reports each one's cost per call. A banked `Program.call`/`reference_call` sends device accesses to `io`
 (a 64 KiB register file, a copy of `mem` when absent), RAM accesses to `mem`.
 
 `call` is `run_to_rts`: push the dummy return `$0001`, set A, run until SP rises above its

@@ -8,19 +8,29 @@ entry ports; :func:`machine_session` records each call's halt, registers, SID lo
 from __future__ import annotations
 
 from collections import defaultdict
+from functools import lru_cache
 from typing import NamedTuple, Optional
 
 import numpy as np
-from jennings.opcodes import OPCODES
+from jennings.opcodes import MEM_MODES, OPCODES
 from vagrant_moses import memmap as mm
 from vagrant_moses.bus import banking, port_read
 from vagrant_moses.roms import load_roms, rom_less
 
 from .smc.classify import expected_reads, expected_writes, view
-from .smc.machine import SENTINEL, MachineOracle, _Mem
+from .smc.machine import SENTINEL, SMC_NATIVE, MachineOracle, _Mem
 from .smc.oracle import writer_of
 from . import wholeprog
 from .trace import Facts
+
+try:
+    from vagrant_moses.smc import TRACE as _TRACE
+    from vagrant_moses.smc import Tracer
+except ImportError:  # a vagrant-moses without the trace
+    _TRACE, Tracer = False, None
+
+#: Whether the native trace collects facts and records (else the reference decode hook).
+TRACE_NATIVE = bool(SMC_NATIVE and _TRACE)
 
 __all__ = [
     "RAM",
@@ -39,6 +49,9 @@ __all__ = [
     "lift_check",
     "LiftCheck",
     "IDLE",
+    "TRACE_NATIVE",
+    "FORMS",
+    "trace_table",
 ]
 
 RAM, ROM, IO = 0, 1, 2
@@ -55,6 +68,28 @@ _STORED = {
     "SAX": lambda a, x, y: a & x,
 }
 _FLAGS = ((8, 0), (9, 1), (10, 2), (11, 3), (13, 6), (14, 7))
+#: The native trace's address-form codes (``vagrant_moses.smc.Tracer``).
+FORMS = {
+    m: i
+    for i, m in enumerate(("zp", "zpx", "zpy", "abs", "absx", "absy", "indx", "indy", "ind"), 1)
+}
+_REG = {mn: i for i, mn in enumerate(_STORED, 1)}
+_PHASE = {"init": 1, "call": 2}
+
+
+@lru_cache(maxsize=None)
+def trace_table():
+    """The native trace's opcode table (``vagrant_moses.smc.Tracer``): per opcode, the
+    address form, whether it reads or stores there, the register a plain store stores and
+    the bytes it pushes, as :meth:`_Host._effects` derives them."""
+    t = np.zeros(256, "<u2")
+    for op in range(256):
+        (mn, mode), w = OPCODES[op], writer_of(op)
+        store = w is not None and w[0] == "cpu" and not w[2]
+        read = mode in MEM_MODES and mn not in ("JSR", "JMP") and not store
+        flags = read << 4 | (w is not None) << 5 | _REG.get(mn, 0) << 6 | _PUSHES.get(mn, 0) << 9
+        t[op] = flags | FORMS.get(mode, 0) if flags or mode == "ind" else 0
+    return t.tobytes()
 
 
 def _config(bits):
@@ -123,16 +158,29 @@ class _Sid:
 
 
 class _Host(MachineOracle):
-    """A machine run recording, per queued call, facts (calls only) and a snapshot at its end."""
+    """A machine run recording, per queued call, facts (calls only) and a snapshot at its end.
 
-    # pylint: disable=too-many-instance-attributes
+    ``backend`` ``native`` collects them in vagrant-moses' trace beside its SMC recorder,
+    ``python`` (the reference) from this decode hook and Python SID devices; the default is
+    ``native`` where the trace exists."""
 
-    def __init__(self, image, sid=SID, roms=None, ntsc=False):
+    # pylint: disable=too-many-instance-attributes,too-many-arguments,too-many-positional-arguments
+
+    def __init__(self, image, sid=SID, roms=None, ntsc=False, backend=None):
         self.sid = sid
-        devices = {
-            b: _Sid(b, bytearray(image[b : b + 0x20]), self) for b in range(sid[0], sid[1], 0x20)
-        }
-        super().__init__(image, ntsc=ntsc, devices=devices, roms=roms)
+        backend = backend or ("native" if TRACE_NATIVE else "python")
+        if backend == "native":
+            if not TRACE_NATIVE:
+                raise ValueError("backend 'native' is not available")
+            super().__init__(image, ntsc=ntsc, roms=roms, backend="native")
+            self.tr = Tracer(self.rec, trace_table(), self.sentinel, sid, image)
+        else:
+            devices = {
+                b: _Sid(b, bytearray(image[b : b + 0x20]), self)
+                for b in range(sid[0], sid[1], 0x20)
+            }
+            super().__init__(image, ntsc=ntsc, devices=devices, roms=roms, backend="python")
+            self.tr = None
         self.cur = None
         self.log = []
         self.last = None
@@ -145,6 +193,7 @@ class _Host(MachineOracle):
         self.page1 = {}
         self.entry_sp = defaultdict(set)
         self.entry_port = defaultdict(set)
+        self.result = None
 
     def access(self, addr, value, write):
         """A SID access by the running instruction."""
@@ -212,16 +261,24 @@ class _Host(MachineOracle):
             )
             self.pending, self.npending = [], 0
 
-    def _ram(self):
-        """The RAM a call record keeps."""
+    def _ram(self, _delta=None):
+        """The RAM a call record keeps; ``_delta``: the native ``(idx, values)`` changed since
+        the previous record."""
         return bytes(self.ram)
 
     def _snap(self, halt):
-        if self.cur is not None:
+        if self.cur is None:
+            return
+        if self.tr is None:
             if self.cur == "call":
                 self._fold()
-            self.snaps.append((self.cur, halt, _reg(self.m.mpu), self.log, self._ram()))
-            self.cur, self.log = None, []
+            log, ram = self.log, self._ram()
+        else:
+            log, idx, vals = self.tr.snap()
+            self.tr.phase(Tracer.NONE)
+            ram = self._ram((np.frombuffer(idx, "<u2"), np.frombuffer(vals, np.uint8)))
+        self.snaps.append((self.cur, halt, _reg(self.m.mpu), log, ram))
+        self.cur, self.log = None, []
 
     def _trap(self, mc):
         self._snap("return")
@@ -231,14 +288,17 @@ class _Host(MachineOracle):
             if phase == "call":
                 self.sp0 = (mc.mpu.sp - 2) & 0xFF
                 self.entry_sp[pc].add(self.sp0)
+            if self.tr is not None:
+                self.tr.phase(_PHASE[phase], self.sp0)
         ok = super()._trap(mc)
         if self.cur == "call":
             self.entry_port[mc.mpu.pc].add((mc.port_dir, mc.port_data))
         return ok
 
     def drive(self, calls, init=(), max_cycles=2_000_000, ports=None):
-        """Run ``init`` then ``calls``; a call that does not return ends the run."""
-        super().run(calls, init, call_cycles=max_cycles, ports=ports)
+        """Run ``init`` then ``calls``; a call that does not return ends the run. The run's
+        SMC labelling is kept as :attr:`result`."""
+        self.result = super().run(calls, init, call_cycles=max_cycles, ports=ports)
         if self.last is not None:
             self._effects(*self.last)
             self.last = None
@@ -247,6 +307,21 @@ class _Host(MachineOracle):
 
     def facts(self):
         """The calls' :class:`~deity_informant.trace.Facts`."""
+        entry = {
+            "entry_sp": {a: sorted(v) for a, v in self.entry_sp.items()},
+            "entry_port": {a: sorted(map(list, v)) for a, v in self.entry_port.items()},
+        }
+        if self.tr is not None:
+            f = self.tr.facts()
+            return Facts(
+                starts=f.starts,
+                edges=f.edges,
+                writes=dict(f.writes),
+                page1={p: [lo, hi] for p, lo, hi in f.page1},
+                heights=dict(f.heights),
+                banks=dict(f.banks),
+                **entry,
+            )
         self._fold(merge=True)
         keys, edges = self.folded
         pcs, hs, bs = keys >> 24, ((keys >> 8) & 0xFFFF) - ((keys >> 8) & 0x8000) * 2, keys & 0xFF
@@ -264,9 +339,8 @@ class _Host(MachineOracle):
             writes={a: sorted(v) for a, v in sorted(self.writes.items())},
             page1={p: list(r) for p, r in sorted(self.page1.items())},
             heights=grouped(pcs, hs),
-            entry_sp={a: sorted(v) for a, v in self.entry_sp.items()},
             banks=grouped(pcs, bs),
-            entry_port={a: sorted(map(list, v)) for a, v in self.entry_port.items()},
+            **entry,
         )
 
 

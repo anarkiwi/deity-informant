@@ -4,7 +4,8 @@
 and records everything the whole-program lifter's evaluation uses, so the corpus need not be
 swept again. Options: `--sample N --seed S` (random tunes), `--jobs J`, `--max-cycles C` (per
 init or call, default 2,000,000), `--default-length S` (default 180), `--timeout S` and
-`--call-timeout S` (default 0.5: a busy frame on the Python-hooked machine oracle; wall clock
+`--call-timeout S` (default 0.02 with vagrant-moses' native trace, else 0.5: tens of times the
+per-call cost of every stage; wall clock
 per song is `timeout + call_timeout * calls`), `--label-calls N` (default 1000; 0: the whole
 song).
 
@@ -36,12 +37,14 @@ PSID with a play routine:
    called as sidplay does (`oracle` `calls`) over the first `--label-calls` calls.
 4. Banked: one vagrant-moses machine run (init and every call, sidplay's $01 per phase) gives
    the facts, the call records the bank-aware lift is checked against (`c64.check`) and the
-   cells over every call; `configs` lists the bank configurations seen. Speed is the banked reference and the
+   cells over every call, natively where vagrant-moses has the trace (`c64.TRACE_NATIVE`);
+   `configs` lists the bank configurations seen. Speed is the banked reference and the
    lifted program (jennings has no bank map).
 
 RSID, or PSID without play: the machine runs init (with the KERNAL's CIA 1 timer) and then the
-tune's own interrupts for the song's frames with a minimal decode hook, dropped once the main
-context is seen busy; `irq` records the vector path after init
+tune's own interrupts for the song's frames, scanned by vagrant-moses' native `smc.Scan` (else,
+as the reference, a minimal decode hook dropped once the main context is seen busy;
+`tools/traceequiv.py --irq` checks they agree); `irq` records the vector path after init
 (`kernal` when the KERNAL is banked in, so IRQs go through $0314, else `hardware` via RAM
 $FFFE), both vectors, interrupts taken, whether init returned, and the main context's
 instructions until then and the frame it first stored outside page 1 or touched I/O

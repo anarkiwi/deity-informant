@@ -20,14 +20,22 @@ import time  # noqa: E402
 from collections import Counter  # noqa: E402
 from concurrent.futures import TimeoutError as FutureTimeout  # noqa: E402
 from concurrent.futures import as_completed  # noqa: E402
+from dataclasses import replace  # noqa: E402
+from functools import lru_cache  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 import numpy as np  # noqa: E402
 import zstandard  # noqa: E402
+from jennings.opcodes import MEM_MODES, OPCODES  # noqa: E402
 from pebble import ProcessPool  # noqa: E402
 from tqdm import tqdm  # noqa: E402
 from vagrant_moses import memmap as mm  # noqa: E402
 from vagrant_moses.bus import banking  # noqa: E402
+
+try:
+    from vagrant_moses.smc import Scan
+except ImportError:  # a vagrant-moses without the scan
+    Scan = None
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -41,7 +49,7 @@ from deity_informant.smc.classify import (  # noqa: E402
 )
 from deity_informant.smc.expect import lift_reason  # noqa: E402
 from deity_informant.smc.machine import _ENTRY, MachineOracle, _Mem, _frames  # noqa: E402
-from deity_informant.smc.oracle import Run, writer_of  # noqa: E402
+from deity_informant.smc.oracle import writer_of  # noqa: E402
 import wplift  # noqa: E402 pylint: disable=wrong-import-order
 from smclabel import iomap, sidfile  # noqa: E402 pylint: disable=wrong-import-order
 
@@ -217,13 +225,14 @@ class _Records(c64._Host):  # pylint: disable=protected-access
 
     base = None
 
-    def _ram(self):
-        cur = self.ram.copy()
-        prev, self.base = self.base, cur
+    def _ram(self, _delta=None):
+        prev, self.base = self.base, self.ram.copy() if _delta is None else True
         if self.cur != "call" or prev is None:
-            return cur.tobytes()
-        idx = np.flatnonzero(cur != prev)
-        return idx, cur[idx]
+            return self.ram.tobytes()
+        if _delta is not None:
+            return _delta
+        idx = np.flatnonzero(self.base != prev)
+        return idx, self.base[idx]
 
     def split(self):
         """``(init records, call records, calls)``, the call records a generator."""
@@ -283,8 +292,7 @@ def _banked(row, img, mc, ev):
     facts = host.facts()
     row["mode"], row["bank_evidence"] = "banked", ev
     row["facts_ms"] = 1e3 * (time.perf_counter() - t)
-    cls = host.cls
-    row |= _label_row("calls", Run(cls.cells, cls.unclassified, True, cls.first), n, t)
+    row |= _label_row("calls", replace(host.result, returned=True), n, t)
     last = inits[-1]
     row |= {"init_halt": last["halt"], "calls_run": n}
     if last["halt"] != "return":
@@ -375,16 +383,53 @@ def _label_row(oracle, run, n, t0):
     }
 
 
+@lru_cache(maxsize=None)
+def _scan_table():
+    """``vagrant_moses.smc.Scan``'s opcode table: the address form, a read and a CPU store of
+    it, as :meth:`_IrqScan._decode` derives them."""
+    t = np.zeros(256, "<u2")
+    for op in range(256):
+        (mn, mode), w = OPCODES[op], writer_of(op)
+        store = w is not None and w[0] == "cpu"
+        read = mode in MEM_MODES and mn not in ("JSR", "JMP") and not store
+        t[op] = c64.FORMS.get(mode, 0) | read << 4 | store << 5
+    return t.tobytes()
+
+
 class _IrqScan(MachineOracle):
     """An interrupt-driven run recording, after init, the IRQ path and interrupts taken, and
-    whether the main context ever stores outside page 1 or touches I/O; the decode hook is
-    dropped once it has, interrupts then being counted from the machine's events."""
+    whether the main context ever stores outside page 1 or touches I/O. ``backend`` ``native``
+    scans in vagrant-moses' recorder; ``python`` (the reference) drops its decode hook once the
+    main context has, interrupts then being counted from the machine's events."""
 
-    def __init__(self, image, ntsc=False):
-        super().__init__(image, ntsc=ntsc)
+    def __init__(self, image, ntsc=False, backend=None):
+        backend = backend or ("native" if c64.TRACE_NATIVE else "python")
+        super().__init__(image, ntsc=ntsc, backend=backend)
         self.irqs, self.vector, self.ctx = 0, None, []
         self.main = Counter()
         self.cpf, self.t0 = mm.video(ntsc).cycles_per_frame, None
+        self.sc = Scan(self.rec, _scan_table(), self.sentinel) if self.native else None
+
+    def _frames_phase(self, index_frames):
+        if self.native:
+            self.m.clear_events()  # pylint: disable=no-member
+            self.sc.start(self.cpf)
+        super()._frames_phase(index_frames)
+
+    def _native_run(self):
+        self.irqs += self._entries(self.m.events)
+        vector, self.main["insns"], busy = self.sc.result()
+        if vector is not None:
+            bits, kv, hv = vector
+            self.vector = {
+                "path": "kernal" if banking(bits)[1] else "hardware",
+                "port_bits": bits,
+                "kernal_vector": kv,
+                "hw_vector": hv,
+            }
+        if busy is not None:
+            self.main["first_busy_frame"] = busy
+        return super()._native_run()
 
     def _entries(self, events):
         return sum(_ENTRY.get(n) in ("irq", "nmi") for _, n in events)
@@ -716,7 +761,9 @@ def main(argv=None):  # pylint: disable=too-many-locals
     ap.add_argument("--default-length", type=float, default=180.0, help="seconds, if unlisted")
     ap.add_argument("--max-cycles", type=int, default=2_000_000, help="per init or call")
     ap.add_argument("--timeout", type=float, default=60, help="seconds per song, plus")
-    ap.add_argument("--call-timeout", type=float, default=0.5, help="seconds per call/frame")
+    ap.add_argument(
+        "--call-timeout", type=float, help="seconds per call/frame (default by backend)"
+    )
     ap.add_argument("--label-calls", type=int, default=1000, help="labelled calls/frames (0: all)")
     ap.add_argument("--jobs", type=int, default=os.cpu_count())
     ap.add_argument("--sample", type=int, default=0, help="random tunes (0: all)")
@@ -774,7 +821,10 @@ def main(argv=None):  # pylint: disable=too-many-locals
                 if "error" in r:
                     ran((p, r), (r, None))
             todo = [(p, r) for p, r in todo if "error" not in r]
-            timeouts = [args.timeout + args.call_timeout * r["calls"] for _, r in todo]
+            per_call = args.call_timeout
+            if per_call is None:
+                per_call = 0.02 if c64.TRACE_NATIVE else 0.5
+            timeouts = [args.timeout + per_call * r["calls"] for _, r in todo]
             jobs = [(p, r, args.max_cycles, args.label_calls, args.defer) for p, r in todo]
             _pool_map(pool, run_song, jobs, timeouts, "corpus", ran)
     s = summary(list(rows.values()))
