@@ -168,6 +168,39 @@ pub const TOP_ENV: Env = {
     e
 };
 
+/// Per zero-page pointer pair (by the address of its low byte), the largest index `m` its
+/// pointer is kept clear of page 1 for (`None`: unprotected); see [`crate::ptr`].
+pub type Win = [Option<u16>; 0x100];
+
+/// A zero-page pointer an address is built from: the address of its low byte (when the
+/// address uses it), of its high byte, and the largest byte added to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ptr {
+    pub lo: Option<Iv>,
+    pub hi: Iv,
+    pub idx: u32,
+}
+
+impl Ptr {
+    /// The pairs whose windows keep the address out of page 1 and the window `m` each needs:
+    /// the address is `p + i` (`i <= m`) for a pointer `p` outside `[$100 - m, $1FF]`.
+    pub fn need(&self) -> (impl Iterator<Item = u8>, u32) {
+        let pair = matches!(
+            (self.lo.and_then(|l| l.value()), self.hi.value()),
+            (Some(l), Some(h)) if (l + 1) & 0xff == h
+        );
+        let m = match self.idx {
+            0 => 0,
+            i if pair => i,
+            _ => 0x100,
+        };
+        (
+            (self.hi.lo..=self.hi.hi).map(|h| (h as u8).wrapping_sub(1)),
+            m,
+        )
+    }
+}
+
 /// A memory access of an instruction's template: address interval and value interval
 /// (stores); `dummy` for a throw-away read, which has no effect on memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -178,22 +211,22 @@ pub struct Access {
     pub dummy: bool,
     /// A store of the value just loaded from the same address.
     pub back: bool,
-    /// Every byte of `hi` was stored on every path to the access.
+    /// Every high byte of `ptr` was stored on every path to the access.
     pub defd: bool,
-    /// Zero-page addresses of the pointer high bytes the address is built from, when it is
-    /// that pointer, or that pointer plus a byte: if each is at least 2 when read, the
-    /// address is not in page 1.
-    pub hi: Option<Iv>,
+    /// A store to a zero-page address whose next byte was stored on every path to it.
+    pub above: bool,
+    /// The zero-page pointer the address is, or is plus a byte.
+    pub ptr: Option<Ptr>,
 }
 
 impl Access {
-    /// Whether the access may reach page 1 given that the zero-page bytes in `prot` hold at
-    /// least 2.
-    pub fn page1(&self, prot: &FixedBitSet) -> bool {
+    /// Whether the access may reach page 1 given the pointer windows `win`.
+    pub fn page1(&self, win: &Win) -> bool {
         self.addr.meets(0x100, 0x200)
-            && !self
-                .hi
-                .is_some_and(|r| (r.lo..=r.hi).all(|a| prot.contains(a as usize)))
+            && !self.ptr.is_some_and(|p| {
+                let (mut qs, m) = p.need();
+                qs.all(|q| win[q as usize].is_some_and(|t| t as u32 >= m))
+            })
     }
 }
 
@@ -208,10 +241,11 @@ enum Tag {
     Word(Iv),
     /// That byte shifted to the high half of a word.
     High(Iv),
-    /// The high half with a byte below it: the page is the byte.
-    Page(Iv),
+    /// The high half with a byte below it (loaded from the given addresses, when known):
+    /// the page is the high byte.
+    Page(Ptr),
     /// A `Page` plus a byte: the page is the byte or the next.
-    Near(Iv),
+    Near(Ptr),
 }
 
 /// Abstractly execute `ops` from `env` with operand bytes `b` (`None` for cells); the
@@ -240,18 +274,29 @@ pub fn absint(ops: &[Op], b: [Option<u8>; 2], env: &mut Env, acc: &mut Vec<Acces
         } else {
             get(op.ins[1], &uniq, env)
         };
-        let hi = match tg(op.ins[0]) {
-            Tag::Page(r) | Tag::Near(r) => Some(r),
+        let ptr = match tg(op.ins[0]) {
+            Tag::Page(p) | Tag::Near(p) => Some(p),
             _ => None,
         };
         let word = op.out.size() == 2;
+        let low = |t: Tag| match t {
+            Tag::Word(r) => Some(r),
+            _ => None,
+        };
+        let page = |hi, t| Ptr {
+            lo: low(t),
+            hi,
+            idx: 0,
+        };
         let t = match (op.opc, tg(op.ins[0]), tg(op.ins[1])) {
             (Opc::Load, _, _) if a.hi < 0x100 && op.out.size() == 1 => Tag::Byte(a),
             (Opc::IntZext, Tag::Byte(r), _) if word => Tag::Word(r),
             (Opc::IntLeft, Tag::Word(r), _) if word && y.value() == Some(8) => Tag::High(r),
-            (Opc::IntOr, Tag::High(r), _) if word && y.hi < 0x100 => Tag::Page(r),
-            (Opc::IntOr, _, Tag::High(r)) if word && a.hi < 0x100 => Tag::Page(r),
-            (Opc::IntAdd, Tag::Page(r), _) if word && y.hi < 0x100 => Tag::Near(r),
+            (Opc::IntOr, Tag::High(r), t) if word && y.hi < 0x100 => Tag::Page(page(r, t)),
+            (Opc::IntOr, t, Tag::High(r)) if word && a.hi < 0x100 => Tag::Page(page(r, t)),
+            (Opc::IntAdd, Tag::Page(p), _) if word && y.hi < 0x100 => {
+                Tag::Near(Ptr { idx: y.hi, ..p })
+            }
             _ => Tag::No,
         };
         let r = match op.opc {
@@ -263,7 +308,8 @@ pub fn absint(ops: &[Op], b: [Option<u8>; 2], env: &mut Env, acc: &mut Vec<Acces
                     dummy: false,
                     back: loaded.contains(&(op.ins[0], op.ins[1])),
                     defd: false,
-                    hi,
+                    above: false,
+                    ptr,
                 });
                 continue;
             }
@@ -276,7 +322,8 @@ pub fn absint(ops: &[Op], b: [Option<u8>; 2], env: &mut Env, acc: &mut Vec<Acces
                     dummy: op.out.is_none(),
                     back: false,
                     defd: false,
-                    hi,
+                    above: false,
+                    ptr,
                 });
                 Iv::full(op.out.size())
             }
@@ -356,11 +403,8 @@ pub struct Graph {
     pub rom_code: FixedBitSet,
     /// The configuration each start was decoded in.
     pub cfg: FxHashMap<u16, u8>,
-    /// Zero-page bytes whose value is kept at least 2 (see [`crate::ptr`]).
-    pub prot: FixedBitSet,
-    /// Per entry, the protected bytes some access it reaches reads before its own stores
-    /// define them: the entry checks them.
-    pub pre: FxHashMap<u16, FixedBitSet>,
+    /// Zero-page pointer pairs kept clear of page 1 and their checks (see [`crate::ptr`]).
+    pub prot: crate::ptr::Prot,
     /// Per instruction start the entries (bit `i % 64` for entry `i`) it is reached from.
     pub from: FxHashMap<u16, u64>,
     /// Instruction starts at which the decimal flag may be set.
@@ -634,8 +678,7 @@ pub fn discover(
                 img: cimg,
                 rom_code,
                 cfg,
-                prot: FixedBitSet::with_capacity(0x100),
-                pre: FxHashMap::default(),
+                prot: crate::ptr::Prot::default(),
                 from,
                 dec,
             };
@@ -743,42 +786,68 @@ mod tests {
     }
 
     #[test]
-    fn pointer_high_byte_is_found_through_y_and_x() {
+    fn pointer_pair_and_index_are_found_through_y_and_x() {
         let b = [Some(0xfb), None];
-        let a = data_access(0xb1, b, Iv::full(1), Iv::full(1));
-        assert_eq!(a.hi, Some(Iv::exact(0xfc)));
+        let y = Iv { lo: 0, hi: 7 };
+        let a = data_access(0xb1, b, Iv::full(1), y);
+        let p = a.ptr.unwrap();
+        assert_eq!(
+            (p.lo, p.hi, p.idx),
+            (Some(Iv::exact(0xfb)), Iv::exact(0xfc), 7)
+        );
+        assert_eq!(p.need().1, 7);
         assert!(a.addr.meets(0x100, 0x200));
+        let a = data_access(0xb1, [Some(0xff), None], Iv::full(1), Iv::full(1));
+        let p = a.ptr.unwrap();
+        assert_eq!(
+            (p.hi, p.need().0.collect::<Vec<_>>()),
+            (Iv::exact(0), vec![0xff])
+        );
         let a = data_access(0xa1, b, Iv::exact(2), Iv::full(1));
-        assert_eq!(a.hi, Some(Iv::exact(0xfe)));
+        assert_eq!(a.ptr.unwrap().hi, Iv::exact(0xfe));
+        assert_eq!(a.ptr.unwrap().need().1, 0);
         let a = data_access(0xa1, b, Iv { lo: 0, hi: 3 }, Iv::full(1));
-        assert_eq!(a.hi, Some(Iv { lo: 0xfc, hi: 0xff }));
+        let (qs, m) = a.ptr.unwrap().need();
+        assert_eq!(
+            (qs.collect::<Vec<_>>(), m),
+            (vec![0xfb, 0xfc, 0xfd, 0xfe], 0)
+        );
     }
 
     #[test]
-    fn the_pointer_itself_and_other_modes_have_no_high_byte() {
+    fn the_pointer_itself_and_other_modes_have_no_pointer() {
         let b = [Some(0xfb), Some(0x20)];
         for op in [0xad, 0xbd, 0xb9, 0xa5, 0xb5] {
             assert_eq!(
-                data_access(op, b, Iv::full(1), Iv::full(1)).hi,
+                data_access(op, b, Iv::full(1), Iv::full(1)).ptr,
                 None,
                 "{op:x}"
             );
         }
-        let a = data_access(0xb1, [None, None], Iv::full(1), Iv::full(1));
-        assert_eq!(a.hi, Some(Iv::full(1)));
+        let a = data_access(0xb1, [None, None], Iv::full(1), Iv::exact(3));
+        assert_eq!(a.ptr.unwrap().hi, Iv::full(1));
+        assert_eq!(a.ptr.unwrap().need().1, crate::ptr::FULL);
     }
 
     #[test]
-    fn protected_bytes_exclude_page_1() {
-        let a = data_access(0xb1, [Some(0xfb), None], Iv::full(1), Iv::full(1));
-        let mut prot = FixedBitSet::with_capacity(0x100);
-        assert!(a.page1(&prot));
-        prot.insert(0xfc);
-        assert!(!a.page1(&prot));
+    fn windows_exclude_page_1() {
+        let a = data_access(
+            0xb1,
+            [Some(0xfb), None],
+            Iv::full(1),
+            Iv { lo: 0, hi: 0x10 },
+        );
+        let mut win: Win = [None; 0x100];
+        assert!(a.page1(&win));
+        win[0xfb] = Some(0x0f);
+        assert!(a.page1(&win));
+        win[0xfb] = Some(0x10);
+        assert!(!a.page1(&win));
         let wide = data_access(0xb1, [None, None], Iv::full(1), Iv::full(1));
-        assert!(wide.page1(&prot));
-        prot.insert_range(..);
-        assert!(!wide.page1(&prot));
+        win = [Some(0xff); 0x100];
+        assert!(wide.page1(&win));
+        win = [Some(crate::ptr::FULL as u16); 0x100];
+        assert!(!wide.page1(&win));
     }
 
     #[test]

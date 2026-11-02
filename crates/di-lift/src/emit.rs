@@ -9,7 +9,6 @@ use crate::analysis::{
 use crate::bank::{Back, BankMap};
 use crate::func::{Arm, Ctl, Exit, Key, Plan, H};
 use crate::ir::{cy, k, mem, other, r1, reg, tmp, Block, Function, LOp, E, NREG};
-use crate::ptr;
 use di_pcode::{reg as R, CtrlKind, Op, Opc, PenKind, Slot, Space, Template, Vn};
 use fixedbitset::FixedBitSet;
 use rustc_hash::FxHashMap;
@@ -150,14 +149,13 @@ pub fn emit(
         em.side_exit(bad, true, |em| em.deopt(k(plan.pc as u32, 2)));
     }
     if plan.top {
-        let pre = sh.g.pre.get(&plan.pc).into_iter().flat_map(|b| b.ones());
-        let bad: Vec<Vn> = pre
-            .map(|h| {
-                let v = em.load(k(h as u32, 2), Iv::exact(h as u32), 0);
-                em.op(Opc::IntLess, 1, v, k(2, 1))
-            })
-            .collect();
-        em.n.ptr_guards += bad.len();
+        let pre =
+            sh.g.prot
+                .pre
+                .get(&plan.pc)
+                .into_iter()
+                .flat_map(|b| b.ones());
+        let bad: Vec<Vn> = pre.map(|q| em.window(q as u8)).collect();
         if let Some(c) = bad.into_iter().reduce(|a, b| em.op(Opc::IntOr, 1, a, b)) {
             em.side_exit(c, true, |em| em.deopt(k(plan.pc as u32, 2)));
         }
@@ -506,20 +504,16 @@ impl<'a> Em<'a, '_> {
         let l = self.zext(lo, 2);
         self.op(Opc::IntOr, 2, h, l)
     }
-    /// Flag in `chk` a store of `v` to `a` that may leave a protected pointer byte below 2.
-    fn ptr_check(&mut self, a: Vn, v: Vn, ac: &Access, chk: &mut Vec<Vn>) {
-        let Some((lo, hi)) = ptr::written(&self.sh.g.prot, ac) else {
-            return;
-        };
-        let at = if lo == hi {
-            self.op(Opc::IntEqual, 1, a, k(lo, 2))
-        } else {
-            let off = self.op(Opc::IntSub, 2, a, k(lo, 2));
-            self.op(Opc::IntLessEqual, 1, off, k(hi - lo, 2))
-        };
-        let low = self.op(Opc::IntLess, 1, v, k(2, 1));
+    /// Whether the pointer pair at `q` is in its window, read from memory.
+    fn window(&mut self, q: u8) -> Vn {
+        let t = self.sh.g.prot.win[q as usize].unwrap() as u32;
+        let ld = |em: &mut Self, a: u8| em.load(k(a as u32, 2), Iv::exact(a as u32), 0);
+        let lo = ld(self, q);
+        let hi = ld(self, q.wrapping_add(1));
+        let p = self.word(lo, hi);
+        let off = self.op(Opc::IntSub, 2, p, k(0x100 - t, 2));
         self.n.ptr_guards += 1;
-        chk.push(self.op(Opc::IntAnd, 1, at, low));
+        self.op(Opc::IntLess, 1, off, k(0x100 + t, 2))
     }
     /// Deopt to `pc` when any code check fired.
     fn check(&mut self, chk: Vec<Vn>, pc: Vn) {
@@ -607,7 +601,8 @@ impl<'a> Em<'a, '_> {
                     dummy: op.out.is_none(),
                     back: false,
                     defd: false,
-                    hi: None,
+                    above: false,
+                    ptr: None,
                 });
                 if op.opc == Opc::Load && op.out.is_none() {
                     ai += 1;
@@ -617,7 +612,7 @@ impl<'a> Em<'a, '_> {
                 if !stack
                     && page1_check(opc, ai) == Check::Own
                     && self.sh.private
-                    && ac.page1(&self.sh.g.prot)
+                    && ac.page1(&self.sh.g.prot.win)
                 {
                     match self.plan.narrowed(&self.sh.seen, pc, opc, ai, ac.addr) {
                         Some(r) => self.page1_guard(a, pc, Some(r)),
@@ -640,8 +635,10 @@ impl<'a> Em<'a, '_> {
                 };
                 if op.opc == Opc::Store {
                     self.emit(Opc::Store, out, a, b, aux);
-                    if !stack {
-                        self.ptr_check(a, b, &ac, &mut chk);
+                    let pairs = self.sh.g.prot.chk.get(&(pc, opc, ai - 1));
+                    for &q in pairs.into_iter().flatten().filter(|_| !stack) {
+                        let bad = self.window(q);
+                        chk.push(bad);
                     }
                     if self.sh.hits_code(ac.addr) {
                         self.n.code_guards += 1;
@@ -961,7 +958,8 @@ impl<'a> Em<'a, '_> {
                     dummy: false,
                     back: false,
                     defd: false,
-                    hi: None,
+                    above: false,
+                    ptr: None,
                 }];
                 let mut u = FxHashMap::default();
                 chk.extend(self.ops(pc, 0x08, php.ops(), &acc, true, &mut none, &mut u));

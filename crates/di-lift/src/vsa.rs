@@ -70,8 +70,8 @@ struct St {
     pred: [Option<Pred>; 3],
     /// `A`, `X` and `Y` as `base + off` of the register `base` at the function's entry.
     rel: [Option<(u8, u8)>; DATA],
-    /// Zero-page bytes stored at an exact address on every path since the entry: each holds
-    /// at least 2 if it is a protected pointer byte, whose stores are checked.
+    /// Zero-page bytes stored at an exact address on every path since the entry: a protected
+    /// pointer pair whose high byte is one holds its window, as its stores are checked.
     stored: [u128; 2],
     /// The entries (bit `i % 64` for entry `i`) the state is reached from.
     from: u64,
@@ -289,8 +289,14 @@ fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>) -> St {
     absint(ops, b, &mut env, acc);
     let mut stored = st.stored;
     for a in acc.iter_mut() {
-        a.defd = a.hi.is_some_and(|r| (r.lo..=r.hi).all(|i| st.has(i)));
-        if let (true, false, Some(i @ 2..0x100)) = (a.store, a.back, a.addr.value()) {
+        a.defd = a
+            .ptr
+            .is_some_and(|p| (p.hi.lo..=p.hi.hi).all(|i| st.has(i)));
+        a.above = a.store
+            && a.addr
+                .value()
+                .is_some_and(|i| i < 0x100 && st.has((i + 1) & 0xff));
+        if let (true, false, Some(i @ 0..0x100)) = (a.store, a.back, a.addr.value()) {
             stored[(i >> 7) as usize] |= 1u128 << (i & 127);
         }
     }

@@ -1,4 +1,4 @@
-"""Pointer high bytes are guarded where they are defined, not at each access through them."""
+"""Zero-page pointers are guarded where they are defined, not at each access through them."""
 
 import pytest
 
@@ -194,3 +194,123 @@ def test_a_pointer_set_on_one_path_only_is_checked_at_entry(src, cycles):
         mem[0xFC] = hi
         differential(img, prog, pcs, [(0, 0), (0, 1), (0, 0)], mem=mem)
     assert len(prog.deopts) == 1
+
+
+# The pair is defined from tables by the input: zero-page targets ($10 + Y and $E0 + Y stay in
+# page 0), targets at $20F8 and $20FC and two that reach the stack page (hi 0 with lo + Y past
+# $FF, hi 1). Each store pair is checked once, after the high byte.
+PAIRS = (
+    """
+entry:  AND #$07
+        TAX
+        LDA lotab,X
+        STA $FB
+        LDA hitab,X
+        STA $FC
+        JSR sub
+        RTS
+"""
+    + READS
+    + """
+lotab:  .byte $10, $E0, $F8, $FC, $F8, $FC, $E0, $10
+hitab:  .byte $00, $00, $20, $00, $01, $20, $00, $00
+"""
+)
+
+
+def test_zero_page_pointers_need_no_access_guard():
+    calls = [(0, 0), (0, 1), (0, 2)]
+    img, pcs, prog = lift(PAIRS, calls)
+    st = prog.stats
+    assert st["stack_private"] and st["stack_guards"] == 0 and st["ptr_guards"] == 1
+    differential(img, prog, pcs, calls + [(0, 5), (0, 6), (0, 7), (0, 0)])
+    assert not prog.deopts
+
+
+@pytest.mark.parametrize("cycles", [False, True])
+def test_pointers_into_the_stack_page_deopt_after_the_pair(cycles):
+    calls = [(0, 0), (0, 1), (0, 2)]
+    img, pcs, prog = lift(PAIRS, calls, cycles)
+    assert prog.stats["stack_guards"] == 0
+    differential(img, prog, pcs, [(0, 3), (0, 0), (0, 4), (0, 2)])
+    assert sum(prog.deopts.values()) == 2
+
+
+def test_a_low_byte_past_the_window_keeps_the_access_guard():
+    calls = [(0, 0), (0, 5)]
+    img, pcs, prog = lift(PAIRS, calls)
+    assert prog.stats["stack_private"] and prog.stats["stack_guards"] > 0
+    differential(img, prog, pcs, calls + [(0, 3), (0, 1), (0, 4)])
+    assert sum(prog.deopts.values()) == 2
+
+
+# The second store of the pair waits for the first: the pointer between them ($F8 with high byte
+# 0) would reach page 1, though neither the old pointer nor the new one does.
+TRANSIENT = """
+entry:  AND #$01
+        TAX
+        LDA lotab,X
+        STA $FB
+        LDA hitab,X
+        STA $FC
+        JSR sub
+        RTS
+lotab:  .byte $10, $F8
+hitab:  .byte $00, $20
+""" + READS
+
+
+def test_the_transient_pointer_between_the_stores_is_not_checked():
+    calls = [(0, 0), (0, 1)]
+    img, pcs, prog = lift(TRANSIENT, calls)
+    assert prog.stats["stack_guards"] == 0
+    differential(img, prog, pcs, [(0, 0), (0, 1), (0, 0), (0, 1)])
+    assert not prog.deopts
+
+
+ZP_PERSIST = """
+init:   STA $FB
+        LDA #$00
+        STA $FC
+        RTS
+entry:  JSR sub
+        RTS
+""" + READS
+
+
+def test_a_zero_page_pointer_is_checked_at_entry():
+    img, labels = assemble(ZP_PERSIST)
+    pcs = [labels["init"], labels["entry"]]
+    prog = wholeprog.lift(img, pcs, [IO], facts_for(img, pcs, [(0, 0x40), (1, 0)]))
+    assert prog.stats["stack_guards"] == 0 and prog.stats["ptr_guards"] > 0
+    mem = differential(img, prog, pcs, [(0, 0x40), (1, 0), (0, 0xF0), (1, 0)])
+    assert not prog.deopts
+    for lo, hi in ((0xF8, 0), (0x40, 1), (0xFA, 0), (0xF9, 0), (0x00, 2)):
+        mem[0xFB], mem[0xFC] = lo, hi
+        differential(img, prog, pcs, [(1, 0)], mem=mem)
+    assert prog.deopts == {pcs[1]: 3}
+
+
+# The pointer at $FF has its high byte at $00.
+WRAP = """
+entry:  STA $FF
+        LDA #$00
+        STA $00
+        JSR sub
+        RTS
+sub:    LDY #$03
+        LDA ($FF),Y
+        STA $1800
+        DEY
+        LDA ($FF),Y
+        STA $1801
+        RTS
+"""
+
+
+def test_a_pointer_at_ff_wraps_to_its_high_byte_at_00():
+    calls = [(0, 0x10), (0, 0x80)]
+    img, pcs, prog = lift(WRAP, calls)
+    assert prog.stats["stack_guards"] == 0
+    differential(img, prog, pcs, calls + [(0, 0xFE), (0, 0x20)])
+    assert sum(prog.deopts.values()) == 1
