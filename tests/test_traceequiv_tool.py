@@ -6,13 +6,15 @@ from pathlib import Path
 
 import pytest
 
-from deity_informant import c64
+from deity_informant import NATIVE, c64
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 import traceequiv  # noqa: E402 pylint: disable=wrong-import-position,wrong-import-order
 from test_wpcorpus_tool import BANKED, BUSY, sid  # noqa: E402 pylint: disable=C0411,C0413
 
-pytestmark = pytest.mark.skipif(not c64.TRACE_NATIVE, reason="needs vagrant-moses' native trace")
+pytestmark = pytest.mark.skipif(
+    not (NATIVE and c64.TRACE_NATIVE), reason="needs the native extension and native trace"
+)
 
 
 def test_banked_song_backends_agree(tmp_path, capsys):

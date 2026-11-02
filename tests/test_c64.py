@@ -16,7 +16,7 @@ from vagrant_moses.bus import port_read  # noqa: E402
 from vagrant_moses.c64 import poweron_ram  # noqa: E402
 from vagrant_moses.roms import DEFAULT_ROM_MIRROR, ROMS, RomFetchError, rom_less  # noqa: E402
 
-from deity_informant import c64, trace, wholeprog  # noqa: E402
+from deity_informant import NATIVE, c64, trace, wholeprog  # noqa: E402
 from deity_informant.smc.machine import core  # noqa: E402
 
 native = pytest.mark.skipif(not core(), reason="needs vagrant-moses' native machine")
@@ -175,7 +175,9 @@ def _backend_run(backend, calls, init, ports, mc):
     return facts.to_dict(), snaps, bad, h.result.cells
 
 
-@pytest.mark.skipif(not c64.TRACE_NATIVE, reason="needs vagrant-moses' native trace")
+@pytest.mark.skipif(
+    not (NATIVE and c64.TRACE_NATIVE), reason="needs the native extension and native trace"
+)
 @pytest.mark.parametrize(
     "calls,init,ports,mc",
     [
