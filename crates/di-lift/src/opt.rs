@@ -741,6 +741,10 @@ impl Lvn<'_> {
                 };
                 return self.simplify(opc, x, K(e), size, size0);
             }
+            // `x & m | c` is `x` when `x` lies in the aligned block `[c, c | m]`.
+            (Opc::IntOr, S(_), K(c)) if matches!(self.skey(a), Some(SKey { opc: Opc::IntAnd, a: x, b: K(k), .. }) if k & k.wrapping_add(1) == 0 && c & k == 0 && { let i = self.iv(x); i.lo >= c && i.hi <= c | k }) => {
+                self.skey(a).map(|k| k.a)
+            }
             (Opc::IntAnd, _, K(c)) if c == m => Some(a),
             (Opc::IntAnd, _, K(1)) if self.is_bool(a) => Some(a),
             (Opc::IntAnd | Opc::IntOr, _, _) if same => Some(a),
@@ -922,7 +926,7 @@ fn rename(f: &mut Function) {
         let mut stack = vec![(r as u32, FxHashMap::<u32, u16>::default())];
         while let Some((b, mut map)) = stack.pop() {
             for op in &mut f.blocks[b as usize].ops {
-                let arity = op.opc.arity();
+                let arity = op.arity();
                 for v in op.ins[..arity].iter_mut() {
                     if v.space() == Space::Unique {
                         let n = *map.entry(v.off()).or_insert_with(|| {
@@ -986,7 +990,7 @@ fn number_block(lv: &mut Lvn, blk: &mut Block, tables: &[Vec<(u16, u32)>], st: &
     let ops = std::mem::take(&mut blk.ops);
     let mut out: Vec<LOp> = Vec::with_capacity(ops.len());
     for mut op in ops {
-        let arity = op.opc.arity();
+        let arity = op.arity();
         let a = if arity > 0 {
             lv.val(st, op.ins[0])
         } else {
@@ -1003,6 +1007,15 @@ fn number_block(lv: &mut Lvn, blk: &mut Block, tables: &[Vec<(u16, u32)>], st: &
         }
         let mut result: Option<(Val, bool)> = None;
         match op.opc {
+            Opc::Load if op.out.is_none() => {
+                let quiet = matches!(a, Val::K(x) if !cx.volatile.iter().any(|&(lo, hi)| (lo..hi).contains(&x)));
+                if quiet || arity > 1 && b == Val::K(0) {
+                    continue;
+                }
+                if matches!(b, Val::K(_)) {
+                    op.ins[1] = Vn::NONE;
+                }
+            }
             Opc::Load => {
                 if let Val::K(x) = a {
                     if !cx.volatile.iter().any(|&(lo, hi)| (lo..hi).contains(&x)) {

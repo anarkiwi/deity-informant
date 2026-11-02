@@ -202,6 +202,12 @@ impl Cpu {
             let a = get(f, bus, op.ins[0]);
             let val = match op.opc {
                 Opc::Copy | Opc::IntZext => a,
+                Opc::Load if op.out.is_none() => {
+                    if op.ins[1].is_none() || get(f, bus, op.ins[1]) != 0 {
+                        bus.read(a as u16);
+                    }
+                    continue;
+                }
                 Opc::Load if op.out.size() == 1 => bus.read(a as u16) as u32,
                 Opc::Load => load(bus, a & 0xffff, op.out.size()),
                 Opc::Store => {
@@ -249,6 +255,9 @@ impl Cpu {
         b2: u8,
     ) -> Result<(), Jam> {
         let o = Operands::new(b1, b2);
+        if t.len == 1 && t.ctrl != CtrlKind::Jam {
+            bus.read(pc.wrapping_add(1));
+        }
         self.exec_ops(bus, ops, &o);
         let w = o.0[2];
         let mut cyc = t.cyc as u64;
@@ -266,7 +275,12 @@ impl Cpu {
             CtrlKind::Br { flag, pol } => {
                 if self.r(flag as usize) == pol {
                     let target = next.wrapping_add(b1 as i8 as u16);
-                    cyc += 1 + ((next ^ target) & 0xff00 != 0) as u64;
+                    let cross = (next ^ target) & 0xff00 != 0;
+                    bus.read(next);
+                    if cross {
+                        bus.read(next & 0xff00 | target & 0xff);
+                    }
+                    cyc += 1 + cross as u64;
                     target
                 } else {
                     next
@@ -287,7 +301,9 @@ impl Cpu {
             CtrlKind::Rts => {
                 let lo = self.pull(bus);
                 let hi = self.pull(bus);
-                u16::from_le_bytes([lo, hi]).wrapping_add(1)
+                let ra = u16::from_le_bytes([lo, hi]);
+                bus.read(ra);
+                ra.wrapping_add(1)
             }
             CtrlKind::Rti => {
                 let p = self.pull(bus);

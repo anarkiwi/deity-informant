@@ -51,7 +51,7 @@ fn templates_cover_the_op_pool() {
             .collect();
         assert_eq!(bound, t.binds());
         for op in t.ops() {
-            assert!(op.inputs().len() == op.opc.arity());
+            assert!(op.inputs().len() == op.arity());
             for v in op.inputs().iter().chain([&op.out]) {
                 if v.space() == Space::Unique {
                     assert!(v.off() as usize + v.size() as usize <= UNIQUE_SIZE);
@@ -92,7 +92,7 @@ fn instantiate_binds_operand_slots() {
         .filter(|v| v.slot() == Slot::Word)
         .map(|v| v.off())
         .collect();
-    assert_eq!(words, [0x12f0]);
+    assert_eq!(words, [0x12f0, 0x12f0]);
     assert_eq!(lda.pen(), Pen::Ax(0x12f0));
     assert_eq!(insns[1].ctrl(), Ctrl::JmpInd(0x30ff));
     assert_eq!(

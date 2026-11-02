@@ -256,9 +256,9 @@ impl<'a, 'b> Fb<'a, 'b> {
         let mut used = vec![R::SP as u32];
         let mut written = Vec::new();
         for o in &x.ops[ops] {
-            let n = o.opc.arity();
+            let n = o.opc.arity() + (o.opc == Opc::Load && o.osz == 0) as usize;
             used.extend([o.a, o.b][..n].iter().filter(|&&v| v & IMM == 0));
-            if writes(o.opc, o.aux) {
+            if writes(o.opc, o.aux, o.osz) {
                 used.push(o.out);
                 written.push(o.out);
             }
@@ -359,6 +359,32 @@ impl<'a, 'b> Fb<'a, 'b> {
             let val = self.b.use_var(v);
             self.b.ins().store(T, val, self.fp, 4 * i as i32);
         }
+    }
+
+    /// A throw-away read: a bus read through `Ctx::load` when it may reach a device and its
+    /// predicate holds (memory reads without one have no effect).
+    fn throwaway(&mut self, o: &crate::exec::X) {
+        if o.aux & (mem::ROM | mem::RAM) != 0 || o.aux & (SPACES | mem::VOLATILE) == 0 {
+            return;
+        }
+        let (rd, cont) = (self.b.create_block(), self.b.create_block());
+        match o.b {
+            b if b & IMM != 0 && b != IMM => self.b.ins().jump(rd, &[]),
+            b if b & IMM != 0 => self.b.ins().jump(cont, &[]),
+            b => {
+                let c = self.get(b);
+                self.b.ins().brif(c, rd, &[], cont, &[])
+            }
+        };
+        self.b.switch_to_block(rd);
+        let a = self.addr(o.a);
+        let f = self.fnptr(offset_of!(Ctx, load));
+        let aux = self.b.ins().iconst(types::I32, o.aux as i64);
+        self.b
+            .ins()
+            .call_indirect(self.sigs[0], f, &[self.ctx, aux, a]);
+        self.b.ins().jump(cont, &[]);
+        self.b.switch_to_block(cont);
     }
 
     fn get(&mut self, o: u32) -> Value {
@@ -475,6 +501,7 @@ impl<'a, 'b> Fb<'a, 'b> {
                 let v = self.mask(a, o.osz);
                 self.set(o.out, v);
             }
+            Opc::Load if o.osz == 0 => self.throwaway(o),
             Opc::Load => {
                 let a = self.addr(o.a);
                 let base = if o.aux & mem::ROM != 0 {
@@ -723,8 +750,9 @@ fn span(x: &Exec, fi: usize) -> (std::ops::Range<usize>, std::ops::Range<usize>)
 }
 
 /// Whether an op of `opc` writes its output.
-fn writes(opc: Opc, aux: u32) -> bool {
+fn writes(opc: Opc, aux: u32, osz: u8) -> bool {
     match opc {
+        Opc::Load => osz != 0,
         Opc::Store | Opc::Branch | Opc::CBranch | Opc::BranchInd | Opc::Call | Opc::Return => false,
         Opc::CallOther => aux != other::DEOPT,
         _ => true,

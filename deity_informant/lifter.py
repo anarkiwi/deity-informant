@@ -7,7 +7,7 @@ family), with correct cycle counts. JAM/KIL halt. An unimplemented opcode is a
 hard error, never a silent skip.
 
 Semantics and cycle counts follow "No More Secrets - NMOS 6510 Unintended
-Opcodes" (v0.91). The static cycle tables below are frozen (no runtime py65
+Opcodes" (v0.91); indexed accesses make the NMOS throw-away read of their unfixed address. The static cycle tables below are frozen (no runtime py65
 dependency) and were cross-checked against the NMS reference chart.
 """
 
@@ -142,14 +142,16 @@ def _ror(e, val):
 
 
 # ---- addressing modes (MODE_LEN / MEM_MODES canonical in jennings.opcodes) ----
-def _ea(e, mem, pc, mode, pmap=None, phis=None):
+def _ea(e, mem, pc, mode, pmap=None, phis=None, hib=None):
     """Emit P-Code computing the effective address; return its varnode.
 
     ``pmap`` (optional) collects ``{id(const): (srcs, fn)}`` recording which
     operand-derived address constants come from which instruction-byte offsets;
     purely additive (emitted ops and return value are identical without it).
     ``phis`` (optional list) receives the pointer high-byte LOAD varnode of an
-    ``indy`` address, likewise without changing the emitted ops.
+    ``indy`` address, likewise without changing the emitted ops. ``hib`` (optional list)
+    receives the 2-byte base-page varnode (``base & $FF00``) of an indexed absolute or
+    ``indy`` address.
     """
     lo = mem[(pc + 1) & 0xFFFF]
     hi = mem[(pc + 2) & 0xFFFF]
@@ -168,23 +170,21 @@ def _ea(e, mem, pc, mode, pmap=None, phis=None):
         return e.op("INT_ZEXT", e.tmp(2), e.op("INT_ADD", e.tmp(), reg(C(lo), [1], "id"), Y))
     if mode == "abs":
         return reg(C(word, 2), [1, 2], "word")
-    if mode == "absx":
+    if mode in ("absx", "absy"):
         base = reg(C(word, 2), [1, 2], "word")
-        return e.op("INT_ADD", e.tmp(2), base, e.op("INT_ZEXT", e.tmp(2), X))
-    if mode == "absy":
-        base = reg(C(word, 2), [1, 2], "word")
-        return e.op("INT_ADD", e.tmp(2), base, e.op("INT_ZEXT", e.tmp(2), Y))
+        if hib is not None:
+            hib.append(e.op("INT_AND", e.tmp(2), base, C(0xFF00, 2)))
+        idx = X if mode == "absx" else Y
+        return e.op("INT_ADD", e.tmp(2), base, e.op("INT_ZEXT", e.tmp(2), idx))
     if mode == "indy":
         plo = e.op("LOAD", e.tmp(), reg(C(lo, 2), [1], "id"))
         phi = e.op("LOAD", e.tmp(), reg(C((lo + 1) & 0xFF, 2), [1], "hi1"))
         if phis is not None:
             phis.append(phi)
-        base = e.op(
-            "INT_OR",
-            e.tmp(2),
-            e.op("INT_LEFT", e.tmp(2), e.op("INT_ZEXT", e.tmp(2), phi), C(8)),
-            e.op("INT_ZEXT", e.tmp(2), plo),
-        )
+        page = e.op("INT_LEFT", e.tmp(2), e.op("INT_ZEXT", e.tmp(2), phi), C(8))
+        if hib is not None:
+            hib.append(page)
+        base = e.op("INT_OR", e.tmp(2), page, e.op("INT_ZEXT", e.tmp(2), plo))
         return e.op("INT_ADD", e.tmp(2), base, e.op("INT_ZEXT", e.tmp(2), Y))
     if mode == "indx":
         pa = e.op("INT_ADD", e.tmp(), reg(C(lo), [1], "id"), X)
@@ -731,7 +731,8 @@ def lift(mem, pc):
     ctrl = ("next",)
     pmap = {}
     phis = []
-    eav = _ea(e, mem, pc, mode, pmap, phis) if mode in MEM_MODES else None
+    hib = []
+    eav = _ea(e, mem, pc, mode, pmap, phis, hib) if mode in MEM_MODES else None
     imm = mem[(pc + 1) & 0xFFFF]
 
     def immc():
@@ -740,9 +741,24 @@ def lift(mem, pc):
         pmap[id(vn)] = ([1], "id")
         return vn
 
+    def unfixed(always):
+        """The throw-away read of an indexed access's unfixed address (the base page with the
+        indexed low byte): always for a write, on a page cross for a read. A ``LOAD`` with no
+        output is a throw-away read; its second input, when present, predicates it."""
+        if not hib:
+            return None
+        lo = e.op("INT_AND", e.tmp(2), eav, C(0xFF, 2))
+        addr = e.op("INT_OR", e.tmp(2), lo, hib[0])
+        if always:
+            e.op("LOAD", None, addr)
+        else:
+            e.op("LOAD", None, addr, e.op("INT_NOTEQUAL", e.tmp(), addr, eav))
+        return addr
+
     def rmw():
         """A read-modify-write's operand, written back unchanged before the result as the
         NMOS bus does."""
+        unfixed(True)
         cur = e.op("LOAD", e.tmp(), eav)
         e.op("STORE", None, eav, cur)
         return cur
@@ -752,6 +768,7 @@ def lift(mem, pc):
             return immc()
         if mode == "acc":
             return A
+        unfixed(False)
         return e.op("LOAD", e.tmp(), eav)
 
     if mn in ("LDA", "LDX", "LDY"):
@@ -759,6 +776,7 @@ def lift(mem, pc):
         e.op("COPY", r, rd())
         e.nz(r)
     elif mn in ("STA", "STX", "STY"):
+        unfixed(True)
         e.op("STORE", None, eav, {"STA": A, "STX": X, "STY": Y}[mn])
     elif mn == "ORA":
         e.op("INT_OR", A, A, rd())
@@ -818,7 +836,7 @@ def lift(mem, pc):
         e.op("COPY", FV, C(0))
     elif mn == "NOP":
         if mode in MEM_MODES:
-            e.op("LOAD", e.tmp(), eav)  # NMS p.40: NOP zp/abs still reads memory
+            rd()  # NMS p.40: NOP zp/abs still reads memory
     elif mn in ("PHA", "PHP"):
         if mn == "PHP":
             val = C(0x30)  # B + unused bits set on a pushed status byte
@@ -897,6 +915,7 @@ def lift(mem, pc):
         e.op("STORE", None, eav, r)
         _sbc(e, r)
     elif mn == "SAX":
+        unfixed(True)
         e.op("STORE", None, eav, e.op("INT_AND", e.tmp(), A, X))
     elif mn == "LAX":
         v = rd()
@@ -937,7 +956,7 @@ def lift(mem, pc):
         e.op("INT_SUB", X, ax, immc())
         e.nz(X)
     elif mn == "LAS":
-        v = e.op("INT_AND", e.tmp(), e.op("LOAD", e.tmp(), eav), SP)
+        v = e.op("INT_AND", e.tmp(), rd(), SP)
         e.op("COPY", A, v)
         e.op("COPY", X, v)
         e.op("COPY", SP, v)
@@ -948,9 +967,10 @@ def lift(mem, pc):
         )
         e.nz(A)
     elif mn in ("SHA", "SHX", "SHY", "TAS"):
-        # Stable form: store reg & (high(base)+1) -- the address-high AND quirk
-        # (NMS pp.43-50). Page-cross / RDY-drop-off instabilities are
-        # non-deterministic and intentionally not modelled.
+        # Store reg & (H+1), H the base's high byte; on a page cross the address's high
+        # byte is the stored value (libsidplayfp sh_instr, NMS pp.43-50). The RDY drop-off
+        # of the H+1 term is not modelled.
+        addr = unfixed(True)
         if mode == "indy":  # $93 SHA: H is the zero-page pointer's loaded high byte
             h1 = e.op("INT_ADD", e.tmp(), phis[0], C(1))
         else:
@@ -965,7 +985,11 @@ def lift(mem, pc):
         else:  # TAS: SP = A & X, then store SP & (H+1)
             e.op("INT_AND", SP, A, X)
             val = e.op("INT_AND", e.tmp(), SP, h1)
-        e.op("STORE", None, eav, val)
+        cross = e.op("INT_ZEXT", e.tmp(2), e.op("INT_NOTEQUAL", e.tmp(), addr, eav))
+        sel = e.op("INT_AND", e.tmp(2), e.op("INT_SUB", e.tmp(2), C(0, 2), cross), C(0xFF00, 2))
+        vhi = e.op("INT_LEFT", e.tmp(2), e.op("INT_ZEXT", e.tmp(2), val), C(8))
+        diff = e.op("INT_AND", e.tmp(2), e.op("INT_XOR", e.tmp(2), eav, vhi), sel)
+        e.op("STORE", None, e.op("INT_XOR", e.tmp(2), eav, diff), val)
     else:
         raise NotImplementedError(mn)
 

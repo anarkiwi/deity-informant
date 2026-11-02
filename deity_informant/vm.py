@@ -37,6 +37,9 @@ def _lhs(vn):
 def _emit_line(mn, out, ins):
     if mn == "STORE":
         return "wr(%s, %s, %d)" % (_rd_expr(ins[0]), _rd_expr(ins[1]), ins[1][2])
+    if mn == "LOAD" and out is None:
+        read = "rd(%s, 1)" % _rd_expr(ins[0])
+        return read if len(ins) == 1 else "if %s: %s" % (_rd_expr(ins[1]), read)
     if mn == "LOAD":
         return "%s = rd(%s, %d)" % (_lhs(out), _rd_expr(ins[0]), out[2])
     lhs = _lhs(out)
@@ -134,8 +137,10 @@ class PcodeVM:
             _k, flag, pol, tgt, ft = ctrl
             if self.reg[flag[1]] == pol:
                 cyc += 1
+                self._rd(ft, 1)
                 if (ft & 0xFF00) != (tgt & 0xFF00):
                     cyc += 1
+                    self._rd((ft & 0xFF00) | (tgt & 0xFF), 1)
                 nxt = tgt
             else:
                 nxt = ft
@@ -158,6 +163,9 @@ class PcodeVM:
 
     # ---- one 6502 instruction: run its P-Code and resolve the next PC --------
     def step(self, pc, cache, lifter):
+        """Run the instruction at ``pc``; its next PC. Besides its P-Code's accesses it reads
+        the byte after a one-byte opcode first, a taken branch's next byte (and unfixed target
+        on a page cross) and the address an ``RTS`` pulled, as the NMOS bus does."""
         mem = self.mem
         k = (pc, mem[pc], mem[(pc + 1) & 0xFFFF], mem[(pc + 2) & 0xFFFF])
         rec = cache.get(k)
@@ -166,6 +174,8 @@ class PcodeVM:
                 raise KeyError("cache miss at %04X (SMC needs a lifter)" % pc)
             rec = lifter(mem, pc)
             cache[k] = rec
+        if rec["len"] == 1 and rec["ctrl"][0] != "jam":
+            self._rd((pc + 1) & 0xFFFF, 1)
         ctrl, nxt = self.run_record(rec, pc)
         t = ctrl[0]
         reg = self.reg
@@ -192,6 +202,7 @@ class PcodeVM:
             lo = mem[0x100 + reg[3]]
             reg[3] = (reg[3] + 1) & 0xFF
             hi = mem[0x100 + reg[3]]
+            self._rd((hi << 8) | lo, 1)
             return ((hi << 8) | lo) + 1 & 0xFFFF
         if t == "rti":
             reg[3] = (reg[3] + 1) & 0xFF

@@ -2,6 +2,7 @@
 
 import dataclasses
 import threading
+from collections import Counter
 
 import pytest
 
@@ -48,6 +49,8 @@ PROGRAMS = {
     "frame": ("FRAME", ["entry"], [(0, a) for a in range(8)]),
     "ptable": ("PTABLE", ["entry"], [(0, 0)] * 12),
     "pxtable": ("PXTABLE", ["entry"], [(0, i & 1) for i in range(12)]),
+    "throwaway": ("THROWAWAY", ["entry"], [(0, a) for a in range(4)]),
+    "throwdp": ("THROWDP", ["entry"], [(0, 0)] * 3),
 }
 
 # Facts inputs and inputs reaching a stack height the facts never saw, per program.
@@ -363,7 +366,10 @@ def test_matches_jennings(name, cycles):
         o = prog.call(mem, 0, a=a, log=True, **st)
         log += o["log"]
         st = {"reg": list(o["reg"]), "cycles": o["cycles"] if cycles else 0}
-    assert log == ref
+    # jennings makes no throw-away reads: its accesses are the lift's less some reads.
+    rest = iter(log)
+    assert all(e in rest for e in ref)
+    assert not any(w for *_, w in Counter(log) - Counter(ref))
     assert (mpu.a, mpu.x, mpu.y, mpu.sp) == tuple(st["reg"][:4])
     assert not cycles or mpu.processorCycles == st["cycles"]
 

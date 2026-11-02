@@ -265,7 +265,8 @@ pub fn binop(opc: Opc, a: u32, b: u32, mask0: u32) -> u32 {
 }
 
 /// One P-Code op: `out = opc(ins[0], ins[1])`. `STORE` has no output and stores `ins[1]`
-/// at address `ins[0]`; unary ops leave `ins[1]` as [`Vn::NONE`].
+/// at address `ins[0]`; unary ops leave `ins[1]` as [`Vn::NONE`]. A `LOAD` with no output
+/// is a throw-away read of one byte, made only when `ins[1]` (if present) is nonzero.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Op {
     pub opc: Opc,
@@ -281,10 +282,15 @@ impl Op {
             ins: [a, b],
         }
     }
+    /// Number of used inputs: the opcode's, plus a throw-away read's predicate.
+    #[inline(always)]
+    pub fn arity(&self) -> usize {
+        self.opc.arity() + (self.opc == Opc::Load && !self.ins[1].is_none()) as usize
+    }
     /// The used inputs.
     #[inline(always)]
     pub fn inputs(&self) -> &[Vn] {
-        &self.ins[..self.opc.arity()]
+        &self.ins[..self.arity()]
     }
 }
 
