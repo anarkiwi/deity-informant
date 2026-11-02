@@ -245,7 +245,11 @@ impl Exec {
                     let dummy = op.opc == Opc::Load && op.out.is_none();
                     x.ops.push(X {
                         opc: op.opc,
-                        osz: op.out.size() as u8,
+                        osz: if op.opc == Opc::Store {
+                            op.ins[1].size()
+                        } else {
+                            op.out.size()
+                        } as u8,
                         asz: op.ins[0].size() as u8,
                         out: if op.out.is_none() { 0 } else { opd(op.out) },
                         a: opd(op.ins[0]),
@@ -560,7 +564,10 @@ impl<'a> Runner<'a> {
                             bus.now(c0 + f[CY as usize] as u64);
                         }
                         let a = get(f, o.a) as u16;
-                        let v = load(x.bank.as_ref(), bus, o.aux, a) as u32;
+                        let mut v = load(x.bank.as_ref(), bus, o.aux, a) as u32;
+                        for i in 1..o.osz as u16 {
+                            v |= (bus.read(a.wrapping_add(i)) as u32) << (8 * i);
+                        }
                         if o.osz != 0 {
                             f[o.out as usize] = v;
                         }
@@ -569,8 +576,11 @@ impl<'a> Runner<'a> {
                         if cyc && o.aux & mem::VOLATILE != 0 {
                             bus.now(c0 + f[CY as usize] as u64);
                         }
-                        let (a, v) = (get(f, o.a) as u16, get(f, o.b) as u8);
-                        store(x.bank.as_ref(), bus, o.aux, a, v)
+                        let (a, v) = (get(f, o.a) as u16, get(f, o.b));
+                        store(x.bank.as_ref(), bus, o.aux, a, v as u8);
+                        for i in 1..o.osz as u16 {
+                            bus.write(a.wrapping_add(i), (v >> (8 * i)) as u8);
+                        }
                     }
                     Opc::Branch => ip = enter!(o.aux),
                     Opc::CBranch => {

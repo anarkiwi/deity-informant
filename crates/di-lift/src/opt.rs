@@ -50,8 +50,7 @@ impl Ctx<'_> {
 /// the op count unchanged.
 pub fn optimize(f: &mut Function, cx: &Ctx, fi: usize) {
     pin_resume(f, cx, fi);
-    let mut last = usize::MAX;
-    loop {
+    let round = |f: &mut Function| {
         cleanup(f);
         rename(f);
         let consts = propagate(f, cx);
@@ -59,12 +58,25 @@ pub fn optimize(f: &mut Function, cx: &Ctx, fi: usize) {
         cleanup(f);
         combine_adds(f);
         dce(f, cx, fi);
+    };
+    let mut last = usize::MAX;
+    loop {
+        round(f);
         let n: usize = f.blocks.iter().map(|b| b.ops.len()).sum();
         debug_assert!(n <= last);
         if n == last {
-            break;
+            // Carry chains are fused once the rest has converged, then optimized again.
+            let fused = if cx.cycles {
+                Vec::new()
+            } else {
+                crate::wide::fuse(f, &|g, c| block_costs(g, cx, fi, c), &mut |g| round(g))
+            };
+            if fused.is_empty() {
+                break;
+            }
+            f.chains.extend(fused);
         }
-        last = n;
+        last = f.blocks.iter().map(|b| b.ops.len()).sum();
     }
     renumber_temps(f);
 }
@@ -780,6 +792,8 @@ impl Lvn<'_> {
             (Opc::IntCarry, _, K(0)) | (Opc::IntCarry, K(0), _) => Some(K(0)),
             _ => self.range_fold(opc, a, b, size0),
         };
+        // An identity of a wider value is a truncation, not the value.
+        let r = r.filter(|v| !matches!(v, S(s) if self.syms[*s as usize].size != size));
         if let Some(v) = r {
             return (v, false);
         }
@@ -864,6 +878,19 @@ impl Lvn<'_> {
                 hi: 0x1ff,
             },
             MemKey::Other(s) => self.syms[s as usize].iv,
+        }
+    }
+    /// [`Self::alias`] of byte `x` with the `w` bytes at `y`.
+    fn alias_w(&self, x: MemKey, y: MemKey, w: u32) -> bool {
+        match y {
+            _ if w == 1 => self.alias(x, y),
+            MemKey::Const(c) => {
+                (0..w).any(|i| self.alias(x, MemKey::Const(c.wrapping_add(i as u16))))
+            }
+            _ => {
+                let (p, q) = (self.key_iv(x), self.key_iv(y));
+                p.lo < q.hi + w && q.lo <= p.hi
+            }
         }
     }
     fn alias(&self, x: MemKey, y: MemKey) -> bool {
@@ -1026,15 +1053,16 @@ fn number_block(lv: &mut Lvn, blk: &mut Block, tables: &[Vec<(u16, u32)>], st: &
                     }
                 }
                 let mk = lv.memkey(a);
-                let hit = op
-                    .plain()
+                let w = op.out.size();
+                let byte = op.plain() && w == 1;
+                let hit = byte
                     .then(|| st.mem.iter().find(|e| e.0 == mk).copied())
                     .flatten();
                 if let Some((_, v)) = hit {
                     result = Some((v, false));
                 } else {
-                    let s = lv.leaf(1, Iv::full(1));
-                    if op.plain() {
+                    let s = lv.leaf(w as u8, Iv::full(w));
+                    if byte {
                         st.remember((mk, Val::S(s)));
                     }
                     result = Some((Val::S(s), true));
@@ -1047,11 +1075,13 @@ fn number_block(lv: &mut Lvn, blk: &mut Block, tables: &[Vec<(u16, u32)>], st: &
                     }
                 }
                 let mk = lv.memkey(a);
-                if op.plain() && st.mem.contains(&(mk, b)) {
+                let w = op.ins[1].size();
+                let byte = op.plain() && w == 1;
+                if byte && st.mem.contains(&(mk, b)) {
                     continue;
                 }
-                st.forget(|e| lv.alias(e, mk));
-                if op.plain() {
+                st.forget(|e| lv.alias_w(e, mk, w));
+                if byte {
                     st.remember((mk, b));
                 }
             }
@@ -1231,15 +1261,26 @@ impl Live<'_> {
         live_in: &[FixedBitSet],
         call: &mut dyn FnMut(u32, u32),
     ) -> Vec<bool> {
+        self.transfer_ops(b, &self.f.blocks[b].ops, live, live_in, call)
+    }
+    /// [`Self::transfer`] of block `b` with `ops` in place of its own.
+    fn transfer_ops(
+        &self,
+        b: usize,
+        ops: &[LOp],
+        live: &mut FixedBitSet,
+        live_in: &[FixedBitSet],
+        call: &mut dyn FnMut(u32, u32),
+    ) -> Vec<bool> {
         let blk = &self.f.blocks[b];
-        let mut keep = vec![true; blk.ops.len()];
-        let mut hs = Vec::with_capacity(blk.ops.len());
+        let mut keep = vec![true; ops.len()];
+        let mut hs = Vec::with_capacity(ops.len());
         let mut h = self.hin[b];
-        for op in &blk.ops {
+        for op in ops {
             hs.push(h);
             h = sp_abs(op, h);
         }
-        for (i, op) in blk.ops.iter().enumerate().rev() {
+        for (i, op) in ops.iter().enumerate().rev() {
             let h = hs[i];
             match op.opc {
                 Opc::Call => {
@@ -1360,6 +1401,21 @@ fn live<'a>(f: &'a Function, cx: &'a Ctx<'a>, fi: usize) -> Live<'a> {
 }
 
 /// Remove ops whose results are never used, by liveness.
+/// Per `(b, ops)`, the ops `dce` would keep of block `b` of `f` holding `ops` instead, by the
+/// liveness of `f` (which `ops` can only shrink, so each count is an upper bound).
+fn block_costs(f: &Function, cx: &Ctx, fi: usize, cands: &[(usize, Vec<LOp>)]) -> Vec<usize> {
+    let lv = live(f, cx, fi);
+    let live_in = lv.solve(&mut |_, _| {});
+    cands
+        .iter()
+        .map(|(b, ops)| {
+            let mut l = lv.live_out(*b, &live_in);
+            let keep = lv.transfer_ops(*b, ops, &mut l, &live_in, &mut |_, _| {});
+            keep.iter().filter(|&&k| k).count()
+        })
+        .collect()
+}
+
 fn dce(f: &mut Function, cx: &Ctx, fi: usize) {
     let keeps: Vec<Vec<bool>> = {
         let lv = live(f, cx, fi);

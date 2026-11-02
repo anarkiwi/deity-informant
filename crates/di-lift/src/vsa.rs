@@ -689,7 +689,7 @@ impl Work<'_> {
 }
 
 /// Fill each variant's accesses from the interval states at its start; the entries (as in
-/// `St::from`) that reach each start. With `matched`, an
+/// `St::from`) that reach each start, and the starts at which the decimal flag may be set. With `matched`, an
 /// `RTS` whose callee leaves the stack as it found it returns to its caller; otherwise any
 /// return may reach any return site.
 pub fn analyze(
@@ -698,7 +698,7 @@ pub fn analyze(
     vars: &mut FxHashMap<u16, Vec<Var>>,
     entries: &[Entry],
     matched: bool,
-) -> FxHashMap<u16, u64> {
+) -> (FxHashMap<u16, u64>, FixedBitSet) {
     let rets = returns(vars, matched);
     let succ_of = |pc: u16| -> Vec<u16> {
         let mut s: Vec<u16> = vars[&pc]
@@ -810,10 +810,12 @@ pub fn analyze(
             .map_or_else(|| st.clone(), |o| join(o, st, None));
         merged.insert(pc, m);
     }
+    let mut dec = FixedBitSet::with_capacity(0x10000);
     for (&pc, vs) in vars.iter_mut() {
         let st = merged
             .get(&pc)
             .map_or_else(|| St::new(TOP_ENV), Clone::clone);
+        dec.set(pc as usize, st.env[di_pcode::reg::D].hi != 0);
         for v in vs.iter_mut() {
             let mut acc = std::mem::take(&mut v.acc);
             acc.clear();
@@ -821,5 +823,8 @@ pub fn analyze(
             v.acc = acc;
         }
     }
-    merged.into_iter().map(|(pc, st)| (pc, st.from)).collect()
+    (
+        merged.into_iter().map(|(pc, st)| (pc, st.from)).collect(),
+        dec,
+    )
 }

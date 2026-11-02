@@ -90,6 +90,8 @@ struct Em<'a, 'b> {
     n: Counts,
     /// The block the current instruction started in.
     istart: u32,
+    /// The decimal flag may be set at the current instruction.
+    dec: bool,
 }
 
 /// What emitting a function produced.
@@ -140,6 +142,7 @@ pub fn emit(
         slots: &sh.slots[fi],
         n: Counts::default(),
         istart: 0,
+        dec: false,
     };
     em.new_block(plan.pc);
     if let Some(s) = plan.sp {
@@ -648,6 +651,7 @@ impl<'a> Em<'a, '_> {
                     continue;
                 }
             }
+            let aux = if self.dec { crate::ir::DECIMAL } else { aux };
             self.emit(op.opc, out, a, b, aux);
         }
         chk
@@ -657,6 +661,7 @@ impl<'a> Em<'a, '_> {
         let (ctl, exit, acc) = (&arm.ctl, arm.exit, &arm.acc[..]);
         self.succ = &arm.succ;
         self.istart = self.cur as u32;
+        self.dec = self.sh.g.dec.contains(pc as usize);
         let t = Template::of(*op);
         self.n.insns += 1;
         self.n.raw += t.n as usize;

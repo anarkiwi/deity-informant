@@ -56,7 +56,13 @@ pub mod other {
     pub const NAMES: [&str; 2] = ["deopt", "codechk"];
 }
 
-/// `LOAD`/`STORE` flags in `aux`.
+/// `aux` of a value op emitted for an instruction at which the decimal flag may be set: its
+/// arithmetic is not fused into wider operations.
+pub const DECIMAL: u32 = 1;
+
+/// `LOAD`/`STORE` flags in `aux`. A `LOAD` whose output (or a `STORE` whose value) has `n > 1`
+/// bytes accesses the `n` consecutive bytes at the address, least significant first; such an
+/// access is plain (`aux` 0) and never wraps past $FFFF.
 pub mod mem {
     /// The address may be volatile: kept verbatim and in order, at the instruction's cycle.
     pub const VOLATILE: u32 = 1;
@@ -205,6 +211,8 @@ pub struct Function {
     pub slotted: FixedBitSet,
     /// In a call-graph cycle: checks its own stack depth at entry.
     pub recursive: bool,
+    /// Carry chains fused into wide operations.
+    pub chains: Vec<crate::wide::Chain>,
 }
 
 impl Function {
@@ -268,6 +276,10 @@ pub struct Stats {
     pub kept_bytes: usize,
     /// Blocks spending the iteration budget (without cycles): loop heads, recursive entries.
     pub budget_checks: usize,
+    /// Multi-byte carry chains recognized in the optimized code (fused or not).
+    pub chains: usize,
+    /// Of which fused into wide operations.
+    pub fused_chains: usize,
 }
 
 /// A lifted program: functions plus what the executor needs to check and leave it.
@@ -286,6 +298,8 @@ pub struct Program {
     pub cycles: bool,
     /// The bank map memory is seen through (none: flat).
     pub bank: Option<crate::bank::BankMap>,
+    /// Carry chains per function: fused, then those left byte-wise.
+    pub chains: Vec<(u32, crate::wide::Chain)>,
     pub stats: Stats,
 }
 
