@@ -16,8 +16,17 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - name: Install
         run: pip install -e ".[dev]"
+      # The coverage gate measures the native lifter and the machine-driven code, so the
+      # extension is built into the source tree beside the editable install.
+      - name: Build native extension
+        run: |
+          maturin build --release --locked -i python -o wheels
+          unzip -j wheels/*.whl 'deity_informant/_native*' -d deity_informant
+          python -c "import deity_informant as d; assert d.NATIVE"
       - name: C64 ROM cache key
         id: roms
         run: >-
