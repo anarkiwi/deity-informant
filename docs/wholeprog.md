@@ -280,7 +280,8 @@ the facts, so a proof holds on every execution that stays in lifted code.
     path has defined them (`St::stored` in `vsa.rs`, an intersection over paths and a union over
     a balanced call), as memory may have been written by the host or by the reference after a
     deopt, which ends the call;
-  - a lift with `interrupts` protects nothing, since a handler may store between instructions.
+  - lifted code is never interrupted: a call with interrupts runs on the reference, and each
+    handler it enters is a lifted entry that checks its own protected bytes.
 
 A deopt sets the reference `Cpu` to the architectural state (registers, PC, and with cycle
 counting cycles), writes the stack bytes each active frame pushed (from its slot registers)

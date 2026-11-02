@@ -233,10 +233,8 @@ pub fn lift_banked(
     let mut matched = true;
     let (g, plans, fidx, callees, recursive, slots, constcode, touches, seen, sites, private) = loop {
         let mut g = discover(img, entries, facts, bank, matched);
-        if !opts.interrupts {
-            let roots: Vec<u16> = entries.iter().map(|e| e.pc).collect();
-            (g.prot, g.pre) = ptr::protect(&g, facts, volatile, &roots);
-        }
+        let roots: Vec<u16> = entries.iter().map(|e| e.pc).collect();
+        (g.prot, g.pre) = ptr::protect(&g, facts, volatile, &roots);
         let img: &[u8; 0x10000] = &g.img;
         let pcs: Vec<u16> = entries.iter().map(|e| e.pc).collect();
         let mut plans = plan(img, &g, &pcs, facts, bank, volatile);
