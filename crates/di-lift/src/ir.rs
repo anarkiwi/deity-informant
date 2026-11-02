@@ -300,6 +300,8 @@ pub struct Program {
     pub bank: Option<crate::bank::BankMap>,
     /// Carry chains per function: fused, then those left byte-wise.
     pub chains: Vec<(u32, crate::wide::Chain)>,
+    /// Induction variables of the discovered program's loops.
+    pub induction: Vec<crate::scev::Induction>,
     pub stats: Stats,
 }
 

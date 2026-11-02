@@ -15,6 +15,7 @@ pub mod ir;
 pub mod jit;
 pub mod opt;
 pub mod ptr;
+pub mod scev;
 pub mod vsa;
 pub mod wide;
 
@@ -99,7 +100,7 @@ fn unchecked(img: &[u8; 0x10000], g: &analysis::Graph, pc: u16, v: &analysis::Va
         && v.acc
             .iter()
             .enumerate()
-            .any(|(i, a)| !a.dummy && a.page1(&g.prot) && page1_check(v.op, i) == Check::No);
+            .any(|(i, a)| !a.dummy && a.page1(&g.prot.win) && page1_check(v.op, i) == Check::No);
     let ind = matches!(v.flow, Flow::JmpInd(_)) && {
         let (iv, cell) = ind_ptr(img, g, pc);
         !cell && iv.meets(0x100, 0x200)
@@ -121,7 +122,7 @@ fn unguarded<'a>(
             let acc = a.acc.iter().enumerate().filter(move |&(i, ac)| {
                 !is_stack_op(v.op)
                     && !ac.dummy
-                    && ac.page1(&g.prot)
+                    && ac.page1(&g.prot.win)
                     && (seen.contains_key(&pc) || page1_check(v.op, i) == Check::No)
             });
             let ind = matches!(v.flow, Flow::JmpInd(_))
@@ -248,7 +249,7 @@ pub fn lift_banked(
     let (g, plans, fidx, callees, recursive, slots, constcode, touches, seen, sites, private) = loop {
         let mut g = discover(img, entries, facts, bank, matched);
         let roots: Vec<u16> = entries.iter().map(|e| e.pc).collect();
-        (g.prot, g.pre) = ptr::protect(&g, facts, volatile, &roots);
+        g.prot = ptr::protect(&g, facts, volatile, &roots, bank);
         let img: &[u8; 0x10000] = &g.img;
         let pcs: Vec<u16> = entries.iter().map(|e| e.pc).collect();
         let mut plans = plan(img, &g, &pcs, facts, bank, volatile);
@@ -315,7 +316,7 @@ pub fn lift_banked(
                 for pc in p.pcs() {
                     for v in &g.vars[&pc] {
                         if !is_stack_op(v.op) {
-                            for a in v.acc.iter().filter(|a| !a.dummy && a.page1(&g.prot)) {
+                            for a in v.acc.iter().filter(|a| !a.dummy && a.page1(&g.prot.win)) {
                                 *(if a.store { &mut store } else { &mut load }) = true;
                             }
                         }
@@ -514,6 +515,7 @@ pub fn lift_banked(
         cycles: opts.cycles,
         stats,
         chains,
+        induction: g.ind.clone(),
     }
 }
 

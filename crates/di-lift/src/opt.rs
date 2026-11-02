@@ -58,6 +58,9 @@ pub fn optimize(f: &mut Function, cx: &Ctx, fi: usize) {
         cleanup(f);
         combine_adds(f);
         dce(f, cx, fi);
+        if !cx.cycles && crate::wide::words(f) > 0 {
+            dce(f, cx, fi);
+        }
     };
     let mut last = usize::MAX;
     loop {
