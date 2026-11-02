@@ -1060,6 +1060,70 @@ fn count(f: &Function) -> usize {
     f.blocks.iter().map(|b| b.ops.len()).sum()
 }
 
+/// The 2-byte load op `i` of `v` can be: `ZEXT(lo) | ZEXT(hi) << 8` of the plain loads of
+/// two adjacent bytes that nothing between them and `i` may store into; its address there.
+fn word_load(v: &View, i: u32) -> Option<(Vn, [u32; 5])> {
+    let op = &v.ops[i as usize];
+    if op.out.size() != 2 {
+        return None;
+    }
+    v.bin(R::Op(i), Opc::IntOr).into_iter().find_map(|(x, y)| {
+        let [zh, R::K(8)] = v.is(x, Opc::IntLeft, 2)? else {
+            return None;
+        };
+        let [h] = v.is(zh, Opc::IntZext, 2).map(|r| [r[0]])?;
+        let [l] = v.is(y, Opc::IntZext, 2).map(|r| [r[0]])?;
+        let (al, ah) = (v.load(l)?, v.load(h)?);
+        let (b, o) = v.addr(al);
+        let adjacent =
+            v.addr(ah) == (b, (o + 1) & 0xffff) && b.map_or(0, |b| v.iv(b, 4).hi) + o < 0xffff;
+        let kept = [(l, al), (h, ah)].iter().all(|&(r, a)| {
+            (pos(r).unwrap() + 1..i).all(|j| {
+                let o = &v.ops[j as usize];
+                o.opc != Opc::Call
+                    && !(o.opc == Opc::Store
+                        && v.alias(v.ins[j as usize][0], o.ins[1].size(), a, 1))
+            })
+        });
+        let at = v.holds(al, i, 2).filter(|_| adjacent && kept)?;
+        Some((at, [pos(x)?, pos(zh)?, pos(y)?, pos(l)?, pos(h)?]))
+    })
+}
+
+/// Pointer pairs and other adjacent byte pairs combined into a word become one 2-byte load,
+/// where that leaves an op it was built from dead; the number replaced.
+pub fn words(f: &mut Function) -> usize {
+    let mut n = 0;
+    for blk in &mut f.blocks {
+        let v = View::new(&blk.ops);
+        let mut new: Vec<(usize, LOp)> = Vec::new();
+        for i in 0..blk.ops.len() as u32 {
+            let Some((at, parts)) = word_load(&v, i) else {
+                continue;
+            };
+            let mut dead: Vec<u32> = vec![i];
+            while let Some(&d) = parts.iter().find(|&&p| {
+                !dead.contains(&p)
+                    && v.ops[p as usize].out.space() == Space::Unique
+                    && v.uses[p as usize].iter().all(|u| dead.contains(u))
+            }) {
+                dead.push(d);
+            }
+            if dead.len() > 1 {
+                new.push((
+                    i as usize,
+                    LOp::new(Opc::Load, v.ops[i as usize].out, at, Vn::NONE, 0),
+                ));
+            }
+        }
+        n += new.len();
+        for (i, op) in new {
+            blk.ops[i] = op;
+        }
+    }
+    n
+}
+
 /// The ops dead-code elimination would keep of each block `b` of a function holding `ops`.
 pub type Costs<'c> = dyn Fn(&Function, &[(usize, Vec<LOp>)]) -> Vec<usize> + 'c;
 
@@ -1218,6 +1282,47 @@ mod tests {
         assert!(c
             .iter()
             .all(|c| rewrite(&blk, c.0, &c.1, &mut Temps(100)).is_none()));
+    }
+
+    /// `($FB),Y` as the template builds the pointer: the high byte loaded at `hi`, then a
+    /// store of `st` to `sa` when given.
+    fn ptr(hi: u32, st: Option<u32>) -> Function {
+        let (t, w) = (|i| tmp(i, 1), |i| tmp(i, 2));
+        let mut ops = vec![ld(0, 0xfb), ld(1, hi)];
+        ops.extend(st.map(|a| op(Opc::Store, Vn::NONE, k(a, 2), r1(di_pcode::reg::A))));
+        ops.extend([
+            op(Opc::IntZext, w(4), t(1), Vn::NONE),
+            op(Opc::IntLeft, w(2), w(4), k(8, 1)),
+            op(Opc::IntZext, w(8), t(0), Vn::NONE),
+            op(Opc::IntOr, w(6), w(8), w(2)),
+            op(Opc::Load, r1(di_pcode::reg::A), w(6), Vn::NONE),
+            LOp::new(Opc::Return, Vn::NONE, k(0, 2), Vn::NONE, 0),
+        ]);
+        Function {
+            blocks: vec![Block {
+                ops,
+                ..Block::default()
+            }],
+            ..Function::default()
+        }
+    }
+
+    #[test]
+    fn a_pointer_pair_is_one_wide_load() {
+        let mut f = ptr(0xfc, Some(0x20));
+        assert_eq!(words(&mut f), 1);
+        let or = &f.blocks[0].ops[6];
+        assert_eq!(
+            (or.opc, or.out.size(), or.ins[0]),
+            (Opc::Load, 2, k(0xfb, 2))
+        );
+        for (hi, st) in [(0xfd, None), (0xfc, Some(0xfc)), (0xfc, Some(0xfb))] {
+            assert_eq!(words(&mut ptr(hi, st)), 0, "{hi:x} {st:?}");
+        }
+        let mut f = ptr(0xfc, None);
+        f.blocks[0].ops[0] = ld(0, 0xffff);
+        f.blocks[0].ops[1] = ld(1, 0);
+        assert_eq!(words(&mut f), 0);
     }
 
     #[test]
