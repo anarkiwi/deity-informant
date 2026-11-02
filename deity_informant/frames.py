@@ -179,7 +179,8 @@ def check(prog, host, max_cycles=2_000_000):
 
 
 def timed(prog, host, bank, max_cycles=2_000_000):
-    """``(reference s, lifted s, reference cycles, frames, interrupted frames)`` of the first window.
+    """``(reference s, lifted s, reference cycles, frames, interrupted frames)`` of the first
+    window.
 
     The frames run through the reference interpreter (bank map ``bank``) and through ``prog``,
     each from the machine's entry states with its device reads and interrupts, after one warm-up

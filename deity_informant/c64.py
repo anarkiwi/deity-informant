@@ -27,7 +27,6 @@ from vagrant_moses.roms import BASIC_RUN, RomFetchError, load_roms, poweron_writ
 
 from .smc.classify import expected_reads, expected_writes, view
 from .smc.machine import (
-    _ENTRY,
     READ,
     READ_BACK,
     SENTINEL,
@@ -910,8 +909,8 @@ def check(prog, image, reg, records, port=None, max_cycles=2_000_000, accs=(), r
     # pylint: disable=too-many-arguments,too-many-positional-arguments
     """Run ``prog``'s entry 0 from ``image`` and registers ``reg`` once per machine record,
     with A from ``accs`` (0 past its end) and ``port`` (when given) stored to $01 before each
-    call, its volatile reads replaying the record's (:func:`read_entries`) and the interrupts
-    the machine took inside it taken at the same instruction boundary: ``[call, *mismatch]`` of
+    call, its volatile reads replaying the record's (:func:`read_entries`) and the record's
+    interrupts entered at the machine's instruction boundary: ``[call, *mismatch]`` of
     the first record the lift differs from (:func:`mismatch`; ``boundary`` when an interrupt
     was not at the machine's boundary), ``[call, "halted", halt]`` when the lift reaches the
     halt of the record ending the run, or None (see :func:`outcome`). With ``ret``, each call
