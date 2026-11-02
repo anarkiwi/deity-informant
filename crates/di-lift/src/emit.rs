@@ -91,6 +91,9 @@ struct Em<'a, 'b> {
     istart: u32,
     /// The decimal flag may be set at the current instruction.
     dec: bool,
+    /// The current instruction's checks include a code check: the code a deopt resumes may
+    /// have changed, so it hands over every register.
+    coded: bool,
 }
 
 /// What emitting a function produced.
@@ -142,6 +145,7 @@ pub fn emit(
         n: Counts::default(),
         istart: 0,
         dec: false,
+        coded: false,
     };
     em.new_block(plan.pc);
     if let Some(s) = plan.sp {
@@ -483,6 +487,7 @@ impl<'a> Em<'a, '_> {
                 self.n.code_guards += 1;
                 chk.push(self.op(Opc::CallOther, 1, a, v));
                 self.f.blocks[self.cur].ops.last_mut().unwrap().aux = other::CODECHK;
+                self.coded = true;
             }
         }
         self.emit(Opc::IntSub, r1(R::SP), r1(R::SP), k(1, 1), 0);
@@ -515,7 +520,8 @@ impl<'a> Em<'a, '_> {
         self.n.ptr_guards += 1;
         self.op(Opc::IntLess, 1, off, k(0x100 + t, 2))
     }
-    /// Deopt to `pc` when any code check fired.
+    /// Deopt to `pc` when any check fired; after a code check with every register handed
+    /// over, as the reference may run changed code.
     fn check(&mut self, chk: Vec<Vn>, pc: Vn) {
         let Some(mut c) = chk.first().copied() else {
             return;
@@ -523,7 +529,8 @@ impl<'a> Em<'a, '_> {
         for &d in &chk[1..] {
             c = self.op(Opc::IntOr, 1, c, d);
         }
-        self.side_exit(c, true, |em| em.deopt(pc));
+        let soft = !std::mem::take(&mut self.coded);
+        self.side_exit(c, soft, |em| em.deopt(pc));
     }
 
     fn node(&mut self, key: Key) {
@@ -644,6 +651,7 @@ impl<'a> Em<'a, '_> {
                         self.n.code_guards += 1;
                         chk.push(self.op(Opc::CallOther, 1, a, b));
                         self.f.blocks[self.cur].ops.last_mut().unwrap().aux = other::CODECHK;
+                        self.coded = true;
                     }
                     continue;
                 }
@@ -659,6 +667,7 @@ impl<'a> Em<'a, '_> {
         self.succ = &arm.succ;
         self.istart = self.cur as u32;
         self.dec = self.sh.g.dec.contains(pc as usize);
+        self.coded = false;
         let t = Template::of(*op);
         self.n.insns += 1;
         self.n.raw += t.n as usize;
