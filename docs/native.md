@@ -47,7 +47,9 @@ from.
 `INT_OR`, `INT_XOR`, `INT_LEFT`, `INT_RIGHT`, `INT_EQUAL`, `INT_NOTEQUAL`, `INT_LESS`,
 `INT_LESSEQUAL`, `INT_CARRY`, `LOAD`, `STORE`; lifted programs add `BRANCH`, `CBRANCH`,
 `BRANCHIND`, `CALL`, `RETURN`, `CALLOTHER`), an output and two inputs. `STORE` stores
-input 1 at address input 0; unary ops leave input 1 empty.
+input 1 at address input 0; unary ops leave input 1 empty. A `LOAD` with no output is an
+indexed access's throw-away read of its unfixed address, made only when input 1 (if present)
+is nonzero (a read's page cross).
 
 **Template** (`Template::of(opcode)`): a slice of the shared `OPS` pool, a slice of the
 shared `BINDS` pool (each operand-bound input as `op << 1 | input`), length, base cycles, penalty kind, control kind and, for `(zp),Y` penalties, the unique that holds the
@@ -83,7 +85,9 @@ lift. `--check` (CI, and `tests/test_gen_pcode.py`) fails if the checked-in file
 `Cpu::step(&mut bus)` fetches the opcode and its operand bytes through `Bus::fetch`, runs the
 template ops with the operand slots bound, adds base cycles and the penalty, then resolves
 control as `PcodeVM.step` does: stack pushes and pulls, `JMP ($xxFF)` page wrap, `BRK`'s
-B-set status push and I set, the `$FFFE` vector read. A JAM adds its cycles and returns
+B-set status push and I set, the `$FFFE` vector read, and the control throw-away reads
+(the byte after a one-byte opcode first, a taken branch's next byte and page-crossing unfixed
+target, `RTS`'s pulled address), as `PcodeVM.step` makes them. A JAM adds its cycles and returns
 `Err(Jam)` with PC unchanged. `Cpu::exec(&mut bus, &insn, &arena)` runs an instantiated
 instruction; `Cpu::run(&mut bus, n)` steps up to `n`. Registers, operand slots and uniques
 share one value file, so an op's operands are single indexed loads.

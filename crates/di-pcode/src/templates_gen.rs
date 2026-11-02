@@ -3,10 +3,10 @@
 use crate::ir::{c, cs, r, u, CtrlKind, Op, Opc as O, PenKind, Slot, Template, Vn};
 
 /// Unique-space words an instruction needs.
-pub const UNIQUE_SIZE: usize = 34;
+pub const UNIQUE_SIZE: usize = 38;
 
 /// Every opcode's op templates, concatenated.
-pub static OPS: [Op; 2146] = [
+pub static OPS: [Op; 2463] = [
     // 00 BRK impl
     // 01 ORA indx
     Op::new(O::IntAdd, u(0, 1), cs(Slot::B1, 1), r(1)),
@@ -150,38 +150,45 @@ pub static OPS: [Op; 2146] = [
     // 11 ORA indy
     Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
     Op::new(O::Load, u(1, 1), cs(Slot::B1Inc, 2), Vn::NONE),
-    Op::new(O::IntZext, u(6, 2), u(1, 1), Vn::NONE),
-    Op::new(O::IntLeft, u(4, 2), u(6, 2), c(0x8, 1)),
+    Op::new(O::IntZext, u(4, 2), u(1, 1), Vn::NONE),
+    Op::new(O::IntLeft, u(2, 2), u(4, 2), c(0x8, 1)),
     Op::new(O::IntZext, u(8, 2), u(0, 1), Vn::NONE),
-    Op::new(O::IntOr, u(2, 2), u(4, 2), u(8, 2)),
+    Op::new(O::IntOr, u(6, 2), u(2, 2), u(8, 2)),
     Op::new(O::IntZext, u(12, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(10, 2), u(2, 2), u(12, 2)),
-    Op::new(O::Load, u(14, 1), u(10, 2), Vn::NONE),
-    Op::new(O::IntOr, r(0), r(0), u(14, 1)),
+    Op::new(O::IntAdd, u(10, 2), u(6, 2), u(12, 2)),
+    Op::new(O::IntAnd, u(14, 2), u(10, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(16, 2), u(14, 2), u(2, 2)),
+    Op::new(O::IntNotEqual, u(18, 1), u(16, 2), u(10, 2)),
+    Op::new(O::Load, Vn::NONE, u(16, 2), u(18, 1)),
+    Op::new(O::Load, u(19, 1), u(10, 2), Vn::NONE),
+    Op::new(O::IntOr, r(0), r(0), u(19, 1)),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(15, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(15, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(20, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(20, 1), c(0x0, 1)),
     // 12 JAM impl
     // 13 SLO indy
     Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
     Op::new(O::Load, u(1, 1), cs(Slot::B1Inc, 2), Vn::NONE),
-    Op::new(O::IntZext, u(6, 2), u(1, 1), Vn::NONE),
-    Op::new(O::IntLeft, u(4, 2), u(6, 2), c(0x8, 1)),
+    Op::new(O::IntZext, u(4, 2), u(1, 1), Vn::NONE),
+    Op::new(O::IntLeft, u(2, 2), u(4, 2), c(0x8, 1)),
     Op::new(O::IntZext, u(8, 2), u(0, 1), Vn::NONE),
-    Op::new(O::IntOr, u(2, 2), u(4, 2), u(8, 2)),
+    Op::new(O::IntOr, u(6, 2), u(2, 2), u(8, 2)),
     Op::new(O::IntZext, u(12, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(10, 2), u(2, 2), u(12, 2)),
-    Op::new(O::Load, u(14, 1), u(10, 2), Vn::NONE),
-    Op::new(O::Store, Vn::NONE, u(10, 2), u(14, 1)),
-    Op::new(O::IntAnd, u(15, 1), u(14, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(8), u(15, 1), c(0x0, 1)),
-    Op::new(O::IntLeft, u(17, 1), u(14, 1), c(0x1, 1)),
-    Op::new(O::IntAnd, u(16, 1), u(17, 1), c(0xff, 1)),
-    Op::new(O::Store, Vn::NONE, u(10, 2), u(16, 1)),
-    Op::new(O::IntOr, r(0), r(0), u(16, 1)),
+    Op::new(O::IntAdd, u(10, 2), u(6, 2), u(12, 2)),
+    Op::new(O::IntAnd, u(14, 2), u(10, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(16, 2), u(14, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(16, 2), Vn::NONE),
+    Op::new(O::Load, u(18, 1), u(10, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(10, 2), u(18, 1)),
+    Op::new(O::IntAnd, u(19, 1), u(18, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(8), u(19, 1), c(0x0, 1)),
+    Op::new(O::IntLeft, u(21, 1), u(18, 1), c(0x1, 1)),
+    Op::new(O::IntAnd, u(20, 1), u(21, 1), c(0xff, 1)),
+    Op::new(O::Store, Vn::NONE, u(10, 2), u(20, 1)),
+    Op::new(O::IntOr, r(0), r(0), u(20, 1)),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(18, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(18, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(22, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(22, 1), c(0x0, 1)),
     // 14 NOP zpx
     Op::new(O::IntAdd, u(2, 1), cs(Slot::B1, 1), r(1)),
     Op::new(O::IntZext, u(0, 2), u(2, 1), Vn::NONE),
@@ -224,67 +231,94 @@ pub static OPS: [Op; 2146] = [
     // 18 CLC impl
     Op::new(O::Copy, r(8), c(0x0, 1), Vn::NONE),
     // 19 ORA absy
-    Op::new(O::IntZext, u(2, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::IntOr, r(0), r(0), u(4, 1)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(2), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::IntNotEqual, u(10, 1), u(8, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), u(10, 1)),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
+    Op::new(O::IntOr, r(0), r(0), u(11, 1)),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(5, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(5, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(12, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(12, 1), c(0x0, 1)),
     // 1A NOP impl
     // 1B SLO absy
-    Op::new(O::IntZext, u(2, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
-    Op::new(O::IntAnd, u(5, 1), u(4, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(8), u(5, 1), c(0x0, 1)),
-    Op::new(O::IntLeft, u(7, 1), u(4, 1), c(0x1, 1)),
-    Op::new(O::IntAnd, u(6, 1), u(7, 1), c(0xff, 1)),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(6, 1)),
-    Op::new(O::IntOr, r(0), r(0), u(6, 1)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(2), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), Vn::NONE),
+    Op::new(O::Load, u(10, 1), u(2, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(10, 1)),
+    Op::new(O::IntAnd, u(11, 1), u(10, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(8), u(11, 1), c(0x0, 1)),
+    Op::new(O::IntLeft, u(13, 1), u(10, 1), c(0x1, 1)),
+    Op::new(O::IntAnd, u(12, 1), u(13, 1), c(0xff, 1)),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(12, 1)),
+    Op::new(O::IntOr, r(0), r(0), u(12, 1)),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(8, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(8, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(14, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(14, 1), c(0x0, 1)),
     // 1C NOP absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::IntNotEqual, u(10, 1), u(8, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), u(10, 1)),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
     // 1D ORA absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::IntOr, r(0), r(0), u(4, 1)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::IntNotEqual, u(10, 1), u(8, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), u(10, 1)),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
+    Op::new(O::IntOr, r(0), r(0), u(11, 1)),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(5, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(5, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(12, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(12, 1), c(0x0, 1)),
     // 1E ASL absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
-    Op::new(O::IntAnd, u(5, 1), u(4, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(8), u(5, 1), c(0x0, 1)),
-    Op::new(O::IntLeft, u(7, 1), u(4, 1), c(0x1, 1)),
-    Op::new(O::IntAnd, u(6, 1), u(7, 1), c(0xff, 1)),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(6, 1)),
-    Op::new(O::IntEqual, r(9), u(6, 1), c(0x0, 1)),
-    Op::new(O::IntAnd, u(8, 1), u(6, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(8, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), Vn::NONE),
+    Op::new(O::Load, u(10, 1), u(2, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(10, 1)),
+    Op::new(O::IntAnd, u(11, 1), u(10, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(8), u(11, 1), c(0x0, 1)),
+    Op::new(O::IntLeft, u(13, 1), u(10, 1), c(0x1, 1)),
+    Op::new(O::IntAnd, u(12, 1), u(13, 1), c(0xff, 1)),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(12, 1)),
+    Op::new(O::IntEqual, r(9), u(12, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(14, 1), u(12, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(14, 1), c(0x0, 1)),
     // 1F SLO absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
-    Op::new(O::IntAnd, u(5, 1), u(4, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(8), u(5, 1), c(0x0, 1)),
-    Op::new(O::IntLeft, u(7, 1), u(4, 1), c(0x1, 1)),
-    Op::new(O::IntAnd, u(6, 1), u(7, 1), c(0xff, 1)),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(6, 1)),
-    Op::new(O::IntOr, r(0), r(0), u(6, 1)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), Vn::NONE),
+    Op::new(O::Load, u(10, 1), u(2, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(10, 1)),
+    Op::new(O::IntAnd, u(11, 1), u(10, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(8), u(11, 1), c(0x0, 1)),
+    Op::new(O::IntLeft, u(13, 1), u(10, 1), c(0x1, 1)),
+    Op::new(O::IntAnd, u(12, 1), u(13, 1), c(0xff, 1)),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(12, 1)),
+    Op::new(O::IntOr, r(0), r(0), u(12, 1)),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(8, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(8, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(14, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(14, 1), c(0x0, 1)),
     // 20 JSR abs
     // 21 AND indx
     Op::new(O::IntAdd, u(0, 1), cs(Slot::B1, 1), r(1)),
@@ -452,40 +486,47 @@ pub static OPS: [Op; 2146] = [
     // 31 AND indy
     Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
     Op::new(O::Load, u(1, 1), cs(Slot::B1Inc, 2), Vn::NONE),
-    Op::new(O::IntZext, u(6, 2), u(1, 1), Vn::NONE),
-    Op::new(O::IntLeft, u(4, 2), u(6, 2), c(0x8, 1)),
+    Op::new(O::IntZext, u(4, 2), u(1, 1), Vn::NONE),
+    Op::new(O::IntLeft, u(2, 2), u(4, 2), c(0x8, 1)),
     Op::new(O::IntZext, u(8, 2), u(0, 1), Vn::NONE),
-    Op::new(O::IntOr, u(2, 2), u(4, 2), u(8, 2)),
+    Op::new(O::IntOr, u(6, 2), u(2, 2), u(8, 2)),
     Op::new(O::IntZext, u(12, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(10, 2), u(2, 2), u(12, 2)),
-    Op::new(O::Load, u(14, 1), u(10, 2), Vn::NONE),
-    Op::new(O::IntAnd, r(0), r(0), u(14, 1)),
+    Op::new(O::IntAdd, u(10, 2), u(6, 2), u(12, 2)),
+    Op::new(O::IntAnd, u(14, 2), u(10, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(16, 2), u(14, 2), u(2, 2)),
+    Op::new(O::IntNotEqual, u(18, 1), u(16, 2), u(10, 2)),
+    Op::new(O::Load, Vn::NONE, u(16, 2), u(18, 1)),
+    Op::new(O::Load, u(19, 1), u(10, 2), Vn::NONE),
+    Op::new(O::IntAnd, r(0), r(0), u(19, 1)),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(15, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(15, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(20, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(20, 1), c(0x0, 1)),
     // 32 JAM impl
     // 33 RLA indy
     Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
     Op::new(O::Load, u(1, 1), cs(Slot::B1Inc, 2), Vn::NONE),
-    Op::new(O::IntZext, u(6, 2), u(1, 1), Vn::NONE),
-    Op::new(O::IntLeft, u(4, 2), u(6, 2), c(0x8, 1)),
+    Op::new(O::IntZext, u(4, 2), u(1, 1), Vn::NONE),
+    Op::new(O::IntLeft, u(2, 2), u(4, 2), c(0x8, 1)),
     Op::new(O::IntZext, u(8, 2), u(0, 1), Vn::NONE),
-    Op::new(O::IntOr, u(2, 2), u(4, 2), u(8, 2)),
+    Op::new(O::IntOr, u(6, 2), u(2, 2), u(8, 2)),
     Op::new(O::IntZext, u(12, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(10, 2), u(2, 2), u(12, 2)),
-    Op::new(O::Load, u(14, 1), u(10, 2), Vn::NONE),
-    Op::new(O::Store, Vn::NONE, u(10, 2), u(14, 1)),
-    Op::new(O::Copy, u(15, 1), r(8), Vn::NONE),
-    Op::new(O::IntAnd, u(16, 1), u(14, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(8), u(16, 1), c(0x0, 1)),
-    Op::new(O::IntLeft, u(19, 1), u(14, 1), c(0x1, 1)),
-    Op::new(O::IntOr, u(18, 1), u(19, 1), u(15, 1)),
-    Op::new(O::IntAnd, u(17, 1), u(18, 1), c(0xff, 1)),
-    Op::new(O::Store, Vn::NONE, u(10, 2), u(17, 1)),
-    Op::new(O::IntAnd, r(0), r(0), u(17, 1)),
+    Op::new(O::IntAdd, u(10, 2), u(6, 2), u(12, 2)),
+    Op::new(O::IntAnd, u(14, 2), u(10, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(16, 2), u(14, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(16, 2), Vn::NONE),
+    Op::new(O::Load, u(18, 1), u(10, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(10, 2), u(18, 1)),
+    Op::new(O::Copy, u(19, 1), r(8), Vn::NONE),
+    Op::new(O::IntAnd, u(20, 1), u(18, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(8), u(20, 1), c(0x0, 1)),
+    Op::new(O::IntLeft, u(23, 1), u(18, 1), c(0x1, 1)),
+    Op::new(O::IntOr, u(22, 1), u(23, 1), u(19, 1)),
+    Op::new(O::IntAnd, u(21, 1), u(22, 1), c(0xff, 1)),
+    Op::new(O::Store, Vn::NONE, u(10, 2), u(21, 1)),
+    Op::new(O::IntAnd, r(0), r(0), u(21, 1)),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(20, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(20, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(24, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(24, 1), c(0x0, 1)),
     // 34 NOP zpx
     Op::new(O::IntAdd, u(2, 1), cs(Slot::B1, 1), r(1)),
     Op::new(O::IntZext, u(0, 2), u(2, 1), Vn::NONE),
@@ -532,73 +573,100 @@ pub static OPS: [Op; 2146] = [
     // 38 SEC impl
     Op::new(O::Copy, r(8), c(0x1, 1), Vn::NONE),
     // 39 AND absy
-    Op::new(O::IntZext, u(2, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::IntAnd, r(0), r(0), u(4, 1)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(2), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::IntNotEqual, u(10, 1), u(8, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), u(10, 1)),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
+    Op::new(O::IntAnd, r(0), r(0), u(11, 1)),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(5, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(5, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(12, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(12, 1), c(0x0, 1)),
     // 3A NOP impl
     // 3B RLA absy
-    Op::new(O::IntZext, u(2, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
-    Op::new(O::Copy, u(5, 1), r(8), Vn::NONE),
-    Op::new(O::IntAnd, u(6, 1), u(4, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(8), u(6, 1), c(0x0, 1)),
-    Op::new(O::IntLeft, u(9, 1), u(4, 1), c(0x1, 1)),
-    Op::new(O::IntOr, u(8, 1), u(9, 1), u(5, 1)),
-    Op::new(O::IntAnd, u(7, 1), u(8, 1), c(0xff, 1)),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(7, 1)),
-    Op::new(O::IntAnd, r(0), r(0), u(7, 1)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(2), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), Vn::NONE),
+    Op::new(O::Load, u(10, 1), u(2, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(10, 1)),
+    Op::new(O::Copy, u(11, 1), r(8), Vn::NONE),
+    Op::new(O::IntAnd, u(12, 1), u(10, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(8), u(12, 1), c(0x0, 1)),
+    Op::new(O::IntLeft, u(15, 1), u(10, 1), c(0x1, 1)),
+    Op::new(O::IntOr, u(14, 1), u(15, 1), u(11, 1)),
+    Op::new(O::IntAnd, u(13, 1), u(14, 1), c(0xff, 1)),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(13, 1)),
+    Op::new(O::IntAnd, r(0), r(0), u(13, 1)),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(10, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(10, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(16, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(16, 1), c(0x0, 1)),
     // 3C NOP absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::IntNotEqual, u(10, 1), u(8, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), u(10, 1)),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
     // 3D AND absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::IntAnd, r(0), r(0), u(4, 1)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::IntNotEqual, u(10, 1), u(8, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), u(10, 1)),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
+    Op::new(O::IntAnd, r(0), r(0), u(11, 1)),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(5, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(5, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(12, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(12, 1), c(0x0, 1)),
     // 3E ROL absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
-    Op::new(O::Copy, u(5, 1), r(8), Vn::NONE),
-    Op::new(O::IntAnd, u(6, 1), u(4, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(8), u(6, 1), c(0x0, 1)),
-    Op::new(O::IntLeft, u(9, 1), u(4, 1), c(0x1, 1)),
-    Op::new(O::IntOr, u(8, 1), u(9, 1), u(5, 1)),
-    Op::new(O::IntAnd, u(7, 1), u(8, 1), c(0xff, 1)),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(7, 1)),
-    Op::new(O::IntEqual, r(9), u(7, 1), c(0x0, 1)),
-    Op::new(O::IntAnd, u(10, 1), u(7, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(10, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), Vn::NONE),
+    Op::new(O::Load, u(10, 1), u(2, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(10, 1)),
+    Op::new(O::Copy, u(11, 1), r(8), Vn::NONE),
+    Op::new(O::IntAnd, u(12, 1), u(10, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(8), u(12, 1), c(0x0, 1)),
+    Op::new(O::IntLeft, u(15, 1), u(10, 1), c(0x1, 1)),
+    Op::new(O::IntOr, u(14, 1), u(15, 1), u(11, 1)),
+    Op::new(O::IntAnd, u(13, 1), u(14, 1), c(0xff, 1)),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(13, 1)),
+    Op::new(O::IntEqual, r(9), u(13, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(16, 1), u(13, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(16, 1), c(0x0, 1)),
     // 3F RLA absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
-    Op::new(O::Copy, u(5, 1), r(8), Vn::NONE),
-    Op::new(O::IntAnd, u(6, 1), u(4, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(8), u(6, 1), c(0x0, 1)),
-    Op::new(O::IntLeft, u(9, 1), u(4, 1), c(0x1, 1)),
-    Op::new(O::IntOr, u(8, 1), u(9, 1), u(5, 1)),
-    Op::new(O::IntAnd, u(7, 1), u(8, 1), c(0xff, 1)),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(7, 1)),
-    Op::new(O::IntAnd, r(0), r(0), u(7, 1)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), Vn::NONE),
+    Op::new(O::Load, u(10, 1), u(2, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(10, 1)),
+    Op::new(O::Copy, u(11, 1), r(8), Vn::NONE),
+    Op::new(O::IntAnd, u(12, 1), u(10, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(8), u(12, 1), c(0x0, 1)),
+    Op::new(O::IntLeft, u(15, 1), u(10, 1), c(0x1, 1)),
+    Op::new(O::IntOr, u(14, 1), u(15, 1), u(11, 1)),
+    Op::new(O::IntAnd, u(13, 1), u(14, 1), c(0xff, 1)),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(13, 1)),
+    Op::new(O::IntAnd, r(0), r(0), u(13, 1)),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(10, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(10, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(16, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(16, 1), c(0x0, 1)),
     // 40 RTI impl
     // 41 EOR indx
     Op::new(O::IntAdd, u(0, 1), cs(Slot::B1, 1), r(1)),
@@ -725,37 +793,44 @@ pub static OPS: [Op; 2146] = [
     // 51 EOR indy
     Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
     Op::new(O::Load, u(1, 1), cs(Slot::B1Inc, 2), Vn::NONE),
-    Op::new(O::IntZext, u(6, 2), u(1, 1), Vn::NONE),
-    Op::new(O::IntLeft, u(4, 2), u(6, 2), c(0x8, 1)),
+    Op::new(O::IntZext, u(4, 2), u(1, 1), Vn::NONE),
+    Op::new(O::IntLeft, u(2, 2), u(4, 2), c(0x8, 1)),
     Op::new(O::IntZext, u(8, 2), u(0, 1), Vn::NONE),
-    Op::new(O::IntOr, u(2, 2), u(4, 2), u(8, 2)),
+    Op::new(O::IntOr, u(6, 2), u(2, 2), u(8, 2)),
     Op::new(O::IntZext, u(12, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(10, 2), u(2, 2), u(12, 2)),
-    Op::new(O::Load, u(14, 1), u(10, 2), Vn::NONE),
-    Op::new(O::IntXor, r(0), r(0), u(14, 1)),
+    Op::new(O::IntAdd, u(10, 2), u(6, 2), u(12, 2)),
+    Op::new(O::IntAnd, u(14, 2), u(10, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(16, 2), u(14, 2), u(2, 2)),
+    Op::new(O::IntNotEqual, u(18, 1), u(16, 2), u(10, 2)),
+    Op::new(O::Load, Vn::NONE, u(16, 2), u(18, 1)),
+    Op::new(O::Load, u(19, 1), u(10, 2), Vn::NONE),
+    Op::new(O::IntXor, r(0), r(0), u(19, 1)),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(15, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(15, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(20, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(20, 1), c(0x0, 1)),
     // 52 JAM impl
     // 53 SRE indy
     Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
     Op::new(O::Load, u(1, 1), cs(Slot::B1Inc, 2), Vn::NONE),
-    Op::new(O::IntZext, u(6, 2), u(1, 1), Vn::NONE),
-    Op::new(O::IntLeft, u(4, 2), u(6, 2), c(0x8, 1)),
+    Op::new(O::IntZext, u(4, 2), u(1, 1), Vn::NONE),
+    Op::new(O::IntLeft, u(2, 2), u(4, 2), c(0x8, 1)),
     Op::new(O::IntZext, u(8, 2), u(0, 1), Vn::NONE),
-    Op::new(O::IntOr, u(2, 2), u(4, 2), u(8, 2)),
+    Op::new(O::IntOr, u(6, 2), u(2, 2), u(8, 2)),
     Op::new(O::IntZext, u(12, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(10, 2), u(2, 2), u(12, 2)),
-    Op::new(O::Load, u(14, 1), u(10, 2), Vn::NONE),
-    Op::new(O::Store, Vn::NONE, u(10, 2), u(14, 1)),
-    Op::new(O::IntAnd, u(15, 1), u(14, 1), c(0x1, 1)),
-    Op::new(O::Copy, r(8), u(15, 1), Vn::NONE),
-    Op::new(O::IntRight, u(16, 1), u(14, 1), c(0x1, 1)),
-    Op::new(O::Store, Vn::NONE, u(10, 2), u(16, 1)),
-    Op::new(O::IntXor, r(0), r(0), u(16, 1)),
+    Op::new(O::IntAdd, u(10, 2), u(6, 2), u(12, 2)),
+    Op::new(O::IntAnd, u(14, 2), u(10, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(16, 2), u(14, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(16, 2), Vn::NONE),
+    Op::new(O::Load, u(18, 1), u(10, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(10, 2), u(18, 1)),
+    Op::new(O::IntAnd, u(19, 1), u(18, 1), c(0x1, 1)),
+    Op::new(O::Copy, r(8), u(19, 1), Vn::NONE),
+    Op::new(O::IntRight, u(20, 1), u(18, 1), c(0x1, 1)),
+    Op::new(O::Store, Vn::NONE, u(10, 2), u(20, 1)),
+    Op::new(O::IntXor, r(0), r(0), u(20, 1)),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(17, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(17, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(21, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(21, 1), c(0x0, 1)),
     // 54 NOP zpx
     Op::new(O::IntAdd, u(2, 1), cs(Slot::B1, 1), r(1)),
     Op::new(O::IntZext, u(0, 2), u(2, 1), Vn::NONE),
@@ -796,64 +871,91 @@ pub static OPS: [Op; 2146] = [
     // 58 CLI impl
     Op::new(O::Copy, r(10), c(0x0, 1), Vn::NONE),
     // 59 EOR absy
-    Op::new(O::IntZext, u(2, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::IntXor, r(0), r(0), u(4, 1)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(2), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::IntNotEqual, u(10, 1), u(8, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), u(10, 1)),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
+    Op::new(O::IntXor, r(0), r(0), u(11, 1)),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(5, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(5, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(12, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(12, 1), c(0x0, 1)),
     // 5A NOP impl
     // 5B SRE absy
-    Op::new(O::IntZext, u(2, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
-    Op::new(O::IntAnd, u(5, 1), u(4, 1), c(0x1, 1)),
-    Op::new(O::Copy, r(8), u(5, 1), Vn::NONE),
-    Op::new(O::IntRight, u(6, 1), u(4, 1), c(0x1, 1)),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(6, 1)),
-    Op::new(O::IntXor, r(0), r(0), u(6, 1)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(2), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), Vn::NONE),
+    Op::new(O::Load, u(10, 1), u(2, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(10, 1)),
+    Op::new(O::IntAnd, u(11, 1), u(10, 1), c(0x1, 1)),
+    Op::new(O::Copy, r(8), u(11, 1), Vn::NONE),
+    Op::new(O::IntRight, u(12, 1), u(10, 1), c(0x1, 1)),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(12, 1)),
+    Op::new(O::IntXor, r(0), r(0), u(12, 1)),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(7, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(7, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(13, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(13, 1), c(0x0, 1)),
     // 5C NOP absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::IntNotEqual, u(10, 1), u(8, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), u(10, 1)),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
     // 5D EOR absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::IntXor, r(0), r(0), u(4, 1)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::IntNotEqual, u(10, 1), u(8, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), u(10, 1)),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
+    Op::new(O::IntXor, r(0), r(0), u(11, 1)),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(5, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(5, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(12, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(12, 1), c(0x0, 1)),
     // 5E LSR absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
-    Op::new(O::IntAnd, u(5, 1), u(4, 1), c(0x1, 1)),
-    Op::new(O::Copy, r(8), u(5, 1), Vn::NONE),
-    Op::new(O::IntRight, u(6, 1), u(4, 1), c(0x1, 1)),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(6, 1)),
-    Op::new(O::IntEqual, r(9), u(6, 1), c(0x0, 1)),
-    Op::new(O::IntAnd, u(7, 1), u(6, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(7, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), Vn::NONE),
+    Op::new(O::Load, u(10, 1), u(2, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(10, 1)),
+    Op::new(O::IntAnd, u(11, 1), u(10, 1), c(0x1, 1)),
+    Op::new(O::Copy, r(8), u(11, 1), Vn::NONE),
+    Op::new(O::IntRight, u(12, 1), u(10, 1), c(0x1, 1)),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(12, 1)),
+    Op::new(O::IntEqual, r(9), u(12, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(13, 1), u(12, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(13, 1), c(0x0, 1)),
     // 5F SRE absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
-    Op::new(O::IntAnd, u(5, 1), u(4, 1), c(0x1, 1)),
-    Op::new(O::Copy, r(8), u(5, 1), Vn::NONE),
-    Op::new(O::IntRight, u(6, 1), u(4, 1), c(0x1, 1)),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(6, 1)),
-    Op::new(O::IntXor, r(0), r(0), u(6, 1)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), Vn::NONE),
+    Op::new(O::Load, u(10, 1), u(2, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(10, 1)),
+    Op::new(O::IntAnd, u(11, 1), u(10, 1), c(0x1, 1)),
+    Op::new(O::Copy, r(8), u(11, 1), Vn::NONE),
+    Op::new(O::IntRight, u(12, 1), u(10, 1), c(0x1, 1)),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(12, 1)),
+    Op::new(O::IntXor, r(0), r(0), u(12, 1)),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(7, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(7, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(13, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(13, 1), c(0x0, 1)),
     // 60 RTS impl
     // 61 ADC indx
     Op::new(O::IntAdd, u(0, 1), cs(Slot::B1, 1), r(1)),
@@ -1086,52 +1188,22 @@ pub static OPS: [Op; 2146] = [
     // 71 ADC indy
     Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
     Op::new(O::Load, u(1, 1), cs(Slot::B1Inc, 2), Vn::NONE),
-    Op::new(O::IntZext, u(6, 2), u(1, 1), Vn::NONE),
-    Op::new(O::IntLeft, u(4, 2), u(6, 2), c(0x8, 1)),
+    Op::new(O::IntZext, u(4, 2), u(1, 1), Vn::NONE),
+    Op::new(O::IntLeft, u(2, 2), u(4, 2), c(0x8, 1)),
     Op::new(O::IntZext, u(8, 2), u(0, 1), Vn::NONE),
-    Op::new(O::IntOr, u(2, 2), u(4, 2), u(8, 2)),
+    Op::new(O::IntOr, u(6, 2), u(2, 2), u(8, 2)),
     Op::new(O::IntZext, u(12, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(10, 2), u(2, 2), u(12, 2)),
-    Op::new(O::Load, u(14, 1), u(10, 2), Vn::NONE),
-    Op::new(O::IntAdd, u(15, 1), r(0), u(14, 1)),
-    Op::new(O::IntCarry, u(16, 1), r(0), u(14, 1)),
-    Op::new(O::IntAdd, u(17, 1), u(15, 1), r(8)),
-    Op::new(O::IntCarry, u(18, 1), u(15, 1), r(8)),
-    Op::new(O::IntXor, u(19, 1), r(0), u(14, 1)),
-    Op::new(O::IntXor, u(20, 1), r(0), u(17, 1)),
-    Op::new(O::IntXor, u(21, 1), u(19, 1), c(0xff, 1)),
-    Op::new(O::IntAnd, u(23, 1), u(21, 1), u(20, 1)),
-    Op::new(O::IntAnd, u(22, 1), u(23, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(13), u(22, 1), c(0x0, 1)),
-    Op::new(O::IntOr, r(8), u(16, 1), u(18, 1)),
-    Op::new(O::Copy, r(0), u(17, 1), Vn::NONE),
-    Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(24, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(24, 1), c(0x0, 1)),
-    // 72 JAM impl
-    // 73 RRA indy
-    Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
-    Op::new(O::Load, u(1, 1), cs(Slot::B1Inc, 2), Vn::NONE),
-    Op::new(O::IntZext, u(6, 2), u(1, 1), Vn::NONE),
-    Op::new(O::IntLeft, u(4, 2), u(6, 2), c(0x8, 1)),
-    Op::new(O::IntZext, u(8, 2), u(0, 1), Vn::NONE),
-    Op::new(O::IntOr, u(2, 2), u(4, 2), u(8, 2)),
-    Op::new(O::IntZext, u(12, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(10, 2), u(2, 2), u(12, 2)),
-    Op::new(O::Load, u(14, 1), u(10, 2), Vn::NONE),
-    Op::new(O::Store, Vn::NONE, u(10, 2), u(14, 1)),
-    Op::new(O::Copy, u(15, 1), r(8), Vn::NONE),
-    Op::new(O::IntAnd, u(16, 1), u(14, 1), c(0x1, 1)),
-    Op::new(O::Copy, r(8), u(16, 1), Vn::NONE),
-    Op::new(O::IntRight, u(18, 1), u(14, 1), c(0x1, 1)),
-    Op::new(O::IntLeft, u(19, 1), u(15, 1), c(0x7, 1)),
-    Op::new(O::IntOr, u(17, 1), u(18, 1), u(19, 1)),
-    Op::new(O::Store, Vn::NONE, u(10, 2), u(17, 1)),
-    Op::new(O::IntAdd, u(20, 1), r(0), u(17, 1)),
-    Op::new(O::IntCarry, u(21, 1), r(0), u(17, 1)),
+    Op::new(O::IntAdd, u(10, 2), u(6, 2), u(12, 2)),
+    Op::new(O::IntAnd, u(14, 2), u(10, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(16, 2), u(14, 2), u(2, 2)),
+    Op::new(O::IntNotEqual, u(18, 1), u(16, 2), u(10, 2)),
+    Op::new(O::Load, Vn::NONE, u(16, 2), u(18, 1)),
+    Op::new(O::Load, u(19, 1), u(10, 2), Vn::NONE),
+    Op::new(O::IntAdd, u(20, 1), r(0), u(19, 1)),
+    Op::new(O::IntCarry, u(21, 1), r(0), u(19, 1)),
     Op::new(O::IntAdd, u(22, 1), u(20, 1), r(8)),
     Op::new(O::IntCarry, u(23, 1), u(20, 1), r(8)),
-    Op::new(O::IntXor, u(24, 1), r(0), u(17, 1)),
+    Op::new(O::IntXor, u(24, 1), r(0), u(19, 1)),
     Op::new(O::IntXor, u(25, 1), r(0), u(22, 1)),
     Op::new(O::IntXor, u(26, 1), u(24, 1), c(0xff, 1)),
     Op::new(O::IntAnd, u(28, 1), u(26, 1), u(25, 1)),
@@ -1142,6 +1214,43 @@ pub static OPS: [Op; 2146] = [
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
     Op::new(O::IntAnd, u(29, 1), r(0), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(14), u(29, 1), c(0x0, 1)),
+    // 72 JAM impl
+    // 73 RRA indy
+    Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
+    Op::new(O::Load, u(1, 1), cs(Slot::B1Inc, 2), Vn::NONE),
+    Op::new(O::IntZext, u(4, 2), u(1, 1), Vn::NONE),
+    Op::new(O::IntLeft, u(2, 2), u(4, 2), c(0x8, 1)),
+    Op::new(O::IntZext, u(8, 2), u(0, 1), Vn::NONE),
+    Op::new(O::IntOr, u(6, 2), u(2, 2), u(8, 2)),
+    Op::new(O::IntZext, u(12, 2), r(2), Vn::NONE),
+    Op::new(O::IntAdd, u(10, 2), u(6, 2), u(12, 2)),
+    Op::new(O::IntAnd, u(14, 2), u(10, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(16, 2), u(14, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(16, 2), Vn::NONE),
+    Op::new(O::Load, u(18, 1), u(10, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(10, 2), u(18, 1)),
+    Op::new(O::Copy, u(19, 1), r(8), Vn::NONE),
+    Op::new(O::IntAnd, u(20, 1), u(18, 1), c(0x1, 1)),
+    Op::new(O::Copy, r(8), u(20, 1), Vn::NONE),
+    Op::new(O::IntRight, u(22, 1), u(18, 1), c(0x1, 1)),
+    Op::new(O::IntLeft, u(23, 1), u(19, 1), c(0x7, 1)),
+    Op::new(O::IntOr, u(21, 1), u(22, 1), u(23, 1)),
+    Op::new(O::Store, Vn::NONE, u(10, 2), u(21, 1)),
+    Op::new(O::IntAdd, u(24, 1), r(0), u(21, 1)),
+    Op::new(O::IntCarry, u(25, 1), r(0), u(21, 1)),
+    Op::new(O::IntAdd, u(26, 1), u(24, 1), r(8)),
+    Op::new(O::IntCarry, u(27, 1), u(24, 1), r(8)),
+    Op::new(O::IntXor, u(28, 1), r(0), u(21, 1)),
+    Op::new(O::IntXor, u(29, 1), r(0), u(26, 1)),
+    Op::new(O::IntXor, u(30, 1), u(28, 1), c(0xff, 1)),
+    Op::new(O::IntAnd, u(32, 1), u(30, 1), u(29, 1)),
+    Op::new(O::IntAnd, u(31, 1), u(32, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(13), u(31, 1), c(0x0, 1)),
+    Op::new(O::IntOr, r(8), u(25, 1), u(27, 1)),
+    Op::new(O::Copy, r(0), u(26, 1), Vn::NONE),
+    Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
+    Op::new(O::IntAnd, u(33, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(33, 1), c(0x0, 1)),
     // 74 NOP zpx
     Op::new(O::IntAdd, u(2, 1), cs(Slot::B1, 1), r(1)),
     Op::new(O::IntZext, u(0, 2), u(2, 1), Vn::NONE),
@@ -1210,117 +1319,144 @@ pub static OPS: [Op; 2146] = [
     // 78 SEI impl
     Op::new(O::Copy, r(10), c(0x1, 1), Vn::NONE),
     // 79 ADC absy
-    Op::new(O::IntZext, u(2, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::IntAdd, u(5, 1), r(0), u(4, 1)),
-    Op::new(O::IntCarry, u(6, 1), r(0), u(4, 1)),
-    Op::new(O::IntAdd, u(7, 1), u(5, 1), r(8)),
-    Op::new(O::IntCarry, u(8, 1), u(5, 1), r(8)),
-    Op::new(O::IntXor, u(9, 1), r(0), u(4, 1)),
-    Op::new(O::IntXor, u(10, 1), r(0), u(7, 1)),
-    Op::new(O::IntXor, u(11, 1), u(9, 1), c(0xff, 1)),
-    Op::new(O::IntAnd, u(13, 1), u(11, 1), u(10, 1)),
-    Op::new(O::IntAnd, u(12, 1), u(13, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(13), u(12, 1), c(0x0, 1)),
-    Op::new(O::IntOr, r(8), u(6, 1), u(8, 1)),
-    Op::new(O::Copy, r(0), u(7, 1), Vn::NONE),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(2), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::IntNotEqual, u(10, 1), u(8, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), u(10, 1)),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
+    Op::new(O::IntAdd, u(12, 1), r(0), u(11, 1)),
+    Op::new(O::IntCarry, u(13, 1), r(0), u(11, 1)),
+    Op::new(O::IntAdd, u(14, 1), u(12, 1), r(8)),
+    Op::new(O::IntCarry, u(15, 1), u(12, 1), r(8)),
+    Op::new(O::IntXor, u(16, 1), r(0), u(11, 1)),
+    Op::new(O::IntXor, u(17, 1), r(0), u(14, 1)),
+    Op::new(O::IntXor, u(18, 1), u(16, 1), c(0xff, 1)),
+    Op::new(O::IntAnd, u(20, 1), u(18, 1), u(17, 1)),
+    Op::new(O::IntAnd, u(19, 1), u(20, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(13), u(19, 1), c(0x0, 1)),
+    Op::new(O::IntOr, r(8), u(13, 1), u(15, 1)),
+    Op::new(O::Copy, r(0), u(14, 1), Vn::NONE),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(14, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(14, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(21, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(21, 1), c(0x0, 1)),
     // 7A NOP impl
     // 7B RRA absy
-    Op::new(O::IntZext, u(2, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
-    Op::new(O::Copy, u(5, 1), r(8), Vn::NONE),
-    Op::new(O::IntAnd, u(6, 1), u(4, 1), c(0x1, 1)),
-    Op::new(O::Copy, r(8), u(6, 1), Vn::NONE),
-    Op::new(O::IntRight, u(8, 1), u(4, 1), c(0x1, 1)),
-    Op::new(O::IntLeft, u(9, 1), u(5, 1), c(0x7, 1)),
-    Op::new(O::IntOr, u(7, 1), u(8, 1), u(9, 1)),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(7, 1)),
-    Op::new(O::IntAdd, u(10, 1), r(0), u(7, 1)),
-    Op::new(O::IntCarry, u(11, 1), r(0), u(7, 1)),
-    Op::new(O::IntAdd, u(12, 1), u(10, 1), r(8)),
-    Op::new(O::IntCarry, u(13, 1), u(10, 1), r(8)),
-    Op::new(O::IntXor, u(14, 1), r(0), u(7, 1)),
-    Op::new(O::IntXor, u(15, 1), r(0), u(12, 1)),
-    Op::new(O::IntXor, u(16, 1), u(14, 1), c(0xff, 1)),
-    Op::new(O::IntAnd, u(18, 1), u(16, 1), u(15, 1)),
-    Op::new(O::IntAnd, u(17, 1), u(18, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(13), u(17, 1), c(0x0, 1)),
-    Op::new(O::IntOr, r(8), u(11, 1), u(13, 1)),
-    Op::new(O::Copy, r(0), u(12, 1), Vn::NONE),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(2), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), Vn::NONE),
+    Op::new(O::Load, u(10, 1), u(2, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(10, 1)),
+    Op::new(O::Copy, u(11, 1), r(8), Vn::NONE),
+    Op::new(O::IntAnd, u(12, 1), u(10, 1), c(0x1, 1)),
+    Op::new(O::Copy, r(8), u(12, 1), Vn::NONE),
+    Op::new(O::IntRight, u(14, 1), u(10, 1), c(0x1, 1)),
+    Op::new(O::IntLeft, u(15, 1), u(11, 1), c(0x7, 1)),
+    Op::new(O::IntOr, u(13, 1), u(14, 1), u(15, 1)),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(13, 1)),
+    Op::new(O::IntAdd, u(16, 1), r(0), u(13, 1)),
+    Op::new(O::IntCarry, u(17, 1), r(0), u(13, 1)),
+    Op::new(O::IntAdd, u(18, 1), u(16, 1), r(8)),
+    Op::new(O::IntCarry, u(19, 1), u(16, 1), r(8)),
+    Op::new(O::IntXor, u(20, 1), r(0), u(13, 1)),
+    Op::new(O::IntXor, u(21, 1), r(0), u(18, 1)),
+    Op::new(O::IntXor, u(22, 1), u(20, 1), c(0xff, 1)),
+    Op::new(O::IntAnd, u(24, 1), u(22, 1), u(21, 1)),
+    Op::new(O::IntAnd, u(23, 1), u(24, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(13), u(23, 1), c(0x0, 1)),
+    Op::new(O::IntOr, r(8), u(17, 1), u(19, 1)),
+    Op::new(O::Copy, r(0), u(18, 1), Vn::NONE),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(19, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(19, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(25, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(25, 1), c(0x0, 1)),
     // 7C NOP absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::IntNotEqual, u(10, 1), u(8, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), u(10, 1)),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
     // 7D ADC absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::IntAdd, u(5, 1), r(0), u(4, 1)),
-    Op::new(O::IntCarry, u(6, 1), r(0), u(4, 1)),
-    Op::new(O::IntAdd, u(7, 1), u(5, 1), r(8)),
-    Op::new(O::IntCarry, u(8, 1), u(5, 1), r(8)),
-    Op::new(O::IntXor, u(9, 1), r(0), u(4, 1)),
-    Op::new(O::IntXor, u(10, 1), r(0), u(7, 1)),
-    Op::new(O::IntXor, u(11, 1), u(9, 1), c(0xff, 1)),
-    Op::new(O::IntAnd, u(13, 1), u(11, 1), u(10, 1)),
-    Op::new(O::IntAnd, u(12, 1), u(13, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(13), u(12, 1), c(0x0, 1)),
-    Op::new(O::IntOr, r(8), u(6, 1), u(8, 1)),
-    Op::new(O::Copy, r(0), u(7, 1), Vn::NONE),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::IntNotEqual, u(10, 1), u(8, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), u(10, 1)),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
+    Op::new(O::IntAdd, u(12, 1), r(0), u(11, 1)),
+    Op::new(O::IntCarry, u(13, 1), r(0), u(11, 1)),
+    Op::new(O::IntAdd, u(14, 1), u(12, 1), r(8)),
+    Op::new(O::IntCarry, u(15, 1), u(12, 1), r(8)),
+    Op::new(O::IntXor, u(16, 1), r(0), u(11, 1)),
+    Op::new(O::IntXor, u(17, 1), r(0), u(14, 1)),
+    Op::new(O::IntXor, u(18, 1), u(16, 1), c(0xff, 1)),
+    Op::new(O::IntAnd, u(20, 1), u(18, 1), u(17, 1)),
+    Op::new(O::IntAnd, u(19, 1), u(20, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(13), u(19, 1), c(0x0, 1)),
+    Op::new(O::IntOr, r(8), u(13, 1), u(15, 1)),
+    Op::new(O::Copy, r(0), u(14, 1), Vn::NONE),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(14, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(14, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(21, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(21, 1), c(0x0, 1)),
     // 7E ROR absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
-    Op::new(O::Copy, u(5, 1), r(8), Vn::NONE),
-    Op::new(O::IntAnd, u(6, 1), u(4, 1), c(0x1, 1)),
-    Op::new(O::Copy, r(8), u(6, 1), Vn::NONE),
-    Op::new(O::IntRight, u(8, 1), u(4, 1), c(0x1, 1)),
-    Op::new(O::IntLeft, u(9, 1), u(5, 1), c(0x7, 1)),
-    Op::new(O::IntOr, u(7, 1), u(8, 1), u(9, 1)),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(7, 1)),
-    Op::new(O::IntEqual, r(9), u(7, 1), c(0x0, 1)),
-    Op::new(O::IntAnd, u(10, 1), u(7, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(10, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), Vn::NONE),
+    Op::new(O::Load, u(10, 1), u(2, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(10, 1)),
+    Op::new(O::Copy, u(11, 1), r(8), Vn::NONE),
+    Op::new(O::IntAnd, u(12, 1), u(10, 1), c(0x1, 1)),
+    Op::new(O::Copy, r(8), u(12, 1), Vn::NONE),
+    Op::new(O::IntRight, u(14, 1), u(10, 1), c(0x1, 1)),
+    Op::new(O::IntLeft, u(15, 1), u(11, 1), c(0x7, 1)),
+    Op::new(O::IntOr, u(13, 1), u(14, 1), u(15, 1)),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(13, 1)),
+    Op::new(O::IntEqual, r(9), u(13, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(16, 1), u(13, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(16, 1), c(0x0, 1)),
     // 7F RRA absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
-    Op::new(O::Copy, u(5, 1), r(8), Vn::NONE),
-    Op::new(O::IntAnd, u(6, 1), u(4, 1), c(0x1, 1)),
-    Op::new(O::Copy, r(8), u(6, 1), Vn::NONE),
-    Op::new(O::IntRight, u(8, 1), u(4, 1), c(0x1, 1)),
-    Op::new(O::IntLeft, u(9, 1), u(5, 1), c(0x7, 1)),
-    Op::new(O::IntOr, u(7, 1), u(8, 1), u(9, 1)),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(7, 1)),
-    Op::new(O::IntAdd, u(10, 1), r(0), u(7, 1)),
-    Op::new(O::IntCarry, u(11, 1), r(0), u(7, 1)),
-    Op::new(O::IntAdd, u(12, 1), u(10, 1), r(8)),
-    Op::new(O::IntCarry, u(13, 1), u(10, 1), r(8)),
-    Op::new(O::IntXor, u(14, 1), r(0), u(7, 1)),
-    Op::new(O::IntXor, u(15, 1), r(0), u(12, 1)),
-    Op::new(O::IntXor, u(16, 1), u(14, 1), c(0xff, 1)),
-    Op::new(O::IntAnd, u(18, 1), u(16, 1), u(15, 1)),
-    Op::new(O::IntAnd, u(17, 1), u(18, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(13), u(17, 1), c(0x0, 1)),
-    Op::new(O::IntOr, r(8), u(11, 1), u(13, 1)),
-    Op::new(O::Copy, r(0), u(12, 1), Vn::NONE),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), Vn::NONE),
+    Op::new(O::Load, u(10, 1), u(2, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(10, 1)),
+    Op::new(O::Copy, u(11, 1), r(8), Vn::NONE),
+    Op::new(O::IntAnd, u(12, 1), u(10, 1), c(0x1, 1)),
+    Op::new(O::Copy, r(8), u(12, 1), Vn::NONE),
+    Op::new(O::IntRight, u(14, 1), u(10, 1), c(0x1, 1)),
+    Op::new(O::IntLeft, u(15, 1), u(11, 1), c(0x7, 1)),
+    Op::new(O::IntOr, u(13, 1), u(14, 1), u(15, 1)),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(13, 1)),
+    Op::new(O::IntAdd, u(16, 1), r(0), u(13, 1)),
+    Op::new(O::IntCarry, u(17, 1), r(0), u(13, 1)),
+    Op::new(O::IntAdd, u(18, 1), u(16, 1), r(8)),
+    Op::new(O::IntCarry, u(19, 1), u(16, 1), r(8)),
+    Op::new(O::IntXor, u(20, 1), r(0), u(13, 1)),
+    Op::new(O::IntXor, u(21, 1), r(0), u(18, 1)),
+    Op::new(O::IntXor, u(22, 1), u(20, 1), c(0xff, 1)),
+    Op::new(O::IntAnd, u(24, 1), u(22, 1), u(21, 1)),
+    Op::new(O::IntAnd, u(23, 1), u(24, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(13), u(23, 1), c(0x0, 1)),
+    Op::new(O::IntOr, r(8), u(17, 1), u(19, 1)),
+    Op::new(O::Copy, r(0), u(18, 1), Vn::NONE),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(19, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(19, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(25, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(25, 1), c(0x0, 1)),
     // 80 NOP imm
     // 81 STA indx
     Op::new(O::IntAdd, u(0, 1), cs(Slot::B1, 1), r(1)),
@@ -1388,27 +1524,42 @@ pub static OPS: [Op; 2146] = [
     // 91 STA indy
     Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
     Op::new(O::Load, u(1, 1), cs(Slot::B1Inc, 2), Vn::NONE),
-    Op::new(O::IntZext, u(6, 2), u(1, 1), Vn::NONE),
-    Op::new(O::IntLeft, u(4, 2), u(6, 2), c(0x8, 1)),
+    Op::new(O::IntZext, u(4, 2), u(1, 1), Vn::NONE),
+    Op::new(O::IntLeft, u(2, 2), u(4, 2), c(0x8, 1)),
     Op::new(O::IntZext, u(8, 2), u(0, 1), Vn::NONE),
-    Op::new(O::IntOr, u(2, 2), u(4, 2), u(8, 2)),
+    Op::new(O::IntOr, u(6, 2), u(2, 2), u(8, 2)),
     Op::new(O::IntZext, u(12, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(10, 2), u(2, 2), u(12, 2)),
+    Op::new(O::IntAdd, u(10, 2), u(6, 2), u(12, 2)),
+    Op::new(O::IntAnd, u(14, 2), u(10, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(16, 2), u(14, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(16, 2), Vn::NONE),
     Op::new(O::Store, Vn::NONE, u(10, 2), r(0)),
     // 92 JAM impl
     // 93 SHA indy
     Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
     Op::new(O::Load, u(1, 1), cs(Slot::B1Inc, 2), Vn::NONE),
-    Op::new(O::IntZext, u(6, 2), u(1, 1), Vn::NONE),
-    Op::new(O::IntLeft, u(4, 2), u(6, 2), c(0x8, 1)),
+    Op::new(O::IntZext, u(4, 2), u(1, 1), Vn::NONE),
+    Op::new(O::IntLeft, u(2, 2), u(4, 2), c(0x8, 1)),
     Op::new(O::IntZext, u(8, 2), u(0, 1), Vn::NONE),
-    Op::new(O::IntOr, u(2, 2), u(4, 2), u(8, 2)),
+    Op::new(O::IntOr, u(6, 2), u(2, 2), u(8, 2)),
     Op::new(O::IntZext, u(12, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(10, 2), u(2, 2), u(12, 2)),
-    Op::new(O::IntAdd, u(14, 1), u(1, 1), c(0x1, 1)),
-    Op::new(O::IntAnd, u(16, 1), r(0), r(1)),
-    Op::new(O::IntAnd, u(15, 1), u(16, 1), u(14, 1)),
-    Op::new(O::Store, Vn::NONE, u(10, 2), u(15, 1)),
+    Op::new(O::IntAdd, u(10, 2), u(6, 2), u(12, 2)),
+    Op::new(O::IntAnd, u(14, 2), u(10, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(16, 2), u(14, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(16, 2), Vn::NONE),
+    Op::new(O::IntAdd, u(18, 1), u(1, 1), c(0x1, 1)),
+    Op::new(O::IntAnd, u(20, 1), r(0), r(1)),
+    Op::new(O::IntAnd, u(19, 1), u(20, 1), u(18, 1)),
+    Op::new(O::IntNotEqual, u(23, 1), u(16, 2), u(10, 2)),
+    Op::new(O::IntZext, u(21, 2), u(23, 1), Vn::NONE),
+    Op::new(O::IntSub, u(26, 2), c(0x0, 2), u(21, 2)),
+    Op::new(O::IntAnd, u(24, 2), u(26, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(30, 2), u(19, 1), Vn::NONE),
+    Op::new(O::IntLeft, u(28, 2), u(30, 2), c(0x8, 1)),
+    Op::new(O::IntXor, u(34, 2), u(10, 2), u(28, 2)),
+    Op::new(O::IntAnd, u(32, 2), u(34, 2), u(24, 2)),
+    Op::new(O::IntXor, u(36, 2), u(10, 2), u(32, 2)),
+    Op::new(O::Store, Vn::NONE, u(36, 2), u(19, 1)),
     // 94 STY zpx
     Op::new(O::IntAdd, u(2, 1), cs(Slot::B1, 1), r(1)),
     Op::new(O::IntZext, u(0, 2), u(2, 1), Vn::NONE),
@@ -1432,37 +1583,97 @@ pub static OPS: [Op; 2146] = [
     Op::new(O::IntAnd, u(0, 1), r(0), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(14), u(0, 1), c(0x0, 1)),
     // 99 STA absy
-    Op::new(O::IntZext, u(2, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Store, Vn::NONE, u(0, 2), r(0)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(2), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(2, 2), r(0)),
     // 9A TXS impl
     Op::new(O::Copy, r(3), r(1), Vn::NONE),
     // 9B TAS absy
-    Op::new(O::IntZext, u(2, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(2), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), Vn::NONE),
     Op::new(O::IntAnd, r(3), r(0), r(1)),
-    Op::new(O::IntAnd, u(4, 1), r(3), cs(Slot::B2Inc, 1)),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
+    Op::new(O::IntAnd, u(10, 1), r(3), cs(Slot::B2Inc, 1)),
+    Op::new(O::IntNotEqual, u(13, 1), u(8, 2), u(2, 2)),
+    Op::new(O::IntZext, u(11, 2), u(13, 1), Vn::NONE),
+    Op::new(O::IntSub, u(16, 2), c(0x0, 2), u(11, 2)),
+    Op::new(O::IntAnd, u(14, 2), u(16, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(20, 2), u(10, 1), Vn::NONE),
+    Op::new(O::IntLeft, u(18, 2), u(20, 2), c(0x8, 1)),
+    Op::new(O::IntXor, u(24, 2), u(2, 2), u(18, 2)),
+    Op::new(O::IntAnd, u(22, 2), u(24, 2), u(14, 2)),
+    Op::new(O::IntXor, u(26, 2), u(2, 2), u(22, 2)),
+    Op::new(O::Store, Vn::NONE, u(26, 2), u(10, 1)),
     // 9C SHY absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::IntAnd, u(4, 1), r(2), cs(Slot::B2Inc, 1)),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), Vn::NONE),
+    Op::new(O::IntAnd, u(10, 1), r(2), cs(Slot::B2Inc, 1)),
+    Op::new(O::IntNotEqual, u(13, 1), u(8, 2), u(2, 2)),
+    Op::new(O::IntZext, u(11, 2), u(13, 1), Vn::NONE),
+    Op::new(O::IntSub, u(16, 2), c(0x0, 2), u(11, 2)),
+    Op::new(O::IntAnd, u(14, 2), u(16, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(20, 2), u(10, 1), Vn::NONE),
+    Op::new(O::IntLeft, u(18, 2), u(20, 2), c(0x8, 1)),
+    Op::new(O::IntXor, u(24, 2), u(2, 2), u(18, 2)),
+    Op::new(O::IntAnd, u(22, 2), u(24, 2), u(14, 2)),
+    Op::new(O::IntXor, u(26, 2), u(2, 2), u(22, 2)),
+    Op::new(O::Store, Vn::NONE, u(26, 2), u(10, 1)),
     // 9D STA absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Store, Vn::NONE, u(0, 2), r(0)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(2, 2), r(0)),
     // 9E SHX absy
-    Op::new(O::IntZext, u(2, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::IntAnd, u(4, 1), r(1), cs(Slot::B2Inc, 1)),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(2), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), Vn::NONE),
+    Op::new(O::IntAnd, u(10, 1), r(1), cs(Slot::B2Inc, 1)),
+    Op::new(O::IntNotEqual, u(13, 1), u(8, 2), u(2, 2)),
+    Op::new(O::IntZext, u(11, 2), u(13, 1), Vn::NONE),
+    Op::new(O::IntSub, u(16, 2), c(0x0, 2), u(11, 2)),
+    Op::new(O::IntAnd, u(14, 2), u(16, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(20, 2), u(10, 1), Vn::NONE),
+    Op::new(O::IntLeft, u(18, 2), u(20, 2), c(0x8, 1)),
+    Op::new(O::IntXor, u(24, 2), u(2, 2), u(18, 2)),
+    Op::new(O::IntAnd, u(22, 2), u(24, 2), u(14, 2)),
+    Op::new(O::IntXor, u(26, 2), u(2, 2), u(22, 2)),
+    Op::new(O::Store, Vn::NONE, u(26, 2), u(10, 1)),
     // 9F SHA absy
-    Op::new(O::IntZext, u(2, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::IntAnd, u(5, 1), r(0), r(1)),
-    Op::new(O::IntAnd, u(4, 1), u(5, 1), cs(Slot::B2Inc, 1)),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(2), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), Vn::NONE),
+    Op::new(O::IntAnd, u(11, 1), r(0), r(1)),
+    Op::new(O::IntAnd, u(10, 1), u(11, 1), cs(Slot::B2Inc, 1)),
+    Op::new(O::IntNotEqual, u(14, 1), u(8, 2), u(2, 2)),
+    Op::new(O::IntZext, u(12, 2), u(14, 1), Vn::NONE),
+    Op::new(O::IntSub, u(17, 2), c(0x0, 2), u(12, 2)),
+    Op::new(O::IntAnd, u(15, 2), u(17, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(21, 2), u(10, 1), Vn::NONE),
+    Op::new(O::IntLeft, u(19, 2), u(21, 2), c(0x8, 1)),
+    Op::new(O::IntXor, u(25, 2), u(2, 2), u(19, 2)),
+    Op::new(O::IntAnd, u(23, 2), u(25, 2), u(15, 2)),
+    Op::new(O::IntXor, u(27, 2), u(2, 2), u(23, 2)),
+    Op::new(O::Store, Vn::NONE, u(27, 2), u(10, 1)),
     // A0 LDY imm
     Op::new(O::Copy, r(2), cs(Slot::B1, 1), Vn::NONE),
     Op::new(O::IntEqual, r(9), r(2), c(0x0, 1)),
@@ -1583,33 +1794,41 @@ pub static OPS: [Op; 2146] = [
     // B1 LDA indy
     Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
     Op::new(O::Load, u(1, 1), cs(Slot::B1Inc, 2), Vn::NONE),
-    Op::new(O::IntZext, u(6, 2), u(1, 1), Vn::NONE),
-    Op::new(O::IntLeft, u(4, 2), u(6, 2), c(0x8, 1)),
+    Op::new(O::IntZext, u(4, 2), u(1, 1), Vn::NONE),
+    Op::new(O::IntLeft, u(2, 2), u(4, 2), c(0x8, 1)),
     Op::new(O::IntZext, u(8, 2), u(0, 1), Vn::NONE),
-    Op::new(O::IntOr, u(2, 2), u(4, 2), u(8, 2)),
+    Op::new(O::IntOr, u(6, 2), u(2, 2), u(8, 2)),
     Op::new(O::IntZext, u(12, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(10, 2), u(2, 2), u(12, 2)),
-    Op::new(O::Load, u(14, 1), u(10, 2), Vn::NONE),
-    Op::new(O::Copy, r(0), u(14, 1), Vn::NONE),
+    Op::new(O::IntAdd, u(10, 2), u(6, 2), u(12, 2)),
+    Op::new(O::IntAnd, u(14, 2), u(10, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(16, 2), u(14, 2), u(2, 2)),
+    Op::new(O::IntNotEqual, u(18, 1), u(16, 2), u(10, 2)),
+    Op::new(O::Load, Vn::NONE, u(16, 2), u(18, 1)),
+    Op::new(O::Load, u(19, 1), u(10, 2), Vn::NONE),
+    Op::new(O::Copy, r(0), u(19, 1), Vn::NONE),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(15, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(15, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(20, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(20, 1), c(0x0, 1)),
     // B2 JAM impl
     // B3 LAX indy
     Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
     Op::new(O::Load, u(1, 1), cs(Slot::B1Inc, 2), Vn::NONE),
-    Op::new(O::IntZext, u(6, 2), u(1, 1), Vn::NONE),
-    Op::new(O::IntLeft, u(4, 2), u(6, 2), c(0x8, 1)),
+    Op::new(O::IntZext, u(4, 2), u(1, 1), Vn::NONE),
+    Op::new(O::IntLeft, u(2, 2), u(4, 2), c(0x8, 1)),
     Op::new(O::IntZext, u(8, 2), u(0, 1), Vn::NONE),
-    Op::new(O::IntOr, u(2, 2), u(4, 2), u(8, 2)),
+    Op::new(O::IntOr, u(6, 2), u(2, 2), u(8, 2)),
     Op::new(O::IntZext, u(12, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(10, 2), u(2, 2), u(12, 2)),
-    Op::new(O::Load, u(14, 1), u(10, 2), Vn::NONE),
-    Op::new(O::Copy, r(0), u(14, 1), Vn::NONE),
-    Op::new(O::Copy, r(1), u(14, 1), Vn::NONE),
+    Op::new(O::IntAdd, u(10, 2), u(6, 2), u(12, 2)),
+    Op::new(O::IntAnd, u(14, 2), u(10, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(16, 2), u(14, 2), u(2, 2)),
+    Op::new(O::IntNotEqual, u(18, 1), u(16, 2), u(10, 2)),
+    Op::new(O::Load, Vn::NONE, u(16, 2), u(18, 1)),
+    Op::new(O::Load, u(19, 1), u(10, 2), Vn::NONE),
+    Op::new(O::Copy, r(0), u(19, 1), Vn::NONE),
+    Op::new(O::Copy, r(1), u(19, 1), Vn::NONE),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(15, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(15, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(20, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(20, 1), c(0x0, 1)),
     // B4 LDY zpx
     Op::new(O::IntAdd, u(2, 1), cs(Slot::B1, 1), r(1)),
     Op::new(O::IntZext, u(0, 2), u(2, 1), Vn::NONE),
@@ -1646,62 +1865,92 @@ pub static OPS: [Op; 2146] = [
     // B8 CLV impl
     Op::new(O::Copy, r(13), c(0x0, 1), Vn::NONE),
     // B9 LDA absy
-    Op::new(O::IntZext, u(2, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::Copy, r(0), u(4, 1), Vn::NONE),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(2), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::IntNotEqual, u(10, 1), u(8, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), u(10, 1)),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
+    Op::new(O::Copy, r(0), u(11, 1), Vn::NONE),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(5, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(5, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(12, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(12, 1), c(0x0, 1)),
     // BA TSX impl
     Op::new(O::Copy, r(1), r(3), Vn::NONE),
     Op::new(O::IntEqual, r(9), r(1), c(0x0, 1)),
     Op::new(O::IntAnd, u(0, 1), r(1), c(0x80, 1)),
     Op::new(O::IntNotEqual, r(14), u(0, 1), c(0x0, 1)),
     // BB LAS absy
-    Op::new(O::IntZext, u(2, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(5, 1), u(0, 2), Vn::NONE),
-    Op::new(O::IntAnd, u(4, 1), u(5, 1), r(3)),
-    Op::new(O::Copy, r(0), u(4, 1), Vn::NONE),
-    Op::new(O::Copy, r(1), u(4, 1), Vn::NONE),
-    Op::new(O::Copy, r(3), u(4, 1), Vn::NONE),
-    Op::new(O::IntEqual, r(9), u(4, 1), c(0x0, 1)),
-    Op::new(O::IntAnd, u(6, 1), u(4, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(6, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(2), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(7, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(9, 2), u(7, 2), u(0, 2)),
+    Op::new(O::IntNotEqual, u(11, 1), u(9, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(9, 2), u(11, 1)),
+    Op::new(O::Load, u(12, 1), u(2, 2), Vn::NONE),
+    Op::new(O::IntAnd, u(6, 1), u(12, 1), r(3)),
+    Op::new(O::Copy, r(0), u(6, 1), Vn::NONE),
+    Op::new(O::Copy, r(1), u(6, 1), Vn::NONE),
+    Op::new(O::Copy, r(3), u(6, 1), Vn::NONE),
+    Op::new(O::IntEqual, r(9), u(6, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(13, 1), u(6, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(13, 1), c(0x0, 1)),
     // BC LDY absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::Copy, r(2), u(4, 1), Vn::NONE),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::IntNotEqual, u(10, 1), u(8, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), u(10, 1)),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
+    Op::new(O::Copy, r(2), u(11, 1), Vn::NONE),
     Op::new(O::IntEqual, r(9), r(2), c(0x0, 1)),
-    Op::new(O::IntAnd, u(5, 1), r(2), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(5, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(12, 1), r(2), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(12, 1), c(0x0, 1)),
     // BD LDA absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::Copy, r(0), u(4, 1), Vn::NONE),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::IntNotEqual, u(10, 1), u(8, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), u(10, 1)),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
+    Op::new(O::Copy, r(0), u(11, 1), Vn::NONE),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(5, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(5, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(12, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(12, 1), c(0x0, 1)),
     // BE LDX absy
-    Op::new(O::IntZext, u(2, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::Copy, r(1), u(4, 1), Vn::NONE),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(2), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::IntNotEqual, u(10, 1), u(8, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), u(10, 1)),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
+    Op::new(O::Copy, r(1), u(11, 1), Vn::NONE),
     Op::new(O::IntEqual, r(9), r(1), c(0x0, 1)),
-    Op::new(O::IntAnd, u(5, 1), r(1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(5, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(12, 1), r(1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(12, 1), c(0x0, 1)),
     // BF LAX absy
-    Op::new(O::IntZext, u(2, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::Copy, r(0), u(4, 1), Vn::NONE),
-    Op::new(O::Copy, r(1), u(4, 1), Vn::NONE),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(2), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::IntNotEqual, u(10, 1), u(8, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), u(10, 1)),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
+    Op::new(O::Copy, r(0), u(11, 1), Vn::NONE),
+    Op::new(O::Copy, r(1), u(11, 1), Vn::NONE),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(5, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(5, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(12, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(12, 1), c(0x0, 1)),
     // C0 CPY imm
     Op::new(O::IntLessEqual, r(8), cs(Slot::B1, 1), r(2)),
     Op::new(O::IntSub, u(0, 1), r(2), cs(Slot::B1, 1)),
@@ -1837,37 +2086,44 @@ pub static OPS: [Op; 2146] = [
     // D1 CMP indy
     Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
     Op::new(O::Load, u(1, 1), cs(Slot::B1Inc, 2), Vn::NONE),
-    Op::new(O::IntZext, u(6, 2), u(1, 1), Vn::NONE),
-    Op::new(O::IntLeft, u(4, 2), u(6, 2), c(0x8, 1)),
+    Op::new(O::IntZext, u(4, 2), u(1, 1), Vn::NONE),
+    Op::new(O::IntLeft, u(2, 2), u(4, 2), c(0x8, 1)),
     Op::new(O::IntZext, u(8, 2), u(0, 1), Vn::NONE),
-    Op::new(O::IntOr, u(2, 2), u(4, 2), u(8, 2)),
+    Op::new(O::IntOr, u(6, 2), u(2, 2), u(8, 2)),
     Op::new(O::IntZext, u(12, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(10, 2), u(2, 2), u(12, 2)),
-    Op::new(O::Load, u(14, 1), u(10, 2), Vn::NONE),
-    Op::new(O::IntLessEqual, r(8), u(14, 1), r(0)),
-    Op::new(O::IntSub, u(15, 1), r(0), u(14, 1)),
-    Op::new(O::IntEqual, r(9), u(15, 1), c(0x0, 1)),
-    Op::new(O::IntAnd, u(16, 1), u(15, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(16, 1), c(0x0, 1)),
+    Op::new(O::IntAdd, u(10, 2), u(6, 2), u(12, 2)),
+    Op::new(O::IntAnd, u(14, 2), u(10, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(16, 2), u(14, 2), u(2, 2)),
+    Op::new(O::IntNotEqual, u(18, 1), u(16, 2), u(10, 2)),
+    Op::new(O::Load, Vn::NONE, u(16, 2), u(18, 1)),
+    Op::new(O::Load, u(19, 1), u(10, 2), Vn::NONE),
+    Op::new(O::IntLessEqual, r(8), u(19, 1), r(0)),
+    Op::new(O::IntSub, u(20, 1), r(0), u(19, 1)),
+    Op::new(O::IntEqual, r(9), u(20, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(21, 1), u(20, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(21, 1), c(0x0, 1)),
     // D2 JAM impl
     // D3 DCP indy
     Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
     Op::new(O::Load, u(1, 1), cs(Slot::B1Inc, 2), Vn::NONE),
-    Op::new(O::IntZext, u(6, 2), u(1, 1), Vn::NONE),
-    Op::new(O::IntLeft, u(4, 2), u(6, 2), c(0x8, 1)),
+    Op::new(O::IntZext, u(4, 2), u(1, 1), Vn::NONE),
+    Op::new(O::IntLeft, u(2, 2), u(4, 2), c(0x8, 1)),
     Op::new(O::IntZext, u(8, 2), u(0, 1), Vn::NONE),
-    Op::new(O::IntOr, u(2, 2), u(4, 2), u(8, 2)),
+    Op::new(O::IntOr, u(6, 2), u(2, 2), u(8, 2)),
     Op::new(O::IntZext, u(12, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(10, 2), u(2, 2), u(12, 2)),
-    Op::new(O::Load, u(15, 1), u(10, 2), Vn::NONE),
-    Op::new(O::Store, Vn::NONE, u(10, 2), u(15, 1)),
-    Op::new(O::IntSub, u(14, 1), u(15, 1), c(0x1, 1)),
+    Op::new(O::IntAdd, u(10, 2), u(6, 2), u(12, 2)),
+    Op::new(O::IntAnd, u(15, 2), u(10, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(17, 2), u(15, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(17, 2), Vn::NONE),
+    Op::new(O::Load, u(19, 1), u(10, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(10, 2), u(19, 1)),
+    Op::new(O::IntSub, u(14, 1), u(19, 1), c(0x1, 1)),
     Op::new(O::Store, Vn::NONE, u(10, 2), u(14, 1)),
     Op::new(O::IntLessEqual, r(8), u(14, 1), r(0)),
-    Op::new(O::IntSub, u(16, 1), r(0), u(14, 1)),
-    Op::new(O::IntEqual, r(9), u(16, 1), c(0x0, 1)),
-    Op::new(O::IntAnd, u(17, 1), u(16, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(17, 1), c(0x0, 1)),
+    Op::new(O::IntSub, u(20, 1), r(0), u(14, 1)),
+    Op::new(O::IntEqual, r(9), u(20, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(21, 1), u(20, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(21, 1), c(0x0, 1)),
     // D4 NOP zpx
     Op::new(O::IntAdd, u(2, 1), cs(Slot::B1, 1), r(1)),
     Op::new(O::IntZext, u(0, 2), u(2, 1), Vn::NONE),
@@ -1906,62 +2162,89 @@ pub static OPS: [Op; 2146] = [
     // D8 CLD impl
     Op::new(O::Copy, r(11), c(0x0, 1), Vn::NONE),
     // D9 CMP absy
-    Op::new(O::IntZext, u(2, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::IntLessEqual, r(8), u(4, 1), r(0)),
-    Op::new(O::IntSub, u(5, 1), r(0), u(4, 1)),
-    Op::new(O::IntEqual, r(9), u(5, 1), c(0x0, 1)),
-    Op::new(O::IntAnd, u(6, 1), u(5, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(6, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(2), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::IntNotEqual, u(10, 1), u(8, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), u(10, 1)),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
+    Op::new(O::IntLessEqual, r(8), u(11, 1), r(0)),
+    Op::new(O::IntSub, u(12, 1), r(0), u(11, 1)),
+    Op::new(O::IntEqual, r(9), u(12, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(13, 1), u(12, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(13, 1), c(0x0, 1)),
     // DA NOP impl
     // DB DCP absy
-    Op::new(O::IntZext, u(2, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(5, 1), u(0, 2), Vn::NONE),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(5, 1)),
-    Op::new(O::IntSub, u(4, 1), u(5, 1), c(0x1, 1)),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
-    Op::new(O::IntLessEqual, r(8), u(4, 1), r(0)),
-    Op::new(O::IntSub, u(6, 1), r(0), u(4, 1)),
-    Op::new(O::IntEqual, r(9), u(6, 1), c(0x0, 1)),
-    Op::new(O::IntAnd, u(7, 1), u(6, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(7, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(2), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(7, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(9, 2), u(7, 2), u(0, 2)),
+    Op::new(O::Load, Vn::NONE, u(9, 2), Vn::NONE),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(11, 1)),
+    Op::new(O::IntSub, u(6, 1), u(11, 1), c(0x1, 1)),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(6, 1)),
+    Op::new(O::IntLessEqual, r(8), u(6, 1), r(0)),
+    Op::new(O::IntSub, u(12, 1), r(0), u(6, 1)),
+    Op::new(O::IntEqual, r(9), u(12, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(13, 1), u(12, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(13, 1), c(0x0, 1)),
     // DC NOP absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::IntNotEqual, u(10, 1), u(8, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), u(10, 1)),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
     // DD CMP absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::IntLessEqual, r(8), u(4, 1), r(0)),
-    Op::new(O::IntSub, u(5, 1), r(0), u(4, 1)),
-    Op::new(O::IntEqual, r(9), u(5, 1), c(0x0, 1)),
-    Op::new(O::IntAnd, u(6, 1), u(5, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(6, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::IntNotEqual, u(10, 1), u(8, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), u(10, 1)),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
+    Op::new(O::IntLessEqual, r(8), u(11, 1), r(0)),
+    Op::new(O::IntSub, u(12, 1), r(0), u(11, 1)),
+    Op::new(O::IntEqual, r(9), u(12, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(13, 1), u(12, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(13, 1), c(0x0, 1)),
     // DE DEC absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(5, 1), u(0, 2), Vn::NONE),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(5, 1)),
-    Op::new(O::IntSub, u(4, 1), u(5, 1), c(0x1, 1)),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
-    Op::new(O::IntEqual, r(9), u(4, 1), c(0x0, 1)),
-    Op::new(O::IntAnd, u(6, 1), u(4, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(6, 1), c(0x0, 1)),
-    // DF DCP absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(5, 1), u(0, 2), Vn::NONE),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(5, 1)),
-    Op::new(O::IntSub, u(4, 1), u(5, 1), c(0x1, 1)),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
-    Op::new(O::IntLessEqual, r(8), u(4, 1), r(0)),
-    Op::new(O::IntSub, u(6, 1), r(0), u(4, 1)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(7, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(9, 2), u(7, 2), u(0, 2)),
+    Op::new(O::Load, Vn::NONE, u(9, 2), Vn::NONE),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(11, 1)),
+    Op::new(O::IntSub, u(6, 1), u(11, 1), c(0x1, 1)),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(6, 1)),
     Op::new(O::IntEqual, r(9), u(6, 1), c(0x0, 1)),
-    Op::new(O::IntAnd, u(7, 1), u(6, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(7, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(12, 1), u(6, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(12, 1), c(0x0, 1)),
+    // DF DCP absx
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(7, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(9, 2), u(7, 2), u(0, 2)),
+    Op::new(O::Load, Vn::NONE, u(9, 2), Vn::NONE),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(11, 1)),
+    Op::new(O::IntSub, u(6, 1), u(11, 1), c(0x1, 1)),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(6, 1)),
+    Op::new(O::IntLessEqual, r(8), u(6, 1), r(0)),
+    Op::new(O::IntSub, u(12, 1), r(0), u(6, 1)),
+    Op::new(O::IntEqual, r(9), u(12, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(13, 1), u(12, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(13, 1), c(0x0, 1)),
     // E0 CPX imm
     Op::new(O::IntLessEqual, r(8), cs(Slot::B1, 1), r(1)),
     Op::new(O::IntSub, u(0, 1), r(1), cs(Slot::B1, 1)),
@@ -2188,61 +2471,68 @@ pub static OPS: [Op; 2146] = [
     // F1 SBC indy
     Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
     Op::new(O::Load, u(1, 1), cs(Slot::B1Inc, 2), Vn::NONE),
-    Op::new(O::IntZext, u(6, 2), u(1, 1), Vn::NONE),
-    Op::new(O::IntLeft, u(4, 2), u(6, 2), c(0x8, 1)),
+    Op::new(O::IntZext, u(4, 2), u(1, 1), Vn::NONE),
+    Op::new(O::IntLeft, u(2, 2), u(4, 2), c(0x8, 1)),
     Op::new(O::IntZext, u(8, 2), u(0, 1), Vn::NONE),
-    Op::new(O::IntOr, u(2, 2), u(4, 2), u(8, 2)),
+    Op::new(O::IntOr, u(6, 2), u(2, 2), u(8, 2)),
     Op::new(O::IntZext, u(12, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(10, 2), u(2, 2), u(12, 2)),
-    Op::new(O::Load, u(14, 1), u(10, 2), Vn::NONE),
-    Op::new(O::IntSub, u(15, 1), c(0x1, 1), r(8)),
-    Op::new(O::IntZext, u(18, 2), u(14, 1), Vn::NONE),
-    Op::new(O::IntZext, u(20, 2), u(15, 1), Vn::NONE),
-    Op::new(O::IntAdd, u(16, 2), u(18, 2), u(20, 2)),
-    Op::new(O::IntZext, u(22, 2), r(0), Vn::NONE),
-    Op::new(O::IntLessEqual, r(8), u(16, 2), u(22, 2)),
-    Op::new(O::IntAdd, u(25, 1), u(14, 1), u(15, 1)),
-    Op::new(O::IntSub, u(24, 1), r(0), u(25, 1)),
-    Op::new(O::IntXor, u(26, 1), r(0), u(14, 1)),
-    Op::new(O::IntXor, u(27, 1), r(0), u(24, 1)),
-    Op::new(O::IntAnd, u(29, 1), u(26, 1), u(27, 1)),
-    Op::new(O::IntAnd, u(28, 1), u(29, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(13), u(28, 1), c(0x0, 1)),
-    Op::new(O::Copy, r(0), u(24, 1), Vn::NONE),
+    Op::new(O::IntAdd, u(10, 2), u(6, 2), u(12, 2)),
+    Op::new(O::IntAnd, u(14, 2), u(10, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(16, 2), u(14, 2), u(2, 2)),
+    Op::new(O::IntNotEqual, u(18, 1), u(16, 2), u(10, 2)),
+    Op::new(O::Load, Vn::NONE, u(16, 2), u(18, 1)),
+    Op::new(O::Load, u(19, 1), u(10, 2), Vn::NONE),
+    Op::new(O::IntSub, u(20, 1), c(0x1, 1), r(8)),
+    Op::new(O::IntZext, u(23, 2), u(19, 1), Vn::NONE),
+    Op::new(O::IntZext, u(25, 2), u(20, 1), Vn::NONE),
+    Op::new(O::IntAdd, u(21, 2), u(23, 2), u(25, 2)),
+    Op::new(O::IntZext, u(27, 2), r(0), Vn::NONE),
+    Op::new(O::IntLessEqual, r(8), u(21, 2), u(27, 2)),
+    Op::new(O::IntAdd, u(30, 1), u(19, 1), u(20, 1)),
+    Op::new(O::IntSub, u(29, 1), r(0), u(30, 1)),
+    Op::new(O::IntXor, u(31, 1), r(0), u(19, 1)),
+    Op::new(O::IntXor, u(32, 1), r(0), u(29, 1)),
+    Op::new(O::IntAnd, u(34, 1), u(31, 1), u(32, 1)),
+    Op::new(O::IntAnd, u(33, 1), u(34, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(13), u(33, 1), c(0x0, 1)),
+    Op::new(O::Copy, r(0), u(29, 1), Vn::NONE),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(30, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(30, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(35, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(35, 1), c(0x0, 1)),
     // F2 JAM impl
     // F3 ISC indy
     Op::new(O::Load, u(0, 1), cs(Slot::B1, 2), Vn::NONE),
     Op::new(O::Load, u(1, 1), cs(Slot::B1Inc, 2), Vn::NONE),
-    Op::new(O::IntZext, u(6, 2), u(1, 1), Vn::NONE),
-    Op::new(O::IntLeft, u(4, 2), u(6, 2), c(0x8, 1)),
+    Op::new(O::IntZext, u(4, 2), u(1, 1), Vn::NONE),
+    Op::new(O::IntLeft, u(2, 2), u(4, 2), c(0x8, 1)),
     Op::new(O::IntZext, u(8, 2), u(0, 1), Vn::NONE),
-    Op::new(O::IntOr, u(2, 2), u(4, 2), u(8, 2)),
+    Op::new(O::IntOr, u(6, 2), u(2, 2), u(8, 2)),
     Op::new(O::IntZext, u(12, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(10, 2), u(2, 2), u(12, 2)),
-    Op::new(O::Load, u(15, 1), u(10, 2), Vn::NONE),
-    Op::new(O::Store, Vn::NONE, u(10, 2), u(15, 1)),
-    Op::new(O::IntAdd, u(14, 1), u(15, 1), c(0x1, 1)),
+    Op::new(O::IntAdd, u(10, 2), u(6, 2), u(12, 2)),
+    Op::new(O::IntAnd, u(15, 2), u(10, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(17, 2), u(15, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(17, 2), Vn::NONE),
+    Op::new(O::Load, u(19, 1), u(10, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(10, 2), u(19, 1)),
+    Op::new(O::IntAdd, u(14, 1), u(19, 1), c(0x1, 1)),
     Op::new(O::Store, Vn::NONE, u(10, 2), u(14, 1)),
-    Op::new(O::IntSub, u(16, 1), c(0x1, 1), r(8)),
-    Op::new(O::IntZext, u(19, 2), u(14, 1), Vn::NONE),
-    Op::new(O::IntZext, u(21, 2), u(16, 1), Vn::NONE),
-    Op::new(O::IntAdd, u(17, 2), u(19, 2), u(21, 2)),
-    Op::new(O::IntZext, u(23, 2), r(0), Vn::NONE),
-    Op::new(O::IntLessEqual, r(8), u(17, 2), u(23, 2)),
-    Op::new(O::IntAdd, u(26, 1), u(14, 1), u(16, 1)),
-    Op::new(O::IntSub, u(25, 1), r(0), u(26, 1)),
-    Op::new(O::IntXor, u(27, 1), r(0), u(14, 1)),
-    Op::new(O::IntXor, u(28, 1), r(0), u(25, 1)),
-    Op::new(O::IntAnd, u(30, 1), u(27, 1), u(28, 1)),
-    Op::new(O::IntAnd, u(29, 1), u(30, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(13), u(29, 1), c(0x0, 1)),
-    Op::new(O::Copy, r(0), u(25, 1), Vn::NONE),
+    Op::new(O::IntSub, u(20, 1), c(0x1, 1), r(8)),
+    Op::new(O::IntZext, u(23, 2), u(14, 1), Vn::NONE),
+    Op::new(O::IntZext, u(25, 2), u(20, 1), Vn::NONE),
+    Op::new(O::IntAdd, u(21, 2), u(23, 2), u(25, 2)),
+    Op::new(O::IntZext, u(27, 2), r(0), Vn::NONE),
+    Op::new(O::IntLessEqual, r(8), u(21, 2), u(27, 2)),
+    Op::new(O::IntAdd, u(30, 1), u(14, 1), u(20, 1)),
+    Op::new(O::IntSub, u(29, 1), r(0), u(30, 1)),
+    Op::new(O::IntXor, u(31, 1), r(0), u(14, 1)),
+    Op::new(O::IntXor, u(32, 1), r(0), u(29, 1)),
+    Op::new(O::IntAnd, u(34, 1), u(31, 1), u(32, 1)),
+    Op::new(O::IntAnd, u(33, 1), u(34, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(13), u(33, 1), c(0x0, 1)),
+    Op::new(O::Copy, r(0), u(29, 1), Vn::NONE),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(31, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(31, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(35, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(35, 1), c(0x0, 1)),
     // F4 NOP zpx
     Op::new(O::IntAdd, u(2, 1), cs(Slot::B1, 1), r(1)),
     Op::new(O::IntZext, u(0, 2), u(2, 1), Vn::NONE),
@@ -2305,131 +2595,161 @@ pub static OPS: [Op; 2146] = [
     // F8 SED impl
     Op::new(O::Copy, r(11), c(0x1, 1), Vn::NONE),
     // F9 SBC absy
-    Op::new(O::IntZext, u(2, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::IntSub, u(5, 1), c(0x1, 1), r(8)),
-    Op::new(O::IntZext, u(8, 2), u(4, 1), Vn::NONE),
-    Op::new(O::IntZext, u(10, 2), u(5, 1), Vn::NONE),
-    Op::new(O::IntAdd, u(6, 2), u(8, 2), u(10, 2)),
-    Op::new(O::IntZext, u(12, 2), r(0), Vn::NONE),
-    Op::new(O::IntLessEqual, r(8), u(6, 2), u(12, 2)),
-    Op::new(O::IntAdd, u(15, 1), u(4, 1), u(5, 1)),
-    Op::new(O::IntSub, u(14, 1), r(0), u(15, 1)),
-    Op::new(O::IntXor, u(16, 1), r(0), u(4, 1)),
-    Op::new(O::IntXor, u(17, 1), r(0), u(14, 1)),
-    Op::new(O::IntAnd, u(19, 1), u(16, 1), u(17, 1)),
-    Op::new(O::IntAnd, u(18, 1), u(19, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(13), u(18, 1), c(0x0, 1)),
-    Op::new(O::Copy, r(0), u(14, 1), Vn::NONE),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(2), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::IntNotEqual, u(10, 1), u(8, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), u(10, 1)),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
+    Op::new(O::IntSub, u(12, 1), c(0x1, 1), r(8)),
+    Op::new(O::IntZext, u(15, 2), u(11, 1), Vn::NONE),
+    Op::new(O::IntZext, u(17, 2), u(12, 1), Vn::NONE),
+    Op::new(O::IntAdd, u(13, 2), u(15, 2), u(17, 2)),
+    Op::new(O::IntZext, u(19, 2), r(0), Vn::NONE),
+    Op::new(O::IntLessEqual, r(8), u(13, 2), u(19, 2)),
+    Op::new(O::IntAdd, u(22, 1), u(11, 1), u(12, 1)),
+    Op::new(O::IntSub, u(21, 1), r(0), u(22, 1)),
+    Op::new(O::IntXor, u(23, 1), r(0), u(11, 1)),
+    Op::new(O::IntXor, u(24, 1), r(0), u(21, 1)),
+    Op::new(O::IntAnd, u(26, 1), u(23, 1), u(24, 1)),
+    Op::new(O::IntAnd, u(25, 1), u(26, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(13), u(25, 1), c(0x0, 1)),
+    Op::new(O::Copy, r(0), u(21, 1), Vn::NONE),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(20, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(20, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(27, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(27, 1), c(0x0, 1)),
     // FA NOP impl
     // FB ISC absy
-    Op::new(O::IntZext, u(2, 2), r(2), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(5, 1), u(0, 2), Vn::NONE),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(5, 1)),
-    Op::new(O::IntAdd, u(4, 1), u(5, 1), c(0x1, 1)),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
-    Op::new(O::IntSub, u(6, 1), c(0x1, 1), r(8)),
-    Op::new(O::IntZext, u(9, 2), u(4, 1), Vn::NONE),
-    Op::new(O::IntZext, u(11, 2), u(6, 1), Vn::NONE),
-    Op::new(O::IntAdd, u(7, 2), u(9, 2), u(11, 2)),
-    Op::new(O::IntZext, u(13, 2), r(0), Vn::NONE),
-    Op::new(O::IntLessEqual, r(8), u(7, 2), u(13, 2)),
-    Op::new(O::IntAdd, u(16, 1), u(4, 1), u(6, 1)),
-    Op::new(O::IntSub, u(15, 1), r(0), u(16, 1)),
-    Op::new(O::IntXor, u(17, 1), r(0), u(4, 1)),
-    Op::new(O::IntXor, u(18, 1), r(0), u(15, 1)),
-    Op::new(O::IntAnd, u(20, 1), u(17, 1), u(18, 1)),
-    Op::new(O::IntAnd, u(19, 1), u(20, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(13), u(19, 1), c(0x0, 1)),
-    Op::new(O::Copy, r(0), u(15, 1), Vn::NONE),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(2), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(7, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(9, 2), u(7, 2), u(0, 2)),
+    Op::new(O::Load, Vn::NONE, u(9, 2), Vn::NONE),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(11, 1)),
+    Op::new(O::IntAdd, u(6, 1), u(11, 1), c(0x1, 1)),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(6, 1)),
+    Op::new(O::IntSub, u(12, 1), c(0x1, 1), r(8)),
+    Op::new(O::IntZext, u(15, 2), u(6, 1), Vn::NONE),
+    Op::new(O::IntZext, u(17, 2), u(12, 1), Vn::NONE),
+    Op::new(O::IntAdd, u(13, 2), u(15, 2), u(17, 2)),
+    Op::new(O::IntZext, u(19, 2), r(0), Vn::NONE),
+    Op::new(O::IntLessEqual, r(8), u(13, 2), u(19, 2)),
+    Op::new(O::IntAdd, u(22, 1), u(6, 1), u(12, 1)),
+    Op::new(O::IntSub, u(21, 1), r(0), u(22, 1)),
+    Op::new(O::IntXor, u(23, 1), r(0), u(6, 1)),
+    Op::new(O::IntXor, u(24, 1), r(0), u(21, 1)),
+    Op::new(O::IntAnd, u(26, 1), u(23, 1), u(24, 1)),
+    Op::new(O::IntAnd, u(25, 1), u(26, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(13), u(25, 1), c(0x0, 1)),
+    Op::new(O::Copy, r(0), u(21, 1), Vn::NONE),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(21, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(21, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(27, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(27, 1), c(0x0, 1)),
     // FC NOP absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::IntNotEqual, u(10, 1), u(8, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), u(10, 1)),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
     // FD SBC absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(4, 1), u(0, 2), Vn::NONE),
-    Op::new(O::IntSub, u(5, 1), c(0x1, 1), r(8)),
-    Op::new(O::IntZext, u(8, 2), u(4, 1), Vn::NONE),
-    Op::new(O::IntZext, u(10, 2), u(5, 1), Vn::NONE),
-    Op::new(O::IntAdd, u(6, 2), u(8, 2), u(10, 2)),
-    Op::new(O::IntZext, u(12, 2), r(0), Vn::NONE),
-    Op::new(O::IntLessEqual, r(8), u(6, 2), u(12, 2)),
-    Op::new(O::IntAdd, u(15, 1), u(4, 1), u(5, 1)),
-    Op::new(O::IntSub, u(14, 1), r(0), u(15, 1)),
-    Op::new(O::IntXor, u(16, 1), r(0), u(4, 1)),
-    Op::new(O::IntXor, u(17, 1), r(0), u(14, 1)),
-    Op::new(O::IntAnd, u(19, 1), u(16, 1), u(17, 1)),
-    Op::new(O::IntAnd, u(18, 1), u(19, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(13), u(18, 1), c(0x0, 1)),
-    Op::new(O::Copy, r(0), u(14, 1), Vn::NONE),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(6, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(8, 2), u(6, 2), u(0, 2)),
+    Op::new(O::IntNotEqual, u(10, 1), u(8, 2), u(2, 2)),
+    Op::new(O::Load, Vn::NONE, u(8, 2), u(10, 1)),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
+    Op::new(O::IntSub, u(12, 1), c(0x1, 1), r(8)),
+    Op::new(O::IntZext, u(15, 2), u(11, 1), Vn::NONE),
+    Op::new(O::IntZext, u(17, 2), u(12, 1), Vn::NONE),
+    Op::new(O::IntAdd, u(13, 2), u(15, 2), u(17, 2)),
+    Op::new(O::IntZext, u(19, 2), r(0), Vn::NONE),
+    Op::new(O::IntLessEqual, r(8), u(13, 2), u(19, 2)),
+    Op::new(O::IntAdd, u(22, 1), u(11, 1), u(12, 1)),
+    Op::new(O::IntSub, u(21, 1), r(0), u(22, 1)),
+    Op::new(O::IntXor, u(23, 1), r(0), u(11, 1)),
+    Op::new(O::IntXor, u(24, 1), r(0), u(21, 1)),
+    Op::new(O::IntAnd, u(26, 1), u(23, 1), u(24, 1)),
+    Op::new(O::IntAnd, u(25, 1), u(26, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(13), u(25, 1), c(0x0, 1)),
+    Op::new(O::Copy, r(0), u(21, 1), Vn::NONE),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(20, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(20, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(27, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(27, 1), c(0x0, 1)),
     // FE INC absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(5, 1), u(0, 2), Vn::NONE),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(5, 1)),
-    Op::new(O::IntAdd, u(4, 1), u(5, 1), c(0x1, 1)),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
-    Op::new(O::IntEqual, r(9), u(4, 1), c(0x0, 1)),
-    Op::new(O::IntAnd, u(6, 1), u(4, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(6, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(7, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(9, 2), u(7, 2), u(0, 2)),
+    Op::new(O::Load, Vn::NONE, u(9, 2), Vn::NONE),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(11, 1)),
+    Op::new(O::IntAdd, u(6, 1), u(11, 1), c(0x1, 1)),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(6, 1)),
+    Op::new(O::IntEqual, r(9), u(6, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(12, 1), u(6, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(12, 1), c(0x0, 1)),
     // FF ISC absx
-    Op::new(O::IntZext, u(2, 2), r(1), Vn::NONE),
-    Op::new(O::IntAdd, u(0, 2), cs(Slot::Word, 2), u(2, 2)),
-    Op::new(O::Load, u(5, 1), u(0, 2), Vn::NONE),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(5, 1)),
-    Op::new(O::IntAdd, u(4, 1), u(5, 1), c(0x1, 1)),
-    Op::new(O::Store, Vn::NONE, u(0, 2), u(4, 1)),
-    Op::new(O::IntSub, u(6, 1), c(0x1, 1), r(8)),
-    Op::new(O::IntZext, u(9, 2), u(4, 1), Vn::NONE),
-    Op::new(O::IntZext, u(11, 2), u(6, 1), Vn::NONE),
-    Op::new(O::IntAdd, u(7, 2), u(9, 2), u(11, 2)),
-    Op::new(O::IntZext, u(13, 2), r(0), Vn::NONE),
-    Op::new(O::IntLessEqual, r(8), u(7, 2), u(13, 2)),
-    Op::new(O::IntAdd, u(16, 1), u(4, 1), u(6, 1)),
-    Op::new(O::IntSub, u(15, 1), r(0), u(16, 1)),
-    Op::new(O::IntXor, u(17, 1), r(0), u(4, 1)),
-    Op::new(O::IntXor, u(18, 1), r(0), u(15, 1)),
-    Op::new(O::IntAnd, u(20, 1), u(17, 1), u(18, 1)),
-    Op::new(O::IntAnd, u(19, 1), u(20, 1), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(13), u(19, 1), c(0x0, 1)),
-    Op::new(O::Copy, r(0), u(15, 1), Vn::NONE),
+    Op::new(O::IntAnd, u(0, 2), cs(Slot::Word, 2), c(0xff00, 2)),
+    Op::new(O::IntZext, u(4, 2), r(1), Vn::NONE),
+    Op::new(O::IntAdd, u(2, 2), cs(Slot::Word, 2), u(4, 2)),
+    Op::new(O::IntAnd, u(7, 2), u(2, 2), c(0xff, 2)),
+    Op::new(O::IntOr, u(9, 2), u(7, 2), u(0, 2)),
+    Op::new(O::Load, Vn::NONE, u(9, 2), Vn::NONE),
+    Op::new(O::Load, u(11, 1), u(2, 2), Vn::NONE),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(11, 1)),
+    Op::new(O::IntAdd, u(6, 1), u(11, 1), c(0x1, 1)),
+    Op::new(O::Store, Vn::NONE, u(2, 2), u(6, 1)),
+    Op::new(O::IntSub, u(12, 1), c(0x1, 1), r(8)),
+    Op::new(O::IntZext, u(15, 2), u(6, 1), Vn::NONE),
+    Op::new(O::IntZext, u(17, 2), u(12, 1), Vn::NONE),
+    Op::new(O::IntAdd, u(13, 2), u(15, 2), u(17, 2)),
+    Op::new(O::IntZext, u(19, 2), r(0), Vn::NONE),
+    Op::new(O::IntLessEqual, r(8), u(13, 2), u(19, 2)),
+    Op::new(O::IntAdd, u(22, 1), u(6, 1), u(12, 1)),
+    Op::new(O::IntSub, u(21, 1), r(0), u(22, 1)),
+    Op::new(O::IntXor, u(23, 1), r(0), u(6, 1)),
+    Op::new(O::IntXor, u(24, 1), r(0), u(21, 1)),
+    Op::new(O::IntAnd, u(26, 1), u(23, 1), u(24, 1)),
+    Op::new(O::IntAnd, u(25, 1), u(26, 1), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(13), u(25, 1), c(0x0, 1)),
+    Op::new(O::Copy, r(0), u(21, 1), Vn::NONE),
     Op::new(O::IntEqual, r(9), r(0), c(0x0, 1)),
-    Op::new(O::IntAnd, u(21, 1), r(0), c(0x80, 1)),
-    Op::new(O::IntNotEqual, r(14), u(21, 1), c(0x0, 1)),
+    Op::new(O::IntAnd, u(27, 1), r(0), c(0x80, 1)),
+    Op::new(O::IntNotEqual, r(14), u(27, 1), c(0x0, 1)),
 ];
 
 /// Every opcode's operand-bound input positions (`op << 1 | input`), concatenated.
-pub static BINDS: [u8; 271] = [
+pub static BINDS: [u8; 319] = [
     0, 0, 0, 0, 0, 2, 12, 0, 2, 12, 1, 1, 0, 0, 0, 2,
-    12, 0, 2, 12, 0, 2, 0, 2, 0, 0, 0, 0, 2, 2, 2, 2,
-    2, 2, 0, 0, 0, 0, 0, 2, 16, 0, 2, 16, 1, 1, 0, 0,
-    0, 2, 16, 0, 2, 16, 0, 2, 0, 2, 0, 0, 0, 0, 2, 2,
-    2, 2, 2, 2, 0, 0, 0, 0, 0, 2, 10, 0, 2, 10, 1, 1,
-    0, 0, 2, 10, 0, 2, 10, 0, 2, 0, 2, 0, 0, 0, 0, 2,
-    2, 2, 2, 2, 2, 0, 0, 0, 0, 0, 2, 16, 0, 2, 16, 1,
-    3, 9, 1, 0, 0, 2, 16, 0, 2, 16, 0, 2, 0, 2, 0, 0,
-    0, 0, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0, 2, 5, 0,
-    0, 0, 2, 0, 2, 0, 2, 0, 0, 0, 0, 2, 2, 7, 2, 5,
-    2, 2, 5, 2, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0,
-    0, 0, 0, 0, 2, 0, 2, 0, 0, 0, 0, 2, 2, 2, 2, 2,
-    2, 0, 3, 0, 0, 0, 0, 0, 2, 6, 0, 2, 6, 0, 3, 2,
-    5, 0, 0, 0, 2, 6, 0, 2, 6, 0, 2, 0, 2, 0, 0, 0,
-    0, 2, 2, 2, 2, 2, 2, 0, 3, 0, 0, 0, 0, 0, 2, 6,
-    0, 2, 6, 2, 12, 17, 2, 12, 17, 0, 0, 0, 2, 6, 0, 2,
-    6, 0, 2, 0, 2, 0, 0, 0, 0, 2, 2, 2, 2, 2, 2,
+    12, 0, 2, 12, 0, 2, 0, 2, 0, 0, 0, 0, 0, 4, 0, 4,
+    0, 4, 0, 4, 0, 4, 0, 4, 0, 0, 0, 0, 0, 2, 16, 0,
+    2, 16, 1, 1, 0, 0, 0, 2, 16, 0, 2, 16, 0, 2, 0, 2,
+    0, 0, 0, 0, 0, 4, 0, 4, 0, 4, 0, 4, 0, 4, 0, 4,
+    0, 0, 0, 0, 0, 2, 10, 0, 2, 10, 1, 1, 0, 0, 2, 10,
+    0, 2, 10, 0, 2, 0, 2, 0, 0, 0, 0, 0, 4, 0, 4, 0,
+    4, 0, 4, 0, 4, 0, 4, 0, 0, 0, 0, 0, 2, 16, 0, 2,
+    16, 1, 3, 9, 1, 0, 0, 2, 16, 0, 2, 16, 0, 2, 0, 2,
+    0, 0, 0, 0, 0, 4, 0, 4, 0, 4, 0, 4, 0, 4, 0, 4,
+    0, 0, 0, 0, 0, 2, 5, 0, 0, 0, 2, 0, 2, 0, 2, 0,
+    0, 0, 0, 0, 4, 0, 4, 15, 0, 4, 13, 0, 4, 0, 4, 13,
+    0, 4, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0,
+    0, 0, 2, 0, 2, 0, 0, 0, 0, 0, 4, 0, 4, 0, 4, 0,
+    4, 0, 4, 0, 4, 0, 3, 0, 0, 0, 0, 0, 2, 6, 0, 2,
+    6, 0, 3, 2, 5, 0, 0, 0, 2, 6, 0, 2, 6, 0, 2, 0,
+    2, 0, 0, 0, 0, 0, 4, 0, 4, 0, 4, 0, 4, 0, 4, 0,
+    4, 0, 3, 0, 0, 0, 0, 0, 2, 6, 0, 2, 6, 2, 12, 17,
+    2, 12, 17, 0, 0, 0, 2, 6, 0, 2, 6, 0, 2, 0, 2, 0,
+    0, 0, 0, 0, 4, 0, 4, 0, 4, 0, 4, 0, 4, 0, 4,
 ];
 
 /// Per-opcode templates.
@@ -2451,243 +2771,243 @@ pub static TEMPLATES: [Template; 256] = [
     Template { start: 102, n: 10, bind: 14, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 0E ASL abs
     Template { start: 112, n: 11, bind: 17, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 0F SLO abs
     Template { start: 123, n: 0, bind: 20, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 14, pol: 0 }, iy_base: 0 }, // 10 BPL rel
-    Template { start: 123, n: 13, bind: 20, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 2 }, // 11 ORA indy
-    Template { start: 136, n: 0, bind: 22, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 12 JAM impl
-    Template { start: 136, n: 19, bind: 22, nbind: 2, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 13 SLO indy
-    Template { start: 155, n: 3, bind: 24, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 14 NOP zpx
-    Template { start: 158, n: 7, bind: 25, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 15 ORA zpx
-    Template { start: 165, n: 12, bind: 26, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 16 ASL zpx
-    Template { start: 177, n: 13, bind: 27, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 17 SLO zpx
-    Template { start: 190, n: 1, bind: 28, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 18 CLC impl
-    Template { start: 191, n: 7, bind: 28, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // 19 ORA absy
-    Template { start: 198, n: 0, bind: 29, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 1A NOP impl
-    Template { start: 198, n: 13, bind: 29, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 1B SLO absy
-    Template { start: 211, n: 3, bind: 30, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 1C NOP absx
-    Template { start: 214, n: 7, bind: 31, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 1D ORA absx
-    Template { start: 221, n: 12, bind: 32, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 1E ASL absx
-    Template { start: 233, n: 13, bind: 33, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 1F SLO absx
-    Template { start: 246, n: 0, bind: 34, nbind: 0, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Jsr, iy_base: 0 }, // 20 JSR abs
-    Template { start: 246, n: 15, bind: 34, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 21 AND indx
-    Template { start: 261, n: 0, bind: 35, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 22 JAM impl
-    Template { start: 261, n: 23, bind: 35, nbind: 1, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 23 RLA indx
-    Template { start: 284, n: 7, bind: 36, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 24 BIT zp
-    Template { start: 291, n: 5, bind: 37, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 25 AND zp
-    Template { start: 296, n: 12, bind: 38, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 26 ROL zp
-    Template { start: 308, n: 13, bind: 41, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 27 RLA zp
-    Template { start: 321, n: 15, bind: 44, nbind: 0, len: 1, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 28 PLP impl
-    Template { start: 336, n: 4, bind: 44, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 29 AND imm
-    Template { start: 340, n: 10, bind: 45, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 2A ROL acc
-    Template { start: 350, n: 6, bind: 45, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 2B ANC imm
-    Template { start: 356, n: 7, bind: 46, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 2C BIT abs
-    Template { start: 363, n: 5, bind: 47, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 2D AND abs
-    Template { start: 368, n: 12, bind: 48, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 2E ROL abs
-    Template { start: 380, n: 13, bind: 51, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 2F RLA abs
-    Template { start: 393, n: 0, bind: 54, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 14, pol: 1 }, iy_base: 0 }, // 30 BMI rel
-    Template { start: 393, n: 13, bind: 54, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 2 }, // 31 AND indy
-    Template { start: 406, n: 0, bind: 56, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 32 JAM impl
-    Template { start: 406, n: 21, bind: 56, nbind: 2, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 33 RLA indy
-    Template { start: 427, n: 3, bind: 58, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 34 NOP zpx
-    Template { start: 430, n: 7, bind: 59, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 35 AND zpx
-    Template { start: 437, n: 14, bind: 60, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 36 ROL zpx
-    Template { start: 451, n: 15, bind: 61, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 37 RLA zpx
-    Template { start: 466, n: 1, bind: 62, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 38 SEC impl
-    Template { start: 467, n: 7, bind: 62, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // 39 AND absy
-    Template { start: 474, n: 0, bind: 63, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 3A NOP impl
-    Template { start: 474, n: 15, bind: 63, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 3B RLA absy
-    Template { start: 489, n: 3, bind: 64, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 3C NOP absx
-    Template { start: 492, n: 7, bind: 65, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 3D AND absx
-    Template { start: 499, n: 14, bind: 66, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 3E ROL absx
-    Template { start: 513, n: 15, bind: 67, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 3F RLA absx
-    Template { start: 528, n: 0, bind: 68, nbind: 0, len: 1, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Rti, iy_base: 0 }, // 40 RTI impl
-    Template { start: 528, n: 15, bind: 68, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 41 EOR indx
-    Template { start: 543, n: 0, bind: 69, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 42 JAM impl
-    Template { start: 543, n: 20, bind: 69, nbind: 1, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 43 SRE indx
-    Template { start: 563, n: 1, bind: 70, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 44 NOP zp
-    Template { start: 564, n: 5, bind: 71, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 45 EOR zp
-    Template { start: 569, n: 9, bind: 72, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 46 LSR zp
-    Template { start: 578, n: 10, bind: 75, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 47 SRE zp
-    Template { start: 588, n: 4, bind: 78, nbind: 0, len: 1, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 48 PHA impl
-    Template { start: 592, n: 4, bind: 78, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 49 EOR imm
-    Template { start: 596, n: 7, bind: 79, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 4A LSR acc
-    Template { start: 603, n: 7, bind: 79, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 4B ALR imm
-    Template { start: 610, n: 0, bind: 80, nbind: 0, len: 3, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Jmp, iy_base: 0 }, // 4C JMP abs
-    Template { start: 610, n: 5, bind: 80, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 4D EOR abs
-    Template { start: 615, n: 9, bind: 81, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 4E LSR abs
-    Template { start: 624, n: 10, bind: 84, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 4F SRE abs
-    Template { start: 634, n: 0, bind: 87, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 13, pol: 0 }, iy_base: 0 }, // 50 BVC rel
-    Template { start: 634, n: 13, bind: 87, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 2 }, // 51 EOR indy
-    Template { start: 647, n: 0, bind: 89, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 52 JAM impl
-    Template { start: 647, n: 18, bind: 89, nbind: 2, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 53 SRE indy
-    Template { start: 665, n: 3, bind: 91, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 54 NOP zpx
-    Template { start: 668, n: 7, bind: 92, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 55 EOR zpx
-    Template { start: 675, n: 11, bind: 93, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 56 LSR zpx
-    Template { start: 686, n: 12, bind: 94, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 57 SRE zpx
-    Template { start: 698, n: 1, bind: 95, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 58 CLI impl
-    Template { start: 699, n: 7, bind: 95, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // 59 EOR absy
-    Template { start: 706, n: 0, bind: 96, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 5A NOP impl
-    Template { start: 706, n: 12, bind: 96, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 5B SRE absy
-    Template { start: 718, n: 3, bind: 97, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 5C NOP absx
-    Template { start: 721, n: 7, bind: 98, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 5D EOR absx
-    Template { start: 728, n: 11, bind: 99, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 5E LSR absx
-    Template { start: 739, n: 12, bind: 100, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 5F SRE absx
-    Template { start: 751, n: 0, bind: 101, nbind: 0, len: 1, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Rts, iy_base: 0 }, // 60 RTS impl
-    Template { start: 751, n: 26, bind: 101, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 61 ADC indx
-    Template { start: 777, n: 0, bind: 102, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 62 JAM impl
-    Template { start: 777, n: 34, bind: 102, nbind: 1, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 63 RRA indx
-    Template { start: 811, n: 1, bind: 103, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 64 NOP zp
-    Template { start: 812, n: 16, bind: 104, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 65 ADC zp
-    Template { start: 828, n: 12, bind: 105, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 66 ROR zp
-    Template { start: 840, n: 24, bind: 108, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 67 RRA zp
-    Template { start: 864, n: 8, bind: 111, nbind: 0, len: 1, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 68 PLA impl
-    Template { start: 872, n: 15, bind: 111, nbind: 3, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 69 ADC imm
-    Template { start: 887, n: 10, bind: 114, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 6A ROR acc
-    Template { start: 897, n: 14, bind: 114, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 6B ARR imm
-    Template { start: 911, n: 0, bind: 115, nbind: 0, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::JmpInd, iy_base: 0 }, // 6C JMP ind
-    Template { start: 911, n: 16, bind: 115, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 6D ADC abs
-    Template { start: 927, n: 12, bind: 116, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 6E ROR abs
-    Template { start: 939, n: 24, bind: 119, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 6F RRA abs
-    Template { start: 963, n: 0, bind: 122, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 13, pol: 1 }, iy_base: 0 }, // 70 BVS rel
-    Template { start: 963, n: 24, bind: 122, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 2 }, // 71 ADC indy
-    Template { start: 987, n: 0, bind: 124, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 72 JAM impl
-    Template { start: 987, n: 32, bind: 124, nbind: 2, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 73 RRA indy
-    Template { start: 1019, n: 3, bind: 126, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 74 NOP zpx
-    Template { start: 1022, n: 18, bind: 127, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 75 ADC zpx
-    Template { start: 1040, n: 14, bind: 128, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 76 ROR zpx
-    Template { start: 1054, n: 26, bind: 129, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 77 RRA zpx
-    Template { start: 1080, n: 1, bind: 130, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 78 SEI impl
-    Template { start: 1081, n: 18, bind: 130, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // 79 ADC absy
-    Template { start: 1099, n: 0, bind: 131, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 7A NOP impl
-    Template { start: 1099, n: 26, bind: 131, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 7B RRA absy
-    Template { start: 1125, n: 3, bind: 132, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 7C NOP absx
-    Template { start: 1128, n: 18, bind: 133, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 7D ADC absx
-    Template { start: 1146, n: 14, bind: 134, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 7E ROR absx
-    Template { start: 1160, n: 26, bind: 135, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 7F RRA absx
-    Template { start: 1186, n: 0, bind: 136, nbind: 0, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 80 NOP imm
-    Template { start: 1186, n: 11, bind: 136, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 81 STA indx
-    Template { start: 1197, n: 0, bind: 137, nbind: 0, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 82 NOP imm
-    Template { start: 1197, n: 12, bind: 137, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 83 SAX indx
-    Template { start: 1209, n: 1, bind: 138, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 84 STY zp
-    Template { start: 1210, n: 1, bind: 139, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 85 STA zp
-    Template { start: 1211, n: 1, bind: 140, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 86 STX zp
-    Template { start: 1212, n: 2, bind: 141, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 87 SAX zp
-    Template { start: 1214, n: 4, bind: 142, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 88 DEY impl
-    Template { start: 1218, n: 0, bind: 142, nbind: 0, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 89 NOP imm
-    Template { start: 1218, n: 4, bind: 142, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 8A TXA impl
-    Template { start: 1222, n: 6, bind: 142, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 8B ANE imm
-    Template { start: 1228, n: 1, bind: 143, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 8C STY abs
-    Template { start: 1229, n: 1, bind: 144, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 8D STA abs
-    Template { start: 1230, n: 1, bind: 145, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 8E STX abs
-    Template { start: 1231, n: 2, bind: 146, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 8F SAX abs
-    Template { start: 1233, n: 0, bind: 147, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 8, pol: 0 }, iy_base: 0 }, // 90 BCC rel
-    Template { start: 1233, n: 9, bind: 147, nbind: 2, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 91 STA indy
-    Template { start: 1242, n: 0, bind: 149, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 92 JAM impl
-    Template { start: 1242, n: 12, bind: 149, nbind: 2, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 93 SHA indy
-    Template { start: 1254, n: 3, bind: 151, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 94 STY zpx
-    Template { start: 1257, n: 3, bind: 152, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 95 STA zpx
-    Template { start: 1260, n: 3, bind: 153, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 96 STX zpy
-    Template { start: 1263, n: 4, bind: 154, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 97 SAX zpy
-    Template { start: 1267, n: 4, bind: 155, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 98 TYA impl
-    Template { start: 1271, n: 3, bind: 155, nbind: 1, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 99 STA absy
-    Template { start: 1274, n: 1, bind: 156, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 9A TXS impl
-    Template { start: 1275, n: 5, bind: 156, nbind: 2, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 9B TAS absy
-    Template { start: 1280, n: 4, bind: 158, nbind: 2, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 9C SHY absx
-    Template { start: 1284, n: 3, bind: 160, nbind: 1, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 9D STA absx
-    Template { start: 1287, n: 4, bind: 161, nbind: 2, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 9E SHX absy
-    Template { start: 1291, n: 5, bind: 163, nbind: 2, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 9F SHA absy
-    Template { start: 1296, n: 4, bind: 165, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A0 LDY imm
-    Template { start: 1300, n: 15, bind: 166, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A1 LDA indx
-    Template { start: 1315, n: 4, bind: 167, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A2 LDX imm
-    Template { start: 1319, n: 16, bind: 168, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A3 LAX indx
-    Template { start: 1335, n: 5, bind: 169, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A4 LDY zp
-    Template { start: 1340, n: 5, bind: 170, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A5 LDA zp
-    Template { start: 1345, n: 5, bind: 171, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A6 LDX zp
-    Template { start: 1350, n: 6, bind: 172, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A7 LAX zp
-    Template { start: 1356, n: 4, bind: 173, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A8 TAY impl
-    Template { start: 1360, n: 4, bind: 173, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A9 LDA imm
-    Template { start: 1364, n: 4, bind: 174, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // AA TAX impl
-    Template { start: 1368, n: 7, bind: 174, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // AB LXA imm
-    Template { start: 1375, n: 5, bind: 175, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // AC LDY abs
-    Template { start: 1380, n: 5, bind: 176, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // AD LDA abs
-    Template { start: 1385, n: 5, bind: 177, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // AE LDX abs
-    Template { start: 1390, n: 6, bind: 178, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // AF LAX abs
-    Template { start: 1396, n: 0, bind: 179, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 8, pol: 1 }, iy_base: 0 }, // B0 BCS rel
-    Template { start: 1396, n: 13, bind: 179, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 2 }, // B1 LDA indy
-    Template { start: 1409, n: 0, bind: 181, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // B2 JAM impl
-    Template { start: 1409, n: 14, bind: 181, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 2 }, // B3 LAX indy
-    Template { start: 1423, n: 7, bind: 183, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // B4 LDY zpx
-    Template { start: 1430, n: 7, bind: 184, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // B5 LDA zpx
-    Template { start: 1437, n: 7, bind: 185, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // B6 LDX zpy
-    Template { start: 1444, n: 8, bind: 186, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // B7 LAX zpy
-    Template { start: 1452, n: 1, bind: 187, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // B8 CLV impl
-    Template { start: 1453, n: 7, bind: 187, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // B9 LDA absy
-    Template { start: 1460, n: 4, bind: 188, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // BA TSX impl
-    Template { start: 1464, n: 10, bind: 188, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // BB LAS absy
-    Template { start: 1474, n: 7, bind: 189, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // BC LDY absx
-    Template { start: 1481, n: 7, bind: 190, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // BD LDA absx
-    Template { start: 1488, n: 7, bind: 191, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // BE LDX absy
-    Template { start: 1495, n: 8, bind: 192, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // BF LAX absy
-    Template { start: 1503, n: 5, bind: 193, nbind: 2, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C0 CPY imm
-    Template { start: 1508, n: 16, bind: 195, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C1 CMP indx
-    Template { start: 1524, n: 0, bind: 196, nbind: 0, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C2 NOP imm
-    Template { start: 1524, n: 19, bind: 196, nbind: 1, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C3 DCP indx
-    Template { start: 1543, n: 6, bind: 197, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C4 CPY zp
-    Template { start: 1549, n: 6, bind: 198, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C5 CMP zp
-    Template { start: 1555, n: 7, bind: 199, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C6 DEC zp
-    Template { start: 1562, n: 9, bind: 202, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C7 DCP zp
-    Template { start: 1571, n: 4, bind: 205, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C8 INY impl
-    Template { start: 1575, n: 5, bind: 205, nbind: 2, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C9 CMP imm
-    Template { start: 1580, n: 4, bind: 207, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // CA DEX impl
-    Template { start: 1584, n: 6, bind: 207, nbind: 2, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // CB SBX imm
-    Template { start: 1590, n: 6, bind: 209, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // CC CPY abs
-    Template { start: 1596, n: 6, bind: 210, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // CD CMP abs
-    Template { start: 1602, n: 7, bind: 211, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // CE DEC abs
-    Template { start: 1609, n: 9, bind: 214, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // CF DCP abs
-    Template { start: 1618, n: 0, bind: 217, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 9, pol: 0 }, iy_base: 0 }, // D0 BNE rel
-    Template { start: 1618, n: 14, bind: 217, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 2 }, // D1 CMP indy
-    Template { start: 1632, n: 0, bind: 219, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // D2 JAM impl
-    Template { start: 1632, n: 17, bind: 219, nbind: 2, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // D3 DCP indy
-    Template { start: 1649, n: 3, bind: 221, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // D4 NOP zpx
-    Template { start: 1652, n: 8, bind: 222, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // D5 CMP zpx
-    Template { start: 1660, n: 9, bind: 223, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // D6 DEC zpx
-    Template { start: 1669, n: 11, bind: 224, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // D7 DCP zpx
-    Template { start: 1680, n: 1, bind: 225, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // D8 CLD impl
-    Template { start: 1681, n: 8, bind: 225, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // D9 CMP absy
-    Template { start: 1689, n: 0, bind: 226, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // DA NOP impl
-    Template { start: 1689, n: 11, bind: 226, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // DB DCP absy
-    Template { start: 1700, n: 3, bind: 227, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // DC NOP absx
-    Template { start: 1703, n: 8, bind: 228, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // DD CMP absx
-    Template { start: 1711, n: 9, bind: 229, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // DE DEC absx
-    Template { start: 1720, n: 11, bind: 230, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // DF DCP absx
-    Template { start: 1731, n: 5, bind: 231, nbind: 2, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E0 CPX imm
-    Template { start: 1736, n: 28, bind: 233, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E1 SBC indx
-    Template { start: 1764, n: 0, bind: 234, nbind: 0, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E2 NOP imm
-    Template { start: 1764, n: 31, bind: 234, nbind: 1, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E3 ISC indx
-    Template { start: 1795, n: 6, bind: 235, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E4 CPX zp
-    Template { start: 1801, n: 18, bind: 236, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E5 SBC zp
-    Template { start: 1819, n: 7, bind: 237, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E6 INC zp
-    Template { start: 1826, n: 21, bind: 240, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E7 ISC zp
-    Template { start: 1847, n: 4, bind: 243, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E8 INX impl
-    Template { start: 1851, n: 17, bind: 243, nbind: 3, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E9 SBC imm
-    Template { start: 1868, n: 0, bind: 246, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // EA NOP impl
-    Template { start: 1868, n: 17, bind: 246, nbind: 3, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // EB SBC imm
-    Template { start: 1885, n: 6, bind: 249, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // EC CPX abs
-    Template { start: 1891, n: 18, bind: 250, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // ED SBC abs
-    Template { start: 1909, n: 7, bind: 251, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // EE INC abs
-    Template { start: 1916, n: 21, bind: 254, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // EF ISC abs
-    Template { start: 1937, n: 0, bind: 257, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 9, pol: 1 }, iy_base: 0 }, // F0 BEQ rel
-    Template { start: 1937, n: 26, bind: 257, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 2 }, // F1 SBC indy
-    Template { start: 1963, n: 0, bind: 259, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // F2 JAM impl
-    Template { start: 1963, n: 29, bind: 259, nbind: 2, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // F3 ISC indy
-    Template { start: 1992, n: 3, bind: 261, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // F4 NOP zpx
-    Template { start: 1995, n: 20, bind: 262, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // F5 SBC zpx
-    Template { start: 2015, n: 9, bind: 263, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // F6 INC zpx
-    Template { start: 2024, n: 23, bind: 264, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // F7 ISC zpx
-    Template { start: 2047, n: 1, bind: 265, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // F8 SED impl
-    Template { start: 2048, n: 20, bind: 265, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // F9 SBC absy
-    Template { start: 2068, n: 0, bind: 266, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // FA NOP impl
-    Template { start: 2068, n: 23, bind: 266, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // FB ISC absy
-    Template { start: 2091, n: 3, bind: 267, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // FC NOP absx
-    Template { start: 2094, n: 20, bind: 268, nbind: 1, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // FD SBC absx
-    Template { start: 2114, n: 9, bind: 269, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // FE INC absx
-    Template { start: 2123, n: 23, bind: 270, nbind: 1, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // FF ISC absx
+    Template { start: 123, n: 17, bind: 20, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 6 }, // 11 ORA indy
+    Template { start: 140, n: 0, bind: 22, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 12 JAM impl
+    Template { start: 140, n: 22, bind: 22, nbind: 2, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 13 SLO indy
+    Template { start: 162, n: 3, bind: 24, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 14 NOP zpx
+    Template { start: 165, n: 7, bind: 25, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 15 ORA zpx
+    Template { start: 172, n: 12, bind: 26, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 16 ASL zpx
+    Template { start: 184, n: 13, bind: 27, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 17 SLO zpx
+    Template { start: 197, n: 1, bind: 28, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 18 CLC impl
+    Template { start: 198, n: 12, bind: 28, nbind: 2, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // 19 ORA absy
+    Template { start: 210, n: 0, bind: 30, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 1A NOP impl
+    Template { start: 210, n: 17, bind: 30, nbind: 2, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 1B SLO absy
+    Template { start: 227, n: 8, bind: 32, nbind: 2, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 1C NOP absx
+    Template { start: 235, n: 12, bind: 34, nbind: 2, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 1D ORA absx
+    Template { start: 247, n: 16, bind: 36, nbind: 2, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 1E ASL absx
+    Template { start: 263, n: 17, bind: 38, nbind: 2, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 1F SLO absx
+    Template { start: 280, n: 0, bind: 40, nbind: 0, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Jsr, iy_base: 0 }, // 20 JSR abs
+    Template { start: 280, n: 15, bind: 40, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 21 AND indx
+    Template { start: 295, n: 0, bind: 41, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 22 JAM impl
+    Template { start: 295, n: 23, bind: 41, nbind: 1, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 23 RLA indx
+    Template { start: 318, n: 7, bind: 42, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 24 BIT zp
+    Template { start: 325, n: 5, bind: 43, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 25 AND zp
+    Template { start: 330, n: 12, bind: 44, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 26 ROL zp
+    Template { start: 342, n: 13, bind: 47, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 27 RLA zp
+    Template { start: 355, n: 15, bind: 50, nbind: 0, len: 1, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 28 PLP impl
+    Template { start: 370, n: 4, bind: 50, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 29 AND imm
+    Template { start: 374, n: 10, bind: 51, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 2A ROL acc
+    Template { start: 384, n: 6, bind: 51, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 2B ANC imm
+    Template { start: 390, n: 7, bind: 52, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 2C BIT abs
+    Template { start: 397, n: 5, bind: 53, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 2D AND abs
+    Template { start: 402, n: 12, bind: 54, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 2E ROL abs
+    Template { start: 414, n: 13, bind: 57, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 2F RLA abs
+    Template { start: 427, n: 0, bind: 60, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 14, pol: 1 }, iy_base: 0 }, // 30 BMI rel
+    Template { start: 427, n: 17, bind: 60, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 6 }, // 31 AND indy
+    Template { start: 444, n: 0, bind: 62, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 32 JAM impl
+    Template { start: 444, n: 24, bind: 62, nbind: 2, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 33 RLA indy
+    Template { start: 468, n: 3, bind: 64, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 34 NOP zpx
+    Template { start: 471, n: 7, bind: 65, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 35 AND zpx
+    Template { start: 478, n: 14, bind: 66, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 36 ROL zpx
+    Template { start: 492, n: 15, bind: 67, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 37 RLA zpx
+    Template { start: 507, n: 1, bind: 68, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 38 SEC impl
+    Template { start: 508, n: 12, bind: 68, nbind: 2, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // 39 AND absy
+    Template { start: 520, n: 0, bind: 70, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 3A NOP impl
+    Template { start: 520, n: 19, bind: 70, nbind: 2, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 3B RLA absy
+    Template { start: 539, n: 8, bind: 72, nbind: 2, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 3C NOP absx
+    Template { start: 547, n: 12, bind: 74, nbind: 2, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 3D AND absx
+    Template { start: 559, n: 18, bind: 76, nbind: 2, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 3E ROL absx
+    Template { start: 577, n: 19, bind: 78, nbind: 2, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 3F RLA absx
+    Template { start: 596, n: 0, bind: 80, nbind: 0, len: 1, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Rti, iy_base: 0 }, // 40 RTI impl
+    Template { start: 596, n: 15, bind: 80, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 41 EOR indx
+    Template { start: 611, n: 0, bind: 81, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 42 JAM impl
+    Template { start: 611, n: 20, bind: 81, nbind: 1, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 43 SRE indx
+    Template { start: 631, n: 1, bind: 82, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 44 NOP zp
+    Template { start: 632, n: 5, bind: 83, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 45 EOR zp
+    Template { start: 637, n: 9, bind: 84, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 46 LSR zp
+    Template { start: 646, n: 10, bind: 87, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 47 SRE zp
+    Template { start: 656, n: 4, bind: 90, nbind: 0, len: 1, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 48 PHA impl
+    Template { start: 660, n: 4, bind: 90, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 49 EOR imm
+    Template { start: 664, n: 7, bind: 91, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 4A LSR acc
+    Template { start: 671, n: 7, bind: 91, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 4B ALR imm
+    Template { start: 678, n: 0, bind: 92, nbind: 0, len: 3, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Jmp, iy_base: 0 }, // 4C JMP abs
+    Template { start: 678, n: 5, bind: 92, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 4D EOR abs
+    Template { start: 683, n: 9, bind: 93, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 4E LSR abs
+    Template { start: 692, n: 10, bind: 96, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 4F SRE abs
+    Template { start: 702, n: 0, bind: 99, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 13, pol: 0 }, iy_base: 0 }, // 50 BVC rel
+    Template { start: 702, n: 17, bind: 99, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 6 }, // 51 EOR indy
+    Template { start: 719, n: 0, bind: 101, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 52 JAM impl
+    Template { start: 719, n: 21, bind: 101, nbind: 2, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 53 SRE indy
+    Template { start: 740, n: 3, bind: 103, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 54 NOP zpx
+    Template { start: 743, n: 7, bind: 104, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 55 EOR zpx
+    Template { start: 750, n: 11, bind: 105, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 56 LSR zpx
+    Template { start: 761, n: 12, bind: 106, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 57 SRE zpx
+    Template { start: 773, n: 1, bind: 107, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 58 CLI impl
+    Template { start: 774, n: 12, bind: 107, nbind: 2, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // 59 EOR absy
+    Template { start: 786, n: 0, bind: 109, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 5A NOP impl
+    Template { start: 786, n: 16, bind: 109, nbind: 2, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 5B SRE absy
+    Template { start: 802, n: 8, bind: 111, nbind: 2, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 5C NOP absx
+    Template { start: 810, n: 12, bind: 113, nbind: 2, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 5D EOR absx
+    Template { start: 822, n: 15, bind: 115, nbind: 2, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 5E LSR absx
+    Template { start: 837, n: 16, bind: 117, nbind: 2, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 5F SRE absx
+    Template { start: 853, n: 0, bind: 119, nbind: 0, len: 1, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Rts, iy_base: 0 }, // 60 RTS impl
+    Template { start: 853, n: 26, bind: 119, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 61 ADC indx
+    Template { start: 879, n: 0, bind: 120, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 62 JAM impl
+    Template { start: 879, n: 34, bind: 120, nbind: 1, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 63 RRA indx
+    Template { start: 913, n: 1, bind: 121, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 64 NOP zp
+    Template { start: 914, n: 16, bind: 122, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 65 ADC zp
+    Template { start: 930, n: 12, bind: 123, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 66 ROR zp
+    Template { start: 942, n: 24, bind: 126, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 67 RRA zp
+    Template { start: 966, n: 8, bind: 129, nbind: 0, len: 1, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 68 PLA impl
+    Template { start: 974, n: 15, bind: 129, nbind: 3, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 69 ADC imm
+    Template { start: 989, n: 10, bind: 132, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 6A ROR acc
+    Template { start: 999, n: 14, bind: 132, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 6B ARR imm
+    Template { start: 1013, n: 0, bind: 133, nbind: 0, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::JmpInd, iy_base: 0 }, // 6C JMP ind
+    Template { start: 1013, n: 16, bind: 133, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 6D ADC abs
+    Template { start: 1029, n: 12, bind: 134, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 6E ROR abs
+    Template { start: 1041, n: 24, bind: 137, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 6F RRA abs
+    Template { start: 1065, n: 0, bind: 140, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 13, pol: 1 }, iy_base: 0 }, // 70 BVS rel
+    Template { start: 1065, n: 28, bind: 140, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 6 }, // 71 ADC indy
+    Template { start: 1093, n: 0, bind: 142, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 72 JAM impl
+    Template { start: 1093, n: 35, bind: 142, nbind: 2, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 73 RRA indy
+    Template { start: 1128, n: 3, bind: 144, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 74 NOP zpx
+    Template { start: 1131, n: 18, bind: 145, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 75 ADC zpx
+    Template { start: 1149, n: 14, bind: 146, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 76 ROR zpx
+    Template { start: 1163, n: 26, bind: 147, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 77 RRA zpx
+    Template { start: 1189, n: 1, bind: 148, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 78 SEI impl
+    Template { start: 1190, n: 23, bind: 148, nbind: 2, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // 79 ADC absy
+    Template { start: 1213, n: 0, bind: 150, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 7A NOP impl
+    Template { start: 1213, n: 30, bind: 150, nbind: 2, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 7B RRA absy
+    Template { start: 1243, n: 8, bind: 152, nbind: 2, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 7C NOP absx
+    Template { start: 1251, n: 23, bind: 154, nbind: 2, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // 7D ADC absx
+    Template { start: 1274, n: 18, bind: 156, nbind: 2, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 7E ROR absx
+    Template { start: 1292, n: 30, bind: 158, nbind: 2, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 7F RRA absx
+    Template { start: 1322, n: 0, bind: 160, nbind: 0, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 80 NOP imm
+    Template { start: 1322, n: 11, bind: 160, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 81 STA indx
+    Template { start: 1333, n: 0, bind: 161, nbind: 0, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 82 NOP imm
+    Template { start: 1333, n: 12, bind: 161, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 83 SAX indx
+    Template { start: 1345, n: 1, bind: 162, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 84 STY zp
+    Template { start: 1346, n: 1, bind: 163, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 85 STA zp
+    Template { start: 1347, n: 1, bind: 164, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 86 STX zp
+    Template { start: 1348, n: 2, bind: 165, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 87 SAX zp
+    Template { start: 1350, n: 4, bind: 166, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 88 DEY impl
+    Template { start: 1354, n: 0, bind: 166, nbind: 0, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 89 NOP imm
+    Template { start: 1354, n: 4, bind: 166, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 8A TXA impl
+    Template { start: 1358, n: 6, bind: 166, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 8B ANE imm
+    Template { start: 1364, n: 1, bind: 167, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 8C STY abs
+    Template { start: 1365, n: 1, bind: 168, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 8D STA abs
+    Template { start: 1366, n: 1, bind: 169, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 8E STX abs
+    Template { start: 1367, n: 2, bind: 170, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 8F SAX abs
+    Template { start: 1369, n: 0, bind: 171, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 8, pol: 0 }, iy_base: 0 }, // 90 BCC rel
+    Template { start: 1369, n: 12, bind: 171, nbind: 2, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 91 STA indy
+    Template { start: 1381, n: 0, bind: 173, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // 92 JAM impl
+    Template { start: 1381, n: 24, bind: 173, nbind: 2, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 93 SHA indy
+    Template { start: 1405, n: 3, bind: 175, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 94 STY zpx
+    Template { start: 1408, n: 3, bind: 176, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 95 STA zpx
+    Template { start: 1411, n: 3, bind: 177, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 96 STX zpy
+    Template { start: 1414, n: 4, bind: 178, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 97 SAX zpy
+    Template { start: 1418, n: 4, bind: 179, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 98 TYA impl
+    Template { start: 1422, n: 7, bind: 179, nbind: 2, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 99 STA absy
+    Template { start: 1429, n: 1, bind: 181, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 9A TXS impl
+    Template { start: 1430, n: 18, bind: 181, nbind: 3, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 9B TAS absy
+    Template { start: 1448, n: 17, bind: 184, nbind: 3, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 9C SHY absx
+    Template { start: 1465, n: 7, bind: 187, nbind: 2, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 9D STA absx
+    Template { start: 1472, n: 17, bind: 189, nbind: 3, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 9E SHX absy
+    Template { start: 1489, n: 18, bind: 192, nbind: 3, len: 3, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // 9F SHA absy
+    Template { start: 1507, n: 4, bind: 195, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A0 LDY imm
+    Template { start: 1511, n: 15, bind: 196, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A1 LDA indx
+    Template { start: 1526, n: 4, bind: 197, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A2 LDX imm
+    Template { start: 1530, n: 16, bind: 198, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A3 LAX indx
+    Template { start: 1546, n: 5, bind: 199, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A4 LDY zp
+    Template { start: 1551, n: 5, bind: 200, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A5 LDA zp
+    Template { start: 1556, n: 5, bind: 201, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A6 LDX zp
+    Template { start: 1561, n: 6, bind: 202, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A7 LAX zp
+    Template { start: 1567, n: 4, bind: 203, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A8 TAY impl
+    Template { start: 1571, n: 4, bind: 203, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // A9 LDA imm
+    Template { start: 1575, n: 4, bind: 204, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // AA TAX impl
+    Template { start: 1579, n: 7, bind: 204, nbind: 1, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // AB LXA imm
+    Template { start: 1586, n: 5, bind: 205, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // AC LDY abs
+    Template { start: 1591, n: 5, bind: 206, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // AD LDA abs
+    Template { start: 1596, n: 5, bind: 207, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // AE LDX abs
+    Template { start: 1601, n: 6, bind: 208, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // AF LAX abs
+    Template { start: 1607, n: 0, bind: 209, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 8, pol: 1 }, iy_base: 0 }, // B0 BCS rel
+    Template { start: 1607, n: 17, bind: 209, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 6 }, // B1 LDA indy
+    Template { start: 1624, n: 0, bind: 211, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // B2 JAM impl
+    Template { start: 1624, n: 18, bind: 211, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 6 }, // B3 LAX indy
+    Template { start: 1642, n: 7, bind: 213, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // B4 LDY zpx
+    Template { start: 1649, n: 7, bind: 214, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // B5 LDA zpx
+    Template { start: 1656, n: 7, bind: 215, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // B6 LDX zpy
+    Template { start: 1663, n: 8, bind: 216, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // B7 LAX zpy
+    Template { start: 1671, n: 1, bind: 217, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // B8 CLV impl
+    Template { start: 1672, n: 12, bind: 217, nbind: 2, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // B9 LDA absy
+    Template { start: 1684, n: 4, bind: 219, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // BA TSX impl
+    Template { start: 1688, n: 15, bind: 219, nbind: 2, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // BB LAS absy
+    Template { start: 1703, n: 12, bind: 221, nbind: 2, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // BC LDY absx
+    Template { start: 1715, n: 12, bind: 223, nbind: 2, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // BD LDA absx
+    Template { start: 1727, n: 12, bind: 225, nbind: 2, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // BE LDX absy
+    Template { start: 1739, n: 13, bind: 227, nbind: 2, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // BF LAX absy
+    Template { start: 1752, n: 5, bind: 229, nbind: 2, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C0 CPY imm
+    Template { start: 1757, n: 16, bind: 231, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C1 CMP indx
+    Template { start: 1773, n: 0, bind: 232, nbind: 0, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C2 NOP imm
+    Template { start: 1773, n: 19, bind: 232, nbind: 1, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C3 DCP indx
+    Template { start: 1792, n: 6, bind: 233, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C4 CPY zp
+    Template { start: 1798, n: 6, bind: 234, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C5 CMP zp
+    Template { start: 1804, n: 7, bind: 235, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C6 DEC zp
+    Template { start: 1811, n: 9, bind: 238, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C7 DCP zp
+    Template { start: 1820, n: 4, bind: 241, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C8 INY impl
+    Template { start: 1824, n: 5, bind: 241, nbind: 2, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // C9 CMP imm
+    Template { start: 1829, n: 4, bind: 243, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // CA DEX impl
+    Template { start: 1833, n: 6, bind: 243, nbind: 2, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // CB SBX imm
+    Template { start: 1839, n: 6, bind: 245, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // CC CPY abs
+    Template { start: 1845, n: 6, bind: 246, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // CD CMP abs
+    Template { start: 1851, n: 7, bind: 247, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // CE DEC abs
+    Template { start: 1858, n: 9, bind: 250, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // CF DCP abs
+    Template { start: 1867, n: 0, bind: 253, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 9, pol: 0 }, iy_base: 0 }, // D0 BNE rel
+    Template { start: 1867, n: 18, bind: 253, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 6 }, // D1 CMP indy
+    Template { start: 1885, n: 0, bind: 255, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // D2 JAM impl
+    Template { start: 1885, n: 20, bind: 255, nbind: 2, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // D3 DCP indy
+    Template { start: 1905, n: 3, bind: 257, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // D4 NOP zpx
+    Template { start: 1908, n: 8, bind: 258, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // D5 CMP zpx
+    Template { start: 1916, n: 9, bind: 259, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // D6 DEC zpx
+    Template { start: 1925, n: 11, bind: 260, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // D7 DCP zpx
+    Template { start: 1936, n: 1, bind: 261, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // D8 CLD impl
+    Template { start: 1937, n: 13, bind: 261, nbind: 2, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // D9 CMP absy
+    Template { start: 1950, n: 0, bind: 263, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // DA NOP impl
+    Template { start: 1950, n: 15, bind: 263, nbind: 2, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // DB DCP absy
+    Template { start: 1965, n: 8, bind: 265, nbind: 2, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // DC NOP absx
+    Template { start: 1973, n: 13, bind: 267, nbind: 2, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // DD CMP absx
+    Template { start: 1986, n: 13, bind: 269, nbind: 2, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // DE DEC absx
+    Template { start: 1999, n: 15, bind: 271, nbind: 2, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // DF DCP absx
+    Template { start: 2014, n: 5, bind: 273, nbind: 2, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E0 CPX imm
+    Template { start: 2019, n: 28, bind: 275, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E1 SBC indx
+    Template { start: 2047, n: 0, bind: 276, nbind: 0, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E2 NOP imm
+    Template { start: 2047, n: 31, bind: 276, nbind: 1, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E3 ISC indx
+    Template { start: 2078, n: 6, bind: 277, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E4 CPX zp
+    Template { start: 2084, n: 18, bind: 278, nbind: 1, len: 2, cyc: 3, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E5 SBC zp
+    Template { start: 2102, n: 7, bind: 279, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E6 INC zp
+    Template { start: 2109, n: 21, bind: 282, nbind: 3, len: 2, cyc: 5, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E7 ISC zp
+    Template { start: 2130, n: 4, bind: 285, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E8 INX impl
+    Template { start: 2134, n: 17, bind: 285, nbind: 3, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // E9 SBC imm
+    Template { start: 2151, n: 0, bind: 288, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // EA NOP impl
+    Template { start: 2151, n: 17, bind: 288, nbind: 3, len: 2, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // EB SBC imm
+    Template { start: 2168, n: 6, bind: 291, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // EC CPX abs
+    Template { start: 2174, n: 18, bind: 292, nbind: 1, len: 3, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // ED SBC abs
+    Template { start: 2192, n: 7, bind: 293, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // EE INC abs
+    Template { start: 2199, n: 21, bind: 296, nbind: 3, len: 3, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // EF ISC abs
+    Template { start: 2220, n: 0, bind: 299, nbind: 0, len: 2, cyc: 2, pen: PenKind::Branch, ctrl: CtrlKind::Br { flag: 9, pol: 1 }, iy_base: 0 }, // F0 BEQ rel
+    Template { start: 2220, n: 30, bind: 299, nbind: 2, len: 2, cyc: 5, pen: PenKind::Iy, ctrl: CtrlKind::Next, iy_base: 6 }, // F1 SBC indy
+    Template { start: 2250, n: 0, bind: 301, nbind: 0, len: 1, cyc: 0, pen: PenKind::None, ctrl: CtrlKind::Jam, iy_base: 0 }, // F2 JAM impl
+    Template { start: 2250, n: 32, bind: 301, nbind: 2, len: 2, cyc: 8, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // F3 ISC indy
+    Template { start: 2282, n: 3, bind: 303, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // F4 NOP zpx
+    Template { start: 2285, n: 20, bind: 304, nbind: 1, len: 2, cyc: 4, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // F5 SBC zpx
+    Template { start: 2305, n: 9, bind: 305, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // F6 INC zpx
+    Template { start: 2314, n: 23, bind: 306, nbind: 1, len: 2, cyc: 6, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // F7 ISC zpx
+    Template { start: 2337, n: 1, bind: 307, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // F8 SED impl
+    Template { start: 2338, n: 25, bind: 307, nbind: 2, len: 3, cyc: 4, pen: PenKind::Ay, ctrl: CtrlKind::Next, iy_base: 0 }, // F9 SBC absy
+    Template { start: 2363, n: 0, bind: 309, nbind: 0, len: 1, cyc: 2, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // FA NOP impl
+    Template { start: 2363, n: 27, bind: 309, nbind: 2, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // FB ISC absy
+    Template { start: 2390, n: 8, bind: 311, nbind: 2, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // FC NOP absx
+    Template { start: 2398, n: 25, bind: 313, nbind: 2, len: 3, cyc: 4, pen: PenKind::Ax, ctrl: CtrlKind::Next, iy_base: 0 }, // FD SBC absx
+    Template { start: 2423, n: 13, bind: 315, nbind: 2, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // FE INC absx
+    Template { start: 2436, n: 27, bind: 317, nbind: 2, len: 3, cyc: 7, pen: PenKind::None, ctrl: CtrlKind::Next, iy_base: 0 }, // FF ISC absx
 ];

@@ -81,6 +81,8 @@ pub fn iv_op(opc: Opc, a: Iv, b: Iv, out: u32, size0: u32) -> Iv {
             hi: a.hi.min(b.hi),
         },
         Opc::IntOr => match (a.value(), b.value()) {
+            (Some(0), _) => b,
+            (_, Some(0)) => a,
             (Some(c), None) | (None, Some(c))
                 if {
                     let x = if a.value().is_some() { b } else { a };
@@ -167,12 +169,13 @@ pub const TOP_ENV: Env = {
 };
 
 /// A memory access of an instruction's template: address interval and value interval
-/// (stores).
+/// (stores); `dummy` for a throw-away read, which has no effect on memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Access {
     pub store: bool,
     pub addr: Iv,
     pub val: Iv,
+    pub dummy: bool,
 }
 
 /// Abstractly execute `ops` from `env` with operand bytes `b` (`None` for cells); the
@@ -196,6 +199,7 @@ pub fn absint(ops: &[Op], b: [Option<u8>; 2], env: &mut Env, acc: &mut Vec<Acces
                     store: true,
                     addr: a,
                     val: get(op.ins[1], &uniq, env),
+                    dummy: false,
                 });
                 continue;
             }
@@ -204,6 +208,7 @@ pub fn absint(ops: &[Op], b: [Option<u8>; 2], env: &mut Env, acc: &mut Vec<Acces
                     store: false,
                     addr: a,
                     val: Iv::full(1),
+                    dummy: op.out.is_none(),
                 });
                 Iv::full(op.out.size())
             }

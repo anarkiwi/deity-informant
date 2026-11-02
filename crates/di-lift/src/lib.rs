@@ -93,10 +93,9 @@ fn ind_ptr(img: &[u8; 0x10000], g: &analysis::Graph, pc: u16) -> (Iv, bool) {
 /// and cannot be checked at its instruction boundary, or jumps through a fixed page-1 pointer.
 fn unchecked(img: &[u8; 0x10000], g: &analysis::Graph, pc: u16, v: &analysis::Var) -> bool {
     let acc = !is_stack_op(v.op)
-        && v.acc
-            .iter()
-            .enumerate()
-            .any(|(i, a)| a.addr.meets(0x100, 0x200) && page1_check(v.op, i) == Check::No);
+        && v.acc.iter().enumerate().any(|(i, a)| {
+            !a.dummy && a.addr.meets(0x100, 0x200) && page1_check(v.op, i) == Check::No
+        });
     let ind = matches!(v.flow, Flow::JmpInd(_)) && {
         let (iv, cell) = ind_ptr(img, g, pc);
         !cell && iv.meets(0x100, 0x200)
@@ -117,6 +116,7 @@ fn unguarded<'a>(
         g.vars[&pc].iter().zip(&node.arms).flat_map(move |(v, a)| {
             let acc = a.acc.iter().enumerate().filter(move |&(i, ac)| {
                 !is_stack_op(v.op)
+                    && !ac.dummy
                     && ac.addr.meets(0x100, 0x200)
                     && (seen.contains_key(&pc) || page1_check(v.op, i) == Check::No)
             });
@@ -289,7 +289,7 @@ pub fn lift_banked(
             for pc in p.pcs() {
                 for v in &g.vars[&pc] {
                     if !is_stack_op(v.op) {
-                        for a in v.acc.iter().filter(|a| page1(a.addr)) {
+                        for a in v.acc.iter().filter(|a| !a.dummy && page1(a.addr)) {
                             *(if a.store { &mut store } else { &mut load }) = true;
                         }
                     }

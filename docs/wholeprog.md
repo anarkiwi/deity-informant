@@ -8,7 +8,22 @@ assumption is guarded by an exit (deopt) to the reference interpreter at an inst
 boundary. Results are exact against `di_pcode::Cpu`: the volatile access stream (address,
 value, and with cycle counting the cycle), final registers (and cycles), and RAM except dead
 stack bytes below SP. A read-modify-write writes its operand back unchanged before the
-result, as the NMOS bus does, so a device sees both writes. Nothing in it knows a host.
+result, as the NMOS bus does, so a device sees both writes, and the 6502's throw-away reads
+are bus reads (below). Nothing in it knows a host.
+
+**Throw-away reads.** As libsidplayfp's `MOS6510` and the vagrant-moses machine make them:
+the byte after a one-byte opcode (implied, accumulator, push, pull, `RTS`, `RTI`, `BRK`'s
+signature byte), the unfixed address of an `abs,X`/`abs,Y`/`(zp),Y` access (the base's page
+with the indexed low byte: on a page cross for reads, always for stores and read-modify-writes),
+a taken branch's next byte and, on a page cross, its unfixed target, and the address an `RTS`
+pulled. Those of pages `$00`-`$01` (`zp,X`, `(zp,X)`, stack cycles) are not made. Indexed ones
+are template ops (a `LOAD` with no output, predicated by its second input when present); the
+others belong to the instruction's control. The emitter keeps only those whose address
+interval may meet a volatile range in the node's configuration, so elsewhere they cost
+nothing; optimization drops those whose address or predicate folds away, and an unfixed
+address is the access's own when the index cannot cross a page. An entry's exit `RTS` reads
+the host's return address less one (`Program.call` pushes `$0001`); it is not made when
+nothing but pushes reaches page 1 and none lands above the entry.
 
 The Rust core is `crates/di-lift`; `deity_informant._native` exposes it.
 
@@ -200,7 +215,7 @@ aux]` with varnodes `[space, offset, size]` (`c` constant, `r` register, `u` tem
 
 | Op | Inputs | `aux` |
 |---|---|---|
-| `COPY` ... `INT_CARRY`, `LOAD`, `STORE` | as `lift()` | `LOAD`/`STORE`: `"volatile"` when the address may be volatile; with a bank map the access's backing in its node's configuration (`ram`: RAM under any device; `rom`: the bank map's ROM image; `bank<c>`: resolved per address in configuration `c` at run time; device otherwise). A ROM byte at a constant address is a constant, a read of the port's data cell is computed from its registers. |
+| `COPY` ... `INT_CARRY`, `LOAD`, `STORE` | as `lift()`; a `LOAD` with no output is a throw-away read, made when its second input (if any) is nonzero | `LOAD`/`STORE`: `"volatile"` when the address may be volatile; with a bank map the access's backing in its node's configuration (`ram`: RAM under any device; `rom`: the bank map's ROM image; `bank<c>`: resolved per address in configuration `c` at run time; device otherwise). A ROM byte at a constant address is a constant, a read of the port's data cell is computed from its registers. |
 | `BRANCH` | | target block |
 | `CBRANCH` | condition | target block (falls through to the next op) |
 | `BRANCHIND` | address | table `[(address, block)]`; an address outside it deopts there |

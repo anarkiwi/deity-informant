@@ -188,12 +188,13 @@ def store_channel(op):
 
 
 def load_class(op):
-    """Read-classes of ``op``'s loads: ``data``, ``ptr_indirect`` or ``stack_pull``."""
+    """Read-classes of ``op``'s loads (throw-away reads aside): ``data``, ``ptr_indirect``
+    or ``stack_pull``."""
     rec = lift(_image(op), _PC)
     ops, defs, prov = rec["ops"], _defs(rec["ops"]), _prov_by_key(rec)
     out = []
     for o in ops:
-        if o[0] != "LOAD":
+        if o[0] != "LOAD" or o[1] is None:
             continue
         feats = set()
         _features(ops, defs, prov, o[2][0], feats)

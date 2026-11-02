@@ -324,6 +324,56 @@ impl<'a> Em<'a, '_> {
         self.n.stack_guards += 1;
         self.side_exit(hit, true, |em| em.deopt(k(pc as u32, 2)));
     }
+    /// Whether an access in `iv` may reach a volatile address in the current configuration.
+    fn reaches(&self, iv: Iv) -> bool {
+        self.sh.volatile(iv)
+            && self
+                .sh
+                .bank
+                .is_none_or(|m| !matches!(self.backing(m, iv), Some(Back::Ram | Back::Rom)))
+    }
+    /// A throw-away read of `addr` (interval `iv`) when `pred` holds (none: always), emitted
+    /// only where it may reach a volatile address: elsewhere it has no effect.
+    fn touch(&mut self, addr: Vn, pred: Vn, iv: Iv) {
+        if !self.reaches(iv) {
+            return;
+        }
+        let f = match self.sh.bank {
+            None => self.vflag(iv),
+            Some(m) => {
+                let b = self.backing(m, iv);
+                self.bflags(b, iv)
+            }
+        };
+        self.emit(Opc::Load, NONE, addr, pred, f);
+    }
+    /// The entry's return address is still the host's (`Program.call`'s `$0001`, never
+    /// volatile) at an exit: nothing but pushes reaches page 1 and none lands above the entry.
+    fn host_return(&self) -> bool {
+        let p = self.plan;
+        self.sh.private
+            && p.top
+            && !p.sets_sp
+            && p.nodes.keys().all(|k| matches!(k.1, H::Known(h) if h <= 0))
+    }
+    fn touch_at(&mut self, a: u16, pred: Vn) {
+        self.touch(k(a as u32, 2), pred, Iv::exact(a as u32));
+    }
+    /// The throw-away read of the address an `RTS` pulled (`ra`, interval `iv`), made after
+    /// the `RTS` in a caller: with cycles, at the `RTS`'s start cycle.
+    fn touch_ret(&mut self, ra: Vn, iv: Iv) {
+        if !self.reaches(iv) {
+            return;
+        }
+        let rts = Template::of(0x60).cyc as u32;
+        if self.sh.cycles {
+            self.emit(Opc::IntSub, cy(), cy(), k(rts, 4), 0);
+        }
+        self.touch(ra, NONE, iv);
+        if self.sh.cycles {
+            self.emit(Opc::IntAdd, cy(), cy(), k(rts, 4), 0);
+        }
+    }
     fn vflag(&mut self, iv: Iv) -> u32 {
         if self.sh.volatile(iv) {
             self.flush();
@@ -516,7 +566,13 @@ impl<'a> Em<'a, '_> {
                     store: op.opc == Opc::Store,
                     addr: Iv::full(2),
                     val: Iv::full(1),
+                    dummy: op.out.is_none(),
                 });
+                if op.opc == Opc::Load && op.out.is_none() {
+                    ai += 1;
+                    self.touch(a, b, ac.addr);
+                    continue;
+                }
                 if !stack && page1_check(opc, ai) == Check::Own && self.sh.private {
                     match self.plan.narrowed(&self.sh.seen, pc, opc, ai, ac.addr) {
                         Some(r) => self.page1_guard(a, pc, Some(r)),
@@ -591,6 +647,10 @@ impl<'a> Em<'a, '_> {
             memo.insert((s, size), v);
             v
         };
+        // A one-byte instruction first reads the byte after its opcode.
+        if t.len == 1 && t.ctrl != CtrlKind::Jam {
+            self.touch_at(next, NONE);
+        }
         let mut umap = FxHashMap::default();
         let stack = is_stack_op(*op);
         let mut chk = self.ops(pc, *op, t.ops(), acc, stack, &mut slot, &mut umap);
@@ -646,6 +706,38 @@ impl<'a> Em<'a, '_> {
                 } else {
                     self.op(Opc::IntEqual, 1, fl, k(0, 1))
                 };
+                // Taken, a branch reads the next byte, then on a page cross the target's low
+                // byte in the next byte's page.
+                self.touch_at(*f, c);
+                let page = Iv {
+                    lo: (*f & 0xff00) as u32,
+                    hi: (*f | 0xff) as u32,
+                };
+                let calc = match tg {
+                    Tg::At(a) => {
+                        if (a ^ f) & 0xff00 != 0 {
+                            self.touch_at(*f & 0xff00 | *a & 0xff, c);
+                        }
+                        None
+                    }
+                    Tg::Calc(_) => {
+                        let o = self.zext(ob[0], 2);
+                        let neg = self.op(Opc::IntLess, 1, k(0x7f, 2), o);
+                        let neg = self.zext(neg, 2);
+                        let neg = self.op(Opc::IntSub, 2, k(0, 2), neg);
+                        let hi = self.op(Opc::IntAnd, 2, neg, k(0xff00, 2));
+                        let ext = self.op(Opc::IntOr, 2, o, hi);
+                        let tgt = self.op(Opc::IntAdd, 2, k(*f as u32, 2), ext);
+                        if self.reaches(page) {
+                            let lo = self.op(Opc::IntAnd, 2, tgt, k(0xff, 2));
+                            let u = self.op(Opc::IntOr, 2, lo, k((*f & 0xff00) as u32, 2));
+                            let x = self.op(Opc::IntNotEqual, 1, u, tgt);
+                            let p = self.op(Opc::IntAnd, 1, x, c);
+                            self.touch(u, p, page);
+                        }
+                        Some(tgt)
+                    }
+                };
                 self.account(cyc, maxpen);
                 match tg {
                     Tg::At(a) => {
@@ -669,13 +761,7 @@ impl<'a> Em<'a, '_> {
                         self.emit(Opc::CBranch, NONE, c, NONE, x);
                         self.emit(Opc::Branch, NONE, NONE, NONE, bf);
                         self.cur = x as usize;
-                        let o = self.zext(ob[0], 2);
-                        let neg = self.op(Opc::IntLess, 1, k(0x7f, 2), o);
-                        let neg = self.zext(neg, 2);
-                        let neg = self.op(Opc::IntSub, 2, k(0, 2), neg);
-                        let hi = self.op(Opc::IntAnd, 2, neg, k(0xff00, 2));
-                        let ext = self.op(Opc::IntOr, 2, o, hi);
-                        let tgt = self.op(Opc::IntAdd, 2, k(*f as u32, 2), ext);
+                        let tgt = calc.unwrap();
                         if self.sh.cycles {
                             let d = self.op(Opc::IntXor, 2, tgt, k(*f as u32, 2));
                             let d = self.op(Opc::IntAnd, 2, d, k(0xff00, 2));
@@ -751,10 +837,12 @@ impl<'a> Em<'a, '_> {
                     let w = self.word(lo, hi);
                     let bad = self.op(Opc::IntNotEqual, 1, w, k(ra, 2));
                     self.side_exit(bad, false, |em| {
+                        em.touch_ret(w, Iv::full(2));
                         let t = em.op(Opc::IntAdd, 2, w, k(1, 2));
                         em.deopt(t);
                     });
                 }
+                self.touch_ret(k(ra, 2), Iv::exact(ra));
                 if arm.port {
                     let keys = self.succ.to_vec();
                     self.bank_dispatch(*ret, &keys);
@@ -794,6 +882,9 @@ impl<'a> Em<'a, '_> {
                 let hi = self.pull();
                 let mut tgt = self.word(lo, hi);
                 if matches!(ctl, Ctl::Rts(_)) {
+                    if !(exit == Exit::Static && self.host_return()) {
+                        self.touch(tgt, NONE, Iv::full(2));
+                    }
                     tgt = self.op(Opc::IntAdd, 2, tgt, k(1, 2));
                 }
                 self.account(cyc, maxpen);
@@ -813,6 +904,7 @@ impl<'a> Em<'a, '_> {
                     store: true,
                     addr: PAGE1,
                     val: Iv::full(1),
+                    dummy: false,
                 }];
                 let mut u = FxHashMap::default();
                 chk.extend(self.ops(pc, 0x08, php.ops(), &acc, true, &mut none, &mut u));

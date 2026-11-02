@@ -750,3 +750,50 @@ entry:  JSR $E4F0
 .org $E4F0
         .byte $5A
 """
+
+# Throw-away reads reaching IO: indexed accesses across its pages, a pulled RTS address in it,
+# and a branch (its offset a code cell) whose next byte and unfixed target are in it.
+THROWAWAY = """
+entry:  TAX
+        LDA tab,X
+        TAY
+        LDA $C0F0,Y
+        STA $C010,Y
+        TYA
+        TAX
+        INC $C0FE,X
+        LDA #$F4
+        STA $FB
+        LDA #$C0
+        STA $FC
+        LDA ($FB),Y
+        STA ($FB),Y
+        LDA offs
+        STA br+1
+        LDX #2
+        JSR loop
+        LDA #$C0
+        PHA
+        LDA #$FF
+        PHA
+        RTS
+tab:    .byte $00, $07, $08, $20
+offs:   .byte $F6
+.org $BFF6
+loop:   DEX
+        BEQ done
+        JMP br
+done:   RTS
+        NOP
+br:     BNE loop
+.org $C100
+        RTS
+"""
+
+# A one-byte instruction before IO reads its first byte.
+THROWDP = """
+entry:  JSR last
+        RTS
+.org $BFFF
+last:   RTS
+"""

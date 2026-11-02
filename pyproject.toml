@@ -24,7 +24,7 @@ dependencies = ["jennings>=0.9.0", "numpy", "networkx", "tqdm"]
 
 [project.optional-dependencies]
 ghidra = ["pypcode"]
-dev = ["pytest", "pytest-xdist", "pytest-cov", "build", "black", "pylint", "py65", "pypcode", "maturin", "pebble", "vagrant-moses[cpu]>=0.10.0", "pylibresidfp>=0.6.1", "zstandard"]
+dev = ["pytest", "pytest-xdist", "pytest-cov", "build", "black", "pylint", "py65", "pypcode", "maturin", "pebble", "vagrant-moses[cpu]>=0.11.0", "pylibresidfp>=0.6.1", "zstandard"]
 
 [project.urls]
 Homepage = "https://github.com/anarkiwi/deity-informant"

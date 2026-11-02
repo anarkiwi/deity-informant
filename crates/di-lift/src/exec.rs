@@ -230,13 +230,18 @@ impl Exec {
                             operand(v, t0, sbase)
                         }
                     };
+                    let dummy = op.opc == Opc::Load && op.out.is_none();
                     x.ops.push(X {
                         opc: op.opc,
                         osz: op.out.size() as u8,
                         asz: op.ins[0].size() as u8,
                         out: if op.out.is_none() { 0 } else { opd(op.out) },
                         a: opd(op.ins[0]),
-                        b: opd(op.ins[1]),
+                        b: if dummy && op.ins[1].is_none() {
+                            IMM | 1
+                        } else {
+                            opd(op.ins[1])
+                        },
                         aux,
                     });
                 }
@@ -519,11 +524,17 @@ impl<'a> Runner<'a> {
                         f[o.out as usize] = get(f, o.a) & mask(o.osz as u32)
                     }
                     Opc::Load => {
+                        if o.osz == 0 && get(f, o.b) == 0 {
+                            continue;
+                        }
                         if cyc && o.aux & mem::VOLATILE != 0 {
                             bus.now(c0 + f[CY as usize] as u64);
                         }
                         let a = get(f, o.a) as u16;
-                        f[o.out as usize] = load(x.bank.as_ref(), bus, o.aux, a) as u32;
+                        let v = load(x.bank.as_ref(), bus, o.aux, a) as u32;
+                        if o.osz != 0 {
+                            f[o.out as usize] = v;
+                        }
                     }
                     Opc::Store => {
                         if cyc && o.aux & mem::VOLATILE != 0 {

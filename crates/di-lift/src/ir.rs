@@ -96,9 +96,13 @@ impl LOp {
             aux,
         }
     }
+    /// Number of used inputs: the opcode's, plus a throw-away read's predicate.
+    pub fn arity(&self) -> usize {
+        self.opc.arity() + (self.opc == Opc::Load && !self.ins[1].is_none()) as usize
+    }
     /// The used inputs.
     pub fn inputs(&self) -> &[Vn] {
-        &self.ins[..self.opc.arity()]
+        &self.ins[..self.arity()]
     }
     /// Ends a block (a `CALL` is followed by the `BRANCH` to its return block).
     pub fn is_term(&self) -> bool {
