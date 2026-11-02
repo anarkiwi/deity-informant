@@ -224,12 +224,125 @@ def test_basic_boot_runs_the_program_with_the_song(real, song, ntsc):
     prog = H.SONG_POKE
     img = bytearray(poweron_ram())
     img[0x0801 : 0x0801 + len(prog)] = prog
-    boot = c64.basic_boot(img, 0x0801, 0x0801 + len(prog), song, ntsc, real)
+    boot = c64.boot(img, 0x0801, 0x0801 + len(prog), 0, song, ntsc, "BASIC", roms=real)
     end = (0x0801 + len(prog)).to_bytes(2, "little")
     assert boot.image[0x2B:0x2D] == b"\x01\x08" and boot.image[0x2D:0x2F] == end
     assert boot.image[0x02A6] == (not ntsc) and boot.init == (0xBF55, song - 1)
     assert boot.roms[0xA000] != real[0xA000] and real[0xA000] == c64.real_roms()[0xA000]
     o = MachineOracle(boot.image, ntsc=ntsc, roms=boot.roms, backend="python")
-    o.run([], init=[boot.init], frames=5, irq_setup=True, io=boot.io)
+    o.run([], frames=5, **boot.run_kw())
     assert o.ram[4096] == song and o.ram[c64.SAREG] == song - 1
     assert o.ram[0x39] | o.ram[0x3A] << 8 == 20 and not o.m.jammed
+
+
+#: A ``psiddrv.a65`` cold start for a tune without a play address, at $0400, its data first.
+DRIVER = """
+playnum: .byte ${song:02X} ; speed: .byte ${speed:02X} ; initvec: .word $1000 ; playvec: .word 0
+initiomap: .byte ${iomap:02X} ; playiomap: .byte 0 ; video: .byte ${video:02X}
+clock: .byte ${video:02X} ; flags: .byte ${flags:02X} ; init: JMP ($0402)
+cold: SEI ; LDA #$00 ; STA $D01A ; LDA $D019 ; STA $D019 ; LDA #$7F ; STA $DC0D ; STA $DD0D
+LDA $DC0D ; LDA $DD0D ; LDA #$0F ; STA $D418 ; LDA video ; BEQ ntsc ; LDX #$25 ; LDY #$40
+JMP timer ; ntsc: LDX #$95 ; LDY #$42 ; timer: STX $DC04 ; STY $DC05 ; LDX #$9B ; LDY #$37
+EOR clock ; ORA initiomap ; BEQ vicinit ; LDX #$1B ; LDY #$00 ; vicinit: STX $D011
+STY $D012 ; LDA initiomap ; BEQ irqinit ; LDA playiomap ; BEQ irqinit ; STX $0314
+irqinit: LDA speed ; BNE ciainit ; LDA #$81 ; STA $D01A ; JMP setiomap
+ciainit: LDA #$81 ; LDX #$01 ; STA $DC0D ; STX $DC0E ; setiomap: LDA initiomap ; BNE setbank
+LDA #$37 ; setbank: STA $01 ; LDA flags ; PHA ; LDA playnum ; PLP ; JSR init
+LDA initiomap ; BEQ idle ; LDA playiomap ; BEQ run ; LDA #$37 ; STA $01 ; run: CLI
+idle: JMP idle
+"""
+#: Init: reports CIA 1 timer A, the raster, the VIC IRQ flags and SP (as reset, then sidplayfp's
+#: ``jsr init``, leave it) to the SID, takes its IRQs (reporting the timer) and returns.
+PROBE = (
+    "ad04dc8d01d4ad05dc8d02d4ad12d08d03d4ad19d08d04d4ba8e05d4"
+    "a9408d1403a9108d150360"  # $0314 = $1040; RTS
+)
+HANDLER = "ad04dc8d06d4a9ff8d19d0ad0ddc68a868aa6840"  # report, ack VIC and CIA, RTI
+
+
+def _assemble(src, base):
+    """``(code, labels)`` of ``src`` (``;``-separated, ``label:`` prefixes, ``.byte``/``.word``)
+    at ``base``, in two passes."""
+    from py65.assembler import Assembler  # pylint: disable=import-outside-toplevel
+    from py65.devices.mpu6502 import MPU  # pylint: disable=import-outside-toplevel
+    from py65.utils.addressing import AddressParser  # pylint: disable=import-outside-toplevel
+
+    stmts = [x.strip() for x in src.replace("\n", ";").split(";") if x.strip()]
+    names = [x.split(":")[0] for x in stmts if ":" in x]
+    parser, labels = AddressParser(), {}
+    asm = Assembler(MPU(), parser)
+    for final in (False, True):
+        pc, out = base, bytearray()
+        for st in stmts:
+            label, _, op = st.rpartition(":")
+            if label:
+                labels[label] = pc
+            parser.labels = labels if final else dict.fromkeys(names, pc)
+            directive, _, arg = op.strip().partition(" ")
+            if directive in (".byte", ".word"):
+                code = parser.number(arg).to_bytes(1 + (directive == ".word"), "little")
+            else:
+                code = bytes(asm.assemble(op.strip(), pc))
+            out += code
+            pc += len(code)
+    return bytes(out), labels
+
+
+class _SidLog:
+    def __init__(self):
+        self.writes = []
+
+    def read(self, _cycle, _reg):
+        return 0
+
+    def write(self, cycle, reg, value):
+        self.writes.append((cycle, reg, value))
+
+
+def _sid_log(img, ntsc, roms, frames=3, **kw):
+    log = _SidLog()
+    o = MachineOracle(img, ntsc=ntsc, devices={0xD400: log}, roms=roms)
+    o.run([], frames=frames, **kw)
+    return log.writes
+
+
+@native
+@pytest.mark.parametrize(
+    "kind,ntsc,cia", [("RSID", False, 1), ("RSID", True, 1), ("PSID", False, 0), ("PSID", True, 1)]
+)
+def test_boot_matches_the_driver_cycle_for_cycle(request, kind, ntsc, cia):
+    """A :func:`c64.boot` start makes the I/O, the timer and raster phase, the interrupts and the
+    SID writes that running sidplayfp's cold start on the machine does."""
+    roms = request.getfixturevalue("real") if kind == "RSID" else None
+    img = bytearray(poweron_ram())
+    img[0x1000 : 0x1000 + len(bytes.fromhex(PROBE))] = bytes.fromhex(PROBE)
+    img[0x1040 : 0x1040 + len(bytes.fromhex(HANDLER))] = bytes.fromhex(HANDLER)
+    boot = c64.boot(img, 0x1000, 0x1060, 0x1000, 2, ntsc, kind, cia, roms)
+    iomap = 0 if kind == "RSID" else c64.iomap(0x1000)
+    src = DRIVER.format(
+        song=1, speed=cia, iomap=iomap, video=int(not ntsc), flags=4 * (kind == "PSID")
+    )
+    drv, labels = _assemble(src, 0x0400)
+    ref = bytearray(boot.image)
+    ref[0x0400 : 0x0400 + len(drv)] = drv
+    want = _sid_log(ref, ntsc, boot.roms, init=[(labels["cold"], 0)])
+    got = _sid_log(boot.image, ntsc, boot.roms, **boot.run_kw())
+    sp = [w for w in got if w[1] == 5]
+    assert sp[0][2] == 0xFD and [w for w in want if w[1] == 5][0][2] == 0xFB  # the call to cold
+    end = min(got[-1][0], want[-1][0])
+    got, want = ([w for w in log if w[1] != 5 and w[0] <= end] for log in (got, want))
+    assert got == want and len(got) > 6 and got[0][1:] == (0x18, 0x0F)
+
+
+def test_psid_boot_environment():
+    img = bytearray(poweron_ram())
+    img[0x0200:0x0210] = bytes(range(1, 17))
+    img[0xFFF0:] = b"\xaa" * 16
+    boot = c64.boot(img, 0xFFF0, 0x10000, 0xFFF0, 3, ntsc=True, kind="PSID", cia=False)
+    assert boot.image[0x2D:0x33] == bytes(6) and boot.image[0xAC:0xB0] == b"\xf0\xff\x00\x00"
+    assert boot.image[0x0200:0x0210] == bytes(16) and boot.image[0x02A6] == 0 and not boot.roms
+    assert boot.image[0x0314:0x031A] == bytes.fromhex("7eeae2fce2fc") and boot.port == 0x35
+    assert boot.init == (c64.SENTINEL - 15, 2) and boot.image[0xFFF0:] == b"\xaa" * 16
+    assert boot.image[c64.SENTINEL - 15 : c64.SENTINEL - 11] == bytes.fromhex("78 4c f0 ff")
+    io, start = c64.driver_io(True, 0x35, False)
+    assert boot.io == io and boot.start == start - 5 and io[-1][1:] == (0xD01A, 0x81)
