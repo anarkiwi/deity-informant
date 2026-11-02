@@ -15,6 +15,7 @@ pub mod ir;
 pub mod jit;
 pub mod opt;
 pub mod ptr;
+pub mod scev;
 pub mod vsa;
 pub mod wide;
 
@@ -514,6 +515,7 @@ pub fn lift_banked(
         cycles: opts.cycles,
         stats,
         chains,
+        induction: g.ind.clone(),
     }
 }
 

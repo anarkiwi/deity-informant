@@ -708,6 +708,34 @@ impl Program {
         Ok(out)
     }
 
+    /// Induction variables of the loops: ``{"head", "reg", "addr", "lo", "hi", "step",
+    /// "trips"}`` with ``reg`` ``a``/``x``/``y`` (``addr`` the byte's address otherwise),
+    /// ``lo``/``hi`` its interval entering the loop, ``step`` its signed change per iteration
+    /// and ``trips`` the most head visits per entry (``None``: unbounded).
+    #[getter]
+    fn induction<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        use di_lift::scev::Place;
+        let out = PyList::empty(py);
+        let mut ivs: Vec<_> = self.prog.induction.iter().collect();
+        ivs.sort_by_key(|iv| (iv.head, iv.var));
+        for iv in ivs {
+            let d = PyDict::new(py);
+            d.set_item("head", iv.head)?;
+            let (r, a) = match iv.var {
+                Place::Reg(r) => (Some(["a", "x", "y"][r as usize]), None),
+                Place::Mem(a) => (None, Some(a)),
+            };
+            d.set_item("reg", r)?;
+            d.set_item("addr", a)?;
+            d.set_item("lo", iv.start.lo)?;
+            d.set_item("hi", iv.start.hi)?;
+            d.set_item("step", iv.step as i8)?;
+            d.set_item("trips", iv.trips)?;
+            out.append(d)?;
+        }
+        Ok(out)
+    }
+
     /// Whether the program counts cycles.
     #[getter]
     fn cycles(&self) -> bool {

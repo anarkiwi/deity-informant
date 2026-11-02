@@ -34,7 +34,7 @@ const FLAGS: [usize; 3] = [8, 9, 14];
 const DATA: usize = 3;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Rel {
+pub(crate) enum Rel {
     Eq,
     Ne,
     Ge,
@@ -65,8 +65,8 @@ struct Pred {
 }
 
 #[derive(Clone, PartialEq, Debug)]
-struct St {
-    env: Env,
+pub(crate) struct St {
+    pub(crate) env: Env,
     pred: [Option<Pred>; 3],
     /// `A`, `X` and `Y` as `base + off` of the register `base` at the function's entry.
     rel: [Option<(u8, u8)>; DATA],
@@ -94,7 +94,7 @@ impl St {
 
 /// A one-byte value as a symbol: `base + off`, bit 7 of it, or a condition on it.
 #[derive(Clone, Copy)]
-enum Sym {
+pub(crate) enum Sym {
     Lin(u8, u8),
     Bit7(u8, u8),
     Cond(u8, u8, Rel, u8),
@@ -109,6 +109,22 @@ enum Val {
 /// Symbols of the registers after `ops` (entry `A`, `X`, `Y` are bases 0-2, each load a new
 /// base) and the mask of registers they write.
 fn symbolic(ops: &[Op], b: [Option<u8>; 2]) -> ([Option<Sym>; 16], u32) {
+    let (reg, written, _) = symbolic_in(ops, b, None, None);
+    (reg, written)
+}
+
+/// The base of the byte at a tracked address in [`symbolic_in`].
+pub(crate) const MEM: u8 = u8::MAX;
+
+/// [`symbolic`] with the carry known (`carry`) and, for a tracked address `mem` whose loads
+/// are base [`MEM`], the symbol of the last value stored there (`Some(None)`: not a symbol).
+pub(crate) fn symbolic_in(
+    ops: &[Op],
+    b: [Option<u8>; 2],
+    carry: Option<u8>,
+    mem: Option<u32>,
+) -> ([Option<Sym>; 16], u32, Option<Option<Sym>>) {
+    let mut stored = None;
     let mut reg = [None; 16];
     for (r, s) in reg.iter_mut().enumerate().take(DATA) {
         *s = Some(Sym::Lin(r as u8, 0));
@@ -122,6 +138,9 @@ fn symbolic(ops: &[Op], b: [Option<u8>; 2]) -> ([Option<Sym>; 16], u32) {
                     return None;
                 }
                 match v.space() {
+                    Space::Reg if v.off() == 8 && written >> 8 & 1 == 0 && carry.is_some() => {
+                        carry.map(Val::C)
+                    }
                     Space::Const => match v.slot() {
                         Slot::Fixed => u8::try_from(v.off()).ok().map(Val::C),
                         Slot::B1 => b[0].map(Val::C),
@@ -139,10 +158,25 @@ fn symbolic(ops: &[Op], b: [Option<u8>; 2]) -> ([Option<Sym>; 16], u32) {
             _ => None,
         };
         let cond = |rel, k, (b, o): (u8, u8)| Some(Sym::Cond(b, o, rel, k));
+        let at = |v: Vn| match v.space() {
+            Space::Const if v.slot() == Slot::Fixed => Some(v.off()),
+            Space::Const => crate::analysis::slot_iv(v.slot(), b, v.size()).value(),
+            _ => None,
+        };
         let r = match op.opc {
+            Opc::Load if op.out.size() == 1 && mem.is_some() && at(op.ins[0]) == mem => {
+                Some(Sym::Lin(MEM, 0))
+            }
             Opc::Load if op.out.size() == 1 => {
                 fresh = fresh.wrapping_add(1);
                 Some(Sym::Lin(fresh, 0))
+            }
+            Opc::Store if mem.is_some() && at(op.ins[0]) == mem => {
+                stored = Some(match y {
+                    Some(Val::S(s)) => Some(s),
+                    _ => None,
+                });
+                None
             }
             Opc::Copy => match x {
                 Some(Val::S(s)) => Some(s),
@@ -196,11 +230,11 @@ fn symbolic(ops: &[Op], b: [Option<u8>; 2]) -> ([Option<Sym>; 16], u32) {
             _ => {}
         }
     }
-    (reg, written)
+    (reg, written, stored)
 }
 
 /// Whether `[lo, hi]` shifted by `d` modulo 256, as an interval (full when it straddles the wrap).
-fn shift(iv: Iv, d: u8) -> Iv {
+pub(crate) fn shift(iv: Iv, d: u8) -> Iv {
     let (lo, hi) = (iv.lo + d as u32, iv.hi + d as u32);
     match (lo > 255, hi > 255) {
         (true, _) => Iv {
@@ -212,12 +246,12 @@ fn shift(iv: Iv, d: u8) -> Iv {
     }
 }
 
-fn meet(a: Iv, b: Iv) -> Option<Iv> {
+pub(crate) fn meet(a: Iv, b: Iv) -> Option<Iv> {
     let (lo, hi) = (a.lo.max(b.lo), a.hi.min(b.hi));
     (lo <= hi).then_some(Iv { lo, hi })
 }
 
-fn hull(a: Iv, b: Iv) -> Iv {
+pub(crate) fn hull(a: Iv, b: Iv) -> Iv {
     Iv {
         lo: a.lo.min(b.lo),
         hi: a.hi.max(b.hi),
@@ -257,7 +291,7 @@ fn restrict(p: &Pred, want: bool) -> Option<Iv> {
 }
 
 /// `st` on the edge where flag register `flag` equals `want`, or `None` if the edge cannot be taken.
-fn refine(st: &St, flag: usize, want: bool) -> Option<St> {
+pub(crate) fn refine(st: &St, flag: usize, want: bool) -> Option<St> {
     if st.env[flag].value().is_some_and(|v| (v != 0) != want) {
         return None;
     }
@@ -275,13 +309,13 @@ fn refine(st: &St, flag: usize, want: bool) -> Option<St> {
 }
 
 /// The image and code cells.
-struct Code<'a> {
-    img: &'a [u8; 0x10000],
-    cells: &'a FixedBitSet,
+pub(crate) struct Code<'a> {
+    pub(crate) img: &'a [u8; 0x10000],
+    pub(crate) cells: &'a FixedBitSet,
 }
 
 /// `st` after variant `v` at `pc`; its accesses are appended to `acc`.
-fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>) -> St {
+pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>) -> St {
     let t = Template::of(v.op);
     let ops = t.ops();
     let b = operand_bytes(code.img, code.cells, pc, t.len);
@@ -704,7 +738,11 @@ pub fn analyze(
     vars: &mut FxHashMap<u16, Vec<Var>>,
     entries: &[Entry],
     matched: bool,
-) -> (FxHashMap<u16, u64>, FixedBitSet) {
+) -> (
+    FxHashMap<u16, u64>,
+    FixedBitSet,
+    Vec<crate::scev::Induction>,
+) {
     let rets = returns(vars, matched);
     let succ_of = |pc: u16| -> Vec<u16> {
         let mut s: Vec<u16> = vars[&pc]
@@ -816,21 +854,36 @@ pub fn analyze(
             .map_or_else(|| st.clone(), |o| join(o, st, None));
         merged.insert(pc, m);
     }
+    let succs: FxHashMap<u16, Vec<u16>> = vars.keys().map(|&pc| (pc, succ_of(pc))).collect();
     let mut dec = FixedBitSet::with_capacity(0x10000);
-    for (&pc, vs) in vars.iter_mut() {
-        let st = merged
+    let mut fill = |vars: &mut FxHashMap<u16, Vec<Var>>, pc: u16, yb: Option<Iv>| {
+        let mut st = merged
             .get(&pc)
             .map_or_else(|| St::new(TOP_ENV), Clone::clone);
         dec.set(pc as usize, st.env[di_pcode::reg::D].hi != 0);
-        for v in vs.iter_mut() {
+        let y = di_pcode::reg::Y;
+        if let Some(b) = yb.and_then(|b| meet(b, st.env[y])) {
+            st.env[y] = b;
+        }
+        for v in vars.get_mut(&pc).unwrap() {
             let mut acc = std::mem::take(&mut v.acc);
             acc.clear();
             step(&code, pc, v, &st, &mut acc);
             v.acc = acc;
         }
+    };
+    let pcs: Vec<u16> = vars.keys().copied().collect();
+    for &pc in &pcs {
+        fill(vars, pc, None);
+    }
+    // Index bounds from the loops' trip counts tighten the accesses they reach.
+    let ind = crate::scev::find(&code, vars, &heads, &succs, &merged, &roots);
+    for (pc, b) in crate::scev::y_bounds(&ind) {
+        fill(vars, pc, Some(b));
     }
     (
         merged.into_iter().map(|(pc, st)| (pc, st.from)).collect(),
         dec,
+        ind,
     )
 }

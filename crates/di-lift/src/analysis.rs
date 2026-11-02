@@ -251,6 +251,17 @@ enum Tag {
 /// Abstractly execute `ops` from `env` with operand bytes `b` (`None` for cells); the
 /// memory accesses in op order.
 pub fn absint(ops: &[Op], b: [Option<u8>; 2], env: &mut Env, acc: &mut Vec<Access>) {
+    absint_known(ops, b, env, acc, None)
+}
+
+/// [`absint`] with the byte at one address known: `(address, value)`.
+pub fn absint_known(
+    ops: &[Op],
+    b: [Option<u8>; 2],
+    env: &mut Env,
+    acc: &mut Vec<Access>,
+    known: Option<(u32, u8)>,
+) {
     let mut uniq = [Iv::full(4); di_pcode::UNIQUE_SIZE];
     let mut tag = [Tag::No; di_pcode::UNIQUE_SIZE];
     let mut loaded: Vec<(Vn, Vn)> = Vec::new();
@@ -325,7 +336,12 @@ pub fn absint(ops: &[Op], b: [Option<u8>; 2], env: &mut Env, acc: &mut Vec<Acces
                     above: false,
                     ptr,
                 });
-                Iv::full(op.out.size())
+                match known {
+                    Some((k, x)) if a.value() == Some(k) && op.out.size() == 1 => {
+                        Iv::exact(x as u32)
+                    }
+                    _ => Iv::full(op.out.size()),
+                }
             }
             Opc::Copy | Opc::IntZext => a,
             o => iv_op(
@@ -409,6 +425,8 @@ pub struct Graph {
     pub from: FxHashMap<u16, u64>,
     /// Instruction starts at which the decimal flag may be set.
     pub dec: FixedBitSet,
+    /// Induction variables of the loops.
+    pub ind: Vec<crate::scev::Induction>,
 }
 
 /// Stack-pointer effect of a `Next` instruction: pushes and pulls by count, `None` for an
@@ -650,7 +668,7 @@ pub fn discover(
             }
         }
         let written = static_stores(&cimg, &cells, &vars);
-        let (from, dec) = crate::vsa::analyze(&cimg, &cells, &mut vars, entries, matched);
+        let (from, dec, ind) = crate::vsa::analyze(&cimg, &cells, &mut vars, entries, matched);
         let mut next = FixedBitSet::with_capacity(0x10000);
         let mut nvalues = observed.clone();
         for a in code.ones().filter(|&a| !rom_code.contains(a)) {
@@ -681,6 +699,7 @@ pub fn discover(
                 prot: crate::ptr::Prot::default(),
                 from,
                 dec,
+                ind,
             };
         }
         cells = next;
