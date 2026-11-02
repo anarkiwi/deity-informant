@@ -72,11 +72,42 @@ on the sentinel closes it and resumes the interrupted pc. The record's entry sta
 registers and status the hardware pushed (`frames.ENTRY`). The lift is always banked, through the
 song's ROMs (a BASIC song's patched BASIC included), one entry per entry address;
 `Program.call(..., irq=True)` pushes the frame as the hardware does (PC, status with B clear, I
-set) and the entry returns by `RTI` to the sentinel. `frames.check` replays each frame's device
-reads and compares as `c64.check`; an NMI or further IRQ entered inside a frame is not modelled
-(`interrupt` outcome when it differs). A frame cut by the end of the run is dropped; one that jams
-or exceeds `--max-cycles` ends it (`halted`). Frame rows have `mode` `banked`, no `jennings_s`
-and no facts line.
+set) and the entry returns by `RTI` to the sentinel. A frame cut by the end of the run is dropped;
+one that jams or exceeds `--max-cycles` ends it (`halted`). Frame rows have `mode` `banked`, no
+`jennings_s`, and a facts record (`state` over the song's image, `entries`, `facts`).
+
+An interrupt entered inside a frame (an NMI digi player inside an IRQ frame; one taken just
+after the frame's `RTI` opens the next frame instead) is part of that frame's record: its device
+accesses and RAM changes join the record in the order the machine made them, and the entry is an
+event at the position of the record's log it was taken at (`frames.EVENT`: the number of device
+accesses made before it, the entry and the registers before the interrupt). The lifted program
+takes it there: `Program.call(..., nested=[(pos, entry, a, reg)])` runs the entry as an interrupt
+before the volatile access number `pos` of the call, those of the interrupts it ran included (at
+the return when the call makes no more), so the log, the replayed reads and the end state are the
+machine's. `Program.check(..., starts=, nested=)` does this for every frame of a record chunk in
+one native loop; `wholeprog.reference_call(..., nested=)` takes the same events on the reference
+interpreter.
+
+The machine takes an interrupt at an instruction boundary; the log identifies only the device
+access it precedes. The frames are lifted with `interrupts` (`wholeprog.lift(..., interrupts=True)`):
+a volatile access is a point an interrupt may be taken at, so the optimizer keeps no memory value
+across one. A frame that differs from the machine after its first event is then no mismatch of the
+lift alone: `frames.check` gives `interrupt` with the sources, and `interrupt_cause` says why,
+found by running the reference interpreter with the same events: `position` when it equals the
+lift (the handler and the interrupted code share state between two device accesses, so the
+lift is the program run with the interrupt there), `diverged` when it does not (the lift kept
+something across the device access, or the reference's handler frame, pushed at the stack
+pointer the machine had at the boundary, lands on stack the reference's interrupted code has
+pushed by that access). A difference before the first event, or in a frame without events, is a
+`mismatch`.
+Exactness at the instruction boundary needs the machine to log it (an instruction count beside
+each interrupt entry).
+
+A run that has not recorded all its frames by half of the song's wall clock allowance
+(`--timeout + --call-timeout * calls`, the rest being for lifting, checking and timing) stops
+there: the frames recorded are checked and, when exact, the outcome is `halted` with stop
+`budget`. Songs with an interrupt per ~100 cycles (NMI digi players) record on the order of a
+hundred frames per video frame, each a Python trap on the machine.
 
 ### Boot environment
 
@@ -136,6 +167,7 @@ rather than duplicated (e.g. `--redo "needs the C64 BASIC ROM"` for rows of earl
 
 ## Tools
 
+`tools/framediff.py ROOT PATH [--song N --frames N --raw --bisect]` records an interrupt-driven song's frames and shows where the first frame the lift differs in differs (entry state, interrupts, device logs of lift, reference and machine, memory); `--bisect` finds the first interrupt the lift and the reference interpreter differ at.
 `tools/wpsong.py ROOT PATH [--song N --calls N --label-calls N --out ROW.json]` runs one song
 through the pipeline in-process (for `py-spy record`, whose raw output `tools/profsum.py
 PROFILE --within FRAME --match FRAME...` summarises). `tools/corpussum.py ROWS [--paths FILE] [--diff OTHER]` prints a rows file's counts by kind, skip, mode and outcome, the non-exact songs, speedup and cost percentiles, stats coverage and the interrupt breakdown (`--diff`: outcome moves to a second file). `tools/corpusequiv.py BEFORE AFTER` lists
