@@ -63,21 +63,26 @@ def run(code, n=40):
 )
 def test_frames_lift_exact(code, at, pcs):
     boot, host = run(code)
-    assert len(host.stream) >= 40 and not host.foreign and not host.nested
+    assert len(host.stream) >= 40 and not host.foreign and not len(host.inner)
     assert set(host.frames["at"].tolist()) == {at} and set(host.frames["pc"].tolist()) <= pcs
     prog = frames.lift(host, boot.roms)
-    assert prog.entries == [at] and frames.check(prog, host, c64.bank_map(boot.roms)) is None
-    assert host.stream.halt == "return" and prog.stats["stack_private"]
-    t_ref, t_lift, cycles, n = frames.timed(prog, host, c64.bank_map(boot.roms))
-    assert t_ref > 0 and t_lift > 0 and cycles > 0 and n >= 40
+    assert prog.entries == [at] and frames.check(prog, host) is None
+    assert host.stream.halt == "return" and prog.stats["stack_private"] and host.stop == "none"
+    t_ref, t_lift, cycles, n, hit = frames.timed(prog, host, c64.bank_map(boot.roms))
+    assert t_ref > 0 and t_lift > 0 and cycles > 0 and n >= 40 and hit == 0
 
 
 def test_mismatch():
     boot, host = run(HARDWARE, 5)
     host.image = host.image[:0x1035] + b"\x03" + host.image[0x1036:]
-    prog = frames.lift(host, boot.roms)
-    bad = frames.check(prog, host, c64.bank_map(boot.roms))
+    bad = frames.check(frames.lift(host, boot.roms), host)
     assert bad[0] == 0 and bad[1] == "memory"
+
+
+def test_frame_budget_stops_the_run():
+    boot = boot_of(HARDWARE)
+    host = frames.FrameHost(boot.image, roms=boot.roms).drive_frames(boot, 40, 15)
+    assert host.stop == "unit_cycles" and len(host.stream) < 5
 
 
 def test_irq_call_matches_reference():
@@ -105,69 +110,64 @@ def test_interrupted_code_that_works_is_dirty():
 def test_nested_interrupt_taken_inside_frame():
     boot, host = run(NESTED, 30)
     assert len(host.stream) >= 30 and not host.foreign and not host.dirty
-    assert host.nested and {k for v in host.nested.values() for k in v} == {"nmi"}
-    k = max(host.nested)
+    k = int(host.inner["record"].max())
     ev = host.inside(k)
-    assert (
-        len(ev) and set(ev["at"].tolist()) == {0x1060} and ev["pos"].tolist() == sorted(ev["pos"])
-    )
+    assert host.sources(k) == ["nmi"] and set(ev["at"].tolist()) == {0x1060}
+    assert ev["pos"].tolist() == sorted(ev["pos"]) and ev["icount"].tolist() == sorted(ev["icount"])
     prog = frames.lift(host, boot.roms)
-    assert frames.check(prog, host, c64.bank_map(boot.roms)) is None
+    assert frames.check(prog, host) is None
     kw = {"ret": host.sentinel - 1, "irq": True, "log": True}
     entry = prog.entries.index(int(host.frames[k]["at"]))
-    reg = frames.regs(host.frames[k])
-    reads = c64.reads(host.stream[k])
+    reg, reads = frames.regs(host.frames[k]), c64.read_entries(host.stream[k])
     with_nmi = prog.call(bytearray(host.image), entry, reg=reg, reads=reads, **kw,
                          nested=frames.nested(prog, host, k))  # fmt: skip
     without = prog.call(bytearray(host.image), entry, reg=reg, reads=reads, **kw)
+    assert with_nmi["boundary"] is None
     assert [e[:2] for e in with_nmi["log"]] == [tuple(e[:2]) for e in host.stream[k]["log"]]
     assert len(without["log"]) == len(host.stream[k]["log"]) - 2 * len(ev)
 
 
-def test_interrupt_between_two_device_accesses_is_not_a_lift_mismatch():
+def test_interrupt_between_two_device_accesses_is_exact():
     boot, host = run(RACE, 30)
-    bank = c64.bank_map(boot.roms)
     prog = frames.lift(host, boot.roms)
-    bad = frames.check(prog, host, bank)
-    assert bad[1:] == ["interrupt", "nmi"] and host.taken[bad[0]]
-    assert c64.outcome(bad) == "interrupt" and host.cause[bad[0]] == "position"
-    # lifting the frames with a changed handler is no race: the lift then differs from the reference
+    assert len(host.inner) and frames.check(prog, host) is None
     other = bytearray(host.image)
     other[0x1060 + 4] = 0x01
     host.image, image = bytes(other), host.image
-    prog = frames.lift(host, boot.roms)
+    changed = frames.lift(host, boot.roms)
     host.image = image
-    bad = frames.check(prog, host, bank)
-    assert c64.outcome(bad) == "mismatch"
+    assert c64.outcome(frames.check(changed, host)) == "mismatch"
 
 
-def test_interrupt_changing_a_value_the_lift_keeps_across_a_device_access():
+def test_an_interrupt_the_lift_would_move_is_taken_at_the_machines_boundary():
     # IRQ: 40 times LDA $0300; STX $D404; CMP $0300; STX $D405 only when it changed. NMI: INC $0300
     irq = bytes.fromhex("ad0ddc a228 ad0003 8e04d4 cd0003 f003 8e05d4 ca d0ef 40")
     nmi = bytes.fromhex("48 ad0ddd ee0003 68 40")
     boot, host = run((NESTED[:0x40] + irq).ljust(0x60, b"\xea") + nmi, 30)
-    bank = c64.bank_map(boot.roms)
-    kept = frames.check(frames.lift(host, boot.roms, interrupts=False), host, bank)
-    assert kept[1] == "interrupt" and host.cause[kept[0]] == "diverged"
-    barrier = frames.check(frames.lift(host, boot.roms), host, bank)
-    assert barrier[1] == "interrupt" and host.cause[barrier[0]] == "position"
+    assert len(host.inner) and frames.check(frames.lift(host, boot.roms), host) is None
 
 
-def test_timed_frames_with_interrupts_and_a_time_limit():
+def test_a_boundary_the_machine_did_not_have_is_reported():
     boot, host = run(NESTED, 30)
-    bank = c64.bank_map(boot.roms)
     prog = frames.lift(host, boot.roms)
-    *_, n = frames.timed(prog, host, bank)
-    assert n > 100 and any(host.taken[k] for k in range(n))
-    assert frames.timed(prog, host, bank, until=0)[3] == 1
+    host.inner["icount"] += 1
+    bad = frames.check(prog, host)
+    assert bad is not None and bad[1] in ("boundary", "log", "memory", "reg")
+
+
+def test_timed_frames_with_interrupts():
+    boot, host = run(NESTED, 30)
+    prog = frames.lift(host, boot.roms)
+    *_, n, hit = frames.timed(prog, host, c64.bank_map(boot.roms))
+    assert n > 100 and hit > 0
 
 
 def test_nested_interrupts_agree_across_backends_and_reference():
     boot, host = run(NESTED, 30)
     prog = frames.lift(host, boot.roms)
-    k = max(host.nested)
+    k = int(host.inner["record"].max())
     rec, e = host.stream[k], host.frames[k]
-    kw = {"a": int(e["a"]), "reg": frames.regs(e), "log": True, "reads": c64.reads(rec)}
+    kw = {"a": int(e["a"]), "reg": frames.regs(e), "log": True, "reads": c64.read_entries(rec)}
     kw |= {"irq": True, "ret": host.sentinel - 1}
     entry = prog.entries.index(int(e["at"]))
     outs = []
@@ -181,7 +181,7 @@ def test_nested_interrupts_agree_across_backends_and_reference():
     ref = wholeprog.reference_call(mem, int(e["at"]), volatile=[c64.DEVICES], nested=frames.nested(None, host, k),
                                    bank=c64.bank_map(boot.roms), **kw)  # fmt: skip
     ref["ram"] = mem
-    assert all(o["halt"] == "return" for o in outs + [ref])
+    assert all(o["halt"] == "return" and o["boundary"] is None for o in outs + [ref])
     assert outs[0]["log"] == outs[1]["log"] and outs[0]["ram"] == outs[1]["ram"] == ref["ram"]
     assert [x[:2] for x in outs[0]["log"]] == [x[:2] for x in ref["log"]]
     assert len(outs[0]["log"]) == len(rec["log"])

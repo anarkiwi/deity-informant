@@ -1,6 +1,6 @@
 //! Executing a lifted program over a [`Bus`], leaving for the reference [`Cpu`] at deopts.
 
-use crate::bank::{BankMap, Banked};
+use crate::bank::{Back, BankMap, Banked};
 use crate::ir::{mask, mem, other, Function, Program, CY, E, NREG};
 use crate::jit::Jit;
 use crate::opt::{budget_points, checkpoints, sp_effect, sp_offsets};
@@ -139,7 +139,7 @@ impl<B: Bus> Bus for NoClock<'_, B> {
     fn lead(&mut self, pc: u16) -> Lead {
         self.0.lead(pc)
     }
-    fn boundary(&mut self, cpu: &Cpu) {
+    fn boundary(&mut self, cpu: &mut Cpu) -> Option<Halt> {
         self.0.boundary(cpu)
     }
     fn ram_read(&mut self, a: u16) -> u8 {
@@ -480,6 +480,11 @@ impl<'a> Runner<'a> {
         }
         if self.precise {
             return self.interpret(cpu, bus, sp_above, end);
+        }
+        if self.x.bank.as_ref().is_some_and(|m| {
+            m.back(m.config(bus.ram_read(m.dir), bus.ram_read(m.data)), pc) == Back::Io
+        }) {
+            return self.fallback(cpu, bus, pc, sp_above, end);
         }
         if self.invalid || sp_above != sp + 1 + self.irq as i32 || sp > 0xfd || sp > sp_above {
             return self.fallback(cpu, bus, pc, sp_above, end);

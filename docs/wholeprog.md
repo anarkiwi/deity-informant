@@ -57,7 +57,6 @@ Inputs:
 | `bank` | A bank map memory is seen through (default flat): the port's direction and data cells, `mask` and `pull` bits, `lut` (configuration per effective port value, undriven bits high) and per configuration each 256-byte page as RAM, a constant ROM image or I/O. `deity_informant.c64.bank_map()` is the C64's (ROM-less ROMs, or `c64.real_roms()`). |
 | `cycles` | Count cycles (default off): `CY`, cycle-budget checks, volatile accesses at their cycle. |
 | `optimize` | Optimize (default on); off keeps the emitted P-Code. |
-| `interrupts` | A volatile access is a point an interrupt may be taken at (default off): no memory value is carried across one. |
 
 `trace.collect(image, driver)` runs `driver(session)` twice on the jennings native core over a
 copy of `image`: `session.call(pc, a)` is `run_to_rts`; `session.mem`/`session.mpu` are the
@@ -84,33 +83,43 @@ memory across windows; the machine's RAM is each window's `origin` plus its reco
 Machines, their chips and their views take part in Python's cyclic GC (vagrant-moses
 0.12.0); the hooks a `MachineOracle` gives its machine hold it weakly (`smc.machine.weak`),
 since its numpy view of the machine's RAM would close a cycle the GC cannot see. A banked `Program.call`/`reference_call` sends non-volatile device accesses to a copy of
-`mem`, RAM accesses to `mem`; `reads=` (bytes) replays its volatile reads in order (0 past the
+`mem`, RAM accesses to `mem`; `reads=` (bytes, or `(address, value)` pairs) replays its volatile reads in order (0 past the
 end). `c64.check` lifts with `c64.DEVICES` volatile and replays each call's machine reads
-(`c64.reads(record)`), so a lift is exact against the machine's devices by construction: one
+(`c64.read_entries(record)`), so a lift is exact against the machine's devices by construction: one
 reading another address, or more or fewer times, differs in the log. Each call pushes the
 machine's return address (`ret=`, its sentinel - 1), so the frame and the return match the
-machine's. `c64.check` reports the first mismatch, or one of two agreements
-(`c64.outcome`): `halted` when the run's last record stopped without returning and the lift
+machine's. `c64.check` reports the first mismatch, or the agreement
+(`c64.outcome`) `halted` when the run's last record stopped without returning and the lift
 reaches that halt (a `jam` with the same log, registers and memory; for the machine's
 `cycles` cap, every logged access in order with the lift still running at the end of the
-shorter record), `interrupt` when the lift differs in a call the machine entered an IRQ or
-NMI in (`c64._Host.interrupts`; a run on vagrant-moses' call queue runs again to that call
-with a trap per call to see them), which lifts do not model. The machine's SID is
+shorter record). The interrupts the machine took inside a call are events of its record and
+are taken at the same instruction boundary (below). The machine's SID is
 vagrant-moses' bus model (unreadable registers read the decaying data-bus latch).
 
 `call(..., irq=True)` (with `ret`, the interrupted PC less one) enters as an interrupt: it
 pushes the PC, the status (B clear) and sets I, and the entry returns by `RTI` to the PC; the
-lifted code assumes the exit at SP + 3 (`deity_informant.frames`). `nested=[(pos, entry, a, reg)]`
-takes interrupts inside the call: before the volatile access number `pos` of the call (counting
-those of the interrupts it ran; at the return when it makes no more) entry `entry` runs as an
-interrupt with registers `reg` and `A = a`, on the same memory and device log. A handler that
-does not return ends the call with its halt. A lift with `interrupts` keeps no memory value
-across a volatile access; without it, a handler that changes a value the interrupted code holds
-makes the lift differ from the reference interpreter (`reference_call(..., nested=)`, whose
-entries are addresses) given the same events. Registers and private stack bytes are the lift's
-either way. `Program.check(..., starts=, nested=)` checks records of such calls (7 bytes per
-record: entry u16, a, x, y, sp, p; 16 per interrupt: record u32, pos u32, entry u16, a, x, y,
-sp, p, pad).
+lifted code assumes the exit at SP + 3 (`deity_informant.frames`).
+
+`nested=[(icount, pos, entry, a, reg, depth)]` takes the interrupts the machine took inside the
+call, in its order: `entry` runs as an interrupt with registers `reg` and `A = a` at the
+boundary after `icount` instructions of the context it interrupts (`depth` 0: the call, `n`:
+the handler of the last interrupt at depth `n - 1`) have retired, on the same memory and device
+log, and the registers the handler leaves are the interrupted code's. A call with such
+interrupts runs on the reference interpreter, instruction by instruction, since the lifted
+code keeps neither the registers nor the memory of an arbitrary boundary; its handlers run on
+the lifted program, a handler interrupted in turn on the reference too. At each boundary the
+interpreter's registers must be `reg` and its volatile accesses `pos`: else the result's
+`boundary` is the index of the first interrupt that was not at the machine's boundary
+(`("boundary", i)` from `Program.check`), as is one that never came. A handler that does not
+return ends the call with its halt. `Program.check(..., starts=, nested=)` checks records of
+such calls (7 bytes per record: entry u16, a, x, y, sp, p; 20 per interrupt: record u32, icount
+u32, pos u32, entry u16, a, x, y, sp, p, depth).
+
+**Code fetched from I/O.** The reference interpreter makes the instruction fetches of code in a
+device page (a handler vectored to a CIA register, say) as the machine logs them: replayed
+reads (`reads=` pairs with addresses) place the opcode fetch after the byte after a one-byte
+opcode, which the machine reads first, and a `BRK` has no opcode fetch. The lift never plans
+code in I/O: an edge to it deopts to the reference interpreter.
 
 `call` is `run_to_rts`: push the dummy return `$0001` (or `ret`), set A, run until SP rises
 above its start (with `ret`, only at `ret + 1`, as a host trapping that address sees the

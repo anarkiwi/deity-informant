@@ -39,7 +39,9 @@ def session(data, song, calls, host=None):
     inits, records, _ = h.split()
     records = [dict(r, ram=bytes(r["ram"])) for r in records]
     bank = wpcorpus._bank()  # pylint: disable=protected-access
-    prog = wholeprog.lift(inits[-1]["ram"], [play], [c64.DEVICES], h.facts(), bank=bank)
+    prog = wholeprog.lift(
+        inits[-1]["ram"], c64.entries_of(play, h.facts()), [c64.DEVICES], h.facts(), bank=bank
+    )
     return {
         "img": img,
         "play": play,

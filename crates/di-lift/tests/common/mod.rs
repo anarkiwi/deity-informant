@@ -343,18 +343,7 @@ pub fn check_in(
     let mut out = None;
     for cycles in [true, false] {
         for optimize in [false, true] {
-            let prog = lift_banked(
-                img,
-                &es,
-                &v,
-                &f,
-                Opts {
-                    optimize,
-                    cycles,
-                    ..Opts::default()
-                },
-                bank,
-            );
+            let prog = lift_banked(img, &es, &v, &f, Opts { optimize, cycles }, bank);
             assert_eq!(
                 diff(img, &prog, calls, vol),
                 0,

@@ -1,10 +1,9 @@
 """Where a lifted interrupt frame differs from the machine's.
-``python tools/framediff.py ROOT PATH [--song N] [--frames N] [--raw] [--bisect]``: records the
+``python tools/framediff.py ROOT PATH [--song N] [--frames N] [--raw]``: records the
 first ``--frames`` video frames of an interrupt-driven song, lifts them (``--raw``: unoptimized)
 and prints, for the first frame the lift differs in, its entry state, the interrupts taken inside
 it, the first difference of the lift's, the reference interpreter's and the machine's device
-logs, and the addresses whose bytes differ. ``--bisect`` finds the first interrupt after which
-the lift and the reference interpreter differ."""
+logs, and the addresses whose bytes differ."""
 
 import argparse
 import sys
@@ -36,8 +35,6 @@ def main(argv=None):
     ap.add_argument("--song", type=int, default=1)
     ap.add_argument("--frames", type=int, default=100)
     ap.add_argument("--raw", action="store_true", help="lift without optimizing")
-    ap.add_argument("--bisect", action="store_true", help="find the interrupt the lift and the "
-                    "reference interpreter first differ at")  # fmt: skip
     ap.add_argument("--max-cycles", type=int, default=2_000_000)
     args = ap.parse_args(argv)
     root = Path(args.root)
@@ -50,8 +47,10 @@ def main(argv=None):
     host.drive_frames(boot, args.frames, args.max_cycles)
     prog = frames.lift(host, boot.roms, optimize=not args.raw)
     bank = c64.bank_map(boot.roms)
-    bad = frames.check(prog, host, bank, args.max_cycles)
-    print(f"{len(host.stream)} frames, {sum(map(len, host.taken.values()))} nested; check: {bad}")
+    bad = frames.check(prog, host, args.max_cycles)
+    print(
+        f"{len(host.stream)} frames, {len(host.inner)} nested; stopped: {host.stop}; check: {bad}"
+    )
     print(f"foreign {sorted(host.foreign)} dirty {host.dirty} stats {prog.stats}")
     if bad is None:
         return 0
@@ -62,28 +61,20 @@ def main(argv=None):
     lift = frames._call(prog, host, n, rec, mem)  # pylint: disable=protected-access
     ref = frames._call(None, host, n, rec, bytearray(before), bank)  # pylint: disable=W0212
     print("entry", host.frames[n], "halt machine", rec["halt"], "lift", lift["halt"])
-    print("interrupts", host.inside(n).tolist(), "cause", host.cause.get(n))
+    print(
+        "interrupts",
+        host.inside(n).tolist(),
+        "boundary lift",
+        lift["boundary"],
+        "ref",
+        ref["boundary"],
+    )
     for name, a, b in (("lift", lift, rec), ("reference", ref, rec), ("reference", ref, lift)):
         k = first_difference(a["log"], b["log"])
         other = "machine" if b is rec else "lift"
         print(f"{name} vs {other}: first log difference {k} of {len(a['log'])}/{len(b['log'])}")
         show(name, a["log"], k)
         show(other, b["log"], k)
-    if args.bisect:
-        events = frames.nested(prog, host, n)
-        for m in range(1, len(events) + 1):
-            kw = {"a": int(host.frames[n]["a"]), "reg": frames.regs(host.frames[n])}
-            kw |= {"reads": c64.read_entries(rec), "ret": host.sentinel - 1, "irq": True, "log": True}
-            lo = prog.call(bytearray(before), prog.entries.index(int(host.frames[n]["at"])),
-                           nested=events[:m], **kw)  # fmt: skip
-            ro = frames.wholeprog.reference_call(
-                bytearray(before), int(host.frames[n]["at"]), volatile=[c64.DEVICES], bank=bank,
-                nested=frames.nested(None, host, n)[:m], **kw)  # fmt: skip
-            if first_difference(lo["log"], ro["log"]) < min(len(lo["log"]), len(ro["log"])):
-                print(
-                    "lift and reference first differ with interrupt", m - 1, host.inside(n)[m - 1]
-                )
-                break
     want = np.frombuffer(bytes(rec["ram"]), np.uint8)
     for a in np.flatnonzero(want != np.frombuffer(bytes(mem), np.uint8))[:40]:
         print(f"  {a:04x} machine {want[a]:02x} lift {mem[a]:02x}")

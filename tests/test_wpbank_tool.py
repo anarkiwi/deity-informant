@@ -99,7 +99,7 @@ class FakeProg:
         self.ports = []
 
     def call(self, mem, entry, a, reg, log, max_cycles, reads, ret):  # pylint: disable=R0913,R0917
-        assert entry == 0 and a == 0 and log and max_cycles and reads == b"" and ret is None
+        assert entry == 0 and a == 0 and log and max_cycles and reads == [] and ret is None
         self.ports.append(mem[1])
         mem[0xC000] += 1
         reg = list(reg)
@@ -122,9 +122,6 @@ def test_check():
     assert c64.check(FakeProg(), img, reg0, refs, 0x36) == [0, "memory", 1]
     refs[2]["reg"][1] = 7
     assert c64.check(FakeProg(), img, reg0, refs, 0x35)[:2] == [2, "reg"]
-    refs[2]["irq"] = ["video_irq"]
-    assert c64.check(FakeProg(), img, reg0, refs, 0x35) == [2, "interrupt", "video_irq"]
-    assert c64.check(FakeProg(), img, reg0, refs, 0x35, irq=lambda k: [])[:2] == [2, "reg"]
 
 
 def test_bank_check_skips(tmp_path):

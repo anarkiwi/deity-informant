@@ -27,9 +27,11 @@ pub trait Bus {
     }
     /// An instruction boundary: `cpu` is as it is before the next instruction. Drivers that run
     /// instruction by instruction ([`Cpu::run_clocked`]) call it before each; a bus that takes
-    /// interrupts counts instructions here.
+    /// interrupts counts instructions here, and may end the run with a halt.
     #[inline(always)]
-    fn boundary(&mut self, _cpu: &Cpu) {}
+    fn boundary(&mut self, _cpu: &mut Cpu) -> Option<Halt> {
+        None
+    }
     /// RAM at `addr`, bypassing any device decoded there (a bank map's RAM pages).
     #[inline(always)]
     fn ram_read(&mut self, addr: u16) -> u8 {
@@ -421,7 +423,9 @@ impl Cpu {
             if self.cycles >= end {
                 return Halt::Cycles;
             }
-            bus.boundary(self);
+            if let Some(h) = bus.boundary(self) {
+                return h;
+            }
             bus.now(self.cycles);
             if self.step(bus).is_err() {
                 return Halt::Jam;

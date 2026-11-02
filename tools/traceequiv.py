@@ -59,7 +59,9 @@ def run(img, song, backend, max_cycles=2_000_000):
     last, bad = inits[-1], None
     if last["halt"] == "return":
         bank = wpcorpus._bank()  # pylint: disable=protected-access
-        prog = wholeprog.lift(last["ram"], [play], [c64.DEVICES], facts, bank=bank)
+        prog = wholeprog.lift(
+            last["ram"], c64.entries_of(play, facts), [c64.DEVICES], facts, bank=bank
+        )
         bad = c64.check(prog, last["ram"], last["reg"], host.split()[1], ports["call"], max_cycles)
     return {
         "facts": facts.to_dict(),

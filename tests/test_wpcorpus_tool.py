@@ -309,13 +309,13 @@ def test_irq_skip():
     assert wpcorpus.irq_skip(base | {"irqs": 0}) == "no interrupts"
 
 
-def test_frame_run_stops_at_its_budget(tmp_path, monkeypatch):
+def test_frame_run_reports_its_budget(tmp_path, monkeypatch):
     monkeypatch.setattr(machine, "WINDOW", 50_000)
     root = tree(tmp_path / "hvsc")
     wpcorpus._worker(str(root / "DOCUMENTS" / "Songlengths.md5"))  # pylint: disable=W0212
     row = wpcorpus.plan(str(root / "irq.sid"), "irq.sid", 60, 20_000)[0]
     full, _ = wpcorpus.run_song(str(root / "irq.sid"), row, 20_000, 10)
-    cut, rec = wpcorpus.run_song(str(root / "irq.sid"), row, 20_000, 10, allowance=1e-6)
-    assert full["outcome"] == "exact" and cut["calls_run"] < full["calls_run"]
-    assert cut["outcome"] == "halted" and cut["stop"] == [cut["calls_run"], "halted", "budget"]
-    assert rec and cut["has_facts"] and not cut["exact"]
+    assert full["outcome"] == "exact" and full["budget"] == "none"
+    cut, rec = wpcorpus.run_song(str(root / "irq.sid"), row, 40, 10)
+    assert cut["budget"] == "unit_cycles" and cut["calls_run"] < full["calls_run"]
+    assert rec and cut["has_facts"]

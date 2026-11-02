@@ -1,4 +1,4 @@
-"""Interrupts taken at an instruction boundary: ``nested`` events counted in retired instructions."""
+"""Interrupts taken at an instruction boundary: events counted in retired instructions."""
 
 import pytest
 
