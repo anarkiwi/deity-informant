@@ -20,10 +20,8 @@ import time  # noqa: E402
 from collections import Counter  # noqa: E402
 from concurrent.futures import TimeoutError as FutureTimeout  # noqa: E402
 from concurrent.futures import as_completed  # noqa: E402
-from dataclasses import replace  # noqa: E402
 from functools import lru_cache  # noqa: E402
 from pathlib import Path  # noqa: E402
-from types import SimpleNamespace  # noqa: E402
 
 import numpy as np  # noqa: E402
 import zstandard  # noqa: E402
@@ -256,103 +254,64 @@ def _lifted_row(prog, lift_ms, bad):
     }
 
 
-def machine_check(prog, row, img, n, mc):
-    """``prog`` against ``n`` machine play calls after init, replaying the machine's device
-    reads (:func:`c64.check`): ``([call, *mismatch]``, ``["init", halt]`` or None``, the
-    run's SMC labelling)``."""
-    init, play = row["init"], row["play"]
-    ports = {"init": iomap(init), "call": iomap(play)}
-    host = c64._Host(img, ntsc=row["clock"] == "NTSC", model=sid_model(row), facts=False)
-    host.drive([(play, 0)] * n, [(init, row["song"] - 1)], mc, ports)
-    inits, records, _ = host.split()
-    last = inits[-1]
-    if last["halt"] != "return":
-        return ["init", last["halt"]], host.result
-    return c64.check(prog, last["ram"], last["reg"], records, ports["call"], mc), host.result
-
-
-def _banked(row, img, mc, ev):
-    """The bank-aware lift of a PSID song: one machine run for facts, records and cells."""
-    init, play = row["init"], row["play"]
+def psid_song(row, img, mc, cap, defer=False):
+    """A PSID song with a play routine: ``(row, facts record or None)``. One machine run of
+    init and every call gives the facts, the call records the lift is checked against and the
+    cells; its bank evidence picks the flat or the bank-aware lift. ``defer`` returns a banked
+    song unlifted (``deferred``) so a later resumed run lifts it."""
+    init, play, a = row["init"], row["play"], row["song"] - 1
+    _, r = flat_init(img, row, mc)
+    phases = [(img, trace.collect(img, lambda s: s.call(init, a), mc), iomap(init))]
+    row |= {"init_halt": r["halt"], "init_cycles": r["cycles"]}
+    ev = bank_evidence(phases) if r["halt"] != "return" else None
+    if ev == []:
+        return row | {"mode": "flat", "bank_evidence": ev, "skip": "init " + r["halt"]}, None
+    if ev and defer:
+        return row | {"deferred": True}, None
     ports = {"init": iomap(init), "call": iomap(play)}
     t = time.perf_counter()
     host = c64._Host(img, ntsc=row["clock"] == "NTSC", model=sid_model(row))
-    host.drive([(play, 0)] * row["calls"], [(init, row["song"] - 1)], mc, ports)
+    host.drive([(play, 0)] * row["calls"], [(init, a)], mc, ports)
     inits, records, n = host.split()
-    facts = host.facts()
-    row["mode"], row["bank_evidence"] = "banked", ev
-    row["facts_ms"] = 1e3 * (time.perf_counter() - t)
-    row |= _label_row("calls", replace(host.result, returned=True), n, t)
     last = inits[-1]
-    row |= {"init_halt": last["halt"], "calls_run": n}
-    if last["halt"] != "return":
+    facts = host.facts() if last["halt"] == "return" else None
+    if ev is None and facts is not None:
+        ev = bank_evidence(phases + [(last["ram"], facts, ports["call"])])
+    if ev and defer:
+        return row | {"deferred": True}, None
+    banked = bool(ev)
+    row |= {
+        "mode": "banked" if banked else "flat",
+        "bank_evidence": ev or [],
+        "facts_ms": 1e3 * (time.perf_counter() - t),
+        "init_halt": last["halt"],
+        "calls_run": n,
+    }
+    if banked or not cap or cap >= n:
+        row |= _label_row("calls", host.result, n, t)
+    else:
+        row |= label("calls", img, row, cap, mc)
+    if facts is None:
         return row | {"skip": "init " + last["halt"]}, None
     t = time.perf_counter()
-    prog = wholeprog.lift(last["ram"], [play], [c64.DEVICES], facts, bank=_bank())
+    bank, vol = (_bank(), [c64.DEVICES]) if banked else (None, volatile_of(row))
+    prog = wholeprog.lift(last["ram"], [play], vol, facts, bank=bank)
     lift_ms = 1e3 * (time.perf_counter() - t)
     row["compile_ms"] = _compiled(prog)
     t = time.perf_counter()
-    bad = c64.check(prog, last["ram"], last["reg"], records, ports["call"], mc)
+    port = ports["call"]
+    bad = c64.check(prog, last["ram"], last["reg"], records, port, mc)
     row |= _lifted_row(prog, lift_ms, bad) | {"check_ms": 1e3 * (time.perf_counter() - t)}
-    row["configs"] = sorted({b for bs in facts.banks.values() for b in bs})
     row["returned"] = n == row["calls"] and host.last_halt == "return"
-    port, vol = ports["call"], [c64.DEVICES]
-    t_ref, (nr, cycles, _) = _timed(
-        _ref_run(play, vol, mc, _bank(), port), bytearray(last["ram"]), n
-    )
-    t_lift, _ = _timed(_lifted_run(prog, mc, port), bytearray(last["ram"]), nr)
-    row["timing"] = _timing(nr, cycles, t_ref, t_lift, None)
-    return row, {"state": _diff(img, last["ram"]), "reg": list(last["reg"]), "facts": facts}
-
-
-def psid_song(row, img, mc, cap, defer=False):
-    """A PSID song with a play routine: ``(row, facts record or None)``; ``defer`` returns a
-    banked song unrun (``deferred``) so a later resumed run lifts it."""
-    init, play, a = row["init"], row["play"], row["song"] - 1
-    vol = volatile_of(row)
-    mem, r = flat_init(img, row, mc)
-    phases = [(img, trace.collect(img, lambda s: s.call(init, a), mc), iomap(init))]
-    row |= {"init_halt": r["halt"], "init_cycles": r["cycles"]}
-    if r["halt"] != "return":
-        ev = bank_evidence(phases)
-        if ev:
-            return (row | {"deferred": True}, None) if defer else _banked(row, img, mc, ev)
-        return row | {"mode": "flat", "bank_evidence": ev, "skip": "init " + r["halt"]}, None
-    t_ref, (n, cycles, halt) = _timed(_ref_run(play, vol, mc), bytearray(mem), row["calls"])
-    t = time.perf_counter()
-    ev = []
-
-    def banked(starts, ports):
-        probe = SimpleNamespace(starts=starts, writes=dict.fromkeys(ports))
-        ev.extend(bank_evidence(phases + [(mem, probe, iomap(play))]))
-        return bool(ev)
-
-    facts = trace.collect(mem, lambda s: [s.call(play) for _ in range(n)], mc, skip=banked)
-    facts_ms = 1e3 * (time.perf_counter() - t)
-    if ev:
-        return (row | {"deferred": True}, None) if defer else _banked(row, img, mc, ev)
-    row |= {
-        "mode": "flat",
-        "bank_evidence": ev,
-        "calls_run": n,
-        "returned": halt == "return",
-        "facts_ms": facts_ms,
-    }
-    t = time.perf_counter()
-    prog = wholeprog.lift(mem, [play], vol, facts)
-    lift_ms = 1e3 * (time.perf_counter() - t)
-    row["compile_ms"] = _compiled(prog)
-    t = time.perf_counter()
-    bad, run = machine_check(prog, row, img, n, mc)
-    row |= _lifted_row(prog, lift_ms, bad) | {"check_ms": 1e3 * (time.perf_counter() - t)}
-    t_lift, _ = _timed(_lifted_run(prog, mc), bytearray(mem), n)
-    t_jen, _ = _timed(_jennings_run(play, mc), bytearray(mem), n)
-    row["timing"] = _timing(n, cycles, t_ref, t_lift, t_jen)
-    if cap and cap < n:
-        row |= label("calls", img, row, cap, mc)
+    if banked:
+        row["configs"] = sorted({b for bs in facts.banks.values() for b in bs})
     else:
-        row |= _label_row("calls", run, n, t)
-    return row, {"state": _diff(img, mem), "reg": list(r["reg"]), "facts": facts}
+        port = None
+    t_ref, (nr, cycles, _) = _timed(_ref_run(play, vol, mc, bank, port), bytearray(last["ram"]), n)
+    t_lift, _ = _timed(_lifted_run(prog, mc, port), bytearray(last["ram"]), nr)
+    t_jen = None if banked else _timed(_jennings_run(play, mc), bytearray(last["ram"]), nr)[0]
+    row["timing"] = _timing(nr, cycles, t_ref, t_lift, t_jen)
+    return row, {"state": _diff(img, last["ram"]), "reg": list(last["reg"]), "facts": facts}
 
 
 # pylint: disable-next=too-many-arguments,too-many-positional-arguments

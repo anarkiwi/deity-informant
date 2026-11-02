@@ -478,8 +478,8 @@ fn step(
 }
 
 /// What the facts say about instruction starts: the heights each was executed at relative to
-/// its outermost entry and which were executed, the configurations each ran in, the starts
-/// not to plan, and the bank map.
+/// its outermost entry and which were executed, the configurations each ran in (with a bank
+/// map), the starts not to plan, and the bank map.
 pub struct Seen<'a> {
     heights: FxHashMap<u16, Vec<i32>>,
     starts: FxHashSet<u16>,
@@ -498,7 +498,10 @@ impl<'a> Seen<'a> {
                 .map(|(p, h)| (*p, h.iter().map(|&x| x as i32).collect()))
                 .collect(),
             starts: f.starts.iter().copied().collect(),
-            banks: f.banks.iter().cloned().collect(),
+            banks: match bank {
+                Some(_) => f.banks.iter().cloned().collect(),
+                None => FxHashMap::default(),
+            },
             banned,
             bank,
         }

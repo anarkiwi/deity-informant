@@ -25,23 +25,23 @@ video frames.
 
 PSID with a play routine:
 
-1. Init on the reference (`wholeprog.reference_call`) over the power-on image; init facts
-   over the same image; play on the reference for every call from the post-init state (timed,
-   `reference_s`), stopping at the first call that does not return (`calls_run`).
-2. Play facts (`trace.collect`) over those calls. The song needs the bank map when the init or
-   play facts store to $00/$01, or an executed start fetches an opcode, operand or vector from
-   a window that is not RAM under sidplay's $01 for that entry (`smclabel.iomap`):
-   `bank_evidence`, decided from the traced pass and a store-only pass before the full facts.
-3. Flat: lift, `wplift.check` over all calls (`exact`, `mismatch`, `deopts`; `no-return`
-   when both stop the same way), the lifted `Program.session` and jennings `run_to_rts` timed
-   over the same calls (`timing`), scenario cells from the vagrant-moses machine oracle with play
-   called as sidplay does (`oracle` `calls`) over the first `--label-calls` calls: the
-   machine run the check replays when that covers every call, else a run of its own.
-4. Banked: one vagrant-moses machine run (init and every call, sidplay's $01 per phase) gives
-   the facts, the call records the bank-aware lift is checked against (`c64.check`) and the
-   cells over every call, natively where vagrant-moses has the trace (`c64.TRACE_NATIVE`);
-   `configs` lists the bank configurations seen. Speed is the banked reference and the
-   lifted program (jennings has no bank map).
+1. Init on the reference (`wholeprog.reference_call`, `init_halt`, `init_cycles`) and init
+   facts (`trace.collect`) over the power-on image.
+2. One vagrant-moses machine run (init and every call, sidplay's $01 per phase; natively
+   where vagrant-moses has the trace, `c64.TRACE_NATIVE`) gives the play facts, the call
+   records the lift is checked against and the scenario cells (`oracle` `calls`) over every
+   call it ran (`calls_run`, to the first that does not return); a `--label-calls` smaller
+   than that labels the first that many calls in a run of its own (flat songs only). The song
+   needs the bank map when the init or play facts store to $00/$01, or an executed start
+   fetches an opcode, operand or vector from a window that is not RAM under sidplay's $01 for
+   that entry (`smclabel.iomap`): `bank_evidence`. A machine init that does not return skips
+   the song (`init <halt>`).
+3. Lift from the machine's post-init state, flat or (`banked`) through the bank map with the
+   facts' bank configurations (`configs`), and `c64.check` over the records (`exact`,
+   `mismatch`, `deopts`; `no-return` when both stop the same way). Timed from that state
+   (`timing`): the reference over the calls run (`reference_s`, with the bank map when
+   banked), then the lifted program and, for flat songs, jennings `run_to_rts` (jennings has
+   no bank map) over the calls the reference ran.
 
 RSID, or PSID without play: the machine starts the song as sidplayfp does (below), runs init and
 then the tune's own interrupts for the song's frames, scanned by vagrant-moses' native `smc.Scan` (else,
@@ -115,4 +115,6 @@ rather than duplicated (e.g. `--redo "needs the C64 BASIC ROM"` for rows of earl
 through the pipeline in-process (for `py-spy record`, whose raw output `tools/profsum.py
 PROFILE --within FRAME --match FRAME...` summarises). `tools/corpusequiv.py BEFORE AFTER` lists
 the songs whose rows (bar `*_ms` and `timing.*_s`) or facts differ between two runs and the
-`song_ms` speedup per mode.
+`song_ms` speedup per mode. `tools/factsequiv.py ROOT BEFORE AFTER [--list]` lifts each flat
+song of both runs from every pairing of their post-init states and facts, attributing a change
+in the lift statistics to the state or the facts.

@@ -445,7 +445,10 @@ pub fn discover(
     facts: &Facts,
     bank: Option<&BankMap>,
 ) -> Graph {
-    let seen: FxHashMap<u16, u8> = facts.banks.iter().map(|(p, c)| (*p, c[0])).collect();
+    let seen: FxHashMap<u16, u8> = match bank {
+        Some(_) => facts.banks.iter().map(|(p, c)| (*p, c[0])).collect(),
+        None => FxHashMap::default(),
+    };
     let mut edges: FxHashMap<u16, Vec<u16>> = FxHashMap::default();
     for &(p, q) in &facts.edges {
         edges.entry(p).or_default().push(q);
