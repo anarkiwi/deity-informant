@@ -155,6 +155,9 @@ pub struct Block {
     /// The registers (bits below `NREG`) the emitted continuation of a side exit reads,
     /// replacing `resume` once optimization starts.
     pub resume_live: Option<u32>,
+    /// The block the instruction a before-instruction side exit deopts to starts at: the
+    /// reference re-executes the instruction, so what that block reads is handed over too.
+    pub replay: Option<u32>,
     /// The address of the instruction the block starts at (the deopt PC of a cycle-budget
     /// check).
     pub pc: u16,
@@ -238,6 +241,8 @@ pub struct Stats {
     pub stack_private: bool,
     /// Accesses checked at run time not to reach page 1.
     pub stack_guards: usize,
+    /// Checks on zero-page pointer high bytes: entries and stores.
+    pub ptr_guards: usize,
     /// Accesses that reached page 1 in the facts or cannot be checked (each keeps the stack
     /// in memory).
     pub page1_sites: usize,

@@ -7,6 +7,7 @@ use crate::opt::{budget_points, checkpoints, sp_effect, sp_offsets};
 use di_pcode::{reg as R, Bus, Cpu, Halt, Opc, Space, Vn, RETURN};
 use fixedbitset::FixedBitSet;
 use rustc_hash::FxHashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 pub(crate) const IMM: u32 = 1 << 31;
@@ -35,6 +36,8 @@ pub(crate) struct XBlock {
     pub depth: u32,
     /// Spends one unit of the iteration budget (without cycles).
     pub budget: bool,
+    /// Ends in a deopt: a conditional branch to it is a guard.
+    pub exit: bool,
 }
 
 /// An active `CALL`: resume op, callee, return address and SP before the `JSR`.
@@ -78,6 +81,7 @@ pub struct Exec {
     slotted: Vec<FixedBitSet>,
     bank: Option<BankMap>,
     jit: OnceLock<Option<Arc<Jit>>>,
+    guards: Arc<AtomicU64>,
 }
 
 /// Access flags that resolve memory other than through `Bus::read`/`write`.
@@ -173,6 +177,7 @@ impl Exec {
             slotted: p.functions.iter().map(|f| f.slotted.clone()).collect(),
             bank: p.bank.clone(),
             jit: OnceLock::new(),
+            guards: Arc::default(),
         };
         for &(a, v) in &p.code {
             x.constcode.insert(a as usize);
@@ -216,6 +221,7 @@ impl Exec {
                     check,
                     depth,
                     budget: spend.contains(bi),
+                    exit: b.ops.last().is_some_and(|o| o.is_deopt()),
                 });
                 for op in &b.ops {
                     let aux = match op.opc {
@@ -358,6 +364,10 @@ impl Exec {
                     .flatten()
             })
             .as_deref()
+    }
+    /// Conditional branches to a deopt the interpreter has evaluated (the guards run).
+    pub fn guard_evals(&self) -> u64 {
+        self.guards.load(Ordering::Relaxed)
     }
     /// Every byte the program treats as constant code holds its lifted value in `bus`.
     pub fn matches<B: Bus>(&self, bus: &mut B) -> bool {
@@ -505,6 +515,7 @@ impl<'a> Runner<'a> {
         } else {
             x.jit().zip(bus.flat())
         };
+        let mut guards = 0u64;
         let (dpc, stop) = if cyc && first.check >= budget || (sp as u32) < first.depth {
             (first.pc, Stop::Deopt)
         } else if let Some((j, flat)) = native {
@@ -545,6 +556,7 @@ impl<'a> Runner<'a> {
                     }
                     Opc::Branch => ip = enter!(o.aux),
                     Opc::CBranch => {
+                        guards += x.blocks[o.aux as usize].exit as u64;
                         if get(f, o.a) != 0 {
                             ip = enter!(o.aux);
                         }
@@ -588,6 +600,7 @@ impl<'a> Runner<'a> {
                 }
             }
         };
+        x.guards.fetch_add(guards, Ordering::Relaxed);
         let f = &self.f;
         let mut reg = [0u8; 16];
         for (i, r) in reg.iter_mut().enumerate() {
@@ -653,6 +666,7 @@ impl<'a> Runner<'a> {
         end: u64,
     ) -> Outcome {
         *self.deopts.entry(pc).or_default() += 1;
+        self.invalid = true;
         cpu.pc = pc;
         let ret = self.ret;
         let halt = match (&self.x.bank, self.x.cycles) {

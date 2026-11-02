@@ -36,6 +36,7 @@ facts = trace.collect(state, lambda s: [s.call(play) for _ in range(3000)])
 prog = wholeprog.lift(state, [play], volatile=[(lo, hi)], facts=facts)   # cycles=False
 prog.functions        # [{"pc", "entry", "recursive", "blocks": [{"pc", "ops"}], "tables"}]
 prog.stats            # insns, raw_ops, emitted_ops, ops, cells, code_guards, calls, ...
+prog.guard_evals      # conditional branches to a deopt the interpreter backend has run
 r = prog.call(mem, 0, a=0, reg=None, cycles=0, max_cycles=10_000_000, log=True)  # backend=
 prog.backend          # "jit" (default) or "interp"; prog.compile() -> compile seconds
 r["reg"], r["pc"], r["cycles"], r["halt"], r["deopt"], r["log"]
@@ -202,7 +203,8 @@ the program, and checks it against the reference.
    program, so recursion converges like a loop) and optimized again: a `CALL` uses and kills
    only its callee's registers, a callee computes only what its callers read, and a deopt
    whose continuation is lifted (a checked access, a code check) needs only what that
-   continuation reads.
+   continuation reads, and what the instruction reads when the reference re-executes it
+   (a check before an instruction).
 
 ## Guards
 
@@ -213,6 +215,7 @@ the program, and checks it against the reference.
 | An edge reaches a start at a stack height the plan has no node for (never seen there) | none: the edge is the deopt | deopt at the start |
 | After an SP-setting instruction, SP is at a height the facts saw the next start at | SP dispatch: `SP - E` compared per height without wrapping (`stats["sp_dispatch"]`), SP restated as `E + height - 2`; a function with a dispatch loads its stack slots from memory at entry | deopt at the next start |
 | A store may hit constant code | `codechk(addr, value)` after the store, when the address interval (*Static proofs*) meets constant code | deopt after the instruction; the program stays invalid until its constant code matches again |
+| A zero-page pointer high byte that accesses rely on stays at least 2 (*Pointer high bytes*) | an entry compares the bytes some access reads before the entry stores them; a store that may write one and may store less than 2 compares the value after the instruction (`stats["ptr_guards"]`) | deopt at the entry; deopt after the store |
 | An access that may reach page 1 (by its address interval) does not, while stack bytes are kept out of memory | the address's page is compared with 1 before the access (`stats["stack_guards"]`) | deopt before the instruction |
 | A callee that may store into page 1 returns to its caller (stack not private) | the return-address bytes are compared after `CALL` | deopt at the address the `RTS` pulled |
 | Entry register value | compare at entry | deopt at the entry |
@@ -252,6 +255,23 @@ the facts, so a proof holds on every execution that stays in lifted code.
   other edge deopts). It reads no runtime fact beyond those edges and no data byte, so it
   remains valid after any deopt and from any memory state. The stack-privacy decision still
   uses the facts' page-1 accesses as before.
+
+- **Pointer high bytes.** The address of a `(zp),Y` or `(zp,X)` access is the pointer plus a
+  byte, which is outside page 1 whenever the pointer's high byte is at least 2 (the sum wraps
+  past $FFFF into page 0). The analysis (`analysis::Access::hi`) names the zero-page bytes an
+  access's address is built from; `ptr.rs` chooses the bytes to protect, those whose accesses
+  outnumber the checks they cost, never one that is volatile, code, stored below 2 in the facts
+  (its checks would fail on every call) or read by an access that reached page 1 in the facts.
+  An access whose bytes are all protected needs no page-1 guard, so a callee's pointer reads
+  and writes no longer keep the whole stack in memory. The invariant holds because
+  - every lifted store whose address interval meets a protected byte, except one that writes
+    back the byte it just loaded, and whose value may be below 2, checks the value and deopts
+    after the instruction (the interval is sound, so no other lifted store reaches the byte);
+  - every entry checks the protected bytes some access it reaches reads before a store on every
+    path has defined them (`St::stored` in `vsa.rs`, an intersection over paths and a union over
+    a balanced call), as memory may have been written by the host or by the reference after a
+    deopt, which ends the call;
+  - a lift with `interrupts` protects nothing, since a handler may store between instructions.
 
 A deopt sets the reference `Cpu` to the architectural state (registers, PC, and with cycle
 counting cycles), writes the stack bytes each active frame pushed (from its slot registers)
@@ -310,7 +330,8 @@ tests run every lift test on both and random programs through both (`tests/jit.r
 - Instruction bytes in volatile ranges are treated as memory.
 - With the stack private, stack bytes below SP (popped pushes, returned frames) are not in
   memory: an access that reads them, whether lifted code that never did in the facts or the
-  reference after a deopt, sees what the program last stored there itself.
+  reference after a deopt, sees what the program last stored there itself. Code that sets SP (`TXS`,
+  `TAS`, `LAS`) can expose them, so the random-program tests never store those opcodes.
 - One access in a callee that reached page 1 in the facts keeps the whole program's stack in
   memory: it may read the frames of any active function and stack bytes below SP. In an
   outermost plan such accesses keep only the bytes they may hit in memory (all of its pushes
@@ -322,5 +343,7 @@ tests run every lift test on both and random programs through both (`tests/jit.r
 - Without cycle counting, a call that does not return within `max_cycles` ends with the
   reference's halt (`cycles`) but not its state.
 - The host must keep constant code unchanged between calls, or check `matches` and re-lift.
+  After a deopt the reference may have stored into constant code, so the next call compares it
+  with the lifted bytes first and runs on the reference while they differ.
 - A start runs from one backing: one executed from ROM in some configurations and from RAM in
   others is planned only where it is fetched as decoded (the rest deopt). `lift_many` is flat.

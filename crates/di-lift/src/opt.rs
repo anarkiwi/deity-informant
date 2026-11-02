@@ -81,7 +81,10 @@ fn pin_resume(f: &mut Function, cx: &Ctx, fi: usize) {
     let live_in = live(f, cx, fi).solve(&mut |_, _| {});
     for b in &mut f.blocks {
         if let Some(r) = b.resume.take() {
-            let l = &live_in[r as usize];
+            let mut l = live_in[r as usize].clone();
+            if let Some(s) = b.replay.take() {
+                l.union_with(&live_in[s as usize]);
+            }
             b.resume_live = Some((0..NREG).fold(0, |m, i| m | (l.contains(i) as u32) << i));
         }
     }

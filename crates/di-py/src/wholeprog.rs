@@ -528,6 +528,8 @@ impl Program {
         d.set_item("calls", s.calls)?;
         d.set_item("stack_private", s.stack_private)?;
         d.set_item("stack_guards", s.stack_guards)?;
+        d.set_item("ptr_guards", s.ptr_guards)?;
+        d.set_item("guard_evals", self.exec.guard_evals())?;
         d.set_item("page1_sites", s.page1_sites)?;
         d.set_item("slot_ops", s.slot_ops)?;
         d.set_item("stack_ops", s.stack_ops)?;
@@ -576,6 +578,12 @@ impl Program {
     /// seconds, or None when there is none (programs counting cycles).
     fn compile(&self, py: Python<'_>) -> Option<f64> {
         py.detach(|| self.exec.jit().map(|j| j.secs))
+    }
+
+    /// Guards the interpreter backend has evaluated so far (conditional branches to a deopt).
+    #[getter]
+    fn guard_evals(&self) -> u64 {
+        self.exec.guard_evals()
     }
 
     /// Deopts so far per PC.

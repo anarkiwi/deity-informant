@@ -608,6 +608,7 @@ fn unbounded_index_store_keeps_its_guard() {
         let opts = Opts {
             optimize: true,
             cycles,
+            ..Opts::default()
         };
         let p = lift_with(&img, &entries(&[0x1000]), &[(0xc000, 0xc100)], &f, opts);
         assert_eq!(p.stats.code_guards, 1);
