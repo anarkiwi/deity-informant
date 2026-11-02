@@ -312,12 +312,14 @@ class MachineOracle:
         irq_setup=False,
         ports=None,
         index_frames=False,
+        io=(),
     ):
         """Run ``init`` then ``calls`` (``[(pc, a)]``); with ``frames``, interrupts drive play.
 
         ``ports`` maps ``"init"``/``"call"`` to the $01 value the host sets before each such call.
         ``index_frames``: a cell's first-seen index is the frame of the interrupt-driven phase
-        (cycles since its first decode over cycles per frame) instead of the call.
+        (cycles since its first decode over cycles per frame) instead of the call. ``io``:
+        ``(addr, value)`` host I/O writes after the reset, before ``irq_setup``'s CIA setup.
         """
         self.ports = dict(ports or {})
         self.queue = [("init", pc, a) for pc, a in init] + [("call", pc, a) for pc, a in calls]
@@ -329,6 +331,8 @@ class MachineOracle:
         m.set_trap(self._trap, {self.sentinel})  # pylint: disable=no-member
         t = self.call_start = m.reset(self.sentinel)
         self.shadow[:] = self.ram
+        for reg, v in io:
+            m.io_write(reg, v)
         if irq_setup:
             latch = mm.video(m.ntsc).kernal_latch
             for reg, v in ((mm.CIA1_TIMER_A_LO, latch & 0xFF), (mm.CIA1_TIMER_A_HI, latch >> 8),

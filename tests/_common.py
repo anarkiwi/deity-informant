@@ -38,3 +38,16 @@ def arch_state(vm):
     """Architectural state ``(A, X, Y, SP, C, Z, I, D, V, N)`` from ``vm``."""
     r = vm.reg
     return (r[0], r[1], r[2], r[3], r[8], r[9], r[10], r[11], r[13], r[14])
+
+
+def basic_program(*lines, org=0x0801):
+    """A tokenised C64 BASIC program at ``org`` from ``(number, tokenised text)`` lines."""
+    out = bytearray()
+    for number, text in lines:
+        body = number.to_bytes(2, "little") + text + b"\0"
+        out += (org + len(out) + 2 + len(body)).to_bytes(2, "little") + body
+    return bytes(out + b"\0\0")
+
+
+# 10 POKE 4096,PEEK(780)+1: POKE 54296,15 / 20 GOTO 20: tokens POKE $97, PEEK $C2, + $AA, GOTO $89
+SONG_POKE = basic_program((10, b"\x974096,\xc2(780)\xaa1:\x9754296,15"), (20, b"\x8920"))

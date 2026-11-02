@@ -36,6 +36,7 @@ def test_banked_song_backends_agree(tmp_path, capsys):
 def test_irq_song_backends_agree(tmp_path, capsys):
     (tmp_path / "busy.sid").write_bytes(sid(BUSY, 0, magic=b"RSID"))
     song = {"path": "busy.sid", "init": 0x1000, "song": 1, "calls": 20, "clock": "PAL"}
+    song |= {"kind": "RSID", "flags": 0x14}
     path = tmp_path / "rows.jsonl"
     path.write_text(json.dumps(song | {"irq": {}}) + "\n" + json.dumps(song), encoding="utf-8")
     args = [str(path), "--hvsc", str(tmp_path), "--irq", "--jobs", "1", "--max-cycles", "5000"]

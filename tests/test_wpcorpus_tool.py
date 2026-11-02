@@ -14,6 +14,7 @@ from deity_informant.smc.machine import core
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 import wpcorpus  # noqa: E402 pylint: disable=wrong-import-position,wrong-import-order
+import _common as H  # noqa: E402 pylint: disable=wrong-import-position,wrong-import-order
 
 pytestmark = pytest.mark.skipif(not (NATIVE and core()), reason="needs the native machines")
 
@@ -24,20 +25,22 @@ BANKED = bytes.fromhex("60" "a9358501a9378501" "8d00d460")  # play stores $01 tw
 IRQ = bytes.fromhex("78a9108d1403a9108d150358" "60eaeaea" "ad0ddc8d00d468a868aa6840")
 
 
-def sid(code, play, init=0x1000, magic=b"PSID", songs=1, speed=0, flags=0x14):
-    hdr = magic + struct.pack(">HHHHHHHI", 2, 0x7C, 0x1000, init, play, songs, 1, speed)
+# pylint: disable-next=too-many-arguments,too-many-positional-arguments
+def sid(code, play, init=0x1000, magic=b"PSID", songs=1, speed=0, flags=0x14, load=0x1000):
+    hdr = magic + struct.pack(">HHHHHHHI", 2, 0x7C, load, init, play, songs, 1, speed)
     hdr += b"\0" * 0x60 + struct.pack(">HBBBB", flags, 0, 0, 0, 0)
     return hdr + code
 
 
-def tree(tmp_path):
+def tree(tmp_path, basic=False):
     files = {
         "flat.sid": sid(FLAT, 0x100B, songs=2, speed=3),
         "banked.sid": sid(BANKED, 0x1001),
         "irq.sid": sid(IRQ, 0, magic=b"RSID"),
-        "basic.sid": sid(IRQ, 0, magic=b"RSID", flags=0x16),
         "bad.sid": b"PSID",
     }
+    if basic:
+        files["basic.sid"] = sid(H.SONG_POKE, 0, 0, b"RSID", songs=2, flags=0x16, load=0)
     lines = ["[Database]"]
     tmp_path.mkdir()
     for name, data in files.items():
@@ -66,7 +69,7 @@ def test_corpus(tmp_path):
     args = [str(root), "--out", str(out), "--jobs", "2", "--default-length", "0.5"]
     assert wpcorpus.main(args + ["--label-calls", "10"]) == 0
     rows = rows_of(out)
-    assert len(rows) == 6
+    assert len(rows) == 5
     f1, f2 = rows["flat.sid", 1], rows["flat.sid", 2]
     assert f1["rate_src"] == "cia-init" and f1["rate_hz"] == pytest.approx(985248 / 0x41)
     assert f1["calls"] == f1["calls_run"] == round(985248 / 0x41) and f2["calls"] == round(
@@ -86,7 +89,6 @@ def test_corpus(tmp_path):
     assert i["irq"]["kernal_vector"] == 0x1010 and i["irq"]["irqs"] > 0 and i["calls_run"] > 0
     assert i["oracle"] == "frames" and i["label_calls"] == 10 and i["irq"]["init_returned"]
     assert set(i["cells_first"]) == set(i["cells"]) and i["cells"]
-    assert rows["basic.sid", 1]["skip"] == "needs the C64 BASIC ROM"
     assert rows["bad.sid", 0]["skip"] == "not a sid file"
     recs = facts_of(out)
     assert {(Path(r["path"]).name, r["song"], r["mode"]) for r in recs} == {
@@ -96,9 +98,9 @@ def test_corpus(tmp_path):
     }
     assert all(r["facts"]["starts"] and r["state"] for r in recs)
     s = json.loads((out / "summary.json").read_text())
-    assert s["rows"] == 6 and s["by_kind"]["PSID"]["lifted"] == 3
+    assert s["rows"] == 5 and s["by_kind"]["PSID"]["lifted"] == 3
     assert s["by_kind"]["PSID"]["exact"] == 3
-    assert s["by_kind"]["RSID"]["skipped"] == {"irq-driven": 1, "needs the C64 BASIC ROM": 1}
+    assert s["by_kind"]["RSID"]["skipped"] == {"irq-driven": 1}
     assert s["irq"]["songs"] == 1 and s["speed"]["lifted_calls_s"]["n"] == 3 and not s["failures"]
     assert s["first_seen"]["capped_songs"] == 3 and s["first_seen"]["indices"]["n"] > 0
     assert {"reference", "lifted", "jennings", "check", "cpu_label", "irq_scan"} <= set(
@@ -111,7 +113,7 @@ def test_corpus(tmp_path):
     (out / "facts.jsonl.zst").write_bytes((out / "facts.jsonl.zst").read_bytes()[:-5])
     (out / "rows.jsonl").write_text((out / "rows.jsonl").read_text()[:-10])
     assert wpcorpus.main(args) == 0
-    assert len(rows_of(out)) == 6 and len(facts_of(out)) == 3
+    assert len(rows_of(out)) == 5 and len(facts_of(out)) == 3
 
 
 def test_timeout_and_errors(tmp_path, monkeypatch):
@@ -183,3 +185,27 @@ def test_irq_scan_backends_agree(code, frames, mc):
         for b in ("python", "native")
     ]
     assert scans[0] == scans[1]
+
+
+def test_basic_rsid_redo(tmp_path, real):  # pylint: disable=unused-argument
+    """A BASIC RSID runs on the real ROMs; --redo replaces rows skipped for a reason in place."""
+    root, out = tree(tmp_path / "hvsc", basic=True), tmp_path / "out"
+    args = [str(root), "--out", str(out), "--jobs", "2", "--default-length", "0.5"]
+    assert wpcorpus.main(args + ["--label-calls", "10"]) == 0
+    rows = rows_of(out)
+    for song in (1, 2):
+        b = rows["basic.sid", song]
+        assert b["basic"] and b["skip"] == "irq-driven" and b["oracle"] == "frames"
+        assert b["irq"]["path"] == "kernal" and b["irq"]["kernal_vector"] == 0xEA31
+        assert b["irq"]["irqs"] > 0 and not b["irq"]["jammed"] and b["cells"]
+    lines = (out / "rows.jsonl").read_text().splitlines()
+    old = [json.loads(x) for x in lines]
+    skipped = "needs the C64 BASIC ROM"
+    keep = ("path", "md5", "song", "kind", "flags", "clock", "calls", "length_s", "rate_hz")
+    old = [r if "basic" not in r else {k: r[k] for k in keep} | {"skip": skipped} for r in old]
+    (out / "rows.jsonl").write_text("".join(json.dumps(r) + "\n" for r in old))
+    assert wpcorpus.main(args) == 0 and rows_of(out)["basic.sid", 1]["skip"] == skipped
+    assert wpcorpus.main(args + ["--redo", skipped, "--redo", "other"]) == 0
+    lines = (out / "rows.jsonl").read_text().splitlines()
+    assert len(lines) == len(old) == len(rows_of(out))
+    assert rows_of(out)["basic.sid", 2]["irq"] == rows["basic.sid", 2]["irq"]

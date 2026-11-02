@@ -85,16 +85,18 @@ def compare(img, song, max_cycles=2_000_000):
     return row
 
 
-def compare_irq(img, song, max_cycles=2_000_000):
-    """Both backends' ``_IrqScan`` of ``song`` over its ``calls`` frames, and costs."""
+def compare_irq(data, song, max_cycles=2_000_000):
+    """Both backends' ``_IrqScan`` of ``song`` of the file ``data`` over its ``calls`` frames,
+    started as ``wpcorpus.irq_boot`` does, and costs."""
+    boot = wpcorpus.irq_boot(song, data)
     row = {"path": song.get("path"), "song": song["song"], "calls_run": song["calls"]}
     res = {}
     for b in BACKENDS:
         t = time.perf_counter()
         o = wpcorpus._IrqScan(  # pylint: disable=protected-access
-            img, ntsc=song["clock"] == "NTSC", backend=b
+            boot.image, ntsc=song["clock"] == "NTSC", backend=b, roms=boot.roms
         )
-        res[b] = o.scan((song["init"], song["song"] - 1), song["calls"], max_cycles)
+        res[b] = o.scan(boot.init, song["calls"], max_cycles, boot.io)
         row[b + "_s"] = time.perf_counter() - t
     row |= {"irq": res["python"], "equal": res["python"] == res["native"]}
     return row | {"scan_equal": row["equal"]}
@@ -102,8 +104,10 @@ def compare_irq(img, song, max_cycles=2_000_000):
 
 def _job(args):
     root, song, max_cycles, irq = args
-    img = sidfile((Path(root) / song["path"]).read_bytes())[1]
-    return (compare_irq if irq else compare)(img, song, max_cycles)
+    data = (Path(root) / song["path"]).read_bytes()
+    return (
+        compare_irq(data, song, max_cycles) if irq else compare(sidfile(data)[1], song, max_cycles)
+    )
 
 
 def summary(rows):

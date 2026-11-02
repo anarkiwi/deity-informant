@@ -365,17 +365,22 @@ def psid_song(row, img, mc, cap, defer=False):
     return row, {"state": _diff(img, mem), "reg": list(r["reg"]), "facts": facts}
 
 
-def label(oracle, img, row, n, mc):
+# pylint: disable-next=too-many-arguments,too-many-positional-arguments
+def label(oracle, img, row, n, mc, boot=None):
     """The scenario-cell row fields of a song's first ``n`` play calls (``calls``: play called
-    as sidplay does) or interrupt-driven frames (``frames``), on the vagrant-moses machine."""
+    as sidplay does) or interrupt-driven frames (``frames``), on the vagrant-moses machine;
+    ``boot`` (:class:`c64.Boot`) replaces ``img`` and the row's init."""
     t = time.perf_counter()
-    init = (row["init"], row["song"] - 1)
-    o = MachineOracle(img, ntsc=row["clock"] == "NTSC")
+    init, roms, io = (row["init"], row["song"] - 1), None, ()
+    if boot is not None:
+        img, roms, init, io = boot
+    o = MachineOracle(img, ntsc=row["clock"] == "NTSC", roms=roms)
     if oracle == "calls":
         ports = {"init": iomap(row["init"]), "call": iomap(row["play"])}
         run = o.run([(row["play"], 0)] * n, init=[init], call_cycles=mc, ports=ports)
     else:
-        run = o.run([], init=[init], frames=n, irq_setup=True, call_cycles=mc, index_frames=True)
+        run = o.run([], init=[init], frames=n, irq_setup=True, call_cycles=mc, index_frames=True,
+                    io=io)  # fmt: skip
     return _label_row(oracle, run, n, t)
 
 
@@ -412,9 +417,9 @@ class _IrqScan(MachineOracle):
     scans in vagrant-moses' recorder; ``python`` (the reference) drops its decode hook once the
     main context has, interrupts then being counted from the machine's events."""
 
-    def __init__(self, image, ntsc=False, backend=None):
+    def __init__(self, image, ntsc=False, backend=None, roms=None):
         backend = backend or ("native" if c64.TRACE_NATIVE else "python")
-        super().__init__(image, ntsc=ntsc, backend=backend)
+        super().__init__(image, ntsc=ntsc, roms=roms, backend=backend)
         self.irqs, self.vector, self.ctx = 0, None, []
         self.main = Counter()
         self.cpf, self.t0 = mm.video(ntsc).cycles_per_frame, None
@@ -482,9 +487,9 @@ class _IrqScan(MachineOracle):
             self.main["first_busy_frame"] = (mc.cycle - self.t0) // self.cpf
             mc.set_decode_hook(None)  # pylint: disable=no-member
 
-    def scan(self, init, frames, mc):
+    def scan(self, init, frames, mc, io=()):
         """Run ``init`` then ``frames`` interrupt-driven frames; the ``irq`` row field."""
-        self.run([], init=[init], frames=frames, irq_setup=True, call_cycles=mc)
+        self.run([], init=[init], frames=frames, irq_setup=True, call_cycles=mc, io=io)
         self.irqs += self._entries(self.m.events)
         return {
             **(self.vector or {}),
@@ -497,17 +502,39 @@ class _IrqScan(MachineOracle):
         }
 
 
-def irq_song(row, img, mc, cap):
-    """An interrupt-driven song on the machine: its IRQ facts over all ``calls`` frames, its
-    cells over the first ``cap`` (0: all)."""
-    row["skip"] = "irq-driven"
+def load_span(data):
+    """``(load, end)``: the C64 address range a PSID/RSID file's data loads to."""
+    off, load = struct.unpack(">HH", data[6:10])
+    if load == 0:
+        load, off = data[off] | data[off + 1] << 8, off + 2
+    return load, load + len(data) - off
+
+
+_real_roms = lru_cache(maxsize=1)(c64.real_roms)
+
+
+def irq_boot(row, data):
+    """The :class:`c64.Boot` of an interrupt-driven song of the file ``data``: an RSID with the
+    C64 BASIC flag runs its program on the real ROMs (:func:`c64.basic_boot`)."""
+    img = sidfile(data)[1]
     if row["kind"] == "RSID" and row["flags"] & 2:
-        return row | {"skip": "needs the C64 BASIC ROM"}, None
+        ntsc = row["clock"] == "NTSC"
+        return c64.basic_boot(img, *load_span(data), row["song"], ntsc, _real_roms())
+    return c64.Boot(img, None, (row["init"], row["song"] - 1), ())
+
+
+def irq_song(row, boot, mc, cap):
+    """An interrupt-driven song on the machine from ``boot`` (:func:`irq_boot`): its IRQ facts
+    over all ``calls`` frames, its cells over the first ``cap`` (0: all)."""
+    row["skip"] = "irq-driven"
+    if boot.roms is not None:
+        row["basic"] = True
     t = time.perf_counter()
-    o = _IrqScan(img, ntsc=row["clock"] == "NTSC")
-    row["irq"] = o.scan((row["init"], row["song"] - 1), row["calls"], mc)
+    o = _IrqScan(boot.image, ntsc=row["clock"] == "NTSC", roms=boot.roms)
+    row["irq"] = o.scan(boot.init, row["calls"], mc, boot.io)
     row |= {"calls_run": o.irqs, "facts_ms": 1e3 * (time.perf_counter() - t)}
-    return row | label("frames", img, row, min(row["calls"], cap or row["calls"]), mc), None
+    n = min(row["calls"], cap or row["calls"])
+    return row | label("frames", boot.image, row, n, mc, boot), None
 
 
 def run_song(path, row, mc, cap=0, defer=()):
@@ -516,13 +543,13 @@ def run_song(path, row, mc, cap=0, defer=()):
     try:
         if "skip" in row:
             return row, None
-        img = sidfile(Path(path).read_bytes())[1]
+        data = Path(path).read_bytes()
         if row["kind"] == "RSID" or not row["play"]:
             if "irq" in defer:
                 return row | {"deferred": True}, None
-            row, rec = irq_song(row, img, mc, cap)
+            row, rec = irq_song(row, irq_boot(row, data), mc, cap)
         else:
-            row, rec = psid_song(row, img, mc, cap, "banked" in defer)
+            row, rec = psid_song(row, sidfile(data)[1], mc, cap, "banked" in defer)
     except Exception as e:  # pylint: disable=broad-exception-caught
         return {**row, "error": repr(e)[:300]}, None
     if rec is None:
@@ -787,6 +814,13 @@ def main(argv=None):  # pylint: disable=too-many-locals
         default=(),
         help="banked,irq: leave those songs for a later run",
     )
+    ap.add_argument(
+        "--redo",
+        action="append",
+        default=[],
+        metavar="REASON",
+        help="re-run the rows skipped for REASON, replacing them (repeatable)",
+    )
     args = ap.parse_args(argv)
     root, out = Path(args.root), Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -797,6 +831,11 @@ def main(argv=None):  # pylint: disable=too-many-locals
         paths = random.Random(args.seed).sample(paths, min(args.sample, len(paths)))
     t0 = time.perf_counter()
     rows = _read_rows(rows_path)
+    if args.redo:
+        rows = {k: r for k, r in rows.items() if r.get("skip") not in args.redo}
+        tmp = rows_path.with_suffix(".redo")
+        tmp.write_text("".join(json.dumps(r) + "\n" for r in rows.values()), encoding="utf-8")
+        os.replace(tmp, rows_path)
     fkeys = _fact_keys(facts_path)
     done = {k for k, r in rows.items() if not r.get("has_facts") or k in fkeys}
     plans = []

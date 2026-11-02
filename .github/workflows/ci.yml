@@ -21,15 +21,16 @@ jobs:
       - name: C64 ROM cache key
         id: roms
         run: >-
-          python -c "from vagrant_moses.roms import ROMS;
-          print('key=c64-roms-' + '-'.join(r.sha256 for r in ROMS.values()))" >> "$GITHUB_OUTPUT"
+          python -c "from vagrant_moses.roms import ASSETS, ROMS;
+          print('key=c64-roms-' + '-'.join(r.sha256 for r in {**ROMS, **ASSETS}.values()))"
+          >> "$GITHUB_OUTPUT"
       - name: C64 ROM cache
         uses: actions/cache@v4
         with:
           path: ${{ env.VAGRANT_MOSES_ROMCACHE }}
           key: ${{ steps.roms.outputs.key }}
       - name: Fetch and verify C64 ROMs
-        run: python -c "from vagrant_moses.roms import ROMS, fetch_rom; [fetch_rom(n) for n in ROMS]"
+        run: python -c "from vagrant_moses.roms import ASSETS, ROMS, fetch_rom; [fetch_rom(n) for n in {**ROMS, **ASSETS}]"
       - name: Format
         run: black --check deity_informant/ tests/ tools/
       - name: Lint
@@ -78,15 +79,16 @@ jobs:
       - name: C64 ROM cache key
         id: roms
         run: >-
-          python -c "from vagrant_moses.roms import ROMS;
-          print('key=c64-roms-' + '-'.join(r.sha256 for r in ROMS.values()))" >> "$GITHUB_OUTPUT"
+          python -c "from vagrant_moses.roms import ASSETS, ROMS;
+          print('key=c64-roms-' + '-'.join(r.sha256 for r in {**ROMS, **ASSETS}.values()))"
+          >> "$GITHUB_OUTPUT"
       - name: C64 ROM cache
         uses: actions/cache@v4
         with:
           path: ${{ env.VAGRANT_MOSES_ROMCACHE }}
           key: ${{ steps.roms.outputs.key }}
       - name: Fetch and verify C64 ROMs
-        run: python -c "from vagrant_moses.roms import ROMS, fetch_rom; [fetch_rom(n) for n in ROMS]"
+        run: python -c "from vagrant_moses.roms import ASSETS, ROMS, fetch_rom; [fetch_rom(n) for n in {**ROMS, **ASSETS}]"
       - uses: docker/setup-buildx-action@v4
       - name: Build
         uses: docker/build-push-action@v7
