@@ -66,6 +66,7 @@ Resolves the stock `6502.slaspec` + SLEIGH compiler from `$GHIDRA_INSTALL_DIR` o
 black --check deity_informant/ tests/ tools/ && pylint deity_informant/
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
 deity-informant emit-sleigh
+maturin develop --release   # the coverage gate measures the native build
 pytest tests/ -n auto --cov=deity_informant --cov-fail-under=85
 ```
 
