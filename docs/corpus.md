@@ -57,7 +57,26 @@ as the reference, a minimal decode hook dropped once the main context is seen bu
 $FFFE), both vectors, interrupts taken, whether init returned, and the main context's
 instructions until then and the frame it first stored outside page 1 or touched I/O
 (`first_busy_frame`; `idle` when it never did). The scan run's recorder labels the frames
-(`oracle` `frames`); a smaller `--label-calls` labels the first that many in a second run. These songs are skipped for lifting (`irq-driven`).
+(`oracle` `frames`); a smaller `--label-calls` labels the first that many in a second run. An idle-main song (`irq.idle`, not jammed, with interrupts) is then lifted and checked frame by
+frame (below); the others are skipped with their reason: `async main` (the main context does real
+work beside the interrupts), `init jam`, `no interrupts`, or `interrupt outside a frame: brk`.
+
+### Interrupt frames
+
+`deity_informant.frames` (`wpcorpus.frame_song`) treats one interrupt, from its entry to its
+`RTI`, as a call. A second machine run (`frames.FrameHost`) traps the targets of the IRQ and NMI
+vectors (the KERNAL's `$FF48`/`$FE43` with the ROM banked in, else the RAM vector's); at an entry
+it points the pushed return address at the machine's sentinel and opens a call record
+(`c64.CallStream`, facts and RAM changes as for a PSID's calls), and the handler's `RTI` landing
+on the sentinel closes it and resumes the interrupted pc. The record's entry state is the
+registers and status the hardware pushed (`frames.ENTRY`). The lift is always banked, through the
+song's ROMs (a BASIC song's patched BASIC included), one entry per entry address;
+`Program.call(..., irq=True)` pushes the frame as the hardware does (PC, status with B clear, I
+set) and the entry returns by `RTI` to the sentinel. `frames.check` replays each frame's device
+reads and compares as `c64.check`; an NMI or further IRQ entered inside a frame is not modelled
+(`interrupt` outcome when it differs). A frame cut by the end of the run is dropped; one that jams
+or exceeds `--max-cycles` ends it (`halted`). Frame rows have `mode` `banked`, no `jennings_s`
+and no facts line.
 
 ### Boot environment
 

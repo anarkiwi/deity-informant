@@ -96,6 +96,10 @@ NMI in (`c64._Host.interrupts`; a run on vagrant-moses' call queue runs again to
 with a trap per call to see them), which lifts do not model. The machine's SID is
 vagrant-moses' bus model (unreadable registers read the decaying data-bus latch).
 
+`call(..., irq=True)` (with `ret`, the interrupted PC less one) enters as an interrupt: it
+pushes the PC, the status (B clear) and sets I, and the entry returns by `RTI` to the PC; the
+lifted code assumes the exit at SP + 3 (`deity_informant.frames`).
+
 `call` is `run_to_rts`: push the dummy return `$0001` (or `ret`), set A, run until SP rises
 above its start (with `ret`, only at `ret + 1`, as a host trapping that address sees the
 return: a stack that wraps is not one), `max_cycles` elapse or a JAM (`halt` is `return`, `cycles` or `jam`). With `log=True`

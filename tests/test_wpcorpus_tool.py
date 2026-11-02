@@ -88,7 +88,10 @@ def test_corpus(tmp_path):
     assert b["mode"] == "banked" and b["bank_evidence"] == ["port-write"] and b["exact"]
     assert b["oracle"] == "calls" and b["configs"] and b["timing"]["jennings_s"] is None
     i = rows["irq.sid", 1]
-    assert i["skip"] == "irq-driven" and i["irq"]["path"] == "kernal" and i["irq"]["idle"]
+    assert "skip" not in i and i["irq"]["path"] == "kernal" and i["irq"]["idle"]
+    assert i["mode"] == "banked" and i["exact"] and i["outcome"] == "exact" and i["returned"]
+    assert i["stats"]["stack_private"] and i["timing"]["calls"] == i["calls_run"] > 0
+    assert i["timing"]["jennings_s"] is None and i["configs"] and not i["deopts"]
     assert i["irq"]["kernal_vector"] == 0x1010 and i["irq"]["irqs"] > 0 and i["calls_run"] > 0
     assert i["oracle"] == "frames" and i["label_calls"] == 10 and i["irq"]["init_returned"]
     assert set(i["cells_first"]) == set(i["cells"]) and i["cells"]
@@ -101,10 +104,9 @@ def test_corpus(tmp_path):
     }
     assert all(r["facts"]["starts"] and r["state"] for r in recs)
     s = json.loads((out / "summary.json").read_text())
-    assert s["rows"] == 5 and s["by_kind"]["PSID"]["lifted"] == 3
-    assert s["by_kind"]["PSID"]["exact"] == 3
-    assert s["by_kind"]["PSID"]["skipped"] == {"irq-driven": 1}
-    assert s["irq"]["songs"] == 1 and s["speed"]["lifted_calls_s"]["n"] == 3 and not s["failures"]
+    assert s["rows"] == 5 and s["by_kind"]["PSID"]["lifted"] == 4
+    assert s["by_kind"]["PSID"]["exact"] == 4 and s["by_kind"]["PSID"]["skipped"] == {}
+    assert s["irq"]["songs"] == 1 and s["speed"]["lifted_calls_s"]["n"] == 4 and not s["failures"]
     assert s["first_seen"]["capped_songs"] == 3 and s["first_seen"]["indices"]["n"] > 0
     assert {"reference", "lifted", "jennings", "check", "cpu_label", "irq_scan"} <= set(
         s["cost_us"]
@@ -199,7 +201,7 @@ def test_basic_rsid_redo(tmp_path, real):  # pylint: disable=unused-argument
     rows = rows_of(out)
     for song in (1, 2):
         b = rows["basic.sid", song]
-        assert b["basic"] and b["skip"] == "irq-driven" and b["oracle"] == "frames"
+        assert b["basic"] and b["skip"] == "async main" and b["oracle"] == "frames"
         assert b["irq"]["path"] == "kernal" and b["irq"]["kernal_vector"] == 0xEA31
         assert b["irq"]["irqs"] > 0 and not b["irq"]["jammed"] and b["cells"]
     lines = (out / "rows.jsonl").read_text().splitlines()
@@ -295,3 +297,11 @@ def test_irq_scan_counts_interrupts_across_windows(monkeypatch):
     monkeypatch.setattr(machine, "WINDOW", 997)
     assert wpcorpus._IrqScan(boot.image).scan(boot, 50, 2_000_000) == want  # pylint: disable=W0212
     assert want["irqs"] > 40
+
+
+def test_irq_skip():
+    base = {"jammed": False, "idle": True, "irqs": 3}
+    assert wpcorpus.irq_skip(base) is None
+    assert wpcorpus.irq_skip(base | {"jammed": True}) == "init jam"
+    assert wpcorpus.irq_skip(base | {"idle": False}) == "async main"
+    assert wpcorpus.irq_skip(base | {"irqs": 0}) == "no interrupts"

@@ -507,8 +507,10 @@ impl Program {
     /// the lifted code runs to its return and ``cycles`` counts only the reference
     /// interpreter's part after a deopt. A banked program's non-volatile devices read and
     /// write a copy of ``mem``; ``reads`` (bytes) replays the volatile reads in order.
-    /// ``backend`` overrides :attr:`backend` for this call.
-    #[pyo3(signature = (mem, entry=0, a=0, reg=None, cycles=0, max_cycles=10_000_000, log=false, synth=false, reads=None, backend=None, ret=None))]
+    /// ``backend`` overrides :attr:`backend` for this call. With ``irq`` the call enters as
+    /// an interrupt: it pushes the PC ``ret + 1``, the status (B clear) and sets I, and returns
+    /// by ``RTI`` to ``ret + 1``.
+    #[pyo3(signature = (mem, entry=0, a=0, reg=None, cycles=0, max_cycles=10_000_000, log=false, synth=false, reads=None, backend=None, ret=None, irq=false))]
     #[allow(clippy::too_many_arguments)]
     fn call<'py>(
         &self,
@@ -524,6 +526,7 @@ impl Program {
         reads: Option<Vec<u8>>,
         backend: Option<&str>,
         ret: Option<u16>,
+        irq: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
         let backend = self.backend_or(backend)?;
         self.entry(entry)?;
@@ -533,7 +536,13 @@ impl Program {
             let mut bus = PyBus::new(m, &self.prog.volatile, log, synth);
             bus.dev = dev;
             bus.reads = reads.as_deref();
-            let o = self.run(&mut bus, &mut cpu, (entry, a, ret), max_cycles, backend);
+            let o = self.run(
+                &mut bus,
+                &mut cpu,
+                (entry, a, ret, irq),
+                max_cycles,
+                backend,
+            );
             (o, bus.log)
         })?;
         result(py, &cpu, o.halt, o.deopt, lg)
@@ -590,7 +599,7 @@ impl Program {
                 let mut bus = PyBus::new(m, &self.prog.volatile, true, false);
                 bus.dev = dev;
                 bus.reads = Some(&reads);
-                let o = self.run(&mut bus, &mut cpu, (0, a, ret), max_cycles, backend);
+                let o = self.run(&mut bus, &mut cpu, (0, a, ret, false), max_cycles, backend);
                 let out = bus.log.take().unwrap_or_default();
                 if let Some(bad) = mismatch(&r, k, o.halt, &out, &cpu.reg(), m, &refm) {
                     return Some((n, bad));
@@ -667,7 +676,7 @@ impl Program {
         &self,
         bus: &mut PyBus<'_>,
         cpu: &mut Cpu,
-        (entry, a, ret): (usize, u8, Option<u16>),
+        (entry, a, ret, irq): (usize, u8, Option<u16>, bool),
         max_cycles: u64,
         backend: Backend,
     ) -> Outcome {
@@ -677,6 +686,7 @@ impl Program {
         run.backend = backend;
         run.invalid = st.0;
         run.ret = ret;
+        run.irq = irq;
         let o = run.call(entry, a, cpu, bus, max_cycles);
         st.0 = run.invalid;
         for (k, v) in run.deopts {
@@ -709,7 +719,7 @@ impl Session {
         let o = with_mem(self.mem.bind(py), |m| {
             let mut bus = PyBus::new(m, &p.prog.volatile, false, false);
             bus.dev = dev.take();
-            let o = p.run(&mut bus, cpu, (entry, a, None), mc, b);
+            let o = p.run(&mut bus, cpu, (entry, a, None, false), mc, b);
             *dev = bus.dev;
             o
         })?;
@@ -733,9 +743,9 @@ fn devices(banked: bool, mem: &Bound<'_, PyByteArray>) -> PyResult<Option<Box<[u
 /// ``run_to_rts`` on the reference interpreter with the same bus as ``Program.call``;
 /// ``clocked=False`` gives volatile accesses no cycle, as a program lifted without cycles.
 /// ``bank`` (a bank map dict, see ``lift_program``) sees memory through it; ``reads`` as
-/// ``Program.call``, ``ret`` as ``Program.call``.
+/// ``Program.call``, ``ret`` and ``irq`` as ``Program.call``.
 #[pyfunction]
-#[pyo3(signature = (mem, pc, a=0, reg=None, cycles=0, max_cycles=10_000_000, volatile=vec![], log=false, synth=false, clocked=true, bank=None, reads=None, ret=None))]
+#[pyo3(signature = (mem, pc, a=0, reg=None, cycles=0, max_cycles=10_000_000, volatile=vec![], log=false, synth=false, clocked=true, bank=None, reads=None, ret=None, irq=false))]
 #[allow(clippy::too_many_arguments)]
 pub fn reference_call<'py>(
     py: Python<'py>,
@@ -752,6 +762,7 @@ pub fn reference_call<'py>(
     bank: Option<&Bound<'py, PyDict>>,
     reads: Option<Vec<u8>>,
     ret: Option<u16>,
+    irq: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     let mut cpu = cpu_of(reg, cycles);
     let bank = bank_of(bank)?;
@@ -766,7 +777,7 @@ pub fn reference_call<'py>(
             &mut bus,
             bank.as_ref(),
             clocked,
-            (pc, a, ret),
+            (pc, a, ret, irq),
             max_cycles,
         );
         (h, bus.log)
@@ -781,15 +792,11 @@ fn reference_run(
     bus: &mut PyBus<'_>,
     bank: Option<&BankMap>,
     clocked: bool,
-    (pc, a, ret): (u16, u8, Option<u16>),
+    (pc, a, ret, irq): (u16, u8, Option<u16>, bool),
     max_cycles: u64,
 ) -> Halt {
     let start = cpu.r(R::SP);
-    for v in ret.unwrap_or(RETURN).to_be_bytes() {
-        let sp = cpu.r(R::SP);
-        bus.ram_write(0x100 | sp as u16, v);
-        cpu.set_r(R::SP, sp.wrapping_sub(1));
-    }
+    cpu.push_frame(bus, ret.unwrap_or(RETURN), irq);
     cpu.set_r(R::A, a);
     cpu.pc = pc;
     let end = cpu.cycles.saturating_add(max_cycles).saturating_add(1);
@@ -836,7 +843,7 @@ pub fn reference_calls(
                 &mut bus,
                 bank.as_ref(),
                 true,
-                (pc, 0, None),
+                (pc, 0, None, false),
                 max_cycles,
             );
             (reg, cycles) = (Some(cpu.reg()), cycles + cpu.cycles);
