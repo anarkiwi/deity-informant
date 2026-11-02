@@ -194,12 +194,3 @@ def test_a_pointer_set_on_one_path_only_is_checked_at_entry(src, cycles):
         mem[0xFC] = hi
         differential(img, prog, pcs, [(0, 0), (0, 1), (0, 0)], mem=mem)
     assert len(prog.deopts) == 1
-
-
-@pytest.mark.parametrize("cycles", [False, True])
-def test_interrupts_disable_pointer_guards(cycles):
-    img, labels = assemble(TABLE)
-    pcs = [labels["entry"]]
-    facts = facts_for(img, pcs, [(0, 0), (0, 1)])
-    prog = wholeprog.lift(img, pcs, [IO], facts, cycles=cycles, interrupts=True)
-    assert prog.stats["ptr_guards"] == 0 and prog.stats["stack_guards"] > 0

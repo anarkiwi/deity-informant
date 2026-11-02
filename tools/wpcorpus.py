@@ -353,13 +353,12 @@ def psid_song(row, img, mc, cap, defer=False):
     def lifted(banked):
         t = time.perf_counter()
         bank, vol = (_bank(), [c64.DEVICES]) if banked else (None, volatile_of(row))
-        prog = wholeprog.lift(last["ram"], [play], vol, facts, bank=bank)
+        prog = wholeprog.lift(last["ram"], c64.entries_of(play, facts), vol, facts, bank=bank)
         lift_ms = 1e3 * (time.perf_counter() - t)
         row["compile_ms"] = _compiled(prog)
         t = time.perf_counter()
         ret = host.sentinel - 1
-        bad = c64.check(prog, last["ram"], last["reg"], records, port, mc, ret=ret,
-                        irq=host.interrupts)  # fmt: skip
+        bad = c64.check(prog, last["ram"], last["reg"], records, port, mc, ret=ret)
         row.update(_lifted_row(prog, lift_ms, bad), check_ms=1e3 * (time.perf_counter() - t))
         return prog, bank, vol, bad
 
@@ -560,21 +559,22 @@ def irq_skip(irq):
     return None if irq["irqs"] else "no interrupts"
 
 
-def frame_song(row, boot, mc, end=None):
-    """``(row, facts record or None)`` of an idle-main interrupt-driven song: one machine run
-    records its frames (IRQ entry to RTI, the interrupts entered inside one with it), they are
-    lifted banked through the song's ROMs and checked and timed frame by frame; a run with an
-    interrupt outside a frame is skipped. The facts record has the machine's RAM at the first
-    frame over the song's image and the lift's entries. A run still recording halfway to ``end``
-    (a ``time.perf_counter`` time: the end of the song's wall clock allowance, the rest being for
-    lifting, checking and timing) stops there: a lift exact over the frames recorded agrees with
-    the machine up to the stop, ``halted`` with stop ``budget``."""
+def frame_song(row, boot, mc):
+    """``(row, facts record or None)`` of an idle-main interrupt-driven song.
+
+    One machine run records its frames (IRQ or NMI entry to RTI, the interrupts entered inside
+    one with it), they are lifted banked through the song's ROMs and checked and timed frame by
+    frame; a run with an interrupt outside a frame is skipped. The facts record has the machine's
+    RAM at the first frame over the song's image and the lift's entries. A run that reaches a
+    budget limit stops there: a lift exact over the frames recorded is ``halted`` (stop ``budget``
+    for a song limit).
+    """
     t = time.perf_counter()
     host = frames.FrameHost(boot.image, roms=boot.roms, ntsc=row["clock"] == "NTSC",
                             model=sid_model(row))  # fmt: skip
-    host.drive_frames(boot, row["calls"], mc, None if end is None else (t + end) / 2)
+    host.drive_frames(boot, row["calls"], mc)
     n = len(host.stream)
-    row |= {"facts_ms": 1e3 * (time.perf_counter() - t), "calls_run": n}
+    row |= {"facts_ms": 1e3 * (time.perf_counter() - t), "calls_run": n, "budget": host.stop}
     if host.foreign:
         return row | {"skip": "interrupt outside a frame: " + ",".join(sorted(host.foreign))}, None
     if host.dirty:
@@ -587,22 +587,19 @@ def frame_song(row, boot, mc, end=None):
     lift_ms = 1e3 * (time.perf_counter() - t)
     row["compile_ms"] = _compiled(prog)
     t = time.perf_counter()
-    bad = frames.check(prog, host, c64.bank_map(boot.roms), mc)
-    if host.budget and bad is None:
+    bad = frames.check(prog, host, mc)
+    if host.stop.startswith("song") and bad is None:
         bad = [n, "halted", "budget"]
     row |= {"mode": "banked", "bank_evidence": [], "returned": host.last_halt == "return",
             "configs": sorted({b for bs in facts.banks.values() for b in bs}),
-            "interrupts_inside": sum(map(len, host.taken.values())),
-            "interrupt_cause": host.cause.get(bad[0]) if bad else None,
-            **_lifted_row(prog, lift_ms, bad)}  # fmt: skip
+            "interrupts_inside": len(host.inner), **_lifted_row(prog, lift_ms, bad)}  # fmt: skip
     row["check_ms"] = 1e3 * (time.perf_counter() - t)
-    until = None if end is None else (time.perf_counter() + end) / 2
-    t_ref, t_lift, cycles, timed = frames.timed(prog, host, c64.bank_map(boot.roms), mc, until)
+    t_ref, t_lift, cycles, timed, hit = frames.timed(prog, host, c64.bank_map(boot.roms), mc)
     rec = {"state": _diff(boot.image, host.image), "entries": list(prog.entries), "facts": facts}
-    return row | {"timing": _timing(timed, cycles, t_ref, t_lift, None)}, rec
+    return row | {"timing": _timing(timed, cycles, t_ref, t_lift, None) | {"interrupted": hit}}, rec
 
 
-def irq_song(row, boot, mc, cap, end=None):
+def irq_song(row, boot, mc, cap):
     """An interrupt-driven song on the machine from ``boot`` (:func:`irq_boot`): its IRQ facts
     over all ``calls`` frames, its cells over the first ``cap`` (0: all); an idle-main song is
     then lifted and checked by :func:`frame_song`, any other skipped with its reason."""
@@ -619,12 +616,11 @@ def irq_song(row, boot, mc, cap, end=None):
         row |= _label_row("frames", o.result, row["calls"], t)
     if why := irq_skip(row["irq"]):
         return row | {"skip": why}, None
-    return frame_song(row, boot, mc, end)
+    return frame_song(row, boot, mc)
 
 
-def run_song(path, row, mc, cap=0, defer=(), allowance=None):
-    """``(row, compressed facts line or None)`` of one planned song; ``allowance`` is the
-    seconds of wall clock the song has (see :func:`frame_song`)."""
+def run_song(path, row, mc, cap=0, defer=()):
+    """``(row, compressed facts line or None)`` of one planned song."""
     row, t0 = dict(row), time.perf_counter()
     try:
         if "skip" in row:
@@ -633,7 +629,7 @@ def run_song(path, row, mc, cap=0, defer=(), allowance=None):
         if row["kind"] == "RSID" or not row["play"]:
             if "irq" in defer:
                 return row | {"deferred": True}, None
-            row, rec = irq_song(row, irq_boot(row, data), mc, cap, allowance and t0 + allowance)
+            row, rec = irq_song(row, irq_boot(row, data), mc, cap)
         else:
             row, rec = psid_song(row, sidfile(data)[1], mc, cap, "banked" in defer)
     except Exception as e:  # pylint: disable=broad-exception-caught
@@ -971,8 +967,7 @@ def main(argv=None):  # pylint: disable=too-many-locals
             if per_call is None:
                 per_call = 0.02 if c64.TRACE_NATIVE else 0.5
             timeouts = [args.timeout + per_call * r["calls"] for _, r in todo]
-            jobs = [(p, r, args.max_cycles, args.label_calls, args.defer, t)
-                    for (p, r), t in zip(todo, timeouts)]  # fmt: skip
+            jobs = [(p, r, args.max_cycles, args.label_calls, args.defer) for p, r in todo]
             _pool_map(pool, run_song, jobs, timeouts, "corpus", ran)
     s = summary(list(rows.values()))
     s["wall_s"] = time.perf_counter() - t0

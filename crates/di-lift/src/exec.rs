@@ -1,10 +1,10 @@
 //! Executing a lifted program over a [`Bus`], leaving for the reference [`Cpu`] at deopts.
 
-use crate::bank::{BankMap, Banked};
+use crate::bank::{Back, BankMap, Banked};
 use crate::ir::{mask, mem, other, Function, Program, CY, E, NREG};
 use crate::jit::Jit;
 use crate::opt::{budget_points, checkpoints, sp_effect, sp_offsets};
-use di_pcode::{reg as R, Bus, Cpu, Halt, Opc, Space, Vn, RETURN};
+use di_pcode::{reg as R, Bus, Cpu, Halt, Lead, Opc, Space, Vn, RETURN};
 use fixedbitset::FixedBitSet;
 use rustc_hash::FxHashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -135,6 +135,12 @@ impl<B: Bus> Bus for NoClock<'_, B> {
     }
     fn fetch(&mut self, a: u16) -> u8 {
         self.0.fetch(a)
+    }
+    fn lead(&mut self, pc: u16) -> Lead {
+        self.0.lead(pc)
+    }
+    fn boundary(&mut self, cpu: &mut Cpu) -> Option<Halt> {
+        self.0.boundary(cpu)
     }
     fn ram_read(&mut self, a: u16) -> u8 {
         self.0.ram_read(a)
@@ -407,6 +413,9 @@ pub struct Runner<'a> {
     /// Whether [`Runner::call`] enters as an interrupt: [`Runner::ret`] is the interrupted PC
     /// less one, pushed with the status as the hardware does, the entry returning by `RTI`.
     pub irq: bool,
+    /// Whether [`Runner::run`] runs on the reference interpreter from the entry, instruction by
+    /// instruction, for a bus that takes interrupts at instruction boundaries.
+    pub precise: bool,
 }
 
 impl<'a> Runner<'a> {
@@ -426,6 +435,7 @@ impl<'a> Runner<'a> {
             deopts: FxHashMap::default(),
             ret: None,
             irq: false,
+            precise: false,
         }
     }
 
@@ -467,6 +477,14 @@ impl<'a> Runner<'a> {
         let sp = cpu.r(R::SP) as i32;
         if self.invalid {
             self.invalid = !self.x.matches(bus);
+        }
+        if self.precise {
+            return self.interpret(cpu, bus, sp_above, end);
+        }
+        if self.x.bank.as_ref().is_some_and(|m| {
+            m.back(m.config(bus.ram_read(m.dir), bus.ram_read(m.data)), pc) == Back::Io
+        }) {
+            return self.fallback(cpu, bus, pc, sp_above, end);
         }
         if self.invalid || sp_above != sp + 1 + self.irq as i32 || sp > 0xfd || sp > sp_above {
             return self.fallback(cpu, bus, pc, sp_above, end);
@@ -668,6 +686,14 @@ impl<'a> Runner<'a> {
         *self.deopts.entry(pc).or_default() += 1;
         self.invalid = true;
         cpu.pc = pc;
+        Outcome {
+            halt: self.interpret(cpu, bus, sp_above, end).halt,
+            deopt: Some(pc),
+        }
+    }
+
+    /// The reference interpreter from `cpu`'s PC until the entry returns.
+    fn interpret<B: Bus>(&self, cpu: &mut Cpu, bus: &mut B, sp_above: i32, end: u64) -> Outcome {
         let ret = self.ret;
         let halt = match (&self.x.bank, self.x.cycles) {
             (Some(m), true) => cpu.run_clocked(&mut Banked::new(m, bus), sp_above, end, ret),
@@ -677,9 +703,6 @@ impl<'a> Runner<'a> {
             (None, true) => cpu.run_clocked(bus, sp_above, end, ret),
             (None, false) => cpu.run_clocked(&mut NoClock(bus), sp_above, end, ret),
         };
-        Outcome {
-            halt,
-            deopt: Some(pc),
-        }
+        Outcome { halt, deopt: None }
     }
 }

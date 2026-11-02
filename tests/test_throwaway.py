@@ -43,6 +43,13 @@ SNIPPETS = {
         {0xCFF6: "caf0034cfecf60", 0xCFFE: "d0f6"},
         [(0xD000, R), (0xD0F6, R)],
     ),
+    # ASL A, then BRK, fetched from colour RAM: the machine reads the byte after the one-byte
+    # ASL first and makes no read for the BRK opcode; the BRK handler at $1100 pops its frame
+    "io_code_implied_brk": (
+        "a90a8d00d84c00d8",
+        {0x1100: "68686860", 0xFFFE: "0011"},
+        [(0xD800, W), (0xD801, R), (0xD800, R), (0xD802, R)],
+    ),
 }
 
 
@@ -93,7 +100,7 @@ def _vm_accesses(img, pc):
 
 
 @needs_native
-@pytest.mark.parametrize("name", sorted(SNIPPETS))
+@pytest.mark.parametrize("name", sorted(n for n in SNIPPETS if not n.startswith("io_code")))
 def test_reference_interpreters_agree(name):
     code, more, _ = SNIPPETS[name]
     img = image(code, more)

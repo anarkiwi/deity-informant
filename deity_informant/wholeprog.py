@@ -52,14 +52,11 @@ def lift(
     cycles=False,
     bank=None,
     backend=None,
-    interrupts=False,
 ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
     """Lift ``entries`` of the program in ``image`` (the memory each entry starts from);
     ``cycles=True`` counts cycles and stamps volatile accesses with them; ``bank`` is a bank
     map (e.g. ``deity_informant.c64.bank_map()``) memory is seen through; ``backend`` (default
-    :data:`BACKEND`) is the engine ``Program.call`` runs it on; with ``interrupts`` the lift
-    keeps no memory value across a volatile access, where ``Program.call(..., nested=)`` takes
-    interrupts."""
+    :data:`BACKEND`) is the engine ``Program.call`` runs it on."""
     n = _native_or_raise()
     prog = n.lift_program(
         bytes(image),
@@ -69,7 +66,6 @@ def lift(
         optimize,
         cycles,
         bank,
-        interrupts,
     )
     prog.backend = backend or BACKEND
     return prog

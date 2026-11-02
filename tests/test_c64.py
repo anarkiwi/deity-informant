@@ -171,8 +171,9 @@ def _backend_run(backend, calls, init, ports, mc):
     bad = None
     if inits and inits[-1][1] == "return":
         prog = wholeprog.lift(
-            inits[-1][4], [calls[0][0]], [c64.DEVICES], facts, bank=c64.bank_map()
-        )
+            inits[-1][4], c64.entries_of(calls[0][0], facts), [c64.DEVICES], facts,
+            bank=c64.bank_map(),
+        )  # fmt: skip
         records = [dict(zip(("halt", "reg", "log", "ram"), s[1:])) for s in snaps if s[0] == "call"]
         bad = c64.check(prog, inits[-1][4], inits[-1][2], records, (ports or {}).get("call"), mc)
         last, split, _ = h.split()
@@ -193,7 +194,6 @@ def _backend_run(backend, calls, init, ports, mc):
         ([(0x1400, 0)] * 2, [(0x1100, 0)], {"init": 0x37, "call": 0x35}, 2_000_000),
         ([(0x1000, 0), (0x1200, 0)], [(0x1100, 0)], None, 1000),
         ([(0x1300, 0), (0x1000, 0)], (), None, 2_000_000),
-        ([(0x1880, 0)] * 2, [(0x1100, 0)], {"call": 0x35}, 2_000_000),
     ],
 )
 def test_trace_backends_agree(calls, init, ports, mc):
@@ -245,13 +245,12 @@ def test_device_read_differences_are_mismatches():
 @pytest.mark.skipif(not NATIVE, reason="needs the native extension")
 def test_halts_and_interrupts_are_outcomes():
     irq = _lift_check(0x1880)
-    assert irq.bad == [0, "interrupt", "cia_irq"] and c64.outcome(irq.bad) == "interrupt"
-    ports = {"init": 0x35, "call": 0x35}
-    for queue in (True, False):
-        h = c64._Host(image())  # pylint: disable=protected-access
-        h.native_queue = queue
-        h.drive([(0x1100, 0), (0x1880, 0)], [(0x1100, 0)], 2_000_000, ports)
-        assert [h.interrupts(k) for k in range(2)] == [[], ["cia_irq"]]
+    assert irq.bad is None and len(irq.prog.entries) > 1
+    h = c64._Host(image()).drive(
+        [(0x1880, 0)] * 2, [(0x1100, 0)], 2_000_000, {"init": 0x35, "call": 0x35}
+    )  # pylint: disable=W0212
+    events = np.frombuffer(next(h.stream.chunks()).packed.events, c64.EVENT)
+    assert len(events) and {c64.SOURCES[k] for k in events["kind"]} == {"cia_irq"}
     assert _lift_check(0x1300).bad == [0, "halted", "jam"]
     ports = {"init": 0x35, "call": 0x35}
     spin = c64.lift_check(image(), 0x1200, [(0x1200, 0)], [(0x1200, 0)], [(0x1100, 0)], ports,
@@ -546,7 +545,6 @@ def test_runs_leave_no_machine_behind():
     before = _live()
     for _ in range(3):
         _, _, _, _, h = _osc3_run()
-        assert h.interrupts(3) == []
         trace.collect(image(), lambda s: s.call(0x1850), 100_000)
         oracle.run_cpu(image(), [0x1810], [(0, 0)] * 3, [(0x1850, 0)])
         del h

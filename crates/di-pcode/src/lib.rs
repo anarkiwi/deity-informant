@@ -12,7 +12,7 @@ pub mod ir;
 mod templates_gen;
 
 pub use decode::{decode_range, instantiate, instantiate_bytes, MAX_OPS};
-pub use interp::{reg, Bus, Cpu, Halt, Jam, RETURN};
+pub use interp::{reg, Bus, Cpu, Halt, Jam, Lead, RETURN};
 pub use ir::{
     binop, Ctrl, CtrlKind, Insn, Op, Opc, Operands, Pen, PenKind, Slot, Space, Template, Vn, FILE,
     UNIQ_BASE,

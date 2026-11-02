@@ -37,13 +37,19 @@ def tree(root, code):
     return root
 
 
-def test_reports_an_interrupt_diagnosis(tmp_path, capsys):
+def test_interrupts_inside_frames_are_exact(tmp_path, capsys):
     root = tree(tmp_path / "hvsc", INIT + IRQ + NMI)
-    assert framediff.main([str(root), "x.sid", "--frames", "30", "--bisect"]) == 1
+    assert framediff.main([str(root), "x.sid", "--frames", "30"]) == 0
+    assert "check: None" in capsys.readouterr().out
+
+
+def test_reports_where_a_frame_differs(tmp_path, capsys, monkeypatch):
+    root = tree(tmp_path / "hvsc", INIT + IRQ + NMI)
+    monkeypatch.setattr(framediff.frames, "check", lambda *a, **k: [2, "log", 1])
+    assert framediff.main([str(root), "x.sid", "--frames", "30"]) == 1
     out = capsys.readouterr().out
-    assert "check: [" in out and "'interrupt', 'nmi'" in out
-    assert "reference vs machine: first log difference" in out and "cause position" in out
-    assert "entry (" in out and "lift and reference first differ" not in out
+    assert "check: [2, 'log', 1]" in out and "reference vs machine: first log difference" in out
+    assert "entry (" in out and "boundary lift" in out
 
 
 def test_exact_song_prints_only_the_summary(tmp_path, capsys):

@@ -19,6 +19,19 @@ pub trait Bus {
     /// does not.
     #[inline(always)]
     fn now(&mut self, _cycles: u64) {}
+    /// How the throw-away reads of the instruction at `pc` precede its fetch, when its bytes
+    /// come from a device whose accesses are logged and the log shows it.
+    #[inline(always)]
+    fn lead(&mut self, _pc: u16) -> Lead {
+        Lead::Fetch
+    }
+    /// An instruction boundary: `cpu` is as it is before the next instruction. Drivers that run
+    /// instruction by instruction ([`Cpu::run_clocked`]) call it before each; a bus that takes
+    /// interrupts counts instructions here, and may end the run with a halt.
+    #[inline(always)]
+    fn boundary(&mut self, _cpu: &mut Cpu) -> Option<Halt> {
+        None
+    }
     /// RAM at `addr`, bypassing any device decoded there (a bank map's RAM pages).
     #[inline(always)]
     fn ram_read(&mut self, addr: u16) -> u8 {
@@ -36,6 +49,16 @@ pub trait Bus {
     fn flat(&mut self) -> Option<(*mut u8, *mut u8)> {
         None
     }
+}
+
+/// Where an instruction's opcode fetch falls among its bus accesses when its bytes are read
+/// from a logged device: the machine reads the byte after a one-byte opcode before the opcode
+/// ([`Lead::Implied`]) and makes no opcode read for `BRK` ([`Lead::Brk`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Lead {
+    Fetch,
+    Implied,
+    Brk,
 }
 
 impl Bus for [u8; 0x10000] {
@@ -268,11 +291,11 @@ impl Cpu {
         pc: u16,
         t: &Template,
         ops: &[Op],
-        b1: u8,
-        b2: u8,
+        (b1, b2): (u8, u8),
+        throwaway: bool,
     ) -> Result<(), Jam> {
         let o = Operands::new(b1, b2);
-        if t.len == 1 && t.ctrl != CtrlKind::Jam {
+        if throwaway && t.len == 1 && t.ctrl != CtrlKind::Jam {
             bus.read(pc.wrapping_add(1));
         }
         self.exec_ops(bus, ops, &o);
@@ -351,7 +374,11 @@ impl Cpu {
     #[inline]
     pub fn step<B: Bus>(&mut self, bus: &mut B) -> Result<(), Jam> {
         let pc = self.pc;
-        let t = Template::of(bus.fetch(pc));
+        let lead = bus.lead(pc);
+        if lead == Lead::Implied {
+            bus.read(pc.wrapping_add(1));
+        }
+        let t = Template::of(if lead == Lead::Brk { 0 } else { bus.fetch(pc) });
         let b1 = if t.len > 1 {
             bus.fetch(pc.wrapping_add(1))
         } else {
@@ -362,7 +389,7 @@ impl Cpu {
         } else {
             0
         };
-        self.execute(bus, pc, t, t.ops(), b1, b2)
+        self.execute(bus, pc, t, t.ops(), (b1, b2), lead != Lead::Implied)
     }
 
     /// Execute an instantiated instruction (at `insn.pc`) whose ops are in `arena`.
@@ -372,8 +399,8 @@ impl Cpu {
             insn.pc,
             insn.template(),
             insn.ops(arena),
-            insn.b1,
-            insn.b2,
+            (insn.b1, insn.b2),
+            true,
         )
     }
 
@@ -395,6 +422,9 @@ impl Cpu {
             }
             if self.cycles >= end {
                 return Halt::Cycles;
+            }
+            if let Some(h) = bus.boundary(self) {
+                return h;
             }
             bus.now(self.cycles);
             if self.step(bus).is_err() {
