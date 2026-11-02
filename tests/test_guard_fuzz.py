@@ -18,11 +18,21 @@ pytestmark = pytest.mark.skipif(not NATIVE, reason="needs the native extension")
 
 TABLE = 0x10E0
 SUBS = (0x1100, 0x1120, 0x1140)
+# Stored bytes may become opcodes the program runs. Those that set SP (TXS, TAS, LAS) expose
+# stack bytes below SP, which a lifted private stack does not hold (docs/wholeprog.md,
+# Limitations), so the generator stores a neighbouring opcode instead.
+NOT_SP = {0x9A: 0x99, 0x9B: 0x9C, 0xBB: 0xBC}
+
+
+def _byte(rng):
+    """A random nonzero byte that is not an SP-setting opcode."""
+    v = rng.randint(1, 255)
+    return NOT_SP.get(v, v)
 
 
 def _sub(rng, i):
     """A subroutine at ``SUBS[i]`` that keeps, clobbers or saves and restores ``X``."""
-    lines = ["        LDA #$%02X" % rng.randint(1, 255), "        STA $C0%02X" % i]
+    lines = ["        LDA #$%02X" % _byte(rng), "        STA $C0%02X" % i]
     if i + 1 < len(SUBS) and rng.random() < 0.5:
         lines.append("        JSR sub%d" % (i + 1))
     how = rng.choice(["keep", "clobber", "save"])
@@ -37,7 +47,7 @@ def _block(rng, n):
     """One random fragment of the entry routine."""
     kind = rng.choice(["down", "up", "input", "call", "rmw"])
     index = rng.choice("XY")
-    value = rng.randint(1, 255)
+    value = _byte(rng)
     if kind == "down":
         return [
             "        LDX #$%02X" % rng.choice([3, 7, 0x1F, 0x3F, 0x5F]),
@@ -90,7 +100,9 @@ def program(seed):
 
 
 @pytest.mark.parametrize("cycles", [False, True])
-@pytest.mark.parametrize("seed", range(60))
+# 4813: the reference stores into constant code after a deopt at an opcode cell; the next
+# call must re-validate the lifted code.
+@pytest.mark.parametrize("seed", [*range(60), 4813, 4875, 5978])
 def test_random_programs_are_exact(seed, cycles):
     src, calls = program(seed)
     img, labels = assemble(src)

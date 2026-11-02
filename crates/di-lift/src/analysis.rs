@@ -176,13 +176,55 @@ pub struct Access {
     pub addr: Iv,
     pub val: Iv,
     pub dummy: bool,
+    /// A store of the value just loaded from the same address.
+    pub back: bool,
+    /// Every byte of `hi` was stored on every path to the access.
+    pub defd: bool,
+    /// Zero-page addresses of the pointer high bytes the address is built from, when it is
+    /// that pointer, or that pointer plus a byte: if each is at least 2 when read, the
+    /// address is not in page 1.
+    pub hi: Option<Iv>,
+}
+
+impl Access {
+    /// Whether the access may reach page 1 given that the zero-page bytes in `prot` hold at
+    /// least 2.
+    pub fn page1(&self, prot: &FixedBitSet) -> bool {
+        self.addr.meets(0x100, 0x200)
+            && !self
+                .hi
+                .is_some_and(|r| (r.lo..=r.hi).all(|a| prot.contains(a as usize)))
+    }
+}
+
+/// What an address temporary was built from.
+#[derive(Clone, Copy, Default)]
+enum Tag {
+    #[default]
+    No,
+    /// A byte loaded from the zero-page addresses.
+    Byte(Iv),
+    /// That byte as a word.
+    Word(Iv),
+    /// That byte shifted to the high half of a word.
+    High(Iv),
+    /// The high half with a byte below it: the page is the byte.
+    Page(Iv),
+    /// A `Page` plus a byte: the page is the byte or the next.
+    Near(Iv),
 }
 
 /// Abstractly execute `ops` from `env` with operand bytes `b` (`None` for cells); the
 /// memory accesses in op order.
 pub fn absint(ops: &[Op], b: [Option<u8>; 2], env: &mut Env, acc: &mut Vec<Access>) {
     let mut uniq = [Iv::full(4); di_pcode::UNIQUE_SIZE];
+    let mut tag = [Tag::No; di_pcode::UNIQUE_SIZE];
+    let mut loaded: Vec<(Vn, Vn)> = Vec::new();
     for op in ops {
+        let tg = |v: Vn| match v.space() {
+            Space::Unique => tag[v.off() as usize],
+            _ => Tag::No,
+        };
         let get = |v: Vn, u: &[Iv], env: &Env| -> Iv {
             match v.space() {
                 Space::Const if v.slot() == Slot::Fixed => Iv::exact(v.off()),
@@ -193,22 +235,48 @@ pub fn absint(ops: &[Op], b: [Option<u8>; 2], env: &mut Env, acc: &mut Vec<Acces
             }
         };
         let a = get(op.ins[0], &uniq, env);
+        let y = if op.ins[1].is_none() {
+            Iv::full(1)
+        } else {
+            get(op.ins[1], &uniq, env)
+        };
+        let hi = match tg(op.ins[0]) {
+            Tag::Page(r) | Tag::Near(r) => Some(r),
+            _ => None,
+        };
+        let word = op.out.size() == 2;
+        let t = match (op.opc, tg(op.ins[0]), tg(op.ins[1])) {
+            (Opc::Load, _, _) if a.hi < 0x100 && op.out.size() == 1 => Tag::Byte(a),
+            (Opc::IntZext, Tag::Byte(r), _) if word => Tag::Word(r),
+            (Opc::IntLeft, Tag::Word(r), _) if word && y.value() == Some(8) => Tag::High(r),
+            (Opc::IntOr, Tag::High(r), _) if word && y.hi < 0x100 => Tag::Page(r),
+            (Opc::IntOr, _, Tag::High(r)) if word && a.hi < 0x100 => Tag::Page(r),
+            (Opc::IntAdd, Tag::Page(r), _) if word && y.hi < 0x100 => Tag::Near(r),
+            _ => Tag::No,
+        };
         let r = match op.opc {
             Opc::Store => {
                 acc.push(Access {
                     store: true,
                     addr: a,
-                    val: get(op.ins[1], &uniq, env),
+                    val: y,
                     dummy: false,
+                    back: loaded.contains(&(op.ins[0], op.ins[1])),
+                    defd: false,
+                    hi,
                 });
                 continue;
             }
             Opc::Load => {
+                loaded.push((op.ins[0], op.out));
                 acc.push(Access {
                     store: false,
                     addr: a,
                     val: Iv::full(1),
                     dummy: op.out.is_none(),
+                    back: false,
+                    defd: false,
+                    hi,
                 });
                 Iv::full(op.out.size())
             }
@@ -223,7 +291,10 @@ pub fn absint(ops: &[Op], b: [Option<u8>; 2], env: &mut Env, acc: &mut Vec<Acces
         };
         match op.out.space() {
             Space::Reg => env[op.out.off() as usize] = r,
-            Space::Unique => uniq[op.out.off() as usize] = r,
+            Space::Unique => {
+                uniq[op.out.off() as usize] = r;
+                tag[op.out.off() as usize] = t;
+            }
             _ => {}
         }
     }
@@ -285,6 +356,13 @@ pub struct Graph {
     pub rom_code: FixedBitSet,
     /// The configuration each start was decoded in.
     pub cfg: FxHashMap<u16, u8>,
+    /// Zero-page bytes whose value is kept at least 2 (see [`crate::ptr`]).
+    pub prot: FixedBitSet,
+    /// Per entry, the protected bytes some access it reaches reads before its own stores
+    /// define them: the entry checks them.
+    pub pre: FxHashMap<u16, FixedBitSet>,
+    /// Per instruction start the entries (bit `i % 64` for entry `i`) it is reached from.
+    pub from: FxHashMap<u16, u64>,
 }
 
 /// Stack-pointer effect of a `Next` instruction: pushes and pulls by count, `None` for an
@@ -526,7 +604,7 @@ pub fn discover(
             }
         }
         let written = static_stores(&cimg, &cells, &vars);
-        crate::vsa::analyze(&cimg, &cells, &mut vars, entries, matched);
+        let from = crate::vsa::analyze(&cimg, &cells, &mut vars, entries, matched);
         let mut next = FixedBitSet::with_capacity(0x10000);
         let mut nvalues = observed.clone();
         for a in code.ones().filter(|&a| !rom_code.contains(a)) {
@@ -554,6 +632,9 @@ pub fn discover(
                 img: cimg,
                 rom_code,
                 cfg,
+                prot: FixedBitSet::with_capacity(0x100),
+                pre: FxHashMap::default(),
+                from,
             };
         }
         cells = next;
@@ -642,4 +723,72 @@ fn single_next(f: &Flow) -> Option<u16> {
 /// are fully constant).
 pub fn operands(b: [Option<u8>; 2]) -> Operands {
     Operands::new(b[0].unwrap_or(0), b[1].unwrap_or(0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The data access of opcode `op` (operand bytes `b`, `X` and `Y` as given).
+    fn data_access(op: u8, b: [Option<u8>; 2], x: Iv, y: Iv) -> Access {
+        let mut env = TOP_ENV;
+        env[di_pcode::reg::X] = x;
+        env[di_pcode::reg::Y] = y;
+        let mut acc = Vec::new();
+        absint(Template::of(op).ops(), b, &mut env, &mut acc);
+        *acc.iter().rev().find(|a| !a.dummy).unwrap()
+    }
+
+    #[test]
+    fn pointer_high_byte_is_found_through_y_and_x() {
+        let b = [Some(0xfb), None];
+        let a = data_access(0xb1, b, Iv::full(1), Iv::full(1));
+        assert_eq!(a.hi, Some(Iv::exact(0xfc)));
+        assert!(a.addr.meets(0x100, 0x200));
+        let a = data_access(0xa1, b, Iv::exact(2), Iv::full(1));
+        assert_eq!(a.hi, Some(Iv::exact(0xfe)));
+        let a = data_access(0xa1, b, Iv { lo: 0, hi: 3 }, Iv::full(1));
+        assert_eq!(a.hi, Some(Iv { lo: 0xfc, hi: 0xff }));
+    }
+
+    #[test]
+    fn the_pointer_itself_and_other_modes_have_no_high_byte() {
+        let b = [Some(0xfb), Some(0x20)];
+        for op in [0xad, 0xbd, 0xb9, 0xa5, 0xb5] {
+            assert_eq!(
+                data_access(op, b, Iv::full(1), Iv::full(1)).hi,
+                None,
+                "{op:x}"
+            );
+        }
+        let a = data_access(0xb1, [None, None], Iv::full(1), Iv::full(1));
+        assert_eq!(a.hi, Some(Iv::full(1)));
+    }
+
+    #[test]
+    fn protected_bytes_exclude_page_1() {
+        let a = data_access(0xb1, [Some(0xfb), None], Iv::full(1), Iv::full(1));
+        let mut prot = FixedBitSet::with_capacity(0x100);
+        assert!(a.page1(&prot));
+        prot.insert(0xfc);
+        assert!(!a.page1(&prot));
+        let wide = data_access(0xb1, [None, None], Iv::full(1), Iv::full(1));
+        assert!(wide.page1(&prot));
+        prot.insert_range(..);
+        assert!(!wide.page1(&prot));
+    }
+
+    #[test]
+    fn a_store_back_of_the_loaded_byte_is_marked() {
+        let mut env = TOP_ENV;
+        let mut acc = Vec::new();
+        absint(
+            Template::of(0xe6).ops(),
+            [Some(0xfc), None],
+            &mut env,
+            &mut acc,
+        );
+        let stores: Vec<bool> = acc.iter().filter(|a| a.store).map(|a| a.back).collect();
+        assert_eq!(stores, [true, false]);
+    }
 }

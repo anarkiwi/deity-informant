@@ -9,6 +9,7 @@ use crate::analysis::{
 use crate::bank::{Back, BankMap};
 use crate::func::{Arm, Ctl, Exit, Key, Plan, H};
 use crate::ir::{cy, k, mem, other, r1, reg, tmp, Block, Function, LOp, E, NREG};
+use crate::ptr;
 use di_pcode::{reg as R, CtrlKind, Op, Opc, PenKind, Slot, Space, Template, Vn};
 use fixedbitset::FixedBitSet;
 use rustc_hash::FxHashMap;
@@ -87,6 +88,8 @@ struct Em<'a, 'b> {
     promote: bool,
     slots: &'a FixedBitSet,
     n: Counts,
+    /// The block the current instruction started in.
+    istart: u32,
 }
 
 /// What emitting a function produced.
@@ -97,6 +100,7 @@ pub struct Counts {
     pub raw: usize,
     pub code_guards: usize,
     pub stack_guards: usize,
+    pub ptr_guards: usize,
     pub slot_ops: usize,
     /// Dispatches on SP after SP-setting instructions.
     pub sp_dispatch: usize,
@@ -135,11 +139,25 @@ pub fn emit(
         promote: sh.promote.contains(fi),
         slots: &sh.slots[fi],
         n: Counts::default(),
+        istart: 0,
     };
     em.new_block(plan.pc);
     if let Some(s) = plan.sp {
         let bad = em.op(Opc::IntNotEqual, 1, r1(R::SP), k(s as u32, 1));
         em.side_exit(bad, true, |em| em.deopt(k(plan.pc as u32, 2)));
+    }
+    if plan.top {
+        let pre = sh.g.pre.get(&plan.pc).into_iter().flat_map(|b| b.ones());
+        let bad: Vec<Vn> = pre
+            .map(|h| {
+                let v = em.load(k(h as u32, 2), Iv::exact(h as u32), 0);
+                em.op(Opc::IntLess, 1, v, k(2, 1))
+            })
+            .collect();
+        em.n.ptr_guards += bad.len();
+        if let Some(c) = bad.into_iter().reduce(|a, b| em.op(Opc::IntOr, 1, a, b)) {
+            em.side_exit(c, true, |em| em.deopt(k(plan.pc as u32, 2)));
+        }
     }
     for (i, vals) in entry.into_iter().flat_map(|e| &e.regs) {
         if let [v] = vals[..] {
@@ -322,7 +340,8 @@ impl<'a> Em<'a, '_> {
             hit = self.op(Opc::IntAnd, 1, hit, out);
         }
         self.n.stack_guards += 1;
-        self.side_exit(hit, true, |em| em.deopt(k(pc as u32, 2)));
+        let x = self.side_exit(hit, true, |em| em.deopt(k(pc as u32, 2)));
+        self.f.blocks[x as usize].replay = Some(self.istart);
     }
     /// Whether an access in `iv` may reach a volatile address in the current configuration.
     fn reaches(&self, iv: Iv) -> bool {
@@ -410,7 +429,7 @@ impl<'a> Em<'a, '_> {
     /// Leave through a new block when `cond` holds (the block sees the pending cycles), and
     /// continue in a fresh block. A `soft` exit's deopt state is what the continuation would
     /// run from.
-    fn side_exit(&mut self, cond: Vn, soft: bool, body: impl FnOnce(&mut Self)) {
+    fn side_exit(&mut self, cond: Vn, soft: bool, body: impl FnOnce(&mut Self)) -> u32 {
         let pc = self.f.blocks[self.cur].pc;
         let (x, cont) = (self.new_block(pc), self.new_block(pc));
         self.f.blocks[x as usize].resume = soft.then_some(cont);
@@ -422,6 +441,7 @@ impl<'a> Em<'a, '_> {
         body(self);
         self.pend = pend;
         self.cur = cont as usize;
+        x
     }
     fn table(&mut self, ts: &[u16]) -> u32 {
         let keys: Vec<Key> = ts
@@ -459,6 +479,7 @@ impl<'a> Em<'a, '_> {
             let flags = mem::STACK | self.store_flags(PAGE1);
             self.emit(Opc::Store, NONE, a, v, flags);
             if self.sh.hits_code(PAGE1) {
+                self.n.code_guards += 1;
                 chk.push(self.op(Opc::CallOther, 1, a, v));
                 self.f.blocks[self.cur].ops.last_mut().unwrap().aux = other::CODECHK;
             }
@@ -482,6 +503,21 @@ impl<'a> Em<'a, '_> {
         let l = self.zext(lo, 2);
         self.op(Opc::IntOr, 2, h, l)
     }
+    /// Flag in `chk` a store of `v` to `a` that may leave a protected pointer byte below 2.
+    fn ptr_check(&mut self, a: Vn, v: Vn, ac: &Access, chk: &mut Vec<Vn>) {
+        let Some((lo, hi)) = ptr::written(&self.sh.g.prot, ac) else {
+            return;
+        };
+        let at = if lo == hi {
+            self.op(Opc::IntEqual, 1, a, k(lo, 2))
+        } else {
+            let off = self.op(Opc::IntSub, 2, a, k(lo, 2));
+            self.op(Opc::IntLessEqual, 1, off, k(hi - lo, 2))
+        };
+        let low = self.op(Opc::IntLess, 1, v, k(2, 1));
+        self.n.ptr_guards += 1;
+        chk.push(self.op(Opc::IntAnd, 1, at, low));
+    }
     /// Deopt to `pc` when any code check fired.
     fn check(&mut self, chk: Vec<Vn>, pc: Vn) {
         let Some(mut c) = chk.first().copied() else {
@@ -490,7 +526,6 @@ impl<'a> Em<'a, '_> {
         for &d in &chk[1..] {
             c = self.op(Opc::IntOr, 1, c, d);
         }
-        self.n.code_guards += chk.len();
         self.side_exit(c, true, |em| em.deopt(pc));
     }
 
@@ -567,13 +602,20 @@ impl<'a> Em<'a, '_> {
                     addr: Iv::full(2),
                     val: Iv::full(1),
                     dummy: op.out.is_none(),
+                    back: false,
+                    defd: false,
+                    hi: None,
                 });
                 if op.opc == Opc::Load && op.out.is_none() {
                     ai += 1;
                     self.touch(a, b, ac.addr);
                     continue;
                 }
-                if !stack && page1_check(opc, ai) == Check::Own && self.sh.private {
+                if !stack
+                    && page1_check(opc, ai) == Check::Own
+                    && self.sh.private
+                    && ac.page1(&self.sh.g.prot)
+                {
                     match self.plan.narrowed(&self.sh.seen, pc, opc, ai, ac.addr) {
                         Some(r) => self.page1_guard(a, pc, Some(r)),
                         None if self.kept(ac.addr) => self.page1_guard(a, pc, None),
@@ -593,10 +635,16 @@ impl<'a> Em<'a, '_> {
                     }
                     _ => self.store_flags(ac.addr),
                 };
-                if op.opc == Opc::Store && self.sh.hits_code(ac.addr) {
+                if op.opc == Opc::Store {
                     self.emit(Opc::Store, out, a, b, aux);
-                    chk.push(self.op(Opc::CallOther, 1, a, b));
-                    self.f.blocks[self.cur].ops.last_mut().unwrap().aux = other::CODECHK;
+                    if !stack {
+                        self.ptr_check(a, b, &ac, &mut chk);
+                    }
+                    if self.sh.hits_code(ac.addr) {
+                        self.n.code_guards += 1;
+                        chk.push(self.op(Opc::CallOther, 1, a, b));
+                        self.f.blocks[self.cur].ops.last_mut().unwrap().aux = other::CODECHK;
+                    }
                     continue;
                 }
             }
@@ -608,6 +656,7 @@ impl<'a> Em<'a, '_> {
     fn insn(&mut self, pc: u16, op: &u8, arm: &'a Arm) {
         let (ctl, exit, acc) = (&arm.ctl, arm.exit, &arm.acc[..]);
         self.succ = &arm.succ;
+        self.istart = self.cur as u32;
         let t = Template::of(*op);
         self.n.insns += 1;
         self.n.raw += t.n as usize;
@@ -905,6 +954,9 @@ impl<'a> Em<'a, '_> {
                     addr: PAGE1,
                     val: Iv::full(1),
                     dummy: false,
+                    back: false,
+                    defd: false,
+                    hi: None,
                 }];
                 let mut u = FxHashMap::default();
                 chk.extend(self.ops(pc, 0x08, php.ops(), &acc, true, &mut none, &mut u));

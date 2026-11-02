@@ -300,6 +300,7 @@ impl Plan {
                     if lo <= hi {
                         a.addr = Iv { lo, hi };
                     }
+                    a.defd = p.defd;
                 }
                 if matches!(arm.ctl, Ctl::Call { .. }) {
                     x = TOP_ENV;

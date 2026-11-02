@@ -14,6 +14,7 @@ pub mod func;
 pub mod ir;
 pub mod jit;
 pub mod opt;
+pub mod ptr;
 pub mod vsa;
 
 pub use analysis::{Entry, Facts};
@@ -97,9 +98,10 @@ fn ind_ptr(img: &[u8; 0x10000], g: &analysis::Graph, pc: u16) -> (Iv, bool) {
 /// and cannot be checked at its instruction boundary, or jumps through a fixed page-1 pointer.
 fn unchecked(img: &[u8; 0x10000], g: &analysis::Graph, pc: u16, v: &analysis::Var) -> bool {
     let acc = !is_stack_op(v.op)
-        && v.acc.iter().enumerate().any(|(i, a)| {
-            !a.dummy && a.addr.meets(0x100, 0x200) && page1_check(v.op, i) == Check::No
-        });
+        && v.acc
+            .iter()
+            .enumerate()
+            .any(|(i, a)| !a.dummy && a.page1(&g.prot) && page1_check(v.op, i) == Check::No);
     let ind = matches!(v.flow, Flow::JmpInd(_)) && {
         let (iv, cell) = ind_ptr(img, g, pc);
         !cell && iv.meets(0x100, 0x200)
@@ -121,7 +123,7 @@ fn unguarded<'a>(
             let acc = a.acc.iter().enumerate().filter(move |&(i, ac)| {
                 !is_stack_op(v.op)
                     && !ac.dummy
-                    && ac.addr.meets(0x100, 0x200)
+                    && ac.page1(&g.prot)
                     && (seen.contains_key(&pc) || page1_check(v.op, i) == Check::No)
             });
             let ind = matches!(v.flow, Flow::JmpInd(_))
@@ -233,7 +235,11 @@ pub fn lift_banked(
 ) -> Program {
     let mut matched = true;
     let (g, plans, fidx, callees, recursive, slots, constcode, touches, seen, sites, private) = loop {
-        let g = discover(img, entries, facts, bank, matched);
+        let mut g = discover(img, entries, facts, bank, matched);
+        if !opts.interrupts {
+            let roots: Vec<u16> = entries.iter().map(|e| e.pc).collect();
+            (g.prot, g.pre) = ptr::protect(&g, facts, volatile, &roots);
+        }
         let img: &[u8; 0x10000] = &g.img;
         let pcs: Vec<u16> = entries.iter().map(|e| e.pc).collect();
         let mut plans = plan(img, &g, &pcs, facts, bank, volatile);
@@ -300,7 +306,7 @@ pub fn lift_banked(
                 for pc in p.pcs() {
                     for v in &g.vars[&pc] {
                         if !is_stack_op(v.op) {
-                            for a in v.acc.iter().filter(|a| !a.dummy && page1(a.addr)) {
+                            for a in v.acc.iter().filter(|a| !a.dummy && a.page1(&g.prot)) {
                                 *(if a.store { &mut store } else { &mut load }) = true;
                             }
                         }
@@ -424,6 +430,7 @@ pub fn lift_banked(
             stats.raw_ops += n.raw;
             stats.code_guards += n.code_guards;
             stats.stack_guards += n.stack_guards;
+            stats.ptr_guards += n.ptr_guards;
             stats.slot_ops += n.slot_ops;
             stats.sp_dispatch += n.sp_dispatch;
             stats.bank_dispatch += n.bank_dispatch;

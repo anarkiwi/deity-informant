@@ -70,6 +70,11 @@ struct St {
     pred: [Option<Pred>; 3],
     /// `A`, `X` and `Y` as `base + off` of the register `base` at the function's entry.
     rel: [Option<(u8, u8)>; DATA],
+    /// Zero-page bytes stored at an exact address on every path since the entry: each holds
+    /// at least 2 if it is a protected pointer byte, whose stores are checked.
+    stored: [u128; 2],
+    /// The entries (bit `i % 64` for entry `i`) the state is reached from.
+    from: u64,
 }
 
 impl St {
@@ -78,7 +83,12 @@ impl St {
             env,
             pred: [None; 3],
             rel: [Some((0, 0)), Some((1, 0)), Some((2, 0))],
+            stored: [0; 2],
+            from: 0,
         }
+    }
+    fn has(&self, a: u32) -> bool {
+        self.stored[(a >> 7) as usize] >> (a & 127) & 1 == 1
     }
 }
 
@@ -277,6 +287,13 @@ fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>) -> St {
     let b = operand_bytes(code.img, code.cells, pc, t.len);
     let mut env = st.env;
     absint(ops, b, &mut env, acc);
+    let mut stored = st.stored;
+    for a in acc.iter_mut() {
+        a.defd = a.hi.is_some_and(|r| (r.lo..=r.hi).all(|i| st.has(i)));
+        if let (true, false, Some(i @ 2..0x100)) = (a.store, a.back, a.addr.value()) {
+            stored[(i >> 7) as usize] |= 1u128 << (i & 127);
+        }
+    }
     let (sym, written) = symbolic(ops, b);
     let mut pred = [None; 3];
     for (i, &f) in FLAGS.iter().enumerate() {
@@ -320,7 +337,13 @@ fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>) -> St {
         }
         _ => None,
     });
-    St { env, pred, rel }
+    St {
+        env,
+        pred,
+        rel,
+        stored,
+        from: st.from,
+    }
 }
 
 /// Program constants and their neighbours: the bounds a widened register stops at.
@@ -403,7 +426,14 @@ fn join(a: &St, b: &St, widen: Option<&Thresholds>) -> St {
         };
     }
     let rel = std::array::from_fn(|r| if a.rel[r] == b.rel[r] { a.rel[r] } else { None });
-    St { env, pred, rel }
+    let stored = [a.stored[0] & b.stored[0], a.stored[1] & b.stored[1]];
+    St {
+        env,
+        pred,
+        rel,
+        stored,
+        from: a.from | b.from,
+    }
 }
 
 /// What a call target's body does: its `RTS`s (reached without passing through nested calls,
@@ -579,11 +609,17 @@ struct Site {
 
 /// The caller's state after a call that left `ret`, given the state `call` it made the call in:
 /// a register the callee left at its entry value plus an offset is the caller's plus that.
-fn apply(ret: &St, call: &St) -> St {
+fn apply(ret: &St, call: &St, linked: bool) -> St {
     let mut s = St {
         pred: [None; 3],
         ..ret.clone()
     };
+    if linked {
+        s.stored = [
+            call.stored[0] | ret.stored[0],
+            call.stored[1] | ret.stored[1],
+        ];
+    }
     for r in 0..DATA {
         s.rel[r] = None;
         if let Some((b, off)) = ret.rel[r] {
@@ -642,10 +678,9 @@ impl Work<'_> {
     /// Flow what returned to site `r` into the context `cx` that called it.
     fn deliver(&mut self, r: u16, cx: u32) {
         let site = &self.ret[&r];
-        let res = [&site.out, &site.wild]
+        let res = [(&site.out, true), (&site.wild, false)]
             .into_iter()
-            .flatten()
-            .map(|p| apply(p, &site.calls[&cx]))
+            .filter_map(|(p, linked)| p.as_ref().map(|p| apply(p, &site.calls[&cx], linked)))
             .reduce(|a, b| join(&a, &b, None));
         if let Some(res) = res {
             self.flow((r, cx), res);
@@ -653,7 +688,8 @@ impl Work<'_> {
     }
 }
 
-/// Fill each variant's accesses from the interval states at its start. With `matched`, an
+/// Fill each variant's accesses from the interval states at its start; the entries (as in
+/// `St::from`) that reach each start. With `matched`, an
 /// `RTS` whose callee leaves the stack as it found it returns to its caller; otherwise any
 /// return may reach any return site.
 pub fn analyze(
@@ -662,7 +698,7 @@ pub fn analyze(
     vars: &mut FxHashMap<u16, Vec<Var>>,
     entries: &[Entry],
     matched: bool,
-) {
+) -> FxHashMap<u16, u64> {
     let rets = returns(vars, matched);
     let succ_of = |pc: u16| -> Vec<u16> {
         let mut s: Vec<u16> = vars[&pc]
@@ -687,7 +723,7 @@ pub fn analyze(
         thr: &thr,
         ret: FxHashMap::default(),
     };
-    for e in entries {
+    for (i, e) in entries.iter().enumerate() {
         let mut env = TOP_ENV;
         for (r, vals) in &e.regs {
             if let (Some(&lo), Some(&hi), true) =
@@ -699,7 +735,13 @@ pub fn analyze(
                 };
             }
         }
-        w.flow((e.pc, NONE), St::new(env));
+        w.flow(
+            (e.pc, NONE),
+            St {
+                from: 1 << (i % 64),
+                ..St::new(env)
+            },
+        );
     }
     let mut acc = Vec::new();
     while let Some(key @ (pc, cx)) = w.queue.pop_front() {
@@ -721,7 +763,14 @@ pub fn analyze(
                 (Flow::Jsr { t: tg, ret }, _) => {
                     w.caller(*ret, cx, &out);
                     for &s in tg.all() {
-                        w.flow((s, *ret as u32), St::new(out.env));
+                        w.flow(
+                            (s, *ret as u32),
+                            St {
+                                stored: out.stored,
+                                from: out.from,
+                                ..St::new(out.env)
+                            },
+                        );
                     }
                 }
                 (f @ (Flow::Rts(_) | Flow::Rti(_)), _) => {
@@ -772,4 +821,5 @@ pub fn analyze(
             v.acc = acc;
         }
     }
+    merged.into_iter().map(|(pc, st)| (pc, st.from)).collect()
 }
