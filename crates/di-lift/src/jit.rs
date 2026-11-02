@@ -516,9 +516,18 @@ impl<'a, 'b> Fb<'a, 'b> {
                 let v = match base {
                     Some(base) => {
                         let p = self.at(base, a);
-                        self.b
-                            .ins()
-                            .uload8(i32t, MemFlags::new().with_notrap(), p, 0)
+                        let fl = MemFlags::new().with_notrap();
+                        match o.osz {
+                            2 => self.b.ins().uload16(i32t, fl, p, 0),
+                            4 => self.b.ins().load(i32t, fl, p, 0),
+                            3 => {
+                                let lo = self.b.ins().uload16(i32t, fl, p, 0);
+                                let hi = self.b.ins().uload8(i32t, fl, p, 2);
+                                let hi = self.b.ins().ishl_imm_u(hi, 16);
+                                self.b.ins().bor(lo, hi)
+                            }
+                            _ => self.b.ins().uload8(i32t, fl, p, 0),
+                        }
                     }
                     None => {
                         let f = self.fnptr(offset_of!(Ctx, load));
@@ -545,7 +554,23 @@ impl<'a, 'b> Fb<'a, 'b> {
                 match base {
                     Some(base) => {
                         let p = self.at(base, a);
-                        self.b.ins().istore8(MemFlags::new().with_notrap(), v, p, 0);
+                        let fl = MemFlags::new().with_notrap();
+                        match o.osz {
+                            2 => {
+                                self.b.ins().istore16(fl, v, p, 0);
+                            }
+                            4 => {
+                                self.b.ins().store(fl, v, p, 0);
+                            }
+                            3 => {
+                                self.b.ins().istore16(fl, v, p, 0);
+                                let hi = self.b.ins().ushr_imm_u(v, 16);
+                                self.b.ins().istore8(fl, hi, p, 2);
+                            }
+                            _ => {
+                                self.b.ins().istore8(fl, v, p, 0);
+                            }
+                        }
                     }
                     None => {
                         let f = self.fnptr(offset_of!(Ctx, store));

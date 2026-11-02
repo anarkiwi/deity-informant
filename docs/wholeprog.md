@@ -36,6 +36,7 @@ facts = trace.collect(state, lambda s: [s.call(play) for _ in range(3000)])
 prog = wholeprog.lift(state, [play], volatile=[(lo, hi)], facts=facts)   # cycles=False
 prog.functions        # [{"pc", "entry", "recursive", "blocks": [{"pc", "ops"}], "tables"}]
 prog.stats            # insns, raw_ops, emitted_ops, ops, cells, code_guards, calls, ...
+prog.chains           # [{"function", "pc", "kind", "fused", "x", "y", "r"}] carry chains
 prog.guard_evals      # conditional branches to a deopt the interpreter backend has run
 r = prog.call(mem, 0, a=0, reg=None, cycles=0, max_cycles=10_000_000, log=True)  # backend=
 prog.backend          # "jit" (default) or "interp"; prog.compile() -> compile seconds
@@ -206,7 +207,7 @@ the program, and checks it against the reference.
    interval and algebraic rules, copy propagation, common subexpressions, store-to-load
    forwarding with alias analysis over constant, stack-relative and interval addresses);
    combining adds to a register; liveness-based dead-code elimination over registers, stack
-   slots and temporaries. Without cycle counting the functions are then summarized (registers
+   slots and temporaries; without cycle counting, carry-chain fusion (*Carry chains*). Without cycle counting the functions are then summarized (registers
    each may and must define by fixpoints over the call graph, then the registers each uses
    and its callers read after it returns by a least fixpoint of liveness over the whole
    program, so recursion converges like a loop) and optimized again: a `CALL` uses and kills
@@ -228,6 +229,7 @@ the program, and checks it against the reference.
 | An access that may reach page 1 (by its address interval) does not, while stack bytes are kept out of memory | the address's page is compared with 1 before the access (`stats["stack_guards"]`) | deopt before the instruction |
 | A callee that may store into page 1 returns to its caller (stack not private) | the return-address bytes are compared after `CALL` | deopt at the address the `RTS` pulled |
 | Entry register value | compare at entry | deopt at the entry |
+| The decimal flag is clear at an entry (unless the entry declares `d`) | compare at entry | deopt at the entry |
 | Entry SP of a specialized entry (`stats["sp_guards"]`) | compare at entry | deopt at the entry |
 | The port registers an entry was always called with (banked) | compare at entry; restated so later configurations fold | deopt at the entry |
 | The bank configuration after a port store or a port-writing `CALL`, and at an entry called in several, is one the facts saw there (`stats["bank_dispatch"]`) | dispatch on the effective port value; folds when the stored value is known | deopt at the next start |
@@ -293,6 +295,40 @@ in memory (an entry's `RTS` reads its caller's return address); `split_nodes` co
 beyond the first per instruction start, and `kept_bytes` the stack bytes outermost functions
 push that stay in memory (bytes their page-1 accesses may hit).
 
+## Carry chains
+
+Multi-byte arithmetic is a chain of one-byte *links*, each taking the carry of the link below:
+`ADC`/`INC` additions (`r = x + y + c`), `SBC`/`CMP`/`DEC` subtractions and comparisons
+(`r = x - y - borrow`), `ASL`/`ROL` and `LSR`/`ROR` shifts. `wide.rs` recognizes chains in
+each optimized block from the forms value numbering leaves, the carry-in of a link being the
+carry-out of the link below (as Ghidra's decompiler matches double-precision `INT_CARRY` /
+`INT_LESS` forms, `double.cc`), through negations of the carry (branches over the carried
+byte) and the borrow of `DEC`'s `LDA lo; BNE` test. Bytes may be in memory, registers or stack
+slots; `stats["chains"]` counts the chains and `Program.chains` lists them with the place of
+each operand and result byte (`["abs", a]`, `["x"|"y", base]` indexed, `None`).
+
+A chain whose operand bytes are adjacent plain loads (or a constant) is fused
+(`stats["fused_chains"]`): at its first redefined op the operands are loaded wide and the
+result computed wide; each result byte, each operand byte loaded later and the top carry-out
+(`C`) are redefined from the wide values, so every flag and byte something still reads keeps
+its value (`V`, `N`, `Z` of the top byte, an intermediate carry pushed or branched on); the
+result's byte stores, when adjacent and nothing between them can read or write their bytes or
+leave the block, become one wide store. Loads move up only past stores that cannot reach their
+bytes (by base and offset, else by address interval), never past a `CALL`. The fused chain is
+kept when dead-code elimination then leaves fewer ops, which it does when the intermediate
+carries flow only into the next link.
+
+A carry branch over a block that only increments or decrements one byte (`BCC`/`BNE` over
+`INC hi`, `BNE`/`BCS` over `DEC hi`) is if-converted into its predecessor as `hi ± carry` when
+that block writes no register (the flags it sets are dead at the join) and its load and store
+are plain, so the byte is re-stored unchanged when the carry is clear; the conversion is kept
+only when it completes a fused chain storing that byte.
+
+Links emitted at an instruction where the interval analysis finds the decimal flag may be set
+carry `ir::DECIMAL` and are never fused: entries are guarded to run with `D` clear, so only
+code after a `SED`, `PLP` or `RTI` keeps byte-wise arithmetic. (The templates, `di_pcode::Cpu`
+and the reference machine are binary in decimal mode too.)
+
 ## IR
 
 Ops are `di_pcode::Opc` over `di_pcode::Vn` varnodes; Python sees `[mnemonic, out, [inputs],
@@ -300,7 +336,7 @@ aux]` with varnodes `[space, offset, size]` (`c` constant, `r` register, `u` tem
 
 | Op | Inputs | `aux` |
 |---|---|---|
-| `COPY` ... `INT_CARRY`, `LOAD`, `STORE` | as `lift()`; a `LOAD` with no output is a throw-away read, made when its second input (if any) is nonzero | `LOAD`/`STORE`: `"volatile"` when the address may be volatile; with a bank map the access's backing in its node's configuration (`ram`: RAM under any device; `rom`: the bank map's ROM image; `bank<c>`: resolved per address in configuration `c` at run time; device otherwise). A ROM byte at a constant address is a constant, a read of the port's data cell is computed from its registers. |
+| `COPY` ... `INT_CARRY`, `LOAD`, `STORE` | as `lift()`; a `LOAD` with no output is a throw-away read, made when its second input (if any) is nonzero; a `LOAD` with an output of `n > 1` bytes (a `STORE` of such a value) accesses the `n` bytes from the address up, least significant first, never past `$FFFF` (fused chains); a `COPY` to fewer bytes truncates | `LOAD`/`STORE`: `"volatile"` when the address may be volatile; with a bank map the access's backing in its node's configuration (`ram`: RAM under any device; `rom`: the bank map's ROM image; `bank<c>`: resolved per address in configuration `c` at run time; device otherwise). A ROM byte at a constant address is a constant, a read of the port's data cell is computed from its registers. |
 | `BRANCH` | | target block |
 | `CBRANCH` | condition | target block (falls through to the next op) |
 | `BRANCHIND` | address | table `[(address, block)]`; an address outside it deopts there |

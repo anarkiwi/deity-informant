@@ -363,6 +363,8 @@ pub struct Graph {
     pub pre: FxHashMap<u16, FixedBitSet>,
     /// Per instruction start the entries (bit `i % 64` for entry `i`) it is reached from.
     pub from: FxHashMap<u16, u64>,
+    /// Instruction starts at which the decimal flag may be set.
+    pub dec: FixedBitSet,
 }
 
 /// Stack-pointer effect of a `Next` instruction: pushes and pulls by count, `None` for an
@@ -604,7 +606,7 @@ pub fn discover(
             }
         }
         let written = static_stores(&cimg, &cells, &vars);
-        let from = crate::vsa::analyze(&cimg, &cells, &mut vars, entries, matched);
+        let (from, dec) = crate::vsa::analyze(&cimg, &cells, &mut vars, entries, matched);
         let mut next = FixedBitSet::with_capacity(0x10000);
         let mut nvalues = observed.clone();
         for a in code.ones().filter(|&a| !rom_code.contains(a)) {
@@ -635,6 +637,7 @@ pub fn discover(
                 prot: FixedBitSet::with_capacity(0x100),
                 pre: FxHashMap::default(),
                 from,
+                dec,
             };
         }
         cells = next;

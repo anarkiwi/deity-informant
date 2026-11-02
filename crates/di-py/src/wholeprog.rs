@@ -662,7 +662,50 @@ impl Program {
         d.set_item("bank_dispatch", s.bank_dispatch)?;
         d.set_item("kept_bytes", s.kept_bytes)?;
         d.set_item("budget_checks", s.budget_checks)?;
+        d.set_item("chains", s.chains)?;
+        d.set_item("fused_chains", s.fused_chains)?;
         Ok(d)
+    }
+
+    /// Multi-byte carry chains: ``{"function", "pc", "kind", "fused", "x", "y", "r"}`` with
+    /// ``kind`` ``add``/``sub``/``shl``/``shr``, ``pc`` the start of the instruction block, and
+    /// per byte (least significant first) of each operand and the stored result its place:
+    /// ``["abs", addr]``, ``["x"|"y", base]`` (indexed) or ``None``.
+    #[getter]
+    fn chains<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        use di_lift::wide::{Kind, Place};
+        let place = |p: &Place| -> PyResult<Bound<'py, PyAny>> {
+            Ok(match *p {
+                Place::Abs(a) => ("abs", a).into_pyobject(py)?.into_any(),
+                Place::Indexed(r, a) => (["a", "x", "y"][r as usize], a)
+                    .into_pyobject(py)?
+                    .into_any(),
+                Place::Other => py.None().into_bound(py),
+            })
+        };
+        let out = PyList::empty(py);
+        for (fi, c) in &self.prog.chains {
+            let d = PyDict::new(py);
+            d.set_item("function", fi)?;
+            d.set_item("pc", c.pc)?;
+            let kind = match c.kind {
+                Kind::Add => "add",
+                Kind::Sub => "sub",
+                Kind::Shl => "shl",
+                Kind::Shr => "shr",
+            };
+            d.set_item("kind", kind)?;
+            d.set_item("fused", c.fused)?;
+            for (name, ps) in [("x", &c.x), ("y", &c.y), ("r", &c.r)] {
+                let l = PyList::empty(py);
+                for p in ps {
+                    l.append(place(p)?)?;
+                }
+                d.set_item(name, l)?;
+            }
+            out.append(d)?;
+        }
+        Ok(out)
     }
 
     /// Whether the program counts cycles.

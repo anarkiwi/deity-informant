@@ -16,6 +16,7 @@ pub mod jit;
 pub mod opt;
 pub mod ptr;
 pub mod vsa;
+pub mod wide;
 
 pub use analysis::{Entry, Facts};
 pub use bank::{Back, BankMap, Banked};
@@ -230,6 +231,19 @@ pub fn lift_banked(
     opts: Opts,
     bank: Option<&BankMap>,
 ) -> Program {
+    // Entries are called with the decimal flag clear unless they declare it: guarded at entry,
+    // so the arithmetic of code that does not set it is binary (`Graph::dec`).
+    let declared: Vec<Entry> = entries
+        .iter()
+        .map(|e| {
+            let mut e = e.clone();
+            if !e.regs.iter().any(|r| r.0 == di_pcode::reg::D) {
+                e.regs.push((di_pcode::reg::D, vec![0]));
+            }
+            e
+        })
+        .collect();
+    let entries = &declared[..];
     let mut matched = true;
     let (g, plans, fidx, callees, recursive, slots, constcode, touches, seen, sites, private) = loop {
         let mut g = discover(img, entries, facts, bank, matched);
@@ -469,6 +483,19 @@ pub fn lift_banked(
             .sum();
     }
     stats.ops = ops().count();
+    let chains: Vec<(u32, wide::Chain)> = functions
+        .iter()
+        .enumerate()
+        .flat_map(|(i, f)| {
+            f.chains
+                .iter()
+                .cloned()
+                .chain(wide::recognize(f))
+                .map(move |c| (i as u32, c))
+        })
+        .collect();
+    stats.chains = chains.len();
+    stats.fused_chains = chains.iter().filter(|c| c.1.fused).count();
     stats.stack_ops = ops()
         .filter(|o| matches!(o.opc, di_pcode::Opc::Load | di_pcode::Opc::Store))
         .filter(|o| o.aux & ir::mem::STACK != 0)
@@ -486,6 +513,7 @@ pub fn lift_banked(
         bank: bank.cloned(),
         cycles: opts.cycles,
         stats,
+        chains,
     }
 }
 

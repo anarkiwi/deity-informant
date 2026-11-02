@@ -59,6 +59,18 @@ pub fn optimize(f: &mut Function, cx: &Ctx, fi: usize) {
         cleanup(f);
         combine_adds(f);
         dce(f, cx, fi);
+        if !cx.cycles {
+            let fused = crate::wide::fuse(f, &mut |g| dce(g, cx, fi), &mut |g| {
+                cleanup(g);
+                rename(g);
+                let consts = propagate(g, cx);
+                number(g, cx, &consts);
+                cleanup(g);
+                combine_adds(g);
+                dce(g, cx, fi);
+            });
+            f.chains.extend(fused);
+        }
         let n: usize = f.blocks.iter().map(|b| b.ops.len()).sum();
         debug_assert!(n <= last);
         if n == last {
@@ -780,6 +792,8 @@ impl Lvn<'_> {
             (Opc::IntCarry, _, K(0)) | (Opc::IntCarry, K(0), _) => Some(K(0)),
             _ => self.range_fold(opc, a, b, size0),
         };
+        // An identity of a wider value is a truncation, not the value.
+        let r = r.filter(|v| !matches!(v, S(s) if self.syms[*s as usize].size != size));
         if let Some(v) = r {
             return (v, false);
         }
@@ -864,6 +878,19 @@ impl Lvn<'_> {
                 hi: 0x1ff,
             },
             MemKey::Other(s) => self.syms[s as usize].iv,
+        }
+    }
+    /// [`Self::alias`] of byte `x` with the `w` bytes at `y`.
+    fn alias_w(&self, x: MemKey, y: MemKey, w: u32) -> bool {
+        match y {
+            _ if w == 1 => self.alias(x, y),
+            MemKey::Const(c) => {
+                (0..w).any(|i| self.alias(x, MemKey::Const(c.wrapping_add(i as u16))))
+            }
+            _ => {
+                let (p, q) = (self.key_iv(x), self.key_iv(y));
+                p.lo < q.hi + w && q.lo <= p.hi
+            }
         }
     }
     fn alias(&self, x: MemKey, y: MemKey) -> bool {
@@ -1026,15 +1053,16 @@ fn number_block(lv: &mut Lvn, blk: &mut Block, tables: &[Vec<(u16, u32)>], st: &
                     }
                 }
                 let mk = lv.memkey(a);
-                let hit = op
-                    .plain()
+                let w = op.out.size();
+                let byte = op.plain() && w == 1;
+                let hit = byte
                     .then(|| st.mem.iter().find(|e| e.0 == mk).copied())
                     .flatten();
                 if let Some((_, v)) = hit {
                     result = Some((v, false));
                 } else {
-                    let s = lv.leaf(1, Iv::full(1));
-                    if op.plain() {
+                    let s = lv.leaf(w as u8, Iv::full(w));
+                    if byte {
                         st.remember((mk, Val::S(s)));
                     }
                     result = Some((Val::S(s), true));
@@ -1047,11 +1075,13 @@ fn number_block(lv: &mut Lvn, blk: &mut Block, tables: &[Vec<(u16, u32)>], st: &
                     }
                 }
                 let mk = lv.memkey(a);
-                if op.plain() && st.mem.contains(&(mk, b)) {
+                let w = op.ins[1].size();
+                let byte = op.plain() && w == 1;
+                if byte && st.mem.contains(&(mk, b)) {
                     continue;
                 }
-                st.forget(|e| lv.alias(e, mk));
-                if op.plain() {
+                st.forget(|e| lv.alias_w(e, mk, w));
+                if byte {
                     st.remember((mk, b));
                 }
             }
