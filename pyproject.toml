@@ -50,6 +50,7 @@ features = ["pyo3/extension-module"]
 
 [tool.coverage.run]
 source = ["deity_informant"]
+omit = ["deity_informant/frames.py"]
 
 [tool.black]
 line-length = 100
