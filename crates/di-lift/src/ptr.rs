@@ -105,7 +105,7 @@ pub fn protect(
     let mut usable = FixedBitSet::with_capacity(0x100);
     usable.insert_range(..);
     for &(lo, hi) in volatile {
-        usable.remove_range((lo as usize).min(0x100)..(hi as usize + 1).min(0x100));
+        usable.remove_range((lo as usize).min(0x100)..(hi as usize).min(0x100));
     }
     for a in g.code.ones().take_while(|&a| a < 0x100) {
         usable.set(a, false);

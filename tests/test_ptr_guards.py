@@ -314,3 +314,15 @@ def test_a_pointer_at_ff_wraps_to_its_high_byte_at_00():
     assert prog.stats["stack_guards"] == 0
     differential(img, prog, pcs, calls + [(0, 0xFE), (0, 0x20)])
     assert sum(prog.deopts.values()) == 1
+
+
+def test_a_volatile_range_ends_before_its_end_address():
+    img, labels = assemble(TABLE)
+    pcs = [labels["entry"]]
+    calls = [(0, 0), (0, 1)]
+    vol = [IO, (0xF0, PTR)]
+    prog = wholeprog.lift(img, pcs, vol, facts_for(img, pcs, calls))
+    assert prog.stats["stack_guards"] == 0 and prog.stats["ptr_guards"] > 0
+    mem = bytearray(img)
+    mem[PTR + 1] = 0x20
+    differential(img, prog, pcs, calls, mem=mem, volatile=vol)
