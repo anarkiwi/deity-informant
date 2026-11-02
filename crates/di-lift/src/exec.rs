@@ -2,51 +2,74 @@
 
 use crate::bank::{BankMap, Banked};
 use crate::ir::{mask, mem, other, Function, Program, CY, E, NREG};
+use crate::jit::Jit;
 use crate::opt::{budget_points, checkpoints, sp_effect, sp_offsets};
 use di_pcode::{reg as R, Bus, Cpu, Halt, Opc, Space, Vn};
 use fixedbitset::FixedBitSet;
 use rustc_hash::FxHashMap;
+use std::sync::{Arc, OnceLock};
 
-const IMM: u32 = 1 << 31;
-const NOCHECK: u32 = u32::MAX;
+pub(crate) const IMM: u32 = 1 << 31;
+pub(crate) const NOCHECK: u32 = u32::MAX;
 /// Longest run the 32-bit cycle register covers before the executor hands over to the `Cpu`.
 const SPAN: u64 = 1 << 31;
 
 #[derive(Clone, Copy, Debug)]
-struct X {
-    opc: Opc,
-    osz: u8,
-    asz: u8,
-    out: u32,
-    a: u32,
-    b: u32,
-    aux: u32,
+pub(crate) struct X {
+    pub opc: Opc,
+    pub osz: u8,
+    pub asz: u8,
+    pub out: u32,
+    pub a: u32,
+    pub b: u32,
+    pub aux: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
-struct XBlock {
-    start: u32,
-    pc: u16,
+pub(crate) struct XBlock {
+    pub start: u32,
+    pub pc: u16,
     /// Cycle bound to the next check, at cycle-budget checkpoints.
-    check: u32,
+    pub check: u32,
     /// Bytes the stack may grow by before the next check.
-    depth: u32,
+    pub depth: u32,
     /// Spends one unit of the iteration budget (without cycles).
-    budget: bool,
+    pub budget: bool,
+}
+
+/// An active `CALL`: resume op, callee, return address and SP before the `JSR`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Frame {
+    pub ip: u32,
+    pub callee: u32,
+    pub ra: u16,
+    pub sp: u8,
+}
+
+/// Which engine runs lifted code. [`Backend::Jit`] runs native code where it applies
+/// (without cycles, over a bus with [`Bus::flat`] memory) and interprets elsewhere.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Backend {
+    Interp,
+    #[default]
+    Jit,
 }
 
 /// A lifted program compiled for execution.
 #[derive(Clone, Debug)]
 pub struct Exec {
-    ops: Vec<X>,
-    blocks: Vec<XBlock>,
-    tables: Vec<Vec<(u16, u32)>>,
-    fentry: Vec<u32>,
+    pub(crate) ops: Vec<X>,
+    pub(crate) blocks: Vec<XBlock>,
+    pub(crate) tables: Vec<Vec<(u16, u32)>>,
+    pub(crate) fentry: Vec<u32>,
     entries: Vec<(u16, u32)>,
     width: usize,
+    /// First value-file index of the temporaries.
+    pub(crate) temps: u32,
     code: Vec<(u16, u8)>,
-    constcode: FixedBitSet,
-    img: Box<[u8]>,
+    pub(crate) constcode: FixedBitSet,
+    pub(crate) img: Box<[u8]>,
     elide_ret: bool,
     cycles: bool,
     /// Per function: first value-file index and count of its stack slots, and which slots
@@ -54,10 +77,11 @@ pub struct Exec {
     slots: Vec<(u32, u32)>,
     slotted: Vec<FixedBitSet>,
     bank: Option<BankMap>,
+    jit: OnceLock<Option<Arc<Jit>>>,
 }
 
 /// Access flags that resolve memory other than through `Bus::read`/`write`.
-const SPACES: u32 = mem::RAM | mem::ROM | mem::BANK;
+pub(crate) const SPACES: u32 = mem::RAM | mem::ROM | mem::BANK;
 
 fn operand(v: Vn, temps: u32, slots: u32) -> u32 {
     match v.space() {
@@ -66,6 +90,32 @@ fn operand(v: Vn, temps: u32, slots: u32) -> u32 {
         Space::Reg => v.off(),
         Space::Unique => temps + v.off(),
         Space::Ram => unreachable!("lifted programs address memory through LOAD/STORE"),
+    }
+}
+
+/// A non-`ROM` `LOAD` with flags `aux` (cycles aside).
+#[inline(always)]
+pub(crate) fn load<B: Bus>(bank: Option<&BankMap>, bus: &mut B, aux: u32, a: u16) -> u8 {
+    if aux & SPACES == 0 {
+        bus.read(a)
+    } else if aux & mem::RAM != 0 {
+        bus.ram_read(a)
+    } else if aux & mem::ROM != 0 {
+        bank.unwrap().rom[a as usize]
+    } else {
+        bank.unwrap().read(mem::config(aux), bus, a)
+    }
+}
+
+/// A `STORE` with flags `aux` (cycles aside).
+#[inline(always)]
+pub(crate) fn store<B: Bus>(bank: Option<&BankMap>, bus: &mut B, aux: u32, a: u16, v: u8) {
+    if aux & SPACES == 0 {
+        bus.write(a, v)
+    } else if aux & mem::RAM != 0 {
+        bus.ram_write(a, v)
+    } else {
+        bank.unwrap().write(mem::config(aux), bus, a, v)
     }
 }
 
@@ -88,6 +138,9 @@ impl<B: Bus> Bus for NoClock<'_, B> {
     fn ram_write(&mut self, a: u16, v: u8) {
         self.0.ram_write(a, v)
     }
+    fn flat(&mut self) -> Option<(*mut u8, *mut u8)> {
+        self.0.flat()
+    }
 }
 
 impl Exec {
@@ -104,6 +157,7 @@ impl Exec {
             tables: Vec::new(),
             fentry: Vec::new(),
             entries: p.entries.clone(),
+            temps: next,
             width: next as usize
                 + p.functions
                     .iter()
@@ -118,6 +172,7 @@ impl Exec {
             slots,
             slotted: p.functions.iter().map(|f| f.slotted.clone()).collect(),
             bank: p.bank.clone(),
+            jit: OnceLock::new(),
         };
         for &(a, v) in &p.code {
             x.constcode.insert(a as usize);
@@ -288,6 +343,17 @@ fn depths(fs: &[Function], cps: &[FixedBitSet]) -> Vec<Vec<(u32, u32)>> {
 }
 
 impl Exec {
+    /// The native code, compiled on first use (`None` with cycles, which it does not
+    /// cover, or when compilation fails).
+    pub fn jit(&self) -> Option<&Jit> {
+        self.jit
+            .get_or_init(|| {
+                (!self.cycles)
+                    .then(|| Jit::new(self).ok().map(Arc::new))
+                    .flatten()
+            })
+            .as_deref()
+    }
     /// Every byte the program treats as constant code holds its lifted value in `bus`.
     pub fn matches<B: Bus>(&self, bus: &mut B) -> bool {
         self.code.iter().all(|&(a, v)| bus.ram_read(a) == v)
@@ -315,20 +381,27 @@ pub struct Outcome {
 pub struct Runner<'a> {
     x: &'a Exec,
     f: Vec<u32>,
-    /// Active `CALL`s: resume op, return address, SP before the `JSR`, callee.
-    frames: Vec<(u32, u16, u8, u32)>,
+    pub(crate) frames: Vec<Frame>,
     pub invalid: bool,
+    pub backend: Backend,
     /// Deopts per PC.
     pub deopts: FxHashMap<u16, u64>,
 }
 
 impl<'a> Runner<'a> {
+    pub(crate) fn bank(&self) -> Option<&'a BankMap> {
+        self.x.bank.as_ref()
+    }
+    pub(crate) fn file(&mut self) -> &mut [u32] {
+        &mut self.f
+    }
     pub fn new(x: &'a Exec) -> Self {
         Runner {
             x,
             f: vec![0; x.width],
             frames: Vec::new(),
             invalid: false,
+            backend: Backend::default(),
             deopts: FxHashMap::default(),
         }
     }
@@ -418,8 +491,19 @@ impl<'a> Runner<'a> {
             }};
         }
         let first = x.blocks[x.fentry[fi as usize] as usize];
+        let native = if cyc || self.backend == Backend::Interp {
+            None
+        } else {
+            x.jit().zip(bus.flat())
+        };
         let (dpc, stop) = if cyc && first.check >= budget || (sp as u32) < first.depth {
             (first.pc, Stop::Deopt)
+        } else if let Some((j, flat)) = native {
+            let r = j.run(self, fi, flat, bus, &mut iters);
+            (
+                r as u16,
+                [Stop::Exit, Stop::Deopt, Stop::Budget][(r >> 16) as usize],
+            )
         } else {
             let mut ip = first.start as usize;
             loop {
@@ -435,31 +519,14 @@ impl<'a> Runner<'a> {
                             bus.now(c0 + f[CY as usize] as u64);
                         }
                         let a = get(f, o.a) as u16;
-                        f[o.out as usize] = if o.aux & SPACES == 0 {
-                            bus.read(a)
-                        } else if o.aux & mem::RAM != 0 {
-                            bus.ram_read(a)
-                        } else if o.aux & mem::ROM != 0 {
-                            x.bank.as_ref().unwrap().rom[a as usize]
-                        } else {
-                            x.bank.as_ref().unwrap().read(mem::config(o.aux), bus, a)
-                        } as u32;
+                        f[o.out as usize] = load(x.bank.as_ref(), bus, o.aux, a) as u32;
                     }
                     Opc::Store => {
                         if cyc && o.aux & mem::VOLATILE != 0 {
                             bus.now(c0 + f[CY as usize] as u64);
                         }
                         let (a, v) = (get(f, o.a) as u16, get(f, o.b) as u8);
-                        if o.aux & SPACES == 0 {
-                            bus.write(a, v)
-                        } else if o.aux & mem::RAM != 0 {
-                            bus.ram_write(a, v)
-                        } else {
-                            x.bank
-                                .as_ref()
-                                .unwrap()
-                                .write(mem::config(o.aux), bus, a, v)
-                        }
+                        store(x.bank.as_ref(), bus, o.aux, a, v)
                     }
                     Opc::Branch => ip = enter!(o.aux),
                     Opc::CBranch => {
@@ -477,11 +544,16 @@ impl<'a> Runner<'a> {
                     }
                     Opc::Call => {
                         let sp = (f[R::SP] as u8).wrapping_add(2);
-                        self.frames.push((ip as u32, get(f, o.a) as u16, sp, o.aux));
+                        self.frames.push(Frame {
+                            ip: ip as u32,
+                            callee: o.aux,
+                            ra: get(f, o.a) as u16,
+                            sp,
+                        });
                         ip = enter!(x.fentry[o.aux as usize]);
                     }
                     Opc::Return => match self.frames.pop() {
-                        Some((r, ..)) => ip = r as usize,
+                        Some(fr) => ip = fr.ip as usize,
                         None => break (get(f, o.a) as u16, Stop::Exit),
                     },
                     Opc::CallOther => {
@@ -529,7 +601,7 @@ impl<'a> Runner<'a> {
             let mut e = sp as u8;
             let mut fun = fi;
             for j in 0..=self.frames.len() {
-                let cut = self.frames.get(j).map_or(f[R::SP] as u8, |fr| fr.2);
+                let cut = self.frames.get(j).map_or(f[R::SP] as u8, |fr| fr.sp);
                 let (base, n) = self.x.slots[fun as usize];
                 let slotted = &self.x.slotted[fun as usize];
                 for i in 0..(e as i32 - cut as i32).clamp(0, n as i32) as u32 {
@@ -539,7 +611,13 @@ impl<'a> Runner<'a> {
                     let a = 0x100 | e.wrapping_sub(i as u8) as u16;
                     bus.ram_write(a, f[(base + i) as usize] as u8);
                 }
-                if let Some(&(_, ra, s, c)) = self.frames.get(j) {
+                if let Some(&Frame {
+                    ra,
+                    sp: s,
+                    callee: c,
+                    ..
+                }) = self.frames.get(j)
+                {
                     bus.ram_write(0x100 | s as u16, (ra >> 8) as u8);
                     bus.ram_write(0x100 | s.wrapping_sub(1) as u16, ra as u8);
                     (e, fun) = (s.wrapping_sub(2), c);

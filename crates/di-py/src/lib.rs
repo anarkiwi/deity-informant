@@ -221,6 +221,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lift, m)?)?;
     m.add_class::<Cpu>()?;
     m.add_class::<wholeprog::Program>()?;
+    m.add_class::<wholeprog::Session>()?;
     m.add_function(wrap_pyfunction!(wholeprog::lift_program, m)?)?;
     m.add_function(wrap_pyfunction!(wholeprog::lift_many, m)?)?;
     m.add_function(wrap_pyfunction!(wholeprog::plan_program, m)?)?;

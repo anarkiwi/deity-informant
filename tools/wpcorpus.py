@@ -202,11 +202,11 @@ def _ref_run(play, vol, mc, bank=None, port=None):
 
 def _lifted_run(prog, mc, port=None):
     def run(mem, n):
-        reg = None
+        s = prog.session(mem, mc)
         for _ in range(n):
             if port is not None:
                 mem[1] = port
-            reg = prog.call(mem, 0, reg=reg, max_cycles=mc)["reg"]
+            s.call()
 
     return run
 
@@ -271,9 +271,16 @@ def _timing(n, cycles, t_ref, t_lift, t_jen):
     }
 
 
+def _compiled(prog):
+    """Compile ``prog``'s native code now: milliseconds, or None on the interpreter."""
+    s = prog.compile() if prog.backend == "jit" else None
+    return None if s is None else 1e3 * s
+
+
 def _lifted_row(prog, lift_ms, bad):
     return {
         "lift_ms": lift_ms,
+        "backend": prog.backend,
         "stats": prog.stats,
         "exact": bad is None,
         "mismatch": bad,
@@ -300,6 +307,7 @@ def _banked(row, img, mc, ev):
     t = time.perf_counter()
     prog = wholeprog.lift(last["ram"], [play], [c64.SID], facts, bank=_bank())
     lift_ms = 1e3 * (time.perf_counter() - t)
+    row["compile_ms"] = _compiled(prog)
     t = time.perf_counter()
     io = c64.device_file(img, last["ram"], inits)
     bad = c64.check(prog, last["ram"], last["reg"], records, ports["call"], mc, io=io)
@@ -346,6 +354,7 @@ def psid_song(row, img, mc, cap, defer=False):
     t = time.perf_counter()
     prog = wholeprog.lift(mem, [play], vol, facts)
     lift_ms = 1e3 * (time.perf_counter() - t)
+    row["compile_ms"] = _compiled(prog)
     t = time.perf_counter()
     bad = wplift.check(mem, prog, [(play, 0)] * n, vol, progress=False)
     row |= _lifted_row(prog, lift_ms, bad) | {"check_ms": 1e3 * (time.perf_counter() - t)}
@@ -524,7 +533,8 @@ def run_song(path, row, mc, cap=0, defer=()):
     return row, zstandard.ZstdCompressor().compress((json.dumps(rec) + "\n").encode())
 
 
-def _worker(lengths_path):
+def _worker(lengths_path, backend="jit"):
+    wholeprog.BACKEND = backend
     if Path(lengths_path).exists():
         _LENGTHS.update(songlengths(lengths_path))
 
@@ -615,6 +625,7 @@ def _speeds(ok):
         "lifted_cycles_s": _q([s["cycles"] / s["lifted_s"] for s in sp]),
         "jennings_calls_s": _q([s["calls"] / s["jennings_s"] for s in jen]),
         "reference_calls_s": _q([s["calls"] / s["reference_s"] for s in sp]),
+        "compile_ms": _q([r["compile_ms"] for r in ok if r.get("compile_ms") is not None]),
     }
 
 
@@ -769,6 +780,7 @@ def main(argv=None):  # pylint: disable=too-many-locals
     ap.add_argument("--jobs", type=int, default=os.cpu_count())
     ap.add_argument("--sample", type=int, default=0, help="random tunes (0: all)")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--backend", choices=("jit", "interp"), default="jit", help="lifted engine")
     ap.add_argument(
         "--defer",
         type=lambda v: tuple(v.split(",")),
@@ -795,7 +807,9 @@ def main(argv=None):  # pylint: disable=too-many-locals
             res = [{"path": a[1], "song": 0, "calls": 0, "error": "plan " + err}]
         plans.extend((a[0], r) for r in res)
 
-    with ProcessPool(max_workers=args.jobs, initializer=_worker, initargs=(str(lengths),)) as pool:
+    with ProcessPool(
+        max_workers=args.jobs, initializer=_worker, initargs=(str(lengths), args.backend)
+    ) as pool:
         jobs = [(str(p), str(p.relative_to(root)), args.default_length, args.max_cycles)
                 for p in paths]  # fmt: skip
         _pool_map(pool, plan, jobs, [args.timeout] * len(jobs), "plan", planned)

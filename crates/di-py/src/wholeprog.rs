@@ -2,13 +2,14 @@
 //! and the reference `reference_call` with the same bus.
 
 use di_lift::ir::{mem, other, Program as LProgram};
-use di_lift::{Back, BankMap, Banked, Entry, Exec, Facts, Job, Opts, Runner};
+use di_lift::{Back, Backend, BankMap, Banked, Entry, Exec, Facts, Job, Opts, Outcome, Runner};
 use di_pcode::{reg as R, Bus, Cpu, Halt, Opc, Space, Vn};
 use indicatif::{ProgressBar, ProgressStyle};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyDict, PyList};
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// A 64 KiB bytearray as the bus: volatile ranges optionally logged as
@@ -90,6 +91,10 @@ impl Bus for PyBus<'_> {
     fn now(&mut self, c: u64) {
         self.now = c;
     }
+    fn flat(&mut self) -> Option<(*mut u8, *mut u8)> {
+        let ram = self.mem.as_mut_ptr();
+        Some((self.dev.as_mut().map_or(ram, |d| d.as_mut_ptr()), ram))
+    }
 }
 
 /// A bus that ignores cycles.
@@ -110,6 +115,9 @@ impl Bus for Unclocked<'_, '_> {
     }
     fn ram_write(&mut self, a: u16, v: u8) {
         self.0.ram_write(a, v)
+    }
+    fn flat(&mut self) -> Option<(*mut u8, *mut u8)> {
+        self.0.flat()
     }
 }
 
@@ -276,6 +284,7 @@ pub struct Program {
     prog: Arc<LProgram>,
     exec: Arc<Exec>,
     state: std::sync::Mutex<(bool, HashMap<u16, u64>)>,
+    interp: AtomicBool,
 }
 
 impl Program {
@@ -285,7 +294,16 @@ impl Program {
             prog: Arc::new(p),
             exec,
             state: Default::default(),
+            interp: AtomicBool::new(false),
         }
+    }
+}
+
+fn backend_of(name: &str) -> PyResult<Backend> {
+    match name {
+        "jit" => Ok(Backend::Jit),
+        "interp" => Ok(Backend::Interp),
+        _ => Err(PyValueError::new_err("backend must be 'jit' or 'interp'")),
     }
 }
 
@@ -441,6 +459,29 @@ impl Program {
         self.prog.entries.iter().map(|e| e.0).collect()
     }
 
+    /// The engine ``call`` runs lifted code on by default: ``"jit"`` (native code without
+    /// cycle counting, the interpreter otherwise) or ``"interp"``.
+    #[getter]
+    fn backend(&self) -> &'static str {
+        if self.interp.load(Ordering::Relaxed) {
+            "interp"
+        } else {
+            "jit"
+        }
+    }
+    #[setter]
+    fn set_backend(&self, name: &str) -> PyResult<()> {
+        let b = backend_of(name)?;
+        self.interp.store(b == Backend::Interp, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Compile the native code now (otherwise on the first ``"jit"`` call): its compile
+    /// seconds, or None when there is none (programs counting cycles).
+    fn compile(&self, py: Python<'_>) -> Option<f64> {
+        py.detach(|| self.exec.jit().map(|j| j.secs))
+    }
+
     /// Deopts so far per PC.
     #[getter]
     fn deopts(&self) -> HashMap<u16, u64> {
@@ -453,7 +494,7 @@ impl Program {
     /// the lifted code runs to its return and ``cycles`` counts only the reference
     /// interpreter's part after a deopt. A banked program's devices read and write ``io``
     /// (a 64 KiB register file, updated in place; a copy of ``mem`` when absent).
-    #[pyo3(signature = (mem, entry=0, a=0, reg=None, cycles=0, max_cycles=10_000_000, log=false, synth=false, io=None))]
+    #[pyo3(signature = (mem, entry=0, a=0, reg=None, cycles=0, max_cycles=10_000_000, log=false, synth=false, io=None, backend=None))]
     #[allow(clippy::too_many_arguments)]
     fn call<'py>(
         &self,
@@ -467,28 +508,45 @@ impl Program {
         log: bool,
         synth: bool,
         io: Option<&Bound<'py, PyByteArray>>,
+        backend: Option<&str>,
     ) -> PyResult<Bound<'py, PyDict>> {
-        if entry >= self.prog.entries.len() {
-            return Err(PyValueError::new_err("no such entry"));
-        }
+        let backend = self.backend_or(backend)?;
+        self.entry(entry)?;
         let mut cpu = cpu_of(reg, cycles);
-        let mut st = self.state.lock().unwrap();
-        let dev = devices(self.prog.bank.is_some(), mem, io)?;
-        let (o, lg, dev) = with_mem(mem, |m| {
+        let mut dev = devices(self.prog.bank.is_some(), mem, io)?;
+        let (o, lg) = with_mem(mem, |m| {
             let mut bus = PyBus::new(m, &self.prog.volatile, log, synth);
-            bus.now = cycles;
-            bus.dev = dev;
-            let mut run = Runner::new(&self.exec);
-            run.invalid = st.0;
-            let o = run.call(entry, a, &mut cpu, &mut bus, max_cycles);
-            st.0 = run.invalid;
-            for (k, v) in run.deopts {
-                *st.1.entry(k).or_default() += v;
-            }
-            (o, bus.log, bus.dev)
+            bus.dev = dev.take();
+            let o = self.run(&mut bus, &mut cpu, entry, a, max_cycles, backend);
+            dev = bus.dev;
+            (o, bus.log)
         })?;
         store_devices(io, dev)?;
         result(py, &cpu, o.halt, o.deopt, lg)
+    }
+
+    /// A :class:`Session` over ``mem``: repeated ``call``s from one CPU state (``reg``),
+    /// cheaper than ``Program.call`` per call. A banked program's devices start as ``io``
+    /// (a copy of ``mem`` when absent) and persist across the session's calls.
+    #[pyo3(signature = (mem, max_cycles=10_000_000, reg=None, io=None, backend=None))]
+    fn session(
+        slf: &Bound<'_, Self>,
+        mem: &Bound<'_, PyByteArray>,
+        max_cycles: u64,
+        reg: Option<[u8; 16]>,
+        io: Option<&Bound<'_, PyByteArray>>,
+        backend: Option<&str>,
+    ) -> PyResult<Session> {
+        let p = slf.get();
+        with_mem(mem, |_| ())?;
+        Ok(Session {
+            prog: slf.clone().unbind(),
+            mem: mem.clone().unbind(),
+            dev: devices(p.prog.bank.is_some(), mem, io)?,
+            cpu: cpu_of(reg, 0),
+            max_cycles,
+            backend: p.backend_or(backend)?,
+        })
     }
 
     /// True when every byte the program treats as constant code holds its lifted value in
@@ -500,6 +558,80 @@ impl Program {
     /// The program as text.
     fn __str__(&self) -> String {
         self.prog.to_string()
+    }
+}
+
+impl Program {
+    fn backend_or(&self, name: Option<&str>) -> PyResult<Backend> {
+        match name {
+            Some(b) => backend_of(b),
+            None if self.interp.load(Ordering::Relaxed) => Ok(Backend::Interp),
+            None => Ok(Backend::Jit),
+        }
+    }
+    fn entry(&self, entry: usize) -> PyResult<()> {
+        if entry >= self.prog.entries.len() {
+            return Err(PyValueError::new_err("no such entry"));
+        }
+        Ok(())
+    }
+    /// ``run_to_rts`` of `entry` over `bus` from `cpu`, keeping the invalidation and deopts.
+    fn run(
+        &self,
+        bus: &mut PyBus<'_>,
+        cpu: &mut Cpu,
+        entry: usize,
+        a: u8,
+        max_cycles: u64,
+        backend: Backend,
+    ) -> Outcome {
+        bus.now = cpu.cycles;
+        let mut st = self.state.lock().unwrap();
+        let mut run = Runner::new(&self.exec);
+        run.backend = backend;
+        run.invalid = st.0;
+        let o = run.call(entry, a, cpu, bus, max_cycles);
+        st.0 = run.invalid;
+        for (k, v) in run.deopts {
+            *st.1.entry(k).or_default() += v;
+        }
+        o
+    }
+}
+
+/// ``Program.session``: ``run_to_rts`` calls on one memory and CPU state.
+#[pyclass(module = "deity_informant._native")]
+pub struct Session {
+    prog: Py<Program>,
+    mem: Py<PyByteArray>,
+    dev: Option<Box<[u8; 0x10000]>>,
+    cpu: Cpu,
+    max_cycles: u64,
+    backend: Backend,
+}
+
+#[pymethods]
+impl Session {
+    /// ``run_to_rts`` of entry ``entry`` with ``A = a``; the halt (``return``, ``cycles``
+    /// or ``jam``).
+    #[pyo3(signature = (entry=0, a=0))]
+    fn call(&mut self, py: Python<'_>, entry: usize, a: u8) -> PyResult<&'static str> {
+        let p = self.prog.get();
+        p.entry(entry)?;
+        let (cpu, dev, mc, b) = (&mut self.cpu, &mut self.dev, self.max_cycles, self.backend);
+        let o = with_mem(self.mem.bind(py), |m| {
+            let mut bus = PyBus::new(m, &p.prog.volatile, false, false);
+            bus.dev = dev.take();
+            let o = p.run(&mut bus, cpu, entry, a, mc, b);
+            *dev = bus.dev;
+            o
+        })?;
+        Ok(halt_name(o.halt))
+    }
+    /// The registers.
+    #[getter]
+    fn reg(&self) -> Vec<u8> {
+        self.cpu.reg().to_vec()
     }
 }
 

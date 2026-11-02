@@ -7,7 +7,8 @@ init or call, default 2,000,000), `--default-length S` (default 180), `--timeout
 `--call-timeout S` (default 0.02 with vagrant-moses' native trace, else 0.5: tens of times the
 per-call cost of every stage; wall clock
 per song is `timeout + call_timeout * calls`), `--label-calls N` (default 1000; 0: the whole
-song).
+song), `--backend jit|interp` (the lifted engine, default `jit`; rows record `backend` and the
+native compile time `compile_ms` apart from `lift_ms` and the timed run).
 
 ## Plan
 
@@ -32,8 +33,8 @@ PSID with a play routine:
    a window that is not RAM under sidplay's $01 for that entry (`smclabel.iomap`):
    `bank_evidence`.
 3. Flat: lift, `wplift.check` over all calls (`exact`, `mismatch`, `deopts`; `no-return`
-   when both stop the same way), lifted `Program.call` and jennings `run_to_rts` timed over
-   the same calls (`timing`), scenario cells from the vagrant-moses machine oracle with play
+   when both stop the same way), the lifted `Program.session` and jennings `run_to_rts` timed
+   over the same calls (`timing`), scenario cells from the vagrant-moses machine oracle with play
    called as sidplay does (`oracle` `calls`) over the first `--label-calls` calls.
 4. Banked: one vagrant-moses machine run (init and every call, sidplay's $01 per phase) gives
    the facts, the call records the bank-aware lift is checked against (`c64.check`) and the

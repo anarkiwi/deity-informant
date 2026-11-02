@@ -8,6 +8,11 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+cranelift-codegen = "0.137"
+cranelift-frontend = "0.137"
+cranelift-jit = "0.137"
+cranelift-module = "0.137"
+cranelift-native = "0.137"
 di-pcode = { path = "../di-pcode" }
 fixedbitset = "0.5"
 rayon = "1.10"

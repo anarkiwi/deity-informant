@@ -14,6 +14,14 @@ from wholeprog_progs import CODEHIT, GEN, INVALIDATE, IO, JMPIND, PATCH, TOGGLE,
 
 pytestmark = pytest.mark.skipif(not NATIVE, reason="needs the native extension")
 
+
+@pytest.fixture(name="backend", autouse=True, params=["jit", "interp"])
+def _backend(request, monkeypatch):
+    """Every test on both engines (``wholeprog.BACKEND``)."""
+    monkeypatch.setattr(wholeprog, "BACKEND", request.param)
+    return request.param
+
+
 PROGRAMS = {
     "patch": ("PATCH", ["entry"], [(0, 0)] * 20),
     "toggle": ("TOGGLE", ["entry"], [(0, 0)] * 6),
@@ -471,3 +479,43 @@ def test_banked_lift_matches_machine(name, cycles):
     post[c64.IDLE] = 0x60
     calls = [(0, a) for a in forced + seen]
     differential(post, prog, [pc], calls, bank=c64.bank_map(), volatile=[c64.SID])
+
+
+def test_backend_selection(backend):
+    img, lab = assemble(PATCH)
+    pcs = [lab["entry"]]
+    facts = facts_for(img, pcs, [(0, 0)] * 4)
+    prog = wholeprog.lift(img, pcs, [IO], facts)
+    assert prog.backend == backend
+    assert prog.compile() > 0
+    other = "interp" if backend == "jit" else "jit"
+    runs = [prog.call(bytearray(img), 0, backend=b) for b in (backend, other)]
+    assert runs[0] == runs[1]
+    prog.backend = other
+    assert prog.backend == other
+    with pytest.raises(ValueError):
+        prog.backend = "nope"
+    with pytest.raises(ValueError):
+        prog.call(bytearray(img), 0, backend="nope")
+    assert wholeprog.lift(img, pcs, [IO], facts, cycles=True).compile() is None
+    assert wholeprog.lift_many([(img, pcs, [IO], facts)], progress=False)[0].backend == backend
+
+
+def test_session_matches_call():
+    img, lab = assemble(GEN)
+    pcs = [lab["gen"], lab["run"]]
+    calls = [(0, 3), (1, 0), (0, 4), (1, 0)]
+    prog = wholeprog.lift(img, pcs, [IO], facts_for(img, pcs, calls))
+    m1, m2 = bytearray(img), bytearray(img)
+    s = prog.session(m2)
+    reg = None
+    for e, a in calls:
+        r = prog.call(m1, e, a=a, reg=reg)
+        reg = r["reg"]
+        assert s.call(e, a) == r["halt"]
+        assert s.reg == reg
+    assert m1 == m2
+    with pytest.raises(ValueError):
+        s.call(len(pcs))
+    with pytest.raises(ValueError):
+        prog.session(bytearray(10))

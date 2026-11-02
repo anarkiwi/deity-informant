@@ -39,12 +39,19 @@ def _facts(f):
     return (f if isinstance(f, Facts) else Facts.from_dict(f)).to_dict()
 
 
-def lift(image, entries, volatile=(), facts=None, optimize=True, cycles=False, bank=None):
+BACKEND = "jit"
+"""The default ``Program.backend`` of :func:`lift`: ``"jit"`` or ``"interp"``."""
+
+
+def lift(
+    image, entries, volatile=(), facts=None, optimize=True, cycles=False, bank=None, backend=None
+):  # pylint: disable=too-many-arguments,too-many-positional-arguments
     """Lift ``entries`` of the program in ``image`` (the memory each entry starts from);
     ``cycles=True`` counts cycles and stamps volatile accesses with them; ``bank`` is a bank
-    map (e.g. ``deity_informant.c64.bank_map()``) memory is seen through."""
+    map (e.g. ``deity_informant.c64.bank_map()``) memory is seen through; ``backend`` (default
+    :data:`BACKEND`) is the engine ``Program.call`` runs it on."""
     n = _native_or_raise()
-    return n.lift_program(
+    prog = n.lift_program(
         bytes(image),
         [entry_spec(e) for e in entries],
         _ranges(volatile),
@@ -53,6 +60,8 @@ def lift(image, entries, volatile=(), facts=None, optimize=True, cycles=False, b
         cycles,
         bank,
     )
+    prog.backend = backend or BACKEND
+    return prog
 
 
 def plans(image, entries, facts=None, bank=None):
@@ -67,7 +76,7 @@ def plans(image, entries, facts=None, bank=None):
 def lift_many(jobs, progress=True, optimize=True, cycles=False):
     """Lift ``[(image, entries, volatile, facts)]`` in parallel with a progress bar."""
     n = _native_or_raise()
-    return n.lift_many(
+    progs = n.lift_many(
         [
             (bytes(img), [entry_spec(e) for e in ents], _ranges(vol), _facts(f))
             for img, ents, vol, f in jobs
@@ -76,6 +85,9 @@ def lift_many(jobs, progress=True, optimize=True, cycles=False):
         optimize,
         cycles,
     )
+    for p in progs:
+        p.backend = BACKEND
+    return progs
 
 
 def reference_call(mem, pc, **kw):

@@ -84,6 +84,7 @@ def main(argv=None):
     ap.add_argument("--raw", action="store_true", help="skip optimization")
     ap.add_argument("--cycles", action="store_true", help="count cycles")
     ap.add_argument("--check", action="store_true")
+    ap.add_argument("--backend", choices=("jit", "interp"), default="jit")
     args = ap.parse_args(argv)
     img = image_of(args.image, args.org)
     vol = [tuple(num(x) for x in v.split("-")) for v in args.volatile]
@@ -99,8 +100,13 @@ def main(argv=None):
     if args.save_facts:
         Path(args.save_facts).write_text(facts.dumps(), encoding="utf-8")
     t = time.perf_counter()
-    prog = wholeprog.lift(img, args.entry, vol, facts, optimize=not args.raw, cycles=args.cycles)
-    print(json.dumps({"lift_ms": round(1e3 * (time.perf_counter() - t), 2), **prog.stats}))
+    prog = wholeprog.lift(
+        img, args.entry, vol, facts, optimize=not args.raw, cycles=args.cycles, backend=args.backend
+    )
+    lift_ms = round(1e3 * (time.perf_counter() - t), 2)
+    compile_s = prog.compile() if args.backend == "jit" else None
+    compile_ms = None if compile_s is None else round(1e3 * compile_s, 2)
+    print(json.dumps({"lift_ms": lift_ms, "compile_ms": compile_ms, **prog.stats}))
     if args.dump:
         Path(args.dump).write_text(str(prog), encoding="utf-8")
     if args.check:

@@ -21,7 +21,8 @@ facts = trace.collect(state, lambda s: [s.call(play) for _ in range(3000)])
 prog = wholeprog.lift(state, [play], volatile=[(lo, hi)], facts=facts)   # cycles=False
 prog.functions        # [{"pc", "entry", "recursive", "blocks": [{"pc", "ops"}], "tables"}]
 prog.stats            # insns, raw_ops, emitted_ops, ops, cells, code_guards, calls, ...
-r = prog.call(mem, 0, a=0, reg=None, cycles=0, max_cycles=10_000_000, log=True)
+r = prog.call(mem, 0, a=0, reg=None, cycles=0, max_cycles=10_000_000, log=True)  # backend=
+prog.backend          # "jit" (default) or "interp"; prog.compile() -> compile seconds
 r["reg"], r["pc"], r["cycles"], r["halt"], r["deopt"], r["log"]
 prog.deopts           # {pc: count}
 prog.matches(mem)     # constant code still holds its lifted bytes
@@ -199,6 +200,26 @@ cycle counting) and per function its stack slots (18 + `i`: the byte `i` below i
 printed `s<i>`). Block 0 of each function is its entry; the executor (`exec.rs`) runs the
 program over any `di_pcode::Bus`, relocating each function's slots in its value file and,
 with cycle counting, calling `Bus::now(cycle)` before possibly volatile accesses.
+
+### Backends
+
+`Runner::backend` (Python: `Program.backend`, `wholeprog.lift(..., backend=)` or
+`wholeprog.BACKEND`, a per-call `call(..., backend=)`; tools: `--backend`) selects the engine:
+
+- `jit` (default): `jit.rs` compiles every function with Cranelift on first use
+  (`Exec::jit`, `Program.compile()` returns the compile seconds) to one native function. The
+  value-file cells it uses are SSA variables, written back before a `CALL` and at exits and
+  reloaded after a `CALL`; `CALL` is a native call that pushes the same frame record the
+  interpreter keeps, so a deopt or budget stop in a callee unwinds with the interpreter's
+  frames, slots and resume state. `BRANCHIND` is a `Switch` whose default deopts; block entries
+  reached by a branch carry the interpreter's depth check and budget spend (fall-through does
+  not). Accesses `Bus::flat` covers (unflagged non-volatile, `ram`, `rom`) are direct loads and
+  stores; volatile, device and per-configuration (`bank<c>`) accesses call back into the bus.
+  Programs counting cycles, and buses without `flat` memory, run on the interpreter.
+- `interp`: the interpreter.
+
+Both give the same registers, memory, volatile stream, deopts and halts; the differential
+tests run every lift test on both and random programs through both (`tests/jit.rs`).
 
 ## Limitations
 
