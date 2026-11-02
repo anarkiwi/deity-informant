@@ -142,9 +142,16 @@ impl Jit {
             ctx.func.signature = sig.clone();
             ctx.func.name = UserFuncName::user(0, id.as_u32());
             let mut b = FunctionBuilder::new(&mut ctx.func, &mut fctx);
-            let refs: Vec<FuncRef> = ids
+            let (_, ops) = span(x, fi);
+            let refs: FxHashMap<u32, FuncRef> = x.ops[ops]
                 .iter()
-                .map(|&i| module.declare_func_in_func(i, b.func))
+                .filter(|o| o.opc == Opc::Call)
+                .map(|o| {
+                    (
+                        o.aux,
+                        module.declare_func_in_func(ids[o.aux as usize], b.func),
+                    )
+                })
                 .collect();
             Fb::build(x, fi, &mut b, &refs, ptr, guard.as_ptr());
             b.finalize(tc);
@@ -214,7 +221,7 @@ impl Jit {
 struct Fb<'a, 'b> {
     x: &'a Exec,
     b: &'a mut FunctionBuilder<'b>,
-    refs: &'a [FuncRef],
+    refs: &'a FxHashMap<u32, FuncRef>,
     ptr: types::Type,
     guard: i64,
     vars: FxHashMap<u32, Variable>,
@@ -240,14 +247,12 @@ impl<'a, 'b> Fb<'a, 'b> {
         x: &'a Exec,
         fi: usize,
         b: &'a mut FunctionBuilder<'b>,
-        refs: &'a [FuncRef],
+        refs: &'a FxHashMap<u32, FuncRef>,
         ptr: types::Type,
         guard: *const u16,
     ) {
-        let first = x.fentry[fi] as usize;
-        let end = x.fentry.get(fi + 1).map_or(x.blocks.len(), |&e| e as usize);
-        let ops = x.blocks[first].start as usize
-            ..x.blocks.get(end).map_or(x.ops.len(), |b| b.start as usize);
+        let (blocks, ops) = span(x, fi);
+        let (first, end) = (blocks.start, blocks.end);
         let mut used = vec![R::SP as u32];
         let mut written = Vec::new();
         for o in &x.ops[ops] {
@@ -696,7 +701,7 @@ impl<'a, 'b> Fb<'a, 'b> {
             .istore8(T, sp, fr, offset_of!(Frame, sp) as i32);
         let n1 = self.b.ins().iadd_imm_u(n, 1);
         self.b.ins().store(T, n1, self.ctx, no);
-        let c = self.b.ins().call(self.refs[o.aux as usize], &[self.ctx, z]);
+        let c = self.b.ins().call(self.refs[&o.aux], &[self.ctx, z]);
         let r = self.b.inst_results(c)[0];
         let stop = self.b.ins().ushr_imm_u(r, 16);
         let (up, back) = (self.b.create_block(), self.b.create_block());
@@ -707,6 +712,14 @@ impl<'a, 'b> Fb<'a, 'b> {
         self.b.ins().store(T, n, self.ctx, no);
         self.reload();
     }
+}
+
+/// Function `fi`'s blocks and ops.
+fn span(x: &Exec, fi: usize) -> (std::ops::Range<usize>, std::ops::Range<usize>) {
+    let first = x.fentry[fi] as usize;
+    let end = x.fentry.get(fi + 1).map_or(x.blocks.len(), |&e| e as usize);
+    let op = |b: usize| x.blocks.get(b).map_or(x.ops.len(), |b| b.start as usize);
+    (first..end, op(first)..op(end))
 }
 
 /// Whether an op of `opc` writes its output.

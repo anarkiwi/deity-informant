@@ -494,6 +494,7 @@ impl Program {
     /// the lifted code runs to its return and ``cycles`` counts only the reference
     /// interpreter's part after a deopt. A banked program's devices read and write ``io``
     /// (a 64 KiB register file, updated in place; a copy of ``mem`` when absent).
+    /// ``backend`` overrides :attr:`backend` for this call.
     #[pyo3(signature = (mem, entry=0, a=0, reg=None, cycles=0, max_cycles=10_000_000, log=false, synth=false, io=None, backend=None))]
     #[allow(clippy::too_many_arguments)]
     fn call<'py>(

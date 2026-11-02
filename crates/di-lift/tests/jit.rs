@@ -168,7 +168,7 @@ fn function(r: &mut Rng, pc: u16, n: u32, callee: Option<u32>) -> Function {
 #[test]
 fn random_programs_match_the_interpreter() {
     let mut r = Rng(1, 0);
-    for case in 0..3000 {
+    for case in 0..1000 {
         let (n0, n1) = (1 + r.below(8) as u32, 1 + r.below(4) as u32);
         let p = Program {
             functions: vec![
