@@ -164,7 +164,7 @@ fn guarded_stack_and_forced_page1_access() {
     let p = check(&img, &pc, &calls(4, |_| 0x18), IO);
     let s = &p.stats;
     assert!(s.stack_private && s.page1_sites == 0);
-    assert_eq!((s.stack_guards, s.slot_ops, s.stack_ops), (2, 2, 2));
+    assert_eq!((s.stack_guards, s.slot_ops, s.stack_ops), (2, 2, 4));
     let f = facts(&img, &[(pc[0], 0x18); 4], 1_000_000);
     let forced = calls(6, |i| if i % 2 == 1 { 0x01 } else { 0x18 });
     for cycles in [true, false] {
