@@ -29,6 +29,8 @@ pub struct Shared<'a> {
     pub constcode: Vec<u32>,
     /// Only pushes and pulls reach page 1, given a check before every other access that may.
     pub private: bool,
+    /// Pushes and return addresses are also stored to memory (a load may read page 1).
+    pub shadow: bool,
     /// Functions whose pushes and pulls are stack-slot registers.
     pub promote: FixedBitSet,
     /// Functions in a call-graph cycle.
@@ -476,13 +478,19 @@ impl<'a> Em<'a, '_> {
         let z = self.zext(r1(R::SP), 2);
         self.op(Opc::IntOr, 2, z, k(0x100, 2))
     }
+    fn store_stack(&mut self, v: Vn) -> Vn {
+        let a = self.sp_addr();
+        let flags = mem::STACK | self.store_flags(PAGE1);
+        self.emit(Opc::Store, NONE, a, v, flags);
+        a
+    }
     fn push(&mut self, v: Vn, chk: &mut Vec<Vn>) {
-        if let Some(s) = self.h.and_then(|h| self.slot(h)) {
+        let slot = self.h.and_then(|h| self.slot(h));
+        if let Some(s) = slot {
             self.emit(Opc::Copy, s, v, NONE, 0);
-        } else {
-            let a = self.sp_addr();
-            let flags = mem::STACK | self.store_flags(PAGE1);
-            self.emit(Opc::Store, NONE, a, v, flags);
+        }
+        if slot.is_none() || self.sh.shadow {
+            let a = self.store_stack(v);
             if self.sh.hits_code(PAGE1) {
                 self.n.code_guards += 1;
                 chk.push(self.op(Opc::CallOther, 1, a, v));
@@ -874,7 +882,18 @@ impl<'a> Em<'a, '_> {
             Ctl::Call { f, ret, c } => {
                 let ra = ret.wrapping_sub(1) as u32;
                 if self.sh.private {
-                    self.emit(Opc::IntSub, r1(R::SP), r1(R::SP), k(2, 1), 0);
+                    let bytes: &[u32] = if self.sh.shadow {
+                        &[ra >> 8, ra & 0xff]
+                    } else {
+                        &[]
+                    };
+                    for &b in bytes {
+                        self.store_stack(k(b, 1));
+                        self.emit(Opc::IntSub, r1(R::SP), r1(R::SP), k(1, 1), 0);
+                    }
+                    if !self.sh.shadow {
+                        self.emit(Opc::IntSub, r1(R::SP), r1(R::SP), k(2, 1), 0);
+                    }
                 } else {
                     self.push(k(ra >> 8, 1), &mut chk);
                     self.push(k(ra & 0xff, 1), &mut chk);

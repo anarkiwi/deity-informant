@@ -196,7 +196,7 @@ def test_guarded_stack(cycles):
     img, pcs, calls, prog = lifted("guarded", cycles=cycles)
     st = prog.stats
     assert st["stack_private"] and st["page1_sites"] == 0
-    assert st["stack_guards"] == 2 and st["stack_ops"] == 2 and st["slot_ops"] == 2
+    assert st["stack_guards"] == 2 and st["stack_ops"] == 4 and st["slot_ops"] == 2
     assert not prog.deopts
     # The pointer moved into the live stack: the guard deopts before the load, with the
     # pushed byte and the elided return address in memory for the reference to read.

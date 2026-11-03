@@ -416,9 +416,11 @@ tests run every lift test on both and random programs through both (`tests/jit.r
 
 - Instruction bytes in volatile ranges are treated as memory.
 - With the stack private, stack bytes below SP (popped pushes, returned frames) are not in
-  memory: an access that reads them, whether lifted code that never did in the facts or the
-  reference after a deopt, sees what the program last stored there itself. Code that sets SP (`TXS`,
-  `TAS`, `LAS`) can expose them, so the random-program tests never store those opcodes.
+  memory unless a load other than a pull may reach page 1 (by its address interval alone,
+  whatever the facts saw and the pointer windows assume): then every push and every `CALL`
+  also stores its bytes, so a read of them, by lifted code or by the reference after a deopt,
+  sees what the machine's stack holds. Code that sets SP (`TXS`, `TAS`, `LAS`) can still expose
+  bytes the program never stored, so the random-program tests never store those opcodes.
 - One access in a callee that reached page 1 in the facts keeps the whole program's stack in
   memory: it may read the frames of any active function and stack bytes below SP. In an
   outermost plan such accesses keep only the bytes they may hit in memory (all of its pushes
