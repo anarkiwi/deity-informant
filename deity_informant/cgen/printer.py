@@ -709,22 +709,22 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
 
     def quiet(self, items):
         """Whether statements ``items`` are a block that prints nothing: its operations are
-        pure and only it reads them, other than as block arguments."""
+        pure and only its own operations and branch condition read them."""
         if len(items) != 1 or items[0][0] != "ops":
             return False
         blk = items[0][1]
         term = blk.ops[-1]
+        passed = {
+            a
+            for i, a in enumerate(term.args)
+            if (i or term.name == "cf.br") and (id(term), i) not in self.dead
+        }
         for o in blk.ops[:-1]:
             if not (self.pure(o) or id(o) in self.dropped) and o.name != "memref.get_global":
                 return False
             for r in o.res:
-                for u in self.users.get(r, ()):
-                    if u.parent is not blk or (
-                        u is term
-                        and term.args.index(r)
-                        and (id(u), term.args.index(r)) not in self.dead
-                    ):
-                        return False
+                if r in passed or any(u.parent is not blk for u in self.users.get(r, ())):
+                    return False
         return True
 
     def split(self, a):
