@@ -93,6 +93,14 @@ at an interrupt are not the machine's). Frames without interrupts run on the lif
 frame rows have `timing.interrupted`, the frames of the timed window that ran on the
 reference. In PSID calls interrupts are recorded the same way by the native call queue.
 
+A frame whose code reaches the call's return address with the interrupt's frame still on the stack
+(a handler that resets SP and returns into the code the machine resumes at) ends there, as the
+machine's sentinel trap ends it, whatever SP is.
+
+Memory does not grow with the frames: the records, the entry states and the nested interrupts of
+each window go to `c64.Spill`s (`FrameHost.chunks`), and the check and the timed window read them
+a window at a time; the machine's own event list is cleared after each window.
+
 The recording is native, so an NMI digi player's hundred frames per video frame cost no Python.
 The run has a deterministic budget (`smc.Budget`): a frame may run `--max-cycles` cycles and
 half as many instructions, the run that many per video frame; the row's `budget` is the limit

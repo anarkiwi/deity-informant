@@ -510,6 +510,9 @@ class _Chip:
 
     def _clock(self, writes, until):
         """Clock the chip through ``writes`` to cycle ``until``, :data:`SPAN` cycles at a time."""
+        if until - self.chip.cycle <= SPAN:
+            self.chip.run(writes, until)
+            return
         cuts = np.arange(self.chip.cycle + SPAN, until, SPAN)
         parts = np.split(writes, np.searchsorted(writes[:, 0], cuts, "right"))
         for part, end in zip(parts, [*cuts.tolist(), until]):

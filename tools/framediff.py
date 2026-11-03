@@ -48,9 +48,7 @@ def main(argv=None):
     prog = frames.lift(host, boot.roms, optimize=not args.raw)
     bank = c64.bank_map(boot.roms)
     bad = frames.check(prog, host, args.max_cycles)
-    print(
-        f"{len(host.stream)} frames, {len(host.inner)} nested; stopped: {host.stop}; check: {bad}"
-    )
+    print(f"{len(host.stream)} frames, {host.ninner} nested; stopped: {host.stop}; check: {bad}")
     print(f"foreign {sorted(host.foreign)} dirty {host.dirty} stats {prog.stats}")
     if bad is None:
         return 0

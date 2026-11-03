@@ -4,6 +4,7 @@ import struct
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from deity_informant import NATIVE, c64, frames, wholeprog
@@ -63,7 +64,7 @@ def run(code, n=40):
 )
 def test_frames_lift_exact(code, at, pcs):
     boot, host = run(code)
-    assert len(host.stream) >= 40 and not host.foreign and not len(host.inner)
+    assert len(host.stream) >= 40 and not host.foreign and not host.ninner
     assert set(host.frames["at"].tolist()) == {at} and set(host.frames["pc"].tolist()) <= pcs
     prog = frames.lift(host, boot.roms)
     assert prog.entries == [at] and frames.check(prog, host) is None
@@ -120,7 +121,7 @@ def test_nested_interrupt_taken_inside_frame():
     entry = prog.entries.index(int(host.frames[k]["at"]))
     reg, reads = frames.regs(host.frames[k]), c64.read_entries(host.stream[k])
     with_nmi = prog.call(bytearray(host.image), entry, reg=reg, reads=reads, **kw,
-                         nested=frames.nested(prog, host, k))  # fmt: skip
+                         nested=frames.nested(prog, host.inside(k)))  # fmt: skip
     without = prog.call(bytearray(host.image), entry, reg=reg, reads=reads, **kw)
     assert with_nmi["boundary"] is None
     assert [e[:2] for e in with_nmi["log"]] == [tuple(e[:2]) for e in host.stream[k]["log"]]
@@ -130,7 +131,7 @@ def test_nested_interrupt_taken_inside_frame():
 def test_interrupt_between_two_device_accesses_is_exact():
     boot, host = run(RACE, 30)
     prog = frames.lift(host, boot.roms)
-    assert len(host.inner) and frames.check(prog, host) is None
+    assert host.ninner and frames.check(prog, host) is None
     other = bytearray(host.image)
     other[0x1060 + 4] = 0x01
     host.image, image = bytes(other), host.image
@@ -144,13 +145,20 @@ def test_an_interrupt_the_lift_would_move_is_taken_at_the_machines_boundary():
     irq = bytes.fromhex("ad0ddc a228 ad0003 8e04d4 cd0003 f003 8e05d4 ca d0ef 40")
     nmi = bytes.fromhex("48 ad0ddd ee0003 68 40")
     boot, host = run((NESTED[:0x40] + irq).ljust(0x60, b"\xea") + nmi, 30)
-    assert len(host.inner) and frames.check(frames.lift(host, boot.roms), host) is None
+    assert host.ninner and frames.check(frames.lift(host, boot.roms), host) is None
 
 
 def test_a_boundary_the_machine_did_not_have_is_reported():
     boot, host = run(NESTED, 30)
     prog = frames.lift(host, boot.roms)
-    host.inner["icount"] += 1
+    moved = []
+    for chunk in host.nested_log:
+        ev = np.frombuffer(chunk, c64.EVENT).copy()
+        ev["icount"] += 1
+        moved.append(ev.tobytes())
+    host.nested_log = c64.Spill()
+    for chunk in moved:
+        host.nested_log.append(chunk)
     bad = frames.check(prog, host)
     assert bad is not None and bad[1] in ("boundary", "log", "memory", "reg")
 
@@ -174,14 +182,50 @@ def test_nested_interrupts_agree_across_backends_and_reference():
     for backend in ("jit", "interp"):
         mem = bytearray(host.image)
         outs.append(
-            prog.call(mem, entry, backend=backend, nested=frames.nested(prog, host, k), **kw)
+            prog.call(mem, entry, backend=backend, nested=frames.nested(prog, host.inside(k)), **kw)
         )
         outs[-1]["ram"] = mem
     mem = bytearray(host.image)
-    ref = wholeprog.reference_call(mem, int(e["at"]), volatile=[c64.DEVICES], nested=frames.nested(None, host, k),
+    ref = wholeprog.reference_call(mem, int(e["at"]), volatile=[c64.DEVICES], nested=frames.nested(None, host.inside(k)),
                                    bank=c64.bank_map(boot.roms), **kw)  # fmt: skip
     ref["ram"] = mem
     assert all(o["halt"] == "return" and o["boundary"] is None for o in outs + [ref])
     assert outs[0]["log"] == outs[1]["log"] and outs[0]["ram"] == outs[1]["ram"] == ref["ram"]
     assert [x[:2] for x in outs[0]["log"]] == [x[:2] for x in ref["log"]]
     assert len(outs[0]["log"]) == len(rec["log"])
+
+
+def test_a_handler_returning_to_the_call_with_its_frame_on_the_stack_ends_the_call():
+    img = bytearray(0x10000)
+    # INC $0201; LDA #$12; PHA; LDA #$33; PHA; RTS: returns to $1234 below the entry's frame
+    img[0x1000:0x100A] = bytes.fromhex("ee0102 a912 48 a933 48 60")
+    img[0x1010] = 0x40  # the interrupt after the INC: RTI
+    prog = wholeprog.lift(bytes(img), [0x1000, 0x1010], [])
+    reg = [5, 6, 7, 0xF0] + [0] * 12
+    reg[8] = 1
+    inner = [*reg[:3], 0xED] + reg[4:]
+    inner[10] = 1
+    kw = {"a": 5, "reg": reg, "ret": 0x1233, "irq": True, "nested": [(1, 0, 1, 0, inner, 0)]}
+    outs = []
+    for backend in ("jit", "interp"):
+        mem = bytearray(img)
+        outs.append(prog.call(mem, 0, backend=backend, **kw) | {"ram": mem})
+    kw["nested"] = [(1, 0, 0x1010, 0, inner, 0)]
+    ref = bytearray(img)
+    outs.append(wholeprog.reference_call(ref, 0x1000, **kw) | {"ram": ref})
+    for o in outs:
+        assert o["halt"] == "return" and o["pc"] == 0x1234 and o["boundary"] is None
+        assert o["ram"][0x201] == 1
+
+
+def test_recorded_frames_spill_beside_the_stream_and_the_machine_forgets_its_events():
+    boot = boot_of(NESTED)
+    whole = frames.FrameHost(boot.image, roms=boot.roms).drive_frames(boot, 30)
+    host = frames.FrameHost(boot.image, roms=boot.roms, spill=1).drive_frames(boot, 30)
+    for log in (host.entry_log, host.nested_log, host.stream.spill):
+        assert log.frames and not log.held
+    assert not list(host.m.events)
+    assert host.ninner == whole.ninner > 0
+    assert (host.frames == whole.frames).all() and (host.inner == whole.inner).all()
+    assert frames.check(frames.lift(host, boot.roms), host) is None
+    assert sum(len(ev) for _, _, _, ev in host.chunks()) == host.ninner

@@ -159,6 +159,12 @@ fn differs(cpu: &Cpu, reg: &[u8; 16]) -> bool {
 impl Bus for PyBus<'_> {
     #[inline]
     fn boundary(&mut self, cpu: &mut Cpu) -> Option<Halt> {
+        if self.retired.len() == 1
+            && (self.nest.as_ref())
+                .is_some_and(|n| n.ret.is_some_and(|r| cpu.pc == r.wrapping_add(1)))
+        {
+            return Some(Halt::Sp);
+        }
         if self.pending.is_empty() {
             return None;
         }
