@@ -3,8 +3,11 @@
 //! exits and reloaded after calls; flat memory is accessed directly and the rest through the
 //! bus. A function returns `kind << 16 | pc`: kind 0 a `RETURN` (`pc` the exit PC at the
 //! outermost frame), 1 a deopt to `pc`, 2 the iteration budget running out at `pc`.
-//! Cranelift's own optimizer is off (`opt_level` none): the P-Code is optimized before it
-//! gets here, and the optimizer's time is not bounded by the size of the function.
+//! Every exit leaves through the shared exit block with the written value-file cells as
+//! arguments of the branch that takes it. Cranelift's optimizer places a pure value where
+//! something uses it and keeps the copy in that block's dominator subtree only, so state read
+//! by an exit block alone would be recomputed in each exit, a chain of guards squaring the
+//! work; as branch arguments it is computed once, where the guard is.
 
 use crate::bank::BankMap;
 use crate::exec::{load, store, Exec, Frame, Runner, IMM, NOCHECK, SPACES};
@@ -80,6 +83,8 @@ pub struct Jit {
     _guard: Box<[u16]>,
     /// Compilation wall time.
     pub secs: f64,
+    /// Machine code bytes.
+    pub bytes: usize,
 }
 
 // SAFETY: the finalized code and the guard table are immutable after `Jit::new`.
@@ -111,7 +116,7 @@ impl Jit {
         let t = Instant::now();
         let mut fb = settings::builder();
         for (k, v) in [
-            ("opt_level", "none"),
+            ("opt_level", "speed"),
             ("use_colocated_libcalls", "false"),
             ("is_pic", "false"),
         ] {
@@ -140,6 +145,7 @@ impl Jit {
         let tc = module.target_config();
         let mut ctx = module.make_context();
         let mut fctx = FunctionBuilderContext::new();
+        let mut bytes = 0;
         for (fi, &id) in ids.iter().enumerate() {
             ctx.func.signature = sig.clone();
             ctx.func.name = UserFuncName::user(0, id.as_u32());
@@ -160,6 +166,7 @@ impl Jit {
             module
                 .define_function(id, &mut ctx)
                 .map_err(|e| format!("{e:?}"))?;
+            bytes += ctx.compiled_code().map_or(0, |c| c.code_buffer().len());
             module.clear_context(&mut ctx);
         }
         module.finalize_definitions().map_err(|e| e.to_string())?;
@@ -175,6 +182,7 @@ impl Jit {
             funcs,
             _guard: guard,
             secs: t.elapsed().as_secs_f64(),
+            bytes,
         })
     }
 
@@ -407,9 +415,27 @@ impl<'a, 'b> Fb<'a, 'b> {
         self.b.ins().jump(self.exit, &[BlockArg::Value(code)]);
     }
 
-    fn leave_at(&mut self, kind: i64, pc: u16) {
+    /// The pc block `g` deopts to when that is all it does.
+    fn deopt_pc(&self, g: u32) -> Option<u16> {
+        let x = self.x;
+        let (lo, hi) = (
+            x.blocks[g as usize].start as usize,
+            x.blocks.get(g as usize + 1),
+        );
+        match &x.ops[lo..hi.map_or(x.ops.len(), |b| b.start as usize)] {
+            [o] if o.opc == Opc::CallOther && o.aux == other::DEOPT && o.a & IMM != 0 => {
+                Some((o.a & !IMM) as u16)
+            }
+            _ => None,
+        }
+    }
+
+    /// Leave with `kind` at `pc` when `c` holds, else continue in `next`.
+    fn exit_if(&mut self, c: Value, kind: i64, pc: u16, next: Block) {
         let code = self.b.ins().iconst(types::I32, kind << 16 | pc as i64);
-        self.b.ins().jump(self.exit, &[BlockArg::Value(code)]);
+        self.b
+            .ins()
+            .brif(c, self.exit, &[BlockArg::Value(code)], next, &[]);
     }
 
     fn target(&self, g: u32) -> Block {
@@ -430,19 +456,18 @@ impl<'a, 'b> Fb<'a, 'b> {
                 .b
                 .ins()
                 .icmp_imm_u(IntCC::UnsignedLessThan, sp, k.depth as i64);
-            let (out, ok) = (self.b.create_block(), self.b.create_block());
-            self.b.ins().brif(low, out, &[], ok, &[]);
-            self.b.switch_to_block(out);
-            self.leave_at(1, k.pc);
+            let ok = self.b.create_block();
+            self.exit_if(low, 1, k.pc, ok);
             self.b.switch_to_block(ok);
         }
         if k.budget {
             let off = offset_of!(Ctx, iters) as i32;
             let n = self.b.ins().load(types::I64, T, self.ctx, off);
-            let (out, ok) = (self.b.create_block(), self.b.create_block());
-            self.b.ins().brif(n, ok, &[], out, &[]);
-            self.b.switch_to_block(out);
-            self.leave_at(2, k.pc);
+            let (ok, spent) = (
+                self.b.create_block(),
+                self.b.ins().icmp_imm_u(IntCC::Equal, n, 0),
+            );
+            self.exit_if(spent, 2, k.pc, ok);
             self.b.switch_to_block(ok);
             let n = self.b.ins().iadd_imm_s(n, -1);
             self.b.ins().store(T, n, self.ctx, off);
@@ -591,7 +616,12 @@ impl<'a, 'b> Fb<'a, 'b> {
             Opc::CBranch => {
                 let c = self.get(o.a);
                 let (t, next) = (self.target(o.aux), self.b.create_block());
-                self.b.ins().brif(c, t, &[], next, &[]);
+                match self.deopt_pc(o.aux) {
+                    Some(pc) => self.exit_if(c, 1, pc, next),
+                    None => {
+                        self.b.ins().brif(c, t, &[], next, &[]);
+                    }
+                }
                 self.b.switch_to_block(next);
             }
             Opc::BranchInd => {
