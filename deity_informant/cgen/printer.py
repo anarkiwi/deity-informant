@@ -191,11 +191,6 @@ OFFSETS = {
 }
 
 
-def _const_offset(text):
-    sym, _, off = text.partition(" + ")
-    return sym, int(off, 0) if off else 0
-
-
 def logic(sym, es):
     """``es`` joined by ``&&`` or ``||`` (none: the operator's identity)."""
     if not es:
@@ -215,7 +210,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         self.name = op.prop("sym_name")
         self.blocks = op.regions[0]
         self.block_of = {b.name: b for b in self.blocks}
-        self.defs, self.types, self.uses, self.user, self.where = {}, {}, {}, {}, {}
+        self.defs, self.types, self.uses, self.where = {}, {}, {}, {}
         self.users, self.ivs, self.dropped, self.globals = {}, {}, set(), set()
         self.addr_edges, self.arg_src, self.arg_block, self.dead = set(), {}, {}, set()
         self.flags = set()
@@ -249,7 +244,6 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                     self.types[r] = o.types[1][j]
                 for a in o.args:
                     self.uses[a] = self.uses.get(a, 0) + 1
-                    self.user[a] = o
                     self.users.setdefault(a, []).append(o)
                 if o.name == "cf.switch":
                     self.flags.add(o.args[0])
@@ -1329,7 +1323,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
                 out.append(self.convert_switch(it))
             else:
                 out.append(self.convert_loop(self.convert(it[1])))
-        return out
+        return _merge_tails(out)
 
     def tail_call(self, t, vals):
         """A call of tail ``t`` and the return."""
@@ -1412,6 +1406,20 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         lines = [f"(void){n};" for n in params if n not in read] + render(body)
         self.head_text = head
         return "\n".join([f"{head} {{", *lines, "}"])
+
+
+def _merge_tails(items):
+    """``items`` where an ``if`` without ``else`` whose branch ends with the statements that
+    follow it (which jump away) ends before them."""
+    out = []
+    for st in reversed(items):
+        n = len(out)
+        if st[0] == "if" and not st[4] and n and st[3][-n:] == out[::-1]:
+            if len(st[3]) == n:
+                continue
+            st = (*st[:3], st[3][:-n], *st[4:])
+        out.append(st)
+    return out[::-1]
 
 
 def _recall(items, t, keep):
