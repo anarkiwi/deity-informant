@@ -136,6 +136,7 @@ def main(argv=None):  # pylint: disable=too-many-locals
     jumps = {f"0x{pc:04X}": [f"0x{t:04X}" for t in ts] for pc, ts in sorted(info["jumps"].items())}
     traps = {k: (key[0], f"0x{key[1]:04X}") for k, key in sorted(info["traps"].items())}
     print(f"jumps from the code {jumps}; traps {traps}")
+    print(f"structure {info['structure']}")
     stages = ", ".join(f"{k} {v:.3f} s" for k, v in info["times"].items())
     print(f"translate {wall:.3f} s ({stages})", flush=True)
     lib = build(stem.with_suffix(".c"), stem.with_suffix(".so"))

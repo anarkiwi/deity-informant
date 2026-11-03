@@ -9,12 +9,13 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
 IMAGE = "di-mlir"
 DOCKERFILE = Path(__file__).resolve().parents[2] / "docker" / "mlir.Dockerfile"
-#: The structuring pipeline: promote cells, inline callees, fold, then ``cf`` to ``scf``.
+#: The optimization pipeline: promote cells, inline the callees not marked ``no_inline``, fold.
 PIPELINE = (
     "--canonicalize",
     "--mem2reg",
@@ -25,11 +26,9 @@ PIPELINE = (
     "--sccp",
     "--canonicalize",
     "--cse",
-    "--lift-cf-to-scf",
-    "--canonicalize",
-    "--cse",
     "--mlir-print-op-generic",
 )
+_CALLEE = re.compile(r"callee = @(\w+)(, no_inline)?\}")
 
 
 def have_docker_image():
@@ -64,16 +63,29 @@ def run(prefix, argv, text):
 
 
 def optimize(text, prefix):
-    """The generic-form text of MLIR ``text`` after :data:`PIPELINE`."""
-    return run(prefix, ["mlir-opt", *PIPELINE], text)
+    """The generic-form text of MLIR ``text`` after :data:`PIPELINE`, rerun while a callee
+    marked ``no_inline`` is left with a single call site, which is then inlined."""
+    out = run(prefix, ["mlir-opt", *PIPELINE], text)
+    while True:
+        sites = Counter(m.group(1) for m in _CALLEE.finditer(out))
+        single = {m.group(1) for m in _CALLEE.finditer(out) if m.group(2)} & {
+            n for n, k in sites.items() if k == 1
+        }
+        if not single:
+            return out
+        out = _CALLEE.sub(
+            lambda m: f"callee = @{m.group(1)}}}" if m.group(1) in single else m.group(0), out
+        )
+        out = run(prefix, ["mlir-opt", *PIPELINE], out)
 
 
 @dataclass
 class Block:
-    """A block: its arguments ``[(name, type)]`` and operations."""
+    """A block: its label, arguments ``[(name, type)]`` and operations."""
 
     args: list = field(default_factory=list)
     ops: list = field(default_factory=list)
+    name: str = ""
 
 
 @dataclass
@@ -87,6 +99,7 @@ class Op:  # pylint: disable=too-many-instance-attributes
     regions: list
     types: tuple = ((), ())
     parent: Block | None = None
+    succs: list = field(default_factory=list)
 
     def prop(self, key):
         """The text of property ``key`` (quotes stripped), or None."""
@@ -100,13 +113,43 @@ class Op:  # pylint: disable=too-many-instance-attributes
         """The integer value of property ``key`` (``value = 5 : i8``)."""
         return int(self.prop(key).split(":")[0].strip().replace("true", "1").replace("false", "0"))
 
+    def ints(self, key):
+        """The integers of an ``array<i32: ...>`` or ``dense<...>`` property ``key``."""
+        inner = (self.prop(key) or "<>").split("<", 1)[1].split(">")[0]
+        body = inner.split(":", 1)[1] if inner.startswith("i") else inner
+        return [int(x) for x in body.strip(" []").split(",") if x.strip()]
+
+    def edges(self):
+        """``[(successor label, [operand index], case)]`` of a ``cf`` terminator: ``case`` is
+        True or False for ``cond_br``, a ``switch`` case value (None for its default) and None
+        for ``br``."""
+        if self.name == "cf.br":
+            return [(self.succs[0], list(range(len(self.args))), None)]
+        if self.name == "cf.cond_br":
+            _, n, _ = self.ints("operandSegmentSizes")
+            rest = range(1 + n, len(self.args))
+            return [
+                (self.succs[0], list(range(1, 1 + n)), True),
+                (self.succs[1], list(rest), False),
+            ]
+        if self.name == "cf.switch":
+            _, n, _ = self.ints("operandSegmentSizes")
+            out, at = [(self.succs[0], list(range(1, 1 + n)), None)], 1 + n
+            for succ, k, v in zip(
+                self.succs[1:], self.ints("case_operand_segments"), self.ints("case_values")
+            ):
+                out.append((succ, list(range(at, at + k)), v))
+                at += k
+            return out
+        return []
+
 
 _HEAD = re.compile(
     r'^\s*(?:(%[\w$.-]+)(?::(\d+))? = )?"([\w.]+)"\(([^)]*)\)'
     r"(?:\[([^\]]*)\])?\s*(<\{.*?\}>)?\s*(.*)$"
 )
 _TAIL = re.compile(r"^(?:\{.*\}\s*)?:\s*\((.*?)\)\s*->\s*(.*)$")
-_BLOCK = re.compile(r"^\s*\^[\w]+(?:\((.*)\))?:\s*$")
+_BLOCK = re.compile(r"^\s*\^([\w]+)(?:\((.*)\))?:\s*(?://.*)?$")
 
 
 def _types(text):
@@ -148,15 +191,16 @@ def parse(text):
             continue
         if s.startswith("^"):
             m = _BLOCK.match(s)
+            assert m, s
             args = []
-            for a in filter(None, (x.strip() for x in (m.group(1) or "").split(","))):
+            for a in filter(None, (x.strip() for x in (m.group(2) or "").split(","))):
                 n, t = a.split(":", 1)
                 args.append((n.strip(), t.strip()))
             region = stack[-1].regions[-1]
-            if region and not region[-1].ops and not region[-1].args:
-                region[-1].args = args
+            if region and not region[-1].ops and not region[-1].args and not region[-1].name:
+                region[-1].args, region[-1].name = args, m.group(1)
             else:
-                region.append(Block(args))
+                region.append(Block(args, name=m.group(1)))
             continue
         if s.startswith("}"):
             op = stack[-1]
@@ -169,13 +213,14 @@ def parse(text):
             continue
         m = _HEAD.match(s)
         assert m, s
-        res, count, name, args, _succ, props, rest = m.groups()
+        res, count, name, args, succ, props, rest = m.groups()
         op = Op(
             name,
             _results(res, count),
             [a.strip() for a in args.split(",") if a.strip()],
             (props or "<{}>")[2:-2],
             [],
+            succs=[x.strip()[1:] for x in (succ or "").split(",") if x.strip()],
         )
         if stack:
             block = stack[-1].regions[-1][-1]

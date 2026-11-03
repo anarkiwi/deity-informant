@@ -1,4 +1,4 @@
-"""6502/6510 machine code as C: a static whole-program lift structured by MLIR (``docs/cgen.md``).
+"""6502/6510 machine code as C: a static whole-program lift, MLIR, then DREAM (``docs/cgen.md``).
 
 :func:`translate` gives a ``.c`` of the code alone and a ``.h`` of the data regions, so programs
 that differ only in their data or their origin give the same ``.c``.
@@ -157,7 +157,7 @@ def lift(image, entries, volatile, facts=None):
 
 
 def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
-    """``(c_text, h_text, info)`` of :class:`Program` ``p``: MLIR, structured, printed."""
+    """``(c_text, h_text, info)`` of :class:`Program` ``p``: MLIR, structured and printed."""
     times, t0 = {}, time.perf_counter()
     text, traps = emit.emit(p.funcs, p.entries, keep_dummy=bool(p.sensitive))
     run = mlir.runner(build=True) if prefix is None else prefix
@@ -177,7 +177,13 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         loaded = (int(span[0]), int(span[-1]) + 1) if len(span) else (0, 0)
     mem = Memory(p.image, code, p.volatile, loaded, p.sensitive, pointer_pairs(p.image, p.starts))
     mod = printer.Module(top, mem)
+    mod.prune()
     mod.partition()
+    times["layout"] = time.perf_counter() - t1
+    t2 = time.perf_counter()
+    mod.structure()
+    times["structure"] = time.perf_counter() - t2
+    t1 = time.perf_counter()
     fns = mod.functions()
     used, helpers = set(mod.used), mod.helpers
     helpers |= {"oob_rd"} if "rd" in helpers else set()
@@ -209,6 +215,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         "traps": {k: key for key, k in traps.items() if k in mod.traps},
         "unknown_access": mem.unknown,
         "jumps": p.jumps or {},
+        "structure": dict(mod.made),
     }
     return c_text, h_text, info
 

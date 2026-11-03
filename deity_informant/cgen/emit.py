@@ -2,10 +2,13 @@
 
 Each lifted function is a private ``func.func`` taking and returning the register file; its
 registers, stack slots and block-crossing temporaries are ``alloca`` s for ``mem2reg``. Memory
-is the global ``@M``; volatile accesses, traps and code checks call external functions.
+is the global ``@M``; volatile accesses, traps and code checks call external functions. A call
+of a function called from more than one site is ``no_inline``.
 """
 
 from __future__ import annotations
+
+from collections import Counter
 
 BIN = {
     "INT_ADD": "addi",
@@ -43,7 +46,7 @@ class Body:  # pylint: disable=too-many-instance-attributes
 
     def __init__(self, fn, name, ctx):
         self.fn, self.name, self.ctx = fn, name, ctx
-        self.lines, self.n, self.env = [], 0, {}
+        self.lines, self.n, self.env, self.block_id = [], 0, {}, 0
         self.cells = {("r", r): s for r, s in ctx.regfile}
         for b in fn["blocks"]:
             defined = set()
@@ -159,9 +162,12 @@ class Body:  # pylint: disable=too-many-instance-attributes
         if pred is None:
             self.op(f"func.call @io_read({addr}) : (i16) -> i8")
             return
-        self.put(f"scf.if {self.truth(self.read(pred), pred[2])} {{")
+        cond, label = self.truth(self.read(pred), pred[2]), f"^b{self.block_id}_r{self.n}"
+        self.put(f"cf.cond_br {cond}, {label}, {label}j")
+        self.lines.append(f"  {label}:")
         self.op(f"func.call @io_read({addr}) : (i16) -> i8")
-        self.put("}")
+        self.put(f"cf.br {label}j")
+        self.lines.append(f"  {label}j:")
 
     def truth(self, val, size):
         """``val != 0`` as ``i1``."""
@@ -214,14 +220,16 @@ class Body:  # pylint: disable=too-many-instance-attributes
         raise ValueError(name)
 
     def trap(self, key):
-        """Call ``trap`` with the canonical index of ``key`` and return."""
+        """Call ``trap`` with the canonical index of ``key`` and return poison: ``trap``
+        does not return, so the registers it leaves are dead."""
         k = self.ctx.traps.setdefault(key, len(self.ctx.traps))
         self.put(f"func.call @trap({self.const(k, 2)}) : (i16) -> ()")
-        self.ret()
+        vals = [self.op(f"ub.poison : {ty(s)}") for _, s in self.ctx.regfile]
+        self.put(f"func.return {', '.join(vals)} : {self.ctx.types}")
 
     def block(self, i):  # pylint: disable=too-many-branches
         """Emit block ``i``; a mid-block ``CBRANCH`` continues in a new block."""
-        self.env, part = {}, 0
+        self.env, part, self.block_id = {}, 0, i
         self.lines.append(f"  ^b{i}:")
         for op in self.fn["blocks"][i]["ops"]:
             name = op[0]
@@ -260,7 +268,8 @@ class Body:  # pylint: disable=too-many-instance-attributes
         args, t = self.regs(), self.ctx.types
         res = self.new()
         name = self.ctx.names[callee]
-        self.put(f"{res}:{len(args)} = func.call @{name}({', '.join(args)}) : ({t}) -> ({t})")
+        attr = " {no_inline}" if self.ctx.sites[callee] > 1 else ""
+        self.put(f"{res}:{len(args)} = func.call @{name}({', '.join(args)}){attr} : ({t}) -> ({t})")
         for j, (r, s) in enumerate(self.ctx.regfile):
             self.write(["r", r, s], f"{res}#{j}")
 
@@ -321,6 +330,9 @@ class Context:  # pylint: disable=too-few-public-methods
         for j, i in enumerate(rank):
             self.names[i] = f"f{j}"
         self.traps, self.keep_dummy = {}, keep_dummy
+        self.sites = Counter(
+            op[3] for fn in funcs for b in fn["blocks"] for op in b["ops"] if op[0] == "CALL"
+        )
 
 
 def emit(funcs, entries, keep_dummy=False):
