@@ -7,8 +7,10 @@
 //! unbounded: known bits refine an index set, they do not bound it.
 //!
 //! **Stores.** A store whose address is its operand plus index registers has, as addresses,
-//! the address for each value of their index sets (each evaluated exactly); any other (through
-//! a pointer, a cell operand or an unbounded index) is unknown. A stored register's values are
+//! the address for each value of their index sets (each evaluated exactly); one through a
+//! `(zp),Y` pointer whose bytes hold table bytes or constants on every path has each word they
+//! make plus each value of `Y`; any other (through a cell operand, an unbounded index or
+//! another pointer) is unknown. A stored register's values are
 //! those of the definitions reaching the store (each instruction writing it on a path to the
 //! store with no other between: the values its interval and known bits allow after it), so
 //! paths that load different constants keep them apart.
@@ -20,8 +22,9 @@
 //! pointer bytes hold such tags (or constants) on every path, and an `RTS`/`RTI` whose return
 //! address its function pushed so, goes to the words the loads read for each index value:
 //! two bytes indexed by the register's current value, or of one group, pair up value by
-//! value, a constant pairs with every byte. A `JMP (ind)` through a pointer in the code span
-//! that no store may write goes to the pointer's word. The bytes read must be ones no store
+//! value, a constant pairs with every byte. `JMP`/`JSR`s and branches through cell operands go
+//! the same way, or by the values every store leaves in the cells. A `JMP (ind)` through a
+//! pointer in the code span that no store may write goes to the pointer's word. The bytes read must be ones no store
 //! may write; otherwise, or when a byte is not tagged on some path, an index is unbounded or
 //! two bytes are indexed by unrelated values, the transfer is not resolved.
 
@@ -63,7 +66,6 @@ pub enum Jump {
 /// instruction start, their join, the loops' induction variables, the predecessors of each
 /// start and the entries.
 pub(crate) struct Sets<'a> {
-    pub(crate) guards: &'a FxHashMap<u16, (u8, Iv)>,
     pub(crate) states: FxHashMap<u16, Vec<&'a St>>,
     pub(crate) merged: &'a FxHashMap<u16, St>,
     pub(crate) ind: &'a [Induction],
@@ -75,7 +77,7 @@ impl Sets<'_> {
     /// The values data register `r` may hold at `pc`; `None` (unbounded) when neither its
     /// interval nor a loop's trip bound limits it.
     /// The values data register `r` may hold at `pc`, bounded or not: its intervals cut by
-    /// its known bits and its guard.
+    /// its known bits.
     pub(crate) fn any(&self, pc: u16, r: usize) -> Vec<u8> {
         let none = Vec::new();
         let mut ok = [false; 0x100];
@@ -84,11 +86,7 @@ impl Sets<'_> {
                 ok[x as usize] = true;
             }
         }
-        let g = self.guards.get(&pc).filter(|g| g.0 as usize == r);
-        (0..0x100)
-            .filter(|&x| ok[x] && g.is_none_or(|g| (g.1.lo..=g.1.hi).contains(&(x as u32))))
-            .map(|x| x as u8)
-            .collect()
+        (0..0x100).filter(|&x| ok[x]).map(|x| x as u8).collect()
     }
     pub(crate) fn of(&self, pc: u16, r: usize) -> Option<Vec<u8>> {
         let none = Vec::new();
@@ -115,12 +113,6 @@ impl Sets<'_> {
                 *a &= b;
             }
         }
-        if let Some(&(_, g)) = self.guards.get(&pc).filter(|g| g.0 as usize == r) {
-            bounded = true;
-            for (x, o) in ok.iter_mut().enumerate() {
-                *o &= (g.lo..=g.hi).contains(&(x as u32));
-            }
-        }
         bounded.then(|| (0..0x100).filter(|&x| ok[x]).map(|x| x as u8).collect())
     }
 }
@@ -131,6 +123,9 @@ pub(crate) struct Objects {
     starts: Vec<(u32, u16)>,
     pub(crate) code: Vec<u32>,
     end: u32,
+    /// Per table base, the bases the code also reads with the same index value: the columns
+    /// of one table.
+    columns: FxHashMap<u16, Vec<u16>>,
 }
 
 impl Objects {
@@ -140,6 +135,7 @@ impl Objects {
         merged: &FxHashMap<u16, St>,
         bytes: &FixedBitSet,
         loaded: Option<(u32, u32)>,
+        states: &FxHashMap<u16, Vec<&St>>,
     ) -> Objects {
         let mut first: FxHashMap<u16, u32> = FxHashMap::default();
         let mut acc = Vec::new();
@@ -176,10 +172,44 @@ impl Objects {
         }
         let mut starts: Vec<(u32, u16)> = first.into_iter().map(|(b, s)| (s, b)).collect();
         starts.sort_unstable();
+        // A table load whose register still holds the index another tag was read with reads
+        // another column of the same table.
+        let mut columns: FxHashMap<u16, Vec<u16>> = FxHashMap::default();
+        for (&pc, vs) in vars {
+            for v in vs {
+                let Some(Tab::T { reg: r, .. }) = crate::vsa::table(code, pc, v.op) else {
+                    continue;
+                };
+                let Some(b) = load_addr(code, pc, v.op, r, 0).filter(|_| r != NOREG) else {
+                    continue;
+                };
+                for st in states.get(&pc).into_iter().flatten() {
+                    let held = st.tag.iter().chain(&st.push).flatten();
+                    for t in held.chain(st.mem.iter().filter_map(|e| e.1.as_ref())) {
+                        if let Tab::T {
+                            reg, ix: Ix::Live, ..
+                        } = *t
+                        {
+                            if let (true, Some(o)) = (reg == r, base(code, *t)) {
+                                if o != b {
+                                    columns.entry(b).or_default().push(o);
+                                    columns.entry(o).or_default().push(b);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for c in columns.values_mut() {
+            c.sort_unstable();
+            c.dedup();
+        }
         Objects {
             starts,
             code: bytes.ones().map(|a| a as u32).collect(),
             end: loaded.map_or(0x10000, |l| l.1),
+            columns,
         }
     }
     /// The first address from `s` on that holds an instruction byte or lies past the loaded
@@ -196,13 +226,18 @@ impl Objects {
         o.min(c).min(self.end.max(s))
     }
     /// How many of the index values `xs` (ascending) read every column `bases` inside its
-    /// extent: from its first byte to its end ([`Objects::end`], the other columns not
-    /// counted), and no byte another column read at an earlier value. A prefix of `xs`.
+    /// extent: from its first byte to its end ([`Objects::end`], the table's other columns,
+    /// those the code reads with the same index value too, not counted), and no byte another
+    /// column read at an earlier value. A prefix of `xs`.
     fn valid(&self, bases: &[u16], xs: &[u8]) -> usize {
         let Some(&x0) = xs.first() else { return 0 };
+        let mut same = bases.to_vec();
+        for b in bases {
+            same.extend(self.columns.get(b).into_iter().flatten());
+        }
         let ends: Vec<u32> = bases
             .iter()
-            .map(|&b| self.end(b as u32 + x0 as u32, bases))
+            .map(|&b| self.end(b as u32 + x0 as u32, &same))
             .collect();
         let mut claimed: FxHashMap<u32, usize> = FxHashMap::default();
         for (n, &x) in xs.iter().enumerate() {
@@ -365,13 +400,24 @@ fn pointer(code: &Code, pc: u16) -> Option<(u16, u16)> {
     Some((w, (w & 0xff00) | (w.wrapping_add(1) & 0xff)))
 }
 
-/// Whether `f` is a `JMP`/`JSR` through a cell operand.
-pub(crate) fn operand_jump(f: &Flow) -> bool {
-    matches!(f, Flow::Jmp(Tg::Calc(_)) | Flow::Jsr { t: Tg::Calc(_), .. })
+/// How many operand bytes give the target of `f` when they are cells: a `JMP`/`JSR`'s two,
+/// a branch's offset, else none.
+pub(crate) fn operand_len(f: &Flow) -> u16 {
+    match f {
+        Flow::Jmp(Tg::Calc(_)) | Flow::Jsr { t: Tg::Calc(_), .. } => 2,
+        Flow::Br { t: Tg::Calc(_), .. } => 1,
+        _ => 0,
+    }
 }
 
-/// The bytes whose contents the analysis tracks: the pointers of `JMP (ind)`s and the
-/// operands of `JMP`/`JSR`s through cells.
+/// The operand bytes giving the target of the instruction at `pc` ([`operand_len`]).
+pub(crate) fn target_operands(vs: &[Var], pc: u16) -> impl Iterator<Item = u16> {
+    let n = vs.iter().map(|v| operand_len(&v.flow)).max().unwrap_or(0);
+    (1..=n).map(move |i| pc.wrapping_add(i))
+}
+
+/// The bytes whose contents the analysis tracks: the pointers of `JMP (ind)`s and of
+/// `(zp),Y` accesses, and the operands of `JMP`/`JSR`s through cells.
 pub(crate) fn vectors(
     img: &[u8; 0x10000],
     cells: &FixedBitSet,
@@ -382,7 +428,6 @@ pub(crate) fn vectors(
         cells,
         pull_clear: false,
         vecs: Vec::new(),
-        guards: FxHashMap::default(),
         observed: FixedBitSet::new(),
     };
     let mut v: Vec<u16> = vars
@@ -391,11 +436,26 @@ pub(crate) fn vectors(
         .filter_map(|(&pc, _)| pointer(&code, pc))
         .flat_map(|(lo, hi)| [lo, hi])
         .collect();
-    v.extend(
-        vars.iter()
-            .filter(|(_, vs)| vs.iter().any(|v| operand_jump(&v.flow)))
-            .flat_map(|(&pc, _)| [pc.wrapping_add(1), pc.wrapping_add(2)]),
-    );
+    v.extend(vars.iter().flat_map(|(&pc, vs)| target_operands(vs, pc)));
+    let mut acc = Vec::new();
+    for (&pc, vs) in vars {
+        for var in vs {
+            let t = Template::of(var.op);
+            let mut env = TOP_ENV;
+            acc.clear();
+            absint(
+                t.ops(),
+                operand_bytes(img, cells, pc, t.len),
+                &mut env,
+                &mut acc,
+            );
+            for p in acc.iter().filter_map(|a| a.ptr) {
+                if let (Some(q), Some(h)) = (p.lo.and_then(|l| l.value()), p.hi.value()) {
+                    v.extend([q as u16, h as u16]);
+                }
+            }
+        }
+    }
     v.sort_unstable();
     v.dedup();
     v
@@ -538,6 +598,10 @@ fn bytes(code: &Code, sets: &Sets, objs: &Objects, ts: &[Tab]) -> Option<(Vec<By
     for g in groups {
         let mut xs: Option<BTreeSet<u8>> = None;
         let mut bases = Vec::new();
+        let idx = |pc: u16, reg: u8| {
+            sets.of(pc, reg as usize)
+                .unwrap_or_else(|| sets.any(pc, reg as usize))
+        };
         for t in g {
             match *t {
                 Tab::K(_) => {}
@@ -545,11 +609,7 @@ fn bytes(code: &Code, sets: &Sets, objs: &Objects, ts: &[Tab]) -> Option<(Vec<By
                 Tab::T { pc, reg, .. } => {
                     bases.push(base(code, *t)?);
                     if reg != NOREG {
-                        let v = sets.of(pc, reg as usize);
-                        let v: BTreeSet<u8> = v
-                            .unwrap_or_else(|| sets.any(pc, reg as usize))
-                            .into_iter()
-                            .collect();
+                        let v: BTreeSet<u8> = idx(pc, reg).into_iter().collect();
                         xs = Some(match xs {
                             None => v,
                             Some(o) => o.intersection(&v).copied().collect(),
@@ -572,8 +632,7 @@ fn bytes(code: &Code, sets: &Sets, objs: &Objects, ts: &[Tab]) -> Option<(Vec<By
                 };
                 for t in g {
                     if let Tab::T { pc, reg, .. } = *t {
-                        if sets
-                            .any(pc, reg as usize)
+                        if idx(pc, reg)
                             .iter()
                             .any(|&x| !(ok.lo..=ok.hi).contains(&(x as u32)))
                         {
@@ -673,7 +732,7 @@ pub(crate) fn jumps(
     keys.sort_unstable();
     for key in keys {
         let (pc, st) = (key.0, &state[key]);
-        let tag = |a: u16| st.mem.iter().find(|e| e.0 == a).map(|e| e.1);
+        let tag = |a: u16| st.mem.iter().find(|e| e.0 == a).and_then(|e| e.1);
         let opnd = |a: u16| {
             if code.cells.contains(a as usize) {
                 tag(a)
@@ -697,7 +756,16 @@ pub(crate) fn jumps(
                         _ => None,
                     })
                 }
-                ref f if operand_jump(f) => {
+                Flow::Br { t: Tg::Calc(_), f } => opnd(pc.wrapping_add(1)).and_then(|t| {
+                    let (b, g) = bytes(code, sets, objs, &[t])?;
+                    let read: BTreeSet<u16> = b[0].iter().filter_map(|x| x.2).collect();
+                    if read.iter().any(|&a| w.contains(a as usize)) {
+                        return None;
+                    }
+                    let to = b[0].iter().map(|x| f.wrapping_add(x.1 as i8 as u16));
+                    Some(Some((to.collect(), read, g)))
+                }),
+                ref f if operand_len(f) == 2 => {
                     let (lo, hi) = (pc.wrapping_add(1), pc.wrapping_add(2));
                     match (opnd(lo), opnd(hi)) {
                         (Some(l), Some(h)) => pair(code, sets, objs, &w, l, h).map(Some),
@@ -731,7 +799,8 @@ pub(crate) fn jumps(
             };
         }
     }
-    // A `JMP`/`JSR` whose operand cells are not tagged on every path: their value sets.
+    // A `JMP`/`JSR` or branch whose operand cells are not tagged on every path: their value
+    // sets.
     let vals = |a: u16| -> Option<BTreeSet<u8>> {
         if code.cells.contains(a as usize) {
             cellvals.get(&a).cloned().flatten()
@@ -740,7 +809,16 @@ pub(crate) fn jumps(
         }
     };
     for (&pc, r) in res.iter_mut().filter(|(_, r)| r.is_none()) {
-        if !vars[&pc].iter().any(|v| operand_jump(&v.flow)) {
+        let fall = vars[&pc].iter().find_map(|v| match v.flow {
+            Flow::Br { t: Tg::Calc(_), f } => Some(f),
+            _ => None,
+        });
+        if let (Some(f), Some(o)) = (fall, vals(pc.wrapping_add(1))) {
+            let t = o.iter().map(|&x| f.wrapping_add(x as i8 as u16)).collect();
+            *r = Some(Some((t, BTreeSet::new(), Vec::new())));
+            continue;
+        }
+        if !vars[&pc].iter().any(|v| operand_len(&v.flow) == 2) {
             continue;
         }
         if let (Some(l), Some(h)) = (vals(pc.wrapping_add(1)), vals(pc.wrapping_add(2))) {
@@ -761,6 +839,83 @@ pub(crate) fn jumps(
             None => Some((pc, Jump::Fail)),
         })
         .collect()
+}
+
+/// Address sets for the stores through a `(zp),Y` pointer whose two bytes hold, on every
+/// path, table bytes or constants ([`bytes`], inside the tables' extent: the guards that keeps
+/// are appended to `guards`, the bytes read to `reads`): each word whose bytes lie in the
+/// pointer bytes' intervals plus each value of `Y`. The tables read must stay unwritten with
+/// the new address sets, else the stores stay of unknown address.
+pub(crate) fn pointer_stores(
+    code: &Code,
+    vars: &FxHashMap<u16, Vec<Var>>,
+    sets: &Sets,
+    objs: &Objects,
+    stores: &mut [Store],
+    guards: &mut Vec<Guard>,
+    reads: &mut BTreeSet<u16>,
+) -> Vec<usize> {
+    let w = written(code, stores);
+    // Per store: its index, addresses, the table bytes read and the guards they need.
+    type Hit = (usize, Vec<u16>, BTreeSet<u16>, Vec<Guard>);
+    let mut found: Vec<Hit> = Vec::new();
+    for (i, s) in stores.iter().enumerate().filter(|(_, s)| s.addrs.is_none()) {
+        let Some(var) = vars[&s.pc].iter().find(|v| v.op == s.op) else {
+            continue;
+        };
+        let Some(p) = var.acc.get(s.ai).and_then(|a| a.ptr) else {
+            continue;
+        };
+        let (Some(q), Some(h)) = (p.lo.and_then(|l| l.value()), p.hi.value()) else {
+            continue;
+        };
+        let Some(states) = sets.states.get(&s.pc) else {
+            continue;
+        };
+        let ys = sets
+            .of(s.pc, reg::Y)
+            .unwrap_or_else(|| sets.any(s.pc, reg::Y));
+        let mut addrs = BTreeSet::new();
+        let mut read = BTreeSet::new();
+        let mut gs = Vec::new();
+        let ok = states.iter().all(|st| {
+            let at = |a: u32| st.mem.iter().find(|e| e.0 as u32 == a).copied();
+            let (Some((_, Some(l), li)), Some((_, Some(hb), hv))) = (at(q), at(h)) else {
+                return false;
+            };
+            let Some((words, r, g)) = pair(code, sets, objs, &w, l, hb) else {
+                return false;
+            };
+            let inside = |x: u32, iv: Iv| (iv.lo..=iv.hi).contains(&x);
+            for word in words {
+                let [lo, hi] = word.to_le_bytes();
+                if inside(lo as u32, li) && inside(hi as u32, hv) {
+                    addrs.extend(ys.iter().map(|&y| word.wrapping_add(y as u16)));
+                }
+            }
+            read.extend(r);
+            gs.extend(g);
+            true
+        });
+        if ok {
+            found.push((i, addrs.into_iter().collect(), read, gs));
+        }
+    }
+    let mut trial: Vec<Store> = stores.to_vec();
+    for (i, a, _, _) in &found {
+        trial[*i].addrs = Some(a.clone());
+    }
+    let w = written(code, &trial);
+    let mut done = Vec::new();
+    for (i, a, r, g) in found {
+        if r.iter().all(|&x| !w.contains(x as usize)) {
+            stores[i].addrs = Some(a);
+            reads.extend(r);
+            guards.extend(g);
+            done.push(i);
+        }
+    }
+    done
 }
 
 /// The values each byte some store writes may hold, from its entry byte and the stores that
@@ -838,9 +993,7 @@ pub(crate) fn tag_values(
     let w = written(code, stores);
     let mut control: FxHashSet<u16> = vars.keys().copied().collect();
     for (&pc, vs) in vars {
-        if vs.iter().any(|v| operand_jump(&v.flow)) {
-            control.extend([pc.wrapping_add(1), pc.wrapping_add(2)]);
-        }
+        control.extend(target_operands(vs, pc));
     }
     let steers = |s: &Store| {
         s.addrs

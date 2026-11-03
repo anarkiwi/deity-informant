@@ -328,10 +328,16 @@ the facts, so a proof holds on every execution that stays in lifted code.
   one constant on every path from the head to each instruction start of the loop, and by a
   nonzero step around it (`INX`/`DEY`, transfers, `ADC #k`/`SBC #k` with the carry known). Its
   start is the hull of its intervals on the entry edges (the byte's: a forward analysis of its
-  stores, any value at entries and widened at loop heads). When the loop's one back edge is a
-  conditional branch whose flag is set on the straight chain before it from the variable
-  alone (evaluated on each of its 256 values), the trip bound is the most head visits from any
-  start (`DEX; BPL`, `INY; CPY #n; BNE`, `CPX #n; BCC`, `DEC c; BNE`, `TXA; SBX #k; BMI`). A
+  stores, any value at entries and widened at loop heads). A test every iteration passes (the
+  conditional branch of the loop's one back edge, or an exit branch dominating every back
+  edge's source) whose flag is set on the straight chain before it from the variable and
+  constant bytes (evaluated on each of its 256 values; a value it is not known at continues)
+  bounds the trips: the most head visits from any start until the test leaves (`DEX; BPL`,
+  `INY; CPY #n; BNE`, `CPX #n; BCC`, `DEC c; BNE`, `TXA; SBX #k; BMI`, and `LDA tab+1,X;
+  BEQ done; ...; INX; INX; BNE loop` over a table ending in a zero). The bytes taken as
+  constant are the loaded bytes (`loaded`) no cell, the facts nor a store with an address set
+  in an earlier round writes: discovery assumes them, and reruns without the bytes a store's
+  address set holds that a bound read; the bytes read join the program's constant bytes. A
   loop is the natural loop of the head's back edges (from the starts it dominates), a branch
   may reach them through `JMP`s, and the walk from the head keeps each register as the
   variable plus a constant, so `TXA; SBX #k` (`X` minus `k` while `A` = `X`) steps `X`. The `Y`
@@ -354,7 +360,15 @@ the facts, so a proof holds on every execution that stays in lifted code.
   cell` restores it) stores those values; a cell's values are its entry byte and those of
   every store that may write it, those of the cells they copy included (a least fixpoint).
   A cell is closed when every store that may write it has an address set and known values:
-  an opcode cell's dispatch chain then has no deopt, and `Program.sets` holds it.
+  an opcode cell's dispatch chain then has no deopt, and `Program.sets` holds it. A store
+  through a `(zp),Y` pointer whose two bytes hold table bytes or constants on every path
+  (inside the tables' extent, from bytes no store with an address set writes) has, as its
+  address set, each word whose bytes lie in the pointer bytes' intervals plus each value of
+  `Y`, and its access interval is the set's hull: a relocator patching operands through a
+  pointer from its table makes them cells. The pointer bytes of `(zp),Y` accesses are tracked
+  like `JMP (ind)` pointers, with their value intervals: a pointer access reaches the
+  pointer's hull plus its index when that does not wrap, and a store through a pointer stops
+  tracking only the bytes it may reach (the low addresses a wrap reaches included).
 - **Computed jumps** (`dispatch.rs`). A `JMP (ind)` whose pointer bytes are tagged on every
   path into it, a `JMP`/`JSR` whose cell operand bytes are (a byte that is not a cell is a
   constant), and an `RTS`/`RTI` whose return-address bytes are pushed so on every path, goes
@@ -370,7 +384,9 @@ the facts, so a proof holds on every execution that stays in lifted code.
   facts' targets. The words are its targets in every context, an `RTS`/`RTI` resolved so is
   analysed as a jump (its function stays balanced), the bytes read join the program's
   constant bytes, and its table is closed. A `JSR` through cells whose targets are all
-  functions lifted separately is a `BRANCHIND` to a `CALL` of each.
+  functions lifted separately is a `BRANCHIND` to a `CALL` of each. A branch whose offset
+  byte is a cell goes to its fall-through address plus each offset the byte may hold, found
+  the same way.
 - **Table extents** (`dispatch.rs`). A table indexed by a register reads only its own bytes:
   each column (the loads one dispatch pairs by index value: a split table's low and high
   columns, an interleaved table's two bytes) extends from its byte at the least index value
@@ -378,13 +394,16 @@ the facts, so a proof holds on every execution that stays in lifted code.
   address past it at which the code starts accessing a base other than the table's columns
   (a constant operand, indexed or not, starts at its least index value there); and an index
   value stops being read when one column's byte reaches its end or a byte another column read
-  at an earlier value. The index values read so are a prefix of the index's values (an index
-  the code does not bound has every value its known bits allow), so a split table's low
-  column ends where its high column starts and an interleaved table where another object
-  starts. Where an index may take a value past the extent, an index guard compares the
-  register with the extent's range before each column's load and deopts (the program reads
-  outside its table); the analysis then narrows the register at that instruction, and the
-  guards only grow, so the outer fixpoint of discovery terminates.
+  at an earlier value. A table's columns include every base the code reads with the same
+  index value (a table load while its register still holds the index another table byte was
+  read with), so storing one byte of an interleaved pair alone sees its partner as part of
+  the table. The index values read so are a prefix of the index's values (an index the code
+  does not bound has every value its known bits allow), so a split table's low column ends
+  where its high column starts and an interleaved table where another object starts. Where
+  an index may take a value past the extent, an index guard compares the register with the
+  extent's range before each column's load and deopts (the program reads outside its
+  table). Guards do not narrow the analysis: they are what the final converged program reads
+  past its tables.
 - **Stack extent** (`lib.rs`). With `entry_sp` declared, the stack bytes the program can hold
   are `[$100 + s + 1 - D, $1FF]`, `D` the deepest byte a push or an elided `CALL`'s return
   address reaches through the plans' call chains (all of page 1 for a recursive plan or an

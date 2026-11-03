@@ -2,7 +2,7 @@
 
 Constant code is the bytes of reached instructions no constant-address store writes; its span
 also covers the tables the lift read jump targets and stored values from, which a store of
-unknown address must not change either. Data regions are the maximal runs of other bytes some
+unknown address must not change either, and the data regions it overlaps. Data regions are the maximal runs of other bytes some
 access may touch (an access of unknown address may touch every byte of the loaded image),
 outside volatile ranges.
 """
@@ -92,7 +92,11 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         self.regions = runs(touched)
         for k, (org, n) in enumerate(self.regions):
             self.owner[org : org + n] = k
-        self.code_span = self._span()
+        lo, hi = self._span()
+        for org, n in self.regions if hi > lo else ():
+            if org < hi and org + n > lo:
+                lo, hi = min(lo, org), max(hi, org + n)
+        self.code_span = (lo, hi)
 
     def region(self, lo, hi):
         """The region holding all of ``[lo, hi]``, or None."""
