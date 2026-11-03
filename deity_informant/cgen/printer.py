@@ -694,9 +694,8 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             for it in t.items[n]:
                 if it[0] == "ops":
                     for o in it[1].ops[:-1]:
-                        if id(o) in self.dropped or not self.printed(o):
-                            continue
-                        yield from (a for i, a in enumerate(o.args) if (id(o), i) not in self.dead)
+                        if id(o) not in self.dropped and self.printed(o):
+                            yield from self.reads(o)
                 elif it[0] == "copy":
                     yield from (v for _, v, _ in it[1])
                 elif it[0] in ("return", "call"):
@@ -727,6 +726,36 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                     ):
                         return False
         return True
+
+    def split(self, a):
+        """``(constant, rest)`` of an address value: ``rest`` is None or a value."""
+        d, top = self.defs.get(a), (1 << self.width(a)) - 1
+        if d is not None and d.name == "arith.constant":
+            return d.int_prop("value") & top, None
+        if d is not None and d.name == "arith.addi":
+            for x, y in (d.args, d.args[::-1]):
+                if self.const_of(x) is not None:
+                    return self.const_of(x) & top, y
+        return 0, a
+
+    def reads(self, o):
+        """The values printing operation ``o`` reads: an access reads its address through
+        :meth:`address` less a constant offset, not the ``index`` value."""
+        addr = None
+        if o.name in ("memref.load", "memref.store") and o.args[-2] in self.globals:
+            addr = len(o.args) - 1
+        elif o.name == "func.call" and o.prop("callee") in ("@io_read", "@io_write", "@codechk"):
+            addr = 0
+        out = []
+        for i, a in enumerate(o.args):
+            if (id(o), i) in self.dead or a in self.globals:
+                continue
+            if i == addr:
+                a = self.split(self.address(o) if o.name != "func.call" else a)[1]
+                if a is None:
+                    continue
+            out.append(a)
+        return out
 
     def printed(self, o):
         """Whether operation ``o`` prints: an effect, or a value something uses."""
@@ -765,6 +794,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         """Count the uses of each value by what prints, and mark the uses that directly
         follow their block."""
         work, seen = [], set()
+        self.uses, self.user = {}, {}
 
         def use(v, who):
             self.uses[v] = self.uses.get(v, 0) + 1
@@ -779,9 +809,8 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
                 continue
             for o in b.ops[:-1]:
                 if id(o) not in self.f.dropped and self.f.printed(o) and not self.f.pure(o):
-                    for i, a in enumerate(o.args):
-                        if (id(o), i) not in self.f.dead:
-                            use(a, o)
+                    for a in self.f.reads(o):
+                        use(a, o)
         while work:
             d = self.f.defs.get(work.pop())
             if d is None or id(d) in seen or not self.f.pure(d) or id(d) in self.f.dropped:
@@ -789,7 +818,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             if self.f.where[id(d)][0].name not in self.owned:
                 continue
             seen.add(id(d))
-            for a in d.args:
+            for a in self.f.reads(d):
                 use(a, d)
 
     def item_refs(self, items, after):
@@ -953,21 +982,16 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
 
     def split(self, a):
         """``(constant, rest)`` of an address value: ``rest`` is None or a value."""
-        d, top = self.f.defs.get(a), (1 << self.f.width(a)) - 1
-        if d is not None and d.name == "arith.constant":
-            return d.int_prop("value") & top, None
-        if d is not None and d.name == "arith.addi":
-            for x, y in (d.args, d.args[::-1]):
-                dx = self.f.defs.get(x)
-                if dx is not None and dx.name == "arith.constant":
-                    return dx.int_prop("value") & top, y
-        return 0, a
+        return self.f.split(a)
 
     def addr(self, a):
         """The address value ``a`` with its constant relocated (a zero-page one as is)."""
-        if self.f.width(a) < 16:
-            return clean(self.ex(a), self.f.width(a))
         c, rest = self.split(a)
+        if self.f.width(a) < 16 and rest is not None:
+            r = self.ex(rest) if c == 0 else binary("+", 12, lit(c, 8), self.ex(rest), 8)
+            return clean(r, 8)
+        if self.f.width(a) < 16:
+            return lit(c, 8)
         if rest is None:
             return self.reloc(c)
         if not c:
@@ -1390,6 +1414,22 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         return "\n".join([f"{head} {{", *lines, "}"])
 
 
+def _recall(items, t, keep):
+    """``items`` with each call of tail ``t`` passing only the arguments ``keep``."""
+    out = []
+    for it in items:
+        if it[0] == "call" and it[1] is t:
+            it = ("call", t, [it[2][i] for i in keep])
+        elif it[0] == "if":
+            it = (*it[:3], _recall(it[3], t, keep), _recall(it[4], t, keep))
+        elif it[0] == "switch":
+            it = ("switch", it[1], [(c, _recall(b, t, keep)) for c, b in it[2]])
+        elif it[0] == "loop":
+            it = ("loop", _recall(it[1], t, keep))
+        out.append(it)
+    return out
+
+
 def _strip_continue(body):
     """``body`` without ``continue`` statements in its tail position."""
     if not body:
@@ -1525,6 +1565,16 @@ class Module:  # pylint: disable=too-many-instance-attributes
             f.mark_addresses()
         for c in [*self.mains.values(), *self.tails.values()]:
             c.structure()
+        for c in self.tails.values():
+            c.count()
+            ins = c.g.args + c.g.params
+            keep = [i for i, v in enumerate(ins) if c.uses.get(v)]
+            if len(keep) < len(ins):
+                c.g.args = [v for v in c.g.args if c.uses.get(v)]
+                c.g.params = [v for v in c.g.params if c.uses.get(v)]
+                for other in [*self.mains.values(), *self.tails.values()]:
+                    if other.f is c.f:
+                        other.body = _recall(other.body, c.g, keep)
 
     def functions(self):
         """The C text of every function: struct types and the prototypes recursion needs,
