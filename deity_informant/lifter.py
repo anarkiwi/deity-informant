@@ -1104,6 +1104,23 @@ def lift(mem, pc):
     }
 
 
+def bus_only(ops):
+    """Indices of the ops of a lifted record that only drive the bus: the throw-away reads (a
+    ``LOAD`` with no output) and a read-modify-write's dummy write (the loaded byte stored back
+    to its address before the store of the result). They have no data use."""
+    loaded = {tuple(out): ins[0] for mn, out, ins in ops if mn == "LOAD" and out}
+    return frozenset(
+        i
+        for i, (mn, out, ins) in enumerate(ops)
+        if (mn == "LOAD" and out is None)
+        or (
+            mn == "STORE"
+            and loaded.get(tuple(ins[1])) == ins[0]
+            and any(m == "STORE" and x[0] == ins[0] for m, _o, x in ops[i + 1 :])
+        )
+    )
+
+
 def _provenance(ops, pmap, ctrl, op):
     """Byte-provenance metadata for the recorder (inert for other users).
 

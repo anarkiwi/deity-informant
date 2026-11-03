@@ -8,7 +8,7 @@ frame play, and interrupt-driven cadence exactly as a real 6510 would.
 
 from __future__ import annotations
 
-from .lifter import STATUS_BITS
+from .lifter import STATUS_BITS, bus_only
 
 # ---- P-Code -> Python source (per-op line; exec'd into a closure) ------------
 _BINOP = {
@@ -60,7 +60,7 @@ def _emit_line(mn, out, ins):
 
 # ---- pure-Python P-Code interpreter (no py65) --------------------------------
 class PcodeVM:
-    __slots__ = ("mem", "reg", "uniq", "cycles", "volatile", "vicirq", "ciaicr", "wlog")
+    __slots__ = ("mem", "reg", "uniq", "cycles", "volatile", "dummies", "vicirq", "ciaicr", "wlog")
 
     def __init__(self, mem_bytes):
         self.mem = bytearray(mem_bytes)
@@ -69,6 +69,9 @@ class PcodeVM:
         self.uniq = {}
         self.cycles = 0
         self.volatile = True  # apply the SID-replay volatile-read model
+        # Whether the VM makes an instruction's dummy bus accesses (the throw-away reads and a
+        # read-modify-write's dummy write); a machine that places them on its own cycles clears it.
+        self.dummies = True
         # Interrupt-source flags an IRQ handler polls to find who fired: $D019
         # (VIC, write-acked) and $DC0D (CIA, read-cleared). run_irq_driven raises
         # them. wlog, when a list, records (cycle, reg, val) SID writes.
@@ -111,15 +114,18 @@ class PcodeVM:
             mem[(addr + i) & 0xFFFF] = (val >> (8 * i)) & 0xFF
 
     def compile_record(self, rec):
-        f = rec.get("_f")
+        key = "_f" if self.dummies else "_d"
+        f = rec.get(key)
         if f is not None:
             return f
-        lines = [_emit_line(mn, out, ins) for mn, out, ins in rec["ops"]]
+        skip = frozenset() if self.dummies else bus_only(rec["ops"])
+        lines = [
+            _emit_line(mn, out, ins) for i, (mn, out, ins) in enumerate(rec["ops"]) if i not in skip
+        ]
         src = "def _f(r,u,rd,wr):\n    " + ("\n    ".join(lines) or "pass") + "\n"
         ns = {}
         exec(src, ns)  # noqa: S102 - generated straight-line P-Code, no user input
-        f = ns["_f"]
-        rec["_f"] = f
+        f = rec[key] = ns["_f"]
         return f
 
     def run_record(self, rec, pc):
@@ -127,7 +133,9 @@ class PcodeVM:
         return self._resolve(rec)
 
     def _exec(self, rec, pc):
-        (rec.get("_f") or self.compile_record(rec))(self.reg, self.uniq, self._rd, self._wr)
+        (rec.get("_f" if self.dummies else "_d") or self.compile_record(rec))(
+            self.reg, self.uniq, self._rd, self._wr
+        )
 
     def _resolve(self, rec):
         cyc = rec["cyc"]
@@ -137,10 +145,12 @@ class PcodeVM:
             _k, flag, pol, tgt, ft = ctrl
             if self.reg[flag[1]] == pol:
                 cyc += 1
-                self._rd(ft, 1)
+                if self.dummies:
+                    self._rd(ft, 1)
                 if (ft & 0xFF00) != (tgt & 0xFF00):
                     cyc += 1
-                    self._rd((ft & 0xFF00) | (tgt & 0xFF), 1)
+                    if self.dummies:
+                        self._rd((ft & 0xFF00) | (tgt & 0xFF), 1)
                 nxt = tgt
             else:
                 nxt = ft
@@ -165,7 +175,8 @@ class PcodeVM:
     def step(self, pc, cache, lifter):
         """Run the instruction at ``pc``; its next PC. Besides its P-Code's accesses it reads
         the byte after a one-byte opcode first, a taken branch's next byte (and unfixed target
-        on a page cross) and the address an ``RTS`` pulled, as the NMOS bus does."""
+        on a page cross) and the address an ``RTS`` pulled, as the NMOS bus does; none of these dummy
+        accesses is made when ``dummies`` is clear."""
         mem = self.mem
         k = (pc, mem[pc], mem[(pc + 1) & 0xFFFF], mem[(pc + 2) & 0xFFFF])
         rec = cache.get(k)
@@ -174,7 +185,7 @@ class PcodeVM:
                 raise KeyError("cache miss at %04X (SMC needs a lifter)" % pc)
             rec = lifter(mem, pc)
             cache[k] = rec
-        if rec["len"] == 1 and rec["ctrl"][0] != "jam":
+        if self.dummies and rec["len"] == 1 and rec["ctrl"][0] != "jam":
             self._rd((pc + 1) & 0xFFFF, 1)
         ctrl, nxt = self.run_record(rec, pc)
         t = ctrl[0]
@@ -202,7 +213,8 @@ class PcodeVM:
             lo = mem[0x100 + reg[3]]
             reg[3] = (reg[3] + 1) & 0xFF
             hi = mem[0x100 + reg[3]]
-            self._rd((hi << 8) | lo, 1)
+            if self.dummies:
+                self._rd((hi << 8) | lo, 1)
             return ((hi << 8) | lo) + 1 & 0xFFFF
         if t == "rti":
             reg[3] = (reg[3] + 1) & 0xFF
