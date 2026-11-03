@@ -16,6 +16,7 @@ The C64 machine model (power-on RAM, interrupt-vector discovery, ROM-free IRQ di
 - `deity_informant/wholeprog.py`, `deity_informant/trace.py` — whole-program lifting of entry points to optimized, executable, exact P-Code (self-modifying code as memory reads, balanced calls as `CALL`/`RETURN`, the hardware stack as registers, optional cycle counting, guarded deopts), run as Cranelift native code or interpreted, and the run-time facts it uses; see [docs/wholeprog.md](docs/wholeprog.md).
 - `deity_informant/layout.py`, `tools/layout.py` — memory layout recovery (words, pointers, address tables, record and parallel arrays) from carry chains, pointer arithmetic and effective-address facts; see [docs/layout.md](docs/layout.md).
 - `tools/pcode2c.py`, `tools/pcode2mlir.py`, `tools/structure.py`, `tools/cslice.py`, `tools/cplay.py` — a lift as C, as MLIR and as structured C (MLIR `lift-cf-to-scf` through EmitC), Frama-C slicing, and replay of the C against the reference; see [docs/structured.md](docs/structured.md).
+- `deity_informant/cgen/`, `tools/cgenplay.py` — entry points of a program as goto-free C99 (static lift, MLIR `inline`/`mem2reg`/`lift-cf-to-scf`, a compact printer): a `.c` of the code alone and a `.h` of its data regions, identical across data sets and origins, checked against the reference; see [docs/cgen.md](docs/cgen.md).
 - `tools/ghidra_layout.py`, `ghidra/6510/headless/ApplyLayout.java` — headless Ghidra export of layout maps (struct types, typed data, labels, data references) with a read-back check; see [docs/layout.md](docs/layout.md#ghidra-export).
 - `tools/wplift.py` — lift an image file whole and check it against the reference interpreter.
 - `deity_informant/c64.py`, `tools/wpbank.py` — the C64 host of bank-aware lifting: the 6510 port/PLA bank map (ROM-less or verified real ROMs), facts and per-call reference records from vagrant-moses' cycle-exact machine, and a check of bank-aware play lifts of HVSC tunes against it.
@@ -42,6 +43,7 @@ deity-informant disasm IMAGE [--org ADDR] [--start ADDR] [--count N]   # illegal
 deity-informant pcode  IMAGE --at ADDR [--org ADDR]                    # raw P-Code for one instruction
 deity-informant run    IMAGE --init ADDR [--play ADDR --frames N]      # execute in PcodeVM, dump $D400.. grid
 deity-informant emit-sleigh [-o DIR] [--magic 0xEE]                    # build/install the 6510 SLEIGH module
+python -m deity_informant.cgen IMAGE --org ADDR --entry PC:NAME --volatile LO-HI -o OUT.c   # C translation
 ```
 
 ## Python API
