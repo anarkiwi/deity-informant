@@ -592,7 +592,7 @@ def frame_song(row, boot, mc):
         bad = [n, "halted", "budget"]
     row |= {"mode": "banked", "bank_evidence": [], "returned": host.last_halt == "return",
             "configs": sorted({b for bs in facts.banks.values() for b in bs}),
-            "interrupts_inside": len(host.inner), **_lifted_row(prog, lift_ms, bad)}  # fmt: skip
+            "interrupts_inside": host.ninner, **_lifted_row(prog, lift_ms, bad)}  # fmt: skip
     row["check_ms"] = 1e3 * (time.perf_counter() - t)
     t_ref, t_lift, cycles, timed, hit = frames.timed(prog, host, c64.bank_map(boot.roms), mc)
     rec = {"state": _diff(boot.image, host.image), "entries": list(prog.entries), "facts": facts}

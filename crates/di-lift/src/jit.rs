@@ -3,6 +3,8 @@
 //! exits and reloaded after calls; flat memory is accessed directly and the rest through the
 //! bus. A function returns `kind << 16 | pc`: kind 0 a `RETURN` (`pc` the exit PC at the
 //! outermost frame), 1 a deopt to `pc`, 2 the iteration budget running out at `pc`.
+//! Cranelift's own optimizer is off (`opt_level` none): the P-Code is optimized before it
+//! gets here, and the optimizer's time is not bounded by the size of the function.
 
 use crate::bank::BankMap;
 use crate::exec::{load, store, Exec, Frame, Runner, IMM, NOCHECK, SPACES};
@@ -109,7 +111,7 @@ impl Jit {
         let t = Instant::now();
         let mut fb = settings::builder();
         for (k, v) in [
-            ("opt_level", "speed"),
+            ("opt_level", "none"),
             ("use_colocated_libcalls", "false"),
             ("is_pic", "false"),
         ] {

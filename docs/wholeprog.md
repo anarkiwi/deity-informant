@@ -395,7 +395,7 @@ with cycle counting, calling `Bus::now(cycle)` before possibly volatile accesses
 `Runner::backend` (Python: `Program.backend`, `wholeprog.lift(..., backend=)` or
 `wholeprog.BACKEND`, a per-call `call(..., backend=)`; tools: `--backend`) selects the engine:
 
-- `jit` (default): `jit.rs` compiles every function with Cranelift on first use
+- `jit` (default): `jit.rs` compiles every function with Cranelift (its own optimizer off) on first use
   (`Exec::jit`, `Program.compile()` returns the compile seconds) to one native function. The
   value-file cells it uses are SSA variables, written back before a `CALL` and at exits and
   reloaded after a `CALL`; `CALL` is a native call that pushes the same frame record the
