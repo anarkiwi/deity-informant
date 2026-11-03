@@ -95,22 +95,31 @@ def _da(items, v, done):  # pylint: disable=too-many-return-statements,too-many-
     return done, True
 
 
-def drop_unread(items, names, read=None):
-    """``items`` without the constant assignments to ``names`` that nothing reads."""
-    read = _reads(items) if read is None else read
+def drop_unread(items, dead):
+    """``items`` without the assignments ``dead(st, read)`` holds of, ``read`` the variables
+    they read, repeated until none is left."""
+    while True:
+        read = _reads(items)
+        out = _drop(items, lambda st: dead(st, read))
+        if out == items:
+            return out
+        items = out
+
+
+def _drop(items, dead):
     out = []
     for st in items:
-        if st[0] == "a" and st[1] in names and st[1] not in read and st[2].isdigit():
+        if st[0] == "a" and dead(st):
             continue
         if st[0] == "if":
-            then, els = drop_unread(st[3], names, read), drop_unread(st[4], names, read)
+            then, els = _drop(st[3], dead), _drop(st[4], dead)
             if not then and not els:
                 continue
             st = (*st[:3], then, els, *st[5:])
         elif st[0] == "loop":
-            st = (*st[:4], drop_unread(st[4], names, read))
+            st = (*st[:4], _drop(st[4], dead))
         elif st[0] == "switch":
-            st = (*st[:3], [(lab, drop_unread(b, names, read)) for lab, b in st[3]])
+            st = (*st[:3], [(lab, _drop(b, dead)) for lab, b in st[3]])
         out.append(st)
     return out
 

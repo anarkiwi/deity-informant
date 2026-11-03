@@ -438,11 +438,16 @@ pub struct Graph {
     pub stat: FxHashMap<u16, Vec<u16>>,
     /// Stores `(pc, opcode, access index)` none of whose addresses is constant code.
     pub nocode: FxHashSet<(u16, u8, usize)>,
-    /// The bytes the targets in `stat` were read from: constant like code.
+    /// The bytes the targets in `stat` and the values of stores into cells were read from:
+    /// constant like code.
     pub tables: BTreeSet<u16>,
     /// Opcode cells no store writes a value outside their variants: every store that may
     /// write one has known addresses and values.
     pub closed: FixedBitSet,
+    /// The values of the closed cells ([`crate::dispatch::cell_values`]).
+    pub vals: FxHashMap<u16, BTreeSet<u8>>,
+    /// Index guards by instruction ([`crate::dispatch::Guard`]).
+    pub guards: FxHashMap<u16, (u8, Iv)>,
 }
 
 /// Stack-pointer effect of a `Next` instruction: pushes and pulls by count, `None` for an
@@ -526,7 +531,10 @@ impl Ctx<'_> {
     }
     fn tg(&self, pc: u16, cell: bool, image: u16) -> Tg {
         if cell {
-            Tg::Calc(self.facts(pc, [image]))
+            Tg::Calc(match self.stat.get(&pc) {
+                Some(t) => t.iter().copied().collect(),
+                None => self.facts(pc, [image]),
+            })
         } else {
             Tg::At(image)
         }
@@ -612,7 +620,8 @@ pub fn entry_config(m: &BankMap, img: &[u8; 0x10000], facts: &Facts, pc: u16) ->
 ///
 /// The code cells, their value sets and the targets of computed transfers found from the code
 /// ([`crate::dispatch`]) are a joint least fixpoint from none: each round decodes the program
-/// they give and analyses it, and they only grow. Which `RTS`/`RTI`s are jumps through a pushed
+/// they give and analyses it, and they only grow. `loaded` is the `[lo, hi)` the program was
+/// loaded to, where tables end at the latest. Which `RTS`/`RTI`s are jumps through a pushed
 /// address, and which computed transfers stay unresolved (to their facts' targets), is decided
 /// on a converged program, and the fixpoint is recomputed until neither grows.
 pub fn discover(
@@ -621,6 +630,7 @@ pub fn discover(
     facts: &Facts,
     bank: Option<&BankMap>,
     matched: bool,
+    loaded: Option<(u32, u32)>,
 ) -> Graph {
     let mut edges: FxHashMap<u16, Vec<u16>> = FxHashMap::default();
     for &(p, q) in &facts.edges {
@@ -639,9 +649,21 @@ pub fn discover(
         edges,
         failed: FxHashSet::default(),
         disp: FxHashSet::default(),
+        guards: FxHashMap::default(),
+        loaded,
     };
     loop {
-        let (g, jumps) = fix.run();
+        let (g, jumps, guards) = fix.run();
+        // Index guards only narrow: each round keeps the earlier ones.
+        for (pc, r, ok) in guards {
+            let e = fix.guards.entry(pc).or_insert((r, ok));
+            if let (true, Some(m)) = (e.0 == r, crate::vsa::meet(e.1, ok)) {
+                e.1 = m;
+            }
+        }
+        if fix.guards != g.guards {
+            continue;
+        }
         let disp: FxHashSet<u16> = jumps
             .iter()
             .filter(|(pc, j)| {
@@ -681,10 +703,18 @@ struct Fixpoint<'a> {
     edges: FxHashMap<u16, Vec<u16>>,
     failed: FxHashSet<u16>,
     disp: FxHashSet<u16>,
+    guards: FxHashMap<u16, (u8, Iv)>,
+    loaded: Option<(u32, u32)>,
 }
 
 impl Fixpoint<'_> {
-    fn run(&self) -> (Graph, FxHashMap<u16, crate::dispatch::Jump>) {
+    fn run(
+        &self,
+    ) -> (
+        Graph,
+        FxHashMap<u16, crate::dispatch::Jump>,
+        Vec<crate::dispatch::Guard>,
+    ) {
         let (img, entries, facts, bank) = (self.img, self.entries, self.facts, self.bank);
         let seen: FxHashMap<u16, u8> = match bank {
             Some(_) => facts.banks.iter().map(|(p, c)| (*p, c[0])).collect(),
@@ -695,6 +725,8 @@ impl Fixpoint<'_> {
             .iter()
             .map(|(a, v)| (*a, v.iter().copied().collect()))
             .collect();
+        let mut seen_writes = FixedBitSet::with_capacity(0x10000);
+        seen_writes.extend(observed.keys().map(|&a| a as usize));
         let mut cells = FixedBitSet::with_capacity(0x10000);
         let mut values = observed.clone();
         let mut stat: FxHashMap<u16, BTreeSet<u16>> = FxHashMap::default();
@@ -754,13 +786,24 @@ impl Fixpoint<'_> {
                     }
                 }
             }
-            let an =
-                crate::vsa::analyze(&cimg, &cells, &mut vars, entries, self.matched, &self.disp);
+            let an = crate::vsa::analyze(
+                &cimg,
+                &cells,
+                &mut vars,
+                entries,
+                self.matched,
+                &self.disp,
+                &crate::vsa::Given {
+                    guards: &self.guards,
+                    loaded: self.loaded,
+                    observed: &seen_writes,
+                },
+            );
             let mut written: FxHashMap<u16, BTreeSet<u8>> = FxHashMap::default();
             for st in &an.stores {
                 for &a in st.addrs.iter().flatten() {
                     let s = written.entry(a).or_default();
-                    if let Some(v) = &st.vals {
+                    if let Some(Some(v)) = an.cellvals.get(&a) {
                         s.extend(v);
                     }
                 }
@@ -785,7 +828,7 @@ impl Fixpoint<'_> {
             }
             let mut nstat = stat.clone();
             for (&pc, j) in &an.jumps {
-                if let (crate::dispatch::Jump::Targets(t, _), false) =
+                if let (crate::dispatch::Jump::Targets(t, _, _), false) =
                     (j, self.failed.contains(&pc))
                 {
                     nstat.entry(pc).or_default().extend(t);
@@ -793,20 +836,28 @@ impl Fixpoint<'_> {
             }
             if next == cells && nvalues == values && nstat == stat {
                 let pull_clear = crate::vsa::pull_clear(&vars, entries);
+                let tables: BTreeSet<u16> = an
+                    .jumps
+                    .iter()
+                    .filter(|(pc, _)| !self.failed.contains(pc))
+                    .flat_map(|(_, j)| match j {
+                        crate::dispatch::Jump::Targets(_, b, _) => b.clone(),
+                        crate::dispatch::Jump::Fail => Vec::new(),
+                    })
+                    .chain(an.reads.iter().copied())
+                    .collect();
                 let mut constcode = code.clone();
                 constcode.difference_with(&cells);
                 constcode.difference_with(&rom_code);
-                let mut open = FixedBitSet::with_capacity(0x10000);
-                for s in &an.stores {
-                    match (&s.addrs, &s.vals) {
-                        (Some(_), Some(_)) => {}
-                        (Some(a), None) => open.extend(a.iter().map(|&x| x as usize)),
-                        (None, _) => open
-                            .insert_range(s.addr.lo as usize..(s.addr.hi as usize).min(0xffff) + 1),
+                constcode.extend(tables.iter().map(|&a| a as usize));
+                let mut closed = FixedBitSet::with_capacity(0x10000);
+                let mut vals = FxHashMap::default();
+                for a in cells.ones() {
+                    if let Some(Some(v)) = an.cellvals.get(&(a as u16)) {
+                        closed.insert(a);
+                        vals.insert(a as u16, v.clone());
                     }
                 }
-                let mut closed = cells.clone();
-                closed.difference_with(&open);
                 let nocode = an
                     .stores
                     .iter()
@@ -836,17 +887,19 @@ impl Fixpoint<'_> {
                         .collect(),
                     nocode,
                     closed,
-                    tables: an
-                        .jumps
-                        .iter()
-                        .filter(|(pc, _)| !self.failed.contains(pc))
-                        .flat_map(|(_, j)| match j {
-                            crate::dispatch::Jump::Targets(_, b) => b.clone(),
-                            crate::dispatch::Jump::Fail => Vec::new(),
-                        })
-                        .collect(),
+                    vals,
+                    guards: self.guards.clone(),
+                    tables,
                 };
-                return (g, an.jumps);
+                let mut guards = an.guards;
+                for (pc, j) in &an.jumps {
+                    if let (crate::dispatch::Jump::Targets(_, _, gs), false) =
+                        (j, self.failed.contains(pc))
+                    {
+                        guards.extend(gs);
+                    }
+                }
+                return (g, an.jumps, guards);
             }
             cells = next;
             values = nvalues;

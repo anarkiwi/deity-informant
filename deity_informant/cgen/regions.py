@@ -1,8 +1,10 @@
 """The memory partition of a translated program: constant code and data regions.
 
-Constant code is the bytes of reached instructions no constant-address store writes. Data
-regions are the maximal runs of other bytes some access may touch (an access of unknown
-address may touch every byte of the loaded image), outside volatile ranges.
+Constant code is the bytes of reached instructions no constant-address store writes; its span
+also covers the tables the lift read jump targets and stored values from, which a store of
+unknown address must not change either. Data regions are the maximal runs of other bytes some
+access may touch (an access of unknown address may touch every byte of the loaded image),
+outside volatile ranges.
 """
 
 from __future__ import annotations
@@ -52,8 +54,11 @@ def runs(mask):
 class Memory:  # pylint: disable=too-many-instance-attributes
     """Regions of ``image`` for the accesses of a program (see the module docstring)."""
 
-    def __init__(self, image, code, volatile, loaded, sensitive=(), pairs=None):
+    def __init__(
+        self, image, code, volatile, loaded, sensitive=(), pairs=None, tables=None
+    ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self.image, self.code, self.pairs = bytes(image), code, pairs or {}
+        self.tables = np.zeros(0x10000, dtype=bool) if tables is None else tables
         self.pairs_to = {}
         for lo, hi in self.pairs.items():
             self.pairs_to.setdefault(hi, []).append(lo)
@@ -63,8 +68,12 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         self.volatile = [tuple(r) for r in volatile]
         self.loaded, self.sensitive = loaded, sorted(sensitive)
         self.regions, self.owner, self.unknown = [], np.full(0x10000, -1, dtype=np.int32), False
-        span = np.flatnonzero(code)
-        self.code_span = (int(span[0]), int(span[-1]) + 1) if len(span) else (0, 0)
+        self.code_span = self._span()
+
+    def _span(self):
+        """The span of the bytes taken as constant: code and the tables read for jumps."""
+        span = np.flatnonzero(self.code | self.tables)
+        return (int(span[0]), int(span[-1]) + 1) if len(span) else (0, 0)
 
     def partition(self, accesses, stores):
         """Regions for ``accesses`` (``(lo, hi)`` inclusive, None when unknown), given the
@@ -83,8 +92,7 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         self.regions = runs(touched)
         for k, (org, n) in enumerate(self.regions):
             self.owner[org : org + n] = k
-        span = np.flatnonzero(self.code)
-        self.code_span = (int(span[0]), int(span[-1]) + 1) if len(span) else (0, 0)
+        self.code_span = self._span()
 
     def region(self, lo, hi):
         """The region holding all of ``[lo, hi]``, or None."""

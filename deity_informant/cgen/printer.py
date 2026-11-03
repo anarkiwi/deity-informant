@@ -509,26 +509,36 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
 
     def mark_addresses(self):
         """Mark the operand edges ``(op, index)`` through which a value reaches the address
-        of a memory access, so constants on them print relative to their region."""
-        work = []
+        of a memory access or a computed jump's target, so constants on them print relative
+        to their region (a jump's or-ed in high byte too)."""
+        work, jumps = [], []
         for o in self.walk():
             if o.name in ("memref.load", "memref.store") and o.args[-2] in self.globals:
                 work.append((o, len(o.args) - 1))
             elif o.name == "func.call" and o.prop("callee") in ("@io_read", "@io_write"):
                 work.append((o, 0))
-        while work:
-            o, i = work.pop()
-            if (id(o), i) in self.addr_edges:
-                continue
-            self.addr_edges.add((id(o), i))
-            work += self.sources(o.args[i])
+            elif o.name == "cf.switch":
+                jumps.append((o, 0))
+        for work, ors in ((work, False), (jumps, True)):
+            while work:
+                o, i = work.pop()
+                if (id(o), i) in self.addr_edges:
+                    continue
+                self.addr_edges.add((id(o), i))
+                work += self.sources(o.args[i], ors)
 
-    def sources(self, v):
-        """The operand edges a value ``v`` is computed from, as far as addresses flow."""
+    def sources(self, v, ors=False):
+        """The operand edges a value ``v`` is computed from, as far as addresses flow (with
+        ``ors`` through ``|`` too)."""
         d = self.defs.get(v)
         if d is None:
             return [(o, i) for o, i, _ in self.arg_src.get(v, [])]
-        if d.name in CASTS or d.name in ("arith.addi", "arith.subi"):
+        if (
+            d.name in CASTS
+            or d.name in ("arith.addi", "arith.subi")
+            or ors
+            and d.name == "arith.ori"
+        ):
             return [(d, i) for i in range(len(d.args))]
         if d.name == "arith.select":
             return [(d, 1), (d, 2)]
@@ -774,7 +784,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         self.name = None
         self.owned = {it[1].name for its in graph.items.values() for it in its if it[0] == "ops"}
         self.names, self.nvar, self.inline, self.memf, self.types = {}, 0, set(), {}, {}
-        self.uses, self.user, self.covers = {}, {}, {}
+        self.uses, self.user, self.covers, self.copies = {}, {}, {}, set()
         self.body, self.head_text = None, ""
 
     def structure(self):
@@ -1285,8 +1295,11 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             if e.refs & (names - {n}):
                 t = self.fresh(w)
                 out.append(("a", t, e.text, e.refs))
+                self.copies.add(id(out[-1]))
                 pend[i] = (n, w, var(t, w))
-        out += [("a", n, e.text, e.refs) for n, _, e in pend]
+        sts = [("a", n, e.text, e.refs) for n, _, e in pend]
+        self.copies |= {id(st) for st in sts}
+        out += sts
 
     def jump(self, vals):
         """The statements returning ``[(value, edge)]``."""
@@ -1400,7 +1413,12 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         if not self.f.live_res or not (self.f.private or self.tail):
             while body and body[-1] == ("j", "return;", frozenset()):
                 body.pop()
-        body = drop_unread(body, {n for k, n in self.names.items() if isinstance(k, tuple)})
+        flags = {n for k, n in self.names.items() if isinstance(k, tuple)}
+        body = drop_unread(
+            body,
+            lambda st, read: st[1] not in read
+            and (st[1] in flags and st[2].isdigit() or id(st) in self.copies),
+        )
         declare(body, self.types)
         read = names_in(body)
         lines = [f"(void){n};" for n in params if n not in read] + render(body)

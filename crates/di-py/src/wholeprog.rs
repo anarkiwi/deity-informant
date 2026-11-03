@@ -1306,11 +1306,14 @@ pub fn reference_calls(
 /// Lift ``entries`` of the program in ``image`` (the whole address space at entry): ``entries`` as
 /// ``[(pc, [(reg, values)])]``, ``volatile`` as ``[(lo, hi)]``, ``facts`` as a dict with
 /// ``starts``, ``edges``, ``writes``, ``page1`` and ``heights``; ``optimize=False`` keeps the emitted
-/// P-Code; ``cycles=True`` counts cycles. ``bank`` is a bank map: ``dir``/``data`` port
+/// P-Code; ``cycles=True`` counts cycles; ``entry_sp`` declares the SP every entry is called
+/// at (a calling convention: no pointer windows, stack checks against the stack's extent);
+/// ``loaded`` the ``(lo, hi)`` the program was loaded to, where tables end at the latest.
+/// ``bank`` is a bank map: ``dir``/``data`` port
 /// cells, ``mask`` and ``pull`` bits, ``lut`` (configuration per effective port value),
 /// ``configs`` (per configuration 256 page kinds: 0 RAM, 1 ROM, 2 I/O) and ``rom``.
 #[pyfunction]
-#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None))]
+#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn lift_program(
     py: Python<'_>,
@@ -1321,12 +1324,19 @@ pub fn lift_program(
     optimize: bool,
     cycles: bool,
     bank: Option<&Bound<'_, PyDict>>,
+    entry_sp: Option<u8>,
+    loaded: Option<(u32, u32)>,
 ) -> PyResult<Program> {
     let img = self::image(image)?;
     let es = self::entries(entries);
     let f = self::facts(facts)?;
     let bank = bank_of(bank)?;
-    let opts = Opts { optimize, cycles };
+    let opts = Opts {
+        optimize,
+        cycles,
+        entry_sp,
+        loaded,
+    };
     Ok(Program::new(py.detach(|| {
         di_lift::lift_banked(&img, &es, &volatile, &f, opts, bank.as_ref())
     })))
@@ -1348,7 +1358,7 @@ pub fn plan_program<'py>(
     let es = self::entries(entries);
     let f = self::facts(facts)?;
     let bank = bank_of(bank)?;
-    let g = di_lift::analysis::discover(&img, &es, &f, bank.as_ref(), true);
+    let g = di_lift::analysis::discover(&img, &es, &f, bank.as_ref(), true, None);
     let pcs: Vec<u16> = es.iter().map(|e| e.pc).collect();
     let out = PyList::empty(py);
     for p in di_lift::plan(&g.img, &g, &pcs, &f, bank.as_ref(), &[]) {
@@ -1404,7 +1414,11 @@ pub fn lift_many(
         ProgressStyle::with_template("lift {bar:40} {pos}/{len} [{elapsed}<{eta}, {per_sec}]")
             .unwrap(),
     );
-    let opts = Opts { optimize, cycles };
+    let opts = Opts {
+        optimize,
+        cycles,
+        ..Opts::default()
+    };
     let progs = py.detach(|| di_lift::lift_many(&jobs, opts, || bar.inc(1)));
     bar.finish();
     Ok(progs.into_iter().map(Program::new).collect())

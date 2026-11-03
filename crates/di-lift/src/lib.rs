@@ -40,6 +40,14 @@ pub struct Opts {
     pub optimize: bool,
     /// Count cycles: `CY`, cycle-budget checks, volatile accesses at their cycle.
     pub cycles: bool,
+    /// The SP every entry is called at (after its return address), as a calling convention
+    /// rather than an observation: outermost plans are specialized to it, zero-page pointers
+    /// keep no windows, and while the stack is private only a store that may hit the stack
+    /// bytes the program can hold is checked, against those bytes (*Stack extent*).
+    pub entry_sp: Option<u8>,
+    /// The `[lo, hi)` the program was loaded to: tables end at its end at the latest
+    /// (*Static proofs*, *Table extents*).
+    pub loaded: Option<(u32, u32)>,
 }
 
 impl Default for Opts {
@@ -47,6 +55,8 @@ impl Default for Opts {
         Opts {
             optimize: true,
             cycles: false,
+            entry_sp: None,
+            loaded: None,
         }
     }
 }
@@ -135,6 +145,64 @@ fn unguarded<'a>(
                 .map(move |iv| (iv, h))
         })
     })
+}
+
+/// The page-1 addresses `[lo, $1FF]` the stack may hold below and at the host's return
+/// address when every entry is called at SP `s` (*Stack extent*): from the deepest byte a
+/// push or an elided `CALL`'s return address reaches through the plans' call chains, all of
+/// page 1 when a plan is recursive or a height unknown.
+fn extent(
+    plans: &[func::Plan],
+    fidx: &FxHashMap<(u16, u8), u32>,
+    g: &analysis::Graph,
+    s: u8,
+) -> Iv {
+    fn depth(
+        i: usize,
+        plans: &[func::Plan],
+        fidx: &FxHashMap<(u16, u8), u32>,
+        g: &analysis::Graph,
+        memo: &mut [Option<Option<u32>>],
+    ) -> Option<u32> {
+        if let Some(d) = memo[i] {
+            return d;
+        }
+        memo[i] = Some(None);
+        let p = &plans[i];
+        let mut d = p.pushed(g).ones().next_back().map_or(0, |x| x as u32 + 1);
+        let mut ok = p.nodes.keys().all(|k| k.1 != H::Unknown);
+        for (&(_, h, _), n) in &p.nodes {
+            for a in &n.arms {
+                let fs: Vec<(u16, u8)> = match &a.ctl {
+                    func::Ctl::Call { f, c, .. } => vec![(*f, *c)],
+                    func::Ctl::CallInd { fs, c, .. } => fs.iter().map(|&f| (f, *c)).collect(),
+                    _ => continue,
+                };
+                for k in fs {
+                    match (depth(fidx[&k] as usize, plans, fidx, g, memo), h) {
+                        (Some(e), H::Known(h)) => d = d.max((2 - h) as u32 + e),
+                        _ => ok = false,
+                    }
+                }
+            }
+        }
+        let r = ok.then_some(d);
+        memo[i] = Some(r);
+        r
+    }
+    let mut memo = vec![None; plans.len()];
+    let tops = plans.iter().enumerate().filter(|(_, p)| p.top);
+    let d: Option<u32> = tops
+        .map(|(i, _)| depth(i, plans, fidx, g, &mut memo))
+        .try_fold(0, |m, d| d.map(|d| m.max(d)));
+    let top = 0x100 + s as u32 + 1;
+    Iv {
+        lo: d
+            .and_then(|d| top.checked_sub(d))
+            .filter(|&lo| lo >= 0x100)
+            .unwrap_or(0x100),
+        hi: 0x1ff,
+    }
 }
 
 /// Slot indices the unguarded page-1 accesses of plan `p` may hit.
@@ -249,9 +317,11 @@ pub fn lift_banked(
     let entries = &declared[..];
     let mut matched = true;
     let (g, plans, fidx, callees, recursive, slots, constcode, touches, seen, sites, private) = loop {
-        let mut g = discover(img, entries, facts, bank, matched);
+        let mut g = discover(img, entries, facts, bank, matched, opts.loaded);
         let roots: Vec<u16> = entries.iter().map(|e| e.pc).collect();
-        g.prot = ptr::protect(&g, facts, volatile, &roots, bank);
+        if opts.entry_sp.is_none() {
+            g.prot = ptr::protect(&g, facts, volatile, &roots, bank);
+        }
         let img: &[u8; 0x10000] = &g.img;
         let pcs: Vec<u16> = entries.iter().map(|e| e.pc).collect();
         let mut plans = plan(img, &g, &pcs, facts, bank, volatile);
@@ -274,6 +344,10 @@ pub fn lift_banked(
         // An entry called at one SP is specialized to it when that keeps more of its pushes out
         // of memory.
         for p in plans.iter_mut().take(entries.len()) {
+            if let Some(s) = opts.entry_sp {
+                p.refine(&g, img, s);
+                continue;
+            }
             let sp = facts.entry_sp.iter().find(|e| e.0 == p.pc);
             if let Some(&[s]) = sp.map(|e| &e.1[..]) {
                 let pushed = p.pushed(&g);
@@ -399,11 +473,20 @@ pub fn lift_banked(
                 })
             })
         });
+    let stack = opts
+        .entry_sp
+        .filter(|_| private)
+        .map(|s| extent(&plans, &fidx, &g, s));
     let sh = emit::Shared {
+        stack,
         img,
         g: &g,
         volatile,
-        constcode: emit::prefix(&constcode),
+        constcode: emit::prefix(&{
+            let mut c = constcode.clone();
+            c.extend(g.tables.iter().map(|&a| a as usize));
+            c
+        }),
         private,
         shadow,
         promote,
@@ -537,14 +620,28 @@ pub fn lift_banked(
         stats,
         chains,
         induction: g.ind.clone(),
-        sets: g
-            .closed
-            .ones()
-            .filter_map(|a| {
-                let vs = g.vars.get(&(a as u16))?;
-                Some((a as u16, vs.iter().map(|v| v.op).collect()))
-            })
-            .collect(),
+        sets: {
+            let mut s: Vec<(u16, Vec<u8>)> = g
+                .closed
+                .ones()
+                .filter_map(|a| {
+                    let vs = g.vars.get(&(a as u16))?;
+                    Some((a as u16, vs.iter().map(|v| v.op).collect()))
+                })
+                .collect();
+            // Operand cells of the jumps resolved through them hold one of their values.
+            let through = |pc: &&u16| g.vars[*pc].iter().any(|v| dispatch::operand_jump(&v.flow));
+            for &pc in g.stat.keys().filter(through) {
+                for a in [pc.wrapping_add(1), pc.wrapping_add(2)] {
+                    if let Some(v) = g.vals.get(&a) {
+                        s.push((a, v.iter().copied().collect()));
+                    }
+                }
+            }
+            s.sort_unstable();
+            s.dedup();
+            s
+        },
         jumps: {
             let mut j: Vec<(u16, Vec<u16>)> =
                 g.stat.iter().map(|(&pc, t)| (pc, t.clone())).collect();
