@@ -77,6 +77,9 @@ def _header(mem, used, traps):
         lo, hi = mem.code_span
         out += [f"#define CODE_ORG 0x{lo:04X}", f"#define CODE_LEN {hi - lo}"]
         out.append(f"#define CODE_INIT {_hex(mem.image[lo:hi])}")
+        out.append(
+            f"#define CODE_DATA_INIT {_hex(np.packbits(mem.owner[lo:hi] >= 0, bitorder='little'))}"
+        )
     elif "CODE_ORG" in used:
         out.append(f"#define CODE_ORG 0x{mem.code_span[0]:04X}")
     if "IMG_ORG" in used:
@@ -85,19 +88,24 @@ def _header(mem, used, traps):
     return "\n".join([*out, "#endif"]) + "\n"
 
 
-def _dispatch(mem, helpers):
-    """``rd``/``wr`` over the regions, the volatile ranges and the out-of-bounds hooks, and
+def _dispatch(mem, helpers, used):
+    """``rd``/``wr`` over the regions outside the code span, the volatile ranges, the code
+    span in memory (whose data bytes ``CODE_DATA`` marks) and the out-of-bounds hooks, and
     ``codechk``: whether a byte of the code span outside the data regions would change."""
     out = []
-    regions = [f"R{k}" for k in range(len(mem.regions))]
+    regions = [f"R{k}" for k in range(len(mem.regions)) if not _slice(mem, used, k)]
     vol = " || ".join(
         f"(a >= 0x{lo:04X} && a < 0x{hi:04X})" if hi < 0x10000 else f"a >= 0x{lo:04X}"
         for lo, hi in mem.volatile
     )
+    span = "CODE" in used
+    data = "(CODE_DATA[(a - CODE_ORG) >> 3] >> ((a - CODE_ORG) & 7) & 1)"
+    inside = "(uint16_t)(a - CODE_ORG) < CODE_LEN"
     if "rd" in helpers:
         out += ["static uint8_t rd(uint16_t a) {"]
         out += [f"if ((uint16_t)(a - {r}_ORG) < {r}_LEN) return {r}[a - {r}_ORG];" for r in regions]
         out += [f"if ({vol}) return io_read(a);"] if vol else []
+        out += [f"if ({inside}) return CODE[a - CODE_ORG];"] if span else []
         out += ["return oob_rd(a);", "}"]
     if "wr" in helpers:
         out += ["static void wr(uint16_t a, uint8_t v) {"]
@@ -106,13 +114,11 @@ def _dispatch(mem, helpers):
             for r in regions
         ]
         out += [f"if ({vol}) {{ io_write(a, v); return; }}"] if vol else []
+        out += [f"if ({inside} && {data}) {{ CODE[a - CODE_ORG] = v; return; }}"] if span else []
         out += ["oob_wr(a, v);", "}"]
     if "codechk" in helpers:
-        lo, hi = mem.code_span
-        inner = [r for r, (org, n) in zip(regions, mem.regions) if org < hi and org + n > lo]
         out += ["static uint8_t codechk(uint16_t a, uint8_t v) {"]
-        out += [f"if ((uint16_t)(a - {r}_ORG) < {r}_LEN) return 0;" for r in inner]
-        out += ["return (uint16_t)(a - CODE_ORG) < CODE_LEN && CODE[a - CODE_ORG] != v;", "}"]
+        out += [f"return {inside} && !{data} && CODE[a - CODE_ORG] != v;", "}"]
     return out
 
 
@@ -221,7 +227,9 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     if oob:
         c += ["#ifdef CGEN_OOB", *(d for d, _ in oob), "#else", *(f for _, f in oob)]
         c.append("#endif")
-    c += _dispatch(mem, helpers)
+    if "CODE" in used and helpers & {"wr", "codechk"}:
+        c.append("static const uint8_t CODE_DATA[] = {CODE_DATA_INIT};")
+    c += _dispatch(mem, helpers, used)
     c += fns
     c_text = clang_format("\n".join(c) + "\n")
     h_text = clang_format(_header(mem, used, [key[1] for key in traps]))

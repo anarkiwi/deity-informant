@@ -19,8 +19,10 @@
 //! `A`, `X` and `Y` also keep their known bits ([`crate::known`]). For computed jumps
 //! ([`crate::dispatch`]) a byte loaded from a constant base plus an index register is tagged
 //! with its load while it is in a data register, among the top three stack bytes pushed since
-//! the function's entry, or in a `JMP (ind)` pointer byte stored at an exact address (so is a
-//! constant there). A tag is live while its index register keeps its value; where the
+//! the function's entry, or in a tracked byte (the pointer bytes of `JMP (ind)` and `(zp),Y`
+//! accesses, the cell operands of jumps) stored at an exact address (so is a constant there);
+//! tracked bytes also keep their value intervals, which bound the addresses of the pointer
+//! accesses through them. A tag is live while its index register keeps its value; where the
 //! register is written, the live tags it indexed become one group (they share an index value)
 //! and the group an earlier execution of that write made becomes unrelated.
 //!
@@ -135,8 +137,9 @@ pub(crate) struct St {
     pub(crate) tag: [Option<Tab>; DATA],
     /// The top three stack bytes, from the top, where pushed since the function's entry.
     pub(crate) push: [Option<Tab>; 3],
-    /// Tracked bytes ([`Code::vecs`]) whose contents are known, by address.
-    pub(crate) mem: Vec<(u16, Tab)>,
+    /// Tracked bytes ([`Code::vecs`]) whose contents are known, by address: the table byte or
+    /// constant they hold, and their interval.
+    pub(crate) mem: Vec<(u16, Option<Tab>, Iv)>,
 }
 
 impl St {
@@ -171,7 +174,22 @@ impl St {
         };
         self.tag.iter_mut().flatten().for_each(f);
         self.push.iter_mut().flatten().for_each(f);
-        self.mem.iter_mut().for_each(|(_, t)| f(t));
+        self.mem.iter_mut().flat_map(|e| e.1.as_mut()).for_each(f);
+    }
+    /// The addresses a zero-page pointer access may reach given the intervals of its tracked
+    /// pointer bytes: the pointer's hull plus its index, when that does not wrap.
+    fn pointed(&self, p: crate::analysis::Ptr) -> Option<Iv> {
+        self.reach(p).filter(|r| r.hi <= 0xffff)
+    }
+    /// The pointer's hull plus its index as unwrapped addresses (up to `$100FE`).
+    fn reach(&self, p: crate::analysis::Ptr) -> Option<Iv> {
+        let (q, h) = (p.lo?.value()?, p.hi.value()?);
+        let iv = |a: u32| self.mem.iter().find(|e| e.0 as u32 == a).map(|e| e.2);
+        let (lo, hi) = (iv(q)?, iv(h)?);
+        Some(Iv {
+            lo: hi.lo << 8 | lo.lo,
+            hi: (hi.hi << 8 | lo.hi) + p.idx,
+        })
     }
     /// What data register `r` holds as a tag: its table byte, else its constant.
     fn val(&self, r: usize) -> Option<Tab> {
@@ -483,9 +501,6 @@ pub(crate) struct Code<'a> {
     /// The bytes whose contents states track (the pointers of `JMP (ind)` and the operands
     /// of `JMP`/`JSR` through cells), ascending.
     pub(crate) vecs: Vec<u16>,
-    /// Index guards ([`crate::dispatch::Guard`]) by instruction: the register and the values
-    /// it holds when the instruction proceeds.
-    pub(crate) guards: FxHashMap<u16, (u8, Iv)>,
     /// The bytes the facts saw written.
     pub(crate) observed: FixedBitSet,
 }
@@ -504,25 +519,18 @@ pub fn pull_clear(vars: &FxHashMap<u16, Vec<Var>>, entries: &[Entry]) -> bool {
 
 /// `st` after variant `v` at `pc`; its accesses are appended to `acc`.
 pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>) -> St {
-    let guarded;
-    let st = match code.guards.get(&pc) {
-        Some(&(r, ok)) => match meet(st.env[r as usize], ok) {
-            Some(m) if m != st.env[r as usize] => {
-                let mut g = st.clone();
-                g.env[r as usize] = m;
-                g.kb[r as usize] = g.kb[r as usize].meet(Kb::of(m));
-                guarded = g;
-                &guarded
-            }
-            _ => st,
-        },
-        None => st,
-    };
     let t = Template::of(v.op);
     let ops = t.ops();
     let b = operand_bytes(code.img, code.cells, pc, t.len);
     let mut env = st.env;
     absint(ops, b, &mut env, acc);
+    for a in acc.iter_mut() {
+        if let Some(iv) = a.ptr.and_then(|p| st.pointed(p)) {
+            if let Some(m) = meet(a.addr, iv) {
+                a.addr = m;
+            }
+        }
+    }
     if code.pull_clear && matches!(v.op, 0x28 | 0x40) {
         env[di_pcode::reg::D] = Iv::exact(0);
     }
@@ -609,7 +617,15 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
         _ => {}
     }
     for a in acc.iter().filter(|a| a.store) {
-        let hit = |&(m, _): &(u16, Tab)| a.addr.meets(m as u32, m as u32 + 1);
+        // A pointer store whose sum may wrap reaches the low addresses it wraps to.
+        let reach = a.ptr.and_then(|p| st.reach(p));
+        let hit = |e: &(u16, Option<Tab>, Iv)| match reach {
+            Some(r) => {
+                let m = e.0 as u32;
+                (r.lo..=r.hi).contains(&m) || (r.lo..=r.hi).contains(&(m + 0x10000))
+            }
+            None => a.addr.meets(e.0 as u32, e.0 as u32 + 1),
+        };
         if !code
             .vecs
             .iter()
@@ -617,16 +633,24 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
         {
             continue;
         }
+        let old = st
+            .mem
+            .iter()
+            .find(|e| Some(e.0 as u32) == a.addr.value())
+            .copied();
         s.mem.retain(|e| !hit(e));
         let Some(m) = a.addr.value() else { continue };
         let (_, _, held) = symbolic_in(ops, b, (None, None, [None; DATA]), Some(m));
-        let t = match held {
-            Some(Some(Sym::Lin(r, 0))) if (r as usize) < DATA => st.val(r as usize),
-            Some(Some(Sym::K(k))) => Some(Tab::K(k)),
-            _ => a.val.value().map(|x| Tab::K(x as u8)),
+        let (t, iv) = match held {
+            Some(Some(Sym::Lin(r, 0))) if (r as usize) < DATA => {
+                (st.val(r as usize), st.env[r as usize])
+            }
+            Some(Some(Sym::K(k))) => (Some(Tab::K(k)), Iv::exact(k as u32)),
+            Some(Some(Sym::Lin(MEM, k))) => (None, old.map_or(Iv::full(1), |e| shift(e.2, k))),
+            _ => (a.val.value().map(|x| Tab::K(x as u8)), a.val),
         };
-        if let Some(t) = t {
-            s.mem.push((m as u16, t));
+        if t.is_some() || iv != Iv::full(1) {
+            s.mem.push((m as u16, t, iv));
             s.mem.sort_unstable_by_key(|e| e.0);
         }
     }
@@ -648,7 +672,7 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
 
 /// The tag of the byte the instruction `op` at `pc` loads when its address is its operand
 /// plus at most one index register (no memory pointer, no cell operand).
-fn table(code: &Code, pc: u16, op: u8) -> Option<Tab> {
+pub(crate) fn table(code: &Code, pc: u16, op: u8) -> Option<Tab> {
     let reg = crate::dispatch::index_reg(Template::of(op)).map_or(NOREG, |r| r as u8);
     crate::dispatch::load_addr(code, pc, op, reg, 0)?;
     Some(Tab::T {
@@ -760,9 +784,11 @@ fn join(a: &St, b: &St, widen: Option<&Thresholds>) -> St {
         mem: a
             .mem
             .iter()
-            .filter_map(|&(m, x)| {
-                let y = b.mem.iter().find(|e| e.0 == m)?.1;
-                Some((m, join_tab(x, y)?))
+            .filter_map(|&(m, x, i)| {
+                let (_, y, j) = *b.mem.iter().find(|e| e.0 == m)?;
+                let t = x.zip(y).and_then(|(x, y)| join_tab(x, y));
+                let iv = w(i, hull(i, j));
+                (t.is_some() || iv != Iv::full(1)).then_some((m, t, iv))
             })
             .collect(),
     }
@@ -1043,18 +1069,20 @@ pub struct Analysis {
     pub stores: Vec<crate::dispatch::Store>,
     /// Index guards the resolved transfers and stored table bytes need.
     pub guards: Vec<crate::dispatch::Guard>,
-    /// The table bytes stored values were read from ([`crate::dispatch::tag_values`]).
+    /// The table bytes stored values, pointer stores' addresses and trip bounds were read
+    /// from.
     pub reads: std::collections::BTreeSet<u16>,
     /// The values of each byte some store writes ([`crate::dispatch::cell_values`]).
     pub cellvals: FxHashMap<u16, Option<std::collections::BTreeSet<u8>>>,
 }
 
-/// What the analysis takes beyond the program: the index guards, the `[lo, hi)` the program
-/// was loaded to and the bytes the facts saw written.
+/// What the analysis takes beyond the program: the `[lo, hi)` the program was loaded to, the
+/// bytes the facts saw written and those taken as constant (holding their entry value: trip
+/// bounds may read them).
 pub struct Given<'a> {
-    pub guards: &'a FxHashMap<u16, (u8, Iv)>,
     pub loaded: Option<(u32, u32)>,
     pub observed: &'a FixedBitSet,
+    pub constant: &'a FixedBitSet,
 }
 
 /// Fill each variant's accesses from the interval states at its start. With `matched`, an
@@ -1070,7 +1098,7 @@ pub fn analyze(
     disp: &FxHashSet<u16>,
     given: &Given,
 ) -> Analysis {
-    let (guards, loaded, observed) = (given.guards, given.loaded, given.observed);
+    let (loaded, observed) = (given.loaded, given.observed);
     let rets = returns(vars, matched, disp);
     let succ_of = |pc: u16| -> Vec<u16> {
         let mut s: Vec<u16> = vars[&pc]
@@ -1090,7 +1118,6 @@ pub fn analyze(
         cells,
         pull_clear: pull_clear(vars, entries),
         vecs: crate::dispatch::vectors(img, cells, vars),
-        guards: guards.clone(),
         observed: observed.clone(),
     };
     let thr = Thresholds::new(vars, &code);
@@ -1217,7 +1244,21 @@ pub fn analyze(
         fill(vars, pc, None);
     }
     // Index bounds from the loops' trip counts tighten the accesses they reach.
-    let ind = crate::scev::find(&code, vars, &heads, &succs, &merged, &roots);
+    let konst = |a: u32| {
+        (given.constant.contains(a as usize) && !cells.contains(a as usize))
+            .then(|| img[a as usize])
+    };
+    let mut kreads = Vec::new();
+    let ind = crate::scev::find(
+        &code,
+        vars,
+        &heads,
+        &succs,
+        &merged,
+        &roots,
+        &konst,
+        &mut kreads,
+    );
     for (pc, b) in crate::scev::y_bounds(&ind) {
         fill(vars, pc, Some(b));
     }
@@ -1232,7 +1273,6 @@ pub fn analyze(
         }
     }
     let sets = crate::dispatch::Sets {
-        guards,
         states,
         merged: &merged,
         ind: &ind,
@@ -1247,10 +1287,19 @@ pub fn analyze(
             }
         }
     }
-    let objs = crate::dispatch::Objects::new(&code, vars, &merged, &bytes, loaded);
+    let objs = crate::dispatch::Objects::new(&code, vars, &merged, &bytes, loaded, &sets.states);
     let mut stores = crate::dispatch::stores(&code, vars, &sets);
     let mut guards = Vec::new();
-    let mut reads = std::collections::BTreeSet::new();
+    let mut reads: std::collections::BTreeSet<u16> = kreads.into_iter().collect();
+    let through = crate::dispatch::pointer_stores(
+        &code,
+        vars,
+        &sets,
+        &objs,
+        &mut stores,
+        &mut guards,
+        &mut reads,
+    );
     crate::dispatch::tag_values(
         &code,
         vars,
@@ -1261,6 +1310,34 @@ pub fn analyze(
         &mut reads,
     );
     let cellvals = crate::dispatch::cell_values(img, &stores);
+    // A store through a pointer with an address set reaches the hull of its set.
+    for &i in &through {
+        let st = &stores[i];
+        let Some(&[lo, .., hi]) = st.addrs.as_deref().filter(|a| a.len() > 1) else {
+            if let Some(&[a]) = st.addrs.as_deref() {
+                for v in vars
+                    .get_mut(&st.pc)
+                    .into_iter()
+                    .flatten()
+                    .filter(|v| v.op == st.op)
+                {
+                    v.acc[st.ai].addr = Iv::exact(a as u32);
+                }
+            }
+            continue;
+        };
+        for v in vars
+            .get_mut(&st.pc)
+            .into_iter()
+            .flatten()
+            .filter(|v| v.op == st.op)
+        {
+            v.acc[st.ai].addr = Iv {
+                lo: lo as u32,
+                hi: hi as u32,
+            };
+        }
+    }
     let jumps = crate::dispatch::jumps(&code, vars, &w.state, &sets, &objs, &stores, &cellvals);
     Analysis {
         from: merged.into_iter().map(|(pc, st)| (pc, st.from)).collect(),

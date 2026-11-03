@@ -972,7 +972,7 @@ impl<'a> Em<'a, '_> {
                             self.pend = (1, vec![d]);
                             self.flush();
                         }
-                        let tb = self.table(ts, false);
+                        let tb = self.table(ts, self.sh.g.stat.contains_key(&pc));
                         self.emit(Opc::BranchInd, NONE, tgt, NONE, tb);
                     }
                 }

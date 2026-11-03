@@ -76,9 +76,14 @@ pub fn iv_op(opc: Opc, a: Iv, b: Iv, out: u32, size0: u32) -> Iv {
             lo: a.lo - b.hi,
             hi: a.hi - b.lo,
         },
-        Opc::IntAnd => Iv {
-            lo: 0,
-            hi: a.hi.min(b.hi),
+        // A mask of low bits keeps the values it covers.
+        Opc::IntAnd => match (a.value(), b.value()) {
+            (_, Some(m)) if m & m.wrapping_add(1) == 0 && a.hi <= m => a,
+            (Some(m), _) if m & m.wrapping_add(1) == 0 && b.hi <= m => b,
+            _ => Iv {
+                lo: 0,
+                hi: a.hi.min(b.hi),
+            },
         },
         Opc::IntOr => match (a.value(), b.value()) {
             (Some(0), _) => b,
@@ -256,16 +261,16 @@ enum Tag {
 /// Abstractly execute `ops` from `env` with operand bytes `b` (`None` for cells); the
 /// memory accesses in op order.
 pub fn absint(ops: &[Op], b: [Option<u8>; 2], env: &mut Env, acc: &mut Vec<Access>) {
-    absint_known(ops, b, env, acc, None)
+    absint_known(ops, b, env, acc, &|_| None)
 }
 
-/// [`absint`] with the byte at one address known: `(address, value)`.
+/// [`absint`] with the bytes `known` gives (by address) known.
 pub fn absint_known(
     ops: &[Op],
     b: [Option<u8>; 2],
     env: &mut Env,
     acc: &mut Vec<Access>,
-    known: Option<(u32, u8)>,
+    known: &dyn Fn(u32) -> Option<u8>,
 ) {
     let mut uniq = [Iv::full(4); di_pcode::UNIQUE_SIZE];
     let mut tag = [Tag::No; di_pcode::UNIQUE_SIZE];
@@ -341,11 +346,9 @@ pub fn absint_known(
                     above: false,
                     ptr,
                 });
-                match known {
-                    Some((k, x)) if a.value() == Some(k) && op.out.size() == 1 => {
-                        Iv::exact(x as u32)
-                    }
-                    _ => Iv::full(op.out.size()),
+                match a.value().filter(|_| op.out.size() == 1).and_then(known) {
+                    Some(x) => Iv::exact(x as u32),
+                    None => Iv::full(op.out.size()),
                 }
             }
             Opc::Copy | Opc::IntZext => a,
@@ -448,6 +451,8 @@ pub struct Graph {
     pub vals: FxHashMap<u16, BTreeSet<u8>>,
     /// Index guards by instruction ([`crate::dispatch::Guard`]).
     pub guards: FxHashMap<u16, (u8, Iv)>,
+    /// The bytes stores with address sets may write.
+    pub written: FixedBitSet,
 }
 
 /// Stack-pointer effect of a `Next` instruction: pushes and pulls by count, `None` for an
@@ -649,19 +654,31 @@ pub fn discover(
         edges,
         failed: FxHashSet::default(),
         disp: FxHashSet::default(),
-        guards: FxHashMap::default(),
         loaded,
+        constant: {
+            let mut c = FixedBitSet::with_capacity(0x10000);
+            if let Some((lo, hi)) = loaded {
+                c.insert_range(lo as usize..(hi as usize).min(0x10000));
+            }
+            for (a, _) in &facts.writes {
+                c.set(*a as usize, false);
+            }
+            c
+        },
     };
     loop {
-        let (g, jumps, guards) = fix.run();
-        // Index guards only narrow: each round keeps the earlier ones.
-        for (pc, r, ok) in guards {
-            let e = fix.guards.entry(pc).or_insert((r, ok));
-            if let (true, Some(m)) = (e.0 == r, crate::vsa::meet(e.1, ok)) {
-                e.1 = m;
-            }
-        }
-        if fix.guards != g.guards {
+        let (g, jumps) = fix.run();
+        // Bytes read as constant that a store with an address set may write are not.
+        let mut w = g.written.clone();
+        let bad: Vec<usize> = g
+            .tables
+            .iter()
+            .map(|&a| a as usize)
+            .filter(|&a| w.contains(a) && fix.constant.contains(a))
+            .collect();
+        if !bad.is_empty() {
+            w.intersect_with(&fix.constant);
+            fix.constant.difference_with(&w);
             continue;
         }
         let disp: FxHashSet<u16> = jumps
@@ -703,18 +720,14 @@ struct Fixpoint<'a> {
     edges: FxHashMap<u16, Vec<u16>>,
     failed: FxHashSet<u16>,
     disp: FxHashSet<u16>,
-    guards: FxHashMap<u16, (u8, Iv)>,
     loaded: Option<(u32, u32)>,
+    /// Loaded bytes taken as constant: those no store with an address set wrote in an
+    /// earlier round, nor the facts.
+    constant: FixedBitSet,
 }
 
 impl Fixpoint<'_> {
-    fn run(
-        &self,
-    ) -> (
-        Graph,
-        FxHashMap<u16, crate::dispatch::Jump>,
-        Vec<crate::dispatch::Guard>,
-    ) {
+    fn run(&self) -> (Graph, FxHashMap<u16, crate::dispatch::Jump>) {
         let (img, entries, facts, bank) = (self.img, self.entries, self.facts, self.bank);
         let seen: FxHashMap<u16, u8> = match bank {
             Some(_) => facts.banks.iter().map(|(p, c)| (*p, c[0])).collect(),
@@ -794,9 +807,9 @@ impl Fixpoint<'_> {
                 self.matched,
                 &self.disp,
                 &crate::vsa::Given {
-                    guards: &self.guards,
                     loaded: self.loaded,
                     observed: &seen_writes,
+                    constant: &self.constant,
                 },
             );
             let mut written: FxHashMap<u16, BTreeSet<u8>> = FxHashMap::default();
@@ -888,18 +901,32 @@ impl Fixpoint<'_> {
                     nocode,
                     closed,
                     vals,
-                    guards: self.guards.clone(),
+                    guards: {
+                        // Index guards: what the program reads past its tables' extents.
+                        let mut gs: FxHashMap<u16, (u8, Iv)> = FxHashMap::default();
+                        let jumped = an.jumps.iter().filter(|(pc, _)| !self.failed.contains(pc));
+                        let from_jumps = jumped.flat_map(|(_, j)| match j {
+                            crate::dispatch::Jump::Targets(_, _, g) => g.clone(),
+                            crate::dispatch::Jump::Fail => Vec::new(),
+                        });
+                        for (pc, r, ok) in an.guards.iter().copied().chain(from_jumps) {
+                            let e = gs.entry(pc).or_insert((r, ok));
+                            if let (true, Some(m)) = (e.0 == r, crate::vsa::meet(e.1, ok)) {
+                                e.1 = m;
+                            }
+                        }
+                        gs
+                    },
+                    written: {
+                        let mut w = FixedBitSet::with_capacity(0x10000);
+                        for s in &an.stores {
+                            w.extend(s.addrs.iter().flatten().map(|&a| a as usize));
+                        }
+                        w
+                    },
                     tables,
                 };
-                let mut guards = an.guards;
-                for (pc, j) in &an.jumps {
-                    if let (crate::dispatch::Jump::Targets(_, _, gs), false) =
-                        (j, self.failed.contains(pc))
-                    {
-                        guards.extend(gs);
-                    }
-                }
-                return (g, an.jumps, guards);
+                return (g, an.jumps);
             }
             cells = next;
             values = nvalues;

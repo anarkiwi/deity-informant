@@ -630,9 +630,8 @@ pub fn lift_banked(
                 })
                 .collect();
             // Operand cells of the jumps resolved through them hold one of their values.
-            let through = |pc: &&u16| g.vars[*pc].iter().any(|v| dispatch::operand_jump(&v.flow));
-            for &pc in g.stat.keys().filter(through) {
-                for a in [pc.wrapping_add(1), pc.wrapping_add(2)] {
+            for &pc in g.stat.keys() {
+                for a in dispatch::target_operands(&g.vars[&pc], pc) {
                     if let Some(v) = g.vals.get(&a) {
                         s.push((a, v.iter().copied().collect()));
                     }

@@ -262,6 +262,78 @@ tlo:    .byte lo(j0),lo(j1)
 buf:    .byte 7
 end:
 """
+RELOCATOR = """
+entry:  CMP #$01
+        BEQ play
+        LDX #$00
+rloop:  LDA rtab+1,X
+        BEQ rdone
+        STA $FC
+        LDA rtab,X
+        STA $FB
+        LDY #$01
+        LDA #lo(data)
+        STA ($FB),Y
+        INY
+        LDA #hi(data)
+        STA ($FB),Y
+        INX
+        INX
+        BNE rloop
+rdone:  RTS
+play:   LDX #$01
+p1:     LDA $FFFF,X
+        STA $C000
+p2:     LDA $FFFF
+        STA $C001
+        RTS
+rtab:   .byte lo(p1),hi(p1),lo(p2),hi(p2),0,0
+data:   .byte $11,$22
+end:
+"""
+BRTAB = """
+entry:  AND #$03
+        TAY
+        LDA offs,Y
+        STA br+1
+        CLC
+br:     BCC br+2
+        LDA #$10
+        STA $C000
+        LDA #$11
+        STA $C001
+        LDA #$12
+        STA $C002
+        RTS
+offs:   .byte 0,5,10,10
+end:
+"""
+TWIN = """
+entry:  AND #$01
+        BEQ b
+        JSR v1
+        JSR v1
+        RTS
+b:      JSR v2
+        JSR v2
+        RTS
+v1:     LDX #$00
+l1:     LDA tab,X
+        STA $C000
+        INX
+        CPX #$04
+        BNE l1
+        RTS
+v2:     LDX #$00
+l2:     LDA tab,X
+        STA $C000
+        INX
+        CPX #$04
+        BNE l2
+        RTS
+tab:    .byte 1,2,3,4
+end:
+"""
 OPCALL = """
 entry:  CMP #$04
         BCS call
@@ -270,11 +342,19 @@ entry:  CMP #$04
         STA site+1
         RTS
 call:   AND #$03
+        JSR sub
+        PHA
+        JSR sub
+        PLA
+        STA $C001
+        RTS
+sub:
 site:   JSR j0
         STA $C000
         RTS
         .byte 0
-j0:     LDA #$10
+j0:     LDY #$00
+        LDA ($FB),Y
         RTS
 j1:     LDA #$11
         RTS
@@ -668,15 +748,42 @@ def test_table_region_past_the_code_span(prefix, tmp_path):
     assert "codechk" in c and "CODE_INIT" in h and len(info["jumps"]) == 1
     _, labels, _ = assemble(STRADDLE)
     [k] = [k for k, (org, n) in enumerate(info["regions"]) if org <= labels["buf"] < org + n]
-    assert f"uint8_t R{k}[R{k}_LEN]" in c and info["code_span"][1] > labels["tlo"]
+    assert f"#define R{k} (CODE + (R{k}_ORG - CODE_ORG))" in c
+    assert info["code_span"][1] > labels["buf"] and "CODE_DATA" in c
+
+
+def test_pointer_stores_from_a_terminated_table_make_cells(prefix, tmp_path):
+    c, _, info = check(prefix, tmp_path, RELOCATOR, entry_calls([0, 1, 1, 0, 1]))
+    st = info["stats"]
+    assert not info["traps"] and "codechk" not in c
+    assert (st["code_guards"], st["stack_guards"], st["cells"]) == (0, 0, 4)
+
+
+def test_branch_offset_written_from_a_table(prefix, tmp_path):
+    _, _, info = check(prefix, tmp_path, BRTAB, entry_calls([0, 1, 2, 3, 1]))
+    _, labels, _ = assemble(BRTAB)
+    br = labels["br"]
+    assert info["jumps"] == {br: [br + 2, br + 7, br + 12]} and not info["traps"]
+
+
+def test_identical_functions_fold(prefix, tmp_path):
+    c, _, info = check(prefix, tmp_path, TWIN, entry_calls([0, 1, 1, 0]))
+    names = sorted({int(n) for n in re.findall(r"\bf(\d+)\(", c)})
+    assert info["structure"]["folded"] == 1 and names == list(range(1, len(names) + 1))
 
 
 def test_call_through_an_operand_written_earlier(prefix, tmp_path):
     calls = [("entry", a) for a in (1, 4, 4, 3, 5, 0, 6, 2, 7)]
-    _, _, info = check(prefix, tmp_path, OPCALL, calls)
-    _, labels, _ = assemble(OPCALL)
-    assert info["jumps"] == {labels["site"]: [labels[f"j{i}"] for i in range(4)]}
-    assert not info["traps"]
+    outs = []
+    for org in (0x1000, 0x2300):
+        img, labels, loaded = assemble(OPCALL, org)
+        c, h, info = translate(prefix, img, labels, loaded)
+        assert info["jumps"] == {labels["site"]: [labels[f"j{i}"] for i in range(4)]}
+        assert not info["traps"]
+        (tmp_path / str(org)).mkdir()
+        play(tmp_path / str(org), c, h, img, labels, calls)
+        outs.append(c)
+    assert outs[0] == outs[1] and ">> 8" in outs[0]
 
 
 def test_opcode_restored_through_the_stack(prefix, tmp_path):

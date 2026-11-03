@@ -8,6 +8,7 @@ is made unsigned only where 16-bit ``int`` arithmetic could overflow.
 from __future__ import annotations
 
 import operator
+import re
 from collections import Counter
 from dataclasses import dataclass, field, replace
 
@@ -731,6 +732,23 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                     return False
         return True
 
+    def stack_byte(self, a):
+        """``(value, offset)`` of a page-1 address ``(value + offset) | $100``, or None."""
+        d = self.defs.get(a)
+        if d is None or d.name != "arith.ori":
+            return None
+        x, k = d.args if self.const_of(d.args[1]) is not None else d.args[::-1]
+        if self.const_of(k) != 0x100:
+            return None
+        while self.defs.get(x) is not None and self.defs[x].name in CASTS:
+            x = self.defs[x].args[0]
+        d = self.defs.get(x)
+        if d is not None and d.name in ("arith.addi", "arith.subi"):
+            c = self.const_of(d.args[1])
+            if c is not None:
+                return d.args[0], (c if d.name == "arith.addi" else -c) & 0xFF
+        return x, 0
+
     def split(self, a):
         """``(constant, rest)`` of an address value: ``rest`` is None or a value."""
         d, top = self.defs.get(a), (1 << self.width(a)) - 1
@@ -1187,11 +1205,41 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         else:
             raise NotImplementedError(name)
 
+    def stack_halves(self, o, c):
+        """The value ``c`` of a store ``o`` to a stack byte that, with a constant store to the
+        byte below in its block, writes a return address the program holds: relative to it."""
+        f = self.f
+        me = f.stack_byte(f.address(o))
+        if me is None:
+            return None
+        blk, _ = f.where[id(o)]
+        for x in blk.ops:
+            if x is o or x.name != "memref.store" or x.args[-2] not in f.globals:
+                continue
+            other, v = f.stack_byte(f.address(x)), f.const_of(x.args[0])
+            if other is None or v is None or other[0] != me[0]:
+                continue
+            if (other[1] + 1) & 0xFF == me[1]:
+                word, hi = (c & 0xFF) << 8 | v & 0xFF, True
+            elif (me[1] + 1) & 0xFF == other[1]:
+                word, hi = (v & 0xFF) << 8 | c & 0xFF, False
+            else:
+                continue
+            if self.mod.mem.base(word)[0] is None:
+                return None
+            e = self.reloc(word)
+            if hi:
+                return E(f"({e.text}) >> 8", 11, ">>", 0, 255)
+            return E(f"(uint8_t)({e.text})", 15, "cast", 0, 255)
+        return None
+
     def halves(self, o):
         """The value of a constant store ``o`` that, with a constant store to the other byte
         of a pointer pair in its block, writes an address: relative to its region."""
         f = self.f
         c, a = f.const_of(o.args[0]), self.split(f.address(o))
+        if c is not None and a[1] is not None:
+            return self.stack_halves(o, c)
         if c is None or a[1] is not None:
             return None
         pairs, a = self.mod.mem.pairs, a[0]
@@ -1482,6 +1530,42 @@ def _continues(items):
     return False
 
 
+FUNC = re.compile(r"\bf(\d+)\b")
+
+
+def fold(defs, protos):
+    """``(protos, definitions)`` with each set of functions whose definitions are the same up
+    to their own name and the functions they call (merged so far) kept once, until none is
+    left, then renumbered ``f1, f2, ...`` in their order; ``defs`` ``[(name, text)]``."""
+    text = dict(defs)
+    rep = {n: n for n in text}
+
+    def canon(n):
+        return FUNC.sub(
+            lambda m: "f0" if m.group(0) == n else rep.get(m.group(0), m.group(0)), text[n]
+        )
+
+    while True:
+        groups = {}
+        for n in (n for n, _ in defs if rep[n] == n):
+            groups.setdefault(canon(n), []).append(n)
+        merged = [(v[0], x) for v in groups.values() for x in v[1:]]
+        for keep, x in merged:
+            rep[x] = keep
+        if not merged:
+            break
+    kept = sorted((n for n in text if rep[n] == n and FUNC.fullmatch(n)), key=lambda n: int(n[1:]))
+    name = {n: f"f{i}" for i, n in enumerate(kept, 1)}
+    name.update({n: name.get(rep[n], rep[n]) for n in text})
+
+    def sub(t):
+        return FUNC.sub(lambda m: name.get(m.group(0), m.group(0)), t)
+
+    keep = [sub(t) for n, t in defs if rep[n] == n]
+    heads = [sub(p) for p in protos]
+    return [h for i, h in enumerate(heads) if h not in heads[:i]], keep
+
+
 class Module:  # pylint: disable=too-many-instance-attributes
     """The functions of the optimized module and the memory they share."""
 
@@ -1637,6 +1721,6 @@ class Module:  # pylint: disable=too-many-instance-attributes
             f"{name} {{ {' '.join(f'{CTYPE[w]} r{j};' for j, w in enumerate(ws))} }};"
             for name, ws in sorted(self.structs.items())
         ]
-        out += [f"{c.head_text};" for c in protos]
-        self.made["functions"] = len(post)
-        return out + [texts[id(c)] for c in post]
+        defs = fold([(c.name, texts[id(c)]) for c in post], [f"{c.head_text};" for c in protos])
+        self.made["functions"], self.made["folded"] = len(defs[1]), len(post) - len(defs[1])
+        return out + defs[0] + defs[1]

@@ -34,8 +34,9 @@ python tools/cgenplay.py tune.sid --psid --volatile 0xD400-0xD41D -o out/   # tr
 `[(origin, length)]`, the code span, the traps in the `.c` (`{k: ("deopt", pc)}` or `("ind", pc,
 ...)` for a computed jump with no target), the computed jumps resolved from the code (`jumps`),
 the fact edges used, the lift's `stats`, whether some access has an unknown address and the
-`structure` counts: C `functions`, outlined `tails`, and the structuring variables made for
-multi-entry loops (`entries`), multi-exit loops (`exits`) and joins (`flags`).
+`structure` counts: C `functions` (and the identical ones `folded` into them), outlined
+`tails`, and the structuring variables made for multi-entry loops (`entries`), multi-exit
+loops (`exits`) and joins (`flags`).
 
 The host supplies `uint8_t io_read(uint16_t)`, `void io_write(uint16_t, uint8_t)` and
 `void trap(uint16_t k)`, which must not return (`longjmp`, or abort the call). Each entry
@@ -133,15 +134,19 @@ qualify.
 
 Names come from structure alone: C functions are `f1, f2, ...` in the order they are first
 called when printing (entries first), variables `v1, v2, ...` in order of first use. Callees
-are defined before callers; only recursive functions need prototypes.
+are defined before callers; only recursive functions need prototypes. Functions whose
+definitions are the same up to their names and the functions they call (those merged so
+far) are kept once, until none is left (`info["structure"]["folded"]`), as a player's
+per-voice routines often are; the rest are renumbered in order.
 
 ## Memory
 
 - **Constant code** is the bytes of the planned instructions that the lift treats as constant
   (no store's address set holds them) and that no constant-address store writes. The `.h`'s
   `CODE` is the span from the first such byte, or byte of a table the lift read jump targets
-  or cell values from, to the last; when the `.c` needs it, the data regions inside it are
-  its slices (`#define R2 (CODE + (R2_ORG - CODE_ORG))`), so each byte is held once.
+  or cell values from, to the last, widened over the data regions it overlaps; when the `.c`
+  needs it, those regions are its slices (`#define R2 (CODE + (R2_ORG - CODE_ORG))`), so
+  each byte is held once, and `CODE_DATA` marks its data bytes.
 - **Data regions** `R0, R1, ...` (ascending address) are the maximal runs of other bytes that
   some access may touch, outside volatile ranges. An access's interval comes from its address
   expression (constants, an 8-bit index adds `[0, 255]`, masks, shifts, the hull of what flows
@@ -152,8 +157,9 @@ are defined before callers; only recursive functions need prototypes.
 - An access whose interval lies in one region is `Rk[off + index]`, `off` relative to the
   region and the address taken modulo its width (16 bits, 8 for a zero-page one) as the 6502
   wraps it. One in volatile memory is `io_read`/`io_write`. One wholly in constant code is
-  `oob_rd`/`oob_wr`. Any other goes through `rd(a)`/`wr(a, v)`: the regions (by the `Rk_ORG`
-  symbols, so data pointers holding original addresses resolve), the volatile ranges, then
+  `oob_rd`/`oob_wr`. Any other goes through `rd(a)`/`wr(a, v)`: the regions outside the code
+  span (by the `Rk_ORG` symbols, so data pointers holding original addresses resolve), the
+  volatile ranges, the code span in memory (`wr` writing its data bytes only), then
   `oob_rd`/`oob_wr`.
 - `oob_rd` returns the original byte of `CODE` (0 outside it), `oob_wr` discards; defining
   `CGEN_OOB` replaces both with the host's. A store the lift found may hit constant code or a
@@ -164,8 +170,8 @@ Address constants print relative to the region, code span or loaded image holdin
 (`R2_ORG + 0x10`, `CODE_ORG + 0x21`, `IMG_ORG + ...`): a constant reaching an access address
 through additions, casts, selects and block arguments, the cases of a computed-jump switch, and a
 pair of constant byte stores into a pointer pair (the zero-page pointer of a `(zp),Y`/`(zp,X)`,
-a `JMP (ind)` vector, a three-byte operand, or two stack bytes, as a `JSR`'s return address
-when the stack is kept in memory) whose 16-bit value lies in the program: `LDA #<tab` then
+a `JMP (ind)` vector, a three-byte operand, or two stack bytes at one SP value and that
+value less one, as a `JSR`'s return address when the stack is kept in memory) whose 16-bit value lies in the program: `LDA #<tab` then
 prints `(uint8_t)(R3_ORG + 4)`. A constant or-ed into a computed jump's target (the high byte of a
 `JMP` whose low operand byte is a cell) prints so too: `R16[0] | CODE_ORG`. Not covered: an
 address half stored without its partner in the same block, or used other than as an address
