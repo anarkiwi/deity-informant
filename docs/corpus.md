@@ -165,7 +165,7 @@ rather than duplicated (e.g. `--redo "needs the C64 BASIC ROM"` for rows of earl
 
 ## Tools
 
-`tools/framediff.py ROOT PATH [--song N --frames N --raw]` records an interrupt-driven song's frames and shows where the first frame the lift differs in differs (entry state, interrupts, device logs of lift, reference and machine, memory).
+`tools/framediff.py ROOT PATH [--song N --frames N --raw --bisect]` records an interrupt-driven song's frames and shows where the first frame the lift differs in differs (entry state, interrupts, device logs of lift, reference and machine, memory); `--bisect` runs the reference interpreter alone over the recorded frames and shows the first whose memory (page 1 included) differs from the machine's.
 `tools/wpsong.py ROOT PATH [--song N --calls N --label-calls N --out ROW.json]` runs one song
 through the pipeline in-process (for `py-spy record`, whose raw output `tools/profsum.py
 PROFILE --within FRAME --match FRAME...` summarises). `tools/corpussum.py ROWS [--paths FILE] [--diff OTHER]` prints a rows file's counts by kind, skip, mode and outcome, the non-exact songs, speedup and cost percentiles, stats coverage and the interrupt breakdown (`--diff`: outcome moves to a second file). `tools/corpusequiv.py BEFORE AFTER` lists

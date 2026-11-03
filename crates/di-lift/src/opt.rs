@@ -227,7 +227,9 @@ pub fn checkpoints(f: &Function, cycles: bool) -> FixedBitSet {
             cp.insert(0);
         }
         let net: Vec<i32> = f.blocks.iter().map(|b| sp_effect(b, |_| 0).0).collect();
-        while let Some(s) = sp_conflict(f, &cp, &net) {
+        let (start, to) = csr(f);
+        let mut off = vec![None; f.blocks.len()];
+        while let Some(s) = sp_conflict(&start, &to, &cp, &net, &mut off) {
             cp.insert(s);
         }
         return cp;
@@ -242,17 +244,36 @@ pub fn checkpoints(f: &Function, cycles: bool) -> FixedBitSet {
     cp
 }
 
+/// The successors of every block as a compressed adjacency list: block `b`'s are
+/// `to[start[b]..start[b + 1]]`.
+fn csr(f: &Function) -> (Vec<usize>, Vec<u32>) {
+    let mut start = Vec::with_capacity(f.blocks.len() + 1);
+    let mut to = Vec::new();
+    for b in &f.blocks {
+        start.push(to.len());
+        to.extend(b.succs(&f.tables));
+    }
+    start.push(to.len());
+    (start, to)
+}
+
 /// SP offset of every block relative to the checkpoint (or entry) it is reached from without
-/// crossing another; the first block reached at two offsets.
-fn sp_conflict(f: &Function, cp: &FixedBitSet, net: &[i32]) -> Option<usize> {
-    let mut off: Vec<Option<i32>> = vec![None; f.blocks.len()];
+/// crossing another; the first block reached at two offsets. `off` is scratch.
+fn sp_conflict(
+    start: &[usize],
+    to: &[u32],
+    cp: &FixedBitSet,
+    net: &[i32],
+    off: &mut [Option<i32>],
+) -> Option<usize> {
+    off.fill(None);
     let mut work: Vec<usize> = cp.ones().chain([0]).collect();
     for &r in &work {
         off[r] = Some(0);
     }
     while let Some(b) = work.pop() {
         let o = off[b].unwrap() + net[b];
-        for s in f.blocks[b].succs(&f.tables) {
+        for &s in &to[start[b]..start[b + 1]] {
             let s = s as usize;
             if cp.contains(s) {
                 continue;

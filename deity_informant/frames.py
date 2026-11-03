@@ -7,6 +7,7 @@ boundary the machine took it at; ``Program.call(..., nested=...)`` takes it ther
 from __future__ import annotations
 
 import time
+from functools import cached_property
 
 import numpy as np
 
@@ -91,14 +92,14 @@ class FrameHost(c64._Host):  # pylint: disable=protected-access,too-many-instanc
             yield n, rec, np.frombuffer(ent, ENTRY), np.frombuffer(ev, EVENT)
             n += len(rec)
 
-    @property
+    @cached_property
     def frames(self):
         """The entry states of all recorded frames (:data:`ENTRY`), materialized."""
         return np.concatenate(
             [np.frombuffer(c, ENTRY) for c in self.entry_log] or [np.zeros(0, ENTRY)]
         )
 
-    @property
+    @cached_property
     def inner(self):
         """The interrupts entered inside all frames (:data:`EVENT`, ``record`` the frame),
         materialized."""
@@ -110,9 +111,8 @@ class FrameHost(c64._Host):  # pylint: disable=protected-access,too-many-instanc
 
     def inside(self, k):
         """The interrupts entered inside frame ``k`` (:data:`EVENT`)."""
-        inner = self.inner
-        lo, hi = np.searchsorted(inner["record"], [k, k + 1])
-        return inner[lo:hi]
+        lo, hi = np.searchsorted(self.inner["record"], [k, k + 1])
+        return self.inner[lo:hi]
 
     def sources(self, k):
         """The kinds of interrupt entered inside frame ``k``."""
