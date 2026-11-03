@@ -20,9 +20,10 @@ class Conds:
 
     def __init__(self):
         self.bdd = cudd.BDD()
+        self.bdd.configure(reordering=False)
         self.keys, self.vars, self.families = {}, {}, {}
         self.care = self.bdd.true
-        self.nsyn = 0
+        self.nsyn, self.syn = 0, set()
         self.memo = {}
 
     def var(self, key):
@@ -62,8 +63,13 @@ class Conds:
         some = self.bdd.false
         for k in range(n):
             some |= self.var(("e", fam, k))
+            self.syn.add(self.vars[("e", fam, k)].var)
         self.care &= some
         return fam
+
+    def fixed(self, f):
+        """``f`` with the structuring variables quantified out."""
+        return self.bdd.exist(self.syn & f.support, f) if self.syn & f.support else f
 
     def implies(self, f, g):
         """Whether ``f`` implies ``g``."""
@@ -266,8 +272,8 @@ def topo(g, n, region):
 class Structurer:
     """DREAM's structuring of a :class:`Graph` (see the module docstring)."""
 
-    def __init__(self, conds):
-        self.conds, self.region = conds, None
+    def __init__(self, conds, made, quiet=lambda items: False):
+        self.conds, self.region, self.made, self.quiet = conds, None, made, quiet
 
     def structure(self, g):
         """The statements of ``g``, reduced to one node."""
@@ -308,6 +314,7 @@ class Structurer:
             for p in preds[m]:
                 f |= cr[p] & next(g.cond(c) for t, c in g.succ[p] if t == m)
             if len(preds[m]) > 1 and len(conds.cover(f, conds.care)) > len(preds[m]):
+                self.made["flags"] += 1
                 fam = conds.synthetic(2)
                 g.items[n].insert(0, ("set", fam, 0))
                 for k, p in enumerate(preds[m]):
@@ -362,22 +369,24 @@ class Structurer:
     def switch(self, rest, lit, ctx):  # pylint: disable=too-many-locals
         """``(switch statement, remaining nodes, jumped condition)`` over the family of atom
         ``lit`` when ``rest`` falls into three or more groups of disjoint outcomes, else None."""
-        cr, preds, _, _ = self.region
+        cr, preds, items, _ = self.region
         conds, bdd = self.conds, self.conds.bdd
         key = conds.keys[lit.var]
         if key[0] != "e":
             return None
         fam = key[1]
-        outcomes = [
-            k for k in [*conds.families[fam], None] if (ctx & conds.sel(fam, k)) != bdd.false
-        ]
+        order = [*conds.families[fam], None]
+        outcomes = [k for k in order if (ctx & conds.sel(fam, k)) != bdd.false]
         groups, members, live = [], set(), set(rest)
         for x in rest:
             if any(p in live and p not in members for p in preds[x]):
                 continue
             f = ctx & cr[x]
             got = frozenset(o for o in outcomes if (f & conds.sel(fam, o)) != bdd.false)
-            if not got or len(got) == len(outcomes):
+            if self.quiet(items[x]) and got:
+                members.add(x)
+                continue
+            if len(got) == len(outcomes) or not got:
                 continue
             group = next((g for g in groups if g[0] & got), None)
             if group is None:
@@ -390,16 +399,95 @@ class Structurer:
         if len(groups) < 3:
             return None
         arms, gone = [], bdd.false
-        for got, nodes in groups:
+        for got, nodes in sorted(groups, key=lambda g: min(order.index(o) for o in g[0])):
             f = bdd.false
             for o in got:
                 f |= conds.sel(fam, o)
             body, jumped = self.refine(nodes, ctx & f)
             if _breaks(body):
                 return None
-            arms.append(([o for o in outcomes if o in got], body))
+            arms.append(([o for o in order if o in got], body))
             gone |= jumped
         return ("switch", fam, arms), [x for x in rest if x not in members], gone
+
+    def atom(self, f):
+        """``(family, k, polarity)`` when ``f`` is a literal of a selector atom, else None."""
+        if f.var is None:
+            return None
+        v = self.conds.bdd.var(f.var)
+        key = self.conds.keys[f.var]
+        if f not in (v, ~v) or key[0] != "e":
+            return None
+        return key[1], key[2], f == v
+
+    def finish(self, items):
+        """The statements of a function: tests its enclosing tests decide dropped, then
+        :meth:`chains`."""
+        return self.chains(self.decide(items, self.conds.care))
+
+    def decide(self, items, path):
+        """``items`` where ``path`` holds: an ``if`` that ``path`` and its own context decide
+        is replaced by the branch taken; the others print where both hold. Structuring
+        variables, which statements assign, are left out of ``path``."""
+        out, conds = [], self.conds
+        for it in items:
+            if it[0] == "if":
+                f, known = it[1], path & conds.fixed(it[2])
+                if conds.implies(known, f):
+                    out += self.decide(it[3], path)
+                elif conds.implies(known, ~f):
+                    out += self.decide(it[4], path)
+                else:
+                    then = self.decide(it[3], known & conds.fixed(f))
+                    out.append(
+                        ("if", f, it[2] & path, then, self.decide(it[4], known & conds.fixed(~f)))
+                    )
+            elif it[0] == "switch":
+                arms = []
+                for cases, body in it[2]:
+                    sel = conds.bdd.false
+                    for k in cases:
+                        sel |= conds.sel(it[1], k)
+                    arms.append((cases, self.decide(body, path & conds.fixed(sel))))
+                out.append(("switch", it[1], arms))
+            elif it[0] == "loop":
+                out.append(("loop", self.decide(it[1], path)))
+            else:
+                out.append(it)
+        return out
+
+    def chains(self, items):
+        """``items`` with each chain of three or more ``if``/``else`` tests of one selector
+        family against constants as a ``switch``."""
+        out = []
+        for it in items:
+            if it[0] == "if":
+                arms, rest, fam = [], [it], None
+                while True:
+                    rest = [x for x in rest if not self.quiet([x])]
+                    a = self.atom(rest[0][1]) if len(rest) == 1 and rest[0][0] == "if" else None
+                    if a is None or fam not in (None, a[0]):
+                        break
+                    fam = a[0]
+                    hit, miss = (rest[0][3], rest[0][4]) if a[2] else (rest[0][4], rest[0][3])
+                    arms.append(([a[1]], hit))
+                    rest = miss
+                arms += [([None], rest)] if rest else []
+                cases = [k for c, _ in arms for k in c]
+                if (
+                    len(arms) >= 3
+                    and len(set(cases)) == len(cases)
+                    and not any(_breaks(b) for _, b in arms)
+                ):
+                    it = ("switch", fam, [(c, self.chains(b)) for c, b in arms])
+                else:
+                    it = (*it[:3], self.chains(it[3]), self.chains(it[4]))
+            elif it[0] == "switch":
+                it = ("switch", it[1], [(c, self.chains(b)) for c, b in it[2]])
+            elif it[0] == "loop":
+                it = ("loop", self.chains(it[1]))
+            out.append(it)
+        return out
 
     def cyclic(self, g, h, back, pre):
         """Replace the loop headed by ``h`` by a ``loop`` statement."""
@@ -456,6 +544,7 @@ class Structurer:
         found = exits()
         if len(found) < 2:
             return found
+        self.made["exits"] += 1
         fam = self.conds.synthetic(len(found))
         x = g.add([], [[t, self.conds.var(("e", fam, j))] for j, t in enumerate(found)])
         for n in topo(g, h, loop):
@@ -471,6 +560,7 @@ class Structurer:
     ):  # pylint: disable=too-many-arguments
         """Make ``loop`` single-entry: a dispatcher on a structuring variable set on each
         entering edge and on the back edges to ``h``. The dispatcher."""
+        self.made["entries"] += 1
         fam = self.conds.synthetic(len(entries))
         d = g.add([], [[e, self.conds.var(("e", fam, j))] for j, e in enumerate(entries)])
         for j, e in enumerate(entries):

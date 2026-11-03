@@ -215,6 +215,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         "traps": {k: key for key, k in traps.items() if k in mod.traps},
         "unknown_access": mem.unknown,
         "jumps": p.jumps or {},
+        "structure": dict(mod.made),
     }
     return c_text, h_text, info
 

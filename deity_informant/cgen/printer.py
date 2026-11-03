@@ -8,6 +8,7 @@ is made unsigned only where 16-bit ``int`` arithmetic could overflow.
 from __future__ import annotations
 
 import operator
+from collections import Counter
 from dataclasses import dataclass, field, replace
 
 import networkx as nx
@@ -182,6 +183,12 @@ class Unknown(Exception):
 TERMINATORS = {"cf.br", "cf.cond_br", "cf.switch", "func.return"}
 CASTS = {"arith.extui", "arith.index_castui", "arith.index_cast", "arith.trunci"}
 REMAT = {"arith.constant", "ub.poison", "memref.get_global"}
+#: The value ``x`` takes when ``op(x, c)`` is ``k``, for the invertible operations.
+OFFSETS = {
+    "arith.addi": lambda k, c: k - c,
+    "arith.subi": lambda k, c: k + c,
+    "arith.xori": lambda k, c: k ^ c,
+}
 
 
 def _const_offset(text):
@@ -336,6 +343,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         full = (0, (1 << self.width(v)) - 1)
         if not srcs:
             return self.param_iv(v, full)
+        self.ivs[v] = full
         home = self.arg_block[v].name
         back = [s for s in srcs if self.dominates(home, s[0].parent.name)]
         fwd = [s for s in srcs if s not in back]
@@ -452,35 +460,44 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 out.append((o, self.iv(o.args[0])))
         return out
 
-    def release(self, v):
-        """Drop one use of ``v``; an unused pure definition or block argument releases its
-        operands in turn."""
-        work = [v]
-        while work:
-            v = work.pop()
-            self.uses[v] -= 1
-            if self.uses[v]:
-                continue
-            d = self.defs.get(v)
-            if d is not None:
-                if self.pure(d) and id(d) not in self.dropped:
-                    if not any(self.uses.get(r) for r in d.res):
-                        self.dropped.add(id(d))
-                        work += d.args
-            elif v in self.arg_src:
-                for o, i, _ in self.arg_src[v]:
-                    self.dead.add((id(o), i))
-                    work.append(o.args[i])
+    def root(self, o):
+        """Whether operation ``o`` is observable by itself: a store, an I/O write, a trap,
+        or a read that may meet a read-sensitive address."""
+        if o.name == "memref.store":
+            return True
+        callee = o.prop("callee") if o.name == "func.call" else None
+        if callee in ("@io_write", "@trap"):
+            return True
+        return callee == "@io_read" and self.mod.mem.sensitive_in(*self.iv(o.args[0]))
 
-    def drop(self):
-        """Drop unused reads that cannot meet a read-sensitive address, then dead pure ops."""
+    def settle(self, live, funcs):
+        """Drop what ``live`` does not hold: pure operations and reads, the arguments of
+        unused parameters, unused returned values and the edges into unused block
+        arguments; count the uses left."""
+        self.uses = {}
         for o in self.walk():
-            if o.prop("callee") == "@io_read" and not self.uses.get(o.res[0]):
-                lo, hi = self.iv(o.args[0])
-                if not self.mod.mem.sensitive_in(lo, hi) and id(o) not in self.dropped:
-                    self.dropped.add(id(o))
-                    for a in o.args:
-                        self.release(a)
+            callee = o.prop("callee")[1:] if o.name == "func.call" else None
+            if callee in funcs:
+                keep = set(funcs[callee].live_args)
+            elif o.name == "func.return":
+                keep = set(self.live_res)
+            elif o.name.startswith("cf."):
+                keep = {
+                    i
+                    for s, idx, _ in o.edges()
+                    for (a, _), i in zip(self.block_of[s].args, idx)
+                    if a in live
+                } | ({0} if o.name != "cf.br" else set())
+            elif callee in funcs or not o.res or any(r in live for r in o.res) or self.root(o):
+                keep = set(range(len(o.args)))
+            else:
+                self.dropped.add(id(o))
+                continue
+            for i, a in enumerate(o.args):
+                if i in keep:
+                    self.uses[a] = self.uses.get(a, 0) + 1
+                else:
+                    self.dead.add((id(o), i))
 
     def pure(self, o):
         """Whether ``o`` computes a value with no effect."""
@@ -550,7 +567,8 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
 
     def lit_key(self, c):
         """``(key, polarity)`` of branch condition ``c``: an atom ``x == k`` of a comparison
-        with a constant, else the value."""
+        with a constant (``x`` with its zero extensions stripped; one of an ``i1`` is that
+        value), else the value."""
         d = self.defs.get(c)
         if d is not None and d.name == "arith.xori" and self.const_of(d.args[1]) in (1, -1):
             key, pol = self.lit_key(d.args[0])
@@ -558,8 +576,22 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         if d is not None and d.name == "arith.cmpi" and d.int_prop("predicate") in (0, 1):
             x, k = d.args
             if self.const_of(k) is not None and self.const_of(x) is None:
-                key = ("e", x, self.const_of(k) & (1 << self.width(x)) - 1)
-                return key, d.int_prop("predicate") == 0
+                k = self.const_of(k) & (1 << self.width(x)) - 1
+                while (dx := self.defs.get(x)) is not None:
+                    c = self.const_of(dx.args[1]) if dx.name in OFFSETS else None
+                    if dx.name in ("arith.extui", "arith.index_castui"):
+                        if k >> self.width(dx.args[0]):
+                            break
+                    elif c is None:
+                        break
+                    else:
+                        k = OFFSETS[dx.name](k, c) & (1 << self.width(x)) - 1
+                    x = dx.args[0]
+                eq = d.int_prop("predicate") == 0
+                if self.width(x) == 1:
+                    key, pol = self.lit_key(x)
+                    return key, pol == (eq == (k == 1))
+                return ("e", x, k), eq
         return ("c", c), True
 
     def graph(self, ids):  # pylint: disable=too-many-locals,too-many-branches
@@ -676,6 +708,26 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                         if v is not None:
                             yield v
 
+    def quiet(self, items):
+        """Whether statements ``items`` are a block that prints nothing: its operations are
+        pure and only it reads them, other than as block arguments."""
+        if len(items) != 1 or items[0][0] != "ops":
+            return False
+        blk = items[0][1]
+        term = blk.ops[-1]
+        for o in blk.ops[:-1]:
+            if not (self.pure(o) or id(o) in self.dropped) and o.name != "memref.get_global":
+                return False
+            for r in o.res:
+                for u in self.users.get(r, ()):
+                    if u.parent is not blk or (
+                        u is term
+                        and term.args.index(r)
+                        and (id(u), term.args.index(r)) not in self.dead
+                    ):
+                        return False
+        return True
+
     def printed(self, o):
         """Whether operation ``o`` prints: an effect, or a value something uses."""
         if o.name == "memref.get_global":
@@ -704,7 +756,8 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
 
     def structure(self):
         """Structure the graph into statements."""
-        self.body = Structurer(self.f.conds).structure(self.g)
+        s = Structurer(self.f.conds, self.mod.made, self.f.quiet)
+        self.body = s.finish(s.structure(self.g))
 
     # Values used and printed inline.
 
@@ -818,7 +871,6 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             if mem and not self.adjacent(o, self.user[v]):
                 continue
             self.inline.add(v)
-        f.mark_addresses()
 
     def adjacent(self, d, who):
         """Whether the single use ``who`` of ``d``'s value sees memory as ``d`` does."""
@@ -1371,43 +1423,64 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.mem, self.used, self.helpers, self.regions_used = mem, set(), set(), set()
         self.traps, self.funcs, self.tails, self.mains, self.structs = set(), [], {}, {}, {}
         self.order, self.edges, self.ids, self.entries = [], {}, new_ids(), []
-        self.sites = {}
+        self.sites, self.made = {}, Counter()
         for o in top.regions[0][0].ops:
             if o.name == "func.func" and o.regions[0] and o.regions[0][0].ops:
                 self.funcs.append(Func(o, self))
         self.by_name = {f.name: f for f in self.funcs}
 
     def prune(self):
-        """Drop the parameters and results of lifted functions nothing reads."""
+        """Keep the values something observable needs, over the whole module: a store, an
+        I/O access, a trap or a branch needs its operands, a used result of a lifted function
+        its returned operands, a used parameter its call sites' arguments. Calls pass only the
+        parameters used, functions return only the results used, the rest is dropped."""
         self.sites = sites = {f.name: [] for f in self.funcs}
         for f in self.funcs:
             for o in f.walk():
                 if o.name == "func.call" and o.prop("callee")[1:] in sites:
                     sites[o.prop("callee")[1:]].append((f, o))
-        changed = True
-        while changed:
-            changed = False
-            for g in (g for g in self.funcs if g.private):
-                for j in list(g.live_res):
-                    if not any(f.uses.get(o.res[j]) for f, o in sites[g.name]):
-                        g.live_res.remove(j)
-                        changed = True
-                        for ret in (o for o in g.walk() if o.name == "func.return"):
-                            g.dead.add((id(ret), j))
-                            g.release(ret.args[j])
-                for i in list(g.live_args):
-                    if not g.uses.get(g.blocks[0].args[i][0]):
-                        g.live_args.remove(i)
-                        changed = True
-                        for f, o in sites[g.name]:
-                            f.dead.add((id(o), i))
-                            f.release(o.args[i])
+        live, work = {f.name: set() for f in self.funcs}, []
+
+        def mark(f, v):
+            if v not in live[f.name]:
+                live[f.name].add(v)
+                work.append((f, v))
+
+        for f in self.funcs:
+            f.live_args, f.live_res = [], []
+            for o in f.walk():
+                if o.name in ("cf.cond_br", "cf.switch") or f.root(o):
+                    for a in o.args[:1] if o.name.startswith("cf.") else o.args:
+                        mark(f, a)
+        while work:
+            f, v = work.pop()
+            d = f.defs.get(v)
+            if d is None and v in f.arg_src:
+                for o, i, _ in f.arg_src[v]:
+                    mark(f, o.args[i])
+            elif d is None:
+                i = [a for a, _ in f.blocks[0].args].index(v)
+                f.live_args.append(i)
+                for g, o in sites.get(f.name, ()):
+                    mark(g, o.args[i])
+            elif d.name == "func.call" and d.prop("callee")[1:] in sites:
+                h, j = self.by_name[d.prop("callee")[1:]], d.res.index(v)
+                if j not in h.live_res:
+                    h.live_res.append(j)
+                    for ret in (o for o in h.walk() if o.name == "func.return"):
+                        mark(h, ret.args[j])
+            else:
+                for a in d.args:
+                    mark(f, a)
+        for f in self.funcs:
+            f.live_args.sort()
+            f.live_res = sorted(f.live_res) if f.private else []
+            f.settle(live[f.name], self.by_name)
 
     def partition(self):
         """Partition memory by the accesses of every function."""
         ranges, stores = [], set()
         for f in self.funcs:
-            f.drop()
             for o, (lo, hi) in f.accesses():
                 if id(o) not in f.dropped:
                     ranges.append((lo, hi))
@@ -1448,6 +1521,8 @@ class Module:  # pylint: disable=too-many-instance-attributes
             self.mains[f.name] = CFunc(f, g)
             for t in tails:
                 self.tails[id(t)] = CFunc(f, t, tail=True)
+            self.made["tails"] += len(tails)
+            f.mark_addresses()
         for c in [*self.mains.values(), *self.tails.values()]:
             c.structure()
 
@@ -1487,4 +1562,5 @@ class Module:  # pylint: disable=too-many-instance-attributes
             for name, ws in sorted(self.structs.items())
         ]
         out += [f"{c.head_text};" for c in protos]
+        self.made["functions"] = len(post)
         return out + [texts[id(c)] for c in post]
