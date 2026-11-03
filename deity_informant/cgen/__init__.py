@@ -58,12 +58,21 @@ def _hex(data):
     return ", ".join(f"0x{b:02X}" for b in data)
 
 
+def _slice(mem, used, k):
+    """Whether region ``k`` lies in the code span held in memory: a slice of ``CODE``."""
+    org, n = mem.regions[k]
+    lo, hi = mem.code_span
+    return "CODE" in used and lo <= org and org + n <= hi
+
+
 def _header(mem, used, traps):
-    """The ``.h``: origins, lengths and initial bytes of the regions in ``used``."""
+    """The ``.h``: origins, lengths and initial bytes of the regions (those inside the code
+    span are its slices) and of the code span in ``used``."""
     out = ["#ifndef CGEN_DATA_H", "#define CGEN_DATA_H"]
     for k, (org, n) in enumerate(mem.regions):
         out += [f"#define R{k}_ORG 0x{org:04X}", f"#define R{k}_LEN {n}"]
-        out.append(f"#define R{k}_INIT {_hex(mem.image[org : org + n])}")
+        if not _slice(mem, used, k):
+            out.append(f"#define R{k}_INIT {_hex(mem.image[org : org + n])}")
     if "CODE" in used:
         lo, hi = mem.code_span
         out += [f"#define CODE_ORG 0x{lo:04X}", f"#define CODE_LEN {hi - lo}"]
@@ -77,7 +86,8 @@ def _header(mem, used, traps):
 
 
 def _dispatch(mem, helpers):
-    """``rd``/``wr`` over the regions, the volatile ranges and the out-of-bounds hooks."""
+    """``rd``/``wr`` over the regions, the volatile ranges and the out-of-bounds hooks, and
+    ``codechk``: whether a byte of the code span outside the data regions would change."""
     out = []
     regions = [f"R{k}" for k in range(len(mem.regions))]
     vol = " || ".join(
@@ -98,11 +108,11 @@ def _dispatch(mem, helpers):
         out += [f"if ({vol}) {{ io_write(a, v); return; }}"] if vol else []
         out += ["oob_wr(a, v);", "}"]
     if "codechk" in helpers:
-        out += [
-            "static uint8_t codechk(uint16_t a, uint8_t v) {",
-            "return (uint16_t)(a - CODE_ORG) < CODE_LEN && CODE[a - CODE_ORG] != v;",
-            "}",
-        ]
+        lo, hi = mem.code_span
+        inner = [r for r, (org, n) in zip(regions, mem.regions) if org < hi and org + n > lo]
+        out += ["static uint8_t codechk(uint16_t a, uint8_t v) {"]
+        out += [f"if ((uint16_t)(a - {r}_ORG) < {r}_LEN) return 0;" for r in inner]
+        out += ["return (uint16_t)(a - CODE_ORG) < CODE_LEN && CODE[a - CODE_ORG] != v;", "}"]
     return out
 
 
@@ -136,12 +146,14 @@ class Program:  # pylint: disable=too-many-instance-attributes
     jumps: dict | None = None
 
 
-def lift(image, entries, volatile, facts=None):
+def lift(image, entries, volatile, facts=None, loaded=None):
     """The static lift of ``entries`` as a :class:`Program` and its ``stats``; ``facts``
-    give computed-jump targets only."""
+    give computed-jump targets only, ``loaded`` the ``(lo, hi)`` the program was loaded to."""
     image = bytes(image)
     pcs = [pc for pc, _ in entries]
-    prog = wholeprog.lift(image, pcs, volatile, facts=facts)
+    prog = wholeprog.lift(
+        image, pcs, volatile, facts=facts, entry_sp=emit.ENTRY_REGS[3], loaded=loaded
+    )
     lifted = prog.functions
     rank = sorted(range(len(lifted)), key=lambda i: lifted[i]["pc"])
     remap = {i: j for j, i in enumerate(rank)}
@@ -167,15 +179,18 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     times["mlir"] = time.perf_counter() - t0
     t1 = time.perf_counter()
     code = code_bytes(p.image, p.starts)
+    tables = None
     if p.constant is not None:
         constant = np.zeros(0x10000, dtype=bool)
         constant[list(p.constant)] = True
         code &= constant
+        tables = constant & ~code_bytes(p.image, p.starts)
     loaded = p.loaded
     if loaded is None:
         span = np.flatnonzero(code)
         loaded = (int(span[0]), int(span[-1]) + 1) if len(span) else (0, 0)
-    mem = Memory(p.image, code, p.volatile, loaded, p.sensitive, pointer_pairs(p.image, p.starts))
+    pairs = pointer_pairs(p.image, p.starts)
+    mem = Memory(p.image, code, p.volatile, loaded, p.sensitive, pairs, tables)
     mod = printer.Module(top, mem)
     mod.prune()
     mod.partition()
@@ -194,14 +209,17 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         mod.regions_used | (set(range(len(mem.regions))) if helpers & {"rd", "wr"} else set())
     )
     c = [PROLOGUE.format(header=header)]
-    c += [f"uint8_t R{k}[R{k}_LEN] = {{R{k}_INIT}};" for k in regions]
-    code = "static const uint8_t CODE[CODE_LEN] = {CODE_INIT};"
-    if "codechk" in helpers:
-        c.append(code)
+    # With the code span in memory, the regions inside it are its slices: one copy of each byte.
+    if "CODE" in used:
+        c.append("uint8_t CODE[CODE_LEN] = {CODE_INIT};")
+    for k in regions:
+        if _slice(mem, used, k):
+            c.append(f"#define R{k} (CODE + (R{k}_ORG - CODE_ORG))")
+        else:
+            c.append(f"uint8_t R{k}[R{k}_LEN] = {{R{k}_INIT}};")
     oob = [OOB[h] for h in sorted(helpers & set(OOB))]
     if oob:
-        local = [code] if "oob_rd" in helpers and "codechk" not in helpers else []
-        c += ["#ifdef CGEN_OOB", *(d for d, _ in oob), "#else", *local, *(f for _, f in oob)]
+        c += ["#ifdef CGEN_OOB", *(d for d, _ in oob), "#else", *(f for _, f in oob)]
         c.append("#endif")
     c += _dispatch(mem, helpers)
     c += fns
@@ -236,7 +254,7 @@ def translate(  # pylint: disable=too-many-arguments
     reads at ``sensitive_reads`` are kept; ``facts`` supply computed-jump targets only."""
     t0 = time.perf_counter()
     jf = jump_facts(facts, image) if facts is not None else None
-    p, stats = lift(image, entries, volatile, jf)
+    p, stats = lift(image, entries, volatile, jf, loaded)
     p.sensitive, p.loaded = tuple(sensitive_reads), loaded
     lift_time = time.perf_counter() - t0
     c, h, info = render(p, header, prefix)

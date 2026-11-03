@@ -132,7 +132,7 @@ pub(crate) struct St {
     /// Known bits of `A`, `X` and `Y`.
     pub(crate) kb: [Kb; DATA],
     /// Table bytes `A`, `X` and `Y` hold.
-    tag: [Option<Tab>; DATA],
+    pub(crate) tag: [Option<Tab>; DATA],
     /// The top three stack bytes, from the top, where pushed since the function's entry.
     pub(crate) push: [Option<Tab>; 3],
     /// Tracked bytes ([`Code::vecs`]) whose contents are known, by address.
@@ -480,8 +480,14 @@ pub(crate) struct Code<'a> {
     pub(crate) cells: &'a FixedBitSet,
     /// `PLP` and `RTI` pull the decimal flag clear (guarded where emitted): nothing sets it.
     pub(crate) pull_clear: bool,
-    /// The bytes whose contents states track (the pointers of `JMP (ind)`), ascending.
+    /// The bytes whose contents states track (the pointers of `JMP (ind)` and the operands
+    /// of `JMP`/`JSR` through cells), ascending.
     pub(crate) vecs: Vec<u16>,
+    /// Index guards ([`crate::dispatch::Guard`]) by instruction: the register and the values
+    /// it holds when the instruction proceeds.
+    pub(crate) guards: FxHashMap<u16, (u8, Iv)>,
+    /// The bytes the facts saw written.
+    pub(crate) observed: FixedBitSet,
 }
 
 /// Whether the decimal flag can only be set by a pull from the stack: no `SED` among the
@@ -498,6 +504,20 @@ pub fn pull_clear(vars: &FxHashMap<u16, Vec<Var>>, entries: &[Entry]) -> bool {
 
 /// `st` after variant `v` at `pc`; its accesses are appended to `acc`.
 pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>) -> St {
+    let guarded;
+    let st = match code.guards.get(&pc) {
+        Some(&(r, ok)) => match meet(st.env[r as usize], ok) {
+            Some(m) if m != st.env[r as usize] => {
+                let mut g = st.clone();
+                g.env[r as usize] = m;
+                g.kb[r as usize] = g.kb[r as usize].meet(Kb::of(m));
+                guarded = g;
+                &guarded
+            }
+            _ => st,
+        },
+        None => st,
+    };
     let t = Template::of(v.op);
     let ops = t.ops();
     let b = operand_bytes(code.img, code.cells, pc, t.len);
@@ -1021,6 +1041,20 @@ pub struct Analysis {
     pub jumps: FxHashMap<u16, crate::dispatch::Jump>,
     /// Every store's addresses and values.
     pub stores: Vec<crate::dispatch::Store>,
+    /// Index guards the resolved transfers and stored table bytes need.
+    pub guards: Vec<crate::dispatch::Guard>,
+    /// The table bytes stored values were read from ([`crate::dispatch::tag_values`]).
+    pub reads: std::collections::BTreeSet<u16>,
+    /// The values of each byte some store writes ([`crate::dispatch::cell_values`]).
+    pub cellvals: FxHashMap<u16, Option<std::collections::BTreeSet<u8>>>,
+}
+
+/// What the analysis takes beyond the program: the index guards, the `[lo, hi)` the program
+/// was loaded to and the bytes the facts saw written.
+pub struct Given<'a> {
+    pub guards: &'a FxHashMap<u16, (u8, Iv)>,
+    pub loaded: Option<(u32, u32)>,
+    pub observed: &'a FixedBitSet,
 }
 
 /// Fill each variant's accesses from the interval states at its start. With `matched`, an
@@ -1034,7 +1068,9 @@ pub fn analyze(
     entries: &[Entry],
     matched: bool,
     disp: &FxHashSet<u16>,
+    given: &Given,
 ) -> Analysis {
+    let (guards, loaded, observed) = (given.guards, given.loaded, given.observed);
     let rets = returns(vars, matched, disp);
     let succ_of = |pc: u16| -> Vec<u16> {
         let mut s: Vec<u16> = vars[&pc]
@@ -1054,6 +1090,8 @@ pub fn analyze(
         cells,
         pull_clear: pull_clear(vars, entries),
         vecs: crate::dispatch::vectors(img, cells, vars),
+        guards: guards.clone(),
+        observed: observed.clone(),
     };
     let thr = Thresholds::new(vars, &code);
     let mut w = Work {
@@ -1194,19 +1232,44 @@ pub fn analyze(
         }
     }
     let sets = crate::dispatch::Sets {
+        guards,
         states,
         merged: &merged,
         ind: &ind,
         preds,
         roots: &roots,
     };
-    let stores = crate::dispatch::stores(&code, vars, &sets);
-    let jumps = crate::dispatch::jumps(&code, vars, &w.state, &sets, &stores);
+    let mut bytes = FixedBitSet::with_capacity(0x10000);
+    for (&pc, vs) in vars.iter() {
+        for v in vs {
+            for i in 0..Template::of(v.op).len as u16 {
+                bytes.insert(pc.wrapping_add(i) as usize);
+            }
+        }
+    }
+    let objs = crate::dispatch::Objects::new(&code, vars, &merged, &bytes, loaded);
+    let mut stores = crate::dispatch::stores(&code, vars, &sets);
+    let mut guards = Vec::new();
+    let mut reads = std::collections::BTreeSet::new();
+    crate::dispatch::tag_values(
+        &code,
+        vars,
+        &sets,
+        &objs,
+        &mut stores,
+        &mut guards,
+        &mut reads,
+    );
+    let cellvals = crate::dispatch::cell_values(img, &stores);
+    let jumps = crate::dispatch::jumps(&code, vars, &w.state, &sets, &objs, &stores, &cellvals);
     Analysis {
         from: merged.into_iter().map(|(pc, st)| (pc, st.from)).collect(),
         dec,
         ind,
         jumps,
         stores,
+        guards,
+        cellvals,
+        reads,
     }
 }

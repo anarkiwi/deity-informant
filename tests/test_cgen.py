@@ -185,6 +185,121 @@ msg:    .byte $11,$22,$33
 ptr:    .byte 0,0
 end:
 """
+PAGE0 = """
+entry:  AND #$01
+        BEQ zero
+        LDA #lo(msg)
+        STA $FB
+        LDA #hi(msg)
+        STA $FC
+        LDY #$01
+        BNE read
+zero:   STA $FB
+        STA $FC
+        LDY #$FB
+read:   LDA ($FB),Y
+        STA $C000
+        RTS
+msg:    .byte $11,$22
+end:
+"""
+PSTORE = """
+entry:  CLC
+        ADC #lo(buf)
+        STA $FB
+        LDA sel
+        STA $FC
+        LDY #$00
+        LDA #$5A
+        STA ($FB),Y
+        LDA ($FB),Y
+        STA $C000
+        RTS
+sel:    .byte hi(buf)
+buf:    .byte 0,0,0,0
+end:
+"""
+OPJMP = """
+entry:  INC cnt
+        AND #$03
+        TAY
+        LDA tlo,Y
+        STA site+1
+        LDA thi,Y
+        STA site+2
+site:   JMP j0
+j0:     LDA cnt
+        STA $C000
+        RTS
+j1:     STY $C001
+        RTS
+j2:     STX $C002
+        RTS
+j3:     LDA #$33
+        STA $C003
+        RTS
+tlo:    .byte lo(j0),lo(j1),lo(j2),lo(j3)
+thi:    .byte hi(j0),hi(j1),hi(j2),hi(j3)
+cnt:    .byte 0
+end:
+"""
+STRADDLE = """
+entry:  AND #$01
+        TAY
+        LDA tlo,Y
+        STA site+1
+site:   JMP j0
+j0:     LDA buf
+        LDY #$00
+        STA ($FB),Y
+        STA $C000
+        RTS
+j1:     INC buf
+        LDA buf
+        STA $C001
+        RTS
+tlo:    .byte lo(j0),lo(j1)
+buf:    .byte 7
+end:
+"""
+OPCALL = """
+entry:  CMP #$04
+        BCS call
+        TAY
+        LDA tlo,Y
+        STA site+1
+        RTS
+call:   AND #$03
+site:   JSR j0
+        STA $C000
+        RTS
+        .byte 0
+j0:     LDA #$10
+        RTS
+j1:     LDA #$11
+        RTS
+j2:     LDA #$12
+        RTS
+j3:     LDA #$13
+        RTS
+tlo:    .byte lo(j0),lo(j1),lo(j2),lo(j3)
+end:
+"""
+STACKOP = """
+entry:  LDA site
+        PHA
+        LDA #$60
+        STA site
+        JSR site
+        PLA
+        STA site
+        JSR site
+        RTS
+site:   LDA #$11
+        STA $C000
+        RTS
+end:
+"""
 CLEAR = """
 entry:  CMP #$01
         BEQ clear
@@ -511,15 +626,8 @@ def test_computed_jumps_from_the_code(prefix, tmp_path, name):
     assert all(f"CODE_ORG + 0x{t - org:X}" in c for t in targets[:-1])
 
 
-@pytest.mark.parametrize(
-    "edit",
-    [
-        ("AND #$03\n", ""),
-        ("entry:  AND #$03", "entry:  LDX tlo\n        STX tlo\n        AND #$03"),
-    ],
-    ids=["unbounded", "written"],
-)
-def test_unresolved_jump_traps(prefix, tmp_path, edit):
+def test_unresolved_jump_traps(prefix, tmp_path):
+    edit = ("entry:  AND #$03", "entry:  LDX tlo\n        STX tlo\n        AND #$03")
     img, labels, loaded = assemble(LOHI.replace(*edit))
     c, h, info = translate(prefix, img, labels, loaded)
     assert not info["jumps"]
@@ -532,6 +640,77 @@ def test_unresolved_jump_traps(prefix, tmp_path, edit):
     assert info["facts_edges"] and not info["jumps"]
     (tmp_path / "facts").mkdir()
     play(tmp_path / "facts", c, h, img, labels, entry_calls(range(4), 2))
+
+
+def test_page0_pointer_is_not_a_stack_access(prefix, tmp_path):
+    _, _, info = check(prefix, tmp_path, PAGE0, entry_calls([0, 1, 0, 1], 2))
+    assert not info["traps"]
+    assert info["stats"]["ptr_guards"] == info["stats"]["stack_guards"] == 0
+
+
+def test_only_a_store_that_may_hit_the_stack_is_checked(prefix, tmp_path):
+    _, _, info = check(prefix, tmp_path, PSTORE, entry_calls([0, 1, 2, 3, 1], 2))
+    st = info["stats"]
+    assert (st["ptr_guards"], st["stack_guards"], st["code_guards"]) == (0, 1, 1)
+    assert len(info["traps"]) == 2
+
+
+def test_jump_through_operands_written_from_a_table(prefix, tmp_path):
+    c, _, info = check(prefix, tmp_path, OPJMP, entry_calls([0, 1, 2, 3, 2, 0]))
+    [(site, targets)] = info["jumps"].items()
+    _, labels, _ = assemble(OPJMP)
+    assert site == labels["site"] and targets == [labels[f"j{i}"] for i in range(4)]
+    assert not info["traps"] and "switch (" in c
+
+
+def test_table_region_past_the_code_span(prefix, tmp_path):
+    c, h, info = check(prefix, tmp_path, STRADDLE, entry_calls([0, 1, 1, 0, 1, 0]))
+    assert "codechk" in c and "CODE_INIT" in h and len(info["jumps"]) == 1
+    _, labels, _ = assemble(STRADDLE)
+    [k] = [k for k, (org, n) in enumerate(info["regions"]) if org <= labels["buf"] < org + n]
+    assert f"uint8_t R{k}[R{k}_LEN]" in c and info["code_span"][1] > labels["tlo"]
+
+
+def test_call_through_an_operand_written_earlier(prefix, tmp_path):
+    calls = [("entry", a) for a in (1, 4, 4, 3, 5, 0, 6, 2, 7)]
+    _, _, info = check(prefix, tmp_path, OPCALL, calls)
+    _, labels, _ = assemble(OPCALL)
+    assert info["jumps"] == {labels["site"]: [labels[f"j{i}"] for i in range(4)]}
+    assert not info["traps"]
+
+
+def test_opcode_restored_through_the_stack(prefix, tmp_path):
+    _, _, info = check(prefix, tmp_path, STACKOP, entry_calls([0, 1, 2]))
+    assert not info["traps"]
+    assert (info["stats"]["opcode_cells"], info["stats"]["code_guards"]) == (1, 0)
+
+
+def test_split_table_index_past_its_extent_traps(prefix, tmp_path):
+    img, labels, loaded = assemble(LOHI.replace("AND #$03\n", ""))
+    c, h, info = translate(prefix, img, labels, loaded)
+    [targets] = info["jumps"].values()
+    assert targets == sorted(labels[f"j{i}"] for i in range(4))
+    [(k, key)] = info["traps"].items()
+    assert key == ("deopt", labels["entry"] + 1) and f"trap({k})" in c
+    play(tmp_path, c, h, img, labels, entry_calls(range(4), 2))
+    for a in (4, 0xFF):
+        (tmp_path / str(a)).mkdir()
+        with pytest.raises(AssertionError, match="trap"):
+            play(tmp_path / str(a), c, h, img, labels, [("entry", a)])
+
+
+def test_or_ed_high_byte_relocates(prefix, tmp_path):
+    src = OPJMP.replace("        LDA thi,Y\n        STA site+2\n", "")
+    outs = []
+    for org in (0x1000, 0x2300):
+        img, labels, loaded = assemble(src, org)
+        c, h, info = translate(prefix, img, labels, loaded)
+        assert len(info["jumps"][labels["site"]]) == 4 and not info["traps"]
+        (tmp_path / str(org)).mkdir()
+        play(tmp_path / str(org), c, h, img, labels, entry_calls(range(4), 2))
+        outs.append(c)
+    assert outs[0] == outs[1] and "| CODE_ORG" in outs[0]
+    assert not re.search(r"0x1[0-9A-F]{3}\b|0x23[0-9A-F]{2}\b", outs[0])
 
 
 def test_jump_table_data_and_relocation_invariance(prefix, tmp_path):

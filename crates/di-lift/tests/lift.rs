@@ -107,6 +107,7 @@ fn cycles_budget_and_stack_wrap() {
     let cyc = Opts {
         optimize: true,
         cycles: true,
+        ..Opts::default()
     };
     let p = lift_with(&img, &es, &[(0xc000, 0xc100)], &f, cyc);
     assert!(diff_capped(&img, &p, &calls(10, |_| 0), IO, 150) > 0);
@@ -171,6 +172,7 @@ fn guarded_stack_and_forced_page1_access() {
         let opts = Opts {
             optimize: true,
             cycles,
+            ..Opts::default()
         };
         let p = lift_with(&img, &entries(&pc), &[(0xc000, 0xc100)], &f, opts);
         assert_eq!(diff(&img, &p, &forced, IO), 3);
@@ -216,6 +218,7 @@ fn private_heights(
         let opts = Opts {
             optimize: true,
             cycles,
+            ..Opts::default()
         };
         let q = lift_with(&img, &entries(&[pc]), &[(0xc000, 0xc100)], &f, opts);
         assert!(q.stats.stack_private);
@@ -300,6 +303,7 @@ fn soft_deopt_resumes_with_folded_register() {
         let opts = Opts {
             optimize: true,
             cycles,
+            ..Opts::default()
         };
         let p = lift_with(&img, &entries(&[pc]), &[(0xc000, 0xc100)], &f, opts);
         assert!(p.stats.code_guards > 0);
@@ -331,6 +335,7 @@ fn forced_entry_sp(prog: &[(u16, &[u8])], pc: u16, seen: &[u8], sp: u8) {
         let opts = Opts {
             optimize: true,
             cycles,
+            ..Opts::default()
         };
         let q = lift_with(&img, &entries(&[pc]), &[(0xc000, 0xc100)], &f, opts);
         assert!(diff_at(&img, &q, &acc_calls(seen), IO, 1_000_000, sp) > 0);
@@ -398,6 +403,7 @@ fn capped(prog: &[(u16, &[u8])], pc: u16, n: usize, max: u64, halt: di_pcode::Ha
         let opts = Opts {
             optimize: true,
             cycles,
+            ..Opts::default()
         };
         let p = lift_with(&img, &entries(&[pc]), &[(0xc000, 0xc100)], &f, opts);
         assert_eq!(p.stats.budget_checks > 0, !cycles);
@@ -437,6 +443,7 @@ fn finite_loop_under_a_budget() {
         let opts = Opts {
             optimize: true,
             cycles,
+            ..Opts::default()
         };
         let p = lift_with(
             &img,
@@ -468,6 +475,7 @@ fn banked(prog: &[(u16, &[u8])], pc: u16, seen: &[u8], forced: &[u8]) -> Program
         let opts = Opts {
             optimize: true,
             cycles,
+            ..Opts::default()
         };
         let q = di_lift::lift_banked(
             &img,
@@ -562,6 +570,7 @@ fn unbounded_index_store_keeps_its_guard() {
         let opts = Opts {
             optimize: true,
             cycles,
+            ..Opts::default()
         };
         let p = lift_with(&img, &entries(&[0x1000]), &[(0xc000, 0xc100)], &f, opts);
         assert_eq!(p.stats.code_guards, 1);
@@ -585,6 +594,7 @@ fn computed_jumps_resolve_without_facts() {
             let opts = Opts {
                 optimize: true,
                 cycles,
+                ..Opts::default()
             };
             let p = lift_with(
                 &img,
@@ -601,26 +611,44 @@ fn computed_jumps_resolve_without_facts() {
     }
 }
 
-/// An index the code does not bound, or a table a store may write, leaves the jump
-/// unresolved: it deopts.
+/// A table a store may write leaves the jump unresolved: it deopts.
 #[test]
-fn unbounded_or_written_tables_stay_unresolved() {
-    let mut unbounded = progs::JMPIND[0].1.to_vec();
-    unbounded[..2].copy_from_slice(&[0xea, 0xea]);
+fn written_tables_stay_unresolved() {
     let mut written = progs::JMPIND[0].1.to_vec();
     written[..2].copy_from_slice(&[0x8d, 0x23]);
     written.insert(2, 0x10);
-    for prog in [unbounded, written] {
-        let img = image(&[(0x1000, &prog)]);
-        let p = lift(
-            &img,
-            &entries(&[0x1000]),
-            &[(0xc000, 0xc100)],
-            &Facts::default(),
-        );
-        assert!(p.jumps.is_empty());
-        assert!(diff(&img, &p, &acc_calls(&[0]), IO) > 0);
-    }
+    let img = image(&[(0x1000, &written)]);
+    let p = lift(
+        &img,
+        &entries(&[0x1000]),
+        &[(0xc000, 0xc100)],
+        &Facts::default(),
+    );
+    assert!(p.jumps.is_empty());
+    assert!(diff(&img, &p, &acc_calls(&[0]), IO) > 0);
+}
+
+/// An index the code does not bound reads the table inside its extent, which ends with the
+/// loaded program: the jump goes to those words, and an index past them deopts at the load.
+#[test]
+fn unbounded_index_reads_inside_the_extent() {
+    let mut unbounded = progs::JMPIND[0].1.to_vec();
+    unbounded[..2].copy_from_slice(&[0xea, 0xea]);
+    let img = image(&[(0x1000, &unbounded)]);
+    let opts = Opts {
+        loaded: Some((0x1000, 0x1000 + unbounded.len() as u32)),
+        ..Opts::default()
+    };
+    let p = lift_with(
+        &img,
+        &entries(&[0x1000]),
+        &[(0xc000, 0xc100)],
+        &Facts::default(),
+        opts,
+    );
+    assert_eq!(p.jumps, [(0x1010, vec![0x1013, 0x1017, 0x101b, 0x1022])]);
+    assert_eq!(diff(&img, &p, &acc_calls(&[0, 1, 2, 3, 2, 0]), IO), 0);
+    assert!(diff(&img, &p, &acc_calls(&[4]), IO) > 0);
 }
 
 /// A counted loop clearing operands with `STA abs,X` makes them cells (no code check), and a

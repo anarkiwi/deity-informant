@@ -44,10 +44,12 @@ caller's return address. `tools/cgenplay.c` is a host harness.
 
 ## Pipeline
 
-1. **Lift.** `wholeprog.lift(image, entries, volatile, facts)`, static: no facts but the
-   targets of computed jumps the code does not resolve. Functions are named by ascending entry
-   PC, deopts become `trap(k)` with `k` numbered in the order the lift's functions and blocks
-   meet them.
+1. **Lift.** `wholeprog.lift(image, entries, volatile, facts, entry_sp=0xFD, loaded)`,
+   static: no facts but the targets of computed jumps the code does not resolve; the entry SP
+   is the calling convention below and `loaded` ends every table
+   ([wholeprog](wholeprog.md#static-proofs), *Table extents*, *Stack extent*). Functions are
+   named by ascending entry PC, deopts become `trap(k)` with `k` numbered in the order the
+   lift's functions and blocks meet them.
 2. **MLIR** (`emit.py`). Each lifted function is a private `func.func` taking and returning the
    register file as values; its registers, stack slots and block-crossing temporaries are
    rank-0 `memref.alloca`s, memory one global `@M`, volatile accesses `io_read`/`io_write`
@@ -136,8 +138,10 @@ are defined before callers; only recursive functions need prototypes.
 ## Memory
 
 - **Constant code** is the bytes of the planned instructions that the lift treats as constant
-  (no store's address set holds them) and that no constant-address store writes. It is the
-  `.h`'s `CODE` (the span from the first such byte to the last).
+  (no store's address set holds them) and that no constant-address store writes. The `.h`'s
+  `CODE` is the span from the first such byte, or byte of a table the lift read jump targets
+  or cell values from, to the last; when the `.c` needs it, the data regions inside it are
+  its slices (`#define R2 (CODE + (R2_ORG - CODE_ORG))`), so each byte is held once.
 - **Data regions** `R0, R1, ...` (ascending address) are the maximal runs of other bytes that
   some access may touch, outside volatile ranges. An access's interval comes from its address
   expression (constants, an 8-bit index adds `[0, 255]`, masks, shifts, the hull of what flows
@@ -152,8 +156,9 @@ are defined before callers; only recursive functions need prototypes.
   symbols, so data pointers holding original addresses resolve), the volatile ranges, then
   `oob_rd`/`oob_wr`.
 - `oob_rd` returns the original byte of `CODE` (0 outside it), `oob_wr` discards; defining
-  `CGEN_OOB` replaces both with the host's. A store the lift found may hit constant code is
-  followed by `codechk`, which traps when the byte would change.
+  `CGEN_OOB` replaces both with the host's. A store the lift found may hit constant code or a
+  table it read is followed by `codechk`, which traps when a byte of the span outside the data
+  regions would change.
 
 Address constants print relative to the region, code span or loaded image holding them
 (`R2_ORG + 0x10`, `CODE_ORG + 0x21`, `IMG_ORG + ...`): a constant reaching an access address
@@ -161,32 +166,45 @@ through additions, casts, selects and block arguments, the cases of a computed-j
 pair of constant byte stores into a pointer pair (the zero-page pointer of a `(zp),Y`/`(zp,X)`,
 a `JMP (ind)` vector, a three-byte operand, or two stack bytes, as a `JSR`'s return address
 when the stack is kept in memory) whose 16-bit value lies in the program: `LDA #<tab` then
-prints `(uint8_t)(R3_ORG + 4)`. Not covered: an address half stored without its partner in the
-same block, or used other than as an address (compared, added to data, or-ed into a computed
-jump's target).
+prints `(uint8_t)(R3_ORG + 4)`. A constant or-ed into a computed jump's target (the high byte of a
+`JMP` whose low operand byte is a cell) prints so too: `R16[0] | CODE_ORG`. Not covered: an
+address half stored without its partner in the same block, or used other than as an address
+(compared, added to data).
 
 ## Traps and computed jumps
 
-The lift resolves a `JMP (ind)` whose pointer is stored from loads of a constant table at a
-bounded index (or from constants, or is a constant word of the code span no store writes),
-and an `RTS`/`RTI` that returns through an address pushed so, from the code alone
-([wholeprog](wholeprog.md#static-proofs), *Computed jumps*): the targets are the table's words
-over the index's values, which no store may change. Such a jump is a switch over code
-addresses (`case CODE_ORG + 0x23:`) whose last target is the default, with no trap, and
-`info["jumps"]` lists them (`{pc: [target, ...]}`). Programs with the same code and tables
-give the same `.c`; a table a store may write, or an index the code does not bound, leaves the
-transfer unresolved. An unresolved one, like a transfer through written operands, becomes a
-switch whose default traps; `facts` supplies its targets: `jump_facts` keeps only the edges
-leaving those instructions, and the `.c` then depends on the run that made the facts, which
-`info["facts_edges"]` reports.
+The lift resolves a `JMP (ind)` whose pointer is stored from loads of a constant table (or
+from constants, or is a constant word of the code span no store writes), a `JMP`/`JSR` whose
+operand bytes a store writes so (in the same call, or earlier: then from the values every
+store may leave in them), and an `RTS`/`RTI` that returns through an address pushed so, from
+the code alone ([wholeprog](wholeprog.md#static-proofs), *Computed jumps*): the targets are
+the table's words over the index values inside the table's extent, which no store may change.
+An index the code does not bound, such as a command byte of song data, reads the table up to
+where the layout ends it (*Table extents*: a split table's low column at its high column, any
+column at the next object the code accesses or the end of `loaded`), and an index guard
+traps before a load past it. Such a jump is a switch over code addresses (`case CODE_ORG +
+0x23:`) whose last target is the default, with no trap; a `JSR` through cells to functions is
+a switch of calls. `info["jumps"]` lists them (`{pc: [target, ...]}`). Programs with the same
+code and tables give the same `.c`; a table a store with known addresses may write leaves the
+transfer unresolved. An unresolved one becomes a switch whose default traps; `facts` supplies
+its targets: `jump_facts` keeps only the edges leaving those instructions, and the `.c` then
+depends on the run that made the facts, which `info["facts_edges"]` reports.
 
 Code cells come from the lift too: every byte of a reached instruction that a store's address
 set holds (an indexed store's base plus each value of its bounded index, as a player clearing
 its own operands with `STA abs,X` in a counted loop) is data, so its stores and the
-instruction's reads go to its region with no `codechk`. Other traps: a deopt the lift keeps
-(an opcode cell some store writes with unknown values holding a value outside its set, a
-store whose address is unknown into constant code that changes it, a guard it could not
-prove).
+instruction's reads go to its region with no `codechk`. An opcode cell every store writes
+with known values (constants, table bytes, or its own byte saved with `PHA` and restored with
+`PLA`) dispatches over them with no trap. Other traps: a deopt the lift keeps (an index past
+its table's extent, an opcode cell some store writes with unknown values holding a value
+outside its set, a store whose address is unknown into constant code or a table that
+changes it, a store that may hit the stack, a guard it could not prove).
+
+The stack is the calling convention's: every entry starts at `SP = $FD`, so the stack bytes
+the program can hold are known (*Stack extent*). A pointer access is not checked against
+page 1 by its pointer's value: loads read the stack exactly (pushes and return addresses are
+also stored where a load may reach page 1), and a store that may hit the stack bytes traps
+before it does.
 
 ## Validation
 
@@ -195,7 +213,10 @@ prove).
 calls, memory persisting, with `wholeprog.reference_call`; it checks relocation and data
 invariance, the absence of `goto`, the structuring (shared tails, multi-exit and two-entry
 loops, switches from compare chains and jump tables, kept callees' parameters, wrapping
-addresses), determinism (repeated, with the blocks shuffled and under other hash seeds) and an
+addresses), computed jumps and calls through operands written from tables (in the same call
+or an earlier one), an index past a split table's extent trapping, an opcode restored through
+the stack, a pointer into zero page with no stack check, a jump's or-ed high byte under
+relocation, determinism (repeated, with the blocks shuffled and under other hash seeds) and an
 llvm-mos build. `tools/cgenplay.py` does the same for a PSID or raw image (`--loaded LO-HI`
 names the program's bytes in a raw 64 KiB state, as a memory dump after an init routine) and
 prints `tools/cmetrics.py`'s table, the sizes, the computed jumps resolved from the code, the

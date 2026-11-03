@@ -25,7 +25,7 @@ pub struct Shared<'a> {
     pub img: &'a [u8; 0x10000],
     pub g: &'a Graph,
     pub volatile: &'a [(u32, u32)],
-    /// Prefix counts of constant code bytes (`code - cells`).
+    /// Prefix counts of the bytes taken as constant: code (`code - cells`) and tables.
     pub constcode: Vec<u32>,
     /// Only pushes and pulls reach page 1, given a check before every other access that may.
     pub private: bool,
@@ -47,6 +47,9 @@ pub struct Shared<'a> {
     pub slots: Vec<FixedBitSet>,
     /// The `[lo, hi]` page-1 addresses each instruction reached in the facts.
     pub seen: FxHashMap<u16, (u16, u16)>,
+    /// With a declared entry SP and a private stack, the addresses the stack may hold: only
+    /// stores that may hit them are checked (loads read the shadowed bytes exactly).
+    pub stack: Option<Iv>,
 }
 
 impl Shared<'_> {
@@ -350,6 +353,98 @@ impl<'a> Em<'a, '_> {
         let x = self.side_exit(hit, true, |em| em.deopt(k(pc as u32, 2)));
         self.f.blocks[x as usize].replay = Some(self.istart);
     }
+    /// A `CALL` of `fs[0]`, or with `tv` a `BRANCHIND` on `tv` to a `CALL` of each of `fs`
+    /// (every target when the jump is resolved from the code), returning to `ret`.
+    #[allow(clippy::too_many_arguments)]
+    fn call(
+        &mut self,
+        fs: &[u16],
+        tv: Option<Vn>,
+        ret: u16,
+        c: u8,
+        mut chk: Vec<Vn>,
+        (cyc, maxpen): (u32, u32),
+        port: bool,
+    ) {
+        let ra = ret.wrapping_sub(1) as u32;
+        if self.sh.private {
+            let bytes: &[u32] = if self.sh.shadow {
+                &[ra >> 8, ra & 0xff]
+            } else {
+                &[]
+            };
+            for &b in bytes {
+                self.store_stack(k(b, 1));
+                self.emit(Opc::IntSub, r1(R::SP), r1(R::SP), k(1, 1), 0);
+            }
+            if !self.sh.shadow {
+                self.emit(Opc::IntSub, r1(R::SP), r1(R::SP), k(2, 1), 0);
+            }
+        } else {
+            self.push(k(ra >> 8, 1), &mut chk);
+            self.push(k(ra & 0xff, 1), &mut chk);
+        }
+        self.account(cyc, maxpen);
+        self.check(chk, tv.unwrap_or(k(fs[0] as u32, 2)));
+        self.flush();
+        let fis: Vec<u32> = fs.iter().map(|f| self.sh.fidx[&(*f, c)]).collect();
+        let rb = self.new_block(ret);
+        match tv {
+            None => {
+                self.emit(Opc::Call, NONE, k(ra, 2), NONE, fis[0]);
+                self.emit(Opc::Branch, NONE, NONE, NONE, rb);
+            }
+            Some(tv) => {
+                let pc = self.f.blocks[self.cur].pc;
+                let t: Vec<(u16, u32)> = fs.iter().map(|&f| (f, self.new_block(pc))).collect();
+                self.f.tables.push(t.clone());
+                let i = self.f.tables.len() - 1;
+                self.f.closed.grow(i + 1);
+                self.f.closed.set(i, self.sh.g.stat.contains_key(&pc));
+                self.emit(Opc::BranchInd, NONE, tv, NONE, i as u32);
+                for ((_, b), &fi) in t.iter().zip(&fis) {
+                    self.cur = *b as usize;
+                    self.emit(Opc::Call, NONE, k(ra, 2), NONE, fi);
+                    self.emit(Opc::Branch, NONE, NONE, NONE, rb);
+                }
+            }
+        }
+        self.cur = rb as usize;
+        if fis
+            .iter()
+            .any(|&fi| self.sh.ret_guard.contains(fi as usize))
+        {
+            let s1 = self.op(Opc::IntSub, 1, r1(R::SP), k(1, 1));
+            let a = self.zext(s1, 2);
+            let a = self.op(Opc::IntOr, 2, a, k(0x100, 2));
+            let lo = self.load(a, PAGE1, mem::STACK);
+            let a = self.sp_addr();
+            let hi = self.load(a, PAGE1, mem::STACK);
+            let w = self.word(lo, hi);
+            let bad = self.op(Opc::IntNotEqual, 1, w, k(ra, 2));
+            self.side_exit(bad, false, |em| {
+                em.touch_ret(w, Iv::full(2));
+                let t = em.op(Opc::IntAdd, 2, w, k(1, 2));
+                em.deopt(t);
+            });
+        }
+        self.touch_ret(k(ra, 2), Iv::exact(ra));
+        if port {
+            let keys = self.succ.to_vec();
+            self.bank_dispatch(ret, &keys);
+        } else {
+            let b = self.to(ret);
+            self.emit(Opc::Branch, NONE, NONE, NONE, b);
+        }
+    }
+    /// Deopt to `pc` before the access at `addr` when it lies in `r`.
+    fn range_guard(&mut self, addr: Vn, pc: u16, r: Iv) {
+        let off = self.op(Opc::IntSub, 2, addr, k(r.lo, 2));
+        let hit = self.op(Opc::IntLess, 1, off, k(r.hi - r.lo + 1, 2));
+        self.n.stack_guards += 1;
+        let x = self.side_exit(hit, true, |em| em.deopt(k(pc as u32, 2)));
+        self.f.blocks[x as usize].replay = Some(self.istart);
+    }
     /// Whether an access in `iv` may reach a volatile address in the current configuration.
     fn reaches(&self, iv: Iv) -> bool {
         self.sh.volatile(iv)
@@ -467,7 +562,7 @@ impl<'a> Em<'a, '_> {
         self.f.closed.set(i, closed);
         i as u32
     }
-    fn goto(&mut self, t: &Tg, calc: impl FnOnce(&mut Self) -> Vn) {
+    fn goto(&mut self, pc: u16, t: &Tg, calc: impl FnOnce(&mut Self) -> Vn) {
         match t {
             Tg::At(a) => {
                 let b = self.to(*a);
@@ -475,7 +570,7 @@ impl<'a> Em<'a, '_> {
             }
             Tg::Calc(ts) => {
                 let v = calc(self);
-                let tb = self.table(ts, false);
+                let tb = self.table(ts, self.sh.g.stat.contains_key(&pc));
                 self.emit(Opc::BranchInd, NONE, v, NONE, tb);
             }
         }
@@ -646,7 +741,14 @@ impl<'a> Em<'a, '_> {
                     self.touch(a, b, ac.addr);
                     continue;
                 }
-                if !stack
+                if let (Some(r), false, Check::Own, Opc::Store) =
+                    (self.sh.stack, stack, page1_check(opc, ai), op.opc)
+                {
+                    if ac.addr.meets(r.lo, r.hi + 1) {
+                        self.range_guard(a, pc, r);
+                    }
+                } else if self.sh.stack.is_none()
+                    && !stack
                     && page1_check(opc, ai) == Check::Own
                     && self.sh.private
                     && ac.page1(&self.sh.g.prot.win)
@@ -706,6 +808,12 @@ impl<'a> Em<'a, '_> {
             H::Known(h) if self.promote => Some(h),
             _ => None,
         };
+        if let Some(&(r, ok)) = self.sh.g.guards.get(&pc) {
+            let off = self.op(Opc::IntSub, 1, r1(r as usize), k(ok.lo, 1));
+            let out = self.op(Opc::IntLess, 1, k(ok.hi - ok.lo, 1), off);
+            let x = self.side_exit(out, true, |em| em.deopt(k(pc as u32, 2)));
+            self.f.blocks[x as usize].replay = Some(self.istart);
+        }
         let next = pc.wrapping_add(t.len as u16);
         let bytes = operand_bytes(self.sh.img, &self.sh.g.cells, pc, t.len);
         // Operand bytes that are cells are read once, before the instruction's ops.
@@ -872,7 +980,7 @@ impl<'a> Em<'a, '_> {
             Ctl::Jmp(tg) => {
                 self.account(cyc, maxpen);
                 self.flush();
-                self.goto(tg, |em| slot(em, Slot::Word, 2));
+                self.goto(pc, tg, |em| slot(em, Slot::Word, 2));
             }
             Ctl::JmpInd(ts) => {
                 let (lo_a, hi_a, iv) = match bytes {
@@ -906,55 +1014,11 @@ impl<'a> Em<'a, '_> {
                 self.emit(Opc::BranchInd, NONE, tgt, NONE, tb);
             }
             Ctl::Call { f, ret, c } => {
-                let ra = ret.wrapping_sub(1) as u32;
-                if self.sh.private {
-                    let bytes: &[u32] = if self.sh.shadow {
-                        &[ra >> 8, ra & 0xff]
-                    } else {
-                        &[]
-                    };
-                    for &b in bytes {
-                        self.store_stack(k(b, 1));
-                        self.emit(Opc::IntSub, r1(R::SP), r1(R::SP), k(1, 1), 0);
-                    }
-                    if !self.sh.shadow {
-                        self.emit(Opc::IntSub, r1(R::SP), r1(R::SP), k(2, 1), 0);
-                    }
-                } else {
-                    self.push(k(ra >> 8, 1), &mut chk);
-                    self.push(k(ra & 0xff, 1), &mut chk);
-                }
-                self.account(cyc, maxpen);
-                self.check(chk, k(*f as u32, 2));
-                self.flush();
-                let fi = self.sh.fidx[&(*f, *c)];
-                self.emit(Opc::Call, NONE, k(ra, 2), NONE, fi);
-                let rb = self.new_block(*ret);
-                self.emit(Opc::Branch, NONE, NONE, NONE, rb);
-                self.cur = rb as usize;
-                if self.sh.ret_guard.contains(fi as usize) {
-                    let s1 = self.op(Opc::IntSub, 1, r1(R::SP), k(1, 1));
-                    let a = self.zext(s1, 2);
-                    let a = self.op(Opc::IntOr, 2, a, k(0x100, 2));
-                    let lo = self.load(a, PAGE1, mem::STACK);
-                    let a = self.sp_addr();
-                    let hi = self.load(a, PAGE1, mem::STACK);
-                    let w = self.word(lo, hi);
-                    let bad = self.op(Opc::IntNotEqual, 1, w, k(ra, 2));
-                    self.side_exit(bad, false, |em| {
-                        em.touch_ret(w, Iv::full(2));
-                        let t = em.op(Opc::IntAdd, 2, w, k(1, 2));
-                        em.deopt(t);
-                    });
-                }
-                self.touch_ret(k(ra, 2), Iv::exact(ra));
-                if arm.port {
-                    let keys = self.succ.to_vec();
-                    self.bank_dispatch(*ret, &keys);
-                } else {
-                    let b = self.to(*ret);
-                    self.emit(Opc::Branch, NONE, NONE, NONE, b);
-                }
+                self.call(&[*f], None, *ret, *c, chk, (cyc, maxpen), arm.port);
+            }
+            Ctl::CallInd { fs, ret, c } => {
+                let tv = slot(self, Slot::Word, 2);
+                self.call(fs, Some(tv), *ret, *c, chk, (cyc, maxpen), arm.port);
             }
             Ctl::PushJmp { t: tg, ret } => {
                 let ra = ret.wrapping_sub(1) as u32;
@@ -968,7 +1032,7 @@ impl<'a> Em<'a, '_> {
                 };
                 self.check(chk, to);
                 self.flush();
-                self.goto(tg, |_| tv.unwrap());
+                self.goto(pc, tg, |_| tv.unwrap());
             }
             Ctl::Return => {
                 self.emit(Opc::IntAdd, r1(R::SP), r1(R::SP), k(2, 1), 0);

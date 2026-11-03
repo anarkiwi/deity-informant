@@ -297,9 +297,12 @@ def test_no_facts_is_exact():
     differential(img, prog, pc, [(0, a) for a in range(4)])
     assert not prog.deopts and len(prog.jumps[labels["entry"] + 16]) == 4
     img, labels = assemble(JMPIND.replace("AND #$03\n        ASL A", "ASL A"))
-    prog = wholeprog.lift(img, pc, [IO])
+    loaded = (pc[0], labels["vec"] + 8)
+    prog = wholeprog.lift(img, pc, [IO], loaded=loaded)
     differential(img, prog, pc, [(0, a) for a in range(4)])
-    assert sum(prog.deopts.values()) == 4 and not prog.jumps
+    assert not prog.deopts and len(prog.jumps[labels["entry"] + 14]) == 4
+    differential(img, prog, pc, [(0, 4)])
+    assert sum(prog.deopts.values()) == 1
 
 
 def test_matches_constant_code():

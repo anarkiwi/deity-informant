@@ -62,6 +62,12 @@ pub enum Ctl {
         ret: u16,
         c: u8,
     },
+    /// `JSR` through cell operands to functions lifted separately: a `CALL` of the target.
+    CallInd {
+        fs: Vec<u16>,
+        ret: u16,
+        c: u8,
+    },
     /// `JSR` whose callee is lifted inline: push the return address and jump.
     PushJmp {
         t: Tg,
@@ -302,7 +308,7 @@ impl Plan {
                     }
                     (a.defd, a.above, a.ptr) = (p.defd, p.above, p.ptr);
                 }
-                if matches!(arm.ctl, Ctl::Call { .. }) {
+                if matches!(arm.ctl, Ctl::Call { .. } | Ctl::CallInd { .. }) {
                     x = TOP_ENV;
                 }
                 for j in arm.succ.iter().filter_map(|k| idx.get(k).copied()) {
@@ -337,9 +343,10 @@ impl Plan {
         self.nodes
             .values()
             .flat_map(|n| &n.arms)
-            .filter_map(|a| match a.ctl {
-                Ctl::Call { f, c, .. } => Some((f, c)),
-                _ => None,
+            .flat_map(|a| match &a.ctl {
+                Ctl::Call { f, c, .. } => vec![(*f, *c)],
+                Ctl::CallInd { fs, c, .. } => fs.iter().map(|&f| (f, *c)).collect(),
+                _ => Vec::new(),
             })
     }
 }
@@ -451,6 +458,17 @@ fn step(
             s.succ = vec![(*ret, h)];
             s.ctl = Ctl::Call {
                 f: *f,
+                ret: *ret,
+                c,
+            };
+        }
+        Flow::Jsr {
+            t: Tg::Calc(fs),
+            ret,
+        } if !fs.is_empty() && fs.iter().all(|f| calls.contains(f)) => {
+            s.succ = vec![(*ret, h)];
+            s.ctl = Ctl::CallInd {
+                fs: fs.clone(),
                 ret: *ret,
                 c,
             };
@@ -741,7 +759,7 @@ pub fn plan(
 /// Whether an arm may change the configuration: it stores to the port, or `CALL`s with a
 /// bank map (cleared by [`plan_all`] for callees that cannot).
 fn port_arm(v: &Var, ctl: &Ctl, bank: Option<&BankMap>) -> bool {
-    writes_port(v, bank) || bank.is_some() && matches!(ctl, Ctl::Call { .. })
+    writes_port(v, bank) || bank.is_some() && matches!(ctl, Ctl::Call { .. } | Ctl::CallInd { .. })
 }
 
 /// Plans for `entries` (outermost, entered in the configurations given per entry) and every
@@ -753,10 +771,11 @@ pub fn plan_all(g: &Graph, entries: &[(u16, Vec<u8>)], seen: &Seen) -> Vec<Plan>
         .vars
         .values()
         .flatten()
-        .filter_map(|v| match v.flow {
-            Flow::Jsr { t: Tg::At(f), .. } if g.vars.contains_key(&f) => Some(f),
-            _ => None,
+        .flat_map(|v| match &v.flow {
+            Flow::Jsr { t, .. } => t.all().to_vec(),
+            _ => Vec::new(),
         })
+        .filter(|f| g.vars.contains_key(f))
         .collect();
     loop {
         let bad: Vec<u16> = calls
@@ -811,8 +830,13 @@ pub fn plan_all(g: &Graph, entries: &[(u16, Vec<u8>)], seen: &Seen) -> Vec<Plan>
         for p in &mut plans {
             for (k, n) in p.nodes.iter_mut() {
                 for (v, a) in g.vars[&k.0].iter().zip(&mut n.arms) {
-                    if let Ctl::Call { f, c, .. } = a.ctl {
-                        if !porty[idx[&(f, c)]] && !writes_port(v, seen.bank) {
+                    let fs: Vec<(u16, u8)> = match &a.ctl {
+                        Ctl::Call { f, c, .. } => vec![(*f, *c)],
+                        Ctl::CallInd { fs, c, .. } => fs.iter().map(|&f| (f, *c)).collect(),
+                        _ => continue,
+                    };
+                    if let Some(&(_, c)) = fs.first() {
+                        if fs.iter().all(|k| !porty[idx[k]]) && !writes_port(v, seen.bank) {
                             a.port = false;
                             a.succ.retain(|s| s.2 == c);
                         }
