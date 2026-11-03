@@ -7,7 +7,7 @@ The C64 machine model (power-on RAM, interrupt-vector discovery, ROM-free IRQ di
 ## Components
 
 - `deity_informant/lifter.py` — `lift(mem, pc)` -> `{"ops", "len", "cyc", "pen", "ctrl", "prov", "stk"}` raw P-Code; `CYCLETIME`/`EXTRACYCLES` tables.
-- `deity_informant/vm.py` — `PcodeVM` interpreter over a flat 64 KiB image (SID/VIC/CIA volatile IO modeled); `run_sub`/`run_irq`/`run_irq_driven` drivers (handler fixed, or resolved per entry via `vector(addr)`).
+- `deity_informant/vm.py` — `PcodeVM` interpreter over a flat 64 KiB image (SID/VIC/CIA volatile IO modeled); `run_sub`/`run_irq`/`run_irq_driven` drivers (handler fixed, or resolved per entry via `vector(addr)`). `PcodeVM.dummies` (default set) makes the throw-away reads and a read-modify-write's dummy write; a machine that places them on its own cycles (the jennings MPU under vagrant-moses' Python backend) clears it, so the bus sees each once.
 - `deity_informant/cli.py` — `deity-informant` console script.
 - `deity_informant/sleigh/` — SLEIGH module (`languages/6510.slaspec` = stock 6502 + `6510_illegal.sinc`), `smc.py` (SMC context constructors), `build.py`, and `pypcode_context()` (a loaded pypcode `Context` for the 6510).
 - `ghidra/6510/headless/` — headless Ghidra integration tests (LAX/ISC decode, layout export), run via `Dockerfile.ghidra`.

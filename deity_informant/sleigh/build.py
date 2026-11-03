@@ -32,7 +32,14 @@ from .smc import CONTEXT, patch_base, smc_sinc
 
 LANGDIR = Path(__file__).resolve().parent / "languages"
 
-SOURCES = ("6510.slaspec", "6510_illegal.sinc", "6510.ldefs", "6510.pspec", "6510.cspec")
+SOURCES = (
+    "6510.slaspec",
+    "6510_alu.sinc",
+    "6510_illegal.sinc",
+    "6510.ldefs",
+    "6510.pspec",
+    "6510.cspec",
+)
 GENERATED = ("6502.slaspec", "6510_context.sinc", "6510_smc.sinc")
 
 
@@ -126,7 +133,7 @@ def build(work, args):
         # stock .ldefs (that would register a duplicate 6502 language).
         for src in list(base.parent.glob("*.slaspec")) + list(base.parent.glob("*.sinc")):
             shutil.copy(src, dst / src.name)
-        for name in ("6510.slaspec", "6510_illegal.sinc") + GENERATED:
+        for name in tuple(n for n in SOURCES if n.endswith((".slaspec", ".sinc"))) + GENERATED:
             shutil.copy(work / name, dst / name)
         # Ghidra discovers a Processor module only via a Module.manifest at the
         # module root (`.../<name>/data/languages` -> root is two levels up); without

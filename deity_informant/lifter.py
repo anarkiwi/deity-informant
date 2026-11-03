@@ -76,23 +76,95 @@ class Emit:
 
 
 # ---- shared ALU micro-ops (reused by legal AND illegal opcodes) --------------
+def _mask(e, flag):
+    """``0xFF`` where the 0/1 ``flag`` is set, else 0."""
+    return e.op("INT_SUB", e.tmp(), C(0), flag)
+
+
+def _and(e, x, y):
+    return e.op("INT_AND", e.tmp(), x, y)
+
+
+def _pick(e, m, binary, decimal):
+    """``decimal`` where the mask ``m`` is set, else ``binary``."""
+    return e.op("INT_XOR", e.tmp(), binary, _and(e, e.op("INT_XOR", e.tmp(), binary, decimal), m))
+
+
+def _adc_decimal(e, v):
+    """NMOS decimal ADC (Bruce Clark, "Decimal Mode"): ``(A, carry, N/V source byte)``."""
+    al = e.op(
+        "INT_ADD", e.tmp(), e.op("INT_ADD", e.tmp(), _and(e, A, C(0xF)), _and(e, v, C(0xF))), FC
+    )
+    gm = _mask(e, e.op("INT_LESS", e.tmp(), C(9), al))
+    nib = _and(e, e.op("INT_ADD", e.tmp(), al, _and(e, gm, C(6))), C(0xF))
+    low = e.op("INT_OR", e.tmp(), nib, _and(e, gm, C(0x10)))
+    ah, vh = _and(e, A, C(0xF0)), _and(e, v, C(0xF0))
+    s1 = e.op("INT_ADD", e.tmp(), ah, vh)
+    t = e.op("INT_ADD", e.tmp(), s1, low)
+    over = e.op(
+        "INT_OR",
+        e.tmp(),
+        e.op("INT_CARRY", e.tmp(), ah, vh),
+        e.op("INT_CARRY", e.tmp(), s1, low),
+    )
+    adj = e.op("INT_OR", e.tmp(), over, e.op("INT_LESSEQUAL", e.tmp(), C(0xA0), t))
+    res = e.op("INT_ADD", e.tmp(), t, _and(e, _mask(e, adj), C(0x60)))
+    return res, adj, t
+
+
 def _adc(e, v):
     s1 = e.op("INT_ADD", e.tmp(), A, v)
     c1 = e.op("INT_CARRY", e.tmp(), A, v)
     r = e.op("INT_ADD", e.tmp(), s1, FC)
     c2 = e.op("INT_CARRY", e.tmp(), s1, FC)
+    dres, dcarry, dmid = _adc_decimal(e, v)
+    m = _mask(e, FD)
+    rv = _pick(e, m, r, dmid)
     axv = e.op("INT_XOR", e.tmp(), A, v)
-    axr = e.op("INT_XOR", e.tmp(), A, r)
+    axr = e.op("INT_XOR", e.tmp(), A, rv)
     nax = e.op("INT_XOR", e.tmp(), axv, C(0xFF))
     vv = e.op("INT_AND", e.tmp(), e.op("INT_AND", e.tmp(), nax, axr), C(0x80))
     e.op("INT_NOTEQUAL", FV, vv, C(0))
     e.op("INT_OR", FC, c1, c2)
-    e.op("COPY", A, r)
-    e.nz(A)
+    e.op("COPY", FC, _pick(e, m, FC, dcarry))
+    e.op("COPY", A, _pick(e, m, r, dres))
+    e.op("INT_EQUAL", FZ, r, C(0))
+    e.op("INT_NOTEQUAL", FN, _and(e, rv, C(0x80)), C(0))
+
+
+def _sbc_decimal(e, v, nc):
+    """NMOS decimal SBC: the accumulator only, every flag is the binary subtraction's."""
+    al, vl = _and(e, A, C(0xF)), _and(e, v, C(0xF))
+    b1 = _mask(e, e.op("INT_LESS", e.tmp(), al, e.op("INT_ADD", e.tmp(), vl, nc)))
+    nib = _and(
+        e,
+        e.op(
+            "INT_SUB",
+            e.tmp(),
+            e.op("INT_SUB", e.tmp(), al, vl),
+            e.op("INT_ADD", e.tmp(), nc, _and(e, b1, C(6))),
+        ),
+        C(0xF),
+    )
+    ah, vh = _and(e, A, C(0xF0)), _and(e, v, C(0xF0))
+    d1 = e.op("INT_SUB", e.tmp(), ah, vh)
+    k = _and(e, b1, C(0x10))
+    b2 = _mask(
+        e,
+        e.op(
+            "INT_OR",
+            e.tmp(),
+            e.op("INT_LESS", e.tmp(), ah, vh),
+            e.op("INT_LESS", e.tmp(), d1, k),
+        ),
+    )
+    hi = e.op("INT_SUB", e.tmp(), e.op("INT_SUB", e.tmp(), d1, k), _and(e, b2, C(0x60)))
+    return e.op("INT_ADD", e.tmp(), hi, nib)
 
 
 def _sbc(e, v):
     nc = e.op("INT_SUB", e.tmp(), C(1), FC)
+    dres = _sbc_decimal(e, v, nc)
     vb = e.op("INT_ADD", e.tmp(2), e.op("INT_ZEXT", e.tmp(2), v), e.op("INT_ZEXT", e.tmp(2), nc))
     aext = e.op("INT_ZEXT", e.tmp(2), A)
     e.op("INT_LESSEQUAL", FC, vb, aext)
@@ -101,8 +173,8 @@ def _sbc(e, v):
     axr = e.op("INT_XOR", e.tmp(), A, r)
     vv = e.op("INT_AND", e.tmp(), e.op("INT_AND", e.tmp(), axv, axr), C(0x80))
     e.op("INT_NOTEQUAL", FV, vv, C(0))
-    e.op("COPY", A, r)
-    e.nz(A)
+    e.op("COPY", A, _pick(e, _mask(e, FD), r, dres))
+    e.nz(r)
 
 
 def _cmp(e, reg, v):
@@ -945,12 +1017,27 @@ def lift(mem, pc):
             e.op("INT_RIGHT", e.tmp(), A, C(1)),
             e.op("INT_LEFT", e.tmp(), FC, C(7)),
         )
-        e.op("COPY", A, r)
-        e.nz(A)
+        e.nz(r)
         b6 = e.op("INT_AND", e.tmp(), e.op("INT_RIGHT", e.tmp(), r, C(6)), C(1))
         b5 = e.op("INT_AND", e.tmp(), e.op("INT_RIGHT", e.tmp(), r, C(5)), C(1))
-        e.op("COPY", FC, b6)
         e.op("INT_XOR", FV, b6, b5)
+        lo = _mask(e, e.op("INT_LESS", e.tmp(), C(4), _and(e, A, C(0xF))))
+        r1 = e.op(
+            "INT_OR",
+            e.tmp(),
+            _and(e, r, C(0xF0)),
+            _and(e, e.op("INT_ADD", e.tmp(), r, _and(e, lo, C(6))), C(0xF)),
+        )
+        hi = e.op("INT_LESSEQUAL", e.tmp(), C(0x50), A)
+        r2 = e.op(
+            "INT_OR",
+            e.tmp(),
+            _and(e, r1, C(0xF)),
+            _and(e, e.op("INT_ADD", e.tmp(), r1, _and(e, _mask(e, hi), C(0x60))), C(0xF0)),
+        )
+        m = _mask(e, FD)
+        e.op("COPY", FC, _pick(e, m, b6, hi))
+        e.op("COPY", A, _pick(e, m, r, r2))
     elif mn == "SBX":
         ax = e.op("INT_AND", e.tmp(), A, X)
         e.op("INT_LESSEQUAL", FC, immc(), ax)
@@ -1015,6 +1102,23 @@ def lift(mem, pc):
         "prov": prov,
         "stk": stk,
     }
+
+
+def bus_only(ops):
+    """Indices of the ops of a lifted record that only drive the bus: the throw-away reads (a
+    ``LOAD`` with no output) and a read-modify-write's dummy write (the loaded byte stored back
+    to its address before the store of the result). They have no data use."""
+    loaded = {tuple(out): ins[0] for mn, out, ins in ops if mn == "LOAD" and out}
+    return frozenset(
+        i
+        for i, (mn, out, ins) in enumerate(ops)
+        if (mn == "LOAD" and out is None)
+        or (
+            mn == "STORE"
+            and loaded.get(tuple(ins[1])) == ins[0]
+            and any(m == "STORE" and x[0] == ins[0] for m, _o, x in ops[i + 1 :])
+        )
+    )
 
 
 def _provenance(ops, pmap, ctrl, op):

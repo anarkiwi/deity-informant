@@ -365,8 +365,27 @@ may have reached read as the first load.
 
 Links emitted at an instruction where the interval analysis finds the decimal flag may be set
 carry `ir::DECIMAL` and are never fused: entries are guarded to run with `D` clear, so only
-code after a `SED`, `PLP` or `RTI` keeps byte-wise arithmetic. (The templates, `di_pcode::Cpu`
-and the reference machine are binary in decimal mode too.)
+code after a `SED`, `PLP` or `RTI` keeps byte-wise arithmetic.
+
+## Decimal mode
+
+`ADC`, `SBC` and the opcodes that run them (`RRA`, `ISC`, `SBC #imm` at `$EB`) and `ARR` follow
+the NMOS 6502 in decimal mode (Bruce Clark, "Decimal Mode"): `ADC` takes `N` and `V` from the
+intermediate sum before the high-digit correction and `Z` from the binary sum; `SBC` takes every
+flag from the binary difference; `ARR` takes `N`, `Z` and `V` from the rotated value and `C` from
+the high-digit correction. Invalid BCD digits are corrected as the chip does. There is no cycle
+penalty. A template computes both results branch-free and picks by `D` (`lifter._pick`), so one
+template serves the interpreter, the generated native templates and the lift. At an instruction
+where the interval analysis proves `D` clear the template reads `D` as the constant 0 and the
+decimal operations fold away, leaving the binary form the carry-chain matcher and the induction
+analysis (`vsa::symbolic_in` evaluates constants, `AND 0` and `OR`/`XOR 0`) recognize. Where `D`
+may be set the operations stay, tagged `ir::DECIMAL`. When the program has no `SED` variant and no
+entry declares `d` set, nothing but a pull from the stack can set the flag: `PLP` and `RTI` are
+then checked after the pull (the lifted code deopts if the pulled byte has `D` set) and the flag
+is clear everywhere (`vsa::pull_clear`). `tests/test_decimal*.py` run Clark's
+exhaustive cases (every accumulator, operand and carry, decimal flag set and clear) on the
+Python VM, the native interpreter, the lift (entries that declare `d`, do not declare it, or set
+it in the code) and the SLEIGH module.
 
 ## IR
 

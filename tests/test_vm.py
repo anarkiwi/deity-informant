@@ -189,3 +189,53 @@ def test_every_opcode_lifts():
         mem[0x1000] = op
         rec = lift(mem, 0x1000)
         assert rec["len"] in (1, 2, 3) and "ctrl" in rec
+
+
+class _Bus(PcodeVM):
+    """A VM that logs its memory accesses as ``(address, is_write)``."""
+
+    __slots__ = ("log",)
+
+    def _rd(self, addr, sz):
+        self.log.append((addr, False))
+        return PcodeVM._rd(self, addr, sz)
+
+    def _wr(self, addr, val, sz):
+        self.log.append((addr, True))
+        PcodeVM._wr(self, addr, val, sz)
+
+
+# code, X, Y, the accesses with the dummy ones, the accesses without
+R_, W_ = False, True
+BUS = {
+    "lda_absx_cross": (
+        [0xBD, 0xFF, 0x10],
+        1,
+        0,
+        [(0x1000, R_), (0x1100, R_)],
+        [(0x1100, R_)],
+    ),
+    "lda_absx_same_page": ([0xBD, 0x00, 0x10], 1, 0, [(0x1001, R_)], [(0x1001, R_)]),
+    "sta_absx_same_page": ([0x9D, 0x00, 0x10], 1, 0, [(0x1001, R_), (0x1001, W_)], [(0x1001, W_)]),
+    "inc_absx_cross": (
+        [0xFE, 0xFF, 0x10],
+        1,
+        0,
+        [(0x1000, R_), (0x1100, R_), (0x1100, W_), (0x1100, W_)],
+        [(0x1100, R_), (0x1100, W_)],
+    ),
+    "inc_zp": ([0xE6, 0x10], 0, 0, [(0x10, R_), (0x10, W_), (0x10, W_)], [(0x10, R_), (0x10, W_)]),
+    "nop": ([0xEA], 0, 0, [(0x1001, R_)], []),
+    "bne_taken_cross": ([0xD0, 0x80], 0, 0, [(0x1002, R_), (0x1082, R_)], []),
+}
+
+
+@pytest.mark.parametrize("dummies", [True, False])
+@pytest.mark.parametrize("name", sorted(BUS))
+def test_dummy_accesses_are_the_vms_to_make(name, dummies):
+    code, x, y, with_dummies, without = BUS[name]
+    vm = _Bus(H.image(bytes(code)))
+    vm.volatile, vm.dummies, vm.log = False, dummies, []
+    vm.reg[1], vm.reg[2] = x, y
+    vm.step(0x1000, {}, lift)
+    assert vm.log == (with_dummies if dummies else without)

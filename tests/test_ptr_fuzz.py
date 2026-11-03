@@ -84,12 +84,17 @@ def _block(rng, n):
     if kind == "bump":
         return ["        %s $%02X" % (rng.choice(["INC", "DEC"]), HI)]
     if kind == "arith":
-        return [
-            "        LDA $%02X" % HI,
-            "        %s" % rng.choice(["CLC", "SEC"]),
-            "        %s #$%02X" % (rng.choice(["ADC", "SBC"]), rng.randint(0, 3)),
-            "        STA $%02X" % HI,
-        ]
+        decimal = rng.random() < 0.4
+        return (
+            ["        SED"] * decimal
+            + [
+                "        LDA $%02X" % HI,
+                "        %s" % rng.choice(["CLC", "SEC"]),
+                "        %s #$%02X" % (rng.choice(["ADC", "SBC"]), rng.randint(0, 3)),
+                "        STA $%02X" % HI,
+            ]
+            + ["        CLD"] * decimal
+        )
     if kind == "index":
         return [
             "        LDA $F0",

@@ -1,0 +1,65 @@
+# NMOS 6510 ADC and SBC, binary and decimal (Bruce Clark, "Decimal Mode"), shared by the
+# legal ADC/SBC (patched over the stock spec by build.py), RRA, ISC and SBC #imm ($EB).
+# @include'd right after the stock resultFlags/subtraction_flags1 macros.
+
+# NMOS ADC, including its decimal-mode flag rules. In binary mode carry() can
+# describe only one addition, so the two partial carries are combined explicitly.
+macro illegalAdcNmos(op1) {
+    local operand:1 = op1;
+    local tmpC:1 = C;
+    local oldA:1 = A;
+    local sum:2;
+
+    if (D) goto <decimal>;
+    C = carry(A, operand);
+    A = A + operand;
+    C = C || carry(A, tmpC);
+    A = A + tmpC;
+    resultFlags(A);
+    V = ((oldA ^ A) & (operand ^ A) & 0x80) != 0;
+    goto <done>;
+
+    <decimal>
+    local binsum:1 = oldA + operand + tmpC;
+    Z = (binsum == 0);
+    local al:2 = (zext(oldA) & 0x0F) + (zext(operand) & 0x0F) + zext(tmpC);
+    if (al < 0x0A) goto <units_ok>;
+    al = ((al + 0x06) & 0x0F) + 0x10;
+    <units_ok>
+    sum = (zext(oldA) & 0xF0) + (zext(operand) & 0xF0) + al;
+    local mid:1 = sum:1;
+    N = (mid s< 0);
+    V = ((oldA ^ mid) & (operand ^ mid) & 0x80) != 0;
+    if (sum < 0xA0) goto <tens_ok>;
+    sum = sum + 0x60;
+    <tens_ok>
+    C = (sum >= 0x100);
+    A = sum:1;
+    <done>
+}
+
+# NMOS SBC. Decimal mode adjusts A, while N/V/Z/C retain the binary result's
+# values; subtraction_flags1 is patched by build.py so C is not-borrow.
+macro illegalSbcNmos(op1) {
+    local operand:1 = op1;
+    local tmpBorrow:1 = !C;
+    local oldA:1 = A;
+    local result:1 = oldA - operand - tmpBorrow;
+    subtraction_flags1(oldA, operand, result);
+
+    if (D) goto <decimal>;
+    A = result;
+    goto <done>;
+
+    <decimal>
+    local al:2 = (zext(oldA) & 0x0F) - (zext(operand) & 0x0F) - zext(tmpBorrow);
+    if (al s>= 0) goto <units_ok>;
+    al = ((al - 0x06) & 0x0F) - 0x10;
+    <units_ok>
+    local diff:2 = (zext(oldA) & 0xF0) - (zext(operand) & 0xF0) + al;
+    if (diff s>= 0) goto <tens_ok>;
+    diff = diff - 0x60;
+    <tens_ok>
+    A = diff:1;
+    <done>
+}

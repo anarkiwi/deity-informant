@@ -592,8 +592,19 @@ impl<'a> Em<'a, '_> {
                     _ => v.canon(),
                 }
             };
-            let a = map(self, op.ins[0]);
-            let b = map(self, op.ins[1]);
+            let clear = |em: &Self, v: Vn| {
+                !em.dec && v.space() == Space::Reg && v.off() == di_pcode::reg::D as u32
+            };
+            let a = if clear(self, op.ins[0]) {
+                k(0, 1)
+            } else {
+                map(self, op.ins[0])
+            };
+            let b = if clear(self, op.ins[1]) {
+                k(0, 1)
+            } else {
+                map(self, op.ins[1])
+            };
             let out = map(self, op.out);
             let mut aux = 0;
             if stack && matches!(op.opc, Opc::Load | Opc::Store) {
@@ -749,6 +760,9 @@ impl<'a> Em<'a, '_> {
         match ctl {
             Ctl::Next(n) => {
                 self.account(cyc, maxpen);
+                if *op == 0x28 && self.sh.g.pull_clear {
+                    chk.push(r1(R::D));
+                }
                 self.check(chk, k(next as u32, 2));
                 let sets_sp = crate::analysis::stack_delta(*op).is_none();
                 self.exit_or(exit, k(*n as u32, 2), |em| {
@@ -967,6 +981,9 @@ impl<'a> Em<'a, '_> {
                     tgt = self.op(Opc::IntAdd, 2, tgt, k(1, 2));
                 }
                 self.account(cyc, maxpen);
+                if matches!(ctl, Ctl::Rti(_)) && self.sh.g.pull_clear {
+                    self.check(vec![r1(R::D)], tgt);
+                }
                 self.flush();
                 self.exit_or(exit, tgt, |em| {
                     let tb = em.table(ts);

@@ -45,7 +45,7 @@ def _sub(rng, i):
 
 def _block(rng, n):
     """One random fragment of the entry routine."""
-    kind = rng.choice(["down", "up", "input", "call", "rmw"])
+    kind = rng.choice(["down", "up", "input", "call", "rmw", "bcd"])
     index = rng.choice("XY")
     value = _byte(rng)
     if kind == "down":
@@ -78,6 +78,19 @@ def _block(rng, n):
             "        JSR sub%d" % rng.randrange(len(SUBS)),
             "        STA tbl+%d,X" % rng.choice([0, 0x20, 0x21, 0x40]),
         ]
+    if kind == "bcd":
+        return (
+            [
+                "        SED",
+                "        LDA $F0",
+                "        %s" % rng.choice(["CLC", "SEC"]),
+                "        %s #$%02X" % (rng.choice(["ADC", "SBC"]), rng.randrange(256)),
+                "        AND #$03",
+                "        T%s" % ("AX" if index == "X" else "AY"),
+            ]
+            + ["        CLD"] * (rng.random() < 0.8)
+            + ["        LDA #$%02X" % value, "        STA tbl,%s" % index]
+        )
     return [
         "        LDX #$%02X" % rng.randint(0, 3),
         "        INC tbl+%d,X" % rng.choice([0, 0x20]),

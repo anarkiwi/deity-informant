@@ -173,3 +173,13 @@ the songs whose rows (bar `*_ms` and `timing.*_s`) or facts differ between two r
 `song_ms` speedup per mode. `tools/factsequiv.py ROOT BEFORE AFTER [--list]` lifts each flat
 song of both runs from every pairing of their post-init states and facts, attributing a change
 in the lift statistics to the state or the facts.
+
+## Decimal mode
+
+`python tools/decimal_scan.py ROOT CORPUS_DIR` lists the songs of a corpus run that execute
+`ADC`, `SBC`, `ARR`, `RRA` or `ISC` with the decimal flag set. A song's facts record names the
+instruction starts it executed and the RAM they ran from; only a song that executes `SED`, `PLP`
+or `RTI` can have the flag set, and a PSID song with a play routine that does is run on the native
+core call by call with a trace of every instruction and its flags (a banked one on flat RAM). The
+records go to `--out`, the paths of the songs that ran decimal arithmetic to `--paths`, which
+`tools/wpcorpus.py --paths` re-runs.
