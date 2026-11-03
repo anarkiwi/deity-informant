@@ -217,6 +217,10 @@ impl<'a> Em<'a, '_> {
         self.blk.insert(key, b);
         if self.plan.nodes.contains_key(&key) {
             self.queue.push_back(key);
+        } else if self.plan.tails.contains(&key) {
+            let save = std::mem::replace(&mut self.cur, b as usize);
+            self.tail_call(key);
+            self.cur = save;
         } else {
             let save = std::mem::replace(&mut self.cur, b as usize);
             self.deopt(k(pc as u32, 2));
@@ -437,6 +441,38 @@ impl<'a> Em<'a, '_> {
             self.emit(Opc::Branch, NONE, NONE, NONE, b);
         }
     }
+    /// A tail call of `key`'s function: a `CALL` at the entry SP (no return address; the
+    /// callee's `RETURN` pulls this function's), then this function's return at the height the
+    /// callee left SP: a `RETURN`, or an outermost plan's exit through the address its caller
+    /// pushed.
+    fn tail_call(&mut self, key: Key) {
+        let (nh, nc, h) = (self.nh, self.nc, self.h);
+        (self.nh, self.nc) = (H::Known(0), key.2);
+        let fi = self.sh.fidx[&(key.0, key.2)];
+        self.flush();
+        let rb = self.new_block(key.0);
+        self.emit(Opc::Call, NONE, k(0, 2), k(1, 1), fi);
+        self.emit(Opc::Branch, NONE, NONE, NONE, rb);
+        self.cur = rb as usize;
+        if self.plan.top {
+            self.h = self.promote.then_some(2);
+            let hi = self.sp_addr();
+            let hi = self.load(hi, PAGE1, mem::STACK);
+            let lo = self.op(Opc::IntSub, 1, r1(R::SP), k(1, 1));
+            let lo = self.zext(lo, 2);
+            let lo = self.op(Opc::IntOr, 2, lo, k(0x100, 2));
+            let lo = self.load(lo, PAGE1, mem::STACK);
+            let tgt = self.word(lo, hi);
+            if !self.host_return() {
+                self.touch(tgt, NONE, Iv::full(2));
+            }
+            let tgt = self.op(Opc::IntAdd, 2, tgt, k(1, 2));
+            self.emit(Opc::Return, NONE, tgt, NONE, 0);
+        } else {
+            self.emit(Opc::Return, NONE, NONE, NONE, 0);
+        }
+        (self.nh, self.nc, self.h) = (nh, nc, h);
+    }
     /// Deopt to `pc` before the access at `addr` when it lies in `r`.
     fn range_guard(&mut self, addr: Vn, pc: u16, r: Iv) {
         let off = self.op(Opc::IntSub, 2, addr, k(r.lo, 2));
@@ -551,7 +587,7 @@ impl<'a> Em<'a, '_> {
         let keys: Vec<Key> = ts
             .iter()
             .map(|&t| self.key(t))
-            .filter(|k| self.plan.nodes.contains_key(k))
+            .filter(|k| self.plan.nodes.contains_key(k) || self.plan.tails.contains(k))
             .collect();
         let closed = all && keys.len() == ts.len();
         let mut t: Vec<(u16, u32)> = keys.into_iter().map(|k| (k.0, self.block(k))).collect();
@@ -1132,7 +1168,8 @@ impl<'a> Em<'a, '_> {
         let s = self.zext(r1(R::SP), 2);
         let d = self.op(Opc::IntSub, 2, s, reg(E, 2));
         for &key in self.succ {
-            if key.0 != pc || !self.plan.nodes.contains_key(&key) {
+            if key.0 != pc || !self.plan.nodes.contains_key(&key) && !self.plan.tails.contains(&key)
+            {
                 continue;
             }
             let H::Known(x) = key.1 else { unreachable!() };

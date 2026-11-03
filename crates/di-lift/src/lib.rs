@@ -171,6 +171,13 @@ fn extent(
         let p = &plans[i];
         let mut d = p.pushed(g).ones().next_back().map_or(0, |x| x as u32 + 1);
         let mut ok = p.nodes.keys().all(|k| k.1 != H::Unknown);
+        // A tail call runs its callee at the entry SP, over this function's return address.
+        for &(t, _, c) in &p.tails {
+            match depth(fidx[&(t, c)] as usize, plans, fidx, g, memo) {
+                Some(e) => d = d.max(e),
+                None => ok = false,
+            }
+        }
         for (&(_, h, _), n) in &p.nodes {
             for a in &n.arms {
                 let fs: Vec<(u16, u8)> = match &a.ctl {

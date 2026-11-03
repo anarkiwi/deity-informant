@@ -1014,7 +1014,9 @@ def test_switch_from_a_jump_table(prefix, tmp_path):
 def test_callee_called_twice_keeps_its_used_parameters(prefix, tmp_path):
     c, _, _ = check(prefix, tmp_path, SUBS, entry_calls(range(8)))
     [name] = re.findall(r"static uint8_t (f\d+)\(uint8_t v1\)", c)
-    assert c.count(f"{name}(") == 4
+    # Its definition, the two `JSR`s and the tail call `twice` falls through to; `twice`, with
+    # one call site, is inlined.
+    assert c.count(f"{name}(") == 5
 
 
 def test_indexed_addresses_wrap(prefix, tmp_path):

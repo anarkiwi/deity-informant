@@ -48,6 +48,8 @@ pub(crate) struct Frame {
     pub callee: u32,
     pub ra: u16,
     pub sp: u8,
+    /// A tail call: the callee runs at the caller's SP with no return address of its own.
+    pub tail: u8,
 }
 
 /// Which engine runs lifted code. [`Backend::Jit`] runs native code where it applies
@@ -604,12 +606,14 @@ impl<'a> Runner<'a> {
                         }
                     }
                     Opc::Call => {
-                        let sp = (f[R::SP] as u8).wrapping_add(2);
+                        let tail = get(f, o.b) as u8;
+                        let sp = (f[R::SP] as u8).wrapping_add(2 * (1 - tail));
                         self.frames.push(Frame {
                             ip: ip as u32,
                             callee: o.aux,
                             ra: get(f, o.a) as u16,
                             sp,
+                            tail,
                         });
                         ip = enter!(x.fentry[o.aux as usize]);
                     }
@@ -677,9 +681,14 @@ impl<'a> Runner<'a> {
                     ra,
                     sp: s,
                     callee: c,
+                    tail,
                     ..
                 }) = self.frames.get(j)
                 {
+                    if tail != 0 {
+                        (e, fun) = (s, c);
+                        continue;
+                    }
                     bus.ram_write(0x100 | s as u16, (ra >> 8) as u8);
                     bus.ram_write(0x100 | s.wrapping_sub(1) as u16, ra as u8);
                     (e, fun) = (s.wrapping_sub(2), c);

@@ -245,7 +245,8 @@ fn brk_chain_on_untaken_path() {
         &[0, 1, 2],
         &[0x40, 0x80],
     );
-    assert_eq!(p.stats.calls, 1);
+    // `JSR sub`, and the shared `BRK` tail entered from `entry` and from `sub`.
+    assert_eq!(p.stats.calls, 3);
 }
 
 #[test]

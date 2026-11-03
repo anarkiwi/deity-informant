@@ -117,6 +117,10 @@ pub struct Plan {
     pub sp: Option<u8>,
     /// Some node sets SP (`TXS`, `TAS`, `LAS`).
     pub sets_sp: bool,
+    /// Tail calls: an edge at the entry height to a function lifted separately (a fall-through,
+    /// jump or branch into its entry, whose `RTS` then returns from this one) is a `CALL` of it
+    /// followed by this function's return.
+    pub tails: BTreeSet<Key>,
 }
 
 impl Plan {
@@ -338,7 +342,8 @@ impl Plan {
     pub fn roots(&self) -> impl Iterator<Item = Key> + '_ {
         self.entry.iter().map(|&c| (self.pc, H::Known(0), c))
     }
-    /// Functions `CALL`ed with their entry configuration, once per call site and node.
+    /// Functions `CALL`ed with their entry configuration, once per call site and node, then
+    /// the tail calls.
     pub fn callees(&self) -> impl Iterator<Item = (u16, u8)> + '_ {
         self.nodes
             .values()
@@ -348,6 +353,7 @@ impl Plan {
                 Ctl::CallInd { fs, c, .. } => fs.iter().map(|&f| (f, *c)).collect(),
                 _ => Vec::new(),
             })
+            .chain(self.tails.iter().map(|k| (k.0, k.2)))
     }
 }
 
@@ -677,6 +683,9 @@ pub fn plan(
     let mut rets: FxHashMap<i32, BTreeSet<u16>> = FxHashMap::default();
     let mut all_rets: BTreeSet<u16> = BTreeSet::new();
     let mut pulls: FxHashSet<Key> = FxHashSet::default();
+    let mut tails: BTreeSet<Key> = BTreeSet::new();
+    let tail =
+        |t: u16, h: H| seen.bank.is_none() && h == H::Known(0) && t != pc && calls.contains(&t);
     pl.first.insert(pc, H::Known(0));
     let mut work: Vec<Key> = entry.iter().map(|&c| (pc, H::Known(0), c)).collect();
     pl.nodes.extend(work.iter().copied());
@@ -701,7 +710,12 @@ pub fn plan(
             }
             let tc = (!port_arm(v, &s.ctl, bank)).then_some(c);
             for (t, ht) in s.succ {
-                if g.vars.contains_key(&t) && !pl.seen.banned.contains(&t) {
+                if !g.vars.contains_key(&t) || pl.seen.banned.contains(&t) {
+                    continue;
+                }
+                if tail(t, ht) {
+                    tails.extend(pl.configs(t, tc).into_iter().map(|c| (t, ht, c)));
+                } else {
                     work.extend(pl.admit(t, ht, tc));
                 }
             }
@@ -748,12 +762,45 @@ pub fn plan(
         entry,
         balanced,
         sp: None,
+        tails,
         sets_sp: pl.nodes.iter().any(|(p, _, _)| {
             g.vars[p]
                 .iter()
                 .any(|v| matches!(v.flow, Flow::Next(_)) && stack_delta(v.op).is_none())
         }),
     }
+}
+
+/// Heads of shared tails: instruction starts that two or more plans reach at their entry
+/// height, entered there from a node that is not such a start (or that is at another height).
+/// Each becomes a function its callers reach by tail calls, as a `JSR` target that returns at its
+/// entry height does by calls.
+fn shared_tails(plans: &[Plan]) -> BTreeSet<u16> {
+    let mut count: FxHashMap<u16, usize> = FxHashMap::default();
+    for p in plans {
+        let at0: BTreeSet<u16> = p
+            .nodes
+            .keys()
+            .filter(|k| k.1 == H::Known(0) && k.0 != p.pc)
+            .map(|k| k.0)
+            .collect();
+        for t in at0 {
+            *count.entry(t).or_default() += 1;
+        }
+    }
+    let shared = |k: &Key| k.1 == H::Known(0) && count.get(&k.0).is_some_and(|&n| n > 1);
+    plans
+        .iter()
+        .flat_map(|p| {
+            p.nodes.iter().flat_map(move |(k, n)| {
+                n.arms
+                    .iter()
+                    .flat_map(|a| &a.succ)
+                    .filter(move |s| shared(s) && (!shared(k) || k.0 == p.pc))
+                    .map(|s| s.0)
+            })
+        })
+        .collect()
 }
 
 /// Whether an arm may change the configuration: it stores to the port, or `CALL`s with a
@@ -777,35 +824,46 @@ pub fn plan_all(g: &Graph, entries: &[(u16, Vec<u8>)], seen: &Seen) -> Vec<Plan>
         })
         .filter(|f| g.vars.contains_key(f))
         .collect();
-    loop {
-        let bad: Vec<u16> = calls
-            .iter()
-            .copied()
-            .filter(|&f| !plan(g, f, vec![g.cfg[&f]], false, &calls, seen).balanced)
-            .collect();
-        if bad.is_empty() {
-            break;
-        }
-        for b in bad {
-            calls.remove(&b);
-        }
-    }
-    let mut plans: Vec<Plan> = entries
-        .iter()
-        .map(|(e, cs)| plan(g, *e, cs.clone(), true, &calls, seen))
-        .collect();
-    let mut idx: FxHashMap<(u16, u8), usize> = FxHashMap::default();
-    let mut i = 0;
-    while i < plans.len() {
-        let callees: Vec<(u16, u8)> = plans[i].callees().collect();
-        for (f, c) in callees {
-            if let std::collections::hash_map::Entry::Vacant(e) = idx.entry((f, c)) {
-                e.insert(plans.len());
-                plans.push(plan(g, f, vec![c], false, &calls, seen));
+    let mut tried: FxHashSet<u16> = FxHashSet::default();
+    let (mut plans, idx) = loop {
+        loop {
+            let bad: Vec<u16> = calls
+                .iter()
+                .copied()
+                .filter(|&f| !plan(g, f, vec![g.cfg[&f]], false, &calls, seen).balanced)
+                .collect();
+            if bad.is_empty() {
+                break;
+            }
+            for b in bad {
+                calls.remove(&b);
             }
         }
-        i += 1;
-    }
+        let mut plans: Vec<Plan> = entries
+            .iter()
+            .map(|(e, cs)| plan(g, *e, cs.clone(), true, &calls, seen))
+            .collect();
+        let mut idx: FxHashMap<(u16, u8), usize> = FxHashMap::default();
+        let mut i = 0;
+        while i < plans.len() {
+            let callees: Vec<(u16, u8)> = plans[i].callees().collect();
+            for (f, c) in callees {
+                if let std::collections::hash_map::Entry::Vacant(e) = idx.entry((f, c)) {
+                    e.insert(plans.len());
+                    plans.push(plan(g, f, vec![c], false, &calls, seen));
+                }
+            }
+            i += 1;
+        }
+        let heads: Vec<u16> = shared_tails(&plans)
+            .into_iter()
+            .filter(|t| !calls.contains(t) && tried.insert(*t))
+            .collect();
+        if heads.is_empty() || seen.bank.is_some() {
+            break (plans, idx);
+        }
+        calls.extend(heads);
+    };
     if seen.bank.is_some() {
         let own: Vec<bool> = plans
             .iter()
