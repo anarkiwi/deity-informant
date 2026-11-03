@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import wpcorpus  # noqa: E402 pylint: disable=wrong-import-position
@@ -28,6 +29,20 @@ def show(name, log, k):
     print(f"  {name:9}", [(hex(e[0]), e[1], e[-1]) for e in log[max(0, k - 3) : k + 4]])
 
 
+def bisect(host, bank, limit):
+    """``(frame, result, addresses, machine, reference)`` of the first of the first ``limit`` frames
+    after which the reference interpreter's memory (carried from frame to frame) differs from the
+    machine's anywhere, or None."""
+    mem = bytearray(host.image)
+    for k, rec in zip(tqdm(range(limit), desc="reference", unit="frame"), host.stream):
+        ref = frames._call(None, host, k, rec, mem, bank)  # pylint: disable=protected-access
+        want, got = (np.frombuffer(bytes(m), np.uint8) for m in (rec["ram"], mem))
+        bad = np.flatnonzero(want != got)
+        if len(bad):
+            return k, ref, bad, want, got
+    return None
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("root")
@@ -35,6 +50,11 @@ def main(argv=None):
     ap.add_argument("--song", type=int, default=1)
     ap.add_argument("--frames", type=int, default=100)
     ap.add_argument("--raw", action="store_true", help="lift without optimizing")
+    ap.add_argument(
+        "--bisect",
+        action="store_true",
+        help="find the first frame the reference interpreter differs from the machine in",
+    )
     ap.add_argument("--max-cycles", type=int, default=2_000_000)
     args = ap.parse_args(argv)
     root = Path(args.root)
@@ -47,6 +67,17 @@ def main(argv=None):
     host.drive_frames(boot, args.frames, args.max_cycles)
     prog = frames.lift(host, boot.roms, optimize=not args.raw)
     bank = c64.bank_map(boot.roms)
+    if args.bisect:
+        found = bisect(host, c64.bank_map(boot.roms), len(host.stream))
+        if found is None:
+            print("reference: every frame's memory is the machine's")
+            return 0
+        k, ref, bad, want, got = found
+        print(f"reference differs after frame {k}: entry {host.frames[k]}")
+        print("interrupts", host.inside(k).tolist(), "boundary", ref["boundary"])
+        for a in bad[:40]:
+            print(f"  {a:04x} machine {want[a]:02x} reference {got[a]:02x}")
+        return 1
     bad = frames.check(prog, host, args.max_cycles)
     print(f"{len(host.stream)} frames, {host.ninner} nested; stopped: {host.stop}; check: {bad}")
     print(f"foreign {sorted(host.foreign)} dirty {host.dirty} stats {prog.stats}")

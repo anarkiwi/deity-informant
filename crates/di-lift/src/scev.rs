@@ -13,6 +13,8 @@
 use crate::analysis::{absint_known, operand_bytes, Flow, Iv, Var};
 use crate::vsa::{hull, meet, refine, shift, step, symbolic_in, Code, St, Sym, MEM};
 use di_pcode::{reg, CtrlKind, Space, Template};
+use petgraph::algo::tarjan_scc;
+use petgraph::graphmap::DiGraphMap;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 /// What an induction variable is: a register (`lift()` index) or the byte at an address.
@@ -96,24 +98,25 @@ pub(crate) fn find(
     }
     let none = Vec::new();
     let pr = |n: u16| preds.get(&n).unwrap_or(&none);
+    let mut graph: DiGraphMap<u16, ()> = DiGraphMap::new();
+    for (&p, ss) in succs {
+        graph.add_node(p);
+        for &s in ss {
+            graph.add_edge(p, s, ());
+        }
+    }
+    let comps = tarjan_scc(&graph);
+    let comp_of: FxHashMap<u16, usize> = comps
+        .iter()
+        .enumerate()
+        .flat_map(|(i, c)| c.iter().map(move |&n| (n, i)))
+        .collect();
+    let roots_set: FxHashSet<u16> = roots.iter().copied().collect();
     let mut out = Vec::new();
     let mut hs: Vec<u16> = heads.iter().copied().collect();
     hs.sort_unstable();
-    for h in hs.into_iter().filter(|h| !roots.contains(h)) {
-        let mut fwd = FxHashSet::default();
-        let mut work = vec![h];
-        while let Some(n) = work.pop() {
-            if fwd.insert(n) {
-                work.extend(succs.get(&n).into_iter().flatten());
-            }
-        }
-        let mut body: FxHashSet<u16> = [h].into_iter().collect();
-        let mut work: Vec<u16> = pr(h).iter().copied().filter(|p| fwd.contains(p)).collect();
-        while let Some(n) = work.pop() {
-            if body.insert(n) {
-                work.extend(pr(n).iter().copied().filter(|p| fwd.contains(p)));
-            }
-        }
+    for h in hs.into_iter().filter(|h| !roots_set.contains(h)) {
+        let body: FxHashSet<u16> = comps[comp_of[&h]].iter().copied().collect();
         let entries: Vec<(u16, u16)> = body
             .iter()
             .flat_map(|&n| {
@@ -125,7 +128,7 @@ pub(crate) fn find(
             .collect();
         if entries.is_empty()
             || entries.iter().any(|e| e.1 != h)
-            || body.iter().any(|&n| n != h && roots.contains(&n))
+            || body.iter().any(|&n| n != h && roots_set.contains(&n))
         {
             continue;
         }

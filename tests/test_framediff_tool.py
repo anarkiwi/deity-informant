@@ -56,3 +56,25 @@ def test_exact_song_prints_only_the_summary(tmp_path, capsys):
     root = tree(tmp_path / "hvsc", INIT + bytes.fromhex("ad0ddc 8d00d4 40"))
     assert framediff.main([str(root), "x.sid", "--frames", "10", "--raw"]) == 0
     assert "check: None" in capsys.readouterr().out
+
+
+def test_bisect_finds_no_frame_the_reference_differs_in(tmp_path, capsys):
+    root = tree(tmp_path / "hvsc", INIT + IRQ + NMI)
+    assert framediff.main([str(root), "x.sid", "--frames", "30", "--bisect"]) == 0
+    assert "every frame's memory is the machine's" in capsys.readouterr().out
+
+
+def test_bisect_reports_the_first_frame_the_reference_differs_in(tmp_path, capsys, monkeypatch):
+    root = tree(tmp_path / "hvsc", INIT + IRQ + NMI)
+    real = framediff.frames._call  # pylint: disable=protected-access
+
+    def corrupt(prog, host, k, rec, mem, bank=None):
+        out = real(prog, host, k, rec, mem, bank)
+        if k == 3:
+            mem[0x1F0] ^= 0xFF
+        return out
+
+    monkeypatch.setattr(framediff.frames, "_call", corrupt)
+    assert framediff.main([str(root), "x.sid", "--frames", "30", "--bisect"]) == 1
+    out = capsys.readouterr().out
+    assert "reference differs after frame 3" in out and "01f0 machine" in out

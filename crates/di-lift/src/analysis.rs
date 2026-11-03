@@ -583,7 +583,9 @@ pub fn entry_config(m: &BankMap, img: &[u8; 0x10000], facts: &Facts, pc: u16) ->
 }
 
 /// Discover the program reachable from `entries` relative to `img`; the cell fixpoint ends as
-/// cells and their value sets only grow within the 64 KiB image. With a bank map each start
+/// cells and their value sets only grow within the address space. The fixpoint reads only the
+/// decoded instructions and their statically stored values, never the interval analysis, which
+/// runs once on the program it ends with. With a bank map each start
 /// is decoded in the configuration it first ran in (else the one it is first reached in), its
 /// bytes from ROM where that configuration maps ROM.
 pub fn discover(
@@ -668,7 +670,6 @@ pub fn discover(
             }
         }
         let written = static_stores(&cimg, &cells, &vars);
-        let (from, dec, ind) = crate::vsa::analyze(&cimg, &cells, &mut vars, entries, matched);
         let mut next = FixedBitSet::with_capacity(0x10000);
         let mut nvalues = observed.clone();
         for a in code.ones().filter(|&a| !rom_code.contains(a)) {
@@ -688,6 +689,7 @@ pub fn discover(
             nvalues.entry(*a).or_default().extend(v);
         }
         if next == cells && nvalues == values {
+            let (from, dec, ind) = crate::vsa::analyze(&cimg, &cells, &mut vars, entries, matched);
             return Graph {
                 vars,
                 cells,
