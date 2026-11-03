@@ -592,8 +592,19 @@ impl<'a> Em<'a, '_> {
                     _ => v.canon(),
                 }
             };
-            let a = map(self, op.ins[0]);
-            let b = map(self, op.ins[1]);
+            let clear = |em: &Self, v: Vn| {
+                !em.dec && v.space() == Space::Reg && v.off() == di_pcode::reg::D as u32
+            };
+            let a = if clear(self, op.ins[0]) {
+                k(0, 1)
+            } else {
+                map(self, op.ins[0])
+            };
+            let b = if clear(self, op.ins[1]) {
+                k(0, 1)
+            } else {
+                map(self, op.ins[1])
+            };
             let out = map(self, op.out);
             let mut aux = 0;
             if stack && matches!(op.opc, Opc::Load | Opc::Store) {

@@ -42,12 +42,12 @@ pub struct Induction {
 type Succs = FxHashMap<u16, Vec<u16>>;
 
 /// The change of `var` over variant `v` at `pc` with the carry `carry`; `None` if not constant.
-fn delta(code: &Code, pc: u16, v: &Var, var: Place, carry: Option<u8>) -> Option<u8> {
+fn delta(code: &Code, pc: u16, v: &Var, var: Place, known: (Option<u8>, Option<u8>)) -> Option<u8> {
     let t = Template::of(v.op);
     let b = operand_bytes(code.img, code.cells, pc, t.len);
     match var {
         Place::Reg(r) => {
-            let (sym, written, _) = symbolic_in(t.ops(), b, carry, None);
+            let (sym, written, _) = symbolic_in(t.ops(), b, known, None);
             match sym[r as usize] {
                 _ if written >> r & 1 == 0 => Some(0),
                 Some(Sym::Lin(base, off)) if base == r => Some(off),
@@ -62,7 +62,7 @@ fn delta(code: &Code, pc: u16, v: &Var, var: Place, carry: Option<u8>) -> Option
             if !hit {
                 return Some(0);
             }
-            let (_, _, st) = symbolic_in(t.ops(), b, carry, Some(a as u32));
+            let (_, _, st) = symbolic_in(t.ops(), b, known, Some(a as u32));
             let exact = v
                 .acc
                 .iter()
@@ -150,10 +150,9 @@ pub(crate) fn find(
         mems.sort_unstable();
         mems.dedup();
         cands.extend(mems.into_iter().map(Place::Mem));
-        let carry = |n: u16| {
-            st.get(&n)
-                .and_then(|s| s.env[reg::C].value())
-                .map(|c| c as u8)
+        let known = |n: u16| {
+            let flag = |f: usize| st.get(&n).and_then(|s| s.env[f].value()).map(|c| c as u8);
+            (flag(reg::C), flag(reg::D))
         };
         let mut ivs: Vec<Induction> = Vec::new();
         for var in cands {
@@ -165,7 +164,7 @@ pub(crate) fn find(
                 let d = at[&n].and_then(|d| {
                     let ds: Option<Vec<u8>> = vars[&n]
                         .iter()
-                        .map(|v| delta(code, n, v, var, carry(n)))
+                        .map(|v| delta(code, n, v, var, known(n)))
                         .collect();
                     let ds = ds?;
                     ds.iter()

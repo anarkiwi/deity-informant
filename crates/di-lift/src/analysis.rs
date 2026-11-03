@@ -100,6 +100,11 @@ pub fn iv_op(opc: Opc, a: Iv, b: Iv, out: u32, size0: u32) -> Iv {
                 hi: m,
             },
         },
+        Opc::IntXor => match (a.value(), b.value()) {
+            (Some(0), _) => b,
+            (_, Some(0)) => a,
+            _ => full,
+        },
         Opc::IntLeft => match b.value() {
             Some(s) if s < 32 && (a.hi as u64) << s <= m as u64 => Iv {
                 lo: a.lo << s,

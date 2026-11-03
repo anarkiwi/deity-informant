@@ -197,12 +197,27 @@ def _in_ctor(text, head, old, new):
     return text[:i] + text[i:j].replace(old, new, 1) + text[j:]
 
 
+def _swap_body(text, head, body):
+    """Replace the whole body of the constructor starting with ``head``."""
+    i = text.find("\n" + head)
+    j = text.find("\n}", i)
+    k = text.find("\n{", i)
+    if i < 0 or j < 0 or not 0 < k < j:
+        raise ValueError("%r: no constructor to replace in the stock spec" % head)
+    return text[: k + 2] + body + text[j:]
+
+
 def patch_base(base_text):
-    """``base_text`` with the context include and the hardware stack/borrow rules."""
+    """``base_text`` with the context include, the hardware stack/borrow rules and NMOS ADC/SBC."""
     lines = base_text.splitlines()
     i = max(n for n, l in enumerate(lines) if l.startswith("define register"))
     lines.insert(i + 1, '@include "6510_context.sinc"')
     text = "\n".join(lines) + "\n"
     for head, old, new in PATCHES:
         text = _in_ctor(text, head, old, new)
+    i = text.find("\nmacro subtraction_flags1")
+    j = text.find("\n}", i) + 2
+    text = text[:j] + '\n@include "6510_alu.sinc"\n' + text[j:]
+    for head, call in ((":ADC OP1", "illegalAdcNmos(OP1);"), (":SBC OP1", "illegalSbcNmos(OP1);")):
+        text = _swap_body(text, head, "\t" + call)
     return text

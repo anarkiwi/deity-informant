@@ -23,6 +23,7 @@
 use crate::analysis::{
     absint, flow_succs, operand_bytes, stack_delta, Access, Entry, Env, Flow, Iv, Var, TOP_ENV,
 };
+use crate::ir::fold;
 use di_pcode::{CtrlKind, Op, Opc, Slot, Space, Template, Vn, UNIQUE_SIZE};
 use fixedbitset::FixedBitSet;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -98,6 +99,8 @@ pub(crate) enum Sym {
     Lin(u8, u8),
     Bit7(u8, u8),
     Cond(u8, u8, Rel, u8),
+    /// A constant.
+    K(u8),
 }
 
 #[derive(Clone, Copy)]
@@ -108,22 +111,27 @@ enum Val {
 
 /// Symbols of the registers after `ops` (entry `A`, `X`, `Y` are bases 0-2, each load a new
 /// base) and the mask of registers they write.
-fn symbolic(ops: &[Op], b: [Option<u8>; 2]) -> ([Option<Sym>; 16], u32) {
-    let (reg, written, _) = symbolic_in(ops, b, None, None);
+fn symbolic(ops: &[Op], b: [Option<u8>; 2], dec: Option<u8>) -> ([Option<Sym>; 16], u32) {
+    let (reg, written, _) = symbolic_in(ops, b, (None, dec), None);
     (reg, written)
 }
 
 /// The base of the byte at a tracked address in [`symbolic_in`].
 pub(crate) const MEM: u8 = u8::MAX;
 
-/// [`symbolic`] with the carry known (`carry`) and, for a tracked address `mem` whose loads
+/// [`symbolic`] with the carry and decimal flag known (`known`) and, for a tracked address `mem` whose loads
 /// are base [`MEM`], the symbol of the last value stored there (`Some(None)`: not a symbol).
 pub(crate) fn symbolic_in(
     ops: &[Op],
     b: [Option<u8>; 2],
-    carry: Option<u8>,
+    known: (Option<u8>, Option<u8>),
     mem: Option<u32>,
 ) -> ([Option<Sym>; 16], u32, Option<Option<Sym>>) {
+    let (carry, dec) = known;
+    let val = |s: Sym| match s {
+        Sym::K(k) => Val::C(k),
+        s => Val::S(s),
+    };
     let mut stored = None;
     let mut reg = [None; 16];
     for (r, s) in reg.iter_mut().enumerate().take(DATA) {
@@ -141,13 +149,16 @@ pub(crate) fn symbolic_in(
                     Space::Reg if v.off() == 8 && written >> 8 & 1 == 0 && carry.is_some() => {
                         carry.map(Val::C)
                     }
+                    Space::Reg if v.off() == 11 && written >> 11 & 1 == 0 && dec.is_some() => {
+                        dec.map(Val::C)
+                    }
                     Space::Const => match v.slot() {
                         Slot::Fixed => u8::try_from(v.off()).ok().map(Val::C),
                         Slot::B1 => b[0].map(Val::C),
                         _ => None,
                     },
-                    Space::Reg => reg[v.off() as usize].map(Val::S),
-                    Space::Unique => uniq[v.off() as usize].map(Val::S),
+                    Space::Reg => reg[v.off() as usize].map(val),
+                    Space::Unique => uniq[v.off() as usize].map(val),
                     Space::Ram => None,
                 }
             };
@@ -164,6 +175,44 @@ pub(crate) fn symbolic_in(
             _ => None,
         };
         let r = match op.opc {
+            Opc::Copy if matches!(x, Some(Val::C(_))) => match x {
+                Some(Val::C(k)) => Some(Sym::K(k)),
+                _ => None,
+            },
+            o if matches!(
+                o,
+                Opc::IntAdd
+                    | Opc::IntSub
+                    | Opc::IntAnd
+                    | Opc::IntOr
+                    | Opc::IntXor
+                    | Opc::IntLeft
+                    | Opc::IntRight
+                    | Opc::IntEqual
+                    | Opc::IntNotEqual
+                    | Opc::IntLess
+                    | Opc::IntLessEqual
+                    | Opc::IntCarry
+            ) && matches!((x, y), (Some(Val::C(_)), Some(Val::C(_)))) =>
+            {
+                match (x, y) {
+                    (Some(Val::C(p)), Some(Val::C(q))) => {
+                        Some(Sym::K(fold(o, p as u32, q as u32, 1, 1) as u8))
+                    }
+                    _ => None,
+                }
+            }
+            Opc::IntAnd if matches!(x, Some(Val::C(0))) || matches!(y, Some(Val::C(0))) => {
+                Some(Sym::K(0))
+            }
+            Opc::IntOr | Opc::IntXor if matches!(y, Some(Val::C(0))) => match x {
+                Some(Val::S(s)) => Some(s),
+                _ => None,
+            },
+            Opc::IntOr | Opc::IntXor if matches!(x, Some(Val::C(0))) => match y {
+                Some(Val::S(s)) => Some(s),
+                _ => None,
+            },
             Opc::Load if op.out.size() == 1 && mem.is_some() && at(op.ins[0]) == mem => {
                 Some(Sym::Lin(MEM, 0))
             }
@@ -334,7 +383,7 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
             stored[(i >> 7) as usize] |= 1u128 << (i & 127);
         }
     }
-    let (sym, written) = symbolic(ops, b);
+    let (sym, written) = symbolic(ops, b, st.env[di_pcode::reg::D].value().map(|d| d as u8));
     let mut pred = [None; 3];
     for (i, &f) in FLAGS.iter().enumerate() {
         pred[i] = if written >> f & 1 == 0 {

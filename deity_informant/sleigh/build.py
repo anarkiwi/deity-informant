@@ -32,7 +32,14 @@ from .smc import CONTEXT, patch_base, smc_sinc
 
 LANGDIR = Path(__file__).resolve().parent / "languages"
 
-SOURCES = ("6510.slaspec", "6510_illegal.sinc", "6510.ldefs", "6510.pspec", "6510.cspec")
+SOURCES = (
+    "6510.slaspec",
+    "6510_alu.sinc",
+    "6510_illegal.sinc",
+    "6510.ldefs",
+    "6510.pspec",
+    "6510.cspec",
+)
 GENERATED = ("6502.slaspec", "6510_context.sinc", "6510_smc.sinc")
 
 
