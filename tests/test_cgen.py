@@ -157,6 +157,78 @@ entry:  TAX
         RTS
 end:
 """
+LOHI = """
+entry:  AND #$03
+        TAY
+        LDA tlo,Y
+        STA ptr
+        LDA thi,Y
+        STA ptr+1
+        JMP (ptr)
+j0:     LDA msg
+        STA $C050
+        RTS
+j1:     LDA msg+1
+        STA $C051
+        RTS
+j2:     LDX msg+2
+        STX $C052
+        RTS
+j3:     STY $C053
+        RTS
+tlo:    .byte lo(j0),lo(j1),lo(j2),lo(j3)
+thi:    .byte hi(j0),hi(j1),hi(j2),hi(j3)
+msg:    .byte $11,$22,$33
+ptr:    .byte 0,0
+end:
+"""
+CLEAR = """
+entry:  CMP #$01
+        BEQ clear
+        INC ops+1
+ops:    LDA #$11
+        STA $C060
+        LDA #$22
+        STA $C061
+        LDA #$33
+        STA $C062
+        RTS
+clear:  LDX #$0A
+loop:   LDA #$00
+        STA ops+1,X
+        TXA
+        SEC
+        SBC #$05
+        TAX
+        BPL loop
+        RTS
+end:
+"""
+FLIP = """
+entry:  CMP #$02
+        BCS run
+        LSR A
+        LDA #$69
+        BCC fill
+        LDA #$E9
+fill:   LDX #$05
+set:    STA ops,X
+        DEX
+        DEX
+        DEX
+        DEX
+        DEX
+        BPL set
+        RTS
+run:    LDA #$10
+        SEC
+ops:    ADC #$03
+        STA $C060
+        ADC #$04
+        STA $C061
+        RTS
+end:
+"""
 RELOC = """
 entry:  AND #$03
         TAX
@@ -313,23 +385,64 @@ def test_computed_jumps_from_facts(prefix, tmp_path, name):
     play(tmp_path, c, h, img, labels, entry_calls(range(4), 3))
 
 
-def test_unresolved_jump_traps(prefix, tmp_path):
-    img, labels = W.assemble(W.JMPIND)
-    c, h, info = cgen.translate(
-        img,
-        [(labels["entry"], "entry")],
-        [W.IO],
-        loaded=(0x1000, 0x1812),
-        header="t.h",
-        prefix=prefix,
-    )
+@pytest.mark.parametrize("name", ["LOHI", "JMPIND", "JUMPTAB", "PUSHRTS"])
+def test_computed_jumps_from_the_code(prefix, tmp_path, name):
+    src = LOHI if name == "LOHI" else getattr(W, name) + "end:\n"
+    c, _, info = check(prefix, tmp_path, src, entry_calls(range(4), 3))
+    [targets] = info["jumps"].values()
+    assert len(targets) == (2 if name == "PUSHRTS" else 4)
+    assert all(key[0] != "ind" for key in info["traps"].values())
+    assert name == "PUSHRTS" or not info["traps"]
+    org = info["code_span"][0]
+    assert all(f"CODE_ORG + 0x{t - org:X}" in c for t in targets[:-1])
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        ("AND #$03\n", ""),
+        ("entry:  AND #$03", "entry:  LDX tlo\n        STX tlo\n        AND #$03"),
+    ],
+    ids=["unbounded", "written"],
+)
+def test_unresolved_jump_traps(prefix, tmp_path, edit):
+    img, labels, loaded = assemble(LOHI.replace(*edit))
+    c, h, info = translate(prefix, img, labels, loaded)
+    assert not info["jumps"]
     k = next(k for k, key in info["traps"].items() if key[0] == "ind")
     assert f"trap({k})" in c
-    (tmp_path / "t.c").write_text(c)
-    (tmp_path / "t.h").write_text(h)
-    lib = cgenplay.build(tmp_path / "t.c", tmp_path / "t.so")
     with pytest.raises(AssertionError, match="trap"):
-        cgenplay.replay(lib, img, {"entry": labels["entry"]}, [("entry", 1)], [W.IO])
+        play(tmp_path, c, h, img, labels, [("entry", 1)])
+    facts = trace.collect(img, lambda s: [s.call(labels["entry"], a) for a in range(4)])
+    c, h, info = translate(prefix, img, labels, loaded, facts=facts)
+    assert info["facts_edges"] and not info["jumps"]
+    (tmp_path / "facts").mkdir()
+    play(tmp_path / "facts", c, h, img, labels, entry_calls(range(4), 2))
+
+
+def test_jump_table_data_and_relocation_invariance(prefix, tmp_path):
+    outs = []
+    runs = ((0x1000, [0x11, 0x22, 0x33]), (0x1000, [0x44, 0x55, 0x66]), (0x2345, [1, 2, 3]))
+    for i, (org, msg) in enumerate(runs):
+        img, labels, loaded = assemble(LOHI, org, patch={"msg": msg})
+        c, h, _ = translate(prefix, img, labels, loaded)
+        (tmp_path / str(i)).mkdir()
+        play(tmp_path / str(i), c, h, img, labels, entry_calls(range(4), 2))
+        outs.append((c, h))
+    assert outs[0][0] == outs[1][0] == outs[2][0] and len({h for _, h in outs}) == 3
+    assert not re.search(r"0x1[0-9A-F]{3}\b|0x23[0-9A-F]{2}\b", outs[0][0])
+
+
+def test_indexed_stores_clear_operand_cells(prefix, tmp_path):
+    c, _, info = check(prefix, tmp_path, CLEAR, entry_calls([0, 0, 1, 0, 2, 0, 1, 0]))
+    assert "codechk" not in c and not info["traps"]
+    assert (info["stats"]["cells"], info["stats"]["code_guards"]) == (3, 0)
+
+
+def test_indexed_store_of_known_opcodes(prefix, tmp_path):
+    c, _, info = check(prefix, tmp_path, FLIP, entry_calls([2, 1, 2, 0, 2, 3, 1, 2]))
+    assert "codechk" not in c and not info["traps"]
+    assert (info["stats"]["opcode_cells"], info["stats"]["code_guards"]) == (2, 0)
 
 
 def test_untaken_path_and_data_invariance(prefix, tmp_path):

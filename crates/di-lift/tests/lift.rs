@@ -568,3 +568,94 @@ fn unbounded_index_store_keeps_its_guard() {
         assert!(diff(&img, &p, &acc_calls(&[0, 0x41, 0]), IO) > 0);
     }
 }
+
+/// Jump tables (interleaved through `JMP (ind)`, split behind pushed return addresses) indexed
+/// by a bounded register resolve from the code: no facts, every target, no deopt.
+#[test]
+fn computed_jumps_resolve_without_facts() {
+    type Prog = &'static [(u16, &'static [u8])];
+    let cases: [(Prog, u16, usize); 3] = [
+        (progs::JMPIND, progs::JMPIND_ENTRY, 4),
+        (progs::JUMPTAB, progs::JUMPTAB_ENTRY, 4),
+        (progs::PUSHRTS, progs::PUSHRTS_ENTRY, 2),
+    ];
+    for (prog, pc, n) in cases {
+        let img = image(prog);
+        for cycles in [false, true] {
+            let opts = Opts {
+                optimize: true,
+                cycles,
+            };
+            let p = lift_with(
+                &img,
+                &entries(&[pc]),
+                &[(0xc000, 0xc100)],
+                &Facts::default(),
+                opts,
+            );
+            assert_eq!(p.jumps.len(), 1);
+            assert_eq!(p.jumps[0].1.len(), n);
+            let runs = acc_calls(&[0, 1, 2, 3, 3, 2, 1, 0]);
+            assert_eq!(diff(&img, &p, &runs, IO), 0);
+        }
+    }
+}
+
+/// An index the code does not bound, or a table a store may write, leaves the jump
+/// unresolved: it deopts.
+#[test]
+fn unbounded_or_written_tables_stay_unresolved() {
+    let mut unbounded = progs::JMPIND[0].1.to_vec();
+    unbounded[..2].copy_from_slice(&[0xea, 0xea]);
+    let mut written = progs::JMPIND[0].1.to_vec();
+    written[..2].copy_from_slice(&[0x8d, 0x23]);
+    written.insert(2, 0x10);
+    for prog in [unbounded, written] {
+        let img = image(&[(0x1000, &prog)]);
+        let p = lift(
+            &img,
+            &entries(&[0x1000]),
+            &[(0xc000, 0xc100)],
+            &Facts::default(),
+        );
+        assert!(p.jumps.is_empty());
+        assert!(diff(&img, &p, &acc_calls(&[0]), IO) > 0);
+    }
+}
+
+/// A counted loop clearing operands with `STA abs,X` makes them cells (no code check), and a
+/// store of known opcodes makes a closed opcode cell (no dispatch deopt).
+#[test]
+fn indexed_stores_make_cells() {
+    let clear: &[u8] = &[
+        0xa2, 0x0a, 0xa9, 0x00, 0x9d, 0x04, 0x11, 0x8a, 0x38, 0xe9, 0x05, 0xaa, 0x10, 0xf4, 0x60,
+    ];
+    let ops: &[u8] = &[
+        0xee, 0x04, 0x11, 0xa9, 0x11, 0x8d, 0x60, 0xc0, 0xa9, 0x22, 0x8d, 0x61, 0xc0, 0xa9, 0x33,
+        0x8d, 0x62, 0xc0, 0x60,
+    ];
+    let flip: &[u8] = &[
+        0x4a, 0xa9, 0x69, 0x90, 0x02, 0xa9, 0xe9, 0xa2, 0x05, 0x9d, 0x23, 0x12, 0xca, 0xca, 0xca,
+        0xca, 0xca, 0x10, 0xf6, 0x60,
+    ];
+    let run: &[u8] = &[
+        0xa9, 0x10, 0x38, 0x69, 0x03, 0x8d, 0x60, 0xc0, 0x69, 0x04, 0x8d, 0x61, 0xc0, 0x60,
+    ];
+    let img = image(&[
+        (0x1000, clear),
+        (0x1100, ops),
+        (0x1200, flip),
+        (0x1220, run),
+    ]);
+    let calls = [(1, 0), (0, 0), (1, 0), (2, 1), (3, 0), (2, 0), (3, 0)];
+    let p = lift(
+        &img,
+        &entries(&[0x1000, 0x1100, 0x1200, 0x1220]),
+        &[(0xc000, 0xc100)],
+        &Facts::default(),
+    );
+    assert_eq!(p.stats.code_guards, 0);
+    assert_eq!((p.stats.cells, p.stats.opcode_cells), (5, 2));
+    assert_eq!(p.sets.len(), 2);
+    assert_eq!(diff(&img, &p, &calls, IO), 0);
+}

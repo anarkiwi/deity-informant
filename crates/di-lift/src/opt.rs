@@ -440,6 +440,7 @@ fn prune(f: &mut Function) -> bool {
     }
     let mut tmap = vec![u32::MAX; f.tables.len()];
     let mut nt = Vec::new();
+    let mut closed = FixedBitSet::new();
     for b in &mut nb {
         for op in &mut b.ops {
             match op.opc {
@@ -448,6 +449,8 @@ fn prune(f: &mut Function) -> bool {
                     let t = op.aux as usize;
                     if tmap[t] == u32::MAX {
                         tmap[t] = nt.len() as u32;
+                        closed.grow(nt.len() + 1);
+                        closed.set(nt.len(), f.closed.contains(t));
                         nt.push(
                             f.tables[t]
                                 .iter()
@@ -466,6 +469,7 @@ fn prune(f: &mut Function) -> bool {
     }
     f.blocks = nb;
     f.tables = nt;
+    f.closed = closed;
     true
 }
 

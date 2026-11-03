@@ -434,6 +434,15 @@ pub struct Graph {
     pub pull_clear: bool,
     /// Induction variables of the loops.
     pub ind: Vec<crate::scev::Induction>,
+    /// Computed transfers whose targets come from the code ([`crate::dispatch`]).
+    pub stat: FxHashMap<u16, Vec<u16>>,
+    /// Stores `(pc, opcode, access index)` none of whose addresses is constant code.
+    pub nocode: FxHashSet<(u16, u8, usize)>,
+    /// The bytes the targets in `stat` were read from: constant like code.
+    pub tables: BTreeSet<u16>,
+    /// Opcode cells no store writes a value outside their variants: every store that may
+    /// write one has known addresses and values.
+    pub closed: FixedBitSet,
 }
 
 /// Stack-pointer effect of a `Next` instruction: pushes and pulls by count, `None` for an
@@ -488,12 +497,20 @@ struct Ctx<'a> {
     img: &'a [u8; 0x10000],
     cells: &'a FixedBitSet,
     edges: &'a FxHashMap<u16, Vec<u16>>,
+    /// Targets from the code, which replace the facts'.
+    stat: &'a FxHashMap<u16, BTreeSet<u16>>,
     values: &'a FxHashMap<u16, BTreeSet<u8>>,
     /// The `BRK` vector as the instruction's configuration maps it.
     brk: u16,
 }
 
 impl Ctx<'_> {
+    fn computed(&self, pc: u16) -> Vec<u16> {
+        match self.stat.get(&pc) {
+            Some(t) => t.iter().copied().collect(),
+            None => self.facts(pc, []),
+        }
+    }
     fn facts(&self, pc: u16, more: impl IntoIterator<Item = u16>) -> Vec<u16> {
         let mut v: Vec<u16> = self
             .edges
@@ -542,13 +559,13 @@ impl Ctx<'_> {
                 f: next,
             },
             CtrlKind::Jmp => Flow::Jmp(self.tg(pc, opnd, w)),
-            CtrlKind::JmpInd => Flow::JmpInd(self.facts(pc, [])),
+            CtrlKind::JmpInd => Flow::JmpInd(self.computed(pc)),
             CtrlKind::Jsr => Flow::Jsr {
                 t: self.tg(pc, opnd, w),
                 ret: next,
             },
-            CtrlKind::Rts => Flow::Rts(self.facts(pc, [])),
-            CtrlKind::Rti => Flow::Rti(self.facts(pc, [])),
+            CtrlKind::Rts => Flow::Rts(self.computed(pc)),
+            CtrlKind::Rti => Flow::Rti(self.computed(pc)),
             CtrlKind::Brk => Flow::Brk(self.facts(pc, [self.brk])),
             CtrlKind::Jam => Flow::Jam,
         }
@@ -589,12 +606,15 @@ pub fn entry_config(m: &BankMap, img: &[u8; 0x10000], facts: &Facts, pc: u16) ->
     m.config(d, v)
 }
 
-/// Discover the program reachable from `entries` relative to `img`; the cell fixpoint ends as
-/// cells and their value sets only grow within the address space. The fixpoint reads only the
-/// decoded instructions and their statically stored values, never the interval analysis, which
-/// runs once on the program it ends with. With a bank map each start
+/// Discover the program reachable from `entries` relative to `img`. With a bank map each start
 /// is decoded in the configuration it first ran in (else the one it is first reached in), its
 /// bytes from ROM where that configuration maps ROM.
+///
+/// The code cells, their value sets and the targets of computed transfers found from the code
+/// ([`crate::dispatch`]) are a joint least fixpoint from none: each round decodes the program
+/// they give and analyses it, and they only grow. Which `RTS`/`RTI`s are jumps through a pushed
+/// address, and which computed transfers stay unresolved (to their facts' targets), is decided
+/// on a converged program, and the fixpoint is recomputed until neither grows.
 pub fn discover(
     img: &[u8; 0x10000],
     entries: &[Entry],
@@ -602,10 +622,6 @@ pub fn discover(
     bank: Option<&BankMap>,
     matched: bool,
 ) -> Graph {
-    let seen: FxHashMap<u16, u8> = match bank {
-        Some(_) => facts.banks.iter().map(|(p, c)| (*p, c[0])).collect(),
-        None => FxHashMap::default(),
-    };
     let mut edges: FxHashMap<u16, Vec<u16>> = FxHashMap::default();
     for &(p, q) in &facts.edges {
         edges.entry(p).or_default().push(q);
@@ -614,184 +630,228 @@ pub fn discover(
         v.sort_unstable();
         v.dedup();
     }
-    let observed: FxHashMap<u16, BTreeSet<u8>> = facts
-        .writes
-        .iter()
-        .map(|(a, v)| (*a, v.iter().copied().collect()))
-        .collect();
-    let mut cells = FixedBitSet::with_capacity(0x10000);
-    let mut values = observed.clone();
+    let mut fix = Fixpoint {
+        img,
+        entries,
+        facts,
+        bank,
+        matched,
+        edges,
+        failed: FxHashSet::default(),
+        disp: FxHashSet::default(),
+    };
     loop {
-        let mut cimg = Box::new(*img);
-        let mut rom_code = FixedBitSet::with_capacity(0x10000);
-        let mut cfg: FxHashMap<u16, u8> = FxHashMap::default();
-        let mut vars: FxHashMap<u16, Vec<Var>> = FxHashMap::default();
-        let mut work: Vec<(u16, u8)> = entries
+        let (g, jumps) = fix.run();
+        let disp: FxHashSet<u16> = jumps
             .iter()
-            .map(|e| (e.pc, bank.map_or(0, |m| entry_config(m, img, facts, e.pc))))
+            .filter(|(pc, j)| {
+                matches!(j, crate::dispatch::Jump::Targets(..))
+                    && g.vars[pc]
+                        .iter()
+                        .any(|v| matches!(v.flow, Flow::Rts(_) | Flow::Rti(_)))
+            })
+            .map(|(&pc, _)| pc)
+            .chain(fix.disp.iter().copied())
+            .filter(|pc| !fix.failed.contains(pc))
             .collect();
-        while let Some((pc, c)) = work.pop() {
-            if vars.contains_key(&pc) {
-                continue;
-            }
-            let c = seen.get(&pc).copied().unwrap_or(c);
-            if let Some(m) = bank.filter(|m| m.back(c, pc) == Back::Rom) {
-                for i in 0..Template::of(m.rom[pc as usize]).len as u16 {
-                    let a = pc.wrapping_add(i);
-                    if m.back(c, a) == Back::Rom {
-                        cimg[a as usize] = m.rom[a as usize];
-                        rom_code.insert(a as usize);
-                    }
-                }
-            }
-            cfg.insert(pc, c);
-            let vec = |a: u16| match bank {
-                Some(m) if m.back(c, a) == Back::Rom => m.rom[a as usize],
-                _ => img[a as usize],
-            };
-            let ctx = Ctx {
-                img: &cimg,
-                cells: &cells,
-                edges: &edges,
-                values: &values,
-                brk: u16::from_le_bytes([vec(0xfffe), vec(0xffff)]),
-            };
-            let vs: Vec<Var> = ctx
-                .opcodes(pc)
-                .into_iter()
-                .map(|op| Var {
-                    op,
-                    flow: ctx.flow(pc, op),
-                    acc: Vec::new(),
-                })
-                .collect();
-            work.extend(vs.iter().flat_map(|v| flow_succs(&v.flow)).map(|t| (t, c)));
-            vars.insert(pc, vs);
+        if disp != fix.disp {
+            fix.disp = disp;
+            continue;
         }
-        let mut code = FixedBitSet::with_capacity(0x10000);
-        for (&pc, vs) in &vars {
-            for v in vs {
-                for i in 0..Template::of(v.op).len as u16 {
-                    code.insert(pc.wrapping_add(i) as usize);
-                }
-            }
+        let failed: Vec<u16> = jumps
+            .iter()
+            .filter(|(pc, j)| **j == crate::dispatch::Jump::Fail && !fix.failed.contains(pc))
+            .map(|(&pc, _)| pc)
+            .collect();
+        if failed.is_empty() {
+            return g;
         }
-        let written = static_stores(&cimg, &cells, &vars);
-        let mut next = FixedBitSet::with_capacity(0x10000);
-        let mut nvalues = observed.clone();
-        for a in code.ones().filter(|&a| !rom_code.contains(a)) {
-            let a16 = a as u16;
-            let st = written.get(&a16);
-            if observed.contains_key(&a16) || st.is_some() {
-                next.insert(a);
-                nvalues
-                    .entry(a16)
-                    .or_default()
-                    .extend(st.into_iter().flatten());
-            }
-        }
-        // Monotone: cells and their values only grow, so the fixpoint terminates.
-        next.union_with(&cells);
-        for (a, v) in &values {
-            nvalues.entry(*a).or_default().extend(v);
-        }
-        if next == cells && nvalues == values {
-            let pull_clear = crate::vsa::pull_clear(&vars, entries);
-            let (from, dec, ind) = crate::vsa::analyze(&cimg, &cells, &mut vars, entries, matched);
-            return Graph {
-                vars,
-                cells,
-                code,
-                edges,
-                img: cimg,
-                rom_code,
-                cfg,
-                prot: crate::ptr::Prot::default(),
-                from,
-                dec,
-                pull_clear,
-                ind,
-            };
-        }
-        cells = next;
-        values = nvalues;
+        fix.failed.extend(failed);
+        fix.disp.retain(|pc| !fix.failed.contains(pc));
     }
 }
 
-/// The statically known stores `addr -> values` (empty set: unknown value) by abstract
-/// interpretation along single-predecessor chains.
-fn static_stores(
-    img: &[u8; 0x10000],
-    cells: &FixedBitSet,
-    vars: &FxHashMap<u16, Vec<Var>>,
-) -> FxHashMap<u16, BTreeSet<u8>> {
-    let mut preds: FxHashMap<u16, u32> = FxHashMap::default();
-    for vs in vars.values() {
-        let succ: FxHashSet<u16> = vs.iter().flat_map(|v| flow_succs(&v.flow)).collect();
-        for s in succ {
-            *preds.entry(s).or_default() += 1;
-        }
-    }
-    let chained: FxHashSet<u16> = vars
-        .values()
-        .filter(|vs| vs.len() == 1)
-        .filter_map(|vs| single_next(&vs[0].flow))
-        .filter(|n| preds.get(n) == Some(&1))
-        .collect();
-    let mut order: Vec<u16> = vars.keys().copied().collect();
-    order.sort_unstable();
-    let roots: Vec<u16> = order
-        .iter()
-        .filter(|p| !chained.contains(p))
-        .chain(order.iter())
-        .copied()
-        .collect();
-    let mut seen: FxHashSet<u16> = FxHashSet::default();
-    let mut written: FxHashMap<u16, BTreeSet<u8>> = FxHashMap::default();
-    let mut stack = Vec::new();
-    let mut acc = Vec::new();
-    for root in roots {
-        stack.push((root, TOP_ENV));
-        while let Some((pc, env)) = stack.pop() {
-            if !seen.insert(pc) {
-                continue;
-            }
-            let vs = &vars[&pc];
-            let single = vs.len() == 1;
-            for v in vs {
-                let t = Template::of(v.op);
-                let mut e = env;
-                acc.clear();
-                absint(
-                    t.ops(),
-                    operand_bytes(img, cells, pc, t.len),
-                    &mut e,
-                    &mut acc,
-                );
-                for a in &acc {
-                    if let (true, Some(addr)) = (a.store, a.addr.value()) {
-                        let s = written.entry(addr as u16).or_default();
-                        if let Some(x) = a.val.value() {
-                            s.insert(x as u8);
+/// The inner fixpoint of [`discover`] for given unresolved transfers and jumping returns.
+struct Fixpoint<'a> {
+    img: &'a [u8; 0x10000],
+    entries: &'a [Entry],
+    facts: &'a Facts,
+    bank: Option<&'a BankMap>,
+    matched: bool,
+    edges: FxHashMap<u16, Vec<u16>>,
+    failed: FxHashSet<u16>,
+    disp: FxHashSet<u16>,
+}
+
+impl Fixpoint<'_> {
+    fn run(&self) -> (Graph, FxHashMap<u16, crate::dispatch::Jump>) {
+        let (img, entries, facts, bank) = (self.img, self.entries, self.facts, self.bank);
+        let seen: FxHashMap<u16, u8> = match bank {
+            Some(_) => facts.banks.iter().map(|(p, c)| (*p, c[0])).collect(),
+            None => FxHashMap::default(),
+        };
+        let observed: FxHashMap<u16, BTreeSet<u8>> = facts
+            .writes
+            .iter()
+            .map(|(a, v)| (*a, v.iter().copied().collect()))
+            .collect();
+        let mut cells = FixedBitSet::with_capacity(0x10000);
+        let mut values = observed.clone();
+        let mut stat: FxHashMap<u16, BTreeSet<u16>> = FxHashMap::default();
+        loop {
+            let mut cimg = Box::new(*img);
+            let mut rom_code = FixedBitSet::with_capacity(0x10000);
+            let mut cfg: FxHashMap<u16, u8> = FxHashMap::default();
+            let mut vars: FxHashMap<u16, Vec<Var>> = FxHashMap::default();
+            let mut work: Vec<(u16, u8)> = entries
+                .iter()
+                .map(|e| (e.pc, bank.map_or(0, |m| entry_config(m, img, facts, e.pc))))
+                .collect();
+            while let Some((pc, c)) = work.pop() {
+                if vars.contains_key(&pc) {
+                    continue;
+                }
+                let c = seen.get(&pc).copied().unwrap_or(c);
+                if let Some(m) = bank.filter(|m| m.back(c, pc) == Back::Rom) {
+                    for i in 0..Template::of(m.rom[pc as usize]).len as u16 {
+                        let a = pc.wrapping_add(i);
+                        if m.back(c, a) == Back::Rom {
+                            cimg[a as usize] = m.rom[a as usize];
+                            rom_code.insert(a as usize);
                         }
                     }
                 }
-                match single_next(&v.flow) {
-                    Some(n) if single && chained.contains(&n) => stack.push((n, e)),
-                    _ => {}
+                cfg.insert(pc, c);
+                let vec = |a: u16| match bank {
+                    Some(m) if m.back(c, a) == Back::Rom => m.rom[a as usize],
+                    _ => img[a as usize],
+                };
+                let ctx = Ctx {
+                    img: &cimg,
+                    cells: &cells,
+                    edges: &self.edges,
+                    stat: &stat,
+                    values: &values,
+                    brk: u16::from_le_bytes([vec(0xfffe), vec(0xffff)]),
+                };
+                let vs: Vec<Var> = ctx
+                    .opcodes(pc)
+                    .into_iter()
+                    .map(|op| Var {
+                        op,
+                        flow: ctx.flow(pc, op),
+                        acc: Vec::new(),
+                    })
+                    .collect();
+                work.extend(vs.iter().flat_map(|v| flow_succs(&v.flow)).map(|t| (t, c)));
+                vars.insert(pc, vs);
+            }
+            let mut code = FixedBitSet::with_capacity(0x10000);
+            for (&pc, vs) in &vars {
+                for v in vs {
+                    for i in 0..Template::of(v.op).len as u16 {
+                        code.insert(pc.wrapping_add(i) as usize);
+                    }
                 }
             }
+            let an =
+                crate::vsa::analyze(&cimg, &cells, &mut vars, entries, self.matched, &self.disp);
+            let mut written: FxHashMap<u16, BTreeSet<u8>> = FxHashMap::default();
+            for st in &an.stores {
+                for &a in st.addrs.iter().flatten() {
+                    let s = written.entry(a).or_default();
+                    if let Some(v) = &st.vals {
+                        s.extend(v);
+                    }
+                }
+            }
+            let mut next = FixedBitSet::with_capacity(0x10000);
+            let mut nvalues = observed.clone();
+            for a in code.ones().filter(|&a| !rom_code.contains(a)) {
+                let a16 = a as u16;
+                let st = written.get(&a16);
+                if observed.contains_key(&a16) || st.is_some() {
+                    next.insert(a);
+                    nvalues
+                        .entry(a16)
+                        .or_default()
+                        .extend(st.into_iter().flatten());
+                }
+            }
+            // Monotone: cells, their values and targets only grow, so the fixpoint terminates.
+            next.union_with(&cells);
+            for (a, v) in &values {
+                nvalues.entry(*a).or_default().extend(v);
+            }
+            let mut nstat = stat.clone();
+            for (&pc, j) in &an.jumps {
+                if let (crate::dispatch::Jump::Targets(t, _), false) =
+                    (j, self.failed.contains(&pc))
+                {
+                    nstat.entry(pc).or_default().extend(t);
+                }
+            }
+            if next == cells && nvalues == values && nstat == stat {
+                let pull_clear = crate::vsa::pull_clear(&vars, entries);
+                let mut constcode = code.clone();
+                constcode.difference_with(&cells);
+                constcode.difference_with(&rom_code);
+                let mut open = FixedBitSet::with_capacity(0x10000);
+                for s in &an.stores {
+                    match (&s.addrs, &s.vals) {
+                        (Some(_), Some(_)) => {}
+                        (Some(a), None) => open.extend(a.iter().map(|&x| x as usize)),
+                        (None, _) => open
+                            .insert_range(s.addr.lo as usize..(s.addr.hi as usize).min(0xffff) + 1),
+                    }
+                }
+                let mut closed = cells.clone();
+                closed.difference_with(&open);
+                let nocode = an
+                    .stores
+                    .iter()
+                    .filter(|s| {
+                        s.addrs
+                            .as_ref()
+                            .is_some_and(|a| a.iter().all(|&x| !constcode.contains(x as usize)))
+                    })
+                    .map(|s| (s.pc, s.op, s.ai))
+                    .collect();
+                let g = Graph {
+                    vars,
+                    cells,
+                    code,
+                    edges: self.edges.clone(),
+                    img: cimg,
+                    rom_code,
+                    cfg,
+                    prot: crate::ptr::Prot::default(),
+                    from: an.from,
+                    dec: an.dec,
+                    pull_clear,
+                    ind: an.ind,
+                    stat: stat
+                        .into_iter()
+                        .map(|(pc, t)| (pc, t.into_iter().collect()))
+                        .collect(),
+                    nocode,
+                    closed,
+                    tables: an
+                        .jumps
+                        .iter()
+                        .filter(|(pc, _)| !self.failed.contains(pc))
+                        .flat_map(|(_, j)| match j {
+                            crate::dispatch::Jump::Targets(_, b) => b.clone(),
+                            crate::dispatch::Jump::Fail => Vec::new(),
+                        })
+                        .collect(),
+                };
+                return (g, an.jumps);
+            }
+            cells = next;
+            values = nvalues;
+            stat = nstat;
         }
-    }
-    written
-}
-
-/// The fall-through successor of a straight-line instruction.
-fn single_next(f: &Flow) -> Option<u16> {
-    match f {
-        Flow::Next(n) => Some(*n),
-        Flow::Jmp(Tg::At(t)) => Some(*t),
-        _ => None,
     }
 }
 

@@ -1,7 +1,8 @@
 //! Induction variables of the discovered program's loops.
 //!
 //! A loop is a head (target of a depth-first back edge) with the instruction starts that reach
-//! it from it; one entered only at its head is analysed. An index register, or a byte that an
+//! a back edge's source from it without passing it (its natural loop); one entered only at its
+//! head is analysed. An index register, or a byte that an
 //! instruction of the loop loads and stores back changed (`INC`/`DEC`), is an induction variable
 //! when every path from the head to each instruction start changes it by one constant, and every
 //! path around the loop by a nonzero step (from the symbols of [`crate::vsa`]; an `ADC`/`SBC`
@@ -10,10 +11,10 @@
 //! iteration from the variable alone has a trip bound: the most head visits per entry, found
 //! by evaluating that flag on each value the variable takes there.
 
-use crate::analysis::{absint_known, operand_bytes, Flow, Iv, Var};
-use crate::vsa::{hull, meet, refine, shift, step, symbolic_in, Code, St, Sym, MEM};
+use crate::analysis::{absint_known, operand_bytes, Flow, Iv, Tg, Var};
+use crate::vsa::{hull, meet, refine, shift, step, symbolic_in, Code, St, Sym, MEM, VAR};
 use di_pcode::{reg, CtrlKind, Space, Template};
-use petgraph::algo::tarjan_scc;
+use petgraph::algo::dominators::simple_fast;
 use petgraph::graphmap::DiGraphMap;
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -37,43 +38,67 @@ pub struct Induction {
     pub trips: Option<u32>,
     /// Per instruction start of the loop, the change since the head, modulo 256.
     pub at: FxHashMap<u16, u8>,
+    /// Per instruction start of the loop, `A`, `X` and `Y` as the variable's value at the
+    /// head plus a constant, where they are.
+    pub with: FxHashMap<u16, [Option<u8>; 3]>,
 }
 
 type Succs = FxHashMap<u16, Vec<u16>>;
 
-/// The change of `var` over variant `v` at `pc` with the carry `carry`; `None` if not constant.
-fn delta(code: &Code, pc: u16, v: &Var, var: Place, known: (Option<u8>, Option<u8>)) -> Option<u8> {
+/// The carry, the decimal flag and the data registers where known.
+type Known = (Option<u8>, Option<u8>, [Option<u8>; 3]);
+
+/// What the walk from a loop head knows at an instruction start: the variable's change since
+/// the head, and each data register as the variable's value at the head plus a constant.
+type Track = (Option<u8>, [Option<u8>; 3]);
+
+fn merge(a: Track, b: Track) -> Track {
+    let m = |x: Option<u8>, y: Option<u8>| if x == y { x } else { None };
+    (m(a.0, b.0), std::array::from_fn(|q| m(a.1[q], b.1[q])))
+}
+
+/// [`Track`] after variant `v` at `pc` from `tr`, with `known` before it.
+fn advance(code: &Code, pc: u16, v: &Var, var: Place, tr: Track, known: Known) -> Track {
     let t = Template::of(v.op);
     let b = operand_bytes(code.img, code.cells, pc, t.len);
-    match var {
-        Place::Reg(r) => {
-            let (sym, written, _) = symbolic_in(t.ops(), b, known, None);
-            match sym[r as usize] {
-                _ if written >> r & 1 == 0 => Some(0),
-                Some(Sym::Lin(base, off)) if base == r => Some(off),
-                _ => None,
-            }
+    let init = std::array::from_fn(|q| match (tr.1[q], known.2[q]) {
+        (Some(k), _) => Some(Sym::Lin(VAR, k)),
+        (None, Some(c)) => Some(Sym::K(c)),
+        _ => None,
+    });
+    let mem = match var {
+        Place::Mem(a) => Some(a as u32),
+        Place::Reg(_) => None,
+    };
+    let (sym, written, st) = symbolic_in(t.ops(), b, (known.0, known.1, init), mem);
+    let off = |s: Option<Sym>| match s {
+        Some(Sym::Lin(VAR, k)) => Some(k),
+        Some(Sym::Lin(MEM, o)) => tr.0.map(|d| d.wrapping_add(o)),
+        _ => None,
+    };
+    let regs: [Option<u8>; 3] = std::array::from_fn(|q| {
+        if written >> q & 1 == 1 {
+            off(sym[q])
+        } else {
+            tr.1[q]
         }
+    });
+    let change = match var {
+        Place::Reg(r) => regs[r as usize],
         Place::Mem(a) => {
-            let hit = v
-                .acc
-                .iter()
-                .any(|x| x.store && !x.back && x.addr.meets(a as u32, a as u32 + 1));
-            if !hit {
-                return Some(0);
-            }
-            let (_, _, st) = symbolic_in(t.ops(), b, known, Some(a as u32));
-            let exact = v
+            let hits: Vec<_> = v
                 .acc
                 .iter()
                 .filter(|x| x.store && !x.back && x.addr.meets(a as u32, a as u32 + 1))
-                .all(|x| x.addr.value() == Some(a as u32));
+                .collect();
             match st {
-                Some(Some(Sym::Lin(MEM, off))) if exact => Some(off),
+                _ if hits.is_empty() => tr.0,
+                Some(s) if hits.iter().all(|x| x.addr.value() == Some(a as u32)) => off(s),
                 _ => None,
             }
         }
-    }
+    };
+    (change, regs)
 }
 
 /// The induction variables of every loop of `vars`, given the interval states `st` at each
@@ -98,25 +123,36 @@ pub(crate) fn find(
     }
     let none = Vec::new();
     let pr = |n: u16| preds.get(&n).unwrap_or(&none);
-    let mut graph: DiGraphMap<u16, ()> = DiGraphMap::new();
+    // Dominators from a root above the entries: a loop's back edges come from the starts its
+    // head dominates.
+    const ROOT: u32 = 0x10000;
+    let mut graph: DiGraphMap<u32, ()> = DiGraphMap::new();
+    for &r in roots {
+        graph.add_edge(ROOT, r as u32, ());
+    }
     for (&p, ss) in succs {
-        graph.add_node(p);
+        graph.add_node(p as u32);
         for &s in ss {
-            graph.add_edge(p, s, ());
+            graph.add_edge(p as u32, s as u32, ());
         }
     }
-    let comps = tarjan_scc(&graph);
-    let comp_of: FxHashMap<u16, usize> = comps
-        .iter()
-        .enumerate()
-        .flat_map(|(i, c)| c.iter().map(move |&n| (n, i)))
-        .collect();
+    let dom = simple_fast(&graph, ROOT);
+    let dominated = |n: u16, h: u16| {
+        dom.dominators(n as u32)
+            .is_some_and(|mut d| d.any(|x| x == h as u32))
+    };
     let roots_set: FxHashSet<u16> = roots.iter().copied().collect();
     let mut out = Vec::new();
     let mut hs: Vec<u16> = heads.iter().copied().collect();
     hs.sort_unstable();
     for h in hs.into_iter().filter(|h| !roots_set.contains(h)) {
-        let body: FxHashSet<u16> = comps[comp_of[&h]].iter().copied().collect();
+        let mut body: FxHashSet<u16> = [h].into_iter().collect();
+        let mut stack: Vec<u16> = pr(h).iter().copied().filter(|&p| dominated(p, h)).collect();
+        while let Some(n) = stack.pop() {
+            if body.insert(n) {
+                stack.extend(pr(n));
+            }
+        }
         let entries: Vec<(u16, u16)> = body
             .iter()
             .flat_map(|&n| {
@@ -150,27 +186,28 @@ pub(crate) fn find(
         mems.sort_unstable();
         mems.dedup();
         cands.extend(mems.into_iter().map(Place::Mem));
-        let known = |n: u16| {
-            let flag = |f: usize| st.get(&n).and_then(|s| s.env[f].value()).map(|c| c as u8);
-            (flag(reg::C), flag(reg::D))
+        let known = |n: u16| -> Known {
+            let exact = |f: usize| st.get(&n).and_then(|s| s.env[f].value()).map(|c| c as u8);
+            (exact(reg::C), exact(reg::D), std::array::from_fn(exact))
         };
         let mut ivs: Vec<Induction> = Vec::new();
         for var in cands {
-            // Unset, a constant change since the head, or `None` for several.
-            let mut at: FxHashMap<u16, Option<u8>> = [(h, Some(0))].into_iter().collect();
+            let head: Track = match var {
+                Place::Reg(r) => (
+                    Some(0),
+                    std::array::from_fn(|q| (q == r as usize).then_some(0)),
+                ),
+                Place::Mem(_) => (Some(0), [None; 3]),
+            };
+            let mut at: FxHashMap<u16, Track> = [(h, head)].into_iter().collect();
             let mut round: Option<Option<u8>> = None;
             let mut work = vec![h];
             while let Some(n) = work.pop() {
-                let d = at[&n].and_then(|d| {
-                    let ds: Option<Vec<u8>> = vars[&n]
-                        .iter()
-                        .map(|v| delta(code, n, v, var, known(n)))
-                        .collect();
-                    let ds = ds?;
-                    ds.iter()
-                        .all(|&x| x == ds[0])
-                        .then(|| d.wrapping_add(ds[0]))
-                });
+                let d = vars[&n]
+                    .iter()
+                    .map(|v| advance(code, n, v, var, at[&n], known(n)))
+                    .reduce(merge)
+                    .unwrap();
                 for &s in succs
                     .get(&n)
                     .into_iter()
@@ -179,16 +216,16 @@ pub(crate) fn find(
                 {
                     if s == h {
                         round = Some(match round {
-                            None => d,
-                            Some(r) if r == d => r,
+                            None => d.0,
+                            Some(r) if r == d.0 => r,
                             _ => None,
                         });
                         continue;
                     }
                     let new = match at.get(&s) {
                         None => d,
-                        Some(&o) if o == d => continue,
-                        Some(_) => None,
+                        Some(&o) if merge(o, d) == o => continue,
+                        Some(&o) => merge(o, d),
                     };
                     if at.get(&s) != Some(&new) {
                         at.insert(s, new);
@@ -211,9 +248,10 @@ pub(crate) fn find(
                 step: stp,
                 trips: None,
                 at: at
-                    .into_iter()
-                    .filter_map(|(n, d)| d.map(|d| (n, d)))
+                    .iter()
+                    .filter_map(|(&n, d)| d.0.map(|e| (n, e)))
                     .collect(),
+                with: at.into_iter().map(|(n, d)| (n, d.1)).collect(),
             });
         }
         if let [s] = back[..] {
@@ -318,7 +356,8 @@ fn mem_in(
 }
 
 /// The trip bound of the loop at `h` whose only back edge is from the conditional branch at
-/// `s`, when the flag it tests is set on the straight chain before it from `iv` alone.
+/// `s` (or a chain of `JMP`s it alone leads to), when the flag it tests is set on the straight
+/// chain before it from `iv` alone.
 #[allow(clippy::too_many_arguments)]
 fn trips(
     code: &Code,
@@ -330,11 +369,23 @@ fn trips(
     h: u16,
     iv: &Induction,
 ) -> Option<u32> {
+    let (mut s, mut to) = (s, h);
+    while let [Var {
+        flow: Flow::Jmp(Tg::At(_)),
+        ..
+    }] = &vars[&s][..]
+    {
+        to = s;
+        s = match &preds.get(&s)?[..] {
+            [q] if body.contains(q) => *q,
+            _ => return None,
+        };
+    }
     let [v] = &vars[&s][..] else { return None };
     let (Flow::Br { t, f }, CtrlKind::Br { flag, pol }) = (&v.flow, Template::of(v.op).ctrl) else {
         return None;
     };
-    let on_taken = match (t.all().contains(&h), *f == h) {
+    let on_taken = match (t.all().contains(&to), *f == to) {
         (true, false) if !body.contains(f) => true,
         (false, true) if t.all().iter().all(|x| !body.contains(x)) => false,
         _ => return None,
@@ -362,12 +413,18 @@ fn trips(
     }
     let [sv] = &vars[&set][..] else { return None };
     let e = *iv.at.get(&set)?;
+    let with = iv.with.get(&set).copied().unwrap_or([None; 3]);
     let tpl = Template::of(sv.op);
     let b = operand_bytes(code.img, code.cells, set, tpl.len);
     let base = st.get(&set)?.env;
     let mut cont = [false; 0x100];
     for (x, c) in cont.iter_mut().enumerate() {
         let mut env = base;
+        for (q, k) in with.iter().enumerate() {
+            if let Some(k) = k {
+                env[q] = Iv::exact((x as u32 + *k as u32 + 0x100 - e as u32) & 0xff);
+            }
+        }
         let known = match iv.var {
             Place::Reg(r) => {
                 env[r as usize] = Iv::exact(x as u32);

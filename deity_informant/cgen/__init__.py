@@ -132,6 +132,8 @@ class Program:  # pylint: disable=too-many-instance-attributes
     volatile: list
     sensitive: tuple = ()
     loaded: tuple | None = None
+    constant: frozenset | None = None
+    jumps: dict | None = None
 
 
 def lift(image, entries, volatile, facts=None):
@@ -149,7 +151,9 @@ def lift(image, entries, volatile, facts=None):
             if op[0] == "CALL":
                 op[3] = remap[op[3]]
     starts = {pc for p in wholeprog.plans(image, pcs, facts=facts) for pc in p["heights"]}
-    return Program(funcs, list(entries), image, starts, [tuple(v) for v in volatile]), prog.stats
+    p = Program(funcs, list(entries), image, starts, [tuple(v) for v in volatile])
+    p.constant, p.jumps = frozenset(prog.code), dict(prog.jumps)
+    return p, prog.stats
 
 
 def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
@@ -163,6 +167,10 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     times["mlir"] = time.perf_counter() - t0
     t1 = time.perf_counter()
     code = code_bytes(p.image, p.starts)
+    if p.constant is not None:
+        constant = np.zeros(0x10000, dtype=bool)
+        constant[list(p.constant)] = True
+        code &= constant
     loaded = p.loaded
     if loaded is None:
         span = np.flatnonzero(code)
@@ -200,6 +208,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         "code_span": mem.code_span,
         "traps": {k: key for key, k in traps.items() if k in mod.traps},
         "unknown_access": mem.unknown,
+        "jumps": p.jumps or {},
     }
     return c_text, h_text, info
 
