@@ -1,7 +1,7 @@
 """Pure-Python raw-P-Code interpreter (no py65) plus control-flow drivers.
 
 ``PcodeVM`` executes the op lists produced by :func:`deity_informant.lifter.lift`
-against a flat 64 KiB memory model, capturing ``$D400..`` SID writes. The
+against a flat model of the 6510 address space, capturing ``$D400..`` SID writes. The
 ``run_sub`` / ``run_irq`` / ``run_irq_driven`` helpers drive playroutine init,
 frame play, and interrupt-driven cadence exactly as a real 6510 would.
 """
@@ -175,8 +175,8 @@ class PcodeVM:
     def step(self, pc, cache, lifter):
         """Run the instruction at ``pc``; its next PC. Besides its P-Code's accesses it reads
         the byte after a one-byte opcode first, a taken branch's next byte (and unfixed target
-        on a page cross) and the address an ``RTS`` pulled, as the NMOS bus does; none of these dummy
-        accesses is made when ``dummies`` is clear."""
+        on a page cross) and the address an ``RTS`` pulled, as the NMOS bus does; none of these
+        dummy accesses is made when ``dummies`` is clear."""
         mem = self.mem
         k = (pc, mem[pc], mem[(pc + 1) & 0xFFFF], mem[(pc + 2) & 0xFFFF])
         rec = cache.get(k)
