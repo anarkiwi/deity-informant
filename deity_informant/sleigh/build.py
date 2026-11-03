@@ -133,7 +133,7 @@ def build(work, args):
         # stock .ldefs (that would register a duplicate 6502 language).
         for src in list(base.parent.glob("*.slaspec")) + list(base.parent.glob("*.sinc")):
             shutil.copy(src, dst / src.name)
-        for name in ("6510.slaspec", "6510_illegal.sinc") + GENERATED:
+        for name in tuple(n for n in SOURCES if n.endswith((".slaspec", ".sinc"))) + GENERATED:
             shutil.copy(work / name, dst / name)
         # Ghidra discovers a Processor module only via a Module.manifest at the
         # module root (`.../<name>/data/languages` -> root is two levels up); without

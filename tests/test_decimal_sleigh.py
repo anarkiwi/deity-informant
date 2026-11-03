@@ -1,9 +1,12 @@
 """The 6510 SLEIGH module's ADC, SBC, ARR, RRA and ISC against Bruce Clark's reference."""
 
+import re
+
 import pytest
 
 import decimal_ref as ref
 from pcode_eval import Machine
+from deity_informant.sleigh import build
 
 # opcode, reference, zero-page operand
 CASES = {
@@ -42,3 +45,15 @@ def test_sleigh_matches_the_reference(ctx6510, case, quarter, d):
                 assert got == tuple(want[:5]), (case, a, m, c, d)
                 if case in ("RRA", "ISC"):
                     assert vm.spaces["RAM"][0x10] == want[5], (case, a, m, c, d)
+
+
+def test_install_brings_every_included_source_along(tmp_path):
+    """Ghidra compiles the installed ``.slaspec`` itself, so each ``@include`` must be there."""
+    pytest.importorskip("pypcode")
+    dst = tmp_path / "Processors" / "6510" / "data" / "languages"
+    assert build.main(["--install", str(dst)]) == 0
+    sources = [*dst.glob("*.slaspec"), *dst.glob("*.sinc")]
+    included = [n for f in sources for n in re.findall(r'@include "([^"]+)"', f.read_text())]
+    assert "6510_alu.sinc" in included
+    assert all((dst / name).is_file() for name in included)
+    assert (dst.parents[1] / "Module.manifest").is_file()
