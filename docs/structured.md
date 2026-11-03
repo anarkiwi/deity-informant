@@ -35,7 +35,7 @@ mlir-opt --canonicalize --cse --convert-to-emitc --reconcile-unrealized-casts --
 mlir-translate --mlir-to-cpp
 ```
 
-Between the two `mlir-opt` runs `ub.poison` (lifting's value for an untaken path) becomes zero; after `mlir-translate` a header with the standard includes is added and `extern` dropped from the register definitions. LLVM 20 lacks `--convert-to-emitc` and the `scf.while` lowering.
+Between the two `mlir-opt` runs `ub.poison` (lifting's value for an untaken path) becomes zero; after `mlir-translate` a header with the standard includes and a prototype per function is added and `extern` dropped from the register definitions. LLVM 20 lacks `--convert-to-emitc` and the `scf.while` lowering.
 
 The output has no `goto`. Blocks several paths join are structured by threading an `int32_t` selector through the arms and a `switch` on it; irreducible regions become `do { } while (flag)`. EmitC prints signless integers as signed with unsigned casts per operation, and one-cell globals as arrays.
 

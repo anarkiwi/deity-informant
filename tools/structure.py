@@ -62,7 +62,11 @@ def structure(mlir, prefix):
     scf = re.sub(r"ub\.poison : (i\d+)", r"arith.constant 0 : \1", scf)
     emitc = run(prefix, ["mlir-opt", *LOWER], scf)
     cpp = run(prefix, ["mlir-translate", "--mlir-to-cpp"], emitc)
-    return HEADER + re.sub(r"^extern (.*\]) = \{0\};", r"\1;", cpp, flags=re.M)
+    cpp = re.sub(r"^extern (.*\]) = \{0\};", r"\1;", cpp, flags=re.M)
+    protos = "".join(
+        f"void {name}(void);\n" for name in re.findall(r"^void (\w+)\(\) \{", cpp, re.M)
+    )
+    return HEADER + protos + cpp
 
 
 def main(argv=None):

@@ -22,7 +22,17 @@ HARNESS = Path(__file__).with_name("cplay.c")
 
 def build(src, out):
     """Compile ``src`` with the harness to the shared library ``out``; the loaded library."""
-    cmd = ["gcc", "-std=c11", "-O2", "-shared", "-fPIC", "-w", "-o", str(out), str(src)]
+    cmd = [
+        "gcc",
+        "-std=c11",
+        "-O2",
+        "-shared",
+        "-fPIC",
+        "-Werror=implicit-function-declaration",
+        "-o",
+        str(out),
+        str(src),
+    ]
     subprocess.run([*cmd, str(HARNESS)], check=True)
     return ctypes.CDLL(str(out))
 
