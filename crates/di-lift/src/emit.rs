@@ -450,16 +450,22 @@ impl<'a> Em<'a, '_> {
         self.cur = cont as usize;
         x
     }
-    fn table(&mut self, ts: &[u16]) -> u32 {
+    /// The table of `BRANCHIND` targets `ts`, closed when they are every target the jump may
+    /// take (`all`) and every one is planned.
+    fn table(&mut self, ts: &[u16], all: bool) -> u32 {
         let keys: Vec<Key> = ts
             .iter()
             .map(|&t| self.key(t))
             .filter(|k| self.plan.nodes.contains_key(k))
             .collect();
+        let closed = all && keys.len() == ts.len();
         let mut t: Vec<(u16, u32)> = keys.into_iter().map(|k| (k.0, self.block(k))).collect();
         t.sort_unstable();
         self.f.tables.push(t);
-        (self.f.tables.len() - 1) as u32
+        let i = self.f.tables.len() - 1;
+        self.f.closed.grow(i + 1);
+        self.f.closed.set(i, closed);
+        i as u32
     }
     fn goto(&mut self, t: &Tg, calc: impl FnOnce(&mut Self) -> Vn) {
         match t {
@@ -469,7 +475,7 @@ impl<'a> Em<'a, '_> {
             }
             Tg::Calc(ts) => {
                 let v = calc(self);
-                let tb = self.table(ts);
+                let tb = self.table(ts, false);
                 self.emit(Opc::BranchInd, NONE, v, NONE, tb);
             }
         }
@@ -552,7 +558,12 @@ impl<'a> Em<'a, '_> {
             return;
         }
         let v = self.load(k(pc as u32, 2), Iv::exact(pc as u32), 0);
-        for (var, arm) in vars.iter().zip(arms) {
+        let closed = sh.g.closed.contains(pc as usize);
+        for (i, (var, arm)) in vars.iter().zip(arms).enumerate() {
+            if closed && i + 1 == vars.len() {
+                self.insn(pc, &var.op, arm);
+                return;
+            }
             let c = self.op(Opc::IntEqual, 1, v, k(var.op as u32, 1));
             let vb = self.new_block(pc);
             let cont = self.new_block(pc);
@@ -666,7 +677,8 @@ impl<'a> Em<'a, '_> {
                         let bad = self.window(q);
                         chk.push(bad);
                     }
-                    if self.sh.hits_code(ac.addr) {
+                    if self.sh.hits_code(ac.addr) && !self.sh.g.nocode.contains(&(pc, opc, ai - 1))
+                    {
                         self.n.code_guards += 1;
                         chk.push(self.op(Opc::CallOther, 1, a, b));
                         self.f.blocks[self.cur].ops.last_mut().unwrap().aux = other::CODECHK;
@@ -852,7 +864,7 @@ impl<'a> Em<'a, '_> {
                             self.pend = (1, vec![d]);
                             self.flush();
                         }
-                        let tb = self.table(ts);
+                        let tb = self.table(ts, false);
                         self.emit(Opc::BranchInd, NONE, tgt, NONE, tb);
                     }
                 }
@@ -890,7 +902,7 @@ impl<'a> Em<'a, '_> {
                 let tgt = self.word(lo, hi);
                 self.account(cyc, maxpen);
                 self.flush();
-                let tb = self.table(ts);
+                let tb = self.table(ts, self.sh.g.stat.contains_key(&pc));
                 self.emit(Opc::BranchInd, NONE, tgt, NONE, tb);
             }
             Ctl::Call { f, ret, c } => {
@@ -986,7 +998,7 @@ impl<'a> Em<'a, '_> {
                 }
                 self.flush();
                 self.exit_or(exit, tgt, |em| {
-                    let tb = em.table(ts);
+                    let tb = em.table(ts, em.sh.g.stat.contains_key(&pc));
                     em.emit(Opc::BranchInd, NONE, tgt, NONE, tb);
                 });
             }
@@ -1019,7 +1031,7 @@ impl<'a> Em<'a, '_> {
                 self.account(cyc, maxpen);
                 self.check(chk, tgt);
                 self.flush();
-                let tb = self.table(ts);
+                let tb = self.table(ts, false);
                 self.emit(Opc::BranchInd, NONE, tgt, NONE, tb);
             }
             Ctl::Jam => {

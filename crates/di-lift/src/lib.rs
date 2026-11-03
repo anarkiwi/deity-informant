@@ -8,11 +8,13 @@
 
 pub mod analysis;
 pub mod bank;
+pub mod dispatch;
 pub mod emit;
 pub mod exec;
 pub mod func;
 pub mod ir;
 pub mod jit;
+pub mod known;
 pub mod opt;
 pub mod ptr;
 pub mod scev;
@@ -523,7 +525,11 @@ pub fn lift_banked(
             .enumerate()
             .map(|(i, &pc)| (pc, i as u32))
             .collect(),
-        code: constcode.ones().map(|a| (a as u16, img[a])).collect(),
+        code: {
+            let mut c = constcode.clone();
+            c.extend(g.tables.iter().map(|&a| a as usize));
+            c.ones().map(|a| (a as u16, img[a])).collect()
+        },
         volatile: volatile.to_vec(),
         elide_ret: private,
         bank: bank.cloned(),
@@ -531,6 +537,20 @@ pub fn lift_banked(
         stats,
         chains,
         induction: g.ind.clone(),
+        sets: g
+            .closed
+            .ones()
+            .filter_map(|a| {
+                let vs = g.vars.get(&(a as u16))?;
+                Some((a as u16, vs.iter().map(|v| v.op).collect()))
+            })
+            .collect(),
+        jumps: {
+            let mut j: Vec<(u16, Vec<u16>)> =
+                g.stat.iter().map(|(&pc, t)| (pc, t.clone())).collect();
+            j.sort_unstable();
+            j
+        },
     }
 }
 

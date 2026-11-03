@@ -631,6 +631,7 @@ impl Program {
             d.set_item("recursive", f.recursive)?;
             d.set_item("blocks", blocks)?;
             d.set_item("tables", f.tables.clone())?;
+            d.set_item("closed", f.closed.ones().collect::<Vec<_>>())?;
             fs.append(d)?;
         }
         Ok(fs)
@@ -748,6 +749,18 @@ impl Program {
     #[getter]
     fn cycles(&self) -> bool {
         self.prog.cycles
+    }
+
+    /// The code bytes the program treats as constant, ascending.
+    #[getter]
+    fn code(&self) -> Vec<u16> {
+        self.prog.code.iter().map(|e| e.0).collect()
+    }
+
+    /// The computed transfers whose targets come from the code: ``{pc: [target, ...]}``.
+    #[getter]
+    fn jumps(&self) -> HashMap<u16, Vec<u16>> {
+        self.prog.jumps.iter().cloned().collect()
     }
 
     /// Entry PCs in request order.

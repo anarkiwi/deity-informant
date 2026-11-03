@@ -26,13 +26,14 @@ python tools/cgenplay.py tune.sid --psid --volatile 0xD400-0xD41D -o out/   # tr
 | `entries` | `(pc, name)`: each becomes `void name(uint8_t a)`, `a` the accumulator |
 | `volatile` | `[(lo, hi)]` I/O ranges (`hi` exclusive): their writes are kept in order |
 | `sensitive_reads` | I/O addresses whose reads are kept, throw-away reads included |
-| `facts` | `trace.Facts`, used only for computed-jump targets (below) |
+| `facts` | `trace.Facts`, used only for targets of computed jumps the code does not resolve (below) |
 | `loaded` | the `[lo, hi)` bytes the program was loaded to (default: its code span) |
 | `header` | the name the `.c` includes |
 
 `info` holds the stage times, the regions `[(origin, length)]`, the code span, the traps in
 the `.c` (`{k: ("deopt", pc)}` or `("ind", pc, ...)` for a computed jump with no target), the
-fact edges used, the lift's `stats` and whether some access has an unknown address.
+computed jumps resolved from the code (`jumps`), the fact edges used, the lift's `stats` and
+whether some access has an unknown address.
 
 The host supplies `uint8_t io_read(uint16_t)`, `void io_write(uint16_t, uint8_t)` and
 `void trap(uint16_t k)`, which must not return (`longjmp`, or abort the call). Each entry
@@ -42,7 +43,7 @@ caller's return address. `tools/cgenplay.c` is a host harness.
 ## Pipeline
 
 1. **Lift.** `wholeprog.lift(image, entries, volatile, facts)`, static: no facts but the
-   targets of computed jumps. Functions are named by ascending entry PC, deopts become
+   targets of computed jumps the code does not resolve. Functions are named by ascending entry PC, deopts become
    `trap(k)` with `k` numbered in the order the lift's functions and blocks meet them.
 2. **MLIR** (`emit.py`). Each lifted function is a private `func.func` taking and returning the
    register file as values; its registers, stack slots and block-crossing temporaries are
@@ -73,8 +74,9 @@ value is assigned in place when the old one is dead; `lift-cf-to-scf`'s `i32` se
 
 ## Memory
 
-- **Constant code** is the bytes of the planned instructions that no constant-address store
-  writes. It is the `.h`'s `CODE` (the span from the first such byte to the last).
+- **Constant code** is the bytes of the planned instructions that the lift treats as constant
+  (no store's address set holds them) and that no constant-address store writes. It is the
+  `.h`'s `CODE` (the span from the first such byte to the last).
 - **Data regions** `R0, R1, ...` (ascending address) are the maximal runs of other bytes that
   some access may touch, outside volatile ranges. An access's interval comes from its address
   expression (constants, an 8-bit index adds `[0, 255]`, masks, shifts, the hull of `scf`
@@ -101,14 +103,26 @@ same block, or used other than as an address (compared, added to data).
 
 ## Traps and computed jumps
 
-A static lift has no targets for `JMP (ind)`, `RTS`/`RTI` used as jumps or transfers through
-written operands; each becomes a switch whose default traps. `facts` supplies targets:
-`jump_facts` keeps only the edges leaving those instructions. The switch cases are then code
-addresses (`case CODE_ORG + 0x23:`) and the `.c` depends on the run that made the facts, which
-`info["facts_edges"]` reports. Other traps: a deopt the lift keeps (an opcode cell holding a
-value outside its statically stored set, a store into constant code that changes it, a guard
-it could not prove). Indexed stores into code operands are not cells in a static lift, so a
-player clearing its own operands with `STA abs,X` traps there.
+The lift resolves a `JMP (ind)` whose pointer is stored from loads of a constant table at a
+bounded index (or from constants, or is a constant word of the code span no store writes),
+and an `RTS`/`RTI` that returns through an address pushed so, from the code alone
+([wholeprog](wholeprog.md#static-proofs), *Computed jumps*): the targets are the table's words
+over the index's values, which no store may change. Such a jump is a switch over code
+addresses (`case CODE_ORG + 0x23:`) whose last target is the default, with no trap, and
+`info["jumps"]` lists them (`{pc: [target, ...]}`). Programs with the same code and tables
+give the same `.c`; a table a store may write, or an index the code does not bound, leaves the
+transfer unresolved. An unresolved one, like a transfer through written operands, becomes a
+switch whose default traps; `facts` supplies its targets: `jump_facts` keeps only the edges
+leaving those instructions, and the `.c` then depends on the run that made the facts, which
+`info["facts_edges"]` reports.
+
+Code cells come from the lift too: every byte of a reached instruction that a store's address
+set holds (an indexed store's base plus each value of its bounded index, as a player clearing
+its own operands with `STA abs,X` in a counted loop) is data, so its stores and the
+instruction's reads go to its region with no `codechk`. Other traps: a deopt the lift keeps
+(an opcode cell some store writes with unknown values holding a value outside its set, a
+store whose address is unknown into constant code that changes it, a guard it could not
+prove).
 
 ## Validation
 
@@ -116,4 +130,6 @@ player clearing its own operands with `STA abs,X` traps there.
 `tools/cgenplay.c` and compares the volatile writes (and sensitive reads) of many consecutive
 calls, memory persisting, with `wholeprog.reference_call`; it checks relocation and data
 invariance, the absence of `goto` and an llvm-mos build. `tools/cgenplay.py` does the same for
-a PSID or raw image and prints `tools/cmetrics.py`'s table, the sizes and the stage times.
+a PSID or raw image (`--loaded LO-HI` names the program's bytes in a raw 64 KiB state, as a
+memory dump after an init routine) and prints `tools/cmetrics.py`'s table, the sizes, the
+computed jumps resolved from the code, the traps and the stage times.

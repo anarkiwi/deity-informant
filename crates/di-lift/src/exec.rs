@@ -71,6 +71,7 @@ pub struct Exec {
     /// First value-file index of the temporaries.
     pub(crate) temps: u32,
     code: Vec<(u16, u8)>,
+    sets: Vec<(u16, Vec<u8>)>,
     pub(crate) constcode: FixedBitSet,
     pub(crate) img: Box<[u8]>,
     elide_ret: bool,
@@ -175,6 +176,7 @@ impl Exec {
                     .max()
                     .unwrap_or(0),
             code: p.code.clone(),
+            sets: p.sets.clone(),
             constcode: FixedBitSet::with_capacity(0x10000),
             img: vec![0u8; 0x10000].into_boxed_slice(),
             elide_ret: p.elide_ret,
@@ -382,6 +384,10 @@ impl Exec {
     /// Every byte the program treats as constant code holds its lifted value in `bus`.
     pub fn matches<B: Bus>(&self, bus: &mut B) -> bool {
         self.code.iter().all(|&(a, v)| bus.ram_read(a) == v)
+            && self
+                .sets
+                .iter()
+                .all(|(a, vs)| vs.contains(&bus.ram_read(*a)))
     }
 }
 

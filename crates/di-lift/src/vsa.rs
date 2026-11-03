@@ -16,14 +16,23 @@
 //! the stack is not private (`matched` is false: other stores may rewrite return addresses),
 //! an `RTS` may reach any return site and nothing is carried through it.
 //!
-//! Memory contents are unknown: a load yields its full range. The result holds for any machine
-//! state in which the entries are called with their declared registers, since only lifted
-//! control edges are followed and every other one deopts.
+//! `A`, `X` and `Y` also keep their known bits ([`crate::known`]). For computed jumps
+//! ([`crate::dispatch`]) a byte loaded from a constant base plus an index register is tagged
+//! with its load while it is in a data register, among the top three stack bytes pushed since
+//! the function's entry, or in a `JMP (ind)` pointer byte stored at an exact address (so is a
+//! constant there). A tag is live while its index register keeps its value; where the
+//! register is written, the live tags it indexed become one group (they share an index value)
+//! and the group an earlier execution of that write made becomes unrelated.
+//!
+//! Memory contents are otherwise unknown: a load yields its full range. The result holds for
+//! any machine state in which the entries are called with their declared registers, since only
+//! lifted control edges are followed and every other one deopts.
 
 use crate::analysis::{
     absint, flow_succs, operand_bytes, stack_delta, Access, Entry, Env, Flow, Iv, Var, TOP_ENV,
 };
 use crate::ir::fold;
+use crate::known::{self, Kb};
 use di_pcode::{CtrlKind, Op, Opc, Slot, Space, Template, Vn, UNIQUE_SIZE};
 use fixedbitset::FixedBitSet;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -65,6 +74,50 @@ struct Pred {
     pre: Iv,
 }
 
+/// How the index of a table byte relates to its index register: still the register's value,
+/// the value the register held when the instruction at `pc` wrote it (group `pc << 2 | r`;
+/// bytes of one group share their index), or unrelated.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Ix {
+    Live,
+    Grp(u32),
+    Lost,
+}
+
+/// What a byte holds beyond its interval: a constant; the byte the load of opcode `op` at
+/// `pc` read from a constant base plus index register `reg` ([`NOREG`]: none); or (a pushed
+/// byte) any value.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Tab {
+    K(u8),
+    T { pc: u16, op: u8, reg: u8, ix: Ix },
+    Any,
+}
+
+pub(crate) const NOREG: u8 = u8::MAX;
+
+/// What holds of a byte tagged `a` on one path and `b` on another.
+fn join_tab(a: Tab, b: Tab) -> Option<Tab> {
+    match (a, b) {
+        _ if a == b => Some(a),
+        (
+            Tab::T { pc, op, reg, .. },
+            Tab::T {
+                pc: p2,
+                op: o2,
+                reg: r2,
+                ..
+            },
+        ) if (pc, op, reg) == (p2, o2, r2) => Some(Tab::T {
+            pc,
+            op,
+            reg,
+            ix: Ix::Lost,
+        }),
+        _ => None,
+    }
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct St {
     pub(crate) env: Env,
@@ -76,6 +129,14 @@ pub(crate) struct St {
     stored: [u128; 2],
     /// The entries (bit `i % 64` for entry `i`) the state is reached from.
     from: u64,
+    /// Known bits of `A`, `X` and `Y`.
+    pub(crate) kb: [Kb; DATA],
+    /// Table bytes `A`, `X` and `Y` hold.
+    tag: [Option<Tab>; DATA],
+    /// The top three stack bytes, from the top, where pushed since the function's entry.
+    pub(crate) push: [Option<Tab>; 3],
+    /// Tracked bytes ([`Code::vecs`]) whose contents are known, by address.
+    pub(crate) mem: Vec<(u16, Tab)>,
 }
 
 impl St {
@@ -86,15 +147,51 @@ impl St {
             rel: [Some((0, 0)), Some((1, 0)), Some((2, 0))],
             stored: [0; 2],
             from: 0,
+            kb: std::array::from_fn(|r| Kb::of(env[r])),
+            tag: [None; DATA],
+            push: [None; 3],
+            mem: Vec::new(),
         }
     }
     fn has(&self, a: u32) -> bool {
         self.stored[(a >> 7) as usize] >> (a & 127) & 1 == 1
     }
+    /// The instruction at `pc` writes data register `r`: bytes indexed by its old value
+    /// become a group, the group an earlier execution made becomes unrelated.
+    fn detach(&mut self, pc: u16, r: usize) {
+        let g = (pc as u32) << 2 | r as u32;
+        let f = |t: &mut Tab| {
+            if let Tab::T { reg, ix, .. } = t {
+                if *ix == Ix::Grp(g) {
+                    *ix = Ix::Lost;
+                } else if *reg as usize == r && *ix == Ix::Live {
+                    *ix = Ix::Grp(g);
+                }
+            }
+        };
+        self.tag.iter_mut().flatten().for_each(f);
+        self.push.iter_mut().flatten().for_each(f);
+        self.mem.iter_mut().for_each(|(_, t)| f(t));
+    }
+    /// What data register `r` holds as a tag: its table byte, else its constant.
+    fn val(&self, r: usize) -> Option<Tab> {
+        self.tag[r].or_else(|| self.env[r].value().map(|x| Tab::K(x as u8)))
+    }
+    /// The state a callee starts in after a `JSR` from this one.
+    fn callee(&self) -> St {
+        St {
+            stored: self.stored,
+            from: self.from,
+            kb: self.kb,
+            tag: self.tag,
+            mem: self.mem.clone(),
+            ..St::new(self.env)
+        }
+    }
 }
 
 /// A one-byte value as a symbol: `base + off`, bit 7 of it, or a condition on it.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Sym {
     Lin(u8, u8),
     Bit7(u8, u8),
@@ -103,7 +200,7 @@ pub(crate) enum Sym {
     K(u8),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Val {
     C(u8),
     S(Sym),
@@ -112,22 +209,27 @@ enum Val {
 /// Symbols of the registers after `ops` (entry `A`, `X`, `Y` are bases 0-2, each load a new
 /// base) and the mask of registers they write.
 fn symbolic(ops: &[Op], b: [Option<u8>; 2], dec: Option<u8>) -> ([Option<Sym>; 16], u32) {
-    let (reg, written, _) = symbolic_in(ops, b, (None, dec), None);
+    let (reg, written, _) = symbolic_in(ops, b, (None, dec, [None; DATA]), None);
     (reg, written)
 }
 
 /// The base of the byte at a tracked address in [`symbolic_in`].
 pub(crate) const MEM: u8 = u8::MAX;
 
-/// [`symbolic`] with the carry and decimal flag known (`known`) and, for a tracked address `mem` whose loads
-/// are base [`MEM`], the symbol of the last value stored there (`Some(None)`: not a symbol).
+/// A base symbolic evaluation leaves to its caller (see [`symbolic_in`]).
+pub(crate) const VAR: u8 = DATA as u8;
+
+/// [`symbolic`] with the carry and the decimal flag known and the data registers' symbols
+/// before the instruction (`known`; `None`: their own bases, [`VAR`] is free for the caller)
+/// and, for a tracked address `mem` whose loads are base [`MEM`], the symbol of the last value
+/// stored there (`Some(None)`: not a symbol).
 pub(crate) fn symbolic_in(
     ops: &[Op],
     b: [Option<u8>; 2],
-    known: (Option<u8>, Option<u8>),
+    known: (Option<u8>, Option<u8>, [Option<Sym>; DATA]),
     mem: Option<u32>,
 ) -> ([Option<Sym>; 16], u32, Option<Option<Sym>>) {
-    let (carry, dec) = known;
+    let (carry, dec, regs) = known;
     let val = |s: Sym| match s {
         Sym::K(k) => Val::C(k),
         s => Val::S(s),
@@ -135,7 +237,7 @@ pub(crate) fn symbolic_in(
     let mut stored = None;
     let mut reg = [None; 16];
     for (r, s) in reg.iter_mut().enumerate().take(DATA) {
-        *s = Some(Sym::Lin(r as u8, 0));
+        *s = Some(regs[r].unwrap_or(Sym::Lin(r as u8, 0)));
     }
     let mut uniq = [None; UNIQUE_SIZE];
     let (mut written, mut fresh) = (0u32, DATA as u8);
@@ -205,6 +307,18 @@ pub(crate) fn symbolic_in(
             Opc::IntAnd if matches!(x, Some(Val::C(0))) || matches!(y, Some(Val::C(0))) => {
                 Some(Sym::K(0))
             }
+            Opc::IntAnd | Opc::IntOr if x.is_some() && x == y => match x {
+                Some(Val::S(s)) => Some(s),
+                _ => None,
+            },
+            Opc::IntAnd if matches!(y, Some(Val::C(0xff))) => match x {
+                Some(Val::S(s)) => Some(s),
+                _ => None,
+            },
+            Opc::IntAnd if matches!(x, Some(Val::C(0xff))) => match y {
+                Some(Val::S(s)) => Some(s),
+                _ => None,
+            },
             Opc::IntOr | Opc::IntXor if matches!(y, Some(Val::C(0))) => match x {
                 Some(Val::S(s)) => Some(s),
                 _ => None,
@@ -353,6 +467,9 @@ pub(crate) fn refine(st: &St, flag: usize, want: bool) -> Option<St> {
     if let Some(p) = pred {
         let r = p.reg as usize;
         s.env[r] = restrict(&p, want).and_then(|iv| meet(iv, st.env[r]))?;
+        if r < DATA {
+            s.kb[r] = s.kb[r].meet(Kb::of(s.env[r]));
+        }
     }
     Some(s)
 }
@@ -363,6 +480,8 @@ pub(crate) struct Code<'a> {
     pub(crate) cells: &'a FixedBitSet,
     /// `PLP` and `RTI` pull the decimal flag clear (guarded where emitted): nothing sets it.
     pub(crate) pull_clear: bool,
+    /// The bytes whose contents states track (the pointers of `JMP (ind)`), ascending.
+    pub(crate) vecs: Vec<u16>,
 }
 
 /// Whether the decimal flag can only be set by a pull from the stack: no `SED` among the
@@ -443,13 +562,81 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
         }
         _ => None,
     });
-    St {
+    let kb = known::eval(ops, b, &st.env, &st.kb);
+    let mut s = St {
         env,
         pred,
         rel,
         stored,
         from: st.from,
+        kb: std::array::from_fn(|r| kb[r].unwrap_or(st.kb[r]).meet(Kb::of(env[r]))),
+        tag: st.tag,
+        push: st.push,
+        mem: st.mem.clone(),
+    };
+    match (v.op, &v.flow) {
+        (0x48 | 0x08, _) => {
+            let top = if v.op == 0x48 { st.val(0) } else { None };
+            s.push = [top.or(Some(Tab::Any)), st.push[0], st.push[1]];
+        }
+        (0x68 | 0x28, _) => s.push = [st.push[1], st.push[2], None],
+        (op, Flow::Next(_))
+            if stack_delta(op).is_none()
+                || acc.iter().any(|a| a.store && a.addr.meets(0x100, 0x200)) =>
+        {
+            s.push = [None; 3]
+        }
+        _ => {}
     }
+    for a in acc.iter().filter(|a| a.store) {
+        let hit = |&(m, _): &(u16, Tab)| a.addr.meets(m as u32, m as u32 + 1);
+        if !code
+            .vecs
+            .iter()
+            .any(|&m| a.addr.meets(m as u32, m as u32 + 1))
+        {
+            continue;
+        }
+        s.mem.retain(|e| !hit(e));
+        let Some(m) = a.addr.value() else { continue };
+        let (_, _, held) = symbolic_in(ops, b, (None, None, [None; DATA]), Some(m));
+        let t = match held {
+            Some(Some(Sym::Lin(r, 0))) if (r as usize) < DATA => st.val(r as usize),
+            Some(Some(Sym::K(k))) => Some(Tab::K(k)),
+            _ => a.val.value().map(|x| Tab::K(x as u8)),
+        };
+        if let Some(t) = t {
+            s.mem.push((m as u16, t));
+            s.mem.sort_unstable_by_key(|e| e.0);
+        }
+    }
+    for r in (0..DATA).filter(|&r| written >> r & 1 == 1) {
+        s.tag[r] = match sym[r] {
+            Some(Sym::Lin(b0, 0)) if (b0 as usize) < DATA => st.tag[b0 as usize],
+            Some(Sym::Lin(b0, 0)) if b0 >= DATA as u8 && b0 != MEM => match v.op {
+                0x68 => st.push[0],
+                op => table(code, pc, op),
+            },
+            _ => None,
+        };
+    }
+    for r in (0..DATA).filter(|&r| written >> r & 1 == 1) {
+        s.detach(pc, r);
+    }
+    s
+}
+
+/// The tag of the byte the instruction `op` at `pc` loads when its address is its operand
+/// plus at most one index register (no memory pointer, no cell operand).
+fn table(code: &Code, pc: u16, op: u8) -> Option<Tab> {
+    let reg = crate::dispatch::index_reg(Template::of(op)).map_or(NOREG, |r| r as u8);
+    crate::dispatch::load_addr(code, pc, op, reg, 0)?;
+    Some(Tab::T {
+        pc,
+        op,
+        reg,
+        ix: Ix::Live,
+    })
 }
 
 /// Program constants and their neighbours: the bounds a widened register stops at.
@@ -511,6 +698,7 @@ impl Thresholds {
     }
 }
 
+/// The hull of `a` and `b`, widened when `widen` is given.
 fn join(a: &St, b: &St, widen: Option<&Thresholds>) -> St {
     let w = |old: Iv, new: Iv| widen.map_or(new, |t| t.widen(old, new));
     let mut env = a.env;
@@ -533,12 +721,30 @@ fn join(a: &St, b: &St, widen: Option<&Thresholds>) -> St {
     }
     let rel = std::array::from_fn(|r| if a.rel[r] == b.rel[r] { a.rel[r] } else { None });
     let stored = [a.stored[0] & b.stored[0], a.stored[1] & b.stored[1]];
+    let tab = |x: Option<Tab>, y: Option<Tab>| join_tab(x?, y?);
     St {
         env,
         pred,
         rel,
         stored,
         from: a.from | b.from,
+        kb: std::array::from_fn(|r| {
+            let k = |s: &St| s.kb[r].meet(Kb::of(s.env[r]));
+            k(a).join(k(b))
+        }),
+        tag: std::array::from_fn(|r| tab(a.tag[r], b.tag[r])),
+        push: std::array::from_fn(|i| match (a.push[i], b.push[i]) {
+            (Some(x), Some(y)) => Some(join_tab(x, y).unwrap_or(Tab::Any)),
+            _ => None,
+        }),
+        mem: a
+            .mem
+            .iter()
+            .filter_map(|&(m, x)| {
+                let y = b.mem.iter().find(|e| e.0 == m)?.1;
+                Some((m, join_tab(x, y)?))
+            })
+            .collect(),
     }
 }
 
@@ -551,7 +757,7 @@ struct Frame {
     callees: Vec<u16>,
 }
 
-fn frame(vars: &FxHashMap<u16, Vec<Var>>, t: u16) -> Frame {
+fn frame(vars: &FxHashMap<u16, Vec<Var>>, t: u16, disp: &FxHashSet<u16>) -> Frame {
     let mut f = Frame {
         rts: Vec::new(),
         balanced: true,
@@ -571,6 +777,8 @@ fn frame(vars: &FxHashMap<u16, Vec<Var>>, t: u16) -> Frame {
                     Some(d) => work.push((*n, h + d)),
                     None => f.balanced = false,
                 },
+                Flow::Rts(ts) if disp.contains(&pc) => work.extend(ts.iter().map(|&n| (n, h + 2))),
+                Flow::Rti(ts) if disp.contains(&pc) => work.extend(ts.iter().map(|&n| (n, h + 3))),
                 Flow::Rts(_) => {
                     f.rts.push(pc);
                     f.balanced &= h == 0;
@@ -600,7 +808,7 @@ struct Returns {
     all: Vec<u16>,
 }
 
-fn returns(vars: &FxHashMap<u16, Vec<Var>>, matched: bool) -> Returns {
+fn returns(vars: &FxHashMap<u16, Vec<Var>>, matched: bool, disp: &FxHashSet<u16>) -> Returns {
     let mut calls: Vec<(u16, u16)> = Vec::new();
     for v in vars.values().flatten() {
         if let Flow::Jsr { t, ret } = &v.flow {
@@ -613,7 +821,10 @@ fn returns(vars: &FxHashMap<u16, Vec<Var>>, matched: bool) -> Returns {
     };
     r.all.sort_unstable();
     r.all.dedup();
-    let frames: FxHashMap<u16, Frame> = calls.iter().map(|&(t, _)| (t, frame(vars, t))).collect();
+    let frames: FxHashMap<u16, Frame> = calls
+        .iter()
+        .map(|&(t, _)| (t, frame(vars, t, disp)))
+        .collect();
     let mut ok: FxHashMap<u16, bool> = frames.iter().map(|(&t, f)| (t, f.balanced)).collect();
     while let Some(t) = frames
         .iter()
@@ -632,7 +843,7 @@ fn returns(vars: &FxHashMap<u16, Vec<Var>>, matched: bool) -> Returns {
             }
         }
     }
-    for (&pc, vs) in vars {
+    for (&pc, vs) in vars.iter().filter(|e| !disp.contains(e.0)) {
         if vs
             .iter()
             .any(|v| matches!(v.flow, Flow::Rti(_)) || !matched && matches!(v.flow, Flow::Rts(_)))
@@ -680,7 +891,7 @@ fn loop_heads(roots: &[u16], succ: &dyn Fn(u16) -> Vec<u16>) -> FxHashSet<u16> {
 /// A node of the analysis: an instruction start in the context of the `JSR` return site its
 /// function was called from (`NONE`: not in a called function; `ANY`: reached by a return
 /// that goes somewhere other than its call's return site, so in no known call).
-type Key = (u16, u32);
+pub(crate) type Key = (u16, u32);
 const NONE: u32 = u32::MAX;
 const ANY: u32 = u32::MAX - 1;
 
@@ -689,6 +900,7 @@ fn unlinked(st: &St) -> St {
     St {
         pred: [None; 3],
         rel: [None; DATA],
+        push: [None; 3],
         ..st.clone()
     }
 }
@@ -725,11 +937,15 @@ fn apply(ret: &St, call: &St, linked: bool) -> St {
             call.stored[0] | ret.stored[0],
             call.stored[1] | ret.stored[1],
         ];
+        s.push = call.push;
+    } else {
+        s.push = [None; 3];
     }
     for r in 0..DATA {
         s.rel[r] = None;
         if let Some((b, off)) = ret.rel[r] {
             s.env[r] = shift(call.env[b as usize], off);
+            s.kb[r] = s.kb[r].meet(Kb::of(s.env[r]));
             s.rel[r] = call.rel[b as usize].map(|(b0, o0)| (b0, o0.wrapping_add(off)));
         }
     }
@@ -794,22 +1010,32 @@ impl Work<'_> {
     }
 }
 
-/// Fill each variant's accesses from the interval states at its start; the entries (as in
-/// `St::from`) that reach each start, and the starts at which the decimal flag may be set. With `matched`, an
+/// What [`analyze`] finds.
+pub struct Analysis {
+    /// The entries (as in `St::from`) that reach each start.
+    pub from: FxHashMap<u16, u64>,
+    /// The starts at which the decimal flag may be set.
+    pub dec: FixedBitSet,
+    pub ind: Vec<crate::scev::Induction>,
+    /// The targets of computed transfers found from the code ([`crate::dispatch`]).
+    pub jumps: FxHashMap<u16, crate::dispatch::Jump>,
+    /// Every store's addresses and values.
+    pub stores: Vec<crate::dispatch::Store>,
+}
+
+/// Fill each variant's accesses from the interval states at its start. With `matched`, an
 /// `RTS` whose callee leaves the stack as it found it returns to its caller; otherwise any
-/// return may reach any return site.
+/// return may reach any return site. An `RTS`/`RTI` in `disp` jumps to its targets through
+/// the return address its function pushed.
 pub fn analyze(
     img: &[u8; 0x10000],
     cells: &FixedBitSet,
     vars: &mut FxHashMap<u16, Vec<Var>>,
     entries: &[Entry],
     matched: bool,
-) -> (
-    FxHashMap<u16, u64>,
-    FixedBitSet,
-    Vec<crate::scev::Induction>,
-) {
-    let rets = returns(vars, matched);
+    disp: &FxHashSet<u16>,
+) -> Analysis {
+    let rets = returns(vars, matched, disp);
     let succ_of = |pc: u16| -> Vec<u16> {
         let mut s: Vec<u16> = vars[&pc]
             .iter()
@@ -827,6 +1053,7 @@ pub fn analyze(
         img,
         cells,
         pull_clear: pull_clear(vars, entries),
+        vecs: crate::dispatch::vectors(img, cells, vars),
     };
     let thr = Thresholds::new(vars, &code);
     let mut w = Work {
@@ -877,14 +1104,16 @@ pub fn analyze(
                 (Flow::Jsr { t: tg, ret }, _) => {
                     w.caller(*ret, cx, &out);
                     for &s in tg.all() {
-                        w.flow(
-                            (s, *ret as u32),
-                            St {
-                                stored: out.stored,
-                                from: out.from,
-                                ..St::new(out.env)
-                            },
-                        );
+                        w.flow((s, *ret as u32), out.callee());
+                    }
+                }
+                (Flow::Rts(ts) | Flow::Rti(ts), _) if disp.contains(&pc) => {
+                    let mut o = out;
+                    for _ in 0..if matches!(v.flow, Flow::Rts(_)) { 2 } else { 3 } {
+                        o.push = [o.push[1], o.push[2], None];
+                    }
+                    for &s in ts {
+                        w.flow((s, cx), o.clone());
                     }
                 }
                 (f @ (Flow::Rts(_) | Flow::Rti(_)), _) => {
@@ -954,9 +1183,30 @@ pub fn analyze(
     for (pc, b) in crate::scev::y_bounds(&ind) {
         fill(vars, pc, Some(b));
     }
-    (
-        merged.into_iter().map(|(pc, st)| (pc, st.from)).collect(),
+    let mut states: FxHashMap<u16, Vec<&St>> = FxHashMap::default();
+    for (&(pc, _), st) in &w.state {
+        states.entry(pc).or_default().push(st);
+    }
+    let mut preds: FxHashMap<u16, Vec<u16>> = FxHashMap::default();
+    for (&p, ss) in &succs {
+        for &s in ss {
+            preds.entry(s).or_default().push(p);
+        }
+    }
+    let sets = crate::dispatch::Sets {
+        states,
+        merged: &merged,
+        ind: &ind,
+        preds,
+        roots: &roots,
+    };
+    let stores = crate::dispatch::stores(&code, vars, &sets);
+    let jumps = crate::dispatch::jumps(&code, vars, &w.state, &sets, &stores);
+    Analysis {
+        from: merged.into_iter().map(|(pc, st)| (pc, st.from)).collect(),
         dec,
         ind,
-    )
+        jumps,
+        stores,
+    }
 }

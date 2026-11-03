@@ -203,6 +203,9 @@ pub struct Function {
     /// `BRANCHIND` tables: `(address, block)` sorted by address; an address not in the table
     /// deopts there.
     pub tables: Vec<Vec<(u16, u32)>>,
+    /// The tables (by index) holding every address their jump may take: its targets come
+    /// from the code ([`crate::dispatch`]), so the deopt is never taken.
+    pub closed: FixedBitSet,
     pub ntemps: u32,
     /// Promoted stack slots (registers `NREG..NREG + nslots`).
     pub nslots: u32,
@@ -290,6 +293,9 @@ pub struct Program {
     pub entries: Vec<(u16, u32)>,
     /// Constant code bytes `(addr, value)`.
     pub code: Vec<(u16, u8)>,
+    /// Opcode cells whose every value is one of their variants `(addr, values)`: no store
+    /// the lift contains writes them another.
+    pub sets: Vec<(u16, Vec<u8>)>,
     /// Volatile ranges `[lo, hi)`.
     pub volatile: Vec<(u32, u32)>,
     /// `CALL` pushes no return address; a deopt writes those of the active frames.
@@ -302,6 +308,8 @@ pub struct Program {
     pub chains: Vec<(u32, crate::wide::Chain)>,
     /// Induction variables of the discovered program's loops.
     pub induction: Vec<crate::scev::Induction>,
+    /// Computed transfers whose targets come from the code, ascending.
+    pub jumps: Vec<(u16, Vec<u16>)>,
     pub stats: Stats,
 }
 

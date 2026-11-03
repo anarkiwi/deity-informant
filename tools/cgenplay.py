@@ -93,6 +93,7 @@ def main(argv=None):  # pylint: disable=too-many-locals
     ap.add_argument("file")
     ap.add_argument("--psid", action="store_true", help="FILE is a PSID: init and play")
     ap.add_argument("--org", type=lambda s: int(s, 0), help="load address of a raw FILE")
+    ap.add_argument("--loaded", help="LO-HI (HI exclusive): the program's bytes in a raw FILE")
     ap.add_argument("--entry", action="append", default=[], help="PC:NAME")
     ap.add_argument("--volatile", action="append", default=[], help="LO-HI (HI exclusive)")
     ap.add_argument("--sensitive", action="append", default=[], type=lambda s: int(s, 0))
@@ -115,25 +116,32 @@ def main(argv=None):  # pylint: disable=too-many-locals
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     stem = out / Path(args.file).stem
+    loaded = (load, load + len(body))
+    if args.loaded:
+        loaded = tuple(int(x, 0) for x in args.loaded.split("-"))
     t = time.perf_counter()
     c, h, info = cgen.translate(
         image,
         entries,
         vol,
         args.sensitive,
-        loaded=(load, load + len(body)),
+        loaded=loaded,
         header=stem.with_suffix(".h").name,
     )
     wall = time.perf_counter() - t
     stem.with_suffix(".c").write_text(c, encoding="utf-8")
     stem.with_suffix(".h").write_text(h, encoding="utf-8")
+    print(cmetrics.table([str(stem.with_suffix(".c"))]))
+    print(f"\n.c bytes {len(c)}, .h bytes {len(h)}, regions {len(info['regions'])}")
+    jumps = {f"0x{pc:04X}": [f"0x{t:04X}" for t in ts] for pc, ts in sorted(info["jumps"].items())}
+    traps = {k: (key[0], f"0x{key[1]:04X}") for k, key in sorted(info["traps"].items())}
+    print(f"jumps from the code {jumps}; traps {traps}")
+    stages = ", ".join(f"{k} {v:.3f} s" for k, v in info["times"].items())
+    print(f"translate {wall:.3f} s ({stages})", flush=True)
     lib = build(stem.with_suffix(".c"), stem.with_suffix(".so"))
     pcs = {name: pc for pc, name in entries}
     n = replay(lib, image, pcs, parse_calls(calls, pcs), vol, args.sensitive, progress=True)
-    print(cmetrics.table([str(stem.with_suffix(".c"))]))
-    print(f"\n.c bytes {len(c)}, .h bytes {len(h)}, regions {len(info['regions'])}")
-    stages = ", ".join(f"{k} {v:.3f} s" for k, v in info["times"].items())
-    print(f"translate {wall:.3f} s ({stages}); {n} calls identical to the reference")
+    print(f"{n} calls identical to the reference")
     return 0
 
 
