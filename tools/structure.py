@@ -8,51 +8,25 @@ EmitC conversions) and ``mlir-translate``, from ``PATH`` or else the ``di-mlir``
 import argparse
 import re
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
-IMAGE = "di-mlir"
-DOCKERFILE = Path(__file__).resolve().parents[1] / "docker" / "mlir.Dockerfile"
+from deity_informant.cgen import mlir as cgen_mlir
+from deity_informant.cgen.mlir import run
+
 LIFT = ["--canonicalize", "--cse", "--mem2reg", "--lift-cf-to-scf", "--canonicalize", "--cse"]
 LOWER = ["--canonicalize", "--cse", "--convert-to-emitc", "--reconcile-unrealized-casts"]
 LOWER += ["--form-expressions"]
 HEADER = "#include <stdint.h>\n#include <stddef.h>\n#include <stdbool.h>\n"
 
 
-def have_docker_image():
-    """Whether the ``di-mlir`` image exists."""
-    if not shutil.which("docker"):
-        return False
-    return (
-        subprocess.run(
-            ["docker", "image", "inspect", IMAGE], capture_output=True, check=False
-        ).returncode
-        == 0
-    )
-
-
 def runner(build=False):
-    """The command prefix running the MLIR tools: none when on ``PATH``, else ``docker run``;
-    None when neither is available (``build`` builds the image if missing)."""
-    if shutil.which("mlir-opt") and shutil.which("mlir-translate"):
-        return []
-    if not shutil.which("docker"):
-        return None
-    if not have_docker_image():
-        if not build:
-            return None
-        cmd = ["docker", "build", "-q", "-f", str(DOCKERFILE), "-t", IMAGE, str(DOCKERFILE.parent)]
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL)
-    return ["docker", "run", "--rm", "-i", IMAGE]
-
-
-def run(prefix, argv, text):
-    """The stdout of ``argv`` fed ``text``."""
-    done = subprocess.run([*prefix, *argv], input=text, capture_output=True, text=True, check=False)
-    if done.returncode:
-        raise RuntimeError(f"{argv[0]}: {done.stderr[:2000]}")
-    return done.stdout
+    """The command prefix running the MLIR tools: none when ``mlir-opt`` and ``mlir-translate``
+    are on ``PATH``, else ``docker run``; None when neither is available."""
+    prefix = cgen_mlir.runner(build)
+    if prefix == [] and not shutil.which("mlir-translate"):
+        prefix = cgen_mlir.runner(build, local=False)
+    return prefix
 
 
 def structure(mlir, prefix):

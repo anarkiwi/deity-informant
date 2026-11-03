@@ -19,7 +19,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install
-        run: pip install -e ".[dev]"
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y --no-install-recommends clang-format
+          pip install -e ".[dev]"
       # The coverage gate measures the native lifter and the machine-driven code, so the
       # extension is built into the source tree beside the editable install.
       - name: Build native extension
