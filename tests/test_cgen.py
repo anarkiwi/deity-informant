@@ -4,6 +4,8 @@ reference interpreter; relocation and data invariance of the ``.c``; llvm-mos bu
 import contextlib
 import ctypes
 import fcntl
+import os
+import random
 import re
 import shutil
 import subprocess
@@ -14,9 +16,10 @@ import pytest
 
 import wholeprog_progs as W
 from deity_informant import NATIVE, cgen, trace
-from deity_informant.cgen import mlir
+from deity_informant.cgen import csyntax, mlir, structure
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+import cclones  # noqa: E402  pylint: disable=wrong-import-position
 import cgenplay  # noqa: E402  pylint: disable=wrong-import-position
 import cmetrics  # noqa: E402  pylint: disable=wrong-import-position
 from test_pcode2mlir import OPS, UNARY, VALUES, op_function, unary_function  # noqa: E402
@@ -259,6 +262,117 @@ emit:   CLC
         RTS
 tab:    .byte 3,1,4,1,5,9,2,6
 ptrs:   .byte lo(tab),hi(tab),lo(tab+2),hi(tab+2),lo(tab+4),hi(tab+4),lo(tab+5),hi(tab+5)
+end:
+"""
+
+
+TAIL2 = """
+entry:  AND #$01
+        BEQ a0
+        LDX #$05
+        STX $C010
+        JMP tail
+a0:     LDX #$01
+        STA $C011
+tail:   STX $C000
+        LDA tab,X
+        STA $C001
+        RTS
+tab:    .byte 1,2,3,4,5,6,7,8
+end:
+"""
+TAIL3 = """
+entry:  AND #$03
+        BEQ a0
+        CMP #$01
+        BEQ a1
+        LDX #$05
+        JMP tail
+a0:     LDX #$01
+        JMP tail
+a1:     LDX #$02
+tail:   STX $C000
+        LDA tab,X
+        STA $C001
+        RTS
+tab:    .byte 1,2,3,4,5,6,7,8
+end:
+"""
+EXITS = """
+entry:  AND #$03
+        TAX
+outer:  LDY #$00
+        CPX #$02
+        BEQ found
+inner:  LDA tab,Y
+        BEQ none
+        CMP marks,X
+        BEQ found
+        INY
+        CPY #$04
+        BNE inner
+none:   LDA #$00
+        STA $C000,X
+        JMP next
+found:  TYA
+        STA $C004,X
+next:   DEX
+        BPL outer
+        RTS
+tab:    .byte 3,1,2,0
+marks:  .byte 1,2,9,3
+end:
+"""
+IRRED = """
+entry:  LDX #$05
+        AND #$01
+        BEQ b
+a:      STX $C000
+        DEX
+        BEQ done
+b:      STX $C001
+        DEX
+        BNE a
+done:   RTS
+end:
+"""
+CHAIN = """
+entry:  CMP #$01
+        BEQ c1
+        CMP #$02
+        BEQ c2
+        CMP #$05
+        BEQ c3
+        STA $C000
+        RTS
+c1:     LDX #$11
+        STX $C001
+        RTS
+c2:     LDX #$22
+        STX $C002
+        RTS
+c3:     LDX #$33
+        STX $C003
+        RTS
+end:
+"""
+WRAP = """
+entry:  AND #$0F
+        ORA #$70
+        TAX
+        LDA #$5A
+        STA $90,X
+        TXA
+        AND #$0F
+        ORA #$10
+        TAY
+        LDA #$A5
+        STA $FFF0,Y
+        LDA $90,X
+        STA $C000
+        LDA $FFF0,Y
+        STA $C001
+        RTS
 end:
 """
 
@@ -581,3 +695,114 @@ def test_jump_facts_keep_computed_transfers_only():
 def test_parse_rejects_unknown_syntax():
     with pytest.raises(AssertionError):
         mlir.parse('"builtin.module"() ({\n  this is not mlir\n}) : () -> ()\n')
+
+
+@pytest.mark.parametrize("src,places", [(TAIL2, 2), (TAIL3, 3)], ids=["two", "three"])
+def test_shared_tail_becomes_a_function(prefix, tmp_path, src, places):
+    c, _, info = check(prefix, tmp_path, src, entry_calls(range(4), 2))
+    assert info["structure"]["tails"] == 1 and info["structure"]["functions"] == 2
+    [name] = re.findall(r"static void (f\d+)\(uint8_t v1\)", c)
+    assert c.count(f"{name}(") == places + 1
+
+
+def test_multi_exit_loop_joins_its_exits(prefix, tmp_path):
+    c, _, info = check(prefix, tmp_path, EXITS, entry_calls(range(4), 2))
+    assert info["structure"]["exits"] == 1 and "break;" in c
+
+
+def test_two_entry_loop_dispatches(prefix, tmp_path):
+    _, _, info = check(prefix, tmp_path, IRRED, entry_calls(range(4), 2))
+    assert info["structure"]["entries"] == 1
+
+
+def test_switch_from_a_compare_chain(prefix, tmp_path):
+    c, _, _ = check(prefix, tmp_path, CHAIN, entry_calls([0, 1, 2, 3, 5, 9, 0x81]))
+    assert "switch (a)" in c and all(f"case {k}:" in c for k in (1, 2, 5))
+
+
+def test_switch_from_a_jump_table(prefix, tmp_path):
+    c, _, _ = check(prefix, tmp_path, LOHI, entry_calls(range(4)))
+    assert "switch (" in c and c.count("case CODE_ORG + ") == 3 and "default:" in c
+
+
+def test_callee_called_twice_keeps_its_used_parameters(prefix, tmp_path):
+    c, _, _ = check(prefix, tmp_path, SUBS, entry_calls(range(8)))
+    [name] = re.findall(r"static uint8_t (f\d+)\(uint8_t v1\)", c)
+    assert c.count(f"{name}(") == 4
+
+
+def test_indexed_addresses_wrap(prefix, tmp_path):
+    c, _, _ = check(prefix, tmp_path, WRAP, entry_calls(range(0, 256, 15)))
+    assert not re.search(r"\[0xFF[0-9A-F]{2}", c)
+
+
+def _shuffled(parse, seed):
+    def run(text):
+        top = parse(text)
+        rng = random.Random(seed)
+        for f in top.regions[0][0].ops:
+            for region in f.regions:
+                rest = region[1:]
+                rng.shuffle(rest)
+                region[1:] = rest
+        return top
+
+    return run
+
+
+@pytest.mark.parametrize("name", ["EXITS", "IRRED", "TAIL3", "SUBS"])
+def test_deterministic(prefix, monkeypatch, name):
+    img, labels, loaded = assemble(globals()[name])
+    texts = {translate(prefix, img, labels, loaded)[0] for _ in range(2)}
+    parse = mlir.parse
+    for seed in range(3):
+        monkeypatch.setattr(cgen.mlir, "parse", _shuffled(parse, seed))
+        texts.add(translate(prefix, img, labels, loaded)[0])
+    monkeypatch.setattr(cgen.mlir, "parse", parse)
+    code = (
+        "import sys; sys.path[:0] = sys.argv[1:]; import test_cgen as T; "
+        f"img, labels, loaded = T.assemble(T.{name}); "
+        "sys.stdout.write(T.translate(None, img, labels, loaded)[0])"
+    )
+    for seed in ("0", "1"):
+        env = {**os.environ, "PYTHONHASHSEED": seed}
+        here = str(Path(__file__).parent)
+        done = subprocess.run(
+            [sys.executable, "-c", code, here, str(Path(here).parent / "tools")],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=True,
+        )
+        texts.add(done.stdout)
+    assert len(texts) == 1
+
+
+def test_conditions_cover_and_definite_assignment():
+    conds = structure.Conds()
+    a, b = conds.var(("c", "%a")), conds.var(("c", "%b"))
+    assert conds.cover((a & b) | (a & ~b), conds.bdd.true) == [[(("c", "%a"), True)]]
+    one, two = conds.var(("e", "%x", 1)), conds.var(("e", "%x", 2))
+    assert conds.cover(~one & two, conds.care) == [[(("e", "%x", 2), True)]]
+    fam = conds.synthetic(3)
+    assert conds.fixed(conds.var(("e", fam, 0)) & a) == a
+    conds.close()
+    assign = ("a", "x", "1", frozenset())
+    read = ("s", "f(x);", frozenset({"x"}))
+    assert csyntax.assigned_first([("if", "c", frozenset(), [assign], [assign]), read], "x")
+    assert not csyntax.assigned_first([("if", "c", frozenset(), [assign], []), read], "x")
+    jump = ("j", "return;", frozenset())
+    assert csyntax.assigned_first([("if", "c", frozenset(), [assign], [jump]), read], "x")
+    body = [("if", "c", frozenset(), [assign], []), read]
+    assert csyntax.render(csyntax.declare(body, {"x": "uint8_t"}))[0] == "uint8_t x = 0;"
+
+
+def test_clone_metrics():
+    body = "  v1 = R0[3];\n  io_write(0xD400, v1);\n  v2 = v1 + 1;\n  R0[4] = v2;\n"
+    text = (
+        f"static void f1(void) {{\n{body}}}\nstatic void f2(void) {{\n{body.replace('3', '7')}}}\n"
+    )
+    total, dup = cclones.cloned(text)
+    assert total == len(text) and dup == total - len("}\n") * 2
+    assert cclones.pairs(text * 3, least=0.9) == []
+    assert cclones.main([__file__]) == 0

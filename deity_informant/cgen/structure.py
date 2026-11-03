@@ -282,7 +282,7 @@ class Structurer:
             g.remove(set(g.items) - set(pre))
             if len(g.items) == 1 and not back:
                 return g.items[g.entry]
-            heads = {v for _, v in back}
+            heads, size = {v for _, v in back}, len(g.items)
             kids = g.dominators(pre)
             for n in post:
                 if n not in g.items:
@@ -291,12 +291,15 @@ class Structurer:
                     pre, _, back = g.dfs()
                     if any(v == n for _, v in back):
                         self.cyclic(g, n, back, pre)
+                        size = None
                         break
                 region = subtree(kids, n, g.items)
                 inside = set(region)
                 out = {t for x in region for t, _ in g.succ[x] if t not in inside}
                 if len(out) <= 1 < len(region):
                     self.acyclic(g, n, inside, out)
+            if size == len(g.items):
+                raise RuntimeError("structuring made no progress")
 
     def acyclic(self, g, n, inside, out):
         """Replace the single-successor region ``inside`` dominated by ``n`` by its
