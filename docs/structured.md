@@ -9,6 +9,7 @@
 | `tools/structure.py IN.mlir` | `mlir-opt` and `mlir-translate`: structured C |
 | `tools/cslice.py IN.c` | Frama-C slice on bus writes, deopts and writes to `M` |
 | `tools/cplay.py SRC.c --state IMAGE --meta META` | plays C from `A = X = Y = 0`, `SP = $FD` against `wholeprog.reference_call`: the bus writes must be equal (`--ram`: RAM too) |
+| `tools/pcode2c.py ... --compact` | optimized, structured C (`tools/pcodeopt.py`, `tools/pcodec.py`), below |
 | `tools/cmetrics.py A.c ...` | lines, statements, `if`, `goto`, `switch`, loops, `int32_t` variables |
 
 `FUNCS.pkl` is a pickle of `prog.functions`; the C expects `M`, `io_read`, `io_write`, `deopt` and `codechk` from the host (`tools/cplay.c` is one).
@@ -42,3 +43,15 @@ The output has no `goto`. Blocks several paths join are structured by threading 
 ## Tests
 
 `tests/test_pcode2mlir.py` lifts small programs of `tests/wholeprog_progs.py` and plays the C and the structured C against the reference, checks every op in both printers on edge values, and slices. The MLIR step uses `mlir-opt` from `PATH` or builds the `di-mlir` image on first use; the slice pulls `framac/frama-c:29.0`. Tests needing them skip where Docker is absent; CI's test job has Docker, so it runs them there (the first test builds the image, under a lock shared by the xdist workers).
+
+## Compact C
+
+`pcode2c.py --compact` (`pcodec.compact_c(funcs, entry, regions)`) keeps what a host observes of a play routine: the bus accesses in order, and the RAM a later call can read before writing. Registers, flags and stack slots are dead at the exit except what the next call reads (the host sets only `A` and `SP`).
+
+1. **Prune**: edges into blocks that only deopt are removed, `codechk` is 0 and a computed jump has no default. The assumptions this makes are listed in the header of the output.
+2. **Propagate**: expressions are propagated and folded across blocks (register values too), a flag tested by a branch is known on each edge; memory reads move only into a single reader.
+3. **Promote**: zero-page cells accessed only at constant addresses become variables. A cell some call reads before writing stays in RAM; `info["unobserved"]` lists the cells held as variables.
+4. **Liveness**: interprocedural, with a live-in and a must-define summary per function and the live set after each return taken from its call sites. Dead assignments go to a fixed point; the set a later call reads is the greatest fixed point from the empty set (`info["reads"]`: variables the host must provide, besides `A` and `SP`).
+5. **Structure**: if/else, `switch`, `while` and `do`/`while` from dominators and post-dominators; a `goto` only where an edge fits none, and a short block is copied rather than jumped to. Variables used by one non-recursive function and not live into it are locals.
+
+Stack slots (`s18` and up) are bytes below the function's own entry stack pointer and are named per function; a callee's slot is not its caller's.

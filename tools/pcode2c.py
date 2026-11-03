@@ -1,8 +1,8 @@
 """Print a whole-program lift (``wholeprog.Program.functions``) as C.
 
-``python tools/pcode2c.py FUNCS.pkl --entry PC [--layout MAP.json] [-o OUT.c]``: registers are
-globals, memory is ``M[]`` (volatile accesses through ``io_read``/``io_write``), single-use
-temporaries fold into expressions and layout regions (``docs/layout.md``) name their accesses.
+``python tools/pcode2c.py FUNCS.pkl --entry PC [--layout MAP.json] [--compact] [-o OUT.c]``:
+registers are globals, memory is ``M[]`` (volatile accesses through ``io_read``/``io_write``) and
+layout regions (``docs/layout.md``) name accesses; ``--compact`` optimizes and structures it.
 """
 
 import argparse
@@ -37,6 +37,12 @@ CMP = {
 def ctype(size):
     """The C type of a varnode of ``size`` bytes."""
     return "uint8_t" if size == 1 else "uint16_t"
+
+
+def slot_name(v, pc):
+    """The name of register varnode ``v`` in the function at ``pc``: stack slots (registers from
+    18) are bytes below that function's own entry stack pointer."""
+    return REG[v[1]] if v[1] in REG else f"s{v[1]}_{pc:04X}"
 
 
 class Names:
@@ -101,10 +107,9 @@ class Fn:
                 if op[1] and op[1][0] == "u":
                     self.temps.add((op[1][1], op[1][2]))
 
-    @staticmethod
-    def var(v):
-        """The C name of a register or temporary."""
-        return REG.get(v[1], f"s{v[1]}") if v[0] == "r" else f"u{v[1]}_{v[2]}"
+    def var(self, v):
+        """The C name of a register, a stack slot (private to its function) or a temporary."""
+        return slot_name(v, self.fn["pc"]) if v[0] == "r" else f"u{v[1]}_{v[2]}"
 
     def vn(self, v, env):
         """A varnode as an expression, taking a folded temporary out of ``env``."""
@@ -262,7 +267,7 @@ def emit(funcs, entry, regions=(), trace=False):
         for line in Fn(f, names, label, labels, trace).emit() + [""]
     ]
     scalars = sorted(set(re.findall(r"\bv_[0-9A-F]{4}\b", "\n".join(bodies))))
-    regs = sorted(set(REG.values()) | set(re.findall(r"\bs\d+\b", "\n".join(bodies))))
+    regs = sorted(set(REG.values()) | set(re.findall(r"\bs\d+_[0-9A-F]{4}\b", "\n".join(bodies))))
     head = [
         "#include <stdint.h>",
         "extern uint8_t M[65536];",
@@ -285,12 +290,18 @@ def main(argv=None):
     ap.add_argument("--layout")
     ap.add_argument("-o", "--out")
     ap.add_argument("--trace", action="store_true", help="call trace(pc) at every block")
+    ap.add_argument("--compact", action="store_true", help="optimized, structured C (pcodec.py)")
     args = ap.parse_args(argv)
     funcs = pickle.loads(Path(args.funcs).read_bytes())
     regions = (
         json.loads(Path(args.layout).read_text(encoding="utf-8"))["regions"] if args.layout else ()
     )
-    text = emit(funcs, args.entry, regions, args.trace) + "\n"
+    if args.compact:
+        from pcodec import compact_c  # pylint: disable=import-outside-toplevel
+
+        text = compact_c(funcs, args.entry, regions)[0]
+    else:
+        text = emit(funcs, args.entry, regions, args.trace) + "\n"
     if args.out:
         Path(args.out).write_text(text, encoding="utf-8")
     else:

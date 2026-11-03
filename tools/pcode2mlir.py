@@ -11,7 +11,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from pcode2c import REG
+from pcode2c import REG, slot_name
 
 BIN = {
     "INT_ADD": "addi",
@@ -42,9 +42,9 @@ def ty(size):
     return f"i{8 * size}"
 
 
-def reg_name(v):
-    """The global symbol of register varnode ``v``."""
-    return REG.get(v[1], f"s{v[1]}")
+def reg_name(v, pc):
+    """The global symbol of register varnode ``v`` in the function at ``pc``."""
+    return slot_name(v, pc)
 
 
 class Fn:
@@ -61,12 +61,12 @@ class Fn:
                     if v[0] == "u" and tuple(v[1:]) not in defined:
                         cross.add(tuple(v[1:]))
                     if v[0] == "r":
-                        self.regs[reg_name(v)] = v[2]
+                        self.regs[reg_name(v, self.fn["pc"])] = v[2]
                 out = op[1]
                 if out and out[0] == "u":
                     defined.add(tuple(out[1:]))
                 elif out:
-                    self.regs[reg_name(out)] = out[2]
+                    self.regs[reg_name(out, self.fn["pc"])] = out[2]
         self.cross = {k: f"%a{k[0]}_{k[1]}" for k in cross}
         self.globals = {r: f"%g_{r}" for r in [*self.regs, "M"]}
         self.zero = "%zero"
@@ -101,7 +101,8 @@ class Fn:
         """The address and memref type of the storage of ``v``: a register's one-cell global or
         a crossing temporary's rank-0 ``alloca``."""
         if v[0] == "r":
-            return f"{self.globals[reg_name(v)]}[{self.zero}]", f"memref<1x{ty(v[2])}>"
+            g = self.globals[reg_name(v, self.fn["pc"])]
+            return f"{g}[{self.zero}]", f"memref<1x{ty(v[2])}>"
         return f"{self.cross[tuple(v[1:])]}[]", f"memref<{ty(v[2])}>"
 
     def read(self, v):

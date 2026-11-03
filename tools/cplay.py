@@ -37,10 +37,11 @@ def build(src, out):
     return ctypes.CDLL(str(out))
 
 
-def replay(lib, image, pc, inputs, volatile, fn="play", progress=False, ram=True):
+def replay(lib, image, pc, inputs, volatile, fn="play", progress=False, ram=True, skip=()):
     """Play ``fn`` once per ``A`` in ``inputs`` from ``image`` and against the reference at ``pc``.
 
-    AssertionError at the first call whose bus writes, deopts or (with ``ram``) RAM differ."""
+    AssertionError at the first call whose bus writes, deopts or (with ``ram``, except the ``skip`` cells) RAM differ.
+    """
     mem = (ctypes.c_uint8 * 65536).in_dll(lib, "M")
     mem[:] = list(image)
     ref = bytearray(image)
@@ -59,6 +60,8 @@ def replay(lib, image, pc, inputs, volatile, fn="play", progress=False, ram=True
     keep[0x100:0x200] = bytes(0x100)
     for lo, hi in volatile:
         keep[lo:hi] = bytes(hi - lo)
+    for cell in skip:
+        keep[cell] = 0
     play = getattr(lib, fn)
 
     def inside(addr):
