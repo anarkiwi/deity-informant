@@ -204,3 +204,86 @@ fn random_programs_match_the_interpreter() {
         assert_eq!(out[0].3, out[1].3, "invalidation, case {case}\n{p}");
     }
 }
+
+/// `n` steps, each adding a byte of memory to A and leaving through its own deopt block when
+/// another byte of memory is below the step's bound: only the exits read A.
+fn guard_chain(n: u32) -> Program {
+    let (a, c) = (reg(0, 1), reg(5, 1));
+    let step = |i: u32| {
+        let ops = vec![
+            LOp::new(Opc::Load, tmp(0, 1), k(0x4000 + i, 2), Vn::NONE, 0),
+            LOp::new(Opc::IntAdd, a, a, tmp(0, 1), 0),
+            LOp::new(Opc::Load, tmp(1, 1), k(0x5000 + i, 2), Vn::NONE, 0),
+            LOp::new(Opc::IntLess, c, tmp(1, 1), k(i % 90 + 20, 1), 0),
+            LOp::new(Opc::CBranch, Vn::NONE, c, Vn::NONE, n + 1 + i),
+            LOp::new(Opc::Branch, Vn::NONE, Vn::NONE, Vn::NONE, i + 1),
+        ];
+        Block {
+            pc: 0x2000 + i as u16,
+            ops,
+            ..Default::default()
+        }
+    };
+    let done = Block {
+        pc: 0x2000 + n as u16,
+        ops: vec![LOp::new(Opc::Return, Vn::NONE, k(0x1234, 2), Vn::NONE, 0)],
+        ..Default::default()
+    };
+    let leave = |i: u32| Block {
+        pc: 0x2000 + i as u16,
+        ops: vec![LOp::new(
+            Opc::CallOther,
+            Vn::NONE,
+            k(0x2000 + i, 2),
+            Vn::NONE,
+            other::DEOPT,
+        )],
+        ..Default::default()
+    };
+    let blocks = (0..n)
+        .map(step)
+        .chain([done])
+        .chain((0..n).map(leave))
+        .collect();
+    Program {
+        functions: vec![Function {
+            pc: 0x2000,
+            top: true,
+            blocks,
+            ntemps: 8,
+            ..Default::default()
+        }],
+        entries: vec![(0x2000, 0)],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn guards_in_a_chain_leave_exactly_and_compile_linearly() {
+    for start in [0u8, 3, 60, 200] {
+        let x = Exec::new(&guard_chain(40));
+        let out = [Backend::Interp, Backend::Jit].map(|backend| {
+            let mut cpu = Cpu::new();
+            let mut reg = [0u8; 16];
+            (reg[0], reg[3]) = (start, 0xf0);
+            cpu.set_reg(reg);
+            let mut mem = Box::new([0u8; 0x10000]);
+            mem[0x4000..0x4040]
+                .iter_mut()
+                .enumerate()
+                .for_each(|(i, b)| *b = (i * 5) as u8);
+            let mut run = Runner::new(&x);
+            run.backend = backend;
+            let o = run.call(0, 0, &mut cpu, &mut *mem, 1000);
+            (o, cpu)
+        });
+        assert_eq!(out[0], out[1], "start {start}");
+    }
+    let bytes = |n| Exec::new(&guard_chain(n)).jit().unwrap().bytes;
+    assert!(
+        bytes(256) < 3 * bytes(128),
+        "{} bytes for 128 steps, {} for 256",
+        bytes(128),
+        bytes(256)
+    );
+}

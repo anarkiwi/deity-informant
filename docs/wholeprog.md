@@ -397,10 +397,10 @@ The IR prints as C and as structured C: [structured.md](structured.md).
 `Runner::backend` (Python: `Program.backend`, `wholeprog.lift(..., backend=)` or
 `wholeprog.BACKEND`, a per-call `call(..., backend=)`; tools: `--backend`) selects the engine:
 
-- `jit` (default): `jit.rs` compiles every function with Cranelift (its own optimizer off) on first use
+- `jit` (default): `jit.rs` compiles every function with Cranelift (`opt_level` speed) on first use
   (`Exec::jit`, `Program.compile()` returns the compile seconds) to one native function. The
   value-file cells it uses are SSA variables, written back before a `CALL` and at exits and
-  reloaded after a `CALL`; `CALL` is a native call that pushes the same frame record the
+  reloaded after a `CALL`. A guard branches straight to the shared exit block with the written cells as the branch's arguments: the optimizer computes a pure value at its first use in the dominator tree and not again below it, so state that only an exit block read would be recomputed in every exit (a chain of guards squares the work and the code). `CALL` is a native call that pushes the same frame record the
   interpreter keeps, so a deopt or budget stop in a callee unwinds with the interpreter's
   frames, slots and resume state. `BRANCHIND` is a `Switch` whose default deopts; block entries
   reached by a branch carry the interpreter's depth check and budget spend (fall-through does
