@@ -390,6 +390,8 @@ printed `s<i>`). Block 0 of each function is its entry; the executor (`exec.rs`)
 program over any `di_pcode::Bus`, relocating each function's slots in its value file and,
 with cycle counting, calling `Bus::now(cycle)` before possibly volatile accesses.
 
+The IR prints as C and as structured C: [structured.md](structured.md).
+
 ### Backends
 
 `Runner::backend` (Python: `Program.backend`, `wholeprog.lift(..., backend=)` or
