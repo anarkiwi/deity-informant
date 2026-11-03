@@ -361,6 +361,20 @@ pub(crate) fn refine(st: &St, flag: usize, want: bool) -> Option<St> {
 pub(crate) struct Code<'a> {
     pub(crate) img: &'a [u8; 0x10000],
     pub(crate) cells: &'a FixedBitSet,
+    /// `PLP` and `RTI` pull the decimal flag clear (guarded where emitted): nothing sets it.
+    pub(crate) pull_clear: bool,
+}
+
+/// Whether the decimal flag can only be set by a pull from the stack: no `SED` among the
+/// variants and no entry that allows it set. `PLP` and `RTI` are then guarded to pull it clear.
+pub fn pull_clear(vars: &FxHashMap<u16, Vec<Var>>, entries: &[Entry]) -> bool {
+    let d = di_pcode::reg::D;
+    !vars.values().flatten().any(|v| v.op == 0xf8)
+        && entries.iter().all(|e| {
+            e.regs
+                .iter()
+                .all(|(r, vals)| *r != d || vals.iter().all(|&x| x == 0))
+        })
 }
 
 /// `st` after variant `v` at `pc`; its accesses are appended to `acc`.
@@ -370,6 +384,9 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
     let b = operand_bytes(code.img, code.cells, pc, t.len);
     let mut env = st.env;
     absint(ops, b, &mut env, acc);
+    if code.pull_clear && matches!(v.op, 0x28 | 0x40) {
+        env[di_pcode::reg::D] = Iv::exact(0);
+    }
     let mut stored = st.stored;
     for a in acc.iter_mut() {
         a.defd = a
@@ -806,7 +823,11 @@ pub fn analyze(
     };
     let roots: Vec<u16> = entries.iter().map(|e| e.pc).collect();
     let heads = loop_heads(&roots, &succ_of);
-    let code = Code { img, cells };
+    let code = Code {
+        img,
+        cells,
+        pull_clear: pull_clear(vars, entries),
+    };
     let thr = Thresholds::new(vars, &code);
     let mut w = Work {
         state: FxHashMap::default(),
@@ -909,7 +930,10 @@ pub fn analyze(
         let mut st = merged
             .get(&pc)
             .map_or_else(|| St::new(TOP_ENV), Clone::clone);
-        dec.set(pc as usize, st.env[di_pcode::reg::D].hi != 0);
+        dec.set(
+            pc as usize,
+            !code.pull_clear && st.env[di_pcode::reg::D].hi != 0,
+        );
         let y = di_pcode::reg::Y;
         if let Some(b) = yb.and_then(|b| meet(b, st.env[y])) {
             st.env[y] = b;

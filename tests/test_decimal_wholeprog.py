@@ -161,3 +161,61 @@ def test_code_that_sets_or_clears_the_decimal_flag_is_exact(timing, opcode, orig
         mem = bytearray(img)
         mem[0x80:0x84] = bytes(rng.randrange(256) for _ in range(4))
         differential(img, prog, pcs, calls, mem=mem)
+
+
+PULL = """
+entry:  LDA $F0
+        PHA
+        PLP
+        CLC
+        LDA $80
+        ADC $81
+        STA $82
+        LDA $80
+        SBC $81
+        STA $83
+        RTS
+"""
+
+RETURN = """
+entry:  LDA #hi(done)
+        PHA
+        LDA #lo(done)
+        PHA
+        LDA $F0
+        PHA
+        RTI
+done:   CLC
+        LDA $80
+        ADC $81
+        STA $82
+        LDA $80
+        SBC $81
+        STA $83
+        RTS
+"""
+
+
+@pytest.mark.parametrize("source", [PULL, RETURN], ids=["PLP", "RTI"])
+def test_a_flags_pull_is_guarded_to_leave_the_decimal_flag_clear(source):
+    """With no SED anywhere, arithmetic after a pull is binary code behind a check; a pulled
+    byte that sets D leaves the lifted code and the result is the decimal one."""
+    img, labels = assemble(source)
+    pcs = [labels["entry"]]
+    first = bytearray(img)
+    first[0xF0] = 0
+    prog = wholeprog.lift(img, pcs, [IO], facts_for(first, pcs, [(0, 0)]))
+    assert "INT_SUB #0, D" not in str(prog)
+    rng = random.Random(3)
+    for pulled in (0, 0x08, 0x09, 0x28, 0x00, 0x08):
+        mem = bytearray(img)
+        mem[0xF0] = pulled
+        mem[0x80], mem[0x81] = rng.randrange(256), rng.randrange(256)
+        differential(img, prog, pcs, [(0, 0)], mem=mem)
+        run = bytearray(mem)
+        prog.call(run, 0)
+        d = pulled >> 3 & 1
+        total = ref.adc(mem[0x80], mem[0x81], 0, d)
+        assert run[0x82] == total[0]
+        assert run[0x83] == ref.sbc(mem[0x80], mem[0x81], total[4], d)[0]
+    assert sum(prog.deopts.values()) > 0

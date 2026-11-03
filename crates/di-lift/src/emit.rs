@@ -760,6 +760,9 @@ impl<'a> Em<'a, '_> {
         match ctl {
             Ctl::Next(n) => {
                 self.account(cyc, maxpen);
+                if *op == 0x28 && self.sh.g.pull_clear {
+                    chk.push(r1(R::D));
+                }
                 self.check(chk, k(next as u32, 2));
                 let sets_sp = crate::analysis::stack_delta(*op).is_none();
                 self.exit_or(exit, k(*n as u32, 2), |em| {
@@ -978,6 +981,9 @@ impl<'a> Em<'a, '_> {
                     tgt = self.op(Opc::IntAdd, 2, tgt, k(1, 2));
                 }
                 self.account(cyc, maxpen);
+                if matches!(ctl, Ctl::Rti(_)) && self.sh.g.pull_clear {
+                    self.check(vec![r1(R::D)], tgt);
+                }
                 self.flush();
                 self.exit_or(exit, tgt, |em| {
                     let tb = em.table(ts);

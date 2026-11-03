@@ -379,7 +379,10 @@ template serves the interpreter, the generated native templates and the lift. At
 where the interval analysis proves `D` clear the template reads `D` as the constant 0 and the
 decimal operations fold away, leaving the binary form the carry-chain matcher and the induction
 analysis (`vsa::symbolic_in` evaluates constants, `AND 0` and `OR`/`XOR 0`) recognize. Where `D`
-may be set the operations stay, tagged `ir::DECIMAL`. `tests/test_decimal*.py` run Clark's
+may be set the operations stay, tagged `ir::DECIMAL`. When the program has no `SED` variant and no
+entry declares `d` set, nothing but a pull from the stack can set the flag: `PLP` and `RTI` are
+then checked after the pull (the lifted code deopts if the pulled byte has `D` set) and the flag
+is clear everywhere (`vsa::pull_clear`). `tests/test_decimal*.py` run Clark's
 exhaustive cases (every accumulator, operand and carry, decimal flag set and clear) on the
 Python VM, the native interpreter, the lift (entries that declare `d`, do not declare it, or set
 it in the code) and the SLEIGH module.

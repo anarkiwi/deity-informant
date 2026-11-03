@@ -430,6 +430,8 @@ pub struct Graph {
     pub from: FxHashMap<u16, u64>,
     /// Instruction starts at which the decimal flag may be set.
     pub dec: FixedBitSet,
+    /// `PLP` and `RTI` are guarded to pull the decimal flag clear ([`crate::vsa::pull_clear`]).
+    pub pull_clear: bool,
     /// Induction variables of the loops.
     pub ind: Vec<crate::scev::Induction>,
 }
@@ -694,6 +696,7 @@ pub fn discover(
             nvalues.entry(*a).or_default().extend(v);
         }
         if next == cells && nvalues == values {
+            let pull_clear = crate::vsa::pull_clear(&vars, entries);
             let (from, dec, ind) = crate::vsa::analyze(&cimg, &cells, &mut vars, entries, matched);
             return Graph {
                 vars,
@@ -706,6 +709,7 @@ pub fn discover(
                 prot: crate::ptr::Prot::default(),
                 from,
                 dec,
+                pull_clear,
                 ind,
             };
         }
