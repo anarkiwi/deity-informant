@@ -135,6 +135,31 @@ entry:  STA $F0
 """
 
 
+# The pointer's high byte comes from a table (the facts see $20 only), after calls that have
+# returned: a call that points it at page 1 reads their return addresses.
+DEAD = (
+    """
+entry:  STA $F0
+        AND #$03
+        TAX
+        JSR outer
+        LDA #$F5
+        STA $FB
+        LDA hitab,X
+        STA $FC
+        JSR sub
+        RTS
+outer:  JSR inner
+        RTS
+inner:  RTS
+"""
+    + READS
+    + """
+hitab:  .byte $20, $20, $01, $00
+"""
+)
+
+
 def lift(src, calls, cycles=False, facts_calls=None):
     img, labels = assemble(src)
     pcs = [labels["entry"]]
@@ -153,6 +178,13 @@ def test_defined_pointer_needs_no_access_guard(cycles):
     mem[PTR + 1] = 0x20
     differential(img, prog, pcs, calls, mem=mem)
     assert not prog.deopts
+
+
+@pytest.mark.parametrize("cycles", [False, True])
+def test_a_load_that_may_read_page_1_reads_the_returned_frames_exactly(cycles):
+    img, pcs, prog = lift(DEAD, [(0, 0), (0, 1)], cycles)
+    mem = differential(img, prog, pcs, [(0, 0), (0, 1), (0, 2), (0, 3), (0, 2)])
+    assert mem[0x1800:0x1803] != bytes(3)
 
 
 @pytest.mark.parametrize("cycles", [False, True])

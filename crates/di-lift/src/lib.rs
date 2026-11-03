@@ -383,12 +383,27 @@ pub fn lift_banked(
             }
         }
     }
+    // Stack bytes below SP are not in memory while the stack is private and a deopt cannot
+    // restore them, so pushes also store where a load, whatever the facts saw and the pointer
+    // windows assume, may reach page 1: a read of them is then exact.
+    let page1 = |iv: Iv| iv.meets(0x100, 0x200);
+    let shadow = private
+        && plans.iter().any(|p| {
+            p.pcs().any(|pc| {
+                g.vars[&pc].iter().any(|v| {
+                    !is_stack_op(v.op)
+                        && (v.acc.iter().any(|a| !a.dummy && !a.store && page1(a.addr))
+                            || matches!(v.flow, Flow::JmpInd(_)) && page1(ind_ptr(img, &g, pc).0))
+                })
+            })
+        });
     let sh = emit::Shared {
         img,
         g: &g,
         volatile,
         constcode: emit::prefix(&constcode),
         private,
+        shadow,
         promote,
         recursive,
         cycles: opts.cycles,
