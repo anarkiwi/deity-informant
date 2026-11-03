@@ -2,9 +2,9 @@
 
 Constant code is the bytes of reached instructions no constant-address store writes; its span
 also covers the tables the lift read jump targets and stored values from, which a store of
-unknown address must not change either, and the data regions it overlaps. Data regions are the maximal runs of other bytes some
-access may touch (an access of unknown address may touch every byte of the loaded image),
-outside volatile ranges.
+unknown address must not change either, and the data regions it overlaps. Data regions are
+the maximal runs of other bytes some access may touch (an access of unknown address may touch
+every byte of the loaded image), outside volatile ranges.
 """
 
 from __future__ import annotations
