@@ -501,6 +501,8 @@ pub struct Graph {
     pub guards: FxHashMap<u16, (u8, Iv)>,
     /// The bytes stores with address sets may write.
     pub written: FixedBitSet,
+    /// Per return site, the addresses past it a call returns to (inline arguments).
+    pub past: FxHashMap<u16, Vec<u16>>,
 }
 
 /// Stack-pointer effect of a `Next` instruction: pushes and pulls by count, `None` for an
@@ -977,6 +979,7 @@ impl Fixpoint<'_> {
                         }
                         gs
                     },
+                    past: an.past.clone(),
                     written: {
                         let mut w = FixedBitSet::with_capacity(0x10000);
                         for s in &an.stores {

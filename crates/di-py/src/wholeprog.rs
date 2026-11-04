@@ -769,6 +769,12 @@ impl Program {
         self.prog.sets.iter().cloned().collect()
     }
 
+    /// The instruction starts the functions plan, ascending.
+    #[getter]
+    fn starts(&self) -> Vec<u16> {
+        self.prog.starts.clone()
+    }
+
     /// Runs ``[(lo, hi)]`` (``hi`` exclusive) of the bytes stores with address sets may write.
     #[getter]
     fn written(&self) -> Vec<(u32, u32)> {

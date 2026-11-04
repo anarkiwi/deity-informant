@@ -1145,6 +1145,8 @@ pub struct Analysis {
     /// The table bytes stored values, pointer stores' addresses and trip bounds were read
     /// from.
     pub reads: std::collections::BTreeSet<u16>,
+    /// Per return site, the addresses past it a call's `RTS` returns to (inline arguments).
+    pub past: FxHashMap<u16, Vec<u16>>,
     /// The values of each byte some store writes ([`crate::dispatch::cell_values`]).
     pub cellvals: FxHashMap<u16, Option<std::collections::BTreeSet<u8>>>,
 }
@@ -1247,7 +1249,14 @@ pub fn analyze(
                 }
                 // An `RTS` through its call's return address advanced past the call returns.
                 (Flow::Rts(ts), _) if disp.contains(&pc) && st.depth == Some(0) && cx < ANY => {
-                    for &t in ts {
+                    // The address it pulls, where its bytes are constants.
+                    let own = match st.above {
+                        [Some(Tab::K(l)), Some(Tab::K(h))] => {
+                            Some(u16::from_le_bytes([l, h]).wrapping_add(1))
+                        }
+                        _ => None,
+                    };
+                    for &t in ts.iter().filter(|&&t| own.is_none_or(|o| o == t)) {
                         w.give_past(cx as u16, t, &out);
                     }
                 }
@@ -1426,6 +1435,16 @@ pub fn analyze(
     }
     let jumps = crate::dispatch::jumps(&code, vars, &w.state, &sets, &objs, &stores, &cellvals);
     Analysis {
+        past: w
+            .ret
+            .iter()
+            .filter(|(_, s)| !s.past.is_empty())
+            .map(|(&r, s)| {
+                let mut t: Vec<u16> = s.past.keys().copied().collect();
+                t.sort_unstable();
+                (r, t)
+            })
+            .collect(),
         from: merged.into_iter().map(|(pc, st)| (pc, st.from)).collect(),
         dec,
         ind,

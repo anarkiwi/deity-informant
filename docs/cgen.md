@@ -192,7 +192,7 @@ per-voice routines often are; the rest are renumbered in order.
 
 ## Memory
 
-- **Constant code** is the bytes of the planned instructions that the lift treats as constant
+- **Constant code** is the bytes of the planned instructions (`Program.starts`) that the lift treats as constant
   (no store's address set holds them) and that no constant-address store writes. The `.h`'s
   `CODE` is the span from the first such byte, or byte of a table the lift read jump targets
   or cell values from, to the last, widened over the data regions it overlaps; when the `.c`
