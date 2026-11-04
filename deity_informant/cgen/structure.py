@@ -409,7 +409,8 @@ class Structurer:
     followed by the nodes placed after it, in the layout order (:func:`_layout`, by
     ``place``): the joins it immediately dominates (two or more forward edges in), and when
     it heads a natural loop, the loop's follow. A loop's follow is the exit it dominates where
-    execution continues after the loop: of the exits that do not end the procedure, the one
+    execution continues after the loop (an exit that only copies into one successor leaving
+    to that successor): of the exits that do not end the procedure, the one
     all the others reach, else the one most edges leave the loop to (each edge to another
     placed exit is a ``goto``), else the first in layout order. An edge to a node placed so,
     or a back edge, is a jump, any other edge the target's code in place. A jump to the
@@ -504,11 +505,19 @@ class Structurer:
     def follow(self, h, idom):
         """The follow of the loop headed by ``h``, or None."""
         loop, g = self.loops[h], self.g
+
+        def through(t):
+            # An exit that only copies into its one successor leaves to that successor: its
+            # copies print before the ``break``.
+            while _copies_only(g, t) and _dominated(idom, g.succ[t][0][0], h):
+                t = g.succ[t][0][0]
+            return t
+
         edges = Counter(
-            t
+            through(t)
             for n in loop
             for t, _ in g.succ[n]
-            if t not in loop and _dominated(idom, t, h) and t not in self.follows
+            if t not in loop and _dominated(idom, t, h) and through(t) not in self.follows
         )
         going = [t for t in edges if not self.terminal(t)]
         if not going:

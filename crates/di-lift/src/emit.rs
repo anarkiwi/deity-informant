@@ -860,6 +860,34 @@ impl<'a> Em<'a, '_> {
         self.f.closed.set(i, closed);
         i as u32
     }
+    /// The index register and the table of a computed jump at `pc` that selects its
+    /// target by it ([`crate::dispatch::Selector`]): each index value to the block of its
+    /// target, when the jump's targets are all static and planned (a closed table: the index
+    /// guards keep the register among its cases).
+    fn selected(&mut self, pc: u16) -> Option<(Vn, u32)> {
+        if !self.sh.g.stat.contains_key(&pc) {
+            return None;
+        }
+        let xs: (u8, Vec<(u16, Key)>) = match &self.plan.inst {
+            Some(x) => x.sel.get(&self.mem.as_ref()?.0)?.clone(),
+            None => {
+                let (r, xs) = self.sh.g.sels.get(&pc)?;
+                (
+                    *r,
+                    xs.iter().map(|&(x, t)| (x as u16, self.key(t))).collect(),
+                )
+            }
+        };
+        if !xs.1.iter().all(|k| self.planned(&k.1)) {
+            return None;
+        }
+        let t: Vec<(u16, u32)> = xs.1.into_iter().map(|(x, k)| (x, self.block(k))).collect();
+        self.f.tables.push(t);
+        let i = self.f.tables.len() - 1;
+        self.f.closed.grow(i + 1);
+        self.f.closed.set(i, true);
+        Some((r1(xs.0 as usize), i as u32))
+    }
     fn goto(&mut self, pc: u16, t: &Tg, calc: impl FnOnce(&mut Self) -> Vn) {
         match t {
             Tg::At(a) => {
@@ -867,8 +895,10 @@ impl<'a> Em<'a, '_> {
                 self.emit(Opc::Branch, NONE, NONE, NONE, b);
             }
             Tg::Calc(ts) => {
-                let v = calc(self);
-                let tb = self.table(ts, self.sh.g.stat.contains_key(&pc));
+                let (v, tb) = self.selected(pc).unwrap_or_else(|| {
+                    let v = calc(self);
+                    (v, self.table(ts, self.sh.g.stat.contains_key(&pc)))
+                });
                 self.emit(Opc::BranchInd, NONE, v, NONE, tb);
             }
         }
@@ -1095,7 +1125,13 @@ impl<'a> Em<'a, '_> {
                     zone: false,
                     zfree: false,
                 });
-                if ac.zone && !ac.zfree && !stack && page1_check(opc, ai) == Check::Own {
+                // A zone-checked store deopts before it may reach a zone; a load reads memory
+                // (a pointer read leaving the data is the program's error, reading the
+                // translation's memory model).
+                let checked = |x: &Access, j: usize| {
+                    x.zone && !x.zfree && x.store && page1_check(opc, j) == Check::Own
+                };
+                if checked(&ac, ai) && !stack {
                     // One exit before the last checked access covers the instruction's.
                     let c = self.in_zone(a);
                     zone = if zone.is_none() {
@@ -1103,8 +1139,7 @@ impl<'a> Em<'a, '_> {
                     } else {
                         self.op(Opc::IntOr, 1, zone, c)
                     };
-                    let later = (ai + 1..acc.len())
-                        .any(|j| acc[j].zone && !acc[j].zfree && page1_check(opc, j) == Check::Own);
+                    let later = (ai + 1..acc.len()).any(|j| checked(&acc[j], j));
                     if !later {
                         self.n.zone_guards += 1;
                         let x = self.side_exit(zone, true, |em| em.deopt(k(pc as u32, 2)));
@@ -1468,8 +1503,10 @@ impl<'a> Em<'a, '_> {
                 let tgt = self.word(lo, hi);
                 self.account(cyc, maxpen);
                 self.flush();
-                let tb = self.table(ts, self.sh.g.stat.contains_key(&pc));
-                self.emit(Opc::BranchInd, NONE, tgt, NONE, tb);
+                let (v, tb) = self
+                    .selected(pc)
+                    .unwrap_or_else(|| (tgt, self.table(ts, self.sh.g.stat.contains_key(&pc))));
+                self.emit(Opc::BranchInd, NONE, v, NONE, tb);
             }
             Ctl::Call { f, ret, to, c } => {
                 self.call(&[*f], None, (*ret, *to), *c, chk, (cyc, maxpen), arm.port);

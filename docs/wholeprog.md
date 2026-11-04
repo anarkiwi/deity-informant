@@ -417,9 +417,10 @@ the facts, so a proof holds on every execution that stays in lifted code.
   completes a pair when a later one on its chain stores at its addresses plus one through the
   same, unchanged index register (`STA $21,X; ...; STA $22,X`). Every other access through a
   pointer that may reach a zone (a pair no window keeps, or an absolute operand that is a
-  cell) is *zone-checked*: the high bytes of its address and of its throw-away read's are
+  cell) is *zone-checked*: a store's address and its throw-away read's high bytes are
   compared with the zone pages before the instruction (`stats["zone_guards"]`, deopt before
-  it), unless every value its pointer's high byte may hold (the initial byte and every stored
+  it); a load reads memory with no throw-away read (a pointer read leaving the program's data
+  is the program's error, and reads the translation's memory: in cgen, `rd`), unless every value its pointer's high byte may hold (the initial byte and every stored
   value, or a closed cell's values) names, with the next page when indexed, no zone page. A
   pointer whose high byte some store sets to a value naming only zone pages, or an operand
   whose high byte names one in the image, means the device or the stack and is left as it is. Pushes are stored to memory only for loads that may still
@@ -500,8 +501,12 @@ the facts, so a proof holds on every execution that stays in lifted code.
   path or two bytes are indexed by unrelated values, the transfer is unresolved and keeps its
   facts' targets. The words are its targets in every context, an `RTS`/`RTI` resolved so is
   analysed as a jump (its function stays balanced), the bytes read join the program's
-  constant bytes, and its table is closed. The analysis also keeps the two bytes above a
-  called function's entry (its `JSR`'s return address, as constants) and its pushes less
+  constant bytes, and its table is closed. A `JMP (ind)` or `JMP` whose low and high target
+  bytes are columns of one table indexed, in every context, by the current value of one index
+  register (`Selector`) dispatches on that register: each index value inside the extent goes to
+  its word's target (in an instance function, each copy's targets to the node they enter, when
+  every copy selects so and one value enters one node). The analysis also keeps the two
+  bytes above a called function's entry (its `JSR`'s return address, as constants) and its pushes less
   pulls since the entry: a pull past the entry reads them, a push past it writes them, so a
   callee that pulls its return address into a pointer, reads the bytes after the call through
   it and pushes the address back advanced past them has an `RTS` at its entry depth through a

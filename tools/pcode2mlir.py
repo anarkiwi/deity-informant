@@ -268,9 +268,11 @@ class Fn:
         """A ``BRANCHIND`` dispatching on its function's table; deopt otherwise."""
         target = self.read(op[2][0])
         cases = "".join(f",\n      {pc} : ^b{blk}" for pc, blk in self.fn["tables"][op[3]])
-        self.put(f"cf.switch {target} : i16, [\n      default: ^b{i}_d{cases}\n    ]")
+        t = ty(op[2][0][2])
+        self.put(f"cf.switch {target} : {t}, [\n      default: ^b{i}_d{cases}\n    ]")
         self.lines.append(f"  ^b{i}_d:")
-        self.deopt(target)
+        # A switch on an index register (a closed table) has no target address to deopt at.
+        self.deopt(target if op[2][0][2] == 2 else self.const(self.fn["blocks"][i]["pc"], 2))
 
     def type_of(self, name):
         """The memref type of global ``name``."""

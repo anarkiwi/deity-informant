@@ -16,10 +16,6 @@ from ..lifter import MODE_LEN, OPS
 #: Widest address interval treated as bounded; wider accesses are of unknown address.
 BOUNDED = 0x200
 
-#: Bytes of code one more held span costs: its tests in ``rd``, ``wr`` and ``codechk`` and its
-#: data bitmap's slack; a gap of more unneeded constant bytes splits the held constants.
-SPAN_COST = 48
-
 
 def code_bytes(image, starts):
     """The instruction bytes of the instructions at ``starts``, as a boolean array."""
@@ -174,7 +170,7 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         for k, (org, n) in enumerate(self.regions):
             self.owner[org : org + n] = k
         self.code_span = self._span(constant)
-        self.held = self._spans(need, constant)
+        self.held = self._spans(need)
 
     def hull(self, lo, hi):
         """The hull of the bytes in ``[lo, hi]`` when every one is constant (code, or a table
@@ -184,13 +180,13 @@ class Memory:  # pylint: disable=too-many-instance-attributes
             return int(b.min()), int(b.max())
         return 0, 255
 
-    def _spans(self, need, constant):
-        """The runs of ``need`` merged across gaps of at most :data:`SPAN_COST` unneeded
-        constant bytes (data region bytes in a gap cost nothing: they are slices), each widened
-        over the regions it overlaps."""
+    def _spans(self, need):
+        """The runs of ``need`` merged across gaps of data region bytes (slices, held once),
+        each widened over the regions it overlaps: any other byte of a gap would be held as data
+        the program never reads."""
         spans = []
         for org, n in runs(need):
-            if spans and constant[spans[-1][1] : org].sum() <= SPAN_COST:
+            if spans and (self.owner[spans[-1][1] : org] >= 0).all():
                 spans[-1][1] = org + n
             else:
                 spans.append([org, org + n])

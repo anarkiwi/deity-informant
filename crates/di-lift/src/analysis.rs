@@ -524,6 +524,8 @@ pub struct Graph {
     /// Per computed transfer of `stat`, `(low byte address, target)` of each target read from
     /// a table, ascending.
     pub origins: FxHashMap<u16, Vec<(u16, u16)>>,
+    /// Computed jumps selecting their target by an index register ([`crate::dispatch::Selector`]).
+    pub sels: FxHashMap<u16, crate::dispatch::Selector>,
     /// Stores `(pc, opcode, access index)` none of whose addresses is constant code.
     pub nocode: FxHashSet<(u16, u8, usize)>,
     /// The bytes the targets in `stat` and the values of stores into cells were read from:
@@ -1031,6 +1033,12 @@ impl Fixpoint<'_> {
                             crate::dispatch::Jump::Targets(_, _, _, o) => Some((pc, o.clone())),
                             crate::dispatch::Jump::Fail => None,
                         })
+                        .collect(),
+                    sels: an
+                        .sels
+                        .iter()
+                        .filter(|(pc, _)| !self.failed.contains(pc))
+                        .map(|(&pc, x)| (pc, x.clone()))
                         .collect(),
                     nocode,
                     closed,

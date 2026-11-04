@@ -146,7 +146,7 @@ def _dispatch(mem, helpers, used):
     if "wr" in helpers:
         out += _wr("wr", regions, vol, sliced)
     if "codechk" in helpers:
-        out += ["static uint8_t codechk(uint16_t a, uint8_t v) {"]
+        out += ["static __attribute__((noinline)) uint8_t codechk(uint16_t a, uint8_t v) {"]
         for j in spans:
             nd = f" && !{_data(j)}" if j in sliced else ""
             out += [f"if ({_inside(f'C{j}')}) return C{j}[a - C{j}_ORG] != v{nd};"]
