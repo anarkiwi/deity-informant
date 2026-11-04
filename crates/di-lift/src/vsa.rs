@@ -1212,6 +1212,11 @@ pub fn analyze(
     };
     let roots: Vec<u16> = entries.iter().map(|e| e.pc).collect();
     let heads = loop_heads(&roots, &succ_of);
+    let brk_rets: FxHashSet<u16> = vars
+        .iter()
+        .filter(|(_, vs)| vs.iter().any(|v| matches!(v.flow, Flow::Brk(_))))
+        .map(|(&pc, _)| pc.wrapping_add(2))
+        .collect();
     let code = Code {
         img,
         cells,
@@ -1285,6 +1290,13 @@ pub fn analyze(
                         w.give_past(cx as u16, t, &out);
                     }
                 }
+                (Flow::Rti(ts), _)
+                    if disp.contains(&pc) && cx < ANY && brk_rets.contains(&(cx as u16)) =>
+                {
+                    for &t in ts.iter().filter(|&&t| t as u32 == cx) {
+                        w.give_past(cx as u16, t, &out);
+                    }
+                }
                 (Flow::Rts(ts) | Flow::Rti(ts), _) if disp.contains(&pc) => {
                     let mut o = out;
                     for _ in 0..if matches!(v.flow, Flow::Rts(_)) { 2 } else { 3 } {
@@ -1311,17 +1323,23 @@ pub fn analyze(
                         }
                     }
                 }
-                (f, _) => {
-                    let out = if matches!(f, Flow::Brk(_)) {
-                        // The handler's `RTI` returns through the address `BRK` pushed.
-                        let [lo, hi] = pc.wrapping_add(2).to_le_bytes();
-                        St {
-                            push: [Some(Tab::Any), Some(Tab::K(lo)), Some(Tab::K(hi))],
-                            ..unlinked(&out)
-                        }
-                    } else {
-                        out
+                // `BRK` calls its handler in the context of its address plus two, which the
+                // handler's `RTI` returns to through the bytes `BRK` pushed.
+                (Flow::Brk(ts), _) => {
+                    let ret = pc.wrapping_add(2);
+                    if vars.contains_key(&ret) {
+                        w.caller(ret, cx, &out);
+                    }
+                    let [lo, hi] = ret.to_le_bytes();
+                    let h = St {
+                        push: [Some(Tab::Any), Some(Tab::K(lo)), Some(Tab::K(hi))],
+                        ..unlinked(&out)
                     };
+                    for &t in ts {
+                        w.flow((t, ret as u32), h.clone());
+                    }
+                }
+                (f, _) => {
                     for s in flow_succs(f) {
                         w.flow((s, cx), out.clone());
                     }

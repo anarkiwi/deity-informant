@@ -74,6 +74,13 @@ pub enum Ctl {
     },
     /// A dispatch function's entry: a jump through the operand bytes it was handed.
     JmpOp(Vec<u16>),
+    /// `BRK` to its handler `f` lifted separately, continuing at `ret` (its address plus two).
+    BrkCall {
+        f: u16,
+        ret: u16,
+    },
+    /// `RTI` at a `BRK` handler's entry height: a return pulling the three bytes `BRK` pushed.
+    ReturnI,
     /// `JSR` through cell operands to functions lifted separately: a `CALL` of the target.
     CallInd {
         fs: Vec<u16>,
@@ -375,7 +382,10 @@ impl Plan {
                 }
                 if matches!(
                     arm.ctl,
-                    Ctl::Call { .. } | Ctl::CallInd { .. } | Ctl::CallOp { .. }
+                    Ctl::Call { .. }
+                        | Ctl::CallInd { .. }
+                        | Ctl::CallOp { .. }
+                        | Ctl::BrkCall { .. }
                 ) {
                     x = TOP_ENV;
                 }
@@ -419,6 +429,7 @@ impl Plan {
                 Ctl::Call { f, c, .. } => vec![(*f, *c)],
                 Ctl::CallInd { fs, c, .. } => fs.iter().map(|&f| (f, *c)).collect(),
                 Ctl::CallOp { f, c, .. } => vec![(*f, *c)],
+                Ctl::BrkCall { f, .. } => vec![(*f, self.entry[0])],
                 _ => Vec::new(),
             })
             .chain(self.tails.iter().map(|k| (k.0, k.2)))
@@ -838,6 +849,7 @@ pub fn plan(
         out
     };
     let h_of = |succ: &[(u16, H)]| succ.first().map_or(H::Unknown, |x| x.1);
+    let brk_handlers = brk_handlers(g);
     let args = !top
         && g.vars.values().flatten().any(|v| {
             matches!(&v.flow, Flow::Jsr { t: Tg::At(t), ret } if *t == pc && g.past.contains_key(ret))
@@ -875,6 +887,31 @@ pub fn plan(
                 s.succ = vec![(*ret, hh)];
                 s.ret = None;
             }
+        }
+        // A `BRK` to a handler lifted separately calls it; the handler's `RTI` at its entry
+        // height returns.
+        if let Flow::Brk(ts) = &v.flow {
+            if let [t] = ts[..] {
+                if calls.contains(&t) && brk_handlers.contains(&t) {
+                    let h = match h_of(&s.succ) {
+                        H::Known(x) => H::Known(x + 3),
+                        u => u,
+                    };
+                    let ret = p.wrapping_add(2);
+                    s.ctl = Ctl::BrkCall { f: t, ret };
+                    s.succ = vec![(ret, h)];
+                }
+            }
+        }
+        if matches!(v.flow, Flow::Rti(_))
+            && !top
+            && brk_handlers.contains(&pc)
+            && matches!(s.succ[..], [.., (_, H::Known(3))])
+        {
+            s.ctl = Ctl::ReturnI;
+            s.succ = Vec::new();
+            s.exit = Exit::No;
+            s.unbalanced = false;
         }
         // A call returning past inline arguments continues there.
         if let Ctl::Call { ret, to, .. } = &mut s.ctl {
@@ -1006,6 +1043,22 @@ pub fn plan(
                 .any(|v| matches!(v.flow, Flow::Next(_)) && stack_delta(v.op).is_none())
         }),
     }
+}
+
+/// `BRK` handlers that are procedures: the one target of two or more `BRK`s.
+fn brk_handlers(g: &Graph) -> FxHashSet<u16> {
+    let mut n: FxHashMap<u16, usize> = FxHashMap::default();
+    for v in g.vars.values().flatten() {
+        if let Flow::Brk(ts) = &v.flow {
+            if let [t] = ts[..] {
+                *n.entry(t).or_default() += 1;
+            }
+        }
+    }
+    n.into_iter()
+        .filter(|&(t, k)| k >= 2 && g.vars.contains_key(&t))
+        .map(|e| e.0)
+        .collect()
 }
 
 /// Heads of shared tails: instruction starts that two or more plans reach at their entry
@@ -1155,7 +1208,7 @@ fn port_arm(v: &Var, ctl: &Ctl, bank: Option<&BankMap>) -> bool {
         || bank.is_some()
             && matches!(
                 ctl,
-                Ctl::Call { .. } | Ctl::CallInd { .. } | Ctl::CallOp { .. }
+                Ctl::Call { .. } | Ctl::CallInd { .. } | Ctl::CallOp { .. } | Ctl::BrkCall { .. }
             )
 }
 
@@ -1178,6 +1231,7 @@ pub fn plan_all(g: &Graph, entries: &[(u16, Vec<u8>)], seen: &Seen, fold: bool) 
             _ => Vec::new(),
         })
         .filter(|f| g.vars.contains_key(f))
+        .chain(brk_handlers(g).into_iter().filter(|_| seen.bank.is_none()))
         .collect();
     let mut sites: FxHashMap<u16, usize> = FxHashMap::default();
     for v in g.vars.values().flatten() {
@@ -1271,6 +1325,7 @@ pub fn plan_all(g: &Graph, entries: &[(u16, Vec<u8>)], seen: &Seen, fold: bool) 
                         Ctl::Call { f, c, .. } => vec![(*f, *c)],
                         Ctl::CallInd { fs, c, .. } => fs.iter().map(|&f| (f, *c)).collect(),
                         Ctl::CallOp { f, c, .. } => vec![(*f, *c)],
+                        Ctl::BrkCall { f, .. } => vec![(*f, g.cfg[f])],
                         _ => continue,
                     };
                     if let Some(&(_, c)) = fs.first() {

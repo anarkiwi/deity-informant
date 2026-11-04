@@ -86,9 +86,12 @@ def through(image, pc):
 
 def pointer_pairs(image, starts):
     """``{lo: hi}`` of the byte pairs instructions use as addresses: the zero-page pointers of
-    ``(zp),Y``/``(zp,X)``, ``JMP (ind)`` vectors, three-byte operands and page-1 pairs."""
+    ``(zp),Y``/``(zp,X)``, ``JMP (ind)`` vectors, the ``BRK`` vector, three-byte operands and
+    page-1 pairs."""
     pairs = {p: p + 1 for p in range(0x100, 0x1FF)}
     for pc in starts:
+        if image[pc] == 0x00:
+            pairs[0xFFFE] = 0xFFFF
         if image[pc] not in OPS:
             continue
         mode = OPS[image[pc]][1]

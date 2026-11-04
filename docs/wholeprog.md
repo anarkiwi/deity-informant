@@ -509,8 +509,13 @@ the facts, so a proof holds on every execution that stays in lifted code.
   address it pulls plus one (a call with inline arguments, returning past them). A `BRK`
   goes to the words its vector `$FFFE`/`$FFFF` may hold: the values the stores with known
   addresses write there (a vector the program sets before it runs `BRK`; any other deopts),
-  else the image's bytes; it pushes its address plus two as constants, so the handler's `RTI`
-  returns past the signature byte. A `JSR` through cells with targets calls a *dispatch
+  else the image's bytes; it calls the handler in the context of its address plus two, which
+  it pushes as constants, so the handler's `RTI` returns there, past the signature byte. A
+  handler that two or more `BRK`s reach (a procedure) is a function: the `BRK` pushes its
+  address, keeps the status as the `CALL`'s return address (with the low byte, what a deopt
+  writes), sets I and calls it; the handler's `RTI` at its entry height pops the three bytes
+  and returns; the caller restores the flags it pushed and, where the handler may store into
+  page 1, checks the address it returned through. Any other handler is inlined. A `JSR` through cells with targets calls a *dispatch
   function* (`Graph::dispatch`), one per target set (keyed by its least site that no call or
   entry enters): the call hands it the operand bytes (registers 6 and 7, never handed back to
   the machine; only the low byte when every site's high byte is the same constant, which

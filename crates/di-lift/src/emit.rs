@@ -542,6 +542,67 @@ impl<'a> Em<'a, '_> {
             self.emit(Opc::Branch, NONE, NONE, NONE, b);
         }
     }
+    /// `BRK` as a call of its handler `f`, continuing at `ret`: its address and the status
+    /// pushed (the caller's pushes, which a deopt writes), I set, the handler called at that SP
+    /// with no return address of its own; after the handler's `RTI` the flags restored from the
+    /// status pushed and, where the handler may store into page 1, the address it returned
+    /// through checked.
+    fn brk_call(&mut self, f: u16, ret: u16, mut chk: Vec<Vn>, (cyc, maxpen): (u32, u32)) {
+        const FLAGS: [(usize, u32); 6] = [
+            (R::C, 0),
+            (R::Z, 1),
+            (R::I, 2),
+            (R::D, 3),
+            (R::V, 6),
+            (R::N, 7),
+        ];
+        let mut p = k(0x30, 1);
+        for (r, b) in FLAGS {
+            let sh = self.op(Opc::IntLeft, 1, r1(r), k(b, 1));
+            p = self.op(Opc::IntOr, 1, p, sh);
+        }
+        let h0 = self.h;
+        for b in [k(ret as u32 >> 8, 1), k(ret as u32 & 0xff, 1), p] {
+            self.push(b, &mut chk);
+        }
+        self.emit(Opc::Copy, r1(R::I), k(1, 1), NONE, 0);
+        self.account(cyc, maxpen);
+        self.check(chk, k(f as u32, 2));
+        self.flush();
+        let fi = self.sh.fidx[&(f, self.sh.g.cfg[&f])];
+        let rb = self.new_block(ret);
+        self.emit(Opc::Call, NONE, k(0, 2), k(1, 1), fi);
+        self.emit(Opc::Branch, NONE, NONE, NONE, rb);
+        self.cur = rb as usize;
+        self.h = h0;
+        let at = |em: &mut Self, d: u32| {
+            let a = em.op(Opc::IntSub, 1, r1(R::SP), k(d, 1));
+            let a = em.zext(a, 2);
+            em.op(Opc::IntOr, 2, a, k(0x100, 2))
+        };
+        if self.sh.ret_guard.contains(fi as usize) {
+            let a = at(self, 1);
+            let l = self.load(a, PAGE1, mem::STACK);
+            let a = self.sp_addr();
+            let h = self.load(a, PAGE1, mem::STACK);
+            let w = self.word(l, h);
+            let bad = self.op(Opc::IntNotEqual, 1, w, k(ret as u32, 2));
+            self.side_exit(bad, false, |em| em.deopt(w));
+        }
+        let pv = match h0.and_then(|h| self.slot(h - 2)) {
+            Some(s) => self.op(Opc::Copy, 1, s, NONE),
+            None => {
+                let a = at(self, 2);
+                self.load(a, PAGE1, mem::STACK)
+            }
+        };
+        for (r, b) in FLAGS {
+            let v = self.op(Opc::IntRight, 1, pv, k(b, 1));
+            self.emit(Opc::IntAnd, r1(r), v, k(1, 1), 0);
+        }
+        let b = self.to(ret);
+        self.emit(Opc::Branch, NONE, NONE, NONE, b);
+    }
     /// A tail call of `key`'s function: a `CALL` at the entry SP (no return address; the
     /// callee's `RETURN` pulls this function's), then this function's return at the height the
     /// callee left SP: a `RETURN`, or an outermost plan's exit through the address its caller
@@ -1447,6 +1508,13 @@ impl<'a> Em<'a, '_> {
                 self.check(chk, to);
                 self.flush();
                 self.goto(pc, tg, |_| tv.unwrap());
+            }
+            Ctl::BrkCall { f, ret } => self.brk_call(*f, *ret, chk, (cyc, maxpen)),
+            Ctl::ReturnI => {
+                self.emit(Opc::IntAdd, r1(R::SP), r1(R::SP), k(3, 1), 0);
+                self.account(cyc, maxpen);
+                self.flush();
+                self.emit(Opc::Return, NONE, NONE, NONE, 0);
             }
             Ctl::Return => {
                 self.emit(Opc::IntAdd, r1(R::SP), r1(R::SP), k(2, 1), 0);
