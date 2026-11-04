@@ -679,9 +679,10 @@ pub fn entry_config(m: &BankMap, img: &[u8; 0x10000], facts: &Facts, pc: u16) ->
 /// The code cells, their value sets and the targets of computed transfers found from the code
 /// ([`crate::dispatch`]) are a joint least fixpoint from none: each round decodes the program
 /// they give and analyses it, and they only grow. `loaded` is the `[lo, hi)` the program was
-/// loaded to, where tables end at the latest. Which `RTS`/`RTI`s are jumps through a pushed
-/// address, and which computed transfers stay unresolved (to their facts' targets), is decided
-/// on a converged program, and the fixpoint is recomputed until neither grows.
+/// loaded to, where tables end at the latest. An `RTS`/`RTI` whose pulled address the code
+/// gives targets for jumps through it within the same fixpoint; which computed transfers stay
+/// unresolved (to their facts' targets) is decided on a converged program, and the fixpoint is
+/// recomputed until that does not grow.
 pub fn discover(
     img: &[u8; 0x10000],
     entries: &[Entry],
@@ -706,7 +707,6 @@ pub fn discover(
         matched,
         edges,
         failed: FxHashSet::default(),
-        disp: FxHashSet::default(),
         loaded,
         constant: {
             let mut c = FixedBitSet::with_capacity(0x10000);
@@ -734,22 +734,6 @@ pub fn discover(
             fix.constant.difference_with(&w);
             continue;
         }
-        let disp: FxHashSet<u16> = jumps
-            .iter()
-            .filter(|(pc, j)| {
-                matches!(j, crate::dispatch::Jump::Targets(..))
-                    && g.vars[pc]
-                        .iter()
-                        .any(|v| matches!(v.flow, Flow::Rts(_) | Flow::Rti(_)))
-            })
-            .map(|(&pc, _)| pc)
-            .chain(fix.disp.iter().copied())
-            .filter(|pc| !fix.failed.contains(pc))
-            .collect();
-        if disp != fix.disp {
-            fix.disp = disp;
-            continue;
-        }
         let failed: Vec<u16> = jumps
             .iter()
             .filter(|(pc, j)| **j == crate::dispatch::Jump::Fail && !fix.failed.contains(pc))
@@ -759,11 +743,10 @@ pub fn discover(
             return g;
         }
         fix.failed.extend(failed);
-        fix.disp.retain(|pc| !fix.failed.contains(pc));
     }
 }
 
-/// The inner fixpoint of [`discover`] for given unresolved transfers and jumping returns.
+/// The inner fixpoint of [`discover`] for given unresolved transfers.
 struct Fixpoint<'a> {
     img: &'a [u8; 0x10000],
     entries: &'a [Entry],
@@ -772,7 +755,6 @@ struct Fixpoint<'a> {
     matched: bool,
     edges: FxHashMap<u16, Vec<u16>>,
     failed: FxHashSet<u16>,
-    disp: FxHashSet<u16>,
     loaded: Option<(u32, u32)>,
     /// Loaded bytes taken as constant: those no store with an address set wrote in an
     /// earlier round, nor the facts.
@@ -852,13 +834,25 @@ impl Fixpoint<'_> {
                     }
                 }
             }
+            // An `RTS`/`RTI` jumps through the address its code pushed where the code gives its
+            // targets: the return sites ∪ those targets grow with the fixpoint.
+            let disp: FxHashSet<u16> = stat
+                .keys()
+                .copied()
+                .filter(|pc| {
+                    vars.get(pc).is_some_and(|vs| {
+                        vs.iter()
+                            .any(|v| matches!(v.flow, Flow::Rts(_) | Flow::Rti(_)))
+                    })
+                })
+                .collect();
             let an = crate::vsa::analyze(
                 &cimg,
                 &cells,
                 &mut vars,
                 entries,
                 self.matched,
-                &self.disp,
+                &disp,
                 &crate::vsa::Given {
                     loaded: self.loaded,
                     observed: &seen_writes,

@@ -162,11 +162,13 @@ the program, and checks it against the reference.
    address set holds (*Stores*). An opcode cell's values are its entry byte, the observed
    ones and those of the stores that may write it. The cells, their values and the resolved
    targets are a joint least fixpoint (each round decodes the program they give, an opcode
-   cell's values decode new variants, and runs the interval analysis on it); which `RTS`/`RTI`s
-   jump through a pushed address and which transfers stay unresolved is decided on a
-   converged program, and the fixpoint is recomputed until neither changes, nor the index
-   guards (*Table extents*) the resolved transfers and cell values need, which only narrow
-   their registers. All other code bytes are constants of the entry state, so code generated
+   cell's values decode new variants, and runs the interval analysis on it). An `RTS`/`RTI`
+   goes to the return sites of its calls and, once the code gives targets for the address it
+   pulls (pushed so on every path, *Computed jumps*), jumps through it to those targets: its
+   successors grow with the fixpoint, in the same pass. Which transfers stay unresolved is
+   decided on a converged program, and the fixpoint is recomputed until that does not change,
+   nor the index guards (*Table extents*) the resolved transfers and cell values need, which
+   only narrow their registers. All other code bytes are constants of the entry state, so code generated
    by an earlier routine is constant. With a bank map each start is decoded in the configuration
    the facts first saw it in (else the one it is first reached in), its bytes from ROM where
    that configuration maps ROM; ROM bytes are constant code, never cells.
