@@ -419,7 +419,8 @@ pub(crate) fn target_operands(vs: &[Var], pc: u16) -> impl Iterator<Item = u16> 
 }
 
 /// The bytes whose contents the analysis tracks: the pointers of `JMP (ind)`s and of
-/// `(zp),Y` accesses, and the operands of `JMP`/`JSR`s through cells.
+/// `(zp),Y` accesses, the cell operand bytes of instructions and the bytes both loaded and
+/// stored at a constant address.
 pub(crate) fn vectors(
     img: &[u8; 0x10000],
     cells: &FixedBitSet,
@@ -440,24 +441,34 @@ pub(crate) fn vectors(
         .collect();
     v.extend(vars.iter().flat_map(|(&pc, vs)| target_operands(vs, pc)));
     let mut acc = Vec::new();
+    let (mut loads, mut stores) = (FixedBitSet::with_capacity(0x10000), FixedBitSet::new());
+    stores.grow(0x10000);
     for (&pc, vs) in vars {
         for var in vs {
             let t = Template::of(var.op);
             let mut env = TOP_ENV;
             acc.clear();
-            absint(
-                t.ops(),
-                operand_bytes(img, cells, pc, t.len),
-                &mut env,
-                &mut acc,
+            let b = operand_bytes(img, cells, pc, t.len);
+            v.extend(
+                (0..t.len as u16 - 1)
+                    .filter(|&i| b[i as usize].is_none())
+                    .map(|i| pc + i + 1),
             );
+            absint(t.ops(), b, &mut env, &mut acc);
             for p in acc.iter().filter_map(|a| a.ptr) {
                 if let (Some(q), Some(h)) = (p.lo.and_then(|l| l.value()), p.hi.value()) {
                     v.extend([q as u16, h as u16]);
                 }
             }
+            for a in &acc {
+                if let Some(m) = a.addr.value().filter(|_| !a.dummy) {
+                    if a.store { &mut stores } else { &mut loads }.insert(m as usize);
+                }
+            }
         }
     }
+    loads.intersect_with(&stores);
+    v.extend(loads.ones().map(|a| a as u16));
     v.sort_unstable();
     v.dedup();
     v
@@ -523,10 +534,12 @@ pub(crate) fn stores(code: &Code, vars: &FxHashMap<u16, Vec<Var>>, sets: &Sets) 
                         s.insert(x as u8);
                         continue;
                     }
+                    let range = |iv: Iv| {
+                        (iv != Iv::full(1)).then(|| (iv.lo..=iv.hi).map(|x| x as u8).collect())
+                    };
                     let from = held.entry(i).or_insert_with(|| match stored_reg(t, i) {
-                        Some(r) => reaching(code, vars, sets, pc, r),
-                        None => (a.val != Iv::full(1))
-                            .then(|| (a.val.lo..=a.val.hi).map(|x| x as u8).collect()),
+                        Some(r) => reaching(code, vars, sets, pc, r).or_else(|| range(base[r])),
+                        None => range(a.val),
                     });
                     match from {
                         Some(f) => s.extend(f.iter()),

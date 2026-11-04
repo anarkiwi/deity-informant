@@ -31,7 +31,8 @@
 //! lifted control edges are followed and every other one deopts.
 
 use crate::analysis::{
-    absint, flow_succs, operand_bytes, stack_delta, Access, Entry, Env, Flow, Iv, Var, TOP_ENV,
+    absint_ranges, flow_succs, operand_bytes, stack_delta, Access, Entry, Env, Flow, Iv, Var,
+    TOP_ENV,
 };
 use crate::ir::fold;
 use crate::known::{self, Kb};
@@ -498,8 +499,7 @@ pub(crate) struct Code<'a> {
     pub(crate) cells: &'a FixedBitSet,
     /// `PLP` and `RTI` pull the decimal flag clear (guarded where emitted): nothing sets it.
     pub(crate) pull_clear: bool,
-    /// The bytes whose contents states track (the pointers of `JMP (ind)` and the operands
-    /// of `JMP`/`JSR` through cells), ascending.
+    /// The bytes whose contents states track ([`crate::dispatch::vectors`]), ascending.
     pub(crate) vecs: Vec<u16>,
     /// The bytes the facts saw written.
     pub(crate) observed: FixedBitSet,
@@ -523,7 +523,13 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
     let ops = t.ops();
     let b = operand_bytes(code.img, code.cells, pc, t.len);
     let mut env = st.env;
-    absint(ops, b, &mut env, acc);
+    let held = |a: u32| st.mem.iter().find(|e| e.0 as u32 == a).map(|e| e.2);
+    let bi: [Iv; 2] = std::array::from_fn(|i| match b[i] {
+        Some(x) => Iv::exact(x as u32),
+        None => held(pc.wrapping_add(i as u16 + 1) as u32).unwrap_or(Iv::full(1)),
+    });
+    let load = |a: Iv| a.value().and_then(held);
+    absint_ranges(ops, b, bi, &mut env, acc, &load);
     for a in acc.iter_mut() {
         if let Some(iv) = a.ptr.and_then(|p| st.pointed(p)) {
             if let Some(m) = meet(a.addr, iv) {

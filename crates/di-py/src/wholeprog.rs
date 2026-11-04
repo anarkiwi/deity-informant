@@ -763,6 +763,12 @@ impl Program {
         self.prog.code.iter().map(|e| e.0).collect()
     }
 
+    /// The closed cells' value sets: ``{address: [value, ...]}``.
+    #[getter]
+    fn sets(&self) -> HashMap<u16, Vec<u8>> {
+        self.prog.sets.iter().cloned().collect()
+    }
+
     /// The computed transfers whose targets come from the code: ``{pc: [target, ...]}``.
     #[getter]
     fn jumps(&self) -> HashMap<u16, Vec<u16>> {

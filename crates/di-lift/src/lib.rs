@@ -675,16 +675,19 @@ pub fn lift_banked(
                     Some((a as u16, vs.iter().map(|v| v.op).collect()))
                 })
                 .collect();
-            // Operand cells of the jumps resolved through them hold one of their values.
-            for &pc in g.stat.keys() {
-                for a in dispatch::target_operands(&g.vars[&pc], pc) {
-                    if let Some(v) = g.vals.get(&a) {
-                        s.push((a, v.iter().copied().collect()));
-                    }
+            // Every other closed cell (an operand byte) holds one of its values.
+            let ops: FxHashSet<u16> = s.iter().map(|e| e.0).collect();
+            for a in g
+                .closed
+                .ones()
+                .map(|a| a as u16)
+                .filter(|a| !ops.contains(a))
+            {
+                if let Some(v) = g.vals.get(&a) {
+                    s.push((a, v.iter().copied().collect()));
                 }
             }
             s.sort_unstable();
-            s.dedup();
             s
         },
         jumps: {

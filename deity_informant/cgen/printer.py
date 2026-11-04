@@ -290,6 +290,8 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         full = (0, top)
         if o is None:
             r = self.iv_joined(v)
+        elif o.name == "memref.load" and w == 8:
+            r = self.mod.sets.get(self.const_of(self.address(o)), full)
         elif o.name in ("memref.load", "func.call"):
             r = full
         elif o.name == "arith.constant":
@@ -1807,7 +1809,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.traps, self.funcs, self.mains, self.structs = set(), [], {}, {}
         self.order, self.edges, self.ids, self.entries = [], {}, new_ids(), []
         self.sites, self.made, self.lifted, self.prov = {}, Counter(), {}, {}
-        self.copy_pcs = {}
+        self.copy_pcs, self.sets = {}, {}
         for o in top.regions[0][0].ops:
             if o.name == "func.func" and o.regions[0] and o.regions[0][0].ops:
                 self.funcs.append(Func(o, self))

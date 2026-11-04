@@ -136,6 +136,33 @@ pub fn iv_op(opc: Opc, a: Iv, b: Iv, out: u32, size0: u32) -> Iv {
     }
 }
 
+/// Interval of operand slot `slot` whose operand bytes lie in `bi` (a cell's values).
+pub fn slot_range(slot: Slot, bi: [Iv; 2], size: u32) -> Iv {
+    let inc = |x: Iv| match (x.hi < 0xff, x.value()) {
+        (true, _) => Iv {
+            lo: x.lo + 1,
+            hi: x.hi + 1,
+        },
+        (false, Some(_)) => Iv::exact(0),
+        (false, None) => Iv::full(1),
+    };
+    let iv = match slot {
+        Slot::Fixed => unreachable!(),
+        Slot::B1 => bi[0],
+        Slot::Word => Iv {
+            lo: bi[1].lo << 8 | bi[0].lo,
+            hi: bi[1].hi << 8 | bi[0].hi,
+        },
+        Slot::B1Inc => inc(bi[0]),
+        Slot::B2Inc => inc(bi[1]),
+    };
+    if iv.hi > mask(size) {
+        Iv::full(size)
+    } else {
+        iv
+    }
+}
+
 /// Interval of operand slot `slot` of an instruction whose operand bytes are `b` (`None`
 /// for a cell).
 pub fn slot_iv(slot: Slot, b: [Option<u8>; 2], size: u32) -> Iv {
@@ -272,6 +299,21 @@ pub fn absint_known(
     acc: &mut Vec<Access>,
     known: &dyn Fn(u32) -> Option<u8>,
 ) {
+    let bi = b.map(|x| x.map_or(Iv::full(1), |v| Iv::exact(v as u32)));
+    let load = |a: Iv| a.value().and_then(known).map(|x| Iv::exact(x as u32));
+    absint_ranges(ops, b, bi, env, acc, &load)
+}
+
+/// [`absint`] with cell operand bytes in the intervals `bi` and byte loads from an address
+/// interval in the values `load` gives.
+pub fn absint_ranges(
+    ops: &[Op],
+    b: [Option<u8>; 2],
+    bi: [Iv; 2],
+    env: &mut Env,
+    acc: &mut Vec<Access>,
+    load: &dyn Fn(Iv) -> Option<Iv>,
+) {
     let mut uniq = [Iv::full(4); di_pcode::UNIQUE_SIZE];
     let mut tag = [Tag::No; di_pcode::UNIQUE_SIZE];
     let mut loaded: Vec<(Vn, Vn)> = Vec::new();
@@ -283,7 +325,10 @@ pub fn absint_known(
         let get = |v: Vn, u: &[Iv], env: &Env| -> Iv {
             match v.space() {
                 Space::Const if v.slot() == Slot::Fixed => Iv::exact(v.off()),
-                Space::Const => slot_iv(v.slot(), b, v.size()),
+                Space::Const if (0..2).all(|i| b[i].is_some() || bi[i] == Iv::full(1)) => {
+                    slot_iv(v.slot(), b, v.size())
+                }
+                Space::Const => slot_range(v.slot(), bi, v.size()),
                 Space::Reg => env[v.off() as usize],
                 Space::Unique => u[v.off() as usize],
                 Space::Ram => Iv::full(v.size()),
@@ -346,8 +391,8 @@ pub fn absint_known(
                     above: false,
                     ptr,
                 });
-                match a.value().filter(|_| op.out.size() == 1).and_then(known) {
-                    Some(x) => Iv::exact(x as u32),
+                match (op.out.size() == 1).then(|| load(a)).flatten() {
+                    Some(x) => x,
                     None => Iv::full(op.out.size()),
                 }
             }
