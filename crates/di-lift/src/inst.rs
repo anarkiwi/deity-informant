@@ -482,6 +482,23 @@ impl Cx<'_> {
         })
     }
 
+    /// Whether every exit of each copy of `c` but the last runs straight (falling through or by
+    /// `JMP`) into the next copy's entry, as an unrolled body runs into the next, not a test
+    /// choosing among alternatives.
+    fn leaves_unconditionally(&self, c: &Class) -> bool {
+        let straight = |mut p: u16, goal: u16| {
+            let mut seen = FxHashSet::default();
+            while p != goal && seen.insert(p) {
+                p = match self.g.vars.get(&p).map(|vs| &vs[0].flow) {
+                    Some(Flow::Next(t) | Flow::Jmp(Tg::At(t))) => *t,
+                    _ => return false,
+                };
+            }
+            p == goal
+        };
+        (1..c.copies()).all(|k| c.exits.iter().all(|x| straight(x[k - 1], c.entry(k))))
+    }
+
     /// Whether the copies of `c` run one after another, as an unrolled loop's bodies: each
     /// copy's entry is reached from the previous copy's exits (by address, ascending or
     /// descending) through code outside every copy, without returning.
@@ -524,8 +541,12 @@ impl Cx<'_> {
             let (bad, consts) = self.faults(&c);
             c.consts = consts;
             if bad.is_empty() {
-                return (self.indexed(&c) && self.unrolled(&c) && self.heights(&c).is_some())
-                    .then_some(c);
+                let chained = c.consts == 0 || self.leaves_unconditionally(&c);
+                return (self.indexed(&c)
+                    && self.unrolled(&c)
+                    && chained
+                    && self.heights(&c).is_some())
+                .then_some(c);
             }
             banned.extend(bad);
         }
