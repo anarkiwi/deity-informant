@@ -66,6 +66,14 @@ pub enum Ctl {
         to: u16,
         c: u8,
     },
+    /// `JSR` through cell operands to its dispatch function `f`, handed the operand bytes.
+    CallOp {
+        f: u16,
+        ret: u16,
+        c: u8,
+    },
+    /// A dispatch function's entry: a jump through the operand bytes it was handed.
+    JmpOp(Vec<u16>),
     /// `JSR` through cell operands to functions lifted separately: a `CALL` of the target.
     CallInd {
         fs: Vec<u16>,
@@ -365,7 +373,10 @@ impl Plan {
                     }
                     (a.defd, a.above, a.ptr) = (p.defd, p.above, p.ptr);
                 }
-                if matches!(arm.ctl, Ctl::Call { .. } | Ctl::CallInd { .. }) {
+                if matches!(
+                    arm.ctl,
+                    Ctl::Call { .. } | Ctl::CallInd { .. } | Ctl::CallOp { .. }
+                ) {
                     x = TOP_ENV;
                 }
                 for j in arm.succ.iter().filter_map(|k| idx.get(k).copied()) {
@@ -407,6 +418,7 @@ impl Plan {
             .flat_map(|a| match &a.ctl {
                 Ctl::Call { f, c, .. } => vec![(*f, *c)],
                 Ctl::CallInd { fs, c, .. } => fs.iter().map(|&f| (f, *c)).collect(),
+                Ctl::CallOp { f, c, .. } => vec![(*f, *c)],
                 _ => Vec::new(),
             })
             .chain(self.tails.iter().map(|k| (k.0, k.2)))
@@ -791,8 +803,14 @@ pub fn plan(
     let mut pulls: FxHashSet<Key> = FxHashSet::default();
     let mut tails: BTreeSet<Key> = BTreeSet::new();
     let mut icalls: BTreeMap<Key, (u32, u8)> = BTreeMap::new();
-    let tail =
-        |t: u16, h: H| seen.bank.is_none() && h == H::Known(0) && t != pc && calls.contains(&t);
+    // A dispatch function is keyed by a `JSR` it serves: an edge to that `JSR` is not a call.
+    let tail = |t: u16, h: H| {
+        seen.bank.is_none()
+            && h == H::Known(0)
+            && t != pc
+            && calls.contains(&t)
+            && g.dispatch.get(&t).is_none_or(|d| d.0 != t)
+    };
     // Edges to `t` at `h`: a tail call, a copy's call (continuing at its exits), or nodes.
     let enter = |pl: &mut Planner,
                  edges: &mut Vec<(u16, H, Option<u8>)>,
@@ -827,7 +845,7 @@ pub fn plan(
     // A `TXS` restoring a stack pointer saved at a known height continues there; an
     // `RTS`/`RTI` whose targets the code gives goes to them alone, not to the return sites of
     // the inline `JSR`s at its height.
-    let restore = |mut s: Step, v: &Var, p: u16, nodes: &BTreeSet<Key>| {
+    let restore = |mut s: Step, v: &Var, p: u16, c: u8, nodes: &BTreeSet<Key>| {
         if let (0x9a, [(n, H::Unknown)]) = (v.op, &s.succ[..]) {
             if let Some(h) = saved_sp(g, p, nodes) {
                 s.succ = vec![(*n, h)];
@@ -838,6 +856,25 @@ pub fn plan(
         // A callee returning past inline arguments pulls and pushes back its return address.
         if args && matches!(v.flow, Flow::Next(_)) && matches!(s.succ[..], [(_, H::Known(1..=2))]) {
             s.unbalanced = false;
+        }
+        // A computed `JSR` calls its dispatch function, whose entry jumps through the operand.
+        if let (Flow::Jsr { ret, .. }, Some((key, ts))) = (&v.flow, g.dispatch.get(&p)) {
+            let hh = s.ret.map_or(h_of(&s.succ), |r| r.0);
+            if p == pc && !top && hh == H::Known(0) {
+                let h0 = hh;
+                s.ctl = Ctl::JmpOp(ts.clone());
+                s.succ = ts.iter().map(|&t| (t, h0)).collect();
+                s.ret = None;
+                s.unbalanced = false;
+            } else if calls.contains(key) {
+                s.ctl = Ctl::CallOp {
+                    f: *key,
+                    ret: *ret,
+                    c,
+                };
+                s.succ = vec![(*ret, hh)];
+                s.ret = None;
+            }
         }
         // A call returning past inline arguments continues there.
         if let Ctl::Call { ret, to, .. } = &mut s.ctl {
@@ -872,7 +909,13 @@ pub fn plan(
             if matches!(v.flow, Flow::Rts(_) | Flow::Rti(_)) {
                 pulls.insert((p, h, c));
             }
-            let s = restore(step(v, h, c, top, calls, &rets, &all_rets), v, p, &pl.nodes);
+            let s = restore(
+                step(v, h, c, top, calls, &rets, &all_rets),
+                v,
+                p,
+                c,
+                &pl.nodes,
+            );
             if let Some((hr, r)) = s.ret {
                 let new = match hr {
                     H::Known(x) => rets.entry(x).or_default().insert(r),
@@ -913,7 +956,13 @@ pub fn plan(
             let arms = g.vars[&p]
                 .iter()
                 .map(|v| {
-                    let s = restore(step(v, h, c, top, calls, &rets, &all_rets), v, p, &pl.nodes);
+                    let s = restore(
+                        step(v, h, c, top, calls, &rets, &all_rets),
+                        v,
+                        p,
+                        c,
+                        &pl.nodes,
+                    );
                     balanced &= !s.unbalanced;
                     let port = port_arm(v, &s.ctl, bank);
                     let tc = (!port).then_some(c);
@@ -1102,7 +1151,12 @@ fn plan_inst(g: &Graph, ci: u32, c: &Arc<Class>) -> Plan {
 /// Whether an arm may change the configuration: it stores to the port, or `CALL`s with a
 /// bank map (cleared by [`plan_all`] for callees that cannot).
 fn port_arm(v: &Var, ctl: &Ctl, bank: Option<&BankMap>) -> bool {
-    writes_port(v, bank) || bank.is_some() && matches!(ctl, Ctl::Call { .. } | Ctl::CallInd { .. })
+    writes_port(v, bank)
+        || bank.is_some()
+            && matches!(
+                ctl,
+                Ctl::Call { .. } | Ctl::CallInd { .. } | Ctl::CallOp { .. }
+            )
 }
 
 /// Plans for `entries` (outermost, entered in the configurations given per entry) and every
@@ -1110,12 +1164,17 @@ fn port_arm(v: &Var, ctl: &Ctl, bank: Option<&BankMap>) -> bool {
 /// `JSR` targets whose plans are balanced, by a decreasing fixpoint. A `CALL` keeps its
 /// configuration unless its callee may write the port (a least fixpoint over the plans).
 pub fn plan_all(g: &Graph, entries: &[(u16, Vec<u8>)], seen: &Seen, fold: bool) -> Vec<Plan> {
+    // A computed `JSR`'s targets are arms of its dispatch function, which is called; a target
+    // also called directly stays a function of its own.
     let mut calls: FxHashSet<u16> = g
         .vars
-        .values()
-        .flatten()
-        .flat_map(|v| match &v.flow {
-            Flow::Jsr { t, .. } => t.all().to_vec(),
+        .iter()
+        .flat_map(|(pc, vs)| vs.iter().map(move |v| (pc, v)))
+        .flat_map(|(pc, v)| match &v.flow {
+            Flow::Jsr { t, .. } => match g.dispatch.get(pc) {
+                Some(d) => vec![d.0],
+                None => t.all().to_vec(),
+            },
             _ => Vec::new(),
         })
         .filter(|f| g.vars.contains_key(f))
@@ -1176,6 +1235,7 @@ pub fn plan_all(g: &Graph, entries: &[(u16, Vec<u8>)], seen: &Seen, fold: bool) 
         }
         let heads: Vec<u16> = shared_tails(&plans)
             .into_iter()
+            .filter(|t| g.dispatch.get(t).is_none_or(|d| d.0 != *t))
             .filter(|t| !calls.contains(t) && tried.insert(*t))
             .collect();
         if heads.is_empty() || seen.bank.is_some() {
@@ -1210,6 +1270,7 @@ pub fn plan_all(g: &Graph, entries: &[(u16, Vec<u8>)], seen: &Seen, fold: bool) 
                     let fs: Vec<(u16, u8)> = match &a.ctl {
                         Ctl::Call { f, c, .. } => vec![(*f, *c)],
                         Ctl::CallInd { fs, c, .. } => fs.iter().map(|&f| (f, *c)).collect(),
+                        Ctl::CallOp { f, c, .. } => vec![(*f, *c)],
                         _ => continue,
                     };
                     if let Some(&(_, c)) = fs.first() {

@@ -642,7 +642,14 @@ impl<'a> Runner<'a> {
         let f = &self.f;
         let mut reg = cpu.reg();
         for (i, r) in reg.iter_mut().enumerate() {
-            if i != crate::ir::KREG && i != crate::ir::XREG {
+            if ![
+                crate::ir::KREG,
+                crate::ir::XREG,
+                crate::ir::OPLO,
+                crate::ir::OPHI,
+            ]
+            .contains(&i)
+            {
                 *r = f[i] as u8;
             }
         }

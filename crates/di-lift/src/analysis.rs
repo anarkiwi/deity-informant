@@ -7,7 +7,7 @@ use crate::ir::mask;
 use di_pcode::{CtrlKind, Op, Opc, Operands, Slot, Space, Template, Vn};
 use fixedbitset::FixedBitSet;
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// An entry point and optional live-in register values (`lift()` register index, values).
 #[derive(Clone, Debug, Default)]
@@ -63,6 +63,14 @@ impl Iv {
 /// Interval of `opc(a, b)` with an `out`-sized result and `a` of `size0` bytes.
 pub fn iv_op(opc: Opc, a: Iv, b: Iv, out: u32, size0: u32) -> Iv {
     let m = mask(out);
+    // A copy to fewer bytes truncates.
+    if opc == Opc::Copy {
+        return match a.value() {
+            Some(x) => Iv::exact(x & m),
+            None if a.hi <= m => a,
+            None => Iv::full(out),
+        };
+    }
     if let (Some(x), Some(y)) = (a.value(), b.value()) {
         return Iv::exact(di_pcode::binop(opc, x, y, mask(size0)) & m);
     }
@@ -503,6 +511,9 @@ pub struct Graph {
     pub written: FixedBitSet,
     /// Per return site, the addresses past it a call returns to (inline arguments).
     pub past: FxHashMap<u16, Vec<u16>>,
+    /// Per `JSR` through cell operands with targets: its dispatch function (keyed by the least
+    /// such site with the same targets) and the targets.
+    pub dispatch: FxHashMap<u16, (u16, Vec<u16>)>,
 }
 
 /// Stack-pointer effect of a `Next` instruction: pushes and pulls by count, `None` for an
@@ -928,6 +939,40 @@ impl Fixpoint<'_> {
                     })
                     .map(|s| (s.pc, s.op, s.ai))
                     .collect();
+                let dispatch: FxHashMap<u16, (u16, Vec<u16>)> = {
+                    let mut by: BTreeMap<Vec<u16>, Vec<u16>> = BTreeMap::new();
+                    for (&pc, vs) in &vars {
+                        if let [Var {
+                            flow:
+                                Flow::Jsr {
+                                    t: Tg::Calc(fs), ..
+                                },
+                            ..
+                        }] = &vs[..]
+                        {
+                            if !fs.is_empty() && fs.iter().all(|f| vars.contains_key(f)) {
+                                by.entry(fs.clone()).or_default().push(pc);
+                            }
+                        }
+                    }
+                    // Keyed by a site no call or entry enters (its key names a function).
+                    let entered: FxHashSet<u16> = vars
+                        .values()
+                        .flatten()
+                        .flat_map(|v| match &v.flow {
+                            Flow::Jsr { t, .. } => t.all().to_vec(),
+                            _ => Vec::new(),
+                        })
+                        .chain(entries.iter().map(|e| e.pc))
+                        .collect();
+                    by.into_iter()
+                        .filter_map(|(fs, sites)| {
+                            let key = *sites.iter().filter(|s| !entered.contains(s)).min()?;
+                            Some(sites.into_iter().map(move |s| (s, (key, fs.clone()))))
+                        })
+                        .flatten()
+                        .collect()
+                };
                 let g = Graph {
                     vars,
                     cells,
@@ -974,6 +1019,7 @@ impl Fixpoint<'_> {
                         gs
                     },
                     past: an.past.clone(),
+                    dispatch,
                     written: {
                         let mut w = FixedBitSet::with_capacity(0x10000);
                         for s in &an.stores {
