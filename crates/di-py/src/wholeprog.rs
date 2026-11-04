@@ -629,6 +629,7 @@ impl Program {
             d.set_item("pc", f.pc)?;
             d.set_item("entry", f.top)?;
             d.set_item("recursive", f.recursive)?;
+            d.set_item("copies", f.copies.clone())?;
             d.set_item("blocks", blocks)?;
             d.set_item("tables", f.tables.clone())?;
             d.set_item("closed", f.closed.ones().collect::<Vec<_>>())?;
@@ -653,6 +654,8 @@ impl Program {
         d.set_item("code_bytes", s.code_bytes)?;
         d.set_item("code_guards", s.code_guards)?;
         d.set_item("calls", s.calls)?;
+        d.set_item("instances", s.instances)?;
+        d.set_item("instance_copies", s.instance_copies)?;
         d.set_item("stack_private", s.stack_private)?;
         d.set_item("stack_guards", s.stack_guards)?;
         d.set_item("ptr_guards", s.ptr_guards)?;
@@ -1308,12 +1311,13 @@ pub fn reference_calls(
 /// ``starts``, ``edges``, ``writes``, ``page1`` and ``heights``; ``optimize=False`` keeps the emitted
 /// P-Code; ``cycles=True`` counts cycles; ``entry_sp`` declares the SP every entry is called
 /// at (a calling convention: no pointer windows, stack checks against the stack's extent);
-/// ``loaded`` the ``(lo, hi)`` the program was loaded to, where tables end at the latest.
+/// ``loaded`` the ``(lo, hi)`` the program was loaded to, where tables end at the latest;
+/// ``fold=True`` lifts copies of one routine as one function of the copy's index.
 /// ``bank`` is a bank map: ``dir``/``data`` port
 /// cells, ``mask`` and ``pull`` bits, ``lut`` (configuration per effective port value),
 /// ``configs`` (per configuration 256 page kinds: 0 RAM, 1 ROM, 2 I/O) and ``rom``.
 #[pyfunction]
-#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None))]
+#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None, fold=false))]
 #[allow(clippy::too_many_arguments)]
 pub fn lift_program(
     py: Python<'_>,
@@ -1326,6 +1330,7 @@ pub fn lift_program(
     bank: Option<&Bound<'_, PyDict>>,
     entry_sp: Option<u8>,
     loaded: Option<(u32, u32)>,
+    fold: bool,
 ) -> PyResult<Program> {
     let img = self::image(image)?;
     let es = self::entries(entries);
@@ -1336,6 +1341,7 @@ pub fn lift_program(
         cycles,
         entry_sp,
         loaded,
+        fold,
     };
     Ok(Program::new(py.detach(|| {
         di_lift::lift_banked(&img, &es, &volatile, &f, opts, bank.as_ref())
@@ -1361,7 +1367,7 @@ pub fn plan_program<'py>(
     let g = di_lift::analysis::discover(&img, &es, &f, bank.as_ref(), true, None);
     let pcs: Vec<u16> = es.iter().map(|e| e.pc).collect();
     let out = PyList::empty(py);
-    for p in di_lift::plan(&g.img, &g, &pcs, &f, bank.as_ref(), &[]) {
+    for p in di_lift::plan(&g.img, &g, &pcs, &f, bank.as_ref(), &[], false) {
         let d = PyDict::new(py);
         d.set_item("pc", p.pc)?;
         d.set_item("top", p.top)?;

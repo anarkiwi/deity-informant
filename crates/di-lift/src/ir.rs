@@ -10,6 +10,10 @@ pub const CY: u16 = 17;
 /// Register varnodes: the `lift()` file (0-15), `E` and `CY`; a function's promoted stack
 /// slots follow (`NREG + i` holds the byte `i` below its entry SP).
 pub const NREG: usize = 18;
+/// Registers of the 16-entry file no 6502 template uses: an instance function's copy index
+/// and the exit it left by ([`crate::inst`]), never handed back to the machine.
+pub const KREG: usize = 4;
+pub const XREG: usize = 5;
 /// Bit mask of the registers below [`NREG`].
 pub const ALL_REGS: u32 = (1 << NREG) - 1;
 
@@ -216,6 +220,8 @@ pub struct Function {
     pub recursive: bool,
     /// Carry chains fused into wide operations.
     pub chains: Vec<crate::wide::Chain>,
+    /// An instance function ([`crate::inst`]): the entries of the copies it merges, by index.
+    pub copies: Vec<u16>,
 }
 
 impl Function {
@@ -248,6 +254,9 @@ pub struct Stats {
     pub code_guards: usize,
     /// `CALL`s emitted (one per `JSR` node).
     pub calls: usize,
+    /// Instance functions ([`crate::inst`]) and the copies they merge.
+    pub instances: usize,
+    pub instance_copies: usize,
     /// Only pushes and pulls reach page 1, given the page-1 guards: stack traffic is removed.
     pub stack_private: bool,
     /// Accesses checked at run time not to reach page 1.

@@ -251,7 +251,7 @@ checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 
 [[package]]
 name = "di-lift"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
@@ -267,11 +267,11 @@ dependencies = [
 
 [[package]]
 name = "di-pcode"
-version = "0.11.0"
+version = "0.12.0"
 
 [[package]]
 name = "di-py"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "di-lift",
  "di-pcode",

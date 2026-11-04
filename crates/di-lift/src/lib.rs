@@ -12,6 +12,7 @@ pub mod dispatch;
 pub mod emit;
 pub mod exec;
 pub mod func;
+pub mod inst;
 pub mod ir;
 pub mod jit;
 pub mod known;
@@ -48,6 +49,9 @@ pub struct Opts {
     /// The `[lo, hi)` the program was loaded to: tables end at its end at the latest
     /// (*Static proofs*, *Table extents*).
     pub loaded: Option<(u32, u32)>,
+    /// Lift copies of one routine that differ only in their operands as one function taking
+    /// the copy's index ([`inst`]); without facts and a bank map only.
+    pub fold: bool,
 }
 
 impl Default for Opts {
@@ -57,6 +61,7 @@ impl Default for Opts {
             cycles: false,
             entry_sp: None,
             loaded: None,
+            fold: false,
         }
     }
 }
@@ -69,6 +74,17 @@ pub fn lift(
     facts: &Facts,
 ) -> Program {
     lift_with(img, entries, volatile, facts, Opts::default())
+}
+
+/// The plan index of each instance function by class.
+fn inst_index(plans: &[func::Plan]) -> Vec<u32> {
+    let mut out: Vec<(u32, u32)> = plans
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| p.inst.as_ref().map(|x| (x.class, i as u32)))
+        .collect();
+    out.sort_unstable();
+    out.into_iter().map(|x| x.1).collect()
 }
 
 /// Function indices reachable from each function through one or more calls.
@@ -171,6 +187,20 @@ fn extent(
         let p = &plans[i];
         let mut d = p.pushed(g).ones().next_back().map_or(0, |x| x as u32 + 1);
         let mut ok = p.nodes.keys().all(|k| k.1 != H::Unknown);
+        // A tail call runs its callee at the entry SP, over this function's return address;
+        // an instance function at the caller's SP.
+        let ifidx = inst_index(plans);
+        let inline = p
+            .tails
+            .iter()
+            .map(|&(t, _, c)| (fidx[&(t, c)], H::Known(0)))
+            .chain(p.insts.iter().map(|(k, c)| (ifidx[c.class as usize], k.1)));
+        for (f, h) in inline.collect::<Vec<_>>() {
+            match (depth(f as usize, plans, fidx, g, memo), h) {
+                (Some(e), H::Known(h)) => d = d.max((-h) as u32 + e),
+                _ => ok = false,
+            }
+        }
         for (&(_, h, _), n) in &p.nodes {
             for a in &n.arms {
                 let fs: Vec<(u16, u8)> = match &a.ctl {
@@ -243,6 +273,7 @@ pub fn plan(
     facts: &Facts,
     bank: Option<&BankMap>,
     volatile: &[(u32, u32)],
+    fold: bool,
 ) -> Vec<func::Plan> {
     let starts: FxHashSet<u16> = facts.starts.iter().copied().collect();
     let banned: FxHashSet<u16> = g
@@ -279,7 +310,7 @@ pub fn plan(
             (pc, cs)
         })
         .collect();
-    func::plan_all(g, &roots, &func::Seen::new(facts, banned, bank))
+    func::plan_all(g, &roots, &func::Seen::new(facts, banned, bank), fold)
 }
 
 /// [`lift`] with options.
@@ -324,16 +355,24 @@ pub fn lift_banked(
         }
         let img: &[u8; 0x10000] = &g.img;
         let pcs: Vec<u16> = entries.iter().map(|e| e.pc).collect();
-        let mut plans = plan(img, &g, &pcs, facts, bank, volatile);
+        let fold = opts.fold && !opts.cycles && facts.starts.is_empty();
+        let mut plans = plan(img, &g, &pcs, facts, bank, volatile, fold);
         let fidx: FxHashMap<(u16, u8), u32> = plans
             .iter()
             .enumerate()
             .skip(entries.len())
+            .filter(|(_, p)| p.inst.is_none())
             .map(|(i, p)| ((p.pc, p.entry[0]), i as u32))
             .collect();
+        let ifidx = inst_index(&plans);
         let callees: Vec<Vec<u32>> = plans
             .iter()
-            .map(|p| p.callees().map(|k| fidx[&k]).collect())
+            .map(|p| {
+                p.callees()
+                    .map(|k| fidx[&k])
+                    .chain(p.insts.values().map(|c| ifidx[c.class as usize]))
+                    .collect()
+            })
             .collect();
         let recursive = recursive(&callees);
         let seen: FxHashMap<u16, (u16, u16)> = facts
@@ -492,6 +531,7 @@ pub fn lift_banked(
         promote,
         recursive,
         cycles: opts.cycles,
+        ifidx: inst_index(&plans),
         fidx,
         bank,
         ret_guard,
@@ -507,6 +547,12 @@ pub fn lift_banked(
             .count(),
         code_bytes: constcode.count_ones(..),
         stack_private: private,
+        instances: plans.iter().filter(|p| p.inst.is_some()).count(),
+        instance_copies: plans
+            .iter()
+            .filter_map(|p| p.inst.as_ref())
+            .map(|x| x.c.copies())
+            .sum(),
         page1_sites: sites,
         sp_guards: plans.iter().filter(|p| p.sp.is_some()).count(),
         kept_bytes,

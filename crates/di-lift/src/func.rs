@@ -9,10 +9,12 @@ use crate::analysis::{
     Tg, Var, TOP_ENV,
 };
 use crate::bank::{Back, BankMap};
+use crate::inst::{Class, Succ};
 use di_pcode::{reg as R, Template};
 use fixedbitset::FixedBitSet;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// Stack height relative to the function entry (pushes are negative).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -117,6 +119,56 @@ pub struct Plan {
     pub sp: Option<u8>,
     /// Some node sets SP (`TXS`, `TAS`, `LAS`).
     pub sets_sp: bool,
+    /// Tail calls: an edge at the entry height to a function lifted separately (a fall-through,
+    /// jump or branch into its entry, whose `RTS` then returns from this one) is a `CALL` of it
+    /// followed by this function's return.
+    pub tails: BTreeSet<Key>,
+    /// Calls of instance functions ([`crate::inst`]) in place of their copies' entries.
+    pub insts: BTreeMap<Key, Icall>,
+    /// The class of copies this plan merges.
+    pub inst: Option<Box<Inst>>,
+}
+
+/// A call of instance function `class` for copy `k`, continuing at `exits` (one per exit).
+#[derive(Clone, Debug)]
+pub struct Icall {
+    pub class: u32,
+    pub k: u8,
+    pub exits: Vec<Key>,
+}
+
+/// An instance function: its class, the merged instruction at each node's start, the exits by
+/// key and, per computed jump, each copy's target and the node it enters.
+#[derive(Clone, Debug)]
+pub struct Inst {
+    pub class: u32,
+    pub c: Arc<Class>,
+    pub node: FxHashMap<u16, u32>,
+    pub exits: BTreeMap<Key, u32>,
+    pub calc: FxHashMap<u16, Vec<(u16, Key)>>,
+}
+
+/// The classes of copies being lifted as instance functions, and the class and copy index of
+/// each copy's entry.
+#[derive(Default)]
+pub struct Insts {
+    pub classes: Vec<Arc<Class>>,
+    pub entry: FxHashMap<u16, (u32, u8)>,
+}
+
+impl Insts {
+    pub fn new(classes: Vec<Class>) -> Self {
+        let mut entry = FxHashMap::default();
+        for (i, c) in classes.iter().enumerate() {
+            for k in 0..c.copies() {
+                entry.insert(c.entry(k), (i as u32, k as u8));
+            }
+        }
+        Insts {
+            classes: classes.into_iter().map(Arc::new).collect(),
+            entry,
+        }
+    }
 }
 
 impl Plan {
@@ -334,11 +386,15 @@ impl Plan {
             }
         }
     }
-    /// The entry nodes, one per entry configuration.
+    /// The entry nodes, one per entry configuration (none when the entry is a copy's call).
     pub fn roots(&self) -> impl Iterator<Item = Key> + '_ {
-        self.entry.iter().map(|&c| (self.pc, H::Known(0), c))
+        self.entry
+            .iter()
+            .map(|&c| (self.pc, H::Known(0), c))
+            .filter(|k| self.nodes.contains_key(k))
     }
-    /// Functions `CALL`ed with their entry configuration, once per call site and node.
+    /// Functions `CALL`ed with their entry configuration, once per call site and node, then
+    /// the tail calls.
     pub fn callees(&self) -> impl Iterator<Item = (u16, u8)> + '_ {
         self.nodes
             .values()
@@ -348,6 +404,7 @@ impl Plan {
                 Ctl::CallInd { fs, c, .. } => fs.iter().map(|&f| (f, *c)).collect(),
                 _ => Vec::new(),
             })
+            .chain(self.tails.iter().map(|k| (k.0, k.2)))
     }
 }
 
@@ -665,6 +722,7 @@ pub fn plan(
     top: bool,
     calls: &FxHashSet<u16>,
     seen: &Seen,
+    ins: &Insts,
 ) -> Plan {
     let mut pl = Planner {
         g,
@@ -677,9 +735,45 @@ pub fn plan(
     let mut rets: FxHashMap<i32, BTreeSet<u16>> = FxHashMap::default();
     let mut all_rets: BTreeSet<u16> = BTreeSet::new();
     let mut pulls: FxHashSet<Key> = FxHashSet::default();
+    let mut tails: BTreeSet<Key> = BTreeSet::new();
+    let mut icalls: BTreeMap<Key, (u32, u8)> = BTreeMap::new();
+    let tail =
+        |t: u16, h: H| seen.bank.is_none() && h == H::Known(0) && t != pc && calls.contains(&t);
+    // Edges to `t` at `h`: a tail call, a copy's call (continuing at its exits), or nodes.
+    let enter = |pl: &mut Planner,
+                 edges: &mut Vec<(u16, H, Option<u8>)>,
+                 tails: &mut BTreeSet<Key>,
+                 icalls: &mut BTreeMap<Key, (u32, u8)>|
+     -> Vec<Key> {
+        let mut out = Vec::new();
+        while let Some((t, ht, tc)) = edges.pop() {
+            if !g.vars.contains_key(&t) || pl.seen.banned.contains(&t) {
+                continue;
+            }
+            if tail(t, ht) {
+                tails.extend(pl.configs(t, tc).into_iter().map(|c| (t, ht, c)));
+            } else if let Some(&(ci, k)) = ins.entry.get(&t) {
+                for c in pl.configs(t, tc) {
+                    if icalls.insert((t, ht, c), (ci, k)).is_none() {
+                        let x = &ins.classes[ci as usize].exits;
+                        edges.extend(x.iter().map(|x| (x[k as usize], ht, Some(c))));
+                    }
+                }
+            } else {
+                out.extend(pl.admit(t, ht, tc));
+            }
+        }
+        out
+    };
     pl.first.insert(pc, H::Known(0));
-    let mut work: Vec<Key> = entry.iter().map(|&c| (pc, H::Known(0), c)).collect();
-    pl.nodes.extend(work.iter().copied());
+    let mut work: Vec<Key> = Vec::new();
+    if ins.entry.contains_key(&pc) {
+        let mut edges: Vec<_> = entry.iter().map(|&c| (pc, H::Known(0), Some(c))).collect();
+        work = enter(&mut pl, &mut edges, &mut tails, &mut icalls);
+    } else {
+        work.extend(entry.iter().map(|&c| (pc, H::Known(0), c)));
+        pl.nodes.extend(work.iter().copied());
+    }
     let bank = seen.bank;
     while let Some((p, h, c)) = work.pop() {
         if !pl.nodes.contains(&(p, h, c)) {
@@ -700,13 +794,28 @@ pub fn plan(
                 }
             }
             let tc = (!port_arm(v, &s.ctl, bank)).then_some(c);
-            for (t, ht) in s.succ {
-                if g.vars.contains_key(&t) && !pl.seen.banned.contains(&t) {
-                    work.extend(pl.admit(t, ht, tc));
-                }
-            }
+            let mut edges: Vec<_> = s.succ.iter().map(|&(t, ht)| (t, ht, tc)).collect();
+            work.extend(enter(&mut pl, &mut edges, &mut tails, &mut icalls));
         }
     }
+    let insts = icalls
+        .into_iter()
+        .map(|(key, (class, k))| {
+            let exits = ins.classes[class as usize]
+                .exits
+                .iter()
+                .map(|x| {
+                    let t = x[k as usize];
+                    (
+                        t,
+                        pl.resolve(t, key.1).first().copied().unwrap_or(key.1),
+                        key.2,
+                    )
+                })
+                .collect();
+            (key, Icall { class, k, exits })
+        })
+        .collect();
     let mut balanced = true;
     let nodes = pl
         .nodes
@@ -748,11 +857,150 @@ pub fn plan(
         entry,
         balanced,
         sp: None,
+        tails,
+        insts,
+        inst: None,
         sets_sp: pl.nodes.iter().any(|(p, _, _)| {
             g.vars[p]
                 .iter()
                 .any(|v| matches!(v.flow, Flow::Next(_)) && stack_delta(v.op).is_none())
         }),
+    }
+}
+
+/// Heads of shared tails: instruction starts that two or more plans reach at their entry
+/// height, entered there from a node that is not such a start (or that is at another height).
+/// Each becomes a function its callers reach by tail calls, as a `JSR` target that returns at its
+/// entry height does by calls.
+fn shared_tails(plans: &[Plan]) -> BTreeSet<u16> {
+    let mut count: FxHashMap<u16, usize> = FxHashMap::default();
+    let plans: Vec<&Plan> = plans.iter().filter(|p| p.inst.is_none()).collect();
+    for p in &plans {
+        let at0: BTreeSet<u16> = p
+            .nodes
+            .keys()
+            .filter(|k| k.1 == H::Known(0) && k.0 != p.pc)
+            .map(|k| k.0)
+            .collect();
+        for t in at0 {
+            *count.entry(t).or_default() += 1;
+        }
+    }
+    let shared = |k: &Key| k.1 == H::Known(0) && count.get(&k.0).is_some_and(|&n| n > 1);
+    plans
+        .iter()
+        .flat_map(|p| {
+            p.nodes.iter().flat_map(move |(k, n)| {
+                n.arms
+                    .iter()
+                    .flat_map(|a| &a.succ)
+                    .filter(move |s| shared(s) && (!shared(k) || k.0 == p.pc))
+                    .map(|s| s.0)
+            })
+        })
+        .collect()
+}
+
+/// The plan of instance function `ci` merging the copies of `c`: a callee whose nodes are the
+/// merged instructions (keyed by the first copy holding each) at their heights, its exits
+/// returns, its accesses the hull of the copies'.
+fn plan_inst(g: &Graph, ci: u32, c: &Arc<Class>) -> Plan {
+    let hs = crate::inst::heights(g, c);
+    let cf = g.cfg[&c.entry(0)];
+    let rep = |i: u32| {
+        c.nodes[i as usize]
+            .pcs
+            .iter()
+            .flatten()
+            .copied()
+            .next()
+            .unwrap()
+    };
+    let key = |s: Succ| match s {
+        Succ::Node(i) => (rep(i), H::Known(hs[i as usize]), cf),
+        Succ::Exit(j) => (c.exits[j as usize][0], H::Known(0), cf),
+    };
+    let mut calc = FxHashMap::default();
+    let mut nodes = BTreeMap::new();
+    for (i, n) in c.nodes.iter().enumerate() {
+        let p = rep(i as u32);
+        let v = &g.vars[&p][0];
+        let succ: Vec<Key> = n.succ.iter().map(|&s| key(s)).collect();
+        let ctl = match &v.flow {
+            Flow::Next(_) => Ctl::Next(succ[0].0),
+            Flow::Br { .. } => Ctl::Br {
+                t: Tg::At(succ[0].0),
+                f: succ[1].0,
+            },
+            Flow::Jmp(Tg::At(_)) => Ctl::Jmp(Tg::At(succ[0].0)),
+            Flow::Jmp(Tg::Calc(_)) => {
+                let mut ts: Vec<(u16, Key)> = n
+                    .pcs
+                    .iter()
+                    .flatten()
+                    .flat_map(|q| g.origins[q].iter().map(|o| o.1).zip(succ.iter().copied()))
+                    .collect();
+                ts.sort_unstable();
+                ts.dedup();
+                let all: Vec<u16> = ts.iter().map(|t| t.0).collect();
+                calc.insert(p, ts);
+                Ctl::Jmp(Tg::Calc(all))
+            }
+            Flow::Jsr { t: Tg::At(f), .. } => Ctl::Call {
+                f: *f,
+                ret: succ[0].0,
+                c: cf,
+            },
+            Flow::Jam => Ctl::Jam,
+            f => unreachable!("not merged: {f:?}"),
+        };
+        let mut acc = v.acc.clone();
+        for q in n.pcs.iter().flatten() {
+            for (a, b) in acc.iter_mut().zip(&g.vars[q][0].acc) {
+                a.addr = Iv {
+                    lo: a.addr.lo.min(b.addr.lo),
+                    hi: a.addr.hi.max(b.addr.hi),
+                };
+                a.val = Iv {
+                    lo: a.val.lo.min(b.val.lo),
+                    hi: a.val.hi.max(b.val.hi),
+                };
+                a.back &= b.back;
+                a.defd &= b.defd;
+                a.above &= b.above;
+                if a.ptr != b.ptr {
+                    a.ptr = None;
+                }
+            }
+        }
+        let arm = Arm {
+            ctl,
+            exit: Exit::No,
+            succ: succ.clone(),
+            acc,
+            port: false,
+        };
+        nodes.insert(key(Succ::Node(i as u32)), Node { arms: vec![arm] });
+    }
+    Plan {
+        pc: c.entry(0),
+        top: false,
+        nodes,
+        entry: vec![cf],
+        balanced: true,
+        sp: None,
+        sets_sp: false,
+        tails: BTreeSet::new(),
+        insts: BTreeMap::new(),
+        inst: Some(Box::new(Inst {
+            class: ci,
+            c: c.clone(),
+            node: (0..c.nodes.len() as u32).map(|i| (rep(i), i)).collect(),
+            exits: (0..c.exits.len() as u32)
+                .map(|j| (key(Succ::Exit(j)), j))
+                .collect(),
+            calc,
+        })),
     }
 }
 
@@ -766,7 +1014,7 @@ fn port_arm(v: &Var, ctl: &Ctl, bank: Option<&BankMap>) -> bool {
 /// callee they reach per entry configuration, entries first; the call targets are the static
 /// `JSR` targets whose plans are balanced, by a decreasing fixpoint. A `CALL` keeps its
 /// configuration unless its callee may write the port (a least fixpoint over the plans).
-pub fn plan_all(g: &Graph, entries: &[(u16, Vec<u8>)], seen: &Seen) -> Vec<Plan> {
+pub fn plan_all(g: &Graph, entries: &[(u16, Vec<u8>)], seen: &Seen, fold: bool) -> Vec<Plan> {
     let mut calls: FxHashSet<u16> = g
         .vars
         .values()
@@ -777,35 +1025,58 @@ pub fn plan_all(g: &Graph, entries: &[(u16, Vec<u8>)], seen: &Seen) -> Vec<Plan>
         })
         .filter(|f| g.vars.contains_key(f))
         .collect();
-    loop {
-        let bad: Vec<u16> = calls
-            .iter()
-            .copied()
-            .filter(|&f| !plan(g, f, vec![g.cfg[&f]], false, &calls, seen).balanced)
-            .collect();
-        if bad.is_empty() {
-            break;
-        }
-        for b in bad {
-            calls.remove(&b);
-        }
-    }
-    let mut plans: Vec<Plan> = entries
-        .iter()
-        .map(|(e, cs)| plan(g, *e, cs.clone(), true, &calls, seen))
-        .collect();
-    let mut idx: FxHashMap<(u16, u8), usize> = FxHashMap::default();
-    let mut i = 0;
-    while i < plans.len() {
-        let callees: Vec<(u16, u8)> = plans[i].callees().collect();
-        for (f, c) in callees {
-            if let std::collections::hash_map::Entry::Vacant(e) = idx.entry((f, c)) {
-                e.insert(plans.len());
-                plans.push(plan(g, f, vec![c], false, &calls, seen));
+    let mut tried: FxHashSet<u16> = FxHashSet::default();
+    let none = Insts::default();
+    let mut ins: Option<Insts> = None;
+    let (mut plans, idx) = loop {
+        loop {
+            let bad: Vec<u16> = calls
+                .iter()
+                .copied()
+                .filter(|&f| !plan(g, f, vec![g.cfg[&f]], false, &calls, seen, &none).balanced)
+                .collect();
+            if bad.is_empty() {
+                break;
+            }
+            for b in bad {
+                calls.remove(&b);
             }
         }
-        i += 1;
-    }
+        let ins: &Insts = ins.get_or_insert_with(|| match fold && seen.bank.is_none() {
+            true => {
+                let roots: Vec<u16> = entries.iter().map(|e| e.0).collect();
+                Insts::new(crate::inst::find(g, &roots, &calls))
+            }
+            false => Insts::default(),
+        });
+        let mut plans: Vec<Plan> = entries
+            .iter()
+            .map(|(e, cs)| plan(g, *e, cs.clone(), true, &calls, seen, ins))
+            .collect();
+        for (ci, c) in ins.classes.iter().enumerate() {
+            plans.push(plan_inst(g, ci as u32, c));
+        }
+        let mut idx: FxHashMap<(u16, u8), usize> = FxHashMap::default();
+        let mut i = 0;
+        while i < plans.len() {
+            let callees: Vec<(u16, u8)> = plans[i].callees().collect();
+            for (f, c) in callees {
+                if let std::collections::hash_map::Entry::Vacant(e) = idx.entry((f, c)) {
+                    e.insert(plans.len());
+                    plans.push(plan(g, f, vec![c], false, &calls, seen, ins));
+                }
+            }
+            i += 1;
+        }
+        let heads: Vec<u16> = shared_tails(&plans)
+            .into_iter()
+            .filter(|t| !calls.contains(t) && tried.insert(*t))
+            .collect();
+        if heads.is_empty() || seen.bank.is_some() {
+            break (plans, idx);
+        }
+        calls.extend(heads);
+    };
     if seen.bank.is_some() {
         let own: Vec<bool> = plans
             .iter()

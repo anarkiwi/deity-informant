@@ -183,6 +183,7 @@ pub enum Opc {
     IntLess,
     IntLessEqual,
     IntCarry,
+    IntMult,
     Load,
     Store,
     /// Lifted-program control: jump to the block in `aux`.
@@ -217,6 +218,7 @@ impl Opc {
             Opc::IntLess => "INT_LESS",
             Opc::IntLessEqual => "INT_LESSEQUAL",
             Opc::IntCarry => "INT_CARRY",
+            Opc::IntMult => "INT_MULT",
             Opc::Load => "LOAD",
             Opc::Store => "STORE",
             Opc::Branch => "BRANCH",
@@ -260,6 +262,7 @@ pub fn binop(opc: Opc, a: u32, b: u32, mask0: u32) -> u32 {
         Opc::IntLess => (a < b) as u32,
         Opc::IntLessEqual => (a <= b) as u32,
         Opc::IntCarry => (a as u64 + b as u64 > mask0 as u64) as u32,
+        Opc::IntMult => a.wrapping_mul(b),
         _ => unreachable!("not a binary op"),
     }
 }

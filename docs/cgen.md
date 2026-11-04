@@ -34,9 +34,9 @@ python tools/cgenplay.py tune.sid --psid --volatile 0xD400-0xD41D -o out/   # tr
 `[(origin, length)]`, the code span, the traps in the `.c` (`{k: ("deopt", pc)}` or `("ind", pc,
 ...)` for a computed jump with no target), the computed jumps resolved from the code (`jumps`),
 the fact edges used, the lift's `stats`, whether some access has an unknown address and the
-`structure` counts: C `functions` (and the identical ones `folded` into them), outlined
-`tails`, and the structuring variables made for multi-entry loops (`entries`), multi-exit
-loops (`exits`) and joins (`flags`).
+`structure` counts: C `functions` (and the identical ones `folded` into them), and the
+structuring variables made for multi-entry loops (`entries`), multi-exit loops (`exits`) and
+joins (`flags`).
 
 The host supplies `uint8_t io_read(uint16_t)`, `void io_write(uint16_t, uint8_t)` and
 `void trap(uint16_t k)`, which must not return (`longjmp`, or abort the call). Each entry
@@ -48,9 +48,14 @@ caller's return address. `tools/cgenplay.c` is a host harness.
 1. **Lift.** `wholeprog.lift(image, entries, volatile, facts, entry_sp=0xFD, loaded)`,
    static: no facts but the targets of computed jumps the code does not resolve; the entry SP
    is the calling convention below and `loaded` ends every table
-   ([wholeprog](wholeprog.md#static-proofs), *Table extents*, *Stack extent*). Functions are
+   ([wholeprog](wholeprog.md#static-proofs), *Table extents*, *Stack extent*), with `fold=True`
+   ([wholeprog](wholeprog.md#pipeline), *Tail calls*, *Instances*): a routine fallen or jumped
+   into is a tail call of it, code two functions share at their entry height is a function, and
+   copies of one routine that differ only in their operands (a player's unrolled per-voice code)
+   are one function of the copy's index, its operands `base + stride * k`. Functions are
    named by ascending entry PC, deopts become `trap(k)` with `k` numbered in the order the
-   lift's functions and blocks meet them.
+   lift's functions and blocks meet them; a deopt of an instance function is one trap for every
+   copy (`("deopt", pc, function)`, the first copy's start).
 2. **MLIR** (`emit.py`). Each lifted function is a private `func.func` taking and returning the
    register file as values; its registers, stack slots and block-crossing temporaries are
    rank-0 `memref.alloca`s, memory one global `@M`, volatile accesses `io_read`/`io_write`
@@ -71,7 +76,7 @@ caller's return address. `tools/cgenplay.c` is a host harness.
    `cf.cond_br` passing one value to both successors into an invalid branch, so it is not
    used.
 5. **Layout** (`regions.py`): the memory partition below.
-6. **Structure** (`structure.py`): tail outlining, then DREAM (below).
+6. **Structure** (`structure.py`): DREAM (below), each function whole.
 7. **Print** (`printer.py`, `csyntax.py`). The generic text is parsed for the operations the
    pipeline leaves (`func`, `cf`, `arith`, `memref`, `ub.poison`; anything else raises), the
    structured statements are printed with each variable declared at the innermost scope
@@ -88,15 +93,11 @@ Each function's blocks become a graph whose nodes hold statements. An edge carry
 arguments gets a node of copies (the arguments are C variables assigned on the edge, a
 parallel assignment); an edge to a block that only returns is a `return`.
 
-**Tail outlining.** A node other than the entry that has two or more predecessors outside the
-nodes it dominates, and from whose dominated nodes no edge leaves (every path from it returns),
-becomes a static function taking the block arguments it is entered with and the values its
-nodes use but do not define (constants are reprinted); each entering edge becomes `f(...);
-return;` (`return f(...);` for a function with results). Tails are found innermost first, in
-post order of the dominator tree, until none is left, so a nested shared tail is a call inside
-the outer one.
+A shared tail is a function only where the machine code makes it a procedure: a `JSR` target
+or code two lifted functions reach at their entry height (the lift's tail calls); a join inside
+one function stays in it.
 
-**DREAM.** The rest is structured by the pattern-independent algorithm of Yakdan, Eschweiler,
+**DREAM.** Each function is structured by the pattern-independent algorithm of Yakdan, Eschweiler,
 Gerhards-Padilla and Smith, "No More Gotos: Decompilation Using Pattern-Independent
 Control-Flow Structuring and Semantics-Preserving Transformations" (NDSS 2015). Nodes are
 taken in DFS post order. A node heading a cycle has its loop structured; otherwise the region
@@ -217,8 +218,8 @@ before it does.
 `tests/test_cgen.py` compiles each output with gcc (`-std=c99 -Wall -Wextra -Werror`) against
 `tools/cgenplay.c` and compares the volatile writes (and sensitive reads) of many consecutive
 calls, memory persisting, with `wholeprog.reference_call`; it checks relocation and data
-invariance, the absence of `goto`, the structuring (shared tails, multi-exit and two-entry
-loops, switches from compare chains and jump tables, kept callees' parameters, wrapping
+invariance, the absence of `goto`, the structuring (a shared tail kept in its function,
+multi-exit and two-entry loops, switches from compare chains and jump tables, kept callees' parameters, wrapping
 addresses), computed jumps and calls through operands written from tables (in the same call
 or an earlier one), an index past a split table's extent trapping, an opcode restored through
 the stack, a pointer into zero page with no stack check, a jump's or-ed high byte under
@@ -226,8 +227,20 @@ relocation, determinism (repeated, with the blocks shuffled and under other hash
 llvm-mos build. `tools/cgenplay.py` does the same for a PSID or raw image (`--loaded LO-HI`
 names the program's bytes in a raw 64 KiB state, as a memory dump after an init routine) and
 prints `tools/cmetrics.py`'s table, the sizes, the computed jumps resolved from the code, the
-traps and the stage times.
+traps and the stage times. It also checks the lift's tail calls (a routine fallen into for its
+third voice is one function with three call sites) and instances (unrolled copies at a stride
+are one function of the copy's index whose I/O register is `0xC000 + k * 7`, called for each
+copy in order; copies sharing one trap; determinism and relocation invariance of a folded
+program).
 
 `tools/cclones.py` measures how much of a `.c` repeats up to names and constants (and which
-functions are near-identical): the share a clone-folding step could remove where a player
-unrolls its per-voice code.
+functions are near-identical).
+
+Upstream LLVM does not recover the per-voice routines from cgen's code: lowered to LLVM IR
+(`--convert-to-llvm`, `mlir-translate --mlir-to-llvmir`), `opt -passes=iroutliner,mergefunc`
+removes almost none of the per-voice code (MergeFunctions
+merges only identical functions; IROutliner outlines similar straight-line sequences of one
+block whose cost model accepts them, while each voice copy is a multi-block region whose
+blocks interleave with the other copies' in the layout), and without its cost model
+(`-ir-outlining-no-cost`) the IR grows. The copies are recovered in the lift instead
+([wholeprog](wholeprog.md#pipeline), *Instances*).

@@ -678,6 +678,7 @@ impl<'a, 'b> Fb<'a, 'b> {
             Opc::IntAnd => return self.b.ins().band(a, b),
             Opc::IntOr => return self.b.ins().bor(a, b),
             Opc::IntXor => return self.b.ins().bxor(a, b),
+            Opc::IntMult => return self.b.ins().imul(a, b),
             Opc::IntLeft | Opc::IntRight => {
                 let s = if opc == Opc::IntLeft {
                     self.b.ins().ishl(a, b)
@@ -778,8 +779,15 @@ impl<'a, 'b> Fb<'a, 'b> {
         self.b
             .ins()
             .istore16(T, ra, fr, offset_of!(Frame, ra) as i32);
+        let tail = self.get(o.b);
+        self.b
+            .ins()
+            .istore8(T, tail, fr, offset_of!(Frame, tail) as i32);
         let sp = self.b.use_var(self.vars[&(R::SP as u32)]);
-        let sp = self.b.ins().iadd_imm_u(sp, 2);
+        let two = self.b.ins().iconst(i32t, 2);
+        let t2 = self.b.ins().ishl_imm_u(tail, 1);
+        let up = self.b.ins().isub(two, t2);
+        let sp = self.b.ins().iadd(sp, up);
         self.b
             .ins()
             .istore8(T, sp, fr, offset_of!(Frame, sp) as i32);

@@ -751,8 +751,7 @@ impl Lvn<'_> {
         };
         let same = a == b;
         let r = match (opc, a, b) {
-            (Opc::Copy, _, _) => Some(a),
-            (Opc::IntZext, S(s), _) if self.syms[s as usize].size == size => Some(a),
+            (Opc::Copy | Opc::IntZext, S(s), _) if self.syms[s as usize].size == size => Some(a),
             (Opc::IntSub, _, _) if same => Some(K(0)),
             (Opc::IntSub, _, K(c)) => {
                 return self.simplify(Opc::IntAdd, a, K(c.wrapping_neg() & m), size, size0)
