@@ -336,11 +336,18 @@ fn extent(
                     func::Ctl::Call { f, c, .. } => vec![(*f, *c)],
                     func::Ctl::CallInd { fs, c, .. } => fs.iter().map(|&f| (f, *c)).collect(),
                     func::Ctl::CallOp { f, c, .. } => vec![(*f, *c)],
+                    func::Ctl::BrkCall { f, .. } => vec![(*f, g.cfg[f])],
                     _ => continue,
+                };
+                // A `BRK` call pushes three bytes.
+                let n = if matches!(a.ctl, func::Ctl::BrkCall { .. }) {
+                    3
+                } else {
+                    2
                 };
                 for k in fs {
                     match (depth(fidx[&k] as usize, plans, fidx, g, memo), h) {
-                        (Some(e), H::Known(h)) => d = d.max((2 - h) as u32 + e),
+                        (Some(e), H::Known(h)) => d = d.max((n - h) as u32 + e),
                         _ => ok = false,
                     }
                 }

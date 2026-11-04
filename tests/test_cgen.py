@@ -832,6 +832,17 @@ handler: LDA cnt
 cnt:    .byte 0
 end:
 """
+BRK2 = BRKVEC.replace(
+    """        STX $C000
+        RTS
+handler:""",
+    """        STX $C000
+brk2:   BRK
+        .byte $EA
+        STX $C003
+        RTS
+handler:""",
+)
 INLINE = """
 entry:  JSR arg
         .byte $11
@@ -1852,6 +1863,19 @@ def test_brk_through_its_written_vector(prefix, tmp_path):
     img, labels, _ = assemble(BRKVEC)
     assert info["jumps"][labels["brk"]] == [labels["handler"]]
     assert info["jumps"][labels["cnt"] - 1] == [labels["brk"] + 2]
+
+
+def test_brk_handler_of_two_sites_is_a_function(prefix, tmp_path):
+    """A `BRK` handler two `BRK`s reach is a function each calls: the status and return address
+    pushed, the handler's `RTI` a return, the flags restored; the `.c` is the same at another
+    origin."""
+    calls = [("entry", 0)] + entry_calls([0x80, 0x81, 0x82, 0x83], 2)
+    c, _, info = check(prefix, tmp_path, BRK2, calls)
+    img, labels, _ = assemble(BRK2)
+    entries = {f["entry"] for f in info["provenance"]["functions"].values()}
+    assert labels["handler"] in entries and not info["traps"] or labels["handler"] in entries
+    img2, labels2 = W.assemble(BRK2, 0x2400)
+    assert translate(prefix, img2, labels2, (0x2400, labels2["end"]))[0] == c
 
 
 @pytest.mark.parametrize("sites", [2, 1])
