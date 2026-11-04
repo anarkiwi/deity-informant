@@ -653,7 +653,8 @@ fn unbounded_index_reads_inside_the_extent() {
 }
 
 /// A counted loop clearing operands with `STA abs,X` makes them cells (no code check), and a
-/// store of known opcodes makes a closed opcode cell (no dispatch deopt).
+/// store of known opcodes makes a closed opcode cell (no dispatch deopt); the cleared operand
+/// cells are closed with their values.
 #[test]
 fn indexed_stores_make_cells() {
     let clear: &[u8] = &[
@@ -685,7 +686,13 @@ fn indexed_stores_make_cells() {
     );
     assert_eq!(p.stats.code_guards, 0);
     assert_eq!((p.stats.cells, p.stats.opcode_cells), (5, 2));
-    assert_eq!(p.sets.len(), 2);
+    let sets = vec![
+        (0x1109, vec![0x00, 0x22]),
+        (0x110e, vec![0x00, 0x33]),
+        (0x1223, vec![0x69, 0xe9]),
+        (0x1228, vec![0x69, 0xe9]),
+    ];
+    assert_eq!(p.sets, sets);
     assert_eq!(diff(&img, &p, &calls, IO), 0);
 }
 

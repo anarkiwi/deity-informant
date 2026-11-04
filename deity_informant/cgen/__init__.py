@@ -150,6 +150,7 @@ class Program:  # pylint: disable=too-many-instance-attributes
     loaded: tuple | None = None
     constant: frozenset | None = None
     jumps: dict | None = None
+    sets: dict | None = None
 
 
 def lift(image, entries, volatile, facts=None, loaded=None):
@@ -176,7 +177,7 @@ def lift(image, entries, volatile, facts=None, loaded=None):
                 op[3] = remap[op[3]]
     starts = {pc for p in wholeprog.plans(image, pcs, facts=facts) for pc in p["heights"]}
     p = Program(funcs, list(entries), image, starts, [tuple(v) for v in volatile])
-    p.constant, p.jumps = frozenset(prog.code), dict(prog.jumps)
+    p.constant, p.jumps, p.sets = frozenset(prog.code), dict(prog.jumps), dict(prog.sets)
     return p, prog.stats
 
 
@@ -206,6 +207,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     pairs = pointer_pairs(p.image, p.starts)
     mem = Memory(p.image, code, p.volatile, loaded, p.sensitive, pairs, tables)
     mod = printer.Module(top, mem)
+    mod.sets = {a: (min(v), max(v)) for a, v in (p.sets or {}).items() if v}
     mod.lifted = {f"f{j}": (fn["pc"], list(fn.get("copies", ()))) for j, fn in enumerate(p.funcs)}
     mod.lifted.update({name: (pc, []) for pc, name in p.entries})
     mod.copy_pcs = {

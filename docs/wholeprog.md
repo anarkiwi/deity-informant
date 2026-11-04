@@ -42,6 +42,7 @@ prog.stats            # insns, raw_ops, emitted_ops, ops, cells, code_guards, ca
 prog.chains           # [{"function", "pc", "kind", "fused", "x", "y", "r"}] carry chains
 prog.induction        # [{"head", "reg", "addr", "lo", "hi", "step", "trips"}] loop counters
 prog.jumps            # {pc: [target, ...]} computed transfers resolved from the code
+prog.sets             # {address: [value, ...]} closed cells (opcodes and operands) and their values
 prog.code             # [addr, ...] bytes treated as constant: code, tables read for jumps and cells
 prog.guard_evals      # conditional branches to a deopt the interpreter backend has run
 r = prog.call(mem, 0, a=0, reg=None, cycles=0, max_cycles=10_000_000, log=True)  # backend=
@@ -319,8 +320,12 @@ the facts, so a proof holds on every execution that stays in lifted code.
   return that did not go to its call's site) reaches every return site and carries nothing.
   The same happens everywhere when the stack is not private: other stores may then rewrite
   return addresses, so the lift analyses the program again without the call pairing.
-- **Unknown.** Memory contents (a loaded value is its full range), so addresses built from
-  zero-page pointers or table lookups keep their guards; the stack; `SP`.
+- **Memory.** The state tracks the contents of the cell operand bytes of instructions and of
+  the bytes the code both loads and stores at a constant address (with the `JMP (ind)` and
+  `(zp),Y` pointers): a store at an exact address sets the byte's interval, a store that may
+  reach it forgets it, and a load or an instruction's operand reads it. A store's values are
+  those of the definitions reaching it, else its register's interval at the store.
+- **Unknown.** Other memory contents (a loaded value is its full range); the stack; `SP`.
 - **Dependencies.** The analysis assumes the entries are called with the registers they
   declare (guarded at entry) and that control follows the edges the lift contains (every
   other edge deopts). It reads no runtime fact beyond those edges and no data byte, so it

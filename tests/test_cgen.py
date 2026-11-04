@@ -732,6 +732,21 @@ ge:     STA $C002
         RTS
 end:
 """
+PATCHED = """
+entry:  AND #$03
+        TAX
+        LDA #$02
+        STA base
+        LDA base
+        STA op+1
+        TXA
+op:     STA $3000
+        LDA $3002
+        STA $C000
+        RTS
+base:   .byte 9
+end:
+"""
 WRAP = """
 entry:  AND #$0F
         ORA #$70
@@ -1432,3 +1447,10 @@ def test_copies_provenance():
     pcs = {1: [1, 11, 21], 2: [2, 12, 0]}
     assert printer._copies([1, [1, 2]], pcs) == [1, [1, 2], 11, [11, 12], 21]
     assert printer._copies([5], {}) == [5]
+
+
+def test_operand_patched_from_constants_is_a_known_store(prefix, tmp_path):
+    """An operand written with a byte the code stored at a constant address holds its value:
+    the store through it has a known address, so needs no code check."""
+    c, _, info = check(prefix, tmp_path, PATCHED, entry_calls(range(4), 2))
+    assert "codechk" not in c and not info["traps"] and "wr(" not in c

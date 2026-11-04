@@ -201,7 +201,8 @@ per-voice routines often are; the rest are renumbered in order.
   some access may touch, outside volatile ranges. An access's interval comes from its address
   expression (constants, an 8-bit index adds `[0, 255]`, masks, shifts, the hull of what flows
   into a block argument or a function's parameter from its call sites, a loop-carried value
-  enumerated to its fixpoint or keeping its initial interval); wider than `$200` is unknown.
+  enumerated to its fixpoint or keeping its initial interval, a load of a closed cell the
+  hull of its values (`Program.sets`)); wider than `$200` is unknown.
   An unknown access may touch every byte of `loaded`, so then every non-code byte of it is in a
   region. Zero page, the stack page and RAM outside the image are regions when accessed.
 - An access whose interval lies in one region is `Rk[off + index]`, `off` relative to the
