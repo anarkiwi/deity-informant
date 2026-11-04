@@ -109,9 +109,10 @@ class Memory:  # pylint: disable=too-many-instance-attributes
     """Regions of ``image`` for the accesses of a program (see the module docstring)."""
 
     def __init__(
-        self, image, code, volatile, loaded, sensitive=(), pairs=None, tables=None
+        self, image, code, volatile, loaded, sensitive=(), pairs=None, tables=None, written=()
     ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self.image, self.code, self.pairs = bytes(image), code, pairs or {}
+        self.written = list(written)
         self.tables = np.zeros(0x10000, dtype=bool) if tables is None else tables
         self.pairs_to = {}
         for lo, hi in self.pairs.items():
@@ -142,6 +143,8 @@ class Memory:  # pylint: disable=too-many-instance-attributes
                 touched[r[0] : r[1] + 1] = True
         if self.unknown:
             touched[self.loaded[0] : self.loaded[1]] = True
+        for lo, hi in self.written:
+            touched[lo:hi] = True
         touched &= ~self.code & ~self.vol
         self.regions = runs(touched)
         for k, (org, n) in enumerate(self.regions):

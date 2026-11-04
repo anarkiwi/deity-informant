@@ -59,7 +59,9 @@ def replay(lib, image, pcs, calls, volatile, sensitive=(), progress=False):
         )
         want = [(addr, v, int(w)) for addr, v, _c, w in r["log"] if w or addr in keep]
         assert k < 0, (n, name, "trap", k)
-        assert got == want, (n, name, got[:8], want[:8])
+        i = next((i for i, (g, w) in enumerate(zip(got, want)) if g != w), None)
+        i = min(len(got), len(want)) if i is None and got != want else i
+        assert i is None, (n, name, i, got[i : i + 4], want[i : i + 4])
     return len(calls)
 
 

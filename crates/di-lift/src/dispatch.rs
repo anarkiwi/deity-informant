@@ -33,6 +33,8 @@ use crate::scev::{Induction, Place};
 use crate::vsa::{Code, Ix, Key, St, Tab, NOREG};
 use di_pcode::{reg, Opc, Space, Template};
 use fixedbitset::FixedBitSet;
+use petgraph::algo::dominators::{simple_fast, Dominators};
+use petgraph::graphmap::DiGraphMap;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::BTreeSet;
 
@@ -883,8 +885,10 @@ pub(crate) fn jumps(
 /// Address sets for the stores through a `(zp),Y` pointer whose two bytes hold, on every
 /// path, table bytes or constants ([`bytes`], inside the tables' extent: the guards that keeps
 /// are appended to `guards`, the bytes read to `reads`): each word whose bytes lie in the
-/// pointer bytes' intervals plus each value of `Y`. The tables read must stay unwritten with
-/// the new address sets, else the stores stay of unknown address.
+/// pointer bytes' intervals plus each value of `Y`; where a loop advances a pointer byte,
+/// the sets [`advanced`] gives (`konst` the bytes taken as constant). The tables read must
+/// stay unwritten with the new address sets, else the stores stay of unknown address.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn pointer_stores(
     code: &Code,
     vars: &FxHashMap<u16, Vec<Var>>,
@@ -893,11 +897,13 @@ pub(crate) fn pointer_stores(
     stores: &mut [Store],
     guards: &mut Vec<Guard>,
     reads: &mut BTreeSet<u16>,
+    konst: &dyn Fn(u32) -> Option<u8>,
 ) -> Vec<usize> {
     let w = written(code, stores);
     // Per store: its index, addresses, the table bytes read and the guards they need.
     type Hit = (usize, Vec<u16>, BTreeSet<u16>, Vec<Guard>);
     let mut found: Vec<Hit> = Vec::new();
+    let mut lp: Option<Loop> = None;
     for (i, s) in stores.iter().enumerate().filter(|(_, s)| s.addrs.is_none()) {
         let Some(var) = vars[&s.pc].iter().find(|v| v.op == s.op) else {
             continue;
@@ -917,7 +923,7 @@ pub(crate) fn pointer_stores(
         let mut addrs = BTreeSet::new();
         let mut read = BTreeSet::new();
         let mut gs = Vec::new();
-        let ok = states.iter().all(|st| {
+        let tagged = states.iter().all(|st| {
             let at = |a: u32| st.mem.iter().find(|e| e.0 as u32 == a).copied();
             let (Some((_, Some(l), li)), Some((_, Some(hb), hv))) = (at(q), at(h)) else {
                 return false;
@@ -936,8 +942,13 @@ pub(crate) fn pointer_stores(
             gs.extend(g);
             true
         });
-        if ok {
+        if tagged {
             found.push((i, addrs.into_iter().collect(), read, gs));
+            continue;
+        }
+        let g = lp.get_or_insert_with(|| Loop::new(code, vars, sets, objs, konst));
+        if let Some((a, r, g)) = advanced(g, s.pc, [q as u16, h as u16], &ys) {
+            found.push((i, a.into_iter().collect(), r, g));
         }
     }
     let mut trial: Vec<Store> = stores.to_vec();
@@ -955,6 +966,307 @@ pub(crate) fn pointer_stores(
         }
     }
     done
+}
+
+/// Bytes known exactly while evaluating a straight chain of instructions, by address.
+type Known = FxHashMap<u16, u8>;
+
+/// Run the one variant at `pc` on `env` and the bytes `mem` holds (else those `konst` gives,
+/// each appended to `read`): a store at an exact address sets its byte, any other forgets
+/// those it may reach.
+fn run(
+    code: &Code,
+    vars: &FxHashMap<u16, Vec<Var>>,
+    pc: u16,
+    env: &mut crate::analysis::Env,
+    mem: &mut Known,
+    konst: &dyn Fn(u32) -> Option<u8>,
+    read: &mut Vec<u16>,
+) {
+    let t = Template::of(vars[&pc][0].op);
+    let b = operand_bytes(code.img, code.cells, pc, t.len);
+
+    let bi: [Iv; 2] = std::array::from_fn(|i| {
+        let a = pc.wrapping_add(i as u16 + 1) as u32;
+        b[i].or_else(|| mem.get(&(a as u16)).copied())
+            .map_or(Iv::full(1), |x| Iv::exact(x as u32))
+    });
+    let seen = std::cell::RefCell::new(Vec::new());
+    let load = |a: Iv| {
+        let x = a.value()?;
+        if let Some(&v) = mem.get(&(x as u16)) {
+            return Some(Iv::exact(v as u32));
+        }
+        let v = konst(x)?;
+        seen.borrow_mut().push(x as u16);
+        Some(Iv::exact(v as u32))
+    };
+    let mut acc = Vec::new();
+    crate::analysis::absint_ranges(t.ops(), b, bi, env, &mut acc, &load);
+    read.extend(seen.into_inner());
+    for a in acc.iter().filter(|a| a.store) {
+        match (a.addr.value(), a.val.value()) {
+            (Some(x), Some(v)) => {
+                mem.insert(x as u16, v as u8);
+            }
+            _ => mem.retain(|&m, _| !a.addr.meets(m as u32, m as u32 + 1)),
+        }
+    }
+}
+
+/// Address sets for a store at `pc` through the `(zp),Y` pointer bytes `ptr` that a loop
+/// advances, evaluated per value of the index its tables are read with ([`advanced_at`]):
+/// the first loop (by head) whose head dominates `pc` that gives one.
+fn advanced(
+    g: &Loop,
+    pc: u16,
+    ptr: [u16; 2],
+    ys: &[u8],
+) -> Option<(BTreeSet<u16>, BTreeSet<u16>, Vec<Guard>)> {
+    let doms: FxHashSet<u32> = g.dom.dominators(pc as u32)?.collect();
+    g.heads
+        .iter()
+        .filter(|&&h| doms.contains(&(h as u32)))
+        .find_map(|&h| advanced_at(g, h, pc, ptr, ys))
+}
+
+/// What [`advanced_at`] reads: the program, its successors, dominators (from a root above the
+/// entries) and loop heads.
+struct Loop<'a> {
+    code: &'a Code<'a>,
+    vars: &'a FxHashMap<u16, Vec<Var>>,
+    sets: &'a Sets<'a>,
+    objs: &'a Objects,
+    konst: &'a dyn Fn(u32) -> Option<u8>,
+    succs: FxHashMap<u16, Vec<u16>>,
+    dom: Dominators<u32>,
+    heads: Vec<u16>,
+}
+
+impl<'a> Loop<'a> {
+    fn new(
+        code: &'a Code<'a>,
+        vars: &'a FxHashMap<u16, Vec<Var>>,
+        sets: &'a Sets<'a>,
+        objs: &'a Objects,
+        konst: &'a dyn Fn(u32) -> Option<u8>,
+    ) -> Self {
+        const ROOT: u32 = 0x10000;
+        let mut succs: FxHashMap<u16, Vec<u16>> = FxHashMap::default();
+        let mut graph: DiGraphMap<u32, ()> = DiGraphMap::new();
+        for &r in sets.roots {
+            graph.add_edge(ROOT, r as u32, ());
+        }
+        for (&s, ps) in &sets.preds {
+            for &p in ps {
+                succs.entry(p).or_default().push(s);
+                graph.add_edge(p as u32, s as u32, ());
+            }
+        }
+        let mut heads: Vec<u16> = sets.ind.iter().map(|i| i.head).collect();
+        heads.sort_unstable();
+        heads.dedup();
+        Loop {
+            code,
+            vars,
+            sets,
+            objs,
+            konst,
+            succs,
+            dom: simple_fast(&graph, ROOT),
+            heads,
+        }
+    }
+}
+
+/// The starts reachable from `from` along `next` without passing `avoid`.
+fn reach(from: &[u16], next: &FxHashMap<u16, Vec<u16>>, avoid: u16) -> FxHashSet<u16> {
+    let mut seen: FxHashSet<u16> = from.iter().copied().filter(|&n| n != avoid).collect();
+    let mut work: Vec<u16> = seen.iter().copied().collect();
+    while let Some(n) = work.pop() {
+        for &m in next.get(&n).into_iter().flatten() {
+            if m != avoid && seen.insert(m) {
+                work.push(m);
+            }
+        }
+    }
+    seen
+}
+
+/// Address sets for a store at `pc` through the pointer bytes `ptr`, given the loop at `h`:
+/// its head dominates `pc`, it is entered by one edge at the end of a straight chain, and no
+/// instruction on a path from the head to `pc` outside the loop writes the pointer bytes.
+/// On the chain the pointer bytes (and the loop's counter) are table bytes of one index value,
+/// or constants; per value of that index the chain runs exactly to the head, the loop's
+/// induction variables then start at known values ([`crate::scev`], their trip bound with
+/// them), and each pointer byte the loop advances takes its start plus the loop's changes to
+/// it over the trips, the others their value at the head. Stores through the pointer are taken
+/// not to write its bytes, as the set found misses zero page and the stack.
+fn advanced_at(
+    g: &Loop,
+    h: u16,
+    pc: u16,
+    ptr: [u16; 2],
+    ys: &[u8],
+) -> Option<(BTreeSet<u16>, BTreeSet<u16>, Vec<Guard>)> {
+    let (sets, succs) = (g.sets, &g.succs);
+    let through = |a: &crate::analysis::Access| {
+        a.store
+            && a.ptr.is_some_and(|p| {
+                p.lo.and_then(|l| l.value()) == Some(ptr[0] as u32)
+                    && p.hi.value() == Some(ptr[1] as u32)
+            })
+    };
+    let body: FxHashSet<u16> = sets
+        .ind
+        .iter()
+        .filter(|i| i.head == h)
+        .flat_map(|i| i.with.keys().copied())
+        .chain([h])
+        .collect();
+    let [p] = sets.preds[&h]
+        .iter()
+        .copied()
+        .filter(|p| !body.contains(p))
+        .collect::<Vec<_>>()[..]
+    else {
+        return None;
+    };
+    let writes = |n: u16| {
+        g.vars[&n].iter().flat_map(|v| &v.acc).any(|a| {
+            a.store && !through(a) && ptr.iter().any(|&b| a.addr.meets(b as u32, b as u32 + 1))
+        })
+    };
+    let between = &reach(&[h], succs, p) & &reach(&[pc], &sets.preds, p);
+    if between.iter().any(|&n| !body.contains(&n) && writes(n)) {
+        return None;
+    }
+    let mut chain = vec![p];
+    while let [m] = sets.preds.get(chain.last()?).map_or(&[][..], |v| &v[..]) {
+        if succs.get(m).map_or(0, Vec::len) != 1
+            || g.vars[m].len() != 1
+            || sets.roots.contains(m)
+            || body.contains(m)
+            || chain.contains(m)
+        {
+            break;
+        }
+        chain.push(*m);
+    }
+    chain.reverse();
+    // The loop alone, entered from `p`, with stores through the pointer kept off its bytes.
+    let mut local: FxHashMap<u16, Vec<u16>> = body
+        .iter()
+        .map(|&n| (n, succs.get(&n).cloned().unwrap_or_default()))
+        .collect();
+    local.insert(p, vec![h]);
+    let mut vars: FxHashMap<u16, Vec<Var>> = local
+        .iter()
+        .flat_map(|(&n, ss)| ss.iter().copied().chain([n]))
+        .filter_map(|n| Some((n, g.vars.get(&n)?.clone())))
+        .collect();
+    for a in vars.values_mut().flatten().flat_map(|v| v.acc.iter_mut()) {
+        if through(a) {
+            a.addr = Iv {
+                lo: 0x200,
+                hi: 0xffff,
+            };
+        }
+    }
+    let rel = |t: &Tab| match *t {
+        Tab::T { reg, ix, .. } => Some((reg, ix)),
+        _ => None,
+    };
+    let at_p = sets.merged.get(&p)?;
+    let want = ptr.iter().find_map(|&b| {
+        at_p.mem
+            .iter()
+            .find(|e| e.0 == b)
+            .and_then(|e| e.1.as_ref())
+            .and_then(rel)
+    })?;
+    (0..chain.len()).rev().find_map(|d| {
+        let st = sets.merged.get(&chain[d])?;
+        let mut places: Vec<(Option<usize>, u16, Tab)> = Vec::new();
+        for (r, t) in st.tag.iter().enumerate() {
+            if let Some(t) = t.filter(|t| rel(t) == Some(want)) {
+                places.push((Some(r), 0, t));
+            }
+        }
+        for &(a, t, _) in &st.mem {
+            if let Some(t) = t.filter(|t| rel(t) == Some(want)) {
+                places.push((None, a, t));
+            }
+        }
+        let tags: Vec<Tab> = places.iter().map(|e| e.2).collect();
+        let (rows, guards) = bytes(g.code, sets, g.objs, &tags)?;
+        let mut addrs = BTreeSet::new();
+        let mut read: Vec<u16> = rows.iter().flatten().filter_map(|x| x.2).collect();
+        for i in 0..rows[0].len() {
+            let mut env = st.env;
+            let mut mem: Known = st
+                .mem
+                .iter()
+                .filter_map(|e| Some((e.0, e.2.value()? as u8)))
+                .collect();
+            for ((r, a, _), col) in places.iter().zip(&rows) {
+                match r {
+                    Some(r) => env[*r] = Iv::exact(col[i].1 as u32),
+                    None => {
+                        mem.insert(*a, col[i].1);
+                    }
+                }
+            }
+            for &n in &chain[d..chain.len() - 1] {
+                run(g.code, g.vars, n, &mut env, &mut mem, g.konst, &mut read);
+            }
+            let mut st2: FxHashMap<u16, St> = body
+                .iter()
+                .filter_map(|n| Some((*n, sets.merged.get(n)?.clone())))
+                .collect();
+            let mut entry = at_p.clone();
+            entry.env = env;
+            st2.insert(p, entry);
+            run(g.code, g.vars, p, &mut env, &mut mem, g.konst, &mut read);
+            let heads = [h].into_iter().collect();
+            let ivs = crate::scev::find(
+                g.code,
+                &vars,
+                &heads,
+                &local,
+                &st2,
+                &[p],
+                g.konst,
+                &mut read,
+            );
+            let exact = ivs
+                .iter()
+                .all(|i| matches!(i.var, Place::Mem(_)) || i.start.value().is_some());
+            let t = ivs.first().and_then(|iv| iv.trips).filter(|_| exact)?;
+            let vals = |b: u16| -> Option<BTreeSet<u8>> {
+                let s0 = *mem.get(&b)?;
+                let Some(iv) = ivs.iter().find(|i| i.var == Place::Mem(b)) else {
+                    return Some(BTreeSet::from([s0]));
+                };
+                let steps = (0..t).map(|j| (j * iv.step as u32) as u8);
+                let offs: BTreeSet<u8> = steps
+                    .flat_map(|j| iv.at.values().chain(&[0]).map(move |&a| a.wrapping_add(j)))
+                    .collect();
+                Some(offs.into_iter().map(|o| s0.wrapping_add(o)).collect())
+            };
+            let (lo, hi) = (vals(ptr[0])?, vals(ptr[1])?);
+            for &l in &lo {
+                for &hb in &hi {
+                    let word = u16::from_le_bytes([l, hb]);
+                    addrs.extend(ys.iter().map(|&y| word.wrapping_add(y as u16)));
+                }
+            }
+        }
+        if addrs.iter().any(|&a| a < 0x200) {
+            return None;
+        }
+        Some((addrs, read.into_iter().collect(), guards))
+    })
 }
 
 /// The values each byte some store writes may hold, from its entry byte and the stores that

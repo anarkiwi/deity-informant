@@ -321,6 +321,8 @@ pub struct Program {
     pub sets: Vec<(u16, Vec<u8>)>,
     /// Volatile ranges `[lo, hi)`.
     pub volatile: Vec<(u32, u32)>,
+    /// Runs `[lo, hi)` of the bytes stores with address sets may write.
+    pub written: Vec<(u32, u32)>,
     /// `CALL` pushes no return address; a deopt writes those of the active frames.
     pub elide_ret: bool,
     /// Cycles are counted (`CY`, cycle-budget checks, volatile accesses at their cycle).
