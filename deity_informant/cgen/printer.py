@@ -728,7 +728,8 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         if len(items) != 1 or items[0][0] != "ops":
             return False
         return not any(
-            self.effect(o) or o.name == "func.call" for o in items[0][1].ops[:-1]
+            self.effect(o) or o.name == "func.call"
+            for o in items[0][1].ops[:-1]
             if id(o) not in self.dropped
         )
 
@@ -1489,7 +1490,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         """``(condition, copy items)`` of latch ``u``'s back edge to loop head ``h``."""
         for t, c in self.g.succ[u]:
             if t == h or [x for x, _ in self.g.succ.get(t, ())] == [h]:
-                return self.g.cond(c), [i for i in self.g.items[t] if i[0] == "copy"] if t != h else []
+                return self.g.cond(c), (
+                    [i for i in self.g.items[t] if i[0] == "copy"] if t != h else []
+                )
         raise AssertionError(u)
 
     def convert_latched(self, it):
@@ -1498,7 +1501,10 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         body = _strip_continue(self.convert(it[1]))
         f, copies = self.latch_edge(it[3], it[2])
         refs, pre, post = set(), [], []
-        for out, items in ((pre, [i for i in self.g.items[it[3]] if i[0] == "ops"]), (post, copies)):
+        for out, items in (
+            (pre, [i for i in self.g.items[it[3]] if i[0] == "ops"]),
+            (post, copies),
+        ):
             for st in self.convert(items):
                 assert st[0] == "a", st
                 out.append(f"{st[1]} = {st[2]}")
@@ -1674,7 +1680,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             body, lambda st, read: st[1] not in read and self.copies.get(id(st)) is st
         )
         self.prov["gotos"] = [
-            e for st in walk(body) if self.edges.get(id(st), (None,))[0] is st
+            e
+            for st in walk(body)
+            if self.edges.get(id(st), (None,))[0] is st
             for e in self.edges[id(st)][1]
         ]
         declare(body, self.types)

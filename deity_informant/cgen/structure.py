@@ -322,8 +322,10 @@ def split_tails(g, tail):
     while grown:
         grown = False
         for n, es in g.succ.items():
-            ok = not es and g.items[n][-1][0] == "return" or (
-                len(es) == 1 and es[0][1] is None and es[0][0] in tails
+            ok = (
+                not es
+                and g.items[n][-1][0] == "return"
+                or (len(es) == 1 and es[0][1] is None and es[0][0] in tails)
             )
             if n not in tails and n != g.entry and ok and tail(g.items[n]):
                 tails.add(n)
@@ -537,7 +539,8 @@ class Structurer:
     def rejoins(self, x, y):
         """Whether the paths from ``x`` meet at ``y`` (its post-dominator): none reaches what
         follows ``y`` without passing it, a back edge, an edge into a loop's latch (the
-        loop continues) and an exit of ``x``'s innermost loop ending a path."""
+        loop continues), an exit of ``x``'s innermost loop and a jump to a node placed after
+        ``y`` ending a path."""
         inner = min((lp for lp in self.loops.values() if x in lp), key=len, default=None)
         latches = {u for u, _ in self.back} | set(self.latch.values())
 
@@ -550,7 +553,8 @@ class Structurer:
                 seen.add(n)
                 for t, _ in self.g.succ[n]:
                     if (n, t) not in self.back and (inner is None or t in inner):
-                        if t not in latches or t == stop:
+                        later = stop is not None and t in self.at and self.rank[t] > self.rank[y]
+                        if (t not in latches or t == stop) and not later:
                             work.append(t)
             return seen
 

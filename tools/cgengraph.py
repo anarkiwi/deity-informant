@@ -32,7 +32,14 @@ def dump(cf, out=print, verbose=False):
         out(f"  [{n}] {cf.first_pc(n) or 0:04X}..{cf.source_pc(n) or 0:04X} {kinds:12} -> {es}")
         for it in g.items[n]:
             if it[0] == "ops" and verbose:
-                out("        " + "; ".join(o.name.split(".")[-1] + ("@" + o.prop("callee")[1:] if o.name == "func.call" else "") for o in it[1].ops))
+                out(
+                    "        "
+                    + "; ".join(
+                        o.name.split(".")[-1]
+                        + ("@" + o.prop("callee")[1:] if o.name == "func.call" else "")
+                        for o in it[1].ops
+                    )
+                )
             if it[0] == "copy":
                 out("        " + ", ".join(f"{d} := {v}" for d, v, _ in it[1]))
 
