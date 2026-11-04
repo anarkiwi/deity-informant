@@ -820,6 +820,10 @@ pub fn plan(
         out
     };
     let h_of = |succ: &[(u16, H)]| succ.first().map_or(H::Unknown, |x| x.1);
+    let args = !top
+        && g.vars.values().flatten().any(|v| {
+            matches!(&v.flow, Flow::Jsr { t: Tg::At(t), ret } if *t == pc && g.past.contains_key(ret))
+        });
     // A `TXS` restoring a stack pointer saved at a known height continues there; an
     // `RTS`/`RTI` whose targets the code gives goes to them alone, not to the return sites of
     // the inline `JSR`s at its height.
@@ -831,8 +835,8 @@ pub fn plan(
                 s.unbalanced = !top && matches!(h, H::Known(1..));
             }
         }
-        // A callee may pull and push back its own return address.
-        if !top && matches!(v.flow, Flow::Next(_)) && matches!(s.succ[..], [(_, H::Known(1..=2))]) {
+        // A callee returning past inline arguments pulls and pushes back its return address.
+        if args && matches!(v.flow, Flow::Next(_)) && matches!(s.succ[..], [(_, H::Known(1..=2))]) {
             s.unbalanced = false;
         }
         // A call returning past inline arguments continues there.
