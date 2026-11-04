@@ -213,8 +213,12 @@ the program, and checks it against the reference.
    from outside it or is an entry or callee, and no exit enters it), the copies' pushes and
    pulls agree and return to the entry height at every exit, and every operand the copies
    differ in is affine in `k` (`base + stride * k`: per-voice zero-page, I/O and table
-   addresses) or lies in each copy's own code (its cells and jump targets); the starts
-   breaking this are left out and the walk repeated. Per candidate entry the set of copies
+   addresses), lies in each copy's own code (its cells and jump targets) or is an immediate (a
+   per-copy constant, `v0 + sum((k == i) * (vi - v0))`); the starts breaking this are left
+   out and the walk repeated. The copies must hold state of their own (an address they
+   differ in, a cell, a jump through tables shifted per copy): copies alike in every address
+   are one routine repeated, whatever their immediates. A per-copy constant saves nothing (each
+   copy keeps its value). Per candidate entry the set of copies
    saving the most instructions (those held, less the merged function's and one call per
    copy) is kept when it has at least three copies: two fit any line, only a third shows the
    operands are a family indexed by the copy. Classes are taken greedily by saving, no start in
