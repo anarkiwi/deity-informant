@@ -422,9 +422,11 @@ class Structurer:
 
     def __init__(self, conds, quiet=lambda items: False, hoistable=lambda items: False,
                  falls=lambda p, y: False, place=lambda n: 0,
-                 tail=lambda items: False, exprable=lambda items: False):  # fmt: skip
+                 tail=lambda items: False, exprable=lambda items: False,
+                 latchable=lambda items: False):  # fmt: skip
         self.conds, self.quiet, self.hoistable, self.falls = conds, quiet, hoistable, falls
-        self.place, self.tail, self.exprable = place, tail, exprable
+        self.place, self.tail, self.exprable, self.latchable = place, tail, exprable, latchable
+        self.latch, self.cases = {}, {}
         self.g = self.kids = self.loops = self.back = self.rank = None
         self.at, self.after, self.follows, self.idom = {}, {}, set(), {}
 
@@ -461,6 +463,12 @@ class Structurer:
                 self.at[f] = h
                 self.follows.add(f)
         self.idom = idom
+        self.latch = {}
+        for h, lp in self.loops.items():
+            u = self._latch(h, lp, back, fwd)
+            if u is not None:
+                self.latch[h] = u
+                self.at[u] = h
         self.cases = {
             t: d
             for d, es in g.succ.items()
@@ -474,6 +482,24 @@ class Structurer:
         for y in sorted(self.at, key=self.rank.__getitem__):
             self.after.setdefault(self.at[y], []).append(y)
         return self.simplify(self.tree(g.entry), frozenset(), None)
+
+    def _latch(self, h, lp, back, fwd):
+        """The latch of the loop headed by ``h`` printed as its ``do``/``while`` condition
+        (``continue`` goes to it): the one branch the back edge leaves (through copies), its
+        other edge leaving the loop, entered by two or more forward edges, ``latchable``."""
+        srcs = {n for n, t in back if t == h}
+        if len(srcs) != 1:
+            return None
+        (u,) = srcs
+        if _copies_only(self.g, u):
+            preds = [p for p, es in self.g.succ.items() if any(t == u for t, _ in es)]
+            u = preds[0] if len(preds) == 1 else None
+        if u is None or u == h or fwd.get(u, 0) < 2 or u in self.g.effects:
+            return None
+        es = self.g.succ[u]
+        if len(es) != 2 or sum(t in lp for t, _ in es) != 1 or not self.latchable(self.g.items[u]):
+            return None
+        return u
 
     def follow(self, h, idom):
         """The follow of the loop headed by ``h``, or None."""
@@ -513,7 +539,7 @@ class Structurer:
         follows ``y`` without passing it, a back edge, an edge into a loop's latch (the
         loop continues) and an exit of ``x``'s innermost loop ending a path."""
         inner = min((lp for lp in self.loops.values() if x in lp), key=len, default=None)
-        latches = {u for u, _ in self.back}
+        latches = {u for u, _ in self.back} | set(self.latch.values())
 
         def walk(work, stop):
             seen = set()
@@ -553,6 +579,12 @@ class Structurer:
         body = [("label", x), *self.g.items[x], *self.term(x)]
         if x not in self.loops:
             return body + [it for y in ys for it in self.tree(y)]
+        u = self.latch.get(x)
+        if u is not None:
+            inside = [it for y in ys if y in self.loops[x] and y != u for it in self.tree(y)]
+            outside = [it for y in ys if y not in self.loops[x] for it in self.tree(y)]
+            exit_ = next(t for t, _ in self.g.succ[u] if t not in self.loops[x] and t != x)
+            return [("loop", body + inside, x, u), *self.branch(u, exit_), *outside]
         inside = [it for y in ys if y in self.loops[x] for it in self.tree(y)]
         outside = [it for y in ys if y not in self.loops[x] for it in self.tree(y)]
         return [("loop", body + inside, x), *outside]
@@ -606,7 +638,8 @@ class Structurer:
                 then, els = self.simplify(it[3], follow, loop), self.simplify(it[4], follow, loop)
                 it = (*it[:3], then, els, it[5])
             elif kind == "loop":
-                it = ("loop", self.simplify(it[1], frozenset([it[2]]), (it[2], follow)), it[2])
+                top = it[3] if len(it) > 3 else it[2]
+                it = ("loop", self.simplify(it[1], frozenset([top]), (top, follow)), *it[2:])
             out.append(it)
         return out
 
@@ -652,7 +685,7 @@ class Structurer:
                     els = self.decide(it[4], known & ~f)
                     out.append(("if", f, it[2] & path, then, els, it[5]))
             elif it[0] == "loop":
-                out.append(("loop", self.decide(it[1], path), it[2]))
+                out.append(("loop", self.decide(it[1], path), *it[2:]))
             else:
                 out.append(it)
         return out
@@ -694,7 +727,7 @@ class Structurer:
                 else:
                     it = (*it[:3], self.chains(it[3], follow), self.chains(it[4], follow), it[5])
             elif it[0] == "loop":
-                it = ("loop", self.chains(it[1], frozenset()), it[2])
+                it = ("loop", self.chains(it[1], frozenset()), *it[2:])
             out.append(it)
         return out
 
@@ -776,7 +809,7 @@ def _unlabel(items, used):
         if it[0] == "if":
             it = (*it[:3], _unlabel(it[3], used), _unlabel(it[4], used), it[5])
         elif it[0] == "loop":
-            it = ("loop", _unlabel(it[1], used), it[2])
+            it = ("loop", _unlabel(it[1], used), *it[2:])
         elif it[0] == "switch":
             it = ("switch", it[1], [(c, _unlabel(b, used)) for c, b in it[2]], it[3])
         out.append(it)

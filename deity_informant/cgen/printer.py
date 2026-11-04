@@ -723,6 +723,15 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                     return False
         return True
 
+    def latchable(self, items):
+        """Whether statements ``items`` are one block with no effect."""
+        if len(items) != 1 or items[0][0] != "ops":
+            return False
+        return not any(
+            self.effect(o) or o.name == "func.call" for o in items[0][1].ops[:-1]
+            if id(o) not in self.dropped
+        )
+
     def exprable(self, items):
         """Whether statements ``items`` are one block whose effects are stores and I/O
         accesses and whose values only it reads: C expressions with no declaration."""
@@ -845,6 +854,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             lambda n: self.first_pc(n) or 0,
             self.f.tail,
             self.f.exprable,
+            self.f.latchable,
         )
         self.body = s.finish(s.structure(self.g))
 
@@ -917,6 +927,13 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
                     yield from self.item_refs(body, ())
             elif kind == "loop":
                 yield from self.item_refs(it[1], ())
+                if len(it) > 3:
+                    f, copies = self.latch_edge(it[3], it[2])
+                    for cube in self.cover(f, self.f.conds.care):
+                        for key, _ in cube:
+                            if self.f.lit_value(key) is not None:
+                                yield self.f.lit_value(key), False
+                    yield from self.item_refs(copies, ())
 
     def def_in(self, v, blks):
         """Whether value ``v`` is defined by an operation of one of the blocks ``blks``."""
@@ -1460,10 +1477,37 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             elif kind == "switch":
                 out += self.convert_switch(it)
                 self.prov["switches"].append(self.source_pc(it[3]))
+            elif len(it) > 3:
+                out.append(self.convert_latched(it))
+                self.prov["loops"].append(self.head_pc(it[2]))
             else:
                 out.append(self.convert_loop(self.convert(it[1])))
                 self.prov["loops"].append(self.head_pc(it[2]))
         return _merge_tails(out)
+
+    def latch_edge(self, u, h):
+        """``(condition, copy items)`` of latch ``u``'s back edge to loop head ``h``."""
+        for t, c in self.g.succ[u]:
+            if t == h or [x for x, _ in self.g.succ.get(t, ())] == [h]:
+                return self.g.cond(c), [i for i in self.g.items[t] if i[0] == "copy"] if t != h else []
+        raise AssertionError(u)
+
+    def convert_latched(self, it):
+        """A loop whose latch ``it[3]`` is its ``do``/``while`` condition: the latch's
+        statements, its back edge's test and copies as one expression."""
+        body = _strip_continue(self.convert(it[1]))
+        f, copies = self.latch_edge(it[3], it[2])
+        refs, pre, post = set(), [], []
+        for out, items in ((pre, [i for i in self.g.items[it[3]] if i[0] == "ops"]), (post, copies)):
+            for st in self.convert(items):
+                assert st[0] == "a", st
+                out.append(f"{st[1]} = {st[2]}")
+                refs |= st[3] | {st[1]}
+        c = self.cond(f, self.f.conds.care)
+        text = f"({', '.join([*pre, c.text])})" if pre else c.text
+        if post:
+            text = f"{par(E(text, c.prec, c.op), 5, '&&')} && ({', '.join([*post, '1'])})"
+        return ("loop", "do", text, frozenset(refs | c.refs), body)
 
     def selector(self, head):
         """The C variable choosing the entry of the cycle selector ``head`` enters."""
