@@ -328,11 +328,11 @@ impl Cx<'_> {
 
     /// Starts that keep the copies of `c` from being single-entry regions entered at their
     /// entries and left at their exits (one entered from outside its copy or from elsewhere
-    /// than a flow edge, an exit into its own copy; empty when `c` is sound), and the number of
-    /// merged instructions whose immediate is a per-copy constant.
-    fn faults(&self, c: &Class) -> (Vec<u16>, usize) {
+    /// than a flow edge, an exit into its own copy; empty when `c` is sound), and the starts of
+    /// the merged instructions whose immediate is a per-copy constant.
+    fn faults(&self, c: &Class) -> (Vec<u16>, Vec<Vec<u16>>) {
         let n = c.copies();
-        let mut consts = 0;
+        let mut consts = Vec::new();
         let mut own: Vec<FxHashSet<u16>> = vec![FxHashSet::default(); n];
         for node in &c.nodes {
             for (k, p) in node.pcs.iter().enumerate() {
@@ -407,7 +407,7 @@ impl Cx<'_> {
             let value = len == 2 && v.acc.is_empty();
             if line(&pts, m).is_none() && !inside {
                 if value {
-                    consts += 1;
+                    consts.push(node.pcs.iter().flatten().copied().collect());
                 } else {
                     bad.extend(node.pcs.iter().flatten().copied());
                 }
@@ -539,14 +539,15 @@ impl Cx<'_> {
         loop {
             let mut c = self.walk(ms, &banned)?;
             let (bad, consts) = self.faults(&c);
-            c.consts = consts;
+            c.consts = consts.len();
+            if bad.is_empty() && !consts.is_empty() && !self.leaves_unconditionally(&c) {
+                // Per-copy constants only in an unrolled body: elsewhere they leave the class.
+                banned.extend(consts.into_iter().flatten());
+                continue;
+            }
             if bad.is_empty() {
-                let chained = c.consts == 0 || self.leaves_unconditionally(&c);
-                return (self.indexed(&c)
-                    && self.unrolled(&c)
-                    && chained
-                    && self.heights(&c).is_some())
-                .then_some(c);
+                return (self.indexed(&c) && self.unrolled(&c) && self.heights(&c).is_some())
+                    .then_some(c);
             }
             banned.extend(bad);
         }
