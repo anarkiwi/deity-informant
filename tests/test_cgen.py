@@ -24,7 +24,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import cclones  # noqa: E402  pylint: disable=wrong-import-position
 import cgenplay  # noqa: E402  pylint: disable=wrong-import-position
 import cmetrics  # noqa: E402  pylint: disable=wrong-import-position
-import csize  # noqa: E402  pylint: disable=wrong-import-position
 from test_pcode2mlir import OPS, UNARY, VALUES, op_function, unary_function  # noqa: E402
 
 pytestmark = pytest.mark.skipif(
@@ -1898,6 +1897,7 @@ def test_copies_differing_only_in_immediates_stay_apart(prefix, tmp_path):
 def test_size_attribution(prefix, tmp_path):
     """tools/csize.py splits a compiled translation's bytes by C function and origin, each
     function against the instruction bytes of the 6502 code its provenance names."""
+    csize = pytest.importorskip("csize")
     img, labels, loaded = assemble(PTRS)
     c, h, info = translate(prefix, img, labels, loaded)
     (tmp_path / "t.c").write_text(c, encoding="utf-8")
@@ -1932,6 +1932,7 @@ def test_size_attribution(prefix, tmp_path):
 def test_size_origins_of_lines():
     """Lines are classified by what they cost: trap paths with their tests, dispatch, tests of
     code cells, 16-bit arithmetic, the rest."""
+    csize = pytest.importorskip("csize")
     text = """static uint8_t rd(uint16_t a) {
   return R0[a - R0_ORG];
 }
