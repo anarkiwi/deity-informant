@@ -35,6 +35,7 @@ from deity_informant import trace, wholeprog
 facts = trace.collect(state, lambda s: [s.call(play) for _ in range(3000)])
 prog = wholeprog.lift(state, [play], volatile=[(lo, hi)], facts=facts)   # cycles=False
 prog = wholeprog.lift(image, [init, play], volatile, entry_sp=0xFD, loaded=(lo, hi))  # static
+# sensitive=[addr, ...]: the volatile reads with effects; other throw-away reads are not made
 prog.functions        # [{"pc", "entry", "recursive", "blocks": [{"pc", "ops"}], "tables", "closed",
                       #   "copies", "copy_pcs"}]: copy_pcs per merged instruction each copy's pc
                       # an op: [name, out, ins, aux, pc], pc the instruction it was emitted for
@@ -46,6 +47,8 @@ prog.sets             # {address: [value, ...]} closed cells (opcodes and operan
 prog.code             # [addr, ...] bytes treated as constant: code, tables read for jumps and cells
 prog.written          # [(lo, hi), ...] runs of the bytes stores with address sets may write
 prog.starts           # [pc, ...] instruction starts the functions plan (every instance copy's)
+prog.addr_sets        # {(pc, store): [(lo, hi), ...]} address sets of pointer accesses
+prog.bounds           # {address: (lo, hi)} bytes whose every store has an exact address
 prog.guard_evals      # conditional branches to a deopt the interpreter backend has run
 r = prog.call(mem, 0, a=0, reg=None, cycles=0, max_cycles=10_000_000, log=True)  # backend=
 prog.backend          # "jit" (default) or "interp"; prog.compile() -> compile seconds
@@ -347,7 +350,18 @@ the facts, so a proof holds on every execution that stays in lifted code.
   the bytes the code both loads and stores at a constant address (with the `JMP (ind)` and
   `(zp),Y` pointers): a store at an exact address sets the byte's interval, a store that may
   reach it forgets it, and a load or an instruction's operand reads it. A store's values are
-  those of the definitions reaching it, else its register's interval at the store.
+  those of the definitions reaching it, else its register's interval at the store; a store
+  that steers control (into an opcode or a jump's operand) takes the table bytes its register
+  was loaded from when it holds one on every path, which are exact where the interval is a
+  hull.
+- **Constant tables.** A load whose address interval (at most a page) holds only loaded bytes
+  taken as constant (*Table extents*: none a store with an address set writes) and no cell
+  reads the hull of those bytes, and they join the tables read as constant, so a store of
+  unknown address that may hit them is checked like one into code (`codechk`). A byte a store
+  with an address set may write is not constant from the next round of discovery on.
+- **Byte bounds.** `Program.bounds` gives, for each byte (outside page 1, not a cell) every
+  store that may write has an exact address and a value narrower than a byte, the hull of
+  its entry byte and the stored values: what it holds whenever lifted code runs.
 - **Unknown.** Other memory contents (a loaded value is its full range); the stack; `SP`.
 - **Dependencies.** The analysis assumes the entries are called with the registers they
   declare (guarded at entry) and that control follows the edges the lift contains (every
@@ -390,6 +404,26 @@ the facts, so a proof holds on every execution that stays in lifted code.
   A read-back is two byte loads combined into a word (one 2-byte load where nothing between
   may store into them, *Carry chains*), so value numbering folds it where the stored bytes are
   known; a deopt fires when `(p - ($100 - m)) & $FFFF < $100 + m`.
+
+  With a declared entry SP (a static lift) the windows keep pointers out of every *zone*:
+  page 1 and the volatile ranges widened to whole pages (`ptr::zones`), each window
+  `[lo - m, hi - 1]` of a zone `[lo, hi)`. An access through protected pairs then reaches no
+  device, so its throw-away read is not made and it is not volatile. With no facts a pair is
+  not protected when a lifted load reads one of its bytes other than to dereference or step
+  it (a pair also used as data may hold any value between its uses as a pointer), and its
+  window is narrowed to `$FF` (else given up) when a store to its high byte names only pages
+  inside the `$100` window (a pair cleared to zero). A store of unknown address checks only
+  the pair it wrote (`a - q < 3`, the completing store's partner included); an indexed store
+  completes a pair when a later one on its chain stores at its addresses plus one through the
+  same, unchanged index register (`STA $21,X; ...; STA $22,X`). Every other access through a
+  pointer that may reach a zone (a pair no window keeps, or an absolute operand that is a
+  cell) is *zone-checked*: the high bytes of its address and of its throw-away read's are
+  compared with the zone pages before the instruction (`stats["zone_guards"]`, deopt before
+  it), unless every value its pointer's high byte may hold (the initial byte and every stored
+  value, or a closed cell's values) names, with the next page when indexed, no zone page. A
+  pointer whose high byte some store sets to a value naming only zone pages, or an operand
+  whose high byte names one in the image, means the device or the stack and is left as it is. Pushes are stored to memory only for loads that may still
+  reach page 1.
 - **Induction variables.** `scev.rs` finds, per loop head entered only at its head, each index
   register and each byte a loop instruction loads and stores back (`INC`/`DEC`) that changes by
   one constant on every path from the head to each instruction start of the loop, and by a
@@ -448,7 +482,10 @@ the facts, so a proof holds on every execution that stays in lifted code.
   start plus the loop's changes to it over the trips, the other its value at the head, and the
   store's address set is the words they make plus each value of `Y`. A set reaching zero page
   or the stack is not taken, so the assumption holds. Bytes past the image such a set holds
-  are data (`Program.written`), and the reached instructions it overwrites are cells.
+  are data (`Program.written`), and the reached instructions it overwrites are cells. A load
+  through such a pointer gets its set the same way (when its tables need no index guard: it
+  is a fact the lift does not rely on), and its interval is the set's hull.
+  `Program.addr_sets` gives these sets per instruction and kind (`{(pc, store): [(lo, hi)]}`).
 - **Computed jumps** (`dispatch.rs`). A `JMP (ind)` whose pointer bytes are tagged on every
   path into it, a `JMP`/`JSR` whose cell operand bytes are (a byte that is not a cell is a
   constant), and an `RTS`/`RTI` whose return-address bytes are pushed so on every path, goes

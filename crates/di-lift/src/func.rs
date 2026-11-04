@@ -359,19 +359,19 @@ impl Plan {
             for (v, arm) in g.vars[&pc].iter().zip(&mut node.arms) {
                 let t = Template::of(v.op);
                 let mut x = e;
-                let prior = std::mem::take(&mut arm.acc);
+                let prior = &v.acc;
+                arm.acc.clear();
                 absint(
                     t.ops(),
                     operand_bytes(img, &g.cells, pc, t.len),
                     &mut x,
                     &mut arm.acc,
                 );
-                for (a, p) in arm.acc.iter_mut().zip(&prior) {
+                for (a, p) in arm.acc.iter_mut().zip(prior) {
                     let (lo, hi) = (a.addr.lo.max(p.addr.lo), a.addr.hi.min(p.addr.hi));
-                    if lo <= hi {
-                        a.addr = Iv { lo, hi };
-                    }
-                    (a.defd, a.above, a.ptr) = (p.defd, p.above, p.ptr);
+                    a.addr = if lo <= hi { Iv { lo, hi } } else { p.addr };
+                    (a.defd, a.above, a.ptr, a.zone, a.zfree) =
+                        (p.defd, p.above, p.ptr, p.zone, p.zfree);
                 }
                 if matches!(
                     arm.ctl,

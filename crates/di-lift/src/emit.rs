@@ -57,6 +57,8 @@ pub struct Shared<'a> {
     /// With a declared entry SP and a private stack, the addresses the stack may hold: only
     /// stores that may hit them are checked (loads read the shadowed bytes exactly).
     pub stack: Option<Iv>,
+    /// The volatile addresses whose reads have effects (none: all).
+    pub sensitive: Option<&'a [u16]>,
 }
 
 impl Shared<'_> {
@@ -122,6 +124,7 @@ pub struct Counts {
     pub code_guards: usize,
     pub stack_guards: usize,
     pub ptr_guards: usize,
+    pub zone_guards: usize,
     pub slot_ops: usize,
     /// Dispatches on SP after SP-setting instructions.
     pub sp_dispatch: usize,
@@ -393,6 +396,28 @@ impl<'a> Em<'a, '_> {
     fn kept(&self, addr: Iv) -> bool {
         self.sh.private && self.plan.kept(self.slots, self.nh, addr)
     }
+    /// Whether `addr` lies in a zone (page 1 or a volatile page), from its high byte.
+    fn in_zone(&mut self, addr: Vn) -> Vn {
+        let h = self.op(Opc::IntRight, 2, addr, k(8, 1));
+        let h = self.op(Opc::Copy, 1, h, NONE);
+        let mut hit = NONE;
+        for &(lo, hi) in &self.sh.g.zones {
+            let (p, n) = (lo >> 8, (hi - lo) >> 8);
+            let c = match n {
+                1 => self.op(Opc::IntEqual, 1, h, k(p, 1)),
+                _ => {
+                    let off = self.op(Opc::IntSub, 1, h, k(p, 1));
+                    self.op(Opc::IntLess, 1, off, k(n.min(0xff), 1))
+                }
+            };
+            hit = if hit.is_none() {
+                c
+            } else {
+                self.op(Opc::IntOr, 1, hit, c)
+            };
+        }
+        hit
+    }
     /// Deopt to `pc` before the access at `addr` when it reaches page 1 (outside `allow`).
     fn page1_guard(&mut self, addr: Vn, pc: u16, allow: Option<Iv>) {
         let page = self.op(Opc::IntAnd, 2, addr, k(0xff00, 2));
@@ -641,7 +666,8 @@ impl<'a> Em<'a, '_> {
     /// A throw-away read of `addr` (interval `iv`) when `pred` holds (none: always), emitted
     /// only where it may reach a volatile address: elsewhere it has no effect.
     fn touch(&mut self, addr: Vn, pred: Vn, iv: Iv) {
-        if !self.reaches(iv) {
+        let felt = |s: &[u16]| s.iter().any(|&a| iv.meets(a as u32, a as u32 + 1));
+        if !self.reaches(iv) || self.sh.sensitive.is_some_and(|s| !felt(s)) {
             return;
         }
         let f = match self.sh.bank {
@@ -854,9 +880,23 @@ impl<'a> Em<'a, '_> {
         let lo = ld(self, q);
         let hi = ld(self, q.wrapping_add(1));
         let p = self.word(lo, hi);
-        let off = self.op(Opc::IntSub, 2, p, k(0x100 - t, 2));
         self.n.ptr_guards += 1;
-        self.op(Opc::IntLess, 1, off, k(0x100 + t, 2))
+        let mut bad = NONE;
+        for &(zl, zh) in &self.sh.g.zones {
+            let off = self.op(Opc::IntSub, 2, p, k(zl.wrapping_sub(t) & 0xffff, 2));
+            let c = self.op(Opc::IntLess, 1, off, k(zh - zl + t, 2));
+            bad = if bad.is_none() {
+                c
+            } else {
+                self.op(Opc::IntOr, 1, bad, c)
+            };
+        }
+        bad
+    }
+    /// Whether access `ac` is through pairs whose windows keep it out of the volatile
+    /// ranges (pointer windows with a declared entry SP).
+    fn quiet(&self, ac: &Access) -> bool {
+        self.sh.bank.is_none() && self.sh.g.zones.len() > 1 && ac.windowed(&self.sh.g.prot.win)
     }
     /// Deopt to `pc` when any check fired; after a code check with every register handed
     /// over, as the reference may run changed code.
@@ -942,6 +982,7 @@ impl<'a> Em<'a, '_> {
     ) -> Vec<Vn> {
         let mut chk = Vec::new();
         let mut ai = 0;
+        let mut zone = NONE;
         for op in ops {
             let mut map = |em: &mut Self, v: Vn| -> Vn {
                 match v.space() {
@@ -990,16 +1031,42 @@ impl<'a> Em<'a, '_> {
                     defd: false,
                     above: false,
                     ptr: None,
+                    zone: false,
+                    zfree: false,
                 });
+                if ac.zone && !ac.zfree && !stack && page1_check(opc, ai) == Check::Own {
+                    // One exit before the last checked access covers the instruction's.
+                    let c = self.in_zone(a);
+                    zone = if zone.is_none() {
+                        c
+                    } else {
+                        self.op(Opc::IntOr, 1, zone, c)
+                    };
+                    let later = (ai + 1..acc.len())
+                        .any(|j| acc[j].zone && !acc[j].zfree && page1_check(opc, j) == Check::Own);
+                    if !later {
+                        self.n.zone_guards += 1;
+                        let x = self.side_exit(zone, true, |em| em.deopt(k(pc as u32, 2)));
+                        self.f.blocks[x as usize].replay = Some(self.istart);
+                    }
+                }
                 if op.opc == Opc::Load && op.out.is_none() {
                     ai += 1;
-                    self.touch(a, b, ac.addr);
+                    // Kept out of the zones by its own check, or through windowed pairs.
+                    let mut via = acc
+                        .iter()
+                        .filter(|x| !x.dummy && x.ptr.is_some())
+                        .peekable();
+                    let windowed = via.peek().is_some() && via.all(|x| self.quiet(x));
+                    if !ac.zone && !windowed {
+                        self.touch(a, b, ac.addr);
+                    }
                     continue;
                 }
                 if let (Some(r), false, Check::Own, Opc::Store) =
                     (self.sh.stack, stack, page1_check(opc, ai), op.opc)
                 {
-                    if ac.addr.meets(r.lo, r.hi + 1) {
+                    if ac.addr.meets(r.lo, r.hi + 1) && ac.page1(&self.sh.g.prot.win) {
                         self.range_guard(a, pc, r);
                     }
                 } else if self.sh.stack.is_none()
@@ -1015,23 +1082,36 @@ impl<'a> Em<'a, '_> {
                     }
                 }
                 ai += 1;
+                let quiet = !stack && self.quiet(&ac);
                 aux = match (stack, op.opc) {
                     (true, Opc::Load) => {
                         self.load_into(out, a, ac.addr, mem::STACK);
                         continue;
                     }
                     (true, _) => self.store_flags(ac.addr) | mem::STACK,
+                    (false, Opc::Load) if quiet => {
+                        self.emit(Opc::Load, out, a, NONE, 0);
+                        continue;
+                    }
                     (false, Opc::Load) => {
                         self.load_into(out, a, ac.addr, 0);
                         continue;
                     }
+                    _ if quiet => 0,
                     _ => self.store_flags(ac.addr),
                 };
                 if op.opc == Opc::Store {
                     self.emit(Opc::Store, out, a, b, aux);
                     let pairs = self.sh.g.prot.chk.get(&(pc, opc, ai - 1));
                     for &q in pairs.into_iter().flatten().filter(|_| !stack) {
-                        let bad = self.window(q);
+                        let mut bad = self.window(q);
+                        if ac.addr.value().is_none() {
+                            // Only the pair the store wrote: the others keep their state.
+                            // A completing store also stands for its pair's other byte.
+                            let off = self.op(Opc::IntSub, 2, a, k(q as u32, 2));
+                            let hit = self.op(Opc::IntLess, 1, off, k(3, 2));
+                            bad = self.op(Opc::IntAnd, 1, bad, hit);
+                        }
                         chk.push(bad);
                     }
                     if self.sh.hits_code(ac.addr) && !self.sh.g.nocode.contains(&(pc, opc, ai - 1))
@@ -1415,6 +1495,8 @@ impl<'a> Em<'a, '_> {
                     defd: false,
                     above: false,
                     ptr: None,
+                    zone: false,
+                    zfree: false,
                 }];
                 let mut u = FxHashMap::default();
                 chk.extend(self.ops(pc, 0x08, php.ops(), &acc, true, &mut none, &mut u));
