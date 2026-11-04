@@ -16,7 +16,7 @@ import pytest
 
 import wholeprog_progs as W
 from deity_informant import NATIVE, cgen, trace
-from deity_informant.cgen import csyntax, mlir, structure
+from deity_informant.cgen import csyntax, mlir, regions, structure
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import cclones  # noqa: E402  pylint: disable=wrong-import-position
@@ -629,6 +629,25 @@ c3:     LDX #$33
         RTS
 end:
 """
+SHORT = """
+entry:  TAX
+        LDA flags,X
+        AND #$01
+        BEQ skip
+        LDA count,X
+        BEQ skip
+        DEC count,X
+        STX $C000
+skip:   CPX #$02
+        BEQ last
+        CPX #$03
+        BNE out
+last:   STX $C001
+out:    RTS
+flags:  .byte 1,0,1,1
+count:  .byte 2,2,0,1
+end:
+"""
 WRAP = """
 entry:  AND #$0F
         ORA #$70
@@ -693,11 +712,13 @@ def play(tmp_path, c, h, img, labels, calls, sensitive=()):
     return cgenplay.replay(lib, img, {n: labels[n] for n in names}, calls, [W.IO], sensitive)
 
 
-def check(prefix, tmp_path, src, calls, **kw):
-    """Translate, play and return ``(c, h, info)``; the ``.c`` has no ``goto``."""
+def check(prefix, tmp_path, src, calls, gotos=0, **kw):
+    """Translate, play and return ``(c, h, info)``; the ``.c`` has ``gotos`` gotos."""
     img, labels, loaded = assemble(src)
     c, h, info = translate(prefix, img, labels, loaded, **kw)
-    assert cmetrics.metrics(c)["goto"] == 0
+    assert cmetrics.metrics(c)["goto"] == gotos == info["structure"]["gotos"]
+    assert {"flags", "exits", "entries"}.isdisjoint(info["structure"])
+    assert len(info["provenance"]["gotos"]) == gotos
     play(tmp_path, c, h, img, labels, calls, kw.get("sensitive", ()))
     return c, h, info
 
@@ -838,7 +859,9 @@ def test_pointer_stores_from_a_terminated_table_make_cells(prefix, tmp_path):
 
 
 def test_branch_offset_written_from_a_table(prefix, tmp_path):
-    _, _, info = check(prefix, tmp_path, BRTAB, entry_calls([0, 1, 2, 3, 1]))
+    # Offsets 0, 5 and 10 enter one straight-line run at three points: the third entry, past
+    # the run's second store, is a goto.
+    _, _, info = check(prefix, tmp_path, BRTAB, entry_calls([0, 1, 2, 3, 1]), gotos=1)
     _, labels, _ = assemble(BRTAB)
     br = labels["br"]
     assert info["jumps"] == {br: [br + 2, br + 7, br + 12]} and not info["traps"]
@@ -1064,19 +1087,21 @@ def test_parse_rejects_unknown_syntax():
 @pytest.mark.parametrize("src,places", [(TAIL2, 2), (TAIL3, 3)], ids=["two", "three"])
 def test_shared_tail_stays_in_its_function(prefix, tmp_path, src, places):
     c, _, info = check(prefix, tmp_path, src, entry_calls(range(4), 2))
-    assert info["structure"]["functions"] == 1 and not info["structure"].get("flags")
+    assert info["structure"]["functions"] == 1 and info["structure"]["gotos"] == 0
     assert c.count("io_write(0xC000") == 1
     assert c.count("entry") == 1 and places > 1
 
 
-def test_multi_exit_loop_joins_its_exits(prefix, tmp_path):
-    c, _, info = check(prefix, tmp_path, EXITS, entry_calls(range(4), 2))
-    assert info["structure"]["exits"] == 1 and "break;" in c
+def test_multi_exit_loop_breaks_to_its_follow(prefix, tmp_path):
+    # The inner loop's two edges to `none` break to its follow; its exit to `found` and
+    # `none`'s jump past `found` (a join of the outer test) are the gotos.
+    c, _, _ = check(prefix, tmp_path, EXITS, entry_calls(range(4), 2), gotos=3)
+    assert c.count("break;") == 2 and "flag" not in c
 
 
-def test_two_entry_loop_dispatches(prefix, tmp_path):
-    _, _, info = check(prefix, tmp_path, IRRED, entry_calls(range(4), 2))
-    assert info["structure"]["entries"] == 1
+def test_two_entry_loop_jumps_to_its_second_entry(prefix, tmp_path):
+    c, _, _ = check(prefix, tmp_path, IRRED, entry_calls(range(4), 2), gotos=2)
+    assert "for (" not in c
 
 
 def test_switch_from_a_compare_chain(prefix, tmp_path):
@@ -1150,8 +1175,6 @@ def test_conditions_cover_and_definite_assignment():
     assert conds.cover((a & b) | (a & ~b), conds.bdd.true) == [[(("c", "%a"), True)]]
     one, two = conds.var(("e", "%x", 1)), conds.var(("e", "%x", 2))
     assert conds.cover(~one & two, conds.care) == [[(("e", "%x", 2), True)]]
-    fam = conds.synthetic(3)
-    assert conds.fixed(conds.var(("e", fam, 0)) & a) == a
     conds.close()
     assign = ("a", "x", "1", frozenset())
     read = ("s", "f(x);", frozenset({"x"}))
@@ -1159,6 +1182,8 @@ def test_conditions_cover_and_definite_assignment():
     assert not csyntax.assigned_first([("if", "c", frozenset(), [assign], []), read], "x")
     jump = ("j", "return;", frozenset())
     assert csyntax.assigned_first([("if", "c", frozenset(), [assign], [jump]), read], "x")
+    label = ("l", "L1:;", frozenset())
+    assert not csyntax.assigned_first([assign, ("j", "goto L1;", frozenset()), label, read], "x")
     body = [("if", "c", frozenset(), [assign], []), read]
     assert csyntax.render(csyntax.declare(body, {"x": "uint8_t"}))[0] == "uint8_t x = 0;"
 
@@ -1212,3 +1237,69 @@ def test_copies_share_their_trap(prefix, tmp_path):
     (tmp_path / "jam").mkdir()
     with pytest.raises(AssertionError, match="trap"):
         play(tmp_path / "jam", c, h, img, labels, [("entry", 0)])
+
+
+def test_short_circuit_conditions(prefix, tmp_path):
+    """Branches sharing a target, each entered only from the last, are one condition: the
+    load between them runs before the test, as it has no effect."""
+    c, _, info = check(prefix, tmp_path, SHORT, entry_calls(range(4), 3))
+    _, labels, _ = assemble(SHORT)
+    first = labels["entry"] + 6
+    assert info["provenance"]["conditions"] == [
+        [first, first + 5],
+        [labels["skip"] + 2, labels["skip"] + 6],
+    ]
+    assert "&&" in c and "||" in c
+
+
+def test_non_series_parallel_joins_are_gotos(prefix, tmp_path):
+    """EXITS: the outer test into `found` and the inner loop's exit to it are branches to a
+    block other paths join (not the post-dominator of their branch), `JMP next` jumps past it."""
+    _, _, info = check(prefix, tmp_path, EXITS, entry_calls(range(4), 2), gotos=3)
+    _, labels, _ = assemble(EXITS)
+    found, nxt = labels["found"], labels["next"]
+    assert sorted(info["provenance"]["gotos"]) == [
+        [labels["outer"] + 4, found],
+        [labels["inner"] + 8, found],
+        [found - 3, nxt],
+    ]
+    assert info["provenance"]["loops"] == [labels["inner"], labels["outer"]]
+
+
+@pytest.mark.parametrize("name", ["EXITS", "IRRED", "VOICES", "LOHI", "CHAIN", "SHORT", "SUBS"])
+def test_provenance_names_instruction_starts(prefix, name):
+    """Every address the provenance gives is an instruction start of the lift."""
+    img, labels, loaded = assemble(globals()[name])
+    p, _ = cgen.lift(img, [(labels["entry"], "entry")], [W.IO], None, loaded)
+    _, _, info = translate(prefix, img, labels, loaded)
+    pv = info["provenance"]
+    pcs = [pc for e in pv["gotos"] for pc in e] + pv["loops"] + pv["switches"]
+    pcs += [pc for ch in pv["conditions"] for pc in ch]
+    for f in pv["functions"].values():
+        pcs += [f["entry"], *f["copies"], *(pc for call in f["calls"] for pc in call)]
+    assert pcs and set(pcs) <= p.starts
+
+
+def test_provenance_of_calls_and_copies(prefix):
+    """A folded class lists its copies and the sites calling it; the cells are its operand
+    bytes the copies write."""
+    img, labels, loaded = assemble(VOICES)
+    _, _, info = translate(prefix, img, labels, loaded)
+    f = next(f for f in info["provenance"]["functions"].values() if f["index"])
+    copies = [labels[f"v{k}"] for k in range(3)]
+    assert f["entry"] == copies[0] and f["copies"] == copies
+    assert [t for _, t in f["calls"]] == [copies[0]] * 3
+
+
+def test_instruction_edges():
+    """An edge is named by the instruction taking it: a branch, or a JMP the lift threaded."""
+    img, labels = W.assemble("a: BEQ b\n   NOP\nj: JMP c\nb: NOP\nc: RTS\n", 0x1000)
+    a, j, b, c = (labels[k] for k in "ajbc")
+    assert structure_edges(img, a, b) == [a, b]
+    assert structure_edges(img, a, c) == [a, b]
+    assert structure_edges(img, a + 2, c) == [j, c]
+    assert structure_edges(img, a, a + 2) == [a, a + 2]
+
+
+def structure_edges(img, p, q):
+    return regions.edge(img, p, q)

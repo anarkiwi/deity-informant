@@ -1,7 +1,7 @@
 # Machine code as C
 
-`deity_informant.cgen` translates the entry points of a 6502/6510 program to C99 with no
-`goto`: a `.c` holding only the code and a `.h` holding the data (each memory region's origin,
+`deity_informant.cgen` translates the entry points of a 6502/6510 program to C99, structured
+with a `goto` exactly at each edge that has no structured form (*Structuring*): a `.c` holding only the code and a `.h` holding the data (each memory region's origin,
 length and initial bytes). The `.c` names nothing by address or content, so two programs with
 the same code and different data, or the same program at another origin, give a byte-identical
 `.c`. Every path the static lift reaches is translated; one it cannot express calls `trap(k)`.
@@ -34,9 +34,8 @@ python tools/cgenplay.py tune.sid --psid --volatile 0xD400-0xD41D -o out/   # tr
 `[(origin, length)]`, the code span, the traps in the `.c` (`{k: ("deopt", pc)}` or `("ind", pc,
 ...)` for a computed jump with no target), the computed jumps resolved from the code (`jumps`),
 the fact edges used, the lift's `stats`, whether some access has an unknown address and the
-`structure` counts: C `functions` (and the identical ones `folded` into them), and the
-structuring variables made for multi-entry loops (`entries`), multi-exit loops (`exits`) and
-joins (`flags`).
+`structure` counts: C `functions` (and the identical ones `folded` into them) and the
+`gotos` printed, and the `provenance` of the printed constructs in the machine code (below).
 
 The host supplies `uint8_t io_read(uint16_t)`, `void io_write(uint16_t, uint8_t)` and
 `void trap(uint16_t k)`, which must not return (`longjmp`, or abort the call). Each entry
@@ -76,7 +75,7 @@ caller's return address. `tools/cgenplay.c` is a host harness.
    `cf.cond_br` passing one value to both successors into an invalid branch, so it is not
    used.
 5. **Layout** (`regions.py`): the memory partition below.
-6. **Structure** (`structure.py`): DREAM (below), each function whole.
+6. **Structure** (`structure.py`): the dominator-tree translation below, each function whole.
 7. **Print** (`printer.py`, `csyntax.py`). The generic text is parsed for the operations the
    pipeline leaves (`func`, `cf`, `arith`, `memref`, `ub.poison`; anything else raises), the
    structured statements are printed with each variable declared at the innermost scope
@@ -97,41 +96,60 @@ A shared tail is a function only where the machine code makes it a procedure: a 
 or code two lifted functions reach at their entry height (the lift's tail calls); a join inside
 one function stays in it.
 
-**DREAM.** Each function is structured by the pattern-independent algorithm of Yakdan, Eschweiler,
-Gerhards-Padilla and Smith, "No More Gotos: Decompilation Using Pattern-Independent
-Control-Flow Structuring and Semantics-Preserving Transformations" (NDSS 2015). Nodes are
-taken in DFS post order. A node heading a cycle has its loop structured; otherwise the region
-it dominates, when it has at most one successor outside, is replaced by its statements. An edge
-to the function's exit, `break` and `continue` are jumps, not successors, so most regions
-qualify.
+**The goto rule.** The structured forms are exactly: a fall-through (the machine code's next
+instruction), an if/else whose arms rejoin at the branch's immediate post-dominator, a
+short-circuit condition, a loop's `continue` (to its head) and `break` (to its one follow), and
+`return`. Every other edge is a `goto` to a label; no structuring variables are made. Each
+function goes through these steps in order, each deciding on the graph the earlier ones leave:
 
-- *Reaching conditions* are BDDs (CUDD through `dd`, variable order fixed by first use in
-  DFS order). Branch conditions are variables; a comparison of a value with a constant (after
-  stripping zero extensions and constant additions, subtractions and exclusive-ors) and a
-  `cf.switch` case are atoms `x == k` of a selector family whose atoms exclude each other.
-- *Condition-based refinement*: the region's nodes, in topological order, are emitted under
-  their reaching conditions; the first literal (least BDD level) the head node's condition
-  implies, and no enclosing test decides, splits the remaining nodes into `if`/`else` groups,
-  a node joining a group only after its predecessors in the region have. A group placed after
-  a node that jumps away no longer has that node's reaching condition in its context, and the
-  last node of a region without successor is unconditional.
-- *Condition-aware refinement*: when that literal is an atom and the nodes fall into three or
-  more groups of disjoint outcomes of its family, they become a `switch`; after structuring, a
-  chain of three or more `if`/`else` tests of one family is one too. A `switch` arm that would
-  `break` a loop stays an `if` chain.
-- *Joins*: a node whose reaching condition needs more products than it has entering edges is
-  reached by a flag those edges set instead (initialized at the region's head).
-- *Loops*: a loop is the natural loop of the back edges into its head (nodes reachable from
-  the head that reach a latch without it). A multi-entry (irreducible) loop gets a dispatcher
-  on a structuring variable set on every entering edge and on the back edges, as in DREAM. The
-  loop grows by the exits only it reaches, keeping the exit of its last node as the successor;
-  if more than one successor remains, each exit sets a structuring variable and leaves through
-  one dispatcher after the loop. The body, its back edges `continue` and its exits `break`, is
-  structured as above; the loop prints as `while` when it starts with its exit test, as `do`
-  ... `while` when it ends with one and has no other `continue`, else `for (;;)`.
+1. *Short-circuit conditions.* A conditional branch entered only from another branch that shares
+   one of its targets, whose operations have no effect and read only data regions or code
+   (so they may run before the first test), is composed into it: its edges become the first
+   branch's under both tests, joined with the first branch's edge to the same target (two
+   edges to returns of the same values are one target), to a fixpoint. The condition prints
+   as `a && b` / `a || b` (Minato-Morreale ISOP of the composed BDD).
+2. *Loops* (natural loops of the depth-first back edges; the search takes successors in
+   machine-code order, so of a two-entry loop the entry the code falls into is the head). A
+   back edge is `continue`; a loop's follow, placed after it, is of the exits it dominates that
+   do not end the procedure the one all the others reach, else the one most loop edges leave
+   to, else the first; an edge to it is `break`.
+3. *Placement* after Ramsey, "Beyond Relooper: recursive translation of unstructured control
+   flow to structured control flow" (ICFP 2022): each node is followed by the joins it
+   immediately dominates (nodes with two or more forward edges in) and, heading a loop, the
+   loop's follow, in a topological order of the forward edges that takes the ready node first
+   in the machine code. An edge to a node not placed so is that node's code in place.
+4. *Jumps.* An edge to a placed node or a back edge is a jump: to the innermost loop's head
+   `continue`, to its follow `break`, to the statement that runs next nothing when the edge is
+   the machine code's fall-through or the end of an arm of the nearest branch whose paths all
+   meet there (no path from the branch reaches what follows the target without passing it, a
+   back edge, a loop latch and an exit of its loop ending a path), else a `goto`. A jump every
+   arm of an `if`/`else` or of a `switch` with a default ends with is printed once after it.
+
+- *Branch conditions* are BDDs (CUDD through `dd`, variable order fixed by first use). A
+  comparison of a value with a constant (after stripping zero extensions and constant
+  additions, subtractions and exclusive-ors) and a `cf.switch` case are atoms `x == k` of a
+  selector family whose atoms exclude each other.
 - *Tests an enclosing test decides* are dropped, and each condition prints as an irredundant
-  sum of products (Minato-Morreale ISOP) where its enclosing tests and context are don't-cares.
-  Structuring variables are left out of those contexts, as statements assign them.
+  sum of products where its enclosing tests are don't-cares.
+- *Switches*: a chain of three or more `if`/`else` tests of one selector family against sets of
+  its constants is a `switch`; one whose arm would `break` a loop stays an `if` chain.
+- *Loops* print as `while` when the body starts with its exit test, as `do` ... `while` when it
+  ends with one and has no other `continue`, else `for (;;)`.
+
+**Provenance.** `info["provenance"]` names, by original machine-code addresses (not in the
+`.c`, which stays relocation-invariant), where each printed construct comes from:
+
+| Key | Value |
+|---|---|
+| `functions` | `{C name: {"entry", "index", "calls", "copies"}}`: the entry pc, whether it takes an instance index, `[site, target]` of each call and tail call of it, the entries of the copies folded into it |
+| `gotos` | `[from, to]` per printed `goto`: the instruction taking the edge (a branch, or the `JMP` the lift threaded into it) and its target |
+| `loops` | the head of each printed loop |
+| `conditions` | the branch addresses composed into each short-circuit condition |
+| `switches` | the dispatch, or the first compare of the chain, of each printed `switch` |
+| `cells` | the code bytes the lift treats as variables |
+
+Each lifted op carries the instruction it was emitted for ([wholeprog](wholeprog.md#python));
+the MLIR carries it as the op's location (`--mlir-print-debuginfo`), which the printer reads.
 
 Names come from structure alone: C functions are `f1, f2, ...` in the order they are first
 called when printing (entries first), variables `v1, v2, ...` in order of first use. Callees
@@ -218,7 +236,9 @@ before it does.
 `tests/test_cgen.py` compiles each output with gcc (`-std=c99 -Wall -Wextra -Werror`) against
 `tools/cgenplay.c` and compares the volatile writes (and sensitive reads) of many consecutive
 calls, memory persisting, with `wholeprog.reference_call`; it checks relocation and data
-invariance, the absence of `goto`, the structuring (a shared tail kept in its function,
+invariance, the gotos (a non-series-parallel join's edges, a two-entry loop's second entry, a
+computed branch entering one run at three points) and their provenance (instruction starts of
+the lift), short-circuit conditions, no structuring variables, the structuring (a shared tail kept in its function,
 multi-exit and two-entry loops, switches from compare chains and jump tables, kept callees' parameters, wrapping
 addresses), computed jumps and calls through operands written from tables (in the same call
 or an earlier one), an index past a split table's extent trapping, an opcode restored through

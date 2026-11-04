@@ -169,7 +169,8 @@ def test_representation():
     assert {"CALL", "RETURN", "BRANCHIND", "STORE"} <= names
     for f in fns:
         for op in ops_of(f):
-            mn, out, ins, _aux = op
+            mn, out, ins, _aux, pc = op
+            assert isinstance(pc, int)
             assert isinstance(mn, str) and isinstance(ins, list)
             for v in [out] + ins:
                 assert v is None or (v[0] in "cru" and len(v) == 3)

@@ -577,9 +577,10 @@ fn with_mem<R>(
 
 #[pymethods]
 impl Program {
-    /// Functions: ``{"pc", "entry", "blocks": [{"pc", "ops"}], "tables"}``; varnodes are
-    /// ``[space, offset, size]``; ``aux`` is the target block, table, callee, ``CALLOTHER``
-    /// name or ``"volatile"``.
+    /// Functions: ``{"pc", "entry", "blocks": [{"pc", "ops"}], "tables"}``; an op is
+    /// ``[name, out, ins, aux, pc]``, varnodes ``[space, offset, size]``; ``aux`` is the
+    /// target block, table, callee, ``CALLOTHER`` name or ``"volatile"``, ``pc`` the
+    /// instruction the op was emitted for (0: made by the optimizer).
     #[getter]
     fn functions<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let fs = PyList::empty(py);
@@ -617,6 +618,7 @@ impl Program {
                             vn(py, op.out)?,
                             ins.into_any(),
                             aux,
+                            op.pc.into_pyobject(py)?.into_any(),
                         ],
                     )?)?;
                 }

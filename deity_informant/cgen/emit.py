@@ -46,7 +46,7 @@ class Body:  # pylint: disable=too-many-instance-attributes
 
     def __init__(self, fn, name, ctx):
         self.fn, self.name, self.ctx = fn, name, ctx
-        self.lines, self.n, self.env, self.block_id = [], 0, {}, 0
+        self.lines, self.n, self.env, self.block_id, self.pc = [], 0, {}, 0, 0
         self.cells = {("r", r): s for r, s in ctx.regfile}
         for b in fn["blocks"]:
             defined = set()
@@ -66,8 +66,9 @@ class Body:  # pylint: disable=too-many-instance-attributes
         return f"%v{self.n}"
 
     def put(self, text):
-        """Append an operation line."""
-        self.lines.append(f"    {text}")
+        """Append an operation line, located at the instruction it is emitted for."""
+        loc = f' loc("{self.pc:#06x}")' if self.pc else ""
+        self.lines.append(f"    {text}{loc}")
 
     def op(self, text):
         """Append ``text`` as an operation with a result; its name."""
@@ -232,7 +233,7 @@ class Body:  # pylint: disable=too-many-instance-attributes
         self.env, part, self.block_id = {}, 0, i
         self.lines.append(f"  ^b{i}:")
         for op in self.fn["blocks"][i]["ops"]:
-            name = op[0]
+            name, self.pc = op[0], op[4] if len(op) > 4 else 0
             if name == "CBRANCH":
                 cond = self.truth(self.read(op[2][0]), op[2][0][2])
                 part += 1

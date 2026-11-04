@@ -1,8 +1,9 @@
 """C statement trees: declarations at the innermost scope holding every use, then text.
 
 Statements: ``("a", name, text, refs)`` an assignment, ``("s", text, refs)``, ``("j", text,
-refs)`` a jump, ``("if", cond, refs, then, else)``, ``("loop", kind, cond, refs, body)`` (kind
-``for``, ``while`` or ``do``) and ``("switch", sel, refs, [(labels, body)])``.
+refs)`` a jump, ``("l", text, refs)`` a label, ``("if", cond, refs, then, else)``,
+``("loop", kind, cond, refs, body)`` (kind ``for``, ``while`` or ``do``) and ``("switch", sel,
+refs, [(labels, body)])``.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ def _own(st):
     """The variables statement ``st`` reads or writes outside its nested statements."""
     if st[0] == "a":
         return st[3] | {st[1]}
-    return st[2] if st[0] in ("s", "j") else st[2] if st[0] in ("if", "switch") else st[3]
+    return st[2] if st[0] in ("s", "j", "l", "if", "switch") else st[3]
 
 
 def children(st):
@@ -54,9 +55,16 @@ def assigned_first(items, v):
 
 
 def _da(items, v, done):  # pylint: disable=too-many-return-statements,too-many-branches
-    """``(definitely assigned after, no read before assignment)`` over ``items``."""
+    """``(definitely assigned after, no read before assignment)`` over ``items``; control
+    reaching a label may come from anywhere, so nothing is assigned there."""
+    gone = False
     for st in items:
         kind = st[0]
+        if kind == "l":
+            done, gone = False, False
+            continue
+        if gone:
+            continue
         if kind == "a":
             if v in st[3] and not done:
                 return done, False
@@ -69,7 +77,7 @@ def _da(items, v, done):  # pylint: disable=too-many-return-statements,too-many-
             if v in st[2] and not done:
                 return done, False
             if kind == "j":
-                return True, True
+                done, gone = True, True
         elif kind == "if":
             if v in st[2] and not done:
                 return done, False
@@ -178,7 +186,7 @@ def render(items):
         elif kind == "d":
             names = ", ".join(n if e is None else f"{n} = {e}" for n, e in st[2])
             out.append(f"{st[1]} {names};")
-        elif kind in ("s", "j"):
+        elif kind in ("s", "j", "l"):
             out.append(st[1])
         elif kind == "if":
             out += _render_if(st)
@@ -236,6 +244,14 @@ def _breaks(items):
         if st[0] == "switch" and any(_breaks(b) for _, b in st[3]):
             return True
     return False
+
+
+def walk(items):
+    """Every statement of ``items``, nested ones included, in order."""
+    for st in items:
+        yield st
+        for sub in children(st):
+            yield from walk(sub)
 
 
 def names_in(items):

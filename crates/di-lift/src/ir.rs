@@ -88,14 +88,24 @@ pub mod mem {
 
 /// One lifted op: `out = opc(ins[0], ins[1])`; `aux` is the target block (`BRANCH`,
 /// `CBRANCH`), target table (`BRANCHIND`), function (`CALL`), operation (`CALLOTHER`) or
-/// access flags (`LOAD`, `STORE`).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// access flags (`LOAD`, `STORE`); `pc` is the instruction it was emitted for (0 for one the
+/// optimizer made), provenance only: ops compare equal whatever their `pc`.
+#[derive(Clone, Copy, Debug)]
 pub struct LOp {
     pub opc: Opc,
     pub out: Vn,
     pub ins: [Vn; 2],
     pub aux: u32,
+    pub pc: u16,
 }
+
+impl PartialEq for LOp {
+    fn eq(&self, o: &Self) -> bool {
+        (self.opc, self.out, self.ins, self.aux) == (o.opc, o.out, o.ins, o.aux)
+    }
+}
+
+impl Eq for LOp {}
 
 impl LOp {
     pub fn new(opc: Opc, out: Vn, a: Vn, b: Vn, aux: u32) -> Self {
@@ -104,6 +114,7 @@ impl LOp {
             out,
             ins: [a, b],
             aux,
+            pc: 0,
         }
     }
     /// Number of used inputs: the opcode's, plus a throw-away read's predicate.

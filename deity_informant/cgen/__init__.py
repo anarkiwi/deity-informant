@@ -191,10 +191,12 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     times["mlir"] = time.perf_counter() - t0
     t1 = time.perf_counter()
     code = code_bytes(p.image, p.starts)
+    cells = np.zeros_like(code)
     tables = None
     if p.constant is not None:
         constant = np.zeros(0x10000, dtype=bool)
         constant[list(p.constant)] = True
+        cells = code & ~constant
         code &= constant
         tables = constant & ~code_bytes(p.image, p.starts)
     loaded = p.loaded
@@ -204,6 +206,8 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     pairs = pointer_pairs(p.image, p.starts)
     mem = Memory(p.image, code, p.volatile, loaded, p.sensitive, pairs, tables)
     mod = printer.Module(top, mem)
+    mod.lifted = {f"f{j}": (fn["pc"], list(fn.get("copies", ()))) for j, fn in enumerate(p.funcs)}
+    mod.lifted.update({name: (pc, []) for pc, name in p.entries})
     mod.prune()
     mod.partition()
     times["layout"] = time.perf_counter() - t1
@@ -248,6 +252,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         "unknown_access": mem.unknown,
         "jumps": p.jumps or {},
         "structure": dict(mod.made),
+        "provenance": {**mod.prov, "cells": [int(a) for a in np.flatnonzero(cells)]},
     }
     return c_text, h_text, info
 
