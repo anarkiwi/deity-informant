@@ -108,6 +108,7 @@ class Graph:
         self.conds, self.ids = conds, ids
         self.items, self.succ = {}, {}
         self.entry, self.composed, self.back = None, set(), set()
+        self.effects, self.selectors = {}, {}
 
     def add(self, items, succ=()):
         """A new node."""
@@ -189,19 +190,45 @@ def subtree(kids, n):
 
 
 def _ret_key(g, t):
-    """What node ``t`` does when it only returns (the values it returns), else ``t``."""
-    items = g.items[t]
-    if not g.succ[t] and len(items) == 1 and items[0][0] == "return":
+    """What node ``t`` does when it only returns (the values it returns) or only copies into
+    one successor (the copies and the successor), else ``t``."""
+    items, succ = g.items[t], g.succ[t]
+    if len(items) != 1:
+        return t
+    if not succ and items[0][0] == "return":
         return ("return", tuple(v[0] if isinstance(v, tuple) else v for v in items[0][1]))
+    if items[0][0] == "copy" and len(succ) == 1 and succ[0][1] is None:
+        return ("copy", tuple((d, v) for d, v, _ in items[0][1]), succ[0][0])
     return t
 
 
-def short_circuit(g, hoistable):
-    """Compose each conditional branch ``b`` entered only from ``a`` (its operations
-    ``hoistable``: they may run before ``a``'s test) that shares a target with ``a``'s other
-    edges, into ``a``: an edge of ``b``
-    becomes an edge of ``a`` under both tests (``a && b``, ``a || b``), joined with ``a``'s
-    edge to the same target (two edges to returns of the same values are one target)."""
+def prune(g):
+    """Drop the edges no execution takes: an edge whose condition contradicts every path to
+    its branch (a test an earlier test of the same values decides), the path conditions taken
+    over forward edges from the entry and from each loop head, where they restart."""
+    _, post, back = g.dfs()
+    heads = {t for _, t in back}
+    conds, path = g.conds, {}
+    for n in reversed(post):
+        p = conds.bdd.true if n == g.entry or n in heads else path.get(n, conds.bdd.false)
+        keep = []
+        for t, c in g.succ[n]:
+            e = p & g.cond(c)
+            if (n, t) in back or (e & conds.care) != conds.bdd.false:
+                keep.append([t, c])
+                if (n, t) not in back:
+                    path[t] = path.get(t, conds.bdd.false) | e
+        if len(keep) == 1:
+            keep[0][1] = None
+        g.succ[n] = keep
+    g.remove(set(g.items) - set(g.dfs()[0]))
+
+
+def short_circuit(g, hoistable, exprable=lambda items: False):
+    """Compose each conditional branch ``b`` entered only from ``a`` that shares a target with
+    ``a``'s other edges into ``a`` (``a && b``, ``a || b``), to a fixpoint: ``b``'s operations
+    are ``hoistable`` (they may run before ``a``'s test), or ``exprable`` effects of its one
+    test literal (:func:`_verify`); two edges to returns or copies of the same values meet."""
     changed = True
     while changed:
         changed = False
@@ -215,15 +242,146 @@ def short_circuit(g, hoistable):
                     b in (a, g.entry)
                     or preds[b] != [a]
                     or len(g.succ[b]) < 2
-                    or not all(hoistable([it]) for it in g.items[b])
                     or not others & {_ret_key(g, t) for t, _ in g.succ[b]}
                 ):
                     continue
-                _compose(g, a, b, g.cond(cab))
-                changed = True
-                break
+                pure = all(hoistable([it]) for it in g.items[b])
+                if (pure or exprable(g.items[b])) and _try(g, a, b, g.cond(cab), pure):
+                    changed = True
+                    break
             if changed:
                 break
+
+
+def _try(g, a, b, cab, pure):
+    """Compose ``b`` into ``a`` unless an effect of the result fails :func:`_verify`; one
+    with effects (not ``pure``) makes its statements the effects of its test literal."""
+    conds = g.conds
+    fx = [(its, key, cab & reached) for its, key, reached in g.effects.get(b, ())]
+    if not pure:
+        sup = set().union(*(g.cond(c).support for _, c in g.succ[b]))
+        if len(sup) != 1:
+            return False
+        fx.append((list(g.items[b]), conds.keys[next(iter(sup))], cab))
+    saved = [list(e) for e in g.succ[a]], list(g.items[a]), set(g.composed)
+    keep = {n: (g.items[n], g.succ[n]) for n in {b, *(t for t, _ in g.succ[b])}}
+    _compose(g, a, b, cab)
+    if not pure:
+        g.items[a] = saved[1]
+    fx = list(g.effects.get(a, ())) + fx
+    if not fx or _verify(g, a, fx):
+        if fx:
+            g.effects[a] = fx
+        g.effects.pop(b, None)
+        return True
+    g.succ[a], g.items[a], g.composed = saved
+    for n, (its, es) in keep.items():
+        g.items[n], g.succ[n] = its, es
+    return False
+
+
+def _verify(g, a, fx):
+    """Whether ``a``'s two edge conditions, printed as sums of products and evaluated left to
+    right (C's ``&&``/``||``) with no don't-cares, read each effectful literal once, exactly
+    where its statements ran in the machine code."""
+    conds = g.conds
+    if len(g.succ[a]) != 2:
+        return False
+    covers = [conds.cover(g.cond(c), conds.bdd.true) for _, c in g.succ[a]]
+    return all(_evaluated_once(conds, cv, key, reached) for cv in covers for _, key, reached in fx)
+
+
+def _evaluated_once(conds, cubes, key, reached):
+    """Whether ``key`` appears once in ``cubes`` (a sum of products evaluated left to right)
+    and is evaluated exactly where ``reached`` holds."""
+    hits = [(i, j) for i, c in enumerate(cubes) for j, (k, _) in enumerate(c) if k == key]
+    if len(hits) != 1:
+        return False
+    i, j = hits[0]
+    at = conds.bdd.true
+    for c in cubes[:i]:
+        at &= ~_cube(conds, c)
+    at &= _cube(conds, cubes[i][:j])
+    return (at & conds.care) == (reached & conds.care)
+
+
+def _cube(conds, lits):
+    out = conds.bdd.true
+    for k, p in lits:
+        v = conds.vars[k]
+        out &= v if p else ~v
+    return out
+
+
+def split_tails(g, tail):
+    """Give each edge into a tail call its own copy, so it prints in place as a call then
+    ``return``: a node whose statements ``tail`` holds (calls and copies only) that returns or
+    continues unconditionally into such a node. Each copy starts with ``("site", pred)``."""
+    tails, grown = set(), True
+    while grown:
+        grown = False
+        for n, es in g.succ.items():
+            ok = (
+                not es
+                and g.items[n][-1][0] == "return"
+                or (len(es) == 1 and es[0][1] is None and es[0][0] in tails)
+            )
+            if n not in tails and n != g.entry and ok and tail(g.items[n]):
+                tails.add(n)
+                grown = True
+    work = sorted(tails)
+    while work:
+        t = work.pop()
+        base = [it for it in g.items[t] if it[0] != "site"]
+        preds = [p for p in sorted(g.items) if any(u == t for u, _ in g.succ[p])]
+        for i, p in enumerate(preds):
+            n = t if i == 0 else g.add(base, g.succ[t])
+            g.items[n] = [("site", p, n), *base]
+            if n != t:
+                g.succ[p] = [[n if u == t else u, c] for u, c in g.succ[p]]
+                work += [u for u, _ in g.succ[n] if u not in work]
+
+
+def select_entries(g, place):
+    """Give each cycle entered at two nodes from one two-way branch (through copies) a head
+    choosing the entry by a selector variable: the branch's condition, saved on entry, and the
+    entry each retreating edge into an entry takes. ``g.selectors``: ``{head: (lo, hi)}``."""
+    nx_g = nx.DiGraph([(n, t) for n, es in g.succ.items() for t, _ in es])
+    nx_g.add_nodes_from(g.items)
+    preds = g.preds()
+    for scc in sorted(nx.strongly_connected_components(nx_g), key=min):
+        ins = {(p, t) for t in scc for p in nx_g.predecessors(t) if p not in scc}
+        sides = set()
+        for p, _ in ins:
+            while _copies_only(g, p) and len(preds[p]) == 1:
+                p = preds[p][0]
+            sides.add(p)
+        if len({t for _, t in ins}) != 2 or len(sides) != 1 or g.entry in scc:
+            continue
+        s = sides.pop()
+        if len(g.succ[s]) != 2:
+            continue
+        (lo, _), (hi, chi) = sorted(g.succ[s], key=lambda e: place(e[0]))
+        _, _, back = g.dfs(s, within=scc | {lo, hi}, key=place)
+        back = {(n, t) for n, t in back if n in scc}
+        if any(t in scc and t not in (lo, hi) and t in {u for _, u in ins} for _, t in back):
+            continue
+        conds = g.conds
+        head = g.add([])
+        var = conds.var(("v", head))
+        g.succ[head] = [[hi, var], [lo, ~var]]
+        g.succ[s] = [[g.add([("set", head, g.cond(chi))], [[head, None]]), None]]
+        g.selectors[head] = (lo, hi)
+        for n, t in sorted(back):
+            if t in (lo, hi):
+                val = conds.bdd.true if t == hi else conds.bdd.false
+                b = g.add([("set", head, val)], [[head, None]])
+                g.succ[n] = [[b if u == t else u, c] for u, c in g.succ[n]]
+
+
+def _copies_only(g, n):
+    """Whether node ``n`` only copies into one successor."""
+    return len(g.succ[n]) == 1 and all(it[0] == "copy" for it in g.items[n])
 
 
 def _compose(g, a, b, cab):
@@ -263,16 +421,22 @@ class Structurer:
     leading to it; ``quiet(items)``: whether it prints nothing."""
 
     def __init__(self, conds, quiet=lambda items: False, hoistable=lambda items: False,
-                 falls=lambda p, y: False, place=lambda n: 0):  # fmt: skip
+                 falls=lambda p, y: False, place=lambda n: 0,
+                 tail=lambda items: False, exprable=lambda items: False,
+                 latchable=lambda items: False):  # fmt: skip
         self.conds, self.quiet, self.hoistable, self.falls = conds, quiet, hoistable, falls
-        self.place = place
+        self.place, self.tail, self.exprable, self.latchable = place, tail, exprable, latchable
+        self.latch, self.cases = {}, {}
         self.g = self.kids = self.loops = self.back = self.rank = None
         self.at, self.after, self.follows, self.idom = {}, {}, set(), {}
 
     def structure(self, g):
         """The statements of ``g``, with ``label`` statements where jumps go."""
         self.g = g
-        short_circuit(g, self.hoistable)
+        prune(g)
+        short_circuit(g, self.hoistable, self.exprable)
+        split_tails(g, self.tail)
+        select_entries(g, self.place)
         pre, _, back = g.dfs(key=self.place)
         g.remove(set(g.items) - set(pre))
         self.rank = _layout(g, pre, back, self.place)
@@ -299,10 +463,43 @@ class Structurer:
                 self.at[f] = h
                 self.follows.add(f)
         self.idom = idom
+        self.latch = {}
+        for h, lp in self.loops.items():
+            u = self._latch(h, lp, back, fwd)
+            if u is not None:
+                self.latch[h] = u
+                self.at[u] = h
+        self.cases = {
+            t: d
+            for d, es in g.succ.items()
+            if len(es) > 2
+            for t, _ in es
+            if self.at.get(t) == d and t not in self.follows and t not in latches
+        }
+        for t in self.cases:
+            del self.at[t]
         self.after = {}
         for y in sorted(self.at, key=self.rank.__getitem__):
             self.after.setdefault(self.at[y], []).append(y)
         return self.simplify(self.tree(g.entry), frozenset(), None)
+
+    def _latch(self, h, lp, back, fwd):
+        """The latch of the loop headed by ``h`` printed as its ``do``/``while`` condition
+        (``continue`` goes to it): the one branch the back edge leaves (through copies), its
+        other edge leaving the loop, entered by two or more forward edges, ``latchable``."""
+        srcs = {n for n, t in back if t == h}
+        if len(srcs) != 1:
+            return None
+        (u,) = srcs
+        if _copies_only(self.g, u):
+            preds = [p for p, es in self.g.succ.items() if any(t == u for t, _ in es)]
+            u = preds[0] if len(preds) == 1 else None
+        if u is None or u == h or fwd.get(u, 0) < 2 or u in self.g.effects:
+            return None
+        es = self.g.succ[u]
+        if len(es) != 2 or sum(t in lp for t, _ in es) != 1 or not self.latchable(self.g.items[u]):
+            return None
+        return u
 
     def follow(self, h, idom):
         """The follow of the loop headed by ``h``, or None."""
@@ -340,9 +537,10 @@ class Structurer:
     def rejoins(self, x, y):
         """Whether the paths from ``x`` meet at ``y`` (its post-dominator): none reaches what
         follows ``y`` without passing it, a back edge, an edge into a loop's latch (the
-        loop continues) and an exit of ``x``'s innermost loop ending a path."""
+        loop continues), an exit of ``x``'s innermost loop and a jump to a node placed after
+        ``y`` ending a path."""
         inner = min((lp for lp in self.loops.values() if x in lp), key=len, default=None)
-        latches = {u for u, _ in self.back}
+        latches = {u for u, _ in self.back} | set(self.latch.values())
 
         def walk(work, stop):
             seen = set()
@@ -353,7 +551,8 @@ class Structurer:
                 seen.add(n)
                 for t, _ in self.g.succ[n]:
                     if (n, t) not in self.back and (inner is None or t in inner):
-                        if t not in latches or t == stop:
+                        later = stop is not None and t in self.at and self.rank[t] > self.rank[y]
+                        if (t not in latches or t == stop) and not later:
                             work.append(t)
             return seen
 
@@ -382,6 +581,12 @@ class Structurer:
         body = [("label", x), *self.g.items[x], *self.term(x)]
         if x not in self.loops:
             return body + [it for y in ys for it in self.tree(y)]
+        u = self.latch.get(x)
+        if u is not None:
+            inside = [it for y in ys if y in self.loops[x] and y != u for it in self.tree(y)]
+            outside = [it for y in ys if y not in self.loops[x] for it in self.tree(y)]
+            exit_ = next(t for t, _ in self.g.succ[u] if t not in self.loops[x] and t != x)
+            return [("loop", body + inside, x, u), *self.branch(u, exit_), *outside]
         inside = [it for y in ys if y in self.loops[x] for it in self.tree(y)]
         outside = [it for y in ys if y not in self.loops[x] for it in self.tree(y)]
         return [("loop", body + inside, x), *outside]
@@ -392,7 +597,11 @@ class Structurer:
         if not es:
             return []
         es = sorted(
-            es, key=lambda e: e[1] is not None and None in (self.atoms(e[1]) or [0, [None]])[1]
+            es,
+            key=lambda e: (
+                e[1] is not None and None in (self.atoms(e[1]) or [0, [None]])[1],
+                self.place(e[0]) if len(es) > 2 else 0,
+            ),
         )
         out = self.branch(x, es[-1][0])
         for t, c in reversed(es[:-1]):
@@ -403,7 +612,7 @@ class Structurer:
         """The edge from ``x`` to ``t``: a jump, or ``t``'s code in place."""
         if (x, t) in self.back:
             return [("continue", t, x) if t in self.loops else ("goto", t, x)]
-        if t in self.at:
+        if t in self.at or self.cases.get(t, x) != x:
             return [("goto", t, x)]
         return self.tree(t)
 
@@ -431,7 +640,8 @@ class Structurer:
                 then, els = self.simplify(it[3], follow, loop), self.simplify(it[4], follow, loop)
                 it = (*it[:3], then, els, it[5])
             elif kind == "loop":
-                it = ("loop", self.simplify(it[1], frozenset([it[2]]), (it[2], follow)), it[2])
+                top = it[3] if len(it) > 3 else it[2]
+                it = ("loop", self.simplify(it[1], frozenset([top]), (top, follow)), *it[2:])
             out.append(it)
         return out
 
@@ -455,15 +665,21 @@ class Structurer:
         """The statements of a function: tests its enclosing tests decide dropped, then
         :meth:`chains`, the labels no ``goto`` names dropped."""
         out = self.decide(items, self.conds.care)
-        out = _unlabel(out, set(_walk(out, lambda it: it[1] if it[0] == "goto" else None)))
-        return self.chains(out)
+        for step in (lambda x: x, lambda x: self.chains(x, frozenset())):
+            out = step(out)
+            out = _unlabel(out, set(_walk(out, lambda it: it[1] if it[0] == "goto" else None)))
+        return out
 
     def decide(self, items, path):
         """``items`` where ``path`` holds: an ``if`` that ``path`` and its own context decide
         is replaced by the branch taken; the others print where both hold."""
         out, conds = [], self.conds
         for it in items:
-            if it[0] == "if":
+            if it[0] == "if" and it[5] in self.g.effects:
+                then = self.decide(it[3], path & it[1])
+                els = self.decide(it[4], path & ~it[1])
+                out.append(("if", it[1], conds.bdd.true, then, els, it[5]))
+            elif it[0] == "if":
                 f, known = it[1], path & it[2]
                 if conds.implies(known, f):
                     out += self.decide(it[3], path)
@@ -474,21 +690,24 @@ class Structurer:
                     els = self.decide(it[4], known & ~f)
                     out.append(("if", f, it[2] & path, then, els, it[5]))
             elif it[0] == "loop":
-                out.append(("loop", self.decide(it[1], path), it[2]))
+                out.append(("loop", self.decide(it[1], path), *it[2:]))
             else:
                 out.append(it)
         return out
 
-    def chains(self, items):
+    def chains(self, items, nxt):
         """``items`` with each chain of three or more ``if``/``else`` tests of one selector
-        family against sets of its constants as a ``switch``."""
+        family against sets of its constants as a ``switch``, a ``goto`` in an arm to what
+        follows the switch its ``break``; ``nxt``: the labels reached after ``items``."""
         out = []
-        for it in items:
+        for i, it in enumerate(items):
+            follow = _labels(items[i + 1 :], nxt)
             if it[0] == "if":
                 arms, rest, fam = [], [it], None
                 while True:
                     rest = [x for x in rest if not self.quiet([x])]
                     head = rest[0] if len(rest) == 1 and rest[0][0] == "if" else None
+                    head = None if head and head[5] in self.g.effects else head
                     hit, a = (head[3], self.atoms(head[1])) if head else (None, None)
                     if head and a is None:
                         hit, a = head[4], self.atoms(~head[1])
@@ -504,13 +723,57 @@ class Structurer:
                     and len(set(cases)) == len(cases)
                     and not any(_breaks(b) for _, b in arms)
                 ):
-                    it = ("switch", fam, [(c, self.chains(b)) for c, b in arms], it[5])
+                    arms = [(c, _arm_breaks(self.chains(b, follow), follow)) for c, b in arms]
+                    arms = [
+                        (c, _fall_into(b, arms[j + 1][1] if j + 1 < len(arms) else []))
+                        for j, (c, b) in enumerate(arms)
+                    ]
+                    it = ("switch", fam, arms, it[5])
                 else:
-                    it = (*it[:3], self.chains(it[3]), self.chains(it[4]), it[5])
+                    it = (*it[:3], self.chains(it[3], follow), self.chains(it[4], follow), it[5])
             elif it[0] == "loop":
-                it = ("loop", self.chains(it[1]), it[2])
+                it = ("loop", self.chains(it[1], frozenset()), *it[2:])
             out.append(it)
         return out
+
+
+def _fall_into(items, nxt):
+    """A switch arm ending with a ``goto`` to the label the next arm ``nxt`` starts with, as
+    a fall-through into it."""
+    if not nxt or nxt[0][0] != "label" or not items:
+        return items
+    last = items[-1]
+    if last[0] == "goto" and last[1] == nxt[0][1]:
+        return [*items[:-1], ("fall",)]
+    if last[0] == "if":
+        for then, els, f in ((last[3], last[4], last[1]), (last[4], last[3], ~last[1])):
+            inner = _fall_into(then, nxt)
+            if inner is not then and _ends(els):
+                return [*items[:-1], ("if", ~f, last[2], els, [], last[5]), *inner]
+    return items
+
+
+def _ends(items):
+    """Whether control never runs past ``items``."""
+    if not items:
+        return False
+    last = items[-1]
+    if last[0] in ("return", "halt", "goto", "continue", "break"):
+        return True
+    return last[0] == "if" and _ends(last[3]) and _ends(last[4])
+
+
+def _arm_breaks(items, follow):
+    """A switch arm's ``items`` with each ``goto`` to a label of ``follow`` (what runs after
+    the switch), outside loops nested in the arm, as ``break``."""
+    out = []
+    for it in items:
+        if it[0] == "goto" and it[1] in follow:
+            it = ("break",)
+        elif it[0] == "if":
+            it = (*it[:3], _arm_breaks(it[3], follow), _arm_breaks(it[4], follow), it[5])
+        out.append(it)
+    return out
 
 
 def _breaks(items):
@@ -551,7 +814,7 @@ def _unlabel(items, used):
         if it[0] == "if":
             it = (*it[:3], _unlabel(it[3], used), _unlabel(it[4], used), it[5])
         elif it[0] == "loop":
-            it = ("loop", _unlabel(it[1], used), it[2])
+            it = ("loop", _unlabel(it[1], used), *it[2:])
         elif it[0] == "switch":
             it = ("switch", it[1], [(c, _unlabel(b, used)) for c, b in it[2]], it[3])
         out.append(it)

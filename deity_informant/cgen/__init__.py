@@ -208,6 +208,10 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     mod = printer.Module(top, mem)
     mod.lifted = {f"f{j}": (fn["pc"], list(fn.get("copies", ()))) for j, fn in enumerate(p.funcs)}
     mod.lifted.update({name: (pc, []) for pc, name in p.entries})
+    mod.copy_pcs = {
+        f"f{j}": {q: pcs for pcs in fn.get("copy_pcs", ()) for q in pcs if q}
+        for j, fn in enumerate(p.funcs)
+    }
     mod.prune()
     mod.partition()
     times["layout"] = time.perf_counter() - t1

@@ -16,7 +16,7 @@ import pytest
 
 import wholeprog_progs as W
 from deity_informant import NATIVE, cgen, trace
-from deity_informant.cgen import csyntax, mlir, regions, structure
+from deity_informant.cgen import csyntax, mlir, printer, regions, structure
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import cclones  # noqa: E402  pylint: disable=wrong-import-position
@@ -648,6 +648,90 @@ flags:  .byte 1,0,1,1
 count:  .byte 2,2,0,1
 end:
 """
+EFFECT = """
+entry:  AND #$03
+        TAX
+        LDA count,X
+        BEQ do
+        DEC count,X
+        BNE skip
+do:     STX $C000
+skip:   RTS
+count:  .byte 0,1,2,3
+end:
+"""
+SWEEP = """
+entry:  AND #$01
+        STA dir+1
+dir:    LDA #$00
+        BNE up
+down:   DEC val
+        LDA val
+        CMP #$03
+        BCS out
+        INC dir+1
+up:     INC val
+        LDA val
+        CMP #$08
+        BCC out
+        DEC dir+1
+        JMP down
+out:    LDA val
+        STA $C000
+        RTS
+val:    .byte 5
+end:
+"""
+CASES = """
+entry:  AND #$03
+        TAX
+        LDA tlo,X
+        STA $F0
+        LDA thi,X
+        STA $F1
+        JMP ($00F0)
+h0:     LDA #$01
+        JMP join
+h1:     LDA #$02
+        JMP join
+h2:     LDA #$03
+        STA $C002
+h3:     LDA #$04
+join:   STA $C000
+        STA $C001
+        RTS
+tlo:    .byte lo(h0),lo(h1),lo(h2),lo(h3)
+thi:    .byte hi(h0),hi(h1),hi(h2),hi(h3)
+end:
+"""
+TAILS = """
+entry:  AND #$03
+        TAX
+        BEQ x
+        STX $C001
+        JMP sub
+x:      STX $C002
+        JMP sub
+other:  JSR sub
+        RTS
+sub:    STX $C000
+        RTS
+end:
+"""
+CMP3 = """
+entry:  CMP #$0F
+        BEQ eq
+        BCC lt
+        BCS ge
+eq:     LDX #$01
+        STX $C000
+        RTS
+lt:     STA $C001
+        RTS
+ge:     STA $C002
+        RTS
+end:
+"""
 WRAP = """
 entry:  AND #$0F
         ORA #$70
@@ -859,9 +943,10 @@ def test_pointer_stores_from_a_terminated_table_make_cells(prefix, tmp_path):
 
 
 def test_branch_offset_written_from_a_table(prefix, tmp_path):
-    # Offsets 0, 5 and 10 enter one straight-line run at three points: the third entry, past
-    # the run's second store, is a goto.
-    _, _, info = check(prefix, tmp_path, BRTAB, entry_calls([0, 1, 2, 3, 1]), gotos=1)
+    # Offsets 0, 5 and 10 enter one straight-line run at three points: a switch whose cases
+    # fall through into the next.
+    c, _, info = check(prefix, tmp_path, BRTAB, entry_calls([0, 1, 2, 3, 1]))
+    assert c.count("case CODE_ORG") == 2 and "break;" not in c
     _, labels, _ = assemble(BRTAB)
     br = labels["br"]
     assert info["jumps"] == {br: [br + 2, br + 7, br + 12]} and not info["traps"]
@@ -1093,10 +1178,10 @@ def test_shared_tail_stays_in_its_function(prefix, tmp_path, src, places):
 
 
 def test_multi_exit_loop_breaks_to_its_follow(prefix, tmp_path):
-    # The inner loop's two edges to `none` break to its follow; its exit to `found` and
-    # `none`'s jump past `found` (a join of the outer test) are the gotos.
-    c, _, _ = check(prefix, tmp_path, EXITS, entry_calls(range(4), 2), gotos=3)
-    assert c.count("break;") == 2 and "flag" not in c
+    # The inner loop's two edges to `none` break to its follow; its exit to `found` is the
+    # goto; `none`'s jump past `found` to the latch `next` continues the outer do/while.
+    c, _, _ = check(prefix, tmp_path, EXITS, entry_calls(range(4), 2), gotos=1)
+    assert c.count("break;") == 2 and "continue;" in c and "} while (" in c
 
 
 def test_two_entry_loop_jumps_to_its_second_entry(prefix, tmp_path):
@@ -1253,16 +1338,11 @@ def test_short_circuit_conditions(prefix, tmp_path):
 
 
 def test_non_series_parallel_joins_are_gotos(prefix, tmp_path):
-    """EXITS: the outer test into `found` and the inner loop's exit to it are branches to a
-    block other paths join (not the post-dominator of their branch), `JMP next` jumps past it."""
-    _, _, info = check(prefix, tmp_path, EXITS, entry_calls(range(4), 2), gotos=3)
+    """EXITS: the inner loop's exit to `found` is a branch to a block the outer test also
+    reaches (not its loop's follow); `JMP next` into the latch is a ``continue``."""
+    _, _, info = check(prefix, tmp_path, EXITS, entry_calls(range(4), 2), gotos=1)
     _, labels, _ = assemble(EXITS)
-    found, nxt = labels["found"], labels["next"]
-    assert sorted(info["provenance"]["gotos"]) == [
-        [labels["outer"] + 4, found],
-        [labels["inner"] + 8, found],
-        [found - 3, nxt],
-    ]
+    assert info["provenance"]["gotos"] == [[labels["inner"] + 8, labels["found"]]]
     assert info["provenance"]["loops"] == [labels["inner"], labels["outer"]]
 
 
@@ -1303,3 +1383,52 @@ def test_instruction_edges():
 
 def structure_edges(img, p, q):
     return regions.edge(img, p, q)
+
+
+def test_short_circuit_with_effects(prefix, tmp_path):
+    """A test entered only from the last, sharing its target, whose block has effects (`DEC`)
+    is one condition: the effects run as the literal's comma expression, exactly when the
+    machine code runs them."""
+    c, _, info = check(prefix, tmp_path, EFFECT, entry_calls(range(4), 3))
+    _, labels, _ = assemble(EFFECT)
+    assert re.search(r"\|\| \(R\d+\[[^]]*\] = [^,]*, ", c), c
+    assert info["provenance"]["conditions"] == [[labels["do"] - 7, labels["do"] - 2]]
+
+
+def test_cycle_entered_at_two_points_selects_its_entry(prefix, tmp_path):
+    """A cycle entered at two nodes by one branch (a self-modified direction) is one loop whose
+    first iteration that branch's condition, saved on entry, selects."""
+    c, _, info = check(prefix, tmp_path, SWEEP, entry_calls([0, 1, 1, 0, 1], 2))
+    _, labels, _ = assemble(SWEEP)
+    assert info["provenance"]["loops"] == [labels["down"]] and "for (;;)" in c
+
+
+def test_switch_arms_break_and_fall_through(prefix, tmp_path):
+    """Jump-table handlers jumping to what follows the dispatch break; one running into the
+    next handler falls through into its case."""
+    c, _, _ = check(prefix, tmp_path, CASES, entry_calls(range(4), 2))
+    assert c.count("break;") >= 2 and "switch (" in c
+
+
+def test_tail_calls_print_in_place(prefix, tmp_path):
+    """Each jump into a routine called elsewhere is a call then return where it is taken."""
+    _, _, info = check(
+        prefix, tmp_path, TAILS, entry_calls(range(4), 2), entries=("entry", "other")
+    )
+    _, labels, _ = assemble(TAILS)
+    sub = next(f for f in info["provenance"]["functions"].values() if f["entry"] == labels["sub"])
+    sites = {s for s, _ in sub["calls"]}
+    assert {labels["x"] - 3, labels["other"] - 3} <= sites and labels["other"] in sites
+
+
+def test_decided_edges_are_dropped(prefix, tmp_path):
+    """`BCS` after `BCC` on the same carry always branches: its fall-through is no edge."""
+    c, _, _ = check(prefix, tmp_path, CMP3, entry_calls([0, 0x0F, 0x10, 0x80]))
+    assert c.count("io_write(0xC000") == 1
+
+
+def test_copies_provenance():
+    """An instance function's printed constructs name every copy's instruction."""
+    pcs = {1: [1, 11, 21], 2: [2, 12, 0]}
+    assert printer._copies([1, [1, 2]], pcs) == [1, [1, 2], 11, [11, 12], 21]
+    assert printer._copies([5], {}) == [5]

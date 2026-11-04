@@ -632,6 +632,7 @@ impl Program {
             d.set_item("entry", f.top)?;
             d.set_item("recursive", f.recursive)?;
             d.set_item("copies", f.copies.clone())?;
+            d.set_item("copy_pcs", f.copy_pcs.clone())?;
             d.set_item("blocks", blocks)?;
             d.set_item("tables", f.tables.clone())?;
             d.set_item("closed", f.closed.ones().collect::<Vec<_>>())?;
