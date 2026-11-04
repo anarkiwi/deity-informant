@@ -617,6 +617,9 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             if b.name not in node:
                 continue
             n, term = node[b.name], b.ops[-1]
+            if self.traps(b):
+                g.items[n].append(("halt",))
+                continue
             if term.name == "func.return":
                 g.items[n].append(("return", self.ret_vals(term, {})))
                 continue
@@ -720,6 +723,27 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                     return False
         return True
 
+    def tail(self, items):
+        """Whether statements ``items`` are copies and blocks whose only effects are calls of
+        lifted functions, at least one: a tail call's code."""
+        calls = 0
+        for it in items:
+            if it[0] in ("copy", "return"):
+                continue
+            if it[0] != "ops":
+                return False
+            for o in it[1].ops[:-1]:
+                if id(o) in self.dropped or self.pure(o) or o.name == "memref.get_global":
+                    continue
+                if o.name != "func.call" or o.prop("callee")[1:] not in self.mod.by_name:
+                    return False
+                calls += 1
+        return calls > 0
+
+    def traps(self, b):
+        """Whether block ``b`` calls ``trap``, which does not return."""
+        return any(o.name == "func.call" and o.prop("callee") == "@trap" for o in b.ops)
+
     def stack_byte(self, a):
         """``(value, offset)`` of a page-1 address ``(value + offset) | $100``, or None."""
         d = self.defs.get(a)
@@ -803,6 +827,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             self.f.hoistable,
             self.falls,
             lambda n: self.first_pc(n) or 0,
+            self.f.tail,
         )
         self.body = s.finish(s.structure(self.g))
 
@@ -1367,14 +1392,18 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
                 self.assign(it[1], out)
             elif kind == "return":
                 out += self.jump(it[1])
+            elif kind == "halt":
+                out.append(self.halt())
+            elif kind == "site":
+                self.tail_site(it[1], it[2])
             elif kind in ("break", "continue"):
                 out.append(("j", f"{kind};", frozenset()))
             elif kind == "goto":
                 out.append(("j", f"goto {self.goto_label(it[1])};", frozenset()))
-                p, q = self.source_pc(it[2], it[1]), self.first_pc(it[1])
-                self.edges[id(out[-1])] = out[-1], (
-                    regions.edge(self.mod.mem.image, p, q) if p else [p, q]
-                )
+                q, img = self.first_pc(it[1]), self.mod.mem.image
+                self.edges[id(out[-1])] = out[-1], [
+                    regions.edge(img, p, q) if p else [p, q] for p in self.source_pcs(it[2], it[1])
+                ]
             elif kind == "label":
                 out.append(("l", f"{self.goto_label(it[1])}:;", frozenset()))
             elif kind == "if":
@@ -1386,6 +1415,26 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
                 out.append(self.convert_loop(self.convert(it[1])))
                 self.prov["loops"].append(self.head_pc(it[2]))
         return _merge_tails(out)
+
+    def halt(self):
+        """The return after a ``trap``, which does not return: zero results."""
+        rt = self.mod.ret_type(self.f) if self.f.private else "void"
+        if rt == "void":
+            return ("j", "return;", frozenset())
+        return ("j", "return 0;" if rt.startswith("uint") else f"return ({rt}){{0}};", frozenset())
+
+    def tail_site(self, p, t):
+        """Record the tail call graph node ``p`` makes into node ``t``: the instruction taking
+        the edge into the callee of ``t``'s first call."""
+        src = self.source_pc(p, t)
+        for o in (o for b in self.blocks(t) for o in b.ops if o.name == "func.call"):
+            callee = o.prop("callee")[1:]
+            if callee in self.mod.lifted and src:
+                entry = self.mod.lifted[callee][0]
+                self.prov.setdefault("calls", []).append(
+                    [regions.edge(self.mod.mem.image, src, entry)[0], callee]
+                )
+                return
 
     def goto_label(self, node):
         """The C label of graph node ``node``, numbered on first use."""
@@ -1425,6 +1474,21 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
                 img = self.mod.mem.image
                 return regions.through(img, regions.edge(img, p, q)[1])
         return q
+
+    def source_pcs(self, x, t):
+        """The addresses of the instructions branching from graph node ``x`` to node ``t``:
+        each branch composed into ``x`` (a short-circuit condition) with an edge toward it."""
+        if not self.blocks(x):
+            preds = [p for p, es in self.g.succ.items() if any(u == x for u, _ in es)]
+            if len(preds) == 1 and preds[0] in self.g.composed:
+                x = preds[0]
+        if x not in self.g.composed:
+            return [self.source_pc(x, t)]
+        while not self.blocks(t) and len(self.g.succ.get(t, ())) == 1:
+            t = self.g.succ[t][0][0]
+        names = {b.name for b in self.blocks(t)}
+        pcs = [b.ops[-1].pc for b in self.blocks(x) if names & set(b.ops[-1].succs)]
+        return [p for p in pcs if p] or [self.source_pc(x, t)]
 
     def source_pc(self, x, t=None):
         """The address of the instruction branching from graph node ``x`` (to node ``t``):
@@ -1507,7 +1571,8 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             body, lambda st, read: st[1] not in read and self.copies.get(id(st)) is st
         )
         self.prov["gotos"] = [
-            self.edges[id(st)][1] for st in walk(body) if self.edges.get(id(st), (None,))[0] is st
+            e for st in walk(body) if self.edges.get(id(st), (None,))[0] is st
+            for e in self.edges[id(st)][1]
         ]
         declare(body, self.types)
         read = names_in(body)
@@ -1603,6 +1668,26 @@ def fold(defs, protos):
     return [h for i, h in enumerate(heads) if h not in heads[:i]], keep, name
 
 
+def _copies(items, pcs):
+    """Provenance ``items`` (addresses, or lists of them) of an instance function, with each
+    copy's instructions for those ``pcs`` (``{pc: [pc per copy]}``) maps."""
+    if not pcs:
+        return list(items)
+
+    def at(x, k):
+        if isinstance(x, list):
+            got = [at(y, k) for y in x]
+            return None if None in got else got
+        row = pcs.get(x)
+        return x if row is None else (row[k] or None)
+
+    n = len(next(iter(pcs.values())))
+    out = []
+    for k in range(n):
+        out += [y for y in (at(x, k) for x in items) if y is not None and y not in out]
+    return out
+
+
 class Module:  # pylint: disable=too-many-instance-attributes
     """The functions of the optimized module and the memory they share."""
 
@@ -1611,6 +1696,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.traps, self.funcs, self.mains, self.structs = set(), [], {}, {}
         self.order, self.edges, self.ids, self.entries = [], {}, new_ids(), []
         self.sites, self.made, self.lifted, self.prov = {}, Counter(), {}, {}
+        self.copy_pcs = {}
         for o in top.regions[0][0].ops:
             if o.name == "func.func" and o.regions[0] and o.regions[0][0].ops:
                 self.funcs.append(Func(o, self))
@@ -1763,6 +1849,9 @@ class Module:  # pylint: disable=too-many-instance-attributes
                     callee = o.prop("callee")[1:] if o.name == "func.call" else None
                     if o.pc and callee in self.lifted:
                         sites.setdefault(callee, []).append([o.pc, self.lifted[callee][0]])
+            for site, callee in c.prov.get("calls", ()):
+                if [site, self.lifted[callee][0]] not in sites.setdefault(callee, []):
+                    sites[callee].append([site, self.lifted[callee][0]])
         for c in cfuncs:
             name = names.get(c.name, c.name)
             pc, copies = self.lifted[c.f.name]
@@ -1778,5 +1867,5 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 "copies": list(copies),
             }
             for k, v in prov.items():
-                v += c.prov[k]
+                v += _copies(c.prov[k], self.copy_pcs.get(c.f.name, {}))
         self.prov = {"functions": funcs, **prov}

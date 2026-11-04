@@ -144,6 +144,12 @@ pub fn emit(
             copies: plan.inst.as_ref().map_or(Vec::new(), |x| {
                 (0..x.c.copies()).map(|k| x.c.entry(k)).collect()
             }),
+            copy_pcs: plan.inst.as_ref().map_or(Vec::new(), |x| {
+                x.c.nodes
+                    .iter()
+                    .map(|n| n.pcs.iter().map(|p| p.unwrap_or(0)).collect())
+                    .collect()
+            }),
             ..Function::default()
         },
         blk: FxHashMap::default(),

@@ -189,10 +189,15 @@ def subtree(kids, n):
 
 
 def _ret_key(g, t):
-    """What node ``t`` does when it only returns (the values it returns), else ``t``."""
-    items = g.items[t]
-    if not g.succ[t] and len(items) == 1 and items[0][0] == "return":
+    """What node ``t`` does when it only returns (the values it returns) or only copies into
+    one successor (the copies and the successor), else ``t``."""
+    items, succ = g.items[t], g.succ[t]
+    if len(items) != 1:
+        return t
+    if not succ and items[0][0] == "return":
         return ("return", tuple(v[0] if isinstance(v, tuple) else v for v in items[0][1]))
+    if items[0][0] == "copy" and len(succ) == 1 and succ[0][1] is None:
+        return ("copy", tuple((d, v) for d, v, _ in items[0][1]), succ[0][0])
     return t
 
 
@@ -224,6 +229,33 @@ def short_circuit(g, hoistable):
                 break
             if changed:
                 break
+
+
+def split_tails(g, tail):
+    """Give each edge into a tail call its own copy, so it prints in place as a call then
+    ``return``: a node whose statements ``tail`` holds (calls and copies only) that returns or
+    continues unconditionally into such a node. Each copy starts with ``("site", pred)``."""
+    tails, grown = set(), True
+    while grown:
+        grown = False
+        for n, es in g.succ.items():
+            ok = not es and g.items[n][-1][0] == "return" or (
+                len(es) == 1 and es[0][1] is None and es[0][0] in tails
+            )
+            if n not in tails and n != g.entry and ok and tail(g.items[n]):
+                tails.add(n)
+                grown = True
+    work = sorted(tails)
+    while work:
+        t = work.pop()
+        base = [it for it in g.items[t] if it[0] != "site"]
+        preds = [p for p in sorted(g.items) if any(u == t for u, _ in g.succ[p])]
+        for i, p in enumerate(preds):
+            n = t if i == 0 else g.add(base, g.succ[t])
+            g.items[n] = [("site", p, n), *base]
+            if n != t:
+                g.succ[p] = [[n if u == t else u, c] for u, c in g.succ[p]]
+                work += [u for u, _ in g.succ[n] if u not in work]
 
 
 def _compose(g, a, b, cab):
@@ -263,9 +295,10 @@ class Structurer:
     leading to it; ``quiet(items)``: whether it prints nothing."""
 
     def __init__(self, conds, quiet=lambda items: False, hoistable=lambda items: False,
-                 falls=lambda p, y: False, place=lambda n: 0):  # fmt: skip
+                 falls=lambda p, y: False, place=lambda n: 0,
+                 tail=lambda items: False):  # fmt: skip
         self.conds, self.quiet, self.hoistable, self.falls = conds, quiet, hoistable, falls
-        self.place = place
+        self.place, self.tail = place, tail
         self.g = self.kids = self.loops = self.back = self.rank = None
         self.at, self.after, self.follows, self.idom = {}, {}, set(), {}
 
@@ -273,6 +306,7 @@ class Structurer:
         """The statements of ``g``, with ``label`` statements where jumps go."""
         self.g = g
         short_circuit(g, self.hoistable)
+        split_tails(g, self.tail)
         pre, _, back = g.dfs(key=self.place)
         g.remove(set(g.items) - set(pre))
         self.rank = _layout(g, pre, back, self.place)

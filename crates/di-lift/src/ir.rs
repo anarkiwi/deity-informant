@@ -233,6 +233,9 @@ pub struct Function {
     pub chains: Vec<crate::wide::Chain>,
     /// An instance function ([`crate::inst`]): the entries of the copies it merges, by index.
     pub copies: Vec<u16>,
+    /// Per merged instruction of an instance function, each copy's instruction start (0: a copy
+    /// without it).
+    pub copy_pcs: Vec<Vec<u16>>,
 }
 
 impl Function {
