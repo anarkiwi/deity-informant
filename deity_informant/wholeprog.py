@@ -57,14 +57,16 @@ def lift(
     entry_sp=None,
     loaded=None,
     fold=False,
+    sensitive=None,
 ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
     """Lift ``entries`` of the program in ``image`` (the memory each entry starts from);
     ``cycles=True`` counts cycles and stamps volatile accesses with them; ``bank`` is a bank
     map (e.g. ``deity_informant.c64.bank_map()``) memory is seen through; ``backend`` (default
     :data:`BACKEND`) is the engine ``Program.call`` runs it on; ``entry_sp`` declares the SP
     every entry is called at (``docs/wholeprog.md``, *Stack extent*), ``loaded`` the
-    ``(lo, hi)`` the program was loaded to (*Table extents*) and ``fold=True`` lifts copies of
-    one routine as one function of the copy's index (*Instances*)."""
+    ``(lo, hi)`` the program was loaded to (*Table extents*), ``fold=True`` lifts copies of
+    one routine as one function of the copy's index (*Instances*) and ``sensitive`` lists the
+    volatile addresses whose reads have effects (a throw-away read reaching none is not made)."""
     n = _native_or_raise()
     prog = n.lift_program(
         bytes(image),
@@ -77,6 +79,7 @@ def lift(
         entry_sp,
         loaded,
         fold=fold,
+        sensitive=None if sensitive is None else sorted(set(sensitive)),
     )
     prog.backend = backend or BACKEND
     return prog

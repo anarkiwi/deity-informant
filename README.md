@@ -4,6 +4,15 @@ NMOS 6510 toolkit: a 6510 -> raw-P-Code lifter + pure-Python P-Code VM (all 105 
 
 The C64 machine model (power-on RAM, interrupt-vector discovery, ROM-free IRQ dispatch) in [anarkiwi/vagrant-moses](https://github.com/anarkiwi/vagrant-moses).
 
+## C lifting
+
+`deity_informant.cgen` translates 6502/6510 machine code to C99: a static, song-independent
+lift (no run of the program needed) to goto-minimal structured C, with a `goto` only at an
+edge that has no structured form. The `.c` holds the code alone and the `.h` its data, so the
+same player with other data, or loaded elsewhere, gives a byte-identical `.c`; every output is
+verified by replaying its I/O writes against the reference interpreter. See
+[docs/cgen.md](docs/cgen.md).
+
 ## Components
 
 - `deity_informant/lifter.py` — `lift(mem, pc)` -> `{"ops", "len", "cyc", "pen", "ctrl", "prov", "stk"}` raw P-Code; `CYCLETIME`/`EXTRACYCLES` tables.

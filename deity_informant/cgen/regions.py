@@ -16,6 +16,10 @@ from ..lifter import MODE_LEN, OPS
 #: Widest address interval treated as bounded; wider accesses are of unknown address.
 BOUNDED = 0x200
 
+#: Bytes of code one more held span costs: its tests in ``rd``, ``wr`` and ``codechk`` and its
+#: data bitmap's slack; a gap of more unneeded constant bytes splits the held constants.
+SPAN_COST = 48
+
 
 def code_bytes(image, starts):
     """The instruction bytes of the instructions at ``starts``, as a boolean array."""
@@ -106,7 +110,10 @@ def runs(mask):
 
 
 class Memory:  # pylint: disable=too-many-instance-attributes
-    """Regions of ``image`` for the accesses of a program (see the module docstring)."""
+    """Regions of ``image`` for the accesses of a program (see the module docstring):
+    ``code_span`` names the constant bytes (``CODE_ORG``); ``held`` are the spans of those a
+    bounded access may reach and of the tables (widened over the regions they overlap, which
+    are their slices), each held in memory as ``Cj`` from ``Cj_ORG``."""
 
     def __init__(
         self, image, code, volatile, loaded, sensitive=(), pairs=None, tables=None, written=()
@@ -123,16 +130,28 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         self.volatile = [tuple(r) for r in volatile]
         self.loaded, self.sensitive = loaded, sorted(sensitive)
         self.regions, self.owner, self.unknown = [], np.full(0x10000, -1, dtype=np.int32), False
-        self.code_span = self._span()
+        self.constant = self.code | self.tables
+        self.code_span = self._span(self.constant)
+        self.held = []
 
-    def _span(self):
-        """The span of the bytes taken as constant: code and the tables read for jumps."""
-        span = np.flatnonzero(self.code | self.tables)
-        return (int(span[0]), int(span[-1]) + 1) if len(span) else (0, 0)
+    def _span(self, mask):
+        """The span of ``mask``, widened over the regions it overlaps."""
+        span = np.flatnonzero(mask)
+        return self._widen(*((int(span[0]), int(span[-1]) + 1) if len(span) else (0, 0)))
 
-    def partition(self, accesses, stores):
+    def _widen(self, lo, hi):
+        """``[lo, hi)`` widened over the regions it overlaps."""
+        for org, n in self.regions if hi > lo else ():
+            if org < hi and org + n > lo:
+                lo, hi = min(lo, org), max(hi, org + n)
+        return lo, hi
+
+    def partition(self, accesses, stores, unknown_store=True):
         """Regions for ``accesses`` (``(lo, hi)`` inclusive, None when unknown), given the
-        ``stores`` at constant addresses (code bytes they hit are data)."""
+        ``stores`` at constant addresses (code bytes they hit are data). Constant bytes are
+        held where a bounded access may reach them, or everywhere when a store of unknown
+        address (``unknown_store``) may need them to check it, and tables (data read as
+        constant) always; a load of unknown address reaching other code reads ``oob_rd``."""
         for a in stores:
             self.code[a] = False
         touched = np.zeros(0x10000, dtype=bool)
@@ -141,19 +160,49 @@ class Memory:  # pylint: disable=too-many-instance-attributes
                 self.unknown = True
             else:
                 touched[r[0] : r[1] + 1] = True
+        self.constant = constant = self.code | self.tables
+        need = constant if unknown_store else touched & self.code | self.tables
         if self.unknown:
             touched[self.loaded[0] : self.loaded[1]] = True
         for lo, hi in self.written:
             touched[lo:hi] = True
-        touched &= ~self.code & ~self.vol
+        touched &= ~constant & ~self.vol
         self.regions = runs(touched)
         for k, (org, n) in enumerate(self.regions):
             self.owner[org : org + n] = k
-        lo, hi = self._span()
-        for org, n in self.regions if hi > lo else ():
-            if org < hi and org + n > lo:
-                lo, hi = min(lo, org), max(hi, org + n)
-        self.code_span = (lo, hi)
+        self.code_span = self._span(constant)
+        self.held = self._spans(need, constant)
+
+    def hull(self, lo, hi):
+        """The hull of the bytes in ``[lo, hi]`` when every one is constant (code, or a table
+        the lift read as constant), else the full byte range."""
+        if hi - lo < 0x100 and self.constant[lo : hi + 1].all():
+            b = np.frombuffer(self.image, np.uint8)[lo : hi + 1]
+            return int(b.min()), int(b.max())
+        return 0, 255
+
+    def _spans(self, need, constant):
+        """The runs of ``need`` merged across gaps of at most :data:`SPAN_COST` unneeded
+        constant bytes (data region bytes in a gap cost nothing: they are slices), each widened
+        over the regions it overlaps."""
+        spans = []
+        for org, n in runs(need):
+            if spans and constant[spans[-1][1] : org].sum() <= SPAN_COST:
+                spans[-1][1] = org + n
+            else:
+                spans.append([org, org + n])
+        return [self._widen(a, b) for a, b in spans]
+
+    def held_span(self, lo, hi):
+        """The index of the held span holding all of ``[lo, hi]`` when it is constant, else
+        None."""
+        if hi - lo >= BOUNDED or not self.constant[lo : hi + 1].all():
+            return None
+        return next((j for j, (a, b) in enumerate(self.held) if a <= lo and hi < b), None)
+
+    def span_of(self, org, n):
+        """The index of the held span a region ``(org, n)`` lies in, else None."""
+        return next((j for j, (a, b) in enumerate(self.held) if a <= org and org + n <= b), None)
 
     def region(self, lo, hi):
         """The region holding all of ``[lo, hi]``, or None."""

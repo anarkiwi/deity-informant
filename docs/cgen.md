@@ -70,8 +70,9 @@ caller's return address. `tools/cgenplay.c` is a host harness.
    store, an I/O write, a trap, a read that may meet a read-sensitive address and a branch
    need their operands; a used result of a function needs the values its returns give; a used
    parameter needs its call sites' arguments. Calls pass only used parameters and functions
-   return only used results (none: `void`, one: its type, more: a `struct rW_W...` named by
-   the widths). Upstream `--remove-dead-values` would do this, but in LLVM 22 it rewrites a
+   return only used results (none: `void`, one: its type; more: `void`, each result left in
+   the static variable `rvJ` of its register-file position `J`, read into locals right after
+   the call, as the 6502 leaves its registers across `RTS`). Upstream `--remove-dead-values` would do this, but in LLVM 22 it rewrites a
    `cf.cond_br` passing one value to both successors into an invalid branch, so it is not
    used.
 5. **Layout** (`regions.py`): the memory partition below.
@@ -193,32 +194,46 @@ per-voice routines often are; the rest are renumbered in order.
 ## Memory
 
 - **Constant code** is the bytes of the planned instructions (`Program.starts`) that the lift treats as constant
-  (no store's address set holds them) and that no constant-address store writes. The `.h`'s
-  `CODE` is the span from the first such byte, or byte of a table the lift read jump targets
-  or cell values from, to the last, widened over the data regions it overlaps; when the `.c`
-  needs it, those regions are its slices (`#define R2 (CODE + (R2_ORG - CODE_ORG))`), so
-  each byte is held once, and `CODE_DATA` marks its data bytes.
+  (no store's address set holds them) and that no constant-address store writes, and the
+  bytes of the tables the lift read as constant (jump targets, cell values, loads given their
+  bytes' hull). `CODE_ORG` is the first of them (constants into code print relative to it).
+  Only the tables and the constant bytes a bounded access may reach are held in memory (all
+  of them when a store of unknown address may need them for its code check): their runs,
+  merged across gaps of at most `SPAN_COST` unneeded constant bytes (what one more span's
+  tests cost in code) and widened over the data regions they overlap, are the spans `C0,
+  C1, ...`; those regions are their slices (`#define R2 (C0 + (R2_ORG - C0_ORG))`), so each
+  byte is held once, and `Cj_DATA` marks a span's data bytes. A load of unknown address
+  reaching other code reads `oob_rd`.
 - **Data regions** `R0, R1, ...` (ascending address) are the maximal runs of other bytes that
   some access may touch, outside volatile ranges. An access's interval comes from its address
   expression (constants, an 8-bit index adds `[0, 255]`, masks, shifts, the hull of what flows
   into a block argument or a function's parameter from its call sites, a loop-carried value
   enumerated to its fixpoint or keeping its initial interval, a load of a closed cell the
-  hull of its values (`Program.sets`)); wider than `$200` is unknown.
+  hull of its values (`Program.sets`) and of a byte with bounded stores its bound
+  (`Program.bounds`), a mask or an or-ed constant that keeps the interval in one block);
+  wider than `$200` is unknown. `sensitive_reads` also goes to the lift, which makes no
+  throw-away read that cannot reach one of them.
   An unknown access may touch every byte of `loaded`, so then every non-code byte of it is in a
   region. Zero page, the stack page and RAM outside the image are regions when accessed, and
   so is every byte a store with an address set may write (`Program.written`: a block copy's
-  destinations past the image, which pointer reads then find through `rd`).
+  destinations past the image, which pointer reads then find through `rd`); the stack page
+  is accessed only by a load that may read it, since pointer accesses are kept out of page 1
+  ([wholeprog](wholeprog.md#static-proofs), *Pointer windows*).
+- An access with an address set (`Program.addr_sets`: a block copy's loads and stores) that
+  lies in the regions and held spans indexes them directly, testing only those it spans (the
+  last untested); a 16-bit base plus a byte index is the base's element indexed by the byte,
+  as `(zp),Y` is.
 - An access whose interval lies in one region is `Rk[off + index]`, `off` relative to the
   region and the address taken modulo its width (16 bits, 8 for a zero-page one) as the 6502
-  wraps it. One in volatile memory is `io_read`/`io_write`. One wholly in constant code is
-  `oob_rd`/`oob_wr`. Any other goes through `rd(a)`/`wr(a, v)`: the regions outside the code
-  span (by the `Rk_ORG` symbols, so data pointers holding original addresses resolve), the
-  volatile ranges, the code span in memory (`wr` writing its data bytes only), then
-  `oob_rd`/`oob_wr`.
-- `oob_rd` returns the original byte of `CODE` (0 outside it), `oob_wr` discards; defining
-  `CGEN_OOB` replaces both with the host's. A store the lift found may hit constant code or a
-  table it read is followed by `codechk`, which traps when a byte of the span outside the data
-  regions would change.
+  wraps it; a load of constants in one span is `Cj[off + index]` alike. One in volatile
+  memory is `io_read`/`io_write`. One wholly in other constant code is `oob_rd`/`oob_wr`. Any
+  other goes through `rd(a)`/`wr(a, v)`: the regions outside the spans (by the `Rk_ORG`
+  symbols, so data pointers holding original addresses resolve), the volatile ranges, the
+  spans (`wr` writing their data bytes only), then `oob_rd`/`oob_wr`; they are `noinline`, as
+  llvm-mos would otherwise copy them into every caller.
+- `oob_rd` returns 0, `oob_wr` discards; defining `CGEN_OOB` replaces both with the host's.
+  A store the lift found may hit constant code or a table it read is followed by `codechk`,
+  which traps when a constant byte of a span would change.
 
 Address constants print relative to the region, code span or loaded image holding them
 (`R2_ORG + 0x10`, `CODE_ORG + 0x21`, `IMG_ORG + ...`): a constant reaching an access address

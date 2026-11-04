@@ -35,17 +35,21 @@ use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Lift options.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Opts {
     /// Optimize (otherwise the emitted P-Code as is).
     pub optimize: bool,
     /// Count cycles: `CY`, cycle-budget checks, volatile accesses at their cycle.
     pub cycles: bool,
     /// The SP every entry is called at (after its return address), as a calling convention
-    /// rather than an observation: outermost plans are specialized to it, zero-page pointers
-    /// keep no windows, and while the stack is private only a store that may hit the stack
-    /// bytes the program can hold is checked, against those bytes (*Stack extent*).
+    /// rather than an observation: outermost plans are specialized to it, pointer windows keep
+    /// pointers out of the volatile pages too, and while the stack is private only a store
+    /// that may hit the stack bytes the program can hold is checked, against those bytes
+    /// (*Stack extent*).
     pub entry_sp: Option<u8>,
+    /// The volatile addresses whose reads have effects (none: every volatile address): a
+    /// throw-away read that may reach none of them is not made.
+    pub sensitive: Option<Vec<u16>>,
     /// The `[lo, hi)` the program was loaded to: tables end at its end at the latest
     /// (*Static proofs*, *Table extents*).
     pub loaded: Option<(u32, u32)>,
@@ -60,6 +64,7 @@ impl Default for Opts {
             optimize: true,
             cycles: false,
             entry_sp: None,
+            sensitive: None,
             loaded: None,
             fold: false,
         }
@@ -119,6 +124,130 @@ fn ind_ptr(img: &[u8; 0x10000], g: &analysis::Graph, pc: u16) -> (Iv, bool) {
         hi: w.max(h) as u32,
     };
     (iv, false)
+}
+
+/// Marks the accesses a static lift keeps out of the zones (page 1 and the volatile pages):
+/// those through a pointer (a zero-page pair no window keeps, or operand cells) that may
+/// reach a zone. Each is checked before its instruction (when every such access of the
+/// instruction can be), unless its operand names only pages outside the zones (`zfree`).
+/// A pointer whose high byte some store sets to a zone's page means the device or stack.
+fn zone_checks(g: &mut analysis::Graph) {
+    let (win, zones, cells, addr_sets) = (&g.prot.win, &g.zones, &g.cells, &g.addr_sets);
+    let mut meant = FixedBitSet::with_capacity(0x10000);
+    for a in g.vars.iter().filter(|(_, vs)| !is_stack_op(vs[0].op)) {
+        for ac in a.1.iter().flat_map(|v| &v.acc).filter(|ac| ac.store) {
+            let into = |&(lo, hi): &(u32, u32)| lo >> 8 <= ac.val.lo && ac.val.hi < hi >> 8;
+            if ac.addr.hi - ac.addr.lo < 0x100 && zones.iter().any(into) {
+                meant.insert_range(ac.addr.lo as usize..ac.addr.hi as usize + 1);
+            }
+        }
+    }
+    let held = byte_bounds(g);
+    let in_zone = |page: u32| {
+        zones
+            .iter()
+            .any(|&(lo, hi)| (lo >> 8..hi >> 8).contains(&page))
+    };
+    // The pages an absolute operand may name: its high byte a constant or a closed cell.
+    let pages = |pc: u16| -> Option<Vec<u32>> {
+        let a = pc.wrapping_add(2);
+        match (cells.contains(a as usize), g.vals.get(&a)) {
+            (false, _) => Some(vec![g.img[a as usize] as u32]),
+            (true, Some(vs)) if g.closed.contains(a as usize) => {
+                Some(vs.iter().map(|&v| v as u32).collect())
+            }
+            _ => None,
+        }
+    };
+    for (&pc, vs) in g.vars.iter_mut() {
+        let operand = (1..3).any(|i| cells.contains(pc.wrapping_add(i) as usize));
+        let high = |a: &analysis::Access| match a.ptr {
+            Some(p) => !meant.contains_any_in_range(p.hi.lo as usize..p.hi.hi as usize + 1),
+            None => {
+                let hi = pc.wrapping_add(2);
+                operand && !meant.contains(hi as usize) && !in_zone(g.img[hi as usize] as u32)
+            }
+        };
+        let named = if operand { pages(pc) } else { None };
+        for v in vs.iter_mut().filter(|v| !is_stack_op(v.op)) {
+            let pointer = |a: &analysis::Access| {
+                a.addr.hi - a.addr.lo >= 0x1ff
+                    && (a.ptr.is_some() || operand)
+                    && high(a)
+                    && !a.windowed(win)
+                    && zones.iter().any(|&(lo, hi)| a.addr.meets(lo, hi))
+            };
+            let step = index_reads(v.op);
+            let clear = |p: u32| (p..=p + step).all(|q| !in_zone(q & 0xff));
+            // An address set no page of which, nor the page before (its throw-away read's),
+            // is a zone's.
+            let set_free = [false, true].iter().any(|&st| {
+                v.acc
+                    .iter()
+                    .any(|a| a.store == st && a.ptr.is_some() && !a.dummy)
+                    && addr_sets.get(&(pc, st)).is_some_and(|set| {
+                        set.iter().all(|&x| {
+                            let p = x as u32 >> 8;
+                            !in_zone(p) && !in_zone(p.wrapping_sub(1) & 0xff)
+                        })
+                    })
+            });
+            let free = set_free
+                || match v.acc.iter().find_map(|a| a.ptr) {
+                    Some(p) => (p.hi.lo..=p.hi.hi.min(0xff))
+                        .all(|b| held[b as usize].is_some_and(|h| (h.lo..=h.hi).all(clear))),
+                    None => named
+                        .as_ref()
+                        .is_some_and(|ps| ps.iter().all(|&p| clear(p))),
+                };
+            let mut hit = v
+                .acc
+                .iter()
+                .enumerate()
+                .filter(|(_, a)| pointer(a))
+                .peekable();
+            if hit.peek().is_some() && (free || hit.all(|(i, _)| page1_check(v.op, i) != Check::No))
+            {
+                for a in v.acc.iter_mut().filter(|a| pointer(a)) {
+                    (a.zone, a.zfree) = (true, free);
+                }
+            }
+        }
+    }
+}
+
+/// Per byte, the values it may hold when every store that may write it has an exact address
+/// and a value interval narrower than a byte: its entry byte and the stored values (`None`:
+/// unbounded, as for page 1 where pushes land).
+fn byte_bounds(g: &analysis::Graph) -> Vec<Option<Iv>> {
+    let mut held: Vec<Option<Iv>> = (0..0x10000)
+        .map(|a| Some(Iv::exact(g.img[a] as u32)))
+        .collect();
+    held[0x100..0x200].fill(None);
+    let stores = g.vars.values().flatten().flat_map(|v| &v.acc);
+    for ac in stores.filter(|a| a.store) {
+        if ac.addr.value().is_none() || ac.val.hi - ac.val.lo >= 0xff {
+            held[ac.addr.lo as usize..=ac.addr.hi.min(0xffff) as usize].fill(None);
+        } else if let Some(h) = held[ac.addr.lo as usize].as_mut() {
+            *h = Iv {
+                lo: h.lo.min(ac.val.lo),
+                hi: h.hi.max(ac.val.hi),
+            };
+        }
+    }
+    for a in g.cells.ones() {
+        held[a] = None;
+    }
+    held
+}
+
+/// 1 when opcode `op`'s template reads `X` or `Y` (an indexed access may cross a page).
+fn index_reads(op: u8) -> u32 {
+    let ops = di_pcode::Template::of(op).ops();
+    u32::from(ops.iter().flat_map(|o| o.ins).any(|v| {
+        v.space() == di_pcode::Space::Reg
+            && matches!(v.off() as usize, di_pcode::reg::X | di_pcode::reg::Y)
+    }))
 }
 
 /// Whether variant `v` at `pc` has an access other than a push or pull that may reach page 1
@@ -350,8 +479,15 @@ pub fn lift_banked(
     let (g, plans, fidx, callees, recursive, slots, constcode, touches, seen, sites, private) = loop {
         let mut g = discover(img, entries, facts, bank, matched, opts.loaded);
         let roots: Vec<u16> = entries.iter().map(|e| e.pc).collect();
-        if opts.entry_sp.is_none() {
-            g.prot = ptr::protect(&g, facts, volatile, &roots, bank);
+        // Declared entry SP: the windows also keep pointers out of the volatile pages.
+        let zones = match opts.entry_sp {
+            Some(_) => ptr::zones(volatile),
+            None => vec![ptr::PAGE1],
+        };
+        g.prot = ptr::protect(&g, facts, volatile, &zones, &roots, bank);
+        g.zones = zones;
+        if opts.entry_sp.is_some() {
+            zone_checks(&mut g);
         }
         let img: &[u8; 0x10000] = &g.img;
         let pcs: Vec<u16> = entries.iter().map(|e| e.pc).collect();
@@ -499,15 +635,21 @@ pub fn lift_banked(
         }
     }
     // Stack bytes below SP are not in memory while the stack is private and a deopt cannot
-    // restore them, so pushes also store where a load, whatever the facts saw and the pointer
-    // windows assume, may reach page 1: a read of them is then exact.
+    // restore those of returned frames, so pushes also store where a load, whatever the
+    // facts saw and the pointer windows assume, may reach page 1: a read of them is then
+    // exact. A static lift (declared entry SP) relies on its windows and zone checks.
+    let page1 = |iv: Iv| iv.meets(0x100, 0x200);
+    let reads_page1 = |a: &analysis::Access| match opts.entry_sp {
+        Some(_) => a.page1(&g.prot.win),
+        None => page1(a.addr),
+    };
     let page1 = |iv: Iv| iv.meets(0x100, 0x200);
     let shadow = private
         && plans.iter().any(|p| {
             p.pcs().any(|pc| {
                 g.vars[&pc].iter().any(|v| {
                     !is_stack_op(v.op)
-                        && (v.acc.iter().any(|a| !a.dummy && !a.store && page1(a.addr))
+                        && (v.acc.iter().any(|a| !a.dummy && !a.store && reads_page1(a))
                             || matches!(v.flow, Flow::JmpInd(_)) && page1(ind_ptr(img, &g, pc).0))
                 })
             })
@@ -543,6 +685,7 @@ pub fn lift_banked(
             .collect(),
         slots,
         seen,
+        sensitive: opts.sensitive.as_deref(),
     };
     let mut stats = Stats {
         cells: g.cells.count_ones(..),
@@ -593,6 +736,7 @@ pub fn lift_banked(
             stats.code_guards += n.code_guards;
             stats.stack_guards += n.stack_guards;
             stats.ptr_guards += n.ptr_guards;
+            stats.zone_guards += n.zone_guards;
             stats.slot_ops += n.slot_ops;
             stats.sp_dispatch += n.sp_dispatch;
             stats.bank_dispatch += n.bank_dispatch;
@@ -704,6 +848,36 @@ pub fn lift_banked(
         stats,
         chains,
         induction: g.ind.clone(),
+        addr_sets: {
+            let mut v: Vec<ir::AddrSet> = g
+                .addr_sets
+                .iter()
+                .map(|(&(pc, st), a)| {
+                    let mut runs: Vec<(u32, u32)> = Vec::new();
+                    for &x in a {
+                        match runs.last_mut() {
+                            Some(r) if r.1 == x as u32 => r.1 += 1,
+                            _ => runs.push((x as u32, x as u32 + 1)),
+                        }
+                    }
+                    (pc, st, runs)
+                })
+                .collect();
+            v.sort_unstable();
+            v
+        },
+        bounds: {
+            let held = byte_bounds(&g);
+            let stores = g.vars.values().flatten().flat_map(|v| &v.acc);
+            let mut b: Vec<(u16, u8, u8)> = stores
+                .filter(|a| a.store)
+                .filter_map(|a| a.addr.value())
+                .filter_map(|a| held[a as usize].map(|h| (a as u16, h.lo as u8, h.hi as u8)))
+                .collect();
+            b.sort_unstable();
+            b.dedup();
+            b
+        },
         sets: {
             let mut s: Vec<(u16, Vec<u8>)> = g
                 .closed
@@ -749,7 +923,7 @@ pub struct Job {
 pub fn lift_many(jobs: &[Job], opts: Opts, tick: impl Fn() + Sync) -> Vec<Program> {
     jobs.par_iter()
         .map(|j| {
-            let p = lift_with(&j.img, &j.entries, &j.volatile, &j.facts, opts);
+            let p = lift_with(&j.img, &j.entries, &j.volatile, &j.facts, opts.clone());
             tick();
             p
         })

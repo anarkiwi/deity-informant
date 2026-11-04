@@ -277,6 +277,8 @@ pub struct Stats {
     pub stack_guards: usize,
     /// Checks on zero-page pointer high bytes: entries and stores.
     pub ptr_guards: usize,
+    /// Checks keeping a pointer access out of page 1 and the volatile pages.
+    pub zone_guards: usize,
     /// Accesses that reached page 1 in the facts or cannot be checked (each keeps the stack
     /// in memory).
     pub page1_sites: usize,
@@ -308,6 +310,9 @@ pub struct Stats {
     pub fused_chains: usize,
 }
 
+/// An address set: `(pc, store, [(lo, hi)])` runs, `hi` exclusive.
+pub type AddrSet = (u16, bool, Vec<(u32, u32)>);
+
 /// A lifted program: functions plus what the executor needs to check and leave it.
 #[derive(Clone, Debug, Default)]
 pub struct Program {
@@ -319,6 +324,12 @@ pub struct Program {
     /// Opcode cells whose every value is one of their variants `(addr, values)`: no store
     /// the lift contains writes them another.
     pub sets: Vec<(u16, Vec<u8>)>,
+    /// Bytes outside page 1 every store that may write has an exact address and a bounded
+    /// value: `(addr, lo, hi)`, the hull of its entry byte and the stored values.
+    pub bounds: Vec<(u16, u8, u8)>,
+    /// Address sets of data accesses through pointers or with several addresses, as
+    /// `(pc, store, [(lo, hi)])` runs (`hi` exclusive).
+    pub addr_sets: Vec<AddrSet>,
     /// Volatile ranges `[lo, hi)`.
     pub volatile: Vec<(u32, u32)>,
     /// Runs `[lo, hi)` of the bytes stores with address sets may write.

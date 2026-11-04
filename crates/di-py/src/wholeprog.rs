@@ -662,6 +662,7 @@ impl Program {
         d.set_item("stack_private", s.stack_private)?;
         d.set_item("stack_guards", s.stack_guards)?;
         d.set_item("ptr_guards", s.ptr_guards)?;
+        d.set_item("zone_guards", s.zone_guards)?;
         d.set_item("guard_evals", self.exec.guard_evals())?;
         d.set_item("page1_sites", s.page1_sites)?;
         d.set_item("slot_ops", s.slot_ops)?;
@@ -779,6 +780,28 @@ impl Program {
     #[getter]
     fn written(&self) -> Vec<(u32, u32)> {
         self.prog.written.clone()
+    }
+
+    /// Address sets of data accesses through pointers or with several addresses:
+    /// ``{(pc, store): [(lo, hi), ...]}`` runs, ``hi`` exclusive.
+    #[getter]
+    fn addr_sets(&self) -> HashMap<(u16, bool), Vec<(u32, u32)>> {
+        self.prog
+            .addr_sets
+            .iter()
+            .map(|(pc, st, r)| ((*pc, *st), r.clone()))
+            .collect()
+    }
+
+    /// Bytes every store into which has an exact address and a bounded value:
+    /// ``{address: (lo, hi)}``, the hull of the entry byte and the stored values.
+    #[getter]
+    fn bounds(&self) -> HashMap<u16, (u8, u8)> {
+        self.prog
+            .bounds
+            .iter()
+            .map(|&(a, lo, hi)| (a, (lo, hi)))
+            .collect()
     }
 
     /// The computed transfers whose targets come from the code: ``{pc: [target, ...]}``.
@@ -1331,14 +1354,16 @@ pub fn reference_calls(
 /// ``[(pc, [(reg, values)])]``, ``volatile`` as ``[(lo, hi)]``, ``facts`` as a dict with
 /// ``starts``, ``edges``, ``writes``, ``page1`` and ``heights``; ``optimize=False`` keeps the emitted
 /// P-Code; ``cycles=True`` counts cycles; ``entry_sp`` declares the SP every entry is called
-/// at (a calling convention: no pointer windows, stack checks against the stack's extent);
+/// at (a calling convention: pointer windows also keep pointers out of the volatile pages,
+/// stack checks against the stack's extent); ``sensitive`` the volatile addresses whose reads
+/// have effects (a throw-away read reaching none of them is not made);
 /// ``loaded`` the ``(lo, hi)`` the program was loaded to, where tables end at the latest;
 /// ``fold=True`` lifts copies of one routine as one function of the copy's index.
 /// ``bank`` is a bank map: ``dir``/``data`` port
 /// cells, ``mask`` and ``pull`` bits, ``lut`` (configuration per effective port value),
 /// ``configs`` (per configuration 256 page kinds: 0 RAM, 1 ROM, 2 I/O) and ``rom``.
 #[pyfunction]
-#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None, fold=false))]
+#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None, fold=false, sensitive=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn lift_program(
     py: Python<'_>,
@@ -1352,6 +1377,7 @@ pub fn lift_program(
     entry_sp: Option<u8>,
     loaded: Option<(u32, u32)>,
     fold: bool,
+    sensitive: Option<Vec<u16>>,
 ) -> PyResult<Program> {
     let img = self::image(image)?;
     let es = self::entries(entries);
@@ -1361,6 +1387,7 @@ pub fn lift_program(
         optimize,
         cycles,
         entry_sp,
+        sensitive,
         loaded,
         fold,
     };

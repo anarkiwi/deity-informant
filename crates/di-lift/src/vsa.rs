@@ -512,6 +512,28 @@ pub(crate) struct Code<'a> {
     pub(crate) vecs: Vec<u16>,
     /// The bytes the facts saw written.
     pub(crate) observed: FixedBitSet,
+    /// Loaded bytes taken as constant (no store with an address set writes them).
+    pub(crate) constant: FixedBitSet,
+}
+
+impl Code<'_> {
+    /// The hull of the bytes a load from `a` reads when every one is constant: a table no
+    /// lifted store with an address set writes (guarded like one read for a jump).
+    pub(crate) fn konst(&self, a: Iv) -> Option<Iv> {
+        let range = a.lo as usize..a.hi as usize + 1;
+        let constant = a.hi - a.lo < 0x100
+            && a.hi < 0x10000
+            && range
+                .clone()
+                .all(|i| self.constant.contains(i) && !self.cells.contains(i));
+        constant.then(|| {
+            let bytes = self.img[range].iter().map(|&b| b as u32);
+            Iv {
+                lo: bytes.clone().min().unwrap(),
+                hi: bytes.max().unwrap(),
+            }
+        })
+    }
 }
 
 /// Whether the decimal flag can only be set by a pull from the stack: no `SED` among the
@@ -537,7 +559,7 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
         Some(x) => Iv::exact(x as u32),
         None => held(pc.wrapping_add(i as u16 + 1) as u32).unwrap_or(Iv::full(1)),
     });
-    let load = |a: Iv| a.value().and_then(held);
+    let load = |a: Iv| a.value().and_then(held).or_else(|| code.konst(a));
     absint_ranges(ops, b, bi, &mut env, acc, &load);
     for a in acc.iter_mut() {
         if let Some(iv) = a.ptr.and_then(|p| st.pointed(p)) {
@@ -1149,6 +1171,8 @@ pub struct Analysis {
     pub past: FxHashMap<u16, Vec<u16>>,
     /// The values of each byte some store writes ([`crate::dispatch::cell_values`]).
     pub cellvals: FxHashMap<u16, Option<std::collections::BTreeSet<u8>>>,
+    /// Address sets of loads through pointers, by `(pc, opcode, access index)`.
+    pub loads: FxHashMap<(u16, u8, usize), Vec<u16>>,
 }
 
 /// What the analysis takes beyond the program: the `[lo, hi)` the program was loaded to, the
@@ -1194,6 +1218,7 @@ pub fn analyze(
         pull_clear: pull_clear(vars, entries),
         vecs: crate::dispatch::vectors(img, cells, vars),
         observed: observed.clone(),
+        constant: given.constant.clone(),
     };
     let thr = Thresholds::new(vars, &code);
     let mut w = Work {
@@ -1384,6 +1409,13 @@ pub fn analyze(
     let mut stores = crate::dispatch::stores(&code, vars, &sets);
     let mut guards = Vec::new();
     let mut reads: std::collections::BTreeSet<u16> = kreads.into_iter().collect();
+    // Tables whose bytes gave loads their values are constant, guarded like code.
+    for a in vars.values().flatten().flat_map(|v| &v.acc) {
+        let table = !a.store && !a.dummy && a.addr.value().is_none_or(|x| x >= 0x100);
+        if table && code.konst(a.addr).is_some() {
+            reads.extend((a.addr.lo..=a.addr.hi).map(|x| x as u16));
+        }
+    }
     let through = crate::dispatch::pointer_stores(
         &code,
         vars,
@@ -1433,6 +1465,21 @@ pub fn analyze(
             }
         }
     }
+    let loads = crate::dispatch::pointer_loads(
+        &code, vars, &sets, &objs, &stores, &guards, &mut reads, &konst,
+    );
+    // A load through a pointer with an address set reaches the hull of its set.
+    for (&(pc, op, ai), a) in &loads {
+        let (lo, hi) = (a[0] as u32, a[a.len() - 1] as u32);
+        for v in vars
+            .get_mut(&pc)
+            .into_iter()
+            .flatten()
+            .filter(|v| v.op == op)
+        {
+            v.acc[ai].addr = Iv { lo, hi };
+        }
+    }
     let jumps = crate::dispatch::jumps(&code, vars, &w.state, &sets, &objs, &stores, &cellvals);
     Analysis {
         past: w
@@ -1453,5 +1500,6 @@ pub fn analyze(
         guards,
         cellvals,
         reads,
+        loads,
     }
 }
