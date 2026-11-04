@@ -9,10 +9,9 @@ import argparse
 import sys
 from pathlib import Path
 
-from deity_informant.cgen import printer
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from cgenplay import psid  # noqa: E402  pylint: disable=wrong-import-position
+from cgenplay import psid  # noqa: E402  pylint: disable=wrong-import-position,wrong-import-order
+from deity_informant.cgen import printer  # noqa: E402  pylint: disable=wrong-import-position
 
 
 def pcs_of(cf, n):

@@ -98,32 +98,60 @@ one function stays in it.
 
 **The goto rule.** The structured forms are exactly: a fall-through (the machine code's next
 instruction), an if/else whose arms rejoin at the branch's immediate post-dominator, a
-short-circuit condition, a loop's `continue` (to its head) and `break` (to its one follow), and
-`return`. Every other edge is a `goto` to a label; no structuring variables are made. Each
-function goes through these steps in order, each deciding on the graph the earlier ones leave:
+short-circuit condition, a loop's `continue` (to its head, or to its latch when the latch is
+the loop's `do`/`while` condition) and `break` (to its one follow), a switch arm's `break` (to
+what follows the switch) and fall-through (into the next arm), a tail call (`return f(...)`)
+and `return`. Every other edge is a `goto` to a label; no structuring variables are made. A
+block calling `trap`, which does not return, ends its path. Each function goes through these
+steps in order, each deciding on the graph the earlier ones leave:
 
-1. *Short-circuit conditions.* A conditional branch entered only from another branch that shares
-   one of its targets, whose operations have no effect and read only data regions or code
-   (so they may run before the first test), is composed into it: its edges become the first
-   branch's under both tests, joined with the first branch's edge to the same target (two
-   edges to returns of the same values are one target), to a fixpoint. The condition prints
-   as `a && b` / `a || b` (Minato-Morreale ISOP of the composed BDD).
-2. *Loops* (natural loops of the depth-first back edges; the search takes successors in
+1. *Decided edges.* An edge whose condition contradicts every path to its branch (a `BCS`
+   after a `BCC` on the same carry) is dropped; path conditions run over the forward edges
+   from the entry and restart at each loop head.
+2. *Short-circuit conditions.* A conditional branch entered only from another branch that shares
+   one of its targets is composed into it: its edges become the first branch's under both
+   tests, joined with the first branch's edge to the same target (two edges to returns of the
+   same values, or to copies of the same values into one block, are one target), to a
+   fixpoint. Its operations either have no effect and read only data regions or code (so they
+   may run before the first test), or are stores and I/O accesses whose values only the block
+   reads: then they are its test literal's effects, a comma expression before the literal
+   (`a || (R0[x] = v - 1, v != 1)`), kept only where the composed conditions, printed as sums
+   of products with no don't-cares and evaluated left to right, read the literal once and
+   exactly where the machine code ran the block. The condition prints as `a && b` / `a || b`
+   (Minato-Morreale ISOP of the composed BDD).
+3. *Tail calls.* A node that only copies and calls lifted functions and returns, or continues
+   into such a node, gets a copy per incoming edge, so each jump into a procedure prints in
+   place as a call then return (its provenance site is the instruction taking the edge).
+4. *Entry selectors.* A cycle entered at two nodes, both from one two-way branch (Ghouls'
+   sweeps, entered by a self-modified direction), gets a head choosing the entry by a
+   selector variable: the branch's own condition, assigned once on entry, and the constant
+   choosing the entry each retreating edge into an entry takes, assigned on that edge. The
+   cycle is then one natural loop whose first iteration the condition selects.
+5. *Loops* (natural loops of the depth-first back edges; the search takes successors in
    machine-code order, so of a two-entry loop the entry the code falls into is the head). A
    back edge is `continue`; a loop's follow, placed after it, is of the exits it dominates that
    do not end the procedure the one all the others reach, else the one most loop edges leave
-   to, else the first; an edge to it is `break`.
-3. *Placement* after Ramsey, "Beyond Relooper: recursive translation of unstructured control
+   to, else the first; an edge to it is `break`. A loop whose one back edge leaves (through
+   copies) a branch with no effect, entered by two or more forward edges and whose other edge
+   leaves the loop, prints as `do` ... `while` with that latch as its condition (its
+   computations, its test and the back edge's copies as one expression): an edge to the latch
+   is `continue`, and the latch's exit follows the loop.
+6. *Placement* after Ramsey, "Beyond Relooper: recursive translation of unstructured control
    flow to structured control flow" (ICFP 2022): each node is followed by the joins it
    immediately dominates (nodes with two or more forward edges in) and, heading a loop, the
    loop's follow, in a topological order of the forward edges that takes the ready node first
-   in the machine code. An edge to a node not placed so is that node's code in place.
-4. *Jumps.* An edge to a placed node or a back edge is a jump: to the innermost loop's head
-   `continue`, to its follow `break`, to the statement that runs next nothing when the edge is
-   the machine code's fall-through or the end of an arm of the nearest branch whose paths all
-   meet there (no path from the branch reaches what follows the target without passing it, a
-   back edge, a loop latch and an exit of its loop ending a path), else a `goto`. A jump every
-   arm of an `if`/`else` or of a `switch` with a default ends with is printed once after it.
+   in the machine code. A case of a multiway branch it immediately dominates stays in place as
+   its arm (arms in machine-code order). An edge to a node not placed so is that node's code in
+   place.
+7. *Jumps.* An edge to a placed node or a back edge is a jump: to the innermost loop's head (or
+   latch) `continue`, to its follow `break`, to the statement that runs next nothing when the
+   edge is the machine code's fall-through or the end of an arm of the nearest branch whose
+   paths all meet there (no path from the branch reaches what follows the target without
+   passing it, a back edge, a loop latch, an exit of its loop and a jump to a node placed after
+   the target ending a path), else a `goto`. In a switch arm a `goto` to what follows the
+   switch is `break`, and one ending the arm to the case the next arm starts with is a
+   fall-through (`__attribute__((fallthrough))`). A jump every arm of an `if`/`else` or of a
+   `switch` with a default ends with is printed once after it.
 
 - *Branch conditions* are BDDs (CUDD through `dd`, variable order fixed by first use). A
   comparison of a value with a constant (after stripping zero extensions and constant
@@ -141,12 +169,15 @@ function goes through these steps in order, each deciding on the graph the earli
 
 | Key | Value |
 |---|---|
-| `functions` | `{C name: {"entry", "index", "calls", "copies"}}`: the entry pc, whether it takes an instance index, `[site, target]` of each call and tail call of it, the entries of the copies folded into it |
-| `gotos` | `[from, to]` per printed `goto`: the instruction taking the edge (a branch, or the `JMP` the lift threaded into it) and its target |
+| `functions` | `{C name: {"entry", "index", "calls", "copies"}}`: the entry pc, whether it takes an instance index, `[site, target]` of each call and tail call of it (a tail call printed in place names the instruction taking the edge), the entries of the copies folded into it |
+| `gotos` | `[from, to]` per printed `goto`: the instruction taking the edge (a branch, or the `JMP` the lift threaded into it; each branch of a short-circuit condition with an edge to the target) and its target |
 | `loops` | the head of each printed loop |
 | `conditions` | the branch addresses composed into each short-circuit condition |
 | `switches` | the dispatch, or the first compare of the chain, of each printed `switch` |
 | `cells` | the code bytes the lift treats as variables |
+
+In an instance function each construct names every copy's instruction (`Program.functions`'
+`copy_pcs`).
 
 Each lifted op carries the instruction it was emitted for ([wholeprog](wholeprog.md#python));
 the MLIR carries it as the op's location (`--mlir-print-debuginfo`), which the printer reads.
@@ -252,6 +283,10 @@ third voice is one function with three call sites) and instances (unrolled copie
 are one function of the copy's index whose I/O register is `0xC000 + k * 7`, called for each
 copy in order; copies sharing one trap; determinism and relocation invariance of a folded
 program).
+
+`tools/cgengraph.py TUNE.sid --pc ADDR` prints the structuring graph of the functions holding
+an instruction (nodes by instruction address, back edges, copies, `--ops` the operations) and
+the printed gotos and loop heads.
 
 `tools/cclones.py` measures how much of a `.c` repeats up to names and constants (and which
 functions are near-identical).

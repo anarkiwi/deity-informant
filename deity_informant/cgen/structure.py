@@ -226,10 +226,9 @@ def prune(g):
 
 def short_circuit(g, hoistable, exprable=lambda items: False):
     """Compose each conditional branch ``b`` entered only from ``a`` that shares a target with
-    ``a``'s other edges into ``a``: an edge of ``b`` becomes an edge of ``a`` under both tests
-    (``a && b``, ``a || b``), joined with ``a``'s edge to the same target (two edges to returns
-    of the same values are one target). ``b``'s operations must be ``hoistable`` (they may run
-    before ``a``'s test), or ``exprable`` effects of ``b``'s one test literal (:func:`_verify`)."""
+    ``a``'s other edges into ``a`` (``a && b``, ``a || b``), to a fixpoint: ``b``'s operations
+    are ``hoistable`` (they may run before ``a``'s test), or ``exprable`` effects of its one
+    test literal (:func:`_verify`); two edges to returns or copies of the same values meet."""
     changed = True
     while changed:
         changed = False
@@ -344,10 +343,9 @@ def split_tails(g, tail):
 
 
 def select_entries(g, place):
-    """Give each cycle entered at two nodes from one two-way branch ``s`` (both of its edges,
-    perhaps through copies) a head choosing the entry by ``s``'s condition, saved on entry in a
-    selector variable and reset on the retreating edges to the entry they take (Ghouls' sweeps
-    entered by a self-modified direction). ``g.selectors``: ``{head: (false, true) entries}``."""
+    """Give each cycle entered at two nodes from one two-way branch (through copies) a head
+    choosing the entry by a selector variable: the branch's condition, saved on entry, and the
+    entry each retreating edge into an entry takes. ``g.selectors``: ``{head: (lo, hi)}``."""
     nx_g = nx.DiGraph([(n, t) for n, es in g.succ.items() for t, _ in es])
     nx_g.add_nodes_from(g.items)
     preds = g.preds()
@@ -360,7 +358,7 @@ def select_entries(g, place):
             sides.add(p)
         if len({t for _, t in ins}) != 2 or len(sides) != 1 or g.entry in scc:
             continue
-        (s,) = sides
+        s = sides.pop()
         if len(g.succ[s]) != 2:
             continue
         (lo, _), (hi, chi) = sorted(g.succ[s], key=lambda e: place(e[0]))
@@ -666,8 +664,11 @@ class Structurer:
     def finish(self, items):
         """The statements of a function: tests its enclosing tests decide dropped, then
         :meth:`chains`, the labels no ``goto`` names dropped."""
-        out = self.chains(self.decide(items, self.conds.care), frozenset())
-        return _unlabel(out, set(_walk(out, lambda it: it[1] if it[0] == "goto" else None)))
+        out = self.decide(items, self.conds.care)
+        for step in (lambda x: x, lambda x: self.chains(x, frozenset())):
+            out = step(out)
+            out = _unlabel(out, set(_walk(out, lambda it: it[1] if it[0] == "goto" else None)))
+        return out
 
     def decide(self, items, path):
         """``items`` where ``path`` holds: an ``if`` that ``path`` and its own context decide

@@ -742,8 +742,8 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         for o in blk.ops[:-1]:
             if id(o) in self.dropped or o.name == "memref.get_global":
                 continue
-            if not (self.pure(o) or o.name == "memref.store" or (
-                    o.name == "func.call" and o.prop("callee") in ("@io_read", "@io_write"))):  # fmt: skip
+            io = o.name == "func.call" and o.prop("callee") in ("@io_read", "@io_write")
+            if not (self.pure(o) or o.name == "memref.store" or io):
                 return False
             if any(u.parent is not blk for r in o.res for u in self.users.get(r, ())):
                 return False
@@ -908,10 +908,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             if kind == "copy":
                 yield from ((v, self.def_in(v, prev)) for _, v, _ in it[1])
             elif kind == "set":
-                for cube in self.cover(it[2], self.f.conds.care):
-                    for key, _ in cube:
-                        if self.f.lit_value(key) is not None:
-                            yield self.f.lit_value(key), self.def_in(self.f.lit_value(key), prev)
+                yield from ((v, self.def_in(v, prev)) for v in self.lit_values(it[2]))
             elif kind == "return":
                 yield from (
                     (v[0] if isinstance(v, tuple) else v, self.def_in(v, prev)) for v in it[-1]
@@ -930,10 +927,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
                 yield from self.item_refs(it[1], ())
                 if len(it) > 3:
                     f, copies = self.latch_edge(it[3], it[2])
-                    for cube in self.cover(f, self.f.conds.care):
-                        for key, _ in cube:
-                            if self.f.lit_value(key) is not None:
-                                yield self.f.lit_value(key), False
+                    yield from ((v, False) for v in self.lit_values(f))
                     yield from self.item_refs(copies, ())
 
     def def_in(self, v, blks):
@@ -941,6 +935,12 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         v = v[0] if isinstance(v, tuple) else v
         d = self.f.defs.get(v)
         return d is not None and any(self.f.where[id(d)][0] is b for b in blks)
+
+    def lit_values(self, f):
+        """The values the literals of ``f``'s cover read."""
+        cubes = self.cover(f, self.f.conds.care)
+        vals = (self.f.lit_value(key) for cube in cubes for key, _ in cube)
+        return [v for v in vals if v is not None]
 
     def cond_refs(self, it):
         """The values the condition of ``if`` statement ``it`` reads."""
@@ -1462,7 +1462,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             elif kind == "site":
                 self.tail_site(it[1], it[2])
             elif kind == "fall":
-                out.append(("j", "", frozenset()))
+                out.append(("j", "__attribute__((fallthrough));", frozenset()))
             elif kind in ("break", "continue"):
                 out.append(("j", f"{kind};", frozenset()))
             elif kind == "goto":
