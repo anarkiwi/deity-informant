@@ -17,6 +17,7 @@ import pytest
 import wholeprog_progs as W
 from deity_informant import NATIVE, cgen, trace
 from deity_informant.cgen import csyntax, mlir, printer, regions, structure
+from deity_informant.lifter import OPS as OPCODES
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import cclones  # noqa: E402  pylint: disable=wrong-import-position
@@ -85,6 +86,54 @@ done:   RTS
 ptrs:   .byte lo(s0),hi(s0),lo(s1),hi(s1)
 s0:     .byte 1,2,3,0
 s1:     .byte 9,8,0
+end:
+"""
+ZPCLEAR = """
+entry:  LDX #$00
+        TXA
+clr:    STA $20,X
+        INX
+        CPX #$10
+        BNE clr
+        LDX #$02
+        LDA #lo(msg)
+        STA $20,X
+        LDA #hi(msg)
+        STA $21,X
+        LDY #$01
+        LDA ($22),Y
+        STA $C000
+        RTS
+msg:    .byte $11,$22
+end:
+"""
+REGS = """
+entry:  AND #$03
+        JSR sub
+        STX $C000
+        STY $C001
+        JSR sub
+        STX $C002
+        STY $C003
+        RTS
+sub:    TAX
+        INX
+        TXA
+        TAY
+        INY
+        RTS
+end:
+"""
+KTAB = """
+entry:  AND #$03
+        TAX
+        LDY voff,X
+        STY idx
+        LDA #$11
+        STA $C0F0,Y
+        RTS
+voff:   .byte 0,7,14,7
+idx:    .byte 0
 end:
 """
 OOB = """
@@ -1052,6 +1101,16 @@ def check(prefix, tmp_path, src, calls, gotos=0, **kw):
     return c, h, info
 
 
+def pointer_checks_only(info, src, org=0x1000):
+    """Whether every trap of ``info`` is a deopt before an access through a zero-page pointer
+    (the check keeping it out of page 1 and the I/O pages)."""
+    img = assemble(src, org)[0]
+    return all(
+        key[0] == "deopt" and OPCODES[img[key[1]]][1] in ("indx", "indy")
+        for key in info["traps"].values()
+    )
+
+
 def entry_calls(values, n=1):
     """``entry`` called with each ``A`` of ``values``, ``n`` times over."""
     return [("entry", a) for a in values] * n
@@ -1069,8 +1128,8 @@ def entry_calls(values, n=1):
     ids=["tables", "subs", "ptrs", "illegal", "recurse"],
 )
 def test_matches_reference(prefix, tmp_path, src, values):
-    c, _, _ = check(prefix, tmp_path, src, entry_calls(values, 8))
-    assert "trap(" not in c.split("void entry")[1]
+    c, _, info = check(prefix, tmp_path, src, entry_calls(values, 8))
+    assert "trap(" not in c.split("void entry")[1] or pointer_checks_only(info, src)
 
 
 def test_pointer_reads_go_through_regions(prefix, tmp_path):
@@ -1079,10 +1138,51 @@ def test_pointer_reads_go_through_regions(prefix, tmp_path):
     assert all(f"R{k}_ORG" in h for k in range(len(info["regions"])))
 
 
+def test_pointer_reads_are_kept_off_the_stack_and_io(prefix, tmp_path):
+    # Read-sensitive I/O would keep the throw-away reads of a page-crossing (zp),Y: the
+    # pointer's address set (the words of its table) misses the I/O pages and page 1, so
+    # there are none, no check is needed and pushes need not be in memory.
+    c, _, info = check(prefix, tmp_path, PTRS, entry_calls([0, 1, 1, 0]), sensitive=(0xC0FF,))
+    assert not info["traps"] and "io_read(" not in c.split("void entry")[1]
+    assert all(org + n <= 0x100 or org >= 0x200 for org, n in info["regions"])
+
+
+def test_zero_page_cleared_then_a_pointer_set_through_an_index(prefix, tmp_path):
+    # Every value the pair's bytes may hold (zero, the message's address) names a page outside
+    # page 1 and the I/O pages: the read needs no check.
+    _, _, info = check(prefix, tmp_path, ZPCLEAR, entry_calls([0, 0]))
+    assert not info["traps"] and not info["stats"]["zone_guards"]
+
+
+def test_constant_code_is_held_only_where_an_access_reaches(prefix, tmp_path):
+    c, h, info = check(prefix, tmp_path, PTRS, entry_calls([0, 1]))
+    # Only the pointer table and the strings it points at (tables) are held, not the code.
+    _, labels, _ = assemble(PTRS)
+    [(lo, hi)] = info["code_held"]
+    assert lo == labels["ptrs"] and hi <= labels["end"]
+
+
+def test_registers_left_in_register_variables(prefix, tmp_path):
+    c, _, _ = check(prefix, tmp_path, REGS, entry_calls([0, 1, 2, 3]))
+    assert "struct" not in c and "static uint8_t rv" in c
+
+
+def test_constant_table_bounds_an_index(prefix, tmp_path):
+    # Y is a byte of a table no store writes: STA $C0F0,Y stays below the sensitive $C0FF,
+    # so its throw-away read is not made; the byte Y is stored to keeps the table's bounds.
+    c, _, _ = check(prefix, tmp_path, KTAB, entry_calls([0, 1, 2, 3]), sensitive=(0xC0FF,))
+    assert "io_read(" not in c.split("void entry")[1]
+    img, labels, loaded = assemble(KTAB)
+    p, _ = cgen.lift(img, [(labels["entry"], "entry")], [W.IO], loaded=loaded)
+    assert p.bounds[labels["idx"]] == (0, 14)
+
+
 def test_read_off_a_table_into_code(prefix, tmp_path):
     c, _, info = check(prefix, tmp_path, OOB, entry_calls([0], 64))
-    assert "oob_rd" in c and "CODE[" in c
+    assert "C0[" in c
     assert info["code_span"][0] == W.assemble(OOB)[1]["entry"]
+    [(lo, hi)] = info["code_held"]
+    assert info["code_span"][0] <= lo < hi <= info["code_span"][1]
 
 
 def test_smc_operand_cells(prefix, tmp_path):
@@ -1152,15 +1252,14 @@ def test_unresolved_jump_traps(prefix, tmp_path):
 
 def test_page0_pointer_is_not_a_stack_access(prefix, tmp_path):
     _, _, info = check(prefix, tmp_path, PAGE0, entry_calls([0, 1, 0, 1], 2))
-    assert not info["traps"]
-    assert info["stats"]["ptr_guards"] == info["stats"]["stack_guards"] == 0
+    assert pointer_checks_only(info, PAGE0) and info["stats"]["stack_guards"] == 0
 
 
 def test_only_a_store_that_may_hit_the_stack_is_checked(prefix, tmp_path):
     _, _, info = check(prefix, tmp_path, PSTORE, entry_calls([0, 1, 2, 3, 1], 2))
     st = info["stats"]
-    assert (st["ptr_guards"], st["stack_guards"], st["code_guards"]) == (0, 1, 1)
-    assert len(info["traps"]) == 2
+    assert (st["stack_guards"], st["code_guards"]) == (0, 1)
+    assert len(info["traps"]) == 1
 
 
 def test_jump_through_operands_written_from_a_table(prefix, tmp_path):
@@ -1173,18 +1272,17 @@ def test_jump_through_operands_written_from_a_table(prefix, tmp_path):
 
 def test_table_region_past_the_code_span(prefix, tmp_path):
     c, h, info = check(prefix, tmp_path, STRADDLE, entry_calls([0, 1, 1, 0, 1, 0]))
-    assert "codechk" in c and "CODE_INIT" in h and len(info["jumps"]) == 1
+    assert "codechk" in c and "C0_INIT" in h and len(info["jumps"]) == 1
     _, labels, _ = assemble(STRADDLE)
     [k] = [k for k, (org, n) in enumerate(info["regions"]) if org <= labels["buf"] < org + n]
-    assert f"#define R{k} (CODE + (R{k}_ORG - CODE_ORG))" in c
-    assert info["code_span"][1] > labels["buf"] and "CODE_DATA" in c
+    assert f"uint8_t R{k}[R{k}_LEN]" in c and info["code_span"][1] == labels["buf"]
 
 
 def test_pointer_stores_from_a_terminated_table_make_cells(prefix, tmp_path):
     c, _, info = check(prefix, tmp_path, RELOCATOR, entry_calls([0, 1, 1, 0, 1]))
     st = info["stats"]
-    assert not info["traps"] and "codechk" not in c
-    assert (st["code_guards"], st["stack_guards"], st["cells"]) == (0, 0, 4)
+    assert pointer_checks_only(info, RELOCATOR) and "codechk" not in c
+    assert (st["code_guards"], st["cells"]) == (0, 4)
 
 
 def test_branch_offset_written_from_a_table(prefix, tmp_path):
@@ -1229,7 +1327,7 @@ def test_call_through_an_operand_written_earlier(prefix, tmp_path):
         img, labels, loaded = assemble(OPCALL, org)
         c, h, info = translate(prefix, img, labels, loaded)
         assert info["jumps"] == {labels["site"]: [labels[f"j{i}"] for i in range(4)]}
-        assert not info["traps"]
+        assert pointer_checks_only(info, OPCALL, org)
         (tmp_path / str(org)).mkdir()
         play(tmp_path / str(org), c, h, img, labels, calls)
         outs.append(c)
@@ -1733,6 +1831,17 @@ def test_block_copy_stores_have_per_block_addresses(prefix, tmp_path):
     assert "codechk" not in c and not info["traps"]
     spans = {org: n for org, n in info["regions"]}
     assert 0x5000 in spans and 0x6000 in spans and spans[0x6000] <= 0x200
+
+
+def test_block_copy_indexes_the_blocks_directly(prefix, tmp_path):
+    """The copy's stores have address sets in the data regions: they index the regions they
+    span directly, testing only those, with no wr dispatch."""
+    calls = [("entry", 0), ("entry", 0x82), ("entry", 0x90), ("entry", 1), ("entry", 0x88)]
+    c, _, _ = check(prefix, tmp_path, BLOCKS, calls)
+    img, labels, loaded = assemble(BLOCKS)
+    p, _ = cgen.lift(img, [(labels["entry"], "entry")], [W.IO], loaded=loaded)
+    assert any(store for _, store in p.addr_sets)
+    assert " wr(" not in c and "CGEN_IX(" in c
 
 
 def test_brk_through_its_written_vector(prefix, tmp_path):

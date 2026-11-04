@@ -16,6 +16,10 @@
 //!
 //! A pair is protected, with a window serving the largest index of the accesses it frees,
 //! when those accesses outnumber the checks it costs.
+//!
+//! The same windows keep a pointer clear of the volatile ranges (`zones`, widened to whole
+//! pages): an access through a protected pair reaches neither page 1 nor a device, so it
+//! makes no throw-away bus read.
 
 use crate::analysis::{is_stack_op, Facts, Flow, Graph, Iv, Win};
 use crate::bank::BankMap;
@@ -49,19 +53,53 @@ impl Default for Prot {
     }
 }
 
+/// Page 1, the zone every window keeps a pointer out of.
+pub const PAGE1: (u32, u32) = (0x100, 0x200);
+
 /// Whether the pointer `p` is in the window of index `m`: `p + i` may be in page 1 for some
 /// `i <= m`.
 pub fn inside(p: u32, m: u32) -> bool {
-    p.wrapping_sub(0x100 - m) & 0xffff < 0x100 + m
+    inside_zone(p, m, PAGE1)
 }
 
-fn has(v: Iv, x: u32) -> bool {
-    v.lo <= x && x <= v.hi
+/// Whether `p + i` may lie in the zone `[lo, hi)` for some `i <= m`.
+pub fn inside_zone(p: u32, m: u32, (lo, hi): (u32, u32)) -> bool {
+    p.wrapping_sub(lo.wrapping_sub(m)) & 0xffff < hi - lo + m
+}
+
+/// Page 1 and the pages of the volatile ranges.
+pub fn zones(volatile: &[(u32, u32)]) -> Vec<(u32, u32)> {
+    let mut z = vec![PAGE1];
+    z.extend(
+        volatile
+            .iter()
+            .map(|&(lo, hi)| (lo & 0xff00, ((hi + 0xff) & !0xff).min(0x10000)))
+            .filter(|&(lo, hi)| lo < hi),
+    );
+    z
+}
+
+/// The high bytes a pointer in the window `t` of some zone may have.
+fn high_bytes(zones: &[(u32, u32)], t: u32) -> impl Iterator<Item = Iv> + '_ {
+    zones.iter().map(move |&(lo, hi)| Iv {
+        lo: (lo.wrapping_sub(t) & 0xffff) >> 8,
+        hi: (hi - 1) >> 8,
+    })
 }
 
 /// A store of a value in `v` to the high byte keeps the window `t` whatever the low byte.
-fn hi_ok(v: Iv, t: u32) -> bool {
-    !has(v, 1) && !(has(v, 0) && t > 0)
+fn hi_ok(zones: &[(u32, u32)], v: Iv, t: u32) -> bool {
+    high_bytes(zones, t).all(|h| !v.meets(h.lo, h.hi + 1))
+}
+
+/// A store of a value in `v` to the high byte leaves the pointer in the window `t` of some
+/// zone whatever the low byte: every page it names lies wholly in one.
+fn hi_certain(zones: &[(u32, u32)], v: Iv, t: u32) -> bool {
+    (v.lo..=v.hi.min(0xff)).all(|h| {
+        zones
+            .iter()
+            .any(|&(lo, hi)| h << 8 >= lo.saturating_sub(t) && h < hi >> 8)
+    })
 }
 
 struct Store {
@@ -80,8 +118,8 @@ impl Store {
         t == 0 || t == FULL || self.above && self.addr.value().is_some() && self.val.hi + t < 0x100
     }
     /// The store may leave pair `q` in window `t`, the pair holding it before.
-    fn risky(&self, q: u8, t: u32) -> bool {
-        self.hits(q.wrapping_add(1)) && !hi_ok(self.val, t) || self.hits(q) && !self.lo_ok(t)
+    fn risky(&self, z: &[(u32, u32)], q: u8, t: u32) -> bool {
+        self.hits(q.wrapping_add(1)) && !hi_ok(z, self.val, t) || self.hits(q) && !self.lo_ok(t)
     }
 }
 
@@ -92,13 +130,15 @@ struct Site {
     defd: bool,
 }
 
-/// The pairs, windows and checks of program `g`. Stack accesses and accesses that reached
-/// page 1 in the facts are not candidates, nor are pairs with a byte that is volatile, code
-/// or a port register, or whose stored values in the facts would fail their checks.
+/// The pairs, windows and checks of program `g` for the `zones`. Stack accesses and
+/// accesses that reached page 1 in the facts are not candidates, nor are pairs with a byte
+/// that is volatile, code or a port register, or whose stored values in the facts would fail
+/// their checks, or (with no facts) a store to whose high byte would always fail them.
 pub fn protect(
     g: &Graph,
     facts: &Facts,
     volatile: &[(u32, u32)],
+    zones: &[(u32, u32)],
     roots: &[u16],
     bank: Option<&BankMap>,
 ) -> Prot {
@@ -124,7 +164,7 @@ pub fn protect(
         seen_hi[a].1 |= v.contains(&1);
     }
     // The largest window the facts' values keep, per pair.
-    let tmax: Vec<Option<u32>> = (0..0x100usize)
+    let mut tmax: Vec<Option<u32>> = (0..0x100usize)
         .map(|q| {
             let h = (q + 1) & 0xff;
             match seen_hi[h] {
@@ -135,16 +175,48 @@ pub fn protect(
             }
         })
         .collect();
+    if facts.writes.is_empty() {
+        // With no facts, a pair also read as data (not to dereference it, nor to step it in
+        // place) may hold any value between its uses as a pointer: it is not protected.
+        for v in g.vars.values().flatten().filter(|v| !is_stack_op(v.op)) {
+            if v.acc.iter().any(|a| a.ptr.is_some()) {
+                continue;
+            }
+            let rmw = |a: &crate::analysis::Access| {
+                v.acc.iter().any(|b| b.store && b.back && b.addr == a.addr)
+            };
+            for a in v
+                .acc
+                .iter()
+                .filter(|a| !a.store && !a.dummy && a.addr.lo < 0x100)
+            {
+                if !rmw(a) {
+                    for b in a.addr.lo..=a.addr.hi.min(0xff) {
+                        tmax[b as usize] = None;
+                        tmax[(b as u8).wrapping_sub(1) as usize] = None;
+                    }
+                }
+            }
+        }
+        // A window that a stored high byte would always fail is narrowed to the largest
+        // index of a known pair, else given up.
+        let high = g.vars.values().flatten().flat_map(|v| &v.acc);
+        for a in high.filter(|a| a.store && a.addr.lo < 0x100) {
+            for b in a.addr.lo..=a.addr.hi.min(0xff) {
+                let q = (b as u8).wrapping_sub(1) as usize;
+                let fit = |t: &u32| !hi_certain(zones, a.val, *t);
+                tmax[q] = tmax[q].filter(fit).or(tmax[q].map(|_| 0xff).filter(fit));
+            }
+        }
+    }
     let seen: FxHashSet<u16> = facts.page1.iter().map(|x| x.0).collect();
     let mut sites: Vec<Site> = Vec::new();
     let mut stores: Vec<Store> = Vec::new();
+    let reach = |a: &crate::analysis::Access| zones.iter().any(|&(lo, hi)| a.addr.meets(lo, hi));
     for (&pc, vs) in &g.vars {
         for v in vs.iter().filter(|v| !is_stack_op(v.op)) {
             for (ai, a) in v.acc.iter().enumerate().filter(|(_, a)| !a.dummy) {
-                if let Some(p) = a
-                    .ptr
-                    .filter(|_| a.addr.meets(0x100, 0x200) && !seen.contains(&pc))
-                {
+                if let Some(p) = a.ptr.filter(|_| reach(a) && !seen.contains(&pc)) {
                     let (qs, m) = p.need();
                     let qs: Vec<u8> = qs.collect();
                     if qs.iter().all(|&q| tmax[q as usize].is_some_and(|t| t >= m)) {
@@ -200,7 +272,7 @@ pub fn protect(
         let deferred: Vec<usize> = list
             .iter()
             .copied()
-            .filter(|&s| defer.contains_key(&(s, q)) && stores[s].risky(q, t))
+            .filter(|&s| defer.contains_key(&(s, q)) && stores[s].risky(zones, q, t))
             .collect();
         let forced: FxHashSet<usize> = deferred.iter().map(|&s| defer[&(s, q)]).collect();
         list.iter()
@@ -210,8 +282,8 @@ pub fn protect(
                 let st = &stores[s];
                 match forced.contains(&s) {
                     true if st.addr.value() == Some(q as u32) => true,
-                    true => !hi_ok(st.val, t),
-                    false => st.risky(q, t),
+                    true => !hi_ok(zones, st.val, t),
+                    false => st.risky(zones, q, t),
                 }
             })
             .collect()
@@ -284,9 +356,21 @@ pub fn protect(
 
 /// The store completing pair `q` after store `s` on its straight instruction chain, when
 /// nothing between them reads through the pair or may store into it.
+///
+/// An indexed store is completed by one whose address is its own plus one through the same,
+/// unchanged index register (`STA $21,X; ...; STA $22,X`).
 fn completer(g: &Graph, index: &FxHashMap<StoreKey, usize>, s: &Store, q: u8) -> Option<usize> {
-    let e = s.addr.value()?;
-    let other = if e == q as u32 { q.wrapping_add(1) } else { q };
+    let idx = index_regs(s.key.1);
+    let other = match s.addr.value() {
+        Some(e) if e == q as u32 => Some(q.wrapping_add(1)),
+        Some(_) => Some(q),
+        None if idx != 0 && s.addr.hi < 0xff => None,
+        None => return None,
+    };
+    let next = Iv {
+        lo: s.addr.lo + 1,
+        hi: s.addr.hi + 1,
+    };
     let mut pc = s.key.0;
     let mut visited = FxHashSet::default();
     loop {
@@ -324,10 +408,16 @@ fn completer(g: &Graph, index: &FxHashMap<StoreKey, usize>, s: &Store, q: u8) ->
         } else {
             match hits[..] {
                 [] => {}
-                [i] if v.acc[i].addr.value() == Some(other as u32) => {
+                [i] if other.is_some() && v.acc[i].addr.value() == other.map(u32::from) => {
+                    return index.get(&(pc, v.op, i)).copied();
+                }
+                [i] if other.is_none() && v.acc[i].addr == next && index_regs(v.op) == idx => {
                     return index.get(&(pc, v.op, i)).copied();
                 }
                 _ => return None,
+            }
+            if other.is_none() && writes_regs(v.op) & idx != 0 {
+                return None;
             }
         }
         match v.flow {
@@ -335,6 +425,27 @@ fn completer(g: &Graph, index: &FxHashMap<StoreKey, usize>, s: &Store, q: u8) ->
             _ => return None,
         }
     }
+}
+
+/// The index registers (bit 0 `X`, bit 1 `Y`) opcode `op`'s template reads.
+fn index_regs(op: u8) -> u8 {
+    regs(op, |o| o.ins.to_vec())
+}
+
+/// The index registers opcode `op`'s template writes.
+fn writes_regs(op: u8) -> u8 {
+    regs(op, |o| vec![o.out])
+}
+
+fn regs(op: u8, f: impl Fn(&di_pcode::ir::Op) -> Vec<di_pcode::ir::Vn>) -> u8 {
+    use di_pcode::ir::Space;
+    let ops = di_pcode::Template::of(op).ops();
+    let vs = ops.iter().flat_map(f).filter(|v| v.space() == Space::Reg);
+    vs.fold(0, |m, v| match v.off() as usize {
+        di_pcode::reg::X => m | 1,
+        di_pcode::reg::Y => m | 2,
+        _ => m,
+    })
 }
 
 #[cfg(test)]
@@ -353,13 +464,28 @@ mod tests {
         assert!(inside(0x1ff, 0) && !inside(0xff, 0) && !inside(0, 0));
         assert!(inside(0xf0, 0x10) && !inside(0xef, 0x10) && !inside(0x200, 0xff));
         assert!(inside(0, FULL) && !inside(0x200, FULL));
+        let io = (0xd000, 0xe000);
+        for m in [0, 7, 0xff, FULL] {
+            for p in 0..0x10000u32 {
+                let reach =
+                    (0..=m.min(0xff)).any(|i| (0xd000..0xe000).contains(&((p + i) & 0xffff)));
+                assert!(inside_zone(p, m, io) || !reach, "{p:x} {m:x}");
+            }
+        }
     }
 
     #[test]
     fn stored_high_bytes_keep_windows_by_value() {
         let v = |lo, hi| Iv { lo, hi };
-        assert!(hi_ok(v(2, 0xff), FULL) && hi_ok(v(0, 0), 0));
-        assert!(!hi_ok(v(0, 0), 1) && !hi_ok(v(1, 1), 0) && !hi_ok(v(0, 5), 0));
+        let z = &[PAGE1];
+        assert!(hi_ok(z, v(2, 0xff), FULL) && hi_ok(z, v(0, 0), 0));
+        assert!(!hi_ok(z, v(0, 0), 1) && !hi_ok(z, v(1, 1), 0) && !hi_ok(z, v(0, 5), 0));
+        let io = &zones(&[(0xd400, 0xd41d)]);
+        assert_eq!(io, &[PAGE1, (0xd400, 0xd500)]);
+        assert!(!hi_ok(io, v(0xd3, 0xd3), 1) && hi_ok(io, v(0xd3, 0xd3), 0));
+        assert!(hi_ok(io, v(0xd5, 0xff), FULL) && !hi_ok(io, v(2, 0xff), FULL));
+        assert!(hi_certain(io, v(0xd4, 0xd4), 0) && !hi_certain(io, v(0xd4, 0xd5), 0));
+        assert!(hi_certain(z, v(0, 1), FULL) && !hi_certain(z, v(0, 0), 0xff));
         let st = |above, val| Store {
             key: (0, 0, 0),
             addr: Iv::exact(0x10),
@@ -369,6 +495,6 @@ mod tests {
         assert!(st(false, Iv::full(1)).lo_ok(0) && st(false, Iv::full(1)).lo_ok(FULL));
         assert!(!st(false, v(0, 0x0f)).lo_ok(0x10));
         assert!(st(true, v(0, 0x0f)).lo_ok(0xf0) && !st(true, v(0, 0x0f)).lo_ok(0xf1));
-        assert!(st(true, v(0, 0x0f)).risky(0x0f, 0) && !st(true, v(2, 3)).risky(0x0f, 0x80));
+        assert!(st(true, v(0, 0x0f)).risky(z, 0x0f, 0) && !st(true, v(2, 3)).risky(z, 0x0f, 0x80));
     }
 }

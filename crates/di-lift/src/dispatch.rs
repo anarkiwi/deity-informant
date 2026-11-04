@@ -434,6 +434,7 @@ pub(crate) fn vectors(
         pull_clear: false,
         vecs: Vec::new(),
         observed: FixedBitSet::new(),
+        constant: FixedBitSet::new(),
     };
     let mut v: Vec<u16> = vars
         .iter()
@@ -965,44 +966,9 @@ pub(crate) fn pointer_stores(
         let Some(p) = var.acc.get(s.ai).and_then(|a| a.ptr) else {
             continue;
         };
-        let (Some(q), Some(h)) = (p.lo.and_then(|l| l.value()), p.hi.value()) else {
-            continue;
-        };
-        let Some(states) = sets.states.get(&s.pc) else {
-            continue;
-        };
-        let ys = sets
-            .of(s.pc, reg::Y)
-            .unwrap_or_else(|| sets.any(s.pc, reg::Y));
-        let mut addrs = BTreeSet::new();
-        let mut read = BTreeSet::new();
-        let mut gs = Vec::new();
-        let tagged = states.iter().all(|st| {
-            let at = |a: u32| st.mem.iter().find(|e| e.0 as u32 == a).copied();
-            let (Some((_, Some(l), li)), Some((_, Some(hb), hv))) = (at(q), at(h)) else {
-                return false;
-            };
-            let Some((words, r, g, _)) = pair(code, sets, objs, &w, l, hb) else {
-                return false;
-            };
-            let inside = |x: u32, iv: Iv| (iv.lo..=iv.hi).contains(&x);
-            for word in words {
-                let [lo, hi] = word.to_le_bytes();
-                if inside(lo as u32, li) && inside(hi as u32, hv) {
-                    addrs.extend(ys.iter().map(|&y| word.wrapping_add(y as u16)));
-                }
-            }
-            read.extend(r);
-            gs.extend(g);
-            true
-        });
-        if tagged {
-            found.push((i, addrs.into_iter().collect(), read, gs));
-            continue;
-        }
         let g = lp.get_or_insert_with(|| Loop::new(code, vars, sets, objs, konst));
-        if let Some((a, r, g)) = advanced(g, s.pc, [q as u16, h as u16], &ys) {
-            found.push((i, a.into_iter().collect(), r, g));
+        if let Some((a, r, gs)) = pointer_set(g, &w, s.pc, p) {
+            found.push((i, a, r, gs));
         }
     }
     let mut trial: Vec<Store> = stores.to_vec();
@@ -1020,6 +986,86 @@ pub(crate) fn pointer_stores(
         }
     }
     done
+}
+
+/// The address set of an access at `pc` through the `(zp),Y` pointer `p`, the table bytes it
+/// was read from and the guards they need: words of the pointer bytes' tagged table bytes
+/// on every path, else the words a loop advancing them gives ([`advanced`]), plus each `Y`.
+fn pointer_set(
+    g: &Loop,
+    w: &FixedBitSet,
+    pc: u16,
+    p: crate::analysis::Ptr,
+) -> Option<(Vec<u16>, BTreeSet<u16>, Vec<Guard>)> {
+    let (q, h) = (p.lo.and_then(|l| l.value())?, p.hi.value()?);
+    let (code, sets, objs) = (g.code, g.sets, g.objs);
+    let states = sets.states.get(&pc)?;
+    let ys = sets.of(pc, reg::Y).unwrap_or_else(|| sets.any(pc, reg::Y));
+    let mut addrs = BTreeSet::new();
+    let mut read = BTreeSet::new();
+    let mut gs = Vec::new();
+    let tagged = states.iter().all(|st| {
+        let at = |a: u32| st.mem.iter().find(|e| e.0 as u32 == a).copied();
+        let (Some((_, Some(l), li)), Some((_, Some(hb), hv))) = (at(q), at(h)) else {
+            return false;
+        };
+        let Some((words, r, g, _)) = pair(code, sets, objs, w, l, hb) else {
+            return false;
+        };
+        let inside = |x: u32, iv: Iv| (iv.lo..=iv.hi).contains(&x);
+        for word in words {
+            let [lo, hi] = word.to_le_bytes();
+            if inside(lo as u32, li) && inside(hi as u32, hv) {
+                addrs.extend(ys.iter().map(|&y| word.wrapping_add(y as u16)));
+            }
+        }
+        read.extend(r);
+        gs.extend(g);
+        true
+    });
+    if tagged {
+        return Some((addrs.into_iter().collect(), read, gs));
+    }
+    advanced(g, pc, [q as u16, h as u16], &ys).map(|(a, r, g)| (a.into_iter().collect(), r, g))
+}
+
+/// Address sets of the loads through `(zp),Y` pointers ([`pointer_set`]) whose tables no
+/// store writes and that need no index guard beyond `guards`, by `(pc, opcode, access
+/// index)`; the tables join `reads`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pointer_loads(
+    code: &Code,
+    vars: &FxHashMap<u16, Vec<Var>>,
+    sets: &Sets,
+    objs: &Objects,
+    stores: &[Store],
+    guards: &[Guard],
+    reads: &mut BTreeSet<u16>,
+    konst: &dyn Fn(u32) -> Option<u8>,
+) -> FxHashMap<(u16, u8, usize), Vec<u16>> {
+    let w = written(code, stores);
+    let g = Loop::new(code, vars, sets, objs, konst);
+    let mut out = FxHashMap::default();
+    for (&pc, vs) in vars {
+        for v in vs {
+            for (ai, a) in v.acc.iter().enumerate() {
+                let Some(p) = a.ptr.filter(|_| !a.store && !a.dummy) else {
+                    continue;
+                };
+                // A load's set needs no guard of its own: one needing an index guard the
+                // stores' sets do not already take (a table read past its extent) is not
+                // taken.
+                if let Some((s, r, gs)) = pointer_set(&g, &w, pc, p) {
+                    let guarded = gs.iter().all(|x| guards.contains(x));
+                    if !s.is_empty() && guarded && r.iter().all(|&x| !w.contains(x as usize)) {
+                        reads.extend(r);
+                        out.insert((pc, v.op, ai), s);
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Bytes known exactly while evaluating a straight chain of instructions, by address.
@@ -1253,7 +1299,7 @@ fn advanced_at(
             }
         }
         let tags: Vec<Tab> = places.iter().map(|e| e.2).collect();
-        let (rows, guards) = bytes(g.code, sets, g.objs, &tags)?;
+        let (rows, guards) = bytes(g.code, sets, g.objs, &tags).filter(|r| !r.0.is_empty())?;
         let mut addrs = BTreeSet::new();
         let mut read: Vec<u16> = rows.iter().flatten().filter_map(|x| x.2).collect();
         for i in 0..rows[0].len() {
@@ -1384,8 +1430,7 @@ pub(crate) fn cell_values(
 
 /// Fill the values of stores into opcodes and the operands of `JMP`/`JSR`s through cells of
 /// a register holding a table byte or a cell's byte on every path ([`bytes`], read inside the
-/// table's extent: the guards that keeps are appended to `guards`), where the definitions
-/// reaching them give none.
+/// table's extent: the guards that keeps are appended to `guards`).
 pub(crate) fn tag_values(
     code: &Code,
     vars: &FxHashMap<u16, Vec<Var>>,
@@ -1405,7 +1450,9 @@ pub(crate) fn tag_values(
             .as_ref()
             .is_some_and(|a| a.iter().any(|x| control.contains(x)))
     };
-    for s in stores.iter_mut().filter(|s| s.vals.is_none() && steers(s)) {
+    // A store steering control with values from an interval (a table's hull) takes its table
+    // bytes too: they are exact.
+    for s in stores.iter_mut().filter(|s| steers(s)) {
         let Some(r) = stored_reg(Template::of(s.op), s.ai) else {
             continue;
         };

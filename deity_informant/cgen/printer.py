@@ -291,7 +291,9 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         if o is None:
             r = self.iv_joined(v)
         elif o.name == "memref.load" and w == 8:
-            r = self.mod.sets.get(self.const_of(self.address(o)), full)
+            r = self.mod.sets.get(self.const_of(self.address(o))) or self.mod.mem.hull(
+                *self.iv(self.address(o))
+            )
         elif o.name in ("memref.load", "func.call"):
             r = full
         elif o.name == "arith.constant":
@@ -316,15 +318,23 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 lo2, hi2 = lo & top, hi & top
                 r = (lo2, hi2) if lo2 <= hi2 else full
         elif o.name == "arith.andi":
-            a, b = self.iv(o.args[0]), self.iv(o.args[1])
-            r = (0, min(a[1], b[1]))
+            a, b = sorted((self.iv(o.args[0]), self.iv(o.args[1])), key=lambda x: x[0] != x[1])
+            m = a[0]
+            if a[0] == a[1] and not m & (m + 1) and b[0] & ~m == b[1] & ~m:
+                r = (b[0] & m, b[1] & m)
+            else:
+                r = (0, min(a[1], b[1]))
         elif o.name == "arith.muli":
             a, b = self.iv(o.args[0]), self.iv(o.args[1])
             r = (a[0] * b[0], a[1] * b[1]) if a[1] * b[1] <= top else full
         elif o.name in ("arith.ori", "arith.xori"):
-            a, b = self.iv(o.args[0]), self.iv(o.args[1])
-            hi = min((1 << max(a[1], b[1]).bit_length()) - 1, a[1] + b[1])
-            r = (max(a[0], b[0]) if o.name == "arith.ori" else 0, hi)
+            a, b = sorted((self.iv(o.args[0]), self.iv(o.args[1])), key=lambda x: x[0] != x[1])
+            c = a[0]
+            if a[0] == a[1] and c and b[1] < c & -c:
+                r = (c + b[0], c + b[1])
+            else:
+                hi = min((1 << max(a[1], b[1]).bit_length()) - 1, a[1] + b[1])
+                r = (max(a[0], b[0]) if o.name == "arith.ori" else 0, hi)
         elif o.name in ("arith.shli", "arith.shrui"):
             a, b = self.iv(o.args[0]), self.iv(o.args[1])
             if b[0] != b[1]:
@@ -1077,6 +1087,18 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         """``(constant, rest)`` of an address value: ``rest`` is None or a value."""
         return self.f.split(a)
 
+    def indexed(self, o):
+        """``(base, index)`` texts of the address of access ``o`` when it is a 16-bit value
+        plus a zero-extended byte, else None."""
+        d = self.f.defs.get(self.f.address(o))
+        if d is None or d.name != "arith.addi":
+            return None
+        for b, i in (d.args, d.args[::-1]):
+            e = self.f.defs.get(i)
+            if e is not None and e.name == "arith.extui" and self.f.width(e.args[0]) == 8:
+                return self.addr(b).text, self.ex(e.args[0]).text
+        return None
+
     def addr(self, a):
         """The address value ``a`` with its constant relocated (a zero-page one as is)."""
         c, rest = self.split(a)
@@ -1101,14 +1123,27 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         k = mem.region(lo, hi)
         if k is not None:
             return ("region", k)
+        j = mem.held_span(lo, hi, o.name != "memref.load")
+        if j is not None and o.name in ("memref.load", "memref.store"):
+            return ("held", j)
         if mem.is_code(lo, hi):
             return ("code",)
+        store = o.name == "memref.store" or o.prop("callee") == "@io_write"
+        found = self.mod.owners(self.mod.addr_sets.get((o.pc, store)), not store)
+        if found:
+            regs, spans = found
+            if len(regs) + len(spans) == 1:
+                return ("region", regs[0]) if regs else ("held", spans[0])
+            return ("set", regs, spans)
         return ("any",)
 
-    def mem_ref(self, o, k):
-        """The region element ``Rk[...]`` that access ``o`` addresses: the address modulo
-        its width (16 bits, or 8 for a zero-page one), as the 6502 wraps it, less the origin."""
-        org = self.mod.mem.regions[k][0]
+    def mem_ref(self, o, k, held=False):
+        """The region element ``Rk[...]`` (with ``held`` the held constants' ``CODE[...]``)
+        that access ``o`` addresses: the address modulo its width (16 bits, or 8 for a
+        zero-page one), as the 6502 wraps it, less the origin."""
+        name = f"C{k}" if held else f"R{k}"
+        sym = f"{name}_ORG"
+        org = self.mod.mem.held[k][0] if held else self.mod.mem.regions[k][0]
         a = self.f.address(o)
         c, rest = self.split(a)
         top = (1 << self.f.width(a)) - 1
@@ -1117,7 +1152,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             sub = lit(c - org, 16)
         elif c == 0 and org:
             r = self.ex(rest)
-            sub = binary("-", 12, r, E(f"R{k}_ORG", lo=org, hi=org, uns=True), 16)
+            sub = binary("-", 12, r, E(sym, lo=org, hi=org, uns=True), 16)
         else:
             r = clean(self.ex(rest), self.f.width(rest))
             lo, hi = self.f.iv(rest)
@@ -1126,22 +1161,36 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             elif lo + c > top:
                 c -= top + 1
             off = c - org
-            if off > 0:
+            if off < -0x100:
+                # A constant that is no address near the region (a pointer plus one): its
+                # origin stays symbolic, as relocation moves it.
+                if c:
+                    r = binary("+", 12, lit(c, 16), r, 16)
+                sub = binary("-", 12, r, E(sym, lo=org, hi=org, uns=True), 16)
+            elif off > 0:
                 sub = binary("+", 12, lit(off, 16), r, 16)
             elif off < 0:
                 sub = binary("-", 12, r, lit(-off, 16), 16)
             else:
                 sub = r
         sub = clean(sub, 16) if sub.lo < 0 else sub
-        self.mod.regions_used.add(k)
-        return E(f"R{k}[{sub.text}]", 16, "", 0, 255, False, True, sub.refs)
+        if held:
+            self.mod.used.add("CODE")
+            self.mod.spans_used.add(k)
+        else:
+            self.mod.regions_used.add(k)
+        return E(f"{name}[{sub.text}]", 16, "", 0, 255, False, True, sub.refs)
 
     def load(self, o):
         """The C expression of a memory load ``o``."""
         how = self.target(o)
-        if how[0] == "region":
-            return self.mem_ref(o, how[1])
+        if how[0] in ("region", "held"):
+            return self.mem_ref(o, how[-1], how[0] == "held")
         a = self.addr(self.f.address(o))
+        if how[0] == "set":
+            *tests, last = self.mod.choices(how[1], how[2], a.text, self.indexed(o))
+            text = "".join(f"{t} ? {r} : " for t, r in tests) + last[1]
+            return E(f"({text})", 16, "", 0, 255, False, True, a.refs)
         fn = "oob_rd" if how[0] == "code" else "rd"
         self.mod.helpers.add(fn)
         return E(f"{fn}({a.text})", 16, "", 0, 255, False, True, a.refs)
@@ -1360,9 +1409,15 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         """A memory store (or an ``io_write`` that cannot reach I/O)."""
         val = o.args[1] if o.name == "func.call" else o.args[0]
         how, v = self.target(o), (o.name != "func.call" and self.halves(o)) or self.ex(val)
-        if how[0] == "region":
-            ref = self.mem_ref(o, how[1])
+        if how[0] in ("region", "held"):
+            ref = self.mem_ref(o, how[1], how[0] == "held")
             out.append(("s", f"{ref.text} = {v.text};", ref.refs | v.refs))
+            return
+        if how[0] == "set":
+            a = self.addr(self.f.address(o))
+            *tests, last = self.mod.choices(how[1], how[2], a.text, self.indexed(o))
+            text = "".join(f"if ({t}) {r} = {v.text}; else " for t, r in tests)
+            out.append(("s", f"{text}{last[1]} = {v.text};", a.refs | v.refs))
             return
         fn = "oob_wr" if how[0] == "code" else "wr"
         self.mod.helpers.add(fn)
@@ -1387,11 +1442,11 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             if len(res) == 1 and used:
                 out.append(("a", self.var_of(res[0], f.width(res[0])), text, refs))
             elif len(res) > 1 and used:
-                t = self.fresh(8)
-                self.types[t] = self.mod.ret_type(target.f)
-                out.append(("a", t, text, refs))
-                for j, r in enumerate(res):
-                    self.names[r] = f"{t}.r{j}"
+                out.append(("s", f"{text};", refs))
+                for j, r in zip(target.f.live_res, res):
+                    if self.uses.get(r):
+                        rv = self.mod.reg_var(target.f, j)
+                        self.define(r, E(rv, hi=(1 << f.width(r)) - 1), out)
             else:
                 out.append(("s", f"{text};", refs))
             return
@@ -1439,8 +1494,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         refs = frozenset().union(*(e.refs for e in es))
         if len(es) == 1:
             return [("j", f"return {es[0].text};", refs)]
-        text = ", ".join(e.text for e in es)
-        return [("j", f"return ({self.mod.ret_type(self.f)}){{{text}}};", refs)]
+        regs = [self.mod.reg_var(self.f, j) for j in self.f.live_res]
+        sets = [("s", f"{r} = {e.text};", e.refs) for r, e in zip(regs, es) if r != e.text]
+        return sets + [("j", "return;", frozenset())]
 
     def convert(self, items):  # pylint: disable=too-many-branches
         """The C statements of structured ``items``."""
@@ -1528,7 +1584,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         rt = self.mod.ret_type(self.f) if self.f.private else "void"
         if rt == "void":
             return ("j", "return;", frozenset())
-        return ("j", "return 0;" if rt.startswith("uint") else f"return ({rt}){{0}};", frozenset())
+        return ("j", "return 0;", frozenset())
 
     def tail_site(self, p, t):
         """Record the tail call graph node ``p`` makes into node ``t``: the instruction taking
@@ -1675,7 +1731,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         self.plan()
         head, params = self.head()
         body = self.convert(self.body)
-        if not self.f.live_res or not self.f.private:
+        if len(self.f.live_res) != 1 or not self.f.private:
             while body and body[-1] == ("j", "return;", frozenset()):
                 body.pop()
         body = drop_unread(
@@ -1806,6 +1862,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
 
     def __init__(self, top, mem):
         self.mem, self.used, self.helpers, self.regions_used = mem, set(), set(), set()
+        self.addr_sets, self.spans_used = {}, set()
         self.traps, self.funcs, self.mains, self.structs = set(), [], {}, {}
         self.order, self.edges, self.ids, self.entries = [], {}, new_ids(), []
         self.sites, self.made, self.lifted, self.prov = {}, Counter(), {}, {}
@@ -1865,25 +1922,69 @@ class Module:  # pylint: disable=too-many-instance-attributes
 
     def partition(self):
         """Partition memory by the accesses of every function."""
-        ranges, stores = [], set()
+        ranges, stores, unknown = [], set(), False
         for f in self.funcs:
             for o, (lo, hi) in f.accesses():
                 if id(o) not in f.dropped:
                     ranges.append((lo, hi))
                     if o.name == "memref.store" and lo == hi:
                         stores.add(lo)
-        self.mem.partition(ranges, sorted(stores))
+                    write = o.name == "memref.store" or o.prop("callee") == "@io_write"
+                    unknown |= write and hi - lo >= regions.BOUNDED
+        self.mem.partition(ranges, sorted(stores), unknown)
+
+    def owners(self, runs, held):
+        """``(regions, held spans)`` the address ``runs`` (``[(lo, hi)]``, ``hi`` exclusive)
+        lie in (spans only when ``held``: a load), or None when some address is in none."""
+        if not runs:
+            return None
+        mem = self.mem
+        idx = np.concatenate([np.arange(lo, hi) for lo, hi in runs]) & 0xFFFF
+        reg = mem.owner[idx]
+        whole = held or bool((reg >= 0).all())
+        for j, (a, b) in enumerate(mem.held if whole else ()):
+            if a <= idx.min() and idx.max() < b:
+                return (), (j,)
+        span = np.full(len(idx), -1)
+        for j, (a, b) in enumerate(mem.held if held else ()):
+            span[(idx >= a) & (idx < b) & mem.constant[idx]] = j
+        if ((reg < 0) & (span < 0)).any():
+            return None
+        return tuple(int(k) for k in np.unique(reg[reg >= 0])), tuple(
+            int(j) for j in np.unique(span[(reg < 0) & (span >= 0)])
+        )
+
+    def choices(self, regs, spans, addr, indexed=None):
+        """``[(test, element)]`` of address ``addr`` in each of the regions ``regs`` and held
+        ``spans`` its address set lies in: the last needs no test. With ``indexed`` (``(base,
+        index)``, the address a 16-bit base plus an 8-bit index) the element is the base's
+        place indexed, as the 6502's ``(zp),Y`` is."""
+        names = [f"R{k}" for k in regs] + [f"C{j}" for j in spans]
+        self.regions_used.update(regs)
+        if spans:
+            self.used.add("CODE")
+        out = []
+        for n in names:
+            off = f"(uint16_t)(({addr}) - {n}_ORG)"
+            if indexed:
+                el = f"CGEN_IX({n}, ({indexed[0]}) - {n}_ORG, {indexed[1]})"
+                self.used.add("CGEN_IX")
+            else:
+                el = f"{n}[{off}]"
+            out.append((f"{off} < {n}_LEN", el))
+        return out
 
     def ret_type(self, f):
-        """The C return type of function ``f``'s live results."""
+        """The C return type of function ``f``'s live results: none, its one result, or with
+        several none, the results being left in the register variables (:meth:`reg_var`)."""
         ws = [WIDTH[t] for j, t in enumerate(f.results()) if j in f.live_res]
-        if not ws:
-            return "void"
-        if len(ws) == 1:
-            return CTYPE[ws[0]]
-        name = f"struct r{'_'.join(str(w) for w in ws)}"
-        self.structs[name] = ws
-        return name
+        return CTYPE[ws[0]] if len(ws) == 1 else "void"
+
+    def reg_var(self, f, j):
+        """The static variable result ``j`` of function ``f`` (a register of the register
+        file) is left in when ``f`` returns several, as the 6502 leaves its registers."""
+        self.structs[j] = WIDTH[f.results()[j]]
+        return f"rv{j}"
 
     def cfunc_of(self, name):
         """The C function of lifted function ``name``."""
@@ -1938,10 +2039,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
             c.body, c.covers, c.g = None, {}, None
         for f in self.funcs:
             f.conds.close()
-        out = [
-            f"{name} {{ {' '.join(f'{CTYPE[w]} r{j};' for j, w in enumerate(ws))} }};"
-            for name, ws in sorted(self.structs.items())
-        ]
+        out = [f"static {CTYPE[w]} rv{j};" for j, w in sorted(self.structs.items())]
         protos, kept, names = fold(
             [(c.name, texts[id(c)]) for c in post], [f"{c.head_text};" for c in protos]
         )

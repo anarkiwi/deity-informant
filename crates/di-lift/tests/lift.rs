@@ -109,7 +109,7 @@ fn cycles_budget_and_stack_wrap() {
         cycles: true,
         ..Opts::default()
     };
-    let p = lift_with(&img, &es, &[(0xc000, 0xc100)], &f, cyc);
+    let p = lift_with(&img, &es, &[(0xc000, 0xc100)], &f, cyc.clone());
     assert!(diff_capped(&img, &p, &calls(10, |_| 0), IO, 150) > 0);
     let img = image(progs::WRAP);
     let es = [Entry {

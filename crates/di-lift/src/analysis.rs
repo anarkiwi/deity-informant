@@ -84,10 +84,23 @@ pub fn iv_op(opc: Opc, a: Iv, b: Iv, out: u32, size0: u32) -> Iv {
             lo: a.lo - b.hi,
             hi: a.hi - b.lo,
         },
-        // A mask of low bits keeps the values it covers.
+        // A mask of low bits keeps the values it covers, or of an interval inside one block
+        // of its size their low bits.
         Opc::IntAnd => match (a.value(), b.value()) {
             (_, Some(m)) if m & m.wrapping_add(1) == 0 && a.hi <= m => a,
             (Some(m), _) if m & m.wrapping_add(1) == 0 && b.hi <= m => b,
+            (_, Some(m)) | (Some(m), _)
+                if m & m.wrapping_add(1) == 0 && {
+                    let x = if a.value() == Some(m) { b } else { a };
+                    x.lo & !m == x.hi & !m
+                } =>
+            {
+                let x = if a.value() == Some(m) { b } else { a };
+                Iv {
+                    lo: x.lo & m,
+                    hi: x.hi & m,
+                }
+            }
             _ => Iv {
                 lo: 0,
                 hi: a.hi.min(b.hi),
@@ -262,13 +275,23 @@ pub struct Access {
     pub above: bool,
     /// The zero-page pointer the address is, or is plus a byte.
     pub ptr: Option<Ptr>,
+    /// A check before the instruction keeps the address out of every zone (page 1 and the
+    /// volatile pages): a static lift's pointer access whose pair no window keeps.
+    pub zone: bool,
+    /// The zone check is proved: every page the address may name is outside the zones.
+    pub zfree: bool,
 }
 
 impl Access {
     /// Whether the access may reach page 1 given the pointer windows `win`.
     pub fn page1(&self, win: &Win) -> bool {
-        self.addr.meets(0x100, 0x200)
-            && !self.ptr.is_some_and(|p| {
+        self.addr.meets(0x100, 0x200) && !self.windowed(win)
+    }
+    /// Whether the access is kept out of every zone: by its own check, or through pairs the
+    /// windows `win` keep.
+    pub fn windowed(&self, win: &Win) -> bool {
+        self.zone
+            || self.ptr.is_some_and(|p| {
                 let (mut qs, m) = p.need();
                 qs.all(|q| win[q as usize].is_some_and(|t| t as u32 >= m))
             })
@@ -384,6 +407,8 @@ pub fn absint_ranges(
                     defd: false,
                     above: false,
                     ptr,
+                    zone: false,
+                    zfree: false,
                 });
                 continue;
             }
@@ -398,6 +423,8 @@ pub fn absint_ranges(
                     defd: false,
                     above: false,
                     ptr,
+                    zone: false,
+                    zfree: false,
                 });
                 match (op.out.size() == 1).then(|| load(a)).flatten() {
                     Some(x) => x,
@@ -482,6 +509,8 @@ pub struct Graph {
     pub cfg: FxHashMap<u16, u8>,
     /// Zero-page pointer pairs kept clear of page 1 and their checks (see [`crate::ptr`]).
     pub prot: crate::ptr::Prot,
+    /// The zones the pointer windows keep pointers out of (page 1 first).
+    pub zones: Vec<(u32, u32)>,
     /// Per instruction start the entries (bit `i % 64` for entry `i`) it is reached from.
     pub from: FxHashMap<u16, u64>,
     /// Instruction starts at which the decimal flag may be set.
@@ -514,6 +543,9 @@ pub struct Graph {
     /// Per `JSR` through cell operands with targets: its dispatch function (keyed by the least
     /// such site with the same targets) and the targets.
     pub dispatch: FxHashMap<u16, (u16, Vec<u16>)>,
+    /// Per instruction start and kind (store or load), the address set of its data accesses
+    /// through a pointer or with several addresses, where one is known.
+    pub addr_sets: FxHashMap<(u16, bool), BTreeSet<u16>>,
 }
 
 /// Stack-pointer effect of a `Next` instruction: pushes and pulls by count, `None` for an
@@ -982,6 +1014,7 @@ impl Fixpoint<'_> {
                     rom_code,
                     cfg,
                     prot: crate::ptr::Prot::default(),
+                    zones: vec![crate::ptr::PAGE1],
                     from: an.from,
                     dec: an.dec,
                     pull_clear,
@@ -1020,6 +1053,18 @@ impl Fixpoint<'_> {
                     },
                     past: an.past.clone(),
                     dispatch,
+                    addr_sets: {
+                        let mut m: FxHashMap<(u16, bool), BTreeSet<u16>> = FxHashMap::default();
+                        for ((pc, _, _), a) in &an.loads {
+                            m.entry((*pc, false)).or_default().extend(a);
+                        }
+                        for s in &an.stores {
+                            if let Some(a) = s.addrs.as_ref().filter(|a| a.len() > 1) {
+                                m.entry((s.pc, true)).or_default().extend(a);
+                            }
+                        }
+                        m
+                    },
                     written: {
                         let mut w = FixedBitSet::with_capacity(0x10000);
                         for s in &an.stores {
