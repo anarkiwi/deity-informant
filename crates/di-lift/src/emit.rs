@@ -8,7 +8,7 @@ use crate::analysis::{
 };
 use crate::bank::{Back, BankMap};
 use crate::func::{Arm, Ctl, Exit, Key, Plan, H};
-use crate::ir::{cy, k, mem, other, r1, reg, tmp, Block, Function, LOp, E, NREG};
+use crate::ir::{cy, k, mem, other, r1, reg, tmp, Block, Function, LOp, E, KREG, NREG, XREG};
 use di_pcode::{reg as R, CtrlKind, Op, Opc, PenKind, Slot, Space, Template, Vn};
 use fixedbitset::FixedBitSet;
 use rustc_hash::FxHashMap;
@@ -39,6 +39,8 @@ pub struct Shared<'a> {
     pub cycles: bool,
     /// Function index of each callee per entry configuration.
     pub fidx: FxHashMap<(u16, u8), u32>,
+    /// Function index of each instance function by class.
+    pub ifidx: Vec<u32>,
     /// The bank map (none: flat memory).
     pub bank: Option<&'a BankMap>,
     /// Callees whose returns must check their return address (they may store into page 1).
@@ -99,6 +101,9 @@ struct Em<'a, 'b> {
     /// The current instruction's checks include a code check: the code a deopt resumes may
     /// have changed, so it hands over every register.
     coded: bool,
+    /// In an instance function: the start the current node is keyed by, its length and each
+    /// copy's start (`None`: a copy that does not run it).
+    mem: Option<(u16, u16, Vec<Option<u16>>)>,
 }
 
 /// What emitting a function produced.
@@ -134,6 +139,9 @@ pub fn emit(
             pc: plan.pc,
             top: plan.top,
             recursive: sh.recursive.contains(fi),
+            copies: plan.inst.as_ref().map_or(Vec::new(), |x| {
+                (0..x.c.copies()).map(|k| x.c.entry(k)).collect()
+            }),
             ..Function::default()
         },
         blk: FxHashMap::default(),
@@ -151,6 +159,7 @@ pub fn emit(
         istart: 0,
         dec: false,
         coded: false,
+        mem: None,
     };
     em.new_block(plan.pc);
     if let Some(s) = plan.sp {
@@ -176,7 +185,11 @@ pub fn emit(
             em.emit(Opc::Copy, r1(*i), k(v as u32, 1), NONE, 0);
         }
     }
-    let roots: Vec<Key> = plan.roots().collect();
+    let roots: Vec<Key> = plan
+        .entry
+        .iter()
+        .map(|&c| (plan.pc, H::Known(0), c))
+        .collect();
     match (sh.bank, plan.top) {
         (Some(m), true) => em.entry_port(m, entry_port, &roots),
         _ => {
@@ -221,12 +234,32 @@ impl<'a> Em<'a, '_> {
             let save = std::mem::replace(&mut self.cur, b as usize);
             self.tail_call(key);
             self.cur = save;
+        } else if let Some(c) = self.plan.insts.get(&key) {
+            let save = std::mem::replace(&mut self.cur, b as usize);
+            self.inst_call(c);
+            self.cur = save;
+        } else if let Some(&j) = self.plan.inst.as_ref().and_then(|x| x.exits.get(&key)) {
+            let save = std::mem::replace(&mut self.cur, b as usize);
+            if self.plan.inst.as_ref().unwrap().exits.len() > 1 {
+                self.emit(Opc::Copy, r1(XREG), k(j, 1), NONE, 0);
+            }
+            self.emit(Opc::Return, NONE, NONE, NONE, 0);
+            self.cur = save;
         } else {
             let save = std::mem::replace(&mut self.cur, b as usize);
             self.deopt(k(pc as u32, 2));
             self.cur = save;
         }
         b
+    }
+    /// Whether `key` is entered by a block of its own: a node, a tail call, a copy's call or
+    /// an instance function's exit.
+    fn planned(&self, key: &Key) -> bool {
+        let p = self.plan;
+        p.nodes.contains_key(key)
+            || p.tails.contains(key)
+            || p.insts.contains_key(key)
+            || p.inst.as_ref().is_some_and(|x| x.exits.contains_key(key))
     }
     /// The node the current variant transfers to at `pc`.
     fn key(&self, pc: u16) -> Key {
@@ -371,22 +404,29 @@ impl<'a> Em<'a, '_> {
         port: bool,
     ) {
         let ra = ret.wrapping_sub(1) as u32;
+        // In an instance function the return address is the current copy's.
+        let (rav, rlo, rhi) = match self.mem.clone() {
+            Some((rep, _, _)) => {
+                let w = self.here(rep as u32 + 2, 2);
+                let lo = self.op(Opc::Copy, 1, w, NONE);
+                let hi = self.op(Opc::IntRight, 2, w, k(8, 1));
+                let hi = self.op(Opc::Copy, 1, hi, NONE);
+                (w, lo, hi)
+            }
+            None => (k(ra, 2), k(ra & 0xff, 1), k(ra >> 8, 1)),
+        };
         if self.sh.private {
-            let bytes: &[u32] = if self.sh.shadow {
-                &[ra >> 8, ra & 0xff]
-            } else {
-                &[]
-            };
+            let bytes: &[Vn] = if self.sh.shadow { &[rhi, rlo] } else { &[] };
             for &b in bytes {
-                self.store_stack(k(b, 1));
+                self.store_stack(b);
                 self.emit(Opc::IntSub, r1(R::SP), r1(R::SP), k(1, 1), 0);
             }
             if !self.sh.shadow {
                 self.emit(Opc::IntSub, r1(R::SP), r1(R::SP), k(2, 1), 0);
             }
         } else {
-            self.push(k(ra >> 8, 1), &mut chk);
-            self.push(k(ra & 0xff, 1), &mut chk);
+            self.push(rhi, &mut chk);
+            self.push(rlo, &mut chk);
         }
         self.account(cyc, maxpen);
         self.check(chk, tv.unwrap_or(k(fs[0] as u32, 2)));
@@ -395,7 +435,7 @@ impl<'a> Em<'a, '_> {
         let rb = self.new_block(ret);
         match tv {
             None => {
-                self.emit(Opc::Call, NONE, k(ra, 2), NONE, fis[0]);
+                self.emit(Opc::Call, NONE, rav, NONE, fis[0]);
                 self.emit(Opc::Branch, NONE, NONE, NONE, rb);
             }
             Some(tv) => {
@@ -408,7 +448,7 @@ impl<'a> Em<'a, '_> {
                 self.emit(Opc::BranchInd, NONE, tv, NONE, i as u32);
                 for ((_, b), &fi) in t.iter().zip(&fis) {
                     self.cur = *b as usize;
-                    self.emit(Opc::Call, NONE, k(ra, 2), NONE, fi);
+                    self.emit(Opc::Call, NONE, rav, NONE, fi);
                     self.emit(Opc::Branch, NONE, NONE, NONE, rb);
                 }
             }
@@ -425,14 +465,18 @@ impl<'a> Em<'a, '_> {
             let a = self.sp_addr();
             let hi = self.load(a, PAGE1, mem::STACK);
             let w = self.word(lo, hi);
-            let bad = self.op(Opc::IntNotEqual, 1, w, k(ra, 2));
+            let bad = self.op(Opc::IntNotEqual, 1, w, rav);
             self.side_exit(bad, false, |em| {
                 em.touch_ret(w, Iv::full(2));
                 let t = em.op(Opc::IntAdd, 2, w, k(1, 2));
                 em.deopt(t);
             });
         }
-        self.touch_ret(k(ra, 2), Iv::exact(ra));
+        let riv = match self.mem.is_some() {
+            true => Iv::full(2),
+            false => Iv::exact(ra),
+        };
+        self.touch_ret(rav, riv);
         if port {
             let keys = self.succ.to_vec();
             self.bank_dispatch(ret, &keys);
@@ -472,6 +516,79 @@ impl<'a> Em<'a, '_> {
             self.emit(Opc::Return, NONE, NONE, NONE, 0);
         }
         (self.nh, self.nc, self.h) = (nh, nc, h);
+    }
+    /// A call of an instance function for copy `c.k` at the caller's SP (no return address),
+    /// then the node of the exit it left by.
+    fn inst_call(&mut self, c: &crate::func::Icall) {
+        let fi = self.sh.ifidx[c.class as usize];
+        self.flush();
+        self.emit(Opc::Copy, r1(KREG), k(c.k as u32, 1), NONE, 0);
+        let rb = self.new_block(c.exits[0].0);
+        self.emit(Opc::Call, NONE, k(0, 2), k(1, 1), fi);
+        self.emit(Opc::Branch, NONE, NONE, NONE, rb);
+        self.cur = rb as usize;
+        let (last, rest) = c.exits.split_last().unwrap();
+        for (j, &x) in rest.iter().enumerate() {
+            let hit = self.op(Opc::IntEqual, 1, r1(XREG), k(j as u32, 1));
+            let b = self.block(x);
+            self.emit(Opc::CBranch, NONE, hit, NONE, b);
+        }
+        let b = self.block(*last);
+        self.emit(Opc::Branch, NONE, NONE, NONE, b);
+    }
+    /// In an instance function, the value `vals[i]` copy `i` has (`None`: a copy that never
+    /// computes it), as `size` bytes from the copy index: a constant, `a + s * k` where the
+    /// values are affine in it, else `v0 + sum((k == i) * (vi - v0))`.
+    fn fam(&mut self, vals: &[Option<u32>], size: u8) -> Vn {
+        let m = if size == 1 { 0xff } else { 0xffff };
+        let pts: Vec<(u32, u32)> = vals
+            .iter()
+            .enumerate()
+            .filter_map(|(i, v)| v.map(|v| (i as u32, v & m)))
+            .collect();
+        let v0 = pts[0].1;
+        if pts.iter().all(|p| p.1 == v0) {
+            return k(v0, size);
+        }
+        if let Some((a, sl)) = crate::inst::line(&pts, m) {
+            let x = self.zext(r1(KREG), size);
+            let t = if sl == 1 {
+                x
+            } else {
+                self.op(Opc::IntMult, size, x, k(sl, size))
+            };
+            return if a == 0 {
+                t
+            } else {
+                self.op(Opc::IntAdd, size, t, k(a, size))
+            };
+        }
+        let mut acc = k(v0, size);
+        for &(i, v) in &pts[1..] {
+            let d = v.wrapping_sub(v0) & m;
+            if d == 0 {
+                continue;
+            }
+            let hit = self.op(Opc::IntEqual, 1, r1(KREG), k(i, 1));
+            let z = self.zext(hit, size);
+            let t = self.op(Opc::IntMult, size, z, k(d, size));
+            acc = self.op(Opc::IntAdd, size, acc, t);
+        }
+        acc
+    }
+    /// `pc + d` as the current copy's when `pc` is the start the current instance node is keyed
+    /// by, else the constant.
+    fn here(&mut self, pc: u32, d: u32) -> Vn {
+        match self.mem.clone() {
+            Some((rep, _, ms)) if pc == rep as u32 + d && d <= 3 => {
+                let vals: Vec<Option<u32>> = ms
+                    .iter()
+                    .map(|p| p.map(|p| (p as u32 + d) & 0xffff))
+                    .collect();
+                self.fam(&vals, 2)
+            }
+            _ => k(pc, 2),
+        }
     }
     /// Deopt to `pc` before the access at `addr` when it lies in `r`.
     fn range_guard(&mut self, addr: Vn, pc: u16, r: Iv) {
@@ -562,6 +679,17 @@ impl<'a> Em<'a, '_> {
         self.f.blocks[self.cur].maxcyc += cyc + maxpen;
     }
     fn deopt(&mut self, pc: Vn) {
+        let pc = match (&self.mem, pc.space()) {
+            (Some((rep, len, _)), Space::Const) => {
+                let (rep, len, v) = (*rep as u32, *len as u32, pc.off());
+                if v == rep || v == rep + len {
+                    self.here(v, v - rep)
+                } else {
+                    pc
+                }
+            }
+            _ => pc,
+        };
         self.emit(Opc::CallOther, NONE, pc, NONE, other::DEOPT);
     }
     /// Leave through a new block when `cond` holds (the block sees the pending cycles), and
@@ -584,10 +712,25 @@ impl<'a> Em<'a, '_> {
     /// The table of `BRANCHIND` targets `ts`, closed when they are every target the jump may
     /// take (`all`) and every one is planned.
     fn table(&mut self, ts: &[u16], all: bool) -> u32 {
+        let calc = self.mem.as_ref().and_then(|m| {
+            let x = self.plan.inst.as_ref()?;
+            x.calc.get(&m.0).cloned()
+        });
+        if let Some(calc) = calc {
+            // Every copy's targets, each to the merged node it enters.
+            let mut t: Vec<(u16, u32)> =
+                calc.iter().map(|&(a, key)| (a, self.block(key))).collect();
+            t.sort_unstable();
+            self.f.tables.push(t);
+            let i = self.f.tables.len() - 1;
+            self.f.closed.grow(i + 1);
+            self.f.closed.set(i, all);
+            return i as u32;
+        }
         let keys: Vec<Key> = ts
             .iter()
             .map(|&t| self.key(t))
-            .filter(|k| self.plan.nodes.contains_key(k) || self.plan.tails.contains(k))
+            .filter(|k| self.planned(k))
             .collect();
         let closed = all && keys.len() == ts.len();
         let mut t: Vec<(u16, u32)> = keys.into_iter().map(|k| (k.0, self.block(k))).collect();
@@ -684,6 +827,31 @@ impl<'a> Em<'a, '_> {
         let arms = &plan.nodes[&key].arms;
         let vars = &sh.g.vars[&pc];
         (self.nh, self.nc) = (key.1, key.2);
+        if let Some(x) = &plan.inst {
+            let ms = x.c.nodes[x.node[&pc] as usize].pcs.clone();
+            let len = Template::of(vars[0].op).len as u16;
+            if ms.iter().any(|p| p.is_none()) {
+                // Run only by the copies holding it: the others go on to its successor.
+                let mut hit = NONE;
+                for (i, _) in ms.iter().enumerate().filter(|(_, p)| p.is_some()) {
+                    let e = self.op(Opc::IntEqual, 1, r1(KREG), k(i as u32, 1));
+                    hit = if hit.is_none() {
+                        e
+                    } else {
+                        self.op(Opc::IntOr, 1, hit, e)
+                    };
+                }
+                let run = self.new_block(pc);
+                self.emit(Opc::CBranch, NONE, hit, NONE, run);
+                let skip = self.block(arms[0].succ[0]);
+                self.emit(Opc::Branch, NONE, NONE, NONE, skip);
+                self.cur = run as usize;
+            }
+            self.mem = Some((pc, len, ms));
+            self.insn(pc, &vars[0].op, &arms[0]);
+            self.mem = None;
+            return;
+        }
         if !sh.g.cells.contains(pc as usize) {
             self.insn(pc, &vars[0].op, &arms[0]);
             return;
@@ -831,6 +999,52 @@ impl<'a> Em<'a, '_> {
         chk
     }
 
+    /// The operand bytes of an instance node whose copies start at `ms`: constant bytes as
+    /// computed from the copy index (a two-byte operand as one word), cells read from the
+    /// current copy's operand address.
+    fn inst_operands(&mut self, ms: &[Option<u16>], len: u8) -> ([Vn; 2], Option<Vn>) {
+        let (img, cells) = (self.sh.img, &self.sh.g.cells);
+        let bytes: Vec<Option<[Option<u8>; 2]>> = ms
+            .iter()
+            .map(|p| p.map(|p| operand_bytes(img, cells, p, len)))
+            .collect();
+        let first = bytes.iter().flatten().next().copied().unwrap();
+        let mut ob = [k(0, 1); 2];
+        if len == 3 && first[0].is_some() && first[1].is_some() {
+            let w: Vec<Option<u32>> = bytes
+                .iter()
+                .map(|b| b.map(|b| u16::from_le_bytes([b[0].unwrap(), b[1].unwrap()]) as u32))
+                .collect();
+            let w = self.fam(&w, 2);
+            let lo = self.op(Opc::Copy, 1, w, NONE);
+            let hi = self.op(Opc::IntRight, 2, w, k(8, 1));
+            let hi = self.op(Opc::Copy, 1, hi, NONE);
+            return ([lo, hi], Some(w));
+        }
+        for (i, o) in ob.iter_mut().enumerate().take(len as usize - 1) {
+            *o = match first[i] {
+                Some(_) => {
+                    let v: Vec<Option<u32>> = bytes
+                        .iter()
+                        .map(|b| b.map(|b| b[i].unwrap() as u32))
+                        .collect();
+                    self.fam(&v, 1)
+                }
+                None => {
+                    let a: Vec<Option<u32>> = ms
+                        .iter()
+                        .map(|p| p.map(|p| p.wrapping_add(i as u16 + 1) as u32))
+                        .collect();
+                    let lo = a.iter().flatten().min().copied().unwrap();
+                    let hi = a.iter().flatten().max().copied().unwrap();
+                    let av = self.fam(&a, 2);
+                    self.load(av, Iv { lo, hi }, 0)
+                }
+            };
+        }
+        (ob, None)
+    }
+
     fn insn(&mut self, pc: u16, op: &u8, arm: &'a Arm) {
         let (ctl, exit, acc) = (&arm.ctl, arm.exit, &arm.acc[..]);
         self.succ = &arm.succ;
@@ -853,14 +1067,20 @@ impl<'a> Em<'a, '_> {
         let next = pc.wrapping_add(t.len as u16);
         let bytes = operand_bytes(self.sh.img, &self.sh.g.cells, pc, t.len);
         // Operand bytes that are cells are read once, before the instruction's ops.
-        let ob: [Vn; 2] = std::array::from_fn(|i| match bytes[i] {
-            Some(b) => k(b as u32, 1),
-            None if (t.len as usize) > i + 1 => {
-                let a = pc.wrapping_add(i as u16 + 1);
-                self.load(k(a as u32, 2), Iv::exact(a as u32), 0)
-            }
-            None => k(0, 1),
-        });
+        let (ob, wv): ([Vn; 2], Option<Vn>) = match self.mem.clone() {
+            Some((_, _, ms)) => self.inst_operands(&ms, t.len),
+            None => (
+                std::array::from_fn(|i| match bytes[i] {
+                    Some(b) => k(b as u32, 1),
+                    None if (t.len as usize) > i + 1 => {
+                        let a = pc.wrapping_add(i as u16 + 1);
+                        self.load(k(a as u32, 2), Iv::exact(a as u32), 0)
+                    }
+                    None => k(0, 1),
+                }),
+                None,
+            ),
+        };
         let mut memo: FxHashMap<(Slot, u8), Vn> = FxHashMap::default();
         let mut slot = move |em: &mut Self, s: Slot, size: u8| -> Vn {
             if let Some(&v) = memo.get(&(s, size)) {
@@ -869,7 +1089,7 @@ impl<'a> Em<'a, '_> {
             let v = match s {
                 Slot::B1 => em.zext(ob[0], size),
                 Slot::Word => {
-                    let w = em.word(ob[0], ob[1]);
+                    let w = wv.unwrap_or_else(|| em.word(ob[0], ob[1]));
                     em.zext(w, size)
                 }
                 Slot::B1Inc | Slot::B2Inc => {
@@ -1168,8 +1388,7 @@ impl<'a> Em<'a, '_> {
         let s = self.zext(r1(R::SP), 2);
         let d = self.op(Opc::IntSub, 2, s, reg(E, 2));
         for &key in self.succ {
-            if key.0 != pc || !self.plan.nodes.contains_key(&key) && !self.plan.tails.contains(&key)
-            {
+            if key.0 != pc || !self.planned(&key) {
                 continue;
             }
             let H::Known(x) = key.1 else { unreachable!() };

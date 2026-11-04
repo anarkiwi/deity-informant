@@ -158,7 +158,13 @@ def lift(image, entries, volatile, facts=None, loaded=None):
     image = bytes(image)
     pcs = [pc for pc, _ in entries]
     prog = wholeprog.lift(
-        image, pcs, volatile, facts=facts, entry_sp=emit.ENTRY_REGS[3], loaded=loaded
+        image,
+        pcs,
+        volatile,
+        facts=facts,
+        entry_sp=emit.ENTRY_REGS[3],
+        loaded=loaded,
+        fold=True,
     )
     lifted = prog.functions
     rank = sorted(range(len(lifted)), key=lambda i: lifted[i]["pc"])

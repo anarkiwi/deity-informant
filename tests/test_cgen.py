@@ -308,6 +308,84 @@ br:     BCC br+2
 offs:   .byte 0,5,10,10
 end:
 """
+VOICES = """
+entry:  AND #$03
+        STA $10
+        STA $11
+        STA $12
+v0:     DEC $13
+        BPL n0
+        LDA #$02
+        STA $13
+        INC c0+1
+n0:     LDA $20
+        CLC
+c0:     ADC #$00
+        STA $C000
+        STA $20
+        JMP v1
+v1:     DEC $14
+        BPL n1
+        LDA #$02
+        STA $14
+        INC c1+1
+n1:     LDA $21
+        CLC
+c1:     ADC #$00
+        STA $C007
+        STA $21
+        JMP v2
+v2:     DEC $15
+        BPL n2
+        LDA #$02
+        STA $15
+        INC c2+1
+n2:     LDA $22
+        CLC
+c2:     ADC #$00
+        STA $C00E
+        STA $22
+        RTS
+end:
+"""
+FALLTHRU = """
+entry:  AND #$03
+        STA $13
+        LDX #$00
+        JSR voice
+        LDX #$07
+        JSR voice
+        LDX #$0E
+voice:  LDA $10,X
+        CLC
+        ADC $13
+        STA $10,X
+        STA $C000,X
+        RTS
+end:
+"""
+GUARDED = """
+entry:  AND #$03
+        STA $30
+        STA $31
+        STA $32
+        LDA $30
+        BNE s0
+        .byte $02
+s0:      STA $C000
+        JMP v1
+v1:     LDA $31
+        BNE s1
+        .byte $02
+s1:      STA $C007
+        JMP v2
+v2:     LDA $32
+        BNE s2
+        .byte $02
+s2:      STA $C00E
+        RTS
+end:
+"""
 TWIN = """
 entry:  AND #$01
         BEQ b
@@ -984,11 +1062,11 @@ def test_parse_rejects_unknown_syntax():
 
 
 @pytest.mark.parametrize("src,places", [(TAIL2, 2), (TAIL3, 3)], ids=["two", "three"])
-def test_shared_tail_becomes_a_function(prefix, tmp_path, src, places):
+def test_shared_tail_stays_in_its_function(prefix, tmp_path, src, places):
     c, _, info = check(prefix, tmp_path, src, entry_calls(range(4), 2))
-    assert info["structure"]["tails"] == 1 and info["structure"]["functions"] == 2
-    [name] = re.findall(r"static void (f\d+)\(uint8_t v1\)", c)
-    assert c.count(f"{name}(") == places + 1
+    assert info["structure"]["functions"] == 1 and not info["structure"].get("flags")
+    assert c.count("io_write(0xC000") == 1
+    assert c.count("entry") == 1 and places > 1
 
 
 def test_multi_exit_loop_joins_its_exits(prefix, tmp_path):
@@ -1038,7 +1116,7 @@ def _shuffled(parse, seed):
     return run
 
 
-@pytest.mark.parametrize("name", ["EXITS", "IRRED", "TAIL3", "SUBS"])
+@pytest.mark.parametrize("name", ["EXITS", "IRRED", "TAIL3", "SUBS", "VOICES"])
 def test_deterministic(prefix, monkeypatch, name):
     img, labels, loaded = assemble(globals()[name])
     texts = {translate(prefix, img, labels, loaded)[0] for _ in range(2)}
@@ -1094,3 +1172,43 @@ def test_clone_metrics():
     assert total == len(text) and dup == total - len("}\n") * 2
     assert cclones.pairs(text * 3, least=0.9) == []
     assert cclones.main([__file__]) == 0
+
+
+def _voice_writes(c):
+    """The ``io_write`` sites of ``c`` with a constant voice register address."""
+    return re.findall(r"io_write\(0xC0(?:07|0E)\b", c)
+
+
+def test_unrolled_copies_fold_into_one_function(prefix, tmp_path):
+    outs = []
+    for org in (0x1000, 0x2345):
+        img, labels, loaded = assemble(VOICES, org)
+        c, h, info = translate(prefix, img, labels, loaded)
+        (tmp_path / str(org)).mkdir()
+        play(tmp_path / str(org), c, h, img, labels, entry_calls(range(4), 6))
+        outs.append(c)
+    c = outs[0]
+    assert outs[0] == outs[1] and not re.search(r"0x1[0-9A-F]{3}\b|0x23[0-9A-F]{2}\b", c)
+    assert (info["stats"]["instances"], info["stats"]["instance_copies"]) == (1, 3)
+    assert not _voice_writes(c) and c.count("io_write(0xC000") == 1
+    [(name, param)] = re.findall(r"static \w+ (f\d+)\(uint8_t (v\d+)\)", c)
+    assert re.search(rf"io_write\(0xC000 \+ {param} \* 7,", c)
+    assert len(re.findall(rf"\b{name}\([0-2]\)", c)) == 3
+
+
+def test_fall_through_into_a_routine_is_a_tail_call(prefix, tmp_path):
+    c, _, _ = check(prefix, tmp_path, FALLTHRU, entry_calls(range(4), 4))
+    [name] = re.findall(r"static \w+ (f\d+)\(uint8_t v1\)", c)
+    assert c.count(f"{name}(") == 4 and not _voice_writes(c)
+
+
+def test_copies_share_their_trap(prefix, tmp_path):
+    img, labels, loaded = assemble(GUARDED)
+    c, h, info = translate(prefix, img, labels, loaded)
+    assert info["stats"]["instances"] == 1 and not _voice_writes(c)
+    [(k, key)] = info["traps"].items()
+    assert key[0] == "deopt" and len(key) == 3 and c.count(f"trap({k})") == 1
+    play(tmp_path, c, h, img, labels, entry_calls(range(1, 4), 2))
+    (tmp_path / "jam").mkdir()
+    with pytest.raises(AssertionError, match="trap"):
+        play(tmp_path / "jam", c, h, img, labels, [("entry", 0)])

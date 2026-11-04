@@ -640,9 +640,11 @@ impl<'a> Runner<'a> {
         };
         x.guards.fetch_add(guards, Ordering::Relaxed);
         let f = &self.f;
-        let mut reg = [0u8; 16];
+        let mut reg = cpu.reg();
         for (i, r) in reg.iter_mut().enumerate() {
-            *r = f[i] as u8;
+            if i != crate::ir::KREG && i != crate::ir::XREG {
+                *r = f[i] as u8;
+            }
         }
         cpu.set_reg(reg);
         cpu.pc = dpc;

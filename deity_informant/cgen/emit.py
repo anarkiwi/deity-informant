@@ -250,7 +250,11 @@ class Body:  # pylint: disable=too-many-instance-attributes
                 a, v = (self.read(x) for x in op[2] if x)
                 self.write(op[1], self.op(f"func.call @codechk({a}, {v}) : (i16, i8) -> i8"))
             elif name == "CALLOTHER":
-                return self.trap(("deopt", op[2][0][1]))
+                pc = op[2][0]
+                if pc[0] == "c":
+                    return self.trap(("deopt", pc[1]))
+                # A deopt of an instance function: the copy's start, one trap for all copies.
+                return self.trap(("deopt", self.fn["blocks"][i]["pc"], self.fn["pc"]))
             elif name == "STORE":
                 self.store(op)
             elif op[1] is None:

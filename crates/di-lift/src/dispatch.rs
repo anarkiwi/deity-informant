@@ -58,7 +58,9 @@ pub type Guard = (u16, u8, Iv);
 /// it unresolved.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Jump {
-    Targets(Vec<u16>, Vec<u16>, Vec<Guard>),
+    /// Targets, the bytes they were read from, the index guards, and per target read from a
+    /// table the address of its low byte.
+    Targets(Vec<u16>, Vec<u16>, Vec<Guard>, Vec<(u16, u16)>),
     Fail,
 }
 
@@ -661,8 +663,14 @@ fn bytes(code: &Code, sets: &Sets, objs: &Objects, ts: &[Tab]) -> Option<(Vec<By
     Some((out, guards))
 }
 
-/// Targets and the bytes they were read from.
-type Found = (BTreeSet<u16>, BTreeSet<u16>, Vec<Guard>);
+/// Targets, the bytes they were read from, the guards and `(low byte address, target)` of the
+/// targets read from tables.
+type Found = (
+    BTreeSet<u16>,
+    BTreeSet<u16>,
+    Vec<Guard>,
+    BTreeSet<(u16, u16)>,
+);
 
 /// The words of the byte pair `lo`, `hi` (see the module documentation), when every byte
 /// read is one no store writes.
@@ -700,7 +708,11 @@ fn pair(
         .iter()
         .map(|(x, y)| u16::from_le_bytes([x.1, y.1]))
         .collect();
-    Some((t, read, guards))
+    let origin = pairs
+        .iter()
+        .filter_map(|(x, y)| Some((x.2?, u16::from_le_bytes([x.1, y.1]))))
+        .collect();
+    Some((t, read, guards, origin))
 }
 
 /// Per computed transfer resolved or failed in some state of `state`, its resolution; an
@@ -752,6 +764,7 @@ pub(crate) fn jumps(
                             ])]),
                             BTreeSet::from([lo, hi]),
                             Vec::new(),
+                            BTreeSet::new(),
                         ))),
                         _ => None,
                     })
@@ -763,7 +776,11 @@ pub(crate) fn jumps(
                         return None;
                     }
                     let to = b[0].iter().map(|x| f.wrapping_add(x.1 as i8 as u16));
-                    Some(Some((to.collect(), read, g)))
+                    let origin = b[0]
+                        .iter()
+                        .filter_map(|x| Some((x.2?, f.wrapping_add(x.1 as i8 as u16))))
+                        .collect();
+                    Some(Some((to.collect(), read, g, origin)))
                 }),
                 ref f if operand_len(f) == 2 => {
                     let (lo, hi) = (pc.wrapping_add(1), pc.wrapping_add(2));
@@ -774,9 +791,12 @@ pub(crate) fn jumps(
                 }
                 Flow::Rts(_) => match st.push {
                     [None, None, _] => Some(None),
-                    [Some(l), Some(h), _] => pair(code, sets, objs, &w, l, h).map(|(t, b, g)| {
-                        Some((t.into_iter().map(|x| x.wrapping_add(1)).collect(), b, g))
-                    }),
+                    [Some(l), Some(h), _] => {
+                        pair(code, sets, objs, &w, l, h).map(|(t, b, g, o)| {
+                            let o = o.into_iter().map(|(a, x)| (a, x.wrapping_add(1))).collect();
+                            Some((t.into_iter().map(|x| x.wrapping_add(1)).collect(), b, g, o))
+                        })
+                    }
                     _ => None,
                 },
                 Flow::Rti(_) => match st.push {
@@ -792,6 +812,7 @@ pub(crate) fn jumps(
                     a.0.extend(b.0);
                     a.1.extend(b.1);
                     a.2.extend(b.2);
+                    a.3.extend(b.3);
                     Some(Some(a))
                 }
                 (Some(None), Some(None)) => Some(None),
@@ -815,7 +836,7 @@ pub(crate) fn jumps(
         });
         if let (Some(f), Some(o)) = (fall, vals(pc.wrapping_add(1))) {
             let t = o.iter().map(|&x| f.wrapping_add(x as i8 as u16)).collect();
-            *r = Some(Some((t, BTreeSet::new(), Vec::new())));
+            *r = Some(Some((t, BTreeSet::new(), Vec::new(), BTreeSet::new())));
             continue;
         }
         if !vars[&pc].iter().any(|v| operand_len(&v.flow) == 2) {
@@ -826,14 +847,19 @@ pub(crate) fn jumps(
                 .iter()
                 .flat_map(|&x| h.iter().map(move |&y| u16::from_le_bytes([x, y])))
                 .collect();
-            *r = Some(Some((t, BTreeSet::new(), Vec::new())));
+            *r = Some(Some((t, BTreeSet::new(), Vec::new(), BTreeSet::new())));
         }
     }
     res.into_iter()
         .filter_map(|(pc, r)| match r {
-            Some(Some((t, b, g))) => Some((
+            Some(Some((t, b, g, o))) => Some((
                 pc,
-                Jump::Targets(t.into_iter().collect(), b.into_iter().collect(), g),
+                Jump::Targets(
+                    t.into_iter().collect(),
+                    b.into_iter().collect(),
+                    g,
+                    o.into_iter().collect(),
+                ),
             )),
             Some(None) => None,
             None => Some((pc, Jump::Fail)),
@@ -883,7 +909,7 @@ pub(crate) fn pointer_stores(
             let (Some((_, Some(l), li)), Some((_, Some(hb), hv))) = (at(q), at(h)) else {
                 return false;
             };
-            let Some((words, r, g)) = pair(code, sets, objs, &w, l, hb) else {
+            let Some((words, r, g, _)) = pair(code, sets, objs, &w, l, hb) else {
                 return false;
             };
             let inside = |x: u32, iv: Iv| (iv.lo..=iv.hi).contains(&x);

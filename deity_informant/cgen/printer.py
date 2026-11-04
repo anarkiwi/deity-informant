@@ -16,7 +16,7 @@ import networkx as nx
 import numpy as np
 
 from .csyntax import declare, drop_unread, ends_in_jump, names_in, render
-from .structure import Conds, Graph, Structurer, new_ids, outline
+from .structure import Conds, Graph, Structurer, new_ids
 
 WIDTH = {"i1": 1, "i8": 8, "i16": 16, "i32": 8, "i64": 16, "index": 16}
 CTYPE = {1: "uint8_t", 8: "uint8_t", 16: "uint16_t"}
@@ -314,6 +314,9 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         elif o.name == "arith.andi":
             a, b = self.iv(o.args[0]), self.iv(o.args[1])
             r = (0, min(a[1], b[1]))
+        elif o.name == "arith.muli":
+            a, b = self.iv(o.args[0]), self.iv(o.args[1])
+            r = (a[0] * b[0], a[1] * b[1]) if a[1] * b[1] <= top else full
         elif o.name in ("arith.ori", "arith.xori"):
             a, b = self.iv(o.args[0]), self.iv(o.args[1])
             hi = min((1 << max(a[1], b[1]).bit_length()) - 1, a[1] + b[1])
@@ -677,41 +680,6 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         dominates every comparison of it); None for a structuring variable."""
         return key[1] if isinstance(key[1], str) else None
 
-    def free(self, t):
-        """``(block arguments, other values)`` a tail graph ``t`` takes, in order of use."""
-        order = t.dfs()[0]
-        blocks = [it[1] for n in order for it in t.items[n] if it[0] == "ops"]
-        defined = {a for b in blocks for a, _ in b.args} | {
-            r for b in blocks for o in b.ops for r in o.res
-        }
-        head = t.items[t.entry][0][1]
-        args = [a for a, _ in head.args if self.uses.get(a)]
-        params, seen = [], set()
-        for v in self.refs(t, order):
-            if v not in defined and v not in seen and not self.remat(v):
-                seen.add(v)
-                params.append(v)
-        return args, params
-
-    def refs(self, t, order):
-        """The values the nodes ``order`` of graph ``t`` read, in order, with repeats."""
-        for n in order:
-            for it in t.items[n]:
-                if it[0] == "ops":
-                    for o in it[1].ops[:-1]:
-                        if id(o) not in self.dropped and self.printed(o):
-                            yield from self.reads(o)
-                elif it[0] == "copy":
-                    yield from (v for _, v, _ in it[1])
-                elif it[0] in ("return", "call"):
-                    yield from (v if isinstance(v, str) else v[0] for v in it[-1])
-            for _, c in t.succ[n]:
-                if c is not None:
-                    for name in sorted(c.support, key=self.conds.bdd.level_of_var):
-                        v = self.lit_value(self.conds.keys[name])
-                        if v is not None:
-                            yield v
-
     def quiet(self, items):
         """Whether statements ``items`` are a block that prints nothing: its operations are
         pure and only its own operations and branch condition read them."""
@@ -795,10 +763,10 @@ def _types(text):
 
 
 class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-methods
-    """One C function: a lifted function or entry, or a tail outlined from one."""
+    """One C function: a lifted function or entry."""
 
-    def __init__(self, func, graph, tail=False):
-        self.f, self.g, self.tail, self.mod = func, graph, tail, func.mod
+    def __init__(self, func, graph):
+        self.f, self.g, self.mod = func, graph, func.mod
         self.name = None
         self.owned = {it[1].name for its in graph.items.values() for it in its if it[0] == "ops"}
         self.names, self.nvar, self.inline, self.memf, self.types = {}, 0, set(), {}, {}
@@ -850,7 +818,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             kind = it[0]
             if kind == "copy":
                 yield from ((v, self.def_in(v, prev)) for _, v, _ in it[1])
-            elif kind in ("return", "call"):
+            elif kind == "return":
                 yield from (
                     (v[0] if isinstance(v, tuple) else v, self.def_in(v, prev)) for v in it[-1]
                 )
@@ -1374,8 +1342,6 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
                 out.append(("a", self.var_of(it[1]), str(it[2]), frozenset()))
             elif kind == "return":
                 out += self.jump(it[1])
-            elif kind == "call":
-                out += self.tail_call(it[1], it[2])
             elif kind in ("break", "continue"):
                 out.append(("j", f"{kind};", frozenset()))
             elif kind == "if":
@@ -1385,16 +1351,6 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             else:
                 out.append(self.convert_loop(self.convert(it[1])))
         return _merge_tails(out)
-
-    def tail_call(self, t, vals):
-        """A call of tail ``t`` and the return."""
-        target = self.mod.tails[id(t)]
-        es = [self.ex(v, e) for v, e in vals]
-        refs = frozenset().union(*(e.refs for e in es))
-        text = f"{self.mod.name_of(target, self)}({', '.join(e.text for e in es)})"
-        if self.f.live_res:
-            return [("j", f"return {text};", refs)]
-        return [("s", f"{text};", refs), ("j", "return;", frozenset())]
 
     def convert_if(self, it):
         """An ``if``; one whose then-branch jumps continues with its else-branch after it."""
@@ -1441,13 +1397,10 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
     def head(self):
         """The C declarator, naming the parameters."""
         f = self.f
-        if not f.private and not self.tail:
+        if not f.private:
             self.names[f.blocks[0].args[0][0]] = "a"
             return f"void {self.name}(uint8_t a)", ["a"]
-        if self.tail:
-            params = self.g.args + self.g.params
-        else:
-            params = [f.blocks[0].args[i][0] for i in f.live_args]
+        params = [f.blocks[0].args[i][0] for i in f.live_args]
         names = [self.var_of(p, f.width(p)) for p in params]
         decl = ", ".join(f"{self.types.pop(n)} {n}" for n in names) or "void"
         return f"static {self.mod.ret_type(f)} {self.name}({decl})", names
@@ -1458,7 +1411,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         self.plan()
         head, params = self.head()
         body = self.convert(self.body)
-        if not self.f.live_res or not (self.f.private or self.tail):
+        if not self.f.live_res or not self.f.private:
             while body and body[-1] == ("j", "return;", frozenset()):
                 body.pop()
         flags = {n for k, n in self.names.items() if isinstance(k, tuple)}
@@ -1486,22 +1439,6 @@ def _merge_tails(items):
             st = (*st[:3], st[3][:-n], *st[4:])
         out.append(st)
     return out[::-1]
-
-
-def _recall(items, t, keep):
-    """``items`` with each call of tail ``t`` passing only the arguments ``keep``."""
-    out = []
-    for it in items:
-        if it[0] == "call" and it[1] is t:
-            it = ("call", t, [it[2][i] for i in keep])
-        elif it[0] == "if":
-            it = (*it[:3], _recall(it[3], t, keep), _recall(it[4], t, keep))
-        elif it[0] == "switch":
-            it = ("switch", it[1], [(c, _recall(b, t, keep)) for c, b in it[2]])
-        elif it[0] == "loop":
-            it = ("loop", _recall(it[1], t, keep))
-        out.append(it)
-    return out
 
 
 def _strip_continue(body):
@@ -1571,7 +1508,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
 
     def __init__(self, top, mem):
         self.mem, self.used, self.helpers, self.regions_used = mem, set(), set(), set()
-        self.traps, self.funcs, self.tails, self.mains, self.structs = set(), [], {}, {}, {}
+        self.traps, self.funcs, self.mains, self.structs = set(), [], {}, {}
         self.order, self.edges, self.ids, self.entries = [], {}, new_ids(), []
         self.sites, self.made = {}, Counter()
         for o in top.regions[0][0].ops:
@@ -1664,27 +1601,12 @@ class Module:  # pylint: disable=too-many-instance-attributes
         return target.name
 
     def structure(self):
-        """Outline the shared tails of every function and structure each C function."""
+        """Structure each function whole: a shared tail stays in its function (the lift makes
+        the tails several functions share functions of their own)."""
         for f in self.funcs:
-            g = f.graph(self.ids)
-            tails = outline(g, f.free)
-            self.mains[f.name] = CFunc(f, g)
-            for t in tails:
-                self.tails[id(t)] = CFunc(f, t, tail=True)
-            self.made["tails"] += len(tails)
             f.mark_addresses()
-        for c in [*self.mains.values(), *self.tails.values()]:
-            c.structure()
-        for c in self.tails.values():
-            c.count()
-            ins = c.g.args + c.g.params
-            keep = [i for i, v in enumerate(ins) if c.uses.get(v)]
-            if len(keep) < len(ins):
-                c.g.args = [v for v in c.g.args if c.uses.get(v)]
-                c.g.params = [v for v in c.g.params if c.uses.get(v)]
-                for other in [*self.mains.values(), *self.tails.values()]:
-                    if other.f is c.f:
-                        other.body = _recall(other.body, c.g, keep)
+            self.mains[f.name] = CFunc(f, f.graph(self.ids))
+            self.mains[f.name].structure()
 
     def functions(self):
         """The C text of every function: struct types and the prototypes recursion needs,
@@ -1713,7 +1635,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         for c in self.entries:
             if id(c) not in state:
                 visit(c)
-        for c in [*self.mains.values(), *self.tails.values()]:
+        for c in self.mains.values():
             c.body, c.covers, c.g = None, {}, None
         for f in self.funcs:
             f.conds.close()

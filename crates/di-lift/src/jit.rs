@@ -678,6 +678,7 @@ impl<'a, 'b> Fb<'a, 'b> {
             Opc::IntAnd => return self.b.ins().band(a, b),
             Opc::IntOr => return self.b.ins().bor(a, b),
             Opc::IntXor => return self.b.ins().bxor(a, b),
+            Opc::IntMult => return self.b.ins().imul(a, b),
             Opc::IntLeft | Opc::IntRight => {
                 let s = if opc == Opc::IntLeft {
                     self.b.ins().ishl(a, b)

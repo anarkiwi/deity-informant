@@ -1,7 +1,7 @@
-"""Goto-free structuring: tail outlining, then DREAM over BDD reaching conditions.
+"""Goto-free structuring: DREAM over BDD reaching conditions.
 
 DREAM is the pattern-independent structuring of Yakdan et al., "No More Gotos" (NDSS 2015).
-Node statements: ``ops``, ``copy``, ``set``, ``return``, ``call`` (a tail call), ``break``,
+Node statements: ``ops``, ``copy``, ``set``, ``return``, ``break``,
 ``continue``, ``if`` ``(f, ctx, then, else)``, ``switch`` ``(family, arms)`` and ``loop``.
 """
 
@@ -89,6 +89,17 @@ class Conds:
                 return ~v
         return None
 
+    def width(self, f):
+        """The products of ``f``'s cover, those that differ only in which outcome of one
+        selector family they test counted once (one set-membership test)."""
+        keys = set()
+        for cube in self.cover(f, self.care):
+            sel = [k for k, p in cube if p and k[0] == "e"]
+            fam = sel[0][1] if len(sel) == 1 else None
+            rest = tuple((k, p) for k, p in cube if fam is None or k != sel[0])
+            keys.add((fam, rest))
+        return len(keys)
+
     def cover(self, f, ctx):
         """An irredundant sum of products (Minato-Morreale ISOP) equal to ``f`` where ``ctx``
         holds: ``[[(key, polarity), ...], ...]``, literals and cubes by level."""
@@ -126,13 +137,13 @@ def _cof(f, level):
 
 
 class Graph:
-    """Nodes of statements, edges ``[target, condition]`` (None: unconditional), an entry,
-    and for a tail its block arguments :attr:`args` and other inputs :attr:`params`."""
+    """Nodes of statements, edges ``[target, condition]`` (None: unconditional) and an
+    entry."""
 
     def __init__(self, conds, ids):
         self.conds, self.ids = conds, ids
         self.items, self.succ = {}, {}
-        self.entry, self.args, self.params = None, [], []
+        self.entry = None
 
     def add(self, items, succ=()):
         """A new node."""
@@ -208,62 +219,6 @@ def subtree(kids, n, alive):
     return out
 
 
-def outline(g, free):
-    """Move shared tails out of ``g``, innermost first, until none is left: a non-entry node
-    with two or more predecessors outside its dominated nodes, from which no edge leaves them.
-    ``free(tail)`` gives a tail's ``(args, params)``; entering edges become ``call`` s."""
-    tails, found = [], True
-    while found:
-        found = False
-        pre, _, _ = g.dfs()
-        kids = g.dominators(pre)
-        post, work = [], [(g.entry, False)]
-        while work:
-            n, done = work.pop()
-            if done:
-                post.append(n)
-                continue
-            work.append((n, True))
-            work += [(k, False) for k in reversed(kids[n])]
-        for h in post:
-            if h == g.entry or h not in g.items:
-                continue
-            region = set(subtree(kids, h, g.items))
-            if any(t not in region for n in region for t, _ in g.succ[n]):
-                continue
-            outside = [p for p in g.preds()[h] if p not in region]
-            if len(outside) > 1:
-                tails.append(_cut(g, h, region, outside, free))
-                found = True
-    return tails
-
-
-def _cut(g, h, region, outside, free):  # pylint: disable=too-many-arguments
-    """The tail dominated by ``h`` as a graph, entered from ``outside``."""
-    t = Graph(g.conds, g.ids)
-    t.entry = h
-    order, _, _ = g.dfs(h, region)
-    for n in order:
-        t.items[n], t.succ[n] = g.items[n], g.succ[n]
-    g.remove(order)
-    t.args, t.params = free(t)
-    for p in outside:
-        items, single = g.items[p], len(g.succ[p]) == 1
-        free_vals = [(v, None) for v in t.params]
-        if single and items and items[-1][0] == "copy":
-            vals = {a: (v, e) for a, v, e in items.pop()[1]}
-            items.append(("call", t, [vals[a] for a in t.args] + free_vals))
-            g.succ[p] = []
-        elif single:
-            items.append(("call", t, free_vals))
-            g.succ[p] = []
-        else:
-            for e in g.succ[p]:
-                if e[0] == h:
-                    e[0] = g.add([("call", t, free_vals)])
-    return t
-
-
 def topo(g, n, region):
     """``region``'s nodes in reverse postorder from ``n``."""
     return g.dfs(n, region)[1][::-1]
@@ -316,7 +271,7 @@ class Structurer:
             f = conds.bdd.false
             for p in preds[m]:
                 f |= cr[p] & next(g.cond(c) for t, c in g.succ[p] if t == m)
-            if len(preds[m]) > 1 and len(conds.cover(f, conds.care)) > len(preds[m]):
+            if len(preds[m]) > 1 and conds.width(f) > len(preds[m]):
                 self.made["flags"] += 1
                 fam = conds.synthetic(2)
                 g.items[n].insert(0, ("set", fam, 0))

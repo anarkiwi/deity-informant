@@ -439,6 +439,9 @@ pub struct Graph {
     pub ind: Vec<crate::scev::Induction>,
     /// Computed transfers whose targets come from the code ([`crate::dispatch`]).
     pub stat: FxHashMap<u16, Vec<u16>>,
+    /// Per computed transfer of `stat`, `(low byte address, target)` of each target read from
+    /// a table, ascending.
+    pub origins: FxHashMap<u16, Vec<(u16, u16)>>,
     /// Stores `(pc, opcode, access index)` none of whose addresses is constant code.
     pub nocode: FxHashSet<(u16, u8, usize)>,
     /// The bytes the targets in `stat` and the values of stores into cells were read from:
@@ -841,7 +844,7 @@ impl Fixpoint<'_> {
             }
             let mut nstat = stat.clone();
             for (&pc, j) in &an.jumps {
-                if let (crate::dispatch::Jump::Targets(t, _, _), false) =
+                if let (crate::dispatch::Jump::Targets(t, _, _, _), false) =
                     (j, self.failed.contains(&pc))
                 {
                     nstat.entry(pc).or_default().extend(t);
@@ -854,7 +857,7 @@ impl Fixpoint<'_> {
                     .iter()
                     .filter(|(pc, _)| !self.failed.contains(pc))
                     .flat_map(|(_, j)| match j {
-                        crate::dispatch::Jump::Targets(_, b, _) => b.clone(),
+                        crate::dispatch::Jump::Targets(_, b, _, _) => b.clone(),
                         crate::dispatch::Jump::Fail => Vec::new(),
                     })
                     .chain(an.reads.iter().copied())
@@ -898,6 +901,15 @@ impl Fixpoint<'_> {
                         .into_iter()
                         .map(|(pc, t)| (pc, t.into_iter().collect()))
                         .collect(),
+                    origins: an
+                        .jumps
+                        .iter()
+                        .filter(|(pc, _)| !self.failed.contains(pc))
+                        .filter_map(|(&pc, j)| match j {
+                            crate::dispatch::Jump::Targets(_, _, _, o) => Some((pc, o.clone())),
+                            crate::dispatch::Jump::Fail => None,
+                        })
+                        .collect(),
                     nocode,
                     closed,
                     vals,
@@ -906,7 +918,7 @@ impl Fixpoint<'_> {
                         let mut gs: FxHashMap<u16, (u8, Iv)> = FxHashMap::default();
                         let jumped = an.jumps.iter().filter(|(pc, _)| !self.failed.contains(pc));
                         let from_jumps = jumped.flat_map(|(_, j)| match j {
-                            crate::dispatch::Jump::Targets(_, _, g) => g.clone(),
+                            crate::dispatch::Jump::Targets(_, _, g, _) => g.clone(),
                             crate::dispatch::Jump::Fail => Vec::new(),
                         });
                         for (pc, r, ok) in an.guards.iter().copied().chain(from_jumps) {

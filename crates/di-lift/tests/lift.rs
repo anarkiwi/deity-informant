@@ -688,3 +688,54 @@ fn indexed_stores_make_cells() {
     assert_eq!(p.sets.len(), 2);
     assert_eq!(diff(&img, &p, &calls, IO), 0);
 }
+
+/// Three copies of a voice routine at a stride, each over its own zero-page bytes and I/O
+/// register (`$C000 + 7k`), chained by `JMP`s: one instance function of the copy's index,
+/// replaying exactly without facts.
+#[test]
+fn unrolled_copies_fold() {
+    let copy = |k: u8, tail: &[u8]| -> Vec<u8> {
+        let mut c = vec![
+            0xc6,
+            0x10 + k,
+            0x10,
+            0x04,
+            0xa9,
+            0x02,
+            0x85,
+            0x10 + k,
+            0xa5,
+            0x20 + k,
+            0x8d,
+            7 * k,
+            0xc0,
+        ];
+        c.extend_from_slice(tail);
+        c
+    };
+    let (c0, c1, c2) = (
+        copy(0, &[0x4c, 0x20, 0x10]),
+        copy(1, &[0x4c, 0x30, 0x10]),
+        copy(2, &[0x60]),
+    );
+    let img = image(&[
+        (
+            0x1000,
+            &[0x85, 0x20, 0x85, 0x21, 0x85, 0x22, 0x4c, 0x10, 0x10],
+        ),
+        (0x1010, &c0),
+        (0x1020, &c1),
+        (0x1030, &c2),
+    ]);
+    let v = [(IO.0 as u32, IO.1 as u32)];
+    for optimize in [false, true] {
+        let opts = Opts {
+            optimize,
+            fold: true,
+            ..Opts::default()
+        };
+        let p = lift_with(&img, &entries(&[0x1000]), &v, &Facts::default(), opts);
+        assert_eq!((p.stats.instances, p.stats.instance_copies), (1, 3));
+        assert_eq!(diff(&img, &p, &calls(12, |i| i as u8), IO), 0);
+    }
+}

@@ -186,6 +186,43 @@ the program, and checks it against the reference.
    that may store to the port cells, and a `CALL` whose callee may (a least fixpoint over the
    plans), continues in each configuration the facts saw its successor in. Callees are planned
    per entry configuration.
+   **Tail calls.** An edge at a function's entry height into the entry of a function lifted
+   separately (a fall-through, `JMP` or branch into it, whose `RTS` then returns from the
+   caller too) is a `CALL` at the caller's SP with no return address, followed by the caller's
+   return; a deopt in the callee writes no return address for that frame. An instruction start
+   that two or more plans reach at their entry height, from a node that is not such a start,
+   is a *shared tail*: it becomes a function entered by tail calls when its plan is balanced
+   (plans are made again until no new shared tail appears). So a voice routine called with
+   `JSR` for two voices and fallen into for the third is one function with three call sites,
+   not a function plus a copy specialized to the third voice's `X`.
+   **Instances** (`inst.rs`, `fold=True`; without facts, a bank map or cycle counting). Copies
+   of one routine that differ only in their operand bytes, as a player unrolls its per-voice
+   code, are lifted as one function of the copy's index `k` (register 4). Copies are paired
+   by a lockstep walk of their instructions from candidate entries (each start entered other
+   than by falling through, against every start of its opcode): paired instructions agree in
+   opcode, which operand bytes are cells, decimal mode, index guard, `JSR` target and code and
+   pointer checks; branches and jumps pair their targets, a jump through cells pairs its
+   targets in the order of the table bytes they were read from (the tables shifted by one
+   offset per copy), and an instruction some copies have and the others lack, straight-line
+   and followed by what the others run, is kept and run only by those copies. A tuple whose
+   instructions do not pair, or that holds an instruction already in the region, is an exit.
+   A class is kept when each copy is a single-entry region (no start but its entry is entered
+   from outside it or is an entry or callee, and no exit enters it), the copies' pushes and
+   pulls agree and return to the entry height at every exit, and every operand the copies
+   differ in is affine in `k` (`base + stride * k`: per-voice zero-page, I/O and table
+   addresses) or lies in each copy's own code (its cells and jump targets); the starts
+   breaking this are left out and the walk repeated. Per candidate entry the set of copies
+   saving the most instructions (those held, less the merged function's and one call per
+   copy) is kept when it has at least three copies: two fit any line, only a third shows the
+   operands are a family indexed by the copy. Classes are taken greedily by saving, no start in
+   two. Each copy's entry becomes a call at the caller's SP (no return address, as a tail
+   call) that sets `k` and continues at the copy's target of the exit taken (register 5
+   numbers the exits when there are several). In the merged function a constant operand is
+   `a + s * k` where affine, else `v0 + sum((k == i) * (vi - v0))`, a two-byte operand as one
+   word; a cell is read at the copy's operand address; a deopt resumes at the copy's start, a
+   `JSR` returns to the copy's return address, and a jump through cells dispatches each copy's
+   targets to the merged instruction they enter. Accesses carry the hull of the copies'
+   intervals.
 3. **Stack privacy** (`lib.rs`). With facts, an unexecuted start whose page-1 access cannot
    be checked at its instruction boundary (an earlier op of the instruction has an effect,
    or a fixed page-1 `JMP (ind)` pointer) is not planned. An access other than a push or pull
