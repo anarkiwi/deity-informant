@@ -1700,13 +1700,20 @@ def test_brk_through_its_written_vector(prefix, tmp_path):
     assert info["jumps"][labels["cnt"] - 1] == [labels["brk"] + 2]
 
 
-def test_call_with_inline_arguments(prefix, tmp_path):
+@pytest.mark.parametrize("sites", [2, 1])
+def test_call_with_inline_arguments(prefix, tmp_path, sites):
     """A callee that pulls its return address, reads the bytes after the call and pushes the
-    address back past them returns past its inline argument."""
-    c, _, info = check(prefix, tmp_path, INLINE, entry_calls(range(3)))
-    img, labels, _ = assemble(INLINE)
-    assert info["jumps"][labels["end"] - 1] == [labels["entry"] + 4, labels["entry"] + 11]
-    assert not info["traps"] and "io_write(0xC000" in c
+    address back past them returns past its inline argument: called from two sites it is a
+    function whose calls keep the address in memory, from one it is inlined; either way the
+    `.c` is the same at another origin."""
+    src = INLINE if sites == 2 else INLINE.replace("        JSR arg\n        .byte $22\n", "")
+    c, _, info = check(prefix, tmp_path, src, entry_calls(range(3)))
+    img, labels, _ = assemble(src)
+    assert info["jumps"][labels["end"] - 1] == [labels["entry"] + 4, labels["entry"] + 11][:sites]
+    entries = {f["entry"] for f in info["provenance"]["functions"].values()}
+    assert (labels["arg"] in entries) == (sites == 2)
+    img2, labels2 = W.assemble(src, 0x2400)
+    assert translate(prefix, img2, labels2, (0x2400, labels2["end"]))[0] == c
 
 
 def test_txs_to_a_saved_stack_pointer_unwinds(prefix, tmp_path):

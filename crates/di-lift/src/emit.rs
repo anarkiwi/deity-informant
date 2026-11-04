@@ -45,6 +45,9 @@ pub struct Shared<'a> {
     pub bank: Option<&'a BankMap>,
     /// Callees whose returns must check their return address (they may store into page 1).
     pub ret_guard: FixedBitSet,
+    /// Callees that pull and push back their return address: their calls keep it in memory
+    /// and continue where it then points.
+    pub above: FixedBitSet,
     /// Per function: the slot indices whose stack bytes it keeps in slot registers.
     pub slots: Vec<FixedBitSet>,
     /// The `[lo, hi]` page-1 addresses each instruction reached in the facts.
@@ -408,7 +411,7 @@ impl<'a> Em<'a, '_> {
         &mut self,
         fs: &[u16],
         tv: Option<Vn>,
-        ret: u16,
+        (ret, to): (u16, u16),
         c: u8,
         mut chk: Vec<Vn>,
         (cyc, maxpen): (u32, u32),
@@ -426,13 +429,16 @@ impl<'a> Em<'a, '_> {
             }
             None => (k(ra, 2), k(ra & 0xff, 1), k(ra >> 8, 1)),
         };
+        let fis: Vec<u32> = fs.iter().map(|f| self.sh.fidx[&(*f, c)]).collect();
+        let above = fis.iter().any(|&fi| self.sh.above.contains(fi as usize));
         if self.sh.private {
-            let bytes: &[Vn] = if self.sh.shadow { &[rhi, rlo] } else { &[] };
+            let kept = self.sh.shadow || above;
+            let bytes: &[Vn] = if kept { &[rhi, rlo] } else { &[] };
             for &b in bytes {
                 self.store_stack(b);
                 self.emit(Opc::IntSub, r1(R::SP), r1(R::SP), k(1, 1), 0);
             }
-            if !self.sh.shadow {
+            if !kept {
                 self.emit(Opc::IntSub, r1(R::SP), r1(R::SP), k(2, 1), 0);
             }
         } else {
@@ -442,7 +448,6 @@ impl<'a> Em<'a, '_> {
         self.account(cyc, maxpen);
         self.check(chk, tv.unwrap_or(k(fs[0] as u32, 2)));
         self.flush();
-        let fis: Vec<u32> = fs.iter().map(|f| self.sh.fidx[&(*f, c)]).collect();
         let rb = self.new_block(ret);
         match tv {
             None => {
@@ -465,17 +470,31 @@ impl<'a> Em<'a, '_> {
             }
         }
         self.cur = rb as usize;
-        if fis
-            .iter()
-            .any(|&fi| self.sh.ret_guard.contains(fi as usize))
+        // The address the callee returned through: its own, checked when its calls may store
+        // into page 1, or (past inline arguments) a computed jump to where it points.
+        let pulled = |em: &mut Self| {
+            let s1 = em.op(Opc::IntSub, 1, r1(R::SP), k(1, 1));
+            let a = em.zext(s1, 2);
+            let a = em.op(Opc::IntOr, 2, a, k(0x100, 2));
+            let lo = em.load(a, PAGE1, mem::STACK);
+            let a = em.sp_addr();
+            let hi = em.load(a, PAGE1, mem::STACK);
+            em.word(lo, hi)
+        };
+        if to != ret && !port {
+            let w = pulled(self);
+            self.touch_ret(w, Iv::full(2));
+            let t = self.op(Opc::IntAdd, 2, w, k(1, 2));
+            let tb = self.table(&[to], false);
+            self.emit(Opc::BranchInd, NONE, t, NONE, tb);
+            return;
+        }
+        if above
+            || fis
+                .iter()
+                .any(|&fi| self.sh.ret_guard.contains(fi as usize))
         {
-            let s1 = self.op(Opc::IntSub, 1, r1(R::SP), k(1, 1));
-            let a = self.zext(s1, 2);
-            let a = self.op(Opc::IntOr, 2, a, k(0x100, 2));
-            let lo = self.load(a, PAGE1, mem::STACK);
-            let a = self.sp_addr();
-            let hi = self.load(a, PAGE1, mem::STACK);
-            let w = self.word(lo, hi);
+            let w = pulled(self);
             let bad = self.op(Opc::IntNotEqual, 1, w, rav);
             self.side_exit(bad, false, |em| {
                 em.touch_ret(w, Iv::full(2));
@@ -490,9 +509,9 @@ impl<'a> Em<'a, '_> {
         self.touch_ret(rav, riv);
         if port {
             let keys = self.succ.to_vec();
-            self.bank_dispatch(ret, &keys);
+            self.bank_dispatch(to, &keys);
         } else {
-            let b = self.to(ret);
+            let b = self.to(to);
             self.emit(Opc::Branch, NONE, NONE, NONE, b);
         }
     }
@@ -1291,12 +1310,12 @@ impl<'a> Em<'a, '_> {
                 let tb = self.table(ts, self.sh.g.stat.contains_key(&pc));
                 self.emit(Opc::BranchInd, NONE, tgt, NONE, tb);
             }
-            Ctl::Call { f, ret, c } => {
-                self.call(&[*f], None, *ret, *c, chk, (cyc, maxpen), arm.port);
+            Ctl::Call { f, ret, to, c } => {
+                self.call(&[*f], None, (*ret, *to), *c, chk, (cyc, maxpen), arm.port);
             }
             Ctl::CallInd { fs, ret, c } => {
                 let tv = slot(self, Slot::Word, 2);
-                self.call(fs, Some(tv), *ret, *c, chk, (cyc, maxpen), arm.port);
+                self.call(fs, Some(tv), (*ret, *ret), *c, chk, (cyc, maxpen), arm.port);
             }
             Ctl::PushJmp { t: tg, ret } => {
                 let ra = ret.wrapping_sub(1) as u32;

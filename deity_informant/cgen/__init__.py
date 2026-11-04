@@ -176,7 +176,7 @@ def lift(image, entries, volatile, facts=None, loaded=None):
         for op in b["ops"]:
             if op[0] == "CALL":
                 op[3] = remap[op[3]]
-    starts = {pc for p in wholeprog.plans(image, pcs, facts=facts) for pc in p["heights"]}
+    starts = set(prog.starts)
     p = Program(funcs, list(entries), image, starts, [tuple(v) for v in volatile])
     p.constant, p.jumps, p.sets = frozenset(prog.code), dict(prog.jumps), dict(prog.sets)
     p.written = list(prog.written)

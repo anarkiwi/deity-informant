@@ -535,6 +535,12 @@ pub fn lift_banked(
         fidx,
         bank,
         ret_guard,
+        above: plans
+            .iter()
+            .enumerate()
+            .filter(|p| p.1.above)
+            .map(|p| p.0)
+            .collect(),
         slots,
         seen,
     };
@@ -647,6 +653,26 @@ pub fn lift_banked(
         .filter(|o| matches!(o.opc, di_pcode::Opc::Load | di_pcode::Opc::Store))
         .filter(|o| o.aux & ir::mem::STACK != 0)
         .count();
+    // The instruction starts the functions plan (every copy's of an instance function):
+    // constant code is their bytes the program does not write.
+    let starts: Vec<u16> = {
+        let mut s: std::collections::BTreeSet<u16> = plans
+            .iter()
+            .flat_map(|p| p.nodes.keys().map(|k| k.0))
+            .collect();
+        for x in plans.iter().filter_map(|p| p.inst.as_ref()) {
+            s.extend(x.c.nodes.iter().flat_map(|n| n.pcs.iter().flatten()));
+        }
+        s.into_iter().collect()
+    };
+    let mut planned = FixedBitSet::with_capacity(0x10000);
+    for &pc in &starts {
+        for v in &g.vars[&pc] {
+            for i in 0..di_pcode::Template::of(v.op).len as u16 {
+                planned.insert(pc.wrapping_add(i) as usize);
+            }
+        }
+    }
     Program {
         functions,
         entries: pcs
@@ -656,6 +682,7 @@ pub fn lift_banked(
             .collect(),
         code: {
             let mut c = constcode.clone();
+            c.intersect_with(&planned);
             c.extend(g.tables.iter().map(|&a| a as usize));
             c.ones().map(|a| (a as u16, img[a])).collect()
         },
@@ -670,6 +697,7 @@ pub fn lift_banked(
             }
             runs
         },
+        starts,
         elide_ret: private,
         bank: bank.cloned(),
         cycles: opts.cycles,

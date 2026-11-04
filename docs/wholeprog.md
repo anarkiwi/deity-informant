@@ -45,6 +45,7 @@ prog.jumps            # {pc: [target, ...]} computed transfers resolved from the
 prog.sets             # {address: [value, ...]} closed cells (opcodes and operands) and their values
 prog.code             # [addr, ...] bytes treated as constant: code, tables read for jumps and cells
 prog.written          # [(lo, hi), ...] runs of the bytes stores with address sets may write
+prog.starts           # [pc, ...] instruction starts the functions plan (every instance copy's)
 prog.guard_evals      # conditional branches to a deopt the interpreter backend has run
 r = prog.call(mem, 0, a=0, reg=None, cycles=0, max_cycles=10_000_000, log=True)  # backend=
 prog.backend          # "jit" (default) or "interp"; prog.compile() -> compile seconds
@@ -184,7 +185,13 @@ the program, and checks it against the reference.
    unknown (the callee is then inlined into its caller), at any other start the conflicting
    edge deopts. A `JSR` target is lifted as a separate function (`CALL`) when every `RTS` in
    it is at height 0 or below and nothing pulls above its entry (a decreasing fixpoint over
-   the candidates); other callees are inlined: the `JSR` pushes and jumps. An `RTS`/`RTI`
+   the candidates); other callees are inlined: the `JSR` pushes and jumps. A callee that
+   pulls and pushes back its own return address (inline arguments: it never goes more than
+   the address's two bytes above its entry) is lifted separately when two or more `JSR`s call
+   it (a procedure), else inlined; its calls keep the return address in memory, and one
+   whose `RTS` returns past the call's inline arguments (`Graph::past`, per return site)
+   continues through a computed jump on the address the callee left (the table's one target
+   that address, any other deopts). An `RTS`/`RTI`
    below the entry height is a computed jump to its facts' targets plus the return sites
    inline `JSR`s pushed at the height it lands on, or to the targets the code gives it
    (*Computed jumps*) alone. At an entry, the instruction whose height

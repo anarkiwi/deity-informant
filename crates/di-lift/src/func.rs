@@ -58,10 +58,12 @@ pub enum Ctl {
     },
     Jmp(Tg),
     JmpInd(Vec<u16>),
-    /// `JSR` to a function lifted separately (entered in configuration `c`).
+    /// `JSR` to a function lifted separately (entered in configuration `c`), continuing at
+    /// `to`: its return site, or past it when the callee returns past inline arguments.
     Call {
         f: u16,
         ret: u16,
+        to: u16,
         c: u8,
     },
     /// `JSR` through cell operands to functions lifted separately: a `CALL` of the target.
@@ -119,6 +121,9 @@ pub struct Plan {
     pub sp: Option<u8>,
     /// Some node sets SP (`TXS`, `TAS`, `LAS`).
     pub sets_sp: bool,
+    /// A callee that pulls and pushes its return address (inline arguments): its calls keep
+    /// the address in memory and check what it returns through.
+    pub above: bool,
     /// Tail calls: an edge at the entry height to a function lifted separately (a fall-through,
     /// jump or branch into its entry, whose `RTS` then returns from this one) is a `CALL` of it
     /// followed by this function's return.
@@ -564,6 +569,7 @@ fn step(
             s.ctl = Ctl::Call {
                 f: *f,
                 ret: *ret,
+                to: *ret,
                 c,
             };
         }
@@ -813,6 +819,7 @@ pub fn plan(
         }
         out
     };
+    let h_of = |succ: &[(u16, H)]| succ.first().map_or(H::Unknown, |x| x.1);
     // A `TXS` restoring a stack pointer saved at a known height continues there; an
     // `RTS`/`RTI` whose targets the code gives goes to them alone, not to the return sites of
     // the inline `JSR`s at its height.
@@ -822,6 +829,17 @@ pub fn plan(
                 s.succ = vec![(*n, h)];
                 s.exit = exit_of(top, h, false);
                 s.unbalanced = !top && matches!(h, H::Known(1..));
+            }
+        }
+        // A callee may pull and push back its own return address.
+        if !top && matches!(v.flow, Flow::Next(_)) && matches!(s.succ[..], [(_, H::Known(1..=2))]) {
+            s.unbalanced = false;
+        }
+        // A call returning past inline arguments continues there.
+        if let Ctl::Call { ret, to, .. } = &mut s.ctl {
+            if let Some([t]) = g.past.get(ret).map(Vec::as_slice) {
+                *to = *t;
+                s.succ = vec![(*t, h_of(&s.succ))];
             }
         }
         if let (Flow::Rts(ts) | Flow::Rti(ts), true) = (&v.flow, g.stat.contains_key(&p)) {
@@ -916,7 +934,8 @@ pub fn plan(
                 .collect();
             ((p, h, c), Node { arms })
         })
-        .collect();
+        .collect::<BTreeMap<Key, Node>>();
+    let above = !top && nodes.keys().any(|k| matches!(k.1, H::Known(1..)));
     Plan {
         pc,
         top,
@@ -927,6 +946,7 @@ pub fn plan(
         tails,
         insts,
         inst: None,
+        above,
         sets_sp: pl.nodes.iter().any(|(p, _, _)| {
             g.vars[p]
                 .iter()
@@ -1018,6 +1038,7 @@ fn plan_inst(g: &Graph, ci: u32, c: &Arc<Class>) -> Plan {
             Flow::Jsr { t: Tg::At(f), .. } => Ctl::Call {
                 f: *f,
                 ret: succ[0].0,
+                to: succ[0].0,
                 c: cf,
             },
             Flow::Jam => Ctl::Jam,
@@ -1059,6 +1080,7 @@ fn plan_inst(g: &Graph, ci: u32, c: &Arc<Class>) -> Plan {
         balanced: true,
         sp: None,
         sets_sp: false,
+        above: false,
         tails: BTreeSet::new(),
         insts: BTreeMap::new(),
         inst: Some(Box::new(Inst {
@@ -1094,15 +1116,26 @@ pub fn plan_all(g: &Graph, entries: &[(u16, Vec<u8>)], seen: &Seen, fold: bool) 
         })
         .filter(|f| g.vars.contains_key(f))
         .collect();
+    let mut sites: FxHashMap<u16, usize> = FxHashMap::default();
+    for v in g.vars.values().flatten() {
+        if let Flow::Jsr { t: Tg::At(f), .. } = &v.flow {
+            *sites.entry(*f).or_default() += 1;
+        }
+    }
     let mut tried: FxHashSet<u16> = FxHashSet::default();
     let none = Insts::default();
     let mut ins: Option<Insts> = None;
     let (mut plans, idx) = loop {
         loop {
+            // A callee that pulls its return address is a function only when it is a
+            // procedure: called from two or more sites; else it is inlined.
             let bad: Vec<u16> = calls
                 .iter()
                 .copied()
-                .filter(|&f| !plan(g, f, vec![g.cfg[&f]], false, &calls, seen, &none).balanced)
+                .filter(|&f| {
+                    let p = plan(g, f, vec![g.cfg[&f]], false, &calls, seen, &none);
+                    !p.balanced || p.above && sites.get(&f).copied().unwrap_or(0) < 2
+                })
                 .collect();
             if bad.is_empty() {
                 break;
