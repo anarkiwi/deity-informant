@@ -1160,6 +1160,8 @@ pub struct Analysis {
     pub ind: Vec<crate::scev::Induction>,
     /// The targets of computed transfers found from the code ([`crate::dispatch`]).
     pub jumps: FxHashMap<u16, crate::dispatch::Jump>,
+    /// The jumps among them that select their target by an index register's value.
+    pub sels: FxHashMap<u16, crate::dispatch::Selector>,
     /// Every store's addresses and values.
     pub stores: Vec<crate::dispatch::Store>,
     /// Index guards the resolved transfers and stored table bytes need.
@@ -1498,7 +1500,8 @@ pub fn analyze(
             v.acc[ai].addr = Iv { lo, hi };
         }
     }
-    let jumps = crate::dispatch::jumps(&code, vars, &w.state, &sets, &objs, &stores, &cellvals);
+    let (jumps, sels) =
+        crate::dispatch::jumps(&code, vars, &w.state, &sets, &objs, &stores, &cellvals);
     Analysis {
         past: w
             .ret
@@ -1514,6 +1517,7 @@ pub fn analyze(
         dec,
         ind,
         jumps,
+        sels,
         stores,
         guards,
         cellvals,

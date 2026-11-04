@@ -166,6 +166,9 @@ pub struct Inst {
     pub node: FxHashMap<u16, u32>,
     pub exits: BTreeMap<Key, u32>,
     pub calc: FxHashMap<u16, Vec<(u16, Key)>>,
+    /// Per computed jump every copy selects by one index register: the register and, per
+    /// index value, the node it enters.
+    pub sel: FxHashMap<u16, (u8, Vec<(u16, Key)>)>,
 }
 
 /// The classes of copies being lifted as instance functions, and the class and copy index of
@@ -1116,6 +1119,7 @@ fn plan_inst(g: &Graph, ci: u32, c: &Arc<Class>) -> Plan {
         Succ::Exit(j) => (c.exits[j as usize][0], H::Known(0), cf),
     };
     let mut calc = FxHashMap::default();
+    let mut sel = FxHashMap::default();
     let mut nodes = BTreeMap::new();
     for (i, n) in c.nodes.iter().enumerate() {
         let p = rep(i as u32);
@@ -1139,6 +1143,9 @@ fn plan_inst(g: &Graph, ci: u32, c: &Arc<Class>) -> Plan {
                 ts.dedup();
                 let all: Vec<u16> = ts.iter().map(|t| t.0).collect();
                 calc.insert(p, ts);
+                if let Some(x) = copy_sel(g, n.pcs.iter().flatten(), &succ) {
+                    sel.insert(p, x);
+                }
                 Ctl::Jmp(Tg::Calc(all))
             }
             Flow::Jsr { t: Tg::At(f), .. } => Ctl::Call {
@@ -1197,8 +1204,39 @@ fn plan_inst(g: &Graph, ci: u32, c: &Arc<Class>) -> Plan {
                 .map(|j| (key(Succ::Exit(j)), j))
                 .collect(),
             calc,
+            sel,
         })),
     }
+}
+
+/// The selector of a computed jump merged from copies `pcs` whose targets enter `succ` in
+/// order: one index register, each index value entering one node.
+fn copy_sel<'a>(
+    g: &Graph,
+    pcs: impl Iterator<Item = &'a u16>,
+    succ: &[Key],
+) -> Option<(u8, Vec<(u16, Key)>)> {
+    let mut reg = None;
+    let mut out = Vec::new();
+    for q in pcs {
+        let (r, xs) = g.sels.get(q)?;
+        if reg.replace(*r).is_some_and(|x| x != *r) {
+            return None;
+        }
+        let to: FxHashMap<u16, Key> = g.origins[q]
+            .iter()
+            .map(|o| o.1)
+            .zip(succ.iter().copied())
+            .collect();
+        for (x, t) in xs {
+            out.push((*x as u16, *to.get(t)?));
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out.windows(2)
+        .all(|w| w[0].0 != w[1].0)
+        .then_some((reg?, out))
 }
 
 /// Whether an arm may change the configuration: it stores to the port, or `CALL`s with a

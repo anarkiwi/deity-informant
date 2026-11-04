@@ -13,6 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 import wholeprog_progs as W
@@ -1243,7 +1244,14 @@ def test_computed_jumps_from_the_code(prefix, tmp_path, name):
     assert all(key[0] != "ind" for key in info["traps"].values())
     assert name == "PUSHRTS" or not info["traps"]
     org = info["code_span"][0]
-    assert all(f"CODE_ORG + 0x{t - org:X}" in c for t in targets[:-1])
+    if name in ("LOHI", "JMPIND"):
+        # Target bytes from one table pair indexed by the register still holding the index:
+        # a switch on the index's values.
+        step = 2 if name == "JMPIND" else 1
+        assert "case CODE_ORG" not in c and re.search(r"switch \(v\d+\)", c)
+        assert all(f"case {i * step}:" in c for i in range(3))
+    else:
+        assert all(f"CODE_ORG + 0x{t - org:X}" in c for t in targets[:-1])
 
 
 def test_unresolved_jump_traps(prefix, tmp_path):
@@ -1285,6 +1293,7 @@ def test_jump_through_operands_written_from_a_table(prefix, tmp_path):
 def test_table_region_past_the_code_span(prefix, tmp_path):
     c, h, info = check(prefix, tmp_path, STRADDLE, entry_calls([0, 1, 1, 0, 1, 0]))
     assert "codechk" in c and "C0_INIT" in h and len(info["jumps"]) == 1
+    assert "static __attribute__((noinline)) uint8_t codechk(" in c
     _, labels, _ = assemble(STRADDLE)
     [k] = [k for k, (org, n) in enumerate(info["regions"]) if org <= labels["buf"] < org + n]
     assert f"uint8_t R{k}[R{k}_LEN]" in c and info["code_span"][1] == labels["buf"]
@@ -1343,7 +1352,7 @@ def test_call_through_an_operand_written_earlier(prefix, tmp_path):
         (tmp_path / str(org)).mkdir()
         play(tmp_path / str(org), c, h, img, labels, calls)
         outs.append(c)
-    assert outs[0] == outs[1] and ">> 8" in outs[0]
+    assert outs[0] == outs[1] and "rd(R0[0] | ((uint16_t)R0[1] << 8))" in outs[0]
 
 
 def test_opcode_restored_through_the_stack(prefix, tmp_path):
@@ -1397,6 +1406,72 @@ def test_indexed_stores_clear_operand_cells(prefix, tmp_path):
     c, _, info = check(prefix, tmp_path, CLEAR, entry_calls([0, 0, 1, 0, 2, 0, 1, 0]))
     assert "codechk" not in c and not info["traps"]
     assert (info["stats"]["cells"], info["stats"]["code_guards"]) == (3, 0)
+    # The cells lie in three regions: a store at a constant base plus an index goes through
+    # the one write accessor, with no region tests of its own.
+    body = c[c.index("void entry") :]
+    assert re.search(r"\bwr\(R0_ORG \+ v\d+, 0\);", body) and "_LEN" not in body
+
+
+ANYPTR = """
+entry:  STA $FC
+        LDA #$00
+        STA $FB
+        LDA #$5A
+        STA $2000
+        LDY #$00
+        LDA ($FB),Y
+        STA $C000
+        RTS
+end:
+"""
+
+
+def test_pointer_read_that_may_reach_a_zone_reads_memory(prefix, tmp_path):
+    """A read through a pointer whose high byte is any value is not checked against page 1
+    and the I/O pages: it reads memory through ``rd``, no deopt."""
+    c, _, info = check(prefix, tmp_path, ANYPTR, [("entry", 0x20)] * 2)
+    assert not info["traps"] and info["stats"]["zone_guards"] == 0
+    assert "rd((uint16_t)a << 8)" in c
+
+
+TWOEXITS = """
+entry:  TAX
+        LDY #$00
+loop:   LDA tab,X
+        BEQ done
+        LDY tab+1,X
+        INX
+        INX
+        BNE loop
+done:   STY $C000
+        RTS
+tab:    .byte 1,2,3,4,0,0
+end:
+"""
+
+
+def test_loop_exits_through_copies_break_to_their_follow(prefix, tmp_path):
+    """A loop's two exits to one follow, each copying another value of a register into it,
+    are its copies then ``break``: no goto."""
+    c, _, info = check(prefix, tmp_path, TWOEXITS, entry_calls([0, 2, 4, 1]))
+    assert info["structure"]["gotos"] == 0 and c.count("break;") == 2
+
+
+@pytest.mark.parametrize("gap_data", [False, True])
+def test_held_spans_join_only_across_data(gap_data):
+    """Two runs of needed constants are one held span only when the bytes between them are
+    data region bytes (its slices); a constant between them is not held."""
+    code = np.zeros(0x10000, dtype=bool)
+    code[0x1000:0x1010] = True
+    accesses = [(0x1000, 0x1003), (0x1008, 0x100A)]
+    if gap_data:
+        code[0x1004:0x1008] = False
+        accesses.append((0x1004, 0x1007))
+    mem = regions.Memory(bytes(0x10000), code, [W.IO], (0x1000, 0x1010))
+    mem.partition(accesses, [], unknown_store=False)
+    want = [(0x1000, 0x100B)] if gap_data else [(0x1000, 0x1004), (0x1008, 0x100B)]
+    assert mem.held == want
+    assert mem.regions == ([(0x1004, 4)] if gap_data else [])
 
 
 def test_indexed_store_of_known_opcodes(prefix, tmp_path):
@@ -1588,7 +1663,24 @@ def test_switch_default_keeps_its_tests_operands(prefix, tmp_path):
 
 def test_switch_from_a_jump_table(prefix, tmp_path):
     c, _, _ = check(prefix, tmp_path, LOHI, entry_calls(range(4)))
-    assert "switch (" in c and c.count("case CODE_ORG + ") == 3 and "default:" in c
+    assert "switch (" in c and "case CODE_ORG" not in c and "default:" in c
+    assert [int(k) for k in re.findall(r"case (\d+):", c)] == [0, 1, 2]
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        ("site:   JMP j0", "        LDY #0\nsite:   JMP j0"),
+        ("        LDA thi,Y", "        INY\n        LDA thi,Y"),
+    ],
+    ids=["index-overwritten", "columns-apart"],
+)
+def test_switch_on_the_target_without_a_live_index(prefix, tmp_path, edit):
+    """A jump whose target bytes no live register indexes as one table switches on the
+    target address."""
+    c, _, info = check(prefix, tmp_path, OPJMP.replace(*edit), entry_calls([0, 1, 2, 2, 0]))
+    assert "case CODE_ORG" in c and not re.search(r"case \d+:", c)
+    assert len(next(iter(info["jumps"].values()))) >= 3
 
 
 def test_callee_called_twice_keeps_its_used_parameters(prefix, tmp_path):

@@ -248,7 +248,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 for a in o.args:
                     self.uses[a] = self.uses.get(a, 0) + 1
                     self.users.setdefault(a, []).append(o)
-                if o.name == "cf.switch":
+                if o.name == "cf.switch" and o.types[0][0] == "i16":
                     self.flags.add(o.args[0])
                 for succ, idx, case in o.edges():
                     for (a, _), i in zip(self.block_of[succ].args, idx):
@@ -1114,8 +1114,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         return binary("+", 12, self.reloc(c), self.ex(rest), 16)
 
     def target(self, o):
-        """How access ``o`` reaches memory: ``("region", k)``, ``("io",)``, ``("code",)`` or
-        ``("any",)``."""
+        """How access ``o`` reaches memory: ``("region", k)``, ``("held", j)``, ``("io",)``,
+        ``("code",)``, ``("set", regions, spans)`` (a pointer access with an address set over
+        several) or ``("any",)`` (``rd``/``wr``)."""
         lo, hi = self.f.iv(self.f.address(o))
         mem = self.mod.mem
         if o.name == "func.call" and mem.is_volatile(lo, hi):
@@ -1134,8 +1135,17 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             regs, spans = found
             if len(regs) + len(spans) == 1:
                 return ("region", regs[0]) if regs else ("held", spans[0])
-            return ("set", regs, spans)
+            if self.pointer(o):
+                return ("set", regs, spans)
         return ("any",)
+
+    def pointer(self, o):
+        """Whether access ``o``'s address is a constant plus a value no byte extends: a
+        pointer, not an indexed constant base."""
+        rest = self.split(self.f.address(o))[1]
+        d = self.f.defs.get(rest)
+        byte = d is not None and d.name == "arith.extui" and self.f.width(d.args[0]) == 8
+        return rest is not None and self.f.width(rest) == 16 and not byte
 
     def mem_ref(self, o, k, held=False):
         """The region element ``Rk[...]`` (with ``held`` the held constants' ``CODE[...]``)

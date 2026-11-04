@@ -281,13 +281,13 @@ class Body:  # pylint: disable=too-many-instance-attributes
     def switch(self, op, i):
         """A ``BRANCHIND`` dispatching on its table; a trap otherwise, unless the table is
         closed (holds every target), when its last case is the default."""
-        target = self.read(op[2][0])
+        target, t = self.read(op[2][0]), ty(op[2][0][2])
         table = self.fn["tables"][op[3]]
         if op[3] in self.fn.get("closed", ()) and table:
             cases = "".join(f", {pc}: ^b{blk}" for pc, blk in table[:-1])
-            return self.put(f"cf.switch {target} : i16, [default: ^b{table[-1][1]}{cases}]")
+            return self.put(f"cf.switch {target} : {t}, [default: ^b{table[-1][1]}{cases}]")
         cases = "".join(f", {pc}: ^b{blk}" for pc, blk in table)
-        self.put(f"cf.switch {target} : i16, [default: ^b{i}_d{cases}]")
+        self.put(f"cf.switch {target} : {t}, [default: ^b{i}_d{cases}]")
         self.lines.append(f"  ^b{i}_d:")
         return self.trap(("ind", self.fn["blocks"][i]["pc"], self.fn["pc"], i))
 

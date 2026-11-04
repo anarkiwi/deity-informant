@@ -731,6 +731,57 @@ fn pair(
     Some((t, read, guards, origin))
 }
 
+/// A jump's selector: the index register and, per index value, the target, when its low and
+/// high target bytes are columns of one table both indexed by the register's current value.
+pub type Selector = (u8, Vec<(u8, u16)>);
+
+/// The [`Selector`] of target bytes `lo`, `hi` when every byte read is one no store writes
+/// (see [`pair`]).
+fn selector(
+    code: &Code,
+    sets: &Sets,
+    objs: &Objects,
+    w: &FixedBitSet,
+    lo: Tab,
+    hi: Tab,
+) -> Option<Selector> {
+    let Tab::T {
+        reg, ix: Ix::Live, ..
+    } = lo
+    else {
+        return None;
+    };
+    if reg == NOREG || !joint(&[lo, hi]) {
+        return None;
+    }
+    let (b, _) = bytes(code, sets, objs, &[lo, hi])?;
+    if b.iter()
+        .flatten()
+        .any(|x| x.2.is_some_and(|a| w.contains(a as usize)))
+    {
+        return None;
+    }
+    let words = b[0]
+        .iter()
+        .zip(&b[1])
+        .map(|(l, h)| Some((l.0?, u16::from_le_bytes([l.1, h.1]))))
+        .collect::<Option<_>>()?;
+    Some((reg, words))
+}
+
+/// The selectors two contexts of one jump agree on: the same register, and one target per
+/// index value.
+fn meet_sel(a: Option<Selector>, b: Option<Selector>) -> Option<Selector> {
+    let ((r, mut x), (q, y)) = (a?, b?);
+    if r != q {
+        return None;
+    }
+    x.extend(y);
+    x.sort_unstable();
+    x.dedup();
+    x.windows(2).all(|w| w[0].0 != w[1].0).then_some((r, x))
+}
+
 /// The words the `BRK` vector `$FFFE`/`$FFFF` may hold when `BRK` runs: of a byte stores
 /// with known addresses write, the values they store (a vector the program sets before it
 /// runs `BRK`; any other deopts at the `BRK`), else its constant byte; none when a store of
@@ -776,7 +827,7 @@ pub(crate) fn jumps(
     objs: &Objects,
     stores: &[Store],
     cellvals: &FxHashMap<u16, Option<BTreeSet<u8>>>,
-) -> FxHashMap<u16, Jump> {
+) -> (FxHashMap<u16, Jump>, FxHashMap<u16, Selector>) {
     let w = written(code, stores);
     let mut span = (u16::MAX, 0u16);
     for (&pc, vs) in vars {
@@ -799,6 +850,7 @@ pub(crate) fn jumps(
     };
     // Per site: `Some(Some(_))` jumps, `Some(None)` returns, `None` failed.
     let mut res: FxHashMap<u16, Option<Option<Found>>> = FxHashMap::default();
+    let mut sels: FxHashMap<u16, Option<Selector>> = FxHashMap::default();
     let mut keys: Vec<&Key> = state.keys().collect();
     keys.sort_unstable();
     for key in keys {
@@ -812,6 +864,16 @@ pub(crate) fn jumps(
             }
         };
         for v in &vars[&pc] {
+            let sel = match v.flow {
+                Flow::JmpInd(_) => {
+                    pointer(code, pc).and_then(|(lo, hi)| Some((tag(lo)?, tag(hi)?)))
+                }
+                Flow::Jmp(Tg::Calc(_)) => opnd(pc.wrapping_add(1)).zip(opnd(pc.wrapping_add(2))),
+                _ => None,
+            }
+            .and_then(|(l, h)| selector(code, sets, objs, &w, l, h));
+            let e = sels.entry(pc).or_insert_with(|| sel.clone());
+            *e = meet_sel(e.take(), sel);
             let r = match v.flow {
                 Flow::JmpInd(_) => {
                     pointer(code, pc).and_then(|(lo, hi)| match (tag(lo), tag(hi)) {
@@ -920,7 +982,13 @@ pub(crate) fn jumps(
             *r = Some(Some((t, BTreeSet::new(), Vec::new(), BTreeSet::new())));
         }
     }
-    res.into_iter()
+    let sels = sels
+        .into_iter()
+        .filter(|(pc, _)| matches!(res.get(pc), Some(Some(Some(_)))))
+        .filter_map(|(pc, x)| Some((pc, x?)))
+        .collect();
+    let jumps = res
+        .into_iter()
         .filter_map(|(pc, r)| match r {
             Some(Some((t, b, g, o))) => Some((
                 pc,
@@ -934,7 +1002,8 @@ pub(crate) fn jumps(
             Some(None) => None,
             None => Some((pc, Jump::Fail)),
         })
-        .collect()
+        .collect();
+    (jumps, sels)
 }
 
 /// Address sets for the stores through a `(zp),Y` pointer whose two bytes hold, on every

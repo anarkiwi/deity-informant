@@ -199,9 +199,9 @@ per-voice routines often are; the rest are renumbered in order.
   bytes' hull). `CODE_ORG` is the first of them (constants into code print relative to it).
   Only the tables and the constant bytes a bounded access may reach are held in memory (all
   of them when a store of unknown address may need them for its code check): their runs,
-  merged across gaps of at most `SPAN_COST` unneeded constant bytes (what one more span's
-  tests cost in code) and widened over the data regions they overlap, are the spans `C0,
-  C1, ...`; those regions are their slices (`#define R2 (C0 + (R2_ORG - C0_ORG))`), so each
+  joined across gaps of data region bytes only (any other byte between them would be held as
+  data the program never reads) and widened over the data regions they overlap, are the spans
+  `C0, C1, ...`; those regions are their slices (`#define R2 (C0 + (R2_ORG - C0_ORG))`), so each
   byte is held once, and `Cj_DATA` marks a span's data bytes. A load of unknown address
   reaching other code reads `oob_rd`.
 - **Data regions** `R0, R1, ...` (ascending address) are the maximal runs of other bytes that
@@ -219,18 +219,19 @@ per-voice routines often are; the rest are renumbered in order.
   destinations past the image, which pointer reads then find through `rd`); the stack page
   is accessed only by a load that may read it, since pointer accesses are kept out of page 1
   ([wholeprog](wholeprog.md#static-proofs), *Pointer windows*).
-- An access with an address set (`Program.addr_sets`: a block copy's loads and stores) that
-  lies in the regions and held spans indexes them directly, testing only those it spans (the
-  last untested); a 16-bit base plus a byte index is the base's element indexed by the byte,
-  as `(zp),Y` is.
+- An access through a pointer with an address set (`Program.addr_sets`: a block copy's
+  loads and stores) that lies in the regions and held spans indexes them directly, testing
+  only those it spans (the last untested); a 16-bit base plus a byte index is the base's
+  element indexed by the byte, as `(zp),Y` is. One at a constant base plus an index whose set
+  spans several regions (operand cells of several copies) goes through `rd`/`wr`.
 - An access whose interval lies in one region is `Rk[off + index]`, `off` relative to the
   region and the address taken modulo its width (16 bits, 8 for a zero-page one) as the 6502
   wraps it; a load of constants in one span is `Cj[off + index]` alike. One in volatile
   memory is `io_read`/`io_write`. One wholly in other constant code is `oob_rd`/`oob_wr`. Any
   other goes through `rd(a)`/`wr(a, v)`: the regions outside the spans (by the `Rk_ORG`
   symbols, so data pointers holding original addresses resolve), the volatile ranges, the
-  spans (`wr` writing their data bytes only), then `oob_rd`/`oob_wr`; they are `noinline`, as
-  llvm-mos would otherwise copy them into every caller.
+  spans (`wr` writing their data bytes only), then `oob_rd`/`oob_wr`; they and `codechk` are
+  `noinline`, as llvm-mos would otherwise copy them into every caller.
 - `oob_rd` returns 0, `oob_wr` discards; defining `CGEN_OOB` replaces both with the host's.
   A store the lift found may hit constant code or a table it read is followed by `codechk`,
   which traps when a constant byte of a span would change.
@@ -259,7 +260,9 @@ An index the code does not bound, such as a command byte of song data, reads the
 where the layout ends it (*Table extents*: a split table's low column at its high column, any
 column at the next object the code accesses or the end of `loaded`), and an index guard
 traps before a load past it. Such a jump is a switch over code addresses (`case CODE_ORG +
-0x23:`) whose last target is the default, with no trap; a `JSR` through cells calls one
+0x23:`) whose last target is the default, with no trap; one whose low and high target bytes
+are a table pair indexed by a register still holding the index (`LDA lo,X; STA op+1; LDA hi,X;
+STA op+2; JMP op`) is a switch over the index's values (`case 3:`), the same for every origin; a `JSR` through cells calls one
 function whose body is the switch over its targets (the handlers its arms), handed the
 operand's low byte, so the high byte relocates in it (`switch (v2 | CODE_ORG)`). `info["jumps"]` lists them (`{pc: [target, ...]}`). Programs with the same
 code and tables give the same `.c`; a table a store with known addresses may write leaves the
