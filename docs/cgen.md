@@ -171,7 +171,7 @@ steps in order, each deciding on the graph the earlier ones leave:
 
 | Key | Value |
 |---|---|
-| `functions` | `{C name: {"entry", "index", "calls", "copies"}}`: the entry pc, whether it takes an instance index, `[site, target]` of each call and tail call of it (a tail call printed in place names the instruction taking the edge), the entries of the copies folded into it |
+| `functions` | `{C name: {"entry", "index", "calls", "copies", "pcs"}}`: the entry pc, whether it takes an instance index, `[site, target]` of each call and tail call of it (a tail call printed in place names the instruction taking the edge), the entries of the copies folded into it, the instructions (every copy's) its operations were emitted for |
 | `gotos` | `[from, to]` per printed `goto`: the instruction taking the edge (a branch, or the `JMP` the lift threaded into it; each branch of a short-circuit condition with an edge to the target) and its target |
 | `loops` | the head of each printed loop |
 | `conditions` | the branch addresses composed into each short-circuit condition |
@@ -308,6 +308,13 @@ program).
 `tools/cgengraph.py TUNE.sid --pc ADDR` prints the structuring graph of the functions holding
 an instruction (nodes by instruction address, back edges, copies, `--ops` the operations) and
 the printed gotos and loop heads.
+
+`tools/csize.py OUT.c OUT.elf --info info.json --image IMAGE --org ADDR [--header OUT.h]`
+attributes a compiled translation's code (an ELF built with `-g`): per C function its bytes
+from the line table (inlined code counted where it came from) against the original instruction
+bytes of its `pcs` (the instructions code is left for after optimization), split by origin: `trap` (a `trap()` call and the test guarding it), `dispatch`
+(`rd`/`wr`/`oob_*`/`codechk` and the lines calling them), `cell` (a test of a code cell's byte),
+`arith16` (16-bit values) and `other`.
 
 `tools/cclones.py` measures how much of a `.c` repeats up to names and constants (and which
 functions are near-identical).
