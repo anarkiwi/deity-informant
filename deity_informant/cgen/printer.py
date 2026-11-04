@@ -1443,6 +1443,8 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
                 out.append(self.halt())
             elif kind == "site":
                 self.tail_site(it[1], it[2])
+            elif kind == "fall":
+                out.append(("j", "", frozenset()))
             elif kind in ("break", "continue"):
                 out.append(("j", f"{kind};", frozenset()))
             elif kind == "goto":

@@ -187,7 +187,7 @@ def render(items):
             names = ", ".join(n if e is None else f"{n} = {e}" for n, e in st[2])
             out.append(f"{st[1]} {names};")
         elif kind in ("s", "j", "l"):
-            out.append(st[1])
+            out += [st[1]] if st[1] else []
         elif kind == "if":
             out += _render_if(st)
         elif kind == "loop":
