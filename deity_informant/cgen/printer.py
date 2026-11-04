@@ -723,6 +723,22 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                     return False
         return True
 
+    def exprable(self, items):
+        """Whether statements ``items`` are one block whose effects are stores and I/O
+        accesses and whose values only it reads: C expressions with no declaration."""
+        if len(items) != 1 or items[0][0] != "ops":
+            return False
+        blk = items[0][1]
+        for o in blk.ops[:-1]:
+            if id(o) in self.dropped or o.name == "memref.get_global":
+                continue
+            if not (self.pure(o) or o.name == "memref.store" or (
+                    o.name == "func.call" and o.prop("callee") in ("@io_read", "@io_write"))):  # fmt: skip
+                return False
+            if any(u.parent is not blk for r in o.res for u in self.users.get(r, ())):
+                return False
+        return True
+
     def tail(self, items):
         """Whether statements ``items`` are copies and blocks whose only effects are calls of
         lifted functions, at least one: a tail call's code."""
@@ -828,6 +844,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             self.falls,
             lambda n: self.first_pc(n) or 0,
             self.f.tail,
+            self.f.exprable,
         )
         self.body = s.finish(s.structure(self.g))
 
@@ -879,6 +896,11 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             kind = it[0]
             if kind == "copy":
                 yield from ((v, self.def_in(v, prev)) for _, v, _ in it[1])
+            elif kind == "set":
+                for cube in self.cover(it[2], self.f.conds.care):
+                    for key, _ in cube:
+                        if self.f.lit_value(key) is not None:
+                            yield self.f.lit_value(key), self.def_in(self.f.lit_value(key), prev)
             elif kind == "return":
                 yield from (
                     (v[0] if isinstance(v, tuple) else v, self.def_in(v, prev)) for v in it[-1]
@@ -1182,7 +1204,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
 
     def literal(self, key, pol):
         """The C condition of literal ``key`` with polarity ``pol``."""
-        if key[0] == "c":
+        if key[0] == "v":
+            e = var(self.selector(key[1]), 1)
+        elif key[0] == "c":
             e = truth(self.ex(key[1]))
         else:
             x = key[1]
@@ -1193,10 +1217,28 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         """Case value ``k`` of selector ``x``: an address when ``x`` is a computed jump's."""
         return self.reloc(k) if x in self.f.flags else lit(k, self.f.width(x))
 
-    def cond(self, f, ctx):
-        """The C condition of ``f`` where ``ctx`` holds."""
+    def cond(self, f, ctx, fx=None):
+        """The C condition of ``f`` where ``ctx`` holds; ``fx`` ``[(items, key, _)]``:
+        statements evaluated with literal ``key``, as a comma expression before it."""
         cubes = self.cover(f, ctx)
-        return logic("||", [logic("&&", [self.literal(k, p) for k, p in c]) for c in cubes])
+        effects = {key: items for items, key, _ in fx or ()}
+
+        def lit_of(k, p):
+            e = self.literal(k, p)
+            if k not in effects:
+                return e
+            parts, refs = [], set(e.refs)
+            for st in self.convert(effects[k]):
+                if st[0] == "a":
+                    parts.append(f"{st[1]} = {st[2]}")
+                    refs |= st[3] | {st[1]}
+                else:
+                    assert st[0] == "s", st
+                    parts.append(st[1].rstrip(";"))
+                    refs |= st[2]
+            return E(f"({', '.join([*parts, e.text])})", lo=e.lo, hi=e.hi, refs=frozenset(refs))
+
+        return logic("||", [logic("&&", [lit_of(k, p) for k, p in c]) for c in cubes])
 
     # Statements.
 
@@ -1392,6 +1434,11 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
                 self.assign(it[1], out)
             elif kind == "return":
                 out += self.jump(it[1])
+            elif kind == "set":
+                f, bdd = it[2], self.f.conds.bdd
+                e = self.cond(f, self.f.conds.care) if f not in (bdd.true, bdd.false) else None
+                text = e.text if e else str(int(f == bdd.true))
+                out.append(("a", self.selector(it[1]), text, e.refs if e else frozenset()))
             elif kind == "halt":
                 out.append(self.halt())
             elif kind == "site":
@@ -1415,6 +1462,12 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
                 out.append(self.convert_loop(self.convert(it[1])))
                 self.prov["loops"].append(self.head_pc(it[2]))
         return _merge_tails(out)
+
+    def selector(self, head):
+        """The C variable choosing the entry of the cycle selector ``head`` enters."""
+        if ("sel", head) not in self.names:
+            self.names[("sel", head)] = self.fresh(8)
+        return self.names[("sel", head)]
 
     def halt(self):
         """The return after a ``trap``, which does not return: zero results."""
@@ -1441,14 +1494,15 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         return self.labels.setdefault(node, f"L{len(self.labels) + 1}")
 
     def blocks(self, n):
-        """The blocks graph node ``n`` holds."""
-        return [it[1] for it in self.g.items[n] if it[0] == "ops"]
+        """The blocks graph node ``n`` holds, those of its condition's effects last."""
+        items = self.g.items[n] + [it for fx in self.g.effects.get(n, ()) for it in fx[0]]
+        return [it[1] for it in items if it[0] == "ops"]
 
     def first_pc(self, n):
         """The address of the first instruction graph node ``n`` (or the node its copies
         lead to) runs."""
-        while not self.blocks(n) and len(self.g.succ.get(n, ())) == 1:
-            n = self.g.succ[n][0][0]
+        while not self.blocks(n) and (len(self.g.succ.get(n, ())) == 1 or n in self.g.selectors):
+            n = self.g.selectors[n][0] if n in self.g.selectors else self.g.succ[n][0][0]
         for b in self.blocks(n):
             for o in b.ops:
                 if o.pc:
@@ -1512,11 +1566,14 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             self.prov["conditions"].append([b.ops[-1].pc for b in self.blocks(x)])
         (then, els), tail = _shared_jump([self.convert(it[3]), self.convert(it[4])])
         f = it[1]
-        if not then and not els:
+        if not then and not els and x not in self.g.effects:
             return tail
-        if not then:
+        if not then and els:
             then, els, f = els, then, ~f
-        c, n = self.cond(f, it[2]), self.cond(~f, it[2])
+        fx = self.g.effects.get(x)
+        c, n = self.cond(f, it[2], fx), self.cond(~f, it[2], fx)
+        if not then and not els:
+            return [("s", f"(void)({c.text});", c.refs), *tail]
         if els and ends_in_jump(then):
             return [("if", c.text, c.refs, then, [], n.text), *els, *tail]
         return [("if", c.text, c.refs, then, els, n.text), *tail]

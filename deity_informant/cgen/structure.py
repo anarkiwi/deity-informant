@@ -108,6 +108,7 @@ class Graph:
         self.conds, self.ids = conds, ids
         self.items, self.succ = {}, {}
         self.entry, self.composed, self.back = None, set(), set()
+        self.effects, self.selectors = {}, {}
 
     def add(self, items, succ=()):
         """A new node."""
@@ -201,12 +202,12 @@ def _ret_key(g, t):
     return t
 
 
-def short_circuit(g, hoistable):
-    """Compose each conditional branch ``b`` entered only from ``a`` (its operations
-    ``hoistable``: they may run before ``a``'s test) that shares a target with ``a``'s other
-    edges, into ``a``: an edge of ``b``
-    becomes an edge of ``a`` under both tests (``a && b``, ``a || b``), joined with ``a``'s
-    edge to the same target (two edges to returns of the same values are one target)."""
+def short_circuit(g, hoistable, exprable=lambda items: False):
+    """Compose each conditional branch ``b`` entered only from ``a`` that shares a target with
+    ``a``'s other edges into ``a``: an edge of ``b`` becomes an edge of ``a`` under both tests
+    (``a && b``, ``a || b``), joined with ``a``'s edge to the same target (two edges to returns
+    of the same values are one target). ``b``'s operations must be ``hoistable`` (they may run
+    before ``a``'s test), or ``exprable`` effects of ``b``'s one test literal (:func:`_verify`)."""
     changed = True
     while changed:
         changed = False
@@ -220,15 +221,75 @@ def short_circuit(g, hoistable):
                     b in (a, g.entry)
                     or preds[b] != [a]
                     or len(g.succ[b]) < 2
-                    or not all(hoistable([it]) for it in g.items[b])
                     or not others & {_ret_key(g, t) for t, _ in g.succ[b]}
                 ):
                     continue
-                _compose(g, a, b, g.cond(cab))
-                changed = True
-                break
+                pure = all(hoistable([it]) for it in g.items[b])
+                if (pure or exprable(g.items[b])) and _try(g, a, b, g.cond(cab), pure):
+                    changed = True
+                    break
             if changed:
                 break
+
+
+def _try(g, a, b, cab, pure):
+    """Compose ``b`` into ``a`` unless an effect of the result fails :func:`_verify`; one
+    with effects (not ``pure``) makes its statements the effects of its test literal."""
+    conds = g.conds
+    fx = [(its, key, cab & reached) for its, key, reached in g.effects.get(b, ())]
+    if not pure:
+        sup = set().union(*(g.cond(c).support for _, c in g.succ[b]))
+        if len(sup) != 1:
+            return False
+        fx.append((list(g.items[b]), conds.keys[next(iter(sup))], cab))
+    saved = [list(e) for e in g.succ[a]], list(g.items[a]), set(g.composed)
+    keep = {n: (g.items[n], g.succ[n]) for n in {b, *(t for t, _ in g.succ[b])}}
+    _compose(g, a, b, cab)
+    if not pure:
+        g.items[a] = saved[1]
+    fx = list(g.effects.get(a, ())) + fx
+    if not fx or _verify(g, a, fx):
+        if fx:
+            g.effects[a] = fx
+        g.effects.pop(b, None)
+        return True
+    g.succ[a], g.items[a], g.composed = saved
+    for n, (its, es) in keep.items():
+        g.items[n], g.succ[n] = its, es
+    return False
+
+
+def _verify(g, a, fx):
+    """Whether ``a``'s two edge conditions, printed as sums of products and evaluated left to
+    right (C's ``&&``/``||``), read each effectful literal once, exactly where its statements
+    ran in the machine code."""
+    conds = g.conds
+    if len(g.succ[a]) != 2:
+        return False
+    covers = [conds.cover(g.cond(c), conds.care) for _, c in g.succ[a]]
+    return all(_evaluated_once(conds, cv, key, reached) for cv in covers for _, key, reached in fx)
+
+
+def _evaluated_once(conds, cubes, key, reached):
+    """Whether ``key`` appears once in ``cubes`` (a sum of products evaluated left to right)
+    and is evaluated exactly where ``reached`` holds."""
+    hits = [(i, j) for i, c in enumerate(cubes) for j, (k, _) in enumerate(c) if k == key]
+    if len(hits) != 1:
+        return False
+    i, j = hits[0]
+    at = conds.bdd.true
+    for c in cubes[:i]:
+        at &= ~_cube(conds, c)
+    at &= _cube(conds, cubes[i][:j])
+    return (at & conds.care) == (reached & conds.care)
+
+
+def _cube(conds, lits):
+    out = conds.bdd.true
+    for k, p in lits:
+        v = conds.vars[k]
+        out &= v if p else ~v
+    return out
 
 
 def split_tails(g, tail):
@@ -256,6 +317,36 @@ def split_tails(g, tail):
             if n != t:
                 g.succ[p] = [[n if u == t else u, c] for u, c in g.succ[p]]
                 work += [u for u, _ in g.succ[n] if u not in work]
+
+
+def select_entries(g, place):
+    """Give each cycle entered at two nodes from one two-way branch ``s`` (both of its edges)
+    a head choosing the entry by ``s``'s condition, saved on entry in a selector variable and
+    reset on the cycle's retreating edges to the entry they take (Ghouls' sweeps entered by a
+    self-modified direction). ``g.selectors``: ``{head: (entry taken when false, true)}``."""
+    nx_g = nx.DiGraph([(n, t) for n, es in g.succ.items() for t, _ in es])
+    nx_g.add_nodes_from(g.items)
+    for scc in sorted(nx.strongly_connected_components(nx_g), key=min):
+        ins = {(p, t) for t in scc for p in nx_g.predecessors(t) if p not in scc}
+        srcs = {p for p, _ in ins}
+        if len({t for _, t in ins}) != 2 or len(srcs) != 1:
+            continue
+        (s,) = srcs
+        if len(g.succ[s]) != 2 or g.entry in scc:
+            continue
+        (lo, clo), (hi, chi) = sorted(g.succ[s], key=lambda e: place(e[0]))
+        conds = g.conds
+        head = g.add([])
+        var = conds.var(("v", head))
+        g.succ[head] = [[hi, var], [lo, ~var]]
+        g.succ[s] = [[g.add([("set", head, g.cond(chi))], [[head, None]]), None]]
+        g.selectors[head] = (lo, hi)
+        _, _, back = g.dfs(head, within=scc | {head}, key=place)
+        for n, t in sorted(back):
+            if t in (lo, hi):
+                val = conds.bdd.true if t == hi else conds.bdd.false
+                b = g.add([("set", head, val)], [[head, None]])
+                g.succ[n] = [[b if u == t else u, c] for u, c in g.succ[n]]
 
 
 def _compose(g, a, b, cab):
@@ -296,17 +387,18 @@ class Structurer:
 
     def __init__(self, conds, quiet=lambda items: False, hoistable=lambda items: False,
                  falls=lambda p, y: False, place=lambda n: 0,
-                 tail=lambda items: False):  # fmt: skip
+                 tail=lambda items: False, exprable=lambda items: False):  # fmt: skip
         self.conds, self.quiet, self.hoistable, self.falls = conds, quiet, hoistable, falls
-        self.place, self.tail = place, tail
+        self.place, self.tail, self.exprable = place, tail, exprable
         self.g = self.kids = self.loops = self.back = self.rank = None
         self.at, self.after, self.follows, self.idom = {}, {}, set(), {}
 
     def structure(self, g):
         """The statements of ``g``, with ``label`` statements where jumps go."""
         self.g = g
-        short_circuit(g, self.hoistable)
+        short_circuit(g, self.hoistable, self.exprable)
         split_tails(g, self.tail)
+        select_entries(g, self.place)
         pre, _, back = g.dfs(key=self.place)
         g.remove(set(g.items) - set(pre))
         self.rank = _layout(g, pre, back, self.place)
@@ -497,7 +589,10 @@ class Structurer:
         is replaced by the branch taken; the others print where both hold."""
         out, conds = [], self.conds
         for it in items:
-            if it[0] == "if":
+            if it[0] == "if" and it[5] in self.g.effects:
+                then = self.decide(it[3], path & it[1])
+                out.append(("if", it[1], it[2], then, self.decide(it[4], path & ~it[1]), it[5]))
+            elif it[0] == "if":
                 f, known = it[1], path & it[2]
                 if conds.implies(known, f):
                     out += self.decide(it[3], path)
@@ -523,6 +618,7 @@ class Structurer:
                 while True:
                     rest = [x for x in rest if not self.quiet([x])]
                     head = rest[0] if len(rest) == 1 and rest[0][0] == "if" else None
+                    head = None if head and head[5] in self.g.effects else head
                     hit, a = (head[3], self.atoms(head[1])) if head else (None, None)
                     if head and a is None:
                         hit, a = head[4], self.atoms(~head[1])
