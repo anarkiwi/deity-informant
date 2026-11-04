@@ -1118,6 +1118,16 @@ impl<'a> Em<'a, '_> {
         if t.len == 1 && t.ctrl != CtrlKind::Jam {
             self.touch_at(next, NONE);
         }
+        // A `TXS` restoring a saved stack pointer in a callee: `X` must be SP at the saved
+        // height, else deopt before it.
+        if let (0x9a, false, H::Known(h), [(_, H::Known(hs), _)]) =
+            (*op, self.plan.top, self.nh, self.succ)
+        {
+            let want = self.op(Opc::IntAdd, 1, r1(R::SP), k((hs - h) as u32 & 0xff, 1));
+            let bad = self.op(Opc::IntNotEqual, 1, r1(R::X), want);
+            let x = self.side_exit(bad, true, |em| em.deopt(k(pc as u32, 2)));
+            self.f.blocks[x as usize].replay = Some(self.istart);
+        }
         let mut umap = FxHashMap::default();
         let stack = is_stack_op(*op);
         let mut chk = self.ops(pc, *op, t.ops(), acc, stack, &mut slot, &mut umap);

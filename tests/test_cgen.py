@@ -734,6 +734,82 @@ join:   STA $C001
         RTS
 end:
 """
+BRKVEC = """
+entry:  CMP #$80
+        BCS play
+        LDA #lo(handler)
+        STA $FFFE
+        LDA #hi(handler)
+        STA $FFFF
+        RTS
+play:   AND #$03
+        TAX
+brk:    BRK
+        .byte $EA
+        STX $C000
+        RTS
+handler: LDA cnt
+        CLC
+        ADC #$01
+        STA cnt
+        STA $C001
+        RTI
+cnt:    .byte 0
+end:
+"""
+INLINE = """
+entry:  JSR arg
+        .byte $11
+        STA $C000
+        JSR arg
+        .byte $22
+        STA $C001
+        RTS
+arg:    PLA
+        STA $F0
+        PLA
+        STA $F1
+        LDY #$01
+        LDA ($F0),Y
+        TAX
+        LDA $F0
+        CLC
+        ADC #$01
+        TAY
+        LDA $F1
+        ADC #$00
+        PHA
+        TYA
+        PHA
+        TXA
+        RTS
+end:
+"""
+UNWIND = """
+entry:  AND #$01
+        TAX
+        JSR voice
+        INX
+        JSR voice
+        RTS
+voice:  STX keep
+        TSX
+        STX save
+        LDX keep
+        JSR deep
+after:  STX $C001
+        RTS
+deep:   JSR deeper
+        RTS
+deeper: STX $C000
+        LDX save
+        TXS
+        LDX keep
+        JMP after
+keep:   .byte 0
+save:   .byte 0
+end:
+"""
 SHORT = """
 entry:  TAX
         LDA flags,X
@@ -1612,6 +1688,32 @@ def test_block_copy_stores_have_per_block_addresses(prefix, tmp_path):
     assert "codechk" not in c and not info["traps"]
     spans = {org: n for org, n in info["regions"]}
     assert 0x5000 in spans and 0x6000 in spans and spans[0x6000] <= 0x200
+
+
+def test_brk_through_its_written_vector(prefix, tmp_path):
+    """A `BRK` goes through the vector the program stores, and the handler's `RTI` returns
+    past the signature byte: no trap on the way."""
+    calls = [("entry", 0)] + entry_calls([0x80, 0x81, 0x82, 0x83], 2)
+    c, _, info = check(prefix, tmp_path, BRKVEC, calls)
+    img, labels, _ = assemble(BRKVEC)
+    assert info["jumps"][labels["brk"]] == [labels["handler"]]
+    assert info["jumps"][labels["cnt"] - 1] == [labels["brk"] + 2]
+
+
+def test_call_with_inline_arguments(prefix, tmp_path):
+    """A callee that pulls its return address, reads the bytes after the call and pushes the
+    address back past them returns past its inline argument."""
+    c, _, info = check(prefix, tmp_path, INLINE, entry_calls(range(3)))
+    img, labels, _ = assemble(INLINE)
+    assert info["jumps"][labels["end"] - 1] == [labels["entry"] + 4, labels["entry"] + 11]
+    assert not info["traps"] and "io_write(0xC000" in c
+
+
+def test_txs_to_a_saved_stack_pointer_unwinds(prefix, tmp_path):
+    """`TXS` to the stack pointer `TSX; STX save` took in an enclosing frame leaves the frames
+    between as a non-local exit."""
+    _, _, info = check(prefix, tmp_path, UNWIND, entry_calls(range(4), 2))
+    assert info["stats"]["unknown_heights"] == 0
 
 
 def test_per_copy_immediates_are_constants(prefix, tmp_path):

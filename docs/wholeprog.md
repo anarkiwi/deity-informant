@@ -176,13 +176,18 @@ the program, and checks it against the reference.
    gets a node per height the facts saw it at (SP minus the host call's entry SP as
    integers, the plan's own frame), or only the first static height reaching it if it never
    ran; an edge at any other height deopts, and after `TXS`/`TAS`/`LAS` the successor is
-   each height the facts saw it at. A callee has one height per start: a conflict at an executed start makes it
+   each height the facts saw it at. A `TXS` restoring a stack pointer saved by `TSX; STX a`
+   (it is reached only from `LDX a`, every store to `a` is such an `STX`, and those `TSX`s run
+   at one height in the plan) continues at that height, a non-local exit leaving the frames
+   between: an outermost plan checks it by its SP dispatch, a callee compares `X` with SP
+   plus the height difference before the `TXS` and deopts. A callee has one height per start: a conflict at an executed start makes it
    unknown (the callee is then inlined into its caller), at any other start the conflicting
    edge deopts. A `JSR` target is lifted as a separate function (`CALL`) when every `RTS` in
    it is at height 0 or below and nothing pulls above its entry (a decreasing fixpoint over
    the candidates); other callees are inlined: the `JSR` pushes and jumps. An `RTS`/`RTI`
    below the entry height is a computed jump to its facts' targets plus the return sites
-   inline `JSR`s pushed at the height it lands on. At an entry, the instruction whose height
+   inline `JSR`s pushed at the height it lands on, or to the targets the code gives it
+   (*Computed jumps*) alone. At an entry, the instruction whose height
    reaches +2 (the entry's own return) exits; after an SP-setting instruction SP is compared
    with the exit threshold at run time. With a bank map nodes are also keyed by the bank
    configuration: a start gets a node per configuration the facts saw it in (or the first
@@ -284,6 +289,7 @@ the program, and checks it against the reference.
 | Computed target is in the table | `BRANCHIND` table lookup; a table resolved from the code holds every target (the function's `closed` tables) | deopt at the target |
 | A table read for a computed transfer or a cell's values stays in the table's extent (*Table extents*) | the index register is compared with the extent's index range before the load | deopt before the instruction |
 | An edge reaches a start at a stack height the plan has no node for (never seen there) | none: the edge is the deopt | deopt at the start |
+| A callee's `TXS` restoring a saved stack pointer sets SP to its saved height | `X` compared with SP plus the height difference | deopt before the instruction |
 | After an SP-setting instruction, SP is at a height the facts saw the next start at | SP dispatch: `SP - E` compared per height without wrapping (`stats["sp_dispatch"]`), SP restated as `E + height - 2`; a function with a dispatch loads its stack slots from memory at entry | deopt at the next start |
 | A store may hit constant code | `codechk(addr, value)` after the store, when the address interval (*Static proofs*) meets constant code or a table the lift read (*Computed jumps*, *Stores*) and its address set, when it has one, does too | deopt after the instruction; the program stays invalid until its constant code matches again |
 | A zero-page pointer pair that accesses rely on stays outside the window of their indices (*Pointer windows*) | an entry reads back the pairs some access reads before every path to it stores their high byte; a store that may write a byte of one and may leave it in its window reads the pair back after the instruction, a pair's two stores on one instruction chain once after the second (`stats["ptr_guards"]`) | deopt at the entry; deopt after the store |
@@ -448,7 +454,17 @@ the facts, so a proof holds on every execution that stays in lifted code.
   path or two bytes are indexed by unrelated values, the transfer is unresolved and keeps its
   facts' targets. The words are its targets in every context, an `RTS`/`RTI` resolved so is
   analysed as a jump (its function stays balanced), the bytes read join the program's
-  constant bytes, and its table is closed. A `JSR` through cells whose targets are all
+  constant bytes, and its table is closed. The analysis also keeps the two bytes above a
+  called function's entry (its `JSR`'s return address, as constants) and its pushes less
+  pulls since the entry: a pull past the entry reads them, a push past it writes them, so a
+  callee that pulls its return address into a pointer, reads the bytes after the call through
+  it and pushes the address back advanced past them has an `RTS` at its entry depth through a
+  return address the `JSR` did not push. That `RTS` returns, in its caller's context, to the
+  address it pulls plus one (a call with inline arguments, returning past them). A `BRK`
+  goes to the words its vector `$FFFE`/`$FFFF` may hold: the values the stores with known
+  addresses write there (a vector the program sets before it runs `BRK`; any other deopts),
+  else the image's bytes; it pushes its address plus two as constants, so the handler's `RTI`
+  returns past the signature byte. A `JSR` through cells whose targets are all
   functions lifted separately is a `BRANCHIND` to a `CALL` of each. A branch whose offset
   byte is a cell goes to its fall-through address plus each offset the byte may hold, found
   the same way.

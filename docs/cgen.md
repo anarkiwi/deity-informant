@@ -236,8 +236,9 @@ address half stored without its partner in the same block, or used other than as
 The lift resolves a `JMP (ind)` whose pointer is stored from loads of a constant table (or
 from constants, or is a constant word of the code span no store writes), a `JMP`/`JSR` whose
 operand bytes a store writes so (in the same call, or earlier: then from the values every
-store may leave in them), and an `RTS`/`RTI` that returns through an address pushed so, from
-the code alone ([wholeprog](wholeprog.md#static-proofs), *Computed jumps*): the targets are
+store may leave in them), an `RTS`/`RTI` that returns through an address pushed so, a `BRK`
+through the vector the program stores, and an `RTS` returning past a call's inline arguments,
+from the code alone ([wholeprog](wholeprog.md#static-proofs), *Computed jumps*): the targets are
 the table's words over the index values inside the table's extent, which no store may change.
 An index the code does not bound, such as a command byte of song data, reads the table up to
 where the layout ends it (*Table extents*: a split table's low column at its high column, any
