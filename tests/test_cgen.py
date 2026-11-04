@@ -4,6 +4,7 @@ reference interpreter; relocation and data invariance of the ``.c``; llvm-mos bu
 import contextlib
 import ctypes
 import fcntl
+import json
 import os
 import random
 import re
@@ -23,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import cclones  # noqa: E402  pylint: disable=wrong-import-position
 import cgenplay  # noqa: E402  pylint: disable=wrong-import-position
 import cmetrics  # noqa: E402  pylint: disable=wrong-import-position
+import csize  # noqa: E402  pylint: disable=wrong-import-position
 from test_pcode2mlir import OPS, UNARY, VALUES, op_function, unary_function  # noqa: E402
 
 pytestmark = pytest.mark.skipif(
@@ -1891,3 +1893,71 @@ def test_copies_differing_only_in_immediates_stay_apart(prefix, tmp_path):
     src = CONSTS.replace("$21", "$20").replace("$22", "$20").replace("$C007", "$C000")
     _, _, info = check(prefix, tmp_path, src.replace("$C00E", "$C000"), entry_calls(range(4)))
     assert info["stats"]["instances"] == 0
+
+
+def test_size_attribution(prefix, tmp_path):
+    """tools/csize.py splits a compiled translation's bytes by C function and origin, each
+    function against the instruction bytes of the 6502 code its provenance names."""
+    img, labels, loaded = assemble(PTRS)
+    c, h, info = translate(prefix, img, labels, loaded)
+    (tmp_path / "t.c").write_text(c, encoding="utf-8")
+    (tmp_path / "t.h").write_text(h, encoding="utf-8")
+    so = tmp_path / "t.so"
+    subprocess.run(
+        [
+            "gcc",
+            *cgenplay.CFLAGS,
+            "-g",
+            "-o",
+            str(so),
+            str(tmp_path / "t.c"),
+            str(cgenplay.HARNESS),
+        ],
+        check=True,
+    )
+    (tmp_path / "info.json").write_text(json.dumps({"provenance": info["provenance"]}))
+    image = bytes(img[loaded[0] : loaded[1]])
+    per = csize.attribute(tmp_path / "t.c", so, info, image, loaded[0], tmp_path / "t.h")
+    entry = per["entry"]
+    assert entry["text"] == sum(entry.get(o, 0) for o in csize.ORIGINS) > 0
+    assert 0 < entry["original"] <= labels["ptrs"] - labels["entry"] and entry["dispatch"] > 0
+    table = csize.report(per)
+    assert table.splitlines()[-1].startswith("| total |")
+    args = [str(tmp_path / "t.c"), str(so), "--info", str(tmp_path / "info.json")]
+    image_file = tmp_path / "t.bin"
+    image_file.write_bytes(image)
+    assert csize.main(args + ["--image", str(image_file), "--org", hex(loaded[0])]) == 0
+
+
+def test_size_origins_of_lines():
+    """Lines are classified by what they cost: trap paths with their tests, dispatch, tests of
+    code cells, 16-bit arithmetic, the rest."""
+    text = """static uint8_t rd(uint16_t a) {
+  return R0[a - R0_ORG];
+}
+void entry(uint8_t a) {
+  if (R1[0x2] == 0xA9) {
+    R0[0] = rd(R0_ORG + a);
+  }
+  if (a > 3) {
+    trap(1);
+  }
+  uint16_t v = a << 8;
+  R0[1] = a;
+}"""
+    kinds, owner = csize.line_origins(text, {0x1002}, {"R1": 0x1000, "R0": 0x10})
+    assert [kinds[n] for n in range(1, 13)] == [
+        "dispatch",
+        "dispatch",
+        "dispatch",
+        "other",
+        "cell",
+        "dispatch",
+        "other",
+        "trap",
+        "trap",
+        "other",
+        "arith16",
+        "other",
+    ]
+    assert owner[6] == "entry" and owner[2] == "rd"

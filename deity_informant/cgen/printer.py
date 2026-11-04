@@ -2067,15 +2067,27 @@ class Module:  # pylint: disable=too-many-instance-attributes
             name = names.get(c.name, c.name)
             pc, copies = self.lifted[c.f.name]
             calls = sites.get(c.f.name, [])
+            each = self.copy_pcs.get(c.f.name, {})
+            pcs = {
+                q
+                for b in c.f.blocks
+                if b.name in c.owned
+                for o in b.ops
+                if o.pc is not None
+                for q in each.get(o.pc, [o.pc])
+                if q is not None
+            }
             if name in funcs:
                 funcs[name]["copies"] += [pc, *copies]
                 funcs[name]["calls"] += calls
+                funcs[name]["pcs"] = sorted(set(funcs[name]["pcs"]) | pcs)
                 continue
             funcs[name] = {
                 "entry": pc,
                 "index": bool(copies),
                 "calls": calls,
                 "copies": list(copies),
+                "pcs": sorted(pcs),
             }
             for k, v in prov.items():
                 v += _copies(c.prov[k], self.copy_pcs.get(c.f.name, {}))
