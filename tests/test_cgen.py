@@ -443,6 +443,32 @@ j3:     LDA #$13
 tlo:    .byte lo(j0),lo(j1),lo(j2),lo(j3)
 end:
 """
+OPDISPATCH = """
+entry:  CMP #$04
+        BCS call
+        TAY
+        LDA tlo,Y
+        STA s1+1
+        STA s2+1
+        RTS
+call:   AND #$03
+s1:     JSR h0
+        STA $C000
+s2:     JSR h0
+        STA $C001
+        RTS
+h0:     LDA #$10
+        JMP tail
+h1:     LDA #$11
+tail:   STA $C002
+        RTS
+h2:     LDA #$12
+        RTS
+h3:     LDA #$13
+        RTS
+tlo:    .byte lo(h0),lo(h1),lo(h2),lo(tail)
+end:
+"""
 STACKOP = """
 entry:  LDA site
         PHA
@@ -1175,6 +1201,25 @@ def test_identical_functions_fold(prefix, tmp_path):
     c, _, info = check(prefix, tmp_path, TWIN, entry_calls([0, 1, 1, 0]))
     names = sorted({int(n) for n in re.findall(r"\bf(\d+)\(", c)})
     assert info["structure"]["folded"] == 1 and names == list(range(1, len(names) + 1))
+
+
+def test_computed_jsr_is_one_dispatch_function(prefix, tmp_path):
+    """`JSR`s through operands written from one table call one function: a switch over the
+    targets, its arms the handlers (one jumping into another's tail), handed the operand's low
+    byte so its high byte relocates inside it."""
+    calls = [("entry", a) for a in (1, 4, 4, 3, 5, 0, 6, 2, 7)]
+    outs = []
+    for org in (0x1000, 0x2300):
+        img, labels, loaded = assemble(OPDISPATCH, org)
+        c, h, info = translate(prefix, img, labels, loaded)
+        prov = info["provenance"]
+        entries = {f["entry"] for f in prov["functions"].values()}
+        assert labels["s1"] in entries and labels["s1"] in prov["switches"]
+        assert not entries & ({labels[f"h{i}"] for i in range(4)} | {labels["tail"]})
+        (tmp_path / str(org)).mkdir()
+        play(tmp_path / str(org), c, h, img, labels, calls)
+        outs.append(c)
+    assert outs[0] == outs[1]
 
 
 def test_call_through_an_operand_written_earlier(prefix, tmp_path):

@@ -244,8 +244,9 @@ An index the code does not bound, such as a command byte of song data, reads the
 where the layout ends it (*Table extents*: a split table's low column at its high column, any
 column at the next object the code accesses or the end of `loaded`), and an index guard
 traps before a load past it. Such a jump is a switch over code addresses (`case CODE_ORG +
-0x23:`) whose last target is the default, with no trap; a `JSR` through cells to functions is
-a switch of calls. `info["jumps"]` lists them (`{pc: [target, ...]}`). Programs with the same
+0x23:`) whose last target is the default, with no trap; a `JSR` through cells calls one
+function whose body is the switch over its targets (the handlers its arms), handed the
+operand's low byte, so the high byte relocates in it (`switch (v2 | CODE_ORG)`). `info["jumps"]` lists them (`{pc: [target, ...]}`). Programs with the same
 code and tables give the same `.c`; a table a store with known addresses may write leaves the
 transfer unresolved. An unresolved one becomes a switch whose default traps; `facts` supplies
 its targets: `jump_facts` keeps only the edges leaving those instructions, and the `.c` then

@@ -473,8 +473,13 @@ the facts, so a proof holds on every execution that stays in lifted code.
   goes to the words its vector `$FFFE`/`$FFFF` may hold: the values the stores with known
   addresses write there (a vector the program sets before it runs `BRK`; any other deopts),
   else the image's bytes; it pushes its address plus two as constants, so the handler's `RTI`
-  returns past the signature byte. A `JSR` through cells whose targets are all
-  functions lifted separately is a `BRANCHIND` to a `CALL` of each. A branch whose offset
+  returns past the signature byte. A `JSR` through cells with targets calls a *dispatch
+  function* (`Graph::dispatch`), one per target set (keyed by its least site that no call or
+  entry enters): the call hands it the operand bytes (registers 6 and 7, never handed back to
+  the machine; only the low byte when every site's high byte is the same constant, which
+  then stays a constant in the function), and its entry is a `BRANCHIND` through them to the
+  targets. The targets are its arms, inlined, unless a `JSR` also calls one directly: that
+  one stays a function the arm tail-calls. A branch whose offset
   byte is a cell goes to its fall-through address plus each offset the byte may hold, found
   the same way.
 - **Table extents** (`dispatch.rs`). A table indexed by a register reads only its own bytes:

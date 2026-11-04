@@ -206,6 +206,7 @@ fn extent(
                 let fs: Vec<(u16, u8)> = match &a.ctl {
                     func::Ctl::Call { f, c, .. } => vec![(*f, *c)],
                     func::Ctl::CallInd { fs, c, .. } => fs.iter().map(|&f| (f, *c)).collect(),
+                    func::Ctl::CallOp { f, c, .. } => vec![(*f, *c)],
                     _ => continue,
                 };
                 for k in fs {

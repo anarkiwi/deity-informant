@@ -8,7 +8,9 @@ use crate::analysis::{
 };
 use crate::bank::{Back, BankMap};
 use crate::func::{Arm, Ctl, Exit, Key, Plan, H};
-use crate::ir::{cy, k, mem, other, r1, reg, tmp, Block, Function, LOp, E, KREG, NREG, XREG};
+use crate::ir::{
+    cy, k, mem, other, r1, reg, tmp, Block, Function, LOp, E, KREG, NREG, OPHI, OPLO, XREG,
+};
 use di_pcode::{reg as R, CtrlKind, Op, Opc, PenKind, Slot, Space, Template, Vn};
 use fixedbitset::FixedBitSet;
 use rustc_hash::FxHashMap;
@@ -784,6 +786,24 @@ impl<'a> Em<'a, '_> {
             }
         }
     }
+    /// The high operand byte every `JSR` the dispatch function `key` serves holds as a
+    /// constant, if one: it stays a constant inside the function.
+    fn op_hi(&self, key: u16) -> Option<u8> {
+        let g = self.sh.g;
+        let his: std::collections::BTreeSet<Option<u8>> = g
+            .dispatch
+            .iter()
+            .filter(|e| e.1 .0 == key)
+            .map(|(&s, _)| {
+                let a = s.wrapping_add(2) as usize;
+                (!g.cells.contains(a)).then(|| self.sh.img[a])
+            })
+            .collect();
+        match his.into_iter().collect::<Vec<_>>()[..] {
+            [Some(h)] => Some(h),
+            _ => None,
+        }
+    }
     fn sp_addr(&mut self) -> Vn {
         let z = self.zext(r1(R::SP), 2);
         self.op(Opc::IntOr, 2, z, k(0x100, 2))
@@ -1312,6 +1332,23 @@ impl<'a> Em<'a, '_> {
             }
             Ctl::Call { f, ret, to, c } => {
                 self.call(&[*f], None, (*ret, *to), *c, chk, (cyc, maxpen), arm.port);
+            }
+            Ctl::CallOp { f, ret, c } => {
+                let lo = slot(self, Slot::B1, 1);
+                self.emit(Opc::Copy, r1(OPLO), lo, NONE, 0);
+                if self.op_hi(*f).is_none() {
+                    let hi = slot(self, Slot::B2Inc, 1);
+                    let hi = self.op(Opc::IntSub, 1, hi, k(1, 1));
+                    self.emit(Opc::Copy, r1(OPHI), hi, NONE, 0);
+                }
+                self.call(&[*f], None, (*ret, *ret), *c, chk, (cyc, maxpen), arm.port);
+            }
+            Ctl::JmpOp(ts) => {
+                let hi = self.op_hi(pc).map_or(r1(OPHI), |h| k(h as u32, 1));
+                // The `JSR`'s cycles were counted at its call.
+                let w = self.word(r1(OPLO), hi);
+                self.flush();
+                self.goto(pc, &Tg::Calc(ts.clone()), |_| w);
             }
             Ctl::CallInd { fs, ret, c } => {
                 let tv = slot(self, Slot::Word, 2);

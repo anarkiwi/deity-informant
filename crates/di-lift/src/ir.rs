@@ -14,6 +14,10 @@ pub const NREG: usize = 18;
 /// and the exit it left by ([`crate::inst`]), never handed back to the machine.
 pub const KREG: usize = 4;
 pub const XREG: usize = 5;
+/// Registers of the file no 6502 template uses: the operand bytes a computed `JSR` hands its
+/// dispatch function ([`crate::func::Ctl::CallOp`]), never handed back to the machine.
+pub const OPLO: usize = 6;
+pub const OPHI: usize = 7;
 /// Bit mask of the registers below [`NREG`].
 pub const ALL_REGS: u32 = (1 << NREG) - 1;
 
