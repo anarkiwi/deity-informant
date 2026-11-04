@@ -627,7 +627,10 @@ impl Ctx<'_> {
             },
             CtrlKind::Rts => Flow::Rts(self.computed(pc)),
             CtrlKind::Rti => Flow::Rti(self.computed(pc)),
-            CtrlKind::Brk => Flow::Brk(self.facts(pc, [self.brk])),
+            CtrlKind::Brk => Flow::Brk(match self.stat.get(&pc) {
+                Some(t) => t.iter().copied().collect(),
+                None => self.facts(pc, [self.brk]),
+            }),
             CtrlKind::Jam => Flow::Jam,
         }
     }

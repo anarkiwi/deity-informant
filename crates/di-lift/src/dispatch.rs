@@ -730,6 +730,38 @@ fn pair(
     Some((t, read, guards, origin))
 }
 
+/// The words the `BRK` vector `$FFFE`/`$FFFF` may hold when `BRK` runs: of a byte stores
+/// with known addresses write, the values they store (a vector the program sets before it
+/// runs `BRK`; any other deopts at the `BRK`), else its constant byte; none when a store of
+/// unknown address or values may write it.
+fn vector(code: &Code, stores: &[Store]) -> Option<Found> {
+    let mut read = BTreeSet::new();
+    let byte = |a: u16, read: &mut BTreeSet<u16>| -> Option<BTreeSet<u8>> {
+        let mut out = BTreeSet::new();
+        for s in stores
+            .iter()
+            .filter(|s| s.addr.meets(a as u32, a as u32 + 1))
+        {
+            match (&s.addrs, &s.vals) {
+                (Some(x), Some(v)) if x.contains(&a) => out.extend(v),
+                (Some(_), _) => {}
+                _ => return None,
+            }
+        }
+        if out.is_empty() {
+            read.insert(a);
+            out.insert(code.img[a as usize]);
+        }
+        Some(out)
+    };
+    let (lo, hi) = (byte(0xfffe, &mut read)?, byte(0xffff, &mut read)?);
+    let targets = lo
+        .iter()
+        .flat_map(|&l| hi.iter().map(move |&h| u16::from_le_bytes([l, h])))
+        .collect();
+    Some((targets, read, Vec::new(), BTreeSet::new()))
+}
+
 /// Per computed transfer resolved or failed in some state of `state`, its resolution; an
 /// `RTS`/`RTI` returning through its caller's address in every state is absent. A `JMP`/`JSR`
 /// through cell operands goes to the words its operand bytes hold where they are tagged on
@@ -753,6 +785,17 @@ pub(crate) fn jumps(
         }
     }
     let constant = |a: u16| !w.contains(a as usize) && (span.0..=span.1).contains(&a);
+    // An `RTS` at its function's entry depth in a call returning to `cx` whose return
+    // address bytes are not those the `JSR` pushed: inline arguments it returns past.
+    let past = |cx: u32, st: &St| {
+        let Ok(r) = u16::try_from(cx) else {
+            return false;
+        };
+        let [lo, hi] = r.wrapping_sub(1).to_le_bytes();
+        st.depth == Some(0)
+            && st.above.iter().all(Option::is_some)
+            && st.above != [Some(Tab::K(lo)), Some(Tab::K(hi))]
+    };
     // Per site: `Some(Some(_))` jumps, `Some(None)` returns, `None` failed.
     let mut res: FxHashMap<u16, Option<Option<Found>>> = FxHashMap::default();
     let mut keys: Vec<&Key> = state.keys().collect();
@@ -805,6 +848,16 @@ pub(crate) fn jumps(
                     }
                 }
                 Flow::Rts(_) => match st.push {
+                    [None, None, _] if past(key.1, st) => match st.above {
+                        [Some(l), Some(h)] => {
+                            pair(code, sets, objs, &w, l, h).map(|(t, b, g, o)| {
+                                let o =
+                                    o.into_iter().map(|(a, x)| (a, x.wrapping_add(1))).collect();
+                                Some((t.into_iter().map(|x| x.wrapping_add(1)).collect(), b, g, o))
+                            })
+                        }
+                        _ => None,
+                    },
                     [None, None, _] => Some(None),
                     [Some(l), Some(h), _] => {
                         pair(code, sets, objs, &w, l, h).map(|(t, b, g, o)| {
@@ -814,6 +867,7 @@ pub(crate) fn jumps(
                     }
                     _ => None,
                 },
+                Flow::Brk(_) => vector(code, stores).map(Some),
                 Flow::Rti(_) => match st.push {
                     [None, None, None] => Some(None),
                     [Some(_), Some(l), Some(h)] => pair(code, sets, objs, &w, l, h).map(Some),

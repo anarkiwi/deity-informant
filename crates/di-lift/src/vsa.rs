@@ -138,6 +138,11 @@ pub(crate) struct St {
     pub(crate) tag: [Option<Tab>; DATA],
     /// The top three stack bytes, from the top, where pushed since the function's entry.
     pub(crate) push: [Option<Tab>; 3],
+    /// The two bytes above the function's entry SP, low first (its `JSR`'s return address
+    /// less one), as pulls and pushes past the entry leave them.
+    pub(crate) above: [Option<Tab>; 2],
+    /// Pushes less pulls since the function's entry, where known.
+    pub(crate) depth: Option<i8>,
     /// Tracked bytes ([`Code::vecs`]) whose contents are known, by address: the table byte or
     /// constant they hold, and their interval.
     pub(crate) mem: Vec<(u16, Option<Tab>, Iv)>,
@@ -154,6 +159,8 @@ impl St {
             kb: std::array::from_fn(|r| Kb::of(env[r])),
             tag: [None; DATA],
             push: [None; 3],
+            above: [None; 2],
+            depth: Some(0),
             mem: Vec::new(),
         }
     }
@@ -196,9 +203,11 @@ impl St {
     fn val(&self, r: usize) -> Option<Tab> {
         self.tag[r].or_else(|| self.env[r].value().map(|x| Tab::K(x as u8)))
     }
-    /// The state a callee starts in after a `JSR` from this one.
-    fn callee(&self) -> St {
+    /// The state a callee starts in after a `JSR` from this one returning to `ret`.
+    fn callee(&self, ret: u16) -> St {
+        let [lo, hi] = ret.wrapping_sub(1).to_le_bytes();
         St {
+            above: [Some(Tab::K(lo)), Some(Tab::K(hi))],
             stored: self.stored,
             from: self.from,
             kb: self.kb,
@@ -606,9 +615,36 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
         kb: std::array::from_fn(|r| kb[r].unwrap_or(st.kb[r]).meet(Kb::of(env[r]))),
         tag: st.tag,
         push: st.push,
+        above: st.above,
+        depth: st.depth,
         mem: st.mem.clone(),
     };
+    // Pushes and pulls past the entry: a pull at depth `d <= 0` reads the byte `-d` above it,
+    // a push at `d < 0` writes the byte `-d - 1`.
+    let mut pulled = None;
+    match (v.op, st.depth) {
+        (0x48 | 0x08, Some(d)) if d < 0 => {
+            let top = if v.op == 0x48 { st.val(0) } else { None };
+            s.above[(-d - 1) as usize] = top.or(Some(Tab::Any));
+        }
+        (0x68 | 0x28, Some(d)) if d <= 0 => pulled = st.above.get((-d) as usize).copied().flatten(),
+        _ => {}
+    }
+    if let (0x68, Some(Tab::K(x))) = (v.op, pulled) {
+        s.env[0] = Iv::exact(x as u32);
+        s.kb[0] = Kb::of(s.env[0]);
+    }
+    s.depth = match stack_delta(v.op) {
+        Some(x) if matches!(v.flow, Flow::Next(_)) => st.depth.and_then(|d| {
+            let n = d - x as i8;
+            (-2..=i8::MAX - 1).contains(&n).then_some(n)
+        }),
+        _ if matches!(v.flow, Flow::Next(_)) => None,
+        _ => st.depth,
+    };
     match (v.op, &v.flow) {
+        (0x48 | 0x08, _) if st.depth.is_some_and(|d| d < 0) => {}
+        (0x68 | 0x28, _) if pulled.is_some() => {}
         (0x48 | 0x08, _) => {
             let top = if v.op == 0x48 { st.val(0) } else { None };
             s.push = [top.or(Some(Tab::Any)), st.push[0], st.push[1]];
@@ -618,7 +654,7 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
             if stack_delta(op).is_none()
                 || acc.iter().any(|a| a.store && a.addr.meets(0x100, 0x200)) =>
         {
-            s.push = [None; 3]
+            (s.push, s.above) = ([None; 3], [None; 2])
         }
         _ => {}
     }
@@ -664,7 +700,7 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
         s.tag[r] = match sym[r] {
             Some(Sym::Lin(b0, 0)) if (b0 as usize) < DATA => st.tag[b0 as usize],
             Some(Sym::Lin(b0, 0)) if b0 >= DATA as u8 && b0 != MEM => match v.op {
-                0x68 => st.push[0],
+                0x68 => pulled.or(st.push[0]),
                 op => table(code, pc, op),
             },
             _ => None,
@@ -787,6 +823,8 @@ fn join(a: &St, b: &St, widen: Option<&Thresholds>) -> St {
             (Some(x), Some(y)) => Some(join_tab(x, y).unwrap_or(Tab::Any)),
             _ => None,
         }),
+        above: std::array::from_fn(|i| tab(a.above[i], b.above[i])),
+        depth: if a.depth == b.depth { a.depth } else { None },
         mem: a
             .mem
             .iter()
@@ -829,7 +867,9 @@ fn frame(vars: &FxHashMap<u16, Vec<Var>>, t: u16, disp: &FxHashSet<u16>) -> Fram
                     Some(d) => work.push((*n, h + d)),
                     None => f.balanced = false,
                 },
-                Flow::Rts(ts) if disp.contains(&pc) => work.extend(ts.iter().map(|&n| (n, h + 2))),
+                Flow::Rts(ts) if disp.contains(&pc) && h != 0 => {
+                    work.extend(ts.iter().map(|&n| (n, h + 2)))
+                }
                 Flow::Rti(ts) if disp.contains(&pc) => work.extend(ts.iter().map(|&n| (n, h + 3))),
                 Flow::Rts(_) => {
                     f.rts.push(pc);
@@ -953,6 +993,8 @@ fn unlinked(st: &St) -> St {
         pred: [None; 3],
         rel: [None; DATA],
         push: [None; 3],
+        above: [None; 2],
+        depth: None,
         ..st.clone()
     }
 }
@@ -975,6 +1017,9 @@ struct Site {
     out: Option<St>,
     wild: Option<St>,
     calls: FxHashMap<u32, St>,
+    /// Joined states of the `RTS`s returning through the return address advanced past the
+    /// call (inline arguments), by the address they return to.
+    past: FxHashMap<u16, St>,
 }
 
 /// The caller's state after a call that left `ret`, given the state `call` it made the call in:
@@ -989,9 +1034,9 @@ fn apply(ret: &St, call: &St, linked: bool) -> St {
             call.stored[0] | ret.stored[0],
             call.stored[1] | ret.stored[1],
         ];
-        s.push = call.push;
+        (s.push, s.above, s.depth) = (call.push, call.above, call.depth);
     } else {
-        s.push = [None; 3];
+        (s.push, s.above, s.depth) = ([None; 3], [None; 2], None);
     }
     for r in 0..DATA {
         s.rel[r] = None;
@@ -1037,6 +1082,20 @@ impl Work<'_> {
             }
         }
     }
+    /// An `RTS` of the call returning to site `r` returns to `t` instead, with `st`.
+    fn give_past(&mut self, r: u16, t: u16, st: &St) {
+        let site = self.ret.entry(r).or_default();
+        let new = site
+            .past
+            .get(&t)
+            .map_or_else(|| st.clone(), |o| join(o, st, None));
+        if site.past.get(&t) != Some(&new) {
+            site.past.insert(t, new);
+            for cx in site.calls.keys().copied().collect::<Vec<_>>() {
+                self.deliver(r, cx);
+            }
+        }
+    }
     /// A `JSR` in context `cx` in state `st` is followed by site `r`.
     fn caller(&mut self, r: u16, cx: u32, st: &St) {
         let site = self.ret.entry(r).or_default();
@@ -1056,8 +1115,16 @@ impl Work<'_> {
             .into_iter()
             .filter_map(|(p, linked)| p.as_ref().map(|p| apply(p, &site.calls[&cx], linked)))
             .reduce(|a, b| join(&a, &b, None));
+        let past: Vec<(u16, St)> = site
+            .past
+            .iter()
+            .map(|(&t, p)| (t, apply(p, &site.calls[&cx], true)))
+            .collect();
         if let Some(res) = res {
             self.flow((r, cx), res);
+        }
+        for (t, st) in past {
+            self.flow((t, cx), st);
         }
     }
 }
@@ -1175,7 +1242,13 @@ pub fn analyze(
                 (Flow::Jsr { t: tg, ret }, _) => {
                     w.caller(*ret, cx, &out);
                     for &s in tg.all() {
-                        w.flow((s, *ret as u32), out.callee());
+                        w.flow((s, *ret as u32), out.callee(*ret));
+                    }
+                }
+                // An `RTS` through its call's return address advanced past the call returns.
+                (Flow::Rts(ts), _) if disp.contains(&pc) && st.depth == Some(0) && cx < ANY => {
+                    for &t in ts {
+                        w.give_past(cx as u16, t, &out);
                     }
                 }
                 (Flow::Rts(ts) | Flow::Rti(ts), _) if disp.contains(&pc) => {
@@ -1206,7 +1279,12 @@ pub fn analyze(
                 }
                 (f, _) => {
                     let out = if matches!(f, Flow::Brk(_)) {
-                        unlinked(&out)
+                        // The handler's `RTI` returns through the address `BRK` pushed.
+                        let [lo, hi] = pc.wrapping_add(2).to_le_bytes();
+                        St {
+                            push: [Some(Tab::Any), Some(Tab::K(lo)), Some(Tab::K(hi))],
+                            ..unlinked(&out)
+                        }
                     } else {
                         out
                     };

@@ -448,6 +448,54 @@ fn exit_of(top: bool, h: H, raises: bool) -> Exit {
     }
 }
 
+/// The height `TXS` at `pc` sets SP to when it restores a stack pointer saved by `TSX; STX a`:
+/// the instruction before it is the only one reaching it and loads `X` from `a`, every store
+/// to `a` is an `STX a` right after a `TSX`, and those `TSX`s run at one height in the plan
+/// (`nodes`). A non-local exit to that frame; a guard checks it at run time.
+fn saved_sp(g: &Graph, pc: u16, nodes: &BTreeSet<Key>) -> Option<H> {
+    let only = |q: u16, op: u8| {
+        let vs = g.vars.get(&q)?;
+        matches!(&vs[..], [v] if v.op == op).then(|| vs[0].clone())
+    };
+    let ldx = pc.wrapping_sub(3);
+    let v = only(ldx, 0xae)?;
+    let into: Vec<u16> = g
+        .vars
+        .iter()
+        .filter(|(_, vs)| {
+            vs.iter()
+                .any(|v| crate::analysis::flow_succs(&v.flow).contains(&pc))
+        })
+        .map(|(&q, _)| q)
+        .collect();
+    if into != [ldx] || !matches!(v.flow, Flow::Next(n) if n == pc) {
+        return None;
+    }
+    let a = u16::from_le_bytes([g.img[ldx as usize + 1], g.img[ldx as usize + 2]]) as u32;
+    let mut hs = BTreeSet::new();
+    for (&q, vs) in &g.vars {
+        let hits = vs
+            .iter()
+            .any(|v| v.acc.iter().any(|x| x.store && x.addr.meets(a, a + 1)));
+        if !hits {
+            continue;
+        }
+        let tsx = q.wrapping_sub(1);
+        let stx = only(q, 0x8e)?;
+        let t = only(tsx, 0xba)?;
+        if stx.acc.iter().any(|x| x.store && x.addr.value() != Some(a))
+            || !matches!(t.flow, Flow::Next(n) if n == q)
+        {
+            return None;
+        }
+        hs.extend(nodes.iter().filter(|k| k.0 == tsx).map(|k| k.1));
+    }
+    match hs.into_iter().collect::<Vec<_>>()[..] {
+        [h @ H::Known(_)] => Some(h),
+        _ => None,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn step(
     v: &Var,
@@ -765,6 +813,25 @@ pub fn plan(
         }
         out
     };
+    // A `TXS` restoring a stack pointer saved at a known height continues there; an
+    // `RTS`/`RTI` whose targets the code gives goes to them alone, not to the return sites of
+    // the inline `JSR`s at its height.
+    let restore = |mut s: Step, v: &Var, p: u16, nodes: &BTreeSet<Key>| {
+        if let (0x9a, [(n, H::Unknown)]) = (v.op, &s.succ[..]) {
+            if let Some(h) = saved_sp(g, p, nodes) {
+                s.succ = vec![(*n, h)];
+                s.exit = exit_of(top, h, false);
+                s.unbalanced = !top && matches!(h, H::Known(1..));
+            }
+        }
+        if let (Flow::Rts(ts) | Flow::Rti(ts), true) = (&v.flow, g.stat.contains_key(&p)) {
+            s.succ.retain(|x| ts.contains(&x.0));
+            if let Ctl::Rts(t) | Ctl::Rti(t) = &mut s.ctl {
+                t.retain(|x| ts.contains(x));
+            }
+        }
+        s
+    };
     pl.first.insert(pc, H::Known(0));
     let mut work: Vec<Key> = Vec::new();
     if ins.entry.contains_key(&pc) {
@@ -783,7 +850,7 @@ pub fn plan(
             if matches!(v.flow, Flow::Rts(_) | Flow::Rti(_)) {
                 pulls.insert((p, h, c));
             }
-            let s = step(v, h, c, top, calls, &rets, &all_rets);
+            let s = restore(step(v, h, c, top, calls, &rets, &all_rets), v, p, &pl.nodes);
             if let Some((hr, r)) = s.ret {
                 let new = match hr {
                     H::Known(x) => rets.entry(x).or_default().insert(r),
@@ -824,7 +891,7 @@ pub fn plan(
             let arms = g.vars[&p]
                 .iter()
                 .map(|v| {
-                    let s = step(v, h, c, top, calls, &rets, &all_rets);
+                    let s = restore(step(v, h, c, top, calls, &rets, &all_rets), v, p, &pl.nodes);
                     balanced &= !s.unbalanced;
                     let port = port_arm(v, &s.ctl, bank);
                     let tc = (!port).then_some(c);
