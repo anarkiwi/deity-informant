@@ -747,6 +747,29 @@ op:     STA $3000
 base:   .byte 9
 end:
 """
+CONSTS = """
+entry:  AND #$03
+        STA $13
+v0:     LDA $20
+        CLC
+        ADC #$05
+        STA $20
+        STA $C000
+        JMP v1
+v1:     LDA $21
+        CLC
+        ADC #$01
+        STA $21
+        STA $C007
+        JMP v2
+v2:     LDA $22
+        CLC
+        ADC #$09
+        STA $22
+        STA $C00E
+        RTS
+end:
+"""
 WRAP = """
 entry:  AND #$0F
         ORA #$70
@@ -1454,3 +1477,19 @@ def test_operand_patched_from_constants_is_a_known_store(prefix, tmp_path):
     the store through it has a known address, so needs no code check."""
     c, _, info = check(prefix, tmp_path, PATCHED, entry_calls(range(4), 2))
     assert "codechk" not in c and not info["traps"] and "wr(" not in c
+
+
+def test_per_copy_immediates_are_constants(prefix, tmp_path):
+    """Unrolled copies whose state is per copy and whose immediates differ (not affine in the
+    copy) are one function; the immediates are its per-copy constants."""
+    c, _, info = check(prefix, tmp_path, CONSTS, entry_calls(range(4), 4))
+    assert (info["stats"]["instances"], info["stats"]["instance_copies"]) == (1, 3)
+    assert not _voice_writes(c)
+
+
+def test_copies_differing_only_in_immediates_stay_apart(prefix, tmp_path):
+    """Copies alike in every address are one routine repeated, not a family indexed by the
+    copy, whatever their immediates."""
+    src = CONSTS.replace("$21", "$20").replace("$22", "$20").replace("$C007", "$C000")
+    _, _, info = check(prefix, tmp_path, src.replace("$C00E", "$C000"), entry_calls(range(4)))
+    assert info["stats"]["instances"] == 0

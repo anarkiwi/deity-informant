@@ -35,6 +35,8 @@ pub struct INode {
 pub struct Class {
     pub nodes: Vec<INode>,
     pub exits: Vec<Vec<u16>>,
+    /// Merged instructions whose immediate is a per-copy constant (not affine in the index).
+    pub consts: usize,
 }
 
 impl Class {
@@ -44,14 +46,18 @@ impl Class {
     pub fn entry(&self, k: usize) -> u16 {
         self.nodes[0].pcs[k].unwrap()
     }
-    /// Instructions the copies hold, less those of the merged function and one call per copy.
+    /// Instructions the copies hold, less those of the merged function, one call per copy and
+    /// each copy's value of every per-copy constant.
     fn saving(&self) -> isize {
         let held: usize = self
             .nodes
             .iter()
             .map(|n| n.pcs.iter().flatten().count())
             .sum();
-        held as isize - self.nodes.len() as isize - self.copies() as isize
+        held as isize
+            - self.nodes.len() as isize
+            - self.copies() as isize
+            - (self.consts * self.copies()) as isize
     }
     fn pcs(&self) -> impl Iterator<Item = u16> + '_ {
         self.nodes
@@ -316,14 +322,17 @@ impl Cx<'_> {
         Some(Class {
             nodes: w.nodes,
             exits: w.exits,
+            consts: 0,
         })
     }
 
     /// Starts that keep the copies of `c` from being single-entry regions entered at their
-    /// entries and left at their exits: one entered from outside its copy or from elsewhere
-    /// than a flow edge, an exit into its own copy; empty when `c` is sound.
-    fn faults(&self, c: &Class) -> Vec<u16> {
+    /// entries and left at their exits (one entered from outside its copy or from elsewhere
+    /// than a flow edge, an exit into its own copy; empty when `c` is sound), and the starts of
+    /// the merged instructions whose immediate is a per-copy constant.
+    fn faults(&self, c: &Class) -> (Vec<u16>, Vec<Vec<u16>>) {
         let n = c.copies();
+        let mut consts = Vec::new();
         let mut own: Vec<FxHashSet<u16>> = vec![FxHashSet::default(); n];
         for node in &c.nodes {
             for (k, p) in node.pcs.iter().enumerate() {
@@ -348,9 +357,9 @@ impl Cx<'_> {
             }
             bad.extend(c.exits.iter().map(|x| x[k]).filter(|x| own[k].contains(x)));
         }
-        // Operands the copies differ in are affine in the copy index, or addresses inside each
-        // copy's own code (its cells and code): what copies of one routine at other places and
-        // over other per-copy state differ in.
+        // Operands the copies differ in are affine in the copy index, addresses inside each
+        // copy's own code (its cells and code), or immediates (per-copy constants): what copies
+        // of one routine at other places and over other per-copy state differ in.
         let code: Vec<FxHashSet<u16>> = own
             .iter()
             .map(|o| {
@@ -395,13 +404,18 @@ impl Cx<'_> {
             let inside = pts
                 .iter()
                 .all(|&(k, v)| code[k as usize].contains(&(v as u16)));
+            let value = len == 2 && v.acc.is_empty();
             if line(&pts, m).is_none() && !inside {
-                bad.extend(node.pcs.iter().flatten().copied());
+                if value {
+                    consts.push(node.pcs.iter().flatten().copied().collect());
+                } else {
+                    bad.extend(node.pcs.iter().flatten().copied());
+                }
             }
         }
         bad.sort_unstable();
         bad.dedup();
-        bad
+        (bad, consts)
     }
 
     /// The stack height of each merged instruction relative to the entry, when every copy's
@@ -443,9 +457,9 @@ impl Cx<'_> {
         h.into_iter().collect()
     }
 
-    /// Whether the copies of `c` hold state of their own: an operand they differ in, a cell
+    /// Whether the copies of `c` hold state of their own: an address they differ in, a cell
     /// (read at each copy's own address) or a jump through tables shifted per copy. Copies
-    /// alike in every operand are one routine repeated, not a family indexed by the copy.
+    /// alike in every address are one routine repeated (per-copy immediates are constants).
     fn indexed(&self, c: &Class) -> bool {
         c.nodes.iter().any(|n| {
             let ps: Vec<u16> = n.pcs.iter().flatten().copied().collect();
@@ -456,14 +470,33 @@ impl Cx<'_> {
                 .map(|&p| operand_bytes(&self.g.img, &self.g.cells, p, len))
                 .collect();
             let data = matches!(v.flow, Flow::Next(_)) || matches!(v.flow, Flow::Jmp(Tg::Calc(_)));
+            let value = len == 2 && v.acc.is_empty();
             data && ps.len() > 1
                 && (b
                     .iter()
                     .any(|x| x[..len as usize - 1].iter().any(|y| y.is_none()))
-                    || b.iter()
-                        .any(|x| x[..len as usize - 1] != b[0][..len as usize - 1])
+                    || !value
+                        && b.iter()
+                            .any(|x| x[..len as usize - 1] != b[0][..len as usize - 1])
                     || matches!(v.flow, Flow::Jmp(Tg::Calc(_))))
         })
+    }
+
+    /// Whether every exit of each copy of `c` but the last runs straight (falling through or by
+    /// `JMP`) into the next copy's entry, as an unrolled body runs into the next, not a test
+    /// choosing among alternatives.
+    fn leaves_unconditionally(&self, c: &Class) -> bool {
+        let straight = |mut p: u16, goal: u16| {
+            let mut seen = FxHashSet::default();
+            while p != goal && seen.insert(p) {
+                p = match self.g.vars.get(&p).map(|vs| &vs[0].flow) {
+                    Some(Flow::Next(t) | Flow::Jmp(Tg::At(t))) => *t,
+                    _ => return false,
+                };
+            }
+            p == goal
+        };
+        (1..c.copies()).all(|k| c.exits.iter().all(|x| straight(x[k - 1], c.entry(k))))
     }
 
     /// Whether the copies of `c` run one after another, as an unrolled loop's bodies: each
@@ -504,8 +537,14 @@ impl Cx<'_> {
     fn class(&self, ms: &[u16]) -> Option<Class> {
         let mut banned = FxHashSet::default();
         loop {
-            let c = self.walk(ms, &banned)?;
-            let bad = self.faults(&c);
+            let mut c = self.walk(ms, &banned)?;
+            let (bad, consts) = self.faults(&c);
+            c.consts = consts.len();
+            if bad.is_empty() && !consts.is_empty() && !self.leaves_unconditionally(&c) {
+                // Per-copy constants only in an unrolled body: elsewhere they leave the class.
+                banned.extend(consts.into_iter().flatten());
+                continue;
+            }
             if bad.is_empty() {
                 return (self.indexed(&c) && self.unrolled(&c) && self.heights(&c).is_some())
                     .then_some(c);
