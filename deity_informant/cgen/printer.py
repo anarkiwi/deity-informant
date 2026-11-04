@@ -1570,9 +1570,10 @@ GOTO = re.compile(r"\bgoto\b")
 
 
 def fold(defs, protos):
-    """``(protos, definitions, {name: final name})`` with each set of functions whose definitions are the same up
-    to their own name and the functions they call (merged so far) kept once, until none is
-    left, then renumbered ``f1, f2, ...`` in their order; ``defs`` ``[(name, text)]``."""
+    """``(protos, definitions, {name: final name})`` with each set of functions whose
+    definitions are the same up to their own name and the functions they call (merged so far)
+    kept once, until none is left, then renumbered ``f1, f2, ...`` in their order; ``defs``
+    ``[(name, text)]``."""
     text = dict(defs)
     rep = {n: n for n in text}
 
