@@ -769,6 +769,12 @@ impl Program {
         self.prog.sets.iter().cloned().collect()
     }
 
+    /// Runs ``[(lo, hi)]`` (``hi`` exclusive) of the bytes stores with address sets may write.
+    #[getter]
+    fn written(&self) -> Vec<(u32, u32)> {
+        self.prog.written.clone()
+    }
+
     /// The computed transfers whose targets come from the code: ``{pc: [target, ...]}``.
     #[getter]
     fn jumps(&self) -> HashMap<u16, Vec<u16>> {

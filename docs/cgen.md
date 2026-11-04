@@ -93,8 +93,9 @@ arguments gets a node of copies (the arguments are C variables assigned on the e
 parallel assignment); an edge to a block that only returns is a `return`.
 
 A shared tail is a function only where the machine code makes it a procedure: a `JSR` target
-or code two lifted functions reach at their entry height (the lift's tail calls); a join inside
-one function stays in it.
+or code two lifted functions enter at their entry height (the lift's tail calls); a join inside
+one function stays in it, as does code past such an entry that the functions only share
+through it.
 
 **The goto rule.** The structured forms are exactly: a fall-through (the machine code's next
 instruction), an if/else whose arms rejoin at the branch's immediate post-dominator, a
@@ -204,7 +205,9 @@ per-voice routines often are; the rest are renumbered in order.
   enumerated to its fixpoint or keeping its initial interval, a load of a closed cell the
   hull of its values (`Program.sets`)); wider than `$200` is unknown.
   An unknown access may touch every byte of `loaded`, so then every non-code byte of it is in a
-  region. Zero page, the stack page and RAM outside the image are regions when accessed.
+  region. Zero page, the stack page and RAM outside the image are regions when accessed, and
+  so is every byte a store with an address set may write (`Program.written`: a block copy's
+  destinations past the image, which pointer reads then find through `rd`).
 - An access whose interval lies in one region is `Rk[off + index]`, `off` relative to the
   region and the address taken modulo its width (16 bits, 8 for a zero-page one) as the 6502
   wraps it. One in volatile memory is `io_read`/`io_write`. One wholly in constant code is

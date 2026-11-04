@@ -705,8 +705,8 @@ class Structurer:
             if it[0] == "if":
                 arms, rest, fam = [], [it], None
                 while True:
-                    rest = [x for x in rest if not self.quiet([x])]
-                    head = rest[0] if len(rest) == 1 and rest[0][0] == "if" else None
+                    shown = [x for x in rest if not self.quiet([x])]
+                    head = shown[0] if len(shown) == 1 and shown[0][0] == "if" else None
                     head = None if head and head[5] in self.g.effects else head
                     hit, a = (head[3], self.atoms(head[1])) if head else (None, None)
                     if head and a is None:

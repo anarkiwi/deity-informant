@@ -629,6 +629,111 @@ c3:     LDX #$33
         RTS
 end:
 """
+CHAIN_TAIL = """
+entry:  LDX sel
+        CMP #$01
+        BEQ c1
+        CMP #$02
+        BEQ c2
+        CMP #$05
+        BEQ c3
+        STA $C000
+        LDY flag
+        BEQ test
+        STY $C005
+test:   CPX cur
+        BNE out
+        STX $C004
+out:    RTS
+c1:     STX cur
+        STA flag
+        RTS
+c2:     INC sel
+        RTS
+c3:     LDX #$33
+        STX $C003
+        RTS
+sel:    .byte 0
+cur:    .byte 1
+flag:   .byte 0
+end:
+"""
+BLOCKS = """
+entry:  CMP #$02
+        BCS play
+        ASL A
+        TAX
+        LDA dst,X
+        STA $FA
+        LDA dst+1,X
+        STA $FB
+        LDA src,X
+        STA $FC
+        LDA src+1,X
+        STA $FD
+        LDY len,X
+        LDA len+1,X
+        TAX
+        STY rest+1
+        LDY #$00
+        INX
+        JMP pages
+copy:   LDA ($FC),Y
+        STA ($FA),Y
+        INY
+        BNE copy
+        INC $FB
+        INC $FD
+pages:  DEX
+        BEQ rest
+        JMP copy
+rest:   CPY #$00
+        BEQ done
+        LDA ($FC),Y
+        STA ($FA),Y
+        INY
+        JMP rest
+done:   RTS
+play:   AND #$7F
+        TAY
+        LDA #$00
+        STA $F8
+        LDA #$50
+        STA $F9
+        LDA ($F8),Y
+        STA $C000
+        INC $F9
+        LDA ($F8),Y
+        STA $C001
+        LDA $6008
+        STA $C002
+        RTS
+dst:    .byte $00, $50, $00, $60
+src:    .byte lo(entry), hi(entry), lo(play), hi(play)
+len:    .byte $23, $01, $10, $00
+end:
+"""
+SHARED = """
+entry:  AND #$03
+        BEQ e1
+        JSR p1
+        RTS
+e1:     JSR p2
+        RTS
+p1:     LDX #$01
+        JMP shared
+p2:     LDX #$02
+shared: CMP #$01
+        BEQ join
+        PHA
+        STX $C000
+        PLA
+        STA $C003
+join:   STA $C001
+        STX $C002
+        RTS
+end:
+"""
 SHORT = """
 entry:  TAX
         LDA flags,X
@@ -1215,6 +1320,16 @@ def test_shared_tail_stays_in_its_function(prefix, tmp_path, src, places):
     assert c.count("entry") == 1 and places > 1
 
 
+def test_code_past_a_shared_tail_stays_in_it(prefix, tmp_path):
+    """Code two procedures share past the shared tail they enter stays in its function, also
+    where it returns to the entry height after a push and a pull."""
+    img, labels, _ = assemble(SHARED)
+    _, _, info = check(prefix, tmp_path, SHARED, entry_calls(range(4), 2))
+    entries = {f["entry"] for f in info["provenance"]["functions"].values()}
+    assert labels["shared"] in entries and labels["join"] not in entries
+    assert labels["join"] - 3 not in entries
+
+
 def test_multi_exit_loop_breaks_to_its_follow(prefix, tmp_path):
     # The inner loop's two edges to `none` break to its follow; its exit to `found` is the
     # goto; `none`'s jump past `found` to the latch `next` continues the outer do/while.
@@ -1230,6 +1345,14 @@ def test_two_entry_loop_jumps_to_its_second_entry(prefix, tmp_path):
 def test_switch_from_a_compare_chain(prefix, tmp_path):
     c, _, _ = check(prefix, tmp_path, CHAIN, entry_calls([0, 1, 2, 3, 5, 9, 0x81]))
     assert "switch (a)" in c and all(f"case {k}:" in c for k in (1, 2, 5))
+
+
+def test_switch_default_keeps_its_tests_operands(prefix, tmp_path):
+    """A test in a compare chain's default arm whose operand is read from memory after an
+    effect keeps the read: the chain's switch drops only the quiet blocks it absorbs."""
+    calls = entry_calls([0, 2, 0, 1, 0, 2, 0, 5, 9, 1, 0])
+    c, _, _ = check(prefix, tmp_path, CHAIN_TAIL, calls)
+    assert "switch (" in c and "default:" in c
 
 
 def test_switch_from_a_jump_table(prefix, tmp_path):
@@ -1477,6 +1600,18 @@ def test_operand_patched_from_constants_is_a_known_store(prefix, tmp_path):
     the store through it has a known address, so needs no code check."""
     c, _, info = check(prefix, tmp_path, PATCHED, entry_calls(range(4), 2))
     assert "codechk" not in c and not info["traps"] and "wr(" not in c
+
+
+def test_block_copy_stores_have_per_block_addresses(prefix, tmp_path):
+    """A block copy through a pointer a page loop advances (a rotated loop over pages, then the
+    remainder) whose destination, source and length are table bytes of one block number: its
+    stores write, per block, the destination up to the pages its length counts, so RAM past the
+    image is data and no store is checked against the code."""
+    calls = [("entry", 0), ("entry", 0x82), ("entry", 0x90), ("entry", 1), ("entry", 0x88)]
+    c, _, info = check(prefix, tmp_path, BLOCKS, calls)
+    assert "codechk" not in c and not info["traps"]
+    spans = {org: n for org, n in info["regions"]}
+    assert 0x5000 in spans and 0x6000 in spans and spans[0x6000] <= 0x200
 
 
 def test_per_copy_immediates_are_constants(prefix, tmp_path):

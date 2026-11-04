@@ -1305,6 +1305,7 @@ pub fn analyze(
         &mut stores,
         &mut guards,
         &mut reads,
+        &konst,
     );
     crate::dispatch::tag_values(
         &code,
@@ -1316,21 +1317,22 @@ pub fn analyze(
         &mut reads,
     );
     let cellvals = crate::dispatch::cell_values(img, &stores);
-    // A store through a pointer with an address set reaches the hull of its set.
+    // A store through a pointer with an address set reaches the hull of its set; its
+    // throw-away read, the base's page with the indexed low byte, the pages from the least
+    // address less a page to the greatest.
     for &i in &through {
         let st = &stores[i];
-        let Some(&[lo, .., hi]) = st.addrs.as_deref().filter(|a| a.len() > 1) else {
-            if let Some(&[a]) = st.addrs.as_deref() {
-                for v in vars
-                    .get_mut(&st.pc)
-                    .into_iter()
-                    .flatten()
-                    .filter(|v| v.op == st.op)
-                {
-                    v.acc[st.ai].addr = Iv::exact(a as u32);
-                }
-            }
+        let Some((&lo, &hi)) = st
+            .addrs
+            .as_deref()
+            .and_then(|a| Some((a.first()?, a.last()?)))
+        else {
             continue;
+        };
+        let (lo, hi) = (lo as u32, hi as u32);
+        let page = Iv {
+            lo: lo.saturating_sub(0xff) & 0xff00,
+            hi: hi | 0xff,
         };
         for v in vars
             .get_mut(&st.pc)
@@ -1338,10 +1340,10 @@ pub fn analyze(
             .flatten()
             .filter(|v| v.op == st.op)
         {
-            v.acc[st.ai].addr = Iv {
-                lo: lo as u32,
-                hi: hi as u32,
-            };
+            v.acc[st.ai].addr = Iv { lo, hi };
+            for a in v.acc.iter_mut().filter(|a| a.dummy && !a.store) {
+                a.addr = meet(a.addr, page).unwrap_or(page);
+            }
         }
     }
     let jumps = crate::dispatch::jumps(&code, vars, &w.state, &sets, &objs, &stores, &cellvals);

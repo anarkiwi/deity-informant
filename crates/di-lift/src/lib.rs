@@ -660,6 +660,16 @@ pub fn lift_banked(
             c.ones().map(|a| (a as u16, img[a])).collect()
         },
         volatile: volatile.to_vec(),
+        written: {
+            let mut runs: Vec<(u32, u32)> = Vec::new();
+            for a in g.written.ones().map(|a| a as u32) {
+                match runs.last_mut() {
+                    Some(r) if r.1 == a => r.1 = a + 1,
+                    _ => runs.push((a, a + 1)),
+                }
+            }
+            runs
+        },
         elide_ret: private,
         bank: bank.cloned(),
         cycles: opts.cycles,

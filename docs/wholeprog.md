@@ -44,6 +44,7 @@ prog.induction        # [{"head", "reg", "addr", "lo", "hi", "step", "trips"}] l
 prog.jumps            # {pc: [target, ...]} computed transfers resolved from the code
 prog.sets             # {address: [value, ...]} closed cells (opcodes and operands) and their values
 prog.code             # [addr, ...] bytes treated as constant: code, tables read for jumps and cells
+prog.written          # [(lo, hi), ...] runs of the bytes stores with address sets may write
 prog.guard_evals      # conditional branches to a deopt the interpreter backend has run
 r = prog.call(mem, 0, a=0, reg=None, cycles=0, max_cycles=10_000_000, log=True)  # backend=
 prog.backend          # "jit" (default) or "interp"; prog.compile() -> compile seconds
@@ -193,9 +194,11 @@ the program, and checks it against the reference.
    separately (a fall-through, `JMP` or branch into it, whose `RTS` then returns from the
    caller too) is a `CALL` at the caller's SP with no return address, followed by the caller's
    return; a deopt in the callee writes no return address for that frame. An instruction start
-   that two or more plans reach at their entry height, from a node that is not such a start,
-   is a *shared tail*: it becomes a function entered by tail calls when its plan is balanced
-   (plans are made again until no new shared tail appears). So a voice routine called with
+   that two or more plans reach at their entry height, entered there from a node no other plan
+   reaches at the same height, is a *shared tail*: it becomes a function entered by tail calls
+   when its plan is balanced (plans are made again until no new shared tail appears). Code the
+   plans share past it stays in that function, also where it returns to the entry height after
+   a push and a pull: a join reached only within one procedure is not a function. So a voice routine called with
    `JSR` for two voices and fallen into for the third is one function with three call sites,
    not a function plus a copy specialized to the third voice's `X`.
    **Instances** (`inst.rs`, `fold=True`; without facts, a bank map or cycle counting). Copies
@@ -413,11 +416,24 @@ the facts, so a proof holds on every execution that stays in lifted code.
   through a `(zp),Y` pointer whose two bytes hold table bytes or constants on every path
   (inside the tables' extent, from bytes no store with an address set writes) has, as its
   address set, each word whose bytes lie in the pointer bytes' intervals plus each value of
-  `Y`, and its access interval is the set's hull: a relocator patching operands through a
+  `Y`, and its access interval is the set's hull (its throw-away read the pages from the
+  hull's least address less a page to its greatest): a relocator patching operands through a
   pointer from its table makes them cells. The pointer bytes of `(zp),Y` accesses are tracked
   like `JMP (ind)` pointers, with their value intervals: a pointer access reaches the
   pointer's hull plus its index when that does not wrap, and a store through a pointer stops
   tracking only the bytes it may reach (the low addresses a wrap reaches included).
+  A store through a pointer a loop advances (a block copy: `INC hi` per page, counted by an
+  index register) is evaluated per value of the index its tables are read with, which relates
+  the pointer to the count: its loop's head must dominate the store and be entered by one edge
+  ending a straight chain on which the pointer bytes and the counter are table bytes of one
+  index value (or constants), and no instruction between the head and the store outside the
+  loop may write the pointer bytes. Per index value the chain runs exactly to the head, so the
+  loop's induction variables start at known values and its trip bound follows (taking stores
+  through the pointer not to write its bytes); each pointer byte the loop advances takes its
+  start plus the loop's changes to it over the trips, the other its value at the head, and the
+  store's address set is the words they make plus each value of `Y`. A set reaching zero page
+  or the stack is not taken, so the assumption holds. Bytes past the image such a set holds
+  are data (`Program.written`), and the reached instructions it overwrites are cells.
 - **Computed jumps** (`dispatch.rs`). A `JMP (ind)` whose pointer bytes are tagged on every
   path into it, a `JMP`/`JSR` whose cell operand bytes are (a byte that is not a cell is a
   constant), and an `RTS`/`RTI` whose return-address bytes are pushed so on every path, goes

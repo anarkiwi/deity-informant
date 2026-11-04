@@ -869,24 +869,26 @@ pub fn plan(
 }
 
 /// Heads of shared tails: instruction starts that two or more plans reach at their entry
-/// height, entered there from a node that is not such a start (or that is at another height).
-/// Each becomes a function its callers reach by tail calls, as a `JSR` target that returns at its
-/// entry height does by calls.
+/// height, entered there from a node that is not shared (one no other plan reaches at the same
+/// height). Code the plans share past such an entry, including where it returns to the entry
+/// height after a push and a pull, stays in the function the entry heads. Each becomes a
+/// function its callers reach by tail calls, as a `JSR` target that returns at its entry
+/// height does by calls.
 fn shared_tails(plans: &[Plan]) -> BTreeSet<u16> {
-    let mut count: FxHashMap<u16, usize> = FxHashMap::default();
+    let mut count: FxHashMap<(u16, H), usize> = FxHashMap::default();
     let plans: Vec<&Plan> = plans.iter().filter(|p| p.inst.is_none()).collect();
     for p in &plans {
-        let at0: BTreeSet<u16> = p
+        let at: BTreeSet<(u16, H)> = p
             .nodes
             .keys()
-            .filter(|k| k.1 == H::Known(0) && k.0 != p.pc)
-            .map(|k| k.0)
+            .filter(|k| k.0 != p.pc)
+            .map(|k| (k.0, k.1))
             .collect();
-        for t in at0 {
-            *count.entry(t).or_default() += 1;
+        for k in at {
+            *count.entry(k).or_default() += 1;
         }
     }
-    let shared = |k: &Key| k.1 == H::Known(0) && count.get(&k.0).is_some_and(|&n| n > 1);
+    let shared = |k: &Key| count.get(&(k.0, k.1)).is_some_and(|&n| n > 1);
     plans
         .iter()
         .flat_map(|p| {
@@ -894,7 +896,7 @@ fn shared_tails(plans: &[Plan]) -> BTreeSet<u16> {
                 n.arms
                     .iter()
                     .flat_map(|a| &a.succ)
-                    .filter(move |s| shared(s) && (!shared(k) || k.0 == p.pc))
+                    .filter(move |s| s.1 == H::Known(0) && shared(s) && (!shared(k) || k.0 == p.pc))
                     .map(|s| s.0)
             })
         })
