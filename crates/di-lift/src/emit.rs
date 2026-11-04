@@ -96,6 +96,8 @@ struct Em<'a, 'b> {
     n: Counts,
     /// The block the current instruction started in.
     istart: u32,
+    /// The address of the instruction being emitted.
+    ipc: u16,
     /// The decimal flag may be set at the current instruction.
     dec: bool,
     /// The current instruction's checks include a code check: the code a deopt resumes may
@@ -157,6 +159,7 @@ pub fn emit(
         slots: &sh.slots[fi],
         n: Counts::default(),
         istart: 0,
+        ipc: 0,
         dec: false,
         coded: false,
         mem: None,
@@ -281,9 +284,11 @@ impl<'a> Em<'a, '_> {
         tmp((self.next - 1) as u16, size)
     }
     fn emit(&mut self, opc: Opc, out: Vn, a: Vn, b: Vn, aux: u32) {
-        self.f.blocks[self.cur]
-            .ops
-            .push(LOp::new(opc, out, a, b, aux));
+        let op = LOp {
+            pc: self.ipc,
+            ..LOp::new(opc, out, a, b, aux)
+        };
+        self.f.blocks[self.cur].ops.push(op);
     }
     /// `opc(a, b)` into a fresh temporary of `size` bytes.
     fn op(&mut self, opc: Opc, size: u8, a: Vn, b: Vn) -> Vn {
@@ -824,6 +829,7 @@ impl<'a> Em<'a, '_> {
     fn node(&mut self, key: Key) {
         let (plan, sh) = (self.plan, self.sh);
         let pc = key.0;
+        self.ipc = pc;
         let arms = &plan.nodes[&key].arms;
         let vars = &sh.g.vars[&pc];
         (self.nh, self.nc) = (key.1, key.2);

@@ -145,7 +145,7 @@ def _block_pointers(vals, uniq, stored, blk, found):
                 if n == 1 and p is not None and (_next(p), 1) in at(pair[1]):
                     pointers[p].add(pc)
 
-    for mn, out, ins, _ in blk["ops"]:
+    for mn, out, ins, *_ in blk["ops"]:
         args = [None if v is None else val(v) for v in ins]
         if mn in ("LOAD", "STORE", "BRANCHIND"):
             address(args[0])

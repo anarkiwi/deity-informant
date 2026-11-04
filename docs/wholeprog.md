@@ -36,6 +36,7 @@ facts = trace.collect(state, lambda s: [s.call(play) for _ in range(3000)])
 prog = wholeprog.lift(state, [play], volatile=[(lo, hi)], facts=facts)   # cycles=False
 prog = wholeprog.lift(image, [init, play], volatile, entry_sp=0xFD, loaded=(lo, hi))  # static
 prog.functions        # [{"pc", "entry", "recursive", "blocks": [{"pc", "ops"}], "tables", "closed"}]
+                      # an op: [name, out, ins, aux, pc], pc the instruction it was emitted for
 prog.stats            # insns, raw_ops, emitted_ops, ops, cells, code_guards, calls, ...
 prog.chains           # [{"function", "pc", "kind", "fused", "x", "y", "r"}] carry chains
 prog.induction        # [{"head", "reg", "addr", "lo", "hi", "step", "trips"}] loop counters

@@ -26,6 +26,60 @@ def code_bytes(image, starts):
     return mask
 
 
+def successors(image, pc):
+    """Where the instruction at ``pc`` may go: a branch's next instruction and target, a
+    ``JMP abs``'s target, else the next instruction."""
+    op = OPS.get(image[pc], ("", "impl"))
+    nxt = (pc + MODE_LEN[op[1]]) & 0xFFFF
+    if op[1] == "rel":
+        return [nxt, (nxt + (image[(pc + 1) & 0xFFFF] ^ 0x80) - 0x80) & 0xFFFF]
+    if op == ("JMP", "abs"):
+        return [image[(pc + 1) & 0xFFFF] | image[(pc + 2) & 0xFFFF] << 8]
+    return [nxt]
+
+
+def edge(image, p, q):
+    """``[from, to]``: the instruction edge from the instruction at ``p`` toward ``q`` (an
+    instruction where the target block's code starts): past the instructions with one
+    successor (``JMP``s the lift threads included), a branch's edge to ``q``, the last
+    ``JMP`` of a chain from one of its successors to ``q``, else its successor at or
+    before ``q``."""
+    seen = set()
+    while p not in seen:
+        seen.add(p)
+        ss = successors(image, p)
+        if len(ss) > 1:
+            if q in ss:
+                return [p, q]
+            hit = [s for s in ss if through(image, s) == q]
+            if hit:
+                return [_last_jump(image, hit[0]), q]
+            below = [s for s in ss if s <= q]
+            return [p, max(below) if below else ss[0]]
+        if ss[0] == q:
+            return [p, q]
+        p = ss[0]
+    return [p, q]
+
+
+def _last_jump(image, pc):
+    """The last ``JMP abs`` of the chain from ``pc``."""
+    seen = set()
+    while (n := successors(image, pc)[0]) not in seen and OPS.get(image[n]) == ("JMP", "abs"):
+        seen.add(pc)
+        pc = n
+    return pc
+
+
+def through(image, pc):
+    """Where a chain of ``JMP abs`` from ``pc`` ends."""
+    seen = set()
+    while OPS.get(image[pc]) == ("JMP", "abs") and pc not in seen:
+        seen.add(pc)
+        pc = successors(image, pc)[0]
+    return pc
+
+
 def pointer_pairs(image, starts):
     """``{lo: hi}`` of the byte pairs instructions use as addresses: the zero-page pointers of
     ``(zp),Y``/``(zp,X)``, ``JMP (ind)`` vectors, three-byte operands and page-1 pairs."""
