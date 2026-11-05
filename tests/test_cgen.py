@@ -1094,6 +1094,19 @@ d0:     .byte 1,2,3,4
 d1:     .byte 5,6,7,8
 end:
 """
+ADD16 = """
+entry:  AND #$0F
+        CLC
+        ADC $20
+        STA $20
+        STA $C000
+        LDA $21
+        ADC $22
+        STA $21
+        STA $C001
+        RTS
+end:
+"""
 WRAP = """
 entry:  AND #$0F
         ORA #$70
@@ -1897,6 +1910,22 @@ def test_entry_run_closes_the_operands_it_writes(prefix, tmp_path):
     ops = [labels[o] + k for o in ("o0", "o1") for k in (1, 2)]
     assert {a: bytes(p.sets[a]) for a in ops} == {a: img[a : a + 1] for a in ops}
     assert info["stats"]["code_guards"] == 0
+
+
+def test_carry_chain_identity():
+    """``lo = a + b``, ``hi = d + e + (lo < a)`` are the bytes of ``(d:a) + (e:b)``, for every
+    ``a``, ``b`` and every value of ``d + e``."""
+    a, b, de = np.meshgrid(*(np.arange(256),) * 3, indexing="ij")
+    lo = (a + b) & 0xFF
+    hi = (de + (lo < a)) & 0xFF
+    w = ((de << 8) + a + b) & 0xFFFF
+    assert (lo == (w & 0xFF)).all() and (hi == (w >> 8)).all()
+
+
+def test_carry_chain_is_one_16_bit_add(prefix, tmp_path):
+    """An `ADC` whose carry only feeds the `ADC` of the byte above prints as one 16-bit add."""
+    c, _, _ = check(prefix, tmp_path, ADD16, entry_calls(range(0, 16, 3), 40))
+    assert "<< 8" in c and not re.search(r"\(v\d+ < v\d+\)", c)
 
 
 def test_fall_through_into_a_routine_is_a_tail_call(prefix, tmp_path):
