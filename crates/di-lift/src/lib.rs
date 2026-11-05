@@ -485,7 +485,15 @@ pub fn lift_banked(
     let entries = &declared[..];
     let mut matched = true;
     let (g, plans, fidx, callees, recursive, slots, constcode, touches, seen, sites, private) = loop {
-        let mut g = discover(img, entries, facts, bank, matched, opts.loaded);
+        let mut g = discover(
+            img,
+            entries,
+            facts,
+            bank,
+            matched,
+            opts.loaded,
+            opts.entry_sp,
+        );
         let roots: Vec<u16> = entries.iter().map(|e| e.pc).collect();
         // Declared entry SP: the windows also keep pointers out of the volatile pages.
         let zones = match opts.entry_sp {

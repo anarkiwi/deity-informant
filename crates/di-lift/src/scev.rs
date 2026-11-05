@@ -102,6 +102,100 @@ fn advance(code: &Code, pc: u16, v: &Var, var: Place, tr: Track, known: Known) -
     (change, regs)
 }
 
+/// What a call of `f` returning to `ret` may change: the data registers it writes (bits of `A`,
+/// `X`, `Y`), the intervals it stores to and its `RTS` starts, when every path from `f` returns
+/// to `ret` (calls within it summarized alike).
+type Call = (u32, Vec<Iv>, Vec<u16>);
+
+fn callee(
+    code: &Code,
+    vars: &FxHashMap<u16, Vec<Var>>,
+    succs: &Succs,
+    f: u16,
+    ret: u16,
+    memo: &mut FxHashMap<(u16, u16), Option<Call>>,
+) -> Option<Call> {
+    if let Some(c) = memo.get(&(f, ret)) {
+        return c.clone();
+    }
+    memo.insert((f, ret), None);
+    let (mut writes, mut stores, mut rts) = (0u32, Vec::new(), Vec::new());
+    let (mut seen, mut work) = (FxHashSet::default(), vec![f]);
+    while let Some(pc) = work.pop() {
+        if !seen.insert(pc) {
+            continue;
+        }
+        for v in vars.get(&pc)? {
+            let t = Template::of(v.op);
+            let b = operand_bytes(code.img, code.cells, pc, t.len);
+            writes |= symbolic_in(t.ops(), b, (None, None, [None; 3]), None).1 & 0b111;
+            stores.extend(v.acc.iter().filter(|a| a.store).map(|a| a.addr));
+            match &v.flow {
+                Flow::Next(_) | Flow::Br { .. } | Flow::Jmp(Tg::At(_)) => {
+                    work.extend(crate::analysis::flow_succs(&v.flow))
+                }
+                Flow::Jsr {
+                    t: Tg::At(g),
+                    ret: r,
+                } => {
+                    let (w, s, _) = callee(code, vars, succs, *g, *r, memo)?;
+                    writes |= w;
+                    stores.extend(s);
+                    work.push(*r);
+                }
+                Flow::Rts(_) if succs.get(&pc).is_some_and(|s| s.contains(&ret)) => rts.push(pc),
+                _ => return None,
+            }
+        }
+    }
+    let c = Some((writes, stores, rts));
+    memo.insert((f, ret), c.clone());
+    c
+}
+
+/// `succs` with each call whose callee returns to its return site ([`callee`]) also an edge to
+/// that site, and the callee's returns to it dropped, so a loop calling a routine others also
+/// call is entered only at its head; and the summary of each such call by its start.
+fn collapse(
+    code: &Code,
+    vars: &FxHashMap<u16, Vec<Var>>,
+    succs: &Succs,
+) -> (Succs, FxHashMap<u16, Call>) {
+    let (mut out, mut calls, mut memo) =
+        (succs.clone(), FxHashMap::default(), FxHashMap::default());
+    for (&pc, vs) in vars {
+        let [Var {
+            flow: Flow::Jsr { t: Tg::At(f), ret },
+            ..
+        }] = &vs[..]
+        else {
+            continue;
+        };
+        if let Some(c) = callee(code, vars, succs, *f, *ret, &mut memo) {
+            let s = out.entry(pc).or_default();
+            if !s.contains(ret) {
+                s.push(*ret);
+            }
+            calls.insert(pc, c);
+        }
+    }
+    for (pc, (_, _, rts)) in &calls {
+        let Some(Var {
+            flow: Flow::Jsr { ret, .. },
+            ..
+        }) = vars[pc].first()
+        else {
+            continue;
+        };
+        for r in rts {
+            if let Some(s) = out.get_mut(r) {
+                s.retain(|x| x != ret);
+            }
+        }
+    }
+    (out, calls)
+}
+
 /// The induction variables of every loop of `vars`, given the interval states `st` at each
 /// instruction start; `roots` are the entries, `konst` gives the bytes taken as constant and
 /// each a trip bound read is appended to `reads`.
@@ -116,6 +210,8 @@ pub(crate) fn find(
     konst: &dyn Fn(u32) -> Option<u8>,
     reads: &mut Vec<u16>,
 ) -> Vec<Induction> {
+    let (succs, calls) = collapse(code, vars, succs);
+    let succs = &succs;
     let mut preds: Succs = FxHashMap::default();
     for (&p, ss) in succs {
         for &s in ss {
@@ -208,11 +304,25 @@ pub(crate) fn find(
             let mut round: Option<Option<u8>> = None;
             let mut work = vec![h];
             while let Some(n) = work.pop() {
-                let d = vars[&n]
+                let mut d = vars[&n]
                     .iter()
                     .map(|v| advance(code, n, v, var, at[&n], known(n)))
                     .reduce(merge)
                     .unwrap();
+                if let Some((w, stores, _)) = calls.get(&n) {
+                    for q in 0..3 {
+                        if w >> q & 1 == 1 {
+                            d.1[q] = None;
+                        }
+                    }
+                    let lost = match var {
+                        Place::Reg(r) => w >> r & 1 == 1,
+                        Place::Mem(a) => stores.iter().any(|x| x.meets(a as u32, a as u32 + 1)),
+                    };
+                    if lost {
+                        d.0 = None;
+                    }
+                }
                 for &s in succs
                     .get(&n)
                     .into_iter()
