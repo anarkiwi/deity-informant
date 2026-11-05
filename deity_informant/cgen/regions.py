@@ -138,10 +138,10 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         span = np.flatnonzero(mask)
         return self._widen(*((int(span[0]), int(span[-1]) + 1) if len(span) else (0, 0)))
 
-    def _widen(self, lo, hi):
-        """``[lo, hi)`` widened over the regions it overlaps."""
+    def _widen(self, lo, hi, touch=False):
+        """``[lo, hi)`` widened over the regions it overlaps (with ``touch``, or abuts)."""
         for org, n in self.regions if hi > lo else ():
-            if org < hi and org + n > lo:
+            if org < hi + touch and org + n + touch > lo:
                 lo, hi = min(lo, org), max(hi, org + n)
         return lo, hi
 
@@ -194,7 +194,13 @@ class Memory:  # pylint: disable=too-many-instance-attributes
                 spans[-1][1] = org + n
             else:
                 spans.append([org, org + n])
-        return [self._widen(a, b) for a, b in spans]
+        out = []
+        for a, b in (self._widen(a, b, True) for a, b in spans):
+            if out and out[-1][1] >= a:
+                out[-1] = (out[-1][0], max(out[-1][1], b))
+            else:
+                out.append((a, b))
+        return out
 
     def held_span(self, lo, hi, store=False):
         """The index of the held span holding all of ``[lo, hi]`` when each byte is held there:

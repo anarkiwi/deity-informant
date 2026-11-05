@@ -90,8 +90,10 @@ def _header(mem, used, traps):
         out += [f"#define C{j}_ORG 0x{lo:04X}", f"#define C{j}_LEN {hi - lo}"]
         out.append(f"#define C{j}_INIT {_hex(mem.image[lo:hi])}")
         if _sliced(mem, used, j):
-            bits = np.packbits(mem.owner[lo:hi] >= 0, bitorder="little")
-            out.append(f"#define C{j}_DATA_INIT {_hex(bits)}")
+            # Past the span's last constant byte every byte is data: the bits stop there.
+            top = lo + int(np.flatnonzero(mem.constant[lo:hi]).max(initial=-1)) + 1
+            bits = np.packbits(mem.owner[lo : max(top, lo + 1)] >= 0, bitorder="little")
+            out += [f"#define C{j}_BITS {top - lo}", f"#define C{j}_DATA_INIT {_hex(bits)}"]
     if "IMG_ORG" in used:
         out.append(f"#define IMG_ORG 0x{mem.loaded[0]:04X}")
     out.append(f"#define CGEN_TRAPS {', '.join(f'0x{pc:04X}' for pc in traps)}")
@@ -103,7 +105,8 @@ def _inside(r):
 
 
 def _data(j):
-    return f"(C{j}_DATA[(a - C{j}_ORG) >> 3] >> ((a - C{j}_ORG) & 7) & 1)"
+    off = f"(uint16_t)(a - C{j}_ORG)"
+    return f"({off} >= C{j}_BITS || C{j}_DATA[{off} >> 3] >> ({off} & 7) & 1)"
 
 
 def _rd(name, regions, vol, spans):
