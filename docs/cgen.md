@@ -78,6 +78,9 @@ caller's return address. `tools/cgenplay.c` is a host harness.
    the call, as the 6502 leaves its registers across `RTS`). Upstream `--remove-dead-values` would do this, but in LLVM 22 it rewrites a
    `cf.cond_br` passing one value to both successors into an invalid branch, so it is not
    used.
+   An 8-bit add whose carry only feeds the add of the byte above it (`lo = a + b`,
+   `hi = d + e + (lo < a)`, an `ADC` chain) becomes one 16-bit add of `(d:a) + (e:b)`, whose
+   bytes replace `hi` and the uses of `lo` after it.
 5. **Layout** (`regions.py`): the memory partition below.
 6. **Structure** (`structure.py`): the dominator-tree translation below, each function whole.
 7. **Print** (`printer.py`, `csyntax.py`). The generic text is parsed for the operations the

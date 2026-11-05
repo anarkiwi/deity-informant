@@ -216,6 +216,24 @@ def _resolve(sub, v):
     return v
 
 
+def _add16(name, pc, x, y):
+    """``(operations, low byte, high byte)`` of the 16-bit sum of the byte pairs ``x`` and
+    ``y`` (``(high, low)`` values), its results named from ``name``."""
+    ops = [Op("arith.constant", [f"{name}.c"], [], "value = 8 : i16", [], ((), ("i16",)))]
+
+    def op(kind, args, t):
+        ops.append(Op(kind, [f"{name}.{len(ops)}"], list(args), "", [], ((), (t,)), pc=pc))
+        return ops[-1].res[0]
+
+    def word(h, l):
+        hz, lz = op("arith.extui", [h], "i16"), op("arith.extui", [l], "i16")
+        return op("arith.ori", [op("arith.shli", [hz, f"{name}.c"], "i16"), lz], "i16")
+
+    w = op("arith.addi", [word(*x), word(*y)], "i16")
+    low = op("arith.trunci", [w], "i8")
+    return ops, low, op("arith.trunci", [op("arith.shrui", [w, f"{name}.c"], "i16")], "i8")
+
+
 def logic(sym, es):
     """``es`` joined by ``&&`` or ``||`` (none: the operator's identity)."""
     if not es:
@@ -317,6 +335,67 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         finally:
             self.ivs = saved
         return out
+
+    def carry16(self):
+        """Rewrite each 8-bit add whose carry only feeds the add of the byte above it as one
+        16-bit add: ``lo = a + b`` and ``hi = d + e + (lo < a)`` become the bytes of
+        ``(d:a) + (e:b)``, the 6502's own carry chain. The new operations go before the high
+        add; ``lo``'s uses after it read the new low byte."""
+        found, used = [], set()
+        for o in self.walk():
+            pat = self.carry_chain(o)
+            if pat is not None and not {pat[0].res[0], pat[5]} & used:
+                found.append(pat)
+                used |= {pat[0].res[0], pat[5]}
+        if not found:
+            return
+        hi_of, lo_of = {}, {}
+        for k, (top, a, b, hd, he, lo) in enumerate(found):
+            ops, low, high = _add16(f"%w{k}", top.pc, (hd, a), (he, b))
+            lo_of[lo] = (top, low)
+            hi_of[top.res[0]] = high
+            blk, at = self.where[id(top)]
+            blk.ops[at:at] = ops
+            for x in ops:
+                x.parent = blk
+            self.reindex()
+        for o in self.walk():
+            for i, x in enumerate(o.args):
+                if x in hi_of:
+                    o.args[i] = hi_of[x]
+                elif x in lo_of and self.after(lo_of[x][0], o):
+                    o.args[i] = lo_of[x][1]
+        self.reindex()
+
+    def after(self, a, b):
+        """Whether operation ``b`` runs after ``a`` on every path: later in its block, or in a
+        block ``a``'s block dominates."""
+        (ba, ia), (bb, ib) = self.where[id(a)], self.where[id(b)]
+        return ib > ia if ba is bb else self.dominates(ba.name, bb.name)
+
+    def carry_chain(self, o):
+        """``(high add, a, b, d, e, lo)`` when ``o`` is ``lo < a`` (unsigned, ``lo = a + b`` in 8
+        bits) and its value only feeds, zero-extended, ``hi = (d + e) + carry``."""
+        if o.name != "arith.cmpi" or o.int_prop("predicate") != 6:
+            return None
+        lo, a = o.args
+        d = self.defs.get(lo)
+        if d is None or d.name != "arith.addi" or a not in d.args or self.types[lo] != "i8":
+            return None
+        b = d.args[1] if d.args[0] == a else d.args[0]
+        users = self.users.get(o.res[0], [])
+        if len(users) != 1 or users[0].name != "arith.extui":
+            return None
+        z = users[0].res[0]
+        zu = self.users.get(z, [])
+        if len(zu) != 1 or zu[0].name != "arith.addi" or self.types[z] != "i8":
+            return None
+        top = zu[0]
+        x = top.args[1] if top.args[0] == z else top.args[0]
+        dx = self.defs.get(x)
+        if dx is None or dx.name != "arith.addi" or len(self.users.get(x, [])) != 1:
+            return None
+        return (top, a, b, dx.args[0], dx.args[1], lo)
 
     def kfold(self):
         """Give each value computed from the instance index alone (not a condition) one
@@ -2188,6 +2267,8 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 f.instance(self.kpos)
                 f.kfold()
         self.forward()
+        for f in self.funcs:
+            f.carry16()
         live, work = {f.name: set() for f in self.funcs}, []
 
         def mark(f, v):
