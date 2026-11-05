@@ -1177,6 +1177,20 @@ pub struct Analysis {
     pub loads: FxHashMap<(u16, u8, usize), Vec<u16>>,
 }
 
+/// Each store of `stores` an entry's run decided writes the pairs it made ([`Made`]).
+///
+/// [`Made`]: crate::dispatch::Made
+fn pair(stores: &mut [crate::dispatch::Store], made: &crate::dispatch::Made) {
+    for s in stores.iter_mut() {
+        if let Some(Some(p)) = made.get(&(s.pc, s.op, s.ai)) {
+            let addrs: std::collections::BTreeSet<u16> = p.iter().map(|e| e.0).collect();
+            s.addrs = Some(addrs.into_iter().collect());
+            s.vals = Some(p.iter().map(|e| e.1).collect());
+            s.pairs = Some(p.iter().copied().collect());
+        }
+    }
+}
+
 /// What the analysis takes beyond the program: the `[lo, hi)` the program was loaded to, the
 /// bytes the facts saw written and those taken as constant (holding their entry value: trip
 /// bounds may read them).
@@ -1459,16 +1473,44 @@ pub fn analyze(
         &mut reads,
     );
     // Stores an entry's run decides write the pairs it made.
-    let made = crate::dispatch::entry_runs(&code, vars, entries, given.entry_sp, &konst);
-    for s in stores.iter_mut() {
-        if let Some(Some(p)) = made.get(&(s.pc, s.op, s.ai)) {
-            let addrs: std::collections::BTreeSet<u16> = p.iter().map(|e| e.0).collect();
-            s.addrs = Some(addrs.into_iter().collect());
-            s.vals = Some(p.iter().map(|e| e.1).collect());
-            s.pairs = Some(p.iter().copied().collect());
+    let none = FxHashSet::default();
+    let (made, _) =
+        crate::dispatch::entry_runs(&code, vars, entries, given.entry_sp, &konst, &none);
+    pair(&mut stores, &made);
+    let mut cellvals = crate::dispatch::cell_values(img, &stores);
+    // An inductive invariant: with every loaded byte the entries' runs read taken as its image
+    // byte, the runs' stores and every store through operand cells resolved at the values that
+    // gives hold if no store of the program may write a byte the runs read. An entry whose
+    // reads some store may write is not run, until the rest hold or none is left.
+    if let Some((lo, hi)) = loaded {
+        let image = |a: u32| {
+            (lo <= a && a < hi && !code.cells.contains(a as usize)).then(|| img[a as usize])
+        };
+        let mut skip: FxHashSet<u16> = FxHashSet::default();
+        while skip.len() < entries.len() {
+            let (made, read) =
+                crate::dispatch::entry_runs(&code, vars, entries, given.entry_sp, &image, &skip);
+            let mut opt = stores.clone();
+            pair(&mut opt, &made);
+            let cv = crate::dispatch::cell_addressed(&code, vars, &sets, &mut opt);
+            let touched: FxHashSet<u16> = read
+                .iter()
+                .filter(|(_, r)| {
+                    opt.iter().any(|s| match &s.addrs {
+                        Some(a) => a.iter().any(|x| r.contains(x)),
+                        None => r.iter().any(|&x| s.addr.meets(x as u32, x as u32 + 1)),
+                    })
+                })
+                .map(|(&e, _)| e)
+                .collect();
+            if touched.is_empty() {
+                stores = opt;
+                cellvals = cv;
+                break;
+            }
+            skip.extend(touched);
         }
     }
-    let cellvals = crate::dispatch::cell_values(img, &stores);
     // A store through a pointer with an address set reaches the hull of its set; its
     // throw-away read, the base's page with the indexed low byte, the pages from the least
     // address less a page to the greatest.

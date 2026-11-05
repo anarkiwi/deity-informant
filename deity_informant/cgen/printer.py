@@ -597,7 +597,9 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         elif o.name in ("arith.ori", "arith.xori"):
             a, b = sorted((self.iv(o.args[0]), self.iv(o.args[1])), key=lambda x: x[0] != x[1])
             c = a[0]
-            if a[0] == a[1] and c and b[1] < c & -c:
+            if a[0] == a[1] and b[0] == b[1]:
+                r = ((c | b[0]) if o.name == "arith.ori" else (c ^ b[0]),) * 2
+            elif a[0] == a[1] and c and b[1] < c & -c:
                 r = (c + b[0], c + b[1])
             else:
                 hi = min((1 << max(a[1], b[1]).bit_length()) - 1, a[1] + b[1])

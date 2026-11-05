@@ -1107,6 +1107,39 @@ entry:  AND #$0F
         RTS
 end:
 """
+RELOCATE = """
+init:   LDX #$00
+r:      LDA ptrs,X
+        STA $FB
+        LDA ptrs+1,X
+        STA $FC
+        LDY #$01
+        LDA rel,X
+        CLC
+        ADC #lo(base)
+        STA ($FB),Y
+        INY
+        LDA rel+1,X
+        ADC #hi(base)
+        STA ($FB),Y
+        INX
+        INX
+        CPX #$04
+        BNE r
+        RTS
+play:   AND #$03
+        TAY
+o0:     LDA tab,Y
+        STA $C000
+o1:     STA state
+        RTS
+ptrs:   .byte lo(o0), hi(o0), lo(o1), hi(o1)
+rel:    .byte lo(tab-base), hi(tab-base), lo(state-base), hi(state-base)
+base:
+tab:    .byte 1,2,3,4
+state:  .byte 0
+end:
+"""
 WRAP = """
 entry:  AND #$0F
         ORA #$70
@@ -1926,6 +1959,22 @@ def test_carry_chain_is_one_16_bit_add(prefix, tmp_path):
     """An `ADC` whose carry only feeds the `ADC` of the byte above prints as one 16-bit add."""
     c, _, _ = check(prefix, tmp_path, ADD16, entry_calls(range(0, 16, 3), 40))
     assert "<< 8" in c and not re.search(r"\(v\d+ < v\d+\)", c)
+
+
+@pytest.mark.parametrize("clobber", [False, True])
+def test_relocated_operands_close_when_no_store_reaches_the_relocator(prefix, tmp_path, clobber):
+    """An init with no done flag relocating operands from a table on every call: with the
+    bytes its run reads taken as constant, every store (play's, through the operands it
+    relocates, included) resolves away from them, so the operands hold their relocated values
+    and play indexes memory directly. A play store into the relocator's table breaks the
+    invariant: the operands stay open."""
+    src = RELOCATE.replace("        RTS\nptrs:", "        INC rel\n        RTS\nptrs:")
+    img, labels, loaded = assemble(src if clobber else RELOCATE)
+    c, h, _ = translate(prefix, img, labels, loaded, entries=("init", "play"))
+    calls = [("play", 1), ("init", 0)] + [("play", a) for a in range(4)] * 2 + [("init", 0)]
+    play(tmp_path, c, h, img, labels, calls + [("play", 2)])
+    body = c[c.index("void play") :]
+    assert bool(re.search(r"\b(?:rd|wr|codechk)\(", body)) == clobber
 
 
 def test_fall_through_into_a_routine_is_a_tail_call(prefix, tmp_path):
