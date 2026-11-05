@@ -85,6 +85,8 @@ struct Cx<'a> {
     preds: FxHashMap<u16, Vec<u16>>,
     /// Starts entered other than by a flow edge: entries and called functions.
     ext: FxHashSet<u16>,
+    /// Block starts: entries, callees and every successor of a branch, jump, call or return.
+    lead: FxHashSet<u16>,
 }
 
 /// The successors of every flow, `JSR` return sites included.
@@ -499,6 +501,13 @@ impl Cx<'_> {
         (1..c.copies()).all(|k| c.exits.iter().all(|x| straight(x[k - 1], c.entry(k))))
     }
 
+    /// Whether every copy of `c` is whole blocks: each exit enters a block start, so no copy
+    /// ends inside a block whose rest the copies do not share (statements alike only in a
+    /// prefix, such as loads of fields at a stride, are not copies of one routine).
+    fn whole(&self, c: &Class) -> bool {
+        c.exits.iter().flatten().all(|p| self.lead.contains(p))
+    }
+
     /// Whether the copies of `c` run one after another, as an unrolled loop's bodies: each
     /// copy's entry is reached from the previous copy's exits (by address, ascending or
     /// descending) through code outside every copy, without returning.
@@ -533,23 +542,30 @@ impl Cx<'_> {
     }
 
     /// The sound class of copies entered at `ms`: walked, then walked again without the starts
-    /// that break its regions until none does.
+    /// that break its regions until none does. Its first sound walk, the copies' extent alike up
+    /// to immediates, must be whole blocks or an unrolled body.
     fn class(&self, ms: &[u16]) -> Option<Class> {
         let mut banned = FxHashSet::default();
+        let mut blocks = None;
         loop {
             let mut c = self.walk(ms, &banned)?;
             let (bad, consts) = self.faults(&c);
             c.consts = consts.len();
-            if bad.is_empty() && !consts.is_empty() && !self.leaves_unconditionally(&c) {
+            if !bad.is_empty() {
+                banned.extend(bad);
+                continue;
+            }
+            let straight = self.leaves_unconditionally(&c);
+            if !*blocks.get_or_insert_with(|| straight || self.whole(&c)) {
+                return None;
+            }
+            if !consts.is_empty() && !straight {
                 // Per-copy constants only in an unrolled body: elsewhere they leave the class.
                 banned.extend(consts.into_iter().flatten());
                 continue;
             }
-            if bad.is_empty() {
-                return (self.indexed(&c) && self.unrolled(&c) && self.heights(&c).is_some())
-                    .then_some(c);
-            }
-            banned.extend(bad);
+            return (self.indexed(&c) && self.unrolled(&c) && self.heights(&c).is_some())
+                .then_some(c);
         }
     }
 }
@@ -601,6 +617,7 @@ pub fn find(g: &Graph, roots: &[u16], calls: &FxHashSet<u16>) -> Vec<Class> {
         calls,
         preds,
         ext,
+        lead: lead.iter().copied().collect(),
     };
     let mut by_op: FxHashMap<u8, Vec<u16>> = FxHashMap::default();
     for &p in &pcs {
@@ -669,6 +686,7 @@ pub fn heights(g: &Graph, c: &Class) -> Vec<i32> {
         calls: &FxHashSet::default(),
         preds: FxHashMap::default(),
         ext: FxHashSet::default(),
+        lead: FxHashSet::default(),
     };
     cx.heights(c).expect("a found class has heights")
 }

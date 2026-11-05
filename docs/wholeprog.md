@@ -235,7 +235,11 @@ the program, and checks it against the reference.
    differ in is affine in `k` (`base + stride * k`: per-voice zero-page, I/O and table
    addresses), lies in each copy's own code (its cells and jump targets) or is an immediate (a
    per-copy constant, `v0 + sum((k == i) * (vi - v0))`); the starts breaking this are left
-   out and the walk repeated. The copies must hold state of their own (an address they
+   out and the walk repeated. Each copy is whole blocks: its exits enter block starts (a
+   branch's, jump's, call's or return's successor, an entry or a callee), as walked before
+   the per-copy constants are left out, unless they run straight into the next copy's entry;
+   statements alike only in a prefix of their blocks (loads of fields at a stride, each
+   followed by its own immediate) are not copies of one routine. The copies must hold state of their own (an address they
    differ in, a cell, a jump through tables shifted per copy): copies alike in every address
    are one routine repeated, whatever their immediates. A per-copy constant saves nothing (each
    copy keeps its value), and a class with one has every exit of each copy run straight into
@@ -443,12 +447,21 @@ the facts, so a proof holds on every execution that stays in lifted code.
   loop is the natural loop of the head's back edges (from the starts it dominates), a branch
   may reach them through `JMP`s, and the walk from the head keeps each register as the
   variable plus a constant, so `TXA; SBX #k` (`X` minus `k` while `A` = `X`) steps `X`. A `JSR`
-  whose callee returns to its return site on every path is one step to that site (its returns
-  there are no edges into the loop, so a routine other sites also call does not enter the
-  loop), changing the registers and bytes the callee may write; a register such a callee
-  leaves alone holds, at the callee's instructions, its values at the call (when only the
-  loop's calls run them), so a voice loop's `X` (`14, 7, 0` by `TXA; SBC #7; TAX`) bounds the
-  routine it calls. The `X` and `Y`
+  whose callee returns to its return site on every path is one step to that site (the edges
+  to it from the returns the call runs are no edges into the loop, so a routine other sites
+  also call does not enter the loop), changing the bytes the callee may write and the
+  registers that do not hold their values at the call when it returns. Which places (data
+  registers and constant addresses) hold the value a place held at the call is a must
+  analysis over the callee's instructions: a transfer or a load of a place holding it, a
+  store of it to a constant address (`STX keep` ... `LDX keep`), any other store forgetting
+  the addresses it may reach; a nested call composes the places its own analysis gives for
+  each place holding the value at it, a nested call that does not return to its site (one
+  unwinding by `TXS` to a stack pointer saved above it) is walked through, a `BRK` is a call
+  of its handlers returning past its signature byte, and a return or computed jump elsewhere
+  continues at its targets. A register holding its value at the call at a callee's
+  instruction holds there the values it has at the call (when only the loop's calls run
+  them), so a voice loop's `X` (`14, 7, 0` by `TXA; SBC #7; TAX`) bounds the routine it calls,
+  through a `BRK` or a stack switch in it. The `X` and `Y`
   intervals a trip bound gives at an instruction of the loop narrow the ones the interval
   analysis gives (so the index `m` of a pointer access), and `Program.induction` lists the
   variables.
@@ -534,7 +547,9 @@ the facts, so a proof holds on every execution that stays in lifted code.
   goes to the words its vector `$FFFE`/`$FFFF` may hold: the values the stores with known
   addresses write there (a vector the program sets before it runs `BRK`; any other deopts),
   else the image's bytes; it calls the handler in the context of its address plus two, which
-  it pushes as constants, so the handler's `RTI` returns there, past the signature byte. A
+  it pushes as constants, so the handler's `RTI` returns there, past the signature byte; a
+  routine running such a `BRK` whose handlers' `RTI`s run at their entry height is as
+  balanced as one making a call, its `RTS` returning to its own call sites. A
   handler that two or more `BRK`s reach (a procedure) is a function: the `BRK` pushes its
   address, keeps the status as the `CALL`'s return address (with the low byte, what a deopt
   writes), sets I and calls it; the handler's `RTI` at its entry height pops the three bytes

@@ -398,10 +398,11 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         return (top, a, b, dx.args[0], dx.args[1], lo)
 
     def kfold(self):
-        """Give each value computed from the instance index alone (not a condition) one
-        definition at the entry per distinct set of per-index values: the least value plus
-        a ``arith.kfam`` of the index, 8 bits wide where the offsets fit, which prints as
-        ``base + stride * k`` where affine in the index, else as a constant table."""
+        """Give each value computed from the instance index alone (not a condition: a
+        condition of the index alone tests such a value) one definition at the entry per
+        distinct set of per-index values: the least value plus a ``arith.kfam`` of the index,
+        8 bits wide where the offsets fit, which prints as ``base + k`` where it steps by one
+        with the index, else as a constant table."""
         if self.kparam is None:
             return
         new = {}
@@ -409,7 +410,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         for o in list(self.walk()):
             if (
                 len(o.res) == 1
-                and self.types[o.res[0]] != "index"
+                and self.types[o.res[0]] not in ("index", "i1")
                 and self.kvec(o.res[0]) is not None
             ):
                 continue
@@ -1611,23 +1612,21 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         raise NotImplementedError(name)
 
     def kfam(self, o):
-        """The C expression of an ``arith.kfam``: ``a + s * k`` where its values are affine in
-        the instance index ``k``, else an element of a constant table indexed by ``k``."""
+        """The C expression of an ``arith.kfam``: ``a + k`` or ``a - k`` where its values step
+        by one with the instance index ``k``, else an element of a constant table indexed by
+        ``k`` (one indexed load, where a stride would be a multiplication)."""
         f, w = self.f, self.f.width(o.res[0])
         tab, k = f.ktabs[o.res[0]], self.ex(o.args[0])
         m = (1 << w) - 1
-        pts = [(int(x), int(tab[x])) for x in f.kvals]
-        fit = line(pts, m)
-        if fit is None:
+        fit = line([(int(x), int(tab[x])) for x in f.kvals], m)
+        if fit is None or fit[1] not in (1, m):
             name = self.mod.table(w, tab)
             lo, hi = int(tab[f.kvals].min()), int(tab[f.kvals].max())
             return E(f"{name}[{k.text}]", 16, "", lo, hi, w == 16, False, k.refs)
         a, st = fit
-        neg = st > m // 2
-        t = k if st == 1 else binary("*", 13, k, lit(m + 1 - st if neg else st, w), w)
-        if neg:
-            return binary("-", 12, lit(a, w), t, w)
-        return binary("+", 12, lit(a, w), t, w) if a else t
+        if st == m:
+            return binary("-", 12, lit(a, w), k, w)
+        return binary("+", 12, lit(a, w), k, w) if a else k
 
     @staticmethod
     def cmpi(pred, a, b, width):

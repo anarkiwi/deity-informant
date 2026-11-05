@@ -862,14 +862,16 @@ fn join(a: &St, b: &St, widen: Option<&Thresholds>) -> St {
 
 /// What a call target's body does: its `RTS`s (reached without passing through nested calls,
 /// which are summarized by their return sites), whether the stack height at every one is
-/// the entry's and the nested calls' targets.
+/// the entry's and the nested calls' targets. A `BRK` calls its handlers, whose `RTI` at
+/// their entry height returns past its signature byte; `rti` analyses such a handler, its
+/// `RTI`s its returns.
 struct Frame {
     rts: Vec<u16>,
     balanced: bool,
     callees: Vec<u16>,
 }
 
-fn frame(vars: &FxHashMap<u16, Vec<Var>>, t: u16, disp: &FxHashSet<u16>) -> Frame {
+fn frame(vars: &FxHashMap<u16, Vec<Var>>, t: u16, disp: &FxHashSet<u16>, rti: bool) -> Frame {
     let mut f = Frame {
         rts: Vec::new(),
         balanced: true,
@@ -889,10 +891,12 @@ fn frame(vars: &FxHashMap<u16, Vec<Var>>, t: u16, disp: &FxHashSet<u16>) -> Fram
                     Some(d) => work.push((*n, h + d)),
                     None => f.balanced = false,
                 },
+                Flow::Rti(_) if rti && h == 0 => f.rts.push(pc),
                 Flow::Rts(ts) if disp.contains(&pc) && h != 0 => {
                     work.extend(ts.iter().map(|&n| (n, h + 2)))
                 }
                 Flow::Rti(ts) if disp.contains(&pc) => work.extend(ts.iter().map(|&n| (n, h + 3))),
+                Flow::Rts(_) if rti => f.balanced = false,
                 Flow::Rts(_) => {
                     f.rts.push(pc);
                     f.balanced &= h == 0;
@@ -900,6 +904,16 @@ fn frame(vars: &FxHashMap<u16, Vec<Var>>, t: u16, disp: &FxHashSet<u16>) -> Fram
                 Flow::Jsr { t, ret } => {
                     f.callees.extend(t.all());
                     work.push((*ret, h));
+                }
+                Flow::Brk(ts)
+                    if !rti && !ts.is_empty() && vars.contains_key(&pc.wrapping_add(2)) =>
+                {
+                    for &t in ts {
+                        let g = frame(vars, t, disp, true);
+                        f.balanced &= g.balanced && !g.rts.is_empty();
+                        f.callees.extend(g.callees);
+                    }
+                    work.push((pc.wrapping_add(2), h));
                 }
                 Flow::Rti(_) | Flow::Brk(_) => f.balanced = false,
                 fl => work.extend(flow_succs(fl).into_iter().map(|n| (n, h))),
@@ -937,7 +951,7 @@ fn returns(vars: &FxHashMap<u16, Vec<Var>>, matched: bool, disp: &FxHashSet<u16>
     r.all.dedup();
     let frames: FxHashMap<u16, Frame> = calls
         .iter()
-        .map(|&(t, _)| (t, frame(vars, t, disp)))
+        .map(|&(t, _)| (t, frame(vars, t, disp, false)))
         .collect();
     let mut ok: FxHashMap<u16, bool> = frames.iter().map(|(&t, f)| (t, f.balanced)).collect();
     while let Some(t) = frames

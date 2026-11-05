@@ -18,6 +18,7 @@ use di_pcode::{reg, CtrlKind, Space, Template};
 use petgraph::algo::dominators::simple_fast;
 use petgraph::graphmap::DiGraphMap;
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::collections::BTreeSet;
 
 /// What an induction variable is: a register (`lift()` index) or the byte at an address.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -102,11 +103,276 @@ fn advance(code: &Code, pc: u16, v: &Var, var: Place, tr: Track, known: Known) -
     (change, regs)
 }
 
-/// What a call of `f` returning to `ret` may change: the data registers it writes (bits of `A`,
-/// `X`, `Y`), the intervals it stores to, its `RTS` starts and the instruction starts it runs
-/// (its callees' included), when every path from `f` returns to `ret` (calls within it
-/// summarized alike).
-type Call = (u32, Vec<Iv>, Vec<u16>, Vec<u16>);
+/// The places holding one value: data registers (bits of `A`, `X`, `Y`) and constant
+/// addresses (`STX a` ... `LDX a`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Holds {
+    regs: u32,
+    mem: BTreeSet<u16>,
+}
+
+/// One place: a data register or a constant address.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Loc {
+    Reg(u8),
+    Mem(u16),
+}
+
+impl Holds {
+    fn of(l: Loc) -> Holds {
+        match l {
+            Loc::Reg(q) => Holds {
+                regs: 1 << q,
+                mem: BTreeSet::new(),
+            },
+            Loc::Mem(a) => Holds {
+                regs: 0,
+                mem: [a].into_iter().collect(),
+            },
+        }
+    }
+    fn locs(&self) -> Vec<Loc> {
+        (0..3)
+            .filter(|q| self.regs >> q & 1 == 1)
+            .map(Loc::Reg)
+            .chain(self.mem.iter().map(|&a| Loc::Mem(a)))
+            .collect()
+    }
+    fn meet(&self, o: &Holds) -> Holds {
+        Holds {
+            regs: self.regs & o.regs,
+            mem: self.mem.intersection(&o.mem).copied().collect(),
+        }
+    }
+    fn join(&mut self, o: &Holds) {
+        self.regs |= o.regs;
+        self.mem.extend(&o.mem);
+    }
+}
+
+/// `h` after variant `v` at `pc`: a register written with the value, a load of an address
+/// holding it, a store of it to a constant address holds it; any other store forgets the
+/// addresses it may reach.
+fn hold(code: &Code, pc: u16, v: &Var, h: &Holds) -> Holds {
+    let t = Template::of(v.op);
+    let b = operand_bytes(code.img, code.cells, pc, t.len);
+    let init = std::array::from_fn(|q| (h.regs >> q & 1 == 1).then_some(Sym::Lin(VAR, 0)));
+    let held = |s: Option<Sym>, mem: bool| match s {
+        Some(Sym::Lin(VAR, 0)) => true,
+        Some(Sym::Lin(MEM, 0)) => mem,
+        _ => false,
+    };
+    let load = v
+        .acc
+        .iter()
+        .filter(|a| !a.store && !a.dummy)
+        .find_map(|a| a.addr.value().filter(|&x| h.mem.contains(&(x as u16))));
+    let (sym, written, _) = symbolic_in(t.ops(), b, (None, None, init), load);
+    let regs = (0..3).fold(0, |m, q| {
+        let r = if written >> q & 1 == 1 {
+            held(sym[q], load.is_some())
+        } else {
+            h.regs >> q & 1 == 1
+        };
+        m | (r as u32) << q
+    });
+    let mut out = Holds {
+        regs,
+        mem: h.mem.clone(),
+    };
+    for a in v.acc.iter().filter(|a| a.store) {
+        out.mem.retain(|&m| !a.addr.meets(m as u32, m as u32 + 1));
+        if let Some(x) = a.addr.value() {
+            let (_, _, st) = symbolic_in(t.ops(), b, (None, None, init), Some(x));
+            if held(st.flatten(), h.mem.contains(&(x as u16))) {
+                out.mem.insert(x as u16);
+            }
+        }
+    }
+    out
+}
+
+/// The places holding the value one place held at a call: per instruction start the call runs
+/// (its callees' included) on every path there, and when it returns.
+#[derive(Clone)]
+struct Held {
+    at: FxHashMap<u16, Holds>,
+    back: Holds,
+    /// The intervals the call stores to.
+    stores: Vec<Iv>,
+}
+
+type Memo = FxHashMap<(u16, u16, Loc), Option<Held>>;
+
+/// [`Held`] of the value at `o` for a call of `f` returning to `ret`, when every path from `f`
+/// returns to `ret`: calls within it composed from theirs, or walked through where they do not
+/// return (a callee unwinding to a frame above it), `BRK` as a call of its handlers returning
+/// past the signature byte, and a return or computed jump elsewhere followed to its targets.
+fn held(
+    code: &Code,
+    vars: &FxHashMap<u16, Vec<Var>>,
+    succs: &Succs,
+    (f, ret, o): (u16, u16, Loc),
+    memo: &mut Memo,
+) -> Option<Held> {
+    if let Some(c) = memo.get(&(f, ret, o)) {
+        return c.clone();
+    }
+    memo.insert((f, ret, o), None);
+    let mut c = Held {
+        at: [(f, Holds::of(o))].into_iter().collect(),
+        back: Holds::default(),
+        stores: Vec::new(),
+    };
+    let mut back: Option<Holds> = None;
+    let mut nested: FxHashMap<u16, Holds> = FxHashMap::default();
+    let mut work = vec![f];
+    let mut seen = FxHashSet::default();
+    while let Some(pc) = work.pop() {
+        let first = seen.insert(pc);
+        let h = c.at[&pc].clone();
+        for v in vars.get(&pc)? {
+            let out = hold(code, pc, v, &h);
+            if first {
+                c.stores
+                    .extend(v.acc.iter().filter(|a| a.store).map(|a| a.addr));
+            }
+            let returns = succs.get(&pc).is_some_and(|s| s.contains(&ret));
+            let next: Vec<(u16, Holds)> = match &v.flow {
+                Flow::Next(_) | Flow::Br { .. } | Flow::Jmp(Tg::At(_)) => {
+                    crate::analysis::flow_succs(&v.flow)
+                        .into_iter()
+                        .map(|s| (s, out.clone()))
+                        .collect()
+                }
+                Flow::Jsr {
+                    t: Tg::At(g),
+                    ret: r,
+                } => sub(
+                    code,
+                    vars,
+                    succs,
+                    (&[*g], *r),
+                    &out,
+                    first,
+                    &mut c,
+                    &mut nested,
+                    memo,
+                ),
+                Flow::Brk(ts) if !ts.is_empty() => {
+                    let r = pc.wrapping_add(2);
+                    sub(
+                        code,
+                        vars,
+                        succs,
+                        (ts, r),
+                        &out,
+                        first,
+                        &mut c,
+                        &mut nested,
+                        memo,
+                    )
+                }
+                Flow::Rts(_) | Flow::Rti(_) if returns => {
+                    back = Some(back.map_or(out.clone(), |b| b.meet(&out)));
+                    Vec::new()
+                }
+                Flow::Rts(_) | Flow::Rti(_) | Flow::JmpInd(_) => {
+                    let ts = succs.get(&pc).filter(|s| !s.is_empty())?;
+                    ts.iter().map(|&s| (s, out.clone())).collect()
+                }
+                _ => return None,
+            };
+            for (s, hs) in next {
+                let new = match c.at.get(&s) {
+                    None => hs,
+                    Some(o) => o.meet(&hs),
+                };
+                if c.at.get(&s) != Some(&new) || !seen.contains(&s) {
+                    c.at.insert(s, new);
+                    work.push(s);
+                }
+            }
+        }
+    }
+    // A call that never returns keeps everything vacuously.
+    c.back = back.unwrap_or_else(|| Holds {
+        regs: 0b111,
+        ..Holds::of(o)
+    });
+    for (p, h) in nested {
+        let m = c.at.get(&p).map_or(h.clone(), |o| o.meet(&h));
+        c.at.insert(p, m);
+    }
+    memo.insert((f, ret, o), Some(c.clone()));
+    Some(c)
+}
+
+/// The successors of a call of `gs` returning to `r` with `out` holding the value: the return
+/// site holding what the places holding it at the call hold on its return, the calls'
+/// instructions noted in `nested` and their stores in `c` (on the call's `first` visit), where
+/// each callee is composed; else the callee's entry, walked through.
+#[allow(clippy::too_many_arguments)]
+fn sub(
+    code: &Code,
+    vars: &FxHashMap<u16, Vec<Var>>,
+    succs: &Succs,
+    (gs, r): (&[u16], u16),
+    out: &Holds,
+    first: bool,
+    c: &mut Held,
+    nested: &mut FxHashMap<u16, Holds>,
+    memo: &mut Memo,
+) -> Vec<(u16, Holds)> {
+    let mut next = Vec::new();
+    let mut back: Option<Holds> = None;
+    for &g in gs {
+        let Some(base) = held(code, vars, succs, (g, r, Loc::Reg(0)), memo) else {
+            next.push((g, out.clone()));
+            continue;
+        };
+        let parts: Option<Vec<Held>> = out
+            .locs()
+            .into_iter()
+            .map(|l| held(code, vars, succs, (g, r, l), memo))
+            .collect();
+        let Some(parts) = parts else {
+            next.push((g, out.clone()));
+            continue;
+        };
+        let mut h = Holds::default();
+        let mut at: FxHashMap<u16, Holds> =
+            base.at.keys().map(|&p| (p, Holds::default())).collect();
+        for n in &parts {
+            h.join(&n.back);
+            for (p, x) in &n.at {
+                at.entry(*p).or_default().join(x);
+            }
+        }
+        for (p, x) in at {
+            let m = nested.get(&p).map_or(x.clone(), |o| o.meet(&x));
+            nested.insert(p, m);
+        }
+        if first {
+            c.stores.extend(base.stores);
+        }
+        back = Some(back.map_or(h.clone(), |b| b.meet(&h)));
+    }
+    next.extend(back.map(|b| (r, b)));
+    next
+}
+
+/// What a call of `f` returning to `ret` may change, when every path from `f` returns to `ret`
+/// ([`held`]).
+#[derive(Clone)]
+struct Call {
+    /// Per instruction start it runs, the data registers (bits of `A`, `X`, `Y`) holding their
+    /// values at the call on every path there.
+    keeps: FxHashMap<u16, u32>,
+    /// The data registers holding their values at the call when it returns.
+    kept: u32,
+    stores: Vec<Iv>,
+}
 
 fn callee(
     code: &Code,
@@ -114,51 +380,31 @@ fn callee(
     succs: &Succs,
     f: u16,
     ret: u16,
-    memo: &mut FxHashMap<(u16, u16), Option<Call>>,
+    memo: &mut Memo,
 ) -> Option<Call> {
-    if let Some(c) = memo.get(&(f, ret)) {
-        return c.clone();
-    }
-    memo.insert((f, ret), None);
-    let (mut writes, mut stores, mut rts, mut runs) = (0u32, Vec::new(), Vec::new(), Vec::new());
-    let (mut seen, mut work) = (FxHashSet::default(), vec![f]);
-    while let Some(pc) = work.pop() {
-        if !seen.insert(pc) {
-            continue;
+    let hs: Vec<Held> = (0..3)
+        .map(|q| held(code, vars, succs, (f, ret, Loc::Reg(q)), memo))
+        .collect::<Option<_>>()?;
+    let mut keeps: FxHashMap<u16, u32> = FxHashMap::default();
+    let mut kept = 0;
+    for (q, h) in hs.iter().enumerate() {
+        for (&p, x) in &h.at {
+            *keeps.entry(p).or_default() |= x.regs & 1 << q;
         }
-        for v in vars.get(&pc)? {
-            let t = Template::of(v.op);
-            let b = operand_bytes(code.img, code.cells, pc, t.len);
-            writes |= symbolic_in(t.ops(), b, (None, None, [None; 3]), None).1 & 0b111;
-            stores.extend(v.acc.iter().filter(|a| a.store).map(|a| a.addr));
-            match &v.flow {
-                Flow::Next(_) | Flow::Br { .. } | Flow::Jmp(Tg::At(_)) => {
-                    work.extend(crate::analysis::flow_succs(&v.flow))
-                }
-                Flow::Jsr {
-                    t: Tg::At(g),
-                    ret: r,
-                } => {
-                    let (w, s, _, i) = callee(code, vars, succs, *g, *r, memo)?;
-                    writes |= w;
-                    stores.extend(s);
-                    runs.extend(i);
-                    work.push(*r);
-                }
-                Flow::Rts(_) if succs.get(&pc).is_some_and(|s| s.contains(&ret)) => rts.push(pc),
-                _ => return None,
-            }
-        }
+        kept |= h.back.regs & 1 << q;
     }
-    runs.extend(seen);
-    let c = Some((writes, stores, rts, runs));
-    memo.insert((f, ret), c.clone());
-    c
+    let h = hs.into_iter().next()?;
+    Some(Call {
+        keeps,
+        kept,
+        stores: h.stores,
+    })
 }
 
 /// `succs` with each call whose callee returns to its return site ([`callee`]) also an edge to
-/// that site, and the callee's returns to it dropped, so a loop calling a routine others also
-/// call is entered only at its head; and the summary of each such call by its start.
+/// that site, and the edges to it from the returns the call runs dropped, so a loop calling a
+/// routine others also call is entered only at its head; and the summary of each such call by
+/// its start.
 fn collapse(
     code: &Code,
     vars: &FxHashMap<u16, Vec<Var>>,
@@ -182,7 +428,7 @@ fn collapse(
             calls.insert(pc, c);
         }
     }
-    for (pc, (_, _, rts, _)) in &calls {
+    for (pc, c) in &calls {
         let Some(Var {
             flow: Flow::Jsr { ret, .. },
             ..
@@ -190,7 +436,13 @@ fn collapse(
         else {
             continue;
         };
-        for r in rts {
+        let rets = c.keeps.keys().filter(|p| {
+            vars.get(p).is_some_and(|vs| {
+                vs.iter()
+                    .any(|v| matches!(v.flow, Flow::Rts(_) | Flow::Rti(_)))
+            })
+        });
+        for r in rets {
             if let Some(s) = out.get_mut(r) {
                 s.retain(|x| x != ret);
             }
@@ -199,9 +451,9 @@ fn collapse(
     (out, calls)
 }
 
-/// The change of register `r` at the instructions of the calls the loop `body` makes that
-/// leave `r` alone, as at their call sites (`at`), when only the loop and those calls run them:
-/// a voice loop's index holds its strided values in the routines it calls.
+/// The change of register `r` at the instructions of the calls the loop `body` makes where `r`
+/// holds its value at the call, as at their call sites (`at`), when only the loop and those
+/// calls run them: a voice loop's index holds its strided values in the routines it calls.
 fn callee_steps(
     calls: &FxHashMap<u16, Call>,
     body: &FxHashSet<u16>,
@@ -210,14 +462,14 @@ fn callee_steps(
     at: &mut FxHashMap<u16, Track>,
 ) {
     let mut inner: FxHashMap<u16, Option<u8>> = FxHashMap::default();
-    for (&n, (w, _, _, runs)) in calls {
-        let Some(&(Some(e), _)) = at.get(&n).filter(|_| body.contains(&n) && w >> r & 1 == 0)
-        else {
+    for (&n, c) in calls {
+        let Some(&(Some(e), _)) = at.get(&n).filter(|_| body.contains(&n)) else {
             continue;
         };
-        for &pc in runs.iter().filter(|pc| !body.contains(pc)) {
-            let x = inner.entry(pc).or_insert(Some(e));
-            if *x != Some(e) {
+        for (&pc, &k) in c.keeps.iter().filter(|(pc, _)| !body.contains(pc)) {
+            let held = (k >> r & 1 == 1).then_some(e);
+            let x = inner.entry(pc).or_insert(held);
+            if *x != held {
                 *x = None;
             }
         }
@@ -351,15 +603,15 @@ pub(crate) fn find(
                     .map(|v| advance(code, n, v, var, at[&n], known(n)))
                     .reduce(merge)
                     .unwrap();
-                if let Some((w, stores, _, _)) = calls.get(&n) {
+                if let Some(c) = calls.get(&n) {
                     for q in 0..3 {
-                        if w >> q & 1 == 1 {
+                        if c.kept >> q & 1 == 0 {
                             d.1[q] = None;
                         }
                     }
                     let lost = match var {
-                        Place::Reg(r) => w >> r & 1 == 1,
-                        Place::Mem(a) => stores.iter().any(|x| x.meets(a as u32, a as u32 + 1)),
+                        Place::Reg(r) => c.kept >> r & 1 == 0,
+                        Place::Mem(a) => c.stores.iter().any(|x| x.meets(a as u32, a as u32 + 1)),
                     };
                     if lost {
                         d.0 = None;
