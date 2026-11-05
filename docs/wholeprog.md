@@ -445,8 +445,11 @@ the facts, so a proof holds on every execution that stays in lifted code.
   variable plus a constant, so `TXA; SBX #k` (`X` minus `k` while `A` = `X`) steps `X`. A `JSR`
   whose callee returns to its return site on every path is one step to that site (its returns
   there are no edges into the loop, so a routine other sites also call does not enter the
-  loop), changing the registers and bytes the callee may write. The `Y`
-  interval a trip bound gives at an instruction of the loop narrows the one the interval
+  loop), changing the registers and bytes the callee may write; a register such a callee
+  leaves alone holds, at the callee's instructions, its values at the call (when only the
+  loop's calls run them), so a voice loop's `X` (`14, 7, 0` by `TXA; SBC #7; TAX`) bounds the
+  routine it calls. The `X` and `Y`
+  intervals a trip bound gives at an instruction of the loop narrow the ones the interval
   analysis gives (so the index `m` of a pointer access), and `Program.induction` lists the
   variables.
 - **Stores** (`dispatch.rs`). An index register's values at an instruction are the union over

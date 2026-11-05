@@ -103,9 +103,10 @@ fn advance(code: &Code, pc: u16, v: &Var, var: Place, tr: Track, known: Known) -
 }
 
 /// What a call of `f` returning to `ret` may change: the data registers it writes (bits of `A`,
-/// `X`, `Y`), the intervals it stores to and its `RTS` starts, when every path from `f` returns
-/// to `ret` (calls within it summarized alike).
-type Call = (u32, Vec<Iv>, Vec<u16>);
+/// `X`, `Y`), the intervals it stores to, its `RTS` starts and the instruction starts it runs
+/// (its callees' included), when every path from `f` returns to `ret` (calls within it
+/// summarized alike).
+type Call = (u32, Vec<Iv>, Vec<u16>, Vec<u16>);
 
 fn callee(
     code: &Code,
@@ -119,7 +120,7 @@ fn callee(
         return c.clone();
     }
     memo.insert((f, ret), None);
-    let (mut writes, mut stores, mut rts) = (0u32, Vec::new(), Vec::new());
+    let (mut writes, mut stores, mut rts, mut runs) = (0u32, Vec::new(), Vec::new(), Vec::new());
     let (mut seen, mut work) = (FxHashSet::default(), vec![f]);
     while let Some(pc) = work.pop() {
         if !seen.insert(pc) {
@@ -138,9 +139,10 @@ fn callee(
                     t: Tg::At(g),
                     ret: r,
                 } => {
-                    let (w, s, _) = callee(code, vars, succs, *g, *r, memo)?;
+                    let (w, s, _, i) = callee(code, vars, succs, *g, *r, memo)?;
                     writes |= w;
                     stores.extend(s);
+                    runs.extend(i);
                     work.push(*r);
                 }
                 Flow::Rts(_) if succs.get(&pc).is_some_and(|s| s.contains(&ret)) => rts.push(pc),
@@ -148,7 +150,8 @@ fn callee(
             }
         }
     }
-    let c = Some((writes, stores, rts));
+    runs.extend(seen);
+    let c = Some((writes, stores, rts, runs));
     memo.insert((f, ret), c.clone());
     c
 }
@@ -179,7 +182,7 @@ fn collapse(
             calls.insert(pc, c);
         }
     }
-    for (pc, (_, _, rts)) in &calls {
+    for (pc, (_, _, rts, _)) in &calls {
         let Some(Var {
             flow: Flow::Jsr { ret, .. },
             ..
@@ -194,6 +197,45 @@ fn collapse(
         }
     }
     (out, calls)
+}
+
+/// The change of register `r` at the instructions of the calls the loop `body` makes that
+/// leave `r` alone, as at their call sites (`at`), when only the loop and those calls run them:
+/// a voice loop's index holds its strided values in the routines it calls.
+fn callee_steps(
+    calls: &FxHashMap<u16, Call>,
+    body: &FxHashSet<u16>,
+    preds: &Succs,
+    r: u8,
+    at: &mut FxHashMap<u16, Track>,
+) {
+    let mut inner: FxHashMap<u16, Option<u8>> = FxHashMap::default();
+    for (&n, (w, _, _, runs)) in calls {
+        let Some(&(Some(e), _)) = at.get(&n).filter(|_| body.contains(&n) && w >> r & 1 == 0)
+        else {
+            continue;
+        };
+        for &pc in runs.iter().filter(|pc| !body.contains(pc)) {
+            let x = inner.entry(pc).or_insert(Some(e));
+            if *x != Some(e) {
+                *x = None;
+            }
+        }
+    }
+    let closed = inner.keys().all(|pc| {
+        preds
+            .get(pc)
+            .into_iter()
+            .flatten()
+            .all(|p| body.contains(p) || inner.contains_key(p))
+    });
+    if closed {
+        for (pc, e) in inner {
+            if let Some(e) = e {
+                at.insert(pc, (Some(e), [None; 3]));
+            }
+        }
+    }
 }
 
 /// The induction variables of every loop of `vars`, given the interval states `st` at each
@@ -309,7 +351,7 @@ pub(crate) fn find(
                     .map(|v| advance(code, n, v, var, at[&n], known(n)))
                     .reduce(merge)
                     .unwrap();
-                if let Some((w, stores, _)) = calls.get(&n) {
+                if let Some((w, stores, _, _)) = calls.get(&n) {
                     for q in 0..3 {
                         if w >> q & 1 == 1 {
                             d.1[q] = None;
@@ -351,6 +393,9 @@ pub(crate) fn find(
             let Some(Some(stp)) = round.filter(|r| r.is_some_and(|x| x != 0)) else {
                 continue;
             };
+            if let Place::Reg(r) = var {
+                callee_steps(&calls, &body, &preds, r, &mut at);
+            }
             let start = entries
                 .iter()
                 .map(|&(p, _)| entry_value(code, vars, st, &preds, heads, roots, p, h, var))
@@ -605,11 +650,12 @@ fn trips(
     t
 }
 
-/// Per instruction start, the interval of `Y` its loops' trip bounds give, where tighter than
-/// none.
-pub(crate) fn y_bounds(ivs: &[Induction]) -> FxHashMap<u16, Iv> {
+/// Per instruction start of a loop with a trip bound (and of the calls it makes that leave
+/// the register alone), the interval of index register `r` as an induction variable: its
+/// start plus its change since the head, over the trips.
+pub(crate) fn bounds(ivs: &[Induction], r: usize) -> FxHashMap<u16, Iv> {
     let mut out: FxHashMap<u16, Iv> = FxHashMap::default();
-    for iv in ivs.iter().filter(|iv| iv.var == Place::Reg(reg::Y as u8)) {
+    for iv in ivs.iter().filter(|iv| iv.var == Place::Reg(r as u8)) {
         let Some(t) = iv.trips else { continue };
         let span = (t as i32 - 1) * iv.step as i8 as i32;
         for (&pc, &e) in &iv.at {
