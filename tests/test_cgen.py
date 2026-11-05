@@ -1039,6 +1039,27 @@ v2:     LDA $22
         RTS
 end:
 """
+KEEPS = """
+entry:  AND #$03
+        TAX
+        LDY #$05
+        JSR sub
+        JSR idle
+        STA $C000
+        STX $C001
+        STY $C002
+        LDY #$07
+        JSR idle
+        JSR sub
+        STA $C003
+        STY $C004
+        RTS
+sub:    INC $10,X
+        LDA $10,X
+        RTS
+idle:   RTS
+end:
+"""
 WRAP = """
 entry:  AND #$0F
         ORA #$70
@@ -1685,7 +1706,7 @@ def test_switch_on_the_target_without_a_live_index(prefix, tmp_path, edit):
 
 def test_callee_called_twice_keeps_its_used_parameters(prefix, tmp_path):
     c, _, _ = check(prefix, tmp_path, SUBS, entry_calls(range(8)))
-    [name] = re.findall(r"static uint8_t (f\d+)\(uint8_t v1\)", c)
+    [name] = re.findall(r"static \w+ (f\d+)\(uint8_t v1\)", c)
     # Its definition, the two `JSR`s and the tail call `twice` falls through to; `twice`, with
     # one call site, is inlined.
     assert c.count(f"{name}(") == 5
@@ -1815,6 +1836,19 @@ def test_per_copy_constants_index_a_table(prefix, tmp_path):
     """Per-copy immediates not affine in the copy are a constant table indexed by it."""
     c, _, _ = check(prefix, tmp_path, CONSTS, entry_calls(range(4), 4))
     assert "static const uint8_t K0[] = {5, 1, 9};" in c and "==" not in c
+
+
+def test_registers_a_callee_leaves_are_its_arguments(prefix, tmp_path):
+    """A result a callee returns unchanged from a parameter is the argument its call passes,
+    so the callee returning one register returns it plainly, with no ``rv`` variable, and a
+    callee left with no effect is not called."""
+    c, _, _ = check(prefix, tmp_path, KEEPS, entry_calls(range(4), 3))
+    assert (
+        "rv" not in c
+        and "f2" not in c
+        and len(re.findall(r"static uint8_t f1\(uint8_t v1\)", c)) == 1
+    )
+    assert re.search(r"uint8_t (v\d+) = f1\(v1\);\n *io_write\(0xC000, \1\);", c)
 
 
 def test_fall_through_into_a_routine_is_a_tail_call(prefix, tmp_path):

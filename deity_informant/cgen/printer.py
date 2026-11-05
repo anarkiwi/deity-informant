@@ -209,6 +209,13 @@ def line(pts, m):
     return (a, s) if all((a + s * k) & m == v for k, v in pts) else None
 
 
+def _resolve(sub, v):
+    """``v`` through the substitution ``sub`` to a value it does not replace."""
+    while v in sub:
+        v = sub[v]
+    return v
+
+
 def logic(sym, es):
     """``es`` joined by ``&&`` or ``||`` (none: the operator's identity)."""
     if not es:
@@ -372,6 +379,63 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             types = (tuple(self.types[a] for a in args), (t,))
             out[key] = Op(name, [res], list(args), props, [], types, pc=pc)
         return out[key].res[0]
+
+    def offset(self, v):
+        """``(base, c)`` of a value ``base + c`` (an ``addi``/``subi`` of a constant), else
+        ``(v, 0)``."""
+        d = self.defs.get(v)
+        c = self.const_of(d.args[1]) if d is not None and d.name in OFFSETS else None
+        if c is None or d.name == "arith.xori":
+            return v, 0
+        return d.args[0], c if d.name == "arith.addi" else -c
+
+    def fold_offsets(self):
+        """Fold a constant offset from a constant offset from a value into one, as
+        ``canonicalize`` does, where forwarding made such pairs."""
+        new, sub = {}, {}
+        for o in self.walk():
+            used = len(o.res) == 1 and self.uses.get(o.res[0])
+            base, c = self.offset(o.res[0]) if used else (None, 0)
+            inner, c0 = self.offset(base) if base is not None else (None, 0)
+            if inner == base:
+                continue
+            t = self.types[o.res[0]]
+            v = (c + c0) & (1 << WIDTH[t]) - 1
+            if not v:
+                sub[o.res[0]] = inner
+                continue
+            if (t, v) not in new:
+                props, name = f"value = {v} : {t}", f"%o{len(self.defs)}.{len(new)}"
+                new[t, v] = Op("arith.constant", [name], [], props, [], ((), (t,)))
+            o.name, o.args = "arith.addi", [inner, new[t, v].res[0]]
+        for o in self.walk():
+            o.args = [_resolve(sub, a) for a in o.args]
+        self.blocks[0].ops[0:0] = new.values()
+        for o in new.values():
+            o.parent = self.blocks[0]
+        if new or sub:
+            self.reindex()
+            self.fold_offsets()
+
+    def param_of(self, v, through, seen):
+        """The index of the parameter value ``v`` always equals, or None: the parameter, a
+        block argument every edge gives one, or a call's result its callee returns from the
+        parameter (``through``) the call passes one."""
+        params = [a for a, _ in self.blocks[0].args]
+        if v in params:
+            return params.index(v)
+        if v in seen:
+            return None
+        seen.add(v)
+        d = self.defs.get(v)
+        if d is None:
+            srcs = self.arg_src.get(v)
+            ps = {self.param_of(o.args[i], through, seen) for o, i, _ in srcs or ()}
+            return ps.pop() if len(ps) == 1 else None
+        if d.name == "func.call":
+            p = through.get(d.prop("callee")[1:], {}).get(d.res.index(v))
+            return None if p is None else self.param_of(d.args[p], through, seen)
+        return None
 
     def dominators(self):
         """``{block name: immediate dominator name}``."""
@@ -619,6 +683,9 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         self.uses = {}
         for o in self.walk():
             callee = o.prop("callee")[1:] if o.name == "func.call" else None
+            if callee in self.mod.inert and not any(r in live for r in o.res):
+                self.dropped.add(id(o))
+                continue
             if callee in funcs:
                 keep = set(funcs[callee].live_args)
             elif o.name == "func.return":
@@ -640,6 +707,19 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                     self.uses[a] = self.uses.get(a, 0) + 1
                 else:
                     self.dead.add((id(o), i))
+
+    def inert(self):
+        """Whether this function has no effect: no loop, and nothing kept but pure operations,
+        branches, returns and calls of inert functions."""
+        if any(self.dominates(s, b.name) for b in self.blocks for s in b.ops[-1].succs):
+            return False
+        return all(
+            id(o) in self.dropped
+            or self.pure(o)
+            or o.name in TERMINATORS
+            or o.name == "memref.get_global"
+            for o in self.walk()
+        )
 
     def pure(self, o):
         """Whether ``o`` computes a value with no effect."""
@@ -2039,6 +2119,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.order, self.edges, self.ids, self.entries = [], {}, new_ids(), []
         self.sites, self.made, self.lifted, self.prov = {}, Counter(), {}, {}
         self.copy_pcs, self.sets, self.kpos, self.tables = {}, {}, None, {}
+        self.inert = set()
         for o in top.regions[0][0].ops:
             if o.name == "func.func" and o.regions[0] and o.regions[0][0].ops:
                 self.funcs.append(Func(o, self))
@@ -2058,6 +2139,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
             if self.lifted.get(f.name, (0, ()))[1]:
                 f.instance(self.kpos)
                 f.kfold()
+        self.forward()
         live, work = {f.name: set() for f in self.funcs}, []
 
         def mark(f, v):
@@ -2094,7 +2176,46 @@ class Module:  # pylint: disable=too-many-instance-attributes
         for f in self.funcs:
             f.live_args.sort()
             f.live_res = sorted(f.live_res) if f.private else []
-            f.settle(live[f.name], self.by_name)
+        while True:
+            for f in self.funcs:
+                f.settle(live[f.name], self.by_name)
+            inert = {f.name for f in self.funcs if f.private and f.inert()}
+            if inert <= self.inert:
+                break
+            self.inert |= inert
+
+    def forward(self):
+        """Read each result a lifted function returns unchanged from a parameter (on every
+        return, through block arguments and the calls that forward theirs) as the argument
+        its call passes: the result is then dead, as a register the callee leaves alone."""
+        through = {}
+        changed = True
+        while changed:
+            changed = False
+            for f in self.funcs:
+                if not f.private:
+                    continue
+                rets = [o for o in f.walk() if o.name == "func.return"]
+                params = [a for a, _ in f.blocks[0].args]
+                have = through.setdefault(f.name, {})
+                for j, t in enumerate(f.results()):
+                    ps = {f.param_of(r.args[j], through, set()) for r in rets}
+                    p = ps.pop() if len(ps) == 1 else None
+                    if p is not None and j not in have and f.types[params[p]] == t:
+                        have[j] = p
+                        changed = True
+        for f in self.funcs:
+            sub = {}
+            for o in f.walk():
+                callee = o.prop("callee")[1:] if o.name == "func.call" else None
+                for j, p in through.get(callee, {}).items():
+                    sub[o.res[j]] = o.args[p]
+            if not sub:
+                continue
+            for o in f.walk():
+                o.args = [_resolve(sub, a) for a in o.args]
+            f.reindex()
+            f.fold_offsets()
 
     def partition(self):
         """Partition memory by the accesses of every function."""
