@@ -69,7 +69,10 @@ caller's return address. `tools/cgenplay.c` is a host harness.
 4. **Liveness** (`printer.Module.prune`). An optimistic liveness over the whole module: a
    store, an I/O write, a trap, a read that may meet a read-sensitive address and a branch
    need their operands; a used result of a function needs the values its returns give; a used
-   parameter needs its call sites' arguments. Calls pass only used parameters and functions
+   parameter needs its call sites' arguments. A result a function returns unchanged from a
+   parameter (on every return, through block arguments and calls forwarding theirs) is read as
+   the argument its call passes, as a register the callee leaves alone, and a function left
+   with no effect and no loop is not called. Calls pass only used parameters and functions
    return only used results (none: `void`, one: its type; more: `void`, each result left in
    the static variable `rvJ` of its register-file position `J`, read into locals right after
    the call, as the 6502 leaves its registers across `RTS`). Upstream `--remove-dead-values` would do this, but in LLVM 22 it rewrites a
