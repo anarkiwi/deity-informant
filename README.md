@@ -12,7 +12,9 @@ edge that has no structured form. The `.c` holds the code alone and the `.h` its
 same player with other data, or loaded elsewhere, gives a byte-identical `.c`. Routines a
 player reaches by fall-through or `JSR` are functions, unrolled per-voice copies (whole blocks
 alike up to operands) one function of the copy's index with its per-copy values in constant
-tables, and a voice loop's index bounds the accesses of the routine it calls. Every output is
+tables, and a voice loop's index bounds the accesses of the routine it calls. An init the host
+calls once, first, is evaluated as far as its run is the same for every song: the memory it
+leaves (relocated operands included) is the program's starting data. Every output is
 verified by replaying its I/O writes against the reference interpreter. See
 [docs/cgen.md](docs/cgen.md).
 

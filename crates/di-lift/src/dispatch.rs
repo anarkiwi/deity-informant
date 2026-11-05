@@ -337,7 +337,7 @@ fn addresses(t: &Template, b: [Option<u8>; 2], r: usize) -> bool {
 
 /// The data register access `i` of template `t` stores, when it stores one as the
 /// instruction found it.
-fn stored_reg(t: &Template, i: usize) -> Option<usize> {
+pub(crate) fn stored_reg(t: &Template, i: usize) -> Option<usize> {
     let mut written = 0u32;
     let mut n = 0;
     for o in t.ops() {
@@ -1269,6 +1269,100 @@ fn run(
     acc
 }
 
+/// The work a run may take: a run stopped early only leaves its stores out.
+pub(crate) const STEPS: usize = 1 << 20;
+
+/// An entry's run along its decided path ([`entry_runs`]): the next instruction, the
+/// registers, the bytes it stored exactly and the return sites of its open calls.
+pub(crate) struct Walk {
+    pub(crate) pc: u16,
+    /// The instruction the last [`Walk::step`] ran.
+    pub(crate) at: u16,
+    pub(crate) env: crate::analysis::Env,
+    mem: Known,
+    /// `(return site, SP its JSR ran at)` per open call.
+    pub(crate) rets: Vec<(u16, u32)>,
+}
+
+impl Walk {
+    pub(crate) fn new(e: &crate::analysis::Entry, entry_sp: Option<u8>) -> Self {
+        let mut env = TOP_ENV;
+        for (r, vs) in &e.regs {
+            if let [x] = vs[..] {
+                env[*r] = Iv::exact(x as u32);
+            }
+        }
+        for &(r, x) in &e.set {
+            env[r] = Iv::exact(x as u32);
+        }
+        if let Some(sp) = entry_sp {
+            env[di_pcode::reg::SP] = Iv::exact(sp as u32);
+        }
+        Walk {
+            pc: e.pc,
+            at: e.pc,
+            env,
+            mem: Known::default(),
+            rets: Vec::new(),
+        }
+    }
+
+    /// Run the instruction at `pc` ([`run`]) when it has one variant and is no cell: its
+    /// opcode, its accesses and whether its successor is decided (then `pc` moves there).
+    pub(crate) fn step(
+        &mut self,
+        code: &Code,
+        vars: &FxHashMap<u16, Vec<Var>>,
+        konst: &dyn Fn(u32) -> Option<u8>,
+        read: &mut Vec<u16>,
+    ) -> Option<(u8, Vec<Access>, bool)> {
+        let pc = self.pc;
+        let v = match vars.get(&pc).map(|vs| &vs[..]) {
+            Some([v]) if !code.cells.contains(pc as usize) => v,
+            _ => return None,
+        };
+        // A call's return: its `RTS` at the SP its `JSR` ran at (calls and returns move SP
+        // in neither instruction's template), nothing below that SP left pushed.
+        let sp = self.env[di_pcode::reg::SP].value();
+        let back = self
+            .rets
+            .last()
+            .copied()
+            .filter(|&(_, s): &(u16, u32)| sp == Some(s));
+        let acc = run(code, vars, pc, &mut self.env, &mut self.mem, konst, read);
+        self.at = pc;
+        let next = match (&v.flow, Template::of(v.op).ctrl) {
+            (Flow::Next(n), _) => Some(*n),
+            (Flow::Br { t, f }, CtrlKind::Br { flag, pol }) => {
+                match (self.env[flag as usize].value(), t.all()) {
+                    (Some(x), [t]) => Some(if (x != 0) == (pol != 0) { *t } else { *f }),
+                    _ => None,
+                }
+            }
+            (Flow::Jmp(t), _) => match t.all() {
+                [t] => Some(*t),
+                _ => None,
+            },
+            (Flow::Jsr { t, ret }, _) => match (t.all(), sp) {
+                ([t], Some(s)) => {
+                    self.rets.push((*ret, s));
+                    Some(*t)
+                }
+                _ => None,
+            },
+            (Flow::Rts(_), _) => back.map(|(r, _)| {
+                self.rets.pop();
+                r
+            }),
+            _ => None,
+        };
+        if let Some(n) = next {
+            self.pc = n;
+        }
+        Some((v.op, acc, next.is_some()))
+    }
+}
+
 /// Per store `(pc, opcode, access index)`, the `(address, value)` pairs entries' runs made
 /// (`None`: a value a run could not know).
 pub(crate) type Made = FxHashMap<(u16, u8, usize), Option<BTreeSet<(u16, u8)>>>;
@@ -1288,8 +1382,6 @@ pub(crate) fn entry_runs(
     konst: &dyn Fn(u32) -> Option<u8>,
     skip: &FxHashSet<u16>,
 ) -> (Made, FxHashMap<u16, BTreeSet<u16>>) {
-    // The work a run may take: a run stopped early only leaves its stores out.
-    const STEPS: usize = 1 << 20;
     let mut made: Made = FxHashMap::default();
     let (mut stops, mut reads) = (Vec::new(), FxHashMap::default());
     for e in entries {
@@ -1298,35 +1390,17 @@ pub(crate) fn entry_runs(
             continue;
         }
         let mut read = Vec::new();
-        let mut env = TOP_ENV;
-        for (r, vs) in &e.regs {
-            if let [x] = vs[..] {
-                env[*r] = Iv::exact(x as u32);
-            }
-        }
-        if let Some(sp) = entry_sp {
-            env[di_pcode::reg::SP] = Iv::exact(sp as u32);
-        }
-        let (mut mem, mut rets) = (Known::default(), Vec::new());
-        let mut pc = e.pc;
+        let mut w = Walk::new(e, entry_sp);
         for _ in 0..STEPS {
-            let v = match vars.get(&pc).map(|vs| &vs[..]) {
-                Some([v]) if !code.cells.contains(pc as usize) => v,
-                _ => break,
+            let Some((op, acc, more)) = w.step(code, vars, konst, &mut read) else {
+                break;
             };
-            // A call's return: its `RTS` at the SP its `JSR` ran at (calls and returns move SP
-            // in neither instruction's template), nothing below that SP left pushed.
-            let sp = env[di_pcode::reg::SP].value();
-            let back = rets
-                .last()
-                .copied()
-                .filter(|&(_, s): &(u16, u32)| sp == Some(s));
-            let acc = run(code, vars, pc, &mut env, &mut mem, konst, &mut read);
             if acc.iter().any(|a| a.store && a.addr.value().is_none()) {
+                w.pc = w.at;
                 break;
             }
             for (ai, a) in acc.iter().enumerate().filter(|(_, a)| a.store) {
-                let slot = made.entry((pc, v.op, ai)).or_insert(Some(BTreeSet::new()));
+                let slot = made.entry((w.at, op, ai)).or_insert(Some(BTreeSet::new()));
                 match (slot.as_mut(), a.val.value()) {
                     (Some(s), Some(x)) => {
                         s.insert((a.addr.lo as u16, x as u8));
@@ -1334,37 +1408,11 @@ pub(crate) fn entry_runs(
                     _ => *slot = None,
                 }
             }
-            let next = match (&v.flow, Template::of(v.op).ctrl) {
-                (Flow::Next(n), _) => Some(*n),
-                (Flow::Br { t, f }, CtrlKind::Br { flag, pol }) => {
-                    match (env[flag as usize].value(), t.all()) {
-                        (Some(x), [t]) => Some(if (x != 0) == (pol != 0) { *t } else { *f }),
-                        _ => None,
-                    }
-                }
-                (Flow::Jmp(t), _) => match t.all() {
-                    [t] => Some(*t),
-                    _ => None,
-                },
-                (Flow::Jsr { t, ret }, _) => match (t.all(), sp) {
-                    ([t], Some(s)) => {
-                        rets.push((*ret, s));
-                        Some(*t)
-                    }
-                    _ => None,
-                },
-                (Flow::Rts(_), _) => back.map(|(r, _)| {
-                    rets.pop();
-                    r
-                }),
-                _ => None,
-            };
-            match next {
-                Some(n) => pc = n,
-                None => break,
+            if !more {
+                break;
             }
         }
-        stops.push(pc);
+        stops.push(w.pc);
         reads.insert(e.pc, read.into_iter().collect::<BTreeSet<u16>>());
     }
     // What the code can reach from where a run stopped may store again, with other values.

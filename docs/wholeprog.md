@@ -35,6 +35,7 @@ from deity_informant import trace, wholeprog
 facts = trace.collect(state, lambda s: [s.call(play) for _ in range(3000)])
 prog = wholeprog.lift(state, [play], volatile=[(lo, hi)], facts=facts)   # cycles=False
 prog = wholeprog.lift(image, [init, play], volatile, entry_sp=0xFD, loaded=(lo, hi))  # static
+prog = wholeprog.lift(image, [init, play], volatile, entry_sp=0xFD, loaded=(lo, hi), init=0)
 # sensitive=[addr, ...]: the volatile reads with effects; other throw-away reads are not made
 prog.functions        # [{"pc", "entry", "recursive", "blocks": [{"pc", "ops"}], "tables", "closed",
                       #   "copies", "copy_pcs"}]: copy_pcs per merged instruction each copy's pc
@@ -50,6 +51,7 @@ prog.starts           # [pc, ...] instruction starts the functions plan (every i
 prog.addr_sets        # {(pc, store): [(lo, hi), ...]} address sets of pointer accesses
 prog.bounds           # {address: (lo, hi)} bytes whose every store has an exact address
 prog.guard_evals      # conditional branches to a deopt the interpreter backend has run
+prog.init             # init=: {"index", "entry", "pc", "image", "stores", "regs", "code"} or None
 r = prog.call(mem, 0, a=0, reg=None, cycles=0, max_cycles=10_000_000, log=True)  # backend=
 prog.backend          # "jit" (default) or "interp"; prog.compile() -> compile seconds
 r["reg"], r["pc"], r["cycles"], r["halt"], r["deopt"], r["log"]
@@ -72,6 +74,7 @@ Inputs:
 | `optimize` | Optimize (default on); off keeps the emitted P-Code. |
 | `entry_sp` | The SP every entry is called at (after its return address), declared rather than observed: outermost plans are specialized to it and page-1 checks guard the *Stack extent* only. |
 | `loaded` | The `[lo, hi)` the program was loaded to: no table extends past it (*Table extents*). |
+| `init` | The index of the entry the host calls once, first, on `image` (a player's init): its decided path is folded into the memory the program starts from (*Init folding*; a static lift only). |
 
 `trace.collect(image, driver)` runs `driver(session)` twice on the jennings native core over a
 copy of `image`: `session.call(pc, a)` is `run_to_rts`; `session.mem`/`session.mpu` are the
@@ -296,6 +299,38 @@ the program, and checks it against the reference.
    whose continuation is lifted (a checked access, a code check) needs only what that
    continuation reads, and what the instruction reads when the reference re-executes it
    (a check before an instruction).
+
+## Init folding
+
+With `init` (a static lift: `entry_sp` and `loaded`, no facts, bank map nor cycle counting)
+the host calls that entry once, first, on `image`, and every other entry after it returns
+(a PSID's init, then its play calls). Its *decided path* (`fold.rs`, the walk of the entry
+runs, *Stores*) is the same for every input: from the entry, while each instruction has one
+variant and is no cell, each byte it reads is a loaded byte or one it stored earlier, each
+branch is decided and each store's address is known. Every other entry runs after the path,
+so the program starts from the memory the path leaves. The path is folded at its last point
+where that memory and the registers are a function of the image alone:
+
+- at the entry's height (no call open, SP the entry SP), not another entry's pc;
+- every register (`A`, `X`, `Y`, the flags) the path wrote known;
+- every byte it stored outside page 1 known, or a register the path never wrote (the
+  entry's input, as a song number in `A`, stored as it came);
+- no access to a volatile range and no store above the entry SP on the way.
+
+The lift is then of the image with the path's known bytes in place, its init entry at the
+fold point: the entry first makes the path's stores of its input registers (a byte so stored
+is written outside the lifted code, like a byte the facts saw written: a cell, never a
+constant), then sets the registers the path wrote, and runs on. A byte only the path writes
+is a constant of every entry, so operands a relocator patched are constant code and their
+accesses have exact addresses; a byte some other store writes starts at the path's value. A
+path whose state depends on its input stops before that: the store of a value computed from
+`A` is not known, so the fold is at the last point before it, and the bytes the input decides
+stay cells written by the lifted code. Code only the path runs is not lifted;
+`Program.init` gives the fold (the original entry and the fold point, the starting memory's
+bytes over the image, the stores and registers of the folded entry, and the instructions the
+path ran that the folded program writes no byte of: code, constant like lifted code).
+`Program.call` of the init entry runs the folded entry: called on the starting memory, once
+and first, it gives the reference's accesses and memory (but dead stack bytes below SP).
 
 ## Guards
 

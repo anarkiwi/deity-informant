@@ -4,7 +4,7 @@
 //! deopt when an assumption fails.
 
 use crate::analysis::{
-    is_stack_op, operand_bytes, page1_check, Access, Check, Entry, Graph, Iv, Tg,
+    is_stack_op, operand_bytes, page1_check, Access, Check, Entry, Graph, Iv, Tg, Val,
 };
 use crate::bank::{Back, BankMap};
 use crate::func::{Arm, Ctl, Exit, Key, Plan, H};
@@ -179,6 +179,19 @@ pub fn emit(
         mem: None,
     };
     em.new_block(plan.pc);
+    // A folded entry's stores and registers: what the run it stands for left.
+    if let Some(e) = entry {
+        for &(a, v) in &e.pre {
+            let v = match v {
+                Val::K(x) => k(x as u32, 1),
+                Val::R(r) => r1(r),
+            };
+            em.emit(Opc::Store, NONE, k(a as u32, 2), v, 0);
+        }
+        for &(r, x) in &e.set {
+            em.emit(Opc::Copy, r1(r), k(x as u32, 1), NONE, 0);
+        }
+    }
     if let Some(s) = plan.sp {
         let bad = em.op(Opc::IntNotEqual, 1, r1(R::SP), k(s as u32, 1));
         em.side_exit(bad, true, |em| em.deopt(k(plan.pc as u32, 2)));

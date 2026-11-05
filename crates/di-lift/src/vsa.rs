@@ -545,6 +545,7 @@ pub fn pull_clear(vars: &FxHashMap<u16, Vec<Var>>, entries: &[Entry]) -> bool {
             e.regs
                 .iter()
                 .all(|(r, vals)| *r != d || vals.iter().all(|&x| x == 0))
+                && e.set.iter().all(|&(r, x)| r != d || x == 0)
         })
 }
 
@@ -1268,17 +1269,7 @@ pub fn analyze(
         ret: FxHashMap::default(),
     };
     for (i, e) in entries.iter().enumerate() {
-        let mut env = TOP_ENV;
-        for (r, vals) in &e.regs {
-            if let (Some(&lo), Some(&hi), true) =
-                (vals.iter().min(), vals.iter().max(), *r < env.len())
-            {
-                env[*r] = Iv {
-                    lo: lo as u32,
-                    hi: hi as u32,
-                };
-            }
-        }
+        let env = e.env();
         w.flow(
             (e.pc, NONE),
             St {
@@ -1506,7 +1497,9 @@ pub fn analyze(
     // reads some store may write is not run, until the rest hold or none is left.
     if let Some((lo, hi)) = loaded {
         let image = |a: u32| {
-            (lo <= a && a < hi && !code.cells.contains(a as usize)).then(|| img[a as usize])
+            let i = a as usize;
+            (lo <= a && a < hi && !code.cells.contains(i) && !code.observed.contains(i))
+                .then(|| img[i])
         };
         let mut skip: FxHashSet<u16> = FxHashSet::default();
         while skip.len() < entries.len() {

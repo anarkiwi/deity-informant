@@ -11,12 +11,12 @@ from deity_informant import cgen
 
 c, h, info = cgen.translate(image, [(0x1000, "init"), (0x1003, "play")],
                             volatile=[(0xD400, 0xD41D)], sensitive_reads=(),
-                            facts=None, loaded=(0x1000, 0x1B5F), header="tune.h")
+                            facts=None, loaded=(0x1000, 0x1B5F), header="tune.h", init=0)
 ```
 
 ```bash
 python -m deity_informant.cgen tune.bin --org 0x1000 --entry 0x1000:init --entry 0x1003:play \
-    --volatile 0xD400-0xD41D -o tune.c --header tune.h
+    --init init --volatile 0xD400-0xD41D -o tune.c --header tune.h
 python tools/cgenplay.py tune.sid --psid --volatile 0xD400-0xD41D -o out/   # translate + check
 ```
 
@@ -29,13 +29,15 @@ python tools/cgenplay.py tune.sid --psid --volatile 0xD400-0xD41D -o out/   # tr
 | `facts` | `trace.Facts`, used only for targets of computed jumps the code does not resolve (below) |
 | `loaded` | the `[lo, hi)` bytes the program was loaded to (default: its code span) |
 | `header` | the name the `.c` includes |
+| `init` | the index of the entry the host calls once, before any other (`None`, the default: entries in any order) |
 
 `info` holds the stage times (`lift`, `mlir`, `layout`, `structure`, `print`), the regions
 `[(origin, length)]`, the code span, the traps in the `.c` (`{k: ("deopt", pc)}` or `("ind", pc,
 ...)` for a computed jump with no target), the computed jumps resolved from the code (`jumps`),
 the fact edges used, the lift's `stats`, whether some access has an unknown address and the
 `structure` counts: C `functions` (and the identical ones `folded` into them) and the
-`gotos` printed, and the `provenance` of the printed constructs in the machine code (below).
+`gotos` printed, the `provenance` of the printed constructs in the machine code (below) and
+the folded `init` (`Program.init`, or None).
 
 The host supplies `uint8_t io_read(uint16_t)`, `void io_write(uint16_t, uint8_t)` and
 `void trap(uint16_t k)`, which must not return (`longjmp`, or abort the call). Each entry
@@ -44,7 +46,7 @@ caller's return address. `tools/cgenplay.c` is a host harness.
 
 ## Pipeline
 
-1. **Lift.** `wholeprog.lift(image, entries, volatile, facts, entry_sp=0xFD, loaded)`,
+1. **Lift.** `wholeprog.lift(image, entries, volatile, facts, entry_sp=0xFD, loaded, init)`,
    static: no facts but the targets of computed jumps the code does not resolve; the entry SP
    is the calling convention below and `loaded` ends every table
    ([wholeprog](wholeprog.md#static-proofs), *Table extents*, *Stack extent*), with `fold=True`
@@ -55,7 +57,11 @@ caller's return address. `tools/cgenplay.c` is a host harness.
    `base + stride * k`. Functions are
    named by ascending entry PC, deopts become `trap(k)` with `k` numbered in the order the
    lift's functions and blocks meet them; a deopt of an instance function is one trap for every
-   copy (`("deopt", pc, function)`, the first copy's start).
+   copy (`("deopt", pc, function)`, the first copy's start). With `init` the init entry's
+   decided path is folded ([wholeprog](wholeprog.md#init-folding)): the `.h` holds the memory
+   the path leaves and the init function starts where it ends (storing the song as the path
+   stored it, setting the registers it wrote), so an operand a relocator patches is a
+   constant, its access indexed directly, and code only the path runs is not translated.
 2. **MLIR** (`emit.py`). Each lifted function is a private `func.func` taking and returning the
    register file as values; its registers, stack slots and block-crossing temporaries are
    rank-0 `memref.alloca`s, memory one global `@M`, volatile accesses `io_read`/`io_write`
@@ -200,7 +206,8 @@ per-voice routines often are; the rest are renumbered in order.
 
 ## Memory
 
-- **Constant code** is the bytes of the planned instructions (`Program.starts`) that the lift treats as constant
+- **Constant code** is the bytes of the planned instructions (`Program.starts`, and those of a
+  folded init path, `Program.init`) that the lift treats as constant
   (no store's address set holds them) and that no constant-address store writes, and the
   bytes of the tables the lift read as constant (jump targets, cell values, loads given their
   bytes' hull). `CODE_ORG` is the first of them (constants into code print relative to it).
@@ -321,8 +328,11 @@ multi-exit and two-entry loops, switches from compare chains and jump tables, ke
 addresses), computed jumps and calls through operands written from tables (in the same call
 or an earlier one), an index past a split table's extent trapping, an opcode restored through
 the stack, a pointer into zero page with no stack check, a jump's or-ed high byte under
-relocation, determinism (repeated, with the blocks shuffled and under other hash seeds) and an
-llvm-mos build. `tools/cgenplay.py` does the same for a PSID or raw image (`--loaded LO-HI`
+relocation, determinism (repeated, with the blocks shuffled and under other hash seeds), an
+init run once folded into the starting memory (a relocator's operands constant though play
+writes its table, the song stored by the folded entry; one relocating by the song folded only
+up to it), each song from a fresh image, and an llvm-mos build. `tools/cgenplay.py` does the
+same for a PSID (its init called once, first: `--init`) or raw image (`--loaded LO-HI`
 names the program's bytes in a raw 64 KiB state, as a memory dump after an init routine) and
 prints `tools/cmetrics.py`'s table, the sizes, the computed jumps resolved from the code, the
 traps and the stage times. It also checks the lift's tail calls (a routine fallen into for its

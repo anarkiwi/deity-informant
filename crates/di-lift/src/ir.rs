@@ -321,6 +321,8 @@ pub type AddrSet = (u16, bool, Vec<(u32, u32)>);
 #[derive(Clone, Debug, Default)]
 pub struct Program {
     pub functions: Vec<Function>,
+    /// The init entry folded into the starting memory ([`crate::fold`]).
+    pub init: Option<crate::fold::Fold>,
     /// `(pc, function)` per requested entry.
     pub entries: Vec<(u16, u32)>,
     /// Constant code bytes `(addr, value)`.

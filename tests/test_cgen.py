@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 
 import wholeprog_progs as W
-from deity_informant import NATIVE, cgen, trace
+from deity_informant import NATIVE, cgen, trace, wholeprog
 from deity_informant.cgen import csyntax, mlir, printer, regions, structure
 from deity_informant.lifter import OPS as OPCODES
 
@@ -1247,6 +1247,68 @@ tab:    .byte 1,2,3,4
 state:  .byte 0
 end:
 """
+INITREL = """
+init:   STA song
+        LDX #$00
+r:      LDA ptrs,X
+        STA $FB
+        LDA ptrs+1,X
+        STA $FC
+        LDY #$01
+        LDA rel,X
+        CLC
+        ADC base
+        STA ($FB),Y
+        INY
+        LDA rel+1,X
+        ADC base+1
+        STA ($FB),Y
+        INX
+        INX
+        CPX #$04
+        BNE r
+done:   LDA song
+        STA $C002
+        RTS
+play:   AND #$03
+        TAY
+o0:     LDA $FFFF,Y
+        STA $C000
+        INC rel
+o1:     STA $FFFF
+        LDA song
+        STA $C001
+        RTS
+song:   .byte 0
+base:   .byte lo(tab), hi(tab)
+ptrs:   .byte lo(o0), hi(o0), lo(o1), hi(o1)
+rel:    .byte 0, 0, 4, 0
+tab:    .byte 1,2,3,4
+state:  .byte 0
+end:
+"""
+INITA = """
+init:   LDX #$5A
+        STX flag
+bysong: AND #$03
+        CLC
+        ADC #lo(tab)
+        STA o0+1
+        LDA #hi(tab)
+        ADC #$00
+        STA o0+2
+        RTS
+play:   AND #$03
+        TAY
+o0:     LDA $FFFF,Y
+        STA $C000
+        LDA flag
+        STA $C001
+        RTS
+flag:   .byte 0
+tab:    .byte 1,2,3,4,5,6,7,8
+end:
+"""
 WRAP = """
 entry:  AND #$0F
         ORA #$70
@@ -1294,11 +1356,13 @@ def assemble(src, org=0x1000, patch=None):
     return img, labels, (org, labels["end"])
 
 
-def translate(prefix, img, labels, loaded, entries=("entry",), facts=None, sensitive=()):
+def translate(  # pylint: disable=too-many-arguments
+    prefix, img, labels, loaded, entries=("entry",), facts=None, sensitive=(), init=None
+):
     """``(c, h, info)`` of the program."""
     ents = [(labels[n], n) for n in entries]
     return cgen.translate(
-        img, ents, [W.IO], sensitive, facts, loaded=loaded, header="t.h", prefix=prefix
+        img, ents, [W.IO], sensitive, facts, loaded=loaded, header="t.h", prefix=prefix, init=init
     )
 
 
@@ -1578,7 +1642,7 @@ def test_split_table_index_past_its_extent_traps(prefix, tmp_path):
     assert key == ("deopt", labels["entry"] + 1) and f"trap({k})" in c
     play(tmp_path, c, h, img, labels, entry_calls(range(4), 2))
     for a in (4, 0xFF):
-        (tmp_path / str(a)).mkdir()
+        (tmp_path / str(a)).mkdir(parents=True)
         with pytest.raises(AssertionError, match="trap"):
             play(tmp_path / str(a), c, h, img, labels, [("entry", a)])
 
@@ -2085,6 +2149,85 @@ def test_relocated_operands_close_when_no_store_reaches_the_relocator(prefix, tm
     play(tmp_path, c, h, img, labels, calls + [("play", 2)])
     body = c[c.index("void play") :]
     assert bool(re.search(r"\b(?:rd|wr|codechk)\(", body)) == clobber
+
+
+def songs(prefix, tmp_path, src, values, init=0):
+    """``(c, info, labels)`` of ``src``'s ``init`` and ``play`` translated with ``init``,
+    replayed from a fresh image per song ``a`` of ``values``: ``init(a)``, then plays."""
+    img, labels, loaded = assemble(src)
+    c, h, info = translate(prefix, img, labels, loaded, entries=("init", "play"), init=init)
+    for a in values:
+        (tmp_path / str(a)).mkdir(parents=True)
+        play(
+            tmp_path / str(a),
+            c,
+            h,
+            img,
+            labels,
+            [("init", a)] + [("play", k) for k in range(4)] * 2,
+        )
+    return c, info, labels
+
+
+def test_init_run_once_is_the_starting_memory(prefix, tmp_path):
+    """An init the host runs once, first, relocates play's operands from a table play also
+    writes: no invariant over every call closes them, but its run from the image is the same
+    for every song, so the program starts from the memory it leaves. The operands are
+    constants, play indexes memory directly, the relocator is not translated, and the song
+    the init stores is the folded entry's store of its ``A``."""
+    c, info, labels = songs(prefix, tmp_path, INITREL, (0, 1, 5))
+    fold = info["init"]
+    ops = {labels[o] + k for o in ("o0", "o1") for k in (1, 2)}
+    assert fold["pc"] == labels["done"] and fold["stores"] == [(labels["song"], ("r", 0))]
+    assert ops <= {a for a, _ in fold["image"]} and not ops & set(info["provenance"]["cells"])
+    assert not re.search(r"\b(?:rd|wr|codechk)\(", c) and "for (" not in c
+    img, labels, loaded = assemble(INITREL)
+    plain = translate(prefix, img, labels, loaded, entries=("init", "play"))[0]
+    assert re.search(r"\b(?:rd|wr|codechk)\(", plain[plain.index("void play") :])
+
+
+def test_init_run_stops_where_the_song_decides(prefix, tmp_path):
+    """Init's run is folded only while what it leaves is the same for every song: a constant
+    store before the song is used is the starting memory, the operand it relocates by the
+    song stays a cell written by the folded entry's code."""
+    _, info, labels = songs(prefix, tmp_path, INITA, range(4))
+    fold = info["init"]
+    assert fold["pc"] == labels["bysong"] and dict(fold["image"]) == {labels["flag"]: 0x5A}
+    assert {labels["o0"] + 1, labels["o0"] + 2} <= set(info["provenance"]["cells"])
+
+
+def test_folded_program_calls_match_the_reference():
+    """The lifted program of a folded init, called on its starting memory, makes the
+    reference's accesses and leaves its memory (but the dead stack below SP)."""
+    img, labels, loaded = assemble(INITREL)
+    pcs = [labels["init"], labels["play"]]
+    prog = wholeprog.lift(img, pcs, [W.IO], entry_sp=0xFD, loaded=loaded, init=0)
+    assert prog.init["entry"] == labels["init"] and prog.entries[0] == labels["done"]
+    mem, ref = bytearray(img), bytearray(img)
+    for addr, byte in prog.init["image"]:
+        mem[addr] = byte
+    for e, a in [(0, 3)] + [(1, k) for k in range(4)] * 2:
+        reg = cgenplay.entry_regs(a)
+        got = prog.call(mem, e, a=a, reg=reg, log=True)["log"]
+        want = wholeprog.reference_call(
+            ref, pcs[e], a=a, reg=reg, volatile=[W.IO], log=True, clocked=False
+        )
+        assert got == want["log"]
+        assert mem[0x200:] == ref[0x200:] and mem[:0x100] == ref[:0x100]
+
+
+def test_cli_folds_the_named_init(prefix, tmp_path):
+    # pylint: disable=import-outside-toplevel
+    from deity_informant.cgen.__main__ import main
+
+    img, labels, loaded = assemble(INITREL)
+    (tmp_path / "prog.bin").write_bytes(bytes(img[loaded[0] : loaded[1]]))
+    ents = [a for n in ("init", "play") for a in ("--entry", f"{labels[n]}:{n}")]
+    out = tmp_path / "prog.c"
+    assert prefix is not None
+    main([str(tmp_path / "prog.bin"), "--org", "0x1000", *ents, "--init", "init", "-o", str(out)])
+    c = out.read_text()
+    assert "rd(" not in c and "for (" not in c
 
 
 def test_fall_through_into_a_routine_is_a_tail_call(prefix, tmp_path):

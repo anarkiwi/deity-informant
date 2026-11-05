@@ -189,12 +189,15 @@ class Program:  # pylint: disable=too-many-instance-attributes
     written: list = ()
     bounds: dict | None = None
     addr_sets: dict | None = None
+    init: dict | None = None
 
 
-def lift(image, entries, volatile, facts=None, loaded=None, sensitive=()):
+def lift(image, entries, volatile, facts=None, loaded=None, sensitive=(), init=None):
     """The static lift of ``entries`` as a :class:`Program` and its ``stats``; ``facts``
     give computed-jump targets only, ``loaded`` the ``(lo, hi)`` the program was loaded to,
-    ``sensitive`` the volatile addresses whose throw-away reads are kept."""
+    ``sensitive`` the volatile addresses whose throw-away reads are kept and ``init`` the
+    index of the entry the host calls once, first, on ``image`` (``None``: entries are called
+    in any order), whose decided path is folded into the image the program starts from."""
     image = bytes(image)
     pcs = [pc for pc, _ in entries]
     prog = wholeprog.lift(
@@ -206,7 +209,15 @@ def lift(image, entries, volatile, facts=None, loaded=None, sensitive=()):
         loaded=loaded,
         fold=True,
         sensitive=sensitive,
+        init=init,
     )
+    entries = list(entries)
+    if (fold := prog.init) is not None:
+        start = bytearray(image)
+        for addr, byte in fold["image"]:
+            start[addr] = byte
+        image = bytes(start)
+        entries[fold["index"]] = (fold["pc"], entries[fold["index"]][1])
     lifted = prog.functions
     rank = sorted(range(len(lifted)), key=lambda i: lifted[i]["pc"])
     remap = {i: j for j, i in enumerate(rank)}
@@ -216,10 +227,11 @@ def lift(image, entries, volatile, facts=None, loaded=None, sensitive=()):
             if op[0] == "CALL":
                 op[3] = remap[op[3]]
     starts = set(prog.starts)
-    p = Program(funcs, list(entries), image, starts, [tuple(v) for v in volatile])
+    p = Program(funcs, entries, image, starts, [tuple(v) for v in volatile])
     p.constant, p.jumps, p.sets = frozenset(prog.code), dict(prog.jumps), dict(prog.sets)
     p.written = list(prog.written)
     p.bounds, p.addr_sets = dict(prog.bounds), dict(prog.addr_sets)
+    p.init = fold
     return p, prog.stats
 
 
@@ -234,6 +246,9 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     times["mlir"] = time.perf_counter() - t0
     t1 = time.perf_counter()
     code = code_bytes(p.image, p.starts)
+    for pc, n in (p.init or {}).get("code", ()):
+        code[(pc + np.arange(n)) & 0xFFFF] = True
+    ran = code.copy()
     cells = np.zeros_like(code)
     tables = None
     if p.constant is not None:
@@ -241,7 +256,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         constant[list(p.constant)] = True
         cells = code & ~constant
         code &= constant
-        tables = constant & ~code_bytes(p.image, p.starts)
+        tables = constant & ~ran
     loaded = p.loaded
     if loaded is None:
         span = np.flatnonzero(code)
@@ -323,17 +338,21 @@ def translate(  # pylint: disable=too-many-arguments
     loaded=None,
     header="cgen.h",
     prefix=None,
+    init=None,
 ):
     """``(c_text, h_text, info)`` of the program in ``image`` (64 KiB) called at ``entries``
     (``(pc, name)``, ``A`` the argument) with ``volatile`` ``[(lo, hi)]`` I/O ranges whose
-    reads at ``sensitive_reads`` are kept; ``facts`` supply computed-jump targets only."""
+    reads at ``sensitive_reads`` are kept; ``facts`` supply computed-jump targets only;
+    ``entries[init]`` is called once, before any other entry (``None``: entries are called in
+    any order)."""
     t0 = time.perf_counter()
     jf = jump_facts(facts, image) if facts is not None else None
-    p, stats = lift(image, entries, volatile, jf, loaded, sensitive_reads)
+    p, stats = lift(image, entries, volatile, jf, loaded, sensitive_reads, init)
     p.sensitive, p.loaded = tuple(sensitive_reads), loaded
     lift_time = time.perf_counter() - t0
     c, h, info = render(p, header, prefix)
     info["times"] = {"lift": lift_time, **info["times"]}
     info["facts_edges"] = list(jf.edges) if jf is not None else []
     info["stats"] = stats
+    info["init"] = p.init
     return c, h, info

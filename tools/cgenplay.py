@@ -100,6 +100,7 @@ def main(argv=None):  # pylint: disable=too-many-locals
     ap.add_argument("--volatile", action="append", default=[], help="LO-HI (HI exclusive)")
     ap.add_argument("--sensitive", action="append", default=[], type=lambda s: int(s, 0))
     ap.add_argument("--calls", default="", help="NAME:A*N,... (default init then 3000 plays)")
+    ap.add_argument("--init", help="NAME of the entry called once, first (--psid: init)")
     ap.add_argument("-n", type=int, default=3000, help="play calls after init with --psid")
     ap.add_argument("-o", "--out", default=".", help="directory for the .c, .h and library")
     args = ap.parse_args(argv)
@@ -108,6 +109,7 @@ def main(argv=None):  # pylint: disable=too-many-locals
         load, init, play, start, body = psid(data)
         entries = [(init, "init"), (play, "play")]
         calls = args.calls or f"init:{max(start - 1, 0)},play:0*{args.n}"
+        args.init = args.init or "init"
     else:
         load, body = args.org, data
         entries = [(int(pc, 0), name) for pc, name in (e.split(":") for e in args.entry)]
@@ -129,6 +131,7 @@ def main(argv=None):  # pylint: disable=too-many-locals
         args.sensitive,
         loaded=loaded,
         header=stem.with_suffix(".h").name,
+        init=[n for _, n in entries].index(args.init) if args.init else None,
     )
     wall = time.perf_counter() - t
     stem.with_suffix(".c").write_text(c, encoding="utf-8")
