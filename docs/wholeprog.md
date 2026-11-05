@@ -442,7 +442,10 @@ the facts, so a proof holds on every execution that stays in lifted code.
   address set holds that a bound read; the bytes read join the program's constant bytes. A
   loop is the natural loop of the head's back edges (from the starts it dominates), a branch
   may reach them through `JMP`s, and the walk from the head keeps each register as the
-  variable plus a constant, so `TXA; SBX #k` (`X` minus `k` while `A` = `X`) steps `X`. The `Y`
+  variable plus a constant, so `TXA; SBX #k` (`X` minus `k` while `A` = `X`) steps `X`. A `JSR`
+  whose callee returns to its return site on every path is one step to that site (its returns
+  there are no edges into the loop, so a routine other sites also call does not enter the
+  loop), changing the registers and bytes the callee may write. The `Y`
   interval a trip bound gives at an instruction of the loop narrows the one the interval
   analysis gives (so the index `m` of a pointer access), and `Program.induction` lists the
   variables.
@@ -461,6 +464,11 @@ the facts, so a proof holds on every execution that stays in lifted code.
   extents*, from bytes no store writes) or the byte of a cell (`LDA cell; PHA; ...; PLA; STA
   cell` restores it) stores those values; a cell's values are its entry byte and those of
   every store that may write it, those of the cells they copy included (a least fixpoint).
+  The part of each entry's run every call repeats is run once (with the declared entry SP):
+  from the entry while each byte it reads is constant or stored earlier in the run, each
+  branch decided and each store's address known; each store it makes there writes exactly
+  the `(address, value)` pairs it made, unless code reachable from where a run stops (or
+  another entry's) may run it again, so a relocator's per-operand values stay apart.
   A cell is closed when every store that may write it has an address set and known values:
   an opcode cell's dispatch chain then has no deopt, and `Program.sets` holds it. A store
   through a `(zp),Y` pointer whose two bytes hold table bytes or constants on every path

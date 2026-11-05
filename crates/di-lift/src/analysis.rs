@@ -735,6 +735,7 @@ pub fn discover(
     bank: Option<&BankMap>,
     matched: bool,
     loaded: Option<(u32, u32)>,
+    entry_sp: Option<u8>,
 ) -> Graph {
     let mut edges: FxHashMap<u16, Vec<u16>> = FxHashMap::default();
     for &(p, q) in &facts.edges {
@@ -753,6 +754,7 @@ pub fn discover(
         edges,
         failed: FxHashSet::default(),
         loaded,
+        entry_sp,
         constant: {
             let mut c = FixedBitSet::with_capacity(0x10000);
             if let Some((lo, hi)) = loaded {
@@ -801,6 +803,8 @@ struct Fixpoint<'a> {
     edges: FxHashMap<u16, Vec<u16>>,
     failed: FxHashSet<u16>,
     loaded: Option<(u32, u32)>,
+    /// The SP every entry is called at, when declared.
+    entry_sp: Option<u8>,
     /// Loaded bytes taken as constant: those no store with an address set wrote in an
     /// earlier round, nor the facts.
     constant: FixedBitSet,
@@ -900,6 +904,7 @@ impl Fixpoint<'_> {
                 &disp,
                 &crate::vsa::Given {
                     loaded: self.loaded,
+                    entry_sp: self.entry_sp,
                     observed: &seen_writes,
                     constant: &self.constant,
                 },

@@ -28,10 +28,10 @@
 //! may write; otherwise, or when a byte is not tagged on some path, an index is unbounded or
 //! two bytes are indexed by unrelated values, the transfer is not resolved.
 
-use crate::analysis::{absint, operand_bytes, Flow, Iv, Tg, Var, TOP_ENV};
+use crate::analysis::{absint, operand_bytes, Access, Flow, Iv, Tg, Var, TOP_ENV};
 use crate::scev::{Induction, Place};
 use crate::vsa::{Code, Ix, Key, St, Tab, NOREG};
-use di_pcode::{reg, Opc, Space, Template};
+use di_pcode::{reg, CtrlKind, Opc, Space, Template};
 use fixedbitset::FixedBitSet;
 use petgraph::algo::dominators::{simple_fast, Dominators};
 use petgraph::graphmap::DiGraphMap;
@@ -50,6 +50,8 @@ pub struct Store {
     pub vals: Option<BTreeSet<u8>>,
     /// Cells whose values the store also writes (a byte loaded from one and stored).
     pub deps: Vec<u16>,
+    /// The `(address, value)` pairs it writes, when an entry's run gives them all.
+    pub pairs: Option<Vec<(u16, u8)>>,
 }
 
 /// An index guard: the instruction at `pc` deopts before it unless index register `reg` is in
@@ -510,6 +512,7 @@ pub(crate) fn stores(code: &Code, vars: &FxHashMap<u16, Vec<Var>>, sets: &Sets) 
                     addrs: None,
                     vals: None,
                     deps: Vec::new(),
+                    pairs: None,
                 }));
                 continue;
             };
@@ -559,6 +562,7 @@ pub(crate) fn stores(code: &Code, vars: &FxHashMap<u16, Vec<Var>>, sets: &Sets) 
                     addrs: addrs.map(|s| s.into_iter().collect()),
                     vals,
                     deps: Vec::new(),
+                    pairs: None,
                 });
             }
         }
@@ -1151,7 +1155,7 @@ fn run(
     mem: &mut Known,
     konst: &dyn Fn(u32) -> Option<u8>,
     read: &mut Vec<u16>,
-) {
+) -> Vec<Access> {
     let t = Template::of(vars[&pc][0].op);
     let b = operand_bytes(code.img, code.cells, pc, t.len);
 
@@ -1181,6 +1185,114 @@ fn run(
             _ => mem.retain(|&m, _| !a.addr.meets(m as u32, m as u32 + 1)),
         }
     }
+    acc
+}
+
+/// Per store `(pc, opcode, access index)`, the `(address, value)` pairs entries' runs made
+/// (`None`: a value a run could not know).
+pub(crate) type Made = FxHashMap<(u16, u8, usize), Option<BTreeSet<(u16, u8)>>>;
+
+/// The stores each entry makes on the part of its run that every call repeats: from the
+/// entry, while every byte it reads is constant (`konst`) or stored earlier in the run, every
+/// branch it takes is decided and every store's address is known, the run is the same on
+/// every call. Per store `(pc, opcode, access index)` the `(address, value)` pairs it wrote,
+/// a value it could not know making it `None`; a store the code can also reach from where a
+/// run stops, or that another entry's run does not decide, is left out.
+pub(crate) fn entry_runs(
+    code: &Code,
+    vars: &FxHashMap<u16, Vec<Var>>,
+    entries: &[crate::analysis::Entry],
+    entry_sp: Option<u8>,
+    konst: &dyn Fn(u32) -> Option<u8>,
+) -> Made {
+    // The work a run may take: a run stopped early only leaves its stores out.
+    const STEPS: usize = 1 << 20;
+    let mut made: Made = FxHashMap::default();
+    let mut stops: Vec<u16> = Vec::new();
+    for e in entries {
+        let mut env = TOP_ENV;
+        for (r, vs) in &e.regs {
+            if let [x] = vs[..] {
+                env[*r] = Iv::exact(x as u32);
+            }
+        }
+        if let Some(sp) = entry_sp {
+            env[di_pcode::reg::SP] = Iv::exact(sp as u32);
+        }
+        let (mut mem, mut rets, mut read) = (Known::default(), Vec::new(), Vec::new());
+        let mut pc = e.pc;
+        for _ in 0..STEPS {
+            let v = match vars.get(&pc).map(|vs| &vs[..]) {
+                Some([v]) if !code.cells.contains(pc as usize) => v,
+                _ => break,
+            };
+            // A call's return: its `RTS` at the SP its `JSR` ran at (calls and returns move SP
+            // in neither instruction's template), nothing below that SP left pushed.
+            let sp = env[di_pcode::reg::SP].value();
+            let back = rets
+                .last()
+                .copied()
+                .filter(|&(_, s): &(u16, u32)| sp == Some(s));
+            let acc = run(code, vars, pc, &mut env, &mut mem, konst, &mut read);
+            if acc.iter().any(|a| a.store && a.addr.value().is_none()) {
+                break;
+            }
+            for (ai, a) in acc.iter().enumerate().filter(|(_, a)| a.store) {
+                let slot = made.entry((pc, v.op, ai)).or_insert(Some(BTreeSet::new()));
+                match (slot.as_mut(), a.val.value()) {
+                    (Some(s), Some(x)) => {
+                        s.insert((a.addr.lo as u16, x as u8));
+                    }
+                    _ => *slot = None,
+                }
+            }
+            let next = match (&v.flow, Template::of(v.op).ctrl) {
+                (Flow::Next(n), _) => Some(*n),
+                (Flow::Br { t, f }, CtrlKind::Br { flag, pol }) => {
+                    match (env[flag as usize].value(), t.all()) {
+                        (Some(x), [t]) => Some(if (x != 0) == (pol != 0) { *t } else { *f }),
+                        _ => None,
+                    }
+                }
+                (Flow::Jmp(t), _) => match t.all() {
+                    [t] => Some(*t),
+                    _ => None,
+                },
+                (Flow::Jsr { t, ret }, _) => match (t.all(), sp) {
+                    ([t], Some(s)) => {
+                        rets.push((*ret, s));
+                        Some(*t)
+                    }
+                    _ => None,
+                },
+                (Flow::Rts(_), _) => back.map(|(r, _)| {
+                    rets.pop();
+                    r
+                }),
+                _ => None,
+            };
+            match next {
+                Some(n) => pc = n,
+                None => break,
+            }
+        }
+        stops.push(pc);
+    }
+    // What the code can reach from where a run stopped may store again, with other values.
+    let mut seen: FxHashSet<u16> = FxHashSet::default();
+    let mut work = stops;
+    while let Some(p) = work.pop() {
+        if seen.insert(p) {
+            for v in vars.get(&p).into_iter().flatten() {
+                work.extend(crate::analysis::flow_succs(&v.flow));
+                if let Flow::Jsr { ret, .. } = v.flow {
+                    work.push(ret);
+                }
+            }
+        }
+    }
+    made.retain(|k, _| !seen.contains(&k.0));
+    made
 }
 
 /// Address sets for a store at `pc` through the `(zp),Y` pointer bytes `ptr` that a loop
@@ -1461,9 +1573,16 @@ pub(crate) fn cell_values(
             *v = None;
         }
     }
+    for s in stores {
+        for &(a, v) in s.pairs.iter().flatten() {
+            if let Some(Some(cur)) = out.get_mut(&a) {
+                cur.insert(v);
+            }
+        }
+    }
     loop {
         let mut changed = false;
-        for s in stores {
+        for s in stores.iter().filter(|s| s.pairs.is_none()) {
             let Some(addrs) = &s.addrs else { continue };
             let mut v = s.vals.clone();
             for d in &s.deps {

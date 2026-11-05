@@ -1060,6 +1060,40 @@ sub:    INC $10,X
 idle:   RTS
 end:
 """
+RUNREL = """
+init:   LDX #$00
+r:      LDA ptrs,X
+        STA $FB
+        LDA ptrs+1,X
+        STA $FC
+        LDY #$00
+        LDA vals,X
+        CLC
+        ADC base
+        STA ($FB),Y
+        INY
+        LDA vals+1,X
+        ADC base+1
+        STA ($FB),Y
+        INX
+        INX
+        CPX #$04
+        BNE r
+        RTS
+play:   AND #$03
+        TAY
+o0:     LDA d0,Y
+        STA $C000
+o1:     LDA d1,Y
+        STA $C001
+        RTS
+base:   .byte $C0, $0F
+ptrs:   .byte lo(o0+1), hi(o0+1), lo(o1+1), hi(o1+1)
+vals:   .byte lo(d0-$FC0), hi(d0-$FC0), lo(d1-$FC0), hi(d1-$FC0)
+d0:     .byte 1,2,3,4
+d1:     .byte 5,6,7,8
+end:
+"""
 WRAP = """
 entry:  AND #$0F
         ORA #$70
@@ -1849,6 +1883,20 @@ def test_registers_a_callee_leaves_are_its_arguments(prefix, tmp_path):
         and len(re.findall(r"static uint8_t f1\(uint8_t v1\)", c)) == 1
     )
     assert re.search(r"uint8_t (v\d+) = f1\(v1\);\n *io_write\(0xC000, \1\);", c)
+
+
+def test_entry_run_closes_the_operands_it_writes(prefix, tmp_path):
+    """An init whose run is the same on every call (its reads constant or its own stores, its
+    branches decided) writes each operand a sum carried across its two bytes, the value it
+    holds: the run pairs each store's addresses with its values, so the operands stay closed
+    at them and the stores need no code check."""
+    img, labels, loaded = assemble(RUNREL)
+    c, h, info = translate(prefix, img, labels, loaded, entries=("init", "play"))
+    play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", a) for a in range(4)] * 2)
+    p, _ = cgen.lift(img, [(labels[e], e) for e in ("init", "play")], [W.IO], loaded=loaded)
+    ops = [labels[o] + k for o in ("o0", "o1") for k in (1, 2)]
+    assert {a: bytes(p.sets[a]) for a in ops} == {a: img[a : a + 1] for a in ops}
+    assert info["stats"]["code_guards"] == 0
 
 
 def test_fall_through_into_a_routine_is_a_tail_call(prefix, tmp_path):

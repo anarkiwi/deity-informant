@@ -1182,6 +1182,9 @@ pub struct Analysis {
 /// bounds may read them).
 pub struct Given<'a> {
     pub loaded: Option<(u32, u32)>,
+    /// The SP every entry is called at, when declared: an entry's run
+    /// ([`crate::dispatch::entry_runs`]) then knows where its pushes land.
+    pub entry_sp: Option<u8>,
     pub observed: &'a FixedBitSet,
     pub constant: &'a FixedBitSet,
 }
@@ -1455,6 +1458,16 @@ pub fn analyze(
         &mut guards,
         &mut reads,
     );
+    // Stores an entry's run decides write the pairs it made.
+    let made = crate::dispatch::entry_runs(&code, vars, entries, given.entry_sp, &konst);
+    for s in stores.iter_mut() {
+        if let Some(Some(p)) = made.get(&(s.pc, s.op, s.ai)) {
+            let addrs: std::collections::BTreeSet<u16> = p.iter().map(|e| e.0).collect();
+            s.addrs = Some(addrs.into_iter().collect());
+            s.vals = Some(p.iter().map(|e| e.1).collect());
+            s.pairs = Some(p.iter().copied().collect());
+        }
+    }
     let cellvals = crate::dispatch::cell_values(img, &stores);
     // A store through a pointer with an address set reaches the hull of its set; its
     // throw-away read, the base's page with the indexed low byte, the pages from the least

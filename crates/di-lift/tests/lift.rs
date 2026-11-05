@@ -542,6 +542,24 @@ fn bounded_index_stores_need_no_code_guard() {
     }
 }
 
+/// A loop stepping `Y` down by 7 around a call of a routine another site also calls: the
+/// call leaves `Y` alone, so `Y` is the loop's induction variable and its indexed store stays
+/// off the routine's code within 256 bytes of its table.
+#[test]
+fn loops_around_shared_calls_bound_their_index() {
+    let code: &[u8] = &[
+        0xa0, 0x0e, 0x20, 0x20, 0x11, 0xa9, 0x00, 0x99, 0xe0, 0x10, 0x98, 0x38, 0xe9, 0x07, 0xa8,
+        0x10, 0xf1, 0x20, 0x20, 0x11, 0x60,
+    ];
+    let p = check(
+        &image(&[(0x1000, code), SUB]),
+        &[0x1000],
+        &calls(3, |_| 0),
+        IO,
+    );
+    assert_eq!(p.stats.code_guards, 0);
+}
+
 /// A routine called with `X` = 0, 1, 2 that leaves `X` as it found it (its own callee too)
 /// is analysed per call site.
 #[test]
