@@ -15,6 +15,7 @@ from dataclasses import dataclass, field, replace
 import networkx as nx
 import numpy as np
 
+from .mlir import Op
 from .csyntax import declare, drop_unread, ends_in_jump, names_in, render, walk
 from . import regions
 from ..lifter import OPS
@@ -194,6 +195,20 @@ OFFSETS = {
 }
 
 
+def line(pts, m):
+    """``(a, s)`` with the points ``(k, v)`` on ``v = a + s * k`` modulo ``m + 1``, if any."""
+    (k0, v0), rest = pts[0], [p for p in pts if p[1] != pts[0][1]]
+    s = 0
+    if rest:
+        k1, v1 = rest[0]
+        dv, dk = (v1 - v0) & m, k1 - k0
+        if dv % dk:
+            return None
+        s = dv // dk
+    a = (v0 - s * k0) & m
+    return (a, s) if all((a + s * k) & m == v for k, v in pts) else None
+
+
 def logic(sym, es):
     """``es`` joined by ``&&`` or ``||`` (none: the operator's identity)."""
     if not es:
@@ -217,6 +232,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         self.users, self.ivs, self.dropped, self.globals = {}, {}, set(), set()
         self.addr_edges, self.arg_src, self.arg_block, self.dead = set(), {}, {}, set()
         self.flags = set()
+        self.kparam, self.kvals, self.ktabs, self.kmemo, self.kiv = None, None, {}, {}, {}
         self.index()
         self.idom = self.dominators()
         self.live_args = list(range(len(self.blocks[0].args)))
@@ -253,6 +269,109 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 for succ, idx, case in o.edges():
                     for (a, _), i in zip(self.block_of[succ].args, idx):
                         self.arg_src.setdefault(a, []).append((o, i, case))
+
+    def reindex(self):
+        """Record definitions, types and uses again after operations were rewritten."""
+        self.defs, self.types, self.uses, self.where = {}, {}, {}, {}
+        self.users, self.ivs, self.globals, self.arg_src = {}, {}, set(), {}
+        self.arg_block, self.flags, self.kmemo, self.kiv = {}, set(), {}, {}
+        self.addr_edges = set()
+        self.index()
+
+    def instance(self, kpos):
+        """Take block argument ``kpos`` as the instance index when every call site passes
+        a constant for it: its values are ``kvals``."""
+        sites = self.mod.sites.get(self.name) or ()
+        vals = [f.const_of(o.args[kpos]) for f, o in sites]
+        if vals and None not in vals:
+            self.kparam = self.blocks[0].args[kpos][0]
+            self.kvals = np.array(sorted({v & 0xFF for v in vals}), dtype=np.int64)
+
+    def kvec(self, v):
+        """The value of ``v`` for each instance index (``kvals``) when it depends on the
+        index alone, else None."""
+        if self.kparam is None:
+            return None
+        try:
+            r = self.evaluate(v, {self.kparam: self.kvals}, self.kmemo)
+        except Unknown:
+            return None
+        return np.broadcast_to(r, self.kvals.shape)
+
+    def kivs(self, v):
+        """The interval of ``v`` for each instance index, or None outside an instance."""
+        if self.kparam is None:
+            return None
+        saved, out = self.ivs, []
+        try:
+            for k in self.kvals.tolist():
+                self.ivs = self.kiv.setdefault(k, {self.kparam: (k, k)})
+                out.append(self.iv(v))
+        finally:
+            self.ivs = saved
+        return out
+
+    def kfold(self):
+        """Give each value computed from the instance index alone (not a condition) one
+        definition at the entry per distinct set of per-index values: the least value plus
+        a ``arith.kfam`` of the index, 8 bits wide where the offsets fit, which prints as
+        ``base + stride * k`` where affine in the index, else as a constant table."""
+        if self.kparam is None:
+            return
+        new = {}
+        self.mark_addresses()
+        for o in list(self.walk()):
+            if (
+                len(o.res) == 1
+                and self.types[o.res[0]] != "index"
+                and self.kvec(o.res[0]) is not None
+            ):
+                continue
+            for i, a in enumerate(o.args):
+                t = self.types.get(a)
+                if a == self.kparam or t not in ("i8", "i16"):
+                    continue
+                vec = self.kvec(a)
+                if vec is None or (vec == self.kvals).all() or self.const_of(a) is not None:
+                    continue
+                o.args[i] = self.kdefine(t, vec, new, o.pc, (id(o), i) in self.addr_edges)
+        self.blocks[0].ops[0:0] = new.values()
+        for o in new.values():
+            o.parent = self.blocks[0]
+        if new:
+            self.reindex()
+
+    def kdefine(self, t, vec, out, pc, address):
+        """The value ``vec`` (per instance index) of type ``t`` as new operations ``out``: the
+        least value split off a 16-bit one or an ``address`` (it prints relative to its
+        region), the rest from the index."""
+        lo = int(vec.min()) if address or t == "i16" else 0
+        offs = vec - lo
+        kt = "i8" if offs.max() <= 0xFF else t
+        if (offs == self.kvals).all():
+            kt, name = self.types[self.kparam], self.kparam
+        else:
+            name = self.kop(out, "arith.kfam", [self.kparam], kt, pc, offs=tuple(offs.tolist()))
+        if kt != t:
+            name = self.kop(out, "arith.extui", [name], t, pc)
+        if lo:
+            c = self.kop(out, "arith.constant", [], t, pc, props=f"value = {lo} : {t}")
+            name = self.kop(out, "arith.addi", [c, name], t, pc)
+        return name
+
+    def kop(self, out, name, args, t, pc, props="", offs=None):
+        """The result of operation ``name`` of ``args`` (type ``t``) among the new operations
+        ``out`` (``{key: op}``), added unless there (``offs``: an ``arith.kfam``'s values)."""
+        key = (name, tuple(args), t, props, offs)
+        if key not in out:
+            res = f"%k{len(out)}"
+            if offs is not None:
+                self.ktabs[res] = tab = np.zeros(int(self.kvals.max()) + 1, dtype=np.int64)
+                tab[self.kvals] = offs
+            self.types[res] = t
+            types = (tuple(self.types[a] for a in args), (t,))
+            out[key] = Op(name, [res], list(args), props, [], types, pc=pc)
+        return out[key].res[0]
 
     def dominators(self):
         """``{block name: immediate dominator name}``."""
@@ -301,6 +420,11 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             r = (c, c)
         elif o.name == "ub.poison":
             r = (0, 0)
+        elif o.name == "arith.kfam":
+            lo, hi = self.iv(o.args[0])
+            ks = self.kvals[(self.kvals >= lo) & (self.kvals <= hi)]
+            vals = self.ktabs[v][ks]
+            r = (int(vals.min()), int(vals.max())) if len(vals) else full
         elif o.name in CASTS:
             r = self.iv(o.args[0])
             r = r if r[1] <= top else full
@@ -433,7 +557,9 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             r = np.where(c != 0, a, b)
         else:
             args = [np.asarray(self.evaluate(x, env, memo), dtype=np.int64) for x in d.args]
-            if name in CASTS:
+            if name == "arith.kfam":
+                r = self.ktabs[v][args[0]]
+            elif name in CASTS:
                 r = args[0] & top
             elif name in NUMPY:
                 r = NUMPY[name](args[0], args[1]) & top
@@ -463,13 +589,17 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         return d.args[0] if d is not None and d.name == "arith.index_castui" else idx
 
     def accesses(self):
-        """``[(op, (lo, hi))]`` of the memory accesses and I/O calls."""
+        """``[(op, (lo, hi), per)]`` of the memory accesses and I/O calls: the interval of
+        the address and, in an instance, ``per`` index (else None)."""
         out = []
         for o in self.walk():
             if o.name in ("memref.load", "memref.store") and o.args[-2] in self.globals:
-                out.append((o, self.iv(self.address(o))))
+                a = self.address(o)
             elif o.name == "func.call" and o.prop("callee") in ("@io_read", "@io_write"):
-                out.append((o, self.iv(o.args[0])))
+                a = o.args[0]
+            else:
+                continue
+            out.append((o, self.iv(a), self.kivs(a)))
         return out
 
     def root(self, o):
@@ -1127,6 +1257,17 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         j = mem.held_span(lo, hi, o.name != "memref.load")
         if j is not None and o.name in ("memref.load", "memref.store"):
             return ("held", j)
+        per = self.f.kivs(self.f.address(o))
+        if per:
+            store = o.name != "memref.load"
+            ks = {mem.region(a, b) for a, b in per}
+            js = {mem.held_span(a, b, store) for a, b in per}
+            if len(ks) == 1 and None not in ks:
+                return ("region", ks.pop())
+            if len(js) == 1 and None not in js and o.name in ("memref.load", "memref.store"):
+                return ("held", js.pop())
+            if o.name == "func.call" and all(mem.is_volatile(a, b) for a, b in per):
+                return ("io",)
         if mem.is_code(lo, hi):
             return ("code",)
         store = o.name == "memref.store" or o.prop("callee") == "@io_write"
@@ -1214,6 +1355,8 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             return lit(0, w)
         if name == "memref.load":
             return self.load(o)
+        if name == "arith.kfam":
+            return self.kfam(o)
         if name == "func.call":
             a, v = self.addr(o.args[0]), self.ex(o.args[1])
             self.mod.helpers.add("codechk")
@@ -1262,6 +1405,25 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
                 text, 3, "?:", min(a.lo, b.lo), max(a.hi, b.hi), a.uns or b.uns, **join(c, a, b)
             )
         raise NotImplementedError(name)
+
+    def kfam(self, o):
+        """The C expression of an ``arith.kfam``: ``a + s * k`` where its values are affine in
+        the instance index ``k``, else an element of a constant table indexed by ``k``."""
+        f, w = self.f, self.f.width(o.res[0])
+        tab, k = f.ktabs[o.res[0]], self.ex(o.args[0])
+        m = (1 << w) - 1
+        pts = [(int(x), int(tab[x])) for x in f.kvals]
+        fit = line(pts, m)
+        if fit is None:
+            name = self.mod.table(w, tab)
+            lo, hi = int(tab[f.kvals].min()), int(tab[f.kvals].max())
+            return E(f"{name}[{k.text}]", 16, "", lo, hi, w == 16, False, k.refs)
+        a, st = fit
+        neg = st > m // 2
+        t = k if st == 1 else binary("*", 13, k, lit(m + 1 - st if neg else st, w), w)
+        if neg:
+            return binary("-", 12, lit(a, w), t, w)
+        return binary("+", 12, lit(a, w), t, w) if a else t
 
     @staticmethod
     def cmpi(pred, a, b, width):
@@ -1876,7 +2038,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.traps, self.funcs, self.mains, self.structs = set(), [], {}, {}
         self.order, self.edges, self.ids, self.entries = [], {}, new_ids(), []
         self.sites, self.made, self.lifted, self.prov = {}, Counter(), {}, {}
-        self.copy_pcs, self.sets = {}, {}
+        self.copy_pcs, self.sets, self.kpos, self.tables = {}, {}, None, {}
         for o in top.regions[0][0].ops:
             if o.name == "func.func" and o.regions[0] and o.regions[0][0].ops:
                 self.funcs.append(Func(o, self))
@@ -1892,6 +2054,10 @@ class Module:  # pylint: disable=too-many-instance-attributes
             for o in f.walk():
                 if o.name == "func.call" and o.prop("callee")[1:] in sites:
                     sites[o.prop("callee")[1:]].append((f, o))
+        for f in self.funcs if self.kpos is not None else ():
+            if self.lifted.get(f.name, (0, ()))[1]:
+                f.instance(self.kpos)
+                f.kfold()
         live, work = {f.name: set() for f in self.funcs}, []
 
         def mark(f, v):
@@ -1932,16 +2098,19 @@ class Module:  # pylint: disable=too-many-instance-attributes
 
     def partition(self):
         """Partition memory by the accesses of every function."""
-        ranges, stores, unknown = [], set(), False
+        ranges, stores, unknown, joined = [], set(), False, []
         for f in self.funcs:
-            for o, (lo, hi) in f.accesses():
-                if id(o) not in f.dropped:
-                    ranges.append((lo, hi))
-                    if o.name == "memref.store" and lo == hi:
-                        stores.add(lo)
-                    write = o.name == "memref.store" or o.prop("callee") == "@io_write"
-                    unknown |= write and hi - lo >= regions.BOUNDED
-        self.mem.partition(ranges, sorted(stores), unknown)
+            for o, (lo, hi), per in f.accesses():
+                if id(o) in f.dropped:
+                    continue
+                ranges.append((lo, hi))
+                if o.name == "memref.store" and lo == hi:
+                    stores.add(lo)
+                if per and len(set(per)) > 1 and hi - lo < regions.BOUNDED:
+                    joined.append((lo, hi))
+                write = o.name == "memref.store" or o.prop("callee") == "@io_write"
+                unknown |= write and hi - lo >= regions.BOUNDED
+        self.mem.partition(ranges, sorted(stores), unknown, joined)
 
     def owners(self, runs, held):
         """``(regions, held spans)`` the address ``runs`` (``[(lo, hi)]``, ``hi`` exclusive)
@@ -1983,6 +2152,13 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 el = f"{n}[{off}]"
             out.append((f"{off} < {n}_LEN", el))
         return out
+
+    def table(self, width, vals):
+        """The name of the constant table of ``vals`` (``width`` bits), named on first use."""
+        key = (width, tuple(int(x) for x in vals))
+        if key not in self.tables:
+            self.tables[key] = f"K{len(self.tables)}"
+        return self.tables[key]
 
     def ret_type(self, f):
         """The C return type of function ``f``'s live results: none, its one result, or with
@@ -2050,6 +2226,10 @@ class Module:  # pylint: disable=too-many-instance-attributes
         for f in self.funcs:
             f.conds.close()
         out = [f"static {CTYPE[w]} rv{j};" for j, w in sorted(self.structs.items())]
+        out += [
+            f"static const {CTYPE[w]} {n}[] = {{{', '.join(lit(x, w).text for x in vals)}}};"
+            for (w, vals), n in self.tables.items()
+        ]
         protos, kept, names = fold(
             [(c.name, texts[id(c)]) for c in post], [f"{c.head_text};" for c in protos]
         )

@@ -30,6 +30,8 @@ EXTERNS = {
 #: Entry register values besides ``A`` (index: value; others 0): ``SP`` below the return address.
 ENTRY_REGS = {3: 0xFD, 16: 0xFF}
 NSLOT = 18
+#: The register holding an instance function's copy index.
+KREG = 4
 
 
 def ty(size):

@@ -1790,6 +1790,33 @@ def test_unrolled_copies_fold_into_one_function(prefix, tmp_path):
     assert len(re.findall(rf"\b{name}\([0-2]\)", c)) == 3
 
 
+def test_copies_operand_cells_indexed_directly(prefix, tmp_path):
+    """Each copy's own operand cell lies in one held span: the copies index it at their
+    stride, computed once per call in 8 bits, with no ``rd``/``wr``."""
+    c, _, _ = check(prefix, tmp_path, VOICES, entry_calls(range(4), 6))
+    assert not re.search(r"\b(?:rd|wr)\(", c)
+    [stride] = re.findall(r"uint8_t (v\d+) = v1 \* 0x18;", c)
+    assert len(re.findall(rf"C\d+\[{stride}\]", c)) == 3
+
+
+def test_copies_at_uneven_distances_index_a_table(prefix, tmp_path):
+    """Copies whose cells are not at one stride index their span by a constant table of
+    the offsets, the same at another origin."""
+    src = VOICES.replace("JMP v1\n", "JMP v1\n        .byte 0, 0, 0\n")
+    c, _, info = check(prefix, tmp_path, src, entry_calls(range(4), 6))
+    assert (info["stats"]["instances"], info["stats"]["instance_copies"]) == (1, 3)
+    assert "static const uint8_t K0[] = {0, 0x1B, 0x33};" in c
+    assert not re.search(r"\b(?:rd|wr)\(|==", c)
+    img, labels = W.assemble(src, 0x2345)
+    assert translate(prefix, img, labels, (0x2345, labels["end"]))[0] == c
+
+
+def test_per_copy_constants_index_a_table(prefix, tmp_path):
+    """Per-copy immediates not affine in the copy are a constant table indexed by it."""
+    c, _, _ = check(prefix, tmp_path, CONSTS, entry_calls(range(4), 4))
+    assert "static const uint8_t K0[] = {5, 1, 9};" in c and "==" not in c
+
+
 def test_fall_through_into_a_routine_is_a_tail_call(prefix, tmp_path):
     c, _, _ = check(prefix, tmp_path, FALLTHRU, entry_calls(range(4), 4))
     [name] = re.findall(r"static \w+ (f\d+)\(uint8_t v1\)", c)

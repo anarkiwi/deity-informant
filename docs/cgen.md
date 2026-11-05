@@ -224,6 +224,15 @@ per-voice routines often are; the rest are renumbered in order.
   only those it spans (the last untested); a 16-bit base plus a byte index is the base's
   element indexed by the byte, as `(zp),Y` is. One at a constant base plus an index whose set
   spans several regions (operand cells of several copies) goes through `rd`/`wr`.
+- In an instance function (unrolled copies folded into one function of the copy's index `k`,
+  every call passing a constant), a value computed from `k` alone (not a branch condition) has
+  one definition at the function's entry per distinct set of per-copy values: `base + stride *
+  k` where they are affine in `k`, in 8 bits where the offsets from the least value fit, else
+  an element of a `static const` table `Kn` indexed by `k`; an address keeps its least value
+  as a constant, so it prints relative to its region. An access is placed per copy: its
+  interval for each value of `k` lying in one region (or held span) indexes it directly, as
+  each copy's own operand cells at a stride do; the interval over all copies is then held in
+  one span with the regions it touches.
 - An access whose interval lies in one region is `Rk[off + index]`, `off` relative to the
   region and the address taken modulo its width (16 bits, 8 for a zero-page one) as the 6502
   wraps it; a load of constants in one span is `Cj[off + index]` alike. One in volatile
@@ -306,7 +315,8 @@ traps and the stage times. It also checks the lift's tail calls (a routine falle
 third voice is one function with three call sites) and instances (unrolled copies at a stride
 are one function of the copy's index whose I/O register is `0xC000 + k * 7`, called for each
 copy in order; copies sharing one trap; determinism and relocation invariance of a folded
-program).
+program; copies' operand cells indexed directly at their stride, computed once in 8 bits;
+cells at uneven distances and per-copy immediates as constant tables).
 
 `tools/cgengraph.py TUNE.sid --pc ADDR` prints the structuring graph of the functions holding
 an instruction (nodes by instruction address, back edges, copies, `--ops` the operations) and

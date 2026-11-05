@@ -145,12 +145,14 @@ class Memory:  # pylint: disable=too-many-instance-attributes
                 lo, hi = min(lo, org), max(hi, org + n)
         return lo, hi
 
-    def partition(self, accesses, stores, unknown_store=True):
+    def partition(self, accesses, stores, unknown_store=True, joined=()):
         """Regions for ``accesses`` (``(lo, hi)`` inclusive, None when unknown), given the
         ``stores`` at constant addresses (code bytes they hit are data). Constant bytes are
         held where a bounded access may reach them, or everywhere when a store of unknown
         address (``unknown_store``) may need them to check it, and tables (data read as
-        constant) always; a load of unknown address reaching other code reads ``oob_rd``."""
+        constant) always; a load of unknown address reaching other code reads ``oob_rd``.
+        Each of the ``joined`` intervals (the addresses of an instance's copies) is held in one
+        span with the regions it touches, so the copies index one array."""
         for a in stores:
             self.code[a] = False
         touched = np.zeros(0x10000, dtype=bool)
@@ -160,12 +162,14 @@ class Memory:  # pylint: disable=too-many-instance-attributes
             else:
                 touched[r[0] : r[1] + 1] = True
         self.constant = constant = self.code | self.tables
-        need = constant if unknown_store else touched & self.code | self.tables
+        need = constant.copy() if unknown_store else touched & self.code | self.tables
         if self.unknown:
             touched[self.loaded[0] : self.loaded[1]] = True
         for lo, hi in self.written:
             touched[lo:hi] = True
         touched &= ~constant & ~self.vol
+        for lo, hi in joined:
+            need[lo : hi + 1] |= constant[lo : hi + 1] | touched[lo : hi + 1]
         self.regions = runs(touched)
         for k, (org, n) in enumerate(self.regions):
             self.owner[org : org + n] = k
