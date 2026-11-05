@@ -1300,14 +1300,54 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
     def indexed(self, o):
         """``(base, index)`` texts of the address of access ``o`` when it is a 16-bit value
         plus a zero-extended byte, else None."""
+        bi = self.base_index(o)
+        return None if bi is None else (self.addr(bi[0]).text, self.ex(bi[1]).text)
+
+    def base_index(self, o):
+        """``(base, index)`` values of the address of access ``o`` when it is a 16-bit value
+        plus a zero-extended byte, else None."""
         d = self.f.defs.get(self.f.address(o))
         if d is None or d.name != "arith.addi":
             return None
         for b, i in (d.args, d.args[::-1]):
             e = self.f.defs.get(i)
             if e is not None and e.name == "arith.extui" and self.f.width(e.args[0]) == 8:
-                return self.addr(b).text, self.ex(e.args[0]).text
+                return b, e.args[0]
         return None
+
+    def base_tests(self, o, how):
+        """Per choice of a pointer access ``o`` over regions and spans (``how``), a test of its
+        base alone, when the base determines the choice: the bases that reach each choice's
+        part of the address set (its addresses less the index's interval) are disjoint
+        intervals, so the test holds for every index the base is used with."""
+        bi = self.base_index(o)
+        store = o.name == "memref.store" or o.prop("callee") == "@io_write"
+        runs = self.mod.addr_sets.get((o.pc, store))
+        if bi is None or not runs:
+            return None
+        ylo, yhi = self.f.iv(bi[1])
+        idx = np.concatenate([np.arange(lo, hi) for lo, hi in runs])
+        mem, parts = self.mod.mem, []
+        for k in how[1]:
+            parts.append((f"R{k}", mem.regions[k][0], idx[mem.owner[idx] == k]))
+        for j in how[2]:
+            a, b = mem.held[j]
+            inside = idx[(idx >= a) & (idx < b) & (mem.owner[idx] < 0)]
+            parts.append((f"C{j}", a, inside))
+        spans = [(int(p.min()) - yhi, int(p.max()) - ylo, n, org) for n, org, p in parts if p.size]
+        if len(spans) != len(parts):
+            return None
+        order = sorted(spans)
+        if any(x[1] >= y[0] for x, y in zip(order, order[1:])):
+            return None
+        base = self.addr(bi[0]).text
+        tests = []
+        for lo, hi, n, org in spans:
+            d = lo - org
+            ref = f"{n}_ORG + {lit(d, 16).text}" if d > 0 else f"{n}_ORG - {lit(-d, 16).text}"
+            ref = n + "_ORG" if d == 0 else ref
+            tests.append(f"(uint16_t)(({base}) - ({ref})) < {lit(hi - lo + 1, 16).text}")
+        return tests
 
     def addr(self, a):
         """The address value ``a`` with its constant relocated (a zero-page one as is)."""
@@ -1419,7 +1459,10 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             return self.mem_ref(o, how[-1], how[0] == "held")
         a = self.addr(self.f.address(o))
         if how[0] == "set":
-            *tests, last = self.mod.choices(how[1], how[2], a.text, self.indexed(o))
+            choices = self.mod.choices(
+                how[1], how[2], a.text, self.indexed(o), self.base_tests(o, how)
+            )
+            *tests, last = choices
             text = "".join(f"{t} ? {r} : " for t, r in tests) + last[1]
             return E(f"({text})", 16, "", 0, 255, False, True, a.refs)
         fn = "oob_rd" if how[0] == "code" else "rd"
@@ -1667,7 +1710,10 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             return
         if how[0] == "set":
             a = self.addr(self.f.address(o))
-            *tests, last = self.mod.choices(how[1], how[2], a.text, self.indexed(o))
+            choices = self.mod.choices(
+                how[1], how[2], a.text, self.indexed(o), self.base_tests(o, how)
+            )
+            *tests, last = choices
             text = "".join(f"if ({t}) {r} = {v.text}; else " for t, r in tests)
             out.append(("s", f"{text}{last[1]} = {v.text};", a.refs | v.refs))
             return
@@ -2254,11 +2300,11 @@ class Module:  # pylint: disable=too-many-instance-attributes
             int(j) for j in np.unique(span[(reg < 0) & (span >= 0)])
         )
 
-    def choices(self, regs, spans, addr, indexed=None):
+    def choices(self, regs, spans, addr, indexed=None, tests=None):
         """``[(test, element)]`` of address ``addr`` in each of the regions ``regs`` and held
         ``spans`` its address set lies in: the last needs no test. With ``indexed`` (``(base,
         index)``, the address a 16-bit base plus an 8-bit index) the element is the base's
-        place indexed, as the 6502's ``(zp),Y`` is."""
+        place indexed, as the 6502's ``(zp),Y`` is; ``tests`` replace the address's tests."""
         names = [f"R{k}" for k in regs] + [f"C{j}" for j in spans]
         self.regions_used.update(regs)
         if spans:
@@ -2272,7 +2318,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
             else:
                 el = f"{n}[{off}]"
             out.append((f"{off} < {n}_LEN", el))
-        return out
+        return out if tests is None else [(t, e) for t, (_, e) in zip(tests, out)]
 
     def table(self, width, vals):
         """The name of the constant table of ``vals`` (``width`` bits), named on first use."""

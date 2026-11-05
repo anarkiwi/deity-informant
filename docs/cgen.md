@@ -203,9 +203,11 @@ per-voice routines often are; the rest are renumbered in order.
   Only the tables and the constant bytes a bounded access may reach are held in memory (all
   of them when a store of unknown address may need them for its code check): their runs,
   joined across gaps of data region bytes only (any other byte between them would be held as
-  data the program never reads) and widened over the data regions they overlap, are the spans
-  `C0, C1, ...`; those regions are their slices (`#define R2 (C0 + (R2_ORG - C0_ORG))`), so each
-  byte is held once, and `Cj_DATA` marks a span's data bytes. A load of unknown address
+  data the program never reads) and widened over the data regions they overlap or abut (one
+  array, so `rd`/`wr` test one range for both), are the spans `C0, C1, ...`; those regions are
+  their slices (`#define R2 (C0 + (R2_ORG - C0_ORG))`), so each byte is held once, and
+  `Cj_DATA` marks a span's data bytes up to its last constant byte (`Cj_BITS`; every byte past
+  it is data). A load of unknown address
   reaching other code reads `oob_rd`.
 - **Data regions** `R0, R1, ...` (ascending address) are the maximal runs of other bytes that
   some access may touch, outside volatile ranges. An access's interval comes from its address
@@ -225,7 +227,10 @@ per-voice routines often are; the rest are renumbered in order.
 - An access through a pointer with an address set (`Program.addr_sets`: a block copy's
   loads and stores) that lies in the regions and held spans indexes them directly, testing
   only those it spans (the last untested); a 16-bit base plus a byte index is the base's
-  element indexed by the byte, as `(zp),Y` is. One at a constant base plus an index whose set
+  element indexed by the byte, as `(zp),Y` is. When the bases that reach each tested part of
+  the set (its addresses less the index's interval) are disjoint intervals, the test reads the
+  base alone, the same for every index (a block copy's loop over a page tests its pointer, not
+  each byte). One at a constant base plus an index whose set
   spans several regions (operand cells of several copies) goes through `rd`/`wr`.
 - In an instance function (unrolled copies folded into one function of the copy's index `k`,
   every call passing a constant), a value computed from `k` alone (not a branch condition) has

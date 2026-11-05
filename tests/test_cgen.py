@@ -1250,7 +1250,7 @@ def test_read_off_a_table_into_code(prefix, tmp_path):
     assert "C0[" in c
     assert info["code_span"][0] == W.assemble(OOB)[1]["entry"]
     [(lo, hi)] = info["code_held"]
-    assert info["code_span"][0] <= lo < hi <= info["code_span"][1]
+    assert lo < info["code_span"][1] and info["code_span"][0] < hi
 
 
 def test_smc_operand_cells(prefix, tmp_path):
@@ -1351,7 +1351,7 @@ def test_table_region_past_the_code_span(prefix, tmp_path):
     assert "static __attribute__((noinline)) uint8_t codechk(" in c
     _, labels, _ = assemble(STRADDLE)
     [k] = [k for k, (org, n) in enumerate(info["regions"]) if org <= labels["buf"] < org + n]
-    assert f"uint8_t R{k}[R{k}_LEN]" in c and info["code_span"][1] == labels["buf"]
+    assert f"#define R{k} (C0 + " in c and info["code_span"][1] == labels["buf"]
 
 
 def test_pointer_stores_from_a_terminated_table_make_cells(prefix, tmp_path):
@@ -1461,10 +1461,10 @@ def test_indexed_stores_clear_operand_cells(prefix, tmp_path):
     c, _, info = check(prefix, tmp_path, CLEAR, entry_calls([0, 0, 1, 0, 2, 0, 1, 0]))
     assert "codechk" not in c and not info["traps"]
     assert (info["stats"]["cells"], info["stats"]["code_guards"]) == (3, 0)
-    # The cells lie in three regions: a store at a constant base plus an index goes through
-    # the one write accessor, with no region tests of its own.
+    # The cells lie in three regions slicing one span: a store at a constant base plus an
+    # index indexes the span, with no region tests and no write accessor.
     body = c[c.index("void entry") :]
-    assert re.search(r"\bwr\(R0_ORG \+ v\d+, 0\);", body) and "_LEN" not in body
+    assert re.search(r"\bC0\[v\d+\] = 0;", body) and "_LEN" not in body and "wr(" not in c
 
 
 ANYPTR = """
@@ -2048,13 +2048,29 @@ def test_block_copy_stores_have_per_block_addresses(prefix, tmp_path):
 
 def test_block_copy_indexes_the_blocks_directly(prefix, tmp_path):
     """The copy's stores have address sets in the data regions: they index the regions they
-    span directly, testing only those, with no wr dispatch."""
+    span directly, testing only those, with no wr dispatch; the bases reaching each region
+    are apart, so the test reads the pointer, not the index."""
     calls = [("entry", 0), ("entry", 0x82), ("entry", 0x90), ("entry", 1), ("entry", 0x88)]
     c, _, _ = check(prefix, tmp_path, BLOCKS, calls)
     img, labels, loaded = assemble(BLOCKS)
     p, _ = cgen.lift(img, [(labels["entry"], "entry")], [W.IO], loaded=loaded)
     assert any(store for _, store in p.addr_sets)
     assert " wr(" not in c and "CGEN_IX(" in c
+    tests = re.findall(
+        r"if \(\(uint16_t\)\(([^;]*?)\) <\s*0x[0-9A-F]+\)\s*CGEN_IX\(R\d+, [^,]*, (v\d+)\)", c
+    )
+    assert tests and all(not re.search(rf"\b{v}\b", t) for t, v in tests)
+
+
+@pytest.mark.parametrize("name", ["TABLES", "PTRS", "BLOCKS", "VOICES", "RELOCATOR"])
+def test_regions_abutting_a_held_span_are_its_slices(prefix, name):
+    """A region that abuts a held span is held in it: one array, so rd/wr test one range."""
+    img, labels, loaded = assemble(globals()[name])
+    _, _, info = translate(prefix, img, labels, loaded)
+    held = info["code_held"]
+    for org, n in info["regions"]:
+        for a, b in held:
+            assert a <= org and org + n <= b or not (org + n == a or org == b), (org, n, a, b)
 
 
 def test_brk_through_its_written_vector(prefix, tmp_path):
