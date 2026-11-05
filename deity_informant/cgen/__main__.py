@@ -1,7 +1,8 @@
 """``python -m deity_informant.cgen IMAGE --org ORG --entry PC:NAME ... -o OUT.c --header OUT.h``.
 
 Translates a raw program image loaded at ``ORG`` (the rest of memory zero) to C; ``--facts``
-(``trace.Facts`` JSON) supplies computed-jump targets only.
+(``trace.Facts`` JSON) supplies computed-jump targets only; ``--init NAME`` names the entry the
+host calls once, before any other.
 """
 
 import argparse
@@ -30,6 +31,7 @@ def main(argv=None):
     ap.add_argument("--volatile", action="append", type=_range, default=[], help="LO-HI, HI excl.")
     ap.add_argument("--sensitive", action="append", type=_int, default=[], help="kept I/O read")
     ap.add_argument("--facts", help="trace.Facts JSON for computed-jump targets")
+    ap.add_argument("--init", help="NAME of the entry called once, before any other")
     ap.add_argument("-o", "--out", required=True, help="the .c")
     ap.add_argument("--header", help="the .h (default: the .c's name with .h)")
     args = ap.parse_args(argv)
@@ -47,6 +49,7 @@ def main(argv=None):
         facts,
         loaded=(args.org, args.org + len(data)),
         header=header.name,
+        init=[n for _, n in entries].index(args.init) if args.init else None,
     )
     Path(args.out).write_text(c, encoding="utf-8")
     header.write_text(h, encoding="utf-8")

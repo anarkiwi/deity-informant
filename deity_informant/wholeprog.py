@@ -58,6 +58,7 @@ def lift(
     loaded=None,
     fold=False,
     sensitive=None,
+    init=None,
 ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
     """Lift ``entries`` of the program in ``image`` (the memory each entry starts from);
     ``cycles=True`` counts cycles and stamps volatile accesses with them; ``bank`` is a bank
@@ -66,7 +67,9 @@ def lift(
     every entry is called at (``docs/wholeprog.md``, *Stack extent*), ``loaded`` the
     ``(lo, hi)`` the program was loaded to (*Table extents*), ``fold=True`` lifts copies of
     one routine as one function of the copy's index (*Instances*) and ``sensitive`` lists the
-    volatile addresses whose reads have effects (a throw-away read reaching none is not made)."""
+    volatile addresses whose reads have effects (a throw-away read reaching none is not made).
+    ``init`` is the index of the entry the host calls before any other: a static lift folds
+    its decided path into the starting memory (*Init folding*; ``Program.init``)."""
     n = _native_or_raise()
     prog = n.lift_program(
         bytes(image),
@@ -80,6 +83,7 @@ def lift(
         loaded,
         fold=fold,
         sensitive=None if sensitive is None else sorted(set(sensitive)),
+        init=init,
     )
     prog.backend = backend or BACKEND
     return prog

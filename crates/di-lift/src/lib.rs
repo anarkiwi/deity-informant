@@ -11,6 +11,7 @@ pub mod bank;
 pub mod dispatch;
 pub mod emit;
 pub mod exec;
+pub mod fold;
 pub mod func;
 pub mod inst;
 pub mod ir;
@@ -56,6 +57,10 @@ pub struct Opts {
     /// Lift copies of one routine that differ only in their operands as one function taking
     /// the copy's index ([`inst`]); without facts and a bank map only.
     pub fold: bool,
+    /// The entry (index) the host calls once, before any other, on the image: its decided
+    /// path is folded into the program's starting memory ([`fold`]); a static lift
+    /// (`entry_sp`, `loaded`, no facts, bank map nor cycle counting) only.
+    pub init: Option<usize>,
 }
 
 impl Default for Opts {
@@ -67,6 +72,7 @@ impl Default for Opts {
             sensitive: None,
             loaded: None,
             fold: false,
+            init: None,
         }
     }
 }
@@ -131,7 +137,7 @@ fn ind_ptr(img: &[u8; 0x10000], g: &analysis::Graph, pc: u16) -> (Iv, bool) {
 /// reach a zone. Each is checked before its instruction (when every such access of the
 /// instruction can be), unless its operand names only pages outside the zones (`zfree`).
 /// A pointer whose high byte some store sets to a zone's page means the device or stack.
-fn zone_checks(g: &mut analysis::Graph) {
+fn zone_checks(g: &mut analysis::Graph, entries: &[Entry]) {
     let (win, zones, cells, addr_sets) = (&g.prot.win, &g.zones, &g.cells, &g.addr_sets);
     let mut meant = FixedBitSet::with_capacity(0x10000);
     for a in g.vars.iter().filter(|(_, vs)| !is_stack_op(vs[0].op)) {
@@ -142,7 +148,7 @@ fn zone_checks(g: &mut analysis::Graph) {
             }
         }
     }
-    let held = byte_bounds(g);
+    let held = byte_bounds(g, entries);
     let in_zone = |page: u32| {
         zones
             .iter()
@@ -219,7 +225,7 @@ fn zone_checks(g: &mut analysis::Graph) {
 /// Per byte, the values it may hold when every store that may write it has an exact address
 /// and a value interval narrower than a byte: its entry byte and the stored values (`None`:
 /// unbounded, as for page 1 where pushes land).
-fn byte_bounds(g: &analysis::Graph) -> Vec<Option<Iv>> {
+fn byte_bounds(g: &analysis::Graph, entries: &[Entry]) -> Vec<Option<Iv>> {
     let mut held: Vec<Option<Iv>> = (0..0x10000)
         .map(|a| Some(Iv::exact(g.img[a] as u32)))
         .collect();
@@ -237,6 +243,13 @@ fn byte_bounds(g: &analysis::Graph) -> Vec<Option<Iv>> {
     }
     for a in g.cells.ones() {
         held[a] = None;
+    }
+    for e in entries {
+        for &(a, v) in &e.pre {
+            if let analysis::Val::R(_) = v {
+                held[a as usize] = None;
+            }
+        }
     }
     held
 }
@@ -461,6 +474,22 @@ pub fn lift_with(
     lift_banked(img, entries, volatile, facts, opts, None)
 }
 
+/// Entries are called with the decimal flag clear unless they declare or set it: guarded at
+/// entry, so the arithmetic of code that does not set it is binary (`Graph::dec`).
+fn declared(entries: &[Entry]) -> Vec<Entry> {
+    entries
+        .iter()
+        .map(|e| {
+            let mut e = e.clone();
+            let d = di_pcode::reg::D;
+            if !e.regs.iter().any(|r| r.0 == d) && !e.set.iter().any(|r| r.0 == d) {
+                e.regs.push((d, vec![0]));
+            }
+            e
+        })
+        .collect()
+}
+
 /// [`lift_with`] over memory seen through `bank` (flat when `None`).
 pub fn lift_banked(
     img: &[u8; 0x10000],
@@ -470,19 +499,36 @@ pub fn lift_banked(
     opts: Opts,
     bank: Option<&BankMap>,
 ) -> Program {
-    // Entries are called with the decimal flag clear unless they declare it: guarded at entry,
-    // so the arithmetic of code that does not set it is binary (`Graph::dec`).
-    let declared: Vec<Entry> = entries
-        .iter()
-        .map(|e| {
-            let mut e = e.clone();
-            if !e.regs.iter().any(|r| r.0 == di_pcode::reg::D) {
-                e.regs.push((di_pcode::reg::D, vec![0]));
-            }
-            e
-        })
-        .collect();
-    let entries = &declared[..];
+    let plain = Opts {
+        init: None,
+        ..opts.clone()
+    };
+    let entries = declared(entries);
+    if let (Some(ix), Some(sp), Some(loaded), None, true, false) = (
+        opts.init,
+        opts.entry_sp,
+        opts.loaded,
+        bank,
+        facts.starts.is_empty() && facts.writes.is_empty(),
+        opts.cycles,
+    ) {
+        if let Some((img, es, f)) = fold::prepare(img, &entries, ix, volatile, loaded, sp) {
+            return lift_core(&img, &es, volatile, facts, plain, bank, Some(f));
+        }
+    }
+    lift_core(img, &entries, volatile, facts, plain, bank, None)
+}
+
+/// The lift of `entries` (declared, [`declared`]), `fold` the init entry folded into `img`.
+fn lift_core(
+    img: &[u8; 0x10000],
+    entries: &[Entry],
+    volatile: &[(u32, u32)],
+    facts: &Facts,
+    opts: Opts,
+    bank: Option<&BankMap>,
+    fold: Option<fold::Fold>,
+) -> Program {
     let mut matched = true;
     let (g, plans, fidx, callees, recursive, slots, constcode, touches, seen, sites, private) = loop {
         let mut g = discover(
@@ -503,7 +549,7 @@ pub fn lift_banked(
         g.prot = ptr::protect(&g, facts, volatile, &zones, &roots, bank);
         g.zones = zones;
         if opts.entry_sp.is_some() {
-            zone_checks(&mut g);
+            zone_checks(&mut g, entries);
         }
         let img: &[u8; 0x10000] = &g.img;
         let pcs: Vec<u16> = entries.iter().map(|e| e.pc).collect();
@@ -825,6 +871,11 @@ pub fn lift_banked(
         }
         s.into_iter().collect()
     };
+    let mut fold = fold;
+    let initcode = match fold.as_mut() {
+        Some(f) => f.settle(&g, entries),
+        None => FixedBitSet::with_capacity(0x10000),
+    };
     let mut planned = FixedBitSet::with_capacity(0x10000);
     for &pc in &starts {
         for v in &g.vars[&pc] {
@@ -834,6 +885,7 @@ pub fn lift_banked(
         }
     }
     Program {
+        init: fold,
         functions,
         entries: pcs
             .iter()
@@ -843,6 +895,7 @@ pub fn lift_banked(
         code: {
             let mut c = constcode.clone();
             c.intersect_with(&planned);
+            c.union_with(&initcode);
             c.extend(g.tables.iter().map(|&a| a as usize));
             c.ones().map(|a| (a as u16, img[a])).collect()
         },
@@ -883,7 +936,7 @@ pub fn lift_banked(
             v
         },
         bounds: {
-            let held = byte_bounds(&g);
+            let held = byte_bounds(&g, entries);
             let stores = g.vars.values().flatten().flat_map(|v| &v.acc);
             let mut b: Vec<(u16, u8, u8)> = stores
                 .filter(|a| a.store)

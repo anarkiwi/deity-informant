@@ -9,11 +9,58 @@ use fixedbitset::FixedBitSet;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// An entry point and optional live-in register values (`lift()` register index, values).
+/// An entry point and optional live-in register values (`lift()` register index, values),
+/// guarded at entry. A folded entry ([`crate::fold`]) first makes the stores `pre` (byte
+/// address, value) and then assigns the registers `set`.
 #[derive(Clone, Debug, Default)]
 pub struct Entry {
     pub pc: u16,
     pub regs: Vec<(usize, Vec<u8>)>,
+    pub set: Vec<(usize, u8)>,
+    pub pre: Vec<(u16, Val)>,
+}
+
+/// A byte an entry stores before its first instruction: a constant, or the value a register
+/// holds at entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Val {
+    K(u8),
+    R(usize),
+}
+
+impl Entry {
+    /// The registers at its first instruction: its declared intervals, then those it sets.
+    pub fn env(&self) -> Env {
+        let mut env = TOP_ENV;
+        for (r, vals) in &self.regs {
+            if let (Some(&lo), Some(&hi), true) =
+                (vals.iter().min(), vals.iter().max(), *r < env.len())
+            {
+                env[*r] = Iv {
+                    lo: lo as u32,
+                    hi: hi as u32,
+                };
+            }
+        }
+        for &(r, v) in &self.set {
+            env[r] = Iv::exact(v as u32);
+        }
+        env
+    }
+
+    /// The bytes `pre` stores and the values each may hold.
+    pub fn stores(&self) -> impl Iterator<Item = (u16, BTreeSet<u8>)> + '_ {
+        self.pre.iter().map(|&(a, v)| match v {
+            Val::K(x) => (a, BTreeSet::from([x])),
+            Val::R(r) => (
+                a,
+                self.regs
+                    .iter()
+                    .find(|e| e.0 == r)
+                    .map_or_else(|| (0..=0xff).collect(), |e| e.1.iter().copied().collect()),
+            ),
+        })
+    }
 }
 
 /// What running the program showed: executed instruction starts, executed `(pc, next pc)`
@@ -717,6 +764,11 @@ pub fn entry_config(m: &BankMap, img: &[u8; 0x10000], facts: &Facts, pc: u16) ->
     m.config(d, v)
 }
 
+/// The bytes entries store before their first instruction.
+pub fn pre_stored(entries: &[Entry]) -> impl Iterator<Item = u16> + '_ {
+    entries.iter().flat_map(|e| e.pre.iter().map(|p| p.0))
+}
+
 /// Discover the program reachable from `entries` relative to `img`. With a bank map each start
 /// is decoded in the configuration it first ran in (else the one it is first reached in), its
 /// bytes from ROM where that configuration maps ROM.
@@ -760,8 +812,8 @@ pub fn discover(
             if let Some((lo, hi)) = loaded {
                 c.insert_range(lo as usize..(hi as usize).min(0x10000));
             }
-            for (a, _) in &facts.writes {
-                c.set(*a as usize, false);
+            for a in facts.writes.iter().map(|w| w.0).chain(pre_stored(entries)) {
+                c.set(a as usize, false);
             }
             c
         },
@@ -817,11 +869,14 @@ impl Fixpoint<'_> {
             Some(_) => facts.banks.iter().map(|(p, c)| (*p, c[0])).collect(),
             None => FxHashMap::default(),
         };
-        let observed: FxHashMap<u16, BTreeSet<u8>> = facts
+        let mut observed: FxHashMap<u16, BTreeSet<u8>> = facts
             .writes
             .iter()
             .map(|(a, v)| (*a, v.iter().copied().collect()))
             .collect();
+        for (a, v) in entries.iter().flat_map(Entry::stores) {
+            observed.entry(a).or_default().extend(v);
+        }
         let mut seen_writes = FixedBitSet::with_capacity(0x10000);
         seen_writes.extend(observed.keys().map(|&a| a as usize));
         let mut cells = FixedBitSet::with_capacity(0x10000);

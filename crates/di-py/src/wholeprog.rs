@@ -446,7 +446,13 @@ type PyJob<'py> = (
 );
 
 fn entries(e: Vec<PyEntry>) -> Vec<Entry> {
-    e.into_iter().map(|(pc, regs)| Entry { pc, regs }).collect()
+    e.into_iter()
+        .map(|(pc, regs)| Entry {
+            pc,
+            regs,
+            ..Entry::default()
+        })
+        .collect()
 }
 
 fn vn<'py>(py: Python<'py>, v: Vn) -> PyResult<Bound<'py, PyAny>> {
@@ -814,6 +820,37 @@ impl Program {
     #[getter]
     fn entries(&self) -> Vec<u16> {
         self.prog.entries.iter().map(|e| e.0).collect()
+    }
+
+    /// The folded init entry (``init=``), or None: ``{"index", "entry", "pc", "image",
+    /// "stores", "regs", "code"}``: its index and pc, where the folded entry starts, the
+    /// ``(address, byte)`` pairs of the starting memory over the image, the
+    /// ``(address, value)`` stores the folded entry makes (``value`` a
+    /// byte, or ``("r", r)``: register ``r`` as the entry found it), the
+    /// ``(register, value)`` pairs it sets and the ``(pc, length)`` of the instructions the
+    /// folded path ran that are constant code of the program.
+    #[getter]
+    fn init<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let Some(f) = &self.prog.init else {
+            return Ok(None);
+        };
+        let d = PyDict::new(py);
+        d.set_item("index", f.index)?;
+        d.set_item("entry", f.entry)?;
+        d.set_item("pc", f.pc)?;
+        d.set_item("image", f.image.clone())?;
+        let stores = PyList::empty(py);
+        for &(a, v) in &f.pre {
+            let v = match v {
+                di_lift::analysis::Val::K(x) => x.into_pyobject(py)?.into_any(),
+                di_lift::analysis::Val::R(r) => ("r", r).into_pyobject(py)?.into_any(),
+            };
+            stores.append((a, v))?;
+        }
+        d.set_item("stores", stores)?;
+        d.set_item("regs", f.set.clone())?;
+        d.set_item("code", f.code.clone())?;
+        Ok(Some(d))
     }
 
     /// The engine ``call`` runs lifted code on by default: ``"jit"`` (native code without
@@ -1363,7 +1400,7 @@ pub fn reference_calls(
 /// cells, ``mask`` and ``pull`` bits, ``lut`` (configuration per effective port value),
 /// ``configs`` (per configuration 256 page kinds: 0 RAM, 1 ROM, 2 I/O) and ``rom``.
 #[pyfunction]
-#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None, fold=false, sensitive=None))]
+#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None, fold=false, sensitive=None, init=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn lift_program(
     py: Python<'_>,
@@ -1378,6 +1415,7 @@ pub fn lift_program(
     loaded: Option<(u32, u32)>,
     fold: bool,
     sensitive: Option<Vec<u16>>,
+    init: Option<usize>,
 ) -> PyResult<Program> {
     let img = self::image(image)?;
     let es = self::entries(entries);
@@ -1390,6 +1428,7 @@ pub fn lift_program(
         sensitive,
         loaded,
         fold,
+        init,
     };
     Ok(Program::new(py.detach(|| {
         di_lift::lift_banked(&img, &es, &volatile, &f, opts, bank.as_ref())

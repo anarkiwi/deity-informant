@@ -319,7 +319,12 @@ pub fn diff_at(
 }
 
 pub fn entries(pcs: &[u16]) -> Vec<Entry> {
-    pcs.iter().map(|&pc| Entry { pc, regs: vec![] }).collect()
+    pcs.iter()
+        .map(|&pc| Entry {
+            pc,
+            ..Entry::default()
+        })
+        .collect()
 }
 
 /// Lift with facts from the reference and check `calls` with zero deopts, optimized and as
