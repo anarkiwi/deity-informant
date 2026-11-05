@@ -266,7 +266,7 @@ per-voice routines often are; the rest are renumbered in order.
   A store the lift found may hit constant code or a table it read is followed by `codechk`,
   which traps when a constant byte of a span would change.
 
-Address constants print relative to the region, code span or loaded image holding them
+Address constants print relative to the region holding them, or to the code span or loaded image when the program holds them (any other, a device's or a vector's, prints as it is)
 (`R2_ORG + 0x10`, `CODE_ORG + 0x21`, `IMG_ORG + ...`): a constant reaching an access address
 through additions, casts, selects and block arguments, the cases of a computed-jump switch, and a
 pair of constant byte stores into a pointer pair (the zero-page pointer of a `(zp),Y`/`(zp,X)`,

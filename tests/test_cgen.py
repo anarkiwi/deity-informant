@@ -845,6 +845,25 @@ brk2:   BRK
         RTS
 handler:""",
 )
+INITBRK = """
+init:   LDA #lo(handler)
+        STA $FFFE
+        LDA #hi(handler)
+        STA $FFFF
+        RTS
+play:   AND #$03
+        TAX
+        BRK
+        .byte $EA
+        STX $C000
+        RTS
+handler: INC cnt
+        LDA cnt
+        STA $C001
+        RTI
+cnt:    .byte 0
+end:
+"""
 INLINE = """
 entry:  JSR arg
         .byte $11
@@ -2194,6 +2213,21 @@ def test_init_run_stops_where_the_song_decides(prefix, tmp_path):
     fold = info["init"]
     assert fold["pc"] == labels["bysong"] and dict(fold["image"]) == {labels["flag"]: 0x5A}
     assert {labels["o0"] + 1, labels["o0"] + 2} <= set(info["provenance"]["cells"])
+
+
+def test_folded_vector_is_a_machine_address(prefix, tmp_path):
+    """A vector the folded init leaves outside the program is part of the starting memory,
+    and the addresses beside it (the I/O the handler writes) are absolute: the same ``.c``
+    at every origin."""
+    texts = set()
+    for org in (0x1000, 0x2345):
+        img, labels, loaded = assemble(INITBRK, org)
+        c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+        assert (0xFFFE, labels["handler"] & 0xFF) in info["init"]["image"]
+        (tmp_path / str(org)).mkdir()
+        play(tmp_path / str(org), c, h, img, labels, [("init", 0)] + [("play", 1)] * 4)
+        texts.add(c)
+    assert len(texts) == 1
 
 
 def test_folded_program_calls_match_the_reference():

@@ -233,13 +233,14 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         return any(lo <= a <= hi for a in self.sensitive)
 
     def base(self, addr):
-        """``(symbol, offset)`` of a constant address: relative to the region, code span or
-        loaded image holding it, else ``(None, addr)``."""
+        """``(symbol, offset)`` of a constant address: relative to the region holding it, or
+        to the code span or loaded image when the program holds it, else ``(None, addr)``
+        (a device or fixed machine address, as a vector the program writes)."""
         k = int(self.owner[addr])
         if k >= 0:
             return f"R{k}_ORG", addr - self.regions[k][0]
+        if not self.loaded[0] <= addr < self.loaded[1]:
+            return None, addr
         if self.code_span[0] <= addr < self.code_span[1]:
             return "CODE_ORG", addr - self.code_span[0]
-        if self.loaded[0] <= addr < self.loaded[1]:
-            return "IMG_ORG", addr - self.loaded[0]
-        return None, addr
+        return "IMG_ORG", addr - self.loaded[0]
