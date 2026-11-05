@@ -50,8 +50,9 @@ caller's return address. `tools/cgenplay.c` is a host harness.
    ([wholeprog](wholeprog.md#static-proofs), *Table extents*, *Stack extent*), with `fold=True`
    ([wholeprog](wholeprog.md#pipeline), *Tail calls*, *Instances*): a routine fallen or jumped
    into is a tail call of it, code two functions share at their entry height is a function, and
-   copies of one routine that differ only in their operands (a player's unrolled per-voice code)
-   are one function of the copy's index, its operands `base + stride * k`. Functions are
+   copies of one routine, whole blocks that differ only in their operands (a player's
+   unrolled per-voice code), are one function of the copy's index, its operands
+   `base + stride * k`. Functions are
    named by ascending entry PC, deopts become `trap(k)` with `k` numbered in the order the
    lift's functions and blocks meet them; a deopt of an instance function is one trap for every
    copy (`("deopt", pc, function)`, the first copy's start).
@@ -236,11 +237,13 @@ per-voice routines often are; the rest are renumbered in order.
   each byte). One at a constant base plus an index whose set
   spans several regions (operand cells of several copies) goes through `rd`/`wr`.
 - In an instance function (unrolled copies folded into one function of the copy's index `k`,
-  every call passing a constant), a value computed from `k` alone (not a branch condition) has
-  one definition at the function's entry per distinct set of per-copy values: `base + stride *
-  k` where they are affine in `k`, in 8 bits where the offsets from the least value fit, else
-  an element of a `static const` table `Kn` indexed by `k`; an address keeps its least value
-  as a constant, so it prints relative to its region. An access is placed per copy: its
+  every call passing a constant), a value computed from `k` alone (not a branch condition: a
+  condition of `k` alone tests such a value) has one definition at the function's entry per
+  distinct set of per-copy values: `base + k` (or `base - k`) where they step by one with `k`,
+  else an element of a `static const` table `Kn` indexed by `k`, in 8 bits where the offsets
+  from the least value fit (one indexed load, where a stride would be a multiplication the
+  6502 does not have); an address keeps its least value as a constant, so it prints relative
+  to its region. An access is placed per copy: its
   interval for each value of `k` lying in one region (or held span) indexes it directly, as
   each copy's own operand cells at a stride do; the interval over all copies is then held in
   one span with the regions it touches.
@@ -324,10 +327,13 @@ names the program's bytes in a raw 64 KiB state, as a memory dump after an init 
 prints `tools/cmetrics.py`'s table, the sizes, the computed jumps resolved from the code, the
 traps and the stage times. It also checks the lift's tail calls (a routine fallen into for its
 third voice is one function with three call sites) and instances (unrolled copies at a stride
-are one function of the copy's index whose I/O register is `0xC000 + k * 7`, called for each
-copy in order; copies sharing one trap; determinism and relocation invariance of a folded
-program; copies' operand cells indexed directly at their stride, computed once in 8 bits;
-cells at uneven distances and per-copy immediates as constant tables).
+are one function of the copy's index whose I/O register is `0xC000 + Kn[k]`, `Kn` the
+offsets `{0, 7, 14}`, called for each copy in order; copies sharing one trap; determinism and
+relocation invariance of a folded program; copies' operand cells indexed directly at their
+stride, read once from an 8-bit table; cells at uneven distances, per-copy immediates and
+branches on them as constant tables; statements alike only in a prefix of their blocks not
+folded), and a voice loop's index bounding the throw-away read of the indexed I/O store in the
+routine it calls through a `BRK` and through a stack switch.
 
 `tools/cgengraph.py TUNE.sid --pc ADDR` prints the structuring graph of the functions holding
 an instruction (nodes by instruction address, back edges, copies, `--ops` the operations) and

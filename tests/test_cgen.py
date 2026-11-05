@@ -1039,6 +1039,113 @@ v2:     LDA $22
         RTS
 end:
 """
+FIELDS = """
+entry:  LDX #$0E
+loop:   JSR voice
+        TXA
+        SEC
+        SBC #$07
+        TAX
+        BPL loop
+        RTS
+voice:  LDA $70,X
+        AND #$10
+        BEQ s0
+        LDA $10,X
+        CLC
+        ADC #$03
+        STA $10,X
+s0:     LDY #$01
+s1:     LDA $30,X
+        CLC
+        ADC #$01
+        STA $30,X
+        DEY
+        BPL s1
+        LDA $50,X
+        CLC
+        ADC #$2B
+        STA $50,X
+        STA $C000,X
+        RTS
+end:
+"""
+VLOOP = """
+entry:  CMP #$80
+        BCS init
+        LDX #$0E
+loop:   JSR voice
+        TXA
+        SEC
+        SBC #$07
+        TAX
+        BPL loop
+        RTS
+init:   LDA #lo(handler)
+        STA $FFFE
+        LDA #hi(handler)
+        STA $FFFF
+        RTS
+voice:  LDA $10,X
+        STA $C0F0,X
+        LDY #$01
+inner:  INC $30,X
+"""
+BRKLOOP = VLOOP + """        BRK
+        .byte $EA
+        DEY
+        BPL inner
+        RTS
+handler: INC $20,X
+        RTI
+end:
+"""
+SWITCH = VLOOP + """        STX keep
+        TSX
+        STX save
+        LDX keep
+        JSR deep
+after:  DEY
+        BPL inner
+        RTS
+deep:   JSR deeper
+        RTS
+deeper: INC $20,X
+        LDX save
+        TXS
+        LDX keep
+        JMP after
+handler: RTI
+keep:   .byte 0
+save:   .byte 0
+end:
+"""
+TESTED = """
+entry:  AND #$03
+        STA $13
+v0:     LDA #$25
+        AND #$20
+        BEQ n0
+        INC $20
+n0:     LDA $20
+        STA $C000
+        JMP v1
+v1:     LDA #$05
+        AND #$20
+        BEQ n1
+        INC $21
+n1:     LDA $21
+        STA $C007
+        JMP v2
+v2:     LDA #$31
+        AND #$20
+        BEQ n2
+        INC $22
+n2:     LDA $22
+        STA $C00E
+        RTS
+end:
+"""
 KEEPS = """
 entry:  AND #$03
         TAX
@@ -1887,17 +1994,20 @@ def test_unrolled_copies_fold_into_one_function(prefix, tmp_path):
     assert (info["stats"]["instances"], info["stats"]["instance_copies"]) == (1, 3)
     assert not _voice_writes(c) and c.count("io_write(0xC000") == 1
     [(name, param)] = re.findall(r"static \w+ (f\d+)\(uint8_t (v\d+)\)", c)
-    assert re.search(rf"io_write\(0xC000 \+ {param} \* 7,", c)
+    [tab] = re.findall(rf"io_write\(0xC000 \+ (K\d+)\[{param}\],", c)
+    assert f"static const uint8_t {tab}[] = {{0, 7, 0xE}};" in c and " * " not in c
     assert len(re.findall(rf"\b{name}\([0-2]\)", c)) == 3
 
 
 def test_copies_operand_cells_indexed_directly(prefix, tmp_path):
     """Each copy's own operand cell lies in one held span: the copies index it at their
-    stride, computed once per call in 8 bits, with no ``rd``/``wr``."""
+    stride, read once per call from a constant table of 8-bit offsets (no multiplication),
+    with no ``rd``/``wr``."""
     c, _, _ = check(prefix, tmp_path, VOICES, entry_calls(range(4), 6))
     assert not re.search(r"\b(?:rd|wr)\(", c)
-    [stride] = re.findall(r"uint8_t (v\d+) = v1 \* 0x18;", c)
-    assert len(re.findall(rf"C\d+\[{stride}\]", c)) == 3
+    [(off, tab)] = re.findall(r"uint8_t (v\d+) = (K\d+)\[v1\];", c)
+    assert f"static const uint8_t {tab}[] = {{0, 0x18, 0x30}};" in c
+    assert len(re.findall(rf"C\d+\[{off}\]", c)) == 3
 
 
 def test_copies_at_uneven_distances_index_a_table(prefix, tmp_path):
@@ -2211,6 +2321,32 @@ def test_copies_differing_only_in_immediates_stay_apart(prefix, tmp_path):
     src = CONSTS.replace("$21", "$20").replace("$22", "$20").replace("$C007", "$C000")
     _, _, info = check(prefix, tmp_path, src.replace("$C00E", "$C000"), entry_calls(range(4)))
     assert info["stats"]["instances"] == 0
+
+
+def test_statements_alike_in_a_prefix_are_not_copies(prefix, tmp_path):
+    """Statements loading fields $20 apart, each a block whose rest differs (the immediate
+    added), are alike only up to the middle of their blocks: no instance class, no index."""
+    c, _, info = check(prefix, tmp_path, FIELDS, entry_calls(range(2), 4))
+    assert info["stats"]["instances"] == 0 and " * " not in c and "static const" not in c
+
+
+@pytest.mark.parametrize("src", [BRKLOOP, SWITCH], ids=["brk", "switch"])
+def test_a_loops_index_holds_through_a_brk_or_a_stack_switch(prefix, tmp_path, src):
+    """A voice loop's X (14, 7, 0) holds in the routine it calls through a `BRK` whose
+    handler returns past it, or a nested call unwinding by `TXS` to the stack pointer the
+    routine saved, its X restored from the byte it stored: the indexed I/O store's
+    throw-away read stays below the read-sensitive register."""
+    calls = [("entry", 0x80)] + entry_calls(range(3), 2)
+    c, _, _ = check(prefix, tmp_path, src, calls, sensitive=(0xC0FF,))
+    assert "io_read(" not in c.split("void entry")[1]
+
+
+def test_per_copy_conditions_index_a_table(prefix, tmp_path):
+    """A branch on a per-copy immediate tests the copy's value from a constant table, not a
+    sum of comparisons with the index."""
+    c, _, info = check(prefix, tmp_path, TESTED, entry_calls(range(4), 3))
+    assert (info["stats"]["instances"], info["stats"]["instance_copies"]) == (1, 3)
+    assert "==" not in c and re.search(r"if \(K\d+\[v1\] != 0\)", c)
 
 
 def test_size_attribution(prefix, tmp_path):
