@@ -1375,7 +1375,7 @@ pub fn analyze(
     }
     let succs: FxHashMap<u16, Vec<u16>> = vars.keys().map(|&pc| (pc, succ_of(pc))).collect();
     let mut dec = FixedBitSet::with_capacity(0x10000);
-    let mut fill = |vars: &mut FxHashMap<u16, Vec<Var>>, pc: u16, yb: Option<Iv>| {
+    let mut fill = |vars: &mut FxHashMap<u16, Vec<Var>>, pc: u16, bs: [Option<Iv>; 2]| {
         let mut st = merged
             .get(&pc)
             .map_or_else(|| St::new(TOP_ENV), Clone::clone);
@@ -1383,9 +1383,10 @@ pub fn analyze(
             pc as usize,
             !code.pull_clear && st.env[di_pcode::reg::D].hi != 0,
         );
-        let y = di_pcode::reg::Y;
-        if let Some(b) = yb.and_then(|b| meet(b, st.env[y])) {
-            st.env[y] = b;
+        for (r, b) in [di_pcode::reg::X, di_pcode::reg::Y].into_iter().zip(bs) {
+            if let Some(b) = b.and_then(|b| meet(b, st.env[r])) {
+                st.env[r] = b;
+            }
         }
         for v in vars.get_mut(&pc).unwrap() {
             let mut acc = std::mem::take(&mut v.acc);
@@ -1396,7 +1397,7 @@ pub fn analyze(
     };
     let pcs: Vec<u16> = vars.keys().copied().collect();
     for &pc in &pcs {
-        fill(vars, pc, None);
+        fill(vars, pc, [None, None]);
     }
     // Index bounds from the loops' trip counts tighten the accesses they reach.
     let konst = |a: u32| {
@@ -1414,8 +1415,15 @@ pub fn analyze(
         &konst,
         &mut kreads,
     );
-    for (pc, b) in crate::scev::y_bounds(&ind) {
-        fill(vars, pc, Some(b));
+    let (xb, yb) = (
+        crate::scev::bounds(&ind, di_pcode::reg::X),
+        crate::scev::bounds(&ind, di_pcode::reg::Y),
+    );
+    let mut bounded: Vec<u16> = xb.keys().chain(yb.keys()).copied().collect();
+    bounded.sort_unstable();
+    bounded.dedup();
+    for pc in bounded {
+        fill(vars, pc, [xb.get(&pc).copied(), yb.get(&pc).copied()]);
     }
     let mut states: FxHashMap<u16, Vec<&St>> = FxHashMap::default();
     for (&(pc, _), st) in &w.state {
