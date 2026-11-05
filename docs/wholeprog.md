@@ -468,7 +468,15 @@ the facts, so a proof holds on every execution that stays in lifted code.
   from the entry while each byte it reads is constant or stored earlier in the run, each
   branch decided and each store's address known; each store it makes there writes exactly
   the `(address, value)` pairs it made, unless code reachable from where a run stops (or
-  another entry's) may run it again, so a relocator's per-operand values stay apart.
+  another entry's) may run it again, so a relocator's per-operand values stay apart. Then an
+  inductive invariant is tried: the runs again, with every loaded byte they read (no cell)
+  taken as its image byte, their stores paired, and each store whose address is unknown only
+  through its own operand cells resolved at those cells' values, to a fixpoint. It holds when
+  no store of the program may write a byte a run read; then every entry call repeats the runs'
+  stores, so the operands they write hold their image bytes or the values written, and the
+  stores through them have those addresses. An entry whose reads some store may write is not
+  run (its code may all run again), until the rest hold or none is left: a relocator with no
+  done flag that re-runs on every init closes its operands unless play writes its tables.
   A cell is closed when every store that may write it has an address set and known values:
   an opcode cell's dispatch chain then has no deopt, and `Program.sets` holds it. A store
   through a `(zp),Y` pointer whose two bytes hold table bytes or constants on every path

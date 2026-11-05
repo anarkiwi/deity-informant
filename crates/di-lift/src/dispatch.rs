@@ -485,90 +485,171 @@ type Seen = (Option<BTreeSet<u16>>, Option<BTreeSet<u8>>);
 /// Every store of `vars`, sorted by instruction and access.
 pub(crate) fn stores(code: &Code, vars: &FxHashMap<u16, Vec<Var>>, sets: &Sets) -> Vec<Store> {
     let mut out = Vec::new();
-    let mut acc = Vec::new();
     for (&pc, vs) in vars {
-        let base = sets.merged.get(&pc).map_or(TOP_ENV, |s| s.env);
         for v in vs.iter().filter(|v| v.acc.iter().any(|a| a.store)) {
             let t = Template::of(v.op);
             let b = operand_bytes(code.img, code.cells, pc, t.len);
-            let idx: Option<Vec<(usize, Vec<u8>)>> = [reg::X, reg::Y]
-                .into_iter()
-                .filter(|&r| reads(t, r) && addresses(t, b, r))
-                .map(|r| sets.of(pc, r).map(|s| (r, s)))
-                .collect();
-            let mut found: FxHashMap<usize, Seen> = v
-                .acc
-                .iter()
-                .enumerate()
-                .filter(|a| a.1.store)
-                .map(|(i, _)| (i, (Some(BTreeSet::new()), Some(BTreeSet::new()))))
-                .collect();
-            let Some(idx) = idx else {
-                out.extend(found.into_keys().map(|ai| Store {
-                    pc,
-                    op: v.op,
-                    ai,
-                    addr: v.acc[ai].addr,
-                    addrs: None,
-                    vals: None,
-                    deps: Vec::new(),
-                    pairs: None,
-                }));
-                continue;
-            };
-            let n: usize = idx.iter().map(|e| e.1.len()).product();
-            let mut held: FxHashMap<usize, Option<BTreeSet<u8>>> = FxHashMap::default();
-            for k in 0..n {
-                let mut env = base;
-                let mut q = k;
-                for (r, xs) in &idx {
-                    env[*r] = Iv::exact(xs[q % xs.len()] as u32);
-                    q /= xs.len();
-                }
-                acc.clear();
-                absint(t.ops(), b, &mut env, &mut acc);
-                for (i, a) in acc.iter().enumerate().filter(|a| a.1.store) {
-                    let (addrs, vals) = found.get_mut(&i).unwrap();
-                    match (a.addr.value(), addrs.as_mut()) {
-                        (Some(x), Some(s)) => {
-                            s.insert(x as u16);
-                        }
-                        _ => *addrs = None,
-                    }
-                    let Some(s) = vals.as_mut() else { continue };
-                    if let Some(x) = a.val.value() {
-                        s.insert(x as u8);
-                        continue;
-                    }
-                    let range = |iv: Iv| {
-                        (iv != Iv::full(1)).then(|| (iv.lo..=iv.hi).map(|x| x as u8).collect())
-                    };
-                    let from = held.entry(i).or_insert_with(|| match stored_reg(t, i) {
-                        Some(r) => reaching(code, vars, sets, pc, r).or_else(|| range(base[r])),
-                        None => range(a.val),
-                    });
-                    match from {
-                        Some(f) => s.extend(f.iter()),
-                        None => *vals = None,
-                    }
-                }
-            }
-            for (ai, (addrs, vals)) in found {
-                out.push(Store {
-                    pc,
-                    op: v.op,
-                    ai,
-                    addr: v.acc[ai].addr,
-                    addrs: addrs.map(|s| s.into_iter().collect()),
-                    vals,
-                    deps: Vec::new(),
-                    pairs: None,
-                });
-            }
+            out.extend(var_stores(code, vars, sets, pc, v, &[b]));
         }
     }
     out.sort_unstable_by_key(|s| (s.pc, s.op, s.ai));
     out
+}
+
+/// The stores of variant `v` at `pc` over each choice `bs` of its operand bytes.
+fn var_stores(
+    code: &Code,
+    vars: &FxHashMap<u16, Vec<Var>>,
+    sets: &Sets,
+    pc: u16,
+    v: &Var,
+    bs: &[[Option<u8>; 2]],
+) -> Vec<Store> {
+    let base = sets.merged.get(&pc).map_or(TOP_ENV, |s| s.env);
+    let t = Template::of(v.op);
+    let mut acc = Vec::new();
+    let mut found: FxHashMap<usize, Seen> = v
+        .acc
+        .iter()
+        .enumerate()
+        .filter(|a| a.1.store)
+        .map(|(i, _)| (i, (Some(BTreeSet::new()), Some(BTreeSet::new()))))
+        .collect();
+    let mut held: FxHashMap<usize, Option<BTreeSet<u8>>> = FxHashMap::default();
+    for &b in bs {
+        let idx: Option<Vec<(usize, Vec<u8>)>> = [reg::X, reg::Y]
+            .into_iter()
+            .filter(|&r| reads(t, r) && addresses(t, b, r))
+            .map(|r| sets.of(pc, r).map(|s| (r, s)))
+            .collect();
+        let Some(idx) = idx else {
+            for f in found.values_mut() {
+                *f = (None, None);
+            }
+            break;
+        };
+        let n: usize = idx.iter().map(|e| e.1.len()).product();
+        for k in 0..n {
+            let mut env = base;
+            let mut q = k;
+            for (r, xs) in &idx {
+                env[*r] = Iv::exact(xs[q % xs.len()] as u32);
+                q /= xs.len();
+            }
+            acc.clear();
+            absint(t.ops(), b, &mut env, &mut acc);
+            for (i, a) in acc.iter().enumerate().filter(|a| a.1.store) {
+                let (addrs, vals) = found.get_mut(&i).unwrap();
+                match (a.addr.value(), addrs.as_mut()) {
+                    (Some(x), Some(s)) => {
+                        s.insert(x as u16);
+                    }
+                    _ => *addrs = None,
+                }
+                let Some(s) = vals.as_mut() else { continue };
+                if let Some(x) = a.val.value() {
+                    s.insert(x as u8);
+                    continue;
+                }
+                let range = |iv: Iv| {
+                    (iv != Iv::full(1)).then(|| (iv.lo..=iv.hi).map(|x| x as u8).collect())
+                };
+                let from = held.entry(i).or_insert_with(|| match stored_reg(t, i) {
+                    Some(r) => reaching(code, vars, sets, pc, r).or_else(|| range(base[r])),
+                    None => range(a.val),
+                });
+                match from {
+                    Some(f) => s.extend(f.iter()),
+                    None => *vals = None,
+                }
+            }
+        }
+    }
+    found
+        .into_iter()
+        .map(|(ai, (addrs, vals))| Store {
+            pc,
+            op: v.op,
+            ai,
+            addr: v.acc[ai].addr,
+            addrs: addrs.map(|s| s.into_iter().collect()),
+            vals,
+            deps: Vec::new(),
+            pairs: None,
+        })
+        .collect()
+}
+
+/// The values of the cells ([`cell_values`]) with each store whose address is unknown only
+/// through its own operand cells taken at their values: the stores' addresses and the cells'
+/// values are found together, from none of those stores writing up to their fixpoint (both
+/// only grow; a store whose operand cells have no values stays unknown).
+pub(crate) fn cell_addressed(
+    code: &Code,
+    vars: &FxHashMap<u16, Vec<Var>>,
+    sets: &Sets,
+    stores: &mut [Store],
+) -> FxHashMap<u16, Option<BTreeSet<u8>>> {
+    let operand_cells = |s: &Store| {
+        let t = Template::of(s.op);
+        let b = operand_bytes(code.img, code.cells, s.pc, t.len);
+        (0..t.len as usize - 1).any(|j| b[j].is_none())
+    };
+    let open: Vec<usize> = (0..stores.len())
+        .filter(|&i| stores[i].addrs.is_none() && operand_cells(&stores[i]))
+        .collect();
+    let orig: Vec<Store> = open.iter().map(|&i| stores[i].clone()).collect();
+    let rest: Vec<Store> = (0..stores.len())
+        .filter(|i| !open.contains(i))
+        .map(|i| stores[i].clone())
+        .collect();
+    let mut cv = cell_values(code.img, &rest);
+    loop {
+        for (s0, &i) in orig.iter().zip(&open) {
+            stores[i] = resolve(code, vars, sets, s0, &cv).unwrap_or_else(|| s0.clone());
+        }
+        let new = cell_values(code.img, stores);
+        if new == cv {
+            return cv;
+        }
+        cv = new;
+    }
+}
+
+/// Store `s` with its operand cells taken at their values `cv`, when they all have some.
+fn resolve(
+    code: &Code,
+    vars: &FxHashMap<u16, Vec<Var>>,
+    sets: &Sets,
+    s: &Store,
+    cv: &FxHashMap<u16, Option<BTreeSet<u8>>>,
+) -> Option<Store> {
+    let v = vars.get(&s.pc)?.iter().find(|v| v.op == s.op)?;
+    let t = Template::of(v.op);
+    let b = operand_bytes(code.img, code.cells, s.pc, t.len);
+    let choice = |j: usize| -> Option<Vec<Option<u8>>> {
+        match b[j] {
+            Some(x) => Some(vec![Some(x)]),
+            None if j + 1 < t.len as usize => {
+                let a = s.pc.wrapping_add(1 + j as u16);
+                let vs = match cv.get(&a) {
+                    Some(v) => v.clone()?,
+                    None => [code.img[a as usize]].into(),
+                };
+                Some(vs.into_iter().map(Some).collect())
+            }
+            None => Some(vec![None]),
+        }
+    };
+    let (lo, hi) = (choice(0)?, choice(1)?);
+    let bs: Vec<[Option<u8>; 2]> = lo
+        .iter()
+        .flat_map(|&l| hi.iter().map(move |&h| [l, h]))
+        .collect();
+    var_stores(code, vars, sets, s.pc, v, &bs)
+        .into_iter()
+        .find(|x| x.ai == s.ai)
+        .filter(|x| x.addrs.is_some())
 }
 
 /// The bytes a store of `stores` with known addresses may write and those the facts saw
@@ -1197,19 +1278,26 @@ pub(crate) type Made = FxHashMap<(u16, u8, usize), Option<BTreeSet<(u16, u8)>>>;
 /// branch it takes is decided and every store's address is known, the run is the same on
 /// every call. Per store `(pc, opcode, access index)` the `(address, value)` pairs it wrote,
 /// a value it could not know making it `None`; a store the code can also reach from where a
-/// run stops, or that another entry's run does not decide, is left out.
+/// run stops, or that another entry's run does not decide, is left out; and per entry the
+/// bytes its run read through `konst`. An entry in `skip` is not run: all its code may run.
 pub(crate) fn entry_runs(
     code: &Code,
     vars: &FxHashMap<u16, Vec<Var>>,
     entries: &[crate::analysis::Entry],
     entry_sp: Option<u8>,
     konst: &dyn Fn(u32) -> Option<u8>,
-) -> Made {
+    skip: &FxHashSet<u16>,
+) -> (Made, FxHashMap<u16, BTreeSet<u16>>) {
     // The work a run may take: a run stopped early only leaves its stores out.
     const STEPS: usize = 1 << 20;
     let mut made: Made = FxHashMap::default();
-    let mut stops: Vec<u16> = Vec::new();
+    let (mut stops, mut reads) = (Vec::new(), FxHashMap::default());
     for e in entries {
+        if skip.contains(&e.pc) {
+            stops.push(e.pc);
+            continue;
+        }
+        let mut read = Vec::new();
         let mut env = TOP_ENV;
         for (r, vs) in &e.regs {
             if let [x] = vs[..] {
@@ -1219,7 +1307,7 @@ pub(crate) fn entry_runs(
         if let Some(sp) = entry_sp {
             env[di_pcode::reg::SP] = Iv::exact(sp as u32);
         }
-        let (mut mem, mut rets, mut read) = (Known::default(), Vec::new(), Vec::new());
+        let (mut mem, mut rets) = (Known::default(), Vec::new());
         let mut pc = e.pc;
         for _ in 0..STEPS {
             let v = match vars.get(&pc).map(|vs| &vs[..]) {
@@ -1277,6 +1365,7 @@ pub(crate) fn entry_runs(
             }
         }
         stops.push(pc);
+        reads.insert(e.pc, read.into_iter().collect::<BTreeSet<u16>>());
     }
     // What the code can reach from where a run stopped may store again, with other values.
     let mut seen: FxHashSet<u16> = FxHashSet::default();
@@ -1292,7 +1381,7 @@ pub(crate) fn entry_runs(
         }
     }
     made.retain(|k, _| !seen.contains(&k.0));
-    made
+    (made, reads)
 }
 
 /// Address sets for a store at `pc` through the `(zp),Y` pointer bytes `ptr` that a loop
