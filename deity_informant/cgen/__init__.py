@@ -254,6 +254,8 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         for j, fn in enumerate(p.funcs)
     }
     mod.addr_sets = p.addr_sets or {}
+    regfile = [r for r, _ in emit.Context(p.funcs, False).regfile]
+    mod.kpos = regfile.index(emit.KREG) if emit.KREG in regfile else None
     mod.prune()
     mod.partition()
     times["layout"] = time.perf_counter() - t1
