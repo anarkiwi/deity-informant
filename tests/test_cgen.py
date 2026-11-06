@@ -1066,6 +1066,59 @@ play:   AND #$03
         RTS
 end:
 """
+SONGDATA = """
+init:   LDA #$00
+        LDX #$02
+clear:  STA pos,X
+        DEX
+        BPL clear
+        LDX #$02
+voice:  LDY pos,X
+        JSR seq
+        BPL keep
+        INC pos,X
+        BNE voice
+keep:   STA pat,X
+        DEX
+        BPL voice
+done:   RTS
+play:   LDX #$02
+pl:     LDY pos,X
+        JSR seq
+        EOR pat,X
+        STA $C000,X
+        INC pos,X
+        LDA pos,X
+        AND #$07
+        STA pos,X
+        DEX
+        BPL pl
+        RTS
+seq:    LDA order,Y
+        RTS
+pos:    .byte 9,9,9
+pat:    .byte 9,9,9
+order:  .byte 1,2,3,4,5,6,7,8
+end:
+"""
+SONGIO = """
+init:   LDY #$00
+        LDA #$0F
+        STA $C018
+        JSR seq
+        BPL done
+        STA $C010
+done:   RTS
+play:   AND #$07
+        TAY
+        JSR seq
+        STA $C000
+        RTS
+seq:    LDA order,Y
+        RTS
+order:  .byte 1,2,3,4,5,6,7,8
+end:
+"""
 PAST = """
 init:   RTS
 play:   TAX
@@ -1075,6 +1128,30 @@ play:   TAX
 tab:    .byte 1, 2, 3, 4
 end:
 """
+PATNUM = (
+    """
+init:   LDA #$00
+        STA pat
+        RTS
+play:   AND #$07
+        JSR next
+        BMI keep
+        STA pat
+keep:   LDY pat
+        LDA tab,Y
+        STA $C000
+        RTS
+next:   TAY
+        LDA order,Y
+        RTS
+pat:    .byte 0
+order:  .byte 1, $85, 3, 2, $90, 0, 4, $FF
+tab:    .byte """
+    + ", ".join(str(k % 251) for k in range(160))
+    + """
+end:
+"""
+)
 INITBRK = """
 init:   LDA #lo(handler)
         STA $FFFE
@@ -2601,7 +2678,8 @@ def test_song_range_proves_what_init_leaves(prefix, tmp_path):
     c, _, labels = songs(prefix, tmp_path, SONGINIT, (0, 1), declared=range(2))
     body = c[c.index("void play") :]
     assert "CGEN_IX(C0" in body and not re.search(r"\b(?:rd|rdC\d+)\(", body)
-    assert re.search(r"if \(a >= 2\) \{\s*trap\(", c)
+    guard = r"if \(\(uint8_t\)\(a - CGEN_SONG0\) >= CGEN_SONGS\) \{\s*trap\("
+    assert re.search(guard, c)
     img, labels, loaded = assemble(SONGINIT)
     plain = translate(prefix, img, labels, loaded, ("init", "play"), init=0)[0]
     assert re.search(r"\b(?:rd|rdC\d+)\(", plain[plain.index("void play") :])
@@ -2609,23 +2687,69 @@ def test_song_range_proves_what_init_leaves(prefix, tmp_path):
         songs(prefix, tmp_path / "out", SONGINIT, (2,), declared=range(2))
 
 
-def test_song_values_not_a_run_are_each_guarded(prefix):
-    """Songs that are not a run of values are guarded one by one."""
+def test_song_values_are_a_range(prefix):
+    """The songs the host calls init with are a range of values, its bounds in the header."""
     img, labels, loaded = assemble(SONGINIT)
-    c = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=(0, 2))[0]
-    assert re.search(r"if \(a && \(a != 2\)\) \{\s*trap\(", c)
+    with pytest.raises(ValueError, match="range"):
+        translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=(0, 2))
+    _, h, _ = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=range(1, 3))
+    assert "#define CGEN_SONG0 0x01" in h and "#define CGEN_SONGS 0x02" in h
 
 
-def test_init_lanes_join_where_the_songs_agree(prefix, tmp_path):
-    """Init run per declared song folds where every run is at one point with one state: the
-    relocated operands are the same for each, and the byte holding the song is the folded
-    entry's store of ``A``. Where the songs' runs differ, the fold stops."""
-    c, info, labels = songs(prefix, tmp_path, INITREL, (0, 1, 5), declared=(0, 1, 5))
+@pytest.mark.parametrize("count", [1, 3, 6])
+def test_init_fold_is_the_same_for_every_song_count(prefix, tmp_path, count):
+    """The song number decides none of the folded path: it folds to the same point with
+    one declared song as with several, and the ``.c`` is the same; the song the init stores
+    is the folded entry's store of ``A``. Init relocating by the song stops where it uses it."""
+    c, info, labels = songs(prefix, tmp_path, INITREL, (0,), declared=range(count))
     fold = info["init"]
     assert fold["pc"] == labels["done"] and fold["stores"] == [(labels["song"], ("r", 0))]
     assert not re.search(r"\b(?:rd|wr|codechk)\(", c)
-    _, info, labels = songs(prefix, tmp_path / "a", INITA, range(4), declared=range(4))
+    one = songs(prefix, tmp_path / "one", INITREL, (0,), declared=range(1))[0]
+    assert c == one
+    _, info, labels = songs(prefix, tmp_path / "a", INITA, range(count), declared=range(count))
     assert info["init"]["pc"] == labels["bysong"]
+
+
+@pytest.mark.parametrize(
+    "order",
+    [[1, 2, 3, 4, 5, 6, 7, 8], [0x81, 2, 0x90, 0xA0, 5, 6, 7, 8], [0x81] * 7 + [3]],
+    ids=["plain", "commands", "skips"],
+)
+def test_init_folds_through_what_song_data_decides(prefix, tmp_path, order):
+    """Init reads each voice's first order byte with the routine play reads them with (song
+    data), skipping commands: the bytes decide its path, and every path rejoins after the
+    voice with the same stores, so it folds to its return whatever the song. The ``.c`` is
+    the same for every song and song count; the order positions and patterns it leaves are the
+    song's starting memory, in the header."""
+    img, labels, loaded = assemble(SONGDATA, patch={"order": order})
+    texts = set()
+    for count in (1, 2):
+        c, h, info = translate(
+            prefix, img, labels, loaded, ("init", "play"), init=0, songs=range(count)
+        )
+        assert info["init"]["pc"] == labels["done"]
+        assert {labels["pos"] + k for k in range(3)} <= {a for a, _ in info["init"]["image"]}
+        (tmp_path / str(count)).mkdir()
+        play(tmp_path / str(count), c, h, img, labels, [("init", 0)] + [("play", 0)] * 9)
+        texts.add(c)
+    base = translate(prefix, *assemble(SONGDATA), ("init", "play"), init=0, songs=range(1))[0]
+    assert texts == {base}
+
+
+def test_init_fold_stops_where_song_data_decides_its_io(prefix, tmp_path):
+    """An I/O write only some songs make is no write of the folded entry: the fold stops at
+    the branch the song byte decides, for every song alike."""
+    texts = set()
+    for first in (1, 0x81):
+        img, labels, loaded = assemble(SONGIO, patch={"order": [first]})
+        c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=[0])
+        assert info["init"]["pc"] == labels["init"] + 7 and info["init"]["io"] == [(0xC018, 15)]
+        (tmp_path / str(first)).mkdir()
+        calls = [("init", 0)] + [("play", k) for k in range(4)]
+        play(tmp_path / str(first), c, h, img, labels, calls)
+        texts.add(c)
+    assert len(texts) == 1
 
 
 def test_init_fold_runs_past_its_io_writes(prefix, tmp_path):
@@ -2648,13 +2772,28 @@ def test_init_stores_before_reads_need_no_initial_contents(prefix, tmp_path):
     """Bytes every song's run of init stores before anything reads them start with no
     contents: their region is uninitialized. A byte one song's run reads first keeps its
     initial contents."""
-    c, info, _ = songs(prefix, tmp_path, FRESH, (0, 2), declared=(0, 2))
+    c, info, _ = songs(prefix, tmp_path, FRESH, (0,), declared=range(1))
     [(lo, hi)] = info["fresh"]
     assert hi - lo == 4
     [k] = re.findall(r"^uint8_t R(\d+)\[R\d+_LEN\];$", c, re.M)
-    c, info, _ = songs(prefix, tmp_path / "one", FRESH, (0, 1), declared=(0, 1))
+    c, info, _ = songs(prefix, tmp_path / "one", FRESH, (0, 1), declared=range(2))
     assert info["fresh"] == [(lo, lo + 1), (lo + 2, hi)]
     assert re.search(rf"^uint8_t R{k}\[R{k}_LEN\] = \{{R{k}_INIT\}};$", c, re.M)
+
+
+@pytest.mark.parametrize("bounded", [True, False])
+def test_index_bound_through_a_call_keeps_a_read_inside(prefix, tmp_path, bounded):
+    """A song byte stored as a pattern number only below $80 (the branch on the flags the
+    callee's load left) indexes a table whose first 128 bytes lie in the image: the read is
+    proved inside and reads it unchecked. Stored whatever its sign, the index may reach past
+    the image: the read goes through the span's bounds-checked reader."""
+    src = PATNUM if bounded else PATNUM.replace("        BMI keep\n", "")
+    img, labels, loaded = assemble(src)
+    c, h, _ = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=[0])
+    play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", k) for k in range(8)])
+    body = c[c.index("void play") :]
+    assert (not re.search(r"\b(?:oob_rd|rdC\d+)\(", body)) == bounded
+    assert ("rdC0(" in body) != bounded
 
 
 def test_regions_stop_at_the_loaded_image(prefix, tmp_path):

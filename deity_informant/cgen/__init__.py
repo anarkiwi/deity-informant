@@ -195,6 +195,7 @@ class Program:  # pylint: disable=too-many-instance-attributes
     proven: dict | None = None
     fresh: list = ()
     init: dict | None = None
+    songs: tuple | None = None
 
 
 def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -205,11 +206,17 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     ``sensitive`` the volatile addresses whose throw-away reads are kept and ``init`` the
     index of the entry the host calls once, first, on ``image`` (``None``: entries are called
     in any order), whose decided path is folded into the image the program starts from;
-    ``songs`` the values of ``A`` the init entry is called with (``None``: any)."""
+    ``songs`` the range of values of ``A`` the init entry is called with (``None``: any),
+    which the host checks: they bound the analysis, and the ``.c`` tests them against the
+    ``.h``'s ``CGEN_SONG0`` and ``CGEN_SONGS``."""
     image = bytes(image)
     pcs = [pc for pc, _ in entries]
+    span = None
     if init is not None and songs is not None:
-        pcs[init] = (pcs[init], {"a": sorted(set(songs))})
+        vals = sorted(set(songs))
+        if not vals or vals[-1] - vals[0] + 1 != len(vals):
+            raise ValueError("songs must be a range")
+        pcs[init], span = (pcs[init], {"a": vals}), (init, vals[0], len(vals))
     prog = wholeprog.lift(
         image,
         pcs,
@@ -220,6 +227,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         fold=True,
         sensitive=sensitive,
         init=init,
+        checked=span is not None,
     )
     entries = list(entries)
     if (fold := prog.init) is not None:
@@ -242,7 +250,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     p.written = list(prog.written)
     p.bounds, p.addr_sets, p.reach = dict(prog.bounds), dict(prog.addr_sets), dict(prog.reach)
     p.proven, p.fresh = dict(prog.proven), list(prog.fresh)
-    p.init = fold
+    p.init, p.songs = fold, span
     return p, prog.stats
 
 
@@ -290,6 +298,17 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     mod.reach, mod.proven = p.reach or {}, p.proven or {}
     regfile = [r for r, _ in emit.Context(p.funcs, False).regfile]
     mod.kpos = regfile.index(emit.KREG) if emit.KREG in regfile else None
+    if p.songs is not None:
+        index, first, count = p.songs
+        key = ("deopt", (p.init or {}).get("entry", p.entries[index][0]))
+        k = traps.setdefault(key, len(traps))
+        mod.traps.add(k)
+        mod.konsts.update(CGEN_SONG0=first, CGEN_SONGS=count)
+        mod.guards[p.entries[index][1]] = [
+            f"if ((uint8_t)(a - CGEN_SONG0) >= CGEN_SONGS) {{",
+            f"trap({k});",
+            "}",
+        ]
     mod.prune()
     mod.partition()
     times["layout"] = time.perf_counter() - t1
@@ -370,7 +389,7 @@ def translate(  # pylint: disable=too-many-arguments
     (``(pc, name)``, ``A`` the argument) with ``volatile`` ``[(lo, hi)]`` I/O ranges whose
     reads at ``sensitive_reads`` are kept; ``facts`` supply computed-jump targets only;
     ``entries[init]`` is called once, before any other entry (``None``: entries are called in
-    any order), with ``A`` each of ``songs`` (``None``: any value)."""
+    any order), with ``A`` each of the range ``songs`` (``None``: any value)."""
     t0 = time.perf_counter()
     jf = jump_facts(facts, image) if facts is not None else None
     p, stats = lift(image, entries, volatile, jf, loaded, sensitive_reads, init, songs)

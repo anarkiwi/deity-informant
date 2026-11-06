@@ -31,7 +31,7 @@ python tools/cgenplay.py tune.sid --psid --volatile 0xD400-0xD41D -o out/   # tr
 | `loaded` | the `[lo, hi)` bytes the program was loaded to (default: its code span) |
 | `header` | the name the `.c` includes |
 | `init` | the index of the entry the host calls once, before any other (`None`, the default: entries in any order) |
-| `songs` | the values of `A` the `init` entry is called with (`None`, the default: any); another traps at entry |
+| `songs` | the range of values of `A` the `init` entry is called with (`None`, the default: any); the `.c` traps another at entry, against `CGEN_SONG0` and `CGEN_SONGS` in the `.h` |
 
 `info` holds the stage times (`lift`, `mlir`, `layout`, `structure`, `print`), the regions
 `[(origin, length)]`, the code span, the traps in the `.c` (`{k: ("deopt", pc)}` or `("ind", pc,
@@ -65,6 +65,9 @@ caller's return address. `tools/cgenplay.c` is a host harness.
    the path leaves and the init function starts where it ends (storing the song as the path
    stored it, setting the registers it wrote), so an operand a relocator patches is a
    constant, its access indexed directly, and code only the path runs is not translated.
+   Neither the song number nor song data decides the path, so the `.c` is the same for every
+   song and song count. With `songs` the lift is `checked`: the init function starts with
+   `if ((uint8_t)(a - CGEN_SONG0) >= CGEN_SONGS) trap(k);`, the bounds in the `.h`.
 2. **MLIR** (`emit.py`). Each lifted function is a private `func.func` taking and returning the
    register file as values; its registers, stack slots and block-crossing temporaries are
    rank-0 `memref.alloca`s, memory one global `@M`, volatile accesses `io_read`/`io_write`
@@ -239,7 +242,9 @@ per-voice routines often are; the rest are renumbered in order.
   their array): a read of any other byte past the image is out of bounds. A load whose bytes
   in the program lie in one region or held span, the rest past the image so, tests its
   address against it and reads `oob_rd` outside (`(uint16_t)(a - R2_ORG) < R2_LEN ? ... :
-  oob_rd(a)`). A region every byte of which every run of the init entry stores before any
+  oob_rd(a)`); from a constant base plus a byte inside one held span, through the span's
+  bounds-checked reader `rdCj(base, index)`. One the lift proves (`Program.proven`: the bounds
+  of the bytes its index comes from) inside one region or held span indexes it unchecked. A region every byte of which every run of the init entry stores before any
   read of it (`Program.fresh`) is declared with no initial contents (`uint8_t R4[R4_LEN];`,
   no `R4_INIT`). So is every byte a store with an address set may write (`Program.written`: a block copy's
   destinations past the image, which pointer reads then find through `rd`); the stack page
@@ -377,7 +382,9 @@ the stack, a pointer into zero page with no stack check, a jump's or-ed high byt
 relocation, determinism (repeated, with the blocks shuffled and under other hash seeds), an
 init run once folded into the starting memory (a relocator's operands constant though play
 writes its table, the song stored by the folded entry; one relocating by the song folded only
-up to it), each song from a fresh image, and an llvm-mos build. `tools/cgenplay.py` does the
+up to it; one whose path song data decides folded through to its return, with the same `.c`
+for every song and song count, and stopped where the song decides an I/O write), each song
+from a fresh image, and an llvm-mos build. `tools/cgenplay.py` does the
 same for a PSID (its init called once, first: `--init`) or raw image (`--loaded LO-HI`
 names the program's bytes in a raw 64 KiB state, as a memory dump after an init routine) and
 prints `tools/cmetrics.py`'s table, the sizes, the computed jumps resolved from the code, the

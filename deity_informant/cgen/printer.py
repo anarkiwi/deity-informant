@@ -952,6 +952,15 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         d = self.defs.get(idx)
         return d.args[0] if d is not None and d.name == "arith.index_castui" else idx
 
+    def proven_iv(self, o):
+        """The interval of load ``o``'s address met with the hull the lift proves of its
+        instruction (every copy's, the bounds of the bytes its index comes from), or None."""
+        lo, hi = self.iv(self.address(o))
+        h = self.mod.reach_of(self, o, self.mod.proven) if o.name == "memref.load" else None
+        if h is None or hi - lo >= regions.BOUNDED or h[0] > hi or lo > h[1]:
+            return None
+        return max(lo, h[0]), min(hi, h[1])
+
     def place(self, o):
         """``("region", k)`` or ``("held", j)``: the one region (or, for a load or store, held
         span) access ``o`` lies in, over all its addresses or, in an instance, for each copy's;
@@ -1724,6 +1733,12 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
                 return ("region", regs[0]) if regs else ("held", spans[0])
             if self.pointer(o):
                 return ("set", regs, spans)
+        # A load the lift proves inside one region or held span reads it unchecked.
+        sure = None if store else self.f.proven_iv(o)
+        if sure is not None and (k := mem.region(*sure)) is not None:
+            return ("region", k)
+        if sure is not None and (j := mem.held_span(*sure)) is not None:
+            return ("held", j)
         found = None if store else mem.bounded(lo, hi)
         return ("any",) if found is None else ("bounded", *found)
 
@@ -1797,6 +1812,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         if how[0] == "checked":
             return self.checked(o, how[2], a)
         if how[0] == "bounded":
+            # A constant base plus a byte inside one held span: its bounds-checked reader.
+            if not how[1] and self.base_index(o) is not None:
+                return self.checked(o, how[2][0], a)
             ((test, el),) = self.mod.choices(how[1], how[2], a.text, self.indexed(o))
             self.mod.helpers.add("oob_rd")
             return E(f"({test} ? {el} : oob_rd({a.text}))", 16, "", 0, 255, False, True, a.refs)
@@ -2415,6 +2433,8 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         declare(body, self.types)
         read = names_in(body)
         lines = [f"(void){n};" for n in params if n not in read] + render(body)
+        if not self.f.private:
+            lines = self.mod.guards.get(self.name, []) + lines
         self.head_text = head
         return "\n".join([f"{head} {{", *lines, "}"])
 
@@ -2538,6 +2558,8 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.copy_pcs, self.sets, self.kpos, self.tables = {}, {}, None, {}
         self.reach, self.proven, self.checked, self.konsts = {}, {}, set(), {}
         self.inert = set()
+        #: Per entry name, the C lines that start it (the host's check of its arguments).
+        self.guards = {}
         for o in top.regions[0][0].ops:
             if o.name == "func.func" and o.regions[0] and o.regions[0][0].ops:
                 self.funcs.append(Func(o, self))

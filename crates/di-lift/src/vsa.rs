@@ -715,11 +715,20 @@ impl Code<'_> {
         }
         out.hull().map(|_| out)
     }
-    /// What the load at `pc` from `a` in state `st` yields beyond the tracked bytes: the hull
-    /// of constant bytes ([`Code::konst`]), else of the bytes' bounds ([`Code::byte`]); where
-    /// `clip` lists the bytes an indexed load at `pc` reads, the hull of those in `a`.
-    pub(crate) fn load(&self, pc: u16, a: Iv, st: &St) -> Option<Iv> {
+    /// What the load of opcode `op` at `pc` from `a` in state `st` yields beyond the tracked
+    /// bytes: the hull of constant bytes ([`Code::konst`]), else of the bytes' bounds
+    /// ([`Code::byte`]); where `clip` lists the bytes an indexed load at `pc` reads, the hull
+    /// of those in `a`; from a constant base plus an index register, of the bytes its values
+    /// address.
+    pub(crate) fn load(&self, pc: u16, op: u8, a: Iv, st: &St) -> Option<Iv> {
         let byte = |x: u32| self.byte(x, st);
+        let r = crate::dispatch::index_reg(Template::of(op)).filter(|_| self.sets());
+        if let Some((r, base)) = r.and_then(|r| Some((r, self.base(pc, op, r)?))) {
+            let xs = (st.vals(r).values())
+                .filter_map(|x| self.at(pc, base, x))
+                .filter(|&x| a.meets(x, x + 1));
+            return xs.map(byte).reduce(|p, q| Some(hull(p?, q?))).flatten();
+        }
         match self.clip.get(&pc) {
             Some(xs) => xs
                 .iter()
@@ -764,7 +773,11 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
         Some(x) => Iv::exact(x as u32),
         None => held(pc.wrapping_add(i as u16 + 1) as u32).unwrap_or(Iv::full(1)),
     });
-    let load = |a: Iv| a.value().and_then(held).or_else(|| code.load(pc, a, st));
+    let load = |a: Iv| {
+        a.value()
+            .and_then(held)
+            .or_else(|| code.load(pc, v.op, a, st))
+    };
     absint_ranges(ops, b, bi, &mut env, acc, &load);
     for a in acc.iter_mut() {
         if let Some(iv) = a.ptr.and_then(|p| st.pointed(p)) {
@@ -1295,12 +1308,10 @@ struct Site {
 }
 
 /// The caller's state after a call that left `ret`, given the state `call` it made the call in:
-/// a register the callee left at its entry value plus an offset is the caller's plus that.
+/// a register the callee left at its entry value plus an offset is the caller's plus that. A
+/// flag's predicate on a register holds of the value the callee returns it with.
 fn apply(ret: &St, call: &St, linked: bool) -> St {
-    let mut s = St {
-        pred: [None; 3],
-        ..ret.clone()
-    };
+    let mut s = ret.clone();
     if linked {
         s.stored = [
             call.stored[0] | ret.stored[0],
@@ -1870,7 +1881,7 @@ fn reach(
             .collect();
         let mut after = Vec::new();
         let run = init_left(p, given, &c.bound, &c.clip, proof);
-        fresh = run.as_ref().map(|r| r.1.clone());
+        fresh = run.as_ref().and_then(|r| r.1.clone());
         if let Some((left, _)) = run {
             after = bound.clone();
             for (x, h) in left {
@@ -1932,14 +1943,21 @@ fn reach(
             let (mut acc, mut base) = (Vec::new(), Vec::new());
             step(&c, pc, v, &st, &mut acc);
             step(&c, pc, v, &zero, &mut base);
-            let idx = crate::dispatch::index_reg(t).map_or(Iv::exact(0), |r| st.env[r]);
+            let ix = crate::dispatch::index_reg(t);
+            let idx = ix.map_or(Iv::exact(0), |r| st.env[r]);
             let narrow = |a: Iv, w: Option<Iv>| match w {
                 Some(w) if a.hi <= 0xffff => meet(a, w).unwrap_or(a),
                 Some(w) => w,
                 None => a,
             };
             for (ai, (a, b)) in acc.iter().zip(&base).enumerate() {
-                if !a.store && !a.dummy && (a.ptr.is_some() || cell) {
+                // With `proof`, a load from a constant base and an index register too: the
+                // bounds of the bytes its index comes from hold for every run.
+                let indexed = proof
+                    && ix.is_some()
+                    && a.addr.hi <= 0xffff
+                    && acc.iter().all(|x| x.ptr.is_none());
+                if !a.store && !a.dummy && (a.ptr.is_some() || cell || indexed) {
                     // The pair the address is formed from: a zero-page pointer, or the cell
                     // operand.
                     let q = match a.ptr {
@@ -1976,7 +1994,7 @@ fn init_left(
     bound: &[Option<Iv>],
     clip: &FxHashMap<u16, Vec<u16>>,
     proof: bool,
-) -> Option<(FxHashMap<u16, Iv>, FixedBitSet)> {
+) -> Option<(FxHashMap<u16, Iv>, Option<FixedBitSet>)> {
     let e = &p.entries[given.init?];
     let img = p.code.img;
     let konst = |a: u32| unwritten(img, bound, &[a as u16]).then(|| img[a as usize]);
@@ -2046,7 +2064,7 @@ fn init_left(
             });
         }
     }
-    Some((left?, fresh.filter(|_| proof)?))
+    Some((left?, fresh.filter(|_| proof)))
 }
 
 /// The addresses the access of opcode `op` at `pc` reaches from a constant operand with each

@@ -62,6 +62,10 @@ pub struct Opts {
     /// path is folded into the program's starting memory ([`fold`]); a static lift
     /// (`entry_sp`, `loaded`, no facts, bank map nor cycle counting) only.
     pub init: Option<usize>,
+    /// The host calls the init entry with its declared register values only and checks them
+    /// itself: they bound the analysis, and its code neither tests them nor takes a lone one
+    /// as a constant.
+    pub checked: bool,
 }
 
 impl Default for Opts {
@@ -74,6 +78,7 @@ impl Default for Opts {
             loaded: None,
             fold: false,
             init: None,
+            checked: false,
         }
     }
 }
@@ -816,6 +821,11 @@ fn lift_core(
             .count(),
         ..Stats::default()
     };
+    // The entries as their code starts: a checked init entry tests none of its registers.
+    let mut emitted = entries.to_vec();
+    if let (Some(e), true) = (init.and_then(|i| emitted.get_mut(i)), opts.checked) {
+        e.regs.clear();
+    }
     let mut functions: Vec<Function> = plans
         .iter()
         .enumerate()
@@ -828,7 +838,7 @@ fn lift_core(
                     [r] => Some(r),
                     _ => None,
                 });
-            let (f, n) = emit::emit(&sh, p, entries.get(i), port, i);
+            let (f, n) = emit::emit(&sh, p, emitted.get(i), port, i);
             stats.insns += n.insns;
             stats.raw_ops += n.raw;
             stats.code_guards += n.code_guards;

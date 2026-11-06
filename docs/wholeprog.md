@@ -80,6 +80,7 @@ Inputs:
 | `entry_sp` | The SP every entry is called at (after its return address), declared rather than observed: outermost plans are specialized to it and page-1 checks guard the *Stack extent* only. |
 | `loaded` | The `[lo, hi)` the program was loaded to: no table extends past it (*Table extents*). |
 | `init` | The index of the entry the host calls once, first, on `image` (a player's init): its decided path is folded into the memory the program starts from (*Init folding*; a static lift only). |
+| `checked` | The host calls the `init` entry with its declared register values only and checks them itself: they bound the analysis, and its code neither tests them nor takes a lone one as a constant. |
 
 `trace.collect(image, driver)` runs `driver(session)` twice on the jennings native core over a
 copy of `image`: `session.call(pc, a)` is `run_to_rts`; `session.mem`/`session.mpu` are the
@@ -328,11 +329,27 @@ where that memory and the registers are a function of the image alone:
 - every write to a volatile range of a known value at a known address, no read of one but a
   throw-away read reaching no `sensitive` address, and no store above the entry SP on the way.
 
-An init entry declared with several values of `A` (its songs) runs the path once per value,
-in lockstep, and folds where every run is foldable at one pc with the same registers and
-volatile writes, each byte it stored holding one value in every run or each run's `A` (the
-song stored as it came); where the runs differ the fold stops, and the reach pass (*Pointer
-reach*) runs init once per song past it. With one declared value the path knows `A`.
+The path is the same for every song: its decisions (each branch, each store's address, each
+volatile write) are those of a run that takes the entry's `A` (the song number) and *song
+data* as unknown, song data being the loaded bytes, but constant code, that an instruction
+the other entries reach reads (the data the player plays; tables only the init's own code
+reads, as a relocator's, are part of the player). That run walks in lockstep with the run
+of the values, which knows every loaded byte. Where the decisions run cannot decide a
+branch the values run decides, it takes every path from the branch, each instruction's
+states joined (registers hulled, a byte the paths store unlike unknown), to the branch's
+immediate postdominator in its function (calls run through; for the function's return, the
+return site): where every path reaches it with the same open calls and volatile writes, the
+two runs go on from there, the values run having followed its path alone. So the fold, its
+end, the volatile writes and registers the folded entry makes and the bytes it stores (the
+starting memory's addresses) are a function of the player; the values the path leaves in
+data bytes, the song's, are the starting memory. A byte of constant code the decisions run
+does not know (song data stored into an operand) stops the fold, as the program would take
+it as constant. At the entry's own return the registers are its result, which the host
+does not read: the folded entry sets those the values run knows.
+
+A declared range of `A` (its songs, checked by the host or at entry) bounds the analysis
+(*Pointer reach* runs init once per song past the fold point) but not the path, so the fold
+is the same for one song as for several.
 
 The lift is then of the image with the path's known bytes in place, its init entry at the
 fold point: the entry first checks the declared values of the registers the path read as it
@@ -345,7 +362,8 @@ is a constant of every entry, so operands a relocator patched are constant code 
 accesses have exact addresses; a byte some other store writes starts at the path's value. A
 path whose state depends on its input stops before that: the store of a value computed from
 `A` is not known, so the fold is at the last point before it, and the bytes the input decides
-stay cells written by the lifted code. Code only the path runs is not lifted;
+stay cells written by the lifted code. With `checked` the host checks the declared registers
+itself: the entry neither tests them nor takes a lone value as a constant. Code only the path runs is not lifted;
 `Program.init` gives the fold (the original entry and the fold point, the starting memory's
 bytes over the image, the stores and registers of the folded entry, and the instructions the
 path ran that the folded program writes no byte of: code, constant like lifted code).
@@ -388,7 +406,8 @@ the facts, so a proof holds on every execution that stays in lifted code.
   that compare a register with a constant (`CMP`/`CPX`/`CPY`, `INX`/`DEX`, loads and
   transfers) are kept as predicates on the register, so a conditional branch narrows it on
   each edge before intervals are hulled (`DEX; BPL` keeps `[0, n]` from a loop that counts
-  down from `n`). An edge whose flag is already known is not taken. Loop heads widen to the
+  down from `n`); a callee's return keeps them, so a branch after `JSR` on the flags of the
+  callee's last load narrows what it returns. An edge whose flag is already known is not taken. Loop heads widen to the
   next constant a `CMP`/`CPX`/`CPY` immediate compares with, `$7F`/`$80` or the extremes.
   `A`, `X` and `Y` also keep their known bits (`known.rs`, joined bitwise), so the values of
   a register are its interval cut by them: `{0, 2}` after `ASL` of `0` or `1`, or where paths
@@ -586,12 +605,14 @@ the facts, so a proof holds on every execution that stays in lifted code.
   entry stores (one run per value of `A` whose loads stay inside those extents, each decided
   from the entry to its `RTS`), the values the runs leave in place of its entry byte, for
   states not reached from the init entry (one run per value of `A` the init entry declares,
-  every value when none). Loads take a byte's hull where it is not tracked. A store whose index
-  register holds a value set writes the addresses of its values alone.
+  every value when none). Loads take a byte's hull where it is not tracked (of the bytes its
+  index register's values address, for a constant base plus an index register). A store whose
+  index register holds a value set writes the addresses of its values alone.
   Starting from no hulls, each round of the pass gives hulls that hold of every run, met
   with the last round's, until a round changes none. The pass changes no lifted code: the
   hulls hold only for runs that keep those assumptions (cgen reads past them through
-  `oob_rd`). It runs again with none (`Program.proven`): an indexed access reaches every byte
+  `oob_rd`). It runs again with none (`Program.proven`, which also holds the address hulls
+  of loads from a constant base plus an index register): an indexed access reaches every byte
   its index set gives and the init entry's runs are those of its declared songs, so those
   hulls hold on every run. The runs also give `Program.fresh`: the bytes (outside page 1 and
   the volatile ranges) every run stores before it reads them, when every run is decided;

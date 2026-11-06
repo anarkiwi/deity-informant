@@ -13,8 +13,9 @@ same player with other data, or loaded elsewhere, gives a byte-identical `.c`. R
 player reaches by fall-through or `JSR` are functions, unrolled per-voice copies (whole blocks
 alike up to operands) one function of the copy's index with its per-copy values in constant
 tables, and a voice loop's index bounds the accesses of the routine it calls. An init the host
-calls once, first, is evaluated as far as its run is the same for every song: the memory it
-leaves (relocated operands included) is the program's starting data. A read through a
+calls once, first, is evaluated as far as its run is the same for every song (neither the song
+number nor song data decides its path): the memory it leaves (relocated operands included) is
+the program's starting data. A read through a
 pointer whose bases the analysis bounds (split tables a song byte indexes, constants, an
 offset in `Y`, the record lengths it advances by) is one bounds-checked read of the span
 holding them. Every output is
