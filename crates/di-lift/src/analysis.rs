@@ -108,6 +108,12 @@ impl Iv {
 }
 
 /// Interval of `opc(a, b)` with an `out`-sized result and `a` of `size0` bytes.
+/// The least all-ones value at or above `x`: an or or exclusive or of values at most `x`
+/// stays below it.
+fn ones(x: u32) -> u32 {
+    u32::MAX.checked_shr(x.leading_zeros()).unwrap_or(0)
+}
+
 pub fn iv_op(opc: Opc, a: Iv, b: Iv, out: u32, size0: u32) -> Iv {
     let m = mask(out);
     // A copy to fewer bytes truncates.
@@ -170,13 +176,16 @@ pub fn iv_op(opc: Opc, a: Iv, b: Iv, out: u32, size0: u32) -> Iv {
             }
             _ => Iv {
                 lo: a.lo.max(b.lo),
-                hi: m,
+                hi: m.min(ones(a.hi | b.hi)),
             },
         },
         Opc::IntXor => match (a.value(), b.value()) {
             (Some(0), _) => b,
             (_, Some(0)) => a,
-            _ => full,
+            _ => Iv {
+                lo: 0,
+                hi: m.min(ones(a.hi | b.hi)),
+            },
         },
         Opc::IntLeft => match b.value() {
             Some(s) if s < 32 && (a.hi as u64) << s <= m as u64 => Iv {
@@ -558,6 +567,10 @@ pub struct Graph {
     pub prot: crate::ptr::Prot,
     /// The zones the pointer windows keep pointers out of (page 1 first).
     pub zones: Vec<(u32, u32)>,
+    /// Address hulls of the loads through pointers and cell operands while table loads stay
+    /// inside their extents ([`crate::vsa`]'s `reach`) and of their bases, by `(pc, opcode,
+    /// access index)`.
+    pub reach: FxHashMap<(u16, u8, usize), (Iv, Iv)>,
     /// Per instruction start the entries (bit `i % 64` for entry `i`) it is reached from.
     pub from: FxHashMap<u16, u64>,
     /// Instruction starts at which the decimal flag may be set.
@@ -779,7 +792,9 @@ pub fn pre_stored(entries: &[Entry]) -> impl Iterator<Item = u16> + '_ {
 /// loaded to, where tables end at the latest. An `RTS`/`RTI` whose pulled address the code
 /// gives targets for jumps through it within the same fixpoint; which computed transfers stay
 /// unresolved (to their facts' targets) is decided on a converged program, and the fixpoint is
-/// recomputed until that does not grow.
+/// recomputed until that does not grow. With `reach` (the volatile ranges and the init
+/// entry's index) the graph holds the address hulls of pointer loads.
+#[allow(clippy::too_many_arguments)]
 pub fn discover(
     img: &[u8; 0x10000],
     entries: &[Entry],
@@ -788,6 +803,7 @@ pub fn discover(
     matched: bool,
     loaded: Option<(u32, u32)>,
     entry_sp: Option<u8>,
+    reach: Option<crate::vsa::Wanted>,
 ) -> Graph {
     let mut edges: FxHashMap<u16, Vec<u16>> = FxHashMap::default();
     for &(p, q) in &facts.edges {
@@ -807,6 +823,7 @@ pub fn discover(
         failed: FxHashSet::default(),
         loaded,
         entry_sp,
+        reach,
         constant: {
             let mut c = FixedBitSet::with_capacity(0x10000);
             if let Some((lo, hi)) = loaded {
@@ -860,6 +877,9 @@ struct Fixpoint<'a> {
     /// Loaded bytes taken as constant: those no store with an address set wrote in an
     /// earlier round, nor the facts.
     constant: FixedBitSet,
+    /// The volatile ranges and the init entry's index, when the address hulls of pointer
+    /// loads are wanted.
+    reach: Option<crate::vsa::Wanted<'a>>,
 }
 
 impl Fixpoint<'_> {
@@ -962,6 +982,9 @@ impl Fixpoint<'_> {
                     entry_sp: self.entry_sp,
                     observed: &seen_writes,
                     constant: &self.constant,
+                    volatile: self.reach.map_or(&[], |r| r.volatile),
+                    reach: self.reach.is_some(),
+                    init: self.reach.and_then(|r| r.init),
                 },
             );
             let mut written: FxHashMap<u16, BTreeSet<u8>> = FxHashMap::default();
@@ -1068,6 +1091,7 @@ impl Fixpoint<'_> {
                         .collect()
                 };
                 let g = Graph {
+                    reach: an.reach.clone(),
                     vars,
                     cells,
                     code,

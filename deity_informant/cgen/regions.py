@@ -145,14 +145,31 @@ class Memory:  # pylint: disable=too-many-instance-attributes
                 lo, hi = min(lo, org), max(hi, org + n)
         return lo, hi
 
-    def partition(self, accesses, stores, unknown_store=True, joined=()):
+    def pointer_run(self, hull, touched):
+        """The span ``(a, b)`` (inclusive) a pointer load with address hull ``(lo, hi)`` reads
+        inside the loaded program: from its first non-code byte to its last, held as one array
+        (code bytes inside it held too). None when the hull meets a volatile range there, or
+        reaches below the program a byte ``touched`` (other accesses) or a volatile range holds,
+        or holds no data byte of the program."""
+        lo, hi = hull[:2]
+        a0, a1 = self.loaded
+        if lo < a0 and (touched[lo:a0].any() or self.vol[lo:a0].any()):
+            return None
+        lo, hi = max(lo, a0), min(hi, a1 - 1)
+        data = np.flatnonzero(~self.code[lo : hi + 1]) if lo <= hi else np.zeros(0, int)
+        if not data.size or self.vol[lo : hi + 1].any():
+            return None
+        return lo + int(data[0]), lo + int(data[-1])
+
+    def partition(self, accesses, stores, unknown_store=True, joined=(), wide=()):
         """Regions for ``accesses`` (``(lo, hi)`` inclusive, None when unknown), given the
         ``stores`` at constant addresses (code bytes they hit are data). Constant bytes are
         held where a bounded access may reach them, or everywhere when a store of unknown
         address (``unknown_store``) may need them to check it, and tables (data read as
         constant) always; a load of unknown address reaching other code reads ``oob_rd``.
         Each of the ``joined`` intervals (the addresses of an instance's copies) is held in one
-        span with the regions it touches, so the copies index one array."""
+        span with the regions it touches, so the copies index one array; each of the ``wide``
+        runs (pointer loads', :meth:`pointer_run`) is touched whatever its width."""
         for a in stores:
             self.code[a] = False
         touched = np.zeros(0x10000, dtype=bool)
@@ -167,6 +184,8 @@ class Memory:  # pylint: disable=too-many-instance-attributes
             touched[self.loaded[0] : self.loaded[1]] = True
         for lo, hi in self.written:
             touched[lo:hi] = True
+        for lo, hi in wide:
+            touched[lo : hi + 1] = True
         touched &= ~constant & ~self.vol
         for lo, hi in joined:
             need[lo : hi + 1] |= constant[lo : hi + 1] | touched[lo : hi + 1]
@@ -202,12 +221,13 @@ class Memory:  # pylint: disable=too-many-instance-attributes
                 out.append((a, b))
         return out
 
-    def held_span(self, lo, hi, store=False):
-        """The index of the held span holding all of ``[lo, hi]`` when each byte is held there:
-        a constant (not for a ``store``) or a byte of a region inside it, else None."""
+    def held_span(self, lo, hi, store=False, wide=False):
+        """The index of the held span holding all of ``[lo, hi]`` (narrower than ``BOUNDED``
+        unless ``wide``) when each byte is held there: a constant (not for a ``store``) or a
+        byte of a region inside it, else None."""
         data = self.owner[lo : hi + 1] >= 0
         held = data if store else data | self.constant[lo : hi + 1]
-        if hi - lo >= BOUNDED or not held.all():
+        if hi - lo >= BOUNDED and not wide or not held.all():
             return None
         return next((j for j, (a, b) in enumerate(self.held) if a <= lo and hi < b), None)
 
@@ -215,10 +235,11 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         """The index of the held span a region ``(org, n)`` lies in, else None."""
         return next((j for j, (a, b) in enumerate(self.held) if a <= org and org + n <= b), None)
 
-    def region(self, lo, hi):
-        """The region holding all of ``[lo, hi]``, or None."""
+    def region(self, lo, hi, wide=False):
+        """The region holding all of ``[lo, hi]`` (narrower than ``BOUNDED`` unless ``wide``),
+        or None."""
         k = int(self.owner[lo])
-        return k if self.owner[hi] == k >= 0 and hi - lo < BOUNDED else None
+        return k if self.owner[hi] == k >= 0 and (wide or hi - lo < BOUNDED) else None
 
     def is_volatile(self, lo, hi):
         """Whether all of ``[lo, hi]`` is volatile."""

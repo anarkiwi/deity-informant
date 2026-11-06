@@ -16,8 +16,8 @@ from elftools.elf.elffile import ELFFile
 from deity_informant.lifter import MODE_LEN, OPS
 
 ORIGINS = ("trap", "dispatch", "cell", "arith16", "other")
-RUNTIME = frozenset("rd wr oob_rd oob_wr codechk".split())
-DISPATCH = re.compile(r"\b(?:rd|wr|oob_rd|oob_wr|codechk)\d*\(")
+RUNTIME = re.compile(r"(?:rd|wr|oob_rd|oob_wr|codechk|rdC\d+)$")
+DISPATCH = re.compile(r"\b(?:rd|wr|oob_rd|oob_wr|codechk|rdC\d+)\(")
 ELEMENT = re.compile(r"\b(R\d+|C\d+)\[(0x[0-9A-F]+|\d+)\]\s*[!=]=\s*(?:0x)?[0-9A-F]+\b")
 ORG = re.compile(r"#define (R\d+|C\d+)_ORG 0x([0-9A-F]+)")
 HEAD = re.compile(r"^(?:static )?(?:__attribute__\(\(\w+\)\) )?\w[\w ]*?\b(\w+)\(.*\{$")
@@ -55,7 +55,7 @@ def line_origins(text, cells, origins):
         m = HEAD.match(line)
         func = m.group(1) if m else func
         owner[n] = func
-        if func in RUNTIME or DISPATCH.search(line):
+        if RUNTIME.match(func or "") or DISPATCH.search(line):
             out[n] = "dispatch"
         elif any(origins.get(a, -0x10000) + int(o, 0) in cells for a, o in ELEMENT.findall(line)):
             out[n] = "cell"

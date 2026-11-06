@@ -49,6 +49,7 @@ prog.code             # [addr, ...] bytes treated as constant: code, tables read
 prog.written          # [(lo, hi), ...] runs of the bytes stores with address sets may write
 prog.starts           # [pc, ...] instruction starts the functions plan (every instance copy's)
 prog.addr_sets        # {(pc, store): [(lo, hi), ...]} address sets of pointer accesses
+prog.reach            # {pc: (lo, hi, base_lo, base_hi)} pointer loads' hulls (*Pointer reach*)
 prog.bounds           # {address: (lo, hi)} bytes whose every store has an exact address
 prog.guard_evals      # conditional branches to a deopt the interpreter backend has run
 prog.init             # init=: {"index", "entry", "pc", "image", "stores", "regs", "code"} or None
@@ -559,6 +560,22 @@ the facts, so a proof holds on every execution that stays in lifted code.
   through such a pointer gets its set the same way (when its tables need no index guard: it
   is a fact the lift does not rely on), and its interval is the set's hull.
   `Program.addr_sets` gives these sets per instruction and kind (`{(pc, store): [(lo, hi)]}`).
+- **Pointer reach** (`vsa.rs`, static lifts). `Program.reach` gives, per load through a
+  `(zp)` pointer or a cell operand, the hull of its addresses and of its base (the index
+  registers zero) from a second pass of the analysis that assumes what *Table extents*
+  assumes: an indexed load whose index the code does not bound, or that reads bytes no store
+  writes, reads its table only inside its extent (a table one value of a bounded index fills
+  is read whole: its columns overlap), and so does an indexed store whose index the code does
+  not bound. Every byte only stores with bounded addresses write (each store's address set
+  where it has one) holds the hull of its entry byte and the values they store; a zero-page
+  byte every path since the entry stored, of those values alone; a byte every run of the init
+  entry stores (one run per value of `A` whose loads stay inside those extents, each decided
+  from the entry to its `RTS`), the values the runs leave in place of its entry byte, for
+  states not reached from the init entry. Loads take a byte's hull where it is not tracked.
+  Starting from no hulls, each round of the pass gives hulls that hold of every run, met
+  with the last round's, until a round changes none. The pass changes no lifted code: the
+  hulls hold only for runs that keep those assumptions (cgen reads past them through
+  `oob_rd`).
 - **Computed jumps** (`dispatch.rs`). A `JMP (ind)` whose pointer bytes are tagged on every
   path into it, a `JMP`/`JSR` whose cell operand bytes are (a byte that is not a cell is a
   constant), and an `RTS`/`RTI` whose return-address bytes are pushed so on every path, goes

@@ -90,6 +90,59 @@ s0:     .byte 1,2,3,0
 s1:     .byte 9,8,0
 end:
 """
+SONGPTR = """
+entry:  TAY
+        LDA plo,Y
+        STA $FB
+        LDA phi,Y
+        STA $FC
+        LDY #$00
+loop:   LDA ($FB),Y
+        BEQ done
+        STA $C010
+        TYA
+        SEC
+        ADC ($FB),Y
+        TAY
+        BCC loop
+done:   RTS
+plo:    .byte lo(p0),lo(p1),lo(p2)
+phi:    .byte hi(p0),hi(p1),hi(p2)
+p0:     .byte 1,9,2,8,7,0
+p1:     .byte 3,1,2,3,0
+p2:     .byte 0
+end:
+"""
+SCRATCH = """
+entry:  STA $FB
+        STA $FC
+        ASL $FB
+        ROL $FC
+        LDA $FC
+        STA $C011
+        LDA $FB
+        STA $C012
+        LDA $C013
+        AND #$01
+        TAY
+        LDA plo,Y
+        STA $FB
+        LDA phi,Y
+        STA $FC
+        LDY #$01
+        LDA ($FB),Y
+        STA $C010
+        RTS
+other:  LDY #$00
+        LDA ($FB),Y
+        STA $C014
+        RTS
+plo:    .byte lo(p0),lo(p1)
+phi:    .byte hi(p0),hi(p1)
+p0:     .byte 5,6
+p1:     .byte 7,8
+end:
+"""
 ZPCLEAR = """
 entry:  LDX #$00
         TXA
@@ -1512,8 +1565,10 @@ def test_matches_reference(prefix, tmp_path, src, values):
 
 
 def test_pointer_reads_go_through_regions(prefix, tmp_path):
+    # The pointer's bases are the words of its table: the read is a bounds-checked read of
+    # the span holding the strings, no dispatch over every region.
     c, h, info = check(prefix, tmp_path, PTRS, entry_calls([0, 1, 1, 0]))
-    assert info["unknown_access"] and "rd(" in c
+    assert not info["unknown_access"] and not re.search(r"\brd\(", c) and "rdC0(" in c
     assert all(f"R{k}_ORG" in h for k in range(len(info["regions"])))
 
 
@@ -1524,6 +1579,26 @@ def test_pointer_reads_are_kept_off_the_stack_and_io(prefix, tmp_path):
     c, _, info = check(prefix, tmp_path, PTRS, entry_calls([0, 1, 1, 0]), sensitive=(0xC0FF,))
     assert not info["traps"] and "io_read(" not in c.split("void entry")[1]
     assert all(org + n <= 0x100 or org >= 0x200 for org, n in info["regions"])
+
+
+def test_pointer_from_split_tables_reads_one_span(prefix, tmp_path):
+    # A data byte indexes the pointer's split tables (the index unbounded: they are read inside
+    # their extent) and the offset grows by each record's length: every read is a bounds-checked
+    # read of the span holding the records, with no dispatch over the regions.
+    c, _, info = check(prefix, tmp_path, SONGPTR, entry_calls([0, 1, 2, 1, 0]))
+    assert not re.search(r"\brd\(", c) and "rdC0(" in c and not info["unknown_access"]
+    labels = assemble(SONGPTR)[1]
+    [(lo, hi)] = info["code_held"]
+    assert lo <= labels["p0"] and labels["end"] <= hi
+
+
+def test_pointer_pair_reused_as_scratch(prefix, tmp_path):
+    # The pair holds shifted data between its uses as a pointer: the read after it is set from
+    # the tables is bounded, the read in `other` (whatever the pair last held) is not.
+    calls = [("entry", 3), ("other", 0), ("entry", 0x81), ("other", 0)]
+    c, _, _ = check(prefix, tmp_path, SCRATCH, calls, entries=("entry", "other"))
+    entry, other = c.split("void entry")[1].split("void other")[0], c.split("void other")[1]
+    assert not re.search(r"\brd\(", entry) and re.search(r"\brd\(", other)
 
 
 def test_zero_page_cleared_then_a_pointer_set_through_an_index(prefix, tmp_path):

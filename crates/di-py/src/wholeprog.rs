@@ -799,6 +799,19 @@ impl Program {
             .collect()
     }
 
+    /// Address hulls of the loads through pointers and cell operands while the program's
+    /// table loads stay inside their extents, and of their bases (the index registers zero):
+    /// ``{pc: (lo, hi, base_lo, base_hi)}``, each the hull over the instruction's loads.
+    #[getter]
+    fn reach(&self) -> HashMap<u16, (u32, u32, u32, u32)> {
+        let mut m: HashMap<u16, (u32, u32, u32, u32)> = HashMap::new();
+        for &(pc, lo, hi, blo, bhi) in &self.prog.reach {
+            let e = m.entry(pc).or_insert((lo, hi, blo, bhi));
+            *e = (e.0.min(lo), e.1.max(hi), e.2.min(blo), e.3.max(bhi));
+        }
+        m
+    }
+
     /// Bytes every store into which has an exact address and a bounded value:
     /// ``{address: (lo, hi)}``, the hull of the entry byte and the stored values.
     #[getter]
@@ -1451,7 +1464,7 @@ pub fn plan_program<'py>(
     let es = self::entries(entries);
     let f = self::facts(facts)?;
     let bank = bank_of(bank)?;
-    let g = di_lift::analysis::discover(&img, &es, &f, bank.as_ref(), true, None, None);
+    let g = di_lift::analysis::discover(&img, &es, &f, bank.as_ref(), true, None, None, None);
     let pcs: Vec<u16> = es.iter().map(|e| e.pc).collect();
     let out = PyList::empty(py);
     for p in di_lift::plan(&g.img, &g, &pcs, &f, bank.as_ref(), &[], false) {

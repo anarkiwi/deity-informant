@@ -314,6 +314,10 @@ pub struct Stats {
     pub fused_chains: usize,
 }
 
+/// A pointer load's address hull and its base's (the index registers zero): `(pc, lo, hi,
+/// base lo, base hi)`, inclusive.
+pub type Reach = (u16, u32, u32, u32, u32);
+
 /// An address set: `(pc, store, [(lo, hi)])` runs, `hi` exclusive.
 pub type AddrSet = (u16, bool, Vec<(u32, u32)>);
 
@@ -336,6 +340,9 @@ pub struct Program {
     /// Address sets of data accesses through pointers or with several addresses, as
     /// `(pc, store, [(lo, hi)])` runs (`hi` exclusive).
     pub addr_sets: Vec<AddrSet>,
+    /// Address hulls of the loads through pointers and cell operands while the program's
+    /// table loads stay inside their extents ([`Reach`], one per load of the instruction).
+    pub reach: Vec<Reach>,
     /// Volatile ranges `[lo, hi)`.
     pub volatile: Vec<(u32, u32)>,
     /// Runs `[lo, hi)` of the bytes stores with address sets may write.

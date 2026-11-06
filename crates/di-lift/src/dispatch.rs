@@ -218,6 +218,13 @@ impl Objects {
             columns,
         }
     }
+    /// Base `b` and the bases the code reads with the same index value: one table's columns.
+    pub(crate) fn table_of(&self, b: u16) -> Vec<u16> {
+        let mut t = vec![b];
+        t.extend(self.columns.get(&b).into_iter().flatten());
+        t.sort_unstable();
+        t
+    }
     /// The first address from `s` on that holds an instruction byte or lies past the loaded
     /// program, or past `s` at which the code starts accessing a base other than `bases`.
     fn end(&self, s: u32, bases: &[u16]) -> u32 {
@@ -235,7 +242,7 @@ impl Objects {
     /// extent: from its first byte to its end ([`Objects::end`], the table's other columns,
     /// those the code reads with the same index value too, not counted), and no byte another
     /// column read at an earlier value. A prefix of `xs`.
-    fn valid(&self, bases: &[u16], xs: &[u8]) -> usize {
+    pub(crate) fn valid(&self, bases: &[u16], xs: &[u8]) -> usize {
         let Some(&x0) = xs.first() else { return 0 };
         let mut same = bases.to_vec();
         for b in bases {
@@ -437,6 +444,11 @@ pub(crate) fn vectors(
         vecs: Vec::new(),
         observed: FixedBitSet::new(),
         constant: FixedBitSet::new(),
+        clip: FxHashMap::default(),
+        bound: Vec::new(),
+        stored: Vec::new(),
+        after: Vec::new(),
+        init: 0,
     };
     let mut v: Vec<u16> = vars
         .iter()
@@ -1285,6 +1297,11 @@ pub(crate) struct Walk {
 }
 
 impl Walk {
+    /// The bytes the run stored at exact addresses and their values.
+    pub(crate) fn known(&self) -> FxHashMap<u16, u8> {
+        self.mem.clone()
+    }
+
     pub(crate) fn new(e: &crate::analysis::Entry, entry_sp: Option<u8>) -> Self {
         let mut env = TOP_ENV;
         for (r, vs) in &e.regs {

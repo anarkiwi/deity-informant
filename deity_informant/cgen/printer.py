@@ -259,7 +259,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         self.addr_edges, self.arg_src, self.arg_block, self.dead = set(), {}, {}, set()
         self.flags = set()
         self.kparam, self.kvals, self.ktabs, self.kmemo, self.kiv = None, None, {}, {}, {}
-        self.kptrs = {}
+        self.kptrs, self.wide = {}, {}
         self.index()
         self.idom = self.dominators()
         self.live_args = list(range(len(self.blocks[0].args)))
@@ -1356,12 +1356,27 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         for i, a in enumerate(o.args):
             if (id(o), i) in self.dead or a in self.globals:
                 continue
+            if i == addr and id(o) in self.wide and self.base_index(o) is not None:
+                out.extend(self.base_index(o))
+                continue
             if i == addr:
                 a = self.split(self.address(o) if o.name != "func.call" else a)[1]
                 if a is None:
                     continue
             out.append(a)
         return out
+
+    def base_index(self, o):
+        """``(base, index)`` values of the address of access ``o`` when it is a 16-bit value
+        plus a zero-extended byte, else None."""
+        d = self.defs.get(self.address(o))
+        if d is None or d.name != "arith.addi":
+            return None
+        for b, i in (d.args, d.args[::-1]):
+            e = self.defs.get(i)
+            if e is not None and e.name == "arith.extui" and self.width(e.args[0]) == 8:
+                return b, e.args[0]
+        return None
 
     def printed(self, o):
         """Whether operation ``o`` prints: an effect, or a value something uses."""
@@ -1630,14 +1645,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
     def base_index(self, o):
         """``(base, index)`` values of the address of access ``o`` when it is a 16-bit value
         plus a zero-extended byte, else None."""
-        d = self.f.defs.get(self.f.address(o))
-        if d is None or d.name != "arith.addi":
-            return None
-        for b, i in (d.args, d.args[::-1]):
-            e = self.f.defs.get(i)
-            if e is not None and e.name == "arith.extui" and self.f.width(e.args[0]) == 8:
-                return b, e.args[0]
-        return None
+        return self.f.base_index(o)
 
     def base_tests(self, o, how):
         """Per choice of a pointer access ``o`` over regions and spans (``how``), a test of its
@@ -1695,6 +1703,11 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         mem = self.mod.mem
         if o.name == "func.call" and mem.is_volatile(lo, hi):
             return ("io",)
+        run = self.f.wide.get(id(o))
+        if run is not None:
+            j = mem.held_span(*run, wide=True)
+            if j is not None:
+                return ("checked", "held", j)
         place = self.f.place(o)
         if place is not None:
             return place
@@ -1774,6 +1787,8 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         if how[0] in ("region", "held"):
             return self.mem_ref(o, how[-1], how[0] == "held")
         a = self.addr(self.f.address(o))
+        if how[0] == "checked":
+            return self.checked(o, how[2], a)
         if how[0] == "set":
             choices = self.mod.choices(
                 how[1], how[2], a.text, self.indexed(o), self.base_tests(o, how)
@@ -1784,6 +1799,25 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         fn = "oob_rd" if how[0] == "code" else "rd"
         self.mod.helpers.add(fn)
         return E(f"{fn}({a.text})", 16, "", 0, 255, False, True, a.refs)
+
+    def checked(self, o, j, a):
+        """Pointer load ``o`` of address ``a`` (an expression) through held span ``j``'s
+        bounds-checked reader ``rdCj(base, index)``: the address as a 16-bit base plus a byte
+        (an index value, or a constant below 256), as ``(zp),Y`` forms it."""
+        self.mod.used.add("CODE")
+        self.mod.spans_used.add(j)
+        self.mod.checked.add(j)
+        bi = self.base_index(o)
+        if bi is not None:
+            base, idx = self.addr(bi[0]), self.ex(bi[1])
+        else:
+            c, rest = self.split(self.f.address(o))
+            if rest is not None and self.f.width(rest) == 16 and 0 < c < 0x100:
+                base, idx = self.ex(rest), lit(c, 8)
+            else:
+                base, idx = a, lit(0, 8)
+        refs = join(base, idx)["refs"]
+        return E(f"rdC{j}({base.text}, {idx.text})", 16, "", 0, 255, False, True, refs)
 
     def build(self, o):  # pylint: disable=too-many-return-statements
         """The C expression of the single-result pure operation ``o``."""
@@ -2482,6 +2516,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.order, self.edges, self.ids, self.entries = [], {}, new_ids(), []
         self.sites, self.made, self.lifted, self.prov = {}, Counter(), {}, {}
         self.copy_pcs, self.sets, self.kpos, self.tables = {}, {}, None, {}
+        self.reach, self.checked = {}, set()
         self.inert = set()
         for o in top.regions[0][0].ops:
             if o.name == "func.func" and o.regions[0] and o.regions[0][0].ops:
@@ -2582,12 +2617,27 @@ class Module:  # pylint: disable=too-many-instance-attributes
             f.reindex()
             f.fold_offsets()
 
+    def reach_of(self, f, o):
+        """The lift's address hull of pointer load ``o`` of function ``f`` and its base's,
+        over every copy's instruction, or None."""
+        pcs = [q for q in self.copy_pcs.get(f.name, {}).get(o.pc, [o.pc]) if q]
+        hulls = [self.reach.get(q) for q in pcs]
+        if not hulls or None in hulls:
+            return None
+        return tuple(m(h[i] for h in hulls) for i, m in enumerate((min, max, min, max)))
+
     def partition(self):
-        """Partition memory by the accesses of every function."""
-        ranges, stores, unknown, joined = [], set(), False, []
+        """Partition memory by the accesses of every function: a pointer load of unknown
+        address whose hull the lift bounds reads the run :meth:`Memory.pointer_run` gives."""
+        ranges, stores, unknown, joined, ptrs = [], set(), False, [], []
         for f in self.funcs:
+            f.wide = {}
             for o, (lo, hi), per in f.accesses():
                 if id(o) in f.dropped:
+                    continue
+                hull = self.reach_of(f, o) if o.name == "memref.load" else None
+                if hull is not None and hi - lo >= regions.BOUNDED:
+                    ptrs.append((f, o, hull, (lo, hi)))
                     continue
                 ranges.append((lo, hi))
                 if o.name == "memref.store" and lo == hi:
@@ -2596,7 +2646,20 @@ class Module:  # pylint: disable=too-many-instance-attributes
                     joined.append((lo, hi))
                 write = o.name == "memref.store" or o.prop("callee") == "@io_write"
                 unknown |= write and hi - lo >= regions.BOUNDED
-        self.mem.partition(ranges, sorted(stores), unknown, joined)
+        touched = np.zeros(0x10000, dtype=bool)
+        for lo, hi in [r for r in ranges if r[1] - r[0] < regions.BOUNDED] + [
+            (a, b - 1) for a, b in self.mem.written
+        ]:
+            touched[lo : hi + 1] = True
+        wide = []
+        for f, o, hull, r in ptrs:
+            run = self.mem.pointer_run(hull, touched)
+            if run is None:
+                ranges.append(r)
+            else:
+                f.wide[id(o)] = run
+                wide.append(run)
+        self.mem.partition(ranges, sorted(stores), unknown, joined + wide, wide)
 
     def owners(self, runs, held):
         """``(regions, held spans)`` the address ``runs`` (``[(lo, hi)]``, ``hi`` exclusive)
