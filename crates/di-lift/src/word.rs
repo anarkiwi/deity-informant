@@ -20,7 +20,7 @@
 //! image: a least fixpoint over the rounds of the reach pass, from floors that hold no value.
 
 use crate::analysis::{Access, Iv};
-use crate::vsa::{Code, St, Sym, DATA, MEM};
+use crate::vsa::{Code, Ix, St, Sym, Tab, DATA, MEM, NOREG};
 use di_pcode::reg;
 
 /// The greatest value a pair may be taken to hold: unbounded above.
@@ -194,10 +194,55 @@ fn byte(code: &Code, st: &St, a: u16) -> Iv {
         .unwrap_or(Iv::full(1))
 }
 
-/// The pair's value from its bytes' intervals.
+/// The pair's value from its bytes' intervals, or from the words of the tables they hold
+/// ([`tabled`]).
 fn derived(code: &Code, st: &St, q: u16) -> Wv {
-    let (l, h) = (byte(code, st, q), byte(code, st, q.wrapping_add(1)));
-    Wv::plain(h.lo << 8 | l.lo, h.hi << 8 | l.hi, q)
+    tabled(code, st, q).unwrap_or_else(|| {
+        let (l, h) = (byte(code, st, q), byte(code, st, q.wrapping_add(1)));
+        Wv::plain(h.lo << 8 | l.lo, h.hi << 8 | l.hi, q)
+    })
+}
+
+/// The hull of the words pair `q` holds when its two bytes hold table bytes indexed by one
+/// value (one index register, still its value or one group): per index value both loads
+/// read (`Code::clip`, the register's values when it still holds the index), the word of
+/// the two bytes, each holding its entry byte alone.
+fn tabled(code: &Code, st: &St, q: u16) -> Option<Wv> {
+    let tag = |a: u16| st.mem.iter().find(|e| e.0 == a)?.1;
+    let (
+        Tab::T {
+            pc: p0,
+            op: o0,
+            reg: r,
+            ix,
+        },
+        Tab::T {
+            pc: p1,
+            op: o1,
+            reg: r1,
+            ix: ix1,
+        },
+    ) = (tag(q)?, tag(q.wrapping_add(1))?)
+    else {
+        return None;
+    };
+    if r == NOREG || (r, ix) != (r1, ix1) || ix == Ix::Lost {
+        return None;
+    }
+    let (c0, c1) = (code.clip.get(&p0)?, code.clip.get(&p1)?);
+    let live = (ix == Ix::Live).then(|| st.vals(r as usize));
+    let (mut lo, mut hi) = (u32::MAX, 0);
+    for x in (0..=0xff_u8).filter(|&x| live.is_none_or(|v| v.has(x as u32))) {
+        let a0 = crate::dispatch::load_addr(code, p0, o0, r, x)?;
+        let a1 = crate::dispatch::load_addr(code, p1, o1, r, x)?;
+        if c0.binary_search(&a0).is_err() || c1.binary_search(&a1).is_err() {
+            continue;
+        }
+        let at = |a: u16| code.byte(a as u32, st).and_then(Iv::value);
+        let w = at(a1)? << 8 | at(a0)?;
+        (lo, hi) = (lo.min(w), hi.max(w));
+    }
+    (lo <= hi).then(|| Wv::plain(lo, hi, q))
 }
 
 /// The value of pair `q` no instruction since the entry stored: its bytes' hull from its floor.

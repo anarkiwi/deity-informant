@@ -36,6 +36,7 @@ facts = trace.collect(state, lambda s: [s.call(play) for _ in range(3000)])
 prog = wholeprog.lift(state, [play], volatile=[(lo, hi)], facts=facts)   # cycles=False
 prog = wholeprog.lift(image, [init, play], volatile, entry_sp=0xFD, loaded=(lo, hi))  # static
 prog = wholeprog.lift(image, [init, play], volatile, entry_sp=0xFD, loaded=(lo, hi), init=0)
+prog = wholeprog.lift(image, [(init, {"a": range(3)}), play], ...)  # entry registers' values
 # sensitive=[addr, ...]: the volatile reads with effects; other throw-away reads are not made
 prog.functions        # [{"pc", "entry", "recursive", "blocks": [{"pc", "ops"}], "tables", "closed",
                       #   "copies", "copy_pcs"}]: copy_pcs per merged instruction each copy's pc
@@ -51,9 +52,11 @@ prog.starts           # [pc, ...] instruction starts the functions plan (every i
 prog.addr_sets        # {(pc, store): [(lo, hi), ...]} address sets of pointer accesses
 prog.reach            # {pc: (lo, hi, base_lo, base_hi)} pointer loads' hulls (*Pointer reach*;
                       #   hi past $FFFF: a pointer advanced without bound)
+prog.proven           # the hulls of reach that hold on every run (*Pointer reach*)
+prog.fresh            # [(lo, hi), ...] runs of the bytes init stores before any read of them
 prog.bounds           # {address: (lo, hi)} bytes whose every store has an exact address
 prog.guard_evals      # conditional branches to a deopt the interpreter backend has run
-prog.init             # init=: {"index", "entry", "pc", "image", "stores", "regs", "code"} or None
+prog.init             # init=: {"index", "entry", "pc", "image", "io", "stores", "regs", "code"}
 r = prog.call(mem, 0, a=0, reg=None, cycles=0, max_cycles=10_000_000, log=True)  # backend=
 prog.backend          # "jit" (default) or "interp"; prog.compile() -> compile seconds
 r["reg"], r["pc"], r["cycles"], r["halt"], r["deopt"], r["log"]
@@ -322,10 +325,20 @@ where that memory and the registers are a function of the image alone:
 - every register (`A`, `X`, `Y`, the flags) the path wrote known;
 - every byte it stored outside page 1 known, or a register the path never wrote (the
   entry's input, as a song number in `A`, stored as it came);
-- no access to a volatile range and no store above the entry SP on the way.
+- every write to a volatile range of a known value at a known address, no read of one but a
+  throw-away read reaching no `sensitive` address, and no store above the entry SP on the way.
+
+An init entry declared with several values of `A` (its songs) runs the path once per value,
+in lockstep, and folds where every run is foldable at one pc with the same registers and
+volatile writes, each byte it stored holding one value in every run or each run's `A` (the
+song stored as it came); where the runs differ the fold stops, and the reach pass (*Pointer
+reach*) runs init once per song past it. With one declared value the path knows `A`.
 
 The lift is then of the image with the path's known bytes in place, its init entry at the
-fold point: the entry first makes the path's stores of its input registers (a byte so stored
+fold point: the entry first checks the declared values of the registers the path read as it
+found them or never wrote (the fold holds for those values), makes the path's volatile writes in
+order (a run of one value to consecutive addresses a loop counting in a register the entry
+then sets), then the path's stores of its input registers (a byte so stored
 is written outside the lifted code, like a byte the facts saw written: a cell, never a
 constant), then sets the registers the path wrote, and runs on. A byte only the path writes
 is a constant of every entry, so operands a relocator patched are constant code and their
@@ -353,7 +366,7 @@ and first, it gives the reference's accesses and memory (but dead stack bytes be
 | A zero-page pointer pair that accesses rely on stays outside the window of their indices (*Pointer windows*) | an entry reads back the pairs some access reads before every path to it stores their high byte; a store that may write a byte of one and may leave it in its window reads the pair back after the instruction, a pair's two stores on one instruction chain once after the second (`stats["ptr_guards"]`) | deopt at the entry; deopt after the store |
 | An access that may reach page 1 (by its address interval) does not, while stack bytes are kept out of memory | the address's page is compared with 1 before the access (`stats["stack_guards"]`); with `entry_sp`, only a store that may hit the *Stack extent*, against it | deopt before the instruction |
 | A callee that may store into page 1 returns to its caller (stack not private) | the return-address bytes are compared after `CALL` | deopt at the address the `RTS` pulled |
-| Entry register value | compare at entry | deopt at the entry |
+| Entry register value (its declared values) | compare at entry: one value, a range check for a run of values, else a test of each | deopt at the entry |
 | The decimal flag is clear at an entry (unless the entry declares `d`) | compare at entry | deopt at the entry |
 | Entry SP of a specialized entry (`stats["sp_guards"]`) | compare at entry | deopt at the entry |
 | The port registers an entry was always called with (banked) | compare at entry; restated so later configurations fold | deopt at the entry |
@@ -572,11 +585,18 @@ the facts, so a proof holds on every execution that stays in lifted code.
   byte every path since the entry stored, of those values alone; a byte every run of the init
   entry stores (one run per value of `A` whose loads stay inside those extents, each decided
   from the entry to its `RTS`), the values the runs leave in place of its entry byte, for
-  states not reached from the init entry. Loads take a byte's hull where it is not tracked.
+  states not reached from the init entry (one run per value of `A` the init entry declares,
+  every value when none). Loads take a byte's hull where it is not tracked. A store whose index
+  register holds a value set writes the addresses of its values alone.
   Starting from no hulls, each round of the pass gives hulls that hold of every run, met
   with the last round's, until a round changes none. The pass changes no lifted code: the
   hulls hold only for runs that keep those assumptions (cgen reads past them through
-  `oob_rd`). It runs once, on the program discovery settles on, and refines the domain:
+  `oob_rd`). It runs again with none (`Program.proven`): an indexed access reaches every byte
+  its index set gives and the init entry's runs are those of its declared songs, so those
+  hulls hold on every run. The runs also give `Program.fresh`: the bytes (outside page 1 and
+  the volatile ranges) every run stores before it reads them, when every run is decided;
+  nothing reads them before init stores them. Both passes run once, on the program discovery
+  settles on, and refine the domain:
   - *Value sets.* `A`, `X` and `Y` keep the set of values a load of constant bytes gives them
     (the table's bytes at the index register's values, inside the extent), through transfers
     and constant offsets. A conditional branch cuts the set of the register its flag tests
@@ -588,7 +608,8 @@ the facts, so a proof holds on every execution that stays in lifted code.
     of the pair's low byte stored back into it owes the high byte the carry until the branch
     on the carry and an `INC` of the high byte (or an `ADC #0` of it stored there) settle it,
     and a pair whose two bytes are stored from the two bytes of one pair or sum holds that
-    value; any other store gives a pair its bytes' hull. A value past `$FFFF` is a pointer
+    value; any other store gives a pair its bytes' hull, or, where its bytes hold table bytes
+    indexed by one value, the hull of the words of the index values both loads read. A value past `$FFFF` is a pointer
     walked past the top of memory, which reads out of bounds. A pair no instruction since
     the entry stored holds at least its floor: the least value every return of an entry
     leaves (of the init entry, its image value where its run stores none; with no init

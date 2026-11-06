@@ -1724,7 +1724,8 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
                 return ("region", regs[0]) if regs else ("held", spans[0])
             if self.pointer(o):
                 return ("set", regs, spans)
-        return ("any",)
+        found = None if store else mem.bounded(lo, hi)
+        return ("any",) if found is None else ("bounded", *found)
 
     def pointer(self, o):
         """Whether access ``o``'s address is a constant plus a value no byte extends: a
@@ -1782,13 +1783,23 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         return E(f"{name}[{sub.text}]", 16, "", 0, 255, False, True, sub.refs)
 
     def load(self, o):
-        """The C expression of a memory load ``o``."""
+        """The C expression of a memory load ``o``: of a constant byte at a fixed address, its
+        name in the ``.h`` (:meth:`Module.konst`)."""
+        lo, hi = self.f.iv(self.f.address(o))
+        if lo == hi and self.mod.mem.constant[lo] and not self.mod.mem.vol[lo]:
+            name = self.mod.konst(lo)
+            if name is not None:
+                return E(name, 16, "", 0, 255, False, False)
         how = self.target(o)
         if how[0] in ("region", "held"):
             return self.mem_ref(o, how[-1], how[0] == "held")
         a = self.addr(self.f.address(o))
         if how[0] == "checked":
             return self.checked(o, how[2], a)
+        if how[0] == "bounded":
+            ((test, el),) = self.mod.choices(how[1], how[2], a.text, self.indexed(o))
+            self.mod.helpers.add("oob_rd")
+            return E(f"({test} ? {el} : oob_rd({a.text}))", 16, "", 0, 255, False, True, a.refs)
         if how[0] == "set":
             choices = self.mod.choices(
                 how[1], how[2], a.text, self.indexed(o), self.base_tests(o, how)
@@ -1803,10 +1814,13 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
     def checked(self, o, j, a):
         """Pointer load ``o`` of address ``a`` (an expression) through held span ``j``'s
         bounds-checked reader ``rdCj(base, index)``: the address as a 16-bit base plus a byte
-        (an index value, or a constant below 256), as ``(zp),Y`` forms it."""
+        (an index value, or a constant below 256), as ``(zp),Y`` forms it; the span's element
+        there where the lift proves the address inside it."""
         self.mod.used.add("CODE")
         self.mod.spans_used.add(j)
-        self.mod.checked.add(j)
+        sure = id(o) in self.f.sure
+        if not sure:
+            self.mod.checked.add(j)
         bi = self.base_index(o)
         if bi is not None:
             base, idx = self.addr(bi[0]), self.ex(bi[1])
@@ -1817,6 +1831,12 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             else:
                 base, idx = a, lit(0, 8)
         refs = join(base, idx)["refs"]
+        if sure:
+            self.mod.used.add("CGEN_IX")
+            org = self.mod.mem.held[j][0]
+            off = binary("-", 12, base, E(f"C{j}_ORG", lo=org, hi=org, uns=True), 16)
+            text = f"CGEN_IX(C{j}, {off.text}, {clean(idx, 8).text})"
+            return E(text, 16, "", 0, 255, False, True, refs)
         return E(f"rdC{j}({base.text}, {idx.text})", 16, "", 0, 255, False, True, refs)
 
     def build(self, o):  # pylint: disable=too-many-return-statements
@@ -2516,7 +2536,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.order, self.edges, self.ids, self.entries = [], {}, new_ids(), []
         self.sites, self.made, self.lifted, self.prov = {}, Counter(), {}, {}
         self.copy_pcs, self.sets, self.kpos, self.tables = {}, {}, None, {}
-        self.reach, self.checked = {}, set()
+        self.reach, self.proven, self.checked, self.konsts = {}, {}, set(), {}
         self.inert = set()
         for o in top.regions[0][0].ops:
             if o.name == "func.func" and o.regions[0] and o.regions[0][0].ops:
@@ -2617,21 +2637,22 @@ class Module:  # pylint: disable=too-many-instance-attributes
             f.reindex()
             f.fold_offsets()
 
-    def reach_of(self, f, o):
+    def reach_of(self, f, o, hulls=None):
         """The lift's address hull of pointer load ``o`` of function ``f`` and its base's,
-        over every copy's instruction, or None."""
+        over every copy's instruction (from ``hulls``, default :attr:`reach`), or None."""
         pcs = [q for q in self.copy_pcs.get(f.name, {}).get(o.pc, [o.pc]) if q]
-        hulls = [self.reach.get(q) for q in pcs]
+        hulls = [(self.reach if hulls is None else hulls).get(q) for q in pcs]
         if not hulls or None in hulls:
             return None
         return tuple(m(h[i] for h in hulls) for i, m in enumerate((min, max, min, max)))
 
     def partition(self):
         """Partition memory by the accesses of every function: a pointer load of unknown
-        address whose hull the lift bounds reads the run :meth:`Memory.pointer_run` gives."""
-        ranges, stores, unknown, joined, ptrs = [], set(), False, [], []
+        address whose hull the lift bounds reads the run :meth:`Memory.pointer_run` gives,
+        unchecked where the hull the lift proves lies in it (``f.sure``)."""
+        ranges, stores, unknown, joined, ptrs, writes = [], set(), False, [], [], []
         for f in self.funcs:
-            f.wide = {}
+            f.wide, f.sure = {}, set()
             for o, (lo, hi), per in f.accesses():
                 if id(o) in f.dropped:
                     continue
@@ -2646,6 +2667,8 @@ class Module:  # pylint: disable=too-many-instance-attributes
                     joined.append((lo, hi))
                 write = o.name == "memref.store" or o.prop("callee") == "@io_write"
                 unknown |= write and hi - lo >= regions.BOUNDED
+                if write and hi - lo < regions.BOUNDED:
+                    writes.append((lo, hi))
         touched = np.zeros(0x10000, dtype=bool)
         for lo, hi in [r for r in ranges if r[1] - r[0] < regions.BOUNDED] + [
             (a, b - 1) for a, b in self.mem.written
@@ -2653,13 +2676,17 @@ class Module:  # pylint: disable=too-many-instance-attributes
             touched[lo : hi + 1] = True
         wide = []
         for f, o, hull, r in ptrs:
+            sure = self.reach_of(f, o, self.proven)
             run = self.mem.pointer_run(hull, touched)
+            if sure is not None and self.mem.pointer_run(sure, touched, True) is not None:
+                run = sure[:2]
+                f.sure.add(id(o))
             if run is None:
                 ranges.append(r)
-            else:
-                f.wide[id(o)] = run
-                wide.append(run)
-        self.mem.partition(ranges, sorted(stores), unknown, joined + wide, wide)
+                continue
+            f.wide[id(o)] = run
+            wide.append(run)
+        self.mem.partition(ranges, sorted(stores), unknown, joined + wide, wide, writes)
 
     def owners(self, runs, held):
         """``(regions, held spans)`` the address ``runs`` (``[(lo, hi)]``, ``hi`` exclusive)
@@ -2701,6 +2728,21 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 el = f"{n}[{off}]"
             out.append((f"{off} < {n}_LEN", el))
         return out if tests is None else [(t, e) for t, (_, e) in zip(tests, out)]
+
+    def konst(self, addr):
+        """The ``.h`` name of the constant byte at ``addr``, relative to the origin it is
+        placed by (so the ``.c`` holds neither its value nor its address), or None outside
+        the program."""
+        sym, off = self.mem.base(addr)
+        if sym is None:
+            return None
+        name = f"{sym[:-4]}_K{off:X}"
+        self.konsts[name] = self.mem.image[addr]
+        if sym == "CODE_ORG":
+            self.used.add("CODE_ORG")
+        elif sym == "IMG_ORG":
+            self.used.add("IMG_ORG")
+        return name
 
     def table(self, width, vals):
         """The name of the constant table of ``vals`` (``width`` bits), named on first use."""

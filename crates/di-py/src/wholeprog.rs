@@ -445,6 +445,16 @@ type PyJob<'py> = (
     Option<Bound<'py, PyDict>>,
 );
 
+/// ``{pc: (lo, hi, base_lo, base_hi)}`` of `r`, each the hull over the instruction's loads.
+fn hulls(r: &[di_lift::ir::Reach]) -> HashMap<u16, (u32, u32, u32, u32)> {
+    let mut m: HashMap<u16, (u32, u32, u32, u32)> = HashMap::new();
+    for &(pc, lo, hi, blo, bhi) in r {
+        let e = m.entry(pc).or_insert((lo, hi, blo, bhi));
+        *e = (e.0.min(lo), e.1.max(hi), e.2.min(blo), e.3.max(bhi));
+    }
+    m
+}
+
 fn entries(e: Vec<PyEntry>) -> Vec<Entry> {
     e.into_iter()
         .map(|(pc, regs)| Entry {
@@ -788,6 +798,14 @@ impl Program {
         self.prog.written.clone()
     }
 
+    /// Runs ``[(lo, hi)]`` (``hi`` exclusive) of the bytes every run of the init entry (one per
+    /// ``A`` it is declared with) stores before any read of them: no other entry runs before
+    /// it, so their contents before it runs are never read.
+    #[getter]
+    fn fresh(&self) -> Vec<(u32, u32)> {
+        self.prog.fresh.clone()
+    }
+
     /// Address sets of data accesses through pointers or with several addresses:
     /// ``{(pc, store): [(lo, hi), ...]}`` runs, ``hi`` exclusive.
     #[getter]
@@ -804,12 +822,14 @@ impl Program {
     /// ``{pc: (lo, hi, base_lo, base_hi)}``, each the hull over the instruction's loads.
     #[getter]
     fn reach(&self) -> HashMap<u16, (u32, u32, u32, u32)> {
-        let mut m: HashMap<u16, (u32, u32, u32, u32)> = HashMap::new();
-        for &(pc, lo, hi, blo, bhi) in &self.prog.reach {
-            let e = m.entry(pc).or_insert((lo, hi, blo, bhi));
-            *e = (e.0.min(lo), e.1.max(hi), e.2.min(blo), e.3.max(bhi));
-        }
-        m
+        hulls(&self.prog.reach)
+    }
+
+    /// The hulls of ``reach`` that hold on every run: no table load taken to stay inside its
+    /// extent, the init entry run for each ``A`` it is declared with.
+    #[getter]
+    fn proven(&self) -> HashMap<u16, (u32, u32, u32, u32)> {
+        hulls(&self.prog.proven)
     }
 
     /// Bytes every store into which has an exact address and a bounded value:
@@ -835,10 +855,11 @@ impl Program {
         self.prog.entries.iter().map(|e| e.0).collect()
     }
 
-    /// The folded init entry (``init=``), or None: ``{"index", "entry", "pc", "image",
+    /// The folded init entry (``init=``), or None: ``{"index", "entry", "pc", "image", "io",
     /// "stores", "regs", "code"}``: its index and pc, where the folded entry starts, the
     /// ``(address, byte)`` pairs of the starting memory over the image, the
-    /// ``(address, value)`` stores the folded entry makes (``value`` a
+    /// ``(address, byte)`` volatile writes the folded entry makes first, in order, the
+    /// ``(address, value)`` stores it makes (``value`` a
     /// byte, or ``("r", r)``: register ``r`` as the entry found it), the
     /// ``(register, value)`` pairs it sets and the ``(pc, length)`` of the instructions the
     /// folded path ran that are constant code of the program.
@@ -852,6 +873,7 @@ impl Program {
         d.set_item("entry", f.entry)?;
         d.set_item("pc", f.pc)?;
         d.set_item("image", f.image.clone())?;
+        d.set_item("io", f.io.clone())?;
         let stores = PyList::empty(py);
         for &(a, v) in &f.pre {
             let v = match v {

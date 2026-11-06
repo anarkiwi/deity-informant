@@ -343,10 +343,14 @@ pub struct Program {
     /// Address hulls of the loads through pointers and cell operands while the program's
     /// table loads stay inside their extents ([`Reach`], one per load of the instruction).
     pub reach: Vec<Reach>,
+    /// The hulls of `reach` that hold on every run.
+    pub proven: Vec<Reach>,
     /// Volatile ranges `[lo, hi)`.
     pub volatile: Vec<(u32, u32)>,
     /// Runs `[lo, hi)` of the bytes stores with address sets may write.
     pub written: Vec<(u32, u32)>,
+    /// Runs `[lo, hi)` of the bytes every run of the init entry stores before it reads them.
+    pub fresh: Vec<(u32, u32)>,
     /// The instruction starts the functions plan (every copy's of an instance function),
     /// ascending.
     pub starts: Vec<u16>,

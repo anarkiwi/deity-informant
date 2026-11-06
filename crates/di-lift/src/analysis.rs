@@ -10,14 +10,16 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// An entry point and optional live-in register values (`lift()` register index, values),
-/// guarded at entry. A folded entry ([`crate::fold`]) first makes the stores `pre` (byte
-/// address, value) and then assigns the registers `set`.
+/// guarded at entry. A folded entry ([`crate::fold`]) first makes the volatile writes `io`
+/// (address, value) in order, then the stores `pre` (byte address, value), and then assigns
+/// the registers `set`.
 #[derive(Clone, Debug, Default)]
 pub struct Entry {
     pub pc: u16,
     pub regs: Vec<(usize, Vec<u8>)>,
     pub set: Vec<(usize, u8)>,
     pub pre: Vec<(u16, Val)>,
+    pub io: Vec<(u16, u8)>,
 }
 
 /// A byte an entry stores before its first instruction: a constant, or the value a register
@@ -570,7 +572,15 @@ pub struct Graph {
     /// Address hulls of the loads through pointers and cell operands while table loads stay
     /// inside their extents ([`crate::vsa`]'s `reach`) and of their bases, by `(pc, opcode,
     /// access index)`.
-    pub reach: FxHashMap<(u16, u8, usize), (Iv, Iv)>,
+    pub reach: crate::vsa::Hulls,
+    /// The hulls of `reach` that hold on every run (no table load taken to stay inside its
+    /// extent).
+    pub proven: crate::vsa::Hulls,
+    /// The `RTS`/`RTI`s that jump through the address their code pushed.
+    pub disp: FxHashSet<u16>,
+    /// The bytes every run of the init entry stores before it reads them, when its runs are
+    /// decided ([`crate::vsa`]'s `init_left`).
+    pub fresh: Option<FixedBitSet>,
     /// Per instruction start the entries (bit `i % 64` for entry `i`) it is reached from.
     pub from: FxHashMap<u16, u64>,
     /// Instruction starts at which the decimal flag may be set.
@@ -836,7 +846,7 @@ pub fn discover(
         },
     };
     loop {
-        let (g, jumps) = fix.run();
+        let (mut g, jumps) = fix.run();
         // Bytes read as constant that a store with an address set may write are not.
         let mut w = g.written.clone();
         let bad: Vec<usize> = g
@@ -856,6 +866,7 @@ pub fn discover(
             .map(|(&pc, _)| pc)
             .collect();
         if failed.is_empty() {
+            fix.reach(&mut g);
             return g;
         }
         fix.failed.extend(failed);
@@ -883,20 +894,52 @@ struct Fixpoint<'a> {
 }
 
 impl Fixpoint<'_> {
+    /// The bytes the facts saw written and those the entries store.
+    fn observed(&self) -> FxHashMap<u16, BTreeSet<u8>> {
+        let mut observed: FxHashMap<u16, BTreeSet<u8>> = (self.facts.writes.iter())
+            .map(|(a, v)| (*a, v.iter().copied().collect()))
+            .collect();
+        for (a, v) in self.entries.iter().flat_map(Entry::stores) {
+            observed.entry(a).or_default().extend(v);
+        }
+        observed
+    }
+
+    /// The pointer reach of the program `g` the rounds settled on, when wanted.
+    fn reach(&self, g: &mut Graph) {
+        let Some(r) = self.reach else {
+            return;
+        };
+        let mut seen_writes = FixedBitSet::with_capacity(0x10000);
+        seen_writes.extend(self.observed().keys().map(|&a| a as usize));
+        let given = crate::vsa::Given {
+            loaded: self.loaded,
+            entry_sp: self.entry_sp,
+            observed: &seen_writes,
+            constant: &self.constant,
+            volatile: r.volatile,
+            reach: true,
+            init: r.init,
+        };
+        let an = crate::vsa::analyze(
+            &g.img,
+            &g.cells,
+            &mut g.vars,
+            self.entries,
+            self.matched,
+            &g.disp,
+            &given,
+        );
+        (g.reach, g.proven, g.fresh) = (an.reach, an.proven, an.fresh);
+    }
+
     fn run(&self) -> (Graph, FxHashMap<u16, crate::dispatch::Jump>) {
         let (img, entries, facts, bank) = (self.img, self.entries, self.facts, self.bank);
         let seen: FxHashMap<u16, u8> = match bank {
             Some(_) => facts.banks.iter().map(|(p, c)| (*p, c[0])).collect(),
             None => FxHashMap::default(),
         };
-        let mut observed: FxHashMap<u16, BTreeSet<u8>> = facts
-            .writes
-            .iter()
-            .map(|(a, v)| (*a, v.iter().copied().collect()))
-            .collect();
-        for (a, v) in entries.iter().flat_map(Entry::stores) {
-            observed.entry(a).or_default().extend(v);
-        }
+        let observed = self.observed();
         let mut seen_writes = FixedBitSet::with_capacity(0x10000);
         seen_writes.extend(observed.keys().map(|&a| a as usize));
         let mut cells = FixedBitSet::with_capacity(0x10000);
@@ -970,23 +1013,23 @@ impl Fixpoint<'_> {
                     })
                 })
                 .collect();
-            let given = |reach: bool| crate::vsa::Given {
+            let given = crate::vsa::Given {
                 loaded: self.loaded,
                 entry_sp: self.entry_sp,
                 observed: &seen_writes,
                 constant: &self.constant,
                 volatile: self.reach.map_or(&[], |r| r.volatile),
-                reach,
+                reach: false,
                 init: self.reach.and_then(|r| r.init),
             };
-            let mut an = crate::vsa::analyze(
+            let an = crate::vsa::analyze(
                 &cimg,
                 &cells,
                 &mut vars,
                 entries,
                 self.matched,
                 &disp,
-                &given(false),
+                &given,
             );
             let mut written: FxHashMap<u16, BTreeSet<u8>> = FxHashMap::default();
             for st in &an.stores {
@@ -1024,18 +1067,6 @@ impl Fixpoint<'_> {
                 }
             }
             if next == cells && nvalues == values && nstat == stat {
-                // The pointer reach of the program the rounds settled on.
-                if self.reach.is_some() {
-                    an = crate::vsa::analyze(
-                        &cimg,
-                        &cells,
-                        &mut vars,
-                        entries,
-                        self.matched,
-                        &disp,
-                        &given(true),
-                    );
-                }
                 let pull_clear = crate::vsa::pull_clear(&vars, entries);
                 let tables: BTreeSet<u16> = an
                     .jumps
@@ -1104,7 +1135,10 @@ impl Fixpoint<'_> {
                         .collect()
                 };
                 let g = Graph {
-                    reach: an.reach.clone(),
+                    reach: FxHashMap::default(),
+                    proven: FxHashMap::default(),
+                    fresh: None,
+                    disp,
                     vars,
                     cells,
                     code,
