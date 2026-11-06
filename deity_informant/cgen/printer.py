@@ -7,6 +7,7 @@ is made unsigned only where 16-bit ``int`` arithmetic could overflow.
 
 from __future__ import annotations
 
+import bisect
 import operator
 import re
 from collections import Counter
@@ -258,6 +259,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         self.addr_edges, self.arg_src, self.arg_block, self.dead = set(), {}, {}, set()
         self.flags = set()
         self.kparam, self.kvals, self.ktabs, self.kmemo, self.kiv = None, None, {}, {}, {}
+        self.kptrs = {}
         self.index()
         self.idom = self.dominators()
         self.live_args = list(range(len(self.blocks[0].args)))
@@ -405,6 +407,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         with the index, else as a constant table."""
         if self.kparam is None:
             return
+        self.kmerge()
         new = {}
         self.mark_addresses()
         for o in list(self.walk()):
@@ -428,6 +431,154 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         if new:
             self.reindex()
 
+    def kedges(self, blk):
+        """Per instance index the edge ``(terminator id, case)`` into block ``blk`` that the
+        index takes from ``blk``'s immediate dominator (None where it does not reach
+        ``blk``), when the index alone decides every branch on the way; else None."""
+        top = self.idom.get(blk)
+        if top is None or top == blk:
+            return None
+        out = []
+        for k in self.kvals.tolist():
+            env, memo, b, seen, edge = {self.kparam: np.int64(k)}, {}, top, set(), None
+            while b not in seen:
+                seen.add(b)
+                term = self.block_of[b].ops[-1]
+                es = term.edges()
+                if not es:
+                    break
+                try:
+                    c = int(self.evaluate(term.args[0], env, memo)) if len(es) > 1 else None
+                except Unknown:
+                    return None
+                if term.name == "cf.cond_br":
+                    e = es[0] if c else es[1]
+                elif term.name == "cf.switch":
+                    e = next((x for x in es[1:] if x[2] == c), es[0])
+                else:
+                    e = es[0]
+                if e[0] == blk:
+                    edge = (id(term), e[2])
+                    break
+                b = e[0]
+            else:
+                return None
+            out.append(edge)
+        return out
+
+    def kshape(self, v, blk, memo):
+        """The form of value ``v`` as seen from block ``blk``: ``("k", v)`` where it depends on
+        the instance index alone, ``("op", op, args)`` of a pure operation's operands' forms
+        (an equality of a difference with zero read as the equality of its operands), else
+        ``("v", v)`` where it is defined where ``blk`` is dominated; None otherwise (``memo``
+        holds the forms made)."""
+        if v not in memo:
+            memo[v] = self.kform(v, blk, memo)
+        return memo[v]
+
+    def kform(self, v, blk, memo):
+        """:meth:`kshape` of ``v``, made."""
+        if self.types.get(v) in ("i8", "i16") and self.kvec(v) is not None:
+            return ("k", v)
+        d = self.defs.get(v)
+        if d is None or len(d.res) != 1 or not d.name.startswith("arith."):
+            home = self.arg_block[v].name if d is None else self.where[id(d)][0].name
+            return ("v", v) if self.dominates(home, blk) else None
+        args = d.args
+        if d.name == "arith.cmpi" and d.int_prop("predicate") in (0, 1):
+            x = self.defs.get(args[0])
+            if x is not None and x.name == "arith.subi" and self.const_of(args[1]) == 0:
+                args = x.args
+        forms = [self.kshape(a, blk, memo) for a in args]
+        return None if None in forms else ("op", d, forms)
+
+    def kunify(self, forms, blk, entry, made):
+        """The value of the per-index ``forms`` (``[(index position, form)]``) alike up to
+        their per-index leaves: a value they share, the per-index leaves' values chosen by the
+        index (a constant where they agree, else an ``arith.kfam`` among the entry's new
+        operations ``entry``) or the operation of those, appended to ``made`` (``blk``'s new
+        operations); None where they differ."""
+        kinds = {f[0] for _, f in forms}
+        if len(kinds) != 1:
+            return None
+        kind = kinds.pop()
+        if kind != "op" and len({f[1] for _, f in forms}) == 1:
+            return forms[0][1][1]
+        if kind == "v":
+            return None
+        if kind == "k":
+            t = self.types[forms[0][1][1]]
+            if any(self.types[f[1]] != t for _, f in forms):
+                return None
+            vec = np.zeros(len(self.kvals), dtype=np.int64)
+            vec[:] = self.kvec(forms[0][1][1])[forms[0][0]]
+            for i, f in forms:
+                vec[i] = self.kvec(f[1])[i]
+            if (vec == vec[0]).all():
+                props = f"value = {vec[0]} : {t}"
+                return self.kop(entry, "arith.constant", [], t, None, props, prefix="%m")
+            offs = tuple(vec.tolist())
+            return self.kop(entry, "arith.kfam", [self.kparam], t, None, offs=offs, prefix="%m")
+        d, args = forms[0][1][1], []
+        if all(f[1] is d for _, f in forms) and self.dominates(self.where[id(d)][0].name, blk):
+            return d.res[0]
+        if len({(f[1].name, f[1].props, len(f[2])) for _, f in forms}) != 1:
+            return None
+        for j in range(len(forms[0][1][2])):
+            a = self.kunify([(i, f[2][j]) for i, f in forms], blk, entry, made)
+            if a is None:
+                return None
+            args.append(a)
+        res = f"%m{len(self.defs)}.{len(made)}"
+        made.append(Op(d.name, [res], args, d.props, [], d.types, pc=d.pc))
+        self.types[res] = d.types[1][0]
+        return res
+
+    def kmerge(self):
+        """Read each block argument the instance index alone chooses (every edge into its
+        block decided by the index from the block's immediate dominator, none a back edge)
+        whose values on those edges are alike up to per-index values, as the operation of
+        the values the index chooses: a compare some copies have (``CMP #k``) and the others'
+        zero test are then one compare with a per-copy value, ``v == k`` or a constant
+        table, as each copy's code compares."""
+        sub, entry = {}, {}
+        for blk in self.blocks[1:]:
+            srcs = [self.arg_src.get(v, []) for v, _ in blk.args]
+            if not blk.args or any(
+                self.dominates(blk.name, o.parent.name) for ss in srcs for o, _, _ in ss
+            ):
+                continue
+            edges = self.kedges(blk.name)
+            if edges is None:
+                continue
+            made, memo = [], {}
+            for (v, _), ss in zip(blk.args, srcs):
+                by = {(id(o), case): o.args[i] for o, i, case in ss}
+                if len(by) < 2:
+                    continue
+                forms = [
+                    (i, self.kshape(by[e], blk.name, memo)) for i, e in enumerate(edges) if e in by
+                ]
+                if not forms or any(f is None for _, f in forms):
+                    continue
+                n = len(made)
+                r = self.kunify(forms, blk.name, entry, made)
+                if r is None or r == v:
+                    del made[n:]
+                else:
+                    sub[v] = r
+            blk.ops[0:0] = made
+            for o in made:
+                o.parent = blk
+        if not sub:
+            return
+        self.blocks[0].ops[0:0] = entry.values()
+        for o in entry.values():
+            o.parent = self.blocks[0]
+        for o in self.walk():
+            o.args = [_resolve(sub, a) for a in o.args]
+        self.reindex()
+
     def kdefine(self, t, vec, out, pc, address):
         """The value ``vec`` (per instance index) of type ``t`` as new operations ``out``: the
         least value split off a 16-bit one or an ``address`` (it prints relative to its
@@ -446,12 +597,13 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             name = self.kop(out, "arith.addi", [c, name], t, pc)
         return name
 
-    def kop(self, out, name, args, t, pc, props="", offs=None):
+    def kop(self, out, name, args, t, pc, props="", offs=None, prefix="%k"):
         """The result of operation ``name`` of ``args`` (type ``t``) among the new operations
-        ``out`` (``{key: op}``), added unless there (``offs``: an ``arith.kfam``'s values)."""
+        ``out`` (``{key: op}``), added unless there (``offs``: an ``arith.kfam``'s values),
+        named ``prefix`` and its number."""
         key = (name, tuple(args), t, props, offs)
         if key not in out:
-            res = f"%k{len(out)}"
+            res = f"{prefix}{len(out)}"
             if offs is not None:
                 self.ktabs[res] = tab = np.zeros(int(self.kvals.max()) + 1, dtype=np.int64)
                 tab[self.kvals] = offs
@@ -459,6 +611,72 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             types = (tuple(self.types[a] for a in args), (t,))
             out[key] = Op(name, [res], list(args), props, [], types, pc=pc)
         return out[key].res[0]
+
+    def kpointers(self):
+        """Address the per-copy state of an instance whose per-copy offsets do not fit 8 bits
+        through per-copy pointers: the accesses at a 16-bit table's offsets from constants, in
+        one region or held span for each copy, are grouped by the table and the array; each
+        group's constants are covered by the fewest windows of 256 bytes, each window a
+        ``arith.kfam`` of the copies' addresses of its least constant (:attr:`kptrs`, a table of
+        pointers into the array) and every access in it that pointer plus a byte, as the
+        6502's ``(zp),Y`` reads a field at a base held per copy."""
+        if self.kparam is None:
+            return
+        groups = {}
+        for o in self.walk():
+            if o.name not in ("memref.load", "memref.store") or id(o) in self.dropped:
+                continue
+            if o.args[-2] not in self.globals:
+                continue
+            c, rest = self.split(self.address(o))
+            d = self.defs.get(rest)
+            if d is None or d.name != "arith.kfam" or self.width(rest) != 16:
+                continue
+            place = self.place(o)
+            if place is not None:
+                groups.setdefault((rest, place), []).append((c, o))
+        new = {}
+        for (rest, place), accs in groups.items():
+            starts = []
+            for c in sorted({c for c, _ in accs}):
+                if not starts or c - starts[-1] > 0xFF:
+                    starts.append(c)
+            per = self.ktabs[rest][self.kvals]
+            for c, o in accs:
+                s = starts[bisect.bisect_right(starts, c) - 1]
+                offs = tuple(int(x) for x in (s + per) & 0xFFFF)
+                ptr = self.kop(
+                    new, "arith.kfam", [self.kparam], "i16", o.pc, offs=offs, prefix="%p"
+                )
+                self.kptrs[ptr] = place
+                a = ptr
+                if c != s:
+                    k = self.kop(
+                        new,
+                        "arith.constant",
+                        [],
+                        "i16",
+                        o.pc,
+                        f"value = {c - s} : i16",
+                        prefix="%p",
+                    )
+                    a = self.kop(new, "arith.addi", [ptr, k], "i16", o.pc, prefix="%p")
+                idx = self.defs.get(o.args[-1])
+                if idx is not None and idx.name == "arith.index_castui":
+                    a = self.kop(new, "arith.index_castui", [a], "index", o.pc, prefix="%p")
+                self.uses[o.args[-1]] -= 1
+                o.args[-1] = a
+                self.uses[a] = self.uses.get(a, 0) + 1
+        entry = self.blocks[0]
+        entry.ops[0:0] = new.values()
+        for i, o in enumerate(entry.ops):
+            self.where[id(o)] = (entry, i)
+        for o in new.values():
+            o.parent = entry
+            self.defs[o.res[0]] = o
+            for a in o.args:
+                self.uses[a] = self.uses.get(a, 0) + 1
+                self.users.setdefault(a, []).append(o)
 
     def offset(self, v):
         """``(base, c)`` of a value ``base + c`` (an ``addi``/``subi`` of a constant), else
@@ -733,6 +951,30 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         idx = o.args[-1]
         d = self.defs.get(idx)
         return d.args[0] if d is not None and d.name == "arith.index_castui" else idx
+
+    def place(self, o):
+        """``("region", k)`` or ``("held", j)``: the one region (or, for a load or store, held
+        span) access ``o`` lies in, over all its addresses or, in an instance, for each copy's;
+        else None."""
+        mem, a = self.mod.mem, self.address(o)
+        lo, hi = self.iv(a)
+        direct = o.name in ("memref.load", "memref.store")
+        store = o.name != "memref.load"
+        k = mem.region(lo, hi)
+        if k is not None:
+            return ("region", k)
+        j = mem.held_span(lo, hi, store)
+        if j is not None and direct:
+            return ("held", j)
+        per = self.kivs(a)
+        if per:
+            ks = {mem.region(x, y) for x, y in per}
+            js = {mem.held_span(x, y, store) for x, y in per}
+            if len(ks) == 1 and None not in ks:
+                return ("region", ks.pop())
+            if len(js) == 1 and None not in js and direct:
+                return ("held", js.pop())
+        return None
 
     def accesses(self):
         """``[(op, (lo, hi), per)]`` of the memory accesses and I/O calls: the interval of
@@ -1340,7 +1582,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         if v not in self.names:
             self.nvar += 1
             self.names[v] = f"v{self.nvar}"
-            self.types[self.names[v]] = CTYPE[width]
+            self.types[self.names[v]] = "uint8_t *" if v in self.f.kptrs else CTYPE[width]
         return self.names[v]
 
     def fresh(self, width):
@@ -1453,23 +1695,12 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         mem = self.mod.mem
         if o.name == "func.call" and mem.is_volatile(lo, hi):
             return ("io",)
-        k = mem.region(lo, hi)
-        if k is not None:
-            return ("region", k)
-        j = mem.held_span(lo, hi, o.name != "memref.load")
-        if j is not None and o.name in ("memref.load", "memref.store"):
-            return ("held", j)
+        place = self.f.place(o)
+        if place is not None:
+            return place
         per = self.f.kivs(self.f.address(o))
-        if per:
-            store = o.name != "memref.load"
-            ks = {mem.region(a, b) for a, b in per}
-            js = {mem.held_span(a, b, store) for a, b in per}
-            if len(ks) == 1 and None not in ks:
-                return ("region", ks.pop())
-            if len(js) == 1 and None not in js and o.name in ("memref.load", "memref.store"):
-                return ("held", js.pop())
-            if o.name == "func.call" and all(mem.is_volatile(a, b) for a, b in per):
-                return ("io",)
+        if o.name == "func.call" and per and all(mem.is_volatile(a, b) for a, b in per):
+            return ("io",)
         if mem.is_code(lo, hi):
             return ("code",)
         store = o.name == "memref.store" or o.prop("callee") == "@io_write"
@@ -1499,6 +1730,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         org = self.mod.mem.held[k][0] if held else self.mod.mem.regions[k][0]
         a = self.f.address(o)
         c, rest = self.split(a)
+        if rest in self.f.kptrs:
+            p = self.ex(rest)
+            return E(f"{p.text}[{lit(c, 8).text}]", 16, "", 0, 255, False, True, p.refs)
         top = (1 << self.f.width(a)) - 1
         c &= top
         if rest is None:
@@ -1617,6 +1851,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         ``k`` (one indexed load, where a stride would be a multiplication)."""
         f, w = self.f, self.f.width(o.res[0])
         tab, k = f.ktabs[o.res[0]], self.ex(o.args[0])
+        if o.res[0] in f.kptrs:
+            name = self.mod.pointers(f.kptrs[o.res[0]], tab[f.kvals])
+            return E(f"{name}[{k.text}]", 16, "", 0, 0xFFFF, True, False, k.refs)
         m = (1 << w) - 1
         fit = line([(int(x), int(tab[x])) for x in f.kvals], m)
         if fit is None or fit[1] not in (1, m):
@@ -2404,10 +2641,24 @@ class Module:  # pylint: disable=too-many-instance-attributes
 
     def table(self, width, vals):
         """The name of the constant table of ``vals`` (``width`` bits), named on first use."""
-        key = (width, tuple(int(x) for x in vals))
+        key = (width, tuple(x if width == "ptr" else int(x) for x in vals))
         if key not in self.tables:
             self.tables[key] = f"K{len(self.tables)}"
         return self.tables[key]
+
+    def pointers(self, place, addrs):
+        """The name of the constant table of pointers to ``addrs`` in the region or held span
+        ``place``, named on first use."""
+        kind, j = place
+        if kind == "held":
+            self.used.add("CODE")
+            self.spans_used.add(j)
+            name, org = f"C{j}", self.mem.held[j][0]
+        else:
+            self.regions_used.add(j)
+            name, org = f"R{j}", self.mem.regions[j][0]
+        offs = [int(a) - org for a in addrs]
+        return self.table("ptr", [f"{name} + {lit(d, 16).text}" if d else name for d in offs])
 
     def ret_type(self, f):
         """The C return type of function ``f``'s live results: none, its one result, or with
@@ -2439,6 +2690,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         """Structure each function whole: a shared tail stays in its function (the lift makes
         the tails several functions share functions of their own)."""
         for f in self.funcs:
+            f.kpointers()
             f.mark_addresses()
             self.mains[f.name] = CFunc(f, f.graph(self.ids))
             self.mains[f.name].structure()
@@ -2475,10 +2727,12 @@ class Module:  # pylint: disable=too-many-instance-attributes
         for f in self.funcs:
             f.conds.close()
         out = [f"static {CTYPE[w]} rv{j};" for j, w in sorted(self.structs.items())]
-        out += [
-            f"static const {CTYPE[w]} {n}[] = {{{', '.join(lit(x, w).text for x in vals)}}};"
-            for (w, vals), n in self.tables.items()
-        ]
+        for (w, vals), n in self.tables.items():
+            if w == "ptr":
+                out.append(f"static uint8_t *const {n}[] = {{{', '.join(vals)}}};")
+            else:
+                items = ", ".join(lit(x, w).text for x in vals)
+                out.append(f"static const {CTYPE[w]} {n}[] = {{{items}}};")
         protos, kept, names = fold(
             [(c.name, texts[id(c)]) for c in post], [f"{c.head_text};" for c in protos]
         )

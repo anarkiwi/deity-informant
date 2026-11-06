@@ -253,7 +253,21 @@ per-voice routines often are; the rest are renumbered in order.
   to its region. An access is placed per copy: its
   interval for each value of `k` lying in one region (or held span) indexes it directly, as
   each copy's own operand cells at a stride do; the interval over all copies is then held in
-  one span with the regions it touches.
+  one span with the regions it touches. Per-copy state whose offsets do not fit 8 bits (copies
+  further apart than that over all copies, as each copy's operand cells at a stride of `$88`)
+  is reached through per-copy pointers: the accesses at one table's offsets from constants
+  that lie in one region or held span for every copy are grouped, their constants covered by
+  the fewest windows of 256 bytes, and each window is a `static uint8_t *const Kn[]` of the
+  copies' addresses of its least constant (`C1 + 0x13`, read once per call); each access is
+  that pointer indexed by a byte (`v3[0x3C]`), as `(zp),Y` reads a field at a base held per
+  copy, with no 16-bit index.
+- A value a block of an instance function receives on edges the index alone chooses (every
+  branch from the block's immediate dominator decided by `k`, no back edge into it), alike on
+  those edges up to per-copy values, is the operation of the values `k` chooses, placed in
+  the block: a compare that only some copies have (`CMP #k`, the first copy testing its load
+  against zero) is one compare of the value with the index or a constant table (`v == k`,
+  `v == Kn[k]`), not a choice of compares on `k`. An equality of a difference with zero reads
+  as the equality of its operands.
 - An access whose interval lies in one region is `Rk[off + index]`, `off` relative to the
   region and the address taken modulo its width (16 bits, 8 for a zero-page one) as the 6502
   wraps it; a load of constants in one span is `Cj[off + index]` alike. One in volatile
@@ -342,7 +356,10 @@ offsets `{0, 7, 14}`, called for each copy in order; copies sharing one trap; de
 relocation invariance of a folded program; copies' operand cells indexed directly at their
 stride, read once from an 8-bit table; cells at uneven distances, per-copy immediates and
 branches on them as constant tables; statements alike only in a prefix of their blocks not
-folded), and a voice loop's index bounding the throw-away read of the indexed I/O store in the
+folded; copies at a stride wider than 8 bits reach indexed by a byte from per-copy pointer
+tables into a held span and a region, a table per 256-byte window of a copy's fields; a
+compare only some copies have one compare with the index or a table; copies entered at a
+branch after loads they differ in one class entered at the branch), and a voice loop's index bounding the throw-away read of the indexed I/O store in the
 routine it calls through a `BRK` and through a stack switch.
 
 `tools/cgengraph.py TUNE.sid --pc ADDR` prints the structuring graph of the functions holding
