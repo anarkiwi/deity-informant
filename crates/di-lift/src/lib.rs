@@ -491,6 +491,27 @@ fn declared(entries: &[Entry]) -> Vec<Entry> {
         .collect()
 }
 
+/// Runs `[lo, hi)` of the bytes of `b`.
+fn runs(b: &FixedBitSet) -> Vec<(u32, u32)> {
+    let mut runs: Vec<(u32, u32)> = Vec::new();
+    for a in b.ones().map(|a| a as u32) {
+        match runs.last_mut() {
+            Some(r) if r.1 == a => r.1 = a + 1,
+            _ => runs.push((a, a + 1)),
+        }
+    }
+    runs
+}
+
+/// Pointer-load hulls by `(pc, opcode, access index)` as sorted [`ir::Reach`]es.
+fn reaches(r: &vsa::Hulls) -> Vec<ir::Reach> {
+    let mut v: Vec<ir::Reach> = (r.iter())
+        .map(|(&(pc, _, _), (a, b))| (pc, a.lo, a.hi, b.lo, b.hi))
+        .collect();
+    v.sort_unstable();
+    v
+}
+
 /// [`lift_with`] over memory seen through `bank` (flat when `None`).
 pub fn lift_banked(
     img: &[u8; 0x10000],
@@ -513,7 +534,15 @@ pub fn lift_banked(
         facts.starts.is_empty() && facts.writes.is_empty(),
         opts.cycles,
     ) {
-        if let Some((img, es, f)) = fold::prepare(img, &entries, ix, volatile, loaded, sp) {
+        if let Some((img, es, f)) = fold::prepare(
+            img,
+            &entries,
+            ix,
+            volatile,
+            opts.sensitive.as_deref(),
+            loaded,
+            sp,
+        ) {
             let ix = f.index;
             return lift_core(&img, &es, volatile, facts, plain, bank, Some(f), Some(ix));
         }
@@ -907,16 +936,8 @@ fn lift_core(
             c.ones().map(|a| (a as u16, img[a])).collect()
         },
         volatile: volatile.to_vec(),
-        written: {
-            let mut runs: Vec<(u32, u32)> = Vec::new();
-            for a in g.written.ones().map(|a| a as u32) {
-                match runs.last_mut() {
-                    Some(r) if r.1 == a => r.1 = a + 1,
-                    _ => runs.push((a, a + 1)),
-                }
-            }
-            runs
-        },
+        written: runs(&g.written),
+        fresh: g.fresh.as_ref().map_or_else(Vec::new, runs),
         starts,
         elide_ret: private,
         bank: bank.cloned(),
@@ -924,15 +945,8 @@ fn lift_core(
         stats,
         chains,
         induction: g.ind.clone(),
-        reach: {
-            let mut v: Vec<ir::Reach> = g
-                .reach
-                .iter()
-                .map(|(&(pc, _, _), (a, b))| (pc, a.lo, a.hi, b.lo, b.hi))
-                .collect();
-            v.sort_unstable();
-            v
-        },
+        reach: reaches(&g.reach),
+        proven: reaches(&g.proven),
         addr_sets: {
             let mut v: Vec<ir::AddrSet> = g
                 .addr_sets

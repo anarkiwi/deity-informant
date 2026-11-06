@@ -11,7 +11,8 @@ from deity_informant import cgen
 
 c, h, info = cgen.translate(image, [(0x1000, "init"), (0x1003, "play")],
                             volatile=[(0xD400, 0xD41D)], sensitive_reads=(),
-                            facts=None, loaded=(0x1000, 0x1B5F), header="tune.h", init=0)
+                            facts=None, loaded=(0x1000, 0x1B5F), header="tune.h", init=0,
+                            songs=range(3))
 ```
 
 ```bash
@@ -30,14 +31,16 @@ python tools/cgenplay.py tune.sid --psid --volatile 0xD400-0xD41D -o out/   # tr
 | `loaded` | the `[lo, hi)` bytes the program was loaded to (default: its code span) |
 | `header` | the name the `.c` includes |
 | `init` | the index of the entry the host calls once, before any other (`None`, the default: entries in any order) |
+| `songs` | the values of `A` the `init` entry is called with (`None`, the default: any); another traps at entry |
 
 `info` holds the stage times (`lift`, `mlir`, `layout`, `structure`, `print`), the regions
 `[(origin, length)]`, the code span, the traps in the `.c` (`{k: ("deopt", pc)}` or `("ind", pc,
 ...)` for a computed jump with no target), the computed jumps resolved from the code (`jumps`),
 the fact edges used, the lift's `stats`, whether some access has an unknown address and the
 `structure` counts: C `functions` (and the identical ones `folded` into them) and the
-`gotos` printed, the `provenance` of the printed constructs in the machine code (below) and
-the folded `init` (`Program.init`, or None).
+`gotos` printed, the `provenance` of the printed constructs in the machine code (below), the
+folded `init` (`Program.init`, or None), the bytes init stores before any read (`fresh`) and
+the instruction starts translated (`starts`).
 
 The host supplies `uint8_t io_read(uint16_t)`, `void io_write(uint16_t, uint8_t)` and
 `void trap(uint16_t k)`, which must not return (`longjmp`, or abort the call). Each entry
@@ -230,8 +233,15 @@ per-voice routines often are; the rest are renumbered in order.
   wider than `$200` is unknown. `sensitive_reads` also goes to the lift, which makes no
   throw-away read that cannot reach one of them.
   An unknown access may touch every byte of `loaded`, so then every non-code byte of it is in a
-  region. Zero page, the stack page and RAM outside the image are regions when accessed, and
-  so is every byte a store with an address set may write (`Program.written`: a block copy's
+  region. Zero page, the stack page and RAM below the image are regions when accessed; a byte
+  past the image is one only when a bounded store, the folded init path (`Program.init`) or a
+  store with an address set writes it (the bytes between an instance's copies' bytes stay in
+  their array): a read of any other byte past the image is out of bounds. A load whose bytes
+  in the program lie in one region or held span, the rest past the image so, tests its
+  address against it and reads `oob_rd` outside (`(uint16_t)(a - R2_ORG) < R2_LEN ? ... :
+  oob_rd(a)`). A region every byte of which every run of the init entry stores before any
+  read of it (`Program.fresh`) is declared with no initial contents (`uint8_t R4[R4_LEN];`,
+  no `R4_INIT`). So is every byte a store with an address set may write (`Program.written`: a block copy's
   destinations past the image, which pointer reads then find through `rd`); the stack page
   is accessed only by a load that may read it, since pointer accesses are kept out of page 1
   ([wholeprog](wholeprog.md#static-proofs), *Pointer windows*).
@@ -251,7 +261,10 @@ per-voice routines often are; the rest are renumbered in order.
   inside `loaded` in it, held as one array `Cj` (code bytes inside it held too) and printed
   `rdCj(base, y)`, the address as a 16-bit base plus a byte (`(zp),Y`'s pointer and index, a
   constant offset below 256, else 0): `noinline`, it reads `Cj` where the address lies in it,
-  else `oob_rd`, so a pointer walked past the program reads out of bounds. Not taken when the
+  else `oob_rd`, so a pointer walked past the program reads out of bounds. Where the hull the
+  lift proves on every run (`Program.proven`: no table taken to be read inside its extent,
+  the init entry run for each of its songs) lies inside `loaded`, the span is that hull and the
+  load indexes it unchecked: `CGEN_IX(Cj, base - Cj_ORG, y)`. Not taken when the
   hull meets a volatile range inside `loaded`, or reaches below `loaded` a byte another
   access touches or a volatile one; then `rd`. `rd` and the regions only it reaches are left
   out when no load needs it.
@@ -288,6 +301,10 @@ per-voice routines often are; the rest are renumbered in order.
   symbols, so data pointers holding original addresses resolve), the volatile ranges, the
   spans (`wr` writing their data bytes only), then `oob_rd`/`oob_wr`; they and `codechk` are
   `noinline`, as llvm-mos would otherwise copy them into every caller.
+- A load of a constant byte (constant code or a table the lift read as constant) at a fixed
+  address prints as a name the `.h` defines, relative to the origin that places the byte
+  (`CODE_KA3` for `CODE_ORG + 0xA3`): the `.c` holds neither its value nor its address, and the
+  compiler folds it. A folded init's constants (a relocator's base) so cost no load.
 - `oob_rd` returns 0, `oob_wr` discards; defining `CGEN_OOB` replaces both with the host's.
   A store the lift found may hit constant code or a table it read is followed by `codechk`,
   which traps when a constant byte of a span would change.

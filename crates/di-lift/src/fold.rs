@@ -6,7 +6,8 @@
 //! entry height with every register it wrote known: it makes the stores of registers the path
 //! never wrote (the entry's input, as a song number) and sets the registers it wrote. A byte
 //! only the path writes is then a constant of the program, and code only the path runs is not
-//! lifted.
+//! lifted. A volatile write of a known value is no memory: the folded entry makes the path's
+//! volatile writes first, in order, and the path runs on past them.
 
 use crate::analysis::{discover, Entry, Facts, Iv, Var};
 use crate::dispatch::{stored_reg, Walk, STEPS};
@@ -42,7 +43,9 @@ pub struct Fold {
     pub pc: u16,
     /// The bytes the path leaves: the program's starting memory over the image.
     pub image: Vec<(u16, u8)>,
-    /// The stores the folded entry makes and the registers it sets.
+    /// The volatile writes the folded entry makes, in order, the stores it makes and the
+    /// registers it sets.
+    pub io: Vec<(u16, u8)>,
     pub pre: Vec<(u16, Val)>,
     pub set: Vec<(usize, u8)>,
     /// The path's instructions `(pc, length)` whose opcode it does not store: code the
@@ -50,19 +53,77 @@ pub struct Fold {
     pub code: Vec<(u16, u8)>,
 }
 
-/// The path of an entry after `n` steps (or where it stops) and the last step count it could
-/// be folded at: on its entry height, every register it wrote known, every byte it stored
-/// outside the stack known or a register it never wrote, no access to `volatile`, no store
-/// above the entry SP, and not at another entry.
-struct Path {
+/// One run of the path: the walk, for one value of the entry's `A` when it declares several.
+struct Lane {
     walk: Walk,
+    /// The volatile writes it made, in order.
+    io: Vec<(u16, u8)>,
     /// Per byte stored outside the stack, its value (`None`: unknown).
     stored: BTreeMap<u16, Option<Val>>,
-    /// The registers it wrote, by `lift()` index.
+    /// The registers it wrote, and those it read before writing them, by `lift()` index.
     written: u32,
-    /// The instructions it ran, `pc: length`.
+    used: u32,
+    /// Its bytes stored outside the stack of unknown value, and whether it read a volatile
+    /// address with effects or stored above the entry SP.
+    unknown: usize,
+    spoiled: bool,
+    /// The bytes it stored, read from what it stored, never from the image.
+    dirty: FxHashSet<u16>,
+}
+
+/// The path of an entry after `n` steps (or where it stops), run in lockstep once per value of
+/// `A` it is declared with, and the last step count it could be folded at: every run on its
+/// entry height, every register it wrote known, every byte it stored outside the stack known
+/// or a register it never wrote, every write to `volatile` of a known value, no read of it but
+/// a throw-away read reaching no `sensitive` address, no store above the entry SP, not at
+/// another entry, and the runs joined: at one pc, with the same registers and volatile writes,
+/// and each byte stored the same value in each, or each run's value of `A`.
+struct Path {
+    lanes: Vec<Lane>,
+    /// The values of `A` the lanes run with (empty: one lane, `A` as declared).
+    songs: Vec<u8>,
+    /// The instructions the lanes ran, `pc: length`.
     ran: BTreeMap<u16, u8>,
+    /// The bytes some lane stored whose values do not join.
+    split: FxHashSet<u16>,
     best: Option<usize>,
+}
+
+impl Path {
+    /// The value the lanes leave in byte `x`, joined: one constant, the entry's `A` (each
+    /// lane's value of it, a function of the input on every declared value), or a register
+    /// they all stored as they found it; None otherwise.
+    fn joined(&self, img: &[u8; 0x10000], x: u16) -> Option<Val> {
+        let vals: Vec<Option<Val>> = (self.lanes.iter())
+            .map(|l| *l.stored.get(&x).unwrap_or(&Some(Val::K(img[x as usize]))))
+            .collect();
+        let first = vals[0]?;
+        if vals.iter().all(|&v| v == Some(first)) {
+            return Some(first);
+        }
+        let song = |(l, v): (usize, &Option<Val>)| *v == Some(Val::K(self.songs[l]));
+        (!self.songs.is_empty() && vals.iter().enumerate().all(song)).then_some(Val::R(reg::A))
+    }
+
+    /// Whether the lanes may be folded where they are.
+    fn foldable(&self, sp: u8, others: &[u16]) -> bool {
+        let l0 = &self.lanes[0];
+        let one = |l: &Lane| {
+            !l.spoiled
+                && l.unknown == 0
+                && l.walk.rets.is_empty()
+                && l.walk.env[reg::SP] == Iv::exact(sp as u32)
+                && ARCH
+                    .iter()
+                    .all(|&r| l.written >> r & 1 == 0 || l.walk.env[r].value().is_some())
+                && l.walk.pc == l0.walk.pc
+                && l.io == l0.io
+                && ARCH
+                    .iter()
+                    .all(|&r| l.written >> r & 1 == 0 || l.walk.env[r] == l0.walk.env[r])
+        };
+        self.split.is_empty() && self.lanes.iter().all(one) && !others.contains(&l0.walk.pc)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -73,86 +134,130 @@ fn path(
     sp: u8,
     loaded: (u32, u32),
     volatile: &[(u32, u32)],
+    sensitive: Option<&[u16]>,
     others: &[u16],
     n: usize,
 ) -> Path {
+    let songs: Vec<u8> = match e.regs.iter().find(|r| r.0 == reg::A) {
+        Some((_, vs)) if vs.len() > 1 => vs.clone(),
+        _ => Vec::new(),
+    };
+    let lane = |a: Option<u8>| {
+        let mut walk = Walk::new(e, Some(sp));
+        if let Some(a) = a {
+            walk.env[reg::A] = Iv::exact(a as u32);
+        }
+        Lane {
+            walk,
+            io: Vec::new(),
+            stored: BTreeMap::new(),
+            written: 0,
+            used: 0,
+            unknown: 0,
+            spoiled: false,
+            dirty: FxHashSet::default(),
+        }
+    };
+    let lanes = match songs.is_empty() {
+        true => vec![lane(None)],
+        false => songs.iter().map(|&a| lane(Some(a))).collect(),
+    };
     let mut p = Path {
-        walk: Walk::new(e, Some(sp)),
-        stored: BTreeMap::new(),
-        written: 0,
+        lanes,
+        songs,
         ran: BTreeMap::new(),
+        split: FxHashSet::default(),
         best: None,
     };
-    // A byte the path stored is read from what it stored, never from the image.
-    let dirty: RefCell<FxHashSet<u16>> = RefCell::default();
-    let konst = |a: u32| {
-        (loaded.0 <= a && a < loaded.1 && !dirty.borrow().contains(&(a as u16)))
-            .then(|| code.img[a as usize])
-    };
-    let (mut unknown, mut spoiled, mut read) = (0usize, false, Vec::new());
-    for i in 0..=n.min(STEPS) {
-        let w = &p.walk;
-        if i > 0
-            && !spoiled
-            && unknown == 0
-            && w.rets.is_empty()
-            && w.env[reg::SP] == Iv::exact(sp as u32)
-            && ARCH
-                .iter()
-                .all(|&r| p.written >> r & 1 == 0 || w.env[r].value().is_some())
-            && !others.contains(&w.pc)
-        {
+    let mut read = Vec::new();
+    'steps: for i in 0..=n.min(STEPS) {
+        if i > 0 && p.foldable(sp, others) {
             p.best = Some(i);
         }
         if i == n {
             break;
         }
-        let Some((op, acc, more)) = p.walk.step(code, vars, &konst, &mut read) else {
-            break;
-        };
-        read.clear();
-        if acc.iter().any(|a| a.store && a.addr.value().is_none()) {
-            break;
-        }
-        let t = Template::of(op);
-        p.ran.insert(p.walk.at, t.len);
-        for (ai, a) in acc.iter().enumerate() {
-            spoiled |= volatile.iter().any(|&(lo, hi)| a.addr.meets(lo, hi));
-            if !a.store || a.dummy {
-                continue;
-            }
-            let x = a.addr.lo as u16;
-            dirty.borrow_mut().insert(x);
-            if (0x100..0x200).contains(&x) {
-                spoiled |= x > 0x100 + sp as u16;
-                continue;
-            }
-            let v = match (a.val.value(), stored_reg(t, ai)) {
-                (Some(v), _) => Some(Val::K(v as u8)),
-                (None, Some(r)) if p.written >> r & 1 == 0 => Some(Val::R(r)),
-                _ => None,
+        let mut touched = Vec::new();
+        for l in p.lanes.iter_mut() {
+            let dirty = RefCell::new(std::mem::take(&mut l.dirty));
+            let konst = |a: u32| {
+                (loaded.0 <= a && a < loaded.1 && !dirty.borrow().contains(&(a as u16)))
+                    .then(|| code.img[a as usize])
             };
-            let was = matches!(p.stored.insert(x, v), Some(None));
-            unknown = unknown + usize::from(v.is_none()) - usize::from(was);
+            let stepped = l.walk.step(code, vars, &konst, &mut read);
+            read.clear();
+            let Some((op, acc, more)) = stepped else {
+                break 'steps;
+            };
+            if acc.iter().any(|a| a.store && a.addr.value().is_none()) {
+                break 'steps;
+            }
+            let t = Template::of(op);
+            p.ran.insert(l.walk.at, t.len);
+            for (ai, a) in acc.iter().enumerate() {
+                if volatile.iter().any(|&(lo, hi)| a.addr.meets(lo, hi)) {
+                    let felt = sensitive
+                        .is_none_or(|s| s.iter().any(|&x| a.addr.meets(x as u32, x as u32 + 1)));
+                    match (a.store, a.addr.value(), a.val.value()) {
+                        (true, Some(x), Some(v)) => l.io.push((x as u16, v as u8)),
+                        (true, ..) => l.spoiled = true,
+                        (false, ..) => l.spoiled |= !a.dummy || felt,
+                    }
+                    continue;
+                }
+                if !a.store || a.dummy {
+                    continue;
+                }
+                let x = a.addr.lo as u16;
+                dirty.borrow_mut().insert(x);
+                if (0x100..0x200).contains(&x) {
+                    l.spoiled |= x > 0x100 + sp as u16;
+                    continue;
+                }
+                let v = match (a.val.value(), stored_reg(t, ai)) {
+                    (Some(v), _) => Some(Val::K(v as u8)),
+                    (None, Some(r)) if l.written >> r & 1 == 0 => Some(Val::R(r)),
+                    _ => None,
+                };
+                let was = matches!(l.stored.insert(x, v), Some(None));
+                l.unknown = l.unknown + usize::from(v.is_none()) - usize::from(was);
+                touched.push(x);
+            }
+            let bit = |v: &di_pcode::Vn| 1u32.checked_shl(v.off()).unwrap_or(0);
+            for o in t.ops() {
+                for v in o.inputs().iter().filter(|v| v.space() == Space::Reg) {
+                    l.used |= bit(v) & !l.written;
+                }
+                if o.out.space() == Space::Reg {
+                    l.written |= bit(&o.out);
+                }
+            }
+            l.dirty = dirty.into_inner();
+            if !more {
+                break 'steps;
+            }
         }
-        for o in t.ops().iter().filter(|o| o.out.space() == Space::Reg) {
-            p.written |= 1u32.checked_shl(o.out.off()).unwrap_or(0);
-        }
-        if !more {
-            break;
+        if p.lanes.len() > 1 {
+            for x in touched {
+                match p.joined(code.img, x) {
+                    Some(_) => p.split.remove(&x),
+                    None => p.split.insert(x),
+                };
+            }
         }
     }
     p
 }
 
 /// The folded program for init entry `ix` of `entries` in a static lift (`loaded`, entry SP
-/// `sp`): its starting memory, its entries and the fold, or `None` when the path folds
-/// nothing.
+/// `sp`, the volatile addresses whose reads have effects `sensitive`, none: all): its
+/// starting memory, its entries and the fold, or `None` when the path folds nothing.
 pub fn prepare(
     img: &[u8; 0x10000],
     entries: &[Entry],
     ix: usize,
     volatile: &[(u32, u32)],
+    sensitive: Option<&[u16]>,
     loaded: (u32, u32),
     sp: u8,
 ) -> Option<(Box<[u8; 0x10000]>, Vec<Entry>, Fold)> {
@@ -185,17 +290,28 @@ pub fn prepare(
         .map(|(_, e)| e.pc)
         .collect();
     let e = &entries[ix];
-    let run = |n| path(&code, &g.vars, e, sp, loaded, volatile, &others, n);
+    let run = |n| {
+        path(
+            &code, &g.vars, e, sp, loaded, volatile, sensitive, &others, n,
+        )
+    };
     let p = run(run(STEPS).best?);
+    let l0 = &p.lanes[0];
     let mut out = Box::new(*img);
     let mut f = Fold {
         index: ix,
         entry: e.pc,
-        pc: p.walk.pc,
+        pc: l0.walk.pc,
+        io: l0.io.clone(),
         ..Fold::default()
     };
-    for (&a, &v) in &p.stored {
-        match v {
+    let stored: std::collections::BTreeSet<u16> = p
+        .lanes
+        .iter()
+        .flat_map(|l| l.stored.keys().copied())
+        .collect();
+    for &a in &stored {
+        match p.joined(img, a) {
             Some(Val::K(x)) => {
                 out[a as usize] = x;
                 f.image.push((a, x));
@@ -205,22 +321,25 @@ pub fn prepare(
         }
     }
     f.code = (p.ran.iter())
-        .filter(|e| !p.stored.contains_key(e.0))
+        .filter(|e| !stored.contains(e.0))
         .map(|(&pc, &n)| (pc, n))
         .collect();
+    let written = p.lanes.iter().fold(0, |m, l| m | l.written);
+    let used = p.lanes.iter().fold(0, |m, l| m | l.used);
     f.set = (ARCH.iter())
-        .filter(|&&r| p.written >> r & 1 == 1)
-        .map(|&r| (r, p.walk.env[r].lo as u8))
+        .filter(|&&r| written >> r & 1 == 1)
+        .map(|&r| (r, l0.walk.env[r].lo as u8))
         .collect();
     let mut es = entries.to_vec();
     es[ix] = Entry {
         pc: f.pc,
         regs: (e.regs.iter())
-            .filter(|(r, _)| p.written >> r & 1 == 0)
+            .filter(|(r, _)| (used | !written) >> r & 1 == 1)
             .cloned()
             .collect(),
         set: f.set.clone(),
         pre: f.pre.clone(),
+        io: f.io.clone(),
     };
     Some((out, es, f))
 }
