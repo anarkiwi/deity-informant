@@ -143,6 +143,117 @@ p0:     .byte 5,6
 p1:     .byte 7,8
 end:
 """
+RECORDS = """
+plo:    .byte lo(p0),lo(p1)
+phi:    .byte hi(p0),hi(p1)
+p0:     .byte 1,9,2,8,7,0,3,1,2,3,0,0,0,0,0,0,0,0
+p1:     .byte 0,5,1,4,2,6,0,0,0,0,0,0,0,0,0,0,0,0
+end:
+"""
+STEP = """
+init:   TAY
+        LDA plo,Y
+        STA $FB
+        LDA phi,Y
+        STA $FC
+        RTS
+play:   LDY #$00
+        LDA ($FB),Y
+        AND #$03
+        TAY
+        LDA ($FB),Y
+        STA $C010
+        INY
+        TYA
+        CLC
+        ADC $FB
+        STA $FB
+        BCC done
+        INC $FC
+done:   RTS
+""" + RECORDS
+STEPBACK = STEP.replace(
+    """        INY
+        TYA
+        CLC
+        ADC $FB
+        STA $FB
+        BCC done
+        INC $FC""",
+    """        LDA $FB
+        SEC
+        SBC #$01
+        STA $FB
+        BCS done
+        DEC $FC""",
+).replace("init:   TAY", "init:   TAY\n        INY")
+UNSET = STEP.replace(
+    """init:   TAY
+        LDA plo,Y
+        STA $FB
+        LDA phi,Y
+        STA $FC
+        RTS""",
+    """init:   RTS""",
+)
+CELLS = """
+init:   TAY
+        LDA plo,Y
+        STA ptr
+        LDA phi,Y
+        STA ptr+1
+        RTS
+play:   LDA ptr
+        STA r0+1
+        STA r1+1
+        LDA ptr+1
+        STA r0+2
+        STA r1+2
+r0:     LDA $FFFF
+        AND #$03
+        TAY
+r1:     LDA $FFFF,Y
+        STA $C010
+        INY
+        TYA
+        CLC
+        ADC ptr
+        STA ptr
+        BCC done
+        INC ptr+1
+done:   RTS
+ptr:    .byte $FF,$FF
+""" + RECORDS
+ORDER = """
+init:   LDA #$00
+        STA pos
+        RTS
+play:   LDY pos
+        LDX phi,Y
+        BNE ok
+        LDA back,Y
+        TAY
+        LDX phi,Y
+ok:     STX $FC
+        LDA plo,Y
+        STA $FB
+        INY
+        STY pos
+        LDY #$00
+        LDA ($FB),Y
+        STA $C010
+        RTS
+pos:    .byte 0
+plo:    .byte lo(p0),lo(p1),lo(p0),0
+phi:    .byte hi(p0),hi(p1),hi(p0),0
+back:   .byte 0,0,0,1
+p0:     .byte 7
+p1:     .byte 9
+end:
+"""
+ORDERBAD = ORDER.replace(
+    "phi:    .byte hi(p0),hi(p1),hi(p0),0", "phi:    .byte hi(p0),hi(p1),0,0"
+).replace("back:   .byte 0,0,0,1", "back:   .byte 0,0,0,2")
 ZPCLEAR = """
 entry:  LDX #$00
         TXA
@@ -1599,6 +1710,35 @@ def test_pointer_pair_reused_as_scratch(prefix, tmp_path):
     c, _, _ = check(prefix, tmp_path, SCRATCH, calls, entries=("entry", "other"))
     entry, other = c.split("void entry")[1].split("void other")[0], c.split("void other")[1]
     assert not re.search(r"\brd\(", entry) and re.search(r"\brd\(", other)
+
+
+@pytest.mark.parametrize(
+    "src,checked",
+    [(STEP, True), (CELLS, True), (STEPBACK, False), (UNSET, False)],
+    ids=["zero-page", "cells", "backward", "unset"],
+)
+def test_pointer_advanced_by_record_lengths(prefix, tmp_path, src, checked):
+    # Init points the pair at a song's records; play reads one and advances the pair by its
+    # length (`ADC lo; BCC; INC hi`, or into a copy's operand cells): the pair stays at or
+    # above the least record start, so every read is one of the span holding the records.
+    # Stepped back with a borrow, or never set from the image's zeros, it is not bounded.
+    c, info, labels = songs(prefix, tmp_path, src, (0, 1))
+    assert (not re.search(r"\brd\(", c)) == checked
+    if checked:
+        assert "rdC0(" in c and not info["unknown_access"]
+        [(lo, hi)] = info["code_held"]
+        assert lo <= labels["p0"] and labels["end"] <= hi
+
+
+@pytest.mark.parametrize("src,checked", [(ORDER, True), (ORDERBAD, False)], ids=["ok", "bad"])
+def test_end_marker_tested_before_its_pointer(prefix, tmp_path, src, checked):
+    # The pointer's high byte comes from a table whose zero marks the end of the order: the
+    # branch on it leaves only indices of nonzero bytes, and the restart index the marker's
+    # entry gives names a nonzero byte, so the pointer never names zero page. When a restart
+    # names another marker, it may.
+    c, info, _ = songs(prefix, tmp_path, src, (0,))
+    assert (not re.search(r"\brd\(", c)) == checked
+    assert ("rdC0(" in c) == checked
 
 
 def test_zero_page_cleared_then_a_pointer_set_through_an_index(prefix, tmp_path):

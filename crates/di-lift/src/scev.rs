@@ -730,7 +730,7 @@ fn entry_value(
                         [(t.all().contains(&h), pol != 0), (*f == h, pol == 0)]
                             .into_iter()
                             .filter(|e| e.0)
-                            .map(|e| refine(&out, flag as usize, e.1))
+                            .map(|e| refine(code, &out, flag as usize, e.1))
                             .collect()
                     }
                     _ => vec![Some(out)],

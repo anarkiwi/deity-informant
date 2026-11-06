@@ -178,6 +178,7 @@ pub fn prepare(
         stored: Vec::new(),
         after: Vec::new(),
         init: 0,
+        floor: FxHashMap::default(),
     };
     let others: Vec<u16> = (entries.iter().enumerate())
         .filter(|&(i, _)| i != ix)

@@ -245,8 +245,9 @@ per-voice routines often are; the rest are renumbered in order.
   spans several regions (operand cells of several copies) goes through `rd`/`wr`.
 - A load of unknown address through a pointer whose hull the lift bounds (`Program.reach`,
   [wholeprog](wholeprog.md#static-proofs), *Pointer reach*: bases from tables read inside their
-  extents, constants, a relocation constant added with carry, an offset in `Y`) reads one
-  span: from the first non-code byte of the hull inside `loaded` to its last, every base
+  extents, constants, a relocation constant added with carry, an offset in `Y`, a pointer
+  advanced from them by the lengths it reads, a table byte tested before its pointer uses it)
+  reads one span: from the first non-code byte of the hull inside `loaded` to its last, every base
   inside `loaded` in it, held as one array `Cj` (code bytes inside it held too) and printed
   `rdCj(base, y)`, the address as a 16-bit base plus a byte (`(zp),Y`'s pointer and index, a
   constant offset below 256, else 0): `noinline`, it reads `Cj` where the address lies in it,

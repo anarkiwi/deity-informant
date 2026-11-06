@@ -970,22 +970,23 @@ impl Fixpoint<'_> {
                     })
                 })
                 .collect();
-            let an = crate::vsa::analyze(
+            let given = |reach: bool| crate::vsa::Given {
+                loaded: self.loaded,
+                entry_sp: self.entry_sp,
+                observed: &seen_writes,
+                constant: &self.constant,
+                volatile: self.reach.map_or(&[], |r| r.volatile),
+                reach,
+                init: self.reach.and_then(|r| r.init),
+            };
+            let mut an = crate::vsa::analyze(
                 &cimg,
                 &cells,
                 &mut vars,
                 entries,
                 self.matched,
                 &disp,
-                &crate::vsa::Given {
-                    loaded: self.loaded,
-                    entry_sp: self.entry_sp,
-                    observed: &seen_writes,
-                    constant: &self.constant,
-                    volatile: self.reach.map_or(&[], |r| r.volatile),
-                    reach: self.reach.is_some(),
-                    init: self.reach.and_then(|r| r.init),
-                },
+                &given(false),
             );
             let mut written: FxHashMap<u16, BTreeSet<u8>> = FxHashMap::default();
             for st in &an.stores {
@@ -1023,6 +1024,18 @@ impl Fixpoint<'_> {
                 }
             }
             if next == cells && nvalues == values && nstat == stat {
+                // The pointer reach of the program the rounds settled on.
+                if self.reach.is_some() {
+                    an = crate::vsa::analyze(
+                        &cimg,
+                        &cells,
+                        &mut vars,
+                        entries,
+                        self.matched,
+                        &disp,
+                        &given(true),
+                    );
+                }
                 let pull_clear = crate::vsa::pull_clear(&vars, entries);
                 let tables: BTreeSet<u16> = an
                     .jumps

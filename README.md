@@ -16,7 +16,8 @@ tables, and a voice loop's index bounds the accesses of the routine it calls. An
 calls once, first, is evaluated as far as its run is the same for every song: the memory it
 leaves (relocated operands included) is the program's starting data. A read through a
 pointer whose bases the analysis bounds (split tables a song byte indexes, constants, an
-offset in `Y`) is one bounds-checked read of the span holding them. Every output is
+offset in `Y`, the record lengths it advances by) is one bounds-checked read of the span
+holding them. Every output is
 verified by replaying its I/O writes against the reference interpreter. See
 [docs/cgen.md](docs/cgen.md).
 
