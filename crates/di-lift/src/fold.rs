@@ -164,6 +164,7 @@ pub fn prepare(
         true,
         Some(loaded),
         Some(sp),
+        None,
     );
     let code = Code {
         img: &g.img,
@@ -172,6 +173,11 @@ pub fn prepare(
         vecs: Vec::new(),
         observed: FixedBitSet::with_capacity(0x10000),
         constant: FixedBitSet::with_capacity(0x10000),
+        clip: FxHashMap::default(),
+        bound: Vec::new(),
+        stored: Vec::new(),
+        after: Vec::new(),
+        init: 0,
     };
     let others: Vec<u16> = (entries.iter().enumerate())
         .filter(|&(i, _)| i != ix)

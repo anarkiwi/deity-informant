@@ -243,6 +243,17 @@ per-voice routines often are; the rest are renumbered in order.
   base alone, the same for every index (a block copy's loop over a page tests its pointer, not
   each byte). One at a constant base plus an index whose set
   spans several regions (operand cells of several copies) goes through `rd`/`wr`.
+- A load of unknown address through a pointer whose hull the lift bounds (`Program.reach`,
+  [wholeprog](wholeprog.md#static-proofs), *Pointer reach*: bases from tables read inside their
+  extents, constants, a relocation constant added with carry, an offset in `Y`) reads one
+  span: from the first non-code byte of the hull inside `loaded` to its last, every base
+  inside `loaded` in it, held as one array `Cj` (code bytes inside it held too) and printed
+  `rdCj(base, y)`, the address as a 16-bit base plus a byte (`(zp),Y`'s pointer and index, a
+  constant offset below 256, else 0): `noinline`, it reads `Cj` where the address lies in it,
+  else `oob_rd`, so a pointer walked past the program reads out of bounds. Not taken when the
+  hull meets a volatile range inside `loaded`, or reaches below `loaded` a byte another
+  access touches or a volatile one; then `rd`. `rd` and the regions only it reaches are left
+  out when no load needs it.
 - In an instance function (unrolled copies folded into one function of the copy's index `k`,
   every call passing a constant), a value computed from `k` alone (not a branch condition: a
   condition of `k` alone tests such a value) has one definition at the function's entry per
@@ -336,7 +347,10 @@ before it does.
 `tools/cgenplay.c` and compares the volatile writes (and sensitive reads) of many consecutive
 calls, memory persisting, with `wholeprog.reference_call`; it checks relocation and data
 invariance, the gotos (a non-series-parallel join's edges, a two-entry loop's second entry, a
-computed branch entering one run at three points) and their provenance (instruction starts of
+computed branch entering one run at three points), pointer reads from split tables an
+unbounded byte indexes with a growing `Y` read through one bounds-checked span, a pointer pair
+reused as scratch between its uses keeping `rd` only where its scratch values reach, and their
+provenance (instruction starts of
 the lift), short-circuit conditions, no structuring variables, the structuring (a shared tail kept in its function,
 multi-exit and two-entry loops, switches from compare chains and jump tables, kept callees' parameters, wrapping
 addresses), computed jumps and calls through operands written from tables (in the same call
@@ -370,7 +384,7 @@ the printed gotos and loop heads.
 attributes a compiled translation's code (an ELF built with `-g`): per C function its bytes
 from the line table (inlined code counted where it came from) against the original instruction
 bytes of its `pcs` (the instructions code is left for after optimization), split by origin: `trap` (a `trap()` call and the test guarding it), `dispatch`
-(`rd`/`wr`/`oob_*`/`codechk` and the lines calling them), `cell` (a test of a code cell's byte),
+(`rd`/`wr`/`rdCj`/`oob_*`/`codechk` and the lines calling them), `cell` (a test of a code cell's byte),
 `arith16` (16-bit values) and `other`.
 
 `tools/cclones.py` measures how much of a `.c` repeats up to names and constants (and which

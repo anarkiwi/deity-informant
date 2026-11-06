@@ -539,6 +539,10 @@ fn lift_core(
             matched,
             opts.loaded,
             opts.entry_sp,
+            opts.entry_sp.map(|_| vsa::Wanted {
+                volatile,
+                init: fold.as_ref().map(|f| f.index),
+            }),
         );
         let roots: Vec<u16> = entries.iter().map(|e| e.pc).collect();
         // Declared entry SP: the windows also keep pointers out of the volatile pages.
@@ -917,6 +921,15 @@ fn lift_core(
         stats,
         chains,
         induction: g.ind.clone(),
+        reach: {
+            let mut v: Vec<ir::Reach> = g
+                .reach
+                .iter()
+                .map(|(&(pc, _, _), (a, b))| (pc, a.lo, a.hi, b.lo, b.hi))
+                .collect();
+            v.sort_unstable();
+            v
+        },
         addr_sets: {
             let mut v: Vec<ir::AddrSet> = g
                 .addr_sets

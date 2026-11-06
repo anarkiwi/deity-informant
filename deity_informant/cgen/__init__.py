@@ -189,6 +189,7 @@ class Program:  # pylint: disable=too-many-instance-attributes
     written: list = ()
     bounds: dict | None = None
     addr_sets: dict | None = None
+    reach: dict | None = None
     init: dict | None = None
 
 
@@ -230,7 +231,7 @@ def lift(image, entries, volatile, facts=None, loaded=None, sensitive=(), init=N
     p = Program(funcs, entries, image, starts, [tuple(v) for v in volatile])
     p.constant, p.jumps, p.sets = frozenset(prog.code), dict(prog.jumps), dict(prog.sets)
     p.written = list(prog.written)
-    p.bounds, p.addr_sets = dict(prog.bounds), dict(prog.addr_sets)
+    p.bounds, p.addr_sets, p.reach = dict(prog.bounds), dict(prog.addr_sets), dict(prog.reach)
     p.init = fold
     return p, prog.stats
 
@@ -272,6 +273,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         for j, fn in enumerate(p.funcs)
     }
     mod.addr_sets = p.addr_sets or {}
+    mod.reach = p.reach or {}
     regfile = [r for r, _ in emit.Context(p.funcs, False).regfile]
     mod.kpos = regfile.index(emit.KREG) if emit.KREG in regfile else None
     mod.prune()
@@ -283,7 +285,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     t1 = time.perf_counter()
     fns = mod.functions()
     used, helpers = set(mod.used), mod.helpers
-    helpers |= {"oob_rd"} if "rd" in helpers else set()
+    helpers |= {"oob_rd"} if "rd" in helpers or mod.checked else set()
     helpers |= {"oob_wr"} if "wr" in helpers else set()
     if helpers & {"rd", "codechk"} and mem.held:
         used.add("CODE")
@@ -310,6 +312,13 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         if _sliced(mem, used, j):
             c.append(f"static const uint8_t C{j}_DATA[] = {{C{j}_DATA_INIT}};")
     c += _dispatch(mem, helpers, used)
+    for j in sorted(mod.checked):
+        c += [
+            f"static __attribute__((noinline)) uint8_t rdC{j}(uint16_t p, uint8_t y) {{",
+            f"uint16_t o = p - C{j}_ORG + y;",
+            f"return o < C{j}_LEN ? C{j}[o] : oob_rd(p + y);",
+            "}",
+        ]
     c += fns
     c_text = clang_format("\n".join(c) + "\n")
     h_text = clang_format(_header(mem, used, [key[1] for key in traps]))
