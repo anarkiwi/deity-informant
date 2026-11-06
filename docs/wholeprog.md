@@ -249,7 +249,12 @@ the program, and checks it against the reference.
    the next copy's entry (an unrolled body, not a test choosing among alternatives). Per candidate entry the set of copies
    saving the most instructions (those held, less the merged function's and one call per
    copy) is kept when it has at least three copies: two fit any line, only a third shows the
-   operands are a family indexed by the copy. Classes are taken greedily by saving, no start in
+   operands are a family indexed by the copy. A class starts where its copies' shared run
+   does: while every copy's entry is entered from one instruction only (falling through or
+   branching to it), the class walked from those instructions replaces it when it saves more,
+   so copies entered at a branch on flags the instructions before it set differently (`LDY`
+   before the first copy, `LDA` before the others) are one class entered at the branch, not
+   one class per arm. Classes are taken greedily by saving, no start in
    two. Each copy's entry becomes a call at the caller's SP (no return address, as a tail
    call) that sets `k` and continues at the copy's target of the exit taken (register 5
    numbers the exits when there are several). In the merged function a constant operand is

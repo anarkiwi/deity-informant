@@ -1348,6 +1348,81 @@ entry:  AND #$0F
 end:
 """
 
+COMPARED = """
+entry:  AND #$03
+        STA $20
+v0:     LDA $20
+        BNE n0
+        INC $30
+n0:     LDA $30
+        STA $C000
+        JMP v1
+v1:     LDA $20
+        CMP #${one}
+        BNE n1
+        INC $31
+n1:     LDA $31
+        STA $C007
+        JMP v2
+v2:     LDA $20
+        CMP #${two}
+        BNE n2
+        INC $32
+n2:     LDA $32
+        STA $C00E
+        RTS
+end:
+"""
+ARMS = """
+entry:  AND #$81
+        STA $13
+        LDY $13
+v0:     BMI m0
+        DEC $20
+        DEC $20
+        LDA $20
+        STA $C001
+        JMP n0
+m0:     INC $20
+        INC $20
+        LDA $20
+        STA $C002
+n0:     LDA $20
+        STA $C000
+        LDA $13
+v1:     BMI m1
+        DEC $21
+        DEC $21
+        LDA $21
+        STA $C008
+        JMP n1
+m1:     INC $21
+        INC $21
+        LDA $21
+        STA $C009
+n1:     LDA $21
+        STA $C007
+        LDA $13
+v2:     BMI m2
+        DEC $22
+        DEC $22
+        LDA $22
+        STA $C00F
+        JMP n2
+m2:     INC $22
+        INC $22
+        LDA $22
+        STA $C010
+n2:     LDA $22
+        STA $C00E
+        RTS
+end:
+"""
+WIDE = """
+entry:  AND #$03
+        STA $13
+"""
+
 
 @contextlib.contextmanager
 def locked(tmp_path_factory):
@@ -2524,6 +2599,77 @@ def test_per_copy_conditions_index_a_table(prefix, tmp_path):
     c, _, info = check(prefix, tmp_path, TESTED, entry_calls(range(4), 3))
     assert (info["stats"]["instances"], info["stats"]["instance_copies"]) == (1, 3)
     assert "==" not in c and re.search(r"if \(K\d+\[v1\] != 0\)", c)
+
+
+def _wide(inner, outer):
+    """Three copies, each bumping two of its own operand cells ``inner`` bytes apart (past a
+    jump over them) and a byte past the program at the copies' stride, and storing them to its
+    voice's registers, ``outer`` bytes between."""
+
+    def pad(n):
+        return f"        .byte {', '.join(['0'] * n)}\n" if n else ""
+
+    src = WIDE
+    for k in range(3):
+        last = "RTS" if k == 2 else f"JMP v{k + 1}"
+        src += (
+            f"v{k}:     INC a{k}+1\n        INC b{k}+1\n        INC {{end + {0x90 * k}}}\n"
+            f"a{k}:     LDA #$00\n"
+            f"        STA ${0xC000 + 7 * k:04X}\n        JMP b{k}\n{pad(inner)}"
+            f"b{k}:     LDA #$00\n        STA ${0xC001 + 7 * k:04X}\n"
+            f"        LDA {{end + {0x90 * k}}}\n        STA ${0xC002 + 7 * k:04X}\n"
+            f"        {last}\n" + pad(outer if k < 2 else 0)
+        )
+    return src + "end:\n"
+
+
+@pytest.mark.parametrize("inner,windows", [(0, 1), (0x100, 2)], ids=["one", "two"])
+def test_copies_at_a_wide_stride_index_per_copy_pointers(prefix, tmp_path, inner, windows):
+    """Copies whose operand cells lie further apart than 8 bits reach (a stride of more
+    than $80 over three copies), and data bytes at that stride, read each copy's base once
+    from a constant table of pointers into the span (or region) and index it by a byte, as
+    ``(zp),Y`` does: no 16-bit index, no ``rd``/``wr``; fields of a copy further apart than 256
+    bytes take a pointer per window."""
+    src = _wide(inner, 0x70)
+    c, _, info = check(prefix, tmp_path, src, entry_calls(range(4), 6))
+    assert (info["stats"]["instances"], info["stats"]["instance_copies"]) == (1, 3)
+    assert not re.search(r"\b(?:rd|wr)\(|uint16_t K\d|static const uint16_t", c)
+    tabs = re.findall(r"static uint8_t \*const (K\d+)\[\] = \{([CR])(\d+)[^,]*, \2\3 \+ ", c)
+    assert sorted(t[1] for t in tabs) == ["C"] * windows + ["R"]
+    for tab, _, _ in tabs:
+        [ptr] = re.findall(rf"uint8_t \*(v\d+) = {tab}\[v1\];", c)
+        assert re.search(rf"\b{ptr}\[(?:0|0x[0-9A-F]{{1,2}})\]", c)
+    img, labels = W.assemble(src, 0x2345)
+    assert translate(prefix, img, labels, (0x2345, labels["end"]))[0] == c
+
+
+@pytest.mark.parametrize(
+    "one,two,form",
+    [("01", "02", r"== v1\b"), ("05", "09", r"== (K\d+)\[v1\]")],
+    ids=["index", "table"],
+)
+def test_a_compare_some_copies_lack_is_one_per_copy_compare(prefix, tmp_path, one, two, form):
+    """A compare with an immediate that only some copies have (``CMP #k``; the first copy
+    tests the loaded value against zero) compares the value with the copy's immediate, the
+    index itself or a constant table of them, not a choice of comparisons on the index."""
+    src = COMPARED.replace("${one}", f"${one}").replace("${two}", f"${two}")
+    c, _, info = check(prefix, tmp_path, src, entry_calls(range(4), 3))
+    assert (info["stats"]["instances"], info["stats"]["instance_copies"]) == (1, 3)
+    assert re.search(form, c) and not re.search(r"v1 == \d", c)
+    m = re.search(form, c)
+    if m.groups():
+        assert f"static const uint8_t {m.group(1)}[] = {{0, 5, 9}};" in c
+
+
+def test_copies_entered_at_a_branch_after_unlike_loads_are_one_class(prefix, tmp_path):
+    """Copies entered at a branch on the flags of a load the copies differ in (``LDY`` before
+    the first, ``LDA`` before the others), each arm a block of its own, are one class entered
+    at the branch: its arms are not two classes."""
+    _, _, info = check(prefix, tmp_path, ARMS, entry_calls([0, 1, 0x80, 0x81], 3))
+    _, labels, _ = assemble(ARMS)
+    assert (info["stats"]["instances"], info["stats"]["instance_copies"]) == (1, 3)
+    [fn] = [f for f in info["provenance"]["functions"].values() if f["index"]]
+    assert fn["copies"] == [labels[f"v{k}"] for k in range(3)]
 
 
 def test_size_attribution(prefix, tmp_path):

@@ -541,6 +541,12 @@ impl Cx<'_> {
         (1..n).all(|k| follows(k - 1, k)) || (1..n).all(|k| follows(k, k - 1))
     }
 
+    /// The one instruction flowing into start `p`, when `p` is entered from nowhere else.
+    fn only_pred(&self, p: u16) -> Option<u16> {
+        let ps = self.preds.get(&p)?;
+        (!self.ext.contains(&p) && ps.iter().all(|&q| q == ps[0])).then_some(ps[0])
+    }
+
     /// The sound class of copies entered at `ms`: walked, then walked again without the starts
     /// that break its regions until none does. Its first sound walk, the copies' extent alike up
     /// to immediates, must be whole blocks or an unrolled body.
@@ -626,6 +632,7 @@ pub fn find(g: &Graph, roots: &[u16], calls: &FxHashSet<u16>) -> Vec<Class> {
         }
     }
     let none = FxHashSet::default();
+    let mut earlier: FxHashMap<Vec<u16>, Option<Class>> = FxHashMap::default();
     let mut found: Vec<Class> = Vec::new();
     for &a in &lead {
         let Some(v) = cx.var(a) else { continue };
@@ -658,6 +665,25 @@ pub fn find(g: &Graph, roots: &[u16], calls: &FxHashSet<u16>) -> Vec<Class> {
                     }
                     set = ms;
                 }
+            }
+        }
+        // A copy's entry is the first of the run its copies share: while every entry has one
+        // predecessor and the walk from those pairs, the class starts there.
+        while let Some(c) = &best {
+            let Some(mut ms) = (0..c.copies())
+                .map(|k| cx.only_pred(c.entry(k)))
+                .collect::<Option<Vec<u16>>>()
+            else {
+                break;
+            };
+            ms.sort_unstable();
+            let e = earlier
+                .entry(ms)
+                .or_insert_with_key(|ms| cx.class(ms))
+                .clone();
+            match e {
+                Some(e) if e.saving() > c.saving() => best = Some(e),
+                _ => break,
             }
         }
         found.extend(best);
