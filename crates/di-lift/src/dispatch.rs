@@ -1293,6 +1293,7 @@ pub(crate) const STEPS: usize = 1 << 20;
 
 /// An entry's run along its decided path ([`entry_runs`]): the next instruction, the
 /// registers, the bytes it stored exactly and the return sites of its open calls.
+#[derive(Clone)]
 pub(crate) struct Walk {
     pub(crate) pc: u16,
     /// The instruction the last [`Walk::step`] ran.
@@ -1307,6 +1308,24 @@ impl Walk {
     /// The bytes the run stored at exact addresses and their values.
     pub(crate) fn known(&self) -> FxHashMap<u16, u8> {
         self.mem.clone()
+    }
+
+    /// Join run `o`, at the same instruction with the same open calls (else None), into this
+    /// one: each register the hull of both, a stored byte known where both know it alike.
+    /// Whether this run changed.
+    pub(crate) fn join(&mut self, o: &Walk) -> Option<bool> {
+        if self.rets != o.rets {
+            return None;
+        }
+        let mut changed = false;
+        for (a, b) in self.env.iter_mut().zip(&o.env) {
+            let h = crate::vsa::hull(*a, *b);
+            changed |= h != *a;
+            *a = h;
+        }
+        let n = self.mem.len();
+        self.mem.retain(|m, v| o.mem.get(m) == Some(v));
+        Some(changed || self.mem.len() != n)
     }
 
     pub(crate) fn new(e: &crate::analysis::Entry, entry_sp: Option<u8>) -> Self {
