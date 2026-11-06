@@ -2670,19 +2670,19 @@ def test_init_run_stops_where_the_song_decides(prefix, tmp_path):
     assert {labels["o0"] + 1, labels["o0"] + 2} <= set(info["provenance"]["cells"])
 
 
-def test_song_range_proves_what_init_leaves(prefix, tmp_path):
-    """Init run once per declared song leaves the pointer one of the songs' data: the read
-    through it is proved inside the program and indexes it unchecked. Without the range
-    every table entry is a song's (one points at I/O), and the read is bounds-checked; a song
-    outside the range traps at init."""
+def test_song_range_is_checked_not_assumed(prefix, tmp_path):
+    """The songs the host calls init with are checked at init, not assumed: init's run is
+    taken for every song, a table entry pointing at I/O among them, so the read through the
+    pointer it leaves is bounds-checked, the ``.c`` is the same for every song count, and a
+    song outside the range traps."""
     c, _, labels = songs(prefix, tmp_path, SONGINIT, (0, 1), declared=range(2))
     body = c[c.index("void play") :]
-    assert "CGEN_IX(C0" in body and not re.search(r"\b(?:rd|rdC\d+)\(", body)
+    assert "rdC0(" in body
     guard = r"if \(\(uint8_t\)\(a - CGEN_SONG0\) >= CGEN_SONGS\) \{\s*trap\("
     assert re.search(guard, c)
     img, labels, loaded = assemble(SONGINIT)
-    plain = translate(prefix, img, labels, loaded, ("init", "play"), init=0)[0]
-    assert re.search(r"\b(?:rd|rdC\d+)\(", plain[plain.index("void play") :])
+    other = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=range(4))
+    assert other[0] == c and "#define CGEN_SONGS 0x04" in other[1]
     with pytest.raises(AssertionError, match="trap"):
         songs(prefix, tmp_path / "out", SONGINIT, (2,), declared=range(2))
 
@@ -2769,10 +2769,11 @@ def test_init_fold_runs_past_its_io_writes(prefix, tmp_path):
 
 
 def test_init_stores_before_reads_need_no_initial_contents(prefix, tmp_path):
-    """Bytes every song's run of init stores before anything reads them start with no
-    contents: their region is uninitialized. A byte one song's run reads first keeps its
-    initial contents."""
-    c, info, _ = songs(prefix, tmp_path, FRESH, (0,), declared=range(1))
+    """Bytes every run of init stores before anything reads them start with no contents:
+    their region is uninitialized. A byte one song's run reads first keeps its initial
+    contents."""
+    plain = FRESH.replace("        LDX $2001\n", "")
+    c, info, _ = songs(prefix, tmp_path, plain, (0, 1), declared=range(2))
     [(lo, hi)] = info["fresh"]
     assert hi - lo == 4
     [k] = re.findall(r"^uint8_t R(\d+)\[R\d+_LEN\];$", c, re.M)

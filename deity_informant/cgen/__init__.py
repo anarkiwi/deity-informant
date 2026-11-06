@@ -206,9 +206,9 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     ``sensitive`` the volatile addresses whose throw-away reads are kept and ``init`` the
     index of the entry the host calls once, first, on ``image`` (``None``: entries are called
     in any order), whose decided path is folded into the image the program starts from;
-    ``songs`` the range of values of ``A`` the init entry is called with (``None``: any),
-    which the host checks: they bound the analysis, and the ``.c`` tests them against the
-    ``.h``'s ``CGEN_SONG0`` and ``CGEN_SONGS``."""
+    ``songs`` the range of values of ``A`` the init entry is called with (``None``: any):
+    the ``.c`` tests them against the ``.h``'s ``CGEN_SONG0`` and ``CGEN_SONGS``, and the
+    analysis takes any song, so the ``.c`` is the same for every song count."""
     image = bytes(image)
     pcs = [pc for pc, _ in entries]
     span = None
@@ -216,7 +216,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         vals = sorted(set(songs))
         if not vals or vals[-1] - vals[0] + 1 != len(vals):
             raise ValueError("songs must be a range")
-        pcs[init], span = (pcs[init], {"a": vals}), (init, vals[0], len(vals))
+        span = (init, vals[0], len(vals))
     prog = wholeprog.lift(
         image,
         pcs,
@@ -227,7 +227,6 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         fold=True,
         sensitive=sensitive,
         init=init,
-        checked=span is not None,
     )
     entries = list(entries)
     if (fold := prog.init) is not None:
@@ -305,7 +304,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         mod.traps.add(k)
         mod.konsts.update(CGEN_SONG0=first, CGEN_SONGS=count)
         mod.guards[p.entries[index][1]] = [
-            f"if ((uint8_t)(a - CGEN_SONG0) >= CGEN_SONGS) {{",
+            "if ((uint8_t)(a - CGEN_SONG0) >= CGEN_SONGS) {",
             f"trap({k});",
             "}",
         ]

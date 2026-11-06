@@ -80,7 +80,6 @@ Inputs:
 | `entry_sp` | The SP every entry is called at (after its return address), declared rather than observed: outermost plans are specialized to it and page-1 checks guard the *Stack extent* only. |
 | `loaded` | The `[lo, hi)` the program was loaded to: no table extends past it (*Table extents*). |
 | `init` | The index of the entry the host calls once, first, on `image` (a player's init): its decided path is folded into the memory the program starts from (*Init folding*; a static lift only). |
-| `checked` | The host calls the `init` entry with its declared register values only and checks them itself: they bound the analysis, and its code neither tests them nor takes a lone one as a constant. |
 
 `trace.collect(image, driver)` runs `driver(session)` twice on the jennings native core over a
 copy of `image`: `session.call(pc, a)` is `run_to_rts`; `session.mem`/`session.mpu` are the
@@ -347,9 +346,9 @@ does not know (song data stored into an operand) stops the fold, as the program 
 it as constant. At the entry's own return the registers are its result, which the host
 does not read: the folded entry sets those the values run knows.
 
-A declared range of `A` (its songs, checked by the host or at entry) bounds the analysis
-(*Pointer reach* runs init once per song past the fold point) but not the path, so the fold
-is the same for one song as for several.
+A declared set of `A` values (its songs) bounds the analysis (*Pointer reach* runs init
+once per value past the fold point) but not the path, so the fold is the same for one song
+as for several; cgen declares none, so that its `.c` is the same for every song count.
 
 The lift is then of the image with the path's known bytes in place, its init entry at the
 fold point: the entry first checks the declared values of the registers the path read as it
@@ -362,8 +361,7 @@ is a constant of every entry, so operands a relocator patched are constant code 
 accesses have exact addresses; a byte some other store writes starts at the path's value. A
 path whose state depends on its input stops before that: the store of a value computed from
 `A` is not known, so the fold is at the last point before it, and the bytes the input decides
-stay cells written by the lifted code. With `checked` the host checks the declared registers
-itself: the entry neither tests them nor takes a lone value as a constant. Code only the path runs is not lifted;
+stay cells written by the lifted code. Code only the path runs is not lifted;
 `Program.init` gives the fold (the original entry and the fold point, the starting memory's
 bytes over the image, the stores and registers of the folded entry, and the instructions the
 path ran that the folded program writes no byte of: code, constant like lifted code).

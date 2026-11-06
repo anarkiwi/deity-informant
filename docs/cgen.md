@@ -31,7 +31,7 @@ python tools/cgenplay.py tune.sid --psid --volatile 0xD400-0xD41D -o out/   # tr
 | `loaded` | the `[lo, hi)` bytes the program was loaded to (default: its code span) |
 | `header` | the name the `.c` includes |
 | `init` | the index of the entry the host calls once, before any other (`None`, the default: entries in any order) |
-| `songs` | the range of values of `A` the `init` entry is called with (`None`, the default: any); the `.c` traps another at entry, against `CGEN_SONG0` and `CGEN_SONGS` in the `.h` |
+| `songs` | the range of values of `A` the `init` entry is called with (`None`, the default: any); the `.c` traps another at entry, against `CGEN_SONG0` and `CGEN_SONGS` in the `.h` (the lift takes any song) |
 
 `info` holds the stage times (`lift`, `mlir`, `layout`, `structure`, `print`), the regions
 `[(origin, length)]`, the code span, the traps in the `.c` (`{k: ("deopt", pc)}` or `("ind", pc,
@@ -66,8 +66,9 @@ caller's return address. `tools/cgenplay.c` is a host harness.
    stored it, setting the registers it wrote), so an operand a relocator patches is a
    constant, its access indexed directly, and code only the path runs is not translated.
    Neither the song number nor song data decides the path, so the `.c` is the same for every
-   song and song count. With `songs` the lift is `checked`: the init function starts with
-   `if ((uint8_t)(a - CGEN_SONG0) >= CGEN_SONGS) trap(k);`, the bounds in the `.h`.
+   song. `songs` is no fact of the lift, which takes any song, so neither is the song count:
+   the init function starts with `if ((uint8_t)(a - CGEN_SONG0) >= CGEN_SONGS) trap(k);`, the
+   bounds in the `.h`.
 2. **MLIR** (`emit.py`). Each lifted function is a private `func.func` taking and returning the
    register file as values; its registers, stack slots and block-crossing temporaries are
    rank-0 `memref.alloca`s, memory one global `@M`, volatile accesses `io_read`/`io_write`

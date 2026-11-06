@@ -1430,14 +1430,12 @@ pub fn reference_calls(
 /// stack checks against the stack's extent); ``sensitive`` the volatile addresses whose reads
 /// have effects (a throw-away read reaching none of them is not made);
 /// ``loaded`` the ``(lo, hi)`` the program was loaded to, where tables end at the latest;
-/// ``fold=True`` lifts copies of one routine as one function of the copy's index; ``init``
-/// the entry the host calls first, ``checked=True`` that the host checks its declared
-/// registers (they bound the analysis; its code tests none).
+/// ``fold=True`` lifts copies of one routine as one function of the copy's index.
 /// ``bank`` is a bank map: ``dir``/``data`` port
 /// cells, ``mask`` and ``pull`` bits, ``lut`` (configuration per effective port value),
 /// ``configs`` (per configuration 256 page kinds: 0 RAM, 1 ROM, 2 I/O) and ``rom``.
 #[pyfunction]
-#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None, fold=false, sensitive=None, init=None, checked=false))]
+#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None, fold=false, sensitive=None, init=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn lift_program(
     py: Python<'_>,
@@ -1453,7 +1451,6 @@ pub fn lift_program(
     fold: bool,
     sensitive: Option<Vec<u16>>,
     init: Option<usize>,
-    checked: bool,
 ) -> PyResult<Program> {
     let img = self::image(image)?;
     let es = self::entries(entries);
@@ -1467,7 +1464,6 @@ pub fn lift_program(
         loaded,
         fold,
         init,
-        checked,
     };
     Ok(Program::new(py.detach(|| {
         di_lift::lift_banked(&img, &es, &volatile, &f, opts, bank.as_ref())
