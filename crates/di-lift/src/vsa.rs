@@ -44,7 +44,7 @@ use std::collections::VecDeque;
 /// Flag registers with predicates: C, Z, N.
 const FLAGS: [usize; 3] = [8, 9, 14];
 /// Registers a predicate can constrain: A, X, Y.
-const DATA: usize = 3;
+pub(crate) const DATA: usize = 3;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Rel {
@@ -99,6 +99,41 @@ pub(crate) enum Tab {
 
 pub(crate) const NOREG: u8 = u8::MAX;
 
+/// A set of byte values, bit `v` for `v`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) struct Bits([u64; 4]);
+
+impl Bits {
+    fn add(&mut self, v: u32) {
+        self.0[(v >> 6) as usize & 3] |= 1 << (v & 63);
+    }
+    fn has(&self, v: u32) -> bool {
+        self.0[(v >> 6) as usize & 3] >> (v & 63) & 1 == 1
+    }
+    fn or(self, o: Bits) -> Bits {
+        Bits(std::array::from_fn(|i| self.0[i] | o.0[i]))
+    }
+    fn values(self) -> impl Iterator<Item = u32> {
+        (0..256).filter(move |&v| self.has(v))
+    }
+    /// The values `v + k` (mod 256).
+    fn shifted(self, k: u8) -> Bits {
+        let mut out = Bits::default();
+        self.values().for_each(|v| out.add((v + k as u32) & 0xff));
+        out
+    }
+    fn hull(self) -> Option<Iv> {
+        let lo = self.values().next()?;
+        let hi = (0..256).rev().find(|&v| self.has(v))?;
+        Some(Iv { lo, hi })
+    }
+    fn filter(self, f: impl Fn(u32) -> bool) -> Bits {
+        let mut out = Bits::default();
+        self.values().filter(|&v| f(v)).for_each(|v| out.add(v));
+        out
+    }
+}
+
 /// What holds of a byte tagged `a` on one path and `b` on another.
 fn join_tab(a: Tab, b: Tab) -> Option<Tab> {
     match (a, b) {
@@ -131,11 +166,14 @@ pub(crate) struct St {
     /// pointer pair whose high byte is one holds its window, as its stores are checked.
     stored: [u128; 2],
     /// The entries (bit `i % 64` for entry `i`) the state is reached from.
-    from: u64,
+    pub(crate) from: u64,
     /// Known bits of `A`, `X` and `Y`.
     pub(crate) kb: [Kb; DATA],
     /// Table bytes `A`, `X` and `Y` hold.
     pub(crate) tag: [Option<Tab>; DATA],
+    /// The values `A`, `X` and `Y` may hold beyond their intervals and known bits, where a
+    /// load of constant bytes or a branch on one narrowed them ([`reach`]'s pass only).
+    pub(crate) set: [Option<Bits>; DATA],
     /// The top three stack bytes, from the top, where pushed since the function's entry.
     pub(crate) push: [Option<Tab>; 3],
     /// The two bytes above the function's entry SP, low first (its `JSR`'s return address
@@ -146,6 +184,12 @@ pub(crate) struct St {
     /// Tracked bytes ([`Code::vecs`]) whose contents are known, by address: the table byte or
     /// constant they hold, and their interval.
     pub(crate) mem: Vec<(u16, Option<Tab>, Iv)>,
+    /// Pointer pairs some instruction since the entry stored, by low byte, and their values
+    /// ([`crate::word`], [`reach`]'s pass only).
+    pub(crate) wide: Vec<(u16, Option<crate::word::Wv>)>,
+    /// What `A`, `X` and `Y`, and tracked bytes, hold of 16-bit quantities.
+    pub(crate) half: [Option<crate::word::Half>; DATA],
+    pub(crate) mhalf: Vec<(u16, crate::word::Half)>,
 }
 
 impl St {
@@ -158,10 +202,14 @@ impl St {
             from: 0,
             kb: std::array::from_fn(|r| Kb::of(env[r])),
             tag: [None; DATA],
+            set: [None; DATA],
             push: [None; 3],
             above: [None; 2],
             depth: Some(0),
             mem: Vec::new(),
+            wide: Vec::new(),
+            half: [None; DATA],
+            mhalf: Vec::new(),
         }
     }
     fn has(&self, a: u32) -> bool {
@@ -190,13 +238,21 @@ impl St {
         self.reach(p).filter(|r| r.hi <= 0xffff)
     }
     /// The pointer's hull plus its index as unwrapped addresses (up to `$100FE`).
-    fn reach(&self, p: crate::analysis::Ptr) -> Option<Iv> {
+    pub(crate) fn reach(&self, p: crate::analysis::Ptr) -> Option<Iv> {
         let (q, h) = (p.lo?.value()?, p.hi.value()?);
         let iv = |a: u32| self.mem.iter().find(|e| e.0 as u32 == a).map(|e| e.2);
         let (lo, hi) = (iv(q)?, iv(h)?);
         Some(Iv {
             lo: hi.lo << 8 | lo.lo,
             hi: (hi.hi << 8 | lo.hi) + p.idx,
+        })
+    }
+    /// The values data register `r` may hold.
+    fn vals(&self, r: usize) -> Bits {
+        self.set[r].unwrap_or_else(|| {
+            let mut b = Bits::default();
+            self.kb[r].values(self.env[r]).for_each(|v| b.add(v));
+            b
         })
     }
     /// What data register `r` holds as a tag: its table byte, else its constant.
@@ -212,7 +268,11 @@ impl St {
             from: self.from,
             kb: self.kb,
             tag: self.tag,
+            set: self.set,
             mem: self.mem.clone(),
+            wide: self.wide.clone(),
+            half: self.half,
+            mhalf: self.mhalf.clone(),
             ..St::new(self.env)
         }
     }
@@ -481,13 +541,40 @@ fn restrict(p: &Pred, want: bool) -> Option<Iv> {
     out
 }
 
-/// `st` on the edge where flag register `flag` equals `want`, or `None` if the edge cannot be taken.
-pub(crate) fn refine(st: &St, flag: usize, want: bool) -> Option<St> {
+/// Whether register value `v` makes `p`'s flag `want`.
+fn sat(p: &Pred, want: bool, v: u32) -> bool {
+    let x = (v + 256 - p.shift as u32) & 0xff;
+    let y = (x + p.off as u32) & 0xff;
+    let k = p.k as u32;
+    let rel = match p.rel {
+        Rel::Eq => y == k,
+        Rel::Ne => y != k,
+        Rel::Ge => y >= k,
+        Rel::Lt => y < k,
+    };
+    p.pre.lo <= x && x <= p.pre.hi && rel == want
+}
+
+/// Narrow data register `r` of `s` to the values `keep` allows: `None` if none is left.
+fn narrow(s: &mut St, r: usize, keep: Bits) -> Option<()> {
+    s.env[r] = meet(s.env[r], keep.hull()?)?;
+    s.kb[r] = s.kb[r].meet(Kb::of(s.env[r]));
+    s.set[r] = Some(keep);
+    Some(())
+}
+
+/// `st` on the edge where flag register `flag` equals `want`, or `None` if the edge cannot be
+/// taken. In [`reach`]'s pass a register's value set is cut by the predicate too, and the index
+/// register of a table byte it holds to the indices whose constant byte passes it.
+pub(crate) fn refine(code: &Code, st: &St, flag: usize, want: bool) -> Option<St> {
     if st.env[flag].value().is_some_and(|v| (v != 0) != want) {
         return None;
     }
     let mut s = st.clone();
     s.env[flag] = Iv::exact(want as u32);
+    if flag == di_pcode::reg::C && code.sets() {
+        crate::word::carry(&mut s, want);
+    }
     let pred = FLAGS
         .iter()
         .position(|&f| f == flag)
@@ -497,6 +584,28 @@ pub(crate) fn refine(st: &St, flag: usize, want: bool) -> Option<St> {
         s.env[r] = restrict(&p, want).and_then(|iv| meet(iv, st.env[r]))?;
         if r < DATA {
             s.kb[r] = s.kb[r].meet(Kb::of(s.env[r]));
+        }
+        if r < DATA && code.sets() {
+            narrow(&mut s, r, st.vals(r).filter(|v| sat(&p, want, v)))?;
+            if let Some(Tab::T {
+                pc,
+                op,
+                reg: ix,
+                ix: Ix::Live,
+            }) = st.tag[r].filter(|_| p.shift == 0)
+            {
+                let ix = ix as usize;
+                if let Some(base) = code.base(pc, op, ix).filter(|_| ix < DATA && ix != r) {
+                    let keep = st.vals(ix).filter(|x| {
+                        code.at(pc, base, x).is_some_and(|a| {
+                            code.byte(a, st)
+                                .and_then(Iv::value)
+                                .is_none_or(|b| sat(&p, want, b))
+                        })
+                    });
+                    narrow(&mut s, ix, keep)?;
+                }
+            }
         }
     }
     Some(s)
@@ -525,6 +634,9 @@ pub(crate) struct Code<'a> {
     /// `St::from`) has run ([`reach`]; empty otherwise).
     pub(crate) after: Vec<Option<Iv>>,
     pub(crate) init: u64,
+    /// Per pointer pair, the least value it holds at every entry ([`crate::word`]; empty
+    /// otherwise).
+    pub(crate) floor: FxHashMap<u16, u32>,
 }
 
 impl Code<'_> {
@@ -545,24 +657,59 @@ impl Code<'_> {
             }
         })
     }
-    /// What the load at `pc` from `a` in state `st` yields beyond the tracked bytes: the hull
-    /// of constant bytes ([`Code::konst`]), else of the bytes' bounds (of the stored values
-    /// alone for a zero-page byte every path since the entry stored, of those once the init
-    /// entry has run where `st` is not reached from it); where `clip` lists the
-    /// bytes an indexed load at `pc` reads, the hull of those in `a`.
-    pub(crate) fn load(&self, pc: u16, a: Iv, st: &St) -> Option<Iv> {
-        let byte = |x: u32| {
-            let k = self.constant.contains(x as usize) && !self.cells.contains(x as usize);
-            if k {
-                Some(Iv::exact(self.img[x as usize] as u32))
-            } else if x < 0x100 && st.has(x) && !self.stored.is_empty() {
-                self.stored[x as usize]
-            } else if st.from & self.init == 0 && !self.after.is_empty() {
-                self.after[x as usize]
-            } else {
-                self.bound.get(x as usize).copied().flatten()
+    /// Whether data registers keep value sets ([`reach`]'s pass).
+    fn sets(&self) -> bool {
+        !self.bound.is_empty()
+    }
+    /// The interval of byte `x` a load reads beyond the tracked bytes: its constant, else its
+    /// bound (of the stored values alone for a zero-page byte every path since the entry
+    /// stored, of those once the init entry has run where `st` is not reached from it).
+    pub(crate) fn byte(&self, x: u32, st: &St) -> Option<Iv> {
+        let k = self.constant.contains(x as usize) && !self.cells.contains(x as usize);
+        if k {
+            Some(Iv::exact(self.img[x as usize] as u32))
+        } else if x < 0x100 && st.has(x) && !self.stored.is_empty() {
+            self.stored[x as usize]
+        } else if st.from & self.init == 0 && !self.after.is_empty() {
+            self.after[x as usize]
+        } else {
+            self.bound.get(x as usize).copied().flatten()
+        }
+    }
+    /// The operand of the table load of opcode `op` at `pc` indexed by register `r`, and
+    /// whether it indexes zero page.
+    fn base(&self, pc: u16, op: u8, r: usize) -> Option<(u32, bool)> {
+        let a = crate::dispatch::load_addr(self, pc, op, r as u8, 0)?;
+        Some((a as u32, Template::of(op).len == 2))
+    }
+    /// The address the table load at `pc` from `base` reads with index `x`: None outside the
+    /// bytes `clip` lets it read.
+    fn at(&self, pc: u16, base: (u32, bool), x: u32) -> Option<u32> {
+        let a = (base.0 + x) & if base.1 { 0xff } else { 0xffff };
+        match self.clip.get(&pc) {
+            Some(c) if c.binary_search(&(a as u16)).is_err() => None,
+            _ => Some(a),
+        }
+    }
+    /// The values the load of opcode `op` at `pc` reads in state `st` when it reads only
+    /// constant bytes from its operand plus its index register's values.
+    fn load_set(&self, pc: u16, op: u8, st: &St) -> Option<Bits> {
+        let r = crate::dispatch::index_reg(Template::of(op));
+        let base = self.base(pc, op, r.unwrap_or(NOREG as usize))?;
+        let xs = r.map_or(Bits([1, 0, 0, 0]), |r| st.vals(r));
+        let mut out = Bits::default();
+        for x in xs.values() {
+            if let Some(a) = self.at(pc, base, x) {
+                out.add(self.byte(a, st)?.value()?);
             }
-        };
+        }
+        out.hull().map(|_| out)
+    }
+    /// What the load at `pc` from `a` in state `st` yields beyond the tracked bytes: the hull
+    /// of constant bytes ([`Code::konst`]), else of the bytes' bounds ([`Code::byte`]); where
+    /// `clip` lists the bytes an indexed load at `pc` reads, the hull of those in `a`.
+    pub(crate) fn load(&self, pc: u16, a: Iv, st: &St) -> Option<Iv> {
+        let byte = |x: u32| self.byte(x, st);
         match self.clip.get(&pc) {
             Some(xs) => xs
                 .iter()
@@ -684,10 +831,14 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
         from: st.from,
         kb: std::array::from_fn(|r| kb[r].unwrap_or(st.kb[r]).meet(Kb::of(env[r]))),
         tag: st.tag,
+        set: st.set,
         push: st.push,
         above: st.above,
         depth: st.depth,
         mem: st.mem.clone(),
+        wide: st.wide.clone(),
+        half: st.half,
+        mhalf: st.mhalf.clone(),
     };
     // Pushes and pulls past the entry: a pull at depth `d <= 0` reads the byte `-d` above it,
     // a push at `d < 0` writes the byte `-d - 1`.
@@ -766,6 +917,9 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
             s.mem.sort_unstable_by_key(|e| e.0);
         }
     }
+    if code.sets() {
+        crate::word::step(code, pc, v.op, ops, b, st, &mut s, acc, &sym, written);
+    }
     for r in (0..DATA).filter(|&r| written >> r & 1 == 1) {
         s.tag[r] = match sym[r] {
             Some(Sym::Lin(b0, 0)) if (b0 as usize) < DATA => st.tag[b0 as usize],
@@ -775,6 +929,23 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
             },
             _ => None,
         };
+    }
+    for r in (0..DATA).filter(|&r| written >> r & 1 == 1) {
+        s.set[r] = match sym[r] {
+            _ if !code.sets() => None,
+            Some(Sym::Lin(b0, k)) if (b0 as usize) < DATA => {
+                st.set[b0 as usize].map(|x| x.shifted(k))
+            }
+            Some(Sym::Lin(b0, 0)) if b0 >= DATA as u8 && b0 != MEM && v.op != 0x68 => {
+                code.load_set(pc, v.op, st)
+            }
+            _ => None,
+        };
+        if let Some(x) = s.set[r] {
+            if narrow(&mut s, r, x).is_none() {
+                s.set[r] = None;
+            }
+        }
     }
     for r in (0..DATA).filter(|&r| written >> r & 1 == 1) {
         s.detach(pc, r);
@@ -855,7 +1026,7 @@ impl Thresholds {
 }
 
 /// The hull of `a` and `b`, widened when `widen` is given.
-fn join(a: &St, b: &St, widen: Option<&Thresholds>) -> St {
+fn join(code: &Code, a: &St, b: &St, widen: Option<&Thresholds>) -> St {
     let w = |old: Iv, new: Iv| widen.map_or(new, |t| t.widen(old, new));
     let mut env = a.env;
     for (e, &y) in env.iter_mut().zip(&b.env) {
@@ -878,7 +1049,12 @@ fn join(a: &St, b: &St, widen: Option<&Thresholds>) -> St {
     let rel = std::array::from_fn(|r| if a.rel[r] == b.rel[r] { a.rel[r] } else { None });
     let stored = [a.stored[0] & b.stored[0], a.stored[1] & b.stored[1]];
     let tab = |x: Option<Tab>, y: Option<Tab>| join_tab(x?, y?);
+    let (half, mhalf) = crate::word::join_halves(a, b);
+    let wide = crate::word::join(code, a, b, widen.is_some());
     St {
+        wide,
+        half,
+        mhalf,
         env,
         pred,
         rel,
@@ -889,6 +1065,7 @@ fn join(a: &St, b: &St, widen: Option<&Thresholds>) -> St {
             k(a).join(k(b))
         }),
         tag: std::array::from_fn(|r| tab(a.tag[r], b.tag[r])),
+        set: std::array::from_fn(|r| Some(a.set[r]?.or(b.set[r]?))),
         push: std::array::from_fn(|i| match (a.push[i], b.push[i]) {
             (Some(x), Some(y)) => Some(join_tab(x, y).unwrap_or(Tab::Any)),
             _ => None,
@@ -1084,6 +1261,7 @@ fn unlinked(st: &St) -> St {
 }
 
 struct Work<'a> {
+    code: &'a Code<'a>,
     state: FxHashMap<Key, St>,
     queue: VecDeque<Key>,
     queued: FxHashSet<Key>,
@@ -1138,7 +1316,12 @@ impl Work<'_> {
     fn flow(&mut self, key: Key, st: St) {
         let new = match self.state.get(&key) {
             None => st,
-            Some(old) => join(old, &st, self.heads.contains(&key.0).then_some(self.thr)),
+            Some(old) => join(
+                self.code,
+                old,
+                &st,
+                self.heads.contains(&key.0).then_some(self.thr),
+            ),
         };
         if self.state.get(&key) != Some(&new) {
             self.state.insert(key, new);
@@ -1158,7 +1341,7 @@ impl Work<'_> {
         };
         let new = slot
             .as_ref()
-            .map_or_else(|| st.clone(), |o| join(o, st, None));
+            .map_or_else(|| st.clone(), |o| join(self.code, o, st, None));
         if slot.as_ref() != Some(&new) {
             *slot = Some(new);
             for cx in site.calls.keys().copied().collect::<Vec<_>>() {
@@ -1172,7 +1355,7 @@ impl Work<'_> {
         let new = site
             .past
             .get(&t)
-            .map_or_else(|| st.clone(), |o| join(o, st, None));
+            .map_or_else(|| st.clone(), |o| join(self.code, o, st, None));
         if site.past.get(&t) != Some(&new) {
             site.past.insert(t, new);
             for cx in site.calls.keys().copied().collect::<Vec<_>>() {
@@ -1186,7 +1369,7 @@ impl Work<'_> {
         let new = site
             .calls
             .get(&cx)
-            .map_or_else(|| st.clone(), |o| join(o, st, None));
+            .map_or_else(|| st.clone(), |o| join(self.code, o, st, None));
         if site.calls.get(&cx) != Some(&new) {
             site.calls.insert(cx, new);
             self.deliver(r, cx);
@@ -1198,7 +1381,7 @@ impl Work<'_> {
         let res = [(&site.out, true), (&site.wild, false)]
             .into_iter()
             .filter_map(|(p, linked)| p.as_ref().map(|p| apply(p, &site.calls[&cx], linked)))
-            .reduce(|a, b| join(&a, &b, None));
+            .reduce(|a, b| join(self.code, &a, &b, None));
         let past: Vec<(u16, St)> = site
             .past
             .iter()
@@ -1299,6 +1482,7 @@ fn fixpoint(
 ) -> (FxHashMap<Key, St>, FxHashMap<u16, Site>) {
     let (rets, heads, brk_rets) = (&sh.rets, &sh.heads, &sh.brk_rets);
     let mut w = Work {
+        code,
         state: FxHashMap::default(),
         queue: VecDeque::new(),
         queued: FxHashSet::default(),
@@ -1325,8 +1509,8 @@ fn fixpoint(
             let out = step(code, pc, v, &st, &mut acc);
             match (&v.flow, Template::of(v.op).ctrl) {
                 (Flow::Br { t: tg, f }, CtrlKind::Br { flag, pol }) => {
-                    let taken = refine(&out, flag as usize, pol != 0);
-                    let fall = refine(&out, flag as usize, pol == 0);
+                    let taken = refine(code, &out, flag as usize, pol != 0);
+                    let fall = refine(code, &out, flag as usize, pol == 0);
                     for (s, e) in tg.all().iter().map(|&x| (x, &taken)).chain([(*f, &fall)]) {
                         if let Some(e) = e {
                             w.flow((s, cx), e.clone());
@@ -1413,12 +1597,12 @@ fn fixpoint(
 }
 
 /// Each start's states joined over its contexts.
-fn merge(state: &FxHashMap<Key, St>) -> FxHashMap<u16, St> {
+fn merge(code: &Code, state: &FxHashMap<Key, St>) -> FxHashMap<u16, St> {
     let mut merged: FxHashMap<u16, St> = FxHashMap::default();
     for (&(pc, _), st) in state {
         let m = merged
             .get(&pc)
-            .map_or_else(|| st.clone(), |o| join(o, st, None));
+            .map_or_else(|| st.clone(), |o| join(code, o, st, None));
         merged.insert(pc, m);
     }
     merged
@@ -1475,7 +1659,9 @@ fn clips(img: &[u8; 0x10000], idx: &[Indexed], bound: &[Option<Iv>]) -> FxHashMa
     idx.iter()
         .map(|x| {
             let ext = x.free || unwritten(img, bound, &x.all);
-            (x.pc, if ext { &x.ext } else { &x.all }.clone())
+            let mut c = if ext { &x.ext } else { &x.all }.clone();
+            c.sort_unstable();
+            (x.pc, c)
         })
         .collect()
 }
@@ -1554,6 +1740,26 @@ fn reach(
         };
     }
     let top = vec![None; 0x10000];
+    // A pair's floor starts at its image value where the first call may be any entry's, else
+    // holding none: the init entry's returns give it its first values.
+    let image: FxHashMap<u16, u32> = code
+        .vecs
+        .iter()
+        .copied()
+        .filter(|&q| crate::word::pair(code, q))
+        .map(|q| {
+            let at = |a: u16| entry[a as usize].and_then(Iv::value);
+            (q, at(q).zip(at(q + 1)).map_or(0, |(l, h)| h << 8 | l))
+        })
+        .collect();
+    let none = |v: u32| {
+        if given.init.is_some() {
+            crate::word::NONE
+        } else {
+            v
+        }
+    };
+    let floor = image.iter().map(|(&q, &v)| (q, none(v))).collect();
     let mut c = Code {
         img: code.img,
         cells: code.cells,
@@ -1566,10 +1772,31 @@ fn reach(
         bound: top,
         stored: vec![Some(Iv::full(1)); 0x100],
         init: given.init.map_or(0, |i| 1 << (i % 64)),
+        floor,
     };
     let mut acc = Vec::new();
     let merged = loop {
-        let merged = merge(&fixpoint(&c, p.vars, p.entries, p.sh, p.disp, p.thr).0);
+        let (state, _) = fixpoint(&c, p.vars, p.entries, p.sh, p.disp, p.thr);
+        // Each pair's floor falls to the least value an entry's return leaves in it.
+        let mut floor = c.floor.clone();
+        for (&(pc, cx), st) in &state {
+            let exit = p.vars[&pc]
+                .iter()
+                .any(|v| matches!(v.flow, Flow::Rts(_) | Flow::Rti(_)));
+            if !exit || cx < ANY && !p.sh.rets.wild.contains(&pc) {
+                continue;
+            }
+            for (q, l) in floor.iter_mut() {
+                let lo = match st.wide.binary_search_by_key(q, |e| e.0) {
+                    Ok(_) => crate::word::value(&c, st, *q).range().map(|r| r.0),
+                    // A pair no store of the init entry's run reached holds its image value.
+                    Err(_) if st.from & c.init != 0 => Some(image[q]),
+                    Err(_) => None,
+                };
+                *l = (*l).min(lo.unwrap_or(*l));
+            }
+        }
+        let merged = merge(&c, &state);
         // Per byte the hull of the values stores write (every value for a store of unknown
         // address or value), none where no store writes it.
         let mut wrote: Vec<Option<Iv>> = vec![None; 0x10000];
@@ -1648,8 +1875,13 @@ fn reach(
             .zip(&wrote)
             .map(|(&o, &n)| o.zip(n).map(|(o, n)| meet(o, n).unwrap_or(n)))
             .collect();
+        // The floors are a least fixpoint over runs whose bytes keep their bounds: they fall
+        // once the bounds hold.
         if bound == c.bound && after == c.after && stored == c.stored {
-            break merged;
+            if floor == c.floor {
+                break merged;
+            }
+            c.floor = floor;
         }
         c.clip = clips(code.img, &idx, &bound);
         (c.bound, c.after, c.stored) = (bound, after, stored);
@@ -1669,9 +1901,30 @@ fn reach(
             let (mut acc, mut base) = (Vec::new(), Vec::new());
             step(&c, pc, v, &st, &mut acc);
             step(&c, pc, v, &zero, &mut base);
+            let idx = crate::dispatch::index_reg(t).map_or(Iv::exact(0), |r| st.env[r]);
+            let narrow = |a: Iv, w: Option<Iv>| match w {
+                Some(w) if a.hi <= 0xffff => meet(a, w).unwrap_or(a),
+                Some(w) => w,
+                None => a,
+            };
             for (ai, (a, b)) in acc.iter().zip(&base).enumerate() {
                 if !a.store && !a.dummy && (a.ptr.is_some() || cell) {
-                    out.insert((pc, v.op, ai), (a.addr, b.addr));
+                    // The pair the address is formed from: a zero-page pointer, or the cell
+                    // operand.
+                    let q = match a.ptr {
+                        Some(crate::analysis::Ptr {
+                            lo: Some(l), hi, ..
+                        }) => l
+                            .value()
+                            .filter(|&l| hi.value() == Some(l + 1))
+                            .map(|l| l as u16),
+                        Some(_) => None,
+                        None => (t.len == 3).then_some(pc.wrapping_add(1)),
+                    }
+                    .filter(|&q| crate::word::pair(&c, q));
+                    let w = |i: Iv| q.and_then(|q| crate::word::reach(&c, &st, q, i));
+                    let (a, b) = (narrow(a.addr, w(idx)), narrow(b.addr, w(Iv::exact(0))));
+                    out.insert((pc, v.op, ai), (a, b));
                 }
             }
         }
@@ -1803,10 +2056,11 @@ pub fn analyze(
         stored: Vec::new(),
         after: Vec::new(),
         init: 0,
+        floor: FxHashMap::default(),
     };
     let thr = Thresholds::new(vars, &code);
     let (state, ret) = fixpoint(&code, vars, entries, &sh, disp, &thr);
-    let merged = merge(&state);
+    let merged = merge(&code, &state);
     let succs = &sh.succs;
     let mut dec = FixedBitSet::with_capacity(0x10000);
     let mut fill = |vars: &mut FxHashMap<u16, Vec<Var>>, pc: u16, bs: [Option<Iv>; 2]| {

@@ -49,7 +49,8 @@ prog.code             # [addr, ...] bytes treated as constant: code, tables read
 prog.written          # [(lo, hi), ...] runs of the bytes stores with address sets may write
 prog.starts           # [pc, ...] instruction starts the functions plan (every instance copy's)
 prog.addr_sets        # {(pc, store): [(lo, hi), ...]} address sets of pointer accesses
-prog.reach            # {pc: (lo, hi, base_lo, base_hi)} pointer loads' hulls (*Pointer reach*)
+prog.reach            # {pc: (lo, hi, base_lo, base_hi)} pointer loads' hulls (*Pointer reach*;
+                      #   hi past $FFFF: a pointer advanced without bound)
 prog.bounds           # {address: (lo, hi)} bytes whose every store has an exact address
 prog.guard_evals      # conditional branches to a deopt the interpreter backend has run
 prog.init             # init=: {"index", "entry", "pc", "image", "stores", "regs", "code"} or None
@@ -575,7 +576,26 @@ the facts, so a proof holds on every execution that stays in lifted code.
   Starting from no hulls, each round of the pass gives hulls that hold of every run, met
   with the last round's, until a round changes none. The pass changes no lifted code: the
   hulls hold only for runs that keep those assumptions (cgen reads past them through
-  `oob_rd`).
+  `oob_rd`). It runs once, on the program discovery settles on, and refines the domain:
+  - *Value sets.* `A`, `X` and `Y` keep the set of values a load of constant bytes gives them
+    (the table's bytes at the index register's values, inside the extent), through transfers
+    and constant offsets. A conditional branch cuts the set of the register its flag tests
+    and, where that register holds a table byte read through an index register that still
+    holds its value, the index's set to the indices whose byte passes the test: an end
+    marker tested before its pointer is used leaves the pointer.
+  - *Pointer pairs* (`word.rs`). A pair of tracked bytes `q, q + 1` holds a 16-bit value as
+    integers that do not wrap: a base plus a non-negative offset, unbounded above. `CLC; ADC`
+    of the pair's low byte stored back into it owes the high byte the carry until the branch
+    on the carry and an `INC` of the high byte (or an `ADC #0` of it stored there) settle it,
+    and a pair whose two bytes are stored from the two bytes of one pair or sum holds that
+    value; any other store gives a pair its bytes' hull. A value past `$FFFF` is a pointer
+    walked past the top of memory, which reads out of bounds. A pair no instruction since
+    the entry stored holds at least its floor: the least value every return of an entry
+    leaves (of the init entry, its image value where its run stores none; with no init
+    entry, the image value too), a least fixpoint the rounds reach once the byte bounds
+    hold. With an init entry the floor holds in the states it does not reach.
+  An index register is one the instruction's template reads before writing (`LDX abs,Y`
+  reads `Y`).
 - **Computed jumps** (`dispatch.rs`). A `JMP (ind)` whose pointer bytes are tagged on every
   path into it, a `JMP`/`JSR` whose cell operand bytes are (a byte that is not a cell is a
   constant), and an `RTS`/`RTI` whose return-address bytes are pushed so on every path, goes

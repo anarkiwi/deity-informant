@@ -22,6 +22,7 @@ pub mod ptr;
 pub mod scev;
 pub mod vsa;
 pub mod wide;
+pub mod word;
 
 pub use analysis::{Entry, Facts};
 pub use bank::{Back, BankMap, Banked};
@@ -513,13 +514,17 @@ pub fn lift_banked(
         opts.cycles,
     ) {
         if let Some((img, es, f)) = fold::prepare(img, &entries, ix, volatile, loaded, sp) {
-            return lift_core(&img, &es, volatile, facts, plain, bank, Some(f));
+            let ix = f.index;
+            return lift_core(&img, &es, volatile, facts, plain, bank, Some(f), Some(ix));
         }
+        return lift_core(img, &entries, volatile, facts, plain, bank, None, Some(ix));
     }
-    lift_core(img, &entries, volatile, facts, plain, bank, None)
+    lift_core(img, &entries, volatile, facts, plain, bank, None, None)
 }
 
-/// The lift of `entries` (declared, [`declared`]), `fold` the init entry folded into `img`.
+/// The lift of `entries` (declared, [`declared`]), `fold` the init entry folded into `img`,
+/// `init` the index of the entry the host calls once, first.
+#[allow(clippy::too_many_arguments)]
 fn lift_core(
     img: &[u8; 0x10000],
     entries: &[Entry],
@@ -528,6 +533,7 @@ fn lift_core(
     opts: Opts,
     bank: Option<&BankMap>,
     fold: Option<fold::Fold>,
+    init: Option<usize>,
 ) -> Program {
     let mut matched = true;
     let (g, plans, fidx, callees, recursive, slots, constcode, touches, seen, sites, private) = loop {
@@ -539,10 +545,7 @@ fn lift_core(
             matched,
             opts.loaded,
             opts.entry_sp,
-            opts.entry_sp.map(|_| vsa::Wanted {
-                volatile,
-                init: fold.as_ref().map(|f| f.index),
-            }),
+            opts.entry_sp.map(|_| vsa::Wanted { volatile, init }),
         );
         let roots: Vec<u16> = entries.iter().map(|e| e.pc).collect();
         // Declared entry SP: the windows also keep pointers out of the volatile pages.

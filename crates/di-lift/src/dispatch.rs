@@ -31,7 +31,7 @@
 use crate::analysis::{absint, operand_bytes, Access, Flow, Iv, Tg, Var, TOP_ENV};
 use crate::scev::{Induction, Place};
 use crate::vsa::{Code, Ix, Key, St, Tab, NOREG};
-use di_pcode::{reg, CtrlKind, Opc, Space, Template};
+use di_pcode::{reg, CtrlKind, Opc, Space, Template, Vn};
 use fixedbitset::FixedBitSet;
 use petgraph::algo::dominators::{simple_fast, Dominators};
 use petgraph::graphmap::DiGraphMap;
@@ -367,12 +367,18 @@ pub(crate) fn stored_reg(t: &Template, i: usize) -> Option<usize> {
 }
 
 /// Whether template `t` reads register `r`.
+/// Whether template `t` reads register `r` before it writes it.
 fn reads(t: &Template, r: usize) -> bool {
-    t.ops().iter().any(|o| {
-        o.inputs()
-            .iter()
-            .any(|v| v.space() == Space::Reg && v.off() as usize == r)
-    })
+    let is = |v: &Vn| v.space() == Space::Reg && v.off() as usize == r;
+    for o in t.ops() {
+        if o.inputs().iter().any(is) {
+            return true;
+        }
+        if is(&o.out) {
+            return false;
+        }
+    }
+    false
 }
 
 /// The index register (`X` before `Y`) template `t` reads, if any.
@@ -449,6 +455,7 @@ pub(crate) fn vectors(
         stored: Vec::new(),
         after: Vec::new(),
         init: 0,
+        floor: FxHashMap::default(),
     };
     let mut v: Vec<u16> = vars
         .iter()
