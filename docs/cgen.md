@@ -225,7 +225,7 @@ per-voice routines often are; the rest are renumbered in order.
   their slices (`#define R2 (C0 + (R2_ORG - C0_ORG))`), so each byte is held once, and
   `Cj_DATA` marks a span's data bytes up to its last constant byte (`Cj_BITS`; every byte past
   it is data). A load of unknown address
-  reaching other code reads `oob_rd`.
+  reaching other code reads `oob_rd`, 0 there.
 - **Data regions** `R0, R1, ...` (ascending address) are the maximal runs of other bytes that
   some access may touch, outside volatile ranges. An access's interval comes from its address
   expression (constants, an 8-bit index adds `[0, 255]`, masks, shifts, the hull of what flows
@@ -244,9 +244,9 @@ per-voice routines often are; the rest are renumbered in order.
   region. Zero page, the stack page and RAM below the image are regions when accessed; a byte
   past the image is one only when a bounded store or a store with an address set writes it (the bytes between an instance's copies' bytes stay in
   their array): a read of any other byte past the image is out of bounds. A load whose bytes
-  in the program lie in one region or held span, the rest past the image so, tests its
-  address against it and reads `oob_rd` outside (`(uint16_t)(a - R2_ORG) < R2_LEN ? ... :
-  oob_rd(a)`); from a constant base plus a byte inside one held span, through the span's
+  in the image lie in one region or held span (all its bytes when none is), every one held,
+  tests its address against it and reads `oob_rd` outside (`(uint16_t)(a - R2_ORG) < R2_LEN ?
+  ... : oob_rd(a)`); from a constant base plus a byte inside one held span, through the span's
   bounds-checked reader `rdCj(base, index)`. One the lift proves (`Program.proven`: the bounds
   of the bytes its index comes from) inside one region or held span indexes it unchecked.
   Every byte a store with an address set may write (`Program.written`: a block copy's
@@ -277,13 +277,13 @@ per-voice routines often are; the rest are renumbered in order.
   and those inside it held too) and printed
   `rdCj(base, y)`, the address as a 16-bit base plus a byte (`(zp),Y`'s pointer and index, a
   constant offset below 256, else 0): `noinline`, it reads `Cj` where the address lies in it,
-  else `oob_rd`, so a pointer walked past the program reads out of bounds. Where the hull the
+  else `oob_rd`, so a pointer below the program (zero page, a pointer still 0) or walked past
+  it reads what the 6502 would. Where the hull the
   lift proves on every run (`Program.proven`: no table taken to be read inside its extent)
   lies inside `loaded`, the span is that hull and the
   load indexes it unchecked: `CGEN_IX(Cj, base - Cj_ORG, y)`. Not taken when the
-  hull meets a volatile range inside `loaded`, or reaches below `loaded` a byte another
-  access touches or a volatile one; then `rd`. `rd` and the regions only it reaches are left
-  out when no load needs it.
+  hull meets a volatile range inside `loaded`, or holds no data byte of it; then `rd`.
+  `oob_rd` and the regions only it reaches are left out when no load needs it.
 - In an instance function (unrolled copies folded into one function of the copy's index `k`,
   every call passing a constant), a value computed from `k` alone (not a branch condition: a
   condition of `k` alone tests such a value) has one definition at the function's entry per
@@ -313,15 +313,18 @@ per-voice routines often are; the rest are renumbered in order.
   region and the address taken modulo its width (16 bits, 8 for a zero-page one) as the 6502
   wraps it; a load of constants in one span is `Cj[off + index]` alike. One in volatile
   memory is `io_read`/`io_write`. One wholly in other constant code is `oob_rd`/`oob_wr`. Any
-  other goes through `rd(a)`/`wr(a, v)`: the regions outside the spans (by the `Rk_ORG`
-  symbols, so data pointers holding original addresses resolve), the volatile ranges, the
-  spans (`wr` writing their data bytes only), then `oob_rd`/`oob_wr`; they and `codechk` are
-  `noinline`, as llvm-mos would otherwise copy them into every caller.
+  other goes through `rd(a)` (`oob_rd(a)`) or `wr(a, v)`: the volatile ranges, the regions
+  outside the spans (by the `Rk_ORG` symbols, so data pointers holding original addresses
+  resolve) and the spans (`wr` writing their data bytes only), then `oob_wr`; `oob_rd` finds
+  the array by tables of their origins and lengths (`OOB_AT`, `OOB_ORG`, `OOB_LEN`). They and
+  `codechk` are `noinline`, as llvm-mos would otherwise copy them into every caller.
 - A load of a constant byte (constant code or a table the lift read as constant) at a fixed
   address prints as a name the `.h` defines, relative to the origin that places the byte
   (`CODE_KA3` for `CODE_ORG + 0xA3`): the `.c` holds neither its value nor its address, and the
   compiler folds it.
-- `oob_rd` returns 0, `oob_wr` discards; defining `CGEN_OOB` replaces both with the host's.
+- `oob_rd` returns the byte the 6502 reads at any address: a region's or span's live byte, an
+  I/O register, 0 where the program holds none; `oob_wr` discards. Defining `CGEN_OOB` replaces
+  both with the host's.
   A store the lift found may hit constant code or a table it read is followed by `codechk`,
   which traps when a constant byte of a span would change.
 

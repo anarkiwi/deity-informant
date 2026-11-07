@@ -27,16 +27,8 @@ uint8_t io_read(uint16_t a);
 void io_write(uint16_t a, uint8_t v);
 void trap(uint16_t k);
 """
-OOB = {
-    "oob_rd": (
-        "uint8_t oob_rd(uint16_t a);",
-        "static uint8_t oob_rd(uint16_t a) {\n(void)a;\nreturn 0;\n}",
-    ),
-    "oob_wr": (
-        "void oob_wr(uint16_t a, uint8_t v);",
-        "static void oob_wr(uint16_t a, uint8_t v) {\n(void)a;\n(void)v;\n}",
-    ),
-}
+OOB = {"oob_rd": "uint8_t oob_rd(uint16_t a);", "oob_wr": "void oob_wr(uint16_t a, uint8_t v);"}
+OOB_WR = ["static void oob_wr(uint16_t a, uint8_t v) {", "(void)a;", "(void)v;", "}"]
 
 #: The element of array ``a`` at a 16-bit offset ``b`` plus a byte index ``y``, modulo 2^16 as
 #: the 6502's ``(zp),Y`` wraps: with 16-bit pointers the array's place at ``b`` indexed by
@@ -111,14 +103,30 @@ def _data(j):
     return f"({off} >= C{j}_BITS || C{j}_DATA[{off} >> 3] >> ({off} & 7) & 1)"
 
 
-def _rd(name, regions, vol, spans):
-    """A read dispatcher over ``regions``, the volatile condition ``vol`` and the held
-    ``spans``."""
-    out = [f"static __attribute__((noinline)) uint8_t {name}(uint16_t a) {{"]
-    out += [f"if ({_inside(r)}) return {r}[a - {r}_ORG];" for r in regions]
+def _rd(regions, vol, spans):
+    """``oob_rd``: the byte the 6502 reads at ``a``, by the volatile condition ``vol``, then the
+    origins and lengths of ``regions`` and the held ``spans`` (0 where the program holds none)."""
+    arrays = [*regions, *(f"C{j}" for j in spans)]
+    out = ["static __attribute__((noinline)) uint8_t oob_rd(uint16_t a) {"]
     out += [f"if ({vol}) return io_read(a);"] if vol else []
-    out += [f"if ({_inside(f'C{j}')}) return C{j}[a - C{j}_ORG];" for j in spans]
-    return out + ["return oob_rd(a);", "}"]
+    if not arrays:
+        return out + ([] if vol else ["(void)a;"]) + ["return 0;", "}"]
+    tables = [f"static uint8_t *const OOB_AT[] = {{{', '.join(arrays)}}};"] + [
+        f"static const uint16_t OOB_{k}[] = {{{', '.join(f'{r}_{k}' for r in arrays)}}};"
+        for k in ("ORG", "LEN")
+    ]
+    return (
+        tables
+        + out
+        + [
+            f"for (uint8_t i = 0; i < {len(arrays)}; ++i) {{",
+            "uint16_t o = a - OOB_ORG[i];",
+            "if (o < OOB_LEN[i]) return OOB_AT[i][o];",
+            "}",
+            "return 0;",
+            "}",
+        ]
+    )
 
 
 def _wr(name, regions, vol, sliced):
@@ -135,9 +143,10 @@ def _wr(name, regions, vol, sliced):
 
 
 def _dispatch(mem, helpers, used):
-    """``rd``/``wr`` over the regions outside the held spans, the volatile ranges, the held
-    spans (whose data bytes ``Cj_DATA`` marks) and the out-of-bounds hooks, and ``codechk``:
-    whether a held constant byte would change."""
+    """``oob_rd`` (unless the host's) and ``wr`` over the regions outside the held spans, the
+    volatile ranges and the held spans (whose data bytes ``Cj_DATA`` marks), ``wr`` then
+    ``oob_wr``; ``rd``, ``oob_rd`` for a load the lift places nowhere; and ``codechk``: whether
+    a held constant byte would change."""
     out = []
     vol = " || ".join(
         f"(a >= 0x{lo:04X} && a < 0x{hi:04X})" if hi < 0x10000 else f"a >= 0x{lo:04X}"
@@ -146,8 +155,16 @@ def _dispatch(mem, helpers, used):
     spans = range(len(mem.held)) if "CODE" in used else range(0)
     sliced = [j for j in spans if _sliced(mem, used, j)]
     regions = [f"R{k}" for k in range(len(mem.regions)) if _slice(mem, used, k) is None]
+    oob = sorted(helpers & set(OOB))
+    if oob:
+        out += ["#ifdef CGEN_OOB", *(OOB[h] for h in oob), "#else"]
+        out += [
+            *(OOB_WR if "oob_wr" in oob else []),
+            *(_rd(regions, vol, spans) if "oob_rd" in oob else []),
+        ]
+        out.append("#endif")
     if "rd" in helpers:
-        out += _rd("rd", regions, vol, spans)
+        out.append("static inline uint8_t rd(uint16_t a) { return oob_rd(a); }")
     if "wr" in helpers:
         out += _wr("wr", regions, vol, sliced)
     if "codechk" in helpers:
@@ -311,10 +328,10 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     used, helpers = set(mod.used), mod.helpers
     helpers |= {"oob_rd"} if "rd" in helpers or mod.checked else set()
     helpers |= {"oob_wr"} if "wr" in helpers else set()
-    if helpers & {"rd", "codechk"} and mem.held:
+    if helpers & {"oob_rd", "codechk"} and mem.held:
         used.add("CODE")
     regions = sorted(
-        mod.regions_used | (set(range(len(mem.regions))) if helpers & {"rd", "wr"} else set())
+        mod.regions_used | (set(range(len(mem.regions))) if helpers & {"oob_rd", "wr"} else set())
     )
     c = [PROLOGUE.format(header=header)]
     if "CGEN_IX" in used:
@@ -328,10 +345,6 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
             c.append(f"#define R{k} (C{j} + (R{k}_ORG - C{j}_ORG))")
         else:
             c.append(f"uint8_t R{k}[R{k}_LEN] = {{R{k}_INIT}};")
-    oob = [OOB[h] for h in sorted(helpers & set(OOB))]
-    if oob:
-        c += ["#ifdef CGEN_OOB", *(d for d, _ in oob), "#else", *(f for _, f in oob)]
-        c.append("#endif")
     for j in range(len(mem.held)) if helpers & {"wr", "codechk"} and "CODE" in used else ():
         if _sliced(mem, used, j):
             c.append(f"static const uint8_t C{j}_DATA[] = {{C{j}_DATA_INIT}};")
