@@ -2382,12 +2382,12 @@ end:
 
 def test_pointer_read_that_may_reach_a_zone_reads_memory(prefix, tmp_path):
     """A read through a pointer whose high byte is any value is not checked against page 1
-    and the I/O pages: it reads the program's span where it lands there and ``oob_rd``
-    elsewhere, the I/O pages' ``io_read`` among them, no deopt."""
+    and the I/O pages: with no data byte in the program to hold, it reads memory through
+    ``rd``, the I/O pages' ``io_read`` and zero page's live bytes among it, no deopt."""
     calls = [("entry", a) for a in (0x20, 0xC0, 0, 0x20)]
     c, _, info = check(prefix, tmp_path, ANYPTR, calls)
     assert not info["traps"] and info["stats"]["zone_guards"] == 0
-    assert "rdC0((uint16_t)a << 8, 0)" in c
+    assert "rd((uint16_t)a << 8)" in c
 
 
 TWOEXITS = """
@@ -2441,12 +2441,16 @@ def test_held_spans_join_only_across_data(gap_data):
 )
 def test_pointer_span_reaches_a_block_copy_past_the_program(written, want):
     """A pointer's span runs from its hull's first data byte in the program to its last, and on
-    to the end of what a block copy writes past the program, below the volatile ranges."""
+    to the end of what a block copy writes past the program, below the volatile ranges: none
+    when the program holds no data byte of it."""
     code = np.zeros(0x10000, dtype=bool)
     code[0x1000:0x1008] = True
     mem = regions.Memory(bytes(0x10000), code, [W.IO], (0x1000, 0x1010), written=written)
     assert mem.pointer_run((0x1000, 0xFFFF)) == want == mem.pointer_run((0, 0xFFFF))
     assert mem.pointer_run((0, 0xFFF)) is None and mem.pointer_run((0, 0x1007)) is None
+    code[0x1008:0x1010] = True
+    mem = regions.Memory(bytes(0x10000), code, [W.IO], (0x1000, 0x1010), written=written)
+    assert mem.pointer_run((0, 0xFFFF)) is None
 
 
 def test_bounded_load_reads_its_region_in_the_image():

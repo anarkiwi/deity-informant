@@ -161,7 +161,7 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         past = [b for a, b in self.written if a1 <= a <= hi and b <= below]
         lo, hi = max(lo, a0), min(hi, max([a1, *past]) - 1)
         data = np.flatnonzero(~self.code[lo : hi + 1]) if lo <= hi else np.zeros(0, int)
-        if not data.size or self.vol[lo : hi + 1].any():
+        if not data.size or lo + data[0] >= a1 or self.vol[lo : hi + 1].any():
             return None
         return lo + int(data[0]), lo + int(data[-1])
 
