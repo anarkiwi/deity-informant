@@ -457,6 +457,10 @@ pub(crate) fn vectors(
         floor: FxHashMap::default(),
         runs: Vec::new(),
         words: FxHashMap::default(),
+        ptrs: FxHashMap::default(),
+        exits: FxHashMap::default(),
+        mods: FxHashMap::default(),
+        pinned: FixedBitSet::new(),
         aimed: FxHashMap::default(),
     };
     let mut v: Vec<u16> = vars

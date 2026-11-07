@@ -3008,6 +3008,117 @@ def test_init_block_copy_is_a_runtime_copy(prefix, tmp_path):
     assert "for (" in init and re.search(r"(rdC0|CGEN_IX)\(", init) and not re.search(r"\brd\(", c)
 
 
+OVERCOPY = """
+init:   CMP #$02
+        BCS eff
+        LDX #$03
+c:      LDA blk,X
+        STA init,X
+        DEX
+        BPL c
+        RTS
+eff:    LDA #$0F
+        STA $C018
+        RTS
+play:   AND #$03
+        TAX
+        LDA init,X
+        STA $C000
+        RTS
+blk:    .byte 1, 2, 3, 4
+end:
+"""
+
+
+@pytest.mark.parametrize("rerun", [False, True])
+def test_code_init_overwrites_after_running_it_is_data(prefix, tmp_path, rerun):
+    """Init's code a copy overwrites after init has run it (play never runs it) is data: no
+    instruction runs at those bytes after the copy, so the copy writes data play reads and
+    init's code runs with its entry bytes, with no code check or opcode dispatch. Where play
+    runs that code too, its bytes are cells."""
+    src = (
+        OVERCOPY.replace("play:   AND #$03", "play:   JSR init\n        AND #$03")
+        if rerun
+        else OVERCOPY
+    )
+    img, labels, loaded = assemble(src)
+    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+    for song in (0, 3):
+        (tmp_path / str(song)).mkdir()
+        calls = [("init", song)] + [("play", k) for k in range(4)]
+        play(tmp_path / str(song), c, h, img, labels, calls)
+    cells = set(info["provenance"]["cells"])
+    init = c[c.index("void init") : c.index("void play")]
+    assert (labels["init"] in cells) == rerun
+    if not rerun:
+        assert "codechk(" not in c and not re.search(r"if \(\w+\[[^]]*\] == 0x", init)
+
+
+SWPREL = """
+init:   LDA #lo(song)
+        STA $FD
+        LDA #hi(song)
+        STA $FE
+        LDX #$00
+r:      LDA sites+1,X
+        BEQ done
+        STA $FC
+        LDA sites,X
+        STA $FB
+        LDY offs,X
+        LDA ($FD),Y
+        CLC
+        ADC $FD
+        LDY #$01
+        STA ($FB),Y
+        LDY offs,X
+        INY
+        LDA ($FD),Y
+        ADC $FE
+        LDY #$02
+        STA ($FB),Y
+        INX
+        INX
+        BNE r
+done:   RTS
+play:   AND #$03
+        TAY
+o0:     LDA $0000,Y
+        STA $C000
+o1:     LDA $0000,Y
+        STA $C001
+        RTS
+sites:  .byte lo(o0), hi(o0), lo(o1), hi(o1), 0, 0
+offs:   .byte 0, 0, 2, 0
+song:   .byte 4, 0, 8, 0
+        .byte 1, 2, 3, 4, 5, 6, 7, 8
+end:
+"""
+
+
+@pytest.mark.parametrize("plain", [False, True])
+def test_relocated_operands_point_into_the_song(prefix, tmp_path, plain):
+    """Init relocating play's operands from the song's header words plus the song's base, through
+    a table of patch sites, leaves pointer variables bounded to the song: play reads through
+    them with the song span's bounds-checked reader, not ``rd``. An operand play also writes
+    with a byte of no pointer stays a pointer variable of unbounded values, read through
+    ``rd``."""
+    src = (
+        SWPREL.replace("        STA $C001\n", "        STA $C001\n        INC o1+1\n")
+        if plain
+        else SWPREL
+    )
+    img, labels, loaded = assemble(src)
+    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+    calls = [("init", 0)] + [("play", k) for k in range(4)]
+    play(tmp_path, c, h, img, labels, calls)
+    ops = {labels[o] + k for o in ("o0", "o1") for k in (1, 2)}
+    assert ops <= set(info["provenance"]["cells"])
+    body = c[c.index("void play") :]
+    assert re.search(r"rdC\d+\(", body)
+    assert bool(re.search(r"\brd\(", body)) == plain
+
+
 @pytest.mark.parametrize("bounded", [True, False])
 def test_index_bound_through_a_call_keeps_a_read_inside(prefix, tmp_path, bounded):
     """A song byte stored as a pattern number only below $80 (the branch on the flags the

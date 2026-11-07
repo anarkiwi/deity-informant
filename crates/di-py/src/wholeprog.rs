@@ -792,6 +792,13 @@ impl Program {
         self.prog.written.clone()
     }
 
+    /// Runs ``[(lo, hi)]`` (``hi`` exclusive) of instruction bytes stores write that no
+    /// instruction runs at after them: data.
+    #[getter]
+    fn dead(&self) -> Vec<(u32, u32)> {
+        self.prog.dead.clone()
+    }
+
     /// Address sets of data accesses through pointers or with several addresses:
     /// ``{(pc, store): [(lo, hi), ...]}`` runs, ``hi`` exclusive.
     #[getter]

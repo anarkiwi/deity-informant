@@ -606,6 +606,7 @@ pub fn lift_banked(
             .collect();
         let mut constcode = g.code.clone();
         constcode.difference_with(&g.cells);
+        constcode.difference_with(&g.dead);
         constcode.difference_with(&g.rom_code);
         let page1 = |iv: Iv| iv.meets(0x100, 0x200);
         // Per function whether a load or store other than a push or pull may reach page 1.
@@ -881,6 +882,7 @@ pub fn lift_banked(
         },
         volatile: volatile.to_vec(),
         written: runs(&g.written),
+        dead: runs(&g.dead),
         starts,
         elide_ret: private,
         bank: bank.cloned(),

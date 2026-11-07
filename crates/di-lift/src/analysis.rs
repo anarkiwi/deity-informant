@@ -525,6 +525,9 @@ pub struct Graph {
     pub vars: FxHashMap<u16, Vec<Var>>,
     /// Code bytes the program writes.
     pub cells: FixedBitSet,
+    /// Code bytes stores with address sets write that no instruction runs at after them:
+    /// data, while their instructions run with their entry bytes ([`After`]).
+    pub dead: FixedBitSet,
     /// Every byte of a reached instruction.
     pub code: FixedBitSet,
     /// Observed transfers per site.
@@ -765,6 +768,60 @@ pub fn entry_config(m: &BankMap, img: &[u8; 0x10000], facts: &Facts, pc: u16) ->
 /// is decoded in the configuration it first ran in (else the one it is first reached in), its
 /// bytes from ROM where that configuration maps ROM.
 ///
+/// Which instruction starts may run after a store's instruction: every start without an init
+/// entry; with one (run once, before the others), the starts the other entries reach, and for
+/// a store the init entry reaches, the starts reachable from it.
+struct After<'a> {
+    succs: &'a FxHashMap<u16, Vec<u16>>,
+    from: &'a FxHashMap<u16, u64>,
+    init: Option<u64>,
+    memo: FxHashMap<u16, FixedBitSet>,
+}
+
+impl<'a> After<'a> {
+    fn new(
+        succs: &'a FxHashMap<u16, Vec<u16>>,
+        from: &'a FxHashMap<u16, u64>,
+        init: Option<usize>,
+    ) -> Self {
+        After {
+            succs,
+            from,
+            init: init.map(|i| 1 << (i % 64)),
+            memo: FxHashMap::default(),
+        }
+    }
+
+    /// Whether the instruction at `s` may run after the one at `pc`.
+    fn follows(&mut self, pc: u16, s: u16) -> bool {
+        let Some(bit) = self.init else {
+            return true;
+        };
+        // A start no state reaches is taken to run after any store.
+        let from = |p: u16| self.from.get(&p).copied().unwrap_or(0);
+        if from(s) & !bit != 0 || from(s) == 0 {
+            return true;
+        }
+        if from(pc) & bit == 0 {
+            return false;
+        }
+        let succs = self.succs;
+        self.memo
+            .entry(pc)
+            .or_insert_with(|| {
+                let mut seen = FixedBitSet::with_capacity(0x10000);
+                let mut work = succs.get(&pc).cloned().unwrap_or_default();
+                while let Some(p) = work.pop() {
+                    if !seen.put(p as usize) {
+                        work.extend(succs.get(&p).into_iter().flatten());
+                    }
+                }
+                seen
+            })
+            .contains(s as usize)
+    }
+}
+
 /// The code cells, their value sets and the targets of computed transfers found from the code
 /// ([`crate::dispatch`]) are a joint least fixpoint from none: each round decodes the program
 /// they give and analyses it, and they only grow. `loaded` is the `[lo, hi)` the program was
@@ -883,6 +940,7 @@ impl Fixpoint<'_> {
             init: r.init,
             written: &written,
             aimed: &g.aimed,
+            dead: &g.dead,
         };
         let an = crate::vsa::analyze(
             &g.img,
@@ -916,6 +974,7 @@ impl Fixpoint<'_> {
         // computed with them.
         let mut aimed = crate::vsa::Aimed::default();
         let mut lost: FxHashSet<(u16, u8, usize)> = FxHashSet::default();
+        let mut dead = FixedBitSet::with_capacity(0x10000);
         loop {
             let mut cimg = Box::new(*img);
             let mut rom_code = FixedBitSet::with_capacity(0x10000);
@@ -994,6 +1053,7 @@ impl Fixpoint<'_> {
                 init: self.reach.and_then(|r| r.init),
                 written: &none,
                 aimed: &aimed,
+                dead: &dead,
             };
             let an = crate::vsa::analyze(
                 &cimg,
@@ -1004,12 +1064,42 @@ impl Fixpoint<'_> {
                 &disp,
                 &given,
             );
+            // A code byte a store writes is a cell when an instruction holding it may run
+            // after the store; else it is data (`ndead`), unless a store of unknown address
+            // that may write it may run before such an instruction.
+            let mut after = After::new(&an.succs, &an.from, self.reach.and_then(|r| r.init));
+            let holders = |a: u16| -> Vec<u16> {
+                (0..3u16)
+                    .map(|d| a.wrapping_sub(d))
+                    .filter(|&s| {
+                        vars.get(&s).is_some_and(|vs| {
+                            vs.iter()
+                                .any(|v| Template::of(v.op).len as u16 > a.wrapping_sub(s))
+                        })
+                    })
+                    .collect()
+            };
             let mut written: FxHashMap<u16, BTreeSet<u8>> = FxHashMap::default();
+            let mut ndead = FixedBitSet::with_capacity(0x10000);
             for st in &an.stores {
                 for &a in st.addrs.iter().flatten() {
+                    let runs = holders(a).into_iter().any(|s| after.follows(st.pc, s));
+                    if code.contains(a as usize) && !rom_code.contains(a as usize) && !runs {
+                        ndead.insert(a as usize);
+                        continue;
+                    }
                     let s = written.entry(a).or_default();
                     if let Some(Some(v)) = an.cellvals.get(&a) {
                         s.extend(v);
+                    }
+                }
+            }
+            for st in an.stores.iter().filter(|s| s.addrs.is_none()) {
+                for a in ndead.ones().map(|a| a as u16) {
+                    if st.addr.meets(a as u32, a as u32 + 1)
+                        && holders(a).into_iter().any(|s| after.follows(st.pc, s))
+                    {
+                        written.entry(a).or_default();
                     }
                 }
             }
@@ -1056,7 +1146,13 @@ impl Fixpoint<'_> {
                     _ => {}
                 }
             }
-            if next == cells && nvalues == values && nstat == stat && naimed == aimed {
+            ndead.difference_with(&next);
+            if next == cells
+                && nvalues == values
+                && nstat == stat
+                && naimed == aimed
+                && ndead == dead
+            {
                 let pull_clear = crate::vsa::pull_clear(&vars, entries);
                 let tables: BTreeSet<u16> = an
                     .jumps
@@ -1070,6 +1166,7 @@ impl Fixpoint<'_> {
                     .collect();
                 let mut constcode = code.clone();
                 constcode.difference_with(&cells);
+                constcode.difference_with(&dead);
                 constcode.difference_with(&rom_code);
                 constcode.extend(tables.iter().map(|&a| a as usize));
                 let mut closed = FixedBitSet::with_capacity(0x10000);
@@ -1132,6 +1229,7 @@ impl Fixpoint<'_> {
                     disp,
                     vars,
                     cells,
+                    dead,
                     code,
                     edges: self.edges.clone(),
                     img: cimg,
@@ -1208,6 +1306,7 @@ impl Fixpoint<'_> {
                 return (g, an.jumps);
             }
             aimed = naimed;
+            dead = ndead;
             cells = next;
             values = nvalues;
             stat = nstat;

@@ -189,6 +189,7 @@ class Program:  # pylint: disable=too-many-instance-attributes
     jumps: dict | None = None
     sets: dict | None = None
     written: list = ()
+    dead: list = ()
     bounds: dict | None = None
     addr_sets: dict | None = None
     reach: dict | None = None
@@ -240,7 +241,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     starts = set(prog.starts)
     p = Program(funcs, entries, image, starts, [tuple(v) for v in volatile])
     p.constant, p.jumps, p.sets = frozenset(prog.code), dict(prog.jumps), dict(prog.sets)
-    p.written = list(prog.written)
+    p.written, p.dead = list(prog.written), list(prog.dead)
     p.bounds, p.addr_sets, p.reach = dict(prog.bounds), dict(prog.addr_sets), dict(prog.reach)
     p.proven, p.regs, p.bounded = dict(prog.proven), dict(prog.regs), dict(prog.bounded)
     p.songs = span
@@ -265,6 +266,8 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         constant = np.zeros(0x10000, dtype=bool)
         constant[list(p.constant)] = True
         cells = code & ~constant
+        for lo, hi in p.dead:
+            cells[lo:hi] = False
         code &= constant
         tables = constant & ~ran
     loaded = p.loaded

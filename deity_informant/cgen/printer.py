@@ -1766,8 +1766,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         if run is None:
             return None
         mem, per = self.mod.mem, self.f.kivs(self.f.address(o)) or [(lo, hi)]
-        ks = {int(mem.owner[a]) for a, _ in per}
-        if len(ks) != 1 or -1 in ks:
+        own = [mem.owner[max(a, run[0]) : min(b, run[1]) + 1] for a, b in per]
+        ks = set(np.unique(np.concatenate(own)).tolist()) - {-1} if own else set()
+        if len(ks) != 1:
             return None
         k = ks.pop()
         org, n = mem.regions[k]
@@ -2777,6 +2778,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         address whose hull the lift bounds reads the run :meth:`Memory.pointer_run` gives,
         unchecked where the hull the lift proves lies in it (``f.sure``)."""
         ranges, stores, unknown, joined, ptrs, writes = [], set(), False, [], [], []
+        bound = []
         for f in self.funcs:
             f.wide, f.sure = {}, set()
             for o, (lo, hi), per in f.accesses():
@@ -2787,9 +2789,28 @@ class Module:  # pylint: disable=too-many-instance-attributes
                     lo, hi = max(lo, run[0]), min(hi, run[1])
                 # A load the lift proves inside a hull reads that hull alone.
                 lo, hi = (f.proven_iv(o) if o.name == "memref.load" else None) or (lo, hi)
+                # An access with an address set reaches its addresses (a load's where they lie
+                # in the loaded program or reach code, which no pointer run holds): inside
+                # it, through one span holding them, as the image holds the bytes between.
+                store = o.name == "memref.store"
+                aset = self.addr_sets.get((o.pc, store)) if o.name != "func.call" else None
+                a0, a1 = self.mem.loaded
+                inside = all(a0 <= a < b <= a1 for a, b in aset or ())
+                if not store and not inside and not any(self.mem.code[a:b].any() for a, b in aset):
+                    aset = None
+                if aset and hi - lo >= regions.BOUNDED:
+                    ranges.extend((a, b - 1) for a, b in aset)
+                    if self.mem.loaded[0] <= aset[0][0] and aset[-1][1] <= self.mem.loaded[1]:
+                        joined.append((aset[0][0], aset[-1][1] - 1))
+                    continue
+                # A load the lift bounds reads the run its hull gives.
                 hull = self.reach_of(f, o) if o.name == "memref.load" else None
                 if hull is not None and hi - lo >= regions.BOUNDED:
                     ptrs.append((f, o, hull, (lo, hi)))
+                    continue
+                # A store the lift bounds to an array writes it, checked, whatever its width.
+                if run is not None and hi - lo >= regions.BOUNDED:
+                    bound.append((lo, hi))
                     continue
                 ranges.append((lo, hi))
                 if o.name == "memref.store" and lo == hi:
@@ -2817,7 +2838,9 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 continue
             f.wide[id(o)] = run
             wide.append(run)
-        self.mem.partition(ranges, sorted(stores), unknown, joined + wide, wide, writes)
+        self.mem.partition(
+            ranges, sorted(stores), unknown, joined + wide, wide + bound, writes + bound
+        )
 
     def owners(self, runs, held):
         """``(regions, held spans)`` the address ``runs`` (``[(lo, hi)]``, ``hi`` exclusive)
