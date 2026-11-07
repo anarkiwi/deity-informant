@@ -170,7 +170,8 @@ the program, and checks it against the reference.
    analysis resolves them (*Computed jumps*), else, like transfers through written operands,
    from the facts' edges. **Code cells** are the bytes of reached instructions that the
    program writes: observed writes, plus every byte of a reached instruction that a store's
-   address set holds (*Stores*). An opcode cell's values are its entry byte, the observed
+   address set holds (*Stores*) where that instruction may run after the store (*Init*). An
+   opcode cell's values are its entry byte, the observed
    ones and those of the stores that may write it. The cells, their values and the resolved
    targets are a joint least fixpoint (each round decodes the program they give, an opcode
    cell's values decode new variants, and runs the interval analysis on it). An `RTS`/`RTI`
@@ -315,15 +316,41 @@ the program, and checks it against the reference.
 With `init` the host calls that entry once, first, on `image`, and every other entry after it
 returns (a PSID's init, then its play calls). Init is lifted as code like every entry: nothing
 of its run is evaluated, folded or snapshotted at lift time, so the program is the same for
-every song and every set of song data. Its stores are ordinary stores of the program: a code
-byte it writes (directly, indexed, or through a pointer, as a relocator patching operands
-through `STA (zp),Y`) is a cell like any other (*Stores*), and an access through a patched
-operand reads or writes through that operand pair as a pointer. A store whose address set the
-analysis does not bound goes through the program's checks (a code check where it may hit
-constant code, a guard where it may hit page 1 or I/O). That it runs first is what the
-analysis takes from it: a state not reached from it sees what its returns leave, so a pointer
-pair's floor is the least value the entries' returns leave (*Pointer pairs*), and a pair init's
-run has not stored holds its image word in init's states.
+every song and every set of song data. Its stores are ordinary stores of the program, and the
+analysis computes their values like any other's. That it runs first is what the analysis takes
+from it:
+
+- **What runs after a store** (`analysis::After`). The instructions that may run after a
+  store are those the other entries reach and, for a store the init entry reaches, those
+  reachable from it (returns going to their calls' return sites). A code byte a store with an
+  address set writes is a cell only where an instruction holding it may run after the store;
+  otherwise it is data (`Graph::dead`: not constant code, in the data runs and table extents),
+  and its instruction runs with its entry bytes, as code init runs before a block copy
+  overwrites it does. A store of unknown address that may write such a byte before its
+  instruction runs makes it a cell.
+- **What the entries leave.** A pair no instruction since an entry stored holds the hull of the
+  values every return of an entry leaves in it (its floor, *Pointer pairs*), and a pair init's
+  run has not stored holds its image word in init's states.
+- **Loops that run to their end** (`scev.rs`, `Induction::exit`). A loop entered with its
+  variables at one value each, whose trip test is known at every visit and is the only edge
+  leaving it that may be taken first, runs exactly `trips` head visits. Past its exit each
+  byte its every-iteration stores write over the iterations (through its register, or a
+  pointer of table bytes it indexes plus one `Y`) has been written: a pair both of whose bytes
+  are holds what its stores write, no longer its image word, and a byte a fixed-address
+  every-iteration store alone writes holds that store's last iteration's value.
+- **Relocated operands.** Init's writes are pointers when what they store is: a byte read
+  through a pointer into a run of data bytes (*Pointers into the song*) is a byte of a pointer
+  into that run, plus or less a byte of no pointer or of a pointer into the same (an offset, a
+  base). A byte stored through a pointer at a known index reads back as what was stored while
+  the pointer and the bytes stand. A pair every store into which writes a byte of a pointer
+  into a run holds those pointers and its image word, and a store through such a cell operand
+  pair writes that run, bounds-checked (`Program.bounded`). So a relocator patching play's
+  operands from song header words leaves pointer variables bounded to the song.
+- **Opcode cells.** A code byte init stores one of a few opcodes into (a hardware probe's
+  choice) is a closed opcode cell: play dispatches on its values with no deopt.
+
+Where a value set is not bounded the program's checks stay: a code check where a store may hit
+constant code, a guard where it may hit page 1 or I/O, `rd`/`wr` in cgen.
 
 ## Guards
 
@@ -576,10 +603,14 @@ the facts, so a proof holds on every execution that stays in lifted code.
     value; any other store gives a pair its bytes' hull, or, where its bytes hold table bytes
     indexed by one value, the hull of the words of the index values both loads read. A value past `$FFFF` is a pointer
     walked past the top of memory, which reads out of bounds. A pair no instruction since
-    the entry stored holds at least its floor: the least value every return of an entry
-    leaves (of the init entry, its image value where its run stores none; with no init
+    the entry stored holds a value in its floor: the hull of the values every return of an
+    entry leaves (of the init entry, its image value where its run stores none; with no init
     entry, the image value too), a least fixpoint the rounds reach once the byte bounds
-    hold. With an init entry the floor holds in the states it does not reach. `ADC #0` of a
+    hold. With an init entry the floor holds in the states it does not reach. At a loop head
+    an upper bound that rises widens to the end of the run of data bytes it lies in, past
+    every run to the top; a pair's first value and its bytes' hull do not widen. A callee
+    keeps the caller's tracked bytes and pairs it stores into none of (the address intervals
+    of the stores it runs until it returns). `ADC #0` of a
     byte holding a pair's high byte while the carry holds a sum of the pair's low byte gives
     the sum's high byte, wherever the sum is stored.
   - *Pointers into the song* (the first pass only). The program's data bytes are its loaded
@@ -587,7 +618,8 @@ the facts, so a proof holds on every execution that stays in lifted code.
     write (a block copy's destination), in runs. A pointer whose two bytes are read through
     one pointer (a jump command's operand) points into what that pointer points into: it
     holds that pointer's values. A pair whose two bytes are table bytes indexed by one value,
-    not all constant, read from one run, points into that run. Two stores at one index (the
+    not all constant (a store with an address set or a bounded address writes one), read from
+    one run, points into that run. Two stores at one index (the
     instructions between them falling through and writing no index register) of the low and
     high bytes of one pair or sum make their tables' bases a word column when no other store
     reached from an entry other than init writes a byte of either base's run and every store
