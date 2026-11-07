@@ -36,7 +36,7 @@ jobs:
           print('key=c64-roms-' + '-'.join(r.sha256 for r in {**ROMS, **ASSETS}.values()))"
           >> "$GITHUB_OUTPUT"
       - name: C64 ROM cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ env.VAGRANT_MOSES_ROMCACHE }}
           key: ${{ steps.roms.outputs.key }}
@@ -94,7 +94,7 @@ jobs:
           print('key=c64-roms-' + '-'.join(r.sha256 for r in {**ROMS, **ASSETS}.values()))"
           >> "$GITHUB_OUTPUT"
       - name: C64 ROM cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ env.VAGRANT_MOSES_ROMCACHE }}
           key: ${{ steps.roms.outputs.key }}
