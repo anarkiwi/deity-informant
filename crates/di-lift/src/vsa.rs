@@ -647,6 +647,13 @@ pub(crate) struct Code<'a> {
     /// Per pointer pair, the least value it holds at every entry ([`crate::word`]; empty
     /// otherwise).
     pub(crate) floor: FxHashMap<u16, u32>,
+    /// The runs `[lo, hi)` of data bytes (no byte of an instruction) of the loaded program,
+    /// ascending: a pointer whose bytes are read from one points into it ([`reach`]'s pass
+    /// that takes table loads inside their extents; empty otherwise).
+    pub(crate) runs: Vec<(u32, u32)>,
+    /// Word columns: per two table bases `(lo, hi)` whose bytes only stores of the two halves
+    /// of one pointer at one index write, the hull of the pointers stored ([`crate::word`]).
+    pub(crate) words: FxHashMap<(u16, u16), (u32, u32)>,
 }
 
 impl Code<'_> {
@@ -666,6 +673,16 @@ impl Code<'_> {
                 hi: bytes.max().unwrap(),
             }
         })
+    }
+    /// The run of data bytes ([`Code::runs`]) holding byte `a`.
+    pub(crate) fn run_of(&self, a: u32) -> Option<(u32, u32)> {
+        let i = self.runs.partition_point(|r| r.1 <= a);
+        self.runs.get(i).copied().filter(|r| r.0 <= a)
+    }
+    /// The least of `lo..=hi` addressing a data byte ([`Code::runs`]).
+    pub(crate) fn first_data(&self, lo: u32, hi: u32) -> Option<u32> {
+        let i = self.runs.partition_point(|r| r.1 <= lo);
+        self.runs.get(i).map(|r| r.0.max(lo)).filter(|&v| v <= hi)
     }
     /// Whether data registers keep value sets ([`reach`]'s pass).
     fn sets(&self) -> bool {
@@ -1446,6 +1463,12 @@ pub struct Analysis {
     /// on every run.
     pub reach: Hulls,
     pub proven: Hulls,
+    /// Per instruction start the values `A`, `X` and `Y` hold on every run ([`reach`]'s proof
+    /// pass).
+    pub regs: Regs,
+    /// Stores whose index the code does not bound, by `(pc, opcode, access index)`: the run
+    /// `[lo, hi)` of data bytes they write ([`bounded_stores`]).
+    pub bounded: FxHashMap<(u16, u8, usize), (u32, u32)>,
     /// The bytes every run of the init entry stores before it reads them ([`init_left`]).
     pub fresh: Option<FixedBitSet>,
 }
@@ -1644,6 +1667,8 @@ struct Pass<'a> {
     thr: &'a Thresholds,
     /// The loops' bounds of `X` and `Y` per start.
     xy: [&'a FxHashMap<u16, Iv>; 2],
+    /// The bytes of the instructions.
+    insn: &'a FixedBitSet,
 }
 
 impl Pass<'_> {
@@ -1664,6 +1689,9 @@ impl Pass<'_> {
 
 /// Address hulls of loads and of their bases by `(pc, opcode, access index)` ([`reach`]).
 pub type Hulls = FxHashMap<(u16, u8, usize), (Iv, Iv)>;
+
+/// Per instruction start the value sets of `A`, `X` and `Y`, bit `v` for `v`.
+pub type Regs = FxHashMap<u16, [[u64; 4]; DATA]>;
 
 /// An indexed load of [`reach`]'s pass: the bytes its index set reaches and those inside its
 /// table's extent; `free` when the code does not bound its index.
@@ -1716,7 +1744,7 @@ fn reach(
     stores: &[crate::dispatch::Store],
     given: &Given,
     proof: bool,
-) -> (Hulls, Option<FixedBitSet>) {
+) -> (Hulls, Option<FixedBitSet>, Regs) {
     let code = p.code;
     let addrs: FxHashMap<(u16, u8, usize), &[u16]> = stores
         .iter()
@@ -1810,6 +1838,28 @@ fn reach(
         stored: vec![Some(Iv::full(1)); 0x100],
         init: given.init.map_or(0, |i| 1 << (i % 64)),
         floor,
+        runs: match given.loaded.filter(|_| !proof) {
+            Some((lo, hi)) => {
+                // Data bytes: the program's bytes of no instruction, and the bytes from the
+                // program's start up stores with address sets write (a block copy's
+                // destination).
+                let mut data = given.written.clone();
+                data.grow(0x10000);
+                data.set_range(..lo as usize, false);
+                data.insert_range(lo as usize..hi as usize);
+                data.difference_with(p.insn);
+                let mut runs: Vec<(u32, u32)> = Vec::new();
+                for a in data.ones().map(|a| a as u32) {
+                    match runs.last_mut() {
+                        Some(r) if r.1 == a => r.1 += 1,
+                        _ => runs.push((a, a + 1)),
+                    }
+                }
+                runs
+            }
+            None => Vec::new(),
+        },
+        words: FxHashMap::default(),
     };
     let mut acc = Vec::new();
     let mut fresh;
@@ -1831,6 +1881,19 @@ fn reach(
                     Err(_) if st.from & c.init != 0 => Some(image[q]),
                     Err(_) => None,
                 };
+                // Where the pass bounds pointers into the program's data, a value the init
+                // entry leaves that addresses no data byte (an instruction, or outside the
+                // program) reads through the pair out of bounds: its least value addressing
+                // a data byte is what it bounds.
+                let lo = if proof || st.from & c.init == 0 || c.runs.is_empty() {
+                    lo
+                } else {
+                    let r = match st.wide.binary_search_by_key(q, |e| e.0) {
+                        Ok(_) => crate::word::value(&c, st, *q).range(),
+                        Err(_) => Some((image[q], image[q])),
+                    };
+                    r.and_then(|(a, b)| c.first_data(a, b))
+                };
                 *l = (*l).min(lo.unwrap_or(*l));
             }
         }
@@ -1838,6 +1901,10 @@ fn reach(
         // Per byte the hull of the values stores write (every value for a store of unknown
         // address or value), none where no store writes it.
         let mut wrote: Vec<Option<Iv>> = vec![None; 0x10000];
+        // Stores of `A` from a table base plus an index register: what they store of a
+        // pointer, at which index; the bytes other stores write.
+        let mut halves = Vec::new();
+        let mut other = FixedBitSet::with_capacity(0x10000);
         for (&pc, vs) in p.vars {
             let Some(st) = p.at(&merged, pc) else {
                 continue;
@@ -1846,8 +1913,18 @@ fn reach(
                 acc.clear();
                 step(&c, pc, v, &st, &mut acc);
                 for (ai, a) in acc.iter().enumerate().filter(|(_, a)| a.store) {
+                    let half = (matches!(v.op, 0x99 | 0x9d) && !c.runs.is_empty())
+                        .then(|| {
+                            let r = crate::dispatch::index_reg(Template::of(v.op))?;
+                            let b = crate::dispatch::load_addr(&c, pc, v.op, r as u8, 0)?;
+                            Some((b, st.half[0]?))
+                        })
+                        .flatten();
+                    let cand = half.is_some();
+                    halves.extend(half.map(|(b, h)| (pc, b, crate::word::whole(&c, &st, h))));
                     let mut put = |x: usize, v: Iv| {
                         wrote[x] = Some(wrote[x].map_or(v, |h| hull(h, v)));
+                        other.set(x, other.contains(x) || !cand && st.from & !c.init != 0);
                     };
                     let set = wclip.get(&(pc, v.op)).map(Vec::as_slice);
                     if let Some(set) = set.or_else(|| addrs.get(&(pc, v.op, ai)).copied()) {
@@ -1869,6 +1946,9 @@ fn reach(
                 }
             }
         }
+        let words = crate::word::columns(&c, &halves, &other, |a, b| {
+            straight(p.vars, a, b, code) || straight(p.vars, b, a, code)
+        });
         let with = |e: Option<Iv>, w: Option<Iv>| match (e, w) {
             (Some(e), Some(w)) => Some(hull(e, w)),
             (e, None) => e,
@@ -1920,19 +2000,36 @@ fn reach(
         // The floors are a least fixpoint over runs whose bytes keep their bounds: they fall
         // once the bounds hold.
         if bound == c.bound && after == c.after && stored == c.stored {
-            if floor == c.floor {
+            // The word columns' stored pointers are a least fixpoint: a column found holds
+            // none, then rises to the pointers its stores write; floors fall once they hold.
+            let rose: FxHashMap<(u16, u16), (u32, u32)> = (c.words.iter())
+                .map(|(k, &(lo, hi))| {
+                    let (l, h) = words.get(k).copied().unwrap_or(crate::word::EMPTY);
+                    (*k, (lo.min(l), hi.max(h)))
+                })
+                .collect();
+            if words.keys().any(|k| !c.words.contains_key(k)) {
+                for &k in words.keys() {
+                    c.words.entry(k).or_insert(crate::word::EMPTY);
+                }
+            } else if rose != c.words {
+                c.words = rose;
+            } else if floor == c.floor {
                 break merged;
+            } else {
+                c.floor = floor;
             }
-            c.floor = floor;
         }
         c.clip = clips(code.img, &idx, &bound);
         (c.bound, c.after, c.stored) = (bound, after, stored);
     };
     let mut out = FxHashMap::default();
+    let mut regs = Regs::default();
     for (&pc, vs) in p.vars {
         let Some(st) = p.at(&merged, pc) else {
             continue;
         };
+        regs.insert(pc, std::array::from_fn(|r| st.vals(r).0));
         let mut zero = st.clone();
         zero.env[di_pcode::reg::X] = Iv::exact(0);
         zero.env[di_pcode::reg::Y] = Iv::exact(0);
@@ -1978,7 +2075,37 @@ fn reach(
             }
         }
     }
-    (out, fresh)
+    (out, fresh, regs)
+}
+
+/// Whether the instruction at `a` runs on to the one at `b` by fall-through alone, writing
+/// neither index register on the way: indexed stores at both index one value.
+fn straight(vars: &FxHashMap<u16, Vec<Var>>, a: u16, b: u16, code: &Code) -> bool {
+    let mut pc = a;
+    loop {
+        let [v] = vars.get(&pc).map_or(&[][..], Vec::as_slice) else {
+            return false;
+        };
+        let Flow::Next(n) = v.flow else {
+            return false;
+        };
+        if n <= pc || n > b {
+            return false;
+        }
+        if n == b {
+            return true;
+        }
+        let Some(w) = vars.get(&n).and_then(|vs| vs.first()) else {
+            return false;
+        };
+        let t = Template::of(w.op);
+        let bs = operand_bytes(code.img, code.cells, n, t.len);
+        let (_, written) = symbolic(t.ops(), bs, None);
+        if written & (1 << di_pcode::reg::X | 1 << di_pcode::reg::Y) != 0 {
+            return false;
+        }
+        pc = n;
+    }
 }
 
 /// The bytes every run of the init entry stores and the hull of the values the runs leave in
@@ -2079,6 +2206,53 @@ fn indexed(code: &Code, pc: u16, op: u8, st: &St) -> Option<Vec<u16>> {
     Some(out)
 }
 
+/// The stores of `vars` from a constant base plus an index register that may hold any byte
+/// on some run (`regs`, [`reach`]'s proof pass) whose base is a data byte of the `loaded`
+/// program and that may reach an instruction byte (`code`) past it, by `(pc, opcode, access
+/// index)`: each writes the run `[lo, hi)` of data bytes holding its base, the array it
+/// indexes, and a write past it is out of bounds.
+fn bounded_stores(
+    code: &Code,
+    vars: &FxHashMap<u16, Vec<Var>>,
+    regs: &Regs,
+    bytes: &FixedBitSet,
+    loaded: Option<(u32, u32)>,
+) -> FxHashMap<(u16, u8, usize), (u32, u32)> {
+    let mut out = FxHashMap::default();
+    let Some((lo, hi)) = loaded else {
+        return out;
+    };
+    for (&pc, vs) in vars {
+        for v in vs {
+            let t = Template::of(v.op);
+            let Some(r) = crate::dispatch::index_reg(t).filter(|_| t.len == 3) else {
+                continue;
+            };
+            let Some(ai) = v.acc.iter().position(|a| a.store && !a.dummy) else {
+                continue;
+            };
+            let b = crate::dispatch::load_addr(code, pc, v.op, r as u8, 0).map(|b| b as u32);
+            let Some(b) = b.filter(|&b| (lo..hi).contains(&b) && !bytes.contains(b as usize))
+            else {
+                continue;
+            };
+            if regs.get(&pc).is_none_or(|x| x[r] != [u64::MAX; 4]) {
+                continue;
+            }
+            let start = (lo..b)
+                .rev()
+                .find(|&a| bytes.contains(a as usize))
+                .map_or(lo, |a| a + 1);
+            let end = (b..hi).find(|&a| bytes.contains(a as usize)).unwrap_or(hi);
+            // Only a store that may reach an instruction: one past the program writes data.
+            if end < hi && end < b + 0x100 {
+                out.insert((pc, v.op, ai), (start, end));
+            }
+        }
+    }
+    out
+}
+
 /// Each store of `stores` an entry's run decided writes the pairs it made ([`Made`]).
 ///
 /// [`Made`]: crate::dispatch::Made
@@ -2117,6 +2291,8 @@ pub struct Given<'a> {
     pub reach: bool,
     /// The index of the entry the host calls once, before the others.
     pub init: Option<usize>,
+    /// The bytes stores with address sets write (a block copy's destination): data.
+    pub written: &'a FixedBitSet,
 }
 
 /// Fill each variant's accesses from the interval states at its start. With `matched`, an
@@ -2148,6 +2324,8 @@ pub fn analyze(
         after: Vec::new(),
         init: 0,
         floor: FxHashMap::default(),
+        runs: Vec::new(),
+        words: FxHashMap::default(),
     };
     let thr = Thresholds::new(vars, &code);
     let (state, ret) = fixpoint(&code, vars, entries, &sh, disp, &thr);
@@ -2231,7 +2409,7 @@ pub fn analyze(
     }
     let objs = crate::dispatch::Objects::new(&code, vars, &merged, &bytes, loaded, &sets.states);
     let mut stores = crate::dispatch::stores(&code, vars, &sets);
-    let (reach, proven, fresh) = if given.reach {
+    let (reach, proven, fresh, regs) = if given.reach {
         let pass = Pass {
             code: &code,
             vars,
@@ -2240,13 +2418,26 @@ pub fn analyze(
             disp,
             thr: &thr,
             xy: [&xb, &yb],
+            insn: &bytes,
         };
-        let (assumed, _) = reach(&pass, &sets, &objs, &stores, given, false);
-        let (proven, fresh) = reach(&pass, &sets, &objs, &stores, given, true);
-        (assumed, proven, fresh)
+        let (assumed, _, _) = reach(&pass, &sets, &objs, &stores, given, false);
+        let (proven, fresh, regs) = reach(&pass, &sets, &objs, &stores, given, true);
+        (assumed, proven, fresh, regs)
     } else {
         Default::default()
     };
+    let bounded = bounded_stores(&code, vars, &regs, &bytes, loaded);
+    for (&(pc, op, ai), &(lo, hi)) in &bounded {
+        for v in vars
+            .get_mut(&pc)
+            .into_iter()
+            .flatten()
+            .filter(|v| v.op == op)
+        {
+            let a = &mut v.acc[ai];
+            a.addr = meet(a.addr, Iv { lo, hi: hi - 1 }).unwrap_or(a.addr);
+        }
+    }
     let mut guards = Vec::new();
     let mut reads: std::collections::BTreeSet<u16> = kreads.into_iter().collect();
     // Tables whose bytes gave loads their values are constant, guarded like code.
@@ -2384,6 +2575,8 @@ pub fn analyze(
         loads,
         reach,
         proven,
+        regs,
+        bounded,
         fresh,
     }
 }

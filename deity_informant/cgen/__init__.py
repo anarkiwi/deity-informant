@@ -193,6 +193,8 @@ class Program:  # pylint: disable=too-many-instance-attributes
     addr_sets: dict | None = None
     reach: dict | None = None
     proven: dict | None = None
+    regs: dict | None = None
+    bounded: dict | None = None
     fresh: list = ()
     init: dict | None = None
     songs: tuple | None = None
@@ -248,7 +250,8 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     p.constant, p.jumps, p.sets = frozenset(prog.code), dict(prog.jumps), dict(prog.sets)
     p.written = list(prog.written)
     p.bounds, p.addr_sets, p.reach = dict(prog.bounds), dict(prog.addr_sets), dict(prog.reach)
-    p.proven, p.fresh = dict(prog.proven), list(prog.fresh)
+    p.proven, p.fresh, p.regs = dict(prog.proven), list(prog.fresh), dict(prog.regs)
+    p.bounded = dict(prog.bounded)
     p.init, p.songs = fold, span
     return p, prog.stats
 
@@ -294,8 +297,9 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         for j, fn in enumerate(p.funcs)
     }
     mod.addr_sets = p.addr_sets or {}
-    mod.reach, mod.proven = p.reach or {}, p.proven or {}
-    regfile = [r for r, _ in emit.Context(p.funcs, False).regfile]
+    mod.reach, mod.proven, mod.bounded = p.reach or {}, p.proven or {}, p.bounded or {}
+    mod.regfile = regfile = [r for r, _ in emit.Context(p.funcs, False).regfile]
+    mod.regs = {pc: tuple(bytes(x) for x in r) for pc, r in (p.regs or {}).items()}
     mod.kpos = regfile.index(emit.KREG) if emit.KREG in regfile else None
     if p.songs is not None:
         index, first, count = p.songs
@@ -384,9 +388,9 @@ def translate(  # pylint: disable=too-many-arguments
     init=None,
     songs=None,
 ):
-    """``(c_text, h_text, info)`` of the program in ``image`` (64 KiB) called at ``entries``
-    (``(pc, name)``, ``A`` the argument) with ``volatile`` ``[(lo, hi)]`` I/O ranges whose
-    reads at ``sensitive_reads`` are kept; ``facts`` supply computed-jump targets only;
+    """``(c_text, h_text, info)`` of the program in ``image`` (the whole address space) called
+    at ``entries`` (``(pc, name)``, ``A`` the argument) with ``volatile`` ``[(lo, hi)]`` I/O
+    ranges whose reads at ``sensitive_reads`` are kept; ``facts`` supply computed-jump targets only;
     ``entries[init]`` is called once, before any other entry (``None``: entries are called in
     any order), with ``A`` each of the range ``songs`` (``None``: any value)."""
     t0 = time.perf_counter()

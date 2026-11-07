@@ -151,17 +151,22 @@ class Memory:  # pylint: disable=too-many-instance-attributes
 
     def pointer_run(self, hull, touched, whole=False):
         """The span ``(a, b)`` (inclusive) a pointer load with address hull ``(lo, hi)`` reads
-        inside the loaded program: from its first non-code byte to its last, held as one array
-        (code bytes inside it held too). None when the hull meets a volatile range there, or
-        reaches below the program a byte ``touched`` (other accesses) or a volatile range holds,
-        or holds no data byte of the program, or (``whole``) leaves the program."""
+        inside the loaded program and the bytes past it, below the volatile ranges, a block copy
+        writes (``written``) the hull reaches: from its first non-code byte to its last, held as
+        one array (code bytes and the bytes between the program and those inside it held too).
+        None when the hull meets a volatile range there, or reaches below the program a byte
+        ``touched`` (other accesses) or a volatile range holds, or holds no data byte of the
+        program, or (``whole``) leaves the program."""
         lo, hi = hull[:2]
         a0, a1 = self.loaded
         if whole and not a0 <= lo <= hi < a1:
             return None
         if lo < a0 and (touched[lo:a0].any() or self.vol[lo:a0].any()):
             return None
-        lo, hi = max(lo, a0), min(hi, a1 - 1)
+        vol = np.flatnonzero(self.vol[a1:])
+        below = a1 + int(vol[0]) if vol.size else 0x10000
+        past = [b for a, b in self.written if a1 <= a <= hi and b <= below]
+        lo, hi = max(lo, a0), min(hi, max([a1, *past]) - 1)
         data = np.flatnonzero(~self.code[lo : hi + 1]) if lo <= hi else np.zeros(0, int)
         if not data.size or self.vol[lo : hi + 1].any():
             return None

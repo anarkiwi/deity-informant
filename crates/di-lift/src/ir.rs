@@ -345,6 +345,12 @@ pub struct Program {
     pub reach: Vec<Reach>,
     /// The hulls of `reach` that hold on every run.
     pub proven: Vec<Reach>,
+    /// Per instruction start the values `A`, `X` and `Y` hold on every run (bit `v` for
+    /// `v`), ascending by start.
+    pub regs: Vec<(u16, [[u64; 4]; 3])>,
+    /// Stores from a constant base plus an index the code does not bound, `(pc, lo, hi)`: each
+    /// writes the run `[lo, hi)` of data bytes holding its base, and past it is out of bounds.
+    pub bounded: Vec<(u16, u32, u32)>,
     /// Volatile ranges `[lo, hi)`.
     pub volatile: Vec<(u32, u32)>,
     /// Runs `[lo, hi)` of the bytes stores with address sets may write.

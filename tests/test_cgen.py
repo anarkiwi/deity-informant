@@ -1901,6 +1901,200 @@ def test_end_marker_tested_before_its_pointer(prefix, tmp_path, src, checked):
     assert ("rdC0(" in c) == checked
 
 
+PUSH = """
+stack:  .byte 0,0,0
+entry:  LDX depth
+        STA stack,X
+        INX
+        STX depth
+        LDA stack
+        STA $C010
+        RTS
+depth:  .byte 0
+end:
+"""
+
+
+def test_store_past_its_array_is_out_of_bounds(prefix, tmp_path):
+    # The push index grows without bound: the store is bounds-checked against the array its
+    # base lies in and goes to oob_wr past it, not into the code after it.
+    img, labels, loaded = assemble(PUSH)
+    c, h, info = translate(prefix, img, labels, loaded)
+    play(tmp_path, c, h, img, labels, entry_calls([5, 6, 7]))
+    body = c.split("void entry")[1]
+    assert "oob_wr(" in body and not re.search(r"\b(?:wr|codechk)\(", body)
+    [k] = [k for k, (org, n) in enumerate(info["regions"]) if org == labels["stack"]]
+    assert info["regions"][k][1] == 3 and re.search(rf"if \(.*R{k}_LEN\)", body)
+    assert cgen.lift(img, [(labels["entry"], "entry")], [W.IO], loaded=loaded)[0].bounded == {
+        labels["entry"] + 3: (labels["stack"], labels["entry"])
+    }
+
+
+CALLRET = """
+stlo:   .byte 0,0
+sthi:   .byte 0,0
+depth:  .byte 0
+init:   LDA #lo(song)
+        STA $FB
+        LDA #hi(song)
+        STA $FC
+        LDA #$00
+        STA depth
+        RTS
+play:   LDY #$00
+        LDA ($FB),Y
+        BMI cmd
+        STA $C010
+        LDA $FB
+        CLC
+        ADC #$01
+        STA $FB
+        BCC done
+        INC $FC
+done:   RTS
+cmd:    CMP #$81
+        BEQ call
+        CMP #$82
+        BEQ ret
+jump:   INY
+        LDA ($FB),Y
+        TAX
+        INY
+        LDA ($FB),Y
+        STA $FC
+        STX $FB
+        JMP play
+call:   LDX depth
+        LDA $FB
+        CLC
+        ADC #$03
+        STA stlo,X
+        LDA $FC
+        ADC #$00
+        STA sthi,X
+        INX
+        STX depth
+        JMP jump
+ret:    DEC depth
+        LDX depth
+        LDA stlo,X
+        STA $FB
+        LDA sthi,X
+        STA $FC
+        JMP play
+song:   .byte 1,2,$81,lo(sub),hi(sub),3,$80,lo(song),hi(song)
+sub:    .byte 4,5,$82
+end:
+"""
+IOJUMP = CALLRET.replace(
+    """jump:   INY
+        LDA ($FB),Y
+        TAX
+        INY
+        LDA ($FB),Y""",
+    """jump:   LDX $C013
+        LDA $C014""",
+)
+
+
+@pytest.mark.parametrize("src,bounded", [(CALLRET, True), (IOJUMP, False)], ids=["song", "io"])
+def test_pointer_loaded_from_song_data_and_its_stack(prefix, tmp_path, src, bounded):
+    # A jump loads the song pointer from two song bytes, a call pushes it (advanced past the
+    # command) on a stack whose depth nothing bounds and a return pops it: the pointer points
+    # into the song on every path, so its reads are one span's bounds-checked reads, and the
+    # push is bounds-checked against the stack. Loaded from I/O instead, it may point anywhere.
+    img, labels, loaded = assemble(src)
+    c, h, info = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
+    assert (not re.search(r"\brd\(", c)) == bounded
+    assert "oob_wr(" in c and not re.search(r"\bwr\(", c)
+    if bounded:
+        [(lo, hi)] = info["code_held"]
+        assert lo <= labels["song"] and labels["end"] <= hi
+        calls = [("init", 0)] + [("play", 0)] * 12
+        play(tmp_path, c, h, img, labels, calls)
+
+
+VOICE = """
+state2: .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+entry:  LDX #$0E
+        JSR voice
+        LDA state2,X
+        STA $C011
+        LDX #$07
+        JSR voice
+        LDA state2,X
+        STA $C011
+        LDX #$00
+        JSR voice
+        LDA state2,X
+        STA $C011
+        RTS
+voice:  STX sav+1
+        LDA #$05
+        TAX
+        LDA tab,X
+        STA $C010
+sav:    LDX #$00
+        RTS
+tab:    .byte 1,2,3,4,5,6,7,8
+end:
+"""
+VOICEBAD = VOICE.replace(
+    "        LDA #$05\n        TAX\n", "        LDA $C013\n        STA sav+1\n        TAX\n"
+)
+
+
+@pytest.mark.parametrize("src,kept", [(VOICE, True), (VOICEBAD, False)], ids=["saved", "other"])
+def test_saved_index_reloaded_from_its_operand(prefix, tmp_path, src, kept):
+    # The voice routine saves X in an operand and reloads it: the lift's value sets carry
+    # the voice indices through the reload to the caller's indexed loads, which then stay in
+    # their array. Another value stored into the operand reaches the reload too.
+    img, labels, loaded = assemble(src)
+    p, _ = cgen.lift(img, [(labels["entry"], "entry")], [W.IO], loaded=loaded)
+    after = set(p.regs[labels["sav"] + 2][1])
+    assert (after == {0, 7, 14}) == kept and {0, 7, 14} <= after
+    c, h, info = translate(prefix, img, labels, loaded)
+    held = any(lo <= labels["entry"] < hi for lo, hi in info["code_held"])
+    assert held != kept
+    if kept:
+        play(tmp_path, c, h, img, labels, entry_calls([0, 1]))
+
+
+LEFT = """
+init:   LDA #lo(read)
+        STA $FB
+        LDA #hi(read)
+        STA $FC
+        RTS
+play:   AND #$01
+        BEQ read
+        TAY
+        LDA plo,Y
+        STA $FB
+        LDA phi,Y
+        STA $FC
+read:   LDY #$00
+        LDA ($FB),Y
+        STA $C010
+        RTS
+""" + RECORDS
+
+
+@pytest.mark.parametrize("at,code", [("read", True), ("p1", False)], ids=["code", "data"])
+def test_pointer_init_leaves_at_code_reads_out_of_bounds(at, code):
+    # Init leaves the pair at an instruction, which play may read through before it sets the
+    # pair from its table: reading code is out of bounds, so the span is the records alone
+    # (every run still may read there). Left at a record, the value bounds the reads as any
+    # other.
+    src = LEFT.replace("lo(read)", f"lo({at})").replace("hi(read)", f"hi({at})")
+    img, labels, loaded = assemble(src)
+    ents = [(labels["init"], "init"), (labels["play"], "play")]
+    p, _ = cgen.lift(img, ents, [W.IO], loaded=loaded, init=0)
+    lo = p.reach[labels["read"] + 2][0]
+    assert lo == labels["p0"] if code else lo == min(labels[at], labels["p0"])
+    assert p.proven[labels["read"] + 2][0] <= labels[at]
+
+
 def test_zero_page_cleared_then_a_pointer_set_through_an_index(prefix, tmp_path):
     # Every value the pair's bytes may hold (zero, the message's address) names a page outside
     # page 1 and the I/O pages: the read needs no check.
@@ -2213,6 +2407,24 @@ def test_held_spans_join_only_across_data(gap_data):
     want = [(0x1000, 0x100B)] if gap_data else [(0x1000, 0x1004), (0x1008, 0x100B)]
     assert mem.held == want
     assert mem.regions == ([(0x1004, 4)] if gap_data else [])
+
+
+@pytest.mark.parametrize(
+    "written,want",
+    [
+        ((), (0x1008, 0x100F)),
+        (((0x1100, 0x1180),), (0x1008, 0x117F)),
+        (((0xC010, 0xC020),), (0x1008, 0x100F)),
+    ],
+    ids=["program", "copy", "io"],
+)
+def test_pointer_span_reaches_a_block_copy_past_the_program(written, want):
+    """A pointer's span runs from its hull's first data byte in the program to its last, and on
+    to the end of what a block copy writes past the program, below the volatile ranges."""
+    code = np.zeros(0x10000, dtype=bool)
+    code[0x1000:0x1008] = True
+    mem = regions.Memory(bytes(0x10000), code, [W.IO], (0x1000, 0x1010), written=written)
+    assert mem.pointer_run((0x1000, 0xFFFF), np.zeros(0x10000, dtype=bool)) == want
 
 
 def test_indexed_store_of_known_opcodes(prefix, tmp_path):

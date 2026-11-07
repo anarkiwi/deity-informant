@@ -576,6 +576,11 @@ pub struct Graph {
     /// The hulls of `reach` that hold on every run (no table load taken to stay inside its
     /// extent).
     pub proven: crate::vsa::Hulls,
+    /// Per instruction start the values `A`, `X` and `Y` hold on every run.
+    pub regs: crate::vsa::Regs,
+    /// Stores whose index the code does not bound and the run `[lo, hi)` of data bytes each
+    /// writes, by `(pc, opcode, access index)`: past it a write is out of bounds.
+    pub bounded: FxHashMap<(u16, u8, usize), (u32, u32)>,
     /// The `RTS`/`RTI`s that jump through the address their code pushed.
     pub disp: FxHashSet<u16>,
     /// The bytes every run of the init entry stores before it reads them, when its runs are
@@ -912,6 +917,7 @@ impl Fixpoint<'_> {
         };
         let mut seen_writes = FixedBitSet::with_capacity(0x10000);
         seen_writes.extend(self.observed().keys().map(|&a| a as usize));
+        let written = g.written.clone();
         let given = crate::vsa::Given {
             loaded: self.loaded,
             entry_sp: self.entry_sp,
@@ -920,6 +926,7 @@ impl Fixpoint<'_> {
             volatile: r.volatile,
             reach: true,
             init: r.init,
+            written: &written,
         };
         let an = crate::vsa::analyze(
             &g.img,
@@ -930,7 +937,9 @@ impl Fixpoint<'_> {
             &g.disp,
             &given,
         );
-        (g.reach, g.proven, g.fresh) = (an.reach, an.proven, an.fresh);
+        (g.reach, g.proven, g.regs, g.fresh) = (an.reach, an.proven, an.regs, an.fresh);
+        g.nocode.extend(an.bounded.keys().copied());
+        g.bounded = an.bounded;
     }
 
     fn run(&self) -> (Graph, FxHashMap<u16, crate::dispatch::Jump>) {
@@ -1013,6 +1022,7 @@ impl Fixpoint<'_> {
                     })
                 })
                 .collect();
+            let none = FixedBitSet::new();
             let given = crate::vsa::Given {
                 loaded: self.loaded,
                 entry_sp: self.entry_sp,
@@ -1021,6 +1031,7 @@ impl Fixpoint<'_> {
                 volatile: self.reach.map_or(&[], |r| r.volatile),
                 reach: false,
                 init: self.reach.and_then(|r| r.init),
+                written: &none,
             };
             let an = crate::vsa::analyze(
                 &cimg,
@@ -1137,6 +1148,8 @@ impl Fixpoint<'_> {
                 let g = Graph {
                     reach: FxHashMap::default(),
                     proven: FxHashMap::default(),
+                    regs: FxHashMap::default(),
+                    bounded: FxHashMap::default(),
                     fresh: None,
                     disp,
                     vars,

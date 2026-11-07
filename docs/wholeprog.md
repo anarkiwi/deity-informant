@@ -53,6 +53,8 @@ prog.addr_sets        # {(pc, store): [(lo, hi), ...]} address sets of pointer a
 prog.reach            # {pc: (lo, hi, base_lo, base_hi)} pointer loads' hulls (*Pointer reach*;
                       #   hi past $FFFF: a pointer advanced without bound)
 prog.proven           # the hulls of reach that hold on every run (*Pointer reach*)
+prog.regs             # {pc: (a, x, y)} values the registers hold there on every run, as bytes
+prog.bounded          # {pc: (lo, hi)} stores bounded to the array holding their base (*Pointer reach*)
 prog.fresh            # [(lo, hi), ...] runs of the bytes init stores before any read of them
 prog.bounds           # {address: (lo, hi)} bytes whose every store has an exact address
 prog.guard_evals      # conditional branches to a deopt the interpreter backend has run
@@ -633,7 +635,30 @@ the facts, so a proof holds on every execution that stays in lifted code.
     the entry stored holds at least its floor: the least value every return of an entry
     leaves (of the init entry, its image value where its run stores none; with no init
     entry, the image value too), a least fixpoint the rounds reach once the byte bounds
-    hold. With an init entry the floor holds in the states it does not reach.
+    hold. With an init entry the floor holds in the states it does not reach. `ADC #0` of a
+    byte holding a pair's high byte while the carry holds a sum of the pair's low byte gives
+    the sum's high byte, wherever the sum is stored.
+  - *Pointers into the song* (the first pass only). The program's data bytes are its loaded
+    bytes of no instruction and the bytes from its start up that stores with address sets
+    write (a block copy's destination), in runs. A pointer whose two bytes are read through
+    one pointer (a jump command's operand) points into what that pointer points into: it
+    holds that pointer's values. A pair whose two bytes are table bytes indexed by one value,
+    not all constant, read from one run, points into that run. Two stores at one index (the
+    instructions between them falling through and writing no index register) of the low and
+    high bytes of one pair or sum make their tables' bases a word column when no other store
+    reached from an entry other than init writes a byte of either base's run and every store
+    into those runs is such a store: a pair loaded from the two columns at one index holds
+    the pointers the columns' stores write (a return stack's pop reads what its push
+    stored), a least fixpoint from none. A value the init entry leaves in a pair that
+    addresses no data byte (an instruction, or outside the program) reads out of bounds
+    through it: the floor takes its least value addressing one, and a pair the init entry's
+    run has not stored holds its image word only where that addresses one. The pass's
+    registers on every run (`Program.regs`) are the second pass's.
+  - *Bounded stores* (`Program.bounded`). A store from a constant base plus an index register
+    that may hold any byte on some run of the second pass, whose base is a data byte of the
+    program and that may reach an instruction byte past it, writes the run of data bytes
+    holding its base, the array it indexes; past it the write is out of bounds (no code
+    check). Its access is that run.
   An index register is one the instruction's template reads before writing (`LDX abs,Y`
   reads `Y`).
 - **Computed jumps** (`dispatch.rs`). A `JMP (ind)` whose pointer bytes are tagged on every
