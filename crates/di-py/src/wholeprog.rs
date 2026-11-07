@@ -832,6 +832,36 @@ impl Program {
         hulls(&self.prog.proven)
     }
 
+    /// Stores from a constant base plus an index the code does not bound: ``{pc: (lo, hi)}``,
+    /// the run of data bytes holding the base (``hi`` exclusive) each writes, past which a
+    /// write is out of bounds.
+    #[getter]
+    fn bounded(&self) -> HashMap<u16, (u32, u32)> {
+        self.prog
+            .bounded
+            .iter()
+            .map(|&(pc, lo, hi)| (pc, (lo, hi)))
+            .collect()
+    }
+
+    /// Per instruction start the values ``A``, ``X`` and ``Y`` hold on every run (no table load
+    /// taken to stay inside its extent): ``{pc: (a, x, y)}``, each the ascending values as
+    /// ``bytes``.
+    #[getter]
+    fn regs(&self) -> HashMap<u16, [Vec<u8>; 3]> {
+        let vals = |b: &[u64; 4]| -> Vec<u8> {
+            (0..256u32)
+                .filter(|&v| b[(v >> 6) as usize] >> (v & 63) & 1 == 1)
+                .map(|v| v as u8)
+                .collect()
+        };
+        self.prog
+            .regs
+            .iter()
+            .map(|(pc, r)| (*pc, std::array::from_fn(|i| vals(&r[i]))))
+            .collect()
+    }
+
     /// Bytes every store into which has an exact address and a bounded value:
     /// ``{address: (lo, hi)}``, the hull of the entry byte and the stored values.
     #[getter]
@@ -933,7 +963,7 @@ impl Program {
     /// write a copy of ``mem``; ``reads`` (bytes) replays the volatile reads in order.
     /// ``backend`` overrides :attr:`backend` for this call. With ``irq`` the call enters as
     /// an interrupt: it pushes the PC ``ret + 1``, the status (B clear) and sets I, and returns
-    /// by ``RTI`` to ``ret + 1``. ``nested`` lists the interrupt entries the machine took inside
+    /// by ``RTI`` to that PC. ``nested`` lists the interrupt entries the machine took inside
     /// the call in its order, ``(icount, pos, entry, a, reg, depth)``: entry ``entry`` runs as
     /// an interrupt (as ``irq``, returning to ``ret + 1``) with registers ``reg`` and ``A = a``
     /// at the boundary after ``icount`` instructions of the context it interrupts (``depth``

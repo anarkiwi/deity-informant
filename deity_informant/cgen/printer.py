@@ -16,10 +16,10 @@ from dataclasses import dataclass, field, replace
 import networkx as nx
 import numpy as np
 
+from ..lifter import MODE_LEN, OPS
 from .mlir import Op
 from .csyntax import declare, drop_unread, ends_in_jump, names_in, render, walk
 from . import regions
-from ..lifter import OPS
 from .structure import Conds, Graph, Structurer, new_ids
 
 WIDTH = {"i1": 1, "i8": 8, "i16": 16, "i32": 8, "i64": 16, "index": 16}
@@ -55,6 +55,16 @@ class E:  # pylint: disable=too-many-instance-attributes
     mem: bool = False
     refs: frozenset = field(default_factory=frozenset)
     parts: tuple | None = None
+
+
+#: The register each load mnemonic sets to the byte it reads (``LAX`` sets ``A`` too).
+LOADS = {"LDA": 0, "LDX": 1, "LDY": 2, "LAX": 1}
+
+
+def meet(a, b):
+    """The intersection of intervals ``a`` and ``b`` (``a`` where they do not meet)."""
+    lo, hi = max(a[0], b[0]), min(a[1], b[1])
+    return (lo, hi) if lo <= hi else a
 
 
 def lit(v, width):
@@ -775,7 +785,10 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             r = self.mod.sets.get(self.const_of(self.address(o))) or self.mod.mem.hull(
                 *self.iv(self.address(o))
             )
-        elif o.name in ("memref.load", "func.call"):
+            r = meet(r, self.mod.loaded_iv(self, o) or r)
+        elif o.name == "func.call":
+            r = self.mod.result_iv(o.prop("callee")[1:], o.res.index(v)) or full
+        elif o.name == "memref.load":
             r = full
         elif o.name == "arith.constant":
             c = o.int_prop("value") & top
@@ -871,9 +884,9 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         sites = self.mod.sites.get(self.name) if self.private and v in names else None
         if not sites:
             return full
-        self.ivs[v] = full
+        self.ivs[v] = lift = self.mod.entry_iv(self.name, names.index(v)) or full
         ivs = [f.iv(o.args[names.index(v)]) for f, o in sites]
-        return min(lo for lo, _ in ivs), max(hi for _, hi in ivs)
+        return meet((min(lo for lo, _ in ivs), max(hi for _, hi in ivs)), lift)
 
     def loop_iv(self, v, back, init):
         """The hull of the values block argument ``v`` takes from ``init`` around the loop
@@ -1717,6 +1730,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             j = mem.held_span(*run, wide=True)
             if j is not None:
                 return ("checked", "held", j)
+        bound = self.bound_region(o, lo, hi)
+        if bound is not None:
+            return bound
         place = self.f.place(o)
         if place is not None:
             return place
@@ -1741,6 +1757,22 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             return ("held", j)
         found = None if store else mem.bounded(lo, hi)
         return ("any",) if found is None else ("bounded", *found)
+
+    def bound_region(self, o, lo, hi):
+        """``("region", k)`` for a store the lift bounds to the array holding its base
+        (:meth:`Module.run_of`) whose addresses lie in region ``k``, ``("bound", k)`` when
+        they leave it (a write past it is out of bounds), else None."""
+        run = self.mod.run_of(self.f, o)
+        if run is None:
+            return None
+        mem, per = self.mod.mem, self.f.kivs(self.f.address(o)) or [(lo, hi)]
+        ks = {int(mem.owner[a]) for a, _ in per}
+        if len(ks) != 1 or -1 in ks:
+            return None
+        k = ks.pop()
+        org, n = mem.regions[k]
+        inside = all(org <= a and b < org + n for a, b in per)
+        return ("region", k) if inside else ("bound", k)
 
     def pointer(self, o):
         """Whether access ``o``'s address is a constant plus a value no byte extends: a
@@ -2105,6 +2137,14 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             *tests, last = choices
             text = "".join(f"if ({t}) {r} = {v.text}; else " for t, r in tests)
             out.append(("s", f"{text}{last[1]} = {v.text};", a.refs | v.refs))
+            return
+        if how[0] == "bound":
+            # A store inside the array holding its base, out of bounds past it.
+            a = self.addr(self.f.address(o))
+            ((test, el),) = self.mod.choices((how[1],), (), a.text, self.indexed(o))
+            self.mod.helpers.add("oob_wr")
+            text = f"if ({test}) {el} = {v.text}; else oob_wr({a.text}, {v.text});"
+            out.append(("s", text, a.refs | v.refs))
             return
         fn = "oob_wr" if how[0] == "code" else "wr"
         self.mod.helpers.add(fn)
@@ -2557,7 +2597,8 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.sites, self.made, self.lifted, self.prov = {}, Counter(), {}, {}
         self.copy_pcs, self.sets, self.kpos, self.tables = {}, {}, None, {}
         self.reach, self.proven, self.checked, self.konsts = {}, {}, set(), {}
-        self.inert = set()
+        self.inert, self.regs, self.regfile, self.results_ivs = set(), {}, [], {}
+        self.bounded = {}
         #: Per entry name, the C lines that start it (the host's check of its arguments).
         self.guards = {}
         for o in top.regions[0][0].ops:
@@ -2659,6 +2700,69 @@ class Module:  # pylint: disable=too-many-instance-attributes
             f.reindex()
             f.fold_offsets()
 
+    def reg_iv(self, pcs, j):
+        """The hull of the values register-file position ``j`` (``A``, ``X`` or ``Y``) holds at
+        every instruction start of ``pcs`` on every run (:attr:`regs`), or None."""
+        r = self.regfile[j] if j < len(self.regfile) else None
+        sets = [self.regs.get(pc) for pc in pcs] if r in (0, 1, 2) else [None]
+        if not sets or None in sets or not all(x[r] for x in sets):
+            return None
+        return min(x[r][0] for x in sets), max(x[r][-1] for x in sets)
+
+    def loaded_iv(self, f, o):
+        """The interval of the byte load ``o`` of function ``f`` reads where its instruction
+        (every copy's, constant code) loads it into a register (``LDA``, ``LDX``, ``LDY``,
+        ``LAX``): that register's values at the next instruction start (:meth:`reg_iv`), else
+        None."""
+        pcs = [q for q in self.copy_pcs.get(f.name, {}).get(o.pc, [o.pc]) if q is not None]
+        ops = {OPS.get(self.mem.image[q], ("", "imm")) for q in pcs}
+        if len(ops) != 1 or not all(self.mem.code[q] for q in pcs):
+            return None
+        mn, mode = ops.pop()
+        r, n = LOADS.get(mn) if mode != "imm" else None, MODE_LEN[mode]
+        if r not in self.regfile:
+            return None
+        return self.reg_iv([(q + n) & 0xFFFF for q in pcs], self.regfile.index(r))
+
+    def entry_iv(self, name, j):
+        """The interval of register-file position ``j`` at the entry of lifted function
+        ``name`` (every copy's), from the lift's register sets, or None."""
+        pc, copies = self.lifted.get(name, (None, ()))
+        return None if pc is None else self.reg_iv([pc, *copies], j)
+
+    def result_iv(self, name, j):
+        """The interval of result ``j`` of lifted function ``name``: the hull of what each of
+        its returns gives, the lift's register set where it returns at an ``RTS``, else the
+        returned value's interval."""
+        f = self.by_name.get(name)
+        if f is None or not f.private:
+            return None
+        key = (name, j)
+        if key in self.results_ivs:
+            return self.results_ivs[key]
+        self.results_ivs[key] = None
+        out = []
+        for o in (o for o in f.walk() if o.name == "func.return"):
+            pcs = [q for q in self.copy_pcs.get(name, {}).get(o.pc, [o.pc]) if q is not None]
+            rts = pcs and all(self.mem.code[q] and self.mem.image[q] in (0x40, 0x60) for q in pcs)
+            r = self.reg_iv(pcs, j) if rts else None
+            d = f.defs.get(o.args[j])
+            out.append(r if r or d is not None and d.name == "ub.poison" else f.iv(o.args[j]))
+        out = [r for r in out if r is not None]
+        self.results_ivs[key] = r = (
+            (min(lo for lo, _ in out), max(hi for _, hi in out)) if out else None
+        )
+        return r
+
+    def run_of(self, f, o):
+        """The run ``(lo, hi)`` (inclusive) of data bytes store ``o`` of function ``f`` writes
+        when the lift bounds it to the array holding its base (every copy's), else None."""
+        pcs = [q for q in self.copy_pcs.get(f.name, {}).get(o.pc, [o.pc]) if q is not None]
+        runs = [self.bounded.get(q) for q in pcs]
+        if o.name != "memref.store" or not runs or None in runs:
+            return None
+        return min(r[0] for r in runs), max(r[1] for r in runs) - 1
+
     def reach_of(self, f, o, hulls=None):
         """The lift's address hull of pointer load ``o`` of function ``f`` and its base's,
         over every copy's instruction (from ``hulls``, default :attr:`reach`), or None."""
@@ -2678,6 +2782,11 @@ class Module:  # pylint: disable=too-many-instance-attributes
             for o, (lo, hi), per in f.accesses():
                 if id(o) in f.dropped:
                     continue
+                run = self.run_of(f, o)
+                if run is not None:
+                    lo, hi = max(lo, run[0]), min(hi, run[1])
+                # A load the lift proves inside a hull reads that hull alone.
+                lo, hi = (f.proven_iv(o) if o.name == "memref.load" else None) or (lo, hi)
                 hull = self.reach_of(f, o) if o.name == "memref.load" else None
                 if hull is not None and hi - lo >= regions.BOUNDED:
                     ptrs.append((f, o, hull, (lo, hi)))

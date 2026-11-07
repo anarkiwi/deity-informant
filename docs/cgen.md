@@ -234,7 +234,12 @@ per-voice routines often are; the rest are renumbered in order.
   enumerated to its fixpoint or keeping its initial interval, a load of a closed cell the
   hull of its values (`Program.sets`) and of a byte with bounded stores its bound
   (`Program.bounds`), a mask or an or-ed constant that keeps the interval in one block);
-  wider than `$200` is unknown. `sensitive_reads` also goes to the lift, which makes no
+  wider than `$200` is unknown. A lifted function's parameter takes the hull its call sites
+  pass met with the values the lift finds its register holding at its entry on every run
+  (`Program.regs`, every copy's entry), a call's result the hull over the callee's returns of
+  those at each `RTS`, and a byte an `LDA`/`LDX`/`LDY`/`LAX` loads those its register holds
+  after it: a voice index a routine saves in an operand and reloads keeps its values. A load
+  the lift proves inside a hull (`Program.proven`) touches that hull alone. `sensitive_reads` also goes to the lift, which makes no
   throw-away read that cannot reach one of them.
   An unknown access may touch every byte of `loaded`, so then every non-code byte of it is in a
   region. Zero page, the stack page and RAM below the image are regions when accessed; a byte
@@ -248,7 +253,7 @@ per-voice routines often are; the rest are renumbered in order.
   of the bytes its index comes from) inside one region or held span indexes it unchecked. A region every byte of which every run of the init entry stores before any
   read of it (`Program.fresh`) is declared with no initial contents (`uint8_t R4[R4_LEN];`,
   no `R4_INIT`). So is every byte a store with an address set may write (`Program.written`: a block copy's
-  destinations past the image, which pointer reads then find through `rd`); the stack page
+  destinations past the image, which pointer reads then find through `rd` or a held span); the stack page
   is accessed only by a load that may read it, since pointer accesses are kept out of page 1
   ([wholeprog](wholeprog.md#static-proofs), *Pointer windows*).
 - An access through a pointer with an address set (`Program.addr_sets`: a block copy's
@@ -259,12 +264,19 @@ per-voice routines often are; the rest are renumbered in order.
   base alone, the same for every index (a block copy's loop over a page tests its pointer, not
   each byte). One at a constant base plus an index whose set
   spans several regions (operand cells of several copies) goes through `rd`/`wr`.
+- A store the lift bounds to the array holding its base (`Program.bounded`: an index any byte,
+  the store reaching code past the array) writes the region holding its base inside it and
+  calls `oob_wr` past it: `if ((uint16_t)(a - Rk_ORG) < Rk_LEN) Rk[...] = v; else oob_wr(a,
+  v);`, the write-side counterpart of `rdCj`.
 - A load of unknown address through a pointer whose hull the lift bounds (`Program.reach`,
   [wholeprog](wholeprog.md#static-proofs), *Pointer reach*: bases from tables read inside their
   extents, constants, a relocation constant added with carry, an offset in `Y`, a pointer
-  advanced from them by the lengths it reads, a table byte tested before its pointer uses it)
-  reads one span: from the first non-code byte of the hull inside `loaded` to its last, every base
-  inside `loaded` in it, held as one array `Cj` (code bytes inside it held too) and printed
+  advanced from them by the lengths it reads, a table byte tested before its pointer uses it, a
+  pointer read through one or from song data, a return stack's pop of what its push stored)
+  reads one span: from the first non-code byte of the hull inside `loaded` (and the bytes past it,
+  below the volatile ranges, a block copy writes, `Program.written`) to its last, every base
+  inside `loaded` in it, held as one array `Cj` (code bytes and the bytes between the program
+  and those inside it held too) and printed
   `rdCj(base, y)`, the address as a 16-bit base plus a byte (`(zp),Y`'s pointer and index, a
   constant offset below 256, else 0): `noinline`, it reads `Cj` where the address lies in it,
   else `oob_rd`, so a pointer walked past the program reads out of bounds. Where the hull the

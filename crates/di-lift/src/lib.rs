@@ -947,6 +947,18 @@ fn lift_core(
         induction: g.ind.clone(),
         reach: reaches(&g.reach),
         proven: reaches(&g.proven),
+        bounded: {
+            let mut v: Vec<(u16, u32, u32)> =
+                g.bounded.iter().map(|(k, r)| (k.0, r.0, r.1)).collect();
+            v.sort_unstable();
+            v.dedup();
+            v
+        },
+        regs: {
+            let mut v: Vec<(u16, [[u64; 4]; 3])> = g.regs.iter().map(|(&pc, r)| (pc, *r)).collect();
+            v.sort_unstable();
+            v
+        },
         addr_sets: {
             let mut v: Vec<ir::AddrSet> = g
                 .addr_sets

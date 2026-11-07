@@ -85,6 +85,9 @@ pub(crate) enum Part {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Half {
     Byte(u16),
+    /// A byte read through a pointer pair holding `lo..=hi`: a byte of a pointer into what
+    /// the pair points into.
+    Data(u32, u32),
     Sum {
         pc: u16,
         src: Option<u16>,
@@ -98,7 +101,7 @@ impl Half {
     fn part(self) -> Option<Part> {
         match self {
             Half::Sum { part, .. } => Some(part),
-            Half::Byte(_) => None,
+            _ => None,
         }
     }
     /// The sum and its values when this is part `want` of the sum the `ADC` at some `pc`
@@ -116,6 +119,7 @@ impl Half {
     fn join(self, o: Half) -> Option<Half> {
         match (self, o) {
             _ if self == o => Some(self),
+            (Half::Data(a, b), Half::Data(c, d)) => Some(Half::Data(a.min(c), b.max(d))),
             (
                 Half::Sum {
                     pc,
@@ -229,7 +233,26 @@ fn tabled(code: &Code, st: &St, q: u16) -> Option<Wv> {
     if r == NOREG || (r, ix) != (r1, ix1) || ix == Ix::Lost {
         return None;
     }
+    let b0 = crate::dispatch::load_addr(code, p0, o0, r, 0)?;
+    let b1 = crate::dispatch::load_addr(code, p1, o1, r, 0)?;
+    // Columns only the two halves of stored pointers write hold those pointers: a load reads
+    // what a store left.
+    if let Some(&(lo, hi)) = code.words.get(&(b0, b1)) {
+        return Some(Wv::plain(lo, hi, q));
+    }
     let (c0, c1) = (code.clip.get(&p0)?, code.clip.get(&p1)?);
+    // A pointer whose bytes are read from one run of data bytes points into it.
+    let mut read = c0.iter().chain(c1).map(|&a| code.run_of(a as u32));
+    let one = read
+        .next()
+        .flatten()
+        .filter(|r| read.all(|x| x == Some(*r)));
+    if let Some(run) = one.filter(|_| {
+        let k = |a: &u16| code.byte(*a as u32, st).and_then(Iv::value).is_some();
+        !c0.iter().chain(c1).all(k)
+    }) {
+        return Some(Wv::plain(run.0, run.1 - 1, q));
+    }
     let live = (ix == Ix::Live).then(|| st.vals(r as usize));
     let (mut lo, mut hi) = (u32::MAX, 0);
     for x in (0..=0xff_u8).filter(|&x| live.is_none_or(|v| v.has(x as u32))) {
@@ -248,6 +271,21 @@ fn tabled(code: &Code, st: &St, q: u16) -> Option<Wv> {
 /// The value of pair `q` no instruction since the entry stored: its bytes' hull from its floor.
 fn untouched(code: &Code, st: &St, q: u16) -> Wv {
     let d = derived(code, st, q);
+    // Where the pass bounds pointers into the program's data, a pair the init entry's run
+    // has not stored holds its image word, out of bounds unless it points into one run of
+    // data bytes, and joins what the other entries find.
+    if let (false, Some(&l), true) = (code.runs.is_empty(), code.floor.get(&q), code.init != 0) {
+        let w = code.img[q as usize] as u32 | (code.img[q.wrapping_add(1) as usize] as u32) << 8;
+        let init = (st.from & code.init != 0 && code.run_of(w).is_some()).then_some((w, w));
+        let other = (st.from & !code.init != 0).then_some((d.lo.max(l), d.hi));
+        let (lo, hi) = match (init, other) {
+            (Some(a), Some(b)) if b.0 <= b.1 => (a.0.min(b.0), a.1.max(b.1)),
+            (Some(a), _) => a,
+            (None, Some(b)) => b,
+            (None, None) => (NONE, 0),
+        };
+        return Wv { lo, hi, ..d };
+    }
     match code.floor.get(&q).filter(|_| st.from & code.init == 0) {
         Some(&l) => Wv {
             lo: d.lo.max(l),
@@ -263,6 +301,67 @@ fn holds(code: &Code, st: &St, q: u16, t: Option<Option<Wv>>) -> Wv {
         Some(None) => derived(code, st, q),
         None => untouched(code, st, q),
     }
+}
+
+/// The hull of a word column no store has written yet: none.
+pub(crate) const EMPTY: (u32, u32) = (NONE, 0);
+
+/// What a byte holding `h` in `st` may be of a pointer: its low or high byte, the pointer
+/// identified by the sum or pair it comes from, and the pointer's values.
+pub(crate) type Whole = Vec<(bool, Id, (u32, u32))>;
+
+/// [`Whole`] of a byte holding `h` in `st`.
+pub(crate) fn whole(code: &Code, st: &St, h: Half) -> Whole {
+    let of = |q: u16| value(code, st, q).range();
+    match h {
+        Half::Sum {
+            pc, lo, hi, part, ..
+        } if part != Part::HiC => {
+            vec![(part == Part::Hi, Id::Sum(pc), (lo, hi))]
+        }
+        Half::Byte(m) => [(false, m), (true, m.wrapping_sub(1))]
+            .into_iter()
+            .filter(|&(_, q)| pair(code, q))
+            .filter_map(|(hi, q)| Some((hi, Id::Pair(q), of(q)?)))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Word columns ([`crate::vsa::Code::words`]) of the stores `halves` (instruction, table
+/// base, what the stored byte is of a pointer): two stores at one index (`same`) of the low
+/// and high bytes of one pointer pair their bases, when every store into the run of data
+/// bytes holding either base is such a store and no other store writes a byte of it
+/// (`other`). The hull of the pointers the pairs store.
+pub(crate) fn columns(
+    code: &Code,
+    halves: &[(u16, u16, Whole)],
+    other: &fixedbitset::FixedBitSet,
+    same: impl Fn(u16, u16) -> bool,
+) -> rustc_hash::FxHashMap<(u16, u16), (u32, u32)> {
+    let mut out: rustc_hash::FxHashMap<(u16, u16), (u32, u32)> = Default::default();
+    let mut paired = vec![false; halves.len()];
+    for (i, (p0, b0, w0)) in halves.iter().enumerate() {
+        for &(_, id, (lo, hi)) in w0.iter().filter(|w| !w.0) {
+            for (j, (p1, b1, w1)) in halves.iter().enumerate() {
+                if w1.iter().any(|w| w.0 && w.1 == id) && same(*p0, *p1) {
+                    let e = out.entry((*b0, *b1)).or_insert(EMPTY);
+                    *e = (e.0.min(lo), e.1.max(hi));
+                    paired[i] = true;
+                    paired[j] = true;
+                }
+            }
+        }
+    }
+    let run = |b: u16| code.run_of(b as u32);
+    let clean = |r: Option<(u32, u32)>| {
+        r.is_some_and(|(lo, hi)| {
+            (lo..hi).all(|x| !other.contains(x as usize))
+                && halves.iter().zip(&paired).all(|(h, &p)| p || run(h.0) != r)
+        })
+    };
+    out.retain(|&(b0, b1), _| clean(run(b0)) && clean(run(b1)));
+    out
 }
 
 /// The value pair `q` holds in `st`.
@@ -354,6 +453,20 @@ fn load_half(st: &St, m: u16) -> Half {
     hi.or_else(|| sum(m, Part::Lo)).unwrap_or(Half::Byte(m))
 }
 
+/// What a byte read through a pointer pair holds: a byte of a pointer into what the pair
+/// points into, its values.
+fn data(code: &Code, st: &St, acc: &[Access]) -> Option<Half> {
+    let p = acc.iter().rfind(|a| !a.store && !a.dummy)?.ptr?;
+    let q = p.lo?.value()?;
+    if p.hi.value()? != q + 1 || !pair(code, q as u16) {
+        return None;
+    }
+    // A pair holding no value yet gives none.
+    let w = value(code, st, q as u16);
+    let (lo, hi) = w.range().unwrap_or((w.lo, w.hi));
+    Some(Half::Data(lo, hi))
+}
+
 /// The sum `ADC` at `pc` makes of pair `q`'s value and `v`.
 fn sum(code: &Code, st: &St, pc: u16, q: u16, v: Iv) -> Option<Half> {
     let w = value(code, st, q);
@@ -390,17 +503,39 @@ pub(crate) fn step(
         }
         drop_where(s, |h| h.part() == Some(Part::HiC));
     }
+    // The byte the instruction loads: its last load (a pointer's bytes load before it).
     let ld = acc
         .iter()
-        .find(|a| !a.store && !a.dummy)
+        .rfind(|a| !a.store && !a.dummy)
         .and_then(|a| a.addr.value())
         .map(|a| a as u16);
     let adc = matches!(op, 0x61 | 0x65 | 0x69 | 0x6d | 0x71 | 0x75 | 0x79 | 0x7d)
         && st.env[reg::C].value() == Some(0)
         && st.env[reg::D].value() == Some(0);
+    // `ADC #0` adds the carry a byte holding a sum's high byte less it owes: whatever the
+    // carry, the sum's high byte.
+    let owed = match st.half[0] {
+        Some(Half::Sum {
+            pc,
+            src,
+            lo,
+            hi,
+            part: Part::HiC,
+        }) if op == 0x69 && b[0] == Some(0) && st.env[reg::D].value() == Some(0) => {
+            Some(Half::Sum {
+                pc,
+                src,
+                lo,
+                hi,
+                part: Part::Hi,
+            })
+        }
+        _ => None,
+    };
     let mut new = s.half;
     for r in (0..DATA).filter(|&r| written >> r & 1 == 1) {
         new[r] = match sym[r] {
+            _ if owed.is_some() && r == 0 => owed,
             _ if adc && r == 0 => {
                 let operand = match op {
                     0x69 => Iv::exact(b[0].unwrap_or(0) as u32),
@@ -408,29 +543,22 @@ pub(crate) fn step(
                 };
                 let a_pair = matches!(st.half[0], Some(Half::Byte(q)) if pair(code, q));
                 match (st.half[0], ld.filter(|&m| pair(code, m))) {
-                    (
-                        Some(Half::Sum {
-                            pc,
-                            src,
-                            lo,
-                            hi,
-                            part: Part::HiC,
-                        }),
-                        _,
-                    ) if op == 0x69 && b[0] == Some(0) => Some(Half::Sum {
-                        pc,
-                        src,
-                        lo,
-                        hi,
-                        part: Part::Hi,
-                    }),
                     (Some(Half::Byte(q)), None) if a_pair => sum(code, st, pc, q, operand),
                     (_, Some(q)) if !a_pair => sum(code, st, pc, q, st.env[0]),
                     _ => None,
                 }
             }
             Some(Sym::Lin(b0, 0)) if (b0 as usize) < DATA => st.half[b0 as usize],
-            Some(Sym::Lin(b0, 0)) if b0 >= DATA as u8 && b0 != MEM => ld.map(|m| load_half(st, m)),
+            Some(Sym::Lin(b0, 0)) if b0 >= DATA as u8 && b0 != MEM => ld
+                .map(|m| match half_at(st, m) {
+                    Some(
+                        h @ Half::Sum {
+                            part: Part::HiC, ..
+                        },
+                    ) => h,
+                    _ => load_half(st, m),
+                })
+                .or_else(|| data(code, st, acc)),
             _ => None,
         };
     }
@@ -449,6 +577,28 @@ pub(crate) fn step(
         for (q, w) in s.wide.iter_mut().filter_map(|e| Some((e.0, e.1.as_mut()?))) {
             if w.id == Id::Sum(p) {
                 w.id = Id::Pair(q);
+            }
+        }
+        // While the carry flag holds the sum's carry, the source's high byte is the sum's
+        // high byte less it.
+        if let Some(Half::Sum {
+            src: Some(q),
+            lo,
+            hi,
+            ..
+        }) = new[0]
+        {
+            let x = q.wrapping_add(1);
+            let h = Half::Sum {
+                pc: p,
+                src: Some(q),
+                lo,
+                hi,
+                part: Part::HiC,
+            };
+            match s.mhalf.binary_search_by_key(&x, |e| e.0) {
+                Ok(i) => s.mhalf[i].1 = h,
+                Err(i) => s.mhalf.insert(i, (x, h)),
             }
         }
     }
@@ -478,7 +628,7 @@ pub(crate) fn step(
                 let named = |h: &Half| match *h {
                     Half::Byte(x) => vec![x],
                     Half::Sum { src: Some(q), .. } => vec![q, q.wrapping_add(1)],
-                    Half::Sum { .. } => vec![],
+                    _ => vec![],
                 };
                 let mut bytes: Vec<u16> = s
                     .mhalf
@@ -510,12 +660,16 @@ fn store(code: &Code, st: &St, s: &mut St, ops: &[di_pcode::Op], b: [Option<u8>;
         _ => (None, None),
     };
     forget(s, x);
-    let parts = |lo: Option<Half>, hi: Option<Half>| match (
+    let parts = |q: u16, lo: Option<Half>, hi: Option<Half>| match (
         lo.and_then(|h| h.sum(Part::Lo)),
         hi.and_then(|h| h.sum(Part::Hi)),
     ) {
         (Some((pc, lo, hi)), Some((p2, l2, h2))) if pc == p2 => Some(both(pc, (lo, hi), (l2, h2))),
-        _ => None,
+        // A pointer whose bytes are read through a pointer points into what that points into.
+        _ => match (lo, hi) {
+            (Some(Half::Data(a, b)), Some(h)) if h == Half::Data(a, b) => Some(Wv::plain(a, b, q)),
+            _ => None,
+        },
     };
     if pair(code, x) {
         let next = half_at(s, x + 1);
@@ -538,7 +692,7 @@ fn store(code: &Code, st: &St, s: &mut St, ops: &[di_pcode::Op], b: [Option<u8>;
                     ..value(code, st, m)
                 })
             }
-            _ => parts(h, next),
+            _ => parts(x, h, next),
         };
         put(s, x, w);
     }
@@ -574,7 +728,7 @@ fn store(code: &Code, st: &St, s: &mut St, ops: &[di_pcode::Op], b: [Option<u8>;
                     ..value(code, st, m - 1)
                 })
             }
-            (_, None) => parts(low, h),
+            (_, None) => parts(q, low, h),
             _ => None,
         };
         put(s, q, w);
