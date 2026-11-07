@@ -18,12 +18,12 @@ import cmetrics
 from deity_informant import cgen, wholeprog
 
 HARNESS = Path(__file__).with_name("cgenplay.c")
-CFLAGS = ["-std=c99", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC"]
+CFLAGS = ("-std=c99", "-DCGEN_OOB_EXACT", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC")
 
 
-def build(src, out):
+def build(src, out, flags=CFLAGS):
     """Compile the generated ``src`` with the harness to the shared library ``out``."""
-    subprocess.run(["gcc", *CFLAGS, "-o", str(out), str(src), str(HARNESS)], check=True)
+    subprocess.run(["gcc", *flags, "-o", str(out), str(src), str(HARNESS)], check=True)
     return ctypes.CDLL(str(out))
 
 
