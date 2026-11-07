@@ -25,7 +25,7 @@ PROLOGUE = """#include <stdint.h>
 
 uint8_t io_read(uint16_t a);
 void io_write(uint16_t a, uint8_t v);
-__attribute__((noreturn)) void trap(uint16_t k);
+__attribute__((noreturn, leaf)) void trap(uint16_t k);
 """
 OOB = {"oob_rd": "uint8_t oob_rd(uint16_t a);", "oob_wr": "void oob_wr(uint16_t a, uint8_t v);"}
 OOB_WR = ["static void oob_wr(uint16_t a, uint8_t v) {", "(void)a;", "(void)v;", "}"]

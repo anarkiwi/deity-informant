@@ -325,7 +325,8 @@ per-voice routines often are; the rest are renumbered in order.
 - `oob_rd`, a read outside every array its site may address, calls `trap(0xFFFF)`
   (`OOB_TRAP`). With `CGEN_OOB_EXACT` defined it is `cgen_rd`, the byte the 6502 reads there:
   a region's or span's live byte, an I/O register, 0 where the program holds none. `oob_wr`
-  discards. Defining `CGEN_OOB` replaces both with the host's. `trap` does not return.
+  discards. Defining `CGEN_OOB` replaces both with the host's. `trap` is declared `noreturn`
+  and `leaf`: a host compiles it apart from the `.c`, and it calls back into nothing there.
   A store the lift found may hit constant code or a table it read is followed by `codechk`,
   which traps when a constant byte of a span would change.
 
