@@ -31,7 +31,7 @@
 //! lifted control edges are followed and every other one deopts.
 
 use crate::analysis::{
-    absint_ranges, flow_succs, operand_bytes, stack_delta, Access, Entry, Env, Flow, Iv, Var,
+    absint_ranges, flow_succs, operand_bytes, stack_delta, Access, Entry, Env, Flow, Iv, Tg, Var,
     TOP_ENV,
 };
 use crate::ir::fold;
@@ -79,12 +79,24 @@ struct Pred {
 
 /// How the index of a table byte relates to its index register: still the register's value,
 /// the value the register held when the instruction at `pc` wrote it (group `pc << 2 | r`;
-/// bytes of one group share their index), or unrelated.
+/// bytes of one group share their index), the byte at a base plus a register ([`St::src`])
+/// while neither changes, or unrelated.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Ix {
     Live,
     Grp(u32),
+    Byte(u16, u8),
     Lost,
+}
+
+/// A computed transfer `j` through the bytes tagged `lo`, `hi` taken to the targets of its
+/// target list whose bits `mask` holds: on its path the word of the bytes is one of them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Arm {
+    pub(crate) j: u16,
+    pub(crate) mask: u64,
+    pub(crate) lo: Tab,
+    pub(crate) hi: Tab,
 }
 
 /// What a byte holds beyond its interval: a constant; the byte the load of opcode `op` at
@@ -161,7 +173,7 @@ pub(crate) struct St {
     pub(crate) env: Env,
     pred: [Option<Pred>; 3],
     /// `A`, `X` and `Y` as `base + off` of the register `base` at the function's entry.
-    rel: [Option<(u8, u8)>; DATA],
+    pub(crate) rel: [Option<(u8, u8)>; DATA],
     /// Zero-page bytes stored at an exact address on every path since the entry: a protected
     /// pointer pair whose high byte is one holds its window, as its stores are checked.
     stored: [u128; 2],
@@ -171,6 +183,11 @@ pub(crate) struct St {
     pub(crate) kb: [Kb; DATA],
     /// Table bytes `A`, `X` and `Y` hold.
     pub(crate) tag: [Option<Tab>; DATA],
+    /// The byte of the loaded program `A`, `X` and `Y` hold, as a base plus a register
+    /// ([`NOREG`]: none), while no store may write it and the register keeps its value.
+    pub(crate) src: [Option<(u16, u8)>; DATA],
+    /// The computed transfer the path took to reach the state, within its function.
+    pub(crate) arm: Option<Arm>,
     /// The values `A`, `X` and `Y` may hold beyond their intervals and known bits, where a
     /// load of constant bytes or a branch on one narrowed them ([`reach`]'s pass only).
     pub(crate) set: [Option<Bits>; DATA],
@@ -205,6 +222,8 @@ impl St {
             from: 0,
             kb: std::array::from_fn(|r| Kb::of(env[r])),
             tag: [None; DATA],
+            src: [None; DATA],
+            arm: None,
             set: [None; DATA],
             push: [None; 3],
             above: [None; 2],
@@ -219,22 +238,73 @@ impl St {
     fn has(&self, a: u32) -> bool {
         self.stored[(a >> 7) as usize] >> (a & 127) & 1 == 1
     }
-    /// The instruction at `pc` writes data register `r`: bytes indexed by its old value
-    /// become a group, the group an earlier execution made becomes unrelated.
-    fn detach(&mut self, pc: u16, r: usize) {
+    /// Every tag the state holds.
+    fn tabs(&mut self) -> impl Iterator<Item = &mut Tab> {
+        let arm = self.arm.iter_mut().flat_map(|a| [&mut a.lo, &mut a.hi]);
+        (self
+            .tag
+            .iter_mut()
+            .chain(&mut self.push)
+            .chain(&mut self.above))
+        .flatten()
+        .chain(self.mem.iter_mut().flat_map(|e| e.1.as_mut()))
+        .chain(arm)
+    }
+    /// The instruction at `pc` writes data register `r`, which held the byte `src`: bytes
+    /// indexed by its old value become indexed by that byte, else a group (the group an
+    /// earlier execution made becomes unrelated); bytes indexed by a byte at a base plus `r`
+    /// become unrelated.
+    fn detach(&mut self, pc: u16, r: usize, src: Option<(u16, u8)>) {
         let g = (pc as u32) << 2 | r as u32;
         let f = |t: &mut Tab| {
             if let Tab::T { reg, ix, .. } = t {
-                if *ix == Ix::Grp(g) {
-                    *ix = Ix::Lost;
-                } else if *reg as usize == r && *ix == Ix::Live {
-                    *ix = Ix::Grp(g);
-                }
+                *ix = match *ix {
+                    Ix::Grp(x) if x == g => Ix::Lost,
+                    Ix::Byte(_, x) if x as usize == r => Ix::Lost,
+                    Ix::Live if *reg as usize == r => {
+                        src.map_or(Ix::Grp(g), |(b, x)| Ix::Byte(b, x))
+                    }
+                    ix => ix,
+                };
             }
         };
-        self.tag.iter_mut().flatten().for_each(f);
-        self.push.iter_mut().flatten().for_each(f);
-        self.mem.iter_mut().flat_map(|e| e.1.as_mut()).for_each(f);
+        self.tabs().for_each(f);
+    }
+    /// Store access `a` of an instruction (template `t`, operand bytes `b`) in a state whose
+    /// registers are `env` may have written bytes at a base plus a register: they are no
+    /// longer known. A store indexed by that register from another constant base writes
+    /// another byte.
+    fn stored_at(&mut self, env: &Env, t: &Template, b: [Option<u8>; 2], a: &Access) {
+        let r = [di_pcode::reg::X, di_pcode::reg::Y]
+            .into_iter()
+            .find(|&r| crate::dispatch::addresses(t, b, r))
+            .map_or(NOREG, |r| r as u8);
+        let base = (t.len == 3 && b.iter().all(Option::is_some))
+            .then(|| store_base(t, b))
+            .flatten();
+        let hit = |(m, x): (u16, u8)| match base {
+            Some(s) if x == r => s == m,
+            _ => {
+                let i = if x == NOREG {
+                    Iv::exact(0)
+                } else {
+                    env[x as usize]
+                };
+                a.addr.meets(m as u32 + i.lo, m as u32 + i.hi + 1)
+            }
+        };
+        for e in self.src.iter_mut() {
+            if e.is_some_and(hit) {
+                *e = None;
+            }
+        }
+        for t in self.tabs() {
+            if let Tab::T { ix, .. } = t {
+                if matches!(*ix, Ix::Byte(m, x) if hit((m, x))) {
+                    *ix = Ix::Lost;
+                }
+            }
+        }
     }
     /// The addresses a zero-page pointer access may reach given the intervals of its tracked
     /// pointer bytes: the pointer's hull plus its index, when that does not wrap.
@@ -282,6 +352,7 @@ impl St {
             from: self.from,
             kb: self.kb,
             tag: self.tag,
+            src: self.src,
             set: self.set,
             mem: self.mem.clone(),
             wide: self.wide.clone(),
@@ -673,6 +744,9 @@ pub(crate) struct Code<'a> {
     pub(crate) aimed: Aimed,
     /// Index guards: per instruction, the register and the values it deopts outside of.
     pub(crate) guards: FxHashMap<u16, (u8, Iv)>,
+    /// The runs `[lo, hi)` of the loaded program outside page 1 and the volatile ranges:
+    /// memory only stores change ([`St::src`]).
+    pub(crate) ram: Vec<(u32, u32)>,
 }
 
 /// Per store `(pc, opcode, access index)` the addresses it writes: a store with a set
@@ -701,6 +775,24 @@ impl Code<'_> {
     pub(crate) fn run_of(&self, a: u32) -> Option<(u32, u32)> {
         let i = self.runs.partition_point(|r| r.1 <= a);
         self.runs.get(i).copied().filter(|r| r.0 <= a)
+    }
+    /// The byte the load of opcode `op` at `pc` in state `st` reads, as its operand plus its
+    /// index register (absolute or unindexed), where every address it may name lies in one
+    /// run of [`Code::ram`].
+    fn src(&self, pc: u16, op: u8, st: &St) -> Option<(u16, u8)> {
+        let Some(Tab::T { reg, .. }) = table(self, pc, op) else {
+            return None;
+        };
+        if Template::of(op).len == 2 && reg != NOREG {
+            return None;
+        }
+        let base = crate::dispatch::load_addr(self, pc, op, reg, 0)?;
+        let i = match reg {
+            NOREG => Iv::exact(0),
+            r => st.env[r as usize],
+        };
+        let (lo, hi) = (base as u32 + i.lo, base as u32 + i.hi + 1);
+        (self.ram.iter().any(|&(a, b)| a <= lo && hi <= b)).then_some((base, reg))
     }
     /// Whether data registers keep value sets ([`reach`]'s pass).
     fn sets(&self) -> bool {
@@ -907,6 +999,8 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
         from: st.from,
         kb: std::array::from_fn(|r| kb[r].unwrap_or(st.kb[r]).meet(Kb::of(env[r]))),
         tag: st.tag,
+        src: st.src,
+        arm: st.arm,
         set: st.set,
         push: st.push,
         above: st.above,
@@ -1030,7 +1124,22 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
         }
     }
     for r in (0..DATA).filter(|&r| written >> r & 1 == 1) {
-        s.detach(pc, r);
+        s.src[r] = match sym[r] {
+            Some(Sym::Lin(b0, 0)) if (b0 as usize) < DATA => st.src[b0 as usize],
+            Some(Sym::Lin(b0, 0)) if b0 != MEM && v.op != 0x68 => code.src(pc, v.op, st),
+            _ => None,
+        };
+    }
+    for e in s.src.iter_mut() {
+        if e.is_some_and(|(_, x)| x != NOREG && written >> x & 1 == 1) {
+            *e = None;
+        }
+    }
+    for a in acc.iter().filter(|a| a.store) {
+        s.stored_at(&st.env, t, b, a);
+    }
+    for r in (0..DATA).filter(|&r| written >> r & 1 == 1) {
+        s.detach(pc, r, st.src[r]);
     }
     // Past an index guard the lifted code runs on with its register inside the guard's values
     // (the reach pass's).
@@ -1045,6 +1154,24 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
         }
     }
     s
+}
+
+/// The address the one store of template `t` (operand bytes `b`) writes with its index
+/// registers zero, when that fixes it.
+fn store_base(t: &Template, b: [Option<u8>; 2]) -> Option<u16> {
+    let mut env = TOP_ENV;
+    env[di_pcode::reg::X] = Iv::exact(0);
+    env[di_pcode::reg::Y] = Iv::exact(0);
+    let mut acc = Vec::new();
+    crate::analysis::absint(t.ops(), b, &mut env, &mut acc);
+    let [a] = acc
+        .iter()
+        .filter(|a| a.store && !a.dummy)
+        .collect::<Vec<_>>()[..]
+    else {
+        return None;
+    };
+    a.addr.value().map(|x| x as u16)
 }
 
 /// The tag of the byte the instruction `op` at `pc` loads when its address is its operand
@@ -1142,7 +1269,26 @@ fn join(code: &Code, a: &St, b: &St, widen: Option<&Thresholds>) -> St {
     }
     let rel = std::array::from_fn(|r| if a.rel[r] == b.rel[r] { a.rel[r] } else { None });
     let stored = [a.stored[0] & b.stored[0], a.stored[1] & b.stored[1]];
-    let tab = |x: Option<Tab>, y: Option<Tab>| join_tab(x?, y?);
+    // A byte one path indexes by a register holding the byte another indexes it by.
+    let byte = |s: &St, t: Tab| match t {
+        Tab::T {
+            pc,
+            op,
+            reg,
+            ix: Ix::Live,
+        } if (reg as usize) < DATA => s.src[reg as usize].map_or(t, |(m, x)| Tab::T {
+            pc,
+            op,
+            reg,
+            ix: Ix::Byte(m, x),
+        }),
+        t => t,
+    };
+    let jt = |x: Tab, y: Tab| match join_tab(x, y) {
+        Some(Tab::T { ix: Ix::Lost, .. }) => join_tab(byte(a, x), byte(b, y)),
+        t => t,
+    };
+    let tab = |x: Option<Tab>, y: Option<Tab>| jt(x?, y?);
     let (half, mhalf, phalf) = crate::word::join_halves(a, b);
     let wide = crate::word::join(code, a, b, widen.is_some());
     St {
@@ -1160,9 +1306,19 @@ fn join(code: &Code, a: &St, b: &St, widen: Option<&Thresholds>) -> St {
             k(a).join(k(b))
         }),
         tag: std::array::from_fn(|r| tab(a.tag[r], b.tag[r])),
+        src: std::array::from_fn(|r| a.src[r].filter(|_| a.src[r] == b.src[r])),
+        arm: a.arm.zip(b.arm).and_then(|(x, y)| {
+            (x.j == y.j).then_some(())?;
+            Some(Arm {
+                mask: x.mask | y.mask,
+                lo: jt(x.lo, y.lo)?,
+                hi: jt(x.hi, y.hi)?,
+                ..x
+            })
+        }),
         set: std::array::from_fn(|r| Some(a.held(code, r)?.or(b.held(code, r)?))),
         push: std::array::from_fn(|i| match (a.push[i], b.push[i]) {
-            (Some(x), Some(y)) => Some(join_tab(x, y).unwrap_or(Tab::Any)),
+            (Some(x), Some(y)) => Some(jt(x, y).unwrap_or(Tab::Any)),
             _ => None,
         }),
         above: std::array::from_fn(|i| tab(a.above[i], b.above[i])),
@@ -1172,7 +1328,7 @@ fn join(code: &Code, a: &St, b: &St, widen: Option<&Thresholds>) -> St {
             .iter()
             .filter_map(|&(m, x, i)| {
                 let (_, y, j) = *b.mem.iter().find(|e| e.0 == m)?;
-                let t = x.zip(y).and_then(|(x, y)| join_tab(x, y));
+                let t = x.zip(y).and_then(|(x, y)| jt(x, y));
                 let iv = w(i, hull(i, j));
                 (t.is_some() || iv != Iv::full(1)).then_some((m, t, iv))
             })
@@ -1346,6 +1502,7 @@ const ANY: u32 = u32::MAX - 1;
 /// `st` with nothing known of how its registers relate to a function's entry.
 fn unlinked(st: &St) -> St {
     St {
+        arm: None,
         pred: [None; 3],
         rel: [None; DATA],
         push: [None; 3],
@@ -1387,18 +1544,40 @@ struct Site {
 /// flag's predicate on a register holds of the value the callee returns it with.
 fn apply(ret: &St, call: &St, linked: bool, kept: Option<&[(u32, u32)]>) -> St {
     let mut s = ret.clone();
+    // What a byte indexes the callee may have stored into.
+    let stale = |t: &mut Tab| {
+        if let Tab::T { ix, .. } = t {
+            if matches!(ix, Ix::Byte(..)) {
+                *ix = Ix::Lost;
+            }
+        }
+    };
+    s.arm = call.arm.filter(|_| linked);
+    if let Some(a) = s.arm.as_mut() {
+        stale(&mut a.lo);
+        stale(&mut a.hi);
+    }
     if linked {
         s.stored = [
             call.stored[0] | ret.stored[0],
             call.stored[1] | ret.stored[1],
         ];
         (s.push, s.above, s.depth) = (call.push, call.above, call.depth);
+        s.push
+            .iter_mut()
+            .chain(&mut s.above)
+            .flatten()
+            .for_each(stale);
         // The tracked bytes the callee stores into none of keep what they held at the call.
         if let Some(m) = kept {
             let free = |x: u16| !m.iter().any(|&(lo, hi)| (lo..=hi).contains(&(x as u32)));
             let pair = |q: u16| free(q) && free(q.wrapping_add(1));
             s.mem.retain(|e| !free(e.0));
-            s.mem.extend(call.mem.iter().filter(|e| free(e.0)));
+            s.mem
+                .extend(call.mem.iter().filter(|e| free(e.0)).map(|&(a, mut t, i)| {
+                    t.iter_mut().for_each(stale);
+                    (a, t, i)
+                }));
             s.mem.sort_unstable_by_key(|e| e.0);
             s.mhalf.retain(|e| !free(e.0));
             s.mhalf.extend(call.mhalf.iter().filter(|e| free(e.0)));
@@ -1703,8 +1882,10 @@ fn fixpoint(
                 }
                 (Flow::Jsr { t: tg, ret }, _) => {
                     w.caller(*ret, cx, &out);
-                    for &s in tg.all() {
-                        w.flow((s, *ret as u32), out.callee(*ret));
+                    for (k, &s) in tg.all().iter().enumerate() {
+                        let mut c = out.callee(*ret);
+                        c.arm = arm(code, pc, &out, &v.flow, k);
+                        w.flow((s, *ret as u32), c);
                     }
                 }
                 // An `RTS` through its call's return address advanced past the call returns.
@@ -1770,14 +1951,44 @@ fn fixpoint(
                     }
                 }
                 (f, _) => {
-                    for s in flow_succs(f) {
-                        w.flow((s, cx), out.clone());
+                    for (k, s) in flow_succs(f).into_iter().enumerate() {
+                        let mut o = out.clone();
+                        if let Some(a) = arm(code, pc, &out, f, k) {
+                            o.arm = Some(a);
+                        }
+                        w.flow((s, cx), o);
                     }
                 }
             }
         }
     }
     (w.state, w.ret)
+}
+
+/// The [`Arm`] of the computed transfer `f` at `pc` to its `k`th target, where its target
+/// bytes are tagged in `st` (a byte of a `JMP`/`JSR` operand that is not a cell is a constant).
+pub(crate) fn arm(code: &Code, pc: u16, st: &St, f: &Flow, k: usize) -> Option<Arm> {
+    let tracked = |a: u16| st.mem.iter().find(|e| e.0 == a)?.1;
+    let opnd = |a: u16| match code.cells.contains(a as usize) {
+        true => tracked(a),
+        false => Some(Tab::K(code.img[a as usize])),
+    };
+    let (lo, hi) = match f {
+        Flow::Jmp(Tg::Calc(_)) | Flow::Jsr { t: Tg::Calc(_), .. } => {
+            (opnd(pc.wrapping_add(1))?, opnd(pc.wrapping_add(2))?)
+        }
+        Flow::JmpInd(_) => {
+            let (l, h) = crate::dispatch::pointer(code, pc)?;
+            (tracked(l)?, tracked(h)?)
+        }
+        _ => return None,
+    };
+    (k < 64).then_some(Arm {
+        j: pc,
+        mask: 1 << k,
+        lo,
+        hi,
+    })
 }
 
 /// Each start's states joined over its contexts.
@@ -1988,6 +2199,7 @@ fn reach(
         pinned: FixedBitSet::new(),
         aimed: code.aimed.clone(),
         guards: code.guards.clone(),
+        ram: code.ram.clone(),
     };
     // The pairs a loop running to its end writes both bytes of.
     c.exits = filled(code, p.vars, sets)
@@ -2496,6 +2708,23 @@ pub struct Given<'a> {
     pub guards: &'a FxHashMap<u16, (u8, Iv)>,
 }
 
+/// The runs of the loaded program outside page 1 and the volatile ranges ([`Code::ram`]).
+fn ram(given: &Given) -> Vec<(u32, u32)> {
+    let mut out = Vec::new();
+    if let Some((mut lo, hi)) = given.loaded {
+        let mut vol = given.volatile.to_vec();
+        vol.push((0x100, 0x200));
+        vol.sort_unstable();
+        for (a, b) in vol.into_iter().chain([(hi, hi)]) {
+            if a.min(hi) > lo {
+                out.push((lo, a.min(hi)));
+            }
+            lo = lo.max(b);
+        }
+    }
+    out
+}
+
 /// Fill each variant's accesses from the interval states at its start. With `matched`, an
 /// `RTS` whose callee leaves the stack as it found it returns to its caller; otherwise any
 /// return may reach any return site. An `RTS`/`RTI` in `disp` jumps to its targets through
@@ -2532,6 +2761,7 @@ pub fn analyze(
         pinned: FixedBitSet::new(),
         aimed: given.aimed.clone(),
         guards: given.guards.clone(),
+        ram: ram(given),
     };
     let thr = Thresholds::new(vars, &code);
     let (state, ret) = fixpoint(&code, vars, entries, &sh, disp, &thr);
@@ -2589,32 +2819,48 @@ pub fn analyze(
         fill(vars, pc, [xb.get(&pc).copied(), yb.get(&pc).copied()]);
     }
     let mut states: FxHashMap<u16, Vec<&St>> = FxHashMap::default();
-    for (&(pc, _), st) in &state {
+    let mut cx: FxHashMap<u16, Vec<u32>> = FxHashMap::default();
+    for (&(pc, c), st) in &state {
         states.entry(pc).or_default().push(st);
+        cx.entry(pc).or_default().push(c);
     }
+    let calls = (ret.iter())
+        .map(|(&r, s)| (r, s.calls.iter().map(|(&c, st)| (c, st)).collect()))
+        .collect();
     let mut preds: FxHashMap<u16, Vec<u16>> = FxHashMap::default();
     for (&p, ss) in succs {
         for &s in ss {
             preds.entry(s).or_default().push(p);
         }
     }
-    let sets = crate::dispatch::Sets {
+    let mut sets = crate::dispatch::Sets {
         states,
+        cx,
+        calls,
         merged: &merged,
         ind: &ind,
         preds,
         roots,
+        mem: None,
     };
+    // The instruction bytes, and those of the instructions the analysis reaches: tables end
+    // at those.
     let mut bytes = FixedBitSet::with_capacity(0x10000);
+    let mut ran = FixedBitSet::with_capacity(0x10000);
     for (&pc, vs) in vars.iter() {
+        let reached = sets.states.contains_key(&pc);
         for v in vs {
             for i in 0..Template::of(v.op).len as u16 {
                 bytes.insert(pc.wrapping_add(i) as usize);
+                if reached {
+                    ran.insert(pc.wrapping_add(i) as usize);
+                }
             }
         }
     }
     bytes.difference_with(given.dead);
-    let objs = crate::dispatch::Objects::new(&code, vars, &merged, &bytes, loaded, &sets.states);
+    ran.intersect_with(&bytes);
+    let objs = crate::dispatch::Objects::new(&code, vars, &merged, &ran, loaded, &sets.states);
     let mut stores = crate::dispatch::stores(&code, vars, &sets);
     let (reach, proven, regs, runs) = if given.reach {
         let pass = Pass {
@@ -2674,12 +2920,20 @@ pub fn analyze(
         &mut guards,
         &mut reads,
     );
+    crate::dispatch::arm_values(&code, vars, &sets, &objs, &mut stores, &mut guards);
     // A store whose address is unknown only through its own operand cells writes where the
     // values those cells may hold address.
     let cellvals = match loaded {
         Some(_) => crate::dispatch::cell_addressed(&code, vars, &sets, &mut stores),
         None => crate::dispatch::cell_values(img, &stores),
     };
+    // What the stores the analysis reaches write.
+    let live: Vec<_> = (stores.iter())
+        .filter(|s| sets.states.contains_key(&s.pc))
+        .cloned()
+        .collect();
+    let unknown = live.iter().filter(|s| s.addrs.is_none()).map(|s| s.addr);
+    sets.mem = Some((crate::dispatch::cell_values(img, &live), unknown.collect()));
     // A store through a pointer with an address set reaches the hull of its set; its
     // throw-away read, the base's page with the indexed low byte, the pages from the least
     // address less a page to the greatest.
