@@ -388,9 +388,9 @@ def translate(  # pylint: disable=too-many-arguments
     init=None,
     songs=None,
 ):
-    """``(c_text, h_text, info)`` of the program in ``image`` (the whole address space) called at ``entries``
-    (``(pc, name)``, ``A`` the argument) with ``volatile`` ``[(lo, hi)]`` I/O ranges whose
-    reads at ``sensitive_reads`` are kept; ``facts`` supply computed-jump targets only;
+    """``(c_text, h_text, info)`` of the program in ``image`` (the whole address space) called
+    at ``entries`` (``(pc, name)``, ``A`` the argument) with ``volatile`` ``[(lo, hi)]`` I/O
+    ranges whose reads at ``sensitive_reads`` are kept; ``facts`` supply computed-jump targets only;
     ``entries[init]`` is called once, before any other entry (``None``: entries are called in
     any order), with ``A`` each of the range ``songs`` (``None``: any value)."""
     t0 = time.perf_counter()

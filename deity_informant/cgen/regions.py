@@ -152,11 +152,11 @@ class Memory:  # pylint: disable=too-many-instance-attributes
     def pointer_run(self, hull, touched, whole=False):
         """The span ``(a, b)`` (inclusive) a pointer load with address hull ``(lo, hi)`` reads
         inside the loaded program and the bytes past it, below the volatile ranges, a block copy
-        writes (``written``) the hull reaches: from its first non-code byte to its last, held as one array (code bytes
-        and the bytes between the program and those inside it held too). None when the hull
-        meets a volatile range there, or reaches below the program a byte ``touched`` (other
-        accesses) or a volatile range holds, or holds no data byte of the program, or
-        (``whole``) leaves the program."""
+        writes (``written``) the hull reaches: from its first non-code byte to its last, held as
+        one array (code bytes and the bytes between the program and those inside it held too).
+        None when the hull meets a volatile range there, or reaches below the program a byte
+        ``touched`` (other accesses) or a volatile range holds, or holds no data byte of the
+        program, or (``whole``) leaves the program."""
         lo, hi = hull[:2]
         a0, a1 = self.loaded
         if whole and not a0 <= lo <= hi < a1:
