@@ -1847,40 +1847,37 @@ def test_pointer_from_split_tables_reads_one_span(prefix, tmp_path):
 
 def test_pointer_pair_reused_as_scratch(prefix, tmp_path):
     # The pair holds shifted data between its uses as a pointer: the read after it is set from
-    # the tables is bounded, the read in `other` (whatever the pair last held) is not.
+    # the tables reads the table its value comes from, the read in `other` (whatever the pair
+    # last held) the span where it lands in the program and ``oob_rd`` elsewhere.
     calls = [("entry", 3), ("other", 0), ("entry", 0x81), ("other", 0)]
     c, _, _ = check(prefix, tmp_path, SCRATCH, calls, entries=("entry", "other"))
     entry, other = c.split("void entry")[1].split("void other")[0], c.split("void other")[1]
-    assert not re.search(r"\brd\(", entry) and re.search(r"\brd\(", other)
+    assert not re.search(r"\brd\(|rdC0\(", entry) and "rdC0(" in other
 
 
 @pytest.mark.parametrize(
-    "src,checked",
-    [(STEP, True), (CELLS, True), (STEPBACK, False), (UNSET, False)],
-    ids=["zero-page", "cells", "backward", "unset"],
+    "src", [STEP, CELLS, STEPBACK, UNSET], ids=["zero-page", "cells", "backward", "unset"]
 )
-def test_pointer_advanced_by_record_lengths(prefix, tmp_path, src, checked):
+def test_pointer_advanced_by_record_lengths(prefix, tmp_path, src):
     # Init points the pair at a song's records; play reads one and advances the pair by its
     # length (`ADC lo; BCC; INC hi`, or into a copy's operand cells): the pair stays at or
     # above the least record start, so every read is one of the span holding the records.
-    # Stepped back with a borrow, or never set from the image's zeros, it is not bounded.
+    # Stepped back with a borrow, or never set from the image's zeros, it is not bounded: its
+    # reads below the program read ``oob_rd``.
     c, info, labels = songs(prefix, tmp_path, src, (0, 1))
-    assert (not re.search(r"\brd\(", c)) == checked
-    if checked:
-        assert "rdC0(" in c and not info["unknown_access"]
-        [(lo, hi)] = info["code_held"]
-        assert lo <= labels["p0"] and labels["end"] <= hi
+    assert not re.search(r"\brd\(", c) and "rdC0(" in c
+    [(lo, hi)] = info["code_held"]
+    assert lo <= labels["p0"] and labels["end"] <= hi and not info["unknown_access"]
 
 
-@pytest.mark.parametrize("src,checked", [(ORDER, True), (ORDERBAD, False)], ids=["ok", "bad"])
-def test_end_marker_tested_before_its_pointer(prefix, tmp_path, src, checked):
+@pytest.mark.parametrize("src", [ORDER, ORDERBAD], ids=["ok", "bad"])
+def test_end_marker_tested_before_its_pointer(prefix, tmp_path, src):
     # The pointer's high byte comes from a table whose zero marks the end of the order: the
     # branch on it leaves only indices of nonzero bytes, and the restart index the marker's
     # entry gives names a nonzero byte, so the pointer never names zero page. When a restart
-    # names another marker, it may.
-    c, info, _ = songs(prefix, tmp_path, src, (0,))
-    assert (not re.search(r"\brd\(", c)) == checked
-    assert ("rdC0(" in c) == checked
+    # names another marker, it may: the span's reader reads zero page through ``oob_rd``.
+    c, _, _ = songs(prefix, tmp_path, src, (0,))
+    assert not re.search(r"\brd\(", c) and "rdC0(" in c
 
 
 PUSH = """
@@ -1984,10 +1981,11 @@ def test_pointer_loaded_from_song_data_and_its_stack(prefix, tmp_path, src, boun
     # A jump loads the song pointer from two song bytes, a call pushes it (advanced past the
     # command) on a stack whose depth nothing bounds and a return pops it: the pointer points
     # into the song on every path, so its reads are one span's bounds-checked reads, and the
-    # push is bounds-checked against the stack. Loaded from I/O instead, it may point anywhere.
+    # push is bounds-checked against the stack. Loaded from I/O instead, it may point anywhere:
+    # the same reader reads ``oob_rd`` outside the program.
     img, labels, loaded = assemble(src)
     c, h, info = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
-    assert (not re.search(r"\brd\(", c)) == bounded
+    assert not re.search(r"\brd\(", c) and "rdC0(" in c
     assert "oob_wr(" in c and not re.search(r"\bwr\(", c)
     if bounded:
         [(lo, hi)] = info["code_held"]
@@ -2326,6 +2324,48 @@ def test_indexed_stores_clear_operand_cells(prefix, tmp_path):
     assert re.search(r"\bC0\[v\d+\] = 0;", body) and "_LEN" not in body and "wr(" not in c
 
 
+ZPPTR = """
+init:   LDA #lo(song)
+        STA $FB
+        LDA #hi(song)
+        STA $FC
+        RTS
+play:   INC $FD
+        TAX
+        BEQ read
+        LDA #$00
+        STA $FC
+        LDA #$FD
+        STA $FB
+read:   LDY #$00
+        LDA ($FB),Y
+        STA $C010
+        RTS
+song:   .byte 1,2,3
+end:
+"""
+
+
+@pytest.mark.parametrize(
+    "src,org,span",
+    [(ZPPTR, 0x1000, True), (ZPPTR.replace("song:", ".org $C100\nsong:"), 0xBF00, False)],
+    ids=["program", "io"],
+)
+def test_pointer_read_reaching_zero_page_reads_its_live_state(
+    prefix, tmp_path, src, org, span
+):  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    """A pointer into the song or at a zero-page byte play increments reads through the song
+    span's reader: the zero-page byte, outside it, is ``oob_rd``'s, the byte's value now. A
+    pointer whose bytes in the program meet the I/O pages has no span and reads ``rd``."""
+    img, labels, loaded = assemble(src, org)
+    c, h, info = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
+    calls = [("init", 0), ("play", 0), ("play", 0), ("play", 1), ("play", 0), ("play", 2)]
+    play(tmp_path, c, h, img, labels, calls)
+    body = c[c.index("void play") :]
+    assert bool(re.search(r"rdC\d+\(", body)) == span != bool(re.search(r"\brd\(", body))
+    assert not info["traps"]
+
+
 ANYPTR = """
 entry:  STA $FC
         LDA #$00
@@ -2342,8 +2382,10 @@ end:
 
 def test_pointer_read_that_may_reach_a_zone_reads_memory(prefix, tmp_path):
     """A read through a pointer whose high byte is any value is not checked against page 1
-    and the I/O pages: it reads memory through ``rd``, no deopt."""
-    c, _, info = check(prefix, tmp_path, ANYPTR, [("entry", 0x20)] * 2)
+    and the I/O pages: with no data byte in the program to hold, it reads memory through
+    ``rd``, the I/O pages' ``io_read`` and zero page's live bytes among it, no deopt."""
+    calls = [("entry", a) for a in (0x20, 0xC0, 0, 0x20)]
+    c, _, info = check(prefix, tmp_path, ANYPTR, calls)
     assert not info["traps"] and info["stats"]["zone_guards"] == 0
     assert "rd((uint16_t)a << 8)" in c
 
@@ -2399,11 +2441,35 @@ def test_held_spans_join_only_across_data(gap_data):
 )
 def test_pointer_span_reaches_a_block_copy_past_the_program(written, want):
     """A pointer's span runs from its hull's first data byte in the program to its last, and on
-    to the end of what a block copy writes past the program, below the volatile ranges."""
+    to the end of what a block copy writes past the program, below the volatile ranges: none
+    when the program holds no data byte of it."""
     code = np.zeros(0x10000, dtype=bool)
     code[0x1000:0x1008] = True
     mem = regions.Memory(bytes(0x10000), code, [W.IO], (0x1000, 0x1010), written=written)
-    assert mem.pointer_run((0x1000, 0xFFFF), np.zeros(0x10000, dtype=bool)) == want
+    assert mem.pointer_run((0x1000, 0xFFFF)) == want == mem.pointer_run((0, 0xFFFF))
+    assert mem.pointer_run((0, 0xFFF)) is None and mem.pointer_run((0, 0x1007)) is None
+    code[0x1008:0x1010] = True
+    mem = regions.Memory(bytes(0x10000), code, [W.IO], (0x1000, 0x1010), written=written)
+    assert mem.pointer_run((0, 0xFFFF)) is None
+
+
+def test_bounded_load_reads_its_region_in_the_image():
+    """A load whose bytes in the image lie in one region reads it, any other byte (a region
+    below the image) through ``oob_rd``; with two regions in the image it has no one array."""
+    code = np.zeros(0x10000, dtype=bool)
+    code[0x1008:0x1010] = True
+    mem = regions.Memory(bytes(0x10000), code, [W.IO], (0x1000, 0x1010))
+    mem.partition([(0xFF0, 0xFF7), (0x1000, 0x1003), (0x1005, 0x1007)], [], unknown_store=False)
+    assert mem.regions == [(0xFF0, 8), (0x1000, 4), (0x1005, 3)]
+    assert mem.bounded(0xFF0, 0x1003) == ((1,), ()) and mem.bounded(0xFF0, 0xFFF) == ((0,), ())
+    assert mem.bounded(0xFF0, 0x1007) is None and mem.bounded(0x1003, 0x1006) is None
+
+
+def test_pointer_span_meeting_a_volatile_range_in_the_program():
+    """A hull whose part inside the program meets a volatile range is no span: its in-image
+    addresses are not all one array's."""
+    mem = regions.Memory(bytes(0x10000), np.zeros(0x10000, dtype=bool), [W.IO], (0xBF00, 0xC100))
+    assert mem.pointer_run((0, 0xBFFF)) == (0xBF00, 0xBFFF) and mem.pointer_run((0, 0xFFFF)) is None
 
 
 def test_indexed_store_of_known_opcodes(prefix, tmp_path):
@@ -2765,7 +2831,7 @@ def test_registers_a_callee_leaves_are_its_arguments(prefix, tmp_path):
     assert re.search(r"uint8_t (v\d+) = f1\(v1\);\n *io_write\(0xC000, \1\);", c)
 
 
-OPERAND_PTR = r"rd\(\(R\d+\[0\] \| \(\(uint16_t\)R\d+\[1\] << 8\)\) \+"
+OPERAND_PTR = r"rdC\d+\(R\d+\[0\] \| \(\(uint16_t\)R\d+\[1\] << 8\), "
 
 
 @pytest.mark.parametrize("src", ["RUNREL", "RELOCATE"])
@@ -3101,8 +3167,8 @@ def test_relocated_operands_point_into_the_song(prefix, tmp_path, plain):
     """Init relocating play's operands from the song's header words plus the song's base, through
     a table of patch sites, leaves pointer variables bounded to the song: play reads through
     them with the song span's bounds-checked reader, not ``rd``. An operand play also writes
-    with a byte of no pointer stays a pointer variable of unbounded values, read through
-    ``rd``."""
+    with a byte of no pointer stays a pointer variable of unbounded values, read through the
+    same reader, ``oob_rd`` outside the song."""
     src = (
         SWPREL.replace("        STA $C001\n", "        STA $C001\n        INC o1+1\n")
         if plain
@@ -3115,8 +3181,7 @@ def test_relocated_operands_point_into_the_song(prefix, tmp_path, plain):
     ops = {labels[o] + k for o in ("o0", "o1") for k in (1, 2)}
     assert ops <= set(info["provenance"]["cells"])
     body = c[c.index("void play") :]
-    assert re.search(r"rdC\d+\(", body)
-    assert bool(re.search(r"\brd\(", body)) == plain
+    assert re.search(r"rdC\d+\(", body) and not re.search(r"\brd\(", body)
 
 
 OPPATCH = """
@@ -3172,7 +3237,8 @@ def test_index_bound_through_a_call_keeps_a_read_inside(prefix, tmp_path, bounde
 
 def test_regions_stop_at_the_loaded_image(prefix, tmp_path):
     """A table read with any index reaches past the image: its region ends with the image,
-    and a read past it is out of bounds. A byte past the image a store writes is held."""
+    and a read past it is out of bounds. A byte past the image a store writes is held, and
+    ``oob_rd`` reads it as stored."""
     img, labels, loaded = assemble(PAST)
     c, h, _ = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=[0])
     play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", a) for a in range(4)])
@@ -3181,7 +3247,9 @@ def test_regions_stop_at_the_loaded_image(prefix, tmp_path):
     src = PAST.replace("init:   RTS", "init:   LDA #$07\n        STA end+2\n        RTS")
     img, labels, loaded = assemble(src)
     c, h, _ = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=[0])
-    assert "oob_rd(" not in c[c.index("void play") :]
+    (tmp_path / "w").mkdir()
+    play(tmp_path / "w", c, h, img, labels, [("init", 0)] + [("play", a) for a in (0, 6, 7)])
+    assert "oob_rd(" in c[c.index("void play") :] and re.search(r"#define R\d+_LEN 1\b", h)
 
 
 KONST = """

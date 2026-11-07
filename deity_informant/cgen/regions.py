@@ -145,26 +145,23 @@ class Memory:  # pylint: disable=too-many-instance-attributes
                 lo, hi = min(lo, org), max(hi, org + n)
         return lo, hi
 
-    def pointer_run(self, hull, touched, whole=False):
+    def pointer_run(self, hull, whole=False):
         """The span ``(a, b)`` (inclusive) a pointer load with address hull ``(lo, hi)`` reads
         inside the loaded program and the bytes past it, below the volatile ranges, a block copy
         writes (``written``) the hull reaches: from its first non-code byte to its last, held as
-        one array (code bytes and the bytes between the program and those inside it held too).
-        None when the hull meets a volatile range there, or reaches below the program a byte
-        ``touched`` (other accesses) or a volatile range holds, or holds no data byte of the
-        program, or (``whole``) leaves the program."""
+        one array (code bytes and the bytes between the program and those inside it held too);
+        the hull's other addresses read ``oob_rd``. None when the hull meets a volatile range
+        there, or holds no data byte of the program, or (``whole``) leaves the program."""
         lo, hi = hull[:2]
         a0, a1 = self.loaded
         if whole and not a0 <= lo <= hi < a1:
-            return None
-        if lo < a0 and (touched[lo:a0].any() or self.vol[lo:a0].any()):
             return None
         vol = np.flatnonzero(self.vol[a1:])
         below = a1 + int(vol[0]) if vol.size else 0x10000
         past = [b for a, b in self.written if a1 <= a <= hi and b <= below]
         lo, hi = max(lo, a0), min(hi, max([a1, *past]) - 1)
         data = np.flatnonzero(~self.code[lo : hi + 1]) if lo <= hi else np.zeros(0, int)
-        if not data.size or self.vol[lo : hi + 1].any():
+        if not data.size or lo + data[0] >= a1 or self.vol[lo : hi + 1].any():
             return None
         return lo + int(data[0]), lo + int(data[-1])
 
@@ -263,9 +260,8 @@ class Memory:  # pylint: disable=too-many-instance-attributes
 
     def bounded(self, lo, hi):
         """``(regions, held spans)``: the one region or held span holding the bytes of
-        ``[lo, hi]`` (narrower than ``BOUNDED``) the program holds, when every other byte is
-        out of bounds (past the loaded image, in no region, held span or volatile range), else
-        None."""
+        ``[lo, hi]`` (narrower than ``BOUNDED``) inside the loaded image (all of them when none
+        is), when every byte there is held, else None; every other byte reads ``oob_rd``."""
         if hi - lo >= BOUNDED:
             return None
         idx = np.arange(lo, hi + 1)
@@ -273,10 +269,10 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         span = np.full(len(idx), -1)
         for j, (a, b) in enumerate(self.held):
             span[(idx >= a) & (idx < b) & (self.constant[lo : hi + 1] | (own >= 0))] = j
-        ks, js = np.unique(own[(own >= 0) & (span < 0)]), np.unique(span[span >= 0])
-        out = (own < 0) & (span < 0) & (idx >= self.loaded[1])
-        out &= ~self.vol[lo : hi + 1]
-        if len(ks) + len(js) != 1 or not (out | (own >= 0) | (span >= 0)).all():
+        inside = (idx >= self.loaded[0]) & (idx < self.loaded[1])
+        sel = inside | ~inside.any()
+        ks, js = np.unique(own[sel & (own >= 0) & (span < 0)]), np.unique(span[sel & (span >= 0)])
+        if len(ks) + len(js) != 1 or not ((own >= 0) | (span >= 0))[inside].all():
             return None
         return tuple(int(k) for k in ks), tuple(int(j) for j in js)
 

@@ -2821,16 +2821,11 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 unknown |= write and hi - lo >= regions.BOUNDED
                 if write and hi - lo < regions.BOUNDED:
                     writes.append((lo, hi))
-        touched = np.zeros(0x10000, dtype=bool)
-        for lo, hi in [r for r in ranges if r[1] - r[0] < regions.BOUNDED] + [
-            (a, b - 1) for a, b in self.mem.written
-        ]:
-            touched[lo : hi + 1] = True
         wide = []
         for f, o, hull, r in ptrs:
             sure = self.reach_of(f, o, self.proven)
-            run = self.mem.pointer_run(hull, touched)
-            if sure is not None and self.mem.pointer_run(sure, touched, True) is not None:
+            run = self.mem.pointer_run(hull)
+            if sure is not None and self.mem.pointer_run(sure, True) is not None:
                 run = sure[:2]
                 f.sure.add(id(o))
             if run is None:
