@@ -1048,24 +1048,6 @@ play:   LDA cell
 cell:   .byte 0, 0
 end:
 """
-FRESH = """
-init:   LDX $C030
-        CMP #$01
-        BNE fill0
-        LDX $2001
-        STX $C001
-fill0:  LDX #$03
-fill:   STA $2000,X
-        DEX
-        BPL fill
-        RTS
-play:   AND #$03
-        TAX
-        LDA $2000,X
-        STA $C000
-        RTS
-end:
-"""
 SONGDATA = """
 init:   LDA #$00
         LDX #$02
@@ -2080,19 +2062,16 @@ read:   LDY #$00
 """ + RECORDS
 
 
-@pytest.mark.parametrize("at,code", [("read", True), ("p1", False)], ids=["code", "data"])
-def test_pointer_init_leaves_at_code_reads_out_of_bounds(at, code):
-    # Init leaves the pair at an instruction, which play may read through before it sets the
-    # pair from its table: reading code is out of bounds, so the span is the records alone
-    # (every run still may read there). Left at a record, the value bounds the reads as any
-    # other.
+@pytest.mark.parametrize("at", ["read", "p1"], ids=["code", "data"])
+def test_pointer_init_leaves_bounds_its_reads(at):
+    # Init runs first: play may read through the pair before it sets it from its table, so
+    # the value init leaves (an instruction or a record alike) is in the reads' hull.
     src = LEFT.replace("lo(read)", f"lo({at})").replace("hi(read)", f"hi({at})")
     img, labels, loaded = assemble(src)
     ents = [(labels["init"], "init"), (labels["play"], "play")]
     p, _ = cgen.lift(img, ents, [W.IO], loaded=loaded, init=0)
-    lo = p.reach[labels["read"] + 2][0]
-    assert lo == labels["p0"] if code else lo == min(labels[at], labels["p0"])
-    assert p.proven[labels["read"] + 2][0] <= labels[at]
+    lo = min(labels[at], labels["p0"])
+    assert p.reach[labels["read"] + 2][0] == lo == p.proven[labels["read"] + 2][0]
 
 
 def test_zero_page_cleared_then_a_pointer_set_through_an_index(prefix, tmp_path):
@@ -2786,18 +2765,25 @@ def test_registers_a_callee_leaves_are_its_arguments(prefix, tmp_path):
     assert re.search(r"uint8_t (v\d+) = f1\(v1\);\n *io_write\(0xC000, \1\);", c)
 
 
-def test_entry_run_closes_the_operands_it_writes(prefix, tmp_path):
-    """An init whose run is the same on every call (its reads constant or its own stores, its
-    branches decided) writes each operand a sum carried across its two bytes, the value it
-    holds: the run pairs each store's addresses with its values, so the operands stay closed
-    at them and the stores need no code check."""
-    img, labels, loaded = assemble(RUNREL)
-    c, h, info = translate(prefix, img, labels, loaded, entries=("init", "play"))
-    play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", a) for a in range(4)] * 2)
-    p, _ = cgen.lift(img, [(labels[e], e) for e in ("init", "play")], [W.IO], loaded=loaded)
-    ops = [labels[o] + k for o in ("o0", "o1") for k in (1, 2)]
-    assert {a: bytes(p.sets[a]) for a in ops} == {a: img[a : a + 1] for a in ops}
-    assert info["stats"]["code_guards"] == 0
+OPERAND_PTR = r"rd\(\(R\d+\[0\] \| \(\(uint16_t\)R\d+\[1\] << 8\)\) \+"
+
+
+@pytest.mark.parametrize("src", ["RUNREL", "RELOCATE"])
+def test_operands_init_writes_through_a_pointer_are_pointer_variables(prefix, tmp_path, src):
+    """A relocator storing each operand's two bytes through a ``(zp),Y`` pointer read from a
+    table of patch sites is code, run on every call: both bytes of each operand are cells
+    (the stores' address sets are the sites, the second store's found once the first is
+    known to write only its sites), and play reads through each operand as a pointer
+    variable."""
+    img, labels, loaded = assemble(globals()[src])
+    c, h, info = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
+    calls = [("init", 0)] + [("play", a) for a in range(4)] * 2 + [("init", 0), ("play", 1)]
+    play(tmp_path, c, h, img, labels, calls)
+    ops = {labels[o] + k for o in ("o0", "o1") for k in (1, 2)}
+    assert ops <= set(info["provenance"]["cells"])
+    init, body = c[c.index("void init") : c.index("void play")], c[c.index("void play") :]
+    assert "for (" in init and "codechk(" not in init
+    assert re.search(OPERAND_PTR, body)
 
 
 def test_carry_chain_identity():
@@ -2814,22 +2800,6 @@ def test_carry_chain_is_one_16_bit_add(prefix, tmp_path):
     """An `ADC` whose carry only feeds the `ADC` of the byte above prints as one 16-bit add."""
     c, _, _ = check(prefix, tmp_path, ADD16, entry_calls(range(0, 16, 3), 40))
     assert "<< 8" in c and not re.search(r"\(v\d+ < v\d+\)", c)
-
-
-@pytest.mark.parametrize("clobber", [False, True])
-def test_relocated_operands_close_when_no_store_reaches_the_relocator(prefix, tmp_path, clobber):
-    """An init with no done flag relocating operands from a table on every call: with the
-    bytes its run reads taken as constant, every store (play's, through the operands it
-    relocates, included) resolves away from them, so the operands hold their relocated values
-    and play indexes memory directly. A play store into the relocator's table breaks the
-    invariant: the operands stay open."""
-    src = RELOCATE.replace("        RTS\nptrs:", "        INC rel\n        RTS\nptrs:")
-    img, labels, loaded = assemble(src if clobber else RELOCATE)
-    c, h, _ = translate(prefix, img, labels, loaded, entries=("init", "play"))
-    calls = [("play", 1), ("init", 0)] + [("play", a) for a in range(4)] * 2 + [("init", 0)]
-    play(tmp_path, c, h, img, labels, calls + [("play", 2)])
-    body = c[c.index("void play") :]
-    assert bool(re.search(r"\b(?:rd|wr|codechk)\(", body)) == clobber
 
 
 def songs(  # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -2855,31 +2825,40 @@ def songs(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     return c, info, labels
 
 
-def test_init_run_once_is_the_starting_memory(prefix, tmp_path):
-    """An init the host runs once, first, relocates play's operands from a table play also
-    writes: no invariant over every call closes them, but its run from the image is the same
-    for every song, so the program starts from the memory it leaves. The operands are
-    constants, play indexes memory directly, the relocator is not translated, and the song
-    the init stores is the folded entry's store of its ``A``."""
+def test_operand_stores_through_a_written_site_table_are_checked(prefix, tmp_path):
+    """A relocator whose table of patch sites play writes has no address sets for its
+    stores: they write through ``wr`` and check constant code (trapping were one to change
+    it), and the operands they would patch stay constant code."""
+    src = RUNREL.replace(
+        "        STA $C001\n        RTS", "        STA $C001\n        INC ptrs\n        RTS"
+    )
+    img, labels, loaded = assemble(src)
+    c, h, info = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
+    play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", a) for a in range(4)])
+    init = c[c.index("void init") : c.index("void play")]
+    assert not info["provenance"]["cells"] and init.count("codechk(") == 2
+
+
+def test_init_runs_as_code_for_every_song(prefix, tmp_path):
+    """An init the host runs once, first, relocating play's operands from a table play also
+    writes is lifted as code: the relocator is a loop of the init function, the song it
+    stores a store of ``A``, and play reads through the operand it patches as a pointer
+    variable. Play's store through the other patched operand, whose values the analysis
+    does not bound, writes through ``wr`` and checks constant code."""
     c, info, labels = songs(prefix, tmp_path, INITREL, (0, 1, 5))
-    fold = info["init"]
     ops = {labels[o] + k for o in ("o0", "o1") for k in (1, 2)}
-    assert fold["pc"] == labels["done"] and fold["stores"] == [(labels["song"], ("r", 0))]
-    assert ops <= {a for a, _ in fold["image"]} and not ops & set(info["provenance"]["cells"])
-    assert not re.search(r"\b(?:rd|wr|codechk)\(", c) and "for (" not in c
-    img, labels, loaded = assemble(INITREL)
-    plain = translate(prefix, img, labels, loaded, entries=("init", "play"))[0]
-    assert re.search(r"\b(?:rd|wr|codechk)\(", plain[plain.index("void play") :])
+    assert ops <= set(info["provenance"]["cells"]) and "init" not in info
+    init, body = c[c.index("void init") : c.index("void play")], c[c.index("void play") :]
+    assert "for (" in init and re.search(r"R\d+\[0\] = a;", init)
+    assert re.search(OPERAND_PTR, body) and "wr(" in body and "codechk(" in body
 
 
-def test_init_run_stops_where_the_song_decides(prefix, tmp_path):
-    """Init's run is folded only while what it leaves is the same for every song: a constant
-    store before the song is used is the starting memory, the operand it relocates by the
-    song stays a cell written by the folded entry's code."""
-    _, info, labels = songs(prefix, tmp_path, INITA, range(4))
-    fold = info["init"]
-    assert fold["pc"] == labels["bysong"] and dict(fold["image"]) == {labels["flag"]: 0x5A}
+def test_init_relocating_by_the_song_leaves_pointer_cells(prefix, tmp_path):
+    """Init computing an operand from the song writes both its bytes: play reads through
+    them as a pointer, bounded to the table the song indexes."""
+    c, info, labels = songs(prefix, tmp_path, INITA, range(4))
     assert {labels["o0"] + 1, labels["o0"] + 2} <= set(info["provenance"]["cells"])
+    assert re.search(r"rdC0\(R\d+\[0\] \| \(\(uint16_t\)R\d+\[1\] << 8\), a & 3\)", c)
 
 
 def test_song_range_is_checked_not_assumed(prefix, tmp_path):
@@ -2908,55 +2887,38 @@ def test_song_values_are_a_range(prefix):
     assert "#define CGEN_SONG0 0x01" in h and "#define CGEN_SONGS 0x02" in h
 
 
-@pytest.mark.parametrize("count", [1, 3, 6])
-def test_init_fold_is_the_same_for_every_song_count(prefix, tmp_path, count):
-    """The song number decides none of the folded path: it folds to the same point with
-    one declared song as with several, and the ``.c`` is the same; the song the init stores
-    is the folded entry's store of ``A``. Init relocating by the song stops where it uses it."""
-    c, info, labels = songs(prefix, tmp_path, INITREL, (0,), declared=range(count))
-    fold = info["init"]
-    assert fold["pc"] == labels["done"] and fold["stores"] == [(labels["song"], ("r", 0))]
-    assert not re.search(r"\b(?:rd|wr|codechk)\(", c)
-    one = songs(prefix, tmp_path / "one", INITREL, (0,), declared=range(1))[0]
-    assert c == one
-    _, info, labels = songs(prefix, tmp_path / "a", INITA, range(count), declared=range(count))
-    assert info["init"]["pc"] == labels["bysong"]
-
-
 @pytest.mark.parametrize(
     "order",
     [[1, 2, 3, 4, 5, 6, 7, 8], [0x81, 2, 0x90, 0xA0, 5, 6, 7, 8], [0x81] * 7 + [3]],
     ids=["plain", "commands", "skips"],
 )
-def test_init_folds_through_what_song_data_decides(prefix, tmp_path, order):
+def test_init_reading_song_data_is_code(prefix, tmp_path, order):
     """Init reads each voice's first order byte with the routine play reads them with (song
-    data), skipping commands: the bytes decide its path, and every path rejoins after the
-    voice with the same stores, so it folds to its return whatever the song. The ``.c`` is
-    the same for every song and song count; the order positions and patterns it leaves are the
-    song's starting memory, in the header."""
+    data), skipping commands: lifted as code, its loop is the same for every song, so the
+    ``.c`` is the same for every order list and song count, the order positions it leaves
+    the song's run."""
     img, labels, loaded = assemble(SONGDATA, patch={"order": order})
     texts = set()
     for count in (1, 2):
-        c, h, info = translate(
+        c, h, _ = translate(
             prefix, img, labels, loaded, ("init", "play"), init=0, songs=range(count)
         )
-        assert info["init"]["pc"] == labels["done"]
-        assert {labels["pos"] + k for k in range(3)} <= {a for a, _ in info["init"]["image"]}
         (tmp_path / str(count)).mkdir()
         play(tmp_path / str(count), c, h, img, labels, [("init", 0)] + [("play", 0)] * 9)
         texts.add(c)
     base = translate(prefix, *assemble(SONGDATA), ("init", "play"), init=0, songs=range(1))[0]
-    assert texts == {base}
+    assert texts == {base} and "for (" in base[base.index("void init") : base.index("void play")]
 
 
-def test_init_fold_stops_where_song_data_decides_its_io(prefix, tmp_path):
-    """An I/O write only some songs make is no write of the folded entry: the fold stops at
-    the branch the song byte decides, for every song alike."""
+def test_init_io_writes_song_data_decides_are_its_code(prefix, tmp_path):
+    """An I/O write only some songs make is a write of init's code, under the branch the song
+    byte decides: the same ``.c`` for every song."""
     texts = set()
     for first in (1, 0x81):
         img, labels, loaded = assemble(SONGIO, patch={"order": [first]})
-        c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=[0])
-        assert info["init"]["pc"] == labels["init"] + 7 and info["init"]["io"] == [(0xC018, 15)]
+        c, h, _ = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=[0])
+        init = c[c.index("void init") : c.index("void play")]
+        assert "io_write(0xC018, 0xF)" in init and "io_write(0xC010," in init
         (tmp_path / str(first)).mkdir()
         calls = [("init", 0)] + [("play", k) for k in range(4)]
         play(tmp_path / str(first), c, h, img, labels, calls)
@@ -2964,34 +2926,86 @@ def test_init_fold_stops_where_song_data_decides_its_io(prefix, tmp_path):
     assert len(texts) == 1
 
 
-def test_init_fold_runs_past_its_io_writes(prefix, tmp_path):
-    """Init's writes to I/O fold as the folded entry's writes, in order (a run of one value
-    to consecutive addresses a loop), and the bytes it stores after them are constants of
-    the program. An I/O read stops the fold before it."""
-    c, info, labels = songs(prefix, tmp_path, IOCLEAR, (0,), declared=(0,))
-    fold = info["init"]
-    assert fold["pc"] == labels["done"]
-    assert fold["io"] == [(0xC013 - k, 0) for k in range(4)] + [(0xC020, 0x11)]
-    assert {a for a, _ in fold["image"]} == {labels["cell"], labels["cell"] + 1}
+def test_init_io_writes_stay_in_order_in_its_code(prefix, tmp_path):
+    """Init's I/O writes are its code's, in order (the clearing loop a loop), and the bytes it
+    stores are data play reads."""
+    c, _, labels = songs(prefix, tmp_path, IOCLEAR, (0,), declared=(0,))
     init = c[c.index("void init") : c.index("void play")]
-    assert init.count("io_write(") == 2 and "for (" in init
-    src = IOCLEAR.replace("put:    LDA #$22", "put:    LDA $C030")
-    _, info, labels = songs(prefix, tmp_path / "rd", src, (0,), declared=(0,))
-    assert info["init"]["pc"] == labels["put"]
+    assert "for (" in init and "io_write(0xC010 + " in init and "io_write(0xC020, 0x11)" in init
+    assert not re.search(r"io_write\(0xC00[01], CODE_K", c)
 
 
-def test_init_stores_before_reads_need_no_initial_contents(prefix, tmp_path):
-    """Bytes every run of init stores before anything reads them start with no contents:
-    their region is uninitialized. A byte one song's run reads first keeps its initial
-    contents."""
-    plain = FRESH.replace("        LDX $2001\n", "")
-    c, info, _ = songs(prefix, tmp_path, plain, (0, 1), declared=range(2))
-    [(lo, hi)] = info["fresh"]
-    assert hi - lo == 4
-    [k] = re.findall(r"^uint8_t R(\d+)\[R\d+_LEN\];$", c, re.M)
-    c, info, _ = songs(prefix, tmp_path / "one", FRESH, (0, 1), declared=range(2))
-    assert info["fresh"] == [(lo, lo + 1), (lo + 2, hi)]
-    assert re.search(rf"^uint8_t R{k}\[R{k}_LEN\] = \{{R{k}_INIT\}};$", c, re.M)
+PROBE = """
+init:   LDA $C030
+        AND #$01
+        BEQ keep
+        LDA #$0A
+        STA shift
+keep:   RTS
+play:   AND #$07
+shift:  NOP
+        STA $C000
+        RTS
+end:
+"""
+
+BLOCKCOPY = """
+init:   TAX
+        LDA srclo,X
+        STA $FB
+        LDA srchi,X
+        STA $FC
+        LDY #$03
+copy:   LDA ($FB),Y
+        STA buf,Y
+        DEY
+        BPL copy
+        RTS
+play:   AND #$03
+        TAX
+        LDA buf,X
+        STA $C000
+        RTS
+srclo:  .byte lo(s0), lo(s1)
+srchi:  .byte hi(s0), hi(s1)
+s0:     .byte 1, 2, 3, 4
+s1:     .byte 5, 6, 7, 8
+buf:    .byte 0, 0, 0, 0
+end:
+"""
+
+
+def test_init_io_probe_stays_runtime_code(prefix, tmp_path):
+    """Init probing the hardware (an I/O read) and patching play's opcode by what it reads
+    stays code run at init: the read is an ``io_read`` of the init function, and play
+    dispatches on the opcode cell's two values. Nothing of it is decided at lift time."""
+    img, labels, loaded = assemble(PROBE)
+    c, h, info = translate(
+        prefix, img, labels, loaded, ("init", "play"), sensitive=(0xC030,), init=0
+    )
+    calls = [("init", 0)] + [("play", k) for k in range(4)]
+    play(tmp_path, c, h, img, labels, calls, (0xC030,))
+    init, body = c[c.index("void init") : c.index("void play")], c[c.index("void play") :]
+    assert "io_read(0xC030)" in init and labels["shift"] in info["provenance"]["cells"]
+    assert "R0[0] = 0xA;" in init and "trap(" not in body
+
+
+def test_init_block_copy_is_a_runtime_copy(prefix, tmp_path):
+    """Init copying the song's block from the table the song indexes is a copy loop of the
+    init function run for that song, its source a bounded read through the pointer: the same
+    ``.c`` for other song data, which the header holds."""
+    texts = set()
+    for data in ([1, 2, 3, 4], [9, 8, 7, 6]):
+        img, labels, loaded = assemble(BLOCKCOPY, patch={"s0": data})
+        c, h, _ = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+        for song in (0, 1):
+            (tmp_path / f"{data[0]}-{song}").mkdir()
+            calls = [("init", song)] + [("play", k) for k in range(4)]
+            play(tmp_path / f"{data[0]}-{song}", c, h, img, labels, calls)
+        texts.add(c)
+    [c] = texts
+    init = c[c.index("void init") : c.index("void play")]
+    assert "for (" in init and re.search(r"(rdC0|CGEN_IX)\(", init) and not re.search(r"\brd\(", c)
 
 
 @pytest.mark.parametrize("bounded", [True, False])
@@ -3023,44 +3037,54 @@ def test_regions_stop_at_the_loaded_image(prefix, tmp_path):
     assert "oob_rd(" not in c[c.index("void play") :]
 
 
+KONST = """
+init:   RTS
+play:   LDA k
+        STA $C000
+        RTS
+k:      .byte $11
+end:
+"""
+
+
 def test_constant_bytes_are_names_in_the_header(prefix, tmp_path):
-    """A constant byte read at a fixed address is a name the header defines: the folded
-    init's bytes are the same names, with each origin's values, in one ``.c``."""
+    """A constant byte read at a fixed address is a name the header defines, with each
+    origin's value, in one ``.c``."""
     texts = set()
     for org in (0x1000, 0x2345):
-        img, labels, loaded = assemble(IOCLEAR, org)
+        img, labels, loaded = assemble(KONST, org)
         c, h, _ = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=[0])
         assert re.search(r"io_write\(0xC000, CODE_K[0-9A-F]+\)", c)
         assert re.search(r"#define CODE_K[0-9A-F]+ 0x11", h)
+        (tmp_path / str(org)).mkdir()
+        play(tmp_path / str(org), c, h, img, labels, [("init", 0), ("play", 0)])
         texts.add(c)
     assert len(texts) == 1
 
 
-def test_folded_vector_is_a_machine_address(prefix, tmp_path):
-    """A vector the folded init leaves outside the program is part of the starting memory,
-    and the addresses beside it (the I/O the handler writes) are absolute: the same ``.c``
-    at every origin."""
+def test_init_stored_vector_is_a_machine_address(prefix, tmp_path):
+    """A vector init stores outside the program is a store of init's code, its value an
+    address relative to the code, and the addresses beside it (the I/O the handler writes)
+    are absolute: the same ``.c`` at every origin."""
     texts = set()
     for org in (0x1000, 0x2345):
         img, labels, loaded = assemble(INITBRK, org)
-        c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
-        assert (0xFFFE, labels["handler"] & 0xFF) in info["init"]["image"]
+        c, h, _ = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+        assert "= (uint8_t)(CODE_ORG + " in c[c.index("void init") : c.index("void play")]
         (tmp_path / str(org)).mkdir()
         play(tmp_path / str(org), c, h, img, labels, [("init", 0)] + [("play", 1)] * 4)
         texts.add(c)
     assert len(texts) == 1
 
 
-def test_folded_program_calls_match_the_reference():
-    """The lifted program of a folded init, called on its starting memory, makes the
-    reference's accesses and leaves its memory (but the dead stack below SP)."""
+def test_init_program_calls_match_the_reference():
+    """The lifted program of an init entry, called on the image, makes the reference's
+    accesses and leaves its memory (but the dead stack below SP)."""
     img, labels, loaded = assemble(INITREL)
     pcs = [labels["init"], labels["play"]]
     prog = wholeprog.lift(img, pcs, [W.IO], entry_sp=0xFD, loaded=loaded, init=0)
-    assert prog.init["entry"] == labels["init"] and prog.entries[0] == labels["done"]
+    assert prog.entries[0] == labels["init"] and not hasattr(prog, "init")
     mem, ref = bytearray(img), bytearray(img)
-    for addr, byte in prog.init["image"]:
-        mem[addr] = byte
     for e, a in [(0, 3)] + [(1, k) for k in range(4)] * 2:
         reg = cgenplay.entry_regs(a)
         got = prog.call(mem, e, a=a, reg=reg, log=True)["log"]
@@ -3071,7 +3095,7 @@ def test_folded_program_calls_match_the_reference():
         assert mem[0x200:] == ref[0x200:] and mem[:0x100] == ref[:0x100]
 
 
-def test_cli_folds_the_named_init(prefix, tmp_path):
+def test_cli_lifts_the_named_init(prefix, tmp_path):
     # pylint: disable=import-outside-toplevel
     from deity_informant.cgen.__main__ import main
 
@@ -3082,7 +3106,7 @@ def test_cli_folds_the_named_init(prefix, tmp_path):
     assert prefix is not None
     main([str(tmp_path / "prog.bin"), "--org", "0x1000", *ents, "--init", "init", "-o", str(out)])
     c = out.read_text()
-    assert "rd(" not in c and "for (" not in c
+    assert "for (" in c[c.index("void init") : c.index("void play")]
 
 
 def test_fall_through_into_a_routine_is_a_tail_call(prefix, tmp_path):

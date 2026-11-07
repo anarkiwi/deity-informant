@@ -103,7 +103,6 @@ fn cycles_budget_and_stack_wrap() {
     let es = [Entry {
         pc: progs::TIMING_ENTRY,
         regs: vec![],
-        ..Entry::default()
     }];
     let cyc = Opts {
         optimize: true,
@@ -116,7 +115,6 @@ fn cycles_budget_and_stack_wrap() {
     let es = [Entry {
         pc: progs::WRAP_ENTRY,
         regs: vec![],
-        ..Entry::default()
     }];
     let f = facts(&img, &[(progs::WRAP_ENTRY, 0); 4], 1_000_000);
     for opts in [cyc, Opts::default()] {
@@ -131,7 +129,6 @@ fn deopts_without_facts_and_guards() {
     let es = [Entry {
         pc: progs::TOGGLE_ENTRY,
         regs: vec![(0, vec![0])],
-        ..Entry::default()
     }];
     let p = lift(&img, &es, &[(0xc000, 0xc100)], &Facts::default());
     assert!(diff(&img, &p, &calls(4, |i| (i == 3) as u8), IO) > 0);
@@ -143,7 +140,6 @@ fn batch() {
     let es = vec![Entry {
         pc: progs::JUMPTAB_ENTRY,
         regs: vec![],
-        ..Entry::default()
     }];
     let f = facts(&img, &[(progs::JUMPTAB_ENTRY, 1)], 1_000_000);
     let jobs: Vec<Job> = (0..4)
@@ -326,7 +322,6 @@ fn cell_fixpoint_terminates() {
     let e = [Entry {
         pc: 0x1000,
         regs: vec![],
-        ..Entry::default()
     }];
     let p = lift(&img, &e, &[], &Facts::default());
     assert_eq!(p.stats.opcode_cells, 1);

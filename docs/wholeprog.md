@@ -55,10 +55,8 @@ prog.reach            # {pc: (lo, hi, base_lo, base_hi)} pointer loads' hulls (*
 prog.proven           # the hulls of reach that hold on every run (*Pointer reach*)
 prog.regs             # {pc: (a, x, y)} values the registers hold there on every run, as bytes
 prog.bounded          # {pc: (lo, hi)} stores bounded to the array holding their base (*Pointer reach*)
-prog.fresh            # [(lo, hi), ...] runs of the bytes init stores before any read of them
 prog.bounds           # {address: (lo, hi)} bytes whose every store has an exact address
 prog.guard_evals      # conditional branches to a deopt the interpreter backend has run
-prog.init             # init=: {"index", "entry", "pc", "image", "io", "stores", "regs", "code"}
 r = prog.call(mem, 0, a=0, reg=None, cycles=0, max_cycles=10_000_000, log=True)  # backend=
 prog.backend          # "jit" (default) or "interp"; prog.compile() -> compile seconds
 r["reg"], r["pc"], r["cycles"], r["halt"], r["deopt"], r["log"]
@@ -81,7 +79,7 @@ Inputs:
 | `optimize` | Optimize (default on); off keeps the emitted P-Code. |
 | `entry_sp` | The SP every entry is called at (after its return address), declared rather than observed: outermost plans are specialized to it and page-1 checks guard the *Stack extent* only. |
 | `loaded` | The `[lo, hi)` the program was loaded to: no table extends past it (*Table extents*). |
-| `init` | The index of the entry the host calls once, first, on `image` (a player's init): its decided path is folded into the memory the program starts from (*Init folding*; a static lift only). |
+| `init` | The index of the entry the host calls once, first, on `image` (a player's init), lifted as code (*Init*; a static lift only). |
 
 `trace.collect(image, driver)` runs `driver(session)` twice on the jennings native core over a
 copy of `image`: `session.call(pc, a)` is `run_to_rts`; `session.mem`/`session.mpu` are the
@@ -312,63 +310,20 @@ the program, and checks it against the reference.
    continuation reads, and what the instruction reads when the reference re-executes it
    (a check before an instruction).
 
-## Init folding
+## Init
 
-With `init` (a static lift: `entry_sp` and `loaded`, no facts, bank map nor cycle counting)
-the host calls that entry once, first, on `image`, and every other entry after it returns
-(a PSID's init, then its play calls). Its *decided path* (`fold.rs`, the walk of the entry
-runs, *Stores*) is the same for every input: from the entry, while each instruction has one
-variant and is no cell, each byte it reads is a loaded byte or one it stored earlier, each
-branch is decided and each store's address is known. Every other entry runs after the path,
-so the program starts from the memory the path leaves. The path is folded at its last point
-where that memory and the registers are a function of the image alone:
-
-- at the entry's height (no call open, SP the entry SP), not another entry's pc;
-- every register (`A`, `X`, `Y`, the flags) the path wrote known;
-- every byte it stored outside page 1 known, or a register the path never wrote (the
-  entry's input, as a song number in `A`, stored as it came);
-- every write to a volatile range of a known value at a known address, no read of one but a
-  throw-away read reaching no `sensitive` address, and no store above the entry SP on the way.
-
-The path is the same for every song: its decisions (each branch, each store's address, each
-volatile write) are those of a run that takes the entry's `A` (the song number) and *song
-data* as unknown, song data being the loaded bytes, but constant code, that an instruction
-the other entries reach reads (the data the player plays; tables only the init's own code
-reads, as a relocator's, are part of the player). That run walks in lockstep with the run
-of the values, which knows every loaded byte. Where the decisions run cannot decide a
-branch the values run decides, it takes every path from the branch, each instruction's
-states joined (registers hulled, a byte the paths store unlike unknown), to the branch's
-immediate postdominator in its function (calls run through; for the function's return, the
-return site): where every path reaches it with the same open calls and volatile writes, the
-two runs go on from there, the values run having followed its path alone. So the fold, its
-end, the volatile writes and registers the folded entry makes and the bytes it stores (the
-starting memory's addresses) are a function of the player; the values the path leaves in
-data bytes, the song's, are the starting memory. A byte of constant code the decisions run
-does not know (song data stored into an operand) stops the fold, as the program would take
-it as constant. At the entry's own return the registers are its result, which the host
-does not read: the folded entry sets those the values run knows.
-
-A declared set of `A` values (its songs) bounds the analysis (*Pointer reach* runs init
-once per value past the fold point) but not the path, so the fold is the same for one song
-as for several; cgen declares none, so that its `.c` is the same for every song count.
-
-The lift is then of the image with the path's known bytes in place, its init entry at the
-fold point: the entry first checks the declared values of the registers the path read as it
-found them or never wrote (the fold holds for those values), makes the path's volatile writes in
-order (a run of one value to consecutive addresses a loop counting in a register the entry
-then sets), then the path's stores of its input registers (a byte so stored
-is written outside the lifted code, like a byte the facts saw written: a cell, never a
-constant), then sets the registers the path wrote, and runs on. A byte only the path writes
-is a constant of every entry, so operands a relocator patched are constant code and their
-accesses have exact addresses; a byte some other store writes starts at the path's value. A
-path whose state depends on its input stops before that: the store of a value computed from
-`A` is not known, so the fold is at the last point before it, and the bytes the input decides
-stay cells written by the lifted code. Code only the path runs is not lifted;
-`Program.init` gives the fold (the original entry and the fold point, the starting memory's
-bytes over the image, the stores and registers of the folded entry, and the instructions the
-path ran that the folded program writes no byte of: code, constant like lifted code).
-`Program.call` of the init entry runs the folded entry: called on the starting memory, once
-and first, it gives the reference's accesses and memory (but dead stack bytes below SP).
+With `init` the host calls that entry once, first, on `image`, and every other entry after it
+returns (a PSID's init, then its play calls). Init is lifted as code like every entry: nothing
+of its run is evaluated, folded or snapshotted at lift time, so the program is the same for
+every song and every set of song data. Its stores are ordinary stores of the program: a code
+byte it writes (directly, indexed, or through a pointer, as a relocator patching operands
+through `STA (zp),Y`) is a cell like any other (*Stores*), and an access through a patched
+operand reads or writes through that operand pair as a pointer. A store whose address set the
+analysis does not bound goes through the program's checks (a code check where it may hit
+constant code, a guard where it may hit page 1 or I/O). That it runs first is what the
+analysis takes from it: a state not reached from it sees what its returns leave, so a pointer
+pair's floor is the least value the entries' returns leave (*Pointer pairs*), and a pair init's
+run has not stored holds its image word in init's states.
 
 ## Guards
 
@@ -554,19 +509,9 @@ the facts, so a proof holds on every execution that stays in lifted code.
   extents*, from bytes no store writes) or the byte of a cell (`LDA cell; PHA; ...; PLA; STA
   cell` restores it) stores those values; a cell's values are its entry byte and those of
   every store that may write it, those of the cells they copy included (a least fixpoint).
-  The part of each entry's run every call repeats is run once (with the declared entry SP):
-  from the entry while each byte it reads is constant or stored earlier in the run, each
-  branch decided and each store's address known; each store it makes there writes exactly
-  the `(address, value)` pairs it made, unless code reachable from where a run stops (or
-  another entry's) may run it again, so a relocator's per-operand values stay apart. Then an
-  inductive invariant is tried: the runs again, with every loaded byte they read (no cell)
-  taken as its image byte, their stores paired, and each store whose address is unknown only
-  through its own operand cells resolved at those cells' values, to a fixpoint. It holds when
-  no store of the program may write a byte a run read; then every entry call repeats the runs'
-  stores, so the operands they write hold their image bytes or the values written, and the
-  stores through them have those addresses. An entry whose reads some store may write is not
-  run (its code may all run again), until the rest hold or none is left: a relocator with no
-  done flag that re-runs on every init closes its operands unless play writes its tables.
+  In a static lift a store whose address is unknown only through its own operand cells has
+  the addresses the values those cells may hold give, the cells' values and those addresses
+  found together from none (both only grow).
   A cell is closed when every store that may write it has an address set and known values:
   an opcode cell's dispatch chain then has no deopt, and `Program.sets` holds it. A store
   through a `(zp),Y` pointer whose two bytes hold table bytes or constants on every path
@@ -593,6 +538,12 @@ the facts, so a proof holds on every execution that stays in lifted code.
   through such a pointer gets its set the same way (when its tables need no index guard: it
   is a fact the lift does not rely on), and its interval is the set's hull.
   `Program.addr_sets` gives these sets per instruction and kind (`{(pc, store): [(lo, hi)]}`).
+  Discovery's rounds take each store's address set as what the store writes: a store with a
+  set stops tracking only the bytes the set holds, so a relocator's store of an operand's low
+  byte through its pointer leaves the pointer's tags for the store of its high byte. A store
+  keeps its set while every round finds one, the set growing to those found; one a round finds
+  none for is dropped for good, so the rounds end at sets that hold of the states computed
+  with them.
 - **Pointer reach** (`vsa.rs`, static lifts). `Program.reach` gives, per load through a
   `(zp)` pointer or a cell operand, the hull of its addresses and of its base (the index
   registers zero) from a second pass of the analysis that assumes what *Table extents*
@@ -601,11 +552,7 @@ the facts, so a proof holds on every execution that stays in lifted code.
   is read whole: its columns overlap), and so does an indexed store whose index the code does
   not bound. Every byte only stores with bounded addresses write (each store's address set
   where it has one) holds the hull of its entry byte and the values they store; a zero-page
-  byte every path since the entry stored, of those values alone; a byte every run of the init
-  entry stores (one run per value of `A` whose loads stay inside those extents, each decided
-  from the entry to its `RTS`), the values the runs leave in place of its entry byte, for
-  states not reached from the init entry (one run per value of `A` the init entry declares,
-  every value when none). Loads take a byte's hull where it is not tracked (of the bytes its
+  byte every path since the entry stored, of those values alone. Loads take a byte's hull where it is not tracked (of the bytes its
   index register's values address, for a constant base plus an index register). A store whose
   index register holds a value set writes the addresses of its values alone.
   Starting from no hulls, each round of the pass gives hulls that hold of every run, met
@@ -613,10 +560,7 @@ the facts, so a proof holds on every execution that stays in lifted code.
   hulls hold only for runs that keep those assumptions (cgen reads past them through
   `oob_rd`). It runs again with none (`Program.proven`, which also holds the address hulls
   of loads from a constant base plus an index register): an indexed access reaches every byte
-  its index set gives and the init entry's runs are those of its declared songs, so those
-  hulls hold on every run. The runs also give `Program.fresh`: the bytes (outside page 1 and
-  the volatile ranges) every run stores before it reads them, when every run is decided;
-  nothing reads them before init stores them. Both passes run once, on the program discovery
+  its index set gives, so those hulls hold on every run. Both passes run once, on the program discovery
   settles on, and refine the domain:
   - *Value sets.* `A`, `X` and `Y` keep the set of values a load of constant bytes gives them
     (the table's bytes at the index register's values, inside the extent), through transfers
@@ -649,10 +593,8 @@ the facts, so a proof holds on every execution that stays in lifted code.
     reached from an entry other than init writes a byte of either base's run and every store
     into those runs is such a store: a pair loaded from the two columns at one index holds
     the pointers the columns' stores write (a return stack's pop reads what its push
-    stored), a least fixpoint from none. A value the init entry leaves in a pair that
-    addresses no data byte (an instruction, or outside the program) reads out of bounds
-    through it: the floor takes its least value addressing one, and a pair the init entry's
-    run has not stored holds its image word only where that addresses one. The pass's
+    stored), a least fixpoint from none. A pair the init entry's run has not stored holds its
+    image word in init's states. The pass's
     registers on every run (`Program.regs`) are the second pass's.
   - *Bounded stores* (`Program.bounded`). A store from a constant base plus an index register
     that may hold any byte on some run of the second pass, whose base is a data byte of the

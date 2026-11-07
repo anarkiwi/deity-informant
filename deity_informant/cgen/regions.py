@@ -132,10 +132,6 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         self.constant = self.code | self.tables
         self.code_span = self._span(self.constant)
         self.held = []
-        #: Bytes the init entry stores before anything reads them (``Program.fresh``), and
-        #: those its folded path stores (``Program.init``).
-        self.fresh = np.zeros(0x10000, dtype=bool)
-        self.folded = np.zeros(0x10000, dtype=bool)
 
     def _span(self, mask):
         """The span of ``mask``, widened over the regions it overlaps."""
@@ -184,8 +180,7 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         span with the regions it touches, so the copies index one array; each of the ``wide``
         runs (pointer loads', :meth:`pointer_run`) is touched whatever its width. With
         ``writes`` (the bounded stores' ``(lo, hi)``) a byte past the loaded image that no
-        store writes, nor the folded init path (:attr:`folded`), is in no region: a read of it
-        is out of bounds (``oob_rd``)."""
+        store writes is in no region: a read of it is out of bounds (``oob_rd``)."""
         for a in stores:
             self.code[a] = False
         touched = np.zeros(0x10000, dtype=bool)
@@ -195,7 +190,7 @@ class Memory:  # pylint: disable=too-many-instance-attributes
             else:
                 touched[r[0] : r[1] + 1] = True
         if writes is not None:
-            kept = self.folded.copy()
+            kept = np.zeros(0x10000, dtype=bool)
             kept[: self.loaded[1]] = True
             for lo, hi in [(lo, hi - 1) for lo, hi in self.written] + list(writes):
                 kept[lo : hi + 1] = True
@@ -269,8 +264,8 @@ class Memory:  # pylint: disable=too-many-instance-attributes
     def bounded(self, lo, hi):
         """``(regions, held spans)``: the one region or held span holding the bytes of
         ``[lo, hi]`` (narrower than ``BOUNDED``) the program holds, when every other byte is
-        out of bounds (past the loaded image, in no region, held span or volatile range, and
-        not stored by the folded init), else None."""
+        out of bounds (past the loaded image, in no region, held span or volatile range), else
+        None."""
         if hi - lo >= BOUNDED:
             return None
         idx = np.arange(lo, hi + 1)
@@ -279,17 +274,11 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         for j, (a, b) in enumerate(self.held):
             span[(idx >= a) & (idx < b) & (self.constant[lo : hi + 1] | (own >= 0))] = j
         ks, js = np.unique(own[(own >= 0) & (span < 0)]), np.unique(span[span >= 0])
-        out = (own < 0) & (span < 0) & (idx >= self.loaded[1]) & ~self.folded[lo : hi + 1]
+        out = (own < 0) & (span < 0) & (idx >= self.loaded[1])
         out &= ~self.vol[lo : hi + 1]
         if len(ks) + len(js) != 1 or not (out | (own >= 0) | (span >= 0)).all():
             return None
         return tuple(int(k) for k in ks), tuple(int(j) for j in js)
-
-    def uninit(self, k):
-        """Whether region ``k`` needs no initial contents: the init entry stores each of its
-        bytes before anything reads it."""
-        org, n = self.regions[k]
-        return bool(self.fresh[org : org + n].all())
 
     def is_volatile(self, lo, hi):
         """Whether all of ``[lo, hi]`` is volatile."""

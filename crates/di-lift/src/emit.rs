@@ -4,7 +4,7 @@
 //! deopt when an assumption fails.
 
 use crate::analysis::{
-    is_stack_op, operand_bytes, page1_check, Access, Check, Entry, Graph, Iv, Tg, Val,
+    is_stack_op, operand_bytes, page1_check, Access, Check, Entry, Graph, Iv, Tg,
 };
 use crate::bank::{Back, BankMap};
 use crate::func::{Arm, Ctl, Exit, Key, Plan, H};
@@ -203,21 +203,6 @@ pub fn emit(
             em.emit(Opc::Copy, r1(*i), k(lo as u32, 1), NONE, 0);
         }
     }
-    // A folded entry's volatile writes, stores and registers: what the run it stands for made
-    // and left.
-    if let Some(e) = entry {
-        em.residual_io(e);
-        for &(a, v) in &e.pre {
-            let v = match v {
-                Val::K(x) => k(x as u32, 1),
-                Val::R(r) => r1(r),
-            };
-            em.emit(Opc::Store, NONE, k(a as u32, 2), v, 0);
-        }
-        for &(r, x) in &e.set {
-            em.emit(Opc::Copy, r1(r), k(x as u32, 1), NONE, 0);
-        }
-    }
     if let Some(s) = plan.sp {
         let bad = em.op(Opc::IntNotEqual, 1, r1(R::SP), k(s as u32, 1));
         em.side_exit(bad, true, |em| em.deopt(k(plan.pc as u32, 2)));
@@ -261,64 +246,6 @@ pub fn emit(
 }
 
 impl<'a> Em<'a, '_> {
-    /// A folded entry's volatile writes `e.io`, in order: a run of one value to consecutive
-    /// addresses as a loop counting in a register the entry then sets (and no store of the
-    /// entry's registers reads), where there is one, else one store each.
-    fn residual_io(&mut self, e: &Entry) {
-        let counter = [R::X, R::Y, R::A]
-            .into_iter()
-            .find(|&r| e.set.iter().any(|s| s.0 == r) && !e.pre.iter().any(|p| p.1 == Val::R(r)));
-        let mut i = 0;
-        while i < e.io.len() {
-            let (a, v) = e.io[i];
-            let step = e.io.get(i + 1).map(|n| n.0.wrapping_sub(a));
-            let mut j = i + 1;
-            while let (Some(d @ (1 | 0xffff)), Some(&(b, w))) = (step, e.io.get(j)) {
-                if w != v || b != e.io[j - 1].0.wrapping_add(d) || j - i == 0x100 {
-                    break;
-                }
-                j += 1;
-            }
-            match counter.filter(|_| j - i > 1) {
-                Some(r) => {
-                    let n = (j - i) as u32;
-                    let up = step == Some(1);
-                    let base = if up { a } else { e.io[j - 1].0 };
-                    self.emit(Opc::Copy, r1(r), k(if up { 0 } else { n - 1 }, 1), NONE, 0);
-                    let pc = self.f.blocks[self.cur].pc;
-                    let (body, cont) = (self.new_block(pc), self.new_block(pc));
-                    self.emit(Opc::Branch, NONE, NONE, NONE, body);
-                    self.cur = body as usize;
-                    let off = self.zext(r1(r), 2);
-                    let at = self.op(Opc::IntAdd, 2, k(base as u32, 2), off);
-                    self.emit(Opc::Store, NONE, at, k(v as u32, 1), mem::VOLATILE);
-                    let more = if up {
-                        self.emit(Opc::IntAdd, r1(r), r1(r), k(1, 1), 0);
-                        self.op(Opc::IntNotEqual, 1, r1(r), k(n & 0xff, 1))
-                    } else {
-                        let more = self.op(Opc::IntNotEqual, 1, r1(r), k(0, 1));
-                        self.emit(Opc::IntSub, r1(r), r1(r), k(1, 1), 0);
-                        more
-                    };
-                    self.emit(Opc::CBranch, NONE, more, NONE, body);
-                    self.emit(Opc::Branch, NONE, NONE, NONE, cont);
-                    self.cur = cont as usize;
-                    i = j;
-                }
-                None => {
-                    self.emit(
-                        Opc::Store,
-                        NONE,
-                        k(a as u32, 2),
-                        k(v as u32, 1),
-                        mem::VOLATILE,
-                    );
-                    i += 1;
-                }
-            }
-        }
-    }
-
     fn new_block(&mut self, pc: u16) -> u32 {
         self.f.blocks.push(Block {
             pc,

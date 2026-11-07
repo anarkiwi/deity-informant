@@ -38,8 +38,7 @@ python tools/cgenplay.py tune.sid --psid --volatile 0xD400-0xD41D -o out/   # tr
 ...)` for a computed jump with no target), the computed jumps resolved from the code (`jumps`),
 the fact edges used, the lift's `stats`, whether some access has an unknown address and the
 `structure` counts: C `functions` (and the identical ones `folded` into them) and the
-`gotos` printed, the `provenance` of the printed constructs in the machine code (below), the
-folded `init` (`Program.init`, or None), the bytes init stores before any read (`fresh`) and
+`gotos` printed, the `provenance` of the printed constructs in the machine code (below) and
 the instruction starts translated (`starts`).
 
 The host supplies `uint8_t io_read(uint16_t)`, `void io_write(uint16_t, uint8_t)` and
@@ -60,15 +59,15 @@ caller's return address. `tools/cgenplay.c` is a host harness.
    `base + stride * k`. Functions are
    named by ascending entry PC, deopts become `trap(k)` with `k` numbered in the order the
    lift's functions and blocks meet them; a deopt of an instance function is one trap for every
-   copy (`("deopt", pc, function)`, the first copy's start). With `init` the init entry's
-   decided path is folded ([wholeprog](wholeprog.md#init-folding)): the `.h` holds the memory
-   the path leaves and the init function starts where it ends (storing the song as the path
-   stored it, setting the registers it wrote), so an operand a relocator patches is a
-   constant, its access indexed directly, and code only the path runs is not translated.
-   Neither the song number nor song data decides the path, so the `.c` is the same for every
-   song. `songs` is no fact of the lift, which takes any song, so neither is the song count:
-   the init function starts with `if ((uint8_t)(a - CGEN_SONG0) >= CGEN_SONGS) trap(k);`, the
-   bounds in the `.h`.
+   copy (`("deopt", pc, function)`, the first copy's start). With `init` the init entry is
+   lifted as code like the others ([wholeprog](wholeprog.md#init)), as a hand translation
+   writes it: an operand its relocator patches is a cell, read through as a pointer variable
+   (`rd((R6[0] | R6[1] << 8) + y)`); a block copy it makes is a copy loop; an I/O probe it
+   makes is its `io_read` and the variables or opcode cells it sets. Nothing of its run is
+   decided at lift time, so the `.c` is the same for every song and song data. `songs` is no
+   fact of the lift, which takes any song, so neither is the song count: the init function
+   starts with `if ((uint8_t)(a - CGEN_SONG0) >= CGEN_SONGS) trap(k);`, the bounds in the
+   `.h`.
 2. **MLIR** (`emit.py`). Each lifted function is a private `func.func` taking and returning the
    register file as values; its registers, stack slots and block-crossing temporaries are
    rank-0 `memref.alloca`s, memory one global `@M`, volatile accesses `io_read`/`io_write`
@@ -213,8 +212,8 @@ per-voice routines often are; the rest are renumbered in order.
 
 ## Memory
 
-- **Constant code** is the bytes of the planned instructions (`Program.starts`, and those of a
-  folded init path, `Program.init`) that the lift treats as constant
+- **Constant code** is the bytes of the planned instructions (`Program.starts`) that the lift
+  treats as constant
   (no store's address set holds them) and that no constant-address store writes, and the
   bytes of the tables the lift read as constant (jump targets, cell values, loads given their
   bytes' hull). `CODE_ORG` is the first of them (constants into code print relative to it).
@@ -243,17 +242,16 @@ per-voice routines often are; the rest are renumbered in order.
   throw-away read that cannot reach one of them.
   An unknown access may touch every byte of `loaded`, so then every non-code byte of it is in a
   region. Zero page, the stack page and RAM below the image are regions when accessed; a byte
-  past the image is one only when a bounded store, the folded init path (`Program.init`) or a
-  store with an address set writes it (the bytes between an instance's copies' bytes stay in
+  past the image is one only when a bounded store or a store with an address set writes it (the bytes between an instance's copies' bytes stay in
   their array): a read of any other byte past the image is out of bounds. A load whose bytes
   in the program lie in one region or held span, the rest past the image so, tests its
   address against it and reads `oob_rd` outside (`(uint16_t)(a - R2_ORG) < R2_LEN ? ... :
   oob_rd(a)`); from a constant base plus a byte inside one held span, through the span's
   bounds-checked reader `rdCj(base, index)`. One the lift proves (`Program.proven`: the bounds
-  of the bytes its index comes from) inside one region or held span indexes it unchecked. A region every byte of which every run of the init entry stores before any
-  read of it (`Program.fresh`) is declared with no initial contents (`uint8_t R4[R4_LEN];`,
-  no `R4_INIT`). So is every byte a store with an address set may write (`Program.written`: a block copy's
-  destinations past the image, which pointer reads then find through `rd` or a held span); the stack page
+  of the bytes its index comes from) inside one region or held span indexes it unchecked.
+  Every byte a store with an address set may write (`Program.written`: a block copy's
+  destinations past the image) is in a region, which pointer reads find through `rd` or a
+  held span; the stack page
   is accessed only by a load that may read it, since pointer accesses are kept out of page 1
   ([wholeprog](wholeprog.md#static-proofs), *Pointer windows*).
 - An access through a pointer with an address set (`Program.addr_sets`: a block copy's
@@ -280,8 +278,8 @@ per-voice routines often are; the rest are renumbered in order.
   `rdCj(base, y)`, the address as a 16-bit base plus a byte (`(zp),Y`'s pointer and index, a
   constant offset below 256, else 0): `noinline`, it reads `Cj` where the address lies in it,
   else `oob_rd`, so a pointer walked past the program reads out of bounds. Where the hull the
-  lift proves on every run (`Program.proven`: no table taken to be read inside its extent,
-  the init entry run for each of its songs) lies inside `loaded`, the span is that hull and the
+  lift proves on every run (`Program.proven`: no table taken to be read inside its extent)
+  lies inside `loaded`, the span is that hull and the
   load indexes it unchecked: `CGEN_IX(Cj, base - Cj_ORG, y)`. Not taken when the
   hull meets a volatile range inside `loaded`, or reaches below `loaded` a byte another
   access touches or a volatile one; then `rd`. `rd` and the regions only it reaches are left
@@ -322,7 +320,7 @@ per-voice routines often are; the rest are renumbered in order.
 - A load of a constant byte (constant code or a table the lift read as constant) at a fixed
   address prints as a name the `.h` defines, relative to the origin that places the byte
   (`CODE_KA3` for `CODE_ORG + 0xA3`): the `.c` holds neither its value nor its address, and the
-  compiler folds it. A folded init's constants (a relocator's base) so cost no load.
+  compiler folds it.
 - `oob_rd` returns 0, `oob_wr` discards; defining `CGEN_OOB` replaces both with the host's.
   A store the lift found may hit constant code or a table it read is followed by `codechk`,
   which traps when a constant byte of a span would change.
@@ -393,11 +391,13 @@ addresses), computed jumps and calls through operands written from tables (in th
 or an earlier one), an index past a split table's extent trapping, an opcode restored through
 the stack, a pointer into zero page with no stack check, a jump's or-ed high byte under
 relocation, determinism (repeated, with the blocks shuffled and under other hash seeds), an
-init run once folded into the starting memory (a relocator's operands constant though play
-writes its table, the song stored by the folded entry; one relocating by the song folded only
-up to it; one whose path song data decides folded through to its return, with the same `.c`
-for every song and song count, and stopped where the song decides an I/O write), each song
-from a fresh image, and an llvm-mos build. `tools/cgenplay.py` does the
+init lifted as code (a relocator patching operands through a pointer from its table of
+sites leaving both bytes of each operand cells play reads through as a pointer variable, on
+every call or once and first, for every song; one relocating by the song; one reading song
+data or making I/O writes song data decides, with the same `.c` for every song and song
+count; an I/O probe patching play's opcode an `io_read` of init and a dispatch of play; a
+block copy a copy loop with the same `.c` for other song data; a site table play writes
+leaving the stores checked), each song from a fresh image, and an llvm-mos build. `tools/cgenplay.py` does the
 same for a PSID (its init called once, first: `--init`) or raw image (`--loaded LO-HI`
 names the program's bytes in a raw 64 KiB state, as a memory dump after an init routine) and
 prints `tools/cmetrics.py`'s table, the sizes, the computed jumps resolved from the code, the
