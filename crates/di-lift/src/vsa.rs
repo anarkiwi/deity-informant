@@ -671,6 +671,8 @@ pub(crate) struct Code<'a> {
     pub(crate) pinned: FixedBitSet,
     /// The address sets the stores they key write ([`Aimed`]).
     pub(crate) aimed: Aimed,
+    /// Index guards: per instruction, the register and the values it deopts outside of.
+    pub(crate) guards: FxHashMap<u16, (u8, Iv)>,
 }
 
 /// Per store `(pc, opcode, access index)` the addresses it writes: a store with a set
@@ -960,7 +962,7 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
         let reach = a.ptr.and_then(|p| st.reach(p));
         let aimed = code.aimed.get(&(pc, v.op, ai));
         let hit = |m: u16| match (aimed, reach) {
-            (Some(s), _) => s.binary_search(&m).is_ok(),
+            (Some(s), _) => s.binary_search(&m).is_ok() && a.addr.meets(m as u32, m as u32 + 1),
             (None, Some(r)) => {
                 let m = m as u32;
                 (r.lo..=r.hi).contains(&m) || (r.lo..=r.hi).contains(&(m + 0x10000))
@@ -968,7 +970,7 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
             (None, None) => a.addr.meets(m as u32, m as u32 + 1),
         };
         let tracked = |m: u16| match aimed {
-            Some(s) => s.binary_search(&m).is_ok(),
+            Some(s) => s.binary_search(&m).is_ok() && a.addr.meets(m as u32, m as u32 + 1),
             None => a.addr.meets(m as u32, m as u32 + 1),
         };
         if !code.vecs.iter().any(|&m| tracked(m)) {
@@ -1029,6 +1031,18 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
     }
     for r in (0..DATA).filter(|&r| written >> r & 1 == 1) {
         s.detach(pc, r);
+    }
+    // Past an index guard the lifted code runs on with its register inside the guard's values
+    // (the reach pass's).
+    if let Some(&(r, ok)) = code
+        .guards
+        .get(&pc)
+        .filter(|g| code.sets() && written >> g.0 & 1 == 0)
+    {
+        let keep = s.vals(r as usize).filter(|x| (ok.lo..=ok.hi).contains(&x));
+        if narrow(&mut s, r as usize, keep).is_none() {
+            s.set[r as usize] = None;
+        }
     }
     s
 }
@@ -1401,6 +1415,7 @@ fn apply(ret: &St, call: &St, linked: bool, kept: Option<&[(u32, u32)]>) -> St {
         if let Some((b, off)) = ret.rel[r] {
             s.env[r] = shift(call.env[b as usize], off);
             s.kb[r] = s.kb[r].meet(Kb::of(s.env[r]));
+            s.set[r] = call.set[b as usize].map(|x| x.shifted(off));
             s.rel[r] = call.rel[b as usize].map(|(b0, o0)| (b0, o0.wrapping_add(off)));
         }
     }
@@ -1972,6 +1987,7 @@ fn reach(
         mods: FxHashMap::default(),
         pinned: FixedBitSet::new(),
         aimed: code.aimed.clone(),
+        guards: code.guards.clone(),
     };
     // The pairs a loop running to its end writes both bytes of.
     c.exits = filled(code, p.vars, sets)
@@ -2476,6 +2492,8 @@ pub struct Given<'a> {
     /// Instruction bytes stores with address sets write that no instruction runs at after
     /// them (code the init entry runs before a block copy overwrites it): data.
     pub dead: &'a FixedBitSet,
+    /// The index guards of the program discovery settled on, where known.
+    pub guards: &'a FxHashMap<u16, (u8, Iv)>,
 }
 
 /// Fill each variant's accesses from the interval states at its start. With `matched`, an
@@ -2513,6 +2531,7 @@ pub fn analyze(
         mods: FxHashMap::default(),
         pinned: FixedBitSet::new(),
         aimed: given.aimed.clone(),
+        guards: given.guards.clone(),
     };
     let thr = Thresholds::new(vars, &code);
     let (state, ret) = fixpoint(&code, vars, entries, &sh, disp, &thr);

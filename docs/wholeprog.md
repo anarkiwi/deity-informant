@@ -346,6 +346,15 @@ from it:
   into a run holds those pointers and its image word, and a store through such a cell operand
   pair writes that run, bounds-checked (`Program.bounded`). So a relocator patching play's
   operands from song header words leaves pointer variables bounded to the song.
+- **Operands patched from table words.** A store through its own two cell operand bytes, each
+  holding on every path a table byte of one index (an effect init patching the operand of the
+  voice it names), has as its address set the words of the tables plus each value of its
+  index register, as a `(zp),Y` store does (*Stores*); the index guard keeps the tables read
+  inside their extent. In the reach pass a pair stored from table bytes of one index holds
+  their words past later writes of the index, the lifted code runs on past an index guard
+  with the guard's values in its register, a store with an address set writes only the
+  addresses its access may reach, and a byte of a pointer into a run stored over a pair
+  pointing into the same run leaves it pointing there.
 - **Opcode cells.** A code byte init stores one of a few opcodes into (a hardware probe's
   choice) is a closed opcode cell: play dispatches on its values with no deopt.
 

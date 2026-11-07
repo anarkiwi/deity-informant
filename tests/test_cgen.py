@@ -3119,6 +3119,42 @@ def test_relocated_operands_point_into_the_song(prefix, tmp_path, plain):
     assert bool(re.search(r"\brd\(", body)) == plain
 
 
+OPPATCH = """
+init:   LSR A
+        TAX
+        LDA plo,X
+        STA op+1
+        LDA phi,X
+        STA op+2
+        LDA #$00
+op:     STA $FFFF
+        RTS
+play:   LDA v0
+        STA $C000
+        LDA v1
+        STA $C001
+        RTS
+plo:    .byte lo(v0), lo(v1)
+phi:    .byte hi(v0), hi(v1)
+v0:     .byte 7
+v1:     .byte 9
+end:
+"""
+
+
+def test_operand_patched_from_table_words_has_their_addresses(prefix, tmp_path):
+    """A store through its own operand bytes, each a table byte of one index (an effect init
+    patching the voice it names), has the words of the tables as its addresses: a plain store
+    choosing among them, with no ``wr`` or code check, and an index guard past the tables."""
+    img, labels, loaded = assemble(OPPATCH)
+    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+    for song in (0, 2):
+        (tmp_path / str(song)).mkdir()
+        play(tmp_path / str(song), c, h, img, labels, [("init", song)] + [("play", 0)] * 2)
+    init = c[c.index("void init") : c.index("void play")]
+    assert " wr(" not in c and "codechk(" not in c and "trap(" in init
+
+
 @pytest.mark.parametrize("bounded", [True, False])
 def test_index_bound_through_a_call_keeps_a_read_inside(prefix, tmp_path, bounded):
     """A song byte stored as a pattern number only below $80 (the branch on the flags the
