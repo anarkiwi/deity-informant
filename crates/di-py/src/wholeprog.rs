@@ -456,13 +456,7 @@ fn hulls(r: &[di_lift::ir::Reach]) -> HashMap<u16, (u32, u32, u32, u32)> {
 }
 
 fn entries(e: Vec<PyEntry>) -> Vec<Entry> {
-    e.into_iter()
-        .map(|(pc, regs)| Entry {
-            pc,
-            regs,
-            ..Entry::default()
-        })
-        .collect()
+    e.into_iter().map(|(pc, regs)| Entry { pc, regs }).collect()
 }
 
 fn vn<'py>(py: Python<'py>, v: Vn) -> PyResult<Bound<'py, PyAny>> {
@@ -798,14 +792,6 @@ impl Program {
         self.prog.written.clone()
     }
 
-    /// Runs ``[(lo, hi)]`` (``hi`` exclusive) of the bytes every run of the init entry (one per
-    /// ``A`` it is declared with) stores before any read of them: no other entry runs before
-    /// it, so their contents before it runs are never read.
-    #[getter]
-    fn fresh(&self) -> Vec<(u32, u32)> {
-        self.prog.fresh.clone()
-    }
-
     /// Address sets of data accesses through pointers or with several addresses:
     /// ``{(pc, store): [(lo, hi), ...]}`` runs, ``hi`` exclusive.
     #[getter]
@@ -826,7 +812,7 @@ impl Program {
     }
 
     /// The hulls of ``reach`` that hold on every run: no table load taken to stay inside its
-    /// extent, the init entry run for each ``A`` it is declared with.
+    /// extent.
     #[getter]
     fn proven(&self) -> HashMap<u16, (u32, u32, u32, u32)> {
         hulls(&self.prog.proven)
@@ -885,41 +871,6 @@ impl Program {
         self.prog.entries.iter().map(|e| e.0).collect()
     }
 
-    /// The folded init entry (``init=``), or None: ``{"index", "entry", "pc", "image", "io",
-    /// "stores", "regs", "code"}``: its index and pc, where the folded entry starts, the
-    /// ``(address, byte)`` pairs of the starting memory over the image, the
-    /// ``(address, byte)`` volatile writes the folded entry makes first, in order, the
-    /// ``(address, value)`` stores it makes (``value`` a
-    /// byte, or ``("r", r)``: register ``r`` as the entry found it), the
-    /// ``(register, value)`` pairs it sets and the ``(pc, length)`` of the instructions the
-    /// folded path ran that are constant code of the program.
-    #[getter]
-    fn init<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
-        let Some(f) = &self.prog.init else {
-            return Ok(None);
-        };
-        let d = PyDict::new(py);
-        d.set_item("index", f.index)?;
-        d.set_item("entry", f.entry)?;
-        d.set_item("pc", f.pc)?;
-        d.set_item("image", f.image.clone())?;
-        d.set_item("io", f.io.clone())?;
-        let stores = PyList::empty(py);
-        for &(a, v) in &f.pre {
-            let v = match v {
-                di_lift::analysis::Val::K(x) => x.into_pyobject(py)?.into_any(),
-                di_lift::analysis::Val::R(r) => ("r", r).into_pyobject(py)?.into_any(),
-            };
-            stores.append((a, v))?;
-        }
-        d.set_item("stores", stores)?;
-        d.set_item("regs", f.set.clone())?;
-        d.set_item("code", f.code.clone())?;
-        Ok(Some(d))
-    }
-
-    /// The engine ``call`` runs lifted code on by default: ``"jit"`` (native code without
-    /// cycle counting, the interpreter otherwise) or ``"interp"``.
     #[getter]
     fn backend(&self) -> &'static str {
         if self.interp.load(Ordering::Relaxed) {
@@ -1460,7 +1411,9 @@ pub fn reference_calls(
 /// stack checks against the stack's extent); ``sensitive`` the volatile addresses whose reads
 /// have effects (a throw-away read reaching none of them is not made);
 /// ``loaded`` the ``(lo, hi)`` the program was loaded to, where tables end at the latest;
-/// ``fold=True`` lifts copies of one routine as one function of the copy's index.
+/// ``fold=True`` lifts copies of one routine as one function of the copy's index; ``init``
+/// the index of the entry the host calls once, before any other (lifted as code, the
+/// analysis taking its run as the first).
 /// ``bank`` is a bank map: ``dir``/``data`` port
 /// cells, ``mask`` and ``pull`` bits, ``lut`` (configuration per effective port value),
 /// ``configs`` (per configuration 256 page kinds: 0 RAM, 1 ROM, 2 I/O) and ``rom``.
@@ -1516,7 +1469,7 @@ pub fn plan_program<'py>(
     let es = self::entries(entries);
     let f = self::facts(facts)?;
     let bank = bank_of(bank)?;
-    let g = di_lift::analysis::discover(&img, &es, &f, bank.as_ref(), true, None, None, None);
+    let g = di_lift::analysis::discover(&img, &es, &f, bank.as_ref(), true, None, None);
     let pcs: Vec<u16> = es.iter().map(|e| e.pc).collect();
     let out = PyList::empty(py);
     for p in di_lift::plan(&g.img, &g, &pcs, &f, bank.as_ref(), &[], false) {

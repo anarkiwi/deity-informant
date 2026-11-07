@@ -325,8 +325,6 @@ pub type AddrSet = (u16, bool, Vec<(u32, u32)>);
 #[derive(Clone, Debug, Default)]
 pub struct Program {
     pub functions: Vec<Function>,
-    /// The init entry folded into the starting memory ([`crate::fold`]).
-    pub init: Option<crate::fold::Fold>,
     /// `(pc, function)` per requested entry.
     pub entries: Vec<(u16, u32)>,
     /// Constant code bytes `(addr, value)`.
@@ -355,8 +353,6 @@ pub struct Program {
     pub volatile: Vec<(u32, u32)>,
     /// Runs `[lo, hi)` of the bytes stores with address sets may write.
     pub written: Vec<(u32, u32)>,
-    /// Runs `[lo, hi)` of the bytes every run of the init entry stores before it reads them.
-    pub fresh: Vec<(u32, u32)>,
     /// The instruction starts the functions plan (every copy's of an instance function),
     /// ascending.
     pub starts: Vec<u16>,

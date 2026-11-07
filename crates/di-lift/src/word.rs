@@ -272,11 +272,11 @@ fn tabled(code: &Code, st: &St, q: u16) -> Option<Wv> {
 fn untouched(code: &Code, st: &St, q: u16) -> Wv {
     let d = derived(code, st, q);
     // Where the pass bounds pointers into the program's data, a pair the init entry's run
-    // has not stored holds its image word, out of bounds unless it points into one run of
-    // data bytes, and joins what the other entries find.
+    // has not stored holds its image word (init runs first, on the image), joined with what
+    // the other entries find.
     if let (false, Some(&l), true) = (code.runs.is_empty(), code.floor.get(&q), code.init != 0) {
         let w = code.img[q as usize] as u32 | (code.img[q.wrapping_add(1) as usize] as u32) << 8;
-        let init = (st.from & code.init != 0 && code.run_of(w).is_some()).then_some((w, w));
+        let init = (st.from & code.init != 0).then_some((w, w));
         let other = (st.from & !code.init != 0).then_some((d.lo.max(l), d.hi));
         let (lo, hi) = match (init, other) {
             (Some(a), Some(b)) if b.0 <= b.1 => (a.0.min(b.0), a.1.max(b.1)),

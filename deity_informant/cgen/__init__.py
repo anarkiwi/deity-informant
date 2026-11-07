@@ -83,7 +83,7 @@ def _header(mem, used, traps, konsts=None):
     out = ["#ifndef CGEN_DATA_H", "#define CGEN_DATA_H"]
     for k, (org, n) in enumerate(mem.regions):
         out += [f"#define R{k}_ORG 0x{org:04X}", f"#define R{k}_LEN {n}"]
-        if _slice(mem, used, k) is None and not mem.uninit(k):
+        if _slice(mem, used, k) is None:
             out.append(f"#define R{k}_INIT {_hex(mem.image[org : org + n])}")
     if "CODE" in used or "CODE_ORG" in used:
         out.append(f"#define CODE_ORG 0x{mem.code_span[0]:04X}")
@@ -195,8 +195,6 @@ class Program:  # pylint: disable=too-many-instance-attributes
     proven: dict | None = None
     regs: dict | None = None
     bounded: dict | None = None
-    fresh: list = ()
-    init: dict | None = None
     songs: tuple | None = None
 
 
@@ -207,10 +205,10 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     give computed-jump targets only, ``loaded`` the ``(lo, hi)`` the program was loaded to,
     ``sensitive`` the volatile addresses whose throw-away reads are kept and ``init`` the
     index of the entry the host calls once, first, on ``image`` (``None``: entries are called
-    in any order), whose decided path is folded into the image the program starts from;
-    ``songs`` the range of values of ``A`` the init entry is called with (``None``: any):
-    the ``.c`` tests them against the ``.h``'s ``CGEN_SONG0`` and ``CGEN_SONGS``, and the
-    analysis takes any song, so the ``.c`` is the same for every song count."""
+    in any order), lifted as code like the others; ``songs`` the range of values of ``A``
+    the init entry is called with (``None``: any): the ``.c`` tests them against the ``.h``'s
+    ``CGEN_SONG0`` and ``CGEN_SONGS``, and the analysis takes any song, so the ``.c`` is the
+    same for every song count."""
     image = bytes(image)
     pcs = [pc for pc, _ in entries]
     span = None
@@ -231,12 +229,6 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         init=init,
     )
     entries = list(entries)
-    if (fold := prog.init) is not None:
-        start = bytearray(image)
-        for addr, byte in fold["image"]:
-            start[addr] = byte
-        image = bytes(start)
-        entries[fold["index"]] = (fold["pc"], entries[fold["index"]][1])
     lifted = prog.functions
     rank = sorted(range(len(lifted)), key=lambda i: lifted[i]["pc"])
     remap = {i: j for j, i in enumerate(rank)}
@@ -250,9 +242,8 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     p.constant, p.jumps, p.sets = frozenset(prog.code), dict(prog.jumps), dict(prog.sets)
     p.written = list(prog.written)
     p.bounds, p.addr_sets, p.reach = dict(prog.bounds), dict(prog.addr_sets), dict(prog.reach)
-    p.proven, p.fresh, p.regs = dict(prog.proven), list(prog.fresh), dict(prog.regs)
-    p.bounded = dict(prog.bounded)
-    p.init, p.songs = fold, span
+    p.proven, p.regs, p.bounded = dict(prog.proven), dict(prog.regs), dict(prog.bounded)
+    p.songs = span
     return p, prog.stats
 
 
@@ -267,8 +258,6 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     times["mlir"] = time.perf_counter() - t0
     t1 = time.perf_counter()
     code = code_bytes(p.image, p.starts)
-    for pc, n in (p.init or {}).get("code", ()):
-        code[(pc + np.arange(n)) & 0xFFFF] = True
     ran = code.copy()
     cells = np.zeros_like(code)
     tables = None
@@ -284,10 +273,6 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         loaded = (int(span[0]), int(span[-1]) + 1) if len(span) else (0, 0)
     pairs = pointer_pairs(p.image, p.starts)
     mem = Memory(p.image, code, p.volatile, loaded, p.sensitive, pairs, tables, p.written)
-    for lo, hi in p.fresh:
-        mem.fresh[lo:hi] = True
-    for a, _ in [*(p.init or {}).get("image", ()), *(p.init or {}).get("stores", ())]:
-        mem.folded[a] = True
     mod = printer.Module(top, mem)
     mod.sets = {**(p.bounds or {}), **{a: (min(v), max(v)) for a, v in (p.sets or {}).items() if v}}
     mod.lifted = {f"f{j}": (fn["pc"], list(fn.get("copies", ()))) for j, fn in enumerate(p.funcs)}
@@ -303,7 +288,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     mod.kpos = regfile.index(emit.KREG) if emit.KREG in regfile else None
     if p.songs is not None:
         index, first, count = p.songs
-        key = ("deopt", (p.init or {}).get("entry", p.entries[index][0]))
+        key = ("deopt", p.entries[index][0])
         k = traps.setdefault(key, len(traps))
         mod.traps.add(k)
         mod.konsts.update(CGEN_SONG0=first, CGEN_SONGS=count)
@@ -338,8 +323,6 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         j = _slice(mem, used, k)
         if j is not None:
             c.append(f"#define R{k} (C{j} + (R{k}_ORG - C{j}_ORG))")
-        elif mem.uninit(k):
-            c.append(f"uint8_t R{k}[R{k}_LEN];")
         else:
             c.append(f"uint8_t R{k}[R{k}_LEN] = {{R{k}_INIT}};")
     oob = [OOB[h] for h in sorted(helpers & set(OOB))]
@@ -402,5 +385,5 @@ def translate(  # pylint: disable=too-many-arguments
     info["times"] = {"lift": lift_time, **info["times"]}
     info["facts_edges"] = list(jf.edges) if jf is not None else []
     info["stats"] = stats
-    info["init"], info["fresh"], info["starts"] = p.init, p.fresh, sorted(p.starts)
+    info["starts"] = sorted(p.starts)
     return c, h, info

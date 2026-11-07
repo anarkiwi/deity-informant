@@ -68,8 +68,8 @@ def lift(
     ``(lo, hi)`` the program was loaded to (*Table extents*), ``fold=True`` lifts copies of
     one routine as one function of the copy's index (*Instances*) and ``sensitive`` lists the
     volatile addresses whose reads have effects (a throw-away read reaching none is not made).
-    ``init`` is the index of the entry the host calls before any other: a static lift folds
-    its decided path into the starting memory (*Init folding*; ``Program.init``)."""
+    ``init`` is the index of the entry the host calls before any other: lifted as code like
+    every entry, its run is the first (*Init*)."""
     n = _native_or_raise()
     prog = n.lift_program(
         bytes(image),
