@@ -2366,6 +2366,21 @@ def test_pointer_read_reaching_zero_page_reads_its_live_state(
     assert not info["traps"]
 
 
+def test_read_outside_the_program_traps_by_default(prefix, tmp_path):
+    """Without ``CGEN_OOB_EXACT`` the span reader's read outside the program traps with
+    ``OOB_TRAP``; reads inside it run as before."""
+    img, labels, loaded = assemble(ZPPTR)
+    c, h, _ = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
+    (tmp_path / "t.c").write_text(c)
+    (tmp_path / "t.h").write_text(h)
+    flags = [f for f in cgenplay.CFLAGS if f != "-DCGEN_OOB_EXACT"]
+    lib = cgenplay.build(tmp_path / "t.c", tmp_path / "t.so", flags)
+    lib.call.argtypes = [ctypes.c_void_p, ctypes.c_uint8]
+    fn = {n: ctypes.cast(getattr(lib, n), ctypes.c_void_p) for n in ("init", "play")}
+    got = [lib.call(fn[n], a) for n, a in [("init", 0), ("play", 0), ("play", 1)]]
+    assert got[:2] == [-1, -1] and got[2] == cgen.OOB_TRAP
+
+
 ANYPTR = """
 entry:  STA $FC
         LDA #$00

@@ -225,7 +225,7 @@ per-voice routines often are; the rest are renumbered in order.
   their slices (`#define R2 (C0 + (R2_ORG - C0_ORG))`), so each byte is held once, and
   `Cj_DATA` marks a span's data bytes up to its last constant byte (`Cj_BITS`; every byte past
   it is data). A load of unknown address
-  reaching other code reads `oob_rd`, 0 there.
+  reaching other code reads `oob_rd`.
 - **Data regions** `R0, R1, ...` (ascending address) are the maximal runs of other bytes that
   some access may touch, outside volatile ranges. An access's interval comes from its address
   expression (constants, an 8-bit index adds `[0, 255]`, masks, shifts, the hull of what flows
@@ -313,18 +313,19 @@ per-voice routines often are; the rest are renumbered in order.
   region and the address taken modulo its width (16 bits, 8 for a zero-page one) as the 6502
   wraps it; a load of constants in one span is `Cj[off + index]` alike. One in volatile
   memory is `io_read`/`io_write`. One wholly in other constant code is `oob_rd`/`oob_wr`. Any
-  other goes through `rd(a)` (`oob_rd(a)`) or `wr(a, v)`: the volatile ranges, the regions
-  outside the spans (by the `Rk_ORG` symbols, so data pointers holding original addresses
-  resolve) and the spans (`wr` writing their data bytes only), then `oob_wr`; `oob_rd` finds
-  the array by tables of their origins and lengths (`OOB_AT`, `OOB_ORG`, `OOB_LEN`). They and
+  other goes through `rd(a)` or `wr(a, v)`: the volatile ranges, the regions outside the
+  spans (by the `Rk_ORG` symbols, so data pointers holding original addresses resolve) and the
+  spans (`wr` writing their data bytes only), then `oob_wr`; `rd` (`cgen_rd`) finds the array
+  by tables of their origins and lengths (`OOB_AT`, `OOB_ORG`, `OOB_LEN`). They and
   `codechk` are `noinline`, as llvm-mos would otherwise copy them into every caller.
 - A load of a constant byte (constant code or a table the lift read as constant) at a fixed
   address prints as a name the `.h` defines, relative to the origin that places the byte
   (`CODE_KA3` for `CODE_ORG + 0xA3`): the `.c` holds neither its value nor its address, and the
   compiler folds it.
-- `oob_rd` returns the byte the 6502 reads at any address: a region's or span's live byte, an
-  I/O register, 0 where the program holds none; `oob_wr` discards. Defining `CGEN_OOB` replaces
-  both with the host's.
+- `oob_rd`, a read outside every array its site may address, calls `trap(0xFFFF)`
+  (`OOB_TRAP`). With `CGEN_OOB_EXACT` defined it is `cgen_rd`, the byte the 6502 reads there:
+  a region's or span's live byte, an I/O register, 0 where the program holds none. `oob_wr`
+  discards. Defining `CGEN_OOB` replaces both with the host's. `trap` does not return.
   A store the lift found may hit constant code or a table it read is followed by `codechk`,
   which traps when a constant byte of a span would change.
 
