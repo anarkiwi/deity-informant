@@ -941,6 +941,7 @@ impl Fixpoint<'_> {
             written: &written,
             aimed: &g.aimed,
             dead: &g.dead,
+            guards: &g.guards,
         };
         let an = crate::vsa::analyze(
             &g.img,
@@ -1044,6 +1045,7 @@ impl Fixpoint<'_> {
                 })
                 .collect();
             let none = FixedBitSet::new();
+            let nog = FxHashMap::default();
             let given = crate::vsa::Given {
                 loaded: self.loaded,
                 observed: &seen_writes,
@@ -1054,6 +1056,7 @@ impl Fixpoint<'_> {
                 written: &none,
                 aimed: &aimed,
                 dead: &dead,
+                guards: &nog,
             };
             let an = crate::vsa::analyze(
                 &cimg,

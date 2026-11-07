@@ -461,6 +461,7 @@ pub(crate) fn vectors(
         exits: FxHashMap::default(),
         mods: FxHashMap::default(),
         pinned: FixedBitSet::new(),
+        guards: FxHashMap::default(),
         aimed: FxHashMap::default(),
     };
     let mut v: Vec<u16> = vars
@@ -1142,11 +1143,12 @@ pub(crate) fn pointer_stores(
         let Some(var) = vars[&s.pc].iter().find(|v| v.op == s.op) else {
             continue;
         };
-        let Some(p) = var.acc.get(s.ai).and_then(|a| a.ptr) else {
-            continue;
-        };
         let g = lp.get_or_insert_with(|| Loop::new(code, vars, sets, objs, konst));
-        if let Some((a, r, gs)) = pointer_set(g, &w, s.pc, p) {
+        let hit = match var.acc.get(s.ai).and_then(|a| a.ptr) {
+            Some(p) => pointer_set(g, &w, s.pc, p),
+            None => operand_set(g, &w, s.pc, var.op),
+        };
+        if let Some((a, r, gs)) = hit {
             found.push((i, a, r, gs));
         }
     }
@@ -1167,6 +1169,33 @@ pub(crate) fn pointer_stores(
     done
 }
 
+/// The address set of an access at `pc` of opcode `op` through its two cell operand bytes, as
+/// [`pointer_set`] (words of their tagged table bytes on every path) plus each value of its
+/// index register.
+fn operand_set(
+    g: &Loop,
+    w: &FixedBitSet,
+    pc: u16,
+    op: u8,
+) -> Option<(Vec<u16>, BTreeSet<u16>, Vec<Guard>)> {
+    let t = Template::of(op);
+    let b = operand_bytes(g.code.img, g.code.cells, pc, t.len);
+    if t.len != 3 || b.iter().any(Option::is_some) {
+        return None;
+    }
+    let ys = match index_reg(t) {
+        Some(r) => g.sets.of(pc, r).unwrap_or_else(|| g.sets.any(pc, r)),
+        None => vec![0],
+    };
+    tagged_set(
+        g,
+        w,
+        pc,
+        (pc.wrapping_add(1) as u32, pc.wrapping_add(2) as u32),
+        &ys,
+    )
+}
+
 /// The address set of an access at `pc` through the `(zp),Y` pointer `p`, the table bytes it
 /// was read from and the guards they need: words of the pointer bytes' tagged table bytes
 /// on every path, else the words a loop advancing them gives ([`advanced`]), plus each `Y`.
@@ -1177,9 +1206,26 @@ fn pointer_set(
     p: crate::analysis::Ptr,
 ) -> Option<(Vec<u16>, BTreeSet<u16>, Vec<Guard>)> {
     let (q, h) = (p.lo.and_then(|l| l.value())?, p.hi.value()?);
+    let ys = g
+        .sets
+        .of(pc, reg::Y)
+        .unwrap_or_else(|| g.sets.any(pc, reg::Y));
+    tagged_set(g, w, pc, (q, h), &ys).or_else(|| {
+        advanced(g, pc, [q as u16, h as u16], &ys).map(|(a, r, g)| (a.into_iter().collect(), r, g))
+    })
+}
+
+/// The words of the bytes `q, h` where they hold tagged table bytes on every path into `pc`,
+/// plus each of `ys`; the table bytes read and the guards they need.
+fn tagged_set(
+    g: &Loop,
+    w: &FixedBitSet,
+    pc: u16,
+    (q, h): (u32, u32),
+    ys: &[u8],
+) -> Option<(Vec<u16>, BTreeSet<u16>, Vec<Guard>)> {
     let (code, sets, objs) = (g.code, g.sets, g.objs);
     let states = sets.states.get(&pc)?;
-    let ys = sets.of(pc, reg::Y).unwrap_or_else(|| sets.any(pc, reg::Y));
     let mut addrs = BTreeSet::new();
     let mut read = BTreeSet::new();
     let mut gs = Vec::new();
@@ -1202,10 +1248,7 @@ fn pointer_set(
         gs.extend(g);
         true
     });
-    if tagged {
-        return Some((addrs.into_iter().collect(), read, gs));
-    }
-    advanced(g, pc, [q as u16, h as u16], &ys).map(|(a, r, g)| (a.into_iter().collect(), r, g))
+    tagged.then(|| (addrs.into_iter().collect(), read, gs))
 }
 
 /// Address sets of the loads through `(zp),Y` pointers ([`pointer_set`]) whose tables no

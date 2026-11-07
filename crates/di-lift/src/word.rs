@@ -595,7 +595,7 @@ fn pforget(code: &Code, st: &St, s: &mut St, op: u8, a: &Access, aimed: Option<&
     let own = pkey(st, op, a);
     let reach = a.ptr.and_then(|p| st.reach(p));
     let hit = |x: u32| match (aimed, reach) {
-        (Some(set), _) => set.binary_search(&(x as u16)).is_ok(),
+        (Some(set), _) => set.binary_search(&(x as u16)).is_ok() && a.addr.meets(x, x + 1),
         (None, Some(r)) => (r.lo..=r.hi).contains(&x) || (r.lo..=r.hi).contains(&(x + 0x10000)),
         (None, None) => a.addr.meets(x, x + 1),
     };
@@ -814,7 +814,9 @@ pub(crate) fn step(
                 // with an address set, those.
                 let reach = a.ptr.and_then(|p| st.reach(p));
                 let hit = |x: u16| match (aimed, reach) {
-                    (Some(set), _) => set.binary_search(&x).is_ok(),
+                    (Some(set), _) => {
+                        set.binary_search(&x).is_ok() && a.addr.meets(x as u32, x as u32 + 1)
+                    }
                     (None, Some(r)) => {
                         let m = x as u32;
                         (r.lo..=r.hi).contains(&m) || (r.lo..=r.hi).contains(&(m + 0x10000))
@@ -848,8 +850,19 @@ pub(crate) fn step(
                 for x in bytes {
                     forget(s, x);
                 }
+                // A byte of a pointer into a run stored over a byte of a pair pointing into
+                // it leaves the pair pointing into it (the pass's first, assuming, run).
+                let data = match stored_reg(ops).and_then(|r| st.half[r]) {
+                    Some(Half::Data(lo, hi)) if !code.runs.is_empty() => Some((lo, hi)),
+                    _ => None,
+                };
                 for q in qs {
-                    put(s, q, None);
+                    let into = |(lo, hi): (u32, u32)| {
+                        let (l, h) = value(code, st, q).range()?;
+                        (code.run_of(l)? == code.run_of(lo)? && code.run_of(h) == code.run_of(hi))
+                            .then(|| Wv::plain(l.min(lo), h.max(hi), q))
+                    };
+                    put(s, q, data.and_then(into));
                 }
             }
         }
@@ -905,6 +918,9 @@ fn store(code: &Code, st: &St, s: &mut St, ops: &[di_pcode::Op], b: [Option<u8>;
             }
             _ => parts(x, h, next),
         };
+        // A pair stored from table bytes of one index holds their words from here on, past
+        // later writes of the index.
+        let w = w.or_else(|| tabled(code, s, x));
         put(s, x, w);
     }
     let q = x.wrapping_sub(1);
@@ -942,6 +958,7 @@ fn store(code: &Code, st: &St, s: &mut St, ops: &[di_pcode::Op], b: [Option<u8>;
             (_, None) => parts(q, low, h),
             _ => None,
         };
+        let w = w.or_else(|| tabled(code, s, q));
         put(s, q, w);
     }
     if let (Some(h), None) = (h, rmw) {
