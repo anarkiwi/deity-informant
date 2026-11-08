@@ -1633,6 +1633,50 @@ tab:    .byte 1,2,3,4
 state:  .byte 0
 end:
 """
+#: A relocator patching play's operands from song header words through a table of
+#: (site, header word, offset) entries, as SID-Wizard's does: o0 and o1 from one word.
+WORDREL = """
+init:   LDX #$00
+r:      LDA sites,X
+        STA $FB
+        LDA sites+1,X
+        STA $FC
+        LDY words,X
+        CLC
+        LDA hdr,Y
+        ADC offs,X
+        STA tmp
+        LDA hdr+1,Y
+        ADC #$00
+        LDY #$02
+        STA ($FB),Y
+        DEY
+        LDA tmp
+        STA ($FB),Y
+        INX
+        INX
+        CPX #$06
+        BNE r
+        RTS
+play:   AND #$03
+        TAY
+o0:     LDA $FFFF,Y
+        STA $C000
+o1:     LDA $FFFF,Y
+        STA $C001
+o2:     LDA $FFFF,Y
+        STA $C002
+        RTS
+tmp:    .byte 0
+sites:  .byte lo(o0), hi(o0), lo(o1), hi(o1), lo(o2), hi(o2)
+words:  .byte 0, 0, 0, 0, 2, 0
+offs:   .byte 0, 0, 1, 0, 0, 0
+hdr:    .byte lo(tab1), hi(tab1), lo(tab2), hi(tab2)
+pad:
+tab1:   .byte 1,2,3,4,5
+tab2:   .byte 9,8,7,6
+end:
+"""
 INITA = """
 init:   LDX #$5A
         STX flag
@@ -2246,7 +2290,7 @@ def test_table_region_past_the_code_span(prefix, tmp_path):
     assert "static __attribute__((noinline)) uint8_t codechk(" in c
     _, labels, _ = assemble(STRADDLE)
     [k] = [k for k, (org, n) in enumerate(info["regions"]) if org <= labels["buf"] < org + n]
-    assert f"#define R{k} (C0 + " in c and info["code_span"][1] == labels["buf"]
+    assert f"#define R{k} (C0 + " in h and info["code_span"][1] == labels["buf"]
 
 
 def test_pointer_stores_from_a_terminated_table_make_cells(prefix, tmp_path):
@@ -3811,3 +3855,38 @@ void entry(uint8_t a) {
         "other",
     ]
     assert owner[6] == "entry" and owner[2] == "rd"
+
+
+def test_operands_set_from_one_word_are_one_pointer(prefix, tmp_path):
+    """Play is lifted from what init's run leaves: operand pairs init sets from one song word
+    are one pointer variable, the others read as it plus their constant offset, and the
+    ``.c`` is the same wherever the song puts its tables."""
+    texts = set()
+    for pad in ("", "        .byte 0,0,0\n"):
+        img, labels, loaded = assemble(WORDREL.replace("pad:\n", f"pad:\n{pad}"))
+        c, h, info = translate(
+            prefix, img, labels, loaded, entries=("init", "play"), init=0, songs=range(1)
+        )
+        (tmp_path / str(len(pad))).mkdir()
+        calls = [("init", 0)] + [("play", a) for a in range(4)] * 2
+        play(tmp_path / str(len(pad)), c, h, img, labels, calls)
+        ops = {labels[o] + k for o in ("o0", "o1", "o2") for k in (1, 2)}
+        assert ops <= set(info["provenance"]["cells"])
+        body = c[c.index("void play") :]
+        assert len(set(re.findall(r"(R\d+)\[0\]", body))) == 2 and "1 + v" in body
+        texts.add(c)
+    assert len(texts) == 1
+
+
+def test_song_table_offsets_are_named_in_the_header(prefix, tmp_path):
+    """A table of song data inside a held span is indexed at an offset the ``.h`` names by the
+    instruction reading it, so moving the song's tables leaves the ``.c`` unchanged."""
+    texts = set()
+    for pad in ("", ".byte 0,0,0,0,0\n"):
+        src = TABLES.replace("lo:     .byte", f"        {pad}lo:     .byte") if pad else TABLES
+        img, labels, loaded = assemble(src)
+        c, h, _ = translate(prefix, img, labels, loaded)
+        (tmp_path / str(len(pad))).mkdir()
+        play(tmp_path / str(len(pad)), c, h, img, labels, entry_calls(range(8), 2))
+        texts.add(c)
+    assert len(texts) == 1

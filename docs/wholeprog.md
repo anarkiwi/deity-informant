@@ -37,6 +37,7 @@ prog = wholeprog.lift(state, [play], volatile=[(lo, hi)], facts=facts)   # cycle
 prog = wholeprog.lift(image, [init, play], volatile, entry_sp=0xFD, loaded=(lo, hi))  # static
 prog = wholeprog.lift(image, [init, play], volatile, entry_sp=0xFD, loaded=(lo, hi), init=0)
 prog = wholeprog.lift(image, [(init, {"a": range(3)}), play], ...)  # entry registers' values
+prog = wholeprog.lift(image, [init, play], ..., init=0, alias=[(lo, g, d)])
 # sensitive=[addr, ...]: the volatile reads with effects; other throw-away reads are not made
 prog.functions        # [{"pc", "entry", "recursive", "blocks": [{"pc", "ops"}], "tables", "closed",
                       #   "copies", "copy_pcs"}]: copy_pcs per merged instruction each copy's pc
@@ -80,6 +81,7 @@ Inputs:
 | `entry_sp` | The SP every entry is called at (after its return address), declared rather than observed: outermost plans are specialized to it and page-1 checks guard the *Stack extent* only. |
 | `loaded` | The `[lo, hi)` the program was loaded to: no table extends past it (*Table extents*). |
 | `init` | The index of the entry the host calls once, first, on `image` (a player's init), lifted as code (*Init*; a static lift only). |
+| `alias` | `[(lo, g, delta)]`: operand pairs init leaves as pair `g` plus `delta`, which play reads instead (*Init*). |
 
 `trace.collect(image, driver)` runs `driver(session)` twice on the jennings native core over a
 copy of `image`: `session.call(pc, a)` is `run_to_rts`; `session.mem`/`session.mpu` are the
@@ -331,6 +333,18 @@ from it:
 - **What the entries leave.** A pair no instruction since an entry stored holds the hull of the
   values every return of an entry leaves in it (its floor, *Pointer pairs*), and a pair init's
   run has not stored holds its image word in init's states.
+- **Play from the code as init leaves it** (`deity_informant.postinit`). `cgen.translate` runs
+  init once per declared song on the jennings core (only when it returns on the reference
+  interpreter within its budget) and tags each value with where it came from: a constant of
+  init's code, a byte loaded at a key, a byte of an addition chain on a word (the low and high
+  bytes of one chain share it, the carry joining them), or opaque (a device read, a shift, a
+  mix of two words, decimal mode). A key is an address, or an offset past the value the word
+  at another key was loaded with, so a byte read through a pointer init built from a song word
+  is named by that word. A pair of written bytes tagged as the two bytes of one chain is a
+  pointer on its word; the operand pairs every run leaves on one word, at one constant offset
+  from each other in every run, are one pointer variable (`alias`): play reads the pair of the
+  group's most common value plus its offset, when no store an entry other than init reaches
+  may write any of their bytes. Init still writes every pair as code.
 - **Loops that run to their end** (`scev.rs`, `Induction::exit`). A loop entered with its
   variables at one value each, whose trip test is known at every visit and is the only edge
   leaving it that may be taken first, runs exactly `trips` head visits. Past its exit each

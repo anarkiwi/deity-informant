@@ -59,6 +59,7 @@ def lift(
     fold=False,
     sensitive=None,
     init=None,
+    alias=(),
 ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
     """Lift ``entries`` of the program in ``image`` (the memory each entry starts from);
     ``cycles=True`` counts cycles and stamps volatile accesses with them; ``bank`` is a bank
@@ -69,7 +70,8 @@ def lift(
     one routine as one function of the copy's index (*Instances*) and ``sensitive`` lists the
     volatile addresses whose reads have effects (a throw-away read reaching none is not made).
     ``init`` is the index of the entry the host calls before any other: lifted as code like
-    every entry, its run is the first (*Init*)."""
+    every entry, its run is the first (*Init*); ``alias`` ``[(lo, g, delta)]`` the operand
+    pairs it leaves as pair ``g`` plus ``delta`` (:func:`deity_informant.postinit.groups`)."""
     n = _native_or_raise()
     prog = n.lift_program(
         bytes(image),
@@ -84,6 +86,7 @@ def lift(
         fold=fold,
         sensitive=None if sensitive is None else sorted(set(sensitive)),
         init=init,
+        alias=[tuple(a) for a in alias],
     )
     prog.backend = backend or BACKEND
     return prog
