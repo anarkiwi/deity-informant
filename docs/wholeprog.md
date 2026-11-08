@@ -656,7 +656,20 @@ the facts, so a proof holds on every execution that stays in lifted code.
   store with an address set writes and the facts did not see written (a store of unknown
   address is checked against them, `codechk`); otherwise, or when a byte is untagged on a
   path or two bytes are indexed by unrelated values, the transfer is unresolved and keeps its
-  facts' targets. The words are its targets in every context, an `RTS`/`RTI` resolved so is
+  facts' targets. An index the code does not bound that its register holds as a byte of the
+  loaded program (outside page 1 and the volatile ranges), read from an operand plus an index
+  register both standing since (no store since may write the byte, no instruction writes the
+  register), takes the values that byte may hold at the addresses the register's values
+  give: its entry byte and the values of every store the analysis reaches that may write it
+  (none of unknown address; a store's index register held as its function's entry value of a
+  register plus a constant takes the values that register holds in the calls entering its
+  context). A tag whose index register is written while it holds such a
+  byte stays indexed by the byte. On the edge to each target, a transfer through tagged bytes
+  records which of its targets the path took; a store of a register holding, in every
+  context, the byte a transfer the path took is indexed by stores only the index values
+  (inside the tables' extent, guarded) whose word is a target the path took: a command
+  handler that copies its command into a byte another dispatch reads stores only the commands
+  its own table entries name. The words are its targets in every context, an `RTS`/`RTI` resolved so is
   analysed as a jump (its function stays balanced), the bytes read join the program's
   constant bytes, and its table is closed. A `JMP (ind)` or `JMP` whose low and high target
   bytes are columns of one table indexed, in every context, by the current value of one index
@@ -691,11 +704,11 @@ the facts, so a proof holds on every execution that stays in lifted code.
 - **Table extents** (`dispatch.rs`). A table indexed by a register reads only its own bytes:
   each column (the loads one dispatch pairs by index value: a split table's low and high
   columns, an interleaved table's two bytes) extends from its byte at the least index value
-  to the first instruction byte, the end of the loaded program (`loaded`), or the first
-  address past it at which the code starts accessing a base other than the table's columns
-  (a constant operand, indexed or not, starts at its least index value there); and an index
-  value stops being read when one column's byte reaches its end or a byte another column read
-  at an earlier value. A table's columns include every base the code reads with the same
+  to the first byte of an instruction the analysis reaches, the end of the loaded program
+  (`loaded`), or the first address past it at which the code starts accessing a base other
+  than the table's columns (a constant operand, indexed or not, starts at its least index
+  value there); and an index value stops being read when one column's byte reaches its end
+  or a byte another column read at an earlier value. A table's columns include every base the code reads with the same
   index value (a table load while its register still holds the index another table byte was
   read with), so storing one byte of an interleaved pair alone sees its partner as part of
   the table. The index values read so are a prefix of the index's values (an index the code

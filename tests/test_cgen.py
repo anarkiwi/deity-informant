@@ -684,6 +684,44 @@ h3:     LDA #$13
 tlo:    .byte lo(h0),lo(h1),lo(h2),lo(tail)
 end:
 """
+CMDFX = """
+entry:  STA arg
+        STA vars+2
+        EOR #$01
+        STA vars+5
+        LDX #$00
+        JSR chan
+        LDX #$03
+chan:   LDY vars+2,X
+        LDA t0tbl,Y
+        STA t0+1
+        LDY vars,X
+t0:     JSR t0a
+        LDY vars,X
+        LDA fxtbl,Y
+        STA fx+1
+fx:     JMP fxa
+t0a:    LDA arg
+        STA vars+1,X
+        LDA vars+2,X
+        STA vars,X
+        RTS
+t0b:    LDA #$00
+        STA vars,X
+        RTS
+fxa:    LDA #$11
+        STA $C000,X
+        RTS
+fxb:    LDA #$22
+        STA $C000,X
+        RTS
+stray:  RTS
+t0tbl:  .byte lo(t0a),lo(t0a),lo(t0b),lo(t0b)
+fxtbl:  .byte lo(fxa),lo(fxb),lo(stray),lo(stray)
+vars:   .byte 0,0,0,0,0,0
+arg:    .byte 0
+end:
+"""
 STACKOP = """
 entry:  LDA site
         PHA
@@ -2265,6 +2303,39 @@ def test_call_through_an_operand_written_earlier(prefix, tmp_path):
         play(tmp_path / str(org), c, h, img, labels, calls)
         outs.append(c)
     assert outs[0] == outs[1] and "rd(R0[0] | ((uint16_t)R0[1] << 8))" in outs[0]
+
+
+def test_effect_index_copied_by_its_command_handler(prefix, tmp_path):
+    """A per-channel command picks a `JSR` handler from a table; only the handler of
+    commands 0 and 1 copies the command into the effect byte, which picks a `JMP` from a
+    table whose later entries are no handlers: the effect jump goes to the two."""
+    outs = []
+    for org in (0x1000, 0x2300):
+        img, labels, loaded = assemble(CMDFX, org)
+        c, h, info = translate(prefix, img, labels, loaded)
+        t0 = sorted(labels[n] for n in ("t0a", "t0b"))
+        assert info["jumps"] == {labels["t0"]: t0, labels["fx"]: [labels["fxa"], labels["fxb"]]}
+        (tmp_path / str(org)).mkdir()
+        play(tmp_path / str(org), c, h, img, labels, entry_calls(range(4), 2))
+        outs.append(c)
+    assert outs[0] == outs[1]
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        ("        LDA vars+2,X\n", "        INC vars+2,X\n        LDA vars+2,X\n"),
+        ("        LDA vars+2,X\n", "        INY\n        TYA\n"),
+        ("        LDA vars+2,X\n", "        INX\n        DEX\n        LDA vars+2,X\n"),
+    ],
+    ids=["byte-written", "not-the-byte", "index-changed"],
+)
+def test_effect_index_not_the_dispatched_byte(edit):
+    """The effect byte holds the dispatched command only while the command byte and its
+    index stand: otherwise the effect jump reads its table to its extent."""
+    img, labels, loaded = assemble(CMDFX.replace(*edit))
+    p, _ = cgen.lift(img, [(labels["entry"], "entry")], [W.IO], loaded=loaded)
+    assert labels["stray"] in p.jumps[labels["fx"]]
 
 
 def test_opcode_restored_through_the_stack(prefix, tmp_path):
