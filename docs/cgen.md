@@ -153,8 +153,9 @@ steps in order, each deciding on the graph the earlier ones leave:
    tests, joined with the first branch's edge to the same target (two edges to returns of the
    same values, or to copies of the same values into one block, are one target), to a
    fixpoint. Its operations either have no effect and read only data regions or code (so they
-   may run before the first test), or are stores and I/O accesses whose values only the block
-   reads: then they are its test literal's effects, a comma expression before the literal
+   may run before the first test), or are stores (none bounds-checked or picked among regions:
+   those print as `if`/`else`) and I/O accesses whose values only the block reads: then they
+   are its test literal's effects, a comma expression before the literal
    (`a || (R0[x] = v - 1, v != 1)`), kept only where the composed conditions, printed as sums
    of products with no don't-cares and evaluated left to right, read the literal once and
    exactly where the machine code ran the block. The condition prints as `a && b` / `a || b`
@@ -379,7 +380,8 @@ from the code alone ([wholeprog](wholeprog.md#static-proofs), *Computed jumps*):
 the table's words over the index values inside the table's extent, which no store may change.
 An index the code does not bound, such as a command byte of song data, reads the table up to
 where the layout ends it (*Table extents*: a split table's low column at its high column, any
-column at the next object the code accesses or the end of `loaded`), and an index guard
+column at the next object the code accesses, the first of the jump's targets past its first
+byte, or the end of `loaded`), and an index guard
 traps before a load past it. Such a jump is a switch over code addresses (`case CODE_ORG +
 0x23:`) whose last target is the default, with no trap; one whose low and high target bytes
 are a table pair indexed by a register still holding the index (`LDA lo,X; STA op+1; LDA hi,X;

@@ -398,7 +398,9 @@ the facts, so a proof holds on every execution that stays in lifted code.
   taken as constant (*Table extents*: none a store with an address set writes) and no cell
   reads the hull of those bytes, and they join the tables read as constant, so a store of
   unknown address that may hit them is checked like one into code (`codechk`). A byte a store
-  with an address set may write is not constant from the next round of discovery on.
+  with an address set may write is not constant from the next round of discovery on, nor is
+  a table byte inside the address interval of a store from a constant base plus an index
+  with no address set (a page from its base at most): data it may write.
 - **Byte bounds.** `Program.bounds` gives, for each byte (outside page 1, not a cell) every
   store that may write has an exact address and a value narrower than a byte, the hull of
   its entry byte and the stored values: what it holds whenever lifted code runs.
@@ -677,7 +679,10 @@ the facts, so a proof holds on every execution that stays in lifted code.
   (`loaded`), or the first address past it at which the code starts accessing a base other
   than the table's columns (a constant operand, indexed or not, starts at its least index
   value there); and an index value stops being read when one column's byte reaches its end
-  or a byte another column read at an earlier value. A table's columns include every base the code reads with the same
+  or a byte another column read at an earlier value. A computed transfer's table also ends at
+  the first target its words give past its first byte: what it goes to is code, though the
+  code only that transfer reaches is not yet decoded when the table is first read. A table's
+  columns include every base the code reads with the same
   index value (a table load while its register still holds the index another table byte was
   read with), so storing one byte of an interleaved pair alone sees its partner as part of
   the table. The index values read so are a prefix of the index's values (an index the code

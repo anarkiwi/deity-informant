@@ -689,6 +689,55 @@ fn unbounded_index_reads_inside_the_extent() {
     assert!(diff(&img, &p, &acc_calls(&[4]), IO) > 0);
 }
 
+/// A jump through a cell operand whose low byte an unbounded index reads from a table that
+/// code only the table reaches follows: the table ends at the first target it gives past its
+/// first byte, so the code's bytes give no targets.
+#[test]
+fn jump_table_ends_at_its_target() {
+    let prog: &[u8] = &[
+        0xaa, 0xbd, 0x0a, 0x10, 0x8d, 0x08, 0x10, 0x4c, 0x11, 0x10, 0x0d, 0x11, 0x15, 0x8d, 0x50,
+        0xc0, 0x60, 0x8e, 0x51, 0xc0, 0x60, 0x8c, 0x52, 0xc0, 0x60,
+    ];
+    let img = image(&[(0x1000, prog)]);
+    let opts = Opts {
+        loaded: Some((0x1000, 0x1000 + prog.len() as u32)),
+        ..Opts::default()
+    };
+    let p = lift_with(
+        &img,
+        &entries(&[0x1000]),
+        &[(0xc000, 0xc100)],
+        &Facts::default(),
+        opts,
+    );
+    assert_eq!(p.jumps, [(0x1007, vec![0x100d, 0x1011, 0x1015])]);
+    assert_eq!(diff(&img, &p, &acc_calls(&[0, 1, 2, 1, 0]), IO), 0);
+    assert!(diff(&img, &p, &acc_calls(&[3]), IO) > 0);
+}
+
+/// A table byte a store from a constant base plus an unbounded index may write is data, not
+/// constant code the store is checked against.
+#[test]
+fn indexed_store_keeps_tables_data() {
+    let put: &[u8] = &[0xaa, 0xa9, 0x07, 0x9d, 0x00, 0x11, 0x60];
+    let get: &[u8] = &[0xad, 0x80, 0x11, 0x8d, 0x53, 0xc0, 0x60];
+    let img = image(&[(0x1000, put), (0x1010, get), (0x1180, &[0x42])]);
+    let opts = Opts {
+        loaded: Some((0x1000, 0x1200)),
+        ..Opts::default()
+    };
+    let p = lift_with(
+        &img,
+        &entries(&[0x1000, 0x1010]),
+        &[(0xc000, 0xc100)],
+        &Facts::default(),
+        opts,
+    );
+    assert!(p.code.iter().all(|e| e.0 < 0x1100));
+    let calls = [(1, 0), (0, 0x80), (1, 0), (0, 0x10), (1, 0)];
+    assert_eq!(diff(&img, &p, &calls, IO), 0);
+}
+
 /// A counted loop clearing operands with `STA abs,X` makes them cells (no code check), and a
 /// store of known opcodes makes a closed opcode cell (no dispatch deopt); the cleared operand
 /// cells are closed with their values.
