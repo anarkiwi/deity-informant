@@ -302,17 +302,18 @@ def _array_of(mem, a):
     return (f"R{k}", mem.regions[k][0]) if k >= 0 else None
 
 
-def _copies_h(mem, plan):
+def _copies_h(mem, plan, var=lambda a: None):
     """The ``.h``'s copies (``plan``, :meth:`deity_informant.postinit.Init.copies`) into the
-    regions the program holds, cut where a region ends, the literal bytes they copy, and the
-    regions they name."""
+    regions the program holds and its promoted cells (``var``: an address's lvalue, or None),
+    cut where a region ends, the literal bytes they copy, and the regions they name."""
     dst, src, lens, ends, lit, used = [], [], [], [0], bytearray(), set()
     for ops in plan:
         for d, s, n in ops:
             literal = isinstance(s, bytes)
 
             def key(i, d=d, s=s, literal=literal):
-                to = _array_of(mem, d + i)
+                ref = var((d + i) & 0xFFFF)
+                to = (f"&{ref}", d + i) if ref is not None else _array_of(mem, d + i)
                 frm = "LIT" if literal else _array_of(mem, s + i)
                 return (to, frm) if to is not None and frm is not None else None
 
@@ -321,8 +322,11 @@ def _copies_h(mem, plan):
                     continue
                 i = next(run)
                 m = 1 + sum(1 for _ in run)
-                dst.append(f"{k[0][0]} + {d + i - k[0][1]}")
-                used.add(int(mem.owner[d + i]))
+                if k[0][0].startswith("&"):
+                    dst.append(k[0][0])
+                else:
+                    dst.append(f"{k[0][0]} + {d + i - k[0][1]}")
+                    used.add(int(mem.owner[d + i]))
                 if literal:
                     src.append(f"LIT + {len(lit)}")
                     lit += s[i : i + m]
@@ -483,6 +487,10 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     mem = Memory(data, code, p.volatile, loaded, p.sensitive, pairs, tables, p.written)
     mod = printer.Module(top, mem)
     mod.insn = ran
+    # Promotion candidates: the cells and the other variable bytes inside the code span.
+    lo, hi = mem.code_span
+    mod.cells = cells.copy()
+    mod.cells[lo:hi] |= ~mem.constant[lo:hi] & ~mem.vol[lo:hi]
     mod.sets = {**(p.bounds or {}), **{a: (min(v), max(v)) for a, v in (p.sets or {}).items() if v}}
     mod.lifted = {f"f{j}": (fn["pc"], list(fn.get("copies", ()))) for j, fn in enumerate(p.funcs)}
     mod.lifted.update({name: (pc, []) for pc, name in p.entries})
@@ -521,6 +529,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     if "CGEN_IX" in used:
         c.append(IX)
     c.append("CGEN_STORAGE")
+    c += mod.state_c()
     c += _dispatch(mem, helpers, used)
     for j in sorted(mod.checked):
         c += [
@@ -532,7 +541,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     sets = []
     if p.init is not None:
         (pc, name), state = p.init
-        sets, named = _copies_h(mem, plan)
+        sets, named = _copies_h(mem, plan, mod.var_ref)
         regions = sorted(set(regions) | named)
         sets = [
             f"#define CGEN_SONG0 0x{state.songs[0]:02X}",
@@ -543,7 +552,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         c += _init_c(name, traps[("deopt", pc)])
     c += fns
     c_text = clang_format("\n".join(c) + "\n")
-    store = _storage(mem, used, helpers, regions) + sets
+    store = _storage(mem, used, helpers, regions) + mod.state_h() + sets
     h_text = clang_format(_header(mem, used, [key[1] for key in traps], mod.konsts, store))
     times["print"] = time.perf_counter() - t1
     info = {
@@ -556,6 +565,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         "jumps": p.jumps or {},
         "structure": dict(mod.made),
         "provenance": {**mod.prov, "cells": [int(a) for a in np.flatnonzero(cells)]},
+        "state": {"cells": mod.state.counts(cells), "span": mod.state.counts(mod.cells & ~cells)},
     }
     return c_text, h_text, info
 

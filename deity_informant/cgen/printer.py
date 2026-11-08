@@ -20,6 +20,7 @@ from ..lifter import MODE_LEN, OPS
 from .mlir import Op
 from .csyntax import declare, drop_unread, ends_in_jump, names_in, render, walk
 from . import regions
+from .state import INDEXED, INIT, POINTER, UNKNOWN, State, classify
 from .structure import Conds, Graph, Structurer, new_ids
 
 WIDTH = {"i1": 1, "i8": 8, "i16": 16, "i32": 8, "i64": 16, "index": 16}
@@ -269,7 +270,8 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         self.addr_edges, self.arg_src, self.arg_block, self.dead = set(), {}, {}, set()
         self.flags = set()
         self.kparam, self.kvals, self.ktabs, self.kmemo, self.kiv = None, None, {}, {}, {}
-        self.kptrs, self.wide = {}, {}
+        self.kptrs, self.wide, self.promoted = {}, {}, {}
+        self.steps, self.elements = {}, {}
         self.index()
         self.idom = self.dominators()
         self.live_args = list(range(len(self.blocks[0].args)))
@@ -636,7 +638,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         for o in self.walk():
             if o.name not in ("memref.load", "memref.store") or id(o) in self.dropped:
                 continue
-            if o.args[-2] not in self.globals:
+            if o.args[-2] not in self.globals or id(o) in self.promoted:
                 continue
             c, rest = self.split(self.address(o))
             d = self.defs.get(rest)
@@ -677,6 +679,10 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 self.uses[o.args[-1]] -= 1
                 o.args[-1] = a
                 self.uses[a] = self.uses.get(a, 0) + 1
+        self.prepend(new)
+
+    def prepend(self, new):
+        """Put the new operations ``new`` (``{key: op}``) first in the entry block."""
         entry = self.blocks[0]
         entry.ops[0:0] = new.values()
         for i, o in enumerate(entry.ops):
@@ -890,10 +896,16 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
 
     def loop_iv(self, v, back, init):
         """The hull of the values block argument ``v`` takes from ``init`` around the loop
-        edges ``back``, when their conditions and values depend on ``v`` alone: the set of
-        values is iterated to its fixpoint, every member evaluated at once."""
+        edges ``back`` (:meth:`closure`)."""
         seen = np.zeros(1 << self.width(v), dtype=bool)
         seen[init[0] : init[1] + 1] = True
+        vals = self.closure(v, back, seen)
+        return None if vals is None else (int(vals[0]), int(vals[-1]))
+
+    def closure(self, v, back, seen):
+        """The values block argument ``v`` takes from those ``seen`` (a mask) around the loop
+        edges ``back``, when their conditions and values depend on ``v`` alone: the set of
+        values is iterated to its fixpoint, every member evaluated at once; else None."""
         new = np.flatnonzero(seen)
         try:
             for _ in range(LOOP_STEPS):
@@ -907,12 +919,170 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 vals = np.unique(np.concatenate(outs))
                 new = vals[~seen[vals]]
                 if not new.size:
-                    vals = np.flatnonzero(seen)
-                    return int(vals[0]), int(vals[-1])
+                    return np.flatnonzero(seen)
                 seen[new] = True
         except Unknown:
             return None
         return None
+
+    def stepped(self, v):
+        """``(values, step, steps)`` when byte block argument ``v`` takes the ``values`` of an
+        arithmetic progression of ``step``, each edge into its block (no ``switch``) passing a
+        constant (``steps[(op id, case)] = ("c", element)``) or ``v`` plus a multiple ``j`` of
+        the step (``("d", j)``) that cannot wrap, so the element number steps by ``j``."""
+        if v not in self.steps:
+            self.steps[v] = self.stepped_of(v)
+        return self.steps[v]
+
+    def stepped_of(self, v):
+        """:meth:`stepped`, made."""
+        srcs = self.arg_src.get(v)
+        if not srcs or self.types.get(v) != "i8" or any(o.name == "cf.switch" for o, _, _ in srcs):
+            return None
+        home = self.arg_block[v].name
+        back = [x for x in srcs if self.dominates(home, x[0].parent.name)]
+        loops = {(id(o), c) for o, _, c in back}
+        init = [self.const_of(o.args[i]) for o, i, c in srcs if (id(o), c) not in loops]
+        if None in init or not init:
+            return None
+        seen = np.zeros(0x100, dtype=bool)
+        seen[np.array(init) & 0xFF] = True
+        vals = self.closure(v, back, seen) if back else np.flatnonzero(seen)
+        if vals is None or len(vals) < 2 or len(set(np.diff(vals).tolist())) != 1:
+            return None
+        step, span, steps = int(vals[1] - vals[0]), int(vals[-1] - vals[0]), {}
+        for o, i, case in srcs:
+            u, d = o.args[i], 0
+            if (id(o), case) not in loops:
+                steps[id(o), case] = ("c", ((self.const_of(u) & 0xFF) - int(vals[0])) // step)
+                continue
+            if u != v:
+                du = self.defs.get(u)
+                ok = du is not None and du.name in ("arith.addi", "arith.subi")
+                k = self.const_of(du.args[1]) if ok and du.args[0] == v else None
+                if k is None:
+                    return None
+                k = k if du.name == "arith.addi" else -k
+                d = (k & 0xFF) - (0x100 if k & 0x80 else 0)
+            if d % step or span >= 0x100 - abs(d):
+                return None
+            steps[id(o), case] = ("d", d // step)
+        return vals, step, steps
+
+    def element(self, v):
+        """The block argument added beside ``v`` (:meth:`stepped`) holding its element number:
+        ``(v - values[0]) / step``, the same on every edge."""
+        if v in self.elements:
+            return self.elements[v]
+        _, _, steps = self.stepped(v)
+        blk = self.arg_block[v]
+        e = f"%e{len(self.elements)}"
+        self.elements[v] = e
+        new, made = {}, []
+        for o, _, case in list(self.arg_src[v]):
+            kind, j = steps[id(o), case]
+            if kind == "c" or j:
+                c = self.kop(
+                    new,
+                    "arith.constant",
+                    [],
+                    "i8",
+                    None,
+                    f"value = {j & 0xFF} : i8",
+                    prefix=f"%ec{len(self.defs)}.",
+                )
+            if kind == "d" and j:
+                res = f"%ed{len(self.elements)}.{len(made)}"
+                made.append(Op("arith.addi", [res], [e, c], "", [], (("i8", "i8"), ("i8",))))
+                c = res
+            elif kind == "d":
+                c = e
+            self.pass_arg(o, case, c)
+        self.prepend(new)
+        blk.ops[0:0] = made
+        blk.args.append((e, "i8"))
+        self.types[e], self.arg_block[e] = "i8", blk
+        for x in made:
+            x.parent = blk
+            self.defs[x.res[0]], self.types[x.res[0]] = x, "i8"
+            for a in x.args:
+                self.uses[a] = self.uses.get(a, 0) + 1
+                self.users.setdefault(a, []).append(x)
+        for k, x in enumerate(blk.ops):
+            self.where[id(x)] = (blk, k)
+        self.arg_src[e] = [
+            (o, idx[-1], case)
+            for o in {id(o): o for o, _, _ in self.arg_src[v]}.values()
+            for succ, idx, case in o.edges()
+            if succ == blk.name
+        ]
+        return e
+
+    def plus(self, e, k):
+        """``e + k`` (bytes) for an element block argument ``e``, at the start of its block."""
+        if not k:
+            return e
+        blk, new = self.arg_block[e], {}
+        c = self.kop(
+            new,
+            "arith.constant",
+            [],
+            "i8",
+            None,
+            f"value = {k & 0xFF} : i8",
+            prefix=f"%ec{len(self.defs)}.",
+        )
+        self.prepend(new)
+        res = f"%ep{len(self.defs)}"
+        x = Op("arith.addi", [res], [e, c], "", [], (("i8", "i8"), ("i8",)), parent=blk)
+        blk.ops.insert(0, x)
+        self.defs[res], self.types[res] = x, "i8"
+        for a in (e, c):
+            self.uses[a] = self.uses.get(a, 0) + 1
+            self.users.setdefault(a, []).append(x)
+        for j, y in enumerate(blk.ops):
+            self.where[id(y)] = (blk, j)
+        return res
+
+    def pass_arg(self, o, case, val):
+        """Append ``val`` to the operands terminator ``o`` passes on its edge ``case``,
+        shifting the operand indices recorded past it."""
+        if o.name == "cf.br":
+            at = len(o.args)
+        else:
+            _, n, m = o.ints("operandSegmentSizes")
+            at = 1 + n if case else len(o.args)
+            n, m = (n + 1, m) if case else (n, m + 1)
+            o.props = re.sub(
+                r"operandSegmentSizes = array<i32: [^>]*>",
+                f"operandSegmentSizes = array<i32: 1, {n}, {m}>",
+                o.props,
+            )
+        o.args.insert(at, val)
+        o.types = (tuple(o.types[0][:at]) + ("i8",) + tuple(o.types[0][at:]), o.types[1])
+        self.dead = {(x, i + (x == id(o) and i >= at)) for x, i in self.dead}
+        for srcs in self.arg_src.values():
+            srcs[:] = [(x, i + (x is o and i >= at), c) for x, i, c in srcs]
+        self.uses[val] = self.uses.get(val, 0) + 1
+        self.users.setdefault(val, []).append(o)
+
+    def stepped_access(self, o):
+        """``(addresses, v, offset)`` of access ``o`` at a constant plus a byte ``v + offset``,
+        ``v`` a block argument taking an arithmetic progression (:meth:`stepped`): its
+        addresses for each of ``v``'s values, else None."""
+        c, rest = self.split(self.address(o))
+        d = self.defs.get(rest)
+        if rest is None or d is None or d.name != "arith.extui" or self.width(d.args[0]) != 8:
+            return None
+        w, off = d.args[0], 0
+        dw = self.defs.get(w)
+        if dw is not None and dw.name == "arith.addi" and self.const_of(dw.args[1]) is not None:
+            w, off = dw.args[0], self.const_of(dw.args[1])
+        if self.defs.get(w) is not None or w not in self.arg_src or self.stepped(w) is None:
+            return None
+        vals = self.stepped(w)[0]
+        top = (1 << self.width(self.address(o))) - 1
+        return ((c + ((vals + off) & 0xFF)) & top).tolist(), w, off
 
     def evaluate(self, v, env, memo):  # pylint: disable=too-many-branches
         """The values of ``v`` (an array or scalar) for the block arguments ``env``."""
@@ -1285,7 +1455,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 continue
             if o.name == "func.call" or not self.pure(o):
                 return False
-            if o.name == "memref.load":
+            if o.name == "memref.load" and id(o) not in self.promoted:
                 lo, hi = self.iv(self.address(o))
                 if mem.region(lo, hi) is None and not mem.is_code(lo, hi):
                     return False
@@ -1378,6 +1548,10 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         for i, a in enumerate(o.args):
             if (id(o), i) in self.dead or a in self.globals:
                 continue
+            if i == addr and id(o) in self.promoted:
+                e = self.promoted[id(o)][-1]
+                out.extend([e] if isinstance(e, str) else [])
+                continue
             if i == addr and id(o) in self.wide and self.base_index(o) is not None:
                 out.extend(self.base_index(o))
                 continue
@@ -1405,6 +1579,27 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         if o.name == "memref.get_global":
             return False
         return not self.pure(o) or any(self.uses.get(r) for r in o.res)
+
+
+def _read_only(st, found):
+    """:class:`State` ``st`` less its cells no load of ``found`` (``(func, op, addresses,
+    _)``) reads, which it lists as ``unread``: what they hold is never observed."""
+    read = set()
+    for _, o, one, _ in found:
+        if o.name == "memref.load" and len(set(one)) == 1 and one[0] in st.at:
+            p = st.at[one[0]]
+            read.add(one[0] if p is None else (p[0], p[2]))
+        elif o.name == "memref.load" and (p := st.field_of(one)) is not None:
+            read.add(p[:2])
+    structs = [(b, [d for d in fs if (s, d) in read]) for s, (b, fs) in enumerate(st.structs)]
+    gone = [a for a, p in st.at.items() if (a if p is None else (p[0], p[2])) not in read]
+    return State(
+        [a for a in st.scalars if a in read], [x for x in structs if x[1]], st.why, sorted(gone)
+    )
+
+
+def _hex(data):
+    return ", ".join(f"0x{b:02X}" for b in data)
 
 
 def _types(text):
@@ -1731,6 +1926,8 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         """How access ``o`` reaches memory: ``("region", k)``, ``("held", j)``, ``("io",)``,
         ``("code",)``, ``("set", regions, spans)`` (a pointer access with an address set over
         several) or ``("any",)`` (``rd``/``wr``)."""
+        if id(o) in self.f.promoted:
+            return ("var",)
         lo, hi = self.f.iv(self.f.address(o))
         mem = self.mod.mem
         if o.name == "func.call" and mem.is_volatile(lo, hi):
@@ -1847,9 +2044,21 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             self.mod.regions_used.add(k)
         return E(f"{name}[{sub.text}]", 16, "", 0, 255, False, True, sub.refs)
 
+    def var(self, o):
+        """The promoted cell access ``o`` reaches (:meth:`Module.promote`): a scalar, or a
+        struct's field of the element its copy index chooses."""
+        p = self.f.promoted[id(o)]
+        if p[0] == "s":
+            return E(self.mod.var_name(p[1]), 16, "", 0, 255, False, True)
+        _, s, d, e = p
+        el = lit(e, 8) if isinstance(e, int) else self.ex(e)
+        return E(f"V{s}_f{d:02X}[{el.text}]", 16, "", 0, 255, False, True, el.refs)
+
     def load(self, o):
         """The C expression of a memory load ``o``: of a constant byte at a fixed address, its
         name in the ``.h`` (:meth:`Module.konst`)."""
+        if id(o) in self.f.promoted:
+            return self.var(o)
         lo, hi = self.f.iv(self.f.address(o))
         if lo == hi and self.mod.mem.constant[lo] and not self.mod.mem.vol[lo]:
             name = self.mod.konst(lo)
@@ -2143,6 +2352,10 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         """A memory store (or an ``io_write`` that cannot reach I/O)."""
         val = o.args[1] if o.name == "func.call" else o.args[0]
         how, v = self.target(o), (o.name != "func.call" and self.halves(o)) or self.ex(val)
+        if how[0] == "var":
+            ref = self.var(o)
+            out.append(("s", f"{ref.text} = {v.text};", ref.refs | v.refs))
+            return
         if how[0] in ("region", "held"):
             ref = self.mem_ref(o, how[1], how[0] == "held")
             out.append(("s", f"{ref.text} = {v.text};", ref.refs | v.refs))
@@ -2617,7 +2830,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.reach, self.proven, self.checked, self.konsts = {}, {}, set(), {}
         self.offsets, self.insn = {}, np.zeros(0x10000, dtype=bool)
         self.inert, self.regs, self.regfile, self.results_ivs = set(), {}, [], {}
-        self.bounded = {}
+        self.bounded, self.cells, self.state = {}, None, State()
         #: Per entry name, the C lines that start it (the host's check of its arguments).
         self.guards = {}
         #: Runs ``(lo, hi)`` (inclusive) held in regions whatever reads them (init's sources).
@@ -2793,16 +3006,133 @@ class Module:  # pylint: disable=too-many-instance-attributes
             return None
         return tuple(m(h[i] for h in hulls) for i, m in enumerate((min, max, min, max)))
 
+    def touched(self, f, o, lo, hi, per):
+        """``([(lo, hi)], why)``: the addresses access ``o`` of function ``f`` (address interval
+        ``(lo, hi)``, per copy ``per``) may touch, and the :data:`state.WHY` code of its kind."""
+        run = self.run_of(f, o)
+        if run is not None:
+            lo, hi = max(lo, run[0]), min(hi, run[1])
+        lo, hi = (f.proven_iv(o) if o.name == "memref.load" else None) or (lo, hi)
+        if per and all(y - x < regions.BOUNDED for x, y in per):
+            return per, INDEXED
+        if hi - lo < regions.BOUNDED:
+            return [(lo, hi)], INDEXED
+        store = o.name == "memref.store" or o.prop("callee") == "@io_write"
+        aset = self.addr_sets.get((o.pc, store))
+        if aset:
+            return [(a, b - 1) for a, b in aset], POINTER
+        hull = self.reach_of(f, o) if o.name == "memref.load" else None
+        return ([hull[:2]], POINTER) if hull is not None else ([(0, 0xFFFF)], UNKNOWN)
+
+    def promote(self):
+        """Classify the code cells (:attr:`cells`) by the address sets of every access
+        (:func:`state.classify`) and mark each access of a promoted cell (``f.promoted``): a
+        scalar's address, or a field's struct, field and element (a value of the copy index)."""
+        why, found = np.zeros(0x10000, dtype=np.int8), []
+        for lo, hi in self.held_runs:
+            why[lo : hi + 1] = INIT
+        for f in self.funcs:
+            for o, (lo, hi), per in f.accesses():
+                if id(o) in f.dropped or o.name == "func.call" and self.mem.is_volatile(lo, hi):
+                    continue
+                one = [x for x, y in per if x == y] if per else [lo] if lo == hi else []
+                if o.name != "func.call" and one and len(one) == len(per or one):
+                    if self.cells[one].all():
+                        found.append((f, o, one, None))
+                        continue
+                step = None if per or o.name == "func.call" else f.stepped_access(o)
+                if step is not None and self.cells[step[0]].all():
+                    found.append((f, o, step[0], step[1]))
+                    continue
+                if step is not None:
+                    sel = why[step[0]]
+                    why[step[0]] = np.where(sel == 0, INDEXED, sel)
+                    continue
+                runs, kind = self.touched(f, o, lo, hi, per)
+                for x, y in runs:
+                    sel = why[x : y + 1]
+                    sel[sel == 0] = kind
+        stepped = [a for _, _, a, v in found if v is not None]
+        st = classify(self.cells, [a for _, _, a, _ in found], why, stepped)
+        self.state = st = _read_only(st, found)
+        made, gone = {}, set(st.unread)
+        for f, o, one, v in found:
+            if len(set(one)) == 1 and one[0] in st.at:
+                p = st.at[one[0]]
+                f.promoted[id(o)] = ("s", one[0]) if p is None else ("v", p[0], p[2], p[1])
+                continue
+            place = st.field_of(one) if len(set(one)) > 1 else None
+            if place is None:
+                if gone.issuperset(one):
+                    f.dropped.add(id(o))
+                continue
+            s, d, els = place
+            key = (f.name, v, int(els[0])) if v is not None else (f.name, tuple(els.tolist()))
+            if key in made:
+                e = made[key]
+            elif v is not None:
+                e = f.plus(f.element(v), int(els[0]))
+            elif (els == f.kvals).all():
+                e = f.kparam
+            else:
+                new, offs = {}, tuple(els.tolist())
+                pre = f"%q{len(f.defs)}."
+                e = f.kop(new, "arith.kfam", [f.kparam], "i8", o.pc, offs=offs, prefix=pre)
+                f.prepend(new)
+            made[key] = e
+            f.promoted[id(o)] = ("v", s, d, e)
+
+    def var_name(self, a):
+        """The name of scalar ``a``: by its offset from the code span's origin (or the loaded
+        image's, else its address), so relocating the program keeps it."""
+        lo, hi = self.mem.code_span
+        if lo <= a < hi:
+            return f"S_{a - lo:X}"
+        if self.mem.loaded[0] <= a < self.mem.loaded[1]:
+            return f"S_I{a - self.mem.loaded[0]:X}"
+        return f"S_A{a:04X}"
+
+    def var_ref(self, a):
+        """The C lvalue of promoted cell ``a``, or None."""
+        if a not in self.state.at:
+            return None
+        p = self.state.at[a]
+        return self.var_name(a) if p is None else f"V{p[0]}_f{p[2]:02X}[{p[1]}]"
+
+    def state_c(self):
+        """The ``.c``'s definitions of the promoted state, initialized from the ``.h``: each
+        field of a struct is an array over its copies."""
+        out = [f"uint8_t {self.var_name(a)} = {self.var_name(a)}_INIT;" for a in self.state.scalars]
+        for s, (bases, fields) in enumerate(self.state.structs):
+            out += [
+                f"uint8_t V{s}_f{d:02X}[{len(bases)}] = {{V{s}_f{d:02X}_INIT}};" for d in fields
+            ]
+        return out
+
+    def state_h(self):
+        """The ``.h``'s initial values of the promoted state."""
+        img = self.mem.image
+        out = [f"#define {self.var_name(a)}_INIT 0x{img[a]:02X}" for a in self.state.scalars]
+        for s, (bases, fields) in enumerate(self.state.structs):
+            out += [
+                f"#define V{s}_f{d:02X}_INIT {_hex(img[(int(b) + d) & 0xFFFF] for b in bases)}"
+                for d in fields
+            ]
+        return out
+
     def partition(self):
-        """Partition memory by the accesses of every function: a pointer load of unknown
-        address whose hull the lift bounds reads the run :meth:`Memory.pointer_run` gives,
-        unchecked where the hull the lift proves lies in it (``f.sure``)."""
+        """Partition memory by the accesses of every function but those of promoted cells
+        (:meth:`promote`): a pointer load of unknown address whose hull the lift bounds reads
+        the run :meth:`Memory.pointer_run` gives, unchecked where the hull the lift proves
+        lies in it (``f.sure``)."""
+        if self.cells is not None:
+            self.promote()
         ranges, stores, unknown, joined, ptrs, writes = [], set(), False, [], [], []
         bound = []
         for f in self.funcs:
             f.wide, f.sure = {}, set()
             for o, (lo, hi), per in f.accesses():
-                if id(o) in f.dropped:
+                if id(o) in f.dropped or id(o) in f.promoted:
                     continue
                 run = self.run_of(f, o)
                 if run is not None:
@@ -2860,6 +3190,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
             joined + wide,
             wide + bound + self.held_runs,
             writes + bound + self.held_runs,
+            self.state.mask(),
         )
 
     def owners(self, runs, held):

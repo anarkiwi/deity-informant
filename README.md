@@ -17,7 +17,9 @@ calls once, first, is run per song, not lifted: play is lifted from the memory i
 bytes it stored variables whose per-song values the `.h` holds as copies. A read through a
 pointer whose bases the analysis bounds (split tables a song byte indexes, constants, an
 offset in `Y`, the record lengths it advances by) is one bounds-checked read of the span
-holding them. Every output is
+holding them. Self-modified code cells every access reaches at a constant address are scalars,
+those per-voice copies or a counted voice loop reach at one address per copy field arrays
+indexed by the voice; the rest stay bytes of their memory region. Every output is
 verified by replaying its I/O writes against the reference interpreter. See
 [docs/cgen.md](docs/cgen.md).
 
