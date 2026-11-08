@@ -409,8 +409,9 @@ fn sites(
 }
 
 /// Plans for `entries` of the discovered program `g`: an unexecuted instruction start in a
-/// device (a volatile range, or I/O under the bank map), and with facts one whose page-1 access
-/// cannot be checked, is not planned (edges to it deopt). With a bank map an entry is entered
+/// device (a volatile range, or I/O under the bank map), one the interval analysis never
+/// reaches whatever the data, and with facts one whose page-1 access cannot be checked, is not planned (edges to
+/// it deopt). With a bank map an entry is entered
 /// in each configuration its calls were seen in.
 pub fn plan(
     img: &[u8; 0x10000],
@@ -432,7 +433,9 @@ pub fn plan(
                 || bank.is_some_and(|m| m.back(g.cfg[pc], *pc) == Back::Io);
             !starts.contains(pc)
                 && !entries.contains(pc)
-                && (device || !starts.is_empty() && vs.iter().any(|v| unchecked(img, g, *pc, v)))
+                && (device
+                    || !g.live.contains(*pc as usize)
+                    || !starts.is_empty() && vs.iter().any(|v| unchecked(img, g, *pc, v)))
         })
         .map(|(&pc, _)| pc)
         .collect();
