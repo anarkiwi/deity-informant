@@ -212,6 +212,11 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         self.code_span = self._span(constant)
         self.held = self._spans(need)
 
+    def moves(self, addr, origin=False):
+        """Whether ``addr`` moves with the loaded image when it is relocated: a byte of it, or
+        (``origin``, a region's origin) its end too, where a region run on past it starts."""
+        return self.loaded[0] <= addr < self.loaded[1] + origin
+
     def hull(self, lo, hi):
         """The hull of the bytes in ``[lo, hi]`` when every one is constant (code, or a table
         the lift read as constant), else the full byte range."""

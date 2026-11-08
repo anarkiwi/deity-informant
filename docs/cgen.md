@@ -331,8 +331,10 @@ per-voice routines often are; the rest are renumbered in order.
   as the equality of its operands.
 - An access whose interval lies in one region is `Rk[off + index]`, `off` relative to the
   region and the address taken modulo its width (16 bits, 8 for a zero-page one) as the 6502
-  wraps it; a load of constants in one span is `Cj[off + index]` alike. One in volatile
-  memory is `io_read`/`io_write`. One wholly in other constant code is `oob_rd`/`oob_wr`. Any
+  wraps it (a fixed address in a region whose origin moves with the loaded image, one
+  starting in it or where it ends, is `Rk[addr + index - Rk_ORG]`, so relocating the
+  image leaves the `.c` unchanged); a load of constants in one span is `Cj[off + index]`
+  alike. One in volatile memory is `io_read`/`io_write`. One wholly in other constant code is `oob_rd`/`oob_wr`. Any
   other goes through `rd(a)` or `wr(a, v)`: the volatile ranges and the arrays (by the `Rk_ORG`
   symbols, so data pointers holding original addresses resolve), then `oob_wr`; each finds the
   array by tables of their origins and lengths (`OOB_*` over the regions outside the spans and

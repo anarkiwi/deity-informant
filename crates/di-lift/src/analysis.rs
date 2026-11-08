@@ -1065,8 +1065,15 @@ impl Fixpoint<'_> {
             for st in &an.stores {
                 for &a in st.addrs.iter().flatten() {
                     let s = written.entry(a).or_default();
-                    if let Some(Some(v)) = an.cellvals.get(&a) {
-                        s.extend(v);
+                    match an.cellvals.get(&a) {
+                        Some(Some(v)) => s.extend(v),
+                        // A cell of unknown values (its entry byte the host init's) still
+                        // takes the values the stores of known values write as variants.
+                        _ if st.deps.is_empty() => {
+                            s.extend(st.vals.iter().flatten());
+                            s.extend(st.pairs.iter().flatten().filter(|p| p.0 == a).map(|p| p.1));
+                        }
+                        _ => {}
                     }
                 }
             }
