@@ -130,5 +130,6 @@ def classify(cells, sets, why, stepped=()):
     const = np.zeros(0x10000, dtype=bool)
     const[[int(s[0]) for s in sets if len(set(s)) == 1]] = True
     scalars = np.flatnonzero(cells & (why == 0) & const & ~owner).tolist()
-    out = sorted(((base + np.array(n), sorted(f)) for n, base, f in structs), key=lambda x: x[0][0])
+    out = [(base + np.array(n), sorted(f)) for n, base, f in structs]
+    out.sort(key=lambda x: x[0][0])
     return State(scalars, out, why)
