@@ -1807,7 +1807,11 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             return E(f"{p.text}[{lit(c, 8).text}]", 16, "", 0, 255, False, True, p.refs)
         top = (1 << self.f.width(a)) - 1
         c &= top
-        if rest is None:
+        # A fixed address in a region the image's relocation moves is offset by its origin.
+        moved = not held and self.mod.mem.moves(org, True) != self.mod.mem.moves(c)
+        if rest is None and moved:
+            sub = binary("-", 12, lit(c, 16), E(sym, lo=org, hi=org, uns=True), 16)
+        elif rest is None:
             sub = self.mod.offset(name, o.pc, c, org) if held else lit(c - org, 16)
         elif c == 0 and org:
             r = self.ex(rest)
@@ -1823,7 +1827,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             named = held and c and off >= 0 and not self.mod.insn[c]
             if named:
                 sub = binary("+", 12, self.mod.offset(name, o.pc, c, org), r, 16)
-            elif off < -0x100:
+            elif off < -0x100 or moved:
                 # A constant that is no address near the region (a pointer plus one): its
                 # origin stays symbolic, as relocation moves it.
                 if c:

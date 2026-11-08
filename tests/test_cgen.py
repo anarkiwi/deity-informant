@@ -3852,3 +3852,74 @@ def test_song_table_offsets_are_named_in_the_header(prefix, tmp_path):
         play(tmp_path / str(len(pad)), c, h, img, labels, entry_calls(range(8), 2))
         texts.add(c)
     assert len(texts) == 1
+
+
+STOPPER = """
+init:   LDA #$2C
+        STA op
+        LDA #$00
+        STA n
+        RTS
+play:   INC n
+op:     BIT n
+        LDA n
+        STA $C010
+        CMP #$03
+        BNE done
+        LDA #$60
+        STA op
+done:   RTS
+n:      .byte 0
+end:
+"""
+
+
+def test_play_stores_an_opcode_into_a_cell_init_sets(prefix, tmp_path):
+    """Init sets an opcode cell, so its entry byte is the host's; the opcode play stores
+    there is still lifted as a variant: after it play returns at the cell."""
+    img, labels, loaded = assemble(STOPPER)
+    c, h, info = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
+    assert labels["op"] in info["provenance"]["cells"]
+    play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", 0)] * 6)
+
+
+FIXED = """
+init:   LDA #$40
+        STA $40
+        LDA #$30
+        STA $41
+        LDA #$05
+        STA $3040
+        STA $3047
+        RTS
+play:   LDX #$07
+loop:   LDA $3040,X
+        CLC
+        ADC #$03
+        STA $3040,X
+        STA $C010
+        LDA ($40,X)
+        ADC #$01
+        STA ($40,X)
+        TXA
+        SEC
+        SBC #$07
+        TAX
+        BPL loop
+        RTS
+end:
+"""
+
+
+def test_state_past_the_image_keeps_its_addresses_when_relocated(prefix, tmp_path):
+    """State at fixed addresses past the image, in a region that starts where the image
+    ends (a pointer init sets may write any byte up to it), is offset by the region's
+    origin: the program assembled at another origin translates to the same ``.c``."""
+    texts = set()
+    for org in (0x1000, 0x2000):
+        img, labels, loaded = assemble(FIXED, org)
+        c, h, _ = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
+        (tmp_path / str(org)).mkdir()
+        play(tmp_path / str(org), c, h, img, labels, [("init", 0)] + [("play", 0)] * 4)
+        texts.add(c)
+    assert len(texts) == 1

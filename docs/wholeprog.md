@@ -323,6 +323,8 @@ variable:
   a free byte no constant table, and with the facts' writes, data stores with address sets
   write (the runs of *Pointers into the song* reach the bytes it filled past the program);
 - its entry value unknown: no byte bound, cell value set or vector is taken from the image;
+  a free opcode byte still decodes, beside its values, the values stores of known values
+  write to it (play storing an `RTS` over the opcode init set);
 - a pointer pair with a free byte has as its floor (*Pointer pairs*) the run of data bytes
   holding every word its bytes' values make, else any word: play reads through an operand init
   relocated with that run's bounds-checked reader, and a store through it writes that run
