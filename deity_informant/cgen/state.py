@@ -103,8 +103,8 @@ def _structs(fams):
 def classify(cells, sets, why, stepped=()):
     """The :class:`State` of the ``cells`` (a mask) given ``sets`` (the addresses of each
     access with one address per copy or one constant address; those in ``stepped``, in the
-    order of a loop's element numbers, must reach consecutive elements) and ``why`` (per address the :data:`WHY` code of the other accesses
-    touching it, 0 where none does)."""
+    order of a loop's element numbers, must reach consecutive elements) and ``why`` (per
+    address the :data:`WHY` code of the other accesses touching it, 0 where none does)."""
     why = why.copy()
     fams = sorted({tuple(sorted({int(a) for a in s})) for s in sets if len(set(s)) > 1})
     steps = [(tuple(sorted({int(a) for a in s})), np.array(s, dtype=np.int64)) for s in stepped]
