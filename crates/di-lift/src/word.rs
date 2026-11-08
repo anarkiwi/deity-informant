@@ -14,10 +14,9 @@
 //! bytes were stored from the two parts of one quantity holds that quantity's value.
 //!
 //! A pair no instruction since the entry stored (no entry in `St::wide`) holds its bytes'
-//! hull and at least its floor (`Code::floor`): a lower bound that holds whenever an entry
-//! other than the init entry is called, as it holds of every pair the init entry's returns
-//! leave, of every pair any other entry's return leaves, and (without an init entry) of the
-//! image: a least fixpoint over the rounds of the reach pass, from floors that hold no value.
+//! hull within its floor (`Code::floor`): the hull of its entry word (for a pair of the host
+//! init's variables, the run of data bytes they point into) and of what every entry's return
+//! leaves in it, a least fixpoint over the rounds of the reach pass.
 
 use crate::analysis::{Access, Iv};
 use crate::vsa::{Code, Ix, St, Sym, Tab, DATA, MEM, NOREG};
@@ -198,16 +197,13 @@ fn byte(code: &Code, st: &St, a: u16) -> Iv {
         .unwrap_or(Iv::full(1))
 }
 
-/// The pair's value from the words of the tables its bytes hold ([`tabled`]), else from the
-/// pointers every store into its bytes writes ([`Code::ptrs`]) and its image word, else from
-/// its bytes' intervals.
+/// The pair's value from the words of the tables its bytes hold ([`tabled`]), else from its
+/// bytes' intervals.
 fn derived(code: &Code, st: &St, q: u16) -> Wv {
-    tabled(code, st, q)
-        .or_else(|| written(code, q))
-        .unwrap_or_else(|| {
-            let (l, h) = (byte(code, st, q), byte(code, st, q.wrapping_add(1)));
-            Wv::plain(h.lo << 8 | l.lo, h.hi << 8 | l.hi, q)
-        })
+    tabled(code, st, q).unwrap_or_else(|| {
+        let (l, h) = (byte(code, st, q), byte(code, st, q.wrapping_add(1)));
+        Wv::plain(h.lo << 8 | l.lo, h.hi << 8 | l.hi, q)
+    })
 }
 
 /// The hull of the words pair `q` holds when its two bytes hold table bytes indexed by one
@@ -279,81 +275,10 @@ fn tabled(code: &Code, st: &St, q: u16) -> Option<Wv> {
     (lo <= hi).then(|| Wv::plain(lo, hi, q))
 }
 
-/// The values of pair `q` when every store into either byte writes a byte of a pointer
-/// ([`Code::ptrs`]): those pointers' and its image word.
-fn written(code: &Code, q: u16) -> Option<Wv> {
-    let (Some(&Some(a)), Some(&Some(b))) = (code.ptrs.get(&q), code.ptrs.get(&q.wrapping_add(1)))
-    else {
-        return None;
-    };
-    let w = code.img[q as usize] as u32 | (code.img[q.wrapping_add(1) as usize] as u32) << 8;
-    Some(Wv::plain(a.0.min(b.0).min(w), a.1.max(b.1).max(w), q))
-}
-
-/// Joins into `ptrs` what the store `a` of opcode `op` in `st` (writing `set` where it has
-/// one) writes into tracked bytes: a byte of a pointer into `lo..=hi`, or of none.
-pub(crate) fn stored_ptrs(
-    code: &Code,
-    st: &St,
-    op: u8,
-    a: &Access,
-    set: Option<&[u16]>,
-    ptrs: &mut rustc_hash::FxHashMap<u16, Option<(u32, u32)>>,
-) {
-    // A store of unknown address is taken to write no pointer, as an indexed one writes inside
-    // its table's extent.
-    if code.runs.is_empty() || set.is_none() && a.addr.hi - a.addr.lo >= 0x100 {
-        return;
-    }
-    let ops = di_pcode::Template::of(op).ops();
-    let h = match stored_reg(ops).and_then(|r| st.half[r]) {
-        Some(Half::Data(lo, hi)) => Some((lo, hi)),
-        _ => None,
-    };
-    let hit = |x: u16| match set {
-        Some(s) => s.binary_search(&x).is_ok(),
-        None => a.addr.meets(x as u32, x as u32 + 1),
-    };
-    for &x in code.vecs.iter().filter(|&&x| hit(x)) {
-        let e = ptrs.entry(x).or_insert(h);
-        *e = e.zip(h).map(|(p, q)| (p.0.min(q.0), p.1.max(q.1)));
-    }
-}
-
-/// Past a loop that wrote both bytes of each pair of `qs` ([`Code::exits`]): each holds the
-/// value its last iteration left where known, else the pointers its stores write
-/// ([`Code::ptrs`]), where every store into it writes one.
-pub(crate) fn fill(code: &Code, s: &mut St, qs: &[Filled]) {
-    for &(q, w) in qs {
-        if let Some(w) = w {
-            put(s, q, Some(Wv::plain(w as u32, w as u32, q)));
-        } else if let (Some(&Some(a)), Some(&Some(b))) =
-            (code.ptrs.get(&q), code.ptrs.get(&q.wrapping_add(1)))
-        {
-            put(s, q, Some(Wv::plain(a.0.min(b.0), a.1.max(b.1), q)));
-        }
-    }
-}
-
 /// The value of pair `q` no instruction since the entry stored: its bytes' hull from its floor.
 fn untouched(code: &Code, st: &St, q: u16) -> Wv {
     let d = derived(code, st, q);
-    // Where the pass bounds pointers into the program's data, a pair the init entry's run
-    // has not stored holds its image word (init runs first, on the image), joined with what
-    // the other entries find.
-    if let (false, Some(&l), true) = (code.runs.is_empty(), code.floor.get(&q), code.init != 0) {
-        let w = code.img[q as usize] as u32 | (code.img[q.wrapping_add(1) as usize] as u32) << 8;
-        let init = (st.from & code.init != 0).then_some((w, w));
-        let other = (st.from & !code.init != 0).then_some((d.lo.max(l.0), d.hi.min(l.1)));
-        let (lo, hi) = match (init, other) {
-            (Some(a), Some(b)) if b.0 <= b.1 => (a.0.min(b.0), a.1.max(b.1)),
-            (Some(a), _) => a,
-            (None, Some(b)) => b,
-            (None, None) => (NONE, 0),
-        };
-        return Wv { lo, hi, ..d };
-    }
-    match code.floor.get(&q).filter(|_| st.from & code.init == 0) {
+    match code.floor.get(&q) {
         Some(&l) => Wv {
             lo: d.lo.max(l.0),
             hi: d.hi.min(l.1),
@@ -522,32 +447,11 @@ fn load_half(st: &St, m: u16) -> Half {
     hi.or_else(|| sum(m, Part::Lo)).unwrap_or(Half::Byte(m))
 }
 
-/// The pair a zero-page pointer access `a` of opcode `op` goes through and its index, where
-/// both are known.
-fn pkey(st: &St, op: u8, a: &Access) -> Option<(u16, u8)> {
-    let p = a.ptr?;
-    let q = p.lo?.value()?;
-    if p.hi.value()? != (q + 1) & 0xff {
-        return None;
-    }
-    let k = match op & 0x1f {
-        0x11 | 0x13 => st.env[reg::Y].value()?,
-        _ => 0,
-    };
-    Some((q as u16, k as u8))
-}
-
 /// What the byte the instruction at `pc` (opcode `op`, operand bytes `b`) reads through a
-/// pointer pair or its cell operand holds: what a store through the same pair at the same
-/// index left there, else a byte of a pointer into what the pair points into: the run of
-/// data bytes its values lie in, else its values.
+/// pointer pair or its cell operand holds: a byte of a pointer into what the pair points
+/// into, the run of data bytes its values lie in, else its values.
 fn data(code: &Code, st: &St, pc: u16, op: u8, b: [Option<u8>; 2], acc: &[Access]) -> Option<Half> {
     let a = acc.iter().rfind(|a| !a.store && !a.dummy)?;
-    if let Some((q, k)) = pkey(st, op, a) {
-        if let Some(e) = st.phalf.iter().find(|e| (e.0, e.1) == (q, k)) {
-            return Some(e.2);
-        }
-    }
     let q = match a.ptr {
         Some(p) => {
             let q = p.lo?.value()?;
@@ -574,53 +478,6 @@ fn data(code: &Code, st: &St, pc: u16, op: u8, b: [Option<u8>; 2], acc: &[Access
 fn stored_reg(ops: &[di_pcode::Op]) -> Option<usize> {
     let v = ops.iter().rfind(|o| o.opc == di_pcode::Opc::Store)?.ins[1];
     (v.space() == di_pcode::Space::Reg && (v.off() as usize) < DATA).then_some(v.off() as usize)
-}
-
-/// Whether `op` adds or subtracts its operand: `ADC`/`SBC`.
-fn arith(op: u8) -> bool {
-    matches!(
-        op & 0x1f,
-        0x01 | 0x05 | 0x09 | 0x0d | 0x11 | 0x15 | 0x19 | 0x1d
-    ) && matches!(op >> 5, 3 | 7)
-        || op == 0xeb
-}
-
-/// Forget the bytes stored through pointers (`St::phalf`) the store `a` of opcode `op` in
-/// `st` may overwrite, or whose pair it may write: all but those of its own pair at other
-/// indices.
-fn pforget(code: &Code, st: &St, s: &mut St, op: u8, a: &Access, aimed: Option<&[u16]>) {
-    if s.phalf.is_empty() {
-        return;
-    }
-    let own = pkey(st, op, a);
-    let reach = a.ptr.and_then(|p| st.reach(p));
-    let hit = |x: u32| match (aimed, reach) {
-        (Some(set), _) => set.binary_search(&(x as u16)).is_ok() && a.addr.meets(x, x + 1),
-        (None, Some(r)) => (r.lo..=r.hi).contains(&x) || (r.lo..=r.hi).contains(&(x + 0x10000)),
-        (None, None) => a.addr.meets(x, x + 1),
-    };
-    s.phalf.retain(|&(q, k, _, by)| {
-        if own.is_some_and(|(o, j)| o == q && j != k) {
-            return true;
-        }
-        if hit(q as u32) || hit(q as u32 + 1) || own.is_some_and(|o| o.0 == q) {
-            return false;
-        }
-        // The bytes lie in the address set of the store that wrote them, else in the pair's
-        // values plus the index.
-        if let Some(set) = by.and_then(|b| code.aimed.get(&b)) {
-            return !set.iter().any(|&x| hit(x as u32));
-        }
-        let Some((lo, hi)) = value(code, st, q).range() else {
-            return false;
-        };
-        let (lo, hi) = (lo + k as u32, hi + k as u32);
-        match (aimed, reach) {
-            (Some(set), _) => !set.iter().any(|&x| (lo..=hi).contains(&(x as u32))),
-            (None, Some(r)) => r.hi < lo || hi < r.lo,
-            (None, None) => a.addr.hi < lo || hi < a.addr.lo,
-        }
-    });
 }
 
 /// The sum `ADC` at `pc` makes of pair `q`'s value and `v`.
@@ -689,44 +546,10 @@ pub(crate) fn step(
         }
         _ => None,
     };
-    // A byte of a pointer into `lo..=hi` plus or less a byte of no pointer, or of a pointer
-    // into the same, is a byte of a pointer into it (an offset, a relocation adding a base).
-    let offset = if arith(op) && !code.runs.is_empty() {
-        let opnd = match (op, ld) {
-            (0x69 | 0xe9 | 0xeb, _) => None,
-            (_, Some(m)) => Some(half_at(st, m).unwrap_or(Half::Byte(m))),
-            (_, None) => data(code, st, pc, op, b, acc),
-        };
-        let into = |h: Option<Half>, lo: u32, hi: u32| match h {
-            None => true,
-            Some(Half::Data(a, b)) => (a, b) == (lo, hi),
-            Some(Half::Byte(m)) => {
-                let qs = [m, m.wrapping_sub(1)]
-                    .into_iter()
-                    .filter(|&q| pair(code, q));
-                let mut qs = qs.peekable();
-                qs.peek().is_none()
-                    || qs.any(|q| {
-                        value(code, st, q)
-                            .range()
-                            .is_some_and(|(a, b)| lo <= a && b <= hi)
-                    })
-            }
-            _ => false,
-        };
-        match (st.half[0], opnd) {
-            (Some(d @ Half::Data(lo, hi)), o) if lo > hi || into(o, lo, hi) => Some(d),
-            (h, Some(d @ Half::Data(lo, hi))) if lo > hi || into(h, lo, hi) => Some(d),
-            _ => None,
-        }
-    } else {
-        None
-    };
     let mut new = s.half;
     for r in (0..DATA).filter(|&r| written >> r & 1 == 1) {
         new[r] = match sym[r] {
             _ if owed.is_some() && r == 0 => owed,
-            _ if offset.is_some() && r == 0 => offset,
             _ if adc && r == 0 => {
                 let operand = match op {
                     0x69 => Iv::exact(b[0].unwrap_or(0) as u32),
@@ -800,16 +623,9 @@ pub(crate) fn step(
         .filter(|(_, a)| a.store && !a.back && !vacant)
     {
         let aimed = code.aimed.get(&(pc, op, ai)).map(Vec::as_slice);
-        pforget(code, st, s, op, a, aimed);
         match a.addr.value() {
             Some(x) => store(code, st, s, ops, b, x as u16),
             None => {
-                if let (Some((q, k)), Some(h)) =
-                    (pkey(st, op, a), stored_reg(ops).and_then(|r| st.half[r]))
-                {
-                    let by = aimed.is_some().then_some((pc, op, ai));
-                    s.phalf.push((q, k, h, by));
-                }
                 // A pointer store whose sum may wrap reaches the low addresses it wraps to; one
                 // with an address set, those.
                 let reach = a.ptr.and_then(|p| st.reach(p));
@@ -1053,23 +869,8 @@ pub(crate) fn join(code: &Code, a: &St, b: &St, widen: bool) -> Vec<(u16, Option
     out
 }
 
-/// What bytes stored through pointer pairs hold ([`St::phalf`]): per pair and index, the half
-/// stored, and the store `(pc, opcode, access index)` when it has an address set (the bytes
-/// lie in it).
-pub(crate) type Phalf = Vec<(u16, u8, Half, Option<(u16, u8, usize)>)>;
-
-/// A pair a loop running to its end writes, and its value past it when known
-/// ([`Code::exits`]).
-pub(crate) type Filled = (u16, Option<u16>);
-
 /// The halves `a` and `b` agree on.
-pub(crate) fn join_halves(a: &St, b: &St) -> ([Option<Half>; DATA], Vec<(u16, Half)>, Phalf) {
-    let p = (a.phalf.iter())
-        .filter_map(|&(q, k, h, by)| {
-            let g = b.phalf.iter().find(|e| (e.0, e.1, e.3) == (q, k, by))?.2;
-            Some((q, k, h.join(g)?, by))
-        })
-        .collect();
+pub(crate) fn join_halves(a: &St, b: &St) -> ([Option<Half>; DATA], Vec<(u16, Half)>) {
     let mut m = Vec::new();
     let (mut i, mut j) = (0, 0);
     while let (Some(&(x, h)), Some(&(y, g))) = (a.mhalf.get(i), b.mhalf.get(j)) {
@@ -1079,5 +880,5 @@ pub(crate) fn join_halves(a: &St, b: &St) -> ([Option<Half>; DATA], Vec<(u16, Ha
         i += (x <= y) as usize;
         j += (y <= x) as usize;
     }
-    (std::array::from_fn(|r| a.half[r]?.join(b.half[r]?)), m, p)
+    (std::array::from_fn(|r| a.half[r]?.join(b.half[r]?)), m)
 }

@@ -34,6 +34,8 @@ struct PyBus<'a> {
     retired: Vec<u64>,
     taken: usize,
     boundary_bad: Option<usize>,
+    /// Per address, whether the run stored to it (when asked for).
+    written: Option<Vec<bool>>,
 }
 
 /// An interrupt entry the machine took inside a call: entry `entry` runs as an interrupt with
@@ -83,6 +85,7 @@ impl<'a> PyBus<'a> {
             retired: vec![0],
             taken: 0,
             boundary_bad: None,
+            written: None,
         }
     }
     /// The call returned: interrupts taken after its last instruction run, any other not yet
@@ -205,6 +208,9 @@ impl Bus for PyBus<'_> {
     }
     #[inline]
     fn write(&mut self, a: u16, v: u8) {
+        if let Some(w) = self.written.as_mut() {
+            w[a as usize] = true;
+        }
         let vol = self.volatile(a);
         self.n += vol as u64;
         if let (Some(l), true) = (self.log.as_mut(), vol) {
@@ -220,6 +226,9 @@ impl Bus for PyBus<'_> {
     }
     #[inline]
     fn ram_write(&mut self, a: u16, v: u8) {
+        if let Some(w) = self.written.as_mut() {
+            w[a as usize] = true;
+        }
         self.mem[a as usize] = v;
     }
     #[inline]
@@ -792,13 +801,6 @@ impl Program {
         self.prog.written.clone()
     }
 
-    /// Runs ``[(lo, hi)]`` (``hi`` exclusive) of instruction bytes stores write that no
-    /// instruction runs at after them: data.
-    #[getter]
-    fn dead(&self) -> Vec<(u32, u32)> {
-        self.prog.dead.clone()
-    }
-
     /// Address sets of data accesses through pointers or with several addresses:
     /// ``{(pc, store): [(lo, hi), ...]}`` runs, ``hi`` exclusive.
     #[getter]
@@ -1271,9 +1273,10 @@ fn devices(banked: bool, mem: &Bound<'_, PyByteArray>) -> PyResult<Option<Box<[u
 /// ``run_to_rts`` on the reference interpreter with the same bus as ``Program.call``;
 /// ``clocked=False`` gives volatile accesses no cycle, as a program lifted without cycles.
 /// ``bank`` (a bank map dict, see ``lift_program``) sees memory through it; ``reads`` as
-/// ``Program.call``, ``ret`` and ``irq`` as ``Program.call``.
+/// ``Program.call``, ``ret`` and ``irq`` as ``Program.call``; ``written=True`` also gives
+/// ``written``, the addresses the run stored to, ascending.
 #[pyfunction]
-#[pyo3(signature = (mem, pc, a=0, reg=None, cycles=0, max_cycles=10_000_000, volatile=vec![], log=false, synth=false, clocked=true, bank=None, reads=None, ret=None, irq=false, nested=None))]
+#[pyo3(signature = (mem, pc, a=0, reg=None, cycles=0, max_cycles=10_000_000, volatile=vec![], log=false, synth=false, clocked=true, bank=None, reads=None, ret=None, irq=false, nested=None, written=false))]
 #[allow(clippy::too_many_arguments)]
 pub fn reference_call<'py>(
     py: Python<'py>,
@@ -1292,16 +1295,18 @@ pub fn reference_call<'py>(
     ret: Option<u16>,
     irq: bool,
     nested: Option<Vec<NestedArg>>,
+    written: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     let reads: Option<Replay> = reads.map(Into::into);
     let mut cpu = cpu_of(reg, cycles);
     let bank = bank_of(bank)?;
     let banked = bank.is_some();
-    let (h, lg, bad) = with_mem(mem, |m| {
+    let (h, lg, bad, w) = with_mem(mem, |m| {
         let mut bus = PyBus::new(m, &volatile, log, synth);
         bus.now = cycles;
         bus.dev = banked.then(|| Box::new(*bus.mem));
         bus.replay(&reads);
+        bus.written = written.then(|| vec![false; 0x10000]);
         bus.pending = interrupts_of(nested);
         if !bus.pending.is_empty() {
             bus.nest = Some(Nest {
@@ -1333,10 +1338,17 @@ pub fn reference_call<'py>(
             .and_then(|n| n.bad)
             .filter(|_| h == Halt::Sp)
             .unwrap_or(h);
-        (h, bus.log, bus.boundary_bad)
+        let w: Option<Vec<u16>> = bus.written.map(|w| {
+            (0..0x10000u32)
+                .filter(|&a| w[a as usize])
+                .map(|a| a as u16)
+                .collect()
+        });
+        (h, bus.log, bus.boundary_bad, w)
     })?;
     let d = result(py, &cpu, h, None, lg)?;
     d.set_item("boundary", bad)?;
+    d.set_item("written", w)?;
     Ok(d)
 }
 
@@ -1418,14 +1430,15 @@ pub fn reference_calls(
 /// stack checks against the stack's extent); ``sensitive`` the volatile addresses whose reads
 /// have effects (a throw-away read reaching none of them is not made);
 /// ``loaded`` the ``(lo, hi)`` the program was loaded to, where tables end at the latest;
-/// ``fold=True`` lifts copies of one routine as one function of the copy's index; ``init``
-/// the index of the entry the host calls once, before any other (lifted as code, the
-/// analysis taking its run as the first).
+/// ``fold=True`` lifts copies of one routine as one function of the copy's index; ``free``
+/// ``[(addr, values)]`` the variables the host's init leaves, of unknown value (their values
+/// over its runs), ``alias`` ``[(lo, g, delta)]`` the operand pairs of them one pointer
+/// variable holds.
 /// ``bank`` is a bank map: ``dir``/``data`` port
 /// cells, ``mask`` and ``pull`` bits, ``lut`` (configuration per effective port value),
 /// ``configs`` (per configuration 256 page kinds: 0 RAM, 1 ROM, 2 I/O) and ``rom``.
 #[pyfunction]
-#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None, fold=false, sensitive=None, init=None, alias=vec![]))]
+#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None, fold=false, sensitive=None, free=vec![], alias=vec![]))]
 #[allow(clippy::too_many_arguments)]
 pub fn lift_program(
     py: Python<'_>,
@@ -1440,7 +1453,7 @@ pub fn lift_program(
     loaded: Option<(u32, u32)>,
     fold: bool,
     sensitive: Option<Vec<u16>>,
-    init: Option<usize>,
+    free: Vec<(u16, Vec<u8>)>,
     alias: Vec<(u16, u16, u16)>,
 ) -> PyResult<Program> {
     let img = self::image(image)?;
@@ -1454,7 +1467,7 @@ pub fn lift_program(
         sensitive,
         loaded,
         fold,
-        init,
+        free,
         alias,
     };
     Ok(Program::new(py.detach(|| {
@@ -1478,7 +1491,16 @@ pub fn plan_program<'py>(
     let es = self::entries(entries);
     let f = self::facts(facts)?;
     let bank = bank_of(bank)?;
-    let g = di_lift::analysis::discover(&img, &es, &f, bank.as_ref(), true, None, None);
+    let g = di_lift::analysis::discover(
+        &img,
+        &es,
+        &f,
+        bank.as_ref(),
+        true,
+        None,
+        None,
+        &Default::default(),
+    );
     let pcs: Vec<u16> = es.iter().map(|e| e.pc).collect();
     let out = PyList::empty(py);
     for p in di_lift::plan(&g.img, &g, &pcs, &f, bank.as_ref(), &[], false) {

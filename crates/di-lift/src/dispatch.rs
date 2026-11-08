@@ -527,19 +527,16 @@ pub(crate) fn vectors(
         pull_clear: false,
         vecs: Vec::new(),
         observed: FixedBitSet::new(),
+        free: FixedBitSet::new(),
         constant: FixedBitSet::new(),
         clip: FxHashMap::default(),
         bound: Vec::new(),
         stored: Vec::new(),
-        init: 0,
         floor: FxHashMap::default(),
         runs: Vec::new(),
         words: FxHashMap::default(),
-        ptrs: FxHashMap::default(),
-        exits: FxHashMap::default(),
         mods: FxHashMap::default(),
         pinned: FixedBitSet::new(),
-        guards: FxHashMap::default(),
         aimed: FxHashMap::default(),
         ram: Vec::new(),
     };
@@ -708,12 +705,12 @@ pub(crate) fn cell_addressed(
         .filter(|i| !open.contains(i))
         .map(|i| stores[i].clone())
         .collect();
-    let mut cv = cell_values(code.img, &rest);
+    let mut cv = cell_values(code, &rest);
     loop {
         for (s0, &i) in orig.iter().zip(&open) {
             stores[i] = resolve(code, vars, sets, s0, &cv).unwrap_or_else(|| s0.clone());
         }
-        let new = cell_values(code.img, stores);
+        let new = cell_values(code, stores);
         if new == cv {
             return cv;
         }
@@ -739,6 +736,7 @@ fn resolve(
                 let a = s.pc.wrapping_add(1 + j as u16);
                 let vs = match cv.get(&a) {
                     Some(v) => v.clone()?,
+                    None if code.free.contains(a as usize) => return None,
                     None => [code.img[a as usize]].into(),
                 };
                 Some(vs.into_iter().map(Some).collect())
@@ -991,6 +989,9 @@ fn vector(code: &Code, stores: &[Store]) -> Option<Found> {
             }
         }
         if out.is_empty() {
+            if code.free.contains(a as usize) {
+                return None;
+            }
             read.insert(a);
             out.insert(code.img[a as usize]);
         }
@@ -1223,11 +1224,10 @@ pub(crate) fn pointer_stores(
             continue;
         };
         let g = lp.get_or_insert_with(|| Loop::new(code, vars, sets, objs, konst));
-        let hit = match var.acc.get(s.ai).and_then(|a| a.ptr) {
-            Some(p) => pointer_set(g, &w, s.pc, p),
-            None => operand_set(g, &w, s.pc, var.op),
+        let Some(p) = var.acc.get(s.ai).and_then(|a| a.ptr) else {
+            continue;
         };
-        if let Some((a, r, gs)) = hit {
+        if let Some((a, r, gs)) = pointer_set(g, &w, s.pc, p) {
             found.push((i, a, r, gs));
         }
     }
@@ -1246,33 +1246,6 @@ pub(crate) fn pointer_stores(
         }
     }
     done
-}
-
-/// The address set of an access at `pc` of opcode `op` through its two cell operand bytes, as
-/// [`pointer_set`] (words of their tagged table bytes on every path) plus each value of its
-/// index register.
-fn operand_set(
-    g: &Loop,
-    w: &FixedBitSet,
-    pc: u16,
-    op: u8,
-) -> Option<(Vec<u16>, BTreeSet<u16>, Vec<Guard>)> {
-    let t = Template::of(op);
-    let b = operand_bytes(g.code.img, g.code.cells, pc, t.len);
-    if t.len != 3 || b.iter().any(Option::is_some) {
-        return None;
-    }
-    let ys = match index_reg(t) {
-        Some(r) => g.sets.of(pc, r).unwrap_or_else(|| g.sets.any(pc, r)),
-        None => vec![0],
-    };
-    tagged_set(
-        g,
-        w,
-        pc,
-        (pc.wrapping_add(1) as u32, pc.wrapping_add(2) as u32),
-        &ys,
-    )
 }
 
 /// The address set of an access at `pc` through the `(zp),Y` pointer `p`, the table bytes it
@@ -1673,13 +1646,12 @@ fn advanced_at(
 
 /// The values each byte some store writes may hold, from its entry byte and the stores that
 /// may write it (with the values of the cells they copy, a least fixpoint); `None` where a
-/// store of unknown address or values may write it.
-pub(crate) fn cell_values(
-    img: &[u8; 0x10000],
-    stores: &[Store],
-) -> FxHashMap<u16, Option<BTreeSet<u8>>> {
+/// store of unknown address or values may write it, or its entry byte is not known
+/// ([`Code::free`]).
+pub(crate) fn cell_values(code: &Code, stores: &[Store]) -> FxHashMap<u16, Option<BTreeSet<u8>>> {
     let mut out: FxHashMap<u16, Option<BTreeSet<u8>>> = FxHashMap::default();
-    let init = |a: u16| Some(BTreeSet::from([img[a as usize]]));
+    let init =
+        |a: u16| (!code.free.contains(a as usize)).then(|| BTreeSet::from([code.img[a as usize]]));
     for s in stores {
         for &a in s.addrs.iter().flatten().chain(&s.deps) {
             out.entry(a).or_insert_with(|| init(a));

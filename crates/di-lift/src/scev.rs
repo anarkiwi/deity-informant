@@ -43,12 +43,6 @@ pub struct Induction {
     /// Per instruction start of the loop, `A`, `X` and `Y` as the variable's value at the
     /// head plus a constant, where they are.
     pub with: FxHashMap<u16, [Option<u8>; 3]>,
-    /// A loop entered with its variables at one value each, whose trip test is known at
-    /// every visit and is its only exit: it leaves only after exactly `trips` head visits.
-    /// The test's branch and the target it leaves to, and the starts every iteration runs
-    /// (those dominating every back edge's source) with the times each runs.
-    pub exit: Option<(u16, u16)>,
-    pub every: Vec<(u16, u32)>,
 }
 
 type Succs = FxHashMap<u16, Vec<u16>>;
@@ -665,8 +659,6 @@ pub(crate) fn find(
                 start,
                 step: stp,
                 trips: None,
-                exit: None,
-                every: Vec::new(),
                 at: at
                     .iter()
                     .filter_map(|(&n, d)| d.0.map(|e| (n, e)))
@@ -693,52 +685,19 @@ pub(crate) fn find(
             .collect();
         exits.sort_unstable();
         tests.extend(exits);
-        let mut t: Option<(u32, u16, bool)> = None;
-        let mut found = Vec::new();
+        let mut t: Option<u32> = None;
         for &s in &tests {
             let mut r = Vec::new();
             let b = ivs
                 .iter()
                 .find_map(|iv| trips(code, vars, st, &preds, &body, s, h, iv, konst, &mut r));
-            found.extend(b);
-            if let Some(b) = b.filter(|&b| t.is_none_or(|t| b.0 < t.0)) {
+            if let Some(b) = b.filter(|&b| t.is_none_or(|t| b < t)) {
                 t = Some(b);
                 reads.extend(r);
             }
         }
-        // The loop leaves only at an exact trip test: every other edge leaving its body is
-        // another exact test's that would leave only after more visits.
-        let exit = t.filter(|t| t.2).and_then(|(n, b, _)| {
-            // A call that returns to its site on every path leaves only to its callee.
-            let leaves = |x: &u16| -> Vec<u16> {
-                match calls.contains_key(x) {
-                    true => Vec::new(),
-                    false => (succs.get(x).into_iter().flatten())
-                        .filter(|y| !body.contains(y))
-                        .copied()
-                        .collect(),
-                }
-            };
-            let [o] = leaves(&b)[..] else { return None };
-            let later = |x: &u16| found.iter().any(|f| f.1 == *x && f.2 && f.0 > n);
-            (body
-                .iter()
-                .all(|x| *x == b || later(x) || leaves(x).is_empty())
-                && ivs.iter().all(|iv| iv.start.value().is_some()))
-            .then_some((b, o))
-        });
-        let every: Vec<(u16, u32)> = match (exit, t) {
-            (Some((b, _)), Some((n, _, _))) => body
-                .iter()
-                .filter(|&&x| back.iter().all(|&s| dominated(s, x)))
-                .map(|&x| (x, if dominated(x, b) && x != b { n - 1 } else { n }))
-                .collect(),
-            _ => Vec::new(),
-        };
         for iv in &mut ivs {
-            iv.trips = t.map(|t| t.0);
-            iv.exit = exit;
-            iv.every.clone_from(&every);
+            iv.trips = t;
         }
         out.extend(ivs);
     }
@@ -837,8 +796,7 @@ fn mem_in(
 /// branch at `s` (the only back edge's, or one a chain of `JMP`s alone leads to it from, or
 /// an exit), when the flag it tests is set on the straight chain before it from `iv` alone
 /// and the bytes `konst` gives (each read is appended to `reads`). A value the flag is not
-/// known at continues the loop. With the branch, and whether the flag is known at every
-/// visit (then the bound is the trips of every run).
+/// known at continues the loop.
 #[allow(clippy::too_many_arguments)]
 fn trips(
     code: &Code,
@@ -851,7 +809,7 @@ fn trips(
     iv: &Induction,
     konst: &dyn Fn(u32) -> Option<u8>,
     reads: &mut Vec<u16>,
-) -> Option<(u32, u16, bool)> {
+) -> Option<u32> {
     let mut s = s;
     while let [Var {
         flow: Flow::Jmp(Tg::At(_)),
@@ -901,9 +859,8 @@ fn trips(
     let b = operand_bytes(code.img, code.cells, set, tpl.len);
     let base = st.get(&set)?.env;
     let mut cont = [false; 0x100];
-    let mut known = [false; 0x100];
     let read = std::cell::RefCell::new(Vec::new());
-    for (x, (c, kn)) in cont.iter_mut().zip(known.iter_mut()).enumerate() {
+    for (x, c) in cont.iter_mut().enumerate() {
         let mut env = base;
         for (q, k) in with.iter().enumerate() {
             if let Some(k) = k {
@@ -928,23 +885,21 @@ fn trips(
             }
         };
         absint_known(tpl.ops(), b, &mut env, &mut Vec::new(), &known);
-        *kn = env[flag as usize].value().is_some();
         *c = env[flag as usize]
             .value()
             .is_none_or(|fl| ((fl != 0) == (pol != 0)) == on_taken);
     }
-    let at = |s0: u32, k: u32| ((s0 + k * iv.step as u32 + e as u32) & 0xff) as usize;
     let t = (iv.start.lo..=iv.start.hi)
-        .map(|s0| (0..0x100u32).find(|&k| !cont[at(s0, k)]).map(|k| k + 1))
+        .map(|s0| {
+            (0..0x100u32)
+                .find(|&k| !cont[((s0 + k * iv.step as u32 + e as u32) & 0xff) as usize])
+                .map(|k| k + 1)
+        })
         .try_fold(0, |m, t| t.map(|t| m.max(t)));
-    let exact = iv
-        .start
-        .value()
-        .is_some_and(|s0| t.is_some_and(|t| (0..t).all(|k| known[at(s0, k)])));
     if t.is_some() {
         reads.extend(read.into_inner());
     }
-    t.map(|t| (t, s, exact))
+    t
 }
 
 /// Per instruction start of a loop with a trip bound (and of the calls it makes that leave

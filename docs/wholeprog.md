@@ -35,9 +35,8 @@ from deity_informant import trace, wholeprog
 facts = trace.collect(state, lambda s: [s.call(play) for _ in range(3000)])
 prog = wholeprog.lift(state, [play], volatile=[(lo, hi)], facts=facts)   # cycles=False
 prog = wholeprog.lift(image, [init, play], volatile, entry_sp=0xFD, loaded=(lo, hi))  # static
-prog = wholeprog.lift(image, [init, play], volatile, entry_sp=0xFD, loaded=(lo, hi), init=0)
 prog = wholeprog.lift(image, [(init, {"a": range(3)}), play], ...)  # entry registers' values
-prog = wholeprog.lift(image, [init, play], ..., init=0, alias=[(lo, g, d)])
+prog = wholeprog.lift(state, [play], ..., free={addr: [v, ...]}, alias=[(lo, g, d)])  # *Init*
 # sensitive=[addr, ...]: the volatile reads with effects; other throw-away reads are not made
 prog.functions        # [{"pc", "entry", "recursive", "blocks": [{"pc", "ops"}], "tables", "closed",
                       #   "copies", "copy_pcs"}]: copy_pcs per merged instruction each copy's pc
@@ -80,8 +79,8 @@ Inputs:
 | `optimize` | Optimize (default on); off keeps the emitted P-Code. |
 | `entry_sp` | The SP every entry is called at (after its return address), declared rather than observed: outermost plans are specialized to it and page-1 checks guard the *Stack extent* only. |
 | `loaded` | The `[lo, hi)` the program was loaded to: no table extends past it (*Table extents*). |
-| `init` | The index of the entry the host calls once, first, on `image` (a player's init), lifted as code (*Init*; a static lift only). |
-| `alias` | `[(lo, g, delta)]`: operand pairs init leaves as pair `g` plus `delta`, which play reads instead (*Init*). |
+| `free` | `{addr: [values]}`: the variables an init the host ran on `image` left, and their values over its runs (*Init*; a static lift). |
+| `alias` | `[(lo, g, delta)]`: operand pairs of `free` holding pair `g` plus `delta`, which play reads instead (*Init*). |
 
 `trace.collect(image, driver)` runs `driver(session)` twice on the jennings native core over a
 copy of `image`: `session.call(pc, a)` is `run_to_rts`; `session.mem`/`session.mpu` are the
@@ -315,65 +314,23 @@ the program, and checks it against the reference.
 
 ## Init
 
-With `init` the host calls that entry once, first, on `image`, and every other entry after it
-returns (a PSID's init, then its play calls). Init is lifted as code like every entry: nothing
-of its run is evaluated, folded or snapshotted at lift time, so the program is the same for
-every song and every set of song data. Its stores are ordinary stores of the program, and the
-analysis computes their values like any other's. That it runs first is what the analysis takes
-from it:
+The lift takes no init entry: a host whose program has one runs it and lifts the other entries
+from the memory it leaves (`cgen`, [*Init*](cgen.md#init)). `free` (`{addr: values}`) names the
+bytes init stored, whose values are the song's and their values over its runs; each is a
+variable:
 
-- **What runs after a store** (`analysis::After`). The instructions that may run after a
-  store are those the other entries reach and, for a store the init entry reaches, those
-  reachable from it (returns going to their calls' return sites). A code byte a store with an
-  address set writes is a cell only where an instruction holding it may run after the store;
-  otherwise it is data (`Graph::dead`: not constant code, in the data runs and table extents),
-  and its instruction runs with its entry bytes, as code init runs before a block copy
-  overwrites it does. A store of unknown address that may write such a byte before its
-  instruction runs makes it a cell.
-- **What the entries leave.** A pair no instruction since an entry stored holds the hull of the
-  values every return of an entry leaves in it (its floor, *Pointer pairs*), and a pair init's
-  run has not stored holds its image word in init's states.
-- **Play from the code as init leaves it** (`deity_informant.postinit`). `cgen.translate` runs
-  init once per declared song on the jennings core (only when it returns on the reference
-  interpreter within its budget) and tags each value with where it came from: a constant of
-  init's code, a byte loaded at a key, a byte of an addition chain on a word (the low and high
-  bytes of one chain share it, the carry joining them), or opaque (a device read, a shift, a
-  mix of two words, decimal mode). A key is an address, or an offset past the value the word
-  at another key was loaded with, so a byte read through a pointer init built from a song word
-  is named by that word. A pair of written bytes tagged as the two bytes of one chain is a
-  pointer on its word; the operand pairs every run leaves on one word, at one constant offset
-  from each other in every run, are one pointer variable (`alias`): play reads the pair of the
-  group's most common value plus its offset, when no store an entry other than init reaches
-  may write any of their bytes. Init still writes every pair as code.
-- **Loops that run to their end** (`scev.rs`, `Induction::exit`). A loop entered with its
-  variables at one value each, whose trip test is known at every visit and is the only edge
-  leaving it that may be taken first, runs exactly `trips` head visits. Past its exit each
-  byte its every-iteration stores write over the iterations (through its register, or a
-  pointer of table bytes it indexes plus one `Y`) has been written: a pair both of whose bytes
-  are holds what its stores write, no longer its image word, and a byte a fixed-address
-  every-iteration store alone writes holds that store's last iteration's value.
-- **Relocated operands.** Init's writes are pointers when what they store is: a byte read
-  through a pointer into a run of data bytes (*Pointers into the song*) is a byte of a pointer
-  into that run, plus or less a byte of no pointer or of a pointer into the same (an offset, a
-  base). A byte stored through a pointer at a known index reads back as what was stored while
-  the pointer and the bytes stand. A pair every store into which writes a byte of a pointer
-  into a run holds those pointers and its image word, and a store through such a cell operand
-  pair writes that run, bounds-checked (`Program.bounded`). So a relocator patching play's
-  operands from song header words leaves pointer variables bounded to the song.
-- **Operands patched from table words.** A store through its own two cell operand bytes, each
-  holding on every path a table byte of one index (an effect init patching the operand of the
-  voice it names), has as its address set the words of the tables plus each value of its
-  index register, as a `(zp),Y` store does (*Stores*); the index guard keeps the tables read
-  inside their extent. In the reach pass a pair stored from table bytes of one index holds
-  their words past later writes of the index, the lifted code runs on past an index guard
-  with the guard's values in its register, a store with an address set writes only the
-  addresses its access may reach, and a byte of a pointer into a run stored over a pair
-  pointing into the same run leaves it pointing there.
-- **Opcode cells.** A code byte init stores one of a few opcodes into (a hardware probe's
-  choice) is a closed opcode cell: play dispatches on its values with no deopt.
+- never constant: an instruction byte is a cell (a free opcode byte dispatches over its values),
+  a free byte no constant table, and with the facts' writes, data stores with address sets
+  write (the runs of *Pointers into the song* reach the bytes it filled past the program);
+- its entry value unknown: no byte bound, cell value set or vector is taken from the image;
+- a pointer pair with a free byte has as its floor (*Pointer pairs*) the run of data bytes
+  holding every word its bytes' values make, else any word: play reads through an operand init
+  relocated with that run's bounds-checked reader, and a store through it writes that run
+  (*Bounded stores*).
 
-Where a value set is not bounded the program's checks stay: a code check where a store may hit
-constant code, a guard where it may hit page 1 or I/O, `rd`/`wr` in cgen.
+`alias` (`[(lo, g, delta)]`, from `deity_informant.postinit`'s provenance of init's run) makes
+an operand pair `lo` read as pair `g` plus `delta`, where all four bytes are free cells no lifted
+store may write: the operands init set from one word at constant offsets are one variable.
 
 ## Guards
 
@@ -626,10 +583,9 @@ the facts, so a proof holds on every execution that stays in lifted code.
     value; any other store gives a pair its bytes' hull, or, where its bytes hold table bytes
     indexed by one value, the hull of the words of the index values both loads read. A value past `$FFFF` is a pointer
     walked past the top of memory, which reads out of bounds. A pair no instruction since
-    the entry stored holds a value in its floor: the hull of the values every return of an
-    entry leaves (of the init entry, its image value where its run stores none; with no init
-    entry, the image value too), a least fixpoint the rounds reach once the byte bounds
-    hold. With an init entry the floor holds in the states it does not reach. At a loop head
+    the entry stored holds a value in its floor: the hull of its entry word (*Init* for a
+    pair with a free byte) and of the values every return of an entry leaves, a least
+    fixpoint the rounds reach once the byte bounds hold. At a loop head
     an upper bound that rises widens to the end of the run of data bytes it lies in, past
     every run to the top; a pair's first value and its bytes' hull do not widen. A callee
     keeps the caller's tracked bytes and pairs it stores into none of (the address intervals
@@ -645,17 +601,16 @@ the facts, so a proof holds on every execution that stays in lifted code.
     one run, points into that run. Two stores at one index (the
     instructions between them falling through and writing no index register) of the low and
     high bytes of one pair or sum make their tables' bases a word column when no other store
-    reached from an entry other than init writes a byte of either base's run and every store
-    into those runs is such a store: a pair loaded from the two columns at one index holds
-    the pointers the columns' stores write (a return stack's pop reads what its push
-    stored), a least fixpoint from none. A pair the init entry's run has not stored holds its
-    image word in init's states. The pass's
-    registers on every run (`Program.regs`) are the second pass's.
+    writes a byte of either base's run and every store into those runs is such a store: a
+    pair loaded from the two columns at one index holds the pointers the columns' stores
+    write (a return stack's pop reads what its push stored), a least fixpoint from none. The
+    pass's registers on every run (`Program.regs`) are the second pass's.
   - *Bounded stores* (`Program.bounded`). A store from a constant base plus an index register
     that may hold any byte on some run of the second pass, whose base is a data byte of the
     program and that may reach an instruction byte past it, writes the run of data bytes
     holding its base, the array it indexes; past it the write is out of bounds (no code
-    check). Its access is that run.
+    check). Its access is that run. So is a store through a cell operand pair holding a
+    pointer into one run of data bytes.
   An index register is one the instruction's template reads before writing (`LDX abs,Y`
   reads `Y`).
 - **Computed jumps** (`dispatch.rs`). A `JMP (ind)` whose pointer bytes are tagged on every

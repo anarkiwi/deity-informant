@@ -2606,6 +2606,8 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.bounded = {}
         #: Per entry name, the C lines that start it (the host's check of its arguments).
         self.guards = {}
+        #: Runs ``(lo, hi)`` (inclusive) held in regions whatever reads them (init's sources).
+        self.held_runs = []
         for o in top.regions[0][0].ops:
             if o.name == "func.func" and o.regions[0] and o.regions[0][0].ops:
                 self.funcs.append(Func(o, self))
@@ -2838,7 +2840,12 @@ class Module:  # pylint: disable=too-many-instance-attributes
             f.wide[id(o)] = run
             wide.append(run)
         self.mem.partition(
-            ranges, sorted(stores), unknown, joined + wide, wide + bound, writes + bound
+            ranges,
+            sorted(stores),
+            unknown,
+            joined + wide,
+            wide + bound + self.held_runs,
+            writes + bound + self.held_runs,
         )
 
     def owners(self, runs, held):

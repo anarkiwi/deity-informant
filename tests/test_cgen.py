@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 
 import wholeprog_progs as W
-from deity_informant import NATIVE, cgen, trace, wholeprog
+from deity_informant import NATIVE, cgen, postinit, trace, wholeprog
 from deity_informant.cgen import csyntax, mlir, printer, regions, structure
 from deity_informant.lifter import OPS as OPCODES
 
@@ -1150,9 +1150,7 @@ end:
 """
 PATNUM = (
     """
-init:   LDA #$00
-        STA pat
-        RTS
+init:   RTS
 play:   AND #$07
         JSR next
         BMI keep
@@ -2144,14 +2142,17 @@ read:   LDY #$00
 
 @pytest.mark.parametrize("at", ["read", "p1"], ids=["code", "data"])
 def test_pointer_init_leaves_bounds_its_reads(at):
-    # Init runs first: play may read through the pair before it sets it from its table, so
-    # the value init leaves (an instruction or a record alike) is in the reads' hull.
+    # The pair init leaves is a variable: pointing into the records' run of data bytes, play's
+    # reads through it are bounded to that run in the pass that bounds pointers into the
+    # program's data; pointing at an instruction, they are not. The hulls that hold on every
+    # run take nothing of the value.
     src = LEFT.replace("lo(read)", f"lo({at})").replace("hi(read)", f"hi({at})")
     img, labels, loaded = assemble(src)
     ents = [(labels["init"], "init"), (labels["play"], "play")]
     p, _ = cgen.lift(img, ents, [W.IO], loaded=loaded, init=0)
-    lo = min(labels[at], labels["p0"])
-    assert p.reach[labels["read"] + 2][0] == lo == p.proven[labels["read"] + 2][0]
+    read = labels["read"] + 2
+    assert p.reach[read][0] == (labels["plo"] if at == "p1" else 0)
+    assert p.proven[read][:2] == (0, 0xFFFF)
 
 
 def test_zero_page_cleared_then_a_pointer_set_through_an_index(prefix, tmp_path):
@@ -2478,7 +2479,7 @@ def test_pointer_read_reaching_zero_page_reads_its_live_state(
     play(tmp_path, c, h, img, labels, calls)
     body = c[c.index("void play") :]
     assert bool(re.search(r"rdC\d+\(", body)) == span != bool(re.search(r"\brd\(", body))
-    assert not info["traps"]
+    assert set(info["traps"].values()) == {("deopt", labels["init"])}
 
 
 def test_read_outside_the_program_traps_by_default(prefix, tmp_path):
@@ -2967,19 +2968,15 @@ OPERAND_PTR = r"rdC\d+\(R\d+\[0\] \| \(\(uint16_t\)R\d+\[1\] << 8\), "
 @pytest.mark.parametrize("src", ["RUNREL", "RELOCATE"])
 def test_operands_init_writes_through_a_pointer_are_pointer_variables(prefix, tmp_path, src):
     """A relocator storing each operand's two bytes through a ``(zp),Y`` pointer read from a
-    table of patch sites is code, run on every call: both bytes of each operand are cells
-    (the stores' address sets are the sites, the second store's found once the first is
-    known to write only its sites), and play reads through each operand as a pointer
-    variable."""
+    table of patch sites runs, and play is lifted from what it leaves: both bytes of each
+    operand are cells play reads through as a pointer variable, and with one song the header
+    holds its state as it stands (no copies)."""
     img, labels, loaded = assemble(globals()[src])
     c, h, info = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
-    calls = [("init", 0)] + [("play", a) for a in range(4)] * 2 + [("init", 0), ("play", 1)]
-    play(tmp_path, c, h, img, labels, calls)
+    play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", a) for a in range(4)] * 2)
     ops = {labels[o] + k for o in ("o0", "o1") for k in (1, 2)}
-    assert ops <= set(info["provenance"]["cells"])
-    init, body = c[c.index("void init") : c.index("void play")], c[c.index("void play") :]
-    assert "for (" in init and "codechk(" not in init
-    assert re.search(OPERAND_PTR, body)
+    assert ops <= set(info["provenance"]["cells"]) and "codechk(" not in c
+    assert re.search(OPERAND_PTR, c[c.index("void play") :]) and "#define CGEN_CP_N 0" in h
 
 
 def test_carry_chain_identity():
@@ -3002,9 +2999,10 @@ def songs(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     prefix, tmp_path, src, values, init=0, declared=None
 ):
     """``(c, info, labels)`` of ``src``'s ``init`` and ``play`` translated with ``init``
-    (called with the ``declared`` songs), replayed from a fresh image per song ``a`` of
-    ``values``: ``init(a)``, then plays."""
+    (called with the ``declared`` songs, default the range of ``values``), replayed from a
+    fresh image per song ``a`` of ``values``: ``init(a)``, then plays."""
     img, labels, loaded = assemble(src)
+    declared = range(min(values), max(values) + 1) if declared is None else declared
     c, h, info = translate(
         prefix, img, labels, loaded, entries=("init", "play"), init=init, songs=declared
     )
@@ -3021,32 +3019,17 @@ def songs(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     return c, info, labels
 
 
-def test_operand_stores_through_a_written_site_table_are_checked(prefix, tmp_path):
-    """A relocator whose table of patch sites play writes has no address sets for its
-    stores: they write through ``wr`` and check constant code (trapping were one to change
-    it), and the operands they would patch stay constant code."""
-    src = RUNREL.replace(
-        "        STA $C001\n        RTS", "        STA $C001\n        INC ptrs\n        RTS"
-    )
-    img, labels, loaded = assemble(src)
-    c, h, info = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
-    play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", a) for a in range(4)])
-    init = c[c.index("void init") : c.index("void play")]
-    assert not info["provenance"]["cells"] and init.count("codechk(") == 2
-
-
-def test_init_runs_as_code_for_every_song(prefix, tmp_path):
-    """An init the host runs once, first, relocating play's operands from a table play also
-    writes is lifted as code: the relocator is a loop of the init function, the song it
-    stores a store of ``A``, and play reads through the operand it patches as a pointer
-    variable. Play's store through the other patched operand, whose values the analysis
-    does not bound, writes through ``wr`` and checks constant code."""
+def test_play_is_lifted_from_each_songs_state(prefix, tmp_path):
+    """Init relocating play's operands and storing the song is run for every song, not
+    translated: play reads through the operand it patches as a pointer variable, the init
+    function traps an undeclared song, replays init's I/O write and copies the song's values
+    from the header's literals into the song variable."""
     c, info, labels = songs(prefix, tmp_path, INITREL, (0, 1, 5))
     ops = {labels[o] + k for o in ("o0", "o1") for k in (1, 2)}
-    assert ops <= set(info["provenance"]["cells"]) and "init" not in info
-    init, body = c[c.index("void init") : c.index("void play")], c[c.index("void play") :]
-    assert "for (" in init and re.search(r"R\d+\[0\] = a;", init)
-    assert re.search(OPERAND_PTR, body) and "wr(" in body and "codechk(" in body
+    assert ops <= set(info["provenance"]["cells"]) and "codechk(" not in c
+    init = c[c.index("void init") : c.index("void play")]
+    assert "io_write(IO_AT[i], IO_VAL[i]);" in init and "CP_DST[i][j] = CP_SRC[i][j];" in init
+    assert re.search(OPERAND_PTR, c[c.index("void play") :])
 
 
 def test_init_relocating_by_the_song_leaves_pointer_cells(prefix, tmp_path):
@@ -3058,18 +3041,18 @@ def test_init_relocating_by_the_song_leaves_pointer_cells(prefix, tmp_path):
 
 
 def test_song_range_is_checked_not_assumed(prefix, tmp_path):
-    """The songs the host calls init with are checked at init, not assumed: init's run is
-    taken for every song, a table entry pointing at I/O among them, so the read through the
-    pointer it leaves is bounds-checked, the ``.c`` is the same for every song count, and a
-    song outside the range traps."""
+    """The songs the host calls init with are checked at init, not assumed: the pointer each
+    song's init leaves is a variable whose reads are bounds-checked, so the ``.c`` is the
+    same for every song count (songs pointing at I/O among them), the header holding each
+    song's values, and a song outside the range traps."""
     c, _, labels = songs(prefix, tmp_path, SONGINIT, (0, 1), declared=range(2))
-    body = c[c.index("void play") :]
-    assert "rdC0(" in body
     guard = r"if \(\(uint8_t\)\(a - CGEN_SONG0\) >= CGEN_SONGS\) \{\s*trap\("
-    assert re.search(guard, c)
+    assert "rdC0(" in c[c.index("void play") :] and re.search(guard, c)
     img, labels, loaded = assemble(SONGINIT)
-    other = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=range(4))
-    assert other[0] == c and "#define CGEN_SONGS 0x04" in other[1]
+    one = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=range(1))
+    assert one[0] == c and "#define CGEN_SONGS 1" in one[1]
+    four = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=range(4))
+    assert four[0] == c
     with pytest.raises(AssertionError, match="trap"):
         songs(prefix, tmp_path / "out", SONGINIT, (2,), declared=range(2))
 
@@ -3080,7 +3063,7 @@ def test_song_values_are_a_range(prefix):
     with pytest.raises(ValueError, match="range"):
         translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=(0, 2))
     _, h, _ = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=range(1, 3))
-    assert "#define CGEN_SONG0 0x01" in h and "#define CGEN_SONGS 0x02" in h
+    assert "#define CGEN_SONG0 0x01" in h and "#define CGEN_SONGS 2" in h
 
 
 @pytest.mark.parametrize(
@@ -3088,11 +3071,11 @@ def test_song_values_are_a_range(prefix):
     [[1, 2, 3, 4, 5, 6, 7, 8], [0x81, 2, 0x90, 0xA0, 5, 6, 7, 8], [0x81] * 7 + [3]],
     ids=["plain", "commands", "skips"],
 )
-def test_init_reading_song_data_is_code(prefix, tmp_path, order):
+def test_init_reading_song_data_leaves_variables(prefix, tmp_path, order):
     """Init reads each voice's first order byte with the routine play reads them with (song
-    data), skipping commands: lifted as code, its loop is the same for every song, so the
-    ``.c`` is the same for every order list and song count, the order positions it leaves
-    the song's run."""
+    data), skipping commands: the positions and patterns it leaves are variables, so the
+    ``.c`` is the same for every order list and song count, the header holding their
+    values."""
     img, labels, loaded = assemble(SONGDATA, patch={"order": order})
     texts = set()
     for count in (1, 2):
@@ -3103,18 +3086,17 @@ def test_init_reading_song_data_is_code(prefix, tmp_path, order):
         play(tmp_path / str(count), c, h, img, labels, [("init", 0)] + [("play", 0)] * 9)
         texts.add(c)
     base = translate(prefix, *assemble(SONGDATA), ("init", "play"), init=0, songs=range(1))[0]
-    assert texts == {base} and "for (" in base[base.index("void init") : base.index("void play")]
+    assert texts == {base}
 
 
-def test_init_io_writes_song_data_decides_are_its_code(prefix, tmp_path):
-    """An I/O write only some songs make is a write of init's code, under the branch the song
-    byte decides: the same ``.c`` for every song."""
+def test_init_io_writes_song_data_decides_are_replayed(prefix, tmp_path):
+    """An I/O write only some songs make is one of init's writes the header replays in order:
+    the same ``.c`` for every song."""
     texts = set()
-    for first in (1, 0x81):
+    for first, writes in ((1, "0xC018"), (0x81, "0xC018, 0xC010")):
         img, labels, loaded = assemble(SONGIO, patch={"order": [first]})
         c, h, _ = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=[0])
-        init = c[c.index("void init") : c.index("void play")]
-        assert "io_write(0xC018, 0xF)" in init and "io_write(0xC010," in init
+        assert f"#define CGEN_IO_AT {writes}\n" in h
         (tmp_path / str(first)).mkdir()
         calls = [("init", 0)] + [("play", k) for k in range(4)]
         play(tmp_path / str(first), c, h, img, labels, calls)
@@ -3122,12 +3104,14 @@ def test_init_io_writes_song_data_decides_are_its_code(prefix, tmp_path):
     assert len(texts) == 1
 
 
-def test_init_io_writes_stay_in_order_in_its_code(prefix, tmp_path):
-    """Init's I/O writes are its code's, in order (the clearing loop a loop), and the bytes it
-    stores are data play reads."""
-    c, _, labels = songs(prefix, tmp_path, IOCLEAR, (0,), declared=(0,))
-    init = c[c.index("void init") : c.index("void play")]
-    assert "for (" in init and "io_write(0xC010 + " in init and "io_write(0xC020, 0x11)" in init
+def test_init_io_writes_are_replayed_in_order(prefix, tmp_path):
+    """Init's I/O writes are replayed in their order (a clearing loop's one by one), and the
+    bytes it stores are data play reads, their values in the header."""
+    c, _, _ = songs(prefix, tmp_path, IOCLEAR, (0,), declared=(0,))
+    img, labels, loaded = assemble(IOCLEAR)
+    h = translate(prefix, img, labels, loaded, ("init", "play"), init=0)[1]
+    assert "#define CGEN_IO_AT 0xC013, 0xC012, 0xC011, 0xC010, 0xC020\n" in h
+    assert "#define CGEN_IO_VAL 0x00, 0x00, 0x00, 0x00, 0x11\n" in h
     assert not re.search(r"io_write\(0xC00[01], CODE_K", c)
 
 
@@ -3151,57 +3135,57 @@ init:   TAX
         STA $FB
         LDA srchi,X
         STA $FC
-        LDY #$03
+        LDY #$07
 copy:   LDA ($FB),Y
         STA buf,Y
         DEY
         BPL copy
         RTS
-play:   AND #$03
+play:   AND #$07
         TAX
         LDA buf,X
         STA $C000
         RTS
 srclo:  .byte lo(s0), lo(s1)
 srchi:  .byte hi(s0), hi(s1)
-s0:     .byte 1, 2, 3, 4
-s1:     .byte 5, 6, 7, 8
-buf:    .byte 0, 0, 0, 0
+s0:     .byte 1, 2, 3, 4, 5, 6, 7, 8
+s1:     .byte 11, 12, 13, 14, 15, 16, 17, 18
+buf:    .byte 0, 0, 0, 0, 0, 0, 0, 0
 end:
 """
 
 
-def test_init_io_probe_stays_runtime_code(prefix, tmp_path):
+@pytest.mark.parametrize("model", [0, 1])
+def test_init_io_probe_is_settled_by_the_machine(prefix, tmp_path, model):
     """Init probing the hardware (an I/O read) and patching play's opcode by what it reads
-    stays code run at init: the read is an ``io_read`` of the init function, and play
-    dispatches on the opcode cell's two values. Nothing of it is decided at lift time."""
+    is settled at the machine's value: no ``io_read``, and the opcode a cell only where init
+    stored it, play running the value the machine's run left (any other traps)."""
     img, labels, loaded = assemble(PROBE)
+    img[0xC030] = model
     c, h, info = translate(
         prefix, img, labels, loaded, ("init", "play"), sensitive=(0xC030,), init=0
     )
-    calls = [("init", 0)] + [("play", k) for k in range(4)]
-    play(tmp_path, c, h, img, labels, calls, (0xC030,))
-    init, body = c[c.index("void init") : c.index("void play")], c[c.index("void play") :]
-    assert "io_read(0xC030)" in init and labels["shift"] in info["provenance"]["cells"]
-    assert "R0[0] = 0xA;" in init and "trap(" not in body
+    play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", k) for k in range(4)])
+    assert "io_read(0x" not in c
+    assert (labels["shift"] in info["provenance"]["cells"]) == bool(model)
 
 
-def test_init_block_copy_is_a_runtime_copy(prefix, tmp_path):
-    """Init copying the song's block from the table the song indexes is a copy loop of the
-    init function run for that song, its source a bounded read through the pointer: the same
-    ``.c`` for other song data, which the header holds."""
+def test_init_block_copy_is_a_copy_of_the_header(prefix, tmp_path):
+    """Init copying the song's block from the table the song indexes leaves, per song, a copy
+    of the image's block: the header copies it from the array holding it, the same ``.c`` for
+    other song data."""
     texts = set()
-    for data in ([1, 2, 3, 4], [9, 8, 7, 6]):
+    for data in (list(range(1, 9)), list(range(9, 1, -1))):
         img, labels, loaded = assemble(BLOCKCOPY, patch={"s0": data})
-        c, h, _ = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+        c, h, _ = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=range(2))
         for song in (0, 1):
             (tmp_path / f"{data[0]}-{song}").mkdir()
-            calls = [("init", song)] + [("play", k) for k in range(4)]
+            calls = [("init", song)] + [("play", k) for k in range(8)]
             play(tmp_path / f"{data[0]}-{song}", c, h, img, labels, calls)
+        src, n = re.search(r"#define CGEN_CP_SRC (.*)\n#define CGEN_CP_LEN (.*)\n", h).groups()
+        assert ("R", "8") in zip((x[0] for x in src.split(", ")), n.split(", "))
         texts.add(c)
-    [c] = texts
-    init = c[c.index("void init") : c.index("void play")]
-    assert "for (" in init and re.search(r"(rdC0|CGEN_IX)\(", init) and not re.search(r"\brd\(", c)
+    assert len(texts) == 1
 
 
 OVERCOPY = """
@@ -3226,28 +3210,16 @@ end:
 """
 
 
-@pytest.mark.parametrize("rerun", [False, True])
-def test_code_init_overwrites_after_running_it_is_data(prefix, tmp_path, rerun):
-    """Init's code a copy overwrites after init has run it (play never runs it) is data: no
-    instruction runs at those bytes after the copy, so the copy writes data play reads and
-    init's code runs with its entry bytes, with no code check or opcode dispatch. Where play
-    runs that code too, its bytes are cells."""
-    src = (
-        OVERCOPY.replace("play:   AND #$03", "play:   JSR init\n        AND #$03")
-        if rerun
-        else OVERCOPY
-    )
-    img, labels, loaded = assemble(src)
-    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+def test_code_init_overwrites_is_data(prefix, tmp_path):
+    """Init's code a copy overwrites (play never runs it) is data play reads: no code check or
+    opcode dispatch, the copied bytes the songs' values."""
+    img, labels, loaded = assemble(OVERCOPY)
+    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=range(4))
     for song in (0, 3):
         (tmp_path / str(song)).mkdir()
         calls = [("init", song)] + [("play", k) for k in range(4)]
         play(tmp_path / str(song), c, h, img, labels, calls)
-    cells = set(info["provenance"]["cells"])
-    init = c[c.index("void init") : c.index("void play")]
-    assert (labels["init"] in cells) == rerun
-    if not rerun:
-        assert "codechk(" not in c and not re.search(r"if \(\w+\[[^]]*\] == 0x", init)
+    assert labels["init"] not in set(info["provenance"]["cells"]) and "codechk(" not in c
 
 
 SWPREL = """
@@ -3314,42 +3286,6 @@ def test_relocated_operands_point_into_the_song(prefix, tmp_path, plain):
     assert re.search(r"rdC\d+\(", body) and not re.search(r"\brd\(", body)
 
 
-OPPATCH = """
-init:   LSR A
-        TAX
-        LDA plo,X
-        STA op+1
-        LDA phi,X
-        STA op+2
-        LDA #$00
-op:     STA $FFFF
-        RTS
-play:   LDA v0
-        STA $C000
-        LDA v1
-        STA $C001
-        RTS
-plo:    .byte lo(v0), lo(v1)
-phi:    .byte hi(v0), hi(v1)
-v0:     .byte 7
-v1:     .byte 9
-end:
-"""
-
-
-def test_operand_patched_from_table_words_has_their_addresses(prefix, tmp_path):
-    """A store through its own operand bytes, each a table byte of one index (an effect init
-    patching the voice it names), has the words of the tables as its addresses: a plain store
-    choosing among them, with no ``wr`` or code check, and an index guard past the tables."""
-    img, labels, loaded = assemble(OPPATCH)
-    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
-    for song in (0, 2):
-        (tmp_path / str(song)).mkdir()
-        play(tmp_path / str(song), c, h, img, labels, [("init", song)] + [("play", 0)] * 2)
-    init = c[c.index("void init") : c.index("void play")]
-    assert " wr(" not in c and "codechk(" not in c and "trap(" in init
-
-
 @pytest.mark.parametrize("bounded", [True, False])
 def test_index_bound_through_a_call_keeps_a_read_inside(prefix, tmp_path, bounded):
     """A song byte stored as a pattern number only below $80 (the branch on the flags the
@@ -3407,40 +3343,40 @@ def test_constant_bytes_are_names_in_the_header(prefix, tmp_path):
     assert len(texts) == 1
 
 
-def test_init_stored_vector_is_a_machine_address(prefix, tmp_path):
-    """A vector init stores outside the program is a store of init's code, its value an
-    address relative to the code, and the addresses beside it (the I/O the handler writes)
-    are absolute: the same ``.c`` at every origin."""
+def test_init_stored_vector_is_a_variable(prefix, tmp_path):
+    """A vector init stores outside the program is a variable the header holds, so play's
+    ``BRK`` through it goes where the header says: the same ``.c`` at every origin."""
     texts = set()
     for org in (0x1000, 0x2345):
         img, labels, loaded = assemble(INITBRK, org)
         c, h, _ = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
-        assert "= (uint8_t)(CODE_ORG + " in c[c.index("void init") : c.index("void play")]
         (tmp_path / str(org)).mkdir()
         play(tmp_path / str(org), c, h, img, labels, [("init", 0)] + [("play", 1)] * 4)
         texts.add(c)
     assert len(texts) == 1
 
 
-def test_init_program_calls_match_the_reference():
-    """The lifted program of an init entry, called on the image, makes the reference's
-    accesses and leaves its memory (but the dead stack below SP)."""
+def test_program_lifted_from_init_state_matches_the_reference():
+    """Play lifted from the state init leaves, every byte it stored a variable (``free``),
+    makes the reference's accesses and leaves its memory (but the dead stack below SP)."""
     img, labels, loaded = assemble(INITREL)
-    pcs = [labels["init"], labels["play"]]
-    prog = wholeprog.lift(img, pcs, [W.IO], entry_sp=0xFD, loaded=loaded, init=0)
-    assert prog.entries[0] == labels["init"] and not hasattr(prog, "init")
-    mem, ref = bytearray(img), bytearray(img)
-    for e, a in [(0, 3)] + [(1, k) for k in range(4)] * 2:
+    state = postinit.run(img, labels["init"], [3], [W.IO])
+    mem = bytearray(state.states[0].tobytes())
+    prog = wholeprog.lift(
+        mem, [labels["play"]], [W.IO], entry_sp=0xFD, loaded=loaded, free=state.values()
+    )
+    ref = bytearray(mem)
+    for a in range(8):
         reg = cgenplay.entry_regs(a)
-        got = prog.call(mem, e, a=a, reg=reg, log=True)["log"]
+        got = prog.call(mem, 0, a=a, reg=reg, log=True)["log"]
         want = wholeprog.reference_call(
-            ref, pcs[e], a=a, reg=reg, volatile=[W.IO], log=True, clocked=False
+            ref, labels["play"], a=a, reg=reg, volatile=[W.IO], log=True, clocked=False
         )
         assert got == want["log"]
         assert mem[0x200:] == ref[0x200:] and mem[:0x100] == ref[:0x100]
 
 
-def test_cli_lifts_the_named_init(prefix, tmp_path):
+def test_cli_runs_the_named_init(prefix, tmp_path):
     # pylint: disable=import-outside-toplevel
     from deity_informant.cgen.__main__ import main
 
@@ -3451,7 +3387,7 @@ def test_cli_lifts_the_named_init(prefix, tmp_path):
     assert prefix is not None
     main([str(tmp_path / "prog.bin"), "--org", "0x1000", *ents, "--init", "init", "-o", str(out)])
     c = out.read_text()
-    assert "for (" in c[c.index("void init") : c.index("void play")]
+    assert "void init(uint8_t a)" in c and "CGEN_SONGS" in c
 
 
 def test_fall_through_into_a_routine_is_a_tail_call(prefix, tmp_path):
