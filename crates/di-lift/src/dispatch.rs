@@ -538,6 +538,7 @@ pub(crate) fn vectors(
         bound: Vec::new(),
         stored: Vec::new(),
         floor: FxHashMap::default(),
+        inits: FxHashMap::default(),
         runs: Vec::new(),
         words: FxHashMap::default(),
         mods: FxHashMap::default(),

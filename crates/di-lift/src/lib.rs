@@ -57,8 +57,9 @@ pub struct Opts {
     /// Lift copies of one routine that differ only in their operands as one function taking
     /// the copy's index ([`inst`]); without facts and a bank map only.
     pub fold: bool,
-    /// The variables the host's init leaves (`(address, values over its runs)`): bytes the
-    /// image holds one run's values of, whose values the lift does not take (*Init*).
+    /// The variables the host's init leaves (`(address, values over its runs)`, one per run in
+    /// run order): bytes the image holds one run's values of, whose values the lift does not
+    /// take (*Init*).
     pub free: Vec<(u16, Vec<u8>)>,
     /// Operand pairs of `free` one pointer variable holds: `(lo, g, delta)`, the pair at `lo`
     /// holding the pair at `g` plus `delta` (`deity_informant.postinit`). Play reads `g`.
@@ -546,9 +547,7 @@ pub fn lift_banked(
 ) -> Program {
     let entries = declared(entries);
     let entries = &entries[..];
-    let free: FxHashMap<u16, std::collections::BTreeSet<u8>> = (opts.free.iter())
-        .map(|(a, v)| (*a, v.iter().copied().collect()))
-        .collect();
+    let free: FxHashMap<u16, Vec<u8>> = opts.free.iter().cloned().collect();
     let mut matched = true;
     let (g, plans, fidx, callees, recursive, slots, constcode, touches, seen, sites, private) = loop {
         let mut g = discover(

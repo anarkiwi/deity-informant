@@ -2171,14 +2171,15 @@ read:   LDY #$00
 def test_pointer_init_leaves_bounds_its_reads(at):
     # The pair init leaves is a variable: pointing into the records' run of data bytes, play's
     # reads through it are bounded to that run in the pass that bounds pointers into the
-    # program's data; pointing at an instruction, they are not. The hulls that hold on every
-    # run take nothing of the value.
+    # program's data; pointing at an instruction, it is taken not to be read through, and the
+    # reads are bounded by what play stores. The hulls that hold on every run take nothing of
+    # the value.
     src = LEFT.replace("lo(read)", f"lo({at})").replace("hi(read)", f"hi({at})")
     img, labels, loaded = assemble(src)
     ents = [(labels["init"], "init"), (labels["play"], "play")]
     p, _ = cgen.lift(img, ents, [W.IO], loaded=loaded, init=0)
     read = labels["read"] + 2
-    assert p.reach[read][0] == (labels["plo"] if at == "p1" else 0)
+    assert p.reach[read][0] == labels["plo" if at == "p1" else "p0"]
     assert p.proven[read][:2] == (0, 0xFFFF)
 
 
@@ -4028,3 +4029,188 @@ def test_state_past_the_image_keeps_its_addresses_when_relocated(prefix, tmp_pat
         play(tmp_path / str(org), c, h, img, labels, [("init", 0)] + [("play", 0)] * 4)
         texts.add(c)
     assert len(texts) == 1
+
+
+#: Init unpacking its records past the image and leaving a voice pointer into them, or null
+#: for a song whose voice is idle; play reads through the pointer while the voice is on and
+#: patches an immediate with what it read.
+UNPACK = """
+init:   TAX
+        LDY #$00
+copy:   LDA recs,Y
+        STA $3000,Y
+        INY
+        CPY #$08
+        BNE copy
+        LDA vlo,X
+        STA $FB
+        LDA vhi,X
+        STA $FC
+        LDA von,X
+        STA on
+        RTS
+play:
+lv:     LDA #$00
+        STA $C001
+        LDA on
+        BEQ idle
+        LDY #$00
+read:   LDA ($FB),Y
+        STA $C000
+        STA lv+1
+idle:   RTS
+vlo:    .byte $00,$00
+vhi:    .byte $30,$00
+von:    .byte 1,0
+on:     .byte 0
+recs:   .byte 9,8,7,6,5,4,3,2
+end:
+"""
+
+
+def test_null_voice_pointer_into_unpacked_records_is_bounded(prefix, tmp_path):
+    """The words init leaves in a pointer pair over its songs bound play's reads through it
+    to the records it unpacked past the image, the null of an idle voice's song taken not to
+    be read through: the read reaches no code, and the immediate play patches is a scalar."""
+    img, labels, loaded = assemble(UNPACK)
+    p, _ = cgen.lift(
+        img,
+        [(labels["init"], "init"), (labels["play"], "play")],
+        [W.IO],
+        loaded=loaded,
+        init=0,
+        songs=range(2),
+    )
+    lo, hi = p.reach[labels["read"]][:2]
+    assert labels["vlo"] <= lo < labels["end"] and 0x3007 <= hi < 0x3100
+    c, info, _ = songs(prefix, tmp_path, UNPACK, (0, 1))
+    assert (
+        info["state"]["cells"]["scalars"] == 1 and "cgen_var" not in c.split("#ifdef CGEN_OOB")[0]
+    )
+
+
+#: Play forming its pointer from a table of offsets plus the origin init leaves (a
+#: relocating player's song data base), then patching an immediate with the byte it reads.
+ORIGIN = """
+init:   LDA #lo(recs)
+        STA $FD
+        LDA #hi(recs)
+        STA $FE
+        RTS
+play:   AND #$01
+        TAY
+lv:     LDA #$00
+        STA $C001
+        LDA offlo,Y
+        CLC
+        ADC $FD
+        STA $FB
+        LDA offhi,Y
+        ADC $FE
+        STA $FC
+        LDY #$00
+read:   LDA ($FB),Y
+        STA $C000
+        STA lv+1
+        RTS
+offlo:  .byte 0,5
+offhi:  .byte 0,0
+recs:   .byte 9,8,7,6,5,4,3,2
+end:
+"""
+
+
+def test_offsets_plus_init_origin_point_into_its_run(prefix, tmp_path):
+    """A pair stored from the two parts of a table byte plus the origin init leaves (added
+    with carry) points into the run of data bytes the origin points into: the read reaches
+    no code, so the patched immediate is a scalar. The hulls that hold on every run take
+    nothing of it."""
+    img, labels, loaded = assemble(ORIGIN)
+    ents = [(labels["init"], "init"), (labels["play"], "play")]
+    p, _ = cgen.lift(img, ents, [W.IO], loaded=loaded, init=0)
+    lo, hi = p.reach[labels["read"]][:2]
+    assert labels["offlo"] <= lo and hi < labels["end"] + 0x100
+    assert p.proven[labels["read"]][:2] == (0, 0xFFFF)
+    c, info, _ = songs(prefix, tmp_path, ORIGIN, (0,))
+    assert (
+        info["state"]["cells"]["scalars"] == 1 and "cgen_var" not in c.split("#ifdef CGEN_OOB")[0]
+    )
+
+
+def test_bounded_store_leaves_cells_to_promotion(prefix, tmp_path):
+    """A store through an operand init relocated into a run of data bytes touches that run,
+    not every byte: the operand cells play reads at their addresses are scalars."""
+    c, info, _ = songs(prefix, tmp_path, INITREL, (0, 1, 5))
+    assert info["state"]["cells"]["scalars"] >= 4 and "unknown" not in info["state"]["cells"]
+    assert "cgen_var" not in c.split("#ifdef CGEN_OOB")[0]
+
+
+#: A pointer whose high byte is the argument reads, and writes, the immediate play patches.
+VARPTR = """
+entry:  STA $FC
+        LDA #lo(lv+1)
+        STA $FB
+        LDY #$00
+        LDA ($FB),Y
+        CLC
+        ADC #$01
+        STA ($FB),Y
+        STA $C000
+lv:     LDA #$07
+        STA $C001
+        INC lv+1
+        RTS
+end:
+"""
+
+
+def test_unbounded_pointer_finds_the_promoted_cell(prefix, tmp_path):
+    """A load and a store through a pointer the lift does not bound leave the code span's
+    cells to promotion: the span's reader and ``wr`` find a promoted cell's variable
+    (``cgen_var``)."""
+    _, labels, _ = assemble(VARPTR)
+    hi = labels["lv"] + 1 >> 8
+    c, _, info = check(prefix, tmp_path, VARPTR, entry_calls([hi], 4))
+    assert info["state"]["cells"] == {"scalars": 1, "fields": 0, "unread": 0, "bytes": {}}
+    reader = c[c.index("uint8_t rdC0(") :]
+    assert "cgen_var_at(a)" in reader[: reader.index("}")] and re.search(r"\bwr\(", c)
+
+
+#: Init leaving its pointer at the immediate play patches; play reads through it until it
+#: points it into its records.
+STRAY = """
+init:   LDA #lo(lv+1)
+        STA $FB
+        LDA #hi(lv+1)
+        STA $FC
+        RTS
+play:   AND #$01
+        BEQ read
+        TAY
+        LDA plo,Y
+        STA $FB
+        LDA phi,Y
+        STA $FC
+read:
+lv:     LDA #$00
+        STA $C011
+        LDY #$00
+        LDA ($FB),Y
+        STA $C010
+        STA lv+1
+        RTS
+""" + RECORDS
+
+
+def test_read_past_the_assumed_hull_reads_the_promoted_cell(prefix, tmp_path):
+    """The word init leaves pointing at code is taken not to be read through: play's reads
+    are bounded to its records and the patched immediate is a scalar. A read through it
+    anyway leaves the records' span for ``oob_rd``, which under ``CGEN_OOB_EXACT`` finds the
+    scalar (``cgen_var``)."""
+    img, labels, loaded = assemble(STRAY)
+    c, h, info = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
+    assert info["state"]["cells"]["scalars"] == 1
+    exact = c[c.index("#ifdef CGEN_OOB_EXACT") :]
+    assert "cgen_var" in exact and "cgen_var" not in c[: c.index("#ifdef CGEN_OOB_EXACT")]
+    calls = [("init", 0), ("play", 0), ("play", 0), ("play", 1), ("play", 0), ("play", 3)]
+    play(tmp_path, c, h, img, labels, calls)

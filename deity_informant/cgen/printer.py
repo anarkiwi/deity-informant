@@ -270,7 +270,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         self.addr_edges, self.arg_src, self.arg_block, self.dead = set(), {}, {}, set()
         self.flags = set()
         self.kparam, self.kvals, self.ktabs, self.kmemo, self.kiv = None, None, {}, {}, {}
-        self.kptrs, self.wide, self.promoted = {}, {}, {}
+        self.kptrs, self.wide, self.promoted, self.aware = {}, {}, {}, set()
         self.steps, self.elements = {}, {}
         self.index()
         self.idom = self.dominators()
@@ -1581,10 +1581,11 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         return not self.pure(o) or any(self.uses.get(r) for r in o.res)
 
 
-def _read_only(st, found):
+def _read_only(st, found, seen):
     """:class:`State` ``st`` less its cells no load of ``found`` (``(func, op, addresses,
-    _)``) reads, which it lists as ``unread``: what they hold is never observed."""
-    read = set()
+    _)``) nor pointer load reaching them (``seen``, a mask) reads, which it lists as
+    ``unread``: what they hold is never observed."""
+    read = {a if p is None else (p[0], p[2]) for a, p in st.at.items() if seen[a]}
     for _, o, one, _ in found:
         if o.name == "memref.load" and len(set(one)) == 1 and one[0] in st.at:
             p = st.at[one[0]]
@@ -2065,6 +2066,8 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             if name is not None:
                 return E(name, 16, "", 0, 255, False, False)
         how = self.target(o)
+        if id(o) in self.f.aware and self.mod.var_at and how[0] != "checked":
+            how = ("any",)
         if how[0] in ("region", "held"):
             return self.mem_ref(o, how[-1], how[0] == "held")
         a = self.addr(self.f.address(o))
@@ -2086,6 +2089,8 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             return E(f"({text})", 16, "", 0, 255, False, True, a.refs)
         fn = "oob_rd" if how[0] == "code" else "rd"
         self.mod.helpers.add(fn)
+        if id(o) in self.f.aware and self.mod.var_at:
+            self.mod.helpers.add("cgen_var")
         return E(f"{fn}({a.text})", 16, "", 0, 255, False, True, a.refs)
 
     def checked(self, o, j, a):
@@ -2095,7 +2100,11 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         there where the lift proves the address inside it."""
         self.mod.used.add("CODE")
         self.mod.spans_used.add(j)
-        sure = id(o) in self.f.sure
+        mapped = id(o) in self.f.aware and bool(self.mod.var_at)
+        sure = id(o) in self.f.sure and not mapped
+        if mapped:
+            self.mod.helpers.add("cgen_var")
+            self.mod.var_spans.add(j)
         if not sure:
             self.mod.checked.add(j)
         bi = self.base_index(o)
@@ -2352,6 +2361,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         """A memory store (or an ``io_write`` that cannot reach I/O)."""
         val = o.args[1] if o.name == "func.call" else o.args[0]
         how, v = self.target(o), (o.name != "func.call" and self.halves(o)) or self.ex(val)
+        if id(o) in self.f.aware and self.mod.var_at:
+            how = ("any",)
+            self.mod.helpers.add("cgen_var")
         if how[0] == "var":
             ref = self.var(o)
             out.append(("s", f"{ref.text} = {v.text};", ref.refs | v.refs))
@@ -2828,6 +2840,8 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.sites, self.made, self.lifted, self.prov = {}, Counter(), {}, {}
         self.copy_pcs, self.sets, self.kpos, self.tables = {}, {}, None, {}
         self.reach, self.proven, self.checked, self.konsts = {}, {}, set(), {}
+        #: The held spans whose bounds-checked readers find promoted cells' variables.
+        self.var_spans, self.var_at = set(), []
         self.offsets, self.insn = {}, np.zeros(0x10000, dtype=bool)
         self.inert, self.regs, self.regfile, self.results_ivs = set(), {}, [], {}
         self.bounded, self.cells, self.state = {}, None, State()
@@ -3011,7 +3025,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         ``(lo, hi)``, per copy ``per``) may touch, and the :data:`state.WHY` code of its kind."""
         run = self.run_of(f, o)
         if run is not None:
-            lo, hi = max(lo, run[0]), min(hi, run[1])
+            return [(max(lo, run[0]), min(hi, run[1]))], INDEXED
         lo, hi = (f.proven_iv(o) if o.name == "memref.load" else None) or (lo, hi)
         if per and all(y - x < regions.BOUNDED for x, y in per):
             return per, INDEXED
@@ -3024,11 +3038,24 @@ class Module:  # pylint: disable=too-many-instance-attributes
         hull = self.reach_of(f, o) if o.name == "memref.load" else None
         return ([hull[:2]], POINTER) if hull is not None else ([(0, 0xFFFF)], UNKNOWN)
 
+    def mapped(self, f, o, runs, kind):
+        """Whether access ``o`` of function ``f`` (touching ``runs``, of :data:`state.WHY`
+        kind ``kind``) leaves the cells it may reach to promotion: a load through a pointer the
+        lift bounds by a hull, or a load or store of unknown address, of code span cells only,
+        goes through a reader or ``wr`` that finds a promoted cell's variable."""
+        hull = kind == POINTER and o.name == "memref.load" and self.reach_of(f, o) is not None
+        if o.name == "func.call" or not (hull or kind == UNKNOWN):
+            return False
+        lo, hi = self.mem.code_span
+        hit = np.concatenate([np.flatnonzero(self.cells[x : y + 1]) + x for x, y in runs])
+        return bool(hit.size) and lo <= hit.min() and hit.max() < hi
+
     def promote(self):
         """Classify the code cells (:attr:`cells`) by the address sets of every access
         (:func:`state.classify`) and mark each access of a promoted cell (``f.promoted``): a
         scalar's address, or a field's struct, field and element (a value of the copy index)."""
         why, found = np.zeros(0x10000, dtype=np.int8), []
+        seen = np.zeros(0x10000, dtype=bool)
         for lo, hi in self.held_runs:
             why[lo : hi + 1] = INIT
         for f in self.funcs:
@@ -3049,12 +3076,19 @@ class Module:  # pylint: disable=too-many-instance-attributes
                     why[step[0]] = np.where(sel == 0, INDEXED, sel)
                     continue
                 runs, kind = self.touched(f, o, lo, hi, per)
+                if self.mapped(f, o, runs, kind):
+                    f.aware.add(id(o))
+                    if o.name == "memref.load":
+                        for x, y in runs:
+                            seen[x : y + 1] = True
+                    continue
                 for x, y in runs:
                     sel = why[x : y + 1]
                     sel[sel == 0] = kind
         stepped = [a for _, _, a, v in found if v is not None]
         st = classify(self.cells, [a for _, _, a, _ in found], why, stepped)
-        self.state = st = _read_only(st, found)
+        self.state = st = _read_only(st, found, seen)
+        self.var_at = self.var_cases()
         made, gone = {}, set(st.unread)
         for f, o, one, v in found:
             if len(set(one)) == 1 and one[0] in st.at:
@@ -3091,6 +3125,12 @@ class Module:  # pylint: disable=too-many-instance-attributes
         if self.mem.loaded[0] <= a < self.mem.loaded[1]:
             return f"S_I{a - self.mem.loaded[0]:X}"
         return f"S_A{a:04X}"
+
+    def var_cases(self):
+        """``[(offset, lvalue)]`` of the promoted cells of the code span, by offset from its
+        origin: what ``cgen_var`` finds for an access :meth:`mapped` leaves to them."""
+        lo, hi = self.mem.code_span
+        return [(a - lo, self.var_ref(a)) for a in sorted(self.state.at) if lo <= a < hi]
 
     def var_ref(self, a):
         """The C lvalue of promoted cell ``a``, or None."""
@@ -3188,9 +3228,10 @@ class Module:  # pylint: disable=too-many-instance-attributes
             sorted(stores),
             unknown,
             joined + wide,
-            wide + bound + self.held_runs,
+            wide + bound,
             writes + bound + self.held_runs,
             self.state.mask(),
+            self.held_runs,
         )
 
     def owners(self, runs, held):

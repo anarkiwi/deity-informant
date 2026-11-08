@@ -165,9 +165,17 @@ class Memory:  # pylint: disable=too-many-instance-attributes
             return None
         return lo + int(data[0]), lo + int(data[-1])
 
-    def partition(
-        self, accesses, stores, unknown_store=True, joined=(), wide=(), writes=None, state=None
-    ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    def partition(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        self,
+        accesses,
+        stores,
+        unknown_store=True,
+        joined=(),
+        wide=(),
+        writes=None,
+        state=None,
+        sources=(),
+    ):
         """Regions for ``accesses`` (``(lo, hi)`` inclusive, None when unknown), given the
         ``stores`` at constant addresses (code bytes they hit are data). Constant bytes are
         held where a bounded access may reach them, or everywhere when a store of unknown
@@ -179,7 +187,9 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         ``writes`` (the bounded stores' ``(lo, hi)``) a byte past the loaded image that no
         store writes is in no region: a read of it is out of bounds (``oob_rd``). The bytes
         of ``state`` (a mask: cells held as C variables) are in a region only where one of
-        the ``accesses`` touches them."""
+        the ``accesses`` touches them. The regions only stores with address sets (``written``:
+        init's among them) or ``sources`` (init's copies, a run each) touch are numbered after
+        the others, so the ``.c`` names the same regions whatever songs init runs for."""
         for a in stores:
             self.code[a] = False
         touched = np.zeros(0x10000, dtype=bool)
@@ -201,14 +211,19 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         need = constant.copy() if unknown_store else touched & self.code | self.tables
         if self.unknown:
             touched[self.loaded[0] : self.loaded[1]] = True
-        for lo, hi in self.written:
-            touched[lo:hi] |= True if state is None else ~state[lo:hi]
         for lo, hi in wide:
             touched[lo : hi + 1] = True
+        played = touched & ~constant & ~self.vol
+        for lo, hi in self.written:
+            touched[lo:hi] |= True if state is None else ~state[lo:hi]
         touched &= ~constant & ~self.vol
         for lo, hi in joined:
             need[lo : hi + 1] |= constant[lo : hi + 1] | touched[lo : hi + 1]
-        self.regions = runs(touched)
+        for lo, hi in sources:
+            touched[lo : hi + 1] = True
+        touched &= ~constant & ~self.vol
+        found = runs(touched)
+        self.regions = sorted(found, key=lambda r: not played[r[0] : r[0] + r[1]].any())
         for k, (org, n) in enumerate(self.regions):
             self.owner[org : org + n] = k
         self.code_span = self._span(constant)
