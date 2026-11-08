@@ -1,14 +1,15 @@
 //! What the interval analysis tells about computed transfers and stores, from the code alone.
 //!
 //! **Index sets.** The values an index register may hold at an instruction: the union over
-//! its call contexts of its interval cut by its known bits there (and, where it holds its
-//! function's entry value of a register plus a constant, by that register's values in the
-//! calls entering the context), cut by the progression `start + k * step` (`k` below the trip
-//! bound) of every loop counter it is ([`crate::scev`]). An index whose interval is every byte
-//! and that no trip bound limits is unbounded: known bits refine an index set, they do not
-//! bound it. A table read through an unbounded index that holds a byte of the loaded program
+//! its call contexts of its interval cut by its known bits there, cut by the progression
+//! `start + k * step` (`k` below the trip bound) of every loop counter it is
+//! ([`crate::scev`]). An index whose interval is every byte and that no trip bound limits is
+//! unbounded: known bits refine an index set, they do not bound it. A computed transfer's
+//! table read through an unbounded index that holds a byte of the loaded program
 //! ([`crate::vsa::St::src`]) reads at the values the stores the analysis reaches may leave in
-//! that byte, and its entry byte.
+//! that byte (at the addresses their index registers take, cut where they hold their
+//! function's entry value by the calls entering the context, [`Sets::entered`]), and its
+//! entry byte.
 //!
 //! **Stores.** A store whose address is its operand plus index registers has, as addresses,
 //! the address for each value of their index sets (each evaluated exactly); one through a
@@ -83,6 +84,9 @@ pub(crate) struct Sets<'a> {
     pub(crate) cx: FxHashMap<u16, Vec<u32>>,
     /// Per return site, the states of the calls returning to it, by context.
     pub(crate) calls: FxHashMap<u16, Vec<(u32, &'a St)>>,
+    /// Whether a register held as its function's entry value takes the values of the calls
+    /// entering the context ([`Sets::values`]).
+    pub(crate) entered: bool,
     pub(crate) merged: &'a FxHashMap<u16, St>,
     pub(crate) ind: &'a [Induction],
     pub(crate) preds: FxHashMap<u16, Vec<u16>>,
@@ -97,15 +101,16 @@ pub(crate) type Vals = FxHashMap<u16, Option<BTreeSet<u8>>>;
 
 impl Sets<'_> {
     /// The values data register `r` may hold in state `s` of context `c`, and whether they
-    /// are bounded: its interval cut by its known bits, and where it holds its function's
-    /// entry value of a register plus a constant, by the values that register holds in the
-    /// calls entering the context (bounded where they all are).
+    /// are bounded: its interval cut by its known bits, and (with [`Sets::entered`]) where it
+    /// holds its function's entry value of a register plus a constant, by the values that
+    /// register holds in the calls entering the context (bounded where they all are).
     fn values(&self, c: u32, s: &St, r: usize, seen: &mut Vec<u32>) -> ([bool; 0x100], bool) {
         let mut ok = [false; 0x100];
         s.kb[r].values(s.env[r]).for_each(|x| ok[x as usize] = true);
         let mut bounded = s.env[r] != Iv::full(1);
         let calls = u16::try_from(c).ok().and_then(|c| self.calls.get(&c));
-        if let (Some((b, off)), Some(cs), false) = (s.rel[r], calls, seen.contains(&c)) {
+        let rel = s.rel[r].filter(|_| self.entered && !seen.contains(&c));
+        if let (Some((b, off)), Some(cs)) = (rel, calls) {
             seen.push(c);
             let (mut up, mut all) = ([false; 0x100], true);
             for &(c2, s2) in cs {
@@ -1763,7 +1768,8 @@ pub(crate) fn arm_values(
                 let (Some(src), Some(a)) = (st.src[r], st.arm) else {
                     return false;
                 };
-                let by = |t: Tab| matches!(t, Tab::T { ix: Ix::Byte(m, x), .. } if (m, x) == src);
+                let by =
+                    |t: Tab| matches!(t, Tab::T { ix: Ix::Byte(m, x, _), .. } if (m, x) == src);
                 let (Some(ts), Some((b, gs))) =
                     (targets(a.j), bytes(code, sets, objs, &[a.lo, a.hi]))
                 else {

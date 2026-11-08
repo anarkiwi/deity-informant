@@ -661,15 +661,15 @@ the facts, so a proof holds on every execution that stays in lifted code.
   register both standing since (no store since may write the byte, no instruction writes the
   register), takes the values that byte may hold at the addresses the register's values
   give: its entry byte and the values of every store the analysis reaches that may write it
-  (none of unknown address). A tag whose index register is written while it holds such a
+  (none of unknown address; a store's index register held as its function's entry value of a
+  register plus a constant takes the values that register holds in the calls entering its
+  context). A tag whose index register is written while it holds such a
   byte stays indexed by the byte. On the edge to each target, a transfer through tagged bytes
   records which of its targets the path took; a store of a register holding, in every
   context, the byte a transfer the path took is indexed by stores only the index values
   (inside the tables' extent, guarded) whose word is a target the path took: a command
   handler that copies its command into a byte another dispatch reads stores only the commands
-  its own table entries name. A register a function holds as its entry value of a register
-  plus a constant takes, as an index, the values that register holds in the calls entering
-  its context. The words are its targets in every context, an `RTS`/`RTI` resolved so is
+  its own table entries name. The words are its targets in every context, an `RTS`/`RTI` resolved so is
   analysed as a jump (its function stays balanced), the bytes read join the program's
   constant bytes, and its table is closed. A `JMP (ind)` or `JMP` whose low and high target
   bytes are columns of one table indexed, in every context, by the current value of one index

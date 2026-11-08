@@ -80,13 +80,40 @@ struct Pred {
 /// How the index of a table byte relates to its index register: still the register's value,
 /// the value the register held when the instruction at `pc` wrote it (group `pc << 2 | r`;
 /// bytes of one group share their index), the byte at a base plus a register ([`St::src`])
-/// while neither changes, or unrelated.
+/// while neither changes (and the group it was made in, [`NOGRP`]: none), or unrelated.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Ix {
     Live,
     Grp(u32),
-    Byte(u16, u8),
+    Byte(u16, u8, u32),
     Lost,
+}
+
+/// No group ([`Ix::Byte`]).
+const NOGRP: u32 = u32::MAX;
+
+impl Ix {
+    /// What holds once the byte an index is may have changed: its group.
+    fn unbyte(self) -> Ix {
+        match self {
+            Ix::Byte(_, _, NOGRP) => Ix::Lost,
+            Ix::Byte(_, _, g) => Ix::Grp(g),
+            ix => ix,
+        }
+    }
+    /// What holds of an index related `a` on one path and `b` on another.
+    fn join(a: Ix, b: Ix) -> Ix {
+        match (a, b) {
+            _ if a == b => a,
+            (Ix::Byte(m, x, g), Ix::Byte(n, y, h)) if (m, x) == (n, y) => {
+                Ix::Byte(m, x, if g == h { g } else { NOGRP })
+            }
+            (Ix::Byte(_, _, g), Ix::Grp(h)) | (Ix::Grp(h), Ix::Byte(_, _, g)) if g == h => {
+                Ix::Grp(g)
+            }
+            _ => Ix::Lost,
+        }
+    }
 }
 
 /// A computed transfer `j` through the bytes tagged `lo`, `hi` taken to the targets of its
@@ -151,18 +178,18 @@ fn join_tab(a: Tab, b: Tab) -> Option<Tab> {
     match (a, b) {
         _ if a == b => Some(a),
         (
-            Tab::T { pc, op, reg, .. },
+            Tab::T { pc, op, reg, ix },
             Tab::T {
                 pc: p2,
                 op: o2,
                 reg: r2,
-                ..
+                ix: i2,
             },
         ) if (pc, op, reg) == (p2, o2, r2) => Some(Tab::T {
             pc,
             op,
             reg,
-            ix: Ix::Lost,
+            ix: Ix::join(ix, i2),
         }),
         _ => None,
     }
@@ -260,9 +287,16 @@ impl St {
             if let Tab::T { reg, ix, .. } = t {
                 *ix = match *ix {
                     Ix::Grp(x) if x == g => Ix::Lost,
-                    Ix::Byte(_, x) if x as usize == r => Ix::Lost,
+                    Ix::Byte(m, x, h) => {
+                        let b = Ix::Byte(m, x, if h == g { NOGRP } else { h });
+                        if x as usize == r {
+                            b.unbyte()
+                        } else {
+                            b
+                        }
+                    }
                     Ix::Live if *reg as usize == r => {
-                        src.map_or(Ix::Grp(g), |(b, x)| Ix::Byte(b, x))
+                        src.map_or(Ix::Grp(g), |(b, x)| Ix::Byte(b, x, g))
                     }
                     ix => ix,
                 };
@@ -300,8 +334,8 @@ impl St {
         }
         for t in self.tabs() {
             if let Tab::T { ix, .. } = t {
-                if matches!(*ix, Ix::Byte(m, x) if hit((m, x))) {
-                    *ix = Ix::Lost;
+                if matches!(*ix, Ix::Byte(m, x, _) if hit((m, x))) {
+                    *ix = ix.unbyte();
                 }
             }
         }
@@ -1280,7 +1314,7 @@ fn join(code: &Code, a: &St, b: &St, widen: Option<&Thresholds>) -> St {
             pc,
             op,
             reg,
-            ix: Ix::Byte(m, x),
+            ix: Ix::Byte(m, x, NOGRP),
         }),
         t => t,
     };
@@ -1547,9 +1581,7 @@ fn apply(ret: &St, call: &St, linked: bool, kept: Option<&[(u32, u32)]>) -> St {
     // What a byte indexes the callee may have stored into.
     let stale = |t: &mut Tab| {
         if let Tab::T { ix, .. } = t {
-            if matches!(ix, Ix::Byte(..)) {
-                *ix = Ix::Lost;
-            }
+            *ix = ix.unbyte();
         }
     };
     s.arm = call.arm.filter(|_| linked);
@@ -2837,6 +2869,7 @@ pub fn analyze(
         states,
         cx,
         calls,
+        entered: false,
         merged: &merged,
         ind: &ind,
         preds,
@@ -2927,13 +2960,6 @@ pub fn analyze(
         Some(_) => crate::dispatch::cell_addressed(&code, vars, &sets, &mut stores),
         None => crate::dispatch::cell_values(img, &stores),
     };
-    // What the stores the analysis reaches write.
-    let live: Vec<_> = (stores.iter())
-        .filter(|s| sets.states.contains_key(&s.pc))
-        .cloned()
-        .collect();
-    let unknown = live.iter().filter(|s| s.addrs.is_none()).map(|s| s.addr);
-    sets.mem = Some((crate::dispatch::cell_values(img, &live), unknown.collect()));
     // A store through a pointer with an address set reaches the hull of its set; its
     // throw-away read, the base's page with the indexed low byte, the pages from the least
     // address less a page to the greatest.
@@ -2978,6 +3004,26 @@ pub fn analyze(
             v.acc[ai].addr = Iv { lo, hi };
         }
     }
+    // Computed transfers read their tables at the values of the bytes the stores the
+    // analysis reaches write, at the addresses their index registers' values in the calls
+    // entering their contexts give.
+    sets.entered = true;
+    let exact: FxHashMap<_, _> = (crate::dispatch::stores(&code, vars, &sets).into_iter())
+        .map(|e| ((e.pc, e.op, e.ai), e.addrs))
+        .collect();
+    let live: Vec<_> = (stores.iter())
+        .filter(|s| sets.states.contains_key(&s.pc))
+        .map(|s| crate::dispatch::Store {
+            addrs: match (&s.addrs, exact.get(&(s.pc, s.op, s.ai)).cloned().flatten()) {
+                (Some(a), Some(b)) => Some(a.iter().filter(|x| b.contains(x)).copied().collect()),
+                (a, b) => a.clone().or(b),
+            },
+            ..s.clone()
+        })
+        .collect();
+    sets.entered = false;
+    let unknown = live.iter().filter(|s| s.addrs.is_none()).map(|s| s.addr);
+    sets.mem = Some((crate::dispatch::cell_values(img, &live), unknown.collect()));
     let (jumps, sels) =
         crate::dispatch::jumps(&code, vars, &state, &sets, &objs, &stores, &cellvals);
     Analysis {
