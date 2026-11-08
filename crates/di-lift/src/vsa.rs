@@ -14,7 +14,9 @@
 //! gets its own value back through any number of nested calls. This holds only while a return
 //! address is the one a `JSR` pushed: where a function's pushes and pulls do not balance, or
 //! the stack is not private (`matched` is false: other stores may rewrite return addresses),
-//! an `RTS` may reach any return site and nothing is carried through it.
+//! an `RTS` may reach any return site and nothing is carried through it. Balance is judged
+//! over the starts the analysis reaches with no table taken as constant (whatever the data),
+//! repeated while fewer returns are left unpaired.
 //!
 //! `A`, `X` and `Y` also keep their known bits ([`crate::known`]). For computed jumps
 //! ([`crate::dispatch`]) a byte loaded from a constant base plus an index register is tagged
@@ -727,6 +729,7 @@ pub(crate) fn refine(code: &Code, st: &St, flag: usize, want: bool) -> Option<St
 }
 
 /// The image and code cells.
+#[derive(Clone)]
 pub(crate) struct Code<'a> {
     pub(crate) img: &'a [u8; 0x10000],
     pub(crate) cells: &'a FixedBitSet,
@@ -1344,17 +1347,23 @@ fn join(code: &Code, a: &St, b: &St, widen: Option<&Thresholds>) -> St {
 }
 
 /// What a call target's body does: its `RTS`s (reached without passing through nested calls,
-/// which are summarized by their return sites), whether the stack height at every one is
-/// the entry's and the nested calls' targets. A `BRK` calls its handlers, whose `RTI` at
-/// their entry height returns past its signature byte; `rti` analyses such a handler, its
-/// `RTI`s its returns.
+/// which are summarized by their return sites, nor through starts outside `live`), whether
+/// the stack height at every one is the entry's and the nested calls' targets. A `BRK` calls
+/// its handlers, whose `RTI` at their entry height returns past its signature byte; `rti`
+/// analyses such a handler, its `RTI`s its returns.
 struct Frame {
     rts: Vec<u16>,
     balanced: bool,
     callees: Vec<u16>,
 }
 
-fn frame(vars: &FxHashMap<u16, Vec<Var>>, t: u16, disp: &FxHashSet<u16>, rti: bool) -> Frame {
+fn frame(
+    vars: &FxHashMap<u16, Vec<Var>>,
+    t: u16,
+    disp: &FxHashSet<u16>,
+    rti: bool,
+    live: &FixedBitSet,
+) -> Frame {
     let mut f = Frame {
         rts: Vec::new(),
         balanced: true,
@@ -1363,6 +1372,9 @@ fn frame(vars: &FxHashMap<u16, Vec<Var>>, t: u16, disp: &FxHashSet<u16>, rti: bo
     let mut height: FxHashMap<u16, i32> = FxHashMap::default();
     let mut work = vec![(t, 0i32)];
     while let Some((pc, h)) = work.pop() {
+        if !live.contains(pc as usize) {
+            continue;
+        }
         if let Some(&old) = height.get(&pc) {
             f.balanced &= old == h;
             continue;
@@ -1392,7 +1404,7 @@ fn frame(vars: &FxHashMap<u16, Vec<Var>>, t: u16, disp: &FxHashSet<u16>, rti: bo
                     if !rti && !ts.is_empty() && vars.contains_key(&pc.wrapping_add(2)) =>
                 {
                     for &t in ts {
-                        let g = frame(vars, t, disp, true);
+                        let g = frame(vars, t, disp, true, live);
                         f.balanced &= g.balanced && !g.rts.is_empty();
                         f.callees.extend(g.callees);
                     }
@@ -1419,7 +1431,12 @@ struct Returns {
     all: Vec<u16>,
 }
 
-fn returns(vars: &FxHashMap<u16, Vec<Var>>, matched: bool, disp: &FxHashSet<u16>) -> Returns {
+fn returns(
+    vars: &FxHashMap<u16, Vec<Var>>,
+    matched: bool,
+    disp: &FxHashSet<u16>,
+    live: &FixedBitSet,
+) -> Returns {
     let mut calls: Vec<(u16, u16)> = Vec::new();
     for v in vars.values().flatten() {
         if let Flow::Jsr { t, ret } = &v.flow {
@@ -1434,7 +1451,7 @@ fn returns(vars: &FxHashMap<u16, Vec<Var>>, matched: bool, disp: &FxHashSet<u16>
     r.all.dedup();
     let frames: FxHashMap<u16, Frame> = calls
         .iter()
-        .map(|&(t, _)| (t, frame(vars, t, disp, false)))
+        .map(|&(t, _)| (t, frame(vars, t, disp, false, live)))
         .collect();
     let mut ok: FxHashMap<u16, bool> = frames.iter().map(|(&t, f)| (t, f.balanced)).collect();
     while let Some(t) = frames
@@ -1704,6 +1721,8 @@ impl Work<'_> {
 pub struct Analysis {
     /// The entries (as in `St::from`) that reach each start.
     pub from: FxHashMap<u16, u64>,
+    /// The starts reached whatever the data (no table taken as constant).
+    pub live: FixedBitSet,
     /// The starts at which the decimal flag may be set.
     pub dec: FixedBitSet,
     pub ind: Vec<crate::scev::Induction>,
@@ -1747,6 +1766,8 @@ struct Shape {
     heads: FxHashSet<u16>,
     brk_rets: FxHashSet<u16>,
     succs: FxHashMap<u16, Vec<u16>>,
+    /// The starts the frames and the callees' stores are taken over.
+    live: FixedBitSet,
 }
 
 fn shape(
@@ -1754,8 +1775,9 @@ fn shape(
     entries: &[Entry],
     matched: bool,
     disp: &FxHashSet<u16>,
+    live: FixedBitSet,
 ) -> Shape {
-    let rets = returns(vars, matched, disp);
+    let rets = returns(vars, matched, disp, &live);
     let succ_of = |pc: u16| -> Vec<u16> {
         let mut s: Vec<u16> = vars[&pc]
             .iter()
@@ -1781,15 +1803,18 @@ fn shape(
         heads,
         brk_rets,
         succs,
+        live,
     }
 }
 
 /// Per return site of a `JSR`, the address intervals the instructions its callee runs until
 /// it returns (its nested calls' included) may store into (each store's from `at` where it
-/// has them, else from its access): none for a callee that runs a `BRK` or an `RTI`.
+/// has them, else from its access): none for a callee that runs a `BRK` or an `RTI`. Starts
+/// outside `live` are not run.
 fn mods(
     vars: &FxHashMap<u16, Vec<Var>>,
     at: &FxHashMap<u16, Vec<(u32, u32)>>,
+    live: &FixedBitSet,
 ) -> FxHashMap<u16, Vec<(u32, u32)>> {
     let mut memo: FxHashMap<u16, Option<Vec<(u32, u32)>>> = FxHashMap::default();
     let mut out = FxHashMap::default();
@@ -1805,7 +1830,7 @@ fn mods(
             let mut seen = FxHashSet::default();
             let (mut work, mut ivs) = (vec![t], Vec::new());
             while let Some(pc) = work.pop() {
-                if !seen.insert(pc) {
+                if !live.contains(pc as usize) || !seen.insert(pc) {
                     continue;
                 }
                 let own = || {
@@ -2011,6 +2036,8 @@ struct Pass<'a> {
     vars: &'a FxHashMap<u16, Vec<Var>>,
     entries: &'a [Entry],
     sh: &'a Shape,
+    /// The shape over every decoded start, for a pass reaching starts outside `sh.live`.
+    full: &'a Shape,
     disp: &'a FxHashSet<u16>,
     thr: &'a Thresholds,
     /// The loops' bounds of `X` and `Y` per start.
@@ -2215,17 +2242,23 @@ fn reach(
         aimed: code.aimed.clone(),
         ram: code.ram.clone(),
     };
-    c.mods = mods(p.vars, &FxHashMap::default());
+    let mut sh = p.sh;
+    c.mods = mods(p.vars, &FxHashMap::default(), &sh.live);
     let mut acc = Vec::new();
     let merged = loop {
-        let (state, _) = fixpoint(&c, p.vars, p.entries, p.sh, p.disp, p.thr);
+        let (state, _) = fixpoint(&c, p.vars, p.entries, sh, p.disp, p.thr);
+        if state.keys().any(|k| !sh.live.contains(k.0 as usize)) {
+            sh = p.full;
+            c.mods = mods(p.vars, &FxHashMap::default(), &sh.live);
+            continue;
+        }
         // Each pair's floor widens to the hull of the values an entry's return leaves in it.
         let mut floor = c.floor.clone();
         for (&(pc, cx), st) in &state {
             let exit = p.vars[&pc]
                 .iter()
                 .any(|v| matches!(v.flow, Flow::Rts(_) | Flow::Rti(_)));
-            if !exit || cx < ANY && !p.sh.rets.wild.contains(&pc) {
+            if !exit || cx < ANY && !sh.rets.wild.contains(&pc) {
                 continue;
             }
             for (q, l) in floor.iter_mut() {
@@ -2362,7 +2395,7 @@ fn reach(
                     (*k, (l, h))
                 })
                 .collect();
-            let mods = mods(p.vars, &stored_at);
+            let mods = mods(p.vars, &stored_at, &sh.live);
             if mods != c.mods {
                 c.mods = mods;
             } else if words.keys().any(|k| !c.words.contains_key(k)) {
@@ -2602,8 +2635,9 @@ pub fn analyze(
     given: &Given,
 ) -> Analysis {
     let (loaded, observed) = (given.loaded, given.observed);
-    let sh = shape(vars, entries, matched, disp);
-    let (roots, heads) = (&sh.roots, &sh.heads);
+    let mut live = FixedBitSet::with_capacity(0x10000);
+    live.extend(vars.keys().map(|&pc| pc as usize));
+    let full = shape(vars, entries, matched, disp, live);
     let code = Code {
         img,
         cells,
@@ -2624,7 +2658,40 @@ pub fn analyze(
         ram: ram(given),
     };
     let thr = Thresholds::new(vars, &code);
-    let (state, ret) = fixpoint(&code, vars, entries, &sh, disp, &thr);
+    // The starts reached whatever the data: no table taken as constant.
+    let blind = Code {
+        constant: FixedBitSet::new(),
+        ..code.clone()
+    };
+    let reached = |sh: &Shape| {
+        let mut live = FixedBitSet::with_capacity(0x10000);
+        live.extend(
+            fixpoint(&blind, vars, entries, sh, disp, &thr)
+                .0
+                .keys()
+                .map(|k| k.0 as usize),
+        );
+        live
+    };
+    let mut alive = reached(&full);
+    // Frames over those starts: an edge never taken (a branch on a flag the code already
+    // knows) does not unbalance a callee, so fewer returns reach every site.
+    let mut refined: Option<Shape> = None;
+    loop {
+        let cur = refined.as_ref().unwrap_or(&full);
+        if cur.rets.wild.is_empty() {
+            break;
+        }
+        let next = shape(vars, entries, matched, disp, alive.clone());
+        if next.rets.wild.len() >= cur.rets.wild.len() {
+            break;
+        }
+        alive = reached(&next);
+        refined = Some(next);
+    }
+    let sh = refined.as_ref().unwrap_or(&full);
+    let (state, ret) = fixpoint(&code, vars, entries, sh, disp, &thr);
+    let (roots, heads) = (&sh.roots, &sh.heads);
     let merged = merge(&code, &state);
     let succs = &sh.succs;
     let mut dec = FixedBitSet::with_capacity(0x10000);
@@ -2727,7 +2794,8 @@ pub fn analyze(
             code: &code,
             vars,
             entries,
-            sh: &sh,
+            sh,
+            full: &full,
             disp,
             thr: &thr,
             xy: [&xb, &yb],
@@ -2867,6 +2935,7 @@ pub fn analyze(
             })
             .collect(),
         from: merged.into_iter().map(|(pc, st)| (pc, st.from)).collect(),
+        live: alive,
         dec,
         ind,
         jumps,

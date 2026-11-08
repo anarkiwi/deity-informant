@@ -597,6 +597,41 @@ fn registers_survive_calls_per_call_site() {
     assert_eq!((p.stats.code_guards, p.stats.calls), (0, 4));
 }
 
+/// A routine whose branch on a known carry always skips a `BRK` (data after a `BCS` that
+/// follows a compare) still returns to each call site with the caller's `X`; the `BRK` is not
+/// planned.
+#[test]
+fn untaken_edges_leave_calls_balanced() {
+    let entry: &[u8] = &[
+        0xa2, 0x00, 0x20, 0x20, 0x10, 0xe8, 0x20, 0x20, 0x10, 0xe8, 0x20, 0x20, 0x10, 0x60,
+    ];
+    let voice: &[u8] = &[
+        0xa9, 0x05, 0x9d, 0xe0, 0x10, 0xc9, 0x03, 0xb0, 0x02, 0x00, 0x00, 0x60,
+    ];
+    let img = image(&[
+        (0x1000, entry),
+        (0x1020, voice),
+        (0x1140, &[0xa9, 0x09, 0x60]),
+    ]);
+    let opts = Opts {
+        entry_sp: Some(0xfd),
+        loaded: Some((0x1000, 0x1143)),
+        ..Opts::default()
+    };
+    let p = lift_with(
+        &img,
+        &entries(&[0x1000]),
+        &[(0xc000, 0xc100)],
+        &Facts::default(),
+        opts,
+    );
+    assert!(!p.starts.contains(&0x1029));
+    let x = p.regs.iter().find(|r| r.0 == 0x1022).map(|r| r.1[1]);
+    assert_eq!(x, Some([7, 0, 0, 0]));
+    assert_eq!(p.stats.code_guards, 0);
+    assert_eq!(diff(&img, &p, &calls(3, |_| 0), IO), 0);
+}
+
 /// An index the program does not bound keeps its guard, and a store through it that reaches
 /// constant code deopts exactly.
 #[test]

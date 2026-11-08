@@ -188,7 +188,9 @@ the program, and checks it against the reference.
    The same analysis (`vsa.rs`) gives every access its address interval, which the guards
    consult (see *Static proofs*).
 2. **Functions and stack heights** (`func.rs`). Per function, plan nodes keyed by
-   instruction start and stack height relative to its entry. In an outermost plan a start
+   instruction start and stack height relative to its entry. A start the facts never ran
+   and the interval analysis never reaches whatever the data (no table taken as constant:
+   behind a branch on a flag the code already knows) is not planned: an edge to it deopts. In an outermost plan a start
    gets a node per height the facts saw it at (SP minus the host call's entry SP as
    integers, the plan's own frame), or only the first static height reaching it if it never
    ran; an edge at any other height deopts, and after `TXS`/`TAS`/`LAS` the successor is
@@ -386,6 +388,9 @@ the facts, so a proof holds on every execution that stays in lifted code.
   that holds, so a caller keeps a register through any depth of calls that preserve it.
   An `RTS` whose function's pushes and pulls do not balance (or any `RTS`/`RTI` reached by a
   return that did not go to its call's site) reaches every return site and carries nothing.
+  Balance is judged over the starts the analysis reaches whatever the data (no table taken as
+  constant), again until no more returns pair: an edge it never takes (a branch on a flag the
+  code already knows, into data) unbalances nothing.
   The same happens everywhere when the stack is not private: other stores may then rewrite
   return addresses, so the lift analyses the program again without the call pairing.
 - **Memory.** The state tracks the contents of the cell operand bytes of instructions and of

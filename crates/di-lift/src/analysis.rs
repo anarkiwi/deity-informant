@@ -557,6 +557,8 @@ pub struct Graph {
     pub disp: FxHashSet<u16>,
     /// Per instruction start the entries (bit `i % 64` for entry `i`) it is reached from.
     pub from: FxHashMap<u16, u64>,
+    /// The instruction starts the interval analysis reaches whatever the data.
+    pub live: FixedBitSet,
     /// Instruction starts at which the decimal flag may be set.
     pub dec: FixedBitSet,
     /// `PLP` and `RTI` are guarded to pull the decimal flag clear ([`crate::vsa::pull_clear`]).
@@ -1205,6 +1207,7 @@ impl Fixpoint<'_> {
                     prot: crate::ptr::Prot::default(),
                     zones: vec![crate::ptr::PAGE1],
                     from: an.from,
+                    live: an.live,
                     dec: an.dec,
                     pull_clear,
                     ind: an.ind,
