@@ -777,7 +777,7 @@ pub fn entry_config(m: &BankMap, img: &[u8; 0x10000], facts: &Facts, pc: u16) ->
 /// unresolved (to their facts' targets) is decided on a converged program, and the fixpoint is
 /// recomputed until that does not grow. With `reach` (the volatile ranges) the graph holds the
 /// address hulls of pointer loads. `free` holds the variables the host's init leaves: bytes of
-/// unknown value (their values over its runs), as the facts' writes are.
+/// unknown value (their values over its runs, in run order), as the facts' writes are.
 #[allow(clippy::too_many_arguments)]
 pub fn discover(
     img: &[u8; 0x10000],
@@ -787,7 +787,7 @@ pub fn discover(
     matched: bool,
     loaded: Option<(u32, u32)>,
     reach: Option<crate::vsa::Wanted>,
-    free: &FxHashMap<u16, BTreeSet<u8>>,
+    free: &FxHashMap<u16, Vec<u8>>,
 ) -> Graph {
     let mut edges: FxHashMap<u16, Vec<u16>> = FxHashMap::default();
     for &(p, q) in &facts.edges {
@@ -900,14 +900,16 @@ struct Fixpoint<'a> {
     constant: FixedBitSet,
     /// The volatile ranges, when the address hulls of pointer loads are wanted.
     reach: Option<crate::vsa::Wanted<'a>>,
-    /// The variables the host's init leaves, with their values.
-    free: &'a FxHashMap<u16, BTreeSet<u8>>,
+    /// The variables the host's init leaves, with their values per run.
+    free: &'a FxHashMap<u16, Vec<u8>>,
 }
 
 impl Fixpoint<'_> {
     /// The bytes the facts saw written and the host init's variables, with their values.
     fn observed(&self) -> FxHashMap<u16, BTreeSet<u8>> {
-        let mut m: FxHashMap<u16, BTreeSet<u8>> = self.free.clone();
+        let mut m: FxHashMap<u16, BTreeSet<u8>> = (self.free.iter())
+            .map(|(&a, v)| (a, v.iter().copied().collect()))
+            .collect();
         for (a, v) in &self.facts.writes {
             m.entry(*a).or_default().extend(v.iter().copied());
         }
@@ -934,6 +936,7 @@ impl Fixpoint<'_> {
             loaded: self.loaded,
             observed: &seen_writes,
             values: &values,
+            runs: self.free,
             free: &self.free_bits(),
             constant: &self.constant,
             volatile: r.volatile,
@@ -1047,6 +1050,7 @@ impl Fixpoint<'_> {
                 loaded: self.loaded,
                 observed: &seen_writes,
                 values: &observed,
+                runs: self.free,
                 free: &free_bits,
                 constant: &self.constant,
                 volatile: self.reach.map_or(&[], |r| r.volatile),

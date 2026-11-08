@@ -13,6 +13,12 @@
 //! at a tracked address as it stands, or a part of the sum an `ADC` made; a pair whose two
 //! bytes were stored from the two parts of one quantity holds that quantity's value.
 //!
+//! A byte of a run of data bytes added to a byte of a pair of the host init's variables that
+//! points into that run on each of its runs ([`Half::Rel`]: song data offsets plus the origin
+//! a relocating init left) is a part of their sum; a pair whose two bytes are stored from the
+//! two parts of one such sum points into that run, taken as a table is taken to be read
+//! inside its extent.
+//!
 //! A pair no instruction since the entry stored (no entry in `St::wide`) holds its bytes'
 //! hull within its floor (`Code::floor`): the hull of its entry word (for a pair of the host
 //! init's variables, the run of data bytes they point into) and of what every entry's return
@@ -93,6 +99,16 @@ pub(crate) enum Half {
         lo: u32,
         hi: u32,
         part: Part,
+    },
+    /// A byte of the run of data bytes `run` (inclusive) added to byte `base` (`lo`) or
+    /// `base + 1` of a pair of the host init's variables pointing into that run on each of
+    /// its runs: the low part of the sum, from a clear carry (its carry still in the carry
+    /// flag while `carry`), or the high part, with the carry of a low part of the same pair.
+    Rel {
+        run: (u32, u32),
+        base: u16,
+        lo: bool,
+        carry: bool,
     },
 }
 
@@ -273,6 +289,28 @@ fn tabled(code: &Code, st: &St, q: u16) -> Option<Wv> {
         (lo, hi) = (lo.min(w), hi.max(w));
     }
     (lo <= hi).then(|| Wv::plain(lo, hi, q))
+}
+
+/// The value of a pair whose low and high bytes hold the parts `lo`, `hi` of one relocated
+/// word ([`Half::Rel`]): the run of data bytes they and the init's pair point into.
+fn relocated(lo: Half, hi: Half, q: u16) -> Option<Wv> {
+    match (lo, hi) {
+        (
+            Half::Rel {
+                run,
+                base,
+                lo: true,
+                ..
+            },
+            Half::Rel {
+                run: r1,
+                base: b1,
+                lo: false,
+                ..
+            },
+        ) if (run, base) == (r1, b1) => Some(Wv::plain(run.0, run.1, q)),
+        _ => None,
+    }
 }
 
 /// The value of pair `q` no instruction since the entry stored: its bytes' hull from its floor.
@@ -474,6 +512,58 @@ fn data(code: &Code, st: &St, pc: u16, op: u8, b: [Option<u8>; 2], acc: &[Access
     })
 }
 
+/// What `A` holds after `ADC` (opcode `op`, loading byte `ld`) of a byte of a run of data
+/// bytes (read through a pointer into it, or from a table inside it) and a byte of a pair of
+/// the host init's variables pointing into the run on each of its runs: the low part of their
+/// sum, from a clear carry, or the high part, with the carry a low part of the pair left
+/// ([`Half::Rel`]).
+fn relocate(code: &Code, st: &St, op: u8, ld: Option<u16>) -> Option<Half> {
+    if !matches!(op, 0x65 | 0x6d) || st.env[reg::D].value() != Some(0) || code.runs.is_empty() {
+        return None;
+    }
+    let m = ld?;
+    let run = match (st.half[0], st.tag[0]) {
+        (Some(Half::Data(lo, hi)), _) => code.run_of(lo).filter(|r| r.1 == hi + 1)?,
+        (_, Some(Tab::T { pc, .. })) => {
+            let mut at = code.clip.get(&pc)?.iter().map(|&a| code.run_of(a as u32));
+            let r = at.next()??;
+            at.all(|x| x == Some(r)).then_some(r)?
+        }
+        _ => return None,
+    };
+    let into = |q: u16| {
+        let ws = code.inits.get(&q)?;
+        ws.iter()
+            .all(|&w| code.run_of(w as u32) == Some(run))
+            .then_some(())
+    };
+    let run = (run.0, run.1 - 1);
+    if st.env[reg::C].value() == Some(0) && into(m).is_some() {
+        return Some(Half::Rel {
+            run,
+            base: m,
+            lo: true,
+            carry: true,
+        });
+    }
+    let b = m.wrapping_sub(1);
+    let held = st.half.iter().flatten().copied();
+    held.chain(st.mhalf.iter().map(|e| e.1)).find(|h| {
+        *h == Half::Rel {
+            run,
+            base: b,
+            lo: true,
+            carry: true,
+        }
+    })?;
+    Some(Half::Rel {
+        run,
+        base: b,
+        lo: false,
+        carry: false,
+    })
+}
+
 /// The data register a template's store writes from.
 fn stored_reg(ops: &[di_pcode::Op]) -> Option<usize> {
     let v = ops.iter().rfind(|o| o.opc == di_pcode::Opc::Store)?.ins[1];
@@ -516,6 +606,15 @@ pub(crate) fn step(
             }
         }
         drop_where(s, |h| h.part() == Some(Part::HiC));
+        map_halves(s, |h| match h {
+            Half::Rel { run, base, lo, .. } => Some(Half::Rel {
+                run,
+                base,
+                lo,
+                carry: false,
+            }),
+            h => Some(h),
+        });
     }
     // The byte the instruction loads: its last load (a pointer's bytes load before it).
     let ld = acc
@@ -546,9 +645,11 @@ pub(crate) fn step(
         }
         _ => None,
     };
+    let rel = relocate(code, st, op, ld);
     let mut new = s.half;
     for r in (0..DATA).filter(|&r| written >> r & 1 == 1) {
         new[r] = match sym[r] {
+            _ if rel.is_some() && r == 0 => rel,
             _ if owed.is_some() && r == 0 => owed,
             _ if adc && r == 0 => {
                 let operand = match op {
@@ -704,6 +805,9 @@ fn store(code: &Code, st: &St, s: &mut St, ops: &[di_pcode::Op], b: [Option<u8>;
         hi.and_then(|h| h.sum(Part::Hi)),
     ) {
         _ if none(lo) || none(hi) => Some(Wv::plain(NONE, 0, q)),
+        _ if matches!((lo, hi), (Some(Half::Rel { .. }), Some(Half::Rel { .. }))) => {
+            relocated(lo?, hi?, q)
+        }
         (Some((pc, lo, hi)), Some((p2, l2, h2))) if pc == p2 => Some(both(pc, (lo, hi), (l2, h2))),
         // A pointer whose bytes are read through a pointer points into what that points into.
         _ => match (lo, hi) {

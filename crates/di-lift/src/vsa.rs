@@ -753,6 +753,9 @@ pub(crate) struct Code<'a> {
     /// Per pointer pair, the least value it holds at every entry ([`crate::word`]; empty
     /// otherwise).
     pub(crate) floor: FxHashMap<u16, (u32, u32)>,
+    /// Per pair of the host init's variables, the word it holds on each of its runs
+    /// ([`reach`]; empty otherwise).
+    pub(crate) inits: FxHashMap<u16, Vec<u16>>,
     /// The runs `[lo, hi)` of data bytes (no byte of an instruction) of the loaded program,
     /// ascending: a pointer whose bytes are read from one points into it ([`reach`]'s pass
     /// that takes table loads inside their extents; empty otherwise).
@@ -2173,11 +2176,21 @@ fn reach(
     let runs = match given.loaded.filter(|_| !proof) {
         Some((lo, hi)) => {
             // Data bytes: the program's bytes of no instruction, and the bytes from the
-            // program's start up stores with address sets write (a block copy's destination).
+            // program's start up stores with address sets (a block copy's destination, the
+            // host init's stores) write, past the program to the last of them below the
+            // volatile ranges, with the bytes between.
             let mut data = given.written.clone();
             data.grow(0x10000);
             data.set_range(..lo as usize, false);
             data.insert_range(lo as usize..hi as usize);
+            let below = (given.volatile.iter())
+                .filter(|v| v.0 >= hi)
+                .map(|v| v.0)
+                .min()
+                .unwrap_or(0x10000);
+            if let Some(top) = data.ones().take_while(|&a| a < below as usize).last() {
+                data.insert_range(hi as usize..top.max(hi as usize));
+            }
             data.difference_with(p.insn);
             let mut runs: Vec<(u32, u32)> = Vec::new();
             for a in data.ones().map(|a| a as u32) {
@@ -2191,8 +2204,10 @@ fn reach(
         None => Vec::new(),
     };
     // A pair's floor starts at its entry word; one with a byte the facts saw written (an init's
-    // variable) at the run of data bytes holding every word its bytes were seen to make, else
-    // at every word.
+    // variable) at the run of data bytes holding every word its bytes were seen to make (an
+    // init's pair, every word it holds on a run that points into a run: one pointing into
+    // none, an idle voice's null or the pointer init's own patching leaves, is taken not to be
+    // read through, as a table is not read past its extent), else at every word.
     let seen = |a: u16| match given
         .values
         .get(&a)
@@ -2205,6 +2220,14 @@ fn reach(
         let i = runs.partition_point(|r| r.1 <= a);
         runs.get(i).copied().filter(|r| r.0 <= a)
     };
+    // The words pair `q` of init's variables holds on each run, both its bytes free.
+    let words = |q: u16| -> Option<Vec<u16>> {
+        let (l, h) = (given.runs.get(&q)?, given.runs.get(&q.wrapping_add(1))?);
+        (l.len() == h.len()).then(|| {
+            let ws = l.iter().zip(h).map(|(&l, &h)| u16::from_le_bytes([l, h]));
+            ws.collect()
+        })
+    };
     let floor = (code.vecs.iter().copied())
         .filter(|&q| crate::word::pair(code, q))
         .map(|q| {
@@ -2212,13 +2235,21 @@ fn reach(
             let w = seen(q)
                 .zip(seen(q + 1))
                 .map(|(l, h)| (h.0 << 8 | l.0, h.1 << 8 | l.1));
-            let f = match w {
-                Some(w) if !free => w,
-                Some((lo, hi)) => match (run_of(lo), run_of(hi)) {
+            let f = match (w, words(q)) {
+                (Some(w), _) if !free => w,
+                (_, Some(ws)) if !runs.is_empty() => {
+                    let mut at = ws.iter().filter_map(|&w| run_of(w as u32));
+                    match at.next() {
+                        Some(r) if at.all(|x| x == r) => (r.0, r.1 - 1),
+                        Some(_) => (0, 0xffff),
+                        None => crate::word::EMPTY,
+                    }
+                }
+                (Some((lo, hi)), _) => match (run_of(lo), run_of(hi)) {
                     (Some(a), Some(b)) if a == b => (a.0, a.1 - 1),
                     _ => (0, 0xffff),
                 },
-                None => (0, 0xffff),
+                (None, _) => (0, 0xffff),
             };
             (q, f)
         })
@@ -2235,6 +2266,9 @@ fn reach(
         bound: top,
         stored: vec![Some(Iv::full(1)); 0x100],
         floor,
+        inits: (given.runs.keys())
+            .filter_map(|&q| Some((q, words(q)?)))
+            .collect(),
         runs,
         words: FxHashMap::default(),
         mods: FxHashMap::default(),
@@ -2591,6 +2625,8 @@ pub struct Given<'a> {
     /// The values the facts saw written per byte, and those of the variables the host's init
     /// leaves (their values over its runs).
     pub values: &'a FxHashMap<u16, std::collections::BTreeSet<u8>>,
+    /// The values of the variables the host's init leaves per run, in run order.
+    pub runs: &'a FxHashMap<u16, Vec<u8>>,
     /// The variables the host's init leaves ([`Code::free`]).
     pub free: &'a FixedBitSet,
     pub constant: &'a FixedBitSet,
@@ -2650,6 +2686,7 @@ pub fn analyze(
         bound: Vec::new(),
         stored: Vec::new(),
         floor: FxHashMap::default(),
+        inits: FxHashMap::default(),
         runs: Vec::new(),
         words: FxHashMap::default(),
         mods: FxHashMap::default(),

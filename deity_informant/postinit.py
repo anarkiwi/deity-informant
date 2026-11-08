@@ -52,9 +52,9 @@ class Init:
     free: np.ndarray
 
     def values(self):
-        """``{addr: [values]}``: the values each free byte holds over the songs."""
+        """``{addr: [values]}``: the value each free byte holds on each song, in order."""
         held = self.states[:, self.free]
-        return {int(a): sorted(set(held[:, i].tolist())) for i, a in enumerate(self.free)}
+        return {int(a): held[:, i].tolist() for i, a in enumerate(self.free)}
 
     def varying(self):
         """The free bytes whose value differs between songs, ascending."""

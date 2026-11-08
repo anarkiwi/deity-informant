@@ -70,7 +70,8 @@ def lift(
     one routine as one function of the copy's index (*Instances*) and ``sensitive`` lists the
     volatile addresses whose reads have effects (a throw-away read reaching none is not made).
     ``free`` ``{addr: values}`` are the variables an init the host ran on ``image`` left: bytes
-    of unknown value, ``values`` theirs over its runs (``docs/cgen.md``, *Init*); ``alias``
+    of unknown value, ``values`` theirs on each of its runs, in order (``docs/cgen.md``,
+    *Init*); ``alias``
     ``[(lo, g, delta)]`` the operand pairs of them holding pair ``g`` plus ``delta``
     (:func:`deity_informant.postinit.groups`)."""
     n = _native_or_raise()
@@ -86,7 +87,7 @@ def lift(
         loaded,
         fold=fold,
         sensitive=None if sensitive is None else sorted(set(sensitive)),
-        free=sorted((int(a), sorted(v)) for a, v in (free or {}).items()),
+        free=sorted((int(a), [int(x) for x in v]) for a, v in (free or {}).items()),
         alias=[tuple(a) for a in alias],
     )
     prog.backend = backend or BACKEND

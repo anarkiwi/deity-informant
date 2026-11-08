@@ -318,8 +318,8 @@ the program, and checks it against the reference.
 
 The lift takes no init entry: a host whose program has one runs it and lifts the other entries
 from the memory it leaves (`cgen`, [*Init*](cgen.md#init)). `free` (`{addr: values}`) names the
-bytes init stored, whose values are the song's and their values over its runs; each is a
-variable:
+bytes init stored, whose values are the song's, and their values on each of its runs in order;
+each is a variable:
 
 - never constant: an instruction byte is a cell (a free opcode byte dispatches over its values),
   a free byte no constant table, and with the facts' writes, data stores with address sets
@@ -328,7 +328,8 @@ variable:
   a free opcode byte still decodes, beside its values, the values stores of known values
   write to it (play storing an `RTS` over the opcode init set);
 - a pointer pair with a free byte has as its floor (*Pointer pairs*) the run of data bytes
-  holding every word its bytes' values make, else any word: play reads through an operand init
+  holding every word its bytes' values make (the words it holds on each run, where both bytes
+  are free: *Pointers into the song*), else any word: play reads through an operand init
   relocated with that run's bounds-checked reader, and a store through it writes that run
   (*Bounded stores*).
 
@@ -603,7 +604,18 @@ the facts, so a proof holds on every execution that stays in lifted code.
     the sum's high byte, wherever the sum is stored.
   - *Pointers into the song* (the first pass only). The program's data bytes are its loaded
     bytes of no instruction and the bytes from its start up that stores with address sets
-    write (a block copy's destination), in runs. A pointer whose two bytes are read through
+    write (a block copy's destination, the host init's stores: song data it unpacks), past the
+    program up to the last of them below the volatile ranges with the bytes between, in runs.
+    A pair of the host init's variables (*Init*) has as its floor the run holding every word
+    it holds on one of init's runs that points into a run (one pointing into none, an idle
+    voice's null or the pointer init's own patching of code leaves, is taken not to be read
+    through, as a table is taken not to be read past its extent: cgen reads it through
+    `oob_rd`; no such word: no value, until play's returns give it one). A
+    byte of a run (read through a pointer into it, or from a table inside it) added with a
+    clear carry to the low byte of such a pair pointing into that run on each of init's runs,
+    and a byte of it added with the carry left to the high byte, are the parts of a
+    relocated word (song data offsets plus the origin a relocating init left): a pair stored
+    from the two parts points into that run. A pointer whose two bytes are read through
     one pointer (a jump command's operand) points into what that pointer points into: it
     holds that pointer's values. A pair whose two bytes are table bytes indexed by one value,
     not all constant (a store with an address set or a bounded address writes one), read from

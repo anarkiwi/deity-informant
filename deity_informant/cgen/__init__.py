@@ -107,12 +107,34 @@ def _data(j):
     return f"({off} >= C{j}_BITS || C{j}_DATA[{off} >> 3] >> ({off} & 7) & 1)"
 
 
-def _rd(regions, vol, spans):
-    """``cgen_rd``: the byte the 6502 reads at ``a``, by the volatile condition ``vol``, then
-    the origins and lengths of ``regions`` and the held ``spans`` (0 where the program holds
-    none)."""
+def _var(cases):
+    """``cgen_var``: the promoted cell at ``a``, by the ``cases`` (``[(offset, lvalue)]``, the
+    offset from ``CODE_ORG``), else a null pointer; ``cgen_var_at`` tests their range first."""
+    lo, hi = cases[0][0], cases[-1][0]
+    return [
+        "static __attribute__((noinline)) uint8_t *cgen_var(uint16_t a) {",
+        "switch ((uint16_t)(a - CODE_ORG)) {",
+        *(f"case 0x{d:X}: return &{ref};" for d, ref in cases),
+        "}",
+        "return 0;",
+        "}",
+        "static inline uint8_t *cgen_var_at(uint16_t a) {",
+        f"return (uint16_t)(a - (CODE_ORG + 0x{lo:X})) <= 0x{hi - lo:X} ? cgen_var(a) : 0;",
+        "}",
+    ]
+
+
+#: A reader's test for a promoted cell at ``a`` (``cgen_var``).
+VAR_RD = ["uint8_t *c = cgen_var_at(a);", "if (c) return *c;"]
+
+
+def _rd(regions, vol, spans, var=False):
+    """``cgen_rd``: the byte the 6502 reads at ``a``, by the promoted cells (with ``var``), the
+    volatile condition ``vol``, then the origins and lengths of ``regions`` and the held
+    ``spans`` (0 where the program holds none)."""
     arrays = [*regions, *(f"C{j}" for j in spans)]
     out = ["static __attribute__((noinline)) uint8_t cgen_rd(uint16_t a) {"]
+    out += VAR_RD if var else []
     out += [f"if ({vol}) return io_read(a);"] if vol else []
     if not arrays:
         return out + ([] if vol else ["(void)a;"]) + ["return 0;", "}"]
@@ -133,13 +155,15 @@ def _rd(regions, vol, spans):
     )
 
 
-def _wr(vol):
-    """``wr``: a write dispatcher over the regions (``CGEN_REGIONS``, slices of held spans
-    included: those are the spans' data bytes) and the volatile condition ``vol``."""
+def _wr(vol, var=False):
+    """``wr``: a write dispatcher over the promoted cells (with ``var``), the regions
+    (``CGEN_REGIONS``, slices of held spans included: those are the spans' data bytes) and the
+    volatile condition ``vol``."""
     out = ["static uint8_t *const WR_AT[] = {CGEN_REGIONS};"] + [
         f"static const uint16_t WR_{k}[] = {{CGEN_REGIONS_{k}}};" for k in ("ORG", "LEN")
     ]
     out += ["static __attribute__((noinline)) void wr(uint16_t a, uint8_t v) {"]
+    out += ["uint8_t *c = cgen_var_at(a);", "if (c) {", "*c = v;", "return;", "}"] if var else []
     out += [
         "for (uint8_t i = 0; i < sizeof WR_ORG / sizeof *WR_ORG; ++i) {",
         "uint16_t o = a - WR_ORG[i];",
@@ -184,11 +208,12 @@ def _storage(mem, used, helpers, regions):
     return out
 
 
-def _dispatch(mem, helpers, used):
+def _dispatch(mem, helpers, used, cases=()):
     """``oob_rd`` (unless the host's) and ``wr`` over the regions outside the held spans, the
     volatile ranges and the held spans (whose data bytes ``Cj_DATA`` marks), ``wr`` then
     ``oob_wr``; ``rd``, ``oob_rd`` for a load the lift places nowhere; and ``codechk``: whether
-    a held constant byte would change."""
+    a held constant byte would change. ``cgen_rd`` finds the promoted cells ``cases``
+    (``cgen_var``) first, as ``wr`` does where an access needs it."""
     out = []
     vol = " || ".join(
         f"(a >= 0x{lo:04X} && a < 0x{hi:04X})" if hi < 0x10000 else f"a >= 0x{lo:04X}"
@@ -197,7 +222,11 @@ def _dispatch(mem, helpers, used):
     spans = range(len(mem.held)) if "CODE" in used else range(0)
     sliced = [j for j in spans if _sliced(mem, used, j)]
     regions = [f"R{k}" for k in range(len(mem.regions)) if _slice(mem, used, k) is None]
-    exact = _rd(regions, vol, spans)
+    var = _var(cases) if cases and helpers & {"cgen_var", "rd", "oob_rd"} else []
+    exact = _rd(regions, vol, spans, bool(var))
+    if helpers & {"cgen_var", "rd"}:
+        out, var = out + var, []
+        used.add("CODE_ORG")
     if "rd" in helpers:
         out += [*exact, "static inline uint8_t rd(uint16_t a) { return cgen_rd(a); }"]
     oob = sorted(helpers & set(OOB))
@@ -205,12 +234,13 @@ def _dispatch(mem, helpers, used):
         out += ["#ifdef CGEN_OOB", *(OOB[h] for h in oob), "#else"]
         out += OOB_WR if "oob_wr" in oob else []
         if "oob_rd" in oob:
-            out += ["#ifdef CGEN_OOB_EXACT", *([] if "rd" in helpers else exact)]
+            used |= {"CODE_ORG"} if var else set()
+            out += ["#ifdef CGEN_OOB_EXACT", *([] if "rd" in helpers else var + exact)]
             out += ["static uint8_t oob_rd(uint16_t a) { return cgen_rd(a); }", "#else"]
             out += [OOB_RD_TRAP, "#endif"]
         out.append("#endif")
     if "wr" in helpers:
-        out += _wr(vol)
+        out += _wr(vol, "cgen_var" in helpers)
     if "codechk" in helpers:
         out += ["static __attribute__((noinline)) uint8_t codechk(uint16_t a, uint8_t v) {"]
         for j in spans:
@@ -530,10 +560,12 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         c.append(IX)
     c.append("CGEN_STORAGE")
     c += mod.state_c()
-    c += _dispatch(mem, helpers, used)
+    c += _dispatch(mem, helpers, used, mod.var_at)
     for j in sorted(mod.checked):
+        var = ["uint16_t a = p + y;", *VAR_RD] if j in mod.var_spans else []
         c += [
             f"static __attribute__((noinline)) uint8_t rdC{j}(uint16_t p, uint8_t y) {{",
+            *var,
             f"uint16_t o = p - C{j}_ORG + y;",
             f"return o < C{j}_LEN ? C{j}[o] : oob_rd(p + y);",
             "}",

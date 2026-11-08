@@ -254,18 +254,24 @@ every access the layout places (`state.py`):
   `abs,X`, where an element of a struct would be a multiplication, and separate arrays keep
   their accesses apart for the compiler's alias analysis.
 - Any other byte stays a byte of its region (*Memory*), with the reason
-  (`info["state"]`): an access touches it by an interval (`indexed`: an index or a copy's
-  range), through a pointer whose hull or address set holds it (`pointer`), at an unknown
-  address (`unknown`), as a source of init's copies (`init`), or a family reaching it also
-  reaches a byte that stays one or another struct's (`family`); a byte no access reaches is
-  `unaccessed`.
+  (`info["state"]`): an access touches it by an interval (`indexed`: an index, a copy's
+  range, the run a bounded store writes), through a pointer whose address set holds it
+  (`pointer`), at an unknown address (`unknown`), as a source of init's copies (`init`), or a
+  family reaching it also reaches a byte that stays one or another struct's (`family`); a
+  byte no other access reaches is `unaccessed`.
+- A load through a pointer whose hull the lift bounds (*Memory*) or an access of unknown
+  address keeps no byte of the code span a byte: what it reads or writes there goes through
+  `cgen_var`, the promoted byte at an address (a `switch` on its offset from `CODE_ORG`,
+  after one range test), so its reader (`rdCj`, `rd`) reads the variable and `wr` writes it.
+  Pointers the lift bounds to the song data reach no code byte and need none of it.
 
 A promoted byte no load reads is dropped with its stores (`unread`). The `.c` defines the
 variables (`uint8_t S_23 = S_23_INIT;`, `uint8_t V0_f0A[3] = {V0_f0A_INIT};`) and the `.h`
 their initial values from the state it holds (init's copies write them by address, `&S_23`),
 so the `.c` is the same for every song and placement. Promoted bytes are in no region unless
-another access's interval spans them; `oob_rd` under `CGEN_OOB_EXACT` reads the region bytes,
-not the variables. Patched immediates are then plain variables: a compare or loop bound reads
+another access's interval spans them; `oob_rd` under `CGEN_OOB_EXACT` (`cgen_rd`) finds the
+code span's promoted bytes through `cgen_var` first, so a read past the hull the lift assumed
+reads the variable. Patched immediates are then plain variables: a compare or loop bound reads
 one (`while (v < S_15)`), a patched opcode is a test of its value (`S_D5 == 0x69`, `ADC` or
 `SBC`). `info["state"]` gives per tune `{"cells": counts, "span": counts}`, each `{"scalars",
 "fields", "unread", "bytes": {reason: n}}`, over the cells and the other bytes of the span.
@@ -286,8 +292,10 @@ one (`while (v < S_15)`), a patched opcode is a test of its value (`S_D5 == 0x69
   `Cj_DATA` marks a span's data bytes up to its last constant byte (`Cj_BITS`; every byte past
   it is data). A load of unknown address
   reaching other code reads `oob_rd`.
-- **Data regions** `R0, R1, ...` (ascending address) are the maximal runs of other bytes that
-  some access may touch, outside volatile ranges. An access's interval comes from its address
+- **Data regions** `R0, R1, ...` (ascending address, those only init's stores, block copies
+  or the sources of init's copies touch after the others, so the `.c` names the same regions
+  whatever songs init runs for) are the maximal runs of other bytes that some access may touch, outside volatile
+  ranges. An access's interval comes from its address
   expression (constants, an 8-bit index adds `[0, 255]`, masks, shifts, the hull of what flows
   into a block argument or a function's parameter from its call sites, a loop-carried value
   enumerated to its fixpoint or keeping its initial interval, a load of a closed cell the
@@ -330,7 +338,9 @@ one (`while (v < S_15)`), a patched opcode is a test of its value (`S_D5 == 0x69
   [wholeprog](wholeprog.md#static-proofs), *Pointer reach*: bases from tables read inside their
   extents, constants, a relocation constant added with carry, an offset in `Y`, a pointer
   advanced from them by the lengths it reads, a table byte tested before its pointer uses it, a
-  pointer read through one or from song data, a return stack's pop of what its push stored)
+  pointer read through one or from song data, a return stack's pop of what its push stored, a
+  pointer init leaves into the song data it unpacked (an idle voice's null taken not to be
+  read through), song data offsets plus the origin a relocating init leaves)
   reads one span: from the first non-code byte of the hull inside `loaded` (and the bytes past it,
   below the volatile ranges, a block copy writes, `Program.written`) to its last, every base
   inside `loaded` in it, held as one array `Cj` (code bytes and the bytes between the program
