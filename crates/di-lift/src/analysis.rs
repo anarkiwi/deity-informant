@@ -832,6 +832,21 @@ pub fn discover(
             fix.constant.difference_with(&w);
             continue;
         }
+        // Nor are the table bytes a store from a constant base plus an index with no address
+        // set may write: any of its interval.
+        let iw = indexed_writes(&g);
+        let indexed: Vec<usize> = g
+            .tables
+            .iter()
+            .map(|&a| a as usize)
+            .filter(|&a| fix.constant.contains(a) && iw.contains(a))
+            .collect();
+        if !indexed.is_empty() {
+            for a in indexed {
+                fix.constant.set(a, false);
+            }
+            continue;
+        }
         let failed: Vec<u16> = jumps
             .iter()
             .filter(|(pc, j)| **j == crate::dispatch::Jump::Fail && !fix.failed.contains(pc))
@@ -843,6 +858,29 @@ pub fn discover(
         }
         fix.failed.extend(failed);
     }
+}
+
+/// The bytes the stores of `g` from a constant base plus an index register with no address
+/// set may write: their address intervals.
+fn indexed_writes(g: &Graph) -> FixedBitSet {
+    let mut out = FixedBitSet::with_capacity(0x10000);
+    for (&pc, vs) in &g.vars {
+        if g.addr_sets.contains_key(&(pc, true))
+            || (1..3).any(|i| g.cells.contains(pc.wrapping_add(i) as usize))
+        {
+            continue;
+        }
+        for v in vs {
+            let t = Template::of(v.op);
+            if t.len != 3 || crate::dispatch::index_reg(t).is_none() {
+                continue;
+            }
+            for x in v.acc.iter().filter(|x| x.store && !x.dummy) {
+                out.insert_range(x.addr.lo as usize..(x.addr.hi as usize + 1).min(0x10000));
+            }
+        }
+    }
+    out
 }
 
 /// The inner fixpoint of [`discover`] for given unresolved transfers.

@@ -1989,6 +1989,32 @@ def test_store_past_its_array_is_out_of_bounds(prefix, tmp_path):
     }
 
 
+PUSHIF = """
+stack:  .byte 0,0,0
+entry:  LSR A
+        BCC out
+        LDX depth
+        STA stack,X
+        CMP #$7F
+        BNE out
+        INC depth
+out:    LDA stack
+        STA $C010
+        RTS
+depth:  .byte 0
+end:
+"""
+
+
+def test_checked_store_in_a_condition_is_a_statement(prefix, tmp_path):
+    # A bounds-checked store is an if/else statement, no expression: the branch holding it is
+    # not composed into the test before it as a comma expression.
+    img, labels, loaded = assemble(PUSHIF)
+    c, h, _ = translate(prefix, img, labels, loaded)
+    play(tmp_path, c, h, img, labels, entry_calls([3, 0xFF, 0xFF, 2, 0xFF, 0xFF, 1]))
+    assert "oob_wr(" in c and not re.search(r", +if \(", c)
+
+
 CALLRET = """
 stlo:   .byte 0,0
 sthi:   .byte 0,0

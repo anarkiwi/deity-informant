@@ -1437,10 +1437,20 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             self.falls,
             lambda n: self.first_pc(n) or 0,
             self.f.tail,
-            self.f.exprable,
+            self.exprable,
             self.f.latchable,
         )
         self.body = s.finish(s.structure(self.g))
+
+    def exprable(self, items):
+        """Whether statements ``items`` are C expressions (:meth:`Func.exprable`) whose stores
+        print as assignments: none tested against the bounds of the array or the regions it
+        may write."""
+        return self.f.exprable(items) and not any(
+            o.name == "memref.store" and self.target(o)[0] in ("bound", "set")
+            for o in items[0][1].ops[:-1]
+            if id(o) not in self.f.dropped
+        )
 
     # Values used and printed inline.
 

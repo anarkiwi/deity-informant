@@ -2112,7 +2112,7 @@ fn reach(
             let all: Vec<u16> = xs.iter().filter_map(|&x| at(x)).collect();
             // A table one value of a bounded index fills is no table the index walks: its
             // columns overlap.
-            let n = objs.valid(&objs.table_of(base), &xs).max(1);
+            let n = objs.valid(&objs.table_of(base), &xs, &[]).max(1);
             let ext = all[..if !proof && (n > 1 || free) {
                 n
             } else {

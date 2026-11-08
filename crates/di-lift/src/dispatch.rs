@@ -318,9 +318,10 @@ impl Objects {
     }
     /// How many of the index values `xs` (ascending) read every column `bases` inside its
     /// extent: from its first byte to its end ([`Objects::end`], the table's other columns,
-    /// those the code reads with the same index value too, not counted), and no byte another
-    /// column read at an earlier value. A prefix of `xs`.
-    pub(crate) fn valid(&self, bases: &[u16], xs: &[u8]) -> usize {
+    /// those the code reads with the same index value too, not counted, and the first of
+    /// `stops` (ascending) past its first byte), and no byte another column read at an
+    /// earlier value. A prefix of `xs`.
+    pub(crate) fn valid(&self, bases: &[u16], xs: &[u8], stops: &[u32]) -> usize {
         let Some(&x0) = xs.first() else { return 0 };
         let mut same = bases.to_vec();
         for b in bases {
@@ -328,7 +329,11 @@ impl Objects {
         }
         let ends: Vec<u32> = bases
             .iter()
-            .map(|&b| self.end(b as u32 + x0 as u32, &same))
+            .map(|&b| {
+                let s = b as u32 + x0 as u32;
+                let stop = stops[stops.partition_point(|&t| t <= s)..].first();
+                self.end(s, &same).min(stop.map_or(0x10000, |&t| t))
+            })
             .collect();
         let mut claimed: FxHashMap<u32, usize> = FxHashMap::default();
         for (n, &x) in xs.iter().enumerate() {
@@ -769,7 +774,10 @@ fn written(code: &Code, stores: &[Store]) -> FixedBitSet {
 
 /// Per index value (`None`: not indexed, one byte) the byte a tag stands for, and its address
 /// (`None`: a constant).
-type Bytes = Vec<(Option<u8>, u8, Option<u16>)>;
+type Bytes = Vec<Byte>;
+
+/// One entry of [`Bytes`]: index value, byte, address.
+type Byte = (Option<u8>, u8, Option<u16>);
 
 /// Whether tags `ts` are indexed by one value: one register, still its value or one group.
 fn joint(ts: &[Tab]) -> bool {
@@ -789,10 +797,17 @@ fn base(code: &Code, t: Tab) -> Option<u16> {
 }
 
 /// The bytes tags `ts` stand for, per index value inside their tables' extent
-/// ([`Objects::valid`]): tags indexed by one value (the same register and group) are columns
-/// of one table and pair up value by value, others are read alone. Index guards keep each
-/// load inside the extent where its index set reaches past it.
-fn bytes(code: &Code, sets: &Sets, objs: &Objects, ts: &[Tab]) -> Option<(Vec<Bytes>, Vec<Guard>)> {
+/// ([`Objects::valid`], ending at the first of `stops` too): tags indexed by one value (the
+/// same register and group) are columns of one table and pair up value by value, others are
+/// read alone. Index guards keep each load inside the extent where its index set reaches past
+/// it.
+fn bytes(
+    code: &Code,
+    sets: &Sets,
+    objs: &Objects,
+    ts: &[Tab],
+    stops: &[u32],
+) -> Option<(Vec<Bytes>, Vec<Guard>)> {
     let mut out = Vec::new();
     let mut guards = Vec::new();
     let groups: Vec<&[Tab]> = if joint(ts) {
@@ -828,7 +843,7 @@ fn bytes(code: &Code, sets: &Sets, objs: &Objects, ts: &[Tab]) -> Option<(Vec<By
             None => vec![None],
             Some(v) => {
                 let v: Vec<u8> = v.into_iter().collect();
-                let n = objs.valid(&bases, &v);
+                let n = objs.valid(&bases, &v, stops);
                 if n == 0 {
                     return None;
                 }
@@ -876,30 +891,58 @@ type Found = (
     BTreeSet<(u16, u16)>,
 );
 
-/// The words of the byte pair `lo`, `hi` (see the module documentation), when every byte
-/// read is one no store writes.
-fn pair(
-    code: &Code,
-    sets: &Sets,
-    objs: &Objects,
-    w: &FixedBitSet,
-    lo: Tab,
-    hi: Tab,
-) -> Option<Found> {
-    let (b, guards) = bytes(code, sets, objs, &[lo, hi])?;
-    let [l, h] = &b[..] else { return None };
-    let joint = joint(&[lo, hi]);
-    if !joint && l.len() > 1 && h.len() > 1 {
-        return None;
-    }
-    let pairs: Vec<_> = l
-        .iter()
+/// The byte pairs of the per index value bytes `l`, `h`: value by value when `joint`, else
+/// each with each.
+fn pairs<'b>(l: &'b Bytes, h: &'b Bytes, joint: bool) -> Vec<(&'b Byte, &'b Byte)> {
+    l.iter()
         .flat_map(|x| {
             h.iter()
                 .filter(move |y| !joint || y.0 == x.0)
                 .map(move |y| (x, y))
         })
+        .collect()
+}
+
+/// The bytes of the pair `lo`, `hi` ([`bytes`]); for a transfer to their words plus `to`, a
+/// table they index ends at the first target those words give past its first byte: what it
+/// goes to is code.
+fn word_bytes(
+    code: &Code,
+    sets: &Sets,
+    objs: &Objects,
+    lo: Tab,
+    hi: Tab,
+    to: Option<u16>,
+) -> Option<(Vec<Bytes>, Vec<Guard>)> {
+    let b = bytes(code, sets, objs, &[lo, hi], &[])?;
+    let Some(d) = to else { return Some(b) };
+    let [l, h] = &b.0[..] else { return None };
+    let mut stops: Vec<u32> = pairs(l, h, joint(&[lo, hi]))
+        .iter()
+        .map(|(x, y)| u16::from_le_bytes([x.1, y.1]).wrapping_add(d) as u32)
         .collect();
+    stops.sort_unstable();
+    stops.dedup();
+    bytes(code, sets, objs, &[lo, hi], &stops)
+}
+
+/// The words of the byte pair `lo`, `hi` (see the module documentation), when every byte
+/// read is one no store writes; `to` as in [`word_bytes`].
+fn pair(
+    code: &Code,
+    sets: &Sets,
+    objs: &Objects,
+    w: &FixedBitSet,
+    (lo, hi): (Tab, Tab),
+    to: Option<u16>,
+) -> Option<Found> {
+    let (b, guards) = word_bytes(code, sets, objs, lo, hi, to)?;
+    let [l, h] = &b[..] else { return None };
+    let joint = joint(&[lo, hi]);
+    if !joint && l.len() > 1 && h.len() > 1 {
+        return None;
+    }
+    let pairs = pairs(l, h, joint);
     let read: BTreeSet<u16> = pairs
         .iter()
         .flat_map(|(x, y)| [x.2, y.2])
@@ -942,7 +985,7 @@ fn selector(
     if reg == NOREG || !joint(&[lo, hi]) {
         return None;
     }
-    let (b, _) = bytes(code, sets, objs, &[lo, hi])?;
+    let (b, _) = word_bytes(code, sets, objs, lo, hi, Some(0))?;
     if b.iter()
         .flatten()
         .any(|x| x.2.is_some_and(|a| w.contains(a as usize)))
@@ -1068,7 +1111,7 @@ pub(crate) fn jumps(
             let r = match v.flow {
                 Flow::JmpInd(_) => {
                     pointer(code, pc).and_then(|(lo, hi)| match (tag(lo), tag(hi)) {
-                        (Some(l), Some(h)) => pair(code, sets, objs, &w, l, h).map(Some),
+                        (Some(l), Some(h)) => pair(code, sets, objs, &w, (l, h), Some(0)).map(Some),
                         _ if constant(lo) && constant(hi) => Some(Some((
                             BTreeSet::from([u16::from_le_bytes([
                                 code.img[lo as usize],
@@ -1082,7 +1125,7 @@ pub(crate) fn jumps(
                     })
                 }
                 Flow::Br { t: Tg::Calc(_), f } => opnd(pc.wrapping_add(1)).and_then(|t| {
-                    let (b, g) = bytes(code, sets, objs, &[t])?;
+                    let (b, g) = bytes(code, sets, objs, &[t], &[])?;
                     let read: BTreeSet<u16> = b[0].iter().filter_map(|x| x.2).collect();
                     if read.iter().any(|&a| w.contains(a as usize)) {
                         return None;
@@ -1097,14 +1140,14 @@ pub(crate) fn jumps(
                 ref f if operand_len(f) == 2 => {
                     let (lo, hi) = (pc.wrapping_add(1), pc.wrapping_add(2));
                     match (opnd(lo), opnd(hi)) {
-                        (Some(l), Some(h)) => pair(code, sets, objs, &w, l, h).map(Some),
+                        (Some(l), Some(h)) => pair(code, sets, objs, &w, (l, h), Some(0)).map(Some),
                         _ => None,
                     }
                 }
                 Flow::Rts(_) => match st.push {
                     [None, None, _] if past(key.1, st) => match st.above {
                         [Some(l), Some(h)] => {
-                            pair(code, sets, objs, &w, l, h).map(|(t, b, g, o)| {
+                            pair(code, sets, objs, &w, (l, h), Some(1)).map(|(t, b, g, o)| {
                                 let o =
                                     o.into_iter().map(|(a, x)| (a, x.wrapping_add(1))).collect();
                                 Some((t.into_iter().map(|x| x.wrapping_add(1)).collect(), b, g, o))
@@ -1114,7 +1157,7 @@ pub(crate) fn jumps(
                     },
                     [None, None, _] => Some(None),
                     [Some(l), Some(h), _] => {
-                        pair(code, sets, objs, &w, l, h).map(|(t, b, g, o)| {
+                        pair(code, sets, objs, &w, (l, h), Some(1)).map(|(t, b, g, o)| {
                             let o = o.into_iter().map(|(a, x)| (a, x.wrapping_add(1))).collect();
                             Some((t.into_iter().map(|x| x.wrapping_add(1)).collect(), b, g, o))
                         })
@@ -1124,7 +1167,9 @@ pub(crate) fn jumps(
                 Flow::Brk(_) => vector(code, stores).map(Some),
                 Flow::Rti(_) => match st.push {
                     [None, None, None] => Some(None),
-                    [Some(_), Some(l), Some(h)] => pair(code, sets, objs, &w, l, h).map(Some),
+                    [Some(_), Some(l), Some(h)] => {
+                        pair(code, sets, objs, &w, (l, h), Some(0)).map(Some)
+                    }
                     _ => None,
                 },
                 _ => continue,
@@ -1286,7 +1331,7 @@ fn tagged_set(
         let (Some((_, Some(l), li)), Some((_, Some(hb), hv))) = (at(q), at(h)) else {
             return false;
         };
-        let Some((words, r, g, _)) = pair(code, sets, objs, w, l, hb) else {
+        let Some((words, r, g, _)) = pair(code, sets, objs, w, (l, hb), None) else {
             return false;
         };
         let inside = |x: u32, iv: Iv| (iv.lo..=iv.hi).contains(&x);
@@ -1574,7 +1619,7 @@ fn advanced_at(
             }
         }
         let tags: Vec<Tab> = places.iter().map(|e| e.2).collect();
-        let (rows, guards) = bytes(g.code, sets, g.objs, &tags).filter(|r| !r.0.is_empty())?;
+        let (rows, guards) = bytes(g.code, sets, g.objs, &tags, &[]).filter(|r| !r.0.is_empty())?;
         let mut addrs = BTreeSet::new();
         let mut read: Vec<u16> = rows.iter().flatten().filter_map(|x| x.2).collect();
         for i in 0..rows[0].len() {
@@ -1743,7 +1788,7 @@ pub(crate) fn arm_values(
                 let by =
                     |t: Tab| matches!(t, Tab::T { ix: Ix::Byte(m, x, _), .. } if (m, x) == src);
                 let (Some(ts), Some((b, gs))) =
-                    (targets(a.j), bytes(code, sets, objs, &[a.lo, a.hi]))
+                    (targets(a.j), bytes(code, sets, objs, &[a.lo, a.hi], &[]))
                 else {
                     return false;
                 };
@@ -1815,7 +1860,7 @@ pub(crate) fn tag_values(
                 return true;
             }
             let Some(t) = st.tag[r] else { return false };
-            let Some((b, gs)) = bytes(code, sets, objs, &[t]) else {
+            let Some((b, gs)) = bytes(code, sets, objs, &[t], &[]) else {
                 return false;
             };
             g.extend(gs);
