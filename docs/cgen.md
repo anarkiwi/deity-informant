@@ -39,8 +39,8 @@ python tools/cgenplay.py tune.sid --psid --volatile 0xD400-0xD41D -o out/   # tr
 ...)` for a computed jump with no target), the computed jumps resolved from the code (`jumps`),
 the fact edges used, the lift's `stats`, whether some access has an unknown address and the
 `structure` counts: C `functions` (and the identical ones `folded` into them) and the
-`gotos` printed, the `provenance` of the printed constructs in the machine code (below) and
-the instruction starts translated (`starts`).
+`gotos` printed, the `provenance` of the printed constructs in the machine code (below), the instruction
+starts translated (`starts`) and the cells held as C variables (`state`, *State*).
 
 The host supplies `uint8_t io_read(uint16_t)`, `void io_write(uint16_t, uint8_t)` and
 `void trap(uint16_t k)`, which must not return (`longjmp`, or abort the call). Each entry
@@ -88,7 +88,8 @@ caller's return address. `tools/cgenplay.c` is a host harness.
    An 8-bit add whose carry only feeds the add of the byte above it (`lo = a + b`,
    `hi = d + e + (lo < a)`, an `ADC` chain) becomes one 16-bit add of `(d:a) + (e:b)`, whose
    bytes replace `hi` and the uses of `lo` after it.
-5. **Layout** (`regions.py`): the memory partition below.
+5. **Layout** (`state.py`, `regions.py`): the cells held as C variables (*State*), then the
+   memory partition of the other bytes (*Memory*).
 6. **Structure** (`structure.py`): the dominator-tree translation below, each function whole.
 7. **Print** (`printer.py`, `csyntax.py`). The generic text is parsed for the operations the
    pipeline leaves (`func`, `cf`, `arith`, `memref`, `ub.poison`; anything else raises), the
@@ -215,7 +216,7 @@ steps in order, each deciding on the graph the earlier ones leave:
 | `loops` | the head of each printed loop |
 | `conditions` | the branch addresses composed into each short-circuit condition |
 | `switches` | the dispatch, or the first compare of the chain, of each printed `switch` |
-| `cells` | the code bytes the lift treats as variables |
+| `cells` | the code bytes the lift treats as variables (*State* classifies them) |
 
 In an instance function each construct names every copy's instruction (`Program.functions`'
 `copy_pcs`).
@@ -229,6 +230,45 @@ are defined before callers; only recursive functions need prototypes. Functions 
 definitions are the same up to their names and the functions they call (those merged so
 far) are kept once, until none is left (`info["structure"]["folded"]`), as a player's
 per-voice routines often are; the rest are renumbered in order.
+
+## State
+
+The cells (the bytes of reached instructions the program stores: operands and opcodes it
+patches) and the other variable bytes of the code span are classified by the address sets of
+every access the layout places (`state.py`):
+
+- A byte every access of which has one constant address is a **scalar**, `S_<offset>` (hex,
+  from `CODE_ORG`; `S_I<offset>` from the loaded image's origin outside the code span).
+- A **family** is the accesses reaching one address per copy: an instance function's access
+  at a per-copy offset (the copy index's table), or a counted loop's at a constant plus a
+  byte block argument whose values (enumerated to their fixpoint) step by a constant, every
+  edge into its block passing a constant of them or itself plus a multiple of the step that
+  cannot wrap. Families alike up to a translation, largest first, are the fields of one
+  **struct**: its copies are the first family's addresses, a field the offset of a family
+  less than the least distance between copies past the first copy's (a family reaching some
+  copies of a field's bytes is that field). Each field is an array over the copies,
+  `V<struct>_f<offset>[copy]` (structs by ascending first copy): an instance indexes it by its
+  copy index (or a table of the copies it reaches), a loop by the element number the layout
+  adds as a block argument beside the index (stepped as the index steps), a constant address
+  by its copy. One array per field, not an array of structs: the 6502 indexes it with
+  `abs,X`, where an element of a struct would be a multiplication, and separate arrays keep
+  their accesses apart for the compiler's alias analysis.
+- Any other byte stays a byte of its region (*Memory*), with the reason
+  (`info["state"]`): an access touches it by an interval (`indexed`: an index or a copy's
+  range), through a pointer whose hull or address set holds it (`pointer`), at an unknown
+  address (`unknown`), as a source of init's copies (`init`), or a family reaching it also
+  reaches a byte that stays one or another struct's (`family`); a byte no access reaches is
+  `unaccessed`.
+
+A promoted byte no load reads is dropped with its stores (`unread`). The `.c` defines the
+variables (`uint8_t S_23 = S_23_INIT;`, `uint8_t V0_f0A[3] = {V0_f0A_INIT};`) and the `.h`
+their initial values from the state it holds (init's copies write them by address, `&S_23`),
+so the `.c` is the same for every song and placement. Promoted bytes are in no region unless
+another access's interval spans them; `oob_rd` under `CGEN_OOB_EXACT` reads the region bytes,
+not the variables. Patched immediates are then plain variables: a compare or loop bound reads
+one (`while (v < S_15)`), a patched opcode is a test of its value (`S_D5 == 0x69`, `ADC` or
+`SBC`). `info["state"]` gives per tune `{"cells": counts, "span": counts}`, each `{"scalars",
+"fields", "unread", "bytes": {reason: n}}`, over the cells and the other bytes of the span.
 
 ## Memory
 
@@ -311,12 +351,11 @@ per-voice routines often are; the rest are renumbered in order.
   else an element of a `static const` table `Kn` indexed by `k`, in 8 bits where the offsets
   from the least value fit (one indexed load, where a stride would be a multiplication the
   6502 does not have); an address keeps its least value as a constant, so it prints relative
-  to its region. An access is placed per copy: its
-  interval for each value of `k` lying in one region (or held span) indexes it directly, as
-  each copy's own operand cells at a stride do; the interval over all copies is then held in
-  one span with the regions it touches. Per-copy state whose offsets do not fit 8 bits (copies
-  further apart than that over all copies, as each copy's operand cells at a stride of `$88`)
-  is reached through per-copy pointers: the accesses at one table's offsets from constants
+  to its region. Each copy's own cells are fields (*State*). An access to other bytes is
+  placed per copy: its interval for each value of `k` lying in one region (or held span)
+  indexes it directly; the interval over all copies is then held in one span with the
+  regions it touches. Per-copy data whose offsets do not fit 8 bits (copies further apart
+  than that over all copies) is reached through per-copy pointers: the accesses at one table's offsets from constants
   that lie in one region or held span for every copy are grouped, their constants covered by
   the fewest windows of 256 bytes, and each window is a `static uint8_t *const Kn[]` of the
   copies' addresses of its least constant (`C1 + 0x13`, read once per call); each access is
@@ -367,7 +406,7 @@ pair of constant byte stores into a pointer pair (the zero-page pointer of a `(z
 a `JMP (ind)` vector, a three-byte operand, or two stack bytes at one SP value and that
 value less one, as a `JSR`'s return address when the stack is kept in memory) whose 16-bit value lies in the program: `LDA #<tab` then
 prints `(uint8_t)(R3_ORG + 4)`. A constant or-ed into a computed jump's target (the high byte of a
-`JMP` whose low operand byte is a cell) prints so too: `R16[0] | CODE_ORG`. Not covered: an
+`JMP` whose low operand byte is a cell) prints so too: `S_2F9 | CODE_ORG`. Not covered: an
 address half stored without its partner in the same block, or used other than as an address
 (compared, added to data).
 
@@ -439,11 +478,13 @@ traps and the stage times. It also checks the lift's tail calls (a routine falle
 third voice is one function with three call sites) and instances (unrolled copies at a stride
 are one function of the copy's index whose I/O register is `0xC000 + Kn[k]`, `Kn` the
 offsets `{0, 7, 14}`, called for each copy in order; copies sharing one trap; determinism and
-relocation invariance of a folded program; copies' operand cells indexed directly at their
-stride, read once from an 8-bit table; cells at uneven distances, per-copy immediates and
+relocation invariance of a folded program; copies' operand cells as one field array indexed
+by the copy, at uneven distances too; a patched operand as a scalar, a patched compare
+immediate as a loop bound, cells a counted loop indexes as a field it steps an element number
+through; per-copy immediates and
 branches on them as constant tables; statements alike only in a prefix of their blocks not
-folded; copies at a stride wider than 8 bits reach indexed by a byte from per-copy pointer
-tables into a held span and a region, a table per 256-byte window of a copy's fields; a
+folded; copies at a stride wider than 8 bits reach holding their cells as fields and data
+indexed by a byte from per-copy pointer tables into a region; a
 compare only some copies have one compare with the index or a table; copies entered at a
 branch after loads they differ in one class entered at the branch), and a voice loop's index bounding the throw-away read of the indexed I/O store in the
 routine it calls through a `BRK` and through a stack switch.

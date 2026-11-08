@@ -166,7 +166,7 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         return lo + int(data[0]), lo + int(data[-1])
 
     def partition(
-        self, accesses, stores, unknown_store=True, joined=(), wide=(), writes=None
+        self, accesses, stores, unknown_store=True, joined=(), wide=(), writes=None, state=None
     ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
         """Regions for ``accesses`` (``(lo, hi)`` inclusive, None when unknown), given the
         ``stores`` at constant addresses (code bytes they hit are data). Constant bytes are
@@ -177,7 +177,9 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         span with the regions it touches, so the copies index one array; each of the ``wide``
         runs (pointer loads', :meth:`pointer_run`) is touched whatever its width. With
         ``writes`` (the bounded stores' ``(lo, hi)``) a byte past the loaded image that no
-        store writes is in no region: a read of it is out of bounds (``oob_rd``)."""
+        store writes is in no region: a read of it is out of bounds (``oob_rd``). The bytes
+        of ``state`` (a mask: cells held as C variables) are in a region only where one of
+        the ``accesses`` touches them."""
         for a in stores:
             self.code[a] = False
         touched = np.zeros(0x10000, dtype=bool)
@@ -200,7 +202,7 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         if self.unknown:
             touched[self.loaded[0] : self.loaded[1]] = True
         for lo, hi in self.written:
-            touched[lo:hi] = True
+            touched[lo:hi] |= True if state is None else ~state[lo:hi]
         for lo, hi in wide:
             touched[lo : hi + 1] = True
         touched &= ~constant & ~self.vol

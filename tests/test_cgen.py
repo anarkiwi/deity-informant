@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -2460,10 +2461,11 @@ def test_indexed_stores_clear_operand_cells(prefix, tmp_path):
     c, _, info = check(prefix, tmp_path, CLEAR, entry_calls([0, 0, 1, 0, 2, 0, 1, 0]))
     assert "codechk" not in c and not info["traps"]
     assert (info["stats"]["cells"], info["stats"]["code_guards"]) == (3, 0)
-    # The cells lie in three regions slicing one span: a store at a constant base plus an
-    # index indexes the span, with no region tests and no write accessor.
+    # The cells are one field of three copies: the loop's stores index it by the element
+    # number stepped beside the index, with no region tests and no write accessor.
     body = c[c.index("void entry") :]
-    assert re.search(r"\bC0\[v\d+\] = 0;", body) and "_LEN" not in body and "wr(" not in c
+    assert re.search(r"\bV0_f00\[v\d+\] = 0;", body) and "_LEN" not in body and "wr(" not in c
+    assert "uint8_t V0_f00[3] = {V0_f00_INIT};" in c
 
 
 ZPPTR = """
@@ -2947,23 +2949,123 @@ def test_unrolled_copies_fold_into_one_function(prefix, tmp_path):
 
 
 def test_copies_operand_cells_indexed_directly(prefix, tmp_path):
-    """Each copy's own operand cell lies in one held span: the copies index it at their
-    stride, read once per call from a constant table of 8-bit offsets (no multiplication),
-    with no ``rd``/``wr``."""
-    c, _, _ = check(prefix, tmp_path, VOICES, entry_calls(range(4), 6))
-    assert not re.search(r"\b(?:rd|wr)\(", c)
-    [(off, tab)] = re.findall(r"uint8_t (v\d+) = (K\d+)\[v1\];", c)
-    assert f"static const uint8_t {tab}[] = {{0, 0x18, 0x30}};" in c
-    assert len(re.findall(rf"C\d+\[{off}\]", c)) == 3
+    """Each copy's own operand cell is the copy's element of one field array, indexed by the
+    copy argument (no table of offsets, no multiplication, no ``rd``/``wr``)."""
+    c, _, info = check(prefix, tmp_path, VOICES, entry_calls(range(4), 6))
+    assert not re.search(r"\b(?:rd|wr)\(|0x18", c)
+    assert len(re.findall(r"\bV0_f00\[v1\]", c)) == 3
+    assert info["state"]["cells"] == {"scalars": 0, "fields": 3, "unread": 0, "bytes": {}}
+
+
+PATCHED = """
+entry:  CMP #$80
+        BCC op
+        INC op+1
+op:     LDA #$10
+        STA $C000
+        RTS
+end:
+"""
+BOUND = """
+entry:  CMP #$04
+        BCC run
+        AND #$03
+        CLC
+        ADC #$01
+        STA lim+1
+        RTS
+run:    LDX #$00
+loop:   TXA
+        STA $C000
+        INX
+lim:    CPX #$02
+        BCC loop
+        RTS
+end:
+"""
+STEP = """
+entry:  LDX #$0E
+bump:   INC c0+1,X
+        TXA
+        SEC
+        SBC #$07
+        TAX
+        BPL bump
+c0:     LDA #$01
+        STA $C000
+        NOP
+        NOP
+c1:     LDA #$02
+        STA $C001
+        NOP
+        NOP
+c2:     LDA #$03
+        STA $C002
+        NOP
+        NOP
+        RTS
+end:
+"""
+
+
+def test_patched_operand_is_a_scalar(prefix, tmp_path):
+    """An operand cell every access reaches at its constant address is a scalar named by its
+    offset from the code's origin, its initial value in the header: the same ``.c`` at
+    another origin."""
+    c, h, info = check(prefix, tmp_path, PATCHED, entry_calls([0, 0x80, 0x81, 1], 3))
+    assert "uint8_t S_8 = S_8_INIT;" in c and "S_8 = S_8 + 1;" in c and "R0" not in c
+    assert "#define S_8_INIT 0x10" in h
+    assert info["state"]["cells"] == {"scalars": 1, "fields": 0, "unread": 0, "bytes": {}}
+    img, labels = W.assemble(PATCHED, 0x2345)
+    assert translate(prefix, img, labels, (0x2345, labels["end"]))[0] == c
+
+
+def test_patched_compare_immediate_bounds_a_loop(prefix, tmp_path):
+    """A compare immediate an earlier call patches is a scalar the loop it bounds tests as
+    any variable: a structured loop, no goto."""
+    c, _, info = check(prefix, tmp_path, BOUND, entry_calls([5, 0, 7, 1, 6, 2, 4, 3], 2))
+    assert info["provenance"]["loops"] and re.search(r"S_15 > \(uint8_t\)\(v\d+ \+ 1\)", c)
+    assert "S_15 = (a & 3) + 1;" in c
+
+
+def test_copies_indexed_by_a_counted_loop_step_an_element(prefix, tmp_path):
+    """Operand cells at a stride a counted loop indexes are one field over the copies: the
+    loop steps the element number beside its index, and each copy reads its own element."""
+    c, h, info = check(prefix, tmp_path, STEP, entry_calls([0], 4))
+    loop = re.search(
+        r"uint8_t (v\d+) = 2;\n *for \(;;\) \{\n *V0_f00\[\1\] = V0_f00\[\1\] \+ 1;", c
+    )
+    assert loop and f"{loop.group(1)} = {loop.group(1)} - 1;" in c
+    assert "#define V0_f00_INIT 0x01, 0x02, 0x03" in h and "V0_f00[v1]" in c
+    assert info["state"]["cells"]["fields"] == 3
+
+
+def test_loop_over_some_copies_offsets_its_element(prefix, tmp_path):
+    """A loop reaching the last copies of a field indexes it by its element number plus the
+    first copy it reaches."""
+    src = STEP.replace("BPL bump", "BNE bump").replace(
+        "entry:  LDX", "entry:  DEC c0+1\n        LDX"
+    )
+    c, _, info = check(prefix, tmp_path, src, entry_calls([0], 4))
+    assert re.search(r"V0_f00\[(v\d+) \+ 1\] = V0_f00\[\1 \+ 1\] \+ 1;", c)
+    assert "V0_f00[0] = V0_f00[0] - 1;" in c and info["state"]["cells"]["fields"] == 3
+
+
+def test_scalar_names_follow_the_code_origin():
+    """A scalar is named by its offset from the code span's origin, else the loaded image's,
+    else its address."""
+    mod = SimpleNamespace(mem=SimpleNamespace(code_span=(0x1000, 0x1100), loaded=(0x800, 0x2000)))
+    names = [printer.Module.var_name(mod, a) for a in (0x1023, 0x0900, 0x0040)]
+    assert names == ["S_23", "S_I100", "S_A0040"]
 
 
 def test_copies_at_uneven_distances_index_a_table(prefix, tmp_path):
-    """Copies whose cells are not at one stride index their span by a constant table of
-    the offsets, the same at another origin."""
+    """Copies whose cells are not at one stride are the elements of one field array all the
+    same, the same at another origin."""
     src = VOICES.replace("JMP v1\n", "JMP v1\n        .byte 0, 0, 0\n")
     c, _, info = check(prefix, tmp_path, src, entry_calls(range(4), 6))
     assert (info["stats"]["instances"], info["stats"]["instance_copies"]) == (1, 3)
-    assert "static const uint8_t K0[] = {0, 0x1B, 0x33};" in c
+    assert len(re.findall(r"\bV0_f00\[v1\]", c)) == 3 and "0x1B" not in c
     assert not re.search(r"\b(?:rd|wr)\(|==", c)
     img, labels = W.assemble(src, 0x2345)
     assert translate(prefix, img, labels, (0x2345, labels["end"]))[0] == c
@@ -2988,7 +3090,7 @@ def test_registers_a_callee_leaves_are_its_arguments(prefix, tmp_path):
     assert re.search(r"uint8_t (v\d+) = f1\(v1\);\n *io_write\(0xC000, \1\);", c)
 
 
-OPERAND_PTR = r"rdC\d+\(R\d+\[0\] \| \(\(uint16_t\)R\d+\[1\] << 8\), "
+OPERAND_PTR = r"rdC\d+\(S_\w+ \| \(\(uint16_t\)S_\w+ << 8\), "
 
 
 @pytest.mark.parametrize("src", ["RUNREL", "RELOCATE"])
@@ -3063,7 +3165,7 @@ def test_init_relocating_by_the_song_leaves_pointer_cells(prefix, tmp_path):
     them as a pointer, bounded to the table the song indexes."""
     c, info, labels = songs(prefix, tmp_path, INITA, range(4))
     assert {labels["o0"] + 1, labels["o0"] + 2} <= set(info["provenance"]["cells"])
-    assert re.search(r"rdC0\(R\d+\[0\] \| \(\(uint16_t\)R\d+\[1\] << 8\), a & 3\)", c)
+    assert re.search(r"rdC0\(S_\w+ \| \(\(uint16_t\)S_\w+ << 8\), a & 3\)", c)
 
 
 def test_song_range_is_checked_not_assumed(prefix, tmp_path):
@@ -3703,16 +3805,18 @@ def _wide(inner, outer):
 @pytest.mark.parametrize("inner,windows", [(0, 1), (0x100, 2)], ids=["one", "two"])
 def test_copies_at_a_wide_stride_index_per_copy_pointers(prefix, tmp_path, inner, windows):
     """Copies whose operand cells lie further apart than 8 bits reach (a stride of more
-    than $80 over three copies), and data bytes at that stride, read each copy's base once
-    from a constant table of pointers into the span (or region) and index it by a byte, as
-    ``(zp),Y`` does: no 16-bit index, no ``rd``/``wr``; fields of a copy further apart than 256
-    bytes take a pointer per window."""
+    than $80 over three copies) hold them as field arrays indexed by the copy (one field per
+    cell, however far apart); data bytes at that stride read each copy's base once from a
+    constant table of pointers into the region and index it by a byte, as ``(zp),Y`` does: no
+    16-bit index, no ``rd``/``wr``."""
     src = _wide(inner, 0x70)
     c, _, info = check(prefix, tmp_path, src, entry_calls(range(4), 6))
     assert (info["stats"]["instances"], info["stats"]["instance_copies"]) == (1, 3)
     assert not re.search(r"\b(?:rd|wr)\(|uint16_t K\d|static const uint16_t", c)
+    fields = set(re.findall(r"\b(V0_f[0-9A-F]+)\[v1\]", c))
+    assert len(fields) == 2 and (max(int(f[4:], 16) for f in fields) > 0xFF) == (windows == 2)
     tabs = re.findall(r"static uint8_t \*const (K\d+)\[\] = \{([CR])(\d+)[^,]*, \2\3 \+ ", c)
-    assert sorted(t[1] for t in tabs) == ["C"] * windows + ["R"]
+    assert sorted(t[1] for t in tabs) == ["R"]
     for tab, _, _ in tabs:
         [ptr] = re.findall(rf"uint8_t \*(v\d+) = {tab}\[v1\];", c)
         assert re.search(rf"\b{ptr}\[(?:0|0x[0-9A-F]{{1,2}})\]", c)
@@ -3835,7 +3939,8 @@ def test_operands_set_from_one_word_are_one_pointer(prefix, tmp_path):
         ops = {labels[o] + k for o in ("o0", "o1", "o2") for k in (1, 2)}
         assert ops <= set(info["provenance"]["cells"])
         body = c[c.index("void play") :]
-        assert len(set(re.findall(r"(R\d+)\[0\]", body))) == 2 and "1 + v" in body
+        pairs = set(re.findall(r"\b(S_\w+) \| \(\(uint16_t\)(S_\w+) << 8\)", body))
+        assert len(pairs) == 2 and "1 + v" in body
         texts.add(c)
     assert len(texts) == 1
 
