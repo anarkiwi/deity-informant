@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .. import wholeprog
+from .. import postinit, wholeprog
 from ..trace import Facts
 from . import emit, mlir, printer
 from .regions import Memory, code_bytes, pointer_pairs
@@ -71,10 +71,10 @@ def _sliced(mem, used, j):
     return any(_slice(mem, used, k) == j for k in range(len(mem.regions)))
 
 
-def _header(mem, used, traps, konsts=None):
+def _header(mem, used, traps, konsts=None, store=()):
     """The ``.h``: origins, lengths and initial bytes of the regions (those inside a held span
-    are its slices) and of the held spans when ``used``, and the constant bytes ``konsts``
-    (``{name: byte}``) the ``.c`` reads by name."""
+    are its slices) and of the held spans when ``used``, the constant bytes ``konsts``
+    (``{name: byte}``) the ``.c`` reads by name and the arrays' definitions ``store``."""
     out = ["#ifndef CGEN_DATA_H", "#define CGEN_DATA_H"]
     for k, (org, n) in enumerate(mem.regions):
         out += [f"#define R{k}_ORG 0x{org:04X}", f"#define R{k}_LEN {n}"]
@@ -94,7 +94,7 @@ def _header(mem, used, traps, konsts=None):
         out.append(f"#define IMG_ORG 0x{mem.loaded[0]:04X}")
     out += [f"#define {k} 0x{v:02X}" for k, v in sorted((konsts or {}).items())]
     out.append(f"#define CGEN_TRAPS {', '.join(f'0x{pc:04X}' for pc in traps)}")
-    return "\n".join([*out, "#endif"]) + "\n"
+    return "\n".join([*out, *store, "#endif"]) + "\n"
 
 
 def _inside(r):
@@ -115,15 +115,14 @@ def _rd(regions, vol, spans):
     out += [f"if ({vol}) return io_read(a);"] if vol else []
     if not arrays:
         return out + ([] if vol else ["(void)a;"]) + ["return 0;", "}"]
-    tables = [f"static uint8_t *const OOB_AT[] = {{{', '.join(arrays)}}};"] + [
-        f"static const uint16_t OOB_{k}[] = {{{', '.join(f'{r}_{k}' for r in arrays)}}};"
-        for k in ("ORG", "LEN")
+    tables = ["static uint8_t *const OOB_AT[] = {CGEN_ARRAYS};"] + [
+        f"static const uint16_t OOB_{k}[] = {{CGEN_ARRAYS_{k}}};" for k in ("ORG", "LEN")
     ]
     return (
         tables
         + out
         + [
-            f"for (uint8_t i = 0; i < {len(arrays)}; ++i) {{",
+            "for (uint8_t i = 0; i < sizeof OOB_ORG / sizeof *OOB_ORG; ++i) {",
             "uint16_t o = a - OOB_ORG[i];",
             "if (o < OOB_LEN[i]) return OOB_AT[i][o];",
             "}",
@@ -133,17 +132,55 @@ def _rd(regions, vol, spans):
     )
 
 
-def _wr(name, regions, vol, sliced):
-    """A write dispatcher over ``regions``, the volatile condition ``vol`` and the data bytes
-    of the held spans with slices ``sliced``."""
-    out = [f"static __attribute__((noinline)) void {name}(uint16_t a, uint8_t v) {{"]
-    out += [f"if ({_inside(r)}) {{ {r}[a - {r}_ORG] = v; return; }}" for r in regions]
-    out += [f"if ({vol}) {{ io_write(a, v); return; }}"] if vol else []
-    out += [
-        f"if ({_inside(f'C{j}')} && {_data(j)}) {{ C{j}[a - C{j}_ORG] = v; return; }}"
-        for j in sliced
+def _wr(vol):
+    """``wr``: a write dispatcher over the regions (``CGEN_REGIONS``, slices of held spans
+    included: those are the spans' data bytes) and the volatile condition ``vol``."""
+    out = ["static uint8_t *const WR_AT[] = {CGEN_REGIONS};"] + [
+        f"static const uint16_t WR_{k}[] = {{CGEN_REGIONS_{k}}};" for k in ("ORG", "LEN")
     ]
+    out += ["static __attribute__((noinline)) void wr(uint16_t a, uint8_t v) {"]
+    out += [
+        "for (uint8_t i = 0; i < sizeof WR_ORG / sizeof *WR_ORG; ++i) {",
+        "uint16_t o = a - WR_ORG[i];",
+        "if (o < WR_LEN[i]) {",
+        "WR_AT[i][o] = v;",
+        "return;",
+        "}",
+        "}",
+    ]
+    out += [f"if ({vol}) {{ io_write(a, v); return; }}"] if vol else []
     return out + ["oob_wr(a, v);", "}"]
+
+
+def _storage(mem, used, helpers, regions):
+    """The ``.h``'s arrays, laid out by where the song puts its data: ``CGEN_STORAGE`` (the
+    ``.c`` defines them by it) holds the held spans, the ``regions`` not inside one and the
+    spans' data bits; a region inside a span is its slice; ``rd`` and ``wr`` find them by
+    the ``CGEN_ARRAYS`` and ``CGEN_REGIONS`` lists."""
+    spans = range(len(mem.held)) if "CODE" in used else range(0)
+    defs = [f"uint8_t C{j}[C{j}_LEN] = {{C{j}_INIT}};" for j in spans]
+    out = []
+    for k in regions:
+        j = _slice(mem, used, k)
+        if j is not None:
+            out.append(f"#define R{k} (C{j} + (R{k}_ORG - C{j}_ORG))")
+        else:
+            defs.append(f"uint8_t R{k}[R{k}_LEN] = {{R{k}_INIT}};")
+    for j in spans if "codechk" in helpers else ():
+        if _sliced(mem, used, j):
+            defs.append(f"static const uint8_t C{j}_DATA[] = {{C{j}_DATA_INIT}};")
+    out.append(f"#define CGEN_STORAGE {' '.join(defs)}")
+    whole = [f"R{k}" for k in regions if _slice(mem, used, k) is None]
+    for name, arrays in (
+        ("ARRAYS", [*whole, *(f"C{j}" for j in spans)]),
+        ("REGIONS", [f"R{k}" for k in regions]),
+    ):
+        out.append(f"#define CGEN_{name} {', '.join(arrays)}")
+        out += [
+            f"#define CGEN_{name}_{x} {', '.join(f'{a}_{x}' for a in arrays)}"
+            for x in ("ORG", "LEN")
+        ]
+    return out
 
 
 def _dispatch(mem, helpers, used):
@@ -172,7 +209,7 @@ def _dispatch(mem, helpers, used):
             out += [OOB_RD_TRAP, "#endif"]
         out.append("#endif")
     if "wr" in helpers:
-        out += _wr("wr", regions, vol, sliced)
+        out += _wr(vol)
     if "codechk" in helpers:
         out += ["static __attribute__((noinline)) uint8_t codechk(uint16_t a, uint8_t v) {"]
         for j in spans:
@@ -235,12 +272,16 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     same for every song count."""
     image = bytes(image)
     pcs = [pc for pc, _ in entries]
-    span = None
+    span, alias = None, []
     if init is not None and songs is not None:
         vals = sorted(set(songs))
         if not vals or vals[-1] - vals[0] + 1 != len(vals):
             raise ValueError("songs must be a range")
         span = (init, vals[0], len(vals))
+        runs = [postinit.run(image, pcs[init], a, volatile) for a in vals]
+        if None not in runs:
+            pairs = set().union(*(postinit.pointers(r) for r in runs))
+            alias = [(lo, g, d) for lo, (g, d) in sorted(postinit.groups(runs, pairs).items())]
     prog = wholeprog.lift(
         image,
         pcs,
@@ -251,6 +292,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         fold=True,
         sensitive=sensitive,
         init=init,
+        alias=alias,
     )
     entries = list(entries)
     lifted = prog.functions
@@ -300,6 +342,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     pairs = pointer_pairs(p.image, p.starts)
     mem = Memory(p.image, code, p.volatile, loaded, p.sensitive, pairs, tables, p.written)
     mod = printer.Module(top, mem)
+    mod.insn = ran
     mod.sets = {**(p.bounds or {}), **{a: (min(v), max(v)) for a, v in (p.sets or {}).items() if v}}
     mod.lifted = {f"f{j}": (fn["pc"], list(fn.get("copies", ()))) for j, fn in enumerate(p.funcs)}
     mod.lifted.update({name: (pc, []) for pc, name in p.entries})
@@ -343,18 +386,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     c = [PROLOGUE.format(header=header)]
     if "CGEN_IX" in used:
         c.append(IX)
-    # The regions inside a held span are its slices: one copy of each byte.
-    for j in range(len(mem.held)) if "CODE" in used else ():
-        c.append(f"uint8_t C{j}[C{j}_LEN] = {{C{j}_INIT}};")
-    for k in regions:
-        j = _slice(mem, used, k)
-        if j is not None:
-            c.append(f"#define R{k} (C{j} + (R{k}_ORG - C{j}_ORG))")
-        else:
-            c.append(f"uint8_t R{k}[R{k}_LEN] = {{R{k}_INIT}};")
-    for j in range(len(mem.held)) if helpers & {"wr", "codechk"} and "CODE" in used else ():
-        if _sliced(mem, used, j):
-            c.append(f"static const uint8_t C{j}_DATA[] = {{C{j}_DATA_INIT}};")
+    c.append("CGEN_STORAGE")
     c += _dispatch(mem, helpers, used)
     for j in sorted(mod.checked):
         c += [
@@ -365,7 +397,8 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         ]
     c += fns
     c_text = clang_format("\n".join(c) + "\n")
-    h_text = clang_format(_header(mem, used, [key[1] for key in traps], mod.konsts))
+    store = _storage(mem, used, helpers, regions)
+    h_text = clang_format(_header(mem, used, [key[1] for key in traps], mod.konsts, store))
     times["print"] = time.perf_counter() - t1
     info = {
         "times": times,

@@ -59,6 +59,8 @@ pub struct Shared<'a> {
     pub stack: Option<Iv>,
     /// The volatile addresses whose reads have effects (none: all).
     pub sensitive: Option<&'a [u16]>,
+    /// Operand pairs read as another pair plus a constant: `lo -> (g, delta)`.
+    pub alias: FxHashMap<u16, (u16, u16)>,
 }
 
 impl Shared<'_> {
@@ -1311,8 +1313,23 @@ impl<'a> Em<'a, '_> {
         let next = pc.wrapping_add(t.len as u16);
         let bytes = operand_bytes(self.sh.img, &self.sh.g.cells, pc, t.len);
         // Operand bytes that are cells are read once, before the instruction's ops.
+        let alias = (t.len == 3 && bytes[0].is_none() && bytes[1].is_none())
+            .then(|| self.sh.alias.get(&pc.wrapping_add(1)).copied())
+            .flatten();
         let (ob, wv): ([Vn; 2], Option<Vn>) = match self.mem.clone() {
             Some((_, _, ms)) => self.inst_operands(&ms, t.len),
+            None if alias.is_some() => {
+                let (q, d) = alias.unwrap();
+                let ld = |em: &mut Self, a: u16| em.load(k(a as u32, 2), Iv::exact(a as u32), 0);
+                let lo = ld(self, q);
+                let hi = ld(self, q.wrapping_add(1));
+                let w = self.word(lo, hi);
+                let w = self.op(Opc::IntAdd, 2, w, k(d as u32, 2));
+                let lo = self.op(Opc::Copy, 1, w, NONE);
+                let hi = self.op(Opc::IntRight, 2, w, k(8, 1));
+                let hi = self.op(Opc::Copy, 1, hi, NONE);
+                ([lo, hi], Some(w))
+            }
             None => (
                 std::array::from_fn(|i| match bytes[i] {
                     Some(b) => k(b as u32, 1),

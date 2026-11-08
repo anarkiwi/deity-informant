@@ -1798,7 +1798,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         top = (1 << self.f.width(a)) - 1
         c &= top
         if rest is None:
-            sub = lit(c - org, 16)
+            sub = self.mod.offset(name, o.pc, c, org) if held else lit(c - org, 16)
         elif c == 0 and org:
             r = self.ex(rest)
             sub = binary("-", 12, r, E(sym, lo=org, hi=org, uns=True), 16)
@@ -1810,7 +1810,10 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             elif lo + c > top:
                 c -= top + 1
             off = c - org
-            if off < -0x100:
+            named = held and c and off >= 0 and not self.mod.insn[c]
+            if named:
+                sub = binary("+", 12, self.mod.offset(name, o.pc, c, org), r, 16)
+            elif off < -0x100:
                 # A constant that is no address near the region (a pointer plus one): its
                 # origin stays symbolic, as relocation moves it.
                 if c:
@@ -2598,6 +2601,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.sites, self.made, self.lifted, self.prov = {}, Counter(), {}, {}
         self.copy_pcs, self.sets, self.kpos, self.tables = {}, {}, None, {}
         self.reach, self.proven, self.checked, self.konsts = {}, {}, set(), {}
+        self.offsets, self.insn = {}, np.zeros(0x10000, dtype=bool)
         self.inert, self.regs, self.regfile, self.results_ivs = set(), {}, [], {}
         self.bounded = {}
         #: Per entry name, the C lines that start it (the host's check of its arguments).
@@ -2892,6 +2896,21 @@ class Module:  # pylint: disable=too-many-instance-attributes
         elif sym == "IMG_ORG":
             self.used.add("IMG_ORG")
         return name
+
+    def offset(self, span, pc, addr, org):
+        """The offset of ``addr`` in held span ``span`` (origin ``org``) as the access of the
+        instruction at ``pc`` names it: a data byte's by a ``.h`` name, as where a song's
+        tables lie is song data; an instruction byte's as a literal."""
+        at = self.mem.base(pc)[1] if pc is not None else None
+        if at is None or self.insn[addr]:
+            return lit(addr - org, 16)
+        if (span, addr) not in self.offsets:
+            stem = f"{span}_AT{at:X}"
+            n = sum(v.split("_")[:2] == stem.split("_") for v in self.offsets.values())
+            self.offsets[span, addr] = stem + (f"_{n}" if n else "")
+            self.konsts[self.offsets[span, addr]] = addr - org
+        name = self.offsets[span, addr]
+        return E(name, 16, "", addr - org, addr - org, True)
 
     def table(self, width, vals):
         """The name of the constant table of ``vals`` (``width`` bits), named on first use."""

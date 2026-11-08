@@ -313,11 +313,19 @@ per-voice routines often are; the rest are renumbered in order.
   region and the address taken modulo its width (16 bits, 8 for a zero-page one) as the 6502
   wraps it; a load of constants in one span is `Cj[off + index]` alike. One in volatile
   memory is `io_read`/`io_write`. One wholly in other constant code is `oob_rd`/`oob_wr`. Any
-  other goes through `rd(a)` or `wr(a, v)`: the volatile ranges, the regions outside the
-  spans (by the `Rk_ORG` symbols, so data pointers holding original addresses resolve) and the
-  spans (`wr` writing their data bytes only), then `oob_wr`; `rd` (`cgen_rd`) finds the array
-  by tables of their origins and lengths (`OOB_AT`, `OOB_ORG`, `OOB_LEN`). They and
+  other goes through `rd(a)` or `wr(a, v)`: the volatile ranges and the arrays (by the `Rk_ORG`
+  symbols, so data pointers holding original addresses resolve), then `oob_wr`; each finds the
+  array by tables of their origins and lengths (`OOB_*` over the regions outside the spans and
+  the spans for `rd` (`cgen_rd`), `WR_*` over every region for `wr`). They and
   `codechk` are `noinline`, as llvm-mos would otherwise copy them into every caller.
+- The arrays' definitions are the `.h`'s, as where a song puts its data decides them: the
+  `.c` defines them by `CGEN_STORAGE` (the held spans, the regions not inside one, a span's
+  data bits); a region inside a held span is a `#define` of its slice there; `cgen_rd` and
+  `wr` loop over the `CGEN_ARRAYS` and `CGEN_REGIONS` lists (`wr` writes a span's data bytes
+  through its slices). An access's offset into a held span at a byte of no instruction (a
+  table of song data) is a name the `.h` defines by the first instruction reading it (`C1_AT1A3`
+  for the one at `CODE_ORG + 0x1A3`, `_1`, `_2` for its further constants). Tunes of one
+  player that differ in their song data and its placement give the same `.c`.
 - A load of a constant byte (constant code or a table the lift read as constant) at a fixed
   address prints as a name the `.h` defines, relative to the origin that places the byte
   (`CODE_KA3` for `CODE_ORG + 0xA3`): the `.c` holds neither its value nor its address, and the

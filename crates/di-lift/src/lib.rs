@@ -61,6 +61,9 @@ pub struct Opts {
     /// lifted as code like every entry's, and the analysis takes it as the first (a static
     /// lift, `entry_sp`, only).
     pub init: Option<usize>,
+    /// Operand pairs init leaves as one pointer variable: `(lo, g, delta)`, the pair at `lo`
+    /// holding the pair at `g` plus `delta` (`deity_informant.postinit`). Play reads `g`.
+    pub alias: Vec<(u16, u16, u16)>,
 }
 
 impl Default for Opts {
@@ -73,6 +76,7 @@ impl Default for Opts {
             loaded: None,
             fold: false,
             init: None,
+            alias: Vec::new(),
         }
     }
 }
@@ -483,6 +487,42 @@ fn declared(entries: &[Entry]) -> Vec<Entry> {
         .collect()
 }
 
+/// The pairs of `alias` (`(lo, g, delta)`) whose four bytes are cells no store an entry other
+/// than `init` reaches may write: init leaves them and nothing changes them after.
+fn aliases(
+    g: &analysis::Graph,
+    init: Option<usize>,
+    alias: &[(u16, u16, u16)],
+) -> FxHashMap<u16, (u16, u16)> {
+    let Some(bit) = init.map(|i| 1u64 << (i % 64)) else {
+        return FxHashMap::default();
+    };
+    let mut late = FixedBitSet::with_capacity(0x10000);
+    for (&pc, vs) in &g.vars {
+        let from = g.from.get(&pc).copied().unwrap_or(0);
+        if from != 0 && from & !bit == 0 {
+            continue;
+        }
+        for a in vs.iter().flat_map(|v| &v.acc).filter(|a| a.store) {
+            match g.addr_sets.get(&(pc, true)) {
+                Some(set) => late.extend(set.iter().map(|&x| x as usize)),
+                None => late.insert_range(a.addr.lo as usize..a.addr.hi.min(0xffff) as usize + 1),
+            }
+        }
+    }
+    let ok = |q: u16| {
+        (0..2).all(|i| {
+            let a = q.wrapping_add(i) as usize;
+            g.cells.contains(a) && !late.contains(a)
+        })
+    };
+    alias
+        .iter()
+        .filter(|&&(lo, q, _)| ok(lo) && ok(q))
+        .map(|&(lo, q, d)| (lo, (q, d)))
+        .collect()
+}
+
 /// Runs `[lo, hi)` of the bytes of `b`.
 fn runs(b: &FixedBitSet) -> Vec<(u32, u32)> {
     let mut runs: Vec<(u32, u32)> = Vec::new();
@@ -736,6 +776,7 @@ pub fn lift_banked(
         slots,
         seen,
         sensitive: opts.sensitive.as_deref(),
+        alias: aliases(&g, init, &opts.alias),
     };
     let mut stats = Stats {
         cells: g.cells.count_ones(..),
