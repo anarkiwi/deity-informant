@@ -1,12 +1,15 @@
-"""What an init routine leaves: its run on the jennings native core, each byte with its provenance.
+"""The state an init routine leaves per song (``docs/cgen.md``, *Init*), and its provenance.
 
-Tags (``docs/wholeprog.md``, *Init*): ``None`` a constant of init's code, ``("L", key)`` a byte
-as loaded at ``key``, ``("W", keys, 0, n)``/``("W", key, 1, n)`` the low/high byte of a word plus
-byte addends (chain ``n``; the low byte's candidate words), ``"X"`` anything else; a key is
-``(base, off)``, ``off`` past word key ``base``.
+Tags (:class:`Run`): ``None`` a constant of init's code, ``("L", key)`` a byte loaded at ``key``,
+``("W", keys, 0, n)``/``("W", key, 1, n)`` the low/high byte of chain ``n`` on a word, ``"X"``
+anything else; a key is ``(base, off)``, ``off`` past the word at key ``base``.
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
 
 from jennings.devices.mpu6502 import NativeMPU
 from jennings.memory import NativeMemory
@@ -14,7 +17,138 @@ from jennings.opcodes import OPCODES
 
 from . import wholeprog
 
-__all__ = ["Run", "run", "pointers", "groups"]
+__all__ = ["Init", "reference", "run", "cost", "ENTRY", "Run", "traced", "pointers", "groups"]
+
+#: Table bytes of one copy: its destination, source and length, two bytes each.
+ENTRY = 6
+
+
+def reference(volatile):
+    """A machine running init on the reference interpreter over ``volatile``.
+
+    ``machine(mem, pc, a)`` runs init at ``pc`` with ``A = a`` on ``mem`` (a ``bytearray`` it
+    leaves as init does) and gives its volatile writes ``[(addr, value)]`` in order and the
+    addresses it stored to."""
+
+    def machine(mem, pc, a):
+        r = wholeprog.reference_call(mem, pc, a=a, volatile=volatile, log=True, written=True)
+        if r["halt"] != "return":
+            raise RuntimeError(f"init at ${pc:04X} with A=${a:02X}: {r['halt']}")
+        return [(x, v) for x, v, _, w in r["log"] if w], r["written"]
+
+    return machine
+
+
+@dataclass
+class Init:
+    """What init leaves on ``image`` for each of ``songs``: ``states[i]`` the memory,
+    ``writes[i]`` the volatile writes in order; ``free`` the addresses it stored to outside the
+    stack page and the volatile ranges, ascending."""
+
+    image: np.ndarray
+    songs: list
+    states: np.ndarray
+    writes: list
+    free: np.ndarray
+
+    def values(self):
+        """``{addr: [values]}``: the values each free byte holds over the songs."""
+        held = self.states[:, self.free]
+        return {int(a): sorted(set(held[:, i].tolist())) for i, a in enumerate(self.free)}
+
+    def varying(self):
+        """The free bytes whose value differs between songs, ascending."""
+        held = self.states[:, self.free]
+        return self.free[(held != held[0]).any(axis=0)]
+
+    def copies(self, source, base):
+        """Per song, the copies ``[(dst, src, n)]`` making ``base`` its state on the free bytes.
+
+        ``src`` is the address of a run of bytes no song changes that ``source`` allows, the
+        longest the song's values continue as when longer than :data:`ENTRY` (``bytes.find``
+        over doubling then halving lengths), else a ``bytes`` literal."""
+        free = np.zeros(0x10000, dtype=bool)
+        free[self.free] = True
+        ok = np.asarray(source, dtype=bool) & ~free
+        segs = [(a, base[a : a + n].tobytes()) for a, n in _runs(ok) if n > ENTRY]
+        found = {}
+
+        def longest(t):
+            """``(src, n)`` of the longest prefix of ``t`` some segment holds."""
+            best, n = None, ENTRY + 1
+            while n <= len(t) and (hit := _find(segs, t[:n], found)) is not None:
+                best, n = (hit, n), n * 2
+            lo, hi = (best[1] if best else ENTRY) + 1, min(n, len(t) + 1)
+            while lo < hi:
+                mid = (lo + hi) // 2
+                hit = _find(segs, t[:mid], found)
+                lo, hi, best = (mid + 1, hi, (hit, mid)) if hit is not None else (lo, mid, best)
+            return best
+
+        out = []
+        for st in self.states:
+            ops, same = [], st == base
+            for a, n in _runs(free):
+                t, i, lit = st[a : a + n].tobytes(), 0, None
+                while i < n:
+                    if same[a + i] and lit is None:
+                        i += 1
+                        continue
+                    m = longest(t[i:])
+                    if m is None and not same[a + i]:
+                        lit = i if lit is None else lit
+                        i += 1
+                        continue
+                    if lit is not None:
+                        ops.append((a + lit, t[lit:i], i - lit))
+                        lit = None
+                    if m is not None:
+                        ops.append((a + i, *m))
+                        i += m[1]
+                if lit is not None:
+                    ops.append((a + lit, t[lit:], n - lit))
+            out.append(ops)
+        return out
+
+
+def cost(plan):
+    """The table bytes of a ``plan`` of :meth:`Init.copies`: an entry per copy, and its
+    literal bytes."""
+    return sum(ENTRY + (n if isinstance(s, bytes) else 0) for ops in plan for _, s, n in ops)
+
+
+def _runs(mask):
+    """``[(start, length)]`` of the runs of True in ``mask``."""
+    edges = np.flatnonzero(np.diff(np.concatenate(([0], np.asarray(mask, np.int8), [0]))))
+    return [(int(a), int(b - a)) for a, b in zip(edges[::2], edges[1::2])]
+
+
+def _find(segs, t, memo):
+    """The address of the first occurrence of ``t`` in the segments ``[(addr, bytes)]``."""
+    if t not in memo:
+        memo[t] = next((a + i for a, b in segs if (i := b.find(t)) >= 0), None)
+    return memo[t]
+
+
+def run(image, pc, songs, volatile, machine=None):
+    """The :class:`Init` of init at ``pc`` on ``image`` for each value of ``A`` in ``songs``,
+    on ``machine`` (default :func:`reference` over ``volatile``)."""
+    machine = machine or reference(volatile)
+    vol = np.zeros(0x10000, dtype=bool)
+    vol[0x100:0x200] = True
+    for lo, hi in volatile:
+        vol[lo:hi] = True
+    states, writes = [], []
+    stored = np.zeros(0x10000, dtype=bool)
+    for a in songs:
+        mem = bytearray(image)
+        w, s = machine(mem, pc, a)
+        states.append(np.frombuffer(bytes(mem), dtype=np.uint8))
+        writes.append([(int(x), int(v)) for x, v in w])
+        stored[np.asarray(list(s), dtype=np.int64)] = True
+    img = np.frombuffer(bytes(image), dtype=np.uint8)
+    return Init(img, list(songs), np.stack(states), writes, np.flatnonzero(stored & ~vol))
+
 
 X = "X"
 _COPY = {"TAX": ("a", "x"), "TAY": ("a", "y"), "TXA": ("x", "a"), "TYA": ("y", "a")}
@@ -183,7 +317,7 @@ class Run:
         raise RuntimeError(f"init at ${pc:04X} did not return")
 
 
-def run(image, pc, a=0, volatile=((0xD000, 0xE000),)):
+def traced(image, pc, a=0, volatile=((0xD000, 0xE000),)):
     """The :class:`Run` of init at ``pc`` with ``A = a`` on ``image``; None when it does not
     return on the reference interpreter (``wholeprog.reference_call``) within its budget."""
     ref = wholeprog.reference_call(bytearray(image), pc, a=a, volatile=list(volatile))

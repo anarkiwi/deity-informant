@@ -57,11 +57,10 @@ pub struct Opts {
     /// Lift copies of one routine that differ only in their operands as one function taking
     /// the copy's index ([`inst`]); without facts and a bank map only.
     pub fold: bool,
-    /// The entry (index) the host calls once, before any other, on the image: its run is
-    /// lifted as code like every entry's, and the analysis takes it as the first (a static
-    /// lift, `entry_sp`, only).
-    pub init: Option<usize>,
-    /// Operand pairs init leaves as one pointer variable: `(lo, g, delta)`, the pair at `lo`
+    /// The variables the host's init leaves (`(address, values over its runs)`): bytes the
+    /// image holds one run's values of, whose values the lift does not take (*Init*).
+    pub free: Vec<(u16, Vec<u8>)>,
+    /// Operand pairs of `free` one pointer variable holds: `(lo, g, delta)`, the pair at `lo`
     /// holding the pair at `g` plus `delta` (`deity_informant.postinit`). Play reads `g`.
     pub alias: Vec<(u16, u16, u16)>,
 }
@@ -75,7 +74,7 @@ impl Default for Opts {
             sensitive: None,
             loaded: None,
             fold: false,
-            init: None,
+            free: Vec::new(),
             alias: Vec::new(),
         }
     }
@@ -245,7 +244,7 @@ fn byte_bounds(g: &analysis::Graph) -> Vec<Option<Iv>> {
             };
         }
     }
-    for a in g.cells.ones() {
+    for a in g.cells.ones().chain(g.free.ones()) {
         held[a] = None;
     }
     held
@@ -487,22 +486,11 @@ fn declared(entries: &[Entry]) -> Vec<Entry> {
         .collect()
 }
 
-/// The pairs of `alias` (`(lo, g, delta)`) whose four bytes are cells no store an entry other
-/// than `init` reaches may write: init leaves them and nothing changes them after.
-fn aliases(
-    g: &analysis::Graph,
-    init: Option<usize>,
-    alias: &[(u16, u16, u16)],
-) -> FxHashMap<u16, (u16, u16)> {
-    let Some(bit) = init.map(|i| 1u64 << (i % 64)) else {
-        return FxHashMap::default();
-    };
+/// The pairs of `alias` (`(lo, g, delta)`) whose four bytes are cells no lifted store may
+/// write: the host's init leaves them and nothing changes them after.
+fn aliases(g: &analysis::Graph, alias: &[(u16, u16, u16)]) -> FxHashMap<u16, (u16, u16)> {
     let mut late = FixedBitSet::with_capacity(0x10000);
     for (&pc, vs) in &g.vars {
-        let from = g.from.get(&pc).copied().unwrap_or(0);
-        if from != 0 && from & !bit == 0 {
-            continue;
-        }
         for a in vs.iter().flat_map(|v| &v.acc).filter(|a| a.store) {
             match g.addr_sets.get(&(pc, true)) {
                 Some(set) => late.extend(set.iter().map(|&x| x as usize)),
@@ -513,7 +501,7 @@ fn aliases(
     let ok = |q: u16| {
         (0..2).all(|i| {
             let a = q.wrapping_add(i) as usize;
-            g.cells.contains(a) && !late.contains(a)
+            g.cells.contains(a) && g.free.contains(a) && !late.contains(a)
         })
     };
     alias
@@ -555,7 +543,9 @@ pub fn lift_banked(
 ) -> Program {
     let entries = declared(entries);
     let entries = &entries[..];
-    let init = opts.init;
+    let free: FxHashMap<u16, std::collections::BTreeSet<u8>> = (opts.free.iter())
+        .map(|(a, v)| (*a, v.iter().copied().collect()))
+        .collect();
     let mut matched = true;
     let (g, plans, fidx, callees, recursive, slots, constcode, touches, seen, sites, private) = loop {
         let mut g = discover(
@@ -565,7 +555,8 @@ pub fn lift_banked(
             bank,
             matched,
             opts.loaded,
-            opts.entry_sp.map(|_| vsa::Wanted { volatile, init }),
+            opts.entry_sp.map(|_| vsa::Wanted { volatile }),
+            &free,
         );
         let roots: Vec<u16> = entries.iter().map(|e| e.pc).collect();
         // Declared entry SP: the windows also keep pointers out of the volatile pages.
@@ -646,7 +637,6 @@ pub fn lift_banked(
             .collect();
         let mut constcode = g.code.clone();
         constcode.difference_with(&g.cells);
-        constcode.difference_with(&g.dead);
         constcode.difference_with(&g.rom_code);
         let page1 = |iv: Iv| iv.meets(0x100, 0x200);
         // Per function whether a load or store other than a push or pull may reach page 1.
@@ -776,7 +766,7 @@ pub fn lift_banked(
         slots,
         seen,
         sensitive: opts.sensitive.as_deref(),
-        alias: aliases(&g, init, &opts.alias),
+        alias: aliases(&g, &opts.alias),
     };
     let mut stats = Stats {
         cells: g.cells.count_ones(..),
@@ -923,7 +913,6 @@ pub fn lift_banked(
         },
         volatile: volatile.to_vec(),
         written: runs(&g.written),
-        dead: runs(&g.dead),
         starts,
         elide_ret: private,
         bank: bank.cloned(),
