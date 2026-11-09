@@ -597,7 +597,11 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         "jumps": p.jumps or {},
         "structure": dict(mod.made),
         "provenance": {**mod.prov, "cells": [int(a) for a in np.flatnonzero(cells)]},
-        "state": {"cells": mod.state.counts(cells), "span": mod.state.counts(mod.cells & ~cells)},
+        "state": {
+            "cells": mod.state.counts(cells),
+            "span": mod.state.counts(mod.cells & ~cells),
+            "vars": {mod.var_ref(a): a for a in sorted(mod.state.at)},
+        },
     }
     return c_text, h_text, info
 

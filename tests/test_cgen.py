@@ -2956,6 +2956,11 @@ def test_copies_operand_cells_indexed_directly(prefix, tmp_path):
     assert not re.search(r"\b(?:rd|wr)\(|0x18", c)
     assert len(re.findall(r"\bV0_f00\[v1\]", c)) == 3
     assert info["state"]["cells"] == {"scalars": 0, "fields": 3, "unread": 0, "bytes": {}}
+    at = info["state"]["vars"]
+    assert sorted(at) == [f"V0_f00[{e}]" for e in range(3)]
+    assert sorted(at.values()) == list(at.values()) and set(at.values()) <= set(
+        info["provenance"]["cells"]
+    )
 
 
 PATCHED = """
@@ -3017,6 +3022,7 @@ def test_patched_operand_is_a_scalar(prefix, tmp_path):
     assert "uint8_t S_8 = S_8_INIT;" in c and "S_8 = S_8 + 1;" in c and "R0" not in c
     assert "#define S_8_INIT 0x10" in h
     assert info["state"]["cells"] == {"scalars": 1, "fields": 0, "unread": 0, "bytes": {}}
+    assert info["state"]["vars"] == {"S_8": 0x1008}
     img, labels = W.assemble(PATCHED, 0x2345)
     assert translate(prefix, img, labels, (0x2345, labels["end"]))[0] == c
 

@@ -273,8 +273,10 @@ another access's interval spans them; `oob_rd` under `CGEN_OOB_EXACT` (`cgen_rd`
 code span's promoted bytes through `cgen_var` first, so a read past the hull the lift assumed
 reads the variable. Patched immediates are then plain variables: a compare or loop bound reads
 one (`while (v < S_15)`), a patched opcode is a test of its value (`S_D5 == 0x69`, `ADC` or
-`SBC`). `info["state"]` gives per tune `{"cells": counts, "span": counts}`, each `{"scalars",
-"fields", "unread", "bytes": {reason: n}}`, over the cells and the other bytes of the span.
+`SBC`). `info["state"]` gives per tune `{"cells": counts, "span": counts, "vars": at}`, each
+count `{"scalars", "fields", "unread", "bytes": {reason: n}}`, over the cells and the other
+bytes of the span, and `at` each promoted byte's lvalue and original address (`{"S_23": 0x1023,
+"V0_f0A[1]": 0x1129}`), by which a tool maps the variables back to the original's memory.
 
 ## Memory
 
