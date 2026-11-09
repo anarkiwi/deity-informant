@@ -302,7 +302,8 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   into a block argument or a function's parameter from its call sites, a loop-carried value
   enumerated to its fixpoint or keeping its initial interval, a load of a closed cell the
   hull of its values (`Program.sets`) and of a byte with bounded stores its bound
-  (`Program.bounds`), a mask or an or-ed constant that keeps the interval in one block);
+  (`Program.bounds`: its entry value, for a code cell init leaves its values over init's runs,
+  with the stored values), a mask or an or-ed constant that keeps the interval in one block);
   wider than `$200` is unknown. A lifted function's parameter takes the hull its call sites
   pass met with the values the lift finds its register holding at its entry on every run
   (`Program.regs`, every copy's entry), a call's result the hull over the callee's returns of

@@ -141,7 +141,7 @@ fn ind_ptr(img: &[u8; 0x10000], g: &analysis::Graph, pc: u16) -> (Iv, bool) {
 /// reach a zone. Each is checked before its instruction (when every such access of the
 /// instruction can be), unless its operand names only pages outside the zones (`zfree`).
 /// A pointer whose high byte some store sets to a zone's page means the device or stack.
-fn zone_checks(g: &mut analysis::Graph) {
+fn zone_checks(g: &mut analysis::Graph, free: &FxHashMap<u16, Vec<u8>>) {
     let (win, zones, cells, addr_sets) = (&g.prot.win, &g.zones, &g.cells, &g.addr_sets);
     let mut meant = FixedBitSet::with_capacity(0x10000);
     for a in g.vars.iter().filter(|(_, vs)| !is_stack_op(vs[0].op)) {
@@ -152,7 +152,7 @@ fn zone_checks(g: &mut analysis::Graph) {
             }
         }
     }
-    let held = byte_bounds(g);
+    let held = byte_bounds(g, free);
     let in_zone = |page: u32| {
         zones
             .iter()
@@ -227,11 +227,19 @@ fn zone_checks(g: &mut analysis::Graph) {
 }
 
 /// Per byte, the values it may hold when every store that may write it has an exact address
-/// and a value interval narrower than a byte: its entry byte and the stored values (`None`:
-/// unbounded, as for page 1 where pushes land).
-fn byte_bounds(g: &analysis::Graph) -> Vec<Option<Iv>> {
+/// and a value interval narrower than a byte: its entry byte (for a code cell the host's init
+/// leaves, its values over init's runs) and the stored values (`None`: unbounded, as for page 1
+/// where pushes land and the other variables init leaves, whose words the reach pass takes).
+fn byte_bounds(g: &analysis::Graph, free: &FxHashMap<u16, Vec<u8>>) -> Vec<Option<Iv>> {
     let mut held: Vec<Option<Iv>> = (0..0x10000)
-        .map(|a| Some(Iv::exact(g.img[a] as u32)))
+        .map(|a| match free.get(&(a as u16)) {
+            Some(vs) if g.cells.contains(a) => Some(Iv {
+                lo: *vs.iter().min()? as u32,
+                hi: *vs.iter().max()? as u32,
+            }),
+            Some(_) => None,
+            None => Some(Iv::exact(g.img[a] as u32)),
+        })
         .collect();
     held[0x100..0x200].fill(None);
     let stores = g.vars.values().flatten().flat_map(|v| &v.acc);
@@ -244,9 +252,6 @@ fn byte_bounds(g: &analysis::Graph) -> Vec<Option<Iv>> {
                 hi: h.hi.max(ac.val.hi),
             };
         }
-    }
-    for a in g.cells.ones().chain(g.free.ones()) {
-        held[a] = None;
     }
     held
 }
@@ -569,7 +574,7 @@ pub fn lift_banked(
         g.prot = ptr::protect(&g, facts, volatile, &zones, &roots, bank);
         g.zones = zones;
         if opts.entry_sp.is_some() {
-            zone_checks(&mut g);
+            zone_checks(&mut g, &free);
         }
         let img: &[u8; 0x10000] = &g.img;
         let pcs: Vec<u16> = entries.iter().map(|e| e.pc).collect();
@@ -955,7 +960,7 @@ pub fn lift_banked(
             v
         },
         bounds: {
-            let held = byte_bounds(&g);
+            let held = byte_bounds(&g, &free);
             let stores = g.vars.values().flatten().flat_map(|v| &v.acc);
             let mut b: Vec<(u16, u8, u8)> = stores
                 .filter(|a| a.store)

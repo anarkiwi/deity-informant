@@ -4220,3 +4220,37 @@ def test_read_past_the_assumed_hull_reads_the_promoted_cell(prefix, tmp_path):
     assert "cgen_var" in exact and "cgen_var" not in c[: c.index("#ifdef CGEN_OOB_EXACT")]
     calls = [("init", 0), ("play", 0), ("play", 0), ("play", 1), ("play", 0), ("play", 3)]
     play(tmp_path, c, h, img, labels, calls)
+
+
+#: An index kept in a compare's operand, which init and play patch with bytes they bound.
+CELLIDX = """
+init:   LDA #$03
+        STA lim+1
+        RTS
+play:   TAX
+        LDY lim+1
+        LDA tab,Y
+        STA $C000
+        TXA
+        AND #$01
+lim:    CMP #$00
+        BEQ out
+        STA lim+1
+out:    RTS
+tab:    .byte 1,2,3,4
+pad:    .byte """ + ",".join(["0"] * 40) + "\nend:\n"
+
+
+def test_patched_index_cell_bounded_by_its_stores(prefix, tmp_path):
+    """A code cell init and play patch is an index bounded by the values init leaves and the
+    values play stores: the table it indexes is held as its four bytes, not the bytes past it a
+    whole byte of index would reach."""
+    img, labels, loaded = assemble(CELLIDX)
+    c, h, _ = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
+    tab = labels["tab"]
+    regions = dict(re.findall(r"#define ([RC]\d+)_ORG 0x([0-9A-F]+)", h))
+    lens = dict(re.findall(r"#define ([RC]\d+)_LEN (\d+)", h))
+    held = {int(o, 16): int(lens[r]) for r, o in regions.items()}
+    assert held.get(tab) == 4, (hex(tab), held)
+    calls = [("init", 0), ("play", 0), ("play", 1), ("play", 3)]
+    play(tmp_path, c, h, img, labels, calls)
