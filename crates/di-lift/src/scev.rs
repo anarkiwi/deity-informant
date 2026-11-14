@@ -604,9 +604,9 @@ pub(crate) fn find(
                     .reduce(merge)
                     .unwrap();
                 if let Some(c) = calls.get(&n) {
-                    for q in 0..3 {
+                    for (q, slot) in d.1.iter_mut().enumerate() {
                         if c.kept >> q & 1 == 0 {
-                            d.1[q] = None;
+                            *slot = None;
                         }
                     }
                     let lost = match var {

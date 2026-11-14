@@ -1058,9 +1058,9 @@ fn number_block(lv: &mut Lvn, blk: &mut Block, tables: &[Vec<(u16, u32)>], st: &
         } else {
             Val::K(0)
         };
-        for i in 0..arity {
+        for (i, slot) in op.ins.iter_mut().enumerate().take(arity) {
             let x = if i == 0 { a } else { b };
-            op.ins[i] = lv.vn(st, x, op.ins[i].size(), op.ins[i]);
+            *slot = lv.vn(st, x, slot.size(), *slot);
         }
         let mut result: Option<(Val, bool)> = None;
         match op.opc {
