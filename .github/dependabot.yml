@@ -12,6 +12,10 @@ updates:
     directory: "/docker"
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: "ubuntu"
+        # non-LTS releases (LTS = even year, .04)
+        versions: [">= 24.05, < 26.04", "> 26.04, < 28.04"]
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
