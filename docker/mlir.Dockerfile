@@ -2,7 +2,7 @@
 # The install layer is isolated so source edits do not rebuild it.
 ARG LLVM_VERSION=22
 
-FROM ubuntu:24.04 AS mlir
+FROM ubuntu:25.10 AS mlir
 ARG LLVM_VERSION
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
