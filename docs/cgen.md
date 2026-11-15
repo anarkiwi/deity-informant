@@ -436,7 +436,11 @@ An index the code does not bound, such as a command byte of song data, reads the
 where the layout ends it (*Table extents*: a split table's low column at its high column, any
 column at the next object the code accesses, the first of the jump's targets past its first
 byte, or the end of `loaded`), and an index guard
-traps before a load past it. Such a jump is a switch over code addresses (`case CODE_ORG +
+traps before a load past it. A store (or read-modify-write) to a constant base plus such an
+index, whose table starts inside `loaded`, is guarded alike where some column reaches past
+`loaded` into bytes no store with an address set writes: it traps before a store there, so its
+interval, and its region, ends with `loaded`. A load past `loaded` reads out of bounds
+(`oob_rd`) and a store into code past its array writes out of bounds, as below. Such a jump is a switch over code addresses (`case CODE_ORG +
 0x23:`) whose last target is the default, with no trap; one whose low and high target bytes
 are a table pair indexed by a register still holding the index (`LDA lo,X; STA op+1; LDA hi,X;
 STA op+2; JMP op`) is a switch over the index's values (`case 3:`), the same for every origin; a `JSR` through cells calls one
@@ -453,7 +457,7 @@ its own operands with `STA abs,X` in a counted loop) is data, so its stores and 
 instruction's reads go to its region with no `codechk`. An opcode cell every store writes
 with known values (constants, table bytes, or its own byte saved with `PHA` and restored with
 `PLA`) dispatches over them with no trap. Other traps: a deopt the lift keeps (an index past
-its table's extent, an opcode cell some store writes with unknown values holding a value
+its table's extent or a store's past `loaded`, an opcode cell some store writes with unknown values holding a value
 outside its set, a store whose address is unknown into constant code or a table that
 changes it, a store that may hit the stack, a guard it could not prove).
 
@@ -476,7 +480,8 @@ provenance (instruction starts of
 the lift), short-circuit conditions, no structuring variables, the structuring (a shared tail kept in its function,
 multi-exit and two-entry loops, switches from compare chains and jump tables, kept callees' parameters, wrapping
 addresses), computed jumps and calls through operands written from tables (in the same call
-or an earlier one), an index past a split table's extent trapping, an opcode restored through
+or an earlier one), an index past a split table's extent trapping, a split table at the end of the program stored
+at an unbounded song byte held in arrays ending with the program and trapping past it, an opcode restored through
 the stack, a pointer into zero page with no stack check, a jump's or-ed high byte under
 relocation, determinism (repeated, with the blocks shuffled and under other hash seeds), play
 lifted from the state init leaves (a relocator's operands pointer variables bounded to the song

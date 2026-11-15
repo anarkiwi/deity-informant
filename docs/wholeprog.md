@@ -344,6 +344,7 @@ store may write: the operands init set from one word at constant offsets are one
 | Opcode cell holds a value of its set | dispatch chain; none for a *closed* cell, which every store that may write it does with known addresses and values | deopt before the instruction |
 | Computed target is in the table | `BRANCHIND` table lookup; a table resolved from the code holds every target (the function's `closed` tables) | deopt at the target |
 | A table read for a computed transfer or a cell's values stays in the table's extent (*Table extents*) | the index register is compared with the extent's index range before the load | deopt before the instruction |
+| A store to a constant base plus an index the code does not bound stays inside the loaded program (*Table extents*) | the index register is compared with the index range before the store | deopt before the instruction |
 | An edge reaches a start at a stack height the plan has no node for (never seen there) | none: the edge is the deopt | deopt at the start |
 | A callee's `TXS` restoring a saved stack pointer sets SP to its saved height | `X` compared with SP plus the height difference | deopt before the instruction |
 | After an SP-setting instruction, SP is at a height the facts saw the next start at | SP dispatch: `SP - E` compared per height without wrapping (`stats["sp_dispatch"]`), SP restated as `E + height - 2`; a function with a dispatch loads its stack slots from memory at entry | deopt at the next start |
@@ -712,7 +713,16 @@ the facts, so a proof holds on every execution that stays in lifted code.
   an index may take a value past the extent, an index guard compares the register with the
   extent's range before each column's load and deopts (the program reads outside its
   table). Guards do not narrow the analysis: they are what the final converged program reads
-  past its tables.
+  past its tables. A store (or read-modify-write, at an instruction of one variant) to a
+  constant base plus an index register the code does not bound (no index set, nor a byte of
+  the program with known values), whose table's columns start inside `loaded`, writes the
+  index values before the first at which some column's byte lies past `loaded` where no store
+  with an address set writes; where the index may take a value past them, an index guard
+  deopts before the store. Loads are not guarded so: one past `loaded` reads out of bounds,
+  and code reads a table through bases offset into it (`tab-1,Y` beside `tab,Y`) and on into
+  the code after it. A static lift meets each guarded access's interval, a load's proven hull
+  (`Program.proven`) and a store's run (`Program.bounded`) with the addresses the guard's
+  range gives.
 - **Stack extent** (`lib.rs`). With `entry_sp` declared, the stack bytes the program can hold
   are `[$100 + s + 1 - D, $1FF]`, `D` the deepest byte a push or an elided `CALL`'s return
   address reaches through the plans' call chains (all of page 1 for a recursive plan or an

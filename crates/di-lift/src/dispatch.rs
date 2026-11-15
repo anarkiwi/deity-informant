@@ -1820,6 +1820,81 @@ pub(crate) fn arm_values(
     }
 }
 
+/// The index register and base of an access from a constant base plus an index register:
+/// every data access of opcode `op` at `pc` (a read-modify-write's load and store alike)
+/// addresses the base with the register zero.
+fn indexed_base(code: &Code, pc: u16, op: u8) -> Option<(u8, u16)> {
+    let t = Template::of(op);
+    let b = operand_bytes(code.img, code.cells, pc, t.len);
+    let r = [reg::X, reg::Y].into_iter().find(|&r| moves(t, b, r))?;
+    let mut env = TOP_ENV;
+    env[reg::X] = Iv::exact(0);
+    env[reg::Y] = Iv::exact(0);
+    let mut acc = Vec::new();
+    absint(t.ops(), b, &mut env, &mut acc);
+    let mut bases = acc.iter().filter(|a| !a.dummy).map(|a| a.addr.value());
+    let b = bases.next()??;
+    bases.all(|x| x == Some(b)).then_some((r as u8, b as u16))
+}
+
+/// The index guards of the stores (read-modify-writes included) to a constant base plus an
+/// index register the code does not bound (neither its index set nor the byte it holds,
+/// [`Sets::held`]) whose table's columns ([`Objects::table_of`]) start inside the `loaded`
+/// program, at instructions of one variant: the index values written are those before the
+/// first at which some column's byte lies past the program where no store with an address set
+/// writes (`written`), and a store at a value past them deopts. A load past the program reads
+/// out of bounds instead, and a store into code that follows its table inside the program
+/// writes out of bounds (`Program.bounded`).
+pub(crate) fn access_guards(
+    code: &Code,
+    vars: &FxHashMap<u16, Vec<Var>>,
+    sets: &Sets,
+    objs: &Objects,
+    loaded: Option<(u32, u32)>,
+    written: &FixedBitSet,
+) -> Vec<Guard> {
+    let Some((lo, hi)) = loaded else {
+        return Vec::new();
+    };
+    let closes = |a: u32| a > 0xffff || a >= hi && !written.contains(a as usize);
+    let mut out = Vec::new();
+    for (&pc, vs) in vars
+        .iter()
+        .filter(|(_, vs)| vs.len() == 1 && vs[0].acc.iter().any(|a| a.store))
+    {
+        let Some((reg, b)) = indexed_base(code, pc, vs[0].op) else {
+            continue;
+        };
+        let r = reg as usize;
+        if sets.of(pc, r).or_else(|| sets.held(code, pc, r)).is_some() {
+            continue;
+        }
+        let xs = sets.any(pc, r);
+        let bases = objs.table_of(b);
+        let Some(&x0) = xs.first() else { continue };
+        if !bases
+            .iter()
+            .all(|&c| (lo..hi).contains(&(c as u32 + x0 as u32)))
+        {
+            continue;
+        }
+        let n = xs
+            .iter()
+            .position(|&x| bases.iter().any(|&c| closes(c as u32 + x as u32)));
+        if let Some(n) = n.filter(|&n| n > 0) {
+            out.push((
+                pc,
+                reg,
+                Iv {
+                    lo: x0 as u32,
+                    hi: xs[n - 1] as u32,
+                },
+            ));
+        }
+    }
+    out
+}
+
 /// Fill the values of stores into opcodes and the operands of `JMP`/`JSR`s through cells of
 /// a register holding a table byte or a cell's byte on every path ([`bytes`], read inside the
 /// table's extent: the guards that keeps are appended to `guards`).
