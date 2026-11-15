@@ -172,8 +172,8 @@ def run(image, pc, songs, volatile, machine=None):
 
 def reproduces(prog, image, state):
     """Whether lift ``prog`` of init (its one entry; throw-away reads not made) reproduces the
-    :class:`Init` ``state`` from ``image`` for every song: it returns without a deopt and
-    without a volatile read, so its run depends on nothing but ``image`` and the song, makes
+    :class:`Init` ``state`` from ``image`` for every argument value: it returns without a deopt
+    and without a volatile read, so its run depends on nothing but ``image`` and ``A``, makes
     the machine's volatile writes and leaves its values in the bytes init stores (``free``)
     and the image's in the others outside the stack page and the volatile ranges."""
     img = np.frombuffer(bytes(image), np.uint8)

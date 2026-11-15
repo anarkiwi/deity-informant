@@ -3215,11 +3215,11 @@ def songs(  # pylint: disable=too-many-arguments,too-many-positional-arguments
 
 @pytest.mark.parametrize("probe", [False, True])
 def test_play_is_lifted_from_each_songs_state(prefix, tmp_path, probe):
-    """Init relocating play's operands and storing the song is run for every song: play
-    reads through the operand it patches as a pointer variable. Init is translated, unless
-    its run reads the device: then the init function traps an undeclared song, replays
-    init's I/O write and copies the song's values from the header's literals into the song
-    variable."""
+    """Init relocating the other entry's operands and storing ``A`` is run for every value:
+    the entry reads through the operand init patches as a pointer variable. Init is
+    translated, unless its run reads the device: then the init function traps an undeclared
+    value, replays init's I/O write and copies each value's state from the header's literals
+    into the variable."""
     src = probed(INITREL) if probe else INITREL
     c, info, labels = songs(prefix, tmp_path, src, (0, 1, 5))
     ops = {labels[o] + k for o in ("o0", "o1") for k in (1, 2)}
@@ -3288,8 +3288,8 @@ def test_init_reading_song_data_leaves_variables(prefix, tmp_path, order):
 
 
 def test_init_io_writes_song_data_decides_are_replayed(prefix, tmp_path):
-    """An I/O write only some songs make is one of the writes the header replays in order of
-    an init that is replayed: the same ``.c`` for every song."""
+    """An I/O write the data makes conditional is one of the writes the header replays in
+    order of an init that is replayed: the same ``.c`` for either data."""
     texts = set()
     for first, writes in ((1, "0xC018"), (0x81, "0xC018, 0xC010")):
         img, labels, loaded = assemble(probed(SONGIO), patch={"order": [first]})
@@ -3371,9 +3371,9 @@ def test_init_io_probe_is_settled_by_the_machine(prefix, tmp_path, model):
     assert (labels["shift"] in info["provenance"]["cells"]) == bool(model)
 
 
-#: Init running a routine, then copying the song's block from word tables a song-derived
-#: index chooses, its length a self-modified compare: one song's block overwrites the
-#: routine init already ran.
+#: Init running a routine, then copying a block from word tables an index derived from ``A``
+#: chooses, its length a self-modified compare: one block overwrites the routine init
+#: already ran.
 TABLECOPY = """
 init:   AND #$03
         TAY
@@ -3419,10 +3419,10 @@ end:
 
 
 def test_init_table_block_copy_is_translated(prefix, tmp_path):
-    """Init copying each song's block through pointers from word tables, its length a
+    """Init copying a block through pointers from word tables ``A`` indexes, its length a
     compare operand it patches, is translated: no copy tables, the patched operand a cell
-    of init's code, the routine one song's block overwrites after init ran it constant
-    code, every song's trace the reference's and the same ``.c`` for other song data."""
+    of init's code, the routine one block overwrites after init ran it constant code, every
+    value's trace the reference's and the same ``.c`` for other copied data."""
     texts = set()
     for data in (list(range(1, 9)), list(range(9, 1, -1))):
         src = TABLECOPY.replace("1, 2, 3, 4, 5, 6, 7, 8", ", ".join(map(str, data)))
@@ -3456,9 +3456,9 @@ def test_init_run_once_leaves_code_it_ran_constant():
 
 
 def test_init_block_copy_is_a_copy_of_the_header(prefix, tmp_path):
-    """A replayed init copying the song's block from the table the song indexes leaves, per
-    song, a copy of the image's block: the header copies it from the array holding it, the
-    same ``.c`` for other song data."""
+    """A replayed init copying a block from the table ``A`` indexes leaves, per value, a copy
+    of the image's block: the header copies it from the array holding it, the same ``.c``
+    for other copied data."""
     texts = set()
     for data in (list(range(1, 9)), list(range(9, 1, -1))):
         img, labels, loaded = assemble(probed(BLOCKCOPY), patch={"s0": data})
@@ -4334,8 +4334,8 @@ def test_offsets_plus_init_origin_point_into_its_run(prefix, tmp_path):
 
 def test_bounded_store_leaves_cells_to_promotion(prefix, tmp_path):
     """A store through an operand init relocated into a run of data bytes touches that run,
-    not every byte: the operand cells play reads at their addresses are scalars, which only
-    the translated init's stores through its pointer find by address (``cgen_var``)."""
+    not every byte: the operand cells the entry reads at their addresses are scalars, which
+    only the translated init's stores through its pointer find by address (``cgen_var``)."""
     for probe in (False, True):
         src = probed(INITREL) if probe else INITREL
         c, info, _ = songs(prefix, tmp_path / str(probe), src, (0, 1, 5))

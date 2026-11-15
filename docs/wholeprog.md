@@ -327,8 +327,8 @@ of the instructions that may run after it in the same call (reachable from it, a
 to its return: the routines holding it from it on, every routine they call, and each caller from
 the call's return site on once a routine holding it returns), and needs no code check where it
 has an address set; one of an interval needs it only where the interval meets a table read as
-constant or code that may run after it. Code a store overwrites after it ran (a song's block
-copied over the init that chose it) stays constant code. Interrupts are not modelled.
+constant or code that may run after it. Code a store overwrites after it ran (a block copy
+over the routine that chose its source) stays constant code. Interrupts are not modelled.
 
 For the entries lifted from what init leaves, `free` (`{addr: values}`) names the
 bytes init stored, whose values are the song's, and their values on each of its runs in order;

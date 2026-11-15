@@ -251,7 +251,7 @@ def _dispatch(mem, helpers, used, cases=()):
     return out
 
 
-#: The song's index in the ``.h``'s range, of the init entry's argument ``a``.
+#: The init entry's argument ``a`` as an index into the ``.h``'s range of its values.
 SONG = "(uint8_t)(a - CGEN_SONG0)"
 
 
@@ -459,7 +459,8 @@ def _lift_init(
     start, entry, volatile, facts, sensitive, kw, state, runs
 ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
     """Init's lift (at ``entry``, run once from ``start``, any ``A``: the host's check of the
-    song is the ``.h``'s range) when it is exact for every song: its run reproduces the
+    argument is the ``.h``'s range) when it is exact for every declared argument value: its
+    run reproduces the
     machine's (:func:`deity_informant.postinit.reproduces`, lifted without throw-away reads
     so every volatile read it makes is one it uses) and the accesses of the reference's
     ``runs`` lie inside what it bounds them to (:func:`deity_informant.postinit.bounded`);
@@ -492,7 +493,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     (``None``: none) is called once, first, with ``A`` each of the range ``songs`` (default
     ``[0]``): it runs on ``machine`` (:func:`deity_informant.postinit.run`), the other
     entries are lifted from the memory it leaves, every byte it stores a variable, and init
-    is lifted from ``image`` where its lift reproduces every song's run (*Init*)."""
+    is lifted from ``image`` where its lift reproduces every run (*Init*)."""
     image, entries = bytes(image), list(entries)
     played, state, alias, start = entries, None, [], image
     kw = {"entry_sp": emit.ENTRY_REGS[3], "loaded": loaded, "fold": True}
