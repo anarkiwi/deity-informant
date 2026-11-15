@@ -3436,6 +3436,45 @@ def test_index_bound_through_a_call_keeps_a_read_inside(prefix, tmp_path, bounde
     assert ("rdC0(" in body) != bounded
 
 
+SIGNIDX = (
+    """
+init:   RTS
+play:   TAX
+        BEQ out
+        BPL out
+        ASL A
+        TAY
+TEST
+        LDA tab,Y
+        STA $C000
+out:    RTS
+tab:    .byte """
+    + ", ".join(str(k) for k in range(256))
+    + """
+end:
+"""
+)
+
+
+@pytest.mark.parametrize("test", ["        BPL out", "        CPY #$80\n        BCC out"])
+def test_flag_narrows_every_register_holding_its_value(prefix, tmp_path, test):
+    """The sign of a value two registers hold after a transfer bounds both: past the branch
+    on it the index is $80-$FE, as past the equivalent compare of the index itself, and the
+    table read is held as constant from its byte $80 only."""
+    img, labels, loaded = assemble(SIGNIDX.replace("TEST", test))
+    c, h, _ = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=[0])
+    play(
+        tmp_path,
+        c,
+        h,
+        img,
+        labels,
+        [("init", 0)] + [("play", a) for a in (0, 1, 0x7F, 0x80, 0xC1, 0xFF)],
+    )
+    spans = re.findall(r"#define (C\d+)_ORG 0x([0-9A-F]+)", h)
+    assert [int(o, 16) for _, o in spans] == [labels["tab"] + 0x80], spans
+
+
 def test_regions_stop_at_the_loaded_image(prefix, tmp_path):
     """A table read with any index reaches past the image: its region ends with the image,
     and a read past it is out of bounds. A byte past the image a store writes is held, and

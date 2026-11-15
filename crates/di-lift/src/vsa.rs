@@ -3,9 +3,10 @@
 //! interval follows.
 //!
 //! The domain is an interval per register. The 6502's flag-setting idioms are kept
-//! symbolically: a flag set by comparing `base + k` with a constant is a predicate on the
-//! register holding `base + shift`, so a conditional branch narrows that register on each edge
-//! before its interval is hulled. Joins are interval hulls; loop heads (targets of depth-first
+//! symbolically: a flag set by comparing `base + k` with a constant is a predicate on `base`,
+//! held by every data register that holds `base` plus a shift of its own, so a conditional
+//! branch narrows each of them (and the bound on `base` all their intervals give) on each
+//! edge before intervals are hulled. Joins are interval hulls; loop heads (targets of depth-first
 //! back edges) widen to the next compared-with constant, so every chain is finite.
 //!
 //! Calls are analysed per call site: a node is an instruction start in the context of the
@@ -67,13 +68,12 @@ impl Rel {
     }
 }
 
-/// The flag is `rel((x + off) mod 256, k)` for a value `x` bounded by `pre` that register
-/// `reg` holds as `x + shift`.
+/// The flag is `rel((x + off) mod 256, k)` for a value `x` bounded by `pre` that each data
+/// register `r` with a `shift[r]` holds as `x + shift[r]` (at least one does).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Pred {
-    reg: u8,
+    shift: [Option<u8>; DATA],
     off: u8,
-    shift: u8,
     rel: Rel,
     k: u8,
     pre: Iv,
@@ -626,8 +626,8 @@ pub(crate) fn hull(a: Iv, b: Iv) -> Iv {
     }
 }
 
-/// The values of the register `p` constrains when its flag is `want`; `None` if none.
-fn restrict(p: &Pred, want: bool) -> Option<Iv> {
+/// The values of a register holding `x + d` when `p`'s flag is `want`; `None` if none.
+fn restrict(p: &Pred, d: u8, want: bool) -> Option<Iv> {
     let rel = if want { p.rel } else { p.rel.not() };
     let k = p.k as i32;
     let pieces: &[(i32, i32)] = match rel {
@@ -651,16 +651,16 @@ fn restrict(p: &Pred, want: bool) -> Option<Iv> {
             ) else {
                 continue;
             };
-            let m = shift(m, p.shift);
+            let m = shift(m, d);
             out = Some(out.map_or(m, |o| hull(o, m)));
         }
     }
     out
 }
 
-/// Whether register value `v` makes `p`'s flag `want`.
-fn sat(p: &Pred, want: bool, v: u32) -> bool {
-    let x = (v + 256 - p.shift as u32) & 0xff;
+/// Whether value `v` of a register holding `x + d` makes `p`'s flag `want`.
+fn sat(p: &Pred, d: u8, want: bool, v: u32) -> bool {
+    let x = (v + 256 - d as u32) & 0xff;
     let y = (x + p.off as u32) & 0xff;
     let k = p.k as u32;
     let rel = match p.rel {
@@ -697,27 +697,33 @@ pub(crate) fn refine(code: &Code, st: &St, flag: usize, want: bool) -> Option<St
         .position(|&f| f == flag)
         .and_then(|i| st.pred[i]);
     if let Some(p) = pred {
-        let r = p.reg as usize;
-        s.env[r] = restrict(&p, want).and_then(|iv| meet(iv, st.env[r]))?;
-        if r < DATA {
+        let regs = || (0..DATA).filter_map(|r| p.shift[r].map(|d| (r, d)));
+        let pre = regs().try_fold(p.pre, |x, (r, d)| {
+            meet(x, shift(st.env[r], d.wrapping_neg()))
+        })?;
+        let p = Pred { pre, ..p };
+        for (r, d) in regs() {
+            s.env[r] = restrict(&p, d, want).and_then(|iv| meet(iv, s.env[r]))?;
             s.kb[r] = s.kb[r].meet(Kb::of(s.env[r]));
-        }
-        if r < DATA && code.sets() {
-            narrow(&mut s, r, st.vals(r).filter(|v| sat(&p, want, v)))?;
+            if !code.sets() {
+                continue;
+            }
+            let keep = s.vals(r).filter(|v| sat(&p, d, want, v));
+            narrow(&mut s, r, keep)?;
             if let Some(Tab::T {
                 pc,
                 op,
                 reg: ix,
                 ix: Ix::Live,
-            }) = st.tag[r].filter(|_| p.shift == 0)
+            }) = st.tag[r]
             {
                 let ix = ix as usize;
                 if let Some(base) = code.base(pc, op, ix).filter(|_| ix < DATA && ix != r) {
-                    let keep = st.vals(ix).filter(|x| {
+                    let keep = s.vals(ix).filter(|x| {
                         code.at(pc, base, x).is_some_and(|a| {
                             code.byte(a, st)
                                 .and_then(Iv::value)
-                                .is_none_or(|b| sat(&p, want, b))
+                                .is_none_or(|b| sat(&p, d, want, b))
                         })
                     });
                     narrow(&mut s, ix, keep)?;
@@ -975,37 +981,32 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
         }
     }
     let (sym, written) = symbolic(ops, b, st.env[di_pcode::reg::D].value().map(|d| d as u8));
+    // The shifts at which the data registers hold `x`, given those its symbols' bases hold it at.
+    let holds = |of: &dyn Fn(u8) -> Option<u8>| -> Option<[Option<u8>; DATA]> {
+        let d: [Option<u8>; DATA] = std::array::from_fn(|r| match sym[r] {
+            Some(Sym::Lin(b, o)) => of(b).map(|d| d.wrapping_add(o)),
+            _ => None,
+        });
+        d.iter().any(Option::is_some).then_some(d)
+    };
     let mut pred = [None; 3];
     for (i, &f) in FLAGS.iter().enumerate() {
         pred[i] = if written >> f & 1 == 0 {
             st.pred[i].and_then(|p| {
-                let r = p.reg as usize;
-                if written >> r & 1 == 0 {
-                    return Some(p);
-                }
-                match sym[r] {
-                    Some(Sym::Lin(base, o)) if base as usize == r => Some(Pred {
-                        shift: p.shift.wrapping_add(o),
-                        ..p
-                    }),
-                    _ => None,
-                }
+                let shift = holds(&|b| p.shift.get(b as usize).copied().flatten())?;
+                Some(Pred { shift, ..p })
             })
         } else if let Some(Sym::Cond(base, off, rel, k)) = sym[f] {
-            (0..DATA).find_map(|r| match sym[r] {
-                Some(Sym::Lin(b2, o)) if b2 == base => Some(Pred {
-                    reg: r as u8,
-                    off,
-                    shift: o,
-                    rel,
-                    k,
-                    pre: if (base as usize) < DATA {
-                        st.env[base as usize]
-                    } else {
-                        Iv::full(1)
-                    },
-                }),
-                _ => None,
+            holds(&|b| (b == base).then_some(0)).map(|shift| Pred {
+                shift,
+                off,
+                rel,
+                k,
+                pre: if (base as usize) < DATA {
+                    st.env[base as usize]
+                } else {
+                    Iv::full(1)
+                },
             })
         } else {
             None
@@ -1270,10 +1271,11 @@ fn join(code: &Code, a: &St, b: &St, widen: Option<&Thresholds>) -> St {
     let mut pred = [None; 3];
     for (p, (x, y)) in pred.iter_mut().zip(a.pred.iter().zip(&b.pred)) {
         *p = match (x, y) {
-            (Some(x), Some(y))
-                if (x.reg, x.off, x.shift, x.rel, x.k) == (y.reg, y.off, y.shift, y.rel, y.k) =>
-            {
-                Some(Pred {
+            (Some(x), Some(y)) if (x.off, x.rel, x.k) == (y.off, y.rel, y.k) => {
+                let shift =
+                    std::array::from_fn(|r| x.shift[r].filter(|_| x.shift[r] == y.shift[r]));
+                shift.iter().any(Option::is_some).then_some(Pred {
+                    shift,
                     pre: w(x.pre, hull(x.pre, y.pre)),
                     ..*x
                 })
