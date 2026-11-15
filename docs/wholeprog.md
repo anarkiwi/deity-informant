@@ -371,9 +371,11 @@ the facts, so a proof holds on every execution that stays in lifted code.
 
 - **Domain.** One interval per register at every instruction start and call context. The flags
   that compare a register with a constant (`CMP`/`CPX`/`CPY`, `INX`/`DEX`, loads and
-  transfers) are kept as predicates on the register, so a conditional branch narrows it on
-  each edge before intervals are hulled (`DEX; BPL` keeps `[0, n]` from a loop that counts
-  down from `n`); a callee's return keeps them, so a branch after `JSR` on the flags of the
+  transfers) are kept as predicates on the value compared, held by every one of `A`, `X`
+  and `Y` that holds it plus an offset of its own (`TAY` leaves it in both `A` and `Y`), so a
+  conditional branch narrows each of them on each edge before intervals are hulled (`DEX;
+  BPL` keeps `[0, n]` from a loop that counts down from `n`; `TAY; BPL` bounds the `Y` index
+  as `CPY #$80; BCC` would); a callee's return keeps them, so a branch after `JSR` on the flags of the
   callee's last load narrows what it returns. An edge whose flag is already known is not taken. Loop heads widen to the
   next constant a `CMP`/`CPX`/`CPY` immediate compares with, `$7F`/`$80` or the extremes.
   `A`, `X` and `Y` also keep their known bits (`known.rs`, joined bitwise), so the values of
