@@ -25,7 +25,7 @@ class Conds:
 
     def __init__(self):
         self.bdd = cudd.BDD()
-        self.bdd.configure(reordering=False)
+        self.bdd.configure(reordering=True)
         self.keys, self.vars, self.families = {}, {}, {}
         self.care = self.bdd.true
         self.memo = {}

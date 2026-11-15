@@ -60,6 +60,7 @@ def lift(
     sensitive=None,
     free=None,
     alias=(),
+    once=False,
 ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
     """Lift ``entries`` of the program in ``image`` (the memory each entry starts from);
     ``cycles=True`` counts cycles and stamps volatile accesses with them; ``bank`` is a bank
@@ -73,7 +74,9 @@ def lift(
     of unknown value, ``values`` theirs on each of its runs, in order (``docs/cgen.md``,
     *Init*); ``alias``
     ``[(lo, g, delta)]`` the operand pairs of them holding pair ``g`` plus ``delta``
-    (:func:`deity_informant.postinit.groups`)."""
+    (:func:`deity_informant.postinit.groups`); ``once=True`` runs each entry once from ``image``
+    (a host's init): a store into code makes cells only of the instructions that may run after
+    it in the same call, and needs no code check (``docs/wholeprog.md``, *Init*)."""
     n = _native_or_raise()
     prog = n.lift_program(
         bytes(image),
@@ -89,6 +92,7 @@ def lift(
         sensitive=None if sensitive is None else sorted(set(sensitive)),
         free=sorted((int(a), [int(x) for x in v]) for a, v in (free or {}).items()),
         alias=[tuple(a) for a in alias],
+        once=once,
     )
     prog.backend = backend or BACKEND
     return prog

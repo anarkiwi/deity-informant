@@ -30,7 +30,7 @@ python tools/cgenplay.py tune.sid --psid --volatile 0xD400-0xD41D -o out/   # tr
 | `facts` | `trace.Facts`, used only for targets of computed jumps the code does not resolve (below) |
 | `loaded` | the `[lo, hi)` bytes the program was loaded to (default: its code span) |
 | `header` | the name the `.c` includes |
-| `init` | the index of the entry the host calls once, first, on `image` (`None`, the default: entries in any order); run, not lifted (*Init*) |
+| `init` | the index of the entry the host calls once, first, on `image` (`None`, the default: entries in any order); run per song, and translated where its lift is exact for every song (*Init*) |
 | `songs` | the range of values of `A` the `init` entry is called with (default `[0]`); another traps |
 | `machine` | runs init (`postinit.run`; default the reference interpreter over `volatile`, whose device bytes hold what was written) |
 
@@ -40,7 +40,8 @@ python tools/cgenplay.py tune.sid --psid --volatile 0xD400-0xD41D -o out/   # tr
 the fact edges used, the lift's `stats`, whether some access has an unknown address and the
 `structure` counts: C `functions` (and the identical ones `folded` into them) and the
 `gotos` printed, the `provenance` of the printed constructs in the machine code (below), the instruction
-starts translated (`starts`) and the cells held as C variables (`state`, *State*).
+starts translated (`starts`), the cells held as C variables (`state`, *State*) and, with
+`init`, whether init is `"translated"` or `"replayed"` (`init`).
 
 The host supplies `uint8_t io_read(uint16_t)`, `void io_write(uint16_t, uint8_t)` and
 `void trap(uint16_t k)`, which must not return (`longjmp`, or abort the call). Each entry
@@ -61,7 +62,7 @@ caller's return address. `tools/cgenplay.c` is a host harness.
    named by ascending entry PC, deopts become `trap(k)` with `k` numbered in the order the
    lift's functions and blocks meet them; a deopt of an instance function is one trap for every
    copy (`("deopt", pc, function)`, the first copy's start). With `init` the other entries
-   are lifted from the state init leaves (*Init*).
+   are lifted from the state init leaves and init from the image (*Init*).
 2. **MLIR** (`emit.py`). Each lifted function is a private `func.func` taking and returning the
    register file as values; its registers, stack slots and block-crossing temporaries are
    rank-0 `memref.alloca`s, memory one global `@M`, volatile accesses `io_read`/`io_write`
@@ -104,14 +105,41 @@ every operation, so a small line parser replaces a native dependency.
 ## Init
 
 With `init`, `translate` runs that entry once per song on `machine` and lifts the other
-entries from the memory the first song's run leaves; init itself is not translated. The bytes
-it stores outside the stack page and the volatile ranges are variables whose values are the
-song's (`free`, [wholeprog](wholeprog.md#init)): the analysis takes none of them, so the `.c`
-is the same for every song, song count and song data, and only the `.h` differs. Operand pairs
-init sets from one word at constant offsets are one variable (`alias`), from the provenance
-of its run on the jennings core (`postinit.Run`: each stored byte tagged as a constant, a byte
-loaded at an address or through a word, or a byte of an addition chain on a word) when init
-returns on the reference interpreter. The `.c`'s init function puts the state in place:
+entries from the memory the first song's run leaves. The bytes it stores outside the stack
+page and the volatile ranges are variables whose values are the song's (`free`,
+[wholeprog](wholeprog.md#init)): play's analysis takes none of them, so play's lift holds for
+every song's state. Operand pairs init sets from one word at constant offsets are one variable
+(`alias`), from the provenance of its run on the jennings core (`postinit.Run`: each stored
+byte tagged as a constant, a byte loaded at an address or through a word, or a byte of an
+addition chain on a word) when init returns on the reference interpreter.
+
+Init is then lifted itself, from `image`, as an entry run once (`once`,
+[wholeprog](wholeprog.md#init): a store into code makes cells only of the instructions that
+may run after it, so a block copy over code init already ran leaves that code constant), for
+any `A`. It is **translated** when that lift is exact for every declared song:
+
+- lifted without throw-away reads, its run from `image` (`postinit.reproduces`) returns with
+  no deopt and no volatile read, so it depends on nothing but `image` and the song, makes the
+  machine's volatile writes in order and leaves the machine's values in the bytes init stores
+  and the image's in the others (outside the stack page and the volatile ranges);
+- every access of the reference's run of each song (`postinit.Run.touched`, effective
+  addresses per instruction) lies inside what the lift bounds it to: a pointer load's hulls
+  (`reach`, `proven`), a bounded store's array (`bounded`), an address set (`addr_sets`), so no
+  layout the lift's assumptions give traps on a declared song (`postinit.bounded`).
+
+Its functions join the entries' in one module, each reading its own lift's facts (value sets,
+register sets, hulls, bounded stores, address sets: `printer.Module.fx`); its instruction bytes
+decode from `image`, the bytes it patches are cells unless play's lift reads them as constants
+(which init then leaves), and the `.h` holds `image`. Init's entry function traps a song outside
+`CGEN_SONG0` and the `CGEN_SONGS` after it, then runs the translated code; a self-modified
+operand is a code cell (*State*), an `(zp),Y` block copy a pointer access (*Memory*). The `.c`
+is the same for every song count (the range is the `.h`'s); init's code is lifted from the
+image, so where the lift decides a branch from constant bytes init reads (song data) the `.c`
+follows that data.
+
+Otherwise init is **replayed**: an init whose run reads the device (a hardware probe patching
+play, which is so settled at the machine's value), loops on it, deopts or leaves bounds the lift
+assumed. The init function then puts the state in place:
 
 - a song outside `CGEN_SONG0` and the `CGEN_SONGS` after it traps;
 - init's volatile writes are replayed in order (`CGEN_IO_*`, each distinct sequence once and
@@ -123,8 +151,8 @@ returns on the reference interpreter. The `.c`'s init function puts the state in
   halving lengths, when longer than a copy's six table bytes) or literal bytes (`CGEN_LIT`),
   cut where an array ends; bytes play never reads are not held.
 
-The host calls init once, first, on the image. An init that probes the hardware and patches
-play (a SID-model probe) is settled at the machine's value.
+A replayed init's `.c` is the same for every song, song count and song data; only the `.h`
+differs. The host calls init once, first, on the image.
 
 ## Structuring
 
@@ -195,7 +223,8 @@ steps in order, each deciding on the graph the earlier ones leave:
    fall-through (`__attribute__((fallthrough))`). A jump every arm of an `if`/`else` or of a
    `switch` with a default ends with is printed once after it.
 
-- *Branch conditions* are BDDs (CUDD through `dd`, variable order fixed by first use). A
+- *Branch conditions* are BDDs (CUDD through `dd`, variables declared in order of first use,
+  sifted by CUDD's dynamic reordering as the diagram grows). A
   comparison of a value with a constant (after stripping zero extensions and constant
   additions, subtractions and exclusive-ors) and a `cf.switch` case are atoms `x == k` of a
   selector family whose atoms exclude each other.
@@ -484,10 +513,13 @@ or an earlier one), an index past a split table's extent trapping, a split table
 at an unbounded song byte held in arrays ending with the program and trapping past it, an opcode restored through
 the stack, a pointer into zero page with no stack check, a jump's or-ed high byte under
 relocation, determinism (repeated, with the blocks shuffled and under other hash seeds), play
-lifted from the state init leaves (a relocator's operands pointer variables bounded to the song
+lifted from the state init leaves and init translated (a table-driven block copy with a
+self-modified length overwriting a routine init ran, with no copy tables; an init lifted run
+once against any number of times; an init reading the device replayed; a relocator's operands
+pointer variables bounded to the song
 and one variable per source word; init relocating by the song, reading song data, making I/O
-writes song data decides or copying a block per song, with the same `.c` for every song, song
-count and song data; a probe patching play's opcode settled at the machine's value), each song
+writes song data decides or copying a block per song, replayed with the same `.c` for every
+song, song count and song data; a probe patching play's opcode settled at the machine's value), each song
 from a fresh image, and an llvm-mos build. `tools/cgenplay.py` does the
 same for a PSID (its init called once, first: `--init`) or raw image (`--loaded LO-HI`
 names the program's bytes in a raw 64 KiB state, as a memory dump after an init routine) and

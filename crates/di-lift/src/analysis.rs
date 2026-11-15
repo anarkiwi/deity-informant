@@ -777,7 +777,9 @@ pub fn entry_config(m: &BankMap, img: &[u8; 0x10000], facts: &Facts, pc: u16) ->
 /// unresolved (to their facts' targets) is decided on a converged program, and the fixpoint is
 /// recomputed until that does not grow. With `reach` (the volatile ranges) the graph holds the
 /// address hulls of pointer loads. `free` holds the variables the host's init leaves: bytes of
-/// unknown value (their values over its runs, in run order), as the facts' writes are.
+/// unknown value (their values over its runs, in run order), as the facts' writes are. With
+/// `once` each entry runs once from `img`: a store makes cells only of the code bytes of the
+/// instructions that may run after it ([`After`]) and needs no code check.
 #[allow(clippy::too_many_arguments)]
 pub fn discover(
     img: &[u8; 0x10000],
@@ -788,6 +790,7 @@ pub fn discover(
     loaded: Option<(u32, u32)>,
     reach: Option<crate::vsa::Wanted>,
     free: &FxHashMap<u16, Vec<u8>>,
+    once: bool,
 ) -> Graph {
     let mut edges: FxHashMap<u16, Vec<u16>> = FxHashMap::default();
     for &(p, q) in &facts.edges {
@@ -808,6 +811,7 @@ pub fn discover(
         loaded,
         reach,
         free,
+        once,
         constant: {
             let mut c = FixedBitSet::with_capacity(0x10000);
             if let Some((lo, hi)) = loaded {
@@ -902,6 +906,8 @@ struct Fixpoint<'a> {
     reach: Option<crate::vsa::Wanted<'a>>,
     /// The variables the host's init leaves, with their values per run.
     free: &'a FxHashMap<u16, Vec<u8>>,
+    /// Each entry runs once ([`discover`]).
+    once: bool,
 }
 
 impl Fixpoint<'_> {
@@ -1069,8 +1075,13 @@ impl Fixpoint<'_> {
                 &given,
             );
             let mut written: FxHashMap<u16, BTreeSet<u8>> = FxHashMap::default();
+            let mut later = After::new(&vars, entries, self.once);
             for st in &an.stores {
+                let late = later.of(st.pc);
                 for &a in st.addrs.iter().flatten() {
+                    if late.is_some_and(|l| !l.contains(a as usize)) {
+                        continue;
+                    }
                     let s = written.entry(a).or_default();
                     match an.cellvals.get(&a) {
                         Some(Some(v)) => s.extend(v),
@@ -1151,13 +1162,20 @@ impl Fixpoint<'_> {
                         vals.insert(a as u16, v.clone());
                     }
                 }
+                // Run once, a store meets constant code only where it ran or never runs: one
+                // with an address set makes cells of the rest, one of an interval needs a
+                // check where it may hit a table or code that may run after it.
                 let nocode = an
                     .stores
                     .iter()
-                    .filter(|s| {
-                        s.addrs
-                            .as_ref()
-                            .is_some_and(|a| a.iter().all(|&x| !constcode.contains(x as usize)))
+                    .filter(|s| match &s.addrs {
+                        Some(a) => self.once || a.iter().all(|&x| !constcode.contains(x as usize)),
+                        None => later.of(s.pc).is_some_and(|l| {
+                            (s.addr.lo as usize..=s.addr.hi.min(0xffff) as usize).all(|x| {
+                                !constcode.contains(x)
+                                    || !l.contains(x) && !tables.contains(&(x as u16))
+                            })
+                        }),
                     })
                     .map(|s| (s.pc, s.op, s.ai))
                     .collect();
@@ -1323,6 +1341,160 @@ fn guarded(g: &mut Graph) {
                 *run = (run.0.max(m.lo), run.1.min(m.hi + 1).max(run.0.max(m.lo)));
             }
         }
+    }
+}
+
+/// The code bytes of the instructions that may run after an instruction in one call of an
+/// entry run once, with calls matched to their returns: those of the routines (the entries,
+/// `JSR` and `BRK` targets) holding it from it on, of every routine they call, and of each
+/// caller from the call's return site on, once the routine returns. Memoized per
+/// instruction; `None` when entries are not run once.
+struct After<'a> {
+    vars: &'a FxHashMap<u16, Vec<Var>>,
+    /// Per routine, its own instructions (a call continuing at its return site).
+    body: FxHashMap<u16, FxHashSet<u16>>,
+    /// Per routine, the code bytes of it and of every routine it calls.
+    full: FxHashMap<u16, FixedBitSet>,
+    /// Per routine, the return sites of its calls.
+    sites: FxHashMap<u16, Vec<u16>>,
+    memo: FxHashMap<u16, FixedBitSet>,
+    once: bool,
+}
+
+/// The calls of a flow: its callees and return site.
+fn call(pc: u16, f: &Flow) -> Option<(Vec<u16>, u16)> {
+    match f {
+        Flow::Jsr { t, ret } => Some((t.all().to_vec(), *ret)),
+        Flow::Brk(t) => Some((t.clone(), pc.wrapping_add(2))),
+        _ => None,
+    }
+}
+
+impl<'a> After<'a> {
+    fn new(vars: &'a FxHashMap<u16, Vec<Var>>, entries: &[Entry], once: bool) -> Self {
+        let mut sites: FxHashMap<u16, Vec<u16>> = FxHashMap::default();
+        let mut roots: Vec<u16> = entries.iter().filter(|_| once).map(|e| e.pc).collect();
+        for (&pc, v) in vars
+            .iter()
+            .filter(|_| once)
+            .flat_map(|(p, vs)| vs.iter().map(move |v| (p, v)))
+        {
+            if let Some((ts, ret)) = call(pc, &v.flow) {
+                for t in ts {
+                    sites.entry(t).or_default().push(ret);
+                    roots.push(t);
+                }
+            }
+        }
+        roots.sort_unstable();
+        roots.dedup();
+        let body: FxHashMap<u16, FxHashSet<u16>> =
+            roots.iter().map(|&t| (t, Self::walk(vars, [t]))).collect();
+        let mut full = FxHashMap::default();
+        for &t in &roots {
+            let mut out = FixedBitSet::with_capacity(0x10000);
+            let (mut work, mut seen) = (vec![t], FxHashSet::default());
+            while let Some(r) = work.pop() {
+                if !seen.insert(r) {
+                    continue;
+                }
+                for &p in body.get(&r).into_iter().flatten() {
+                    for v in vars.get(&p).into_iter().flatten() {
+                        for i in 0..Template::of(v.op).len as u16 {
+                            out.insert(p.wrapping_add(i) as usize);
+                        }
+                        work.extend(call(p, &v.flow).into_iter().flat_map(|c| c.0));
+                    }
+                }
+            }
+            full.insert(t, out);
+        }
+        After {
+            vars,
+            body,
+            full,
+            sites,
+            memo: FxHashMap::default(),
+            once,
+        }
+    }
+
+    /// The instructions reached from `from` without returning: a call continues at its return
+    /// site, an `RTS`/`RTI` at its computed targets alone.
+    fn walk(
+        vars: &FxHashMap<u16, Vec<Var>>,
+        from: impl IntoIterator<Item = u16>,
+    ) -> FxHashSet<u16> {
+        let mut seen = FxHashSet::default();
+        let mut work: Vec<u16> = from.into_iter().collect();
+        while let Some(p) = work.pop() {
+            if !seen.insert(p) {
+                continue;
+            }
+            for v in vars.get(&p).into_iter().flatten() {
+                match call(p, &v.flow) {
+                    Some((_, ret)) => work.push(ret),
+                    None => work.extend(flow_succs(&v.flow)),
+                }
+            }
+        }
+        seen
+    }
+
+    fn of(&mut self, pc: u16) -> Option<&FixedBitSet> {
+        if !self.once {
+            return None;
+        }
+        if !self.memo.contains_key(&pc) {
+            let vars = self.vars;
+            let mut out = FixedBitSet::with_capacity(0x10000);
+            let succs = |p: u16| -> Vec<u16> {
+                (vars.get(&p).into_iter().flatten())
+                    .flat_map(|v| match call(p, &v.flow) {
+                        Some((_, ret)) => vec![ret],
+                        None => flow_succs(&v.flow),
+                    })
+                    .collect()
+            };
+            // Each start is the code after it in every routine holding it.
+            let (mut work, mut done) = (vec![(pc, true)], FxHashSet::default());
+            while let Some((q, skip)) = work.pop() {
+                if !done.insert((q, skip)) {
+                    continue;
+                }
+                let start = if skip { succs(q) } else { vec![q] };
+                let seen = Self::walk(vars, start);
+                for &p in &seen {
+                    for v in vars.get(&p).into_iter().flatten() {
+                        for i in 0..Template::of(v.op).len as u16 {
+                            out.insert(p.wrapping_add(i) as usize);
+                        }
+                        for c in call(p, &v.flow).into_iter().flat_map(|c| c.0) {
+                            if let Some(f) = self.full.get(&c) {
+                                out.union_with(f);
+                            }
+                        }
+                    }
+                }
+                // Returning: each routine holding `q` that `seen` returns from goes back to its
+                // callers' return sites.
+                let returns = seen.iter().any(|p| {
+                    (vars.get(p).into_iter().flatten())
+                        .any(|v| matches!(v.flow, Flow::Rts(_) | Flow::Rti(_)))
+                });
+                if returns {
+                    for (t, b) in &self.body {
+                        if b.contains(&q) {
+                            for &r in self.sites.get(t).into_iter().flatten() {
+                                work.push((r, false));
+                            }
+                        }
+                    }
+                }
+            }
+            self.memo.insert(pc, out);
+        }
+        self.memo.get(&pc)
     }
 }
 

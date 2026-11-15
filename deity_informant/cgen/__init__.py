@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import time
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -250,11 +251,14 @@ def _dispatch(mem, helpers, used, cases=()):
     return out
 
 
+#: The song's index in the ``.h``'s range, of the init entry's argument ``a``.
+SONG = "(uint8_t)(a - CGEN_SONG0)"
+
+
 def _init_c(name, k):
     """The init entry ``name``: it traps (``k``) on a song outside the ``.h``'s range, then
     replays init's volatile writes and makes the song's copies into the variables, from the
     ``.h`` (``CGEN_IO_*``, ``CGEN_CP_*``, ``CGEN_LIT*``)."""
-    s = "(uint8_t)(a - CGEN_SONG0)"
     return [
         "#if CGEN_IO_N",
         "static const uint16_t IO_AT[CGEN_IO_N] = {CGEN_IO_AT};",
@@ -274,12 +278,12 @@ def _init_c(name, k):
         "static const uint16_t CP_FROM[CGEN_SONGS + 1] = {CGEN_CP_FROM};",
         "#endif",
         f"void {name}(uint8_t a) {{",
-        f"if ({s} >= CGEN_SONGS) {{",
+        f"if ({SONG} >= CGEN_SONGS) {{",
         f"trap({k});",
         "}",
         "#if CGEN_IO_N",
         "#if CGEN_IO_ROWS > 1",
-        f"uint8_t r = IO_ROW[{s}];",
+        f"uint8_t r = IO_ROW[{SONG}];",
         "#else",
         "uint8_t r = 0;",
         "#endif",
@@ -288,7 +292,7 @@ def _init_c(name, k):
         "}",
         "#endif",
         "#if CGEN_CP_N",
-        f"for (uint16_t i = CP_FROM[{s}]; i < CP_FROM[{s} + 1]; ++i) {{",
+        f"for (uint16_t i = CP_FROM[{SONG}]; i < CP_FROM[{SONG} + 1]; ++i) {{",
         "for (uint16_t j = 0; j < CP_LEN[i]; ++j) {",
         "CP_DST[i][j] = CP_SRC[i][j];",
         "}",
@@ -415,6 +419,60 @@ class Program:  # pylint: disable=too-many-instance-attributes
     regs: dict | None = None
     bounded: dict | None = None
     init: tuple | None = None
+    #: The lift each function comes from (0: the entries', 1: init's), when init is lifted.
+    origin: list | None = None
+    #: The memory init's lift starts from, and its constant bytes, starts and facts.
+    start: bytes | None = None
+    lifted: tuple | None = None
+
+
+def _ranked(progs):
+    """The functions of the lifts ``progs`` sorted by entry PC, their ``CALL`` s renumbered,
+    and the index of the lift each comes from."""
+    items = [(fn, k, i) for k, prog in enumerate(progs) for i, fn in enumerate(prog.functions)]
+    order = sorted(range(len(items)), key=lambda j: items[j][0]["pc"])
+    remap = {items[j][1:]: n for n, j in enumerate(order)}
+    funcs, origin = [], []
+    for j in order:
+        fn, k, _ = items[j]
+        for op in (op for b in fn["blocks"] for op in b["ops"] if op[0] == "CALL"):
+            op[3] = remap[(k, op[3])]
+        funcs.append(fn)
+        origin.append(k)
+    return funcs, origin
+
+
+def _facts(prog):
+    """The facts of lift ``prog`` the layout reads (:meth:`printer.Module.fx`)."""
+    sets = {a: (min(v), max(v)) for a, v in dict(prog.sets).items() if v}
+    return SimpleNamespace(
+        sets={**dict(prog.bounds), **sets},
+        regs={pc: tuple(bytes(x) for x in r) for pc, r in dict(prog.regs).items()},
+        reach=dict(prog.reach),
+        proven=dict(prog.proven),
+        bounded=dict(prog.bounded),
+        addr_sets=dict(prog.addr_sets),
+    )
+
+
+def _lift_init(
+    start, entry, volatile, facts, sensitive, kw, state, runs
+):  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    """Init's lift (at ``entry``, run once from ``start``, any ``A``: the host's check of the
+    song is the ``.h``'s range) when it is exact for every song: its run reproduces the
+    machine's (:func:`deity_informant.postinit.reproduces`, lifted without throw-away reads
+    so every volatile read it makes is one it uses) and the accesses of the reference's
+    ``runs`` lie inside what it bounds them to (:func:`deity_informant.postinit.bounded`);
+    else None."""
+    if None in runs:
+        return None
+    kw, spec = {**kw, "once": True}, [entry]
+    if not postinit.reproduces(
+        wholeprog.lift(start, spec, volatile, facts, sensitive=(), **kw), start, state
+    ):
+        return None
+    lone = wholeprog.lift(start, spec, volatile, facts, sensitive=sensitive, **kw)
+    return lone if postinit.bounded(lone, runs) else None
 
 
 def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
@@ -432,10 +490,12 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     give computed-jump targets only, ``loaded`` the ``(lo, hi)`` the program was loaded to and
     ``sensitive`` the volatile addresses whose throw-away reads are kept. ``entries[init]``
     (``None``: none) is called once, first, with ``A`` each of the range ``songs`` (default
-    ``[0]``): it runs on ``machine`` (:func:`deity_informant.postinit.run`) and the other
-    entries are lifted from the memory it leaves, every byte it stores a variable (*Init*)."""
+    ``[0]``): it runs on ``machine`` (:func:`deity_informant.postinit.run`), the other
+    entries are lifted from the memory it leaves, every byte it stores a variable, and init
+    is lifted from ``image`` where its lift reproduces every song's run (*Init*)."""
     image, entries = bytes(image), list(entries)
-    played, state, alias = entries, None, []
+    played, state, alias, start = entries, None, [], image
+    kw = {"entry_sp": emit.ENTRY_REGS[3], "loaded": loaded, "fold": True}
     if init is not None:
         vals = sorted(set(range(1) if songs is None else songs))
         if not vals or vals[-1] - vals[0] + 1 != len(vals):
@@ -452,21 +512,16 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
         [pc for pc, _ in played],
         volatile,
         facts=facts,
-        entry_sp=emit.ENTRY_REGS[3],
-        loaded=loaded,
-        fold=True,
         sensitive=sensitive,
         free=None if state is None else state.values(),
         alias=alias,
+        **kw,
     )
-    lifted = prog.functions
-    rank = sorted(range(len(lifted)), key=lambda i: lifted[i]["pc"])
-    remap = {i: j for j, i in enumerate(rank)}
-    funcs = [lifted[i] for i in rank]
-    for b in (b for f in funcs for b in f["blocks"]):
-        for op in b["ops"]:
-            if op[0] == "CALL":
-                op[3] = remap[op[3]]
+    lifts = [prog]
+    if state is not None:
+        lone = _lift_init(start, entries[init][0], volatile, facts, sensitive, kw, state, runs)
+        lifts += [lone] if lone is not None else []
+    funcs, origin = _ranked(lifts)
     starts = set(prog.starts)
     p = Program(funcs, played, image, starts, [tuple(v) for v in volatile])
     p.constant, p.jumps, p.sets = frozenset(prog.code), dict(prog.jumps), dict(prog.sets)
@@ -475,6 +530,13 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     p.proven, p.regs, p.bounded = dict(prog.proven), dict(prog.regs), dict(prog.bounded)
     if state is not None:
         p.init = (entries[init], state)
+    if len(lifts) > 1:
+        lone = lifts[1]
+        p.entries = [*played, entries[init]]
+        p.origin, p.start = origin, start
+        p.lifted = (frozenset(lone.code), set(lone.starts), _facts(lone))
+        p.jumps.update(dict(lone.jumps))
+        p.written += list(lone.written)
     return p, prog.stats
 
 
@@ -503,8 +565,20 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         span = np.flatnonzero(code)
         loaded = (int(span[0]), int(span[-1]) + 1) if len(span) else (0, 0)
     pairs = pointer_pairs(p.image, p.starts)
-    data, plan = p.image, None
-    if p.init is not None:
+    data, plan, fixed = p.image, None, code
+    if p.lifted is not None:
+        # Init's lift: its instructions decode from the image it runs on; the bytes it patches
+        # are cells unless the entries' lift reads them as constants, which init leaves.
+        iconst, istarts, _ = p.lifted
+        icode = code_bytes(p.start, istarts)
+        imask = np.zeros(0x10000, dtype=bool)
+        imask[list(iconst)] = True
+        ran |= icode
+        cells |= icode & ~imask & ~code
+        fixed = code | (icode & imask)
+        pairs = {**pointer_pairs(p.start, istarts), **pairs}
+        data = p.start
+    elif p.init is not None:
         # The .h holds the image or the first song's state, whichever needs the smaller copies.
         state = p.init[1]
         source = ~(code if tables is None else code | tables) & ~_volatile_mask(p.volatile)
@@ -516,7 +590,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         )
     mem = Memory(data, code, p.volatile, loaded, p.sensitive, pairs, tables, p.written)
     mod = printer.Module(top, mem)
-    mod.insn = ran
+    mod.insn, mod.fixed = ran, fixed
     # Promotion candidates: the cells and the other variable bytes inside the code span.
     lo, hi = mem.code_span
     mod.cells = cells.copy()
@@ -533,7 +607,13 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     mod.regfile = regfile = [r for r, _ in emit.Context(p.funcs, False).regfile]
     mod.regs = {pc: tuple(bytes(x) for x in r) for pc, r in (p.regs or {}).items()}
     mod.kpos = regfile.index(emit.KREG) if emit.KREG in regfile else None
-    if p.init is not None:
+    if p.lifted is not None:
+        mod.scope = {f"f{j}": p.lifted[2] for j, k in enumerate(p.origin) if k}
+        (pc, name), _ = p.init
+        k = traps.setdefault(("deopt", pc), len(traps))
+        mod.traps.add(k)
+        mod.guards[name] = [f"if ({SONG} >= CGEN_SONGS) {{", f"trap({k});", "}"]
+    elif p.init is not None:
         mod.traps.add(traps.setdefault(("deopt", p.init[0][0]), len(traps)))
         mod.held_runs = sorted(
             {(s, s + n - 1) for ops in plan for _, s, n in ops if isinstance(s, int)}
@@ -571,7 +651,13 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
             "}",
         ]
     sets = []
-    if p.init is not None:
+    if p.lifted is not None:
+        state = p.init[1]
+        sets = [
+            f"#define CGEN_SONG0 0x{state.songs[0]:02X}",
+            f"#define CGEN_SONGS {len(state.songs)}",
+        ]
+    elif p.init is not None:
         (pc, name), state = p.init
         sets, named = _copies_h(mem, plan, mod.var_ref)
         regions = sorted(set(regions) | named)
@@ -635,5 +721,6 @@ def translate(  # pylint: disable=too-many-arguments
     info["times"] = {"lift": lift_time, **info["times"]}
     info["facts_edges"] = list(jf.edges) if jf is not None else []
     info["stats"] = stats
-    info["starts"] = sorted(p.starts)
+    info["starts"] = sorted(p.starts | (p.lifted[1] if p.lifted else set()))
+    info["init"] = None if p.init is None else "translated" if p.lifted else "replayed"
     return c, h, info
