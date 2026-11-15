@@ -512,7 +512,7 @@ the lift), short-circuit conditions, no structuring variables, the structuring (
 multi-exit and two-entry loops, switches from compare chains and jump tables, kept callees' parameters, wrapping
 addresses), computed jumps and calls through operands written from tables (in the same call
 or an earlier one), an index past a split table's extent trapping, a split table at the end of the program stored
-at an unbounded song byte held in arrays ending with the program and trapping past it, an opcode restored through
+at an unbounded song byte held in arrays ending with the program and trapping past it, a cell reload forwarded from the register stored to it past such a guarded store, an opcode restored through
 the stack, a pointer into zero page with no stack check, a jump's or-ed high byte under
 relocation, determinism (repeated, with the blocks shuffled and under other hash seeds), play
 lifted from the state init leaves and init translated (a table-driven block copy with a
