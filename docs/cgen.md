@@ -206,7 +206,8 @@ steps in order, each deciding on the graph the earlier ones leave:
    copies) a branch with no effect, entered by two or more forward edges and whose other edge
    leaves the loop, prints as `do` ... `while` with that latch as its condition (its
    computations, its test and the back edge's copies as one expression): an edge to the latch
-   is `continue`, and the latch's exit follows the loop.
+   is `continue`, the latch's label (a `goto`'s, from a loop nested in the body) ends the body
+   before the condition, and the latch's exit follows the loop.
 6. *Placement* after Ramsey, "Beyond Relooper: recursive translation of unstructured control
    flow to structured control flow" (ICFP 2022): each node is followed by the joins it
    immediately dominates (nodes with two or more forward edges in) and, heading a loop, the
