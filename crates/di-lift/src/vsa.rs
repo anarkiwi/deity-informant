@@ -1737,7 +1737,7 @@ pub struct Analysis {
     pub sels: FxHashMap<u16, crate::dispatch::Selector>,
     /// Every store's addresses and values.
     pub stores: Vec<crate::dispatch::Store>,
-    /// Index guards the resolved transfers and stored table bytes need.
+    /// Index guards the resolved transfers, stored table bytes and unbounded stores need.
     pub guards: Vec<crate::dispatch::Guard>,
     /// The table bytes stored values, pointer stores' addresses and trip bounds were read
     /// from.
@@ -2960,6 +2960,14 @@ pub fn analyze(
     sets.mem = Some((
         crate::dispatch::cell_values(&code, &live),
         unknown.collect(),
+    ));
+    guards.extend(crate::dispatch::access_guards(
+        &code,
+        vars,
+        &sets,
+        &objs,
+        loaded,
+        given.written,
     ));
     let (jumps, sels) =
         crate::dispatch::jumps(&code, vars, &state, &sets, &objs, &stores, &cellvals);

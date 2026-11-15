@@ -376,6 +376,21 @@ entry:  TAX
         RTS
 end:
 """
+SONGTAB = """
+entry:  LDY song
+        LDA tlo,Y
+        STA $C000
+        LDA thi,Y
+        STA $C001
+        INC song
+        TYA
+        STA thi,Y
+        RTS
+song:   .byte 0
+tlo:    .byte $10,$20,$30,$40
+thi:    .byte $11,$21,$31,$41
+end:
+"""
 LOHI = """
 entry:  AND #$03
         TAY
@@ -2429,6 +2444,35 @@ def test_split_table_index_past_its_extent_traps(prefix, tmp_path):
         (tmp_path / str(a)).mkdir(parents=True)
         with pytest.raises(AssertionError, match="trap"):
             play(tmp_path / str(a), c, h, img, labels, [("entry", a)])
+
+
+def arrays_end(h):
+    """The end of the highest array the ``.h`` defines."""
+    ends = re.findall(r"#define ([RC]\d+)_ORG (0x[0-9A-F]+)\n#define \1_LEN (\d+)", h)
+    return max(int(org, 16) + int(n) for _, org, n in ends)
+
+
+def test_unbounded_table_store_ends_with_the_program(prefix, tmp_path):
+    """A split table at the end of the program stored at a song byte the code does not bound:
+    its arrays end with the program, and a store past it traps."""
+    img, labels, loaded = assemble(SONGTAB)
+    c, h, info = translate(prefix, img, labels, loaded)
+    assert arrays_end(h) == labels["end"]
+    [(k, key)] = info["traps"].items()
+    assert key == ("deopt", labels["entry"] + 19) and f"trap({k})" in c
+    play(tmp_path, c, h, img, labels, entry_calls([0], 4))
+    (tmp_path / "past").mkdir()
+    with pytest.raises(AssertionError, match="trap"):
+        play(tmp_path / "past", c, h, img, labels, entry_calls([0], 5))
+
+
+def test_unbounded_table_store_inside_the_program_is_unguarded(prefix, tmp_path):
+    """The same table followed by data the whole index range stays inside has no guard."""
+    src = SONGTAB.replace("end:\n", "        .byte 0\n" * 0x100 + "end:\n")
+    img, labels, loaded = assemble(src)
+    c, h, info = translate(prefix, img, labels, loaded)
+    assert not info["traps"] and arrays_end(h) > labels["thi"] + 4
+    play(tmp_path, c, h, img, labels, entry_calls([0], 9))
 
 
 def test_or_ed_high_byte_relocates(prefix, tmp_path):

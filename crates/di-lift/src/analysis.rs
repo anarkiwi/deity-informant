@@ -956,6 +956,7 @@ impl Fixpoint<'_> {
         (g.reach, g.proven, g.regs) = (an.reach, an.proven, an.regs);
         g.nocode.extend(an.bounded.keys().copied());
         g.bounded = an.bounded;
+        guarded(g);
     }
 
     fn run(&self) -> (Graph, FxHashMap<u16, crate::dispatch::Jump>) {
@@ -1284,6 +1285,43 @@ impl Fixpoint<'_> {
             cells = next;
             values = nvalues;
             stat = nstat;
+        }
+    }
+}
+
+/// The accesses of `g` at each instruction an index guard checks met with the addresses they
+/// reach with the guarded register inside the guard's range, which is all a run past the guard
+/// touches: their intervals, a load's proven hull ([`Graph::proven`]) and a store's run
+/// ([`Graph::bounded`]).
+fn guarded(g: &mut Graph) {
+    let mut acc = Vec::new();
+    for (&pc, &(r, ok)) in &g.guards {
+        for v in g.vars.get_mut(&pc).into_iter().flatten() {
+            let t = Template::of(v.op);
+            let mut env = TOP_ENV;
+            env[r as usize] = ok;
+            acc.clear();
+            absint(
+                t.ops(),
+                operand_bytes(&g.img, &g.cells, pc, t.len),
+                &mut env,
+                &mut acc,
+            );
+            for (ai, (a, x)) in v.acc.iter_mut().zip(&acc).enumerate() {
+                let Some(m) = crate::vsa::meet(a.addr, x.addr).filter(|_| !a.dummy) else {
+                    continue;
+                };
+                a.addr = m;
+                let key = (pc, v.op, ai);
+                if !a.store {
+                    if let Some((h, _)) = g.proven.get_mut(&key) {
+                        *h = crate::vsa::meet(*h, m).unwrap_or(*h);
+                    }
+                    continue;
+                }
+                let run = g.bounded.entry(key).or_insert((m.lo, m.hi + 1));
+                *run = (run.0.max(m.lo), run.1.min(m.hi + 1).max(run.0.max(m.lo)));
+            }
         }
     }
 }

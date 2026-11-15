@@ -750,6 +750,34 @@ fn jump_table_ends_at_its_target() {
     assert!(diff(&img, &p, &acc_calls(&[3]), IO) > 0);
 }
 
+/// A store into a table that ends the loaded program through an unbounded index stays inside
+/// it: an index past it deopts at the store. One whose index range stays inside the program
+/// has no guard.
+#[test]
+fn unbounded_stores_stay_inside_the_program() {
+    let prog: &[u8] = &[
+        0xa8, 0xb9, 0x0b, 0x10, 0x8d, 0x00, 0xc0, 0x99, 0x0b, 0x10, 0x60, 0x11, 0x22, 0x33, 0x44,
+    ];
+    let mut inside = prog.to_vec();
+    inside.extend([0; 0x100]);
+    for (bytes, past) in [(prog, true), (&inside[..], false)] {
+        let img = image(&[(0x1000, bytes)]);
+        let opts = Opts {
+            loaded: Some((0x1000, 0x1000 + bytes.len() as u32)),
+            ..Opts::default()
+        };
+        let p = lift_with(
+            &img,
+            &entries(&[0x1000]),
+            &[(0xc000, 0xc100)],
+            &Facts::default(),
+            opts,
+        );
+        assert_eq!(diff(&img, &p, &acc_calls(&[0, 3, 1, 2, 3, 0]), IO), 0);
+        assert_eq!(diff(&img, &p, &acc_calls(&[4, 5]), IO) > 0, past);
+    }
+}
+
 /// A table byte a store from a constant base plus an unbounded index may write is data, not
 /// constant code the store is checked against.
 #[test]
