@@ -64,6 +64,10 @@ pub struct Opts {
     /// Operand pairs of `free` one pointer variable holds: `(lo, g, delta)`, the pair at `lo`
     /// holding the pair at `g` plus `delta` (`deity_informant.postinit`). Play reads `g`.
     pub alias: Vec<(u16, u16, u16)>,
+    /// Each entry runs once, from `img` (a host's init): a store into code makes cells only of
+    /// the instructions that may run after it in the same call, and needs no code check of the
+    /// others, which ran or never run (*Init*).
+    pub once: bool,
 }
 
 impl Default for Opts {
@@ -77,6 +81,7 @@ impl Default for Opts {
             fold: false,
             free: Vec::new(),
             alias: Vec::new(),
+            once: false,
         }
     }
 }
@@ -564,6 +569,7 @@ pub fn lift_banked(
             opts.loaded,
             opts.entry_sp.map(|_| vsa::Wanted { volatile }),
             &free,
+            opts.once,
         );
         let roots: Vec<u16> = entries.iter().map(|e| e.pc).collect();
         // Declared entry SP: the windows also keep pointers out of the volatile pages.

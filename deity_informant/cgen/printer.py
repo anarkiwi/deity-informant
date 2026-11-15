@@ -788,9 +788,9 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         if o is None:
             r = self.iv_joined(v)
         elif o.name == "memref.load" and w == 8:
-            r = self.mod.sets.get(self.const_of(self.address(o))) or self.mod.mem.hull(
-                *self.iv(self.address(o))
-            )
+            r = self.mod.fx(self.name).sets.get(
+                self.const_of(self.address(o))
+            ) or self.mod.mem.hull(*self.iv(self.address(o)))
             r = meet(r, self.mod.loaded_iv(self, o) or r)
         elif o.name == "func.call":
             r = self.mod.result_iv(o.prop("callee")[1:], o.res.index(v)) or full
@@ -1139,7 +1139,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         """The interval of load ``o``'s address met with the hull the lift proves of its
         instruction (every copy's, the bounds of the bytes its index comes from), or None."""
         lo, hi = self.iv(self.address(o))
-        h = self.mod.reach_of(self, o, self.mod.proven) if o.name == "memref.load" else None
+        h = self.mod.reach_of(self, o, "proven") if o.name == "memref.load" else None
         if h is None or hi - lo >= regions.BOUNDED or h[0] > hi or lo > h[1]:
             return None
         return max(lo, h[0]), min(hi, h[1])
@@ -1882,7 +1882,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         intervals, so the test holds for every index the base is used with."""
         bi = self.base_index(o)
         store = o.name == "memref.store" or o.prop("callee") == "@io_write"
-        runs = self.mod.addr_sets.get((o.pc, store))
+        runs = self.mod.fx(self.f.name).addr_sets.get((o.pc, store))
         if bi is None or not runs:
             return None
         ylo, yhi = self.f.iv(bi[1])
@@ -1950,7 +1950,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         if mem.is_code(lo, hi):
             return ("code",)
         store = o.name == "memref.store" or o.prop("callee") == "@io_write"
-        found = self.mod.owners(self.mod.addr_sets.get((o.pc, store)), not store)
+        found = self.mod.owners(self.mod.fx(self.f.name).addr_sets.get((o.pc, store)), not store)
         if found:
             regs, spans = found
             if len(regs) + len(spans) == 1:
@@ -2849,10 +2849,19 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.guards = {}
         #: Runs ``(lo, hi)`` (inclusive) held in regions whatever reads them (init's sources).
         self.held_runs = []
+        #: Per function name, the lift whose facts (:meth:`fx`) it reads, when not this one's.
+        self.scope = {}
+        #: The instruction bytes each lift decodes as constant (opcodes intervals are read by).
+        self.fixed = mem.code
         for o in top.regions[0][0].ops:
             if o.name == "func.func" and o.regions[0] and o.regions[0][0].ops:
                 self.funcs.append(Func(o, self))
         self.by_name = {f.name: f for f in self.funcs}
+
+    def fx(self, name):
+        """The facts of the lift function ``name`` comes from: ``sets``, ``regs``, ``reach``,
+        ``proven``, ``bounded`` and ``addr_sets``."""
+        return self.scope.get(name, self)
 
     def prune(self):
         """Keep the values something observable needs, over the whole module: a store, an
@@ -2948,11 +2957,13 @@ class Module:  # pylint: disable=too-many-instance-attributes
             f.reindex()
             f.fold_offsets()
 
-    def reg_iv(self, pcs, j):
+    def reg_iv(self, name, pcs, j):
         """The hull of the values register-file position ``j`` (``A``, ``X`` or ``Y``) holds at
-        every instruction start of ``pcs`` on every run (:attr:`regs`), or None."""
+        every instruction start of ``pcs`` on every run of function ``name``'s lift
+        (:attr:`regs`), or None."""
         r = self.regfile[j] if j < len(self.regfile) else None
-        sets = [self.regs.get(pc) for pc in pcs] if r in (0, 1, 2) else [None]
+        regs = self.fx(name).regs
+        sets = [regs.get(pc) for pc in pcs] if r in (0, 1, 2) else [None]
         if not sets or None in sets or not all(x[r] for x in sets):
             return None
         return min(x[r][0] for x in sets), max(x[r][-1] for x in sets)
@@ -2964,19 +2975,19 @@ class Module:  # pylint: disable=too-many-instance-attributes
         None."""
         pcs = [q for q in self.copy_pcs.get(f.name, {}).get(o.pc, [o.pc]) if q is not None]
         ops = {OPS.get(self.mem.image[q], ("", "imm")) for q in pcs}
-        if len(ops) != 1 or not all(self.mem.code[q] for q in pcs):
+        if len(ops) != 1 or not all(self.fixed[q] for q in pcs):
             return None
         mn, mode = ops.pop()
         r, n = LOADS.get(mn) if mode != "imm" else None, MODE_LEN[mode]
         if r not in self.regfile:
             return None
-        return self.reg_iv([(q + n) & 0xFFFF for q in pcs], self.regfile.index(r))
+        return self.reg_iv(f.name, [(q + n) & 0xFFFF for q in pcs], self.regfile.index(r))
 
     def entry_iv(self, name, j):
         """The interval of register-file position ``j`` at the entry of lifted function
         ``name`` (every copy's), from the lift's register sets, or None."""
         pc, copies = self.lifted.get(name, (None, ()))
-        return None if pc is None else self.reg_iv([pc, *copies], j)
+        return None if pc is None else self.reg_iv(name, [pc, *copies], j)
 
     def result_iv(self, name, j):
         """The interval of result ``j`` of lifted function ``name``: the hull of what each of
@@ -2992,8 +3003,8 @@ class Module:  # pylint: disable=too-many-instance-attributes
         out = []
         for o in (o for o in f.walk() if o.name == "func.return"):
             pcs = [q for q in self.copy_pcs.get(name, {}).get(o.pc, [o.pc]) if q is not None]
-            rts = pcs and all(self.mem.code[q] and self.mem.image[q] in (0x40, 0x60) for q in pcs)
-            r = self.reg_iv(pcs, j) if rts else None
+            rts = pcs and all(self.fixed[q] and self.mem.image[q] in (0x40, 0x60) for q in pcs)
+            r = self.reg_iv(name, pcs, j) if rts else None
             d = f.defs.get(o.args[j])
             out.append(r if r or d is not None and d.name == "ub.poison" else f.iv(o.args[j]))
         out = [r for r in out if r is not None]
@@ -3006,16 +3017,17 @@ class Module:  # pylint: disable=too-many-instance-attributes
         """The run ``(lo, hi)`` (inclusive) of data bytes store ``o`` of function ``f`` writes
         when the lift bounds it to the array holding its base (every copy's), else None."""
         pcs = [q for q in self.copy_pcs.get(f.name, {}).get(o.pc, [o.pc]) if q is not None]
-        runs = [self.bounded.get(q) for q in pcs]
+        runs = [self.fx(f.name).bounded.get(q) for q in pcs]
         if o.name != "memref.store" or not runs or None in runs:
             return None
         return min(r[0] for r in runs), max(r[1] for r in runs) - 1
 
-    def reach_of(self, f, o, hulls=None):
+    def reach_of(self, f, o, hulls="reach"):
         """The lift's address hull of pointer load ``o`` of function ``f`` and its base's,
-        over every copy's instruction (from ``hulls``, default :attr:`reach`), or None."""
+        over every copy's instruction (from ``hulls`` of its lift, :attr:`reach` or :attr:`proven`),
+        or None."""
         pcs = [q for q in self.copy_pcs.get(f.name, {}).get(o.pc, [o.pc]) if q]
-        hulls = [(self.reach if hulls is None else hulls).get(q) for q in pcs]
+        hulls = [getattr(self.fx(f.name), hulls).get(q) for q in pcs]
         if not hulls or None in hulls:
             return None
         return tuple(m(h[i] for h in hulls) for i, m in enumerate((min, max, min, max)))
@@ -3032,7 +3044,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         if hi - lo < regions.BOUNDED:
             return [(lo, hi)], INDEXED
         store = o.name == "memref.store" or o.prop("callee") == "@io_write"
-        aset = self.addr_sets.get((o.pc, store))
+        aset = self.fx(f.name).addr_sets.get((o.pc, store))
         if aset:
             return [(a, b - 1) for a, b in aset], POINTER
         hull = self.reach_of(f, o) if o.name == "memref.load" else None
@@ -3183,7 +3195,9 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 # in the loaded program or reach code, which no pointer run holds): inside
                 # it, through one span holding them, as the image holds the bytes between.
                 store = o.name == "memref.store"
-                aset = self.addr_sets.get((o.pc, store)) if o.name != "func.call" else None
+                aset = (
+                    self.fx(f.name).addr_sets.get((o.pc, store)) if o.name != "func.call" else None
+                )
                 a0, a1 = self.mem.loaded
                 inside = all(a0 <= a < b <= a1 for a, b in aset or ())
                 if not store and not inside and not any(self.mem.code[a:b].any() for a, b in aset):
@@ -3213,7 +3227,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
                     writes.append((lo, hi))
         wide = []
         for f, o, hull, r in ptrs:
-            sure = self.reach_of(f, o, self.proven)
+            sure = self.reach_of(f, o, "proven")
             run = self.mem.pointer_run(hull)
             if sure is not None and self.mem.pointer_run(sure, True) is not None:
                 run = sure[:2]

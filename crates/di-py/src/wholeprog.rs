@@ -1433,12 +1433,13 @@ pub fn reference_calls(
 /// ``fold=True`` lifts copies of one routine as one function of the copy's index; ``free``
 /// ``[(addr, values)]`` the variables the host's init leaves, of unknown value (their values
 /// over its runs), ``alias`` ``[(lo, g, delta)]`` the operand pairs of them one pointer
-/// variable holds.
+/// variable holds; ``once=True`` runs each entry once from ``image`` (a host's init): a store
+/// into code makes cells only of the instructions that may run after it.
 /// ``bank`` is a bank map: ``dir``/``data`` port
 /// cells, ``mask`` and ``pull`` bits, ``lut`` (configuration per effective port value),
 /// ``configs`` (per configuration 256 page kinds: 0 RAM, 1 ROM, 2 I/O) and ``rom``.
 #[pyfunction]
-#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None, fold=false, sensitive=None, free=vec![], alias=vec![]))]
+#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None, fold=false, sensitive=None, free=vec![], alias=vec![], once=false))]
 #[allow(clippy::too_many_arguments)]
 pub fn lift_program(
     py: Python<'_>,
@@ -1455,6 +1456,7 @@ pub fn lift_program(
     sensitive: Option<Vec<u16>>,
     free: Vec<(u16, Vec<u8>)>,
     alias: Vec<(u16, u16, u16)>,
+    once: bool,
 ) -> PyResult<Program> {
     let img = self::image(image)?;
     let es = self::entries(entries);
@@ -1469,6 +1471,7 @@ pub fn lift_program(
         fold,
         free,
         alias,
+        once,
     };
     Ok(Program::new(py.detach(|| {
         di_lift::lift_banked(&img, &es, &volatile, &f, opts, bank.as_ref())
@@ -1500,6 +1503,7 @@ pub fn plan_program<'py>(
         None,
         None,
         &Default::default(),
+        false,
     );
     let pcs: Vec<u16> = es.iter().map(|e| e.pc).collect();
     let out = PyList::empty(py);

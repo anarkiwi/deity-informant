@@ -17,7 +17,19 @@ from jennings.opcodes import OPCODES
 
 from . import wholeprog
 
-__all__ = ["Init", "reference", "run", "cost", "ENTRY", "Run", "traced", "pointers", "groups"]
+__all__ = [
+    "Init",
+    "reference",
+    "run",
+    "reproduces",
+    "bounded",
+    "cost",
+    "ENTRY",
+    "Run",
+    "traced",
+    "pointers",
+    "groups",
+]
 
 #: Table bytes of one copy: its destination, source and length, two bytes each.
 ENTRY = 6
@@ -50,6 +62,15 @@ class Init:
     states: np.ndarray
     writes: list
     free: np.ndarray
+    #: The bytes outside the stack page and the volatile ranges.
+    kept: np.ndarray | None = None
+
+    @property
+    def mask(self):
+        """The free bytes, as a boolean array."""
+        m = np.zeros(0x10000, dtype=bool)
+        m[self.free] = True
+        return m
 
     def values(self):
         """``{addr: [values]}``: the value each free byte holds on each song, in order."""
@@ -67,8 +88,7 @@ class Init:
         ``src`` is the address of a run of bytes no song changes that ``source`` allows, the
         longest the song's values continue as when longer than :data:`ENTRY` (``bytes.find``
         over doubling then halving lengths), else a ``bytes`` literal."""
-        free = np.zeros(0x10000, dtype=bool)
-        free[self.free] = True
+        free = self.mask
         ok = np.asarray(source, dtype=bool) & ~free
         segs = [(a, base[a : a + n].tobytes()) for a, n in _runs(ok) if n > ENTRY]
         found = {}
@@ -147,7 +167,51 @@ def run(image, pc, songs, volatile, machine=None):
         writes.append([(int(x), int(v)) for x, v in w])
         stored[np.asarray(list(s), dtype=np.int64)] = True
     img = np.frombuffer(bytes(image), dtype=np.uint8)
-    return Init(img, list(songs), np.stack(states), writes, np.flatnonzero(stored & ~vol))
+    return Init(img, list(songs), np.stack(states), writes, np.flatnonzero(stored & ~vol), ~vol)
+
+
+def reproduces(prog, image, state):
+    """Whether lift ``prog`` of init (its one entry; throw-away reads not made) reproduces the
+    :class:`Init` ``state`` from ``image`` for every song: it returns without a deopt and
+    without a volatile read, so its run depends on nothing but ``image`` and the song, makes
+    the machine's volatile writes and leaves its values in the bytes init stores (``free``)
+    and the image's in the others outside the stack page and the volatile ranges."""
+    img = np.frombuffer(bytes(image), np.uint8)
+    for a, want, writes in zip(state.songs, state.states, state.writes):
+        mem = bytearray(image)
+        r = prog.call(mem, 0, a=a, log=True)
+        log = [tuple(e) for e in r["log"]]
+        if r["halt"] != "return" or r["deopt"] is not None or not all(e[3] for e in log):
+            return False
+        got = np.frombuffer(bytes(mem), np.uint8)
+        same = got == np.where(state.kept & ~state.mask, img, want)
+        if [e[:2] for e in log] != writes or not same[state.kept].all():
+            return False
+    return True
+
+
+def bounded(prog, runs):
+    """Whether every access of the runs ``runs`` (:class:`Run` s of init) lies in what lift
+    ``prog`` bounds it to: a pointer load in its hulls (``reach``, ``proven``), a bounded
+    store in its array (``bounded``), an access with an address set in the set
+    (``addr_sets``)."""
+    boxes = [(dict(prog.reach), 0, False), (dict(prog.proven), 0, False)]
+    boxes.append((dict(prog.bounded), 1, True))
+    sets = dict(prog.addr_sets)
+    for r in runs:
+        for (pc, w), xs in r.touched.items():
+            got = np.fromiter(xs, dtype=np.int64)
+            for box in (b.get(pc) for b, _, store in boxes if store == w):
+                if box is not None and not ((got >= box[0]) & (got <= box[1] - w)).all():
+                    return False
+            spans = sets.get((pc, w))
+            if spans is not None:
+                inside = np.zeros(got.shape, dtype=bool)
+                for lo, hi in spans:
+                    inside |= (got >= lo) & (got < hi)
+                if not inside.all():
+                    return False
+    return True
 
 
 X = "X"
@@ -191,6 +255,8 @@ class Run:
         self.mpu = NativeMPU(memory=self.mem)
         self.volatile = [tuple(v) for v in volatile]
         self.tags, self.vals, self.acc = {}, {}, []
+        #: ``{(pc, write): {address}}``: the effective addresses each instruction read, wrote.
+        self.touched = {}
         self.reg = dict.fromkeys("axyc")
         self.chain = 0
 
@@ -258,6 +324,9 @@ class Run:
         mtag, tags = None, self._base(mode, ops) if mode in _MEM else []
         self.acc = []
         mpu.step()
+        for x, w in self.acc if mode in _MEM else ():
+            if x == self.acc[-1][0]:
+                self.touched.setdefault((pc, w), set()).add(x)
         if mode in _MEM and self.acc:
             ea = self.acc[-1][0]
             mtag = self._tag(ea, self._key(tags, ea))

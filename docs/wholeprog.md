@@ -37,6 +37,7 @@ prog = wholeprog.lift(state, [play], volatile=[(lo, hi)], facts=facts)   # cycle
 prog = wholeprog.lift(image, [init, play], volatile, entry_sp=0xFD, loaded=(lo, hi))  # static
 prog = wholeprog.lift(image, [(init, {"a": range(3)}), play], ...)  # entry registers' values
 prog = wholeprog.lift(state, [play], ..., free={addr: [v, ...]}, alias=[(lo, g, d)])  # *Init*
+prog = wholeprog.lift(image, [init], ..., once=True)  # an init run once from image (*Init*)
 # sensitive=[addr, ...]: the volatile reads with effects; other throw-away reads are not made
 prog.functions        # [{"pc", "entry", "recursive", "blocks": [{"pc", "ops"}], "tables", "closed",
                       #   "copies", "copy_pcs"}]: copy_pcs per merged instruction each copy's pc
@@ -81,6 +82,7 @@ Inputs:
 | `loaded` | The `[lo, hi)` the program was loaded to: no table extends past it (*Table extents*). |
 | `free` | `{addr: [values]}`: the variables an init the host ran on `image` left, and their values over its runs (*Init*; a static lift). |
 | `alias` | `[(lo, g, delta)]`: operand pairs of `free` holding pair `g` plus `delta`, which play reads instead (*Init*). |
+| `once` | Each entry runs once, from `image` (an init): stores into code make cells only of what may run after them (*Init*). |
 
 `trace.collect(image, driver)` runs `driver(session)` twice on the jennings native core over a
 copy of `image`: `session.call(pc, a)` is `run_to_rts`; `session.mem`/`session.mpu` are the
@@ -171,7 +173,8 @@ the program, and checks it against the reference.
    analysis resolves them (*Computed jumps*), else, like transfers through written operands,
    from the facts' edges. **Code cells** are the bytes of reached instructions that the
    program writes: observed writes, plus every byte of a reached instruction that a store's
-   address set holds (*Stores*) where that instruction may run after the store (*Init*). An
+   address set holds (*Stores*) (with `once`, where that instruction may run after the store:
+   *Init*). An
    opcode cell's values are its entry byte, the observed
    ones and those of the stores that may write it. The cells, their values and the resolved
    targets are a joint least fixpoint (each round decodes the program they give, an opcode
@@ -316,8 +319,18 @@ the program, and checks it against the reference.
 
 ## Init
 
-The lift takes no init entry: a host whose program has one runs it and lifts the other entries
-from the memory it leaves (`cgen`, [*Init*](cgen.md#init)). `free` (`{addr: values}`) names the
+A host whose program has an init runs it and lifts the other entries from the memory it leaves
+(`cgen`, [*Init*](cgen.md#init)), and lifts init alone with `once`.
+
+`once` declares that each entry runs once, from `image`: a store makes cells only of the bytes
+of the instructions that may run after it in the same call (reachable from it, a call matched
+to its return: the routines holding it from it on, every routine they call, and each caller from
+the call's return site on once a routine holding it returns), and needs no code check where it
+has an address set; one of an interval needs it only where the interval meets a table read as
+constant or code that may run after it. Code a store overwrites after it ran (a song's block
+copied over the init that chose it) stays constant code. Interrupts are not modelled.
+
+For the entries lifted from what init leaves, `free` (`{addr: values}`) names the
 bytes init stored, whose values are the song's, and their values on each of its runs in order;
 each is a variable:
 
