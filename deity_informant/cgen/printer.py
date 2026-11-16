@@ -806,8 +806,8 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         self.contexts[blk] = ivs, values
         return ivs, values
 
-    def implied(self, c, truth, facts):
-        """Meet into ``facts`` the intervals truth value ``c`` being ``truth`` implies: of the
+    def implied(self, c, holds, facts):
+        """Meet into ``facts`` the intervals truth value ``c`` being ``holds`` implies: of the
         operand of an unsigned or equality compare with a constant, through its negation and
         the operands of an ``||`` false or an ``&&`` true."""
         d = self.defs.get(c)
@@ -815,14 +815,14 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             return
         k = [self.const_of(a) for a in d.args]
         if d.name == "arith.xori" and k[1] is not None and k[1] & 1:
-            self.implied(d.args[0], not truth, facts)
-        elif d.name == ("arith.andi" if truth else "arith.ori") and self.width(c) == 1:
+            self.implied(d.args[0], not holds, facts)
+        elif d.name == ("arith.andi" if holds else "arith.ori") and self.width(c) == 1:
             for a in d.args:
-                self.implied(a, truth, facts)
+                self.implied(a, holds, facts)
         elif d.name == "arith.cmpi" and None in k and k != [None, None]:
             pred, x = d.int_prop("predicate"), d.args[k.index(None)]
             pred = pred if k[1] is not None else SWAPPED.get(pred)
-            pred = pred if truth else NEGATED.get(pred)
+            pred = pred if holds else NEGATED.get(pred)
             top = (1 << self.width(x)) - 1
             n = next(v for v in k if v is not None) & top
             r = {0: (n, n), 6: (0, n - 1), 7: (0, n), 8: (n + 1, top), 9: (n, top)}.get(pred)
