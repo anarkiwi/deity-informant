@@ -252,14 +252,7 @@ impl Objects {
         let mut first: FxHashMap<u16, u32> = FxHashMap::default();
         let mut acc = Vec::new();
         let at = |acc: &mut Vec<_>, t: &Template, b, r: Option<usize>, x: u32| {
-            let mut e = TOP_ENV;
-            e[reg::X] = Iv::exact(0);
-            e[reg::Y] = Iv::exact(0);
-            if let Some(r) = r {
-                e[r] = Iv::exact(x);
-            }
-            acc.clear();
-            absint(t.ops(), b, &mut e, acc);
+            *acc = indexed(t, b, r.map(|r| (r, Iv::exact(x))));
         };
         for (&pc, vs) in vars {
             let env = merged.get(&pc).map_or(TOP_ENV, |s| s.env);
@@ -404,23 +397,26 @@ impl Objects {
     }
 }
 
-/// Whether register `r` moves an address of template `t` (operand bytes `b`).
-fn moves(t: &Template, b: [Option<u8>; 2], r: usize) -> bool {
+/// The accesses of template `t` (operand bytes `b`) with the index registers zero but for
+/// `set`'s register, which holds its interval.
+pub(crate) fn indexed(t: &Template, b: [Option<u8>; 2], set: Option<(usize, Iv)>) -> Vec<Access> {
     let mut env = TOP_ENV;
     env[reg::X] = Iv::exact(0);
     env[reg::Y] = Iv::exact(0);
+    if let Some((r, v)) = set {
+        env[r] = v;
+    }
     let mut acc = Vec::new();
     absint(t.ops(), b, &mut env, &mut acc);
-    let fixed: Vec<bool> = acc.iter().map(|a| a.addr.value().is_some()).collect();
-    env = TOP_ENV;
-    env[reg::X] = Iv::exact(0);
-    env[reg::Y] = Iv::exact(0);
-    env[r] = Iv::full(1);
-    acc.clear();
-    absint(t.ops(), b, &mut env, &mut acc);
-    acc.iter()
-        .zip(fixed)
-        .any(|(a, f)| f && !a.dummy && a.addr.value().is_none())
+    acc
+}
+
+/// Whether register `r` moves an address of template `t` (operand bytes `b`).
+fn moves(t: &Template, b: [Option<u8>; 2], r: usize) -> bool {
+    indexed(t, b, Some((r, Iv::full(1))))
+        .iter()
+        .zip(indexed(t, b, None))
+        .any(|(a, z)| z.addr.value().is_some() && !a.dummy && a.addr.value().is_none())
 }
 
 /// The values data register `r` holds at `pc`, from the definitions reaching it; `None` when
@@ -469,13 +465,9 @@ fn reaching(
 
 /// Whether index register `r` moves a store address of template `t` (operand bytes `b`).
 pub(crate) fn addresses(t: &Template, b: [Option<u8>; 2], r: usize) -> bool {
-    let mut env = TOP_ENV;
-    env[reg::X] = Iv::exact(0);
-    env[reg::Y] = Iv::exact(0);
-    env[r] = Iv::full(1);
-    let mut acc = Vec::new();
-    absint(t.ops(), b, &mut env, &mut acc);
-    acc.iter().any(|a| a.store && a.addr.value().is_none())
+    indexed(t, b, Some((r, Iv::full(1))))
+        .iter()
+        .any(|a| a.store && a.addr.value().is_none())
 }
 
 /// The data register access `i` of template `t` stores, when it stores one as the
@@ -526,19 +518,9 @@ pub(crate) fn index_reg(t: &Template) -> Option<usize> {
 /// ([`NOREG`]: none) holding `x`, when that fixes it.
 pub(crate) fn load_addr(code: &Code, pc: u16, op: u8, r: u8, x: u8) -> Option<u16> {
     let t = Template::of(op);
-    let mut env = TOP_ENV;
-    env[reg::X] = Iv::exact(0);
-    env[reg::Y] = Iv::exact(0);
-    if r != NOREG {
-        env[r as usize] = Iv::exact(x as u32);
-    }
-    let mut acc = Vec::new();
-    absint(
-        t.ops(),
-        operand_bytes(code.img, code.cells, pc, t.len),
-        &mut env,
-        &mut acc,
-    );
+    let b = operand_bytes(code.img, code.cells, pc, t.len);
+    let set = (r != NOREG).then_some((r as usize, Iv::exact(x as u32)));
+    let acc = indexed(t, b, set);
     let [l] = acc.iter().filter(|a| !a.dummy).collect::<Vec<_>>()[..] else {
         return None;
     };
@@ -2275,11 +2257,7 @@ fn indexed_base(code: &Code, pc: u16, op: u8) -> Option<(u8, u16)> {
     let t = Template::of(op);
     let b = operand_bytes(code.img, code.cells, pc, t.len);
     let r = [reg::X, reg::Y].into_iter().find(|&r| moves(t, b, r))?;
-    let mut env = TOP_ENV;
-    env[reg::X] = Iv::exact(0);
-    env[reg::Y] = Iv::exact(0);
-    let mut acc = Vec::new();
-    absint(t.ops(), b, &mut env, &mut acc);
+    let acc = indexed(t, b, None);
     let mut bases = acc.iter().filter(|a| !a.dummy).map(|a| a.addr.value());
     let b = bases.next()??;
     bases.all(|x| x == Some(b)).then_some((r as u8, b as u16))

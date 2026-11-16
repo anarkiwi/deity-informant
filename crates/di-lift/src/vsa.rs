@@ -1812,11 +1812,7 @@ fn eval_sets(ops: &[Op], b: [Option<u8>; 2], st: &St, written: u32) -> [Option<B
 /// The address the one store of template `t` (operand bytes `b`) writes with its index
 /// registers zero, when that fixes it.
 fn store_base(t: &Template, b: [Option<u8>; 2]) -> Option<u16> {
-    let mut env = TOP_ENV;
-    env[di_pcode::reg::X] = Iv::exact(0);
-    env[di_pcode::reg::Y] = Iv::exact(0);
-    let mut acc = Vec::new();
-    crate::analysis::absint(t.ops(), b, &mut env, &mut acc);
+    let acc = crate::dispatch::indexed(t, b, None);
     let [a] = acc
         .iter()
         .filter(|a| a.store && !a.dummy)
