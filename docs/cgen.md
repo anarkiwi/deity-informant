@@ -447,7 +447,8 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   An unknown access may touch every byte of `loaded`, so then every non-code byte of it is in a
   region. Zero page, the stack page and RAM below the image are regions when accessed; a byte
   past the image is one only when a bounded store or a store with an address set writes it (the bytes between an instance's copies' bytes stay in
-  their array): a read of any other byte past the image is out of bounds. A load whose bytes
+  their array): a read of any other byte past the image is out of bounds, but one at a constant
+  address reads the machine's byte (below). A load whose bytes
   in the image lie in one region or held span (all its bytes when none is), every one held,
   tests its address against it and reads `oob_rd` outside (`(uint16_t)(a - R2_ORG) < R2_LEN ?
   ... : oob_rd(a)`); from a constant base plus a byte inside one held span, through the span's
@@ -550,10 +551,22 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   address prints as a name the `.h` defines, relative to the origin that places the byte
   (`CODE_KA3` for `CODE_ORG + 0xA3`; `K_A3` for a byte init leaves constant, *Init*): the `.c`
   holds neither its value nor its address, and the compiler folds it. It is no access: no array
-  holds the byte for it.
+  holds the byte for it. So is a load of a byte outside `loaded`, the volatile ranges and the
+  stack page that no store may write (no address set or interval of one holds it, init stores
+  none there, and no store's address is unknown): the machine's byte at entry, `image`'s
+  (power-on RAM), named by its address (`MEM_K31F0`), as a different machine model changes
+  the `.h` alone.
 - `oob_rd`, a read outside every array its site may address, calls `trap(0xFFFF)`
   (`OOB_TRAP`). With `CGEN_OOB_EXACT` defined it is `cgen_rd`, the byte the 6502 reads there:
-  a region's or span's live byte, an I/O register, 0 where the program holds none. `oob_wr`
+  a region's or span's live byte, an I/O register, and where no array holds the byte either a
+  trap (`OOB_TRAP`: a byte of `loaded` or one init stores, data of the program the lift holds
+  none of for the read, the `.h`'s `CGEN_PROG_ORG`/`_LEN` runs) or the machine's entry byte
+  (`image`'s: the machine model defines it, so reading it is valid input), from the `.h`'s
+  background table: runs (`CGEN_BG_ORG`, the last at or below the address) each reading
+  `CGEN_BG_INIT[(CGEN_BG_AT + (a & CGEN_BG_M)) & 0xFFFF]`, a unit repeating every power of two
+  bytes or a literal, the period the smallest table's (power-on RAM: one 8-byte unit and its
+  inverse, a run per 16 KiB). `rd` is `cgen_rd` too. Pushes are stored where a load may reach
+  the stack page (*Traps and computed jumps*), so its other bytes read their entry bytes. `oob_wr`
   discards. Defining `CGEN_OOB` replaces both with the host's. `trap` is declared `noreturn`
   and `leaf`: a host compiles it apart from the `.c`, and it calls back into nothing there.
   A store the lift found may hit constant code or a table it read is followed by `codechk`,

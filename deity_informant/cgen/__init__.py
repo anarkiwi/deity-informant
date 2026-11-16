@@ -20,7 +20,8 @@ from .. import c64devices, polling, postinit, wholeprog
 from ..trace import Facts
 from . import emit, mlir, printer
 from ..lifter import MODE_LEN, OPS
-from .regions import Memory, code_bytes, pointer_pairs
+from .regions import Memory, background, code_bytes, pointer_pairs
+from .regions import runs as mask_runs
 
 __all__ = ["Program", "jump_facts", "lift", "render", "translate"]
 
@@ -131,31 +132,85 @@ def _var(cases):
 VAR_RD = ["uint8_t *c = cgen_var_at(a);", "if (c) return *c;"]
 
 
+#: ``cgen_rd``'s read of a byte no array holds: a byte of the program (``CGEN_PROG_*``) traps,
+#: any other reads the machine's entry byte, its run's in the background table (``CGEN_BG*``).
+UNHELD = [
+    "static const uint16_t PROG_ORG[] = {CGEN_PROG_ORG};",
+    "static const uint16_t PROG_LEN[] = {CGEN_PROG_LEN};",
+    *(f"static const uint16_t BG_{k}[] = {{CGEN_BG_{k}}};" for k in ("ORG", "AT", "M")),
+    "static const uint8_t BG[] = {CGEN_BG_INIT};",
+]
+UNHELD_RD = [
+    "for (uint16_t i = 0; i < sizeof PROG_ORG / sizeof *PROG_ORG; ++i) {",
+    "if ((uint16_t)(a - PROG_ORG[i]) < PROG_LEN[i])",
+    f"trap(0x{OOB_TRAP:04X});",
+    "}",
+    "uint16_t i = sizeof BG_ORG / sizeof *BG_ORG - 1;",
+    "while (a < BG_ORG[i])",
+    "--i;",
+    "return BG[(uint16_t)(BG_AT[i] + (a & BG_M[i]))];",
+    "}",
+]
+
+
 def _rd(regions, vol, spans, var=False):
     """``cgen_rd``: the byte the 6502 reads at ``a``, by the promoted cells (with ``var``), the
-    volatile condition ``vol``, then the origins and lengths of ``regions`` and the held
-    ``spans`` (0 where the program holds none)."""
+    volatile condition ``vol``, the origins and lengths of ``regions`` and the held ``spans``,
+    then where the program holds none :data:`UNHELD_RD`."""
     arrays = [*regions, *(f"C{j}" for j in spans)]
     out = ["static __attribute__((noinline)) uint8_t cgen_rd(uint16_t a) {"]
     out += VAR_RD if var else []
     out += [f"if ({vol}) return io_read(a);"] if vol else []
     if not arrays:
-        return out + ([] if vol else ["(void)a;"]) + ["return 0;", "}"]
+        return UNHELD + out + UNHELD_RD
     tables = ["static uint8_t *const OOB_AT[] = {CGEN_ARRAYS};"] + [
         f"static const uint16_t OOB_{k}[] = {{CGEN_ARRAYS_{k}}};" for k in ("ORG", "LEN")
     ]
     return (
         tables
+        + UNHELD
         + out
         + [
             "for (uint8_t i = 0; i < sizeof OOB_ORG / sizeof *OOB_ORG; ++i) {",
             "uint16_t o = a - OOB_ORG[i];",
             "if (o < OOB_LEN[i]) return OOB_AT[i][o];",
             "}",
-            "return 0;",
-            "}",
         ]
+        + UNHELD_RD
     )
+
+
+def _unheld_h(mem, used, cases, program):
+    """The ``.h``'s tables of :data:`UNHELD_RD` over the bytes ``cgen_rd`` finds in no array
+    (none in a region, a held span when ``used`` holds the code, or a promoted cell of
+    ``cases``) outside the volatile ranges: those of ``loaded`` and the ``program`` mask
+    (init's stores) as runs ``CGEN_PROG_*`` (joined across the others), the rest the
+    machine's entry bytes (``Memory.image``) as :func:`regions.background`'s table."""
+    held = (mem.owner >= 0) | mem.vol
+    for lo, hi in mem.held if "CODE" in used else ():
+        held[lo:hi] = True
+    held[[(mem.code_span[0] + d) & 0xFFFF for d, _ in cases]] = True
+    prog = program.copy()
+    prog[mem.loaded[0] : mem.loaded[1]] = True
+    prog &= ~held
+    traps = []
+    for o, n in mask_runs(prog | held):
+        t = np.flatnonzero(prog[o : o + n])
+        if t.size:
+            traps.append((o + int(t[0]), int(t[-1] - t[0]) + 1))
+    entries, pool = background(mem.image, ~prog & ~held)
+    out = [
+        f"#define CGEN_PROG_{k} {', '.join(v) or '0'}"
+        for k, v in (
+            ("ORG", [f"0x{o:04X}" for o, _ in traps]),
+            ("LEN", [f"0x{n:X}" for _, n in traps]),
+        )
+    ]
+    out += [
+        f"#define CGEN_BG_{k} {', '.join(f'0x{e[i]:X}' for e in entries)}"
+        for i, k in enumerate(("ORG", "AT", "M"))
+    ]
+    return out + [f"#define CGEN_BG_INIT {_hex(pool)}"]
 
 
 def _wr(vol, var=False):
@@ -211,13 +266,14 @@ def _storage(mem, used, helpers, regions):
     return out
 
 
-def _dispatch(mem, helpers, used, cases=()):
-    """``oob_rd`` (unless the host's) and ``wr`` over the regions outside the held spans, the
-    volatile ranges and the held spans (whose data bytes ``Cj_DATA`` marks), ``wr`` then
-    ``oob_wr``; ``rd``, ``oob_rd`` for a load the lift places nowhere; and ``codechk``: whether
-    a held constant byte would change. ``cgen_rd`` finds the promoted cells ``cases``
-    (``cgen_var``) first, as ``wr`` does where an access needs it."""
-    out = []
+def _dispatch(mem, helpers, used, cases=(), program=None):
+    """``(c lines, h lines)``: ``oob_rd`` (unless the host's) and ``wr`` over the regions
+    outside the held spans, the volatile ranges and the held spans (whose data bytes ``Cj_DATA``
+    marks), ``wr`` then ``oob_wr``; ``rd``, ``oob_rd`` for a load the lift places nowhere; and
+    ``codechk``: whether a held constant byte would change. ``cgen_rd`` finds the promoted
+    cells ``cases`` (``cgen_var``) first, as ``wr`` does where an access needs it, and the
+    bytes in no array by :func:`_unheld_h` (``program`` init's stores)."""
+    out, h = [], []
     vol = " || ".join(
         f"(a >= 0x{lo:04X} && a < 0x{hi:04X})" if hi < 0x10000 else f"a >= 0x{lo:04X}"
         for lo, hi in mem.volatile
@@ -227,6 +283,9 @@ def _dispatch(mem, helpers, used, cases=()):
     regions = [f"R{k}" for k in range(len(mem.regions)) if _slice(mem, used, k) is None]
     var = _var(cases) if cases and helpers & {"cgen_var", "rd", "oob_rd"} else []
     exact = _rd(regions, vol, spans, bool(var))
+    if helpers & {"rd", "oob_rd"}:
+        free = np.zeros(0x10000, dtype=bool) if program is None else program
+        h = _unheld_h(mem, used, cases if var else (), free)
     if helpers & {"cgen_var", "rd"}:
         out, var = out + var, []
         used.add("CODE_ORG")
@@ -250,7 +309,7 @@ def _dispatch(mem, helpers, used, cases=()):
             nd = f" && !{_data(j)}" if j in sliced else ""
             out += [f"if ({_inside(f'C{j}')}) return C{j}[a - C{j}_ORG] != v{nd};"]
         out += ["(void)a;", "(void)v;", "return 0;", "}"]
-    return out
+    return out, h
 
 
 #: The init entry's argument ``a`` as an index into the ``.h``'s range of its values.
@@ -722,6 +781,8 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         folded[p.fixed] = True
         mod.folded = (folded, p.image, folded & code_bytes(p.image, p.starts))
     mod.symbols = symbols
+    if p.init is not None:
+        mod.init_stored = p.init[1].mask
     # Promotion candidates: the cells and the other variable bytes inside the code span.
     lo, hi = mem.code_span
     mod.cells = cells.copy()
@@ -774,7 +835,8 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         c.append(IX)
     c.append("CGEN_STORAGE")
     c += mod.state_c()
-    c += _dispatch(mem, helpers, used, mod.var_at)
+    dispatch, unheld = _dispatch(mem, helpers, used, mod.var_at, mod.init_stored)
+    c += dispatch
     for j in sorted(mod.checked):
         var = ["uint16_t a = p + y;", *VAR_RD] if j in mod.var_spans else []
         c += [
@@ -804,7 +866,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         c += _init_c(name, traps[("deopt", pc)])
     c += fns
     c_text = clang_format("\n".join(c) + "\n")
-    store = _storage(mem, used, helpers, regions) + mod.state_h() + sets
+    store = _storage(mem, used, helpers, regions) + mod.state_h() + sets + unheld
     objs = [
         f"#define CGEN_OBJ{j}_{k} 0x{v:04X}"
         for j in sorted(mod.objs_used)

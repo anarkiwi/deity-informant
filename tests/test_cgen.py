@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from vagrant_moses.c64 import poweron_ram
 
 import wholeprog_progs as W
 from deity_informant import NATIVE, cgen, postinit, trace, wholeprog
@@ -2570,7 +2571,7 @@ def test_call_through_an_operand_written_earlier(prefix, tmp_path):
         (tmp_path / str(org)).mkdir()
         play(tmp_path / str(org), c, h, img, labels, calls)
         outs.append(c)
-    assert outs[0] == outs[1] and "rd(R0[0] | ((uint16_t)R0[1] << 8))" in outs[0]
+    assert outs[0] == outs[1] and "rd(MEM_K00FB | ((uint16_t)MEM_K00FC << 8))" in outs[0]
 
 
 def test_effect_index_copied_by_its_command_handler(prefix, tmp_path):
@@ -5788,3 +5789,91 @@ def test_indexed_pointers_init_fills_are_plain(prefix, tmp_path):
     assert not any(f in body for f in ("rdC", "rd(", "wr(", "codechk"))
     for song in range(4):
         play(tmp_path, c, h, img, labels, [("init", song)] + [("play", 0)] * 20)
+
+
+UNHELD = """
+entry:  LDA ADDR
+        STA $C000
+        RTS
+end:
+"""
+UNHELD_PTR = """
+entry:  STA $FC
+        LDA #$00
+        STA $FB
+        LDY #$00
+        LDA ($FB),Y
+        STA $C000
+        RTS
+end:
+"""
+
+
+def poweron(src, org=0x1000):
+    """:func:`assemble` of ``src`` loaded over the C64's power-on RAM."""
+    img, labels, (lo, hi) = assemble(src, org)
+    ram = bytearray(poweron_ram())
+    ram[lo:hi] = img[lo:hi]
+    return ram, labels, (lo, hi)
+
+
+@pytest.mark.parametrize("addr,value", [(0x31EA, 0xFF), (0x31F0, 0x00)])
+def test_unwritten_machine_byte_is_named(prefix, tmp_path, addr, value):
+    """A constant-address load of a byte past the image that no store writes reads the
+    machine's entry byte there, which the ``.h`` names: no dispatch, no array."""
+    img, labels, loaded = poweron(UNHELD.replace("ADDR", f"${addr:04X}"))
+    assert img[addr] == value
+    c, h, info = translate(prefix, img, labels, loaded)
+    play(tmp_path, c, h, img, labels, entry_calls([0, 1]))
+    assert re.search(rf"^#define MEM_K{addr:04X} 0x{value:02X}$", h, re.M)
+    assert f"MEM_K{addr:04X}" in body_of(c, "entry") and "rd(" not in c
+    assert not info["traps"] and not info["regions"]
+
+
+def test_written_machine_byte_is_not_named(prefix, tmp_path):
+    """A byte past the image some store writes is a variable: its region holds it."""
+    src = UNHELD.replace("ADDR", "$31EA").replace("RTS", "INC $31EA\n        RTS")
+    img, labels, loaded = poweron(src)
+    c, h, info = translate(prefix, img, labels, loaded)
+    play(tmp_path, c, h, img, labels, entry_calls(range(4)))
+    assert "MEM_K" not in h and (0x31EA, 1) in info["regions"]
+
+
+def test_volatile_byte_is_not_named(prefix, tmp_path):
+    """A constant-address load of a volatile byte is a device read, whatever the image holds."""
+    img, labels, loaded = poweron(UNHELD.replace("ADDR", "$C080"))
+    c, h, _ = translate(prefix, img, labels, loaded)
+    play(tmp_path, c, h, img, labels, entry_calls([0, 1]))
+    assert "MEM_K" not in h and "io_read(0xC080)" in body_of(c, "entry")
+
+
+def test_unknown_read_of_unheld_byte(prefix, tmp_path):
+    """A load of unknown address reads the machine's entry byte where no array holds the byte
+    (``cgen_rd``'s background table), and traps on a byte of the program it holds none of."""
+    img, labels, loaded = poweron(UNHELD_PTR)
+    c, h, _ = translate(prefix, img, labels, loaded)
+    assert "rd(" in body_of(c, "entry") and "#define CGEN_BG_ORG 0x0, 0x4000" in h
+    pages = [0x00, 0x31, 0x50, 0x90, 0xE5]
+    assert {img[p << 8] for p in pages} == {0x00, 0xFF}
+    play(tmp_path, c, h, img, labels, entry_calls(pages))
+    lib = cgenplay.build(tmp_path / "t.c", tmp_path / "t.so")
+    k = lib.call(ctypes.cast(lib.entry, ctypes.c_void_p), labels["entry"] >> 8)
+    assert k == cgen.OOB_TRAP
+
+
+def test_background_table_is_exact_and_small():
+    """The background table reads back every cared byte, holding a periodic half in less than
+    a unit per run; power-on RAM is four runs of two eight-byte units."""
+    rng = np.random.default_rng(0)
+    values = rng.integers(0, 256, 0x10000).astype(np.uint8)
+    values[0x8000:] = np.resize(rng.integers(0, 256, 4), 0x8000)
+    care = rng.random(0x10000) < 0.3
+    entries, pool = regions.background(values, care)
+    org = np.array([e[0] for e in entries])
+    run = np.searchsorted(org, np.arange(0x10000), side="right") - 1
+    at, mask = (np.array([e[i] for e in entries])[run] for i in (1, 2))
+    got = np.frombuffer(pool, np.uint8)[(at + (np.arange(0x10000) & mask)) & 0xFFFF]
+    assert org[0] == 0 and (got[care] == values[care]).all()
+    assert len(entries) * regions.ENTRY + len(pool) < 0x8000
+    entries, pool = regions.background(poweron_ram(), np.ones(0x10000, dtype=bool))
+    assert [(o, m) for o, _, m in entries] == [(q << 14, 7) for q in range(4)] and len(pool) == 16
