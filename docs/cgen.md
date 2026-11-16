@@ -120,7 +120,9 @@ copies), so the `.c` is the same for every count of them. The other entries are 
 every value init **takes** (`_accepted`), and the declared ones: of the values its run on
 `machine` returns with, those whose stores lie in what a store of init's lift may write and
 whose runs (`postinit.forks`, one per sequence of values its probes may read) that lift makes
-to its return with no deopt. Init's translation leaves one of their states or traps, whatever
+to its return with no deopt (the same volatile accesses and memory). Values whose machine runs
+leave one memory and volatile writes are tried on the runs of the least of them: one the lift
+runs as it runs the least shares its verdict and runs, another is tried on its own. Init's translation leaves one of their states or traps, whatever
 the host declares; a value it does not take (an index past its tables) traps in it. They are
 lifted from the memory the first of those runs leaves. The bytes those runs store outside the
 stack page and the volatile ranges are variables whose values are the runs' (`free`,

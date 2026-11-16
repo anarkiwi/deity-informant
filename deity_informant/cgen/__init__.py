@@ -743,29 +743,71 @@ def _fixed(start, prog, lifted, every):
     return frozenset(np.flatnonzero(held).tolist())
 
 
-def _takes(prog, image, a, run):
-    """Whether init's lift ``prog`` runs from ``image`` with ``A = a`` and the volatile reads of
-    :class:`postinit.Run` ``run`` to its return with no deopt."""
-    r = prog.call(bytearray(image), 0, a=a, reads=bytes(v for _, v in run.reads))
-    return r["halt"] == "return" and r["deopt"] is None
+def _trace(prog, image, a, feed, held):
+    """What init's lift ``prog`` does from ``image`` with ``A = a`` and the volatile reads
+    ``feed``: its halt, deopt and volatile accesses, and the bytes ``held`` (indices) of the
+    memory it leaves, the only ones its stores may change."""
+    mem = bytearray(image)
+    r = prog.call(mem, 0, a=a, log=True, reads=feed)
+    return r["halt"], r["deopt"], r["log"], np.frombuffer(mem, np.uint8)[held].tobytes()
+
+
+def _makes(trace, run, image, held, kept):
+    """Whether lift ``trace`` (:func:`_trace`) from ``image`` is :class:`postinit.Run`
+    ``run``: it returns with no deopt, making the run's volatile reads and writes, and leaves
+    its memory on the bytes ``kept``: the run's ``held`` bytes, the image elsewhere."""
+    halt, deopt, log, left = trace
+    mem = np.frombuffer(bytes(run.mem[0:0x10000]), np.uint8)
+    rest = kept.copy()
+    rest[held] = False
+    return (
+        (halt, deopt) == ("return", None)
+        and [tuple(e[:2]) for e in log if not e[3]] == run.reads
+        and [tuple(e[:2]) for e in log if e[3]] == run.writes
+        and mem[held].tobytes() == left
+        and (mem[rest] == np.frombuffer(image, np.uint8)[rest]).all()
+    )
 
 
 def _accepted(image, pc, volatile, polls, devices, lift_, every):
     """``{a: runs}`` of each argument value init (at ``pc`` on ``image``) takes, its
     :func:`postinit.forks`: of ``every`` (its runs on the machine for each value it returns
     with), those whose stores outside the stack page and the volatile ranges lie in what a
-    store of its lift ``lift_`` may write, each of whose forks the lift runs to its return with
-    no deopt. Init's translation leaves one of their states or traps, whatever the host
+    store of its lift ``lift_`` may write, on each of whose forks the lift returns with no
+    deopt making the fork's volatile accesses and leaving its memory (:func:`_makes`). Values
+    whose machine runs leave one memory and volatile writes are tried on the forks of the
+    least of them: one the lift runs as it runs the least shares its verdict, another is tried
+    on its own forks. Init's translation leaves one of their states or traps, whatever the host
     declares."""
-    may = ~every.kept
+    may = np.zeros(0x10000, dtype=bool)
     for lo, hi in lift_.stored:
         may[lo:hi] = True
+    held = np.flatnonzero(may & every.kept)
+    may |= ~every.kept
+    alike = {}
+    for a, s, st, w in zip(every.songs, every.stored, every.states, every.writes):
+        if may[s].all():
+            alike.setdefault((st.tobytes(), tuple(w)), []).append(a)
+
+    def traces(a, rs):
+        return [_trace(lift_, image, a, bytes(v for _, v in r.reads), held) for r in rs]
+
+    def makes(a, rs):
+        return all(_makes(t, r, image, held, every.kept) for t, r in zip(traces(a, rs), rs))
+
     out = {}
-    cand = [a for a, s in zip(every.songs, every.stored) if may[s].all()]
-    for a in tqdm(cand, desc="init values", unit="value", leave=False, disable=None):
-        rs = postinit.forks(image, pc, a, volatile, polls, devices)
-        if rs is not None and all(_takes(lift_, image, a, r) for r in rs):
-            out[a] = rs
+    for vals in tqdm(alike.values(), desc="init values", unit="run", leave=False, disable=None):
+        rs = postinit.forks(image, pc, vals[0], volatile, polls, devices)
+        if rs is None:
+            continue
+        ran, ok = traces(vals[0], rs), makes(vals[0], rs)
+        for a in vals:
+            own, took = rs, ok
+            if traces(a, rs) != ran:
+                own = postinit.forks(image, pc, a, volatile, polls, devices) or []
+                took = bool(own) and makes(a, own)
+            if took:
+                out[a] = own
     return out
 
 
@@ -808,7 +850,9 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
         # The values the other entries are lifted for: every one init takes, and the declared.
         over = sorted(set(took) | set(vals))
         byval = {**dict(zip(vals, runs)), **took}
-        flat = [] if None in runs else [r for a in over for r in byval[a]]
+        # Values sharing their runs (``_accepted``) contribute them once.
+        shared = {id(byval[a]): byval[a] for a in over}
+        flat = [] if None in runs else [r for rs in shared.values() for r in rs]
         if flat:
             pairs = set().union(*(postinit.pointers(r) for r in flat))
             alias = [(lo, g, d) for lo, (g, d) in sorted(postinit.groups(flat, pairs).items())]
