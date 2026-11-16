@@ -959,3 +959,36 @@ fn status_saved_through_the_stack_in_lanes() {
     let p = lift(&img, &entries(&[0x1000]), &[(0xc000, 0xc100)], &f);
     assert!(diff(&img, &p, &calls(3, |i| [0xea, 0xf8, 0xe8][i]), IO) > 0);
 }
+
+/// A store indexed over its own operand bytes, of a value read from I/O: resolved with its
+/// operands' entry bytes it makes them cells of unknown values, which leave it unresolved.
+/// The values only rise, so the lift ends: the store's address is unknown and a run that
+/// rewrites its operand deopts.
+#[test]
+fn store_over_its_own_operand_ends() {
+    let prog: &[u8] = &[
+        0xad, 0x00, 0xc0, 0x29, 0x0f, 0xaa, 0xad, 0x01, 0xc0, 0x9d, 0x09, 0x10, 0x60,
+    ];
+    let img = image(&[(0x1000, prog)]);
+    let opts = Opts {
+        loaded: Some((0x1000, 0x1000 + prog.len() as u32)),
+        entry_sp: Some(0xfd),
+        ..Opts::default()
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let job = img.clone();
+    std::thread::spawn(move || {
+        let p = lift_with(
+            &job,
+            &entries(&[0x1000]),
+            &[(0xc000, 0xc100)],
+            &Facts::default(),
+            opts,
+        );
+        tx.send(p).unwrap();
+    });
+    let p = rx
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .expect("lift ends");
+    assert!(diff(&img, &p, &acc_calls(&[0, 0, 0, 0]), IO) > 0);
+}

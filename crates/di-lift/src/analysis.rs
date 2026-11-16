@@ -980,8 +980,8 @@ impl Fixpoint<'_> {
         let mut stat: FxHashMap<u16, BTreeSet<u16>> = FxHashMap::default();
         // The stores' address sets, each round taken as what the stores write: a store keeps
         // its set while every round finds one, growing to the sets found; one a round finds
-        // none for is dropped for good, so the rounds end at sets that hold of the states
-        // computed with them.
+        // none for (or no store) is dropped for good, so the rounds end at sets that hold of
+        // the states computed with them.
         let mut aimed = crate::vsa::Aimed::default();
         let mut lost: FxHashSet<(u16, u8, usize)> = FxHashSet::default();
         loop {
@@ -1108,7 +1108,8 @@ impl Fixpoint<'_> {
                         .extend(st.into_iter().flatten());
                 }
             }
-            // Monotone: cells, their values and targets only grow, so the fixpoint terminates.
+            // Monotone: cells, their values, targets, address sets and dropped stores only
+            // grow, in finite lattices, so the fixpoint terminates.
             next.union_with(&cells);
             for (a, v) in &values {
                 nvalues.entry(*a).or_default().extend(v);
@@ -1138,6 +1139,7 @@ impl Fixpoint<'_> {
                     _ => {}
                 }
             }
+            lost.extend(aimed.keys().filter(|k| !naimed.contains_key(k)));
             if next == cells && nvalues == values && nstat == stat && naimed == aimed {
                 let pull_clear = crate::vsa::pull_clear(&vars, entries);
                 let tables: BTreeSet<u16> = an
