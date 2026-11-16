@@ -20,7 +20,7 @@ from vagrant_moses.c64 import poweron_ram
 
 import wholeprog_progs as W
 from deity_informant import NATIVE, cgen, postinit, trace, wholeprog
-from deity_informant.cgen import csyntax, mlir, printer, regions, structure
+from deity_informant.cgen import csyntax, mlir, printer, regions, structure, traps
 from deity_informant.lifter import OPS as OPCODES
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
@@ -3062,16 +3062,18 @@ end:
 """
 
 
-def test_init_songs_bound_the_store_at_its_argument(prefix, tmp_path):
-    """Init's lift takes the declared songs its trap checks: its store at the song stays
-    inside the table for every one of them, with no guard."""
+def test_init_songs_imply_the_store_guard_at_its_argument(prefix, tmp_path):
+    """Init's lift is for any argument: its store at the song keeps its guard on the table's
+    extent, which the declared songs its entry checks imply."""
     _, info, labels = songs(prefix, tmp_path, SONGSTORE, range(3))
     meta_keyed(info)
     assert info["init"] == "translated"
-    [(k, key)] = info["traps"].items()
-    [song] = info["trap_info"][k]["guards"]
-    assert key == ("deopt", labels["init"]) and song["kind"] == "entry"
-    assert (song["reg"], as_runs(song["ok"])) == ("a", [(0, 2)])
+    by = {key: info["trap_info"][k] for k, key in info["traps"].items()}
+    [song] = by[("deopt", labels["init"])]["guards"]
+    assert song["kind"] == "entry" and (song["reg"], as_runs(song["ok"])) == ("a", [(0, 2)])
+    store = by[("deopt", labels["init"] + 3)]
+    assert store["kind"] == "index" and store["implied_by"] == [traps.ENTRY]
+    assert as_runs(store["guards"][0]["ok"]) == [(0, 2)]
 
 
 #: Two stores at an unbounded song byte into a table ending the program, the tighter first.
@@ -4948,19 +4950,18 @@ def test_init_relocating_by_the_song_leaves_pointer_cells(prefix, tmp_path):
 
 
 def test_song_range_is_checked_not_assumed(prefix, tmp_path):
-    """The songs the host calls init with are checked at init: the pointer each declared
-    song's init leaves, which play never stores, seeds the pair, so its reads lie in the data
-    those songs point at, unchecked, the ``.c`` the same for each count of such songs, the
-    header holding each song's values; with songs pointing at I/O among them the reads keep
-    their checks, and a song outside the range traps."""
+    """The songs the host calls init with are checked at init, and assumed nowhere: the
+    pointer each song init takes leaves, which play never stores, seeds the pair, songs
+    pointing at I/O among them, so its reads keep their checks for every count of songs, the
+    ``.c`` the same, the header holding each song's values; a song outside the range traps."""
     c, _, labels = songs(prefix, tmp_path, SONGINIT, (0, 1), declared=range(2))
     guard = r"if \(\(uint8_t\)\(a - CGEN_SONG0\) >= CGEN_SONGS\) \{\s*trap\("
-    assert "rdC" not in body_of(c, "play") and re.search(guard, c)
+    assert "rdC0(" in body_of(c, "play") and re.search(guard, c)
     img, labels, loaded = assemble(SONGINIT)
     one = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=range(1))
     assert one[0] == c and "#define CGEN_SONGS 1" in one[1]
     four = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=range(4))
-    assert "rdC0(" in body_of(four[0], "play")
+    assert four[0] == c and "#define CGEN_SONGS 4" in four[1]
     with pytest.raises(AssertionError, match="trap"):
         songs(prefix, tmp_path / "out", SONGINIT, (2,), declared=range(2))
 
@@ -7073,3 +7074,49 @@ def test_init_running_operands_it_relocated_reads_and_writes_directly(prefix, tm
     play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", a) for a in range(4)])
     assert info["init"] == "translated" and not DISPATCH.search(c)
     assert {labels["cp"], labels["cp"] + 3}.isdisjoint(pc for _, pc in info["traps"].values())
+
+
+#: Init storing its song's step from a table of 32 at the song into a table of 32 ending the
+#: program, and into play's immediate.
+SONGTABLES = (
+    """
+init:   TAY
+        LDA step,Y
+        STA tab,Y
+        STA add+1
+        RTS
+play:   LDA tab
+        CLC
+add:    ADC #$00
+        STA $C000
+        RTS
+step:   .byte """
+    + ", ".join(str(i * 5 % 32) for i in range(32))
+    + """
+tab:    .byte """
+    + ", ".join(["0"] * 32)
+    + """
+end:
+"""
+)
+
+
+def test_c_holds_for_any_count_of_declared_songs(prefix, tmp_path):
+    """The ``.c`` is decided as if init's argument may be any byte: one, three or 32 declared
+    songs give the same ``.c``, the ``.h`` their count, and each declared song replays. The
+    guard on the store at the song, which only the declared songs keep inside its table, is in
+    the ``.c``, implied by the entry."""
+    out = {}
+    for n in (1, 3, 32):
+        values = sorted({0, n // 2, n - 1})
+        c, info, labels = songs(prefix, tmp_path / str(n), SONGTABLES, values, declared=range(n))
+        meta_keyed(info)
+        assert info["init"] == "translated"
+        out[n] = (c, (tmp_path / str(n) / "0" / "t.h").read_text(), info)
+    assert out[1][0] == out[3][0] == out[32][0]
+    assert len({h for _, h, _ in out.values()}) == 3
+    store = labels["init"] + 4
+    for _, _, info in out.values():
+        [t] = [t for t in info["trap_info"].values() if t["pc"] == store]
+        assert t["kind"] == "index" and t["implied_by"] == [traps.ENTRY]
+        assert as_runs(t["guards"][0]["ok"]) == [(0, 31)]

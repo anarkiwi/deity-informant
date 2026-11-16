@@ -5,7 +5,11 @@ pass and the analysis finds, the traps implying it, and the stores writing code 
 from ..wholeprog import REGS
 from .emit import ENTRY_REGS
 
-__all__ = ["stores", "trap_info"]
+__all__ = ["ENTRY", "stores", "trap_info"]
+
+#: The ``implied_by`` of a guard the entry's declared argument values imply: an argument
+#: outside them is invalid input the entry's guard traps.
+ENTRY = "entry"
 
 
 def stores(prog):
@@ -43,6 +47,13 @@ def _passes(ok, vals):
     return all(any(lo <= v <= hi for lo, hi in ok) for v in vals)
 
 
+def _union(implied):
+    """The traps of the ``implied_by`` lists ``implied``, ascending, then :data:`ENTRY` if any
+    has it."""
+    ks = {k for i in implied for k in i}
+    return sorted(ks - {ENTRY}) + [ENTRY] * (ENTRY in ks)
+
+
 class _Census:
     """The trap metadata of one render (:func:`trap_info`)."""
 
@@ -59,8 +70,10 @@ class _Census:
 
     def implied(self, fi, w):
         """The traps implying register guard ``w`` of function ``fi`` (``[]``: constants
-        alone), or None."""
-        held = w["held"]
+        alone), with :data:`ENTRY` where the entry's declared argument values do, or None."""
+        held, origin = w["held"], self.ctx["origin"]
+        if (w["kind"], w["at"], w["reg"]) in self.ctx["entailed"] and origin[fi]:
+            return [ENTRY]
         if held is None or not w["ok"]:
             return None
         by = {self.of[(fi, j)] for j in held["by"] if (fi, j) in self.of}
@@ -71,7 +84,7 @@ class _Census:
         if song is not None and held["src"] == "a" and self.funcs[fi]["pc"] == song["fn"]:
             vals &= set(range(song["lo"], song["hi"] + 1))
             if _passes(w["ok"], vals):
-                return sorted(by | {song["k"]})
+                return [*sorted(by), ENTRY]
         return None
 
     def writers(self, fi, w):
@@ -129,9 +142,7 @@ class _Census:
             "fn": key[2] if len(key) > 2 else None,
             "copies": sorted({q for fi in fis for q in self.copies(fi, key[1])}),
             "guards": guards,
-            "implied_by": (
-                sorted({k for i in implied for k in i}) if implied and None not in implied else None
-            ),
+            "implied_by": (_union(implied) if implied and None not in implied else None),
             "proven": bool(guards) and all(g["proven"] for g in guards),
         }
 
@@ -140,6 +151,7 @@ def trap_info(funcs, traps, whys, used, ctx):
     """``{k: metadata}`` of the traps ``used`` of ``traps`` (``{key: k}``) of the lifted
     ``funcs``, from ``whys`` (:func:`deity_informant.cgen.emit.emit`) and ``ctx``: ``origin``,
     ``stores`` (``{entry: stores(...)}``), ``jumps``, ``song`` (init's ``{"fn", "lo", "hi",
-    "k"}`` or None) and ``extra`` (``{key: guard}`` the render makes)."""
+    "k"}`` or None), ``entailed`` (the guards ``(kind, at, reg)`` of init's lift the declared
+    argument values imply) and ``extra`` (``{key: guard}`` the render makes)."""
     c = _Census(funcs, traps, whys, ctx)
     return {k: c.trap(key) for key, k in traps.items() if k in used}
