@@ -435,8 +435,10 @@ POKED = cursor_src(
     "        LDY #0\n        LDA $C006\n        STA ($F0),Y\n        RTS\n"
 )
 
-# Play writes the records from I/O: a marker may not hold.
-REWRITTEN = cursor_src(step="INC cur,X\n        LDA $C004\n        STA r3+9")
+# Play writes the last record's marker and the segments from I/O: no marker may hold.
+REWRITTEN = cursor_src(
+    step="INC cur,X\n        LDA $C004\n        STA r3+9\n        LDY $C005\n        STA flat,Y"
+)
 
 #: A model answering the record cursor's step.
 STEP = devices.Model({0xC003: devices.derived(lambda st, at: [0, 1])})
@@ -469,14 +471,15 @@ def cursor_lift(src, entries=("play",), model=None):
 )
 def test_cursors_read_inside_the_states_play_reaches(src, model):
     """Cursors kept between calls, reset at their data's markers, read proven inside the
-    records and segments: the states play reaches from each of init's runs bound them (a
+    data: the states play reaches from each of init's runs bound them (a
     counter deciding a turn taken both ways, an I/O step its modelled values); every run
     replays past many resets."""
     img, labels, init, prog = cursor_lift(src, model=model)
     proven = dict(prog.proven)
-    rec, seg = labels["r0"], labels["flat"]
-    (a, b), (c, d) = proven[labels["rd"]][:2], proven[labels["seg"]][:2]
-    assert rec <= a and b < seg <= c and d < labels["sel"]
+    # Each hull reaches out to the run of data bytes after play's code holding the records.
+    for pc in (labels["rd"], labels["seg"]):
+        lo, hi = proven[pc][:2]
+        assert labels["tlo"] <= lo and hi < labels["end"]
     assert not prog.stats["obj_guards"]
     assert prog.stats["reach_loads"] >= 2 and prog.stats["reach_slices"] == 3
     for song in range(4):
@@ -495,7 +498,7 @@ def test_cursors_no_state_bounds_keep_their_hulls(src, entries, model):
     records."""
     _, labels, _, prog = cursor_lift(src, entries, model)
     h = dict(prog.proven).get(labels["rd"])
-    assert h is None or h[1] >= labels["flat"]
+    assert h is None or h[1] >= labels["end"]
 
 
 def cursor_states_lift(src, entries):

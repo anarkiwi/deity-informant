@@ -1691,9 +1691,9 @@ const CURSOR: [u8; 161] = [
     0x01, 0x00, 0x00, 0x00, 0x00, 0x09, 0x03, 0x00, 0x01, 0x01, 0x01,
 ];
 
-/// The states the entry reaches bound the cursors' loads inside the records (`$107D` up) and
-/// the segments (`$1099` up) and both engines match the reference past many resets; caps the
-/// search passes bound neither.
+/// The states the entry reaches bound the cursors' loads inside the data after the code
+/// (`$106D` up), and both engines match the reference past many resets; caps the search
+/// passes bound neither.
 #[test]
 fn cursor_states_bound_their_loads() {
     let img = image(&[(0x1022, &CURSOR)]);
@@ -1716,7 +1716,7 @@ fn cursor_states_bound_their_loads() {
         (p.proven.iter()).any(|r| r.0 == pc && r.1 >= lo && r.2 < hi)
     };
     let p = lift(Caps::default());
-    assert!(within(&p, 0x104e, 0x107d, 0x1099) && within(&p, 0x1027, 0x1099, 0x10b7));
+    assert!(within(&p, 0x104e, 0x106d, 0x10c3) && within(&p, 0x1027, 0x106d, 0x10c3));
     assert_eq!(
         diff_at(&img, &p, &calls(300, |_| 0), IO, 1_000_000, 0xff),
         0
@@ -1748,6 +1748,6 @@ fn cursor_states_bound_their_loads() {
         },
     ] {
         let q = lift(caps);
-        assert!(!within(&q, 0x104e, 0x107d, 0x1099), "{caps:?}");
+        assert!(!within(&q, 0x104e, 0x106d, 0x10c3), "{caps:?}");
     }
 }
