@@ -615,10 +615,10 @@ fn reaches(r: &vsa::Hulls) -> Vec<ir::Reach> {
     v
 }
 
-/// The loads of `g` no proof holds in the bytes `held` that the reachable states of its
-/// `entries` (called at `sp` from each of init's runs, `free`, with `volatile` ranges
-/// answering as `devices` say, within `caps`) bound there ([`reach`]): their hulls join
-/// [`analysis::Graph::proven`].
+/// The loads of `g` no proof or address set holds in the bytes `held` that the reachable
+/// states of its `entries` (called at `sp` from each of init's runs, `free`, with `volatile`
+/// ranges answering as `devices` say, within `caps`) bound there ([`reach`]): their hulls
+/// join [`analysis::Graph::proven`].
 #[allow(clippy::too_many_arguments)]
 fn reach_bounds(
     g: &mut analysis::Graph,
@@ -639,7 +639,9 @@ fn reach_bounds(
         for v in vs.iter().filter(|v| !is_stack_op(v.op)) {
             for (ai, a) in v.acc.iter().enumerate() {
                 let key = (pc, v.op, ai);
-                let done = g.proven.get(&key).is_some_and(|h| inside(h.0));
+                // A load with an address set reads its addresses already.
+                let done = g.proven.get(&key).is_some_and(|h| inside(h.0))
+                    || g.addr_sets.contains_key(&(pc, false));
                 if !a.store && !a.dummy && a.addr.value().is_none() && !done {
                     targets.insert(key);
                 }
@@ -859,7 +861,7 @@ pub fn lift_banked(
         matched = false;
     };
     let reached = match (opts.entry_sp, bank) {
-        (Some(sp), None) => {
+        (Some(sp), None) if !opts.once => {
             let held = objects::held(opts.loaded, &g.written, &opts.holds, volatile);
             let (dev, caps) = (&opts.devices, opts.reach);
             reach_bounds(&mut g, entries, sp, volatile, dev, &free, held, caps)

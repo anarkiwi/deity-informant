@@ -293,9 +293,6 @@ impl Mem {
             .map(|e| e.0)
             .take_while(move |&a| a <= hi)
     }
-    fn keys(&self) -> impl Iterator<Item = &u16> {
-        self.0.iter().map(|e| &e.0)
-    }
 }
 
 /// What the search proved: per load the hulls of its addresses and bases, the slices whose
@@ -325,6 +322,8 @@ pub struct Found {
     pub fail: bool,
     pub states: usize,
     pub steps: u64,
+    /// The states it reached: a later evaluation of the slice evaluates them all at once.
+    pub seen: Vec<Vec<u8>>,
 }
 
 impl Found {
@@ -945,19 +944,38 @@ impl<'a> Cx<'a> {
             changed |= j != *e;
             *e = j;
         }
-        let mut addrs: Vec<u16> = old.mem.keys().chain(new.mem.keys()).copied().collect();
-        addrs.sort_unstable();
-        addrs.dedup();
-        for a in addrs {
-            let ov = old.mem.get(&a).copied();
-            let x = ov.unwrap_or_else(|| self.base(o, old, a));
-            let y = (new.mem.get(&a).copied()).unwrap_or_else(|| self.base(o, new, a));
-            let j = join(&mut o.provs, x, y, Some(a));
-            if ov != Some(j) {
-                old.mem.insert(a, j);
-                changed = true;
-            }
+        // The written bytes of both, merged by address: a byte one did not write holds its base.
+        let (a, b) = (&old.mem.0, &new.mem.0);
+        let mut out = Vec::with_capacity(a.len().max(b.len()));
+        let (mut i, mut j) = (0, 0);
+        while i < a.len() || j < b.len() {
+            let (x, y) = (a.get(i), b.get(j));
+            let (at, v) = match (x, y) {
+                (Some(x), Some(y)) if x.0 == y.0 => {
+                    (i, j) = (i + 1, j + 1);
+                    (
+                        x.0,
+                        (x.1 != y.1).then(|| join(&mut o.provs, x.1, y.1, Some(x.0))),
+                    )
+                }
+                (Some(x), y) if y.is_none_or(|y| x.0 < y.0) => {
+                    i += 1;
+                    let n = self.base(o, new, x.0);
+                    (x.0, Some(join(&mut o.provs, x.1, n, Some(x.0))))
+                }
+                (_, Some(y)) => {
+                    j += 1;
+                    let n = self.base(o, old, y.0);
+                    (y.0, Some(join(&mut o.provs, n, y.1, Some(y.0))))
+                }
+                (_, None) => unreachable!("one side holds a byte while the loop runs"),
+            };
+            let kept = x.filter(|x| x.0 == at).map(|x| x.1);
+            let v = v.or(kept).unwrap();
+            changed |= kept != Some(v);
+            out.push((at, v));
         }
+        old.mem.0 = out;
         changed
     }
 
@@ -1124,12 +1142,13 @@ impl<'a> Cx<'a> {
     }
 
     /// The least fixpoint of the slice's states from `mem0`'s under every entry, a layer of
-    /// states at a time: what it found.
-    pub fn fixpoint(&self) -> Found {
+    /// states at a time, starting from the states `prior` an earlier evaluation reached too
+    /// (states it does not reach only add to what it finds): what it found.
+    pub fn fixpoint(&self, prior: &[Vec<u8>]) -> Found {
         let kv0: Vec<u8> = self.cells.iter().map(|&c| self.mem0[c as usize]).collect();
-        let mut seen: FxHashSet<Vec<u8>> = FxHashSet::default();
-        seen.insert(kv0.clone());
-        let mut layer = vec![kv0];
+        let mut seen: FxHashSet<Vec<u8>> = prior.iter().cloned().collect();
+        seen.insert(kv0);
+        let mut layer: Vec<Vec<u8>> = seen.iter().cloned().collect();
         let mut f = Found::default();
         while !layer.is_empty() && f.ok() {
             let parts: Vec<(Found, Vec<Vec<u8>>)> =
@@ -1151,6 +1170,7 @@ impl<'a> Cx<'a> {
             f.ranges.insert(c, [lo, hi]);
         }
         f.states = seen.len();
+        f.seen = seen.into_iter().collect();
         f
     }
 }
@@ -1298,9 +1318,8 @@ fn search(
     held: (u32, u32),
     caps: Caps,
 ) -> Bounds {
-    let mut out = Bounds::default();
     if targets.is_empty() || mems.is_empty() {
-        return out;
+        return Bounds::default();
     }
     let inside = |h: &Hull| {
         held.0 <= h[0] && h[1] < held.1 && !vol.iter().any(|&(a, b)| h[0] < b && a <= h[1])
@@ -1311,21 +1330,27 @@ fn search(
         vbits.insert_range(a as usize..(b as usize).min(0x10000));
     }
     let total = AtomicU64::new(0);
-    let eval = |slice: &[u32], ranges: &[FxHashMap<u16, [u32; 2]>], keyed: &[u16]| {
-        let budget = Budget {
-            cap: caps.steps,
-            spent: AtomicU64::new(0),
-            stop: AtomicBool::new(false),
-            total: &total,
+    let none: Vec<Found> = Vec::new();
+    let eval =
+        |slice: &[u32], ranges: &[FxHashMap<u16, [u32; 2]>], keyed: &[u16], prior: &[Found]| {
+            let budget = Budget {
+                cap: caps.steps,
+                spent: AtomicU64::new(0),
+                stop: AtomicBool::new(false),
+                total: &total,
+            };
+            let (b, s) = ((caps, &budget), (slice, keyed));
+            (mems.par_iter().zip(ranges))
+                .enumerate()
+                .map(|(i, (m, r))| {
+                    let seen = prior.get(i).map_or(&[][..], |f| &f.seen[..]);
+                    Cx::new(g, w, &vbits, dev, entries, sp, targets, m, r, b, s).fixpoint(seen)
+                })
+                .collect::<Vec<Found>>()
         };
-        let (b, s) = ((caps, &budget), (slice, keyed));
-        (mems.par_iter().zip(ranges))
-            .map(|(m, r)| Cx::new(g, w, &vbits, dev, entries, sp, targets, m, r, b, s).fixpoint())
-            .collect::<Vec<Found>>()
-    };
-    let base = eval(&[], &ranges, &[]);
+    let base = eval(&[], &ranges, &[], &none);
     if base.iter().any(|f| f.fail) {
-        return out;
+        return Bounds::default();
     }
     let mut sl = Slices::default();
     for ((p, _), h) in base.iter().flat_map(|f| f.tops.values().flatten()) {
@@ -1346,7 +1371,12 @@ fn search(
             })
             .collect();
         let ks: Vec<u16> = keyed.iter().copied().collect();
-        let fs: Vec<Vec<Found>> = todo.par_iter().map(|s| eval(s, &ranges, &ks)).collect();
+        let fs: Vec<Vec<Found>> = (todo.par_iter())
+            .map(|s| {
+                let prior = found.get(s).map_or(&none[..], |f| &f.1[..]);
+                eval(s, &ranges, &ks, prior)
+            })
+            .collect();
         found.extend(todo.into_iter().zip(fs.into_iter().map(|f| (round, f))));
         let (mut grew, mut narrowed, mut rekeyed) = (false, false, false);
         for s in sl.live() {
@@ -1379,20 +1409,36 @@ fn search(
                 }
             }
         }
-        if !grew && !narrowed && !rekeyed {
+        // Done when no slice changes, or every load the evaluations reach is proven.
+        let (proven, reached) = judge(&sl, &found, &base, targets, &inside);
+        if (!grew && !narrowed && !rekeyed) || proven.loads.len() == reached {
             break;
         }
         if !narrowed && !rekeyed {
             found.values_mut().for_each(|f| f.0 = round + 1);
         }
     }
+    judge(&sl, &found, &base, targets, &inside).0
+}
+
+/// What the completed evaluations `found` of slices `sl` (none: `base`, the evaluation with
+/// none) prove of the loads `targets`, inside the bytes `inside` admits: per load the hull of
+/// its addresses and bases, and the loads they reach.
+fn judge(
+    sl: &Slices,
+    found: &FxHashMap<Vec<u32>, (usize, Vec<Found>)>,
+    base: &[Found],
+    targets: &FxHashSet<Key>,
+    inside: &dyn Fn(&Hull) -> bool,
+) -> (Bounds, usize) {
+    let mut out = Bounds::default();
     let live = sl.live();
-    let runs: Vec<(&[u32], &Vec<Found>)> = match live.is_empty() {
-        true => vec![(&[][..], &base)],
+    let runs: Vec<(&[u32], &[Found])> = match live.is_empty() {
+        true => vec![(&[][..], base)],
         false => (live.iter())
             .filter_map(|s| {
                 let fs = found.get(s).filter(|f| f.1.iter().all(Found::ok))?;
-                Some((&s[..], &fs.1))
+                Some((&s[..], &fs.1[..]))
             })
             .collect(),
     };
@@ -1401,6 +1447,7 @@ fn search(
     out.states = runs.iter().flat_map(|r| r.1.iter().map(|f| f.states)).sum();
     let joined = |p: &[u32]| p.iter().any(|&e| e == J || e >= JC);
     let meets = |p: &[u32], s: &[u32]| cells(p).any(|e| s.binary_search(&e).is_ok());
+    let mut reached = 0;
     for &key in targets {
         // Whether slice `s`'s evaluations know every address of the load whose provenance
         // meets `s` outside the held bytes.
@@ -1414,12 +1461,15 @@ fn search(
         };
         let mut h: Option<Hull> = None;
         let mut fine = !runs.is_empty();
+        let mut seen = false;
         for (s, fs) in &runs {
             for f in fs.iter() {
                 if let Some(&x) = f.addrs.get(&key) {
                     h = Some(h.map_or(x, |y| hull(x, y)));
+                    seen = true;
                 }
                 for ((p, m), x) in f.tops.get(&key).into_iter().flatten() {
+                    seen = true;
                     if inside(x) {
                         h = Some(h.map_or(*x, |y| hull(*x, y)));
                         continue;
@@ -1433,11 +1483,15 @@ fn search(
                 }
             }
         }
-        if let (true, Some(h)) = (fine, h.filter(inside)) {
+        reached += seen as usize;
+        // From the least base on: the base an indexed operand names is the program's, so the
+        // array the load reads starts where the code says, whatever the data.
+        let h = h.map(|h| [h[0].min(h[2]), h[1], h[2], h[3]]);
+        if let (true, Some(h)) = (fine, h.filter(|h| inside(h))) {
             out.loads.insert(key, h);
         }
     }
-    out
+    (out, reached)
 }
 
 #[cfg(test)]
