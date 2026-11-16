@@ -90,6 +90,14 @@ def join(*es):
     return {"mem": any(e.mem for e in es), "refs": frozenset().union(*(e.refs for e in es))}
 
 
+def plus(*es):
+    """The 16-bit sum of expressions ``es``, left to right."""
+    out = es[0]
+    for e in es[1:]:
+        out = binary("+", 12, out, e, 16)
+    return out
+
+
 def par(e, prec, op=""):
     """``e`` as an operand of operator ``op`` of precedence ``prec``: parenthesized where
     precedence requires or where a compiler asks for clarity."""
@@ -2189,52 +2197,32 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         byte = d is not None and d.name == "arith.extui" and self.f.width(d.args[0]) == 8
         return rest is not None and self.f.width(rest) == 16 and not byte
 
+    def terms(self, a, top=True):
+        """``(constant, [values])`` summing to the 16-bit address value ``a``: its additions
+        that print inline (all of ``a``'s own, as :meth:`split` reads them) taken apart."""
+        f, d = self.f, self.f.defs.get(a)
+        k = f.const_of(a)
+        if k is not None:
+            return k, []
+        inline = top or a in self.inline or (f.remat(a) and a not in self.names)
+        if d is None or d.name != "arith.addi" or not inline or f.width(a) != 16:
+            return 0, [a]
+        c, out = 0, []
+        for x in d.args:
+            cx, tx = self.terms(x, False)
+            c, out = c + cx, out + tx
+        return c & 0xFFFF, out
+
     def mem_ref(self, o, k, held=False):
         """The region element ``Rk[...]`` (with ``held`` the held constants' ``CODE[...]``)
         that access ``o`` addresses: the address modulo its width (16 bits, or 8 for a
         zero-page one), as the 6502 wraps it, less the origin."""
         name = f"C{k}" if held else f"R{k}"
-        sym = f"{name}_ORG"
-        org = self.mod.mem.held[k][0] if held else self.mod.mem.regions[k][0]
-        a = self.f.address(o)
-        c, rest = self.split(a)
+        c, rest = self.split(self.f.address(o))
         if rest in self.f.kptrs:
             p = self.ex(rest)
             return E(f"{p.text}[{lit(c, 8).text}]", 16, "", 0, 255, False, True, p.refs)
-        top = (1 << self.f.width(a)) - 1
-        c &= top
-        # A fixed address in a region the image's relocation moves is offset by its origin.
-        moved = not held and self.mod.mem.moves(org, True) != self.mod.mem.moves(c)
-        if rest is None and moved:
-            sub = binary("-", 12, lit(c, 16), E(sym, lo=org, hi=org, uns=True), 16)
-        elif rest is None:
-            sub = self.mod.offset(name, o.pc, c, org) if held else lit(c - org, 16)
-        elif c == 0 and org:
-            r = self.ex(rest)
-            sub = binary("-", 12, r, E(sym, lo=org, hi=org, uns=True), 16)
-        else:
-            r = clean(self.ex(rest), self.f.width(rest))
-            lo, hi = self.f.iv(rest)
-            if lo + c <= top < hi + c:
-                r, c = clean(binary("+", 12, lit(c, 16), r, 16), self.f.width(a)), 0
-            elif lo + c > top:
-                c -= top + 1
-            off = c - org
-            named = held and c and off >= 0 and not self.mod.insn[c]
-            if named:
-                sub = binary("+", 12, self.mod.offset(name, o.pc, c, org), r, 16)
-            elif off < -0x100 or moved:
-                # A constant that is no address near the region (a pointer plus one): its
-                # origin stays symbolic, as relocation moves it.
-                if c:
-                    r = binary("+", 12, lit(c, 16), r, 16)
-                sub = binary("-", 12, r, E(sym, lo=org, hi=org, uns=True), 16)
-            elif off > 0:
-                sub = binary("+", 12, lit(off, 16), r, 16)
-            elif off < 0:
-                sub = binary("-", 12, r, lit(-off, 16), 16)
-            else:
-                sub = r
+        sub = self.sub(o, self.f.address(o), k, held)
         sub = clean(sub, 16) if sub.lo < 0 else sub
         if held:
             self.mod.used.add("CODE")
@@ -2242,6 +2230,53 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         else:
             self.mod.regions_used.add(k)
         return E(f"{name}[{sub.text}]", 16, "", 0, 255, False, True, sub.refs)
+
+    def sub(self, o, a, k, held):
+        """The offset of address value ``a`` of access ``o`` into region ``k`` (or held span
+        ``k``): a constant inside it, wherever the additions place it, relative to its origin
+        (a ``.h`` name where the layout decides the distance), plus the rest."""
+        name = f"C{k}" if held else f"R{k}"
+        mem, f = self.mod.mem, self.f
+        org, n = mem.held[k] if held else mem.regions[k]
+        n = n - org if held else n
+        sym = E(f"{name}_ORG", lo=org, hi=org, uns=True)
+        c, rest = self.split(a)
+        top = (1 << f.width(a)) - 1
+        c &= top
+        deep, parts = self.terms(a) if top == 0xFFFF else (c, [])
+        rs, lo, hi = [], 0, 0
+        if deep != c and 0 <= deep - org < n and parts:
+            c, rs = deep, [self.ex(t) for t in parts]
+            lo, hi = (sum(x) for x in zip(*(f.iv(t) for t in parts)))
+        elif rest is not None:
+            rs, (lo, hi) = [clean(self.ex(rest), f.width(rest))], f.iv(rest)
+        # A fixed address in a region the image's relocation moves is offset by its origin.
+        moved = not held and mem.moves(org, True) != mem.moves(c)
+        if rest is None and moved:
+            sub = binary("-", 12, lit(c, 16), sym, 16)
+        elif rest is None:
+            sub = self.mod.offset(name, o.pc, c, org) if held else lit(c - org, 16)
+        elif c == 0 and org:
+            sub = binary("-", 12, self.ex(rest), sym, 16)
+        else:
+            if lo + c <= top < hi + c:
+                rs, c = [clean(plus(lit(c, 16), *rs), f.width(a))], 0
+            elif lo + c > top:
+                c -= top + 1
+            off = c - org
+            if held and c and off >= 0 and self.mod.placed(c, org):
+                sub = plus(self.mod.offset(name, o.pc, c, org), *rs)
+            elif off < -0x100 or moved:
+                # A constant that is no address near the region (a pointer plus one): its
+                # origin stays symbolic, as relocation moves it.
+                sub = binary("-", 12, plus(*([lit(c, 16)] if c else []), *rs), sym, 16)
+            elif off > 0:
+                sub = plus(lit(off, 16), *rs)
+            elif off < 0:
+                sub = binary("-", 12, plus(*rs), lit(-off, 16), 16)
+            else:
+                sub = plus(*rs)
+        return sub
 
     def var(self, o):
         """The promoted cell access ``o`` reaches (:meth:`Module.promote`): a scalar, or a
@@ -2313,21 +2348,20 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         if not sure:
             self.mod.checked.add(j)
         bi = self.base_index(o)
+        c, rest = self.split(self.f.address(o))
         if bi is not None:
-            base, idx = self.addr(bi[0]), self.ex(bi[1])
+            at, idx = bi[0], self.ex(bi[1])
+        elif rest is not None and self.f.width(rest) == 16 and 0 < c < 0x100:
+            at, idx = rest, lit(c, 8)
         else:
-            c, rest = self.split(self.f.address(o))
-            if rest is not None and self.f.width(rest) == 16 and 0 < c < 0x100:
-                base, idx = self.ex(rest), lit(c, 8)
-            else:
-                base, idx = a, lit(0, 8)
-        refs = join(base, idx)["refs"]
+            at, idx = self.f.address(o), lit(0, 8)
         if sure:
             self.mod.used.add("CGEN_IX")
-            org = self.mod.mem.held[j][0]
-            off = binary("-", 12, base, E(f"C{j}_ORG", lo=org, hi=org, uns=True), 16)
+            off = self.sub(o, at, j, True)
             text = f"CGEN_IX(C{j}, {off.text}, {clean(idx, 8).text})"
-            return E(text, 16, "", 0, 255, False, True, refs)
+            return E(text, 16, "", 0, 255, False, True, join(off, idx)["refs"])
+        base = self.addr(at) if bi is not None else a if at == self.f.address(o) else self.ex(at)
+        refs = join(base, idx)["refs"]
         return E(f"rdC{j}({base.text}, {idx.text})", 16, "", 0, 255, False, True, refs)
 
     def build(self, o):  # pylint: disable=too-many-return-statements
@@ -3599,12 +3633,18 @@ class Module:  # pylint: disable=too-many-instance-attributes
             self.used.add("IMG_ORG")
         return name
 
+    def placed(self, addr, org):
+        """Whether the distance of ``addr`` from a span's origin ``org`` below it is the
+        layout's: a byte from one to the other is no instruction's, so where the program's
+        data lies decides it."""
+        return not self.insn[org : addr + 1].all()
+
     def offset(self, span, pc, addr, org):
         """The offset of ``addr`` in held span ``span`` (origin ``org``) as the access of the
-        instruction at ``pc`` names it: a data byte's by a ``.h`` name, as where a song's
-        tables lie is song data; an instruction byte's as a literal."""
+        instruction at ``pc`` names it: by a ``.h`` name where the layout places it
+        (:meth:`placed`), as where a song's tables lie is song data; else as a literal."""
         at = self.mem.base(pc)[1] if pc is not None else None
-        if at is None or self.insn[addr]:
+        if at is None or not self.placed(addr, org):
             return lit(addr - org, 16)
         if (span, addr) not in self.offsets:
             stem = f"{span}_AT{at:X}"

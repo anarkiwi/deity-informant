@@ -2332,6 +2332,81 @@ def test_read_off_a_table_into_code(prefix, tmp_path):
     assert lo < info["code_span"][1] and info["code_span"][0] < hi
 
 
+INCODE = """
+entry:  AND #$07
+        TAX
+        LDA tab,X
+        STA $C010
+        JMP next
+tab:    .byte 3,1,4,1,5,9,2,6
+next:   TXA
+        EOR #$07
+        TAY
+        LDA tab,Y
+        STA $C011
+        RTS
+end:
+"""
+
+
+def copies_reading_tables(split):
+    """Three unrolled copies, each reading its own table between its instructions by an
+    index of its own byte: one table, or (``split``) a low and a high column forming a
+    pointer read through ``($FB),Y``."""
+    out = ["entry:"]
+    for i, reg in enumerate((0xC000, 0xC007, 0xC00E)):
+        out.append(f"        LDA ${0x10 + i:02X}\n        AND #$03\n        TAX")
+        if split:
+            out.append(
+                f"        LDA lo{i},X\n        STA $FB\n        LDA hi{i},X\n        STA $FC\n"
+                f"        LDY #$01\n        LDA ($FB),Y"
+            )
+        else:
+            out.append(f"        LDA lo{i},X")
+        out.append(f"        STA ${reg:04X}\n        INC ${0x10 + i:02X}\n        JMP w{i}")
+        out.append(
+            f"lo{i}:   .byte "
+            + ",".join(f"lo(d{j})" if split else str(i * 4 + j) for j in range(4))
+        )
+        if split:
+            out.append(f"hi{i}:   .byte " + ",".join(f"hi(d{j})" for j in range(4)))
+        out.append(f"w{i}:")
+    out.append("        RTS")
+    out += [f"d{j}:     .byte {2 * j + 1},{2 * j + 2}" for j in range(4)]
+    return "\n".join(out + ["end:", ""])
+
+
+@pytest.mark.parametrize(
+    "src,instances",
+    [(INCODE, 0), (copies_reading_tables(False), 1), (copies_reading_tables(True), 1)],
+    ids=["two-reads", "per-copy", "per-copy-split"],
+)
+def test_tables_inside_code_index_a_named_offset(prefix, tmp_path, src, instances):
+    """A constant table between instructions, read by index, is its span's element at an
+    offset the ``.h`` names (each copy's table its copy's offset beside it): no code address
+    is a value, and the ``.c`` is the same at every origin."""
+    outs = []
+    for org in (0x1000, 0x2345):
+        img, labels, loaded = assemble(src, org)
+        c, h, info = translate(prefix, img, labels, loaded)
+        (tmp_path / str(org)).mkdir()
+        play(tmp_path / str(org), c, h, img, labels, entry_calls(range(8), 2))
+        outs.append(c)
+    assert outs[0] == outs[1] and info["stats"]["instances"] == instances
+    assert "CODE_ORG" not in outs[0] and "IMG_ORG" not in outs[0]
+    named = re.findall(r"\bC\d+\[(C\d+_AT[0-9A-F]+)\b", outs[0])
+    assert named and all(f"#define {n} " in h for n in named)
+
+
+def test_table_inside_code_a_store_writes_is_data(prefix, tmp_path):
+    """A table between instructions that a store writes is a region's bytes, its accesses
+    the region's elements, with no code check and no held span."""
+    src = INCODE.replace("        JMP next", "        INC tab,X\n        JMP next")
+    c, _, info = check(prefix, tmp_path, src, entry_calls(range(8), 2))
+    assert re.search(r"R0\[v1\] = v\d+ \+ 1;", c) and "R0[v1 ^ 7]" in c
+    assert "codechk" not in c and not re.search(r"\bC\d+\[", c) and not info["traps"]
+
+
 def test_smc_operand_cells(prefix, tmp_path):
     img, labels = W.assemble(W.PATCH)
     c, h, _ = cgen.translate(
