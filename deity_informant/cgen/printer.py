@@ -3284,7 +3284,8 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 lo, hi = (f.proven_iv(o) if o.name == "memref.load" else None) or (lo, hi)
                 # An access with an address set reaches its addresses (a load's where they lie
                 # in the loaded program or reach code, which no pointer run holds): inside
-                # it, through one span holding them, as the image holds the bytes between.
+                # it, through one span holding them, as the image holds the bytes between; a
+                # run of the set as wide as an access of unknown address touches its bytes.
                 store = o.name == "memref.store"
                 aset = (
                     self.fx(f.name).addr_sets.get((o.pc, store)) if o.name != "func.call" else None
@@ -3294,7 +3295,10 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 if not store and not inside and not any(self.mem.code[a:b].any() for a, b in aset):
                     aset = None
                 if aset and hi - lo >= regions.BOUNDED:
-                    ranges.extend((a, b - 1) for a, b in aset)
+                    step = regions.BOUNDED
+                    ranges.extend(
+                        (x, min(x + step, b) - 1) for a, b in aset for x in range(a, b, step)
+                    )
                     if self.mem.loaded[0] <= aset[0][0] and aset[-1][1] <= self.mem.loaded[1]:
                         joined.append((aset[0][0], aset[-1][1] - 1))
                     continue

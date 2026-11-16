@@ -51,6 +51,7 @@ prog.code             # [addr, ...] bytes treated as constant: code, tables read
 prog.written          # [(lo, hi), ...] runs of the bytes stores with address sets may write
 prog.starts           # [pc, ...] instruction starts the functions plan (every instance copy's)
 prog.addr_sets        # {(pc, store): [(lo, hi), ...]} address sets of pointer accesses
+prog.ptr_sets         # {pc: [word, ...]} the words a (zp),Y access's pointer may hold
 prog.reach            # {pc: (lo, hi, base_lo, base_hi)} pointer loads' hulls (*Pointer reach*;
                       #   hi past $FFFF: a pointer advanced without bound)
 prog.proven           # the hulls of reach that hold on every run (*Pointer reach*)
@@ -445,6 +446,34 @@ the facts, so a proof holds on every execution that stays in lifted code.
   with an address set may write is not constant from the next round of discovery on, nor is
   a table byte inside the address interval of a store from a constant base plus an index
   with no address set (a page from its base at most): data it may write.
+- **Value sets.** `A`, `X` and `Y` keep the set of values they may hold where their interval
+  and known bits do not give it, at most 64 values (past them, the interval). A load from a
+  constant base plus an index register whose addresses at the index's values are all
+  constant bytes gives the set of those bytes, which join the tables read as constant;
+  transfers and constant offsets move a set, and an instruction that reads a set and no
+  memory runs on each combination of its inputs' values (a flag's interval; at most 128)
+  where every result is exact (`LSR`, `AND`, `ADC #k`). A conditional branch cuts the sets
+  of the registers its predicate holds (an index's set by the bytes it read, *Pointer
+  reach*, only there: the guards on a table's extent do not depend on its bytes). Joins
+  unite sets. So a selector read from a constant table bounds the index set a later
+  table read, a store's address set or a computed jump's words come from (`Sets::values`).
+- **Pointer word sets.** The analysis runs twice when the first run finds a store at an
+  exact address into a byte of a `(zp),Y` pointer pair after which both bytes hold tagged
+  table bytes or constants in every context (*Computed jumps*): the words they make (at most
+  64, inside the tables' extent, from constant bytes no store with an address set writes;
+  an index guard only for an index the code does not bound) *seed* the second run, in which
+  that store leaves the pair holding those words, each with the values `Y` holds with it:
+  `{(p, y)}`. `Y` moving by a constant moves every word's values, any other write of `Y`
+  gives each its new values, and a store that may reach either byte drops the pair. A
+  `(zp),Y` access reaches `p + y` for each pair; a load of constant bytes there gives their
+  set, and a register holding it (until `Y` or the pair changes) cuts the pairs on a branch
+  to those whose byte passes, so a walk over records ends per word at its own end marker and
+  reads only the column `Y` steps over. Such an access has that address set
+  (`Program.addr_sets`; a store's where it has none), its pointer the words
+  (`Program.ptr_sets`). The tables a pair is seeded from (at most 64 entries) join the
+  tables read and their guards are emitted whatever words their bytes make, so the lifted
+  code does not depend on those bytes' values. A store through two cell operand bytes tagged on every
+  path into it writes their words the same way.
 - **Byte bounds.** `Program.bounds` gives, for each byte (outside page 1, not a cell) every
   store that may write has an exact address and a value narrower than a byte, the hull of
   its entry byte and the stored values: what it holds whenever lifted code runs.
@@ -617,11 +646,10 @@ the facts, so a proof holds on every execution that stays in lifted code.
   of loads from a constant base plus an index register): an indexed access reaches every byte
   its index set gives, so those hulls hold on every run. Both passes run once, on the program discovery
   settles on, and refine the domain:
-  - *Value sets.* `A`, `X` and `Y` keep the set of values a load of constant bytes gives them
-    (the table's bytes at the index register's values, inside the extent), through transfers
-    and constant offsets. A conditional branch cuts the set of the register its flag tests
-    and, where that register holds a table byte read through an index register that still
-    holds its value, the index's set to the indices whose byte passes the test: an end
+  - *Value sets* (*Value sets* above) over the bytes' bounds too: a load gives the set of
+    the bytes at the index register's values (inside the extent) where each byte's bound is
+    one value. A conditional branch also cuts the set of the index register of a table byte
+    a register holds (the index still its value) to the indices whose byte passes: an end
     marker tested before its pointer is used leaves the pointer.
   - *Pointer pairs* (`word.rs`). A pair of tracked bytes `q, q + 1` holds a 16-bit value as
     integers that do not wrap: a base plus a non-negative offset, unbounded above. `CLC; ADC`
@@ -898,7 +926,11 @@ and the code using it deopts or traps.
   loop heads, the targets of depth-first back edges over every control edge (a return's to
   its sites included, so every cycle of keys passes one), an interval rises only to the next
   program constant; the rest of a state (tags, known bits, value sets, stack bytes, depth,
-  tracked bytes) is of finite height. Balance is refined while fewer returns are wild.
+  tracked bytes) is of finite height: a register's value set is at most 64 of the 256 byte
+  values (more: its interval), a pointer pair's words at most 64 of its seeds' words (more:
+  dropped), each with a subset of the 256 `Y` values, and joins unite them or drop them.
+  Balance is refined while fewer returns are wild. The analysis runs at most twice per
+  round, the second time with the seeds the first found, which it does not change.
 - Cell values (`dispatch::cell_values`) are a least fixpoint of byte-set unions. A store whose
   address is unknown only through its own operand cells may write those cells unknown values,
   which leave it unresolved and writing nowhere known, so the values it is resolved with would

@@ -596,6 +596,9 @@ pub struct Graph {
     pub addr_sets: FxHashMap<(u16, bool), BTreeSet<u16>>,
     /// The address sets the stores write, as the analysis took them ([`crate::vsa::Aimed`]).
     pub aimed: crate::vsa::Aimed,
+    /// Per `(zp),Y` access whose pointer pair holds a set of words on every path, the words
+    /// ([`crate::vsa::St::pw`]).
+    pub ptr_sets: FxHashMap<u16, BTreeSet<u16>>,
 }
 
 /// Stack-pointer effect of a `Next` instruction: pushes and pulls by count, `None` for an
@@ -1303,6 +1306,13 @@ impl Fixpoint<'_> {
                     },
                     past: an.past.clone(),
                     dispatch,
+                    ptr_sets: {
+                        let mut m: FxHashMap<u16, BTreeSet<u16>> = FxHashMap::default();
+                        for ((pc, _, _), w) in &an.ptrs {
+                            m.entry(*pc).or_default().extend(w);
+                        }
+                        m
+                    },
                     addr_sets: {
                         let mut m: FxHashMap<(u16, bool), BTreeSet<u16>> = FxHashMap::default();
                         for ((pc, _, _), a) in an.loads.iter().chain(&an.indexed) {

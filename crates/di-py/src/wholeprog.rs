@@ -819,6 +819,13 @@ impl Program {
             .collect()
     }
 
+    /// The words the pointer of each `(zp),Y` access may hold, where a set of them reaches it on
+    /// every path: ``{pc: [word, ...]}``.
+    #[getter]
+    fn ptr_sets(&self) -> HashMap<u16, Vec<u16>> {
+        self.prog.ptr_sets.iter().cloned().collect()
+    }
+
     /// Address hulls of the loads through pointers and cell operands while the program's
     /// table loads stay inside their extents, and of their bases (the index registers zero):
     /// ``{pc: (lo, hi, base_lo, base_hi)}``, each the hull over the instruction's loads.

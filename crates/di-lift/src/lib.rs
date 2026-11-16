@@ -958,6 +958,13 @@ pub fn lift_banked(
             v.sort_unstable();
             v
         },
+        ptr_sets: {
+            let mut v: Vec<(u16, Vec<u16>)> = (g.ptr_sets.iter())
+                .map(|(&pc, w)| (pc, w.iter().copied().collect()))
+                .collect();
+            v.sort_unstable();
+            v
+        },
         addr_sets: {
             let mut v: Vec<ir::AddrSet> = g
                 .addr_sets

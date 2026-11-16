@@ -101,13 +101,15 @@ pub(crate) type Vals = FxHashMap<u16, Option<BTreeSet<u8>>>;
 
 impl Sets<'_> {
     /// The values data register `r` may hold in state `s` of context `c`, and whether they
-    /// are bounded: its interval cut by its known bits, and (with [`Sets::entered`]) where it
-    /// holds its function's entry value of a register plus a constant, by the values that
-    /// register holds in the calls entering the context (bounded where they all are).
+    /// are bounded: its value set, else its interval cut by its known bits, and (with
+    /// [`Sets::entered`]) where it holds its function's entry value of a register plus a
+    /// constant, by the values that register holds in the calls entering the context
+    /// (bounded where they all are).
     fn values(&self, c: u32, s: &St, r: usize, seen: &mut Vec<u32>) -> ([bool; 0x100], bool) {
         let mut ok = [false; 0x100];
-        s.kb[r].values(s.env[r]).for_each(|x| ok[x as usize] = true);
-        let mut bounded = s.env[r] != Iv::full(1);
+        let vals = s.vals(r);
+        vals.values().for_each(|x| ok[x as usize] = true);
+        let mut bounded = s.env[r] != Iv::full(1) || s.set[r].is_some() && ok.iter().any(|&x| !x);
         let calls = u16::try_from(c).ok().and_then(|c| self.calls.get(&c));
         let rel = s.rel[r].filter(|_| self.entered && !seen.contains(&c));
         if let (Some((b, off)), Some(cs)) = (rel, calls) {
@@ -404,10 +406,11 @@ fn reaching(
                     continue;
                 }
                 let s = crate::vsa::step(code, q, v, st, &mut Vec::new());
-                if s.env[r] == Iv::full(1) {
+                let vals = s.vals(r);
+                if s.env[r] == Iv::full(1) && s.set[r].is_none() {
                     return None;
                 }
-                out.extend(s.kb[r].values(s.env[r]).map(|x| x as u8));
+                out.extend(vals.values().map(|x| x as u8));
             }
         }
     }
@@ -544,6 +547,7 @@ pub(crate) fn vectors(
         mods: FxHashMap::default(),
         pinned: FixedBitSet::new(),
         aimed: FxHashMap::default(),
+        seeds: FxHashMap::default(),
         ram: Vec::new(),
     };
     let mut v: Vec<u16> = vars
@@ -872,8 +876,8 @@ fn base(code: &Code, t: Tab) -> Option<u16> {
 /// The bytes tags `ts` stand for, per index value inside their tables' extent
 /// ([`Objects::valid`], ending at the first of `stops` too): tags indexed by one value (the
 /// same register and group) are columns of one table and pair up value by value, others are
-/// read alone. Index guards keep each load inside the extent where its index set reaches past
-/// it.
+/// read alone. Index guards keep each load inside the extent where the index values every
+/// tag of its group reads with reach past it.
 fn bytes(
     code: &Code,
     sets: &Sets,
@@ -924,7 +928,9 @@ fn bytes(
                     lo: v[0] as u32,
                     hi: v[n - 1] as u32,
                 };
-                for t in g {
+                // An index value one load reads with that another of the group never does
+                // pairs with nothing: only one all of them read past the extent is guarded.
+                for t in g.iter().filter(|_| n < v.len()) {
                     if let Tab::T { pc, reg, .. } = *t {
                         if idx(pc, reg)
                             .iter()
@@ -1343,6 +1349,9 @@ pub(crate) fn pointer_stores(
         };
         let g = lp.get_or_insert_with(|| Loop::new(code, vars, sets, objs, konst));
         let Some(p) = var.acc.get(s.ai).and_then(|a| a.ptr) else {
+            if let Some((a, r, gs)) = operand_set(g, &w, s.pc, var.op) {
+                found.push((i, a, r, gs));
+            }
             continue;
         };
         if let Some((a, r, gs)) = pointer_set(g, &w, s.pc, p) {
@@ -1385,13 +1394,52 @@ fn pointer_set(
     })
 }
 
+/// The address set of the store of opcode `op` at `pc` through its cell operand bytes, where
+/// they hold tagged table bytes (a byte that is not a cell, its constant) on every path into
+/// it ([`tagged_set`]), plus each value of its index register.
+fn operand_set(
+    g: &Loop,
+    w: &FixedBitSet,
+    pc: u16,
+    op: u8,
+) -> Option<(Vec<u16>, BTreeSet<u16>, Vec<Guard>)> {
+    let t = Template::of(op);
+    let b = operand_bytes(g.code.img, g.code.cells, pc, t.len);
+    if t.len != 3 || b.iter().all(Option::is_some) {
+        return None;
+    }
+    let ys = match index_reg(t) {
+        Some(r) => g.sets.of(pc, r)?,
+        None => vec![0],
+    };
+    let (q, h) = (pc.wrapping_add(1) as u32, pc.wrapping_add(2) as u32);
+    tagged_in(g, w, pc, (q, h), b, &ys).filter(|x| read_only(g.code, &x.1))
+}
+
+/// Whether every byte of `bytes` is one the lift takes as constant and no cell.
+fn read_only(code: &Code, bytes: &BTreeSet<u16>) -> bool {
+    (bytes.iter()).all(|&a| code.constant.contains(a as usize) && !code.cells.contains(a as usize))
+}
+
 /// The words of the bytes `q, h` where they hold tagged table bytes on every path into `pc`,
 /// plus each of `ys`; the table bytes read and the guards they need.
 fn tagged_set(
     g: &Loop,
     w: &FixedBitSet,
     pc: u16,
+    qh: (u32, u32),
+    ys: &[u8],
+) -> Option<(Vec<u16>, BTreeSet<u16>, Vec<Guard>)> {
+    tagged_in(g, w, pc, qh, [None; 2], ys)
+}
+
+/// [`tagged_set`] with the bytes `fixed` gives constant.
+fn tagged_in(
+    g: &Loop,
+    w: &FixedBitSet,
+    pc: u16,
     (q, h): (u32, u32),
+    fixed: [Option<u8>; 2],
     ys: &[u8],
 ) -> Option<(Vec<u16>, BTreeSet<u16>, Vec<Guard>)> {
     let (code, sets, objs) = (g.code, g.sets, g.objs);
@@ -1400,7 +1448,10 @@ fn tagged_set(
     let mut read = BTreeSet::new();
     let mut gs = Vec::new();
     let tagged = states.iter().all(|st| {
-        let at = |a: u32| st.mem.iter().find(|e| e.0 as u32 == a).copied();
+        let at = |a: u32| match fixed[(a == h) as usize] {
+            Some(k) => Some((a as u16, Some(Tab::K(k)), Iv::exact(k as u32))),
+            None => st.mem.iter().find(|e| e.0 as u32 == a).copied(),
+        };
         let (Some((_, Some(l), li)), Some((_, Some(hb), hv))) = (at(q), at(h)) else {
             return false;
         };
@@ -1419,6 +1470,90 @@ fn tagged_set(
         true
     });
     tagged.then(|| (addrs.into_iter().collect(), read, gs))
+}
+
+/// The table bytes and guards the words of a pointer pair's seeds were read with, by the
+/// pair's low byte.
+pub(crate) type SeedReads = FxHashMap<u8, (BTreeSet<u16>, Vec<Guard>)>;
+
+/// The seeds of the `(zp),Y` pointer pairs ([`crate::vsa::Code::seeds`]): per store at an
+/// exact address into a byte of a pair after which, in every context, both bytes hold tagged
+/// table bytes or constants, the words they make ([`pair`]: inside the tables' extents, read
+/// from constant bytes no store with an address set writes) inside the bytes' intervals, at most
+/// [`crate::vsa::CAP`]; and per pair whose tables hold at most that many entries, the bytes
+/// read and the guards they need, each of an index the code does not bound (one it bounds
+/// reads the words it reads), whatever words the bytes make.
+pub(crate) fn pointer_seeds(
+    code: &Code,
+    vars: &FxHashMap<u16, Vec<Var>>,
+    sets: &Sets,
+    objs: &Objects,
+    stores: &[Store],
+) -> (crate::vsa::Seeds, SeedReads) {
+    let w = written(code, stores);
+    let pairs: BTreeSet<u8> = (vars.iter())
+        .flat_map(|(&pc, vs)| vs.iter().filter_map(move |v| code.zpy(pc, v.op)))
+        .collect();
+    let mut seeds = crate::vsa::Seeds::default();
+    let mut reads = SeedReads::default();
+    if pairs.is_empty() {
+        return (seeds, reads);
+    }
+    let mut acc = Vec::new();
+    for (&pc, vs) in vars {
+        let Some(states) = sets.states.get(&pc) else {
+            continue;
+        };
+        for v in vs {
+            let at = (v.acc.iter())
+                .filter(|a| a.store && !a.dummy)
+                .filter_map(|a| a.addr.value().filter(|&m| m < 0x100));
+            let qs: BTreeSet<u8> = at
+                .flat_map(|m| [m as u8, (m as u8).wrapping_sub(1)])
+                .filter(|q| pairs.contains(q))
+                .collect();
+            for q in qs {
+                let mut words = BTreeSet::new();
+                let (mut read, mut gs) = (BTreeSet::new(), Vec::new());
+                let ok = states.iter().all(|st| {
+                    acc.clear();
+                    let s = crate::vsa::step(code, pc, v, st, &mut acc);
+                    let at = |a: u8| s.mem.iter().find(|e| e.0 == a as u16).copied();
+                    let (Some((_, Some(l), li)), Some((_, Some(h), hv))) =
+                        (at(q), at(q.wrapping_add(1)))
+                    else {
+                        return false;
+                    };
+                    let Some((ws, r, g, _)) = pair(code, sets, objs, &w, (l, h), None) else {
+                        return false;
+                    };
+                    if !read_only(code, &r)
+                        || g.iter().any(|&(p, x, _)| sets.of(p, x as usize).is_some())
+                    {
+                        return false;
+                    }
+                    let inside = |x: u8, iv: Iv| (iv.lo..=iv.hi).contains(&(x as u32));
+                    words.extend(ws.into_iter().filter(|w| {
+                        let [lo, hi] = w.to_le_bytes();
+                        inside(lo, li) && inside(hi, hv)
+                    }));
+                    read.extend(r);
+                    gs.extend(g);
+                    true
+                });
+                if !ok || read.len() > 2 * crate::vsa::CAP {
+                    continue;
+                }
+                let e = reads.entry(q).or_default();
+                e.0.extend(read);
+                e.1.extend(gs);
+                if !words.is_empty() && words.len() <= crate::vsa::CAP {
+                    seeds.insert((pc, v.op), (q, words.into_iter().collect()));
+                }
+            }
+        }
+    }
+    (seeds, reads)
 }
 
 /// Address sets of the loads through `(zp),Y` pointers ([`pointer_set`]) whose tables no
