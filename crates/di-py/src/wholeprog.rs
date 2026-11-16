@@ -1,9 +1,10 @@
 //! Whole-program lifting (`di_lift`) for Python: `lift_program`, `lift_many`, `Program`
 //! and the reference `reference_call` with the same bus.
 
+use crate::vn;
 use di_lift::ir::{mem, other, Program as LProgram};
 use di_lift::{Back, Backend, BankMap, Entry, Exec, Facts, Job, Opts, Outcome, Runner};
-use di_pcode::{reg as R, Bus, Cpu, Halt, Lead, Opc, Space, Vn, RETURN};
+use di_pcode::{reg as R, Bus, Cpu, Halt, Lead, Opc, RETURN};
 use indicatif::{ProgressBar, ProgressStyle};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -487,27 +488,6 @@ fn why<'py>(py: Python<'py>, w: &di_lift::why::Why) -> PyResult<Bound<'py, PyDic
 
 fn entries(e: Vec<PyEntry>) -> Vec<Entry> {
     e.into_iter().map(|(pc, regs)| Entry { pc, regs }).collect()
-}
-
-fn vn<'py>(py: Python<'py>, v: Vn) -> PyResult<Bound<'py, PyAny>> {
-    if v.is_none() {
-        return Ok(py.None().into_bound(py));
-    }
-    let sp = match v.space() {
-        Space::Const => "c",
-        Space::Reg => "r",
-        Space::Unique => "u",
-        Space::Ram => "m",
-    };
-    Ok(PyList::new(
-        py,
-        [
-            sp.into_pyobject(py)?.into_any(),
-            v.off().into_pyobject(py)?.into_any(),
-            v.size().into_pyobject(py)?.into_any(),
-        ],
-    )?
-    .into_any())
 }
 
 /// A lifted program. ``functions`` lists each function's blocks of P-Code ops as

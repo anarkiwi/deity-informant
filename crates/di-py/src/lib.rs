@@ -8,7 +8,7 @@ use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyDict, PyList, PyString, PyTuple};
 
-fn vn<'py>(py: Python<'py>, v: Vn) -> PyResult<Bound<'py, PyAny>> {
+pub(crate) fn vn<'py>(py: Python<'py>, v: Vn) -> PyResult<Bound<'py, PyAny>> {
     if v.is_none() {
         return Ok(py.None().into_bound(py));
     }
