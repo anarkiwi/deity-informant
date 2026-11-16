@@ -1067,9 +1067,10 @@ fn brk_handlers(g: &Graph) -> FxHashSet<u16> {
 /// Heads of shared tails: instruction starts that two or more plans reach at their entry
 /// height, entered there from a node that is not shared (one no other plan reaches at the same
 /// height). Code the plans share past such an entry, including where it returns to the entry
-/// height after a push and a pull, stays in the function the entry heads. Each becomes a
-/// function its callers reach by tail calls, as a `JSR` target that returns at its entry
-/// height does by calls.
+/// height after a push and a pull, stays in the function the entry heads. A head that a `JSR`
+/// targets (a computed one's arm included) is a procedure: it becomes a function its callers
+/// reach by tail calls, as a `JSR` target that returns at its entry height does by calls. Any
+/// other shared tail is code of each plan reaching it.
 fn shared_tails(plans: &[Plan]) -> BTreeSet<u16> {
     let mut count: FxHashMap<(u16, H), usize> = FxHashMap::default();
     let plans: Vec<&Plan> = plans.iter().filter(|p| p.inst.is_none()).collect();
@@ -1301,6 +1302,15 @@ pub fn plan_all(g: &Graph, entries: &[(u16, Vec<u8>)], seen: &Seen, fold: bool) 
             *sites.entry(*f).or_default() += 1;
         }
     }
+    let jsrs: FxHashSet<u16> = g
+        .vars
+        .values()
+        .flatten()
+        .flat_map(|v| match &v.flow {
+            Flow::Jsr { t, .. } => t.all().to_vec(),
+            _ => Vec::new(),
+        })
+        .collect();
     let mut tried: FxHashSet<u16> = FxHashSet::default();
     let none = Insts::default();
     let mut ins: Option<Insts> = None;
@@ -1352,7 +1362,7 @@ pub fn plan_all(g: &Graph, entries: &[(u16, Vec<u8>)], seen: &Seen, fold: bool) 
         let heads: Vec<u16> = shared_tails(&plans)
             .into_iter()
             .filter(|t| g.dispatch.get(t).is_none_or(|d| d.0 != *t))
-            .filter(|t| !calls.contains(t) && tried.insert(*t))
+            .filter(|t| jsrs.contains(t) && !calls.contains(t) && tried.insert(*t))
             .collect();
         if heads.is_empty() || seen.bank.is_some() {
             break (plans, idx);

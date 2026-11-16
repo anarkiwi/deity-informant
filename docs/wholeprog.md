@@ -237,10 +237,11 @@ the program, and checks it against the reference.
    caller too) is a `CALL` at the caller's SP with no return address, followed by the caller's
    return; a deopt in the callee writes no return address for that frame. An instruction start
    that two or more plans reach at their entry height, entered there from a node no other plan
-   reaches at the same height, is a *shared tail*: it becomes a function entered by tail calls
-   when its plan is balanced (plans are made again until no new shared tail appears). Code the
-   plans share past it stays in that function, also where it returns to the entry height after
-   a push and a pull: a join reached only within one procedure is not a function. So a voice routine called with
+   reaches at the same height, is a *shared tail*: one a `JSR` targets (a computed `JSR`'s arm
+   included) becomes a function entered by tail calls when its plan is balanced (plans are made
+   again until no new shared tail appears), and code the plans share past it stays in that
+   function, also where it returns to the entry height after a push and a pull; any other is
+   code of each plan reaching it. A join reached only within one procedure is not a function. So a voice routine called with
    `JSR` for two voices and fallen into for the third is one function with three call sites,
    not a function plus a copy specialized to the third voice's `X`.
    **Instances** (`inst.rs`, `fold=True`; without facts, a bank map or cycle counting). Copies

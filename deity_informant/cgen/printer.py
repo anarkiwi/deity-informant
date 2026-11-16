@@ -2000,8 +2000,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             self.f.tail,
             self.exprable,
             self.f.latchable,
+            lambda n: self.first_pc(n) in self.mod.shared,
         )
-        self.body = s.finish(s.structure(self.g))
+        self.body = s.structure(self.g)
 
     def exprable(self, items):
         """Whether statements ``items`` are C expressions (:meth:`Func.exprable`) whose stores
@@ -3257,6 +3258,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.order, self.edges, self.ids, self.entries = [], {}, new_ids(), []
         self.sites, self.made, self.lifted, self.prov = {}, Counter(), {}, {}
         self.copy_pcs, self.sets, self.kpos, self.tables = {}, {}, None, {}
+        self.shared = set()
         #: The bytes init stores (``postinit.Init.mask``), and those no store may write
         #: (:meth:`unwritten`, None until found or when a store of unknown address may).
         self.init_stored, self.free = np.zeros(0x10000, dtype=bool), None
@@ -3938,8 +3940,10 @@ class Module:  # pylint: disable=too-many-instance-attributes
         return target.name
 
     def structure(self):
-        """Structure each function whole: a shared tail stays in its function (the lift makes
-        the tails several functions share functions of their own)."""
+        """Structure each function whole; ``shared``: the instructions two or more functions
+        hold."""
+        held = Counter(pc for f in self.funcs for pc in {o.pc for b in f.blocks for o in b.ops})
+        self.shared = {pc for pc, n in held.items() if pc and n > 1}
         for f in self.funcs:
             f.kpointers()
             f.mark_addresses()

@@ -264,9 +264,10 @@ arguments gets a node of copies (the arguments are C variables assigned on the e
 parallel assignment); an edge to a block that only returns is a `return`.
 
 A shared tail is a function only where the machine code makes it a procedure: a `JSR` target
-or code two lifted functions enter at their entry height (the lift's tail calls); a join inside
-one function stays in it, as does code past such an entry that the functions only share
-through it.
+(a computed `JSR`'s arm included), which a jump or fall-through into it at the entry height
+reaches by a tail call. Code procedures enter only by jumps and fall-through is code of each
+procedure reaching it, held once per procedure (its lift holds each instruction once per stack
+height); a dispatch's handlers and the tails they share are arms of its function's switch.
 
 **The goto rule.** The structured forms are exactly: a fall-through (the machine code's next
 instruction), an if/else whose arms rejoin at the branch's immediate post-dominator, a
@@ -326,6 +327,12 @@ steps in order, each deciding on the graph the earlier ones leave:
    switch is `break`, and one ending the arm to the case the next arm starts with is a
    fall-through (`__attribute__((fallthrough))`). A jump every arm of an `if`/`else` or of a
    `switch` with a default ends with is printed once after it.
+8. *Shared code in place.* A `goto` to a node whose instruction two or more functions hold and
+   whose code ends the procedure with no cycle and no other entry (no node of it but the first
+   entered from outside it) is a copy of that code; one to a tail call continuing into code
+   that does not reach it a copy of the call, the `goto` leaving it. Steps 5-7 run again until
+   no `goto` goes to either: each copy has one predecessor, so a node is copied at most once
+   per edge into it.
 
 - *Branch conditions* are BDDs (CUDD through `dd`, variables declared in order of first use,
   sifted by CUDD's dynamic reordering as the diagram grows). A
@@ -761,7 +768,7 @@ computed branch entering one run at three points), pointer reads from split tabl
 unbounded byte indexes with a growing `Y` read through one bounds-checked span, a pointer pair
 reused as scratch between its uses keeping `rd` only where its scratch values reach, and their
 provenance (instruction starts of
-the lift), short-circuit conditions, no structuring variables, the structuring (a shared tail kept in its function,
+the lift), short-circuit conditions, no structuring variables, the structuring (a shared tail kept in each procedure,
 multi-exit and two-entry loops, switches from compare chains and jump tables, kept callees' parameters, wrapping
 addresses), computed jumps and calls through operands written from tables (in the same call
 or an earlier one), computed transfers switching on their index (carried past its register's
