@@ -2664,8 +2664,10 @@ BRANCHED = """
   }) : () -> ()
 }) : () -> ()
 """
-COND_BR = '"cf.cond_br"(%t)[^bb1, ^bb2] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()'
-SWITCH = (
+BRANCH_TERM = (
+    '"cf.cond_br"(%t)[^bb1, ^bb2] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()'
+)
+SWITCH_TERM = (
     '"cf.switch"(%a)[^bb1, ^bb2] <{case_operand_segments = array<i32: 0>, case_values = '
     "dense<5> : vector<1xi8>, operandSegmentSizes = array<i32: 1, 0, 0>}> : (i8) -> ()"
 )
@@ -2703,7 +2705,7 @@ def cmp(pred, a, b):
 def test_branch_conditions_bound_the_values_they_test(cond, value, block, want):
     """The interval of a value where a block runs meets what the conditions of the branches
     every path to it takes imply."""
-    text = BRANCHED.replace("{cond}", cond).replace("{term}", COND_BR if cond else SWITCH)
+    text = BRANCHED.replace("{cond}", cond).replace("{term}", BRANCH_TERM if cond else SWITCH_TERM)
     f = printer.Func(mlir.parse(text).regions[0][0].ops[0], None)
     assert f.iv_at(value, block) == want
 
