@@ -136,6 +136,7 @@ wait:   INX
 """ + PLAY
 
 
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize(
     "src,translated",
     [

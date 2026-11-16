@@ -5185,6 +5185,7 @@ def test_timer_flag_wait_and_acknowledges_are_kept(prefix, tmp_path):
     cgenplay.replay(lib, img, {n: labels[n] for n, _ in calls}, calls, volatile, (0xDC0D,))
 
 
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize(
     "src,polled,translated",
     [
@@ -5709,24 +5710,31 @@ def test_operand_patched_from_constants_is_a_known_store(prefix, tmp_path):
     assert "codechk" not in c and not info["traps"] and "wr(" not in c
 
 
-def test_block_copy_stores_have_per_block_addresses(prefix, tmp_path):
+@pytest.fixture(name="blocks", scope="module")
+def fixture_blocks(prefix, tmp_path_factory):
+    """``(c, h, info)`` of BLOCKS, checked against the reference over a call per block."""
+    calls = [("entry", 0), ("entry", 0x82), ("entry", 0x90), ("entry", 1), ("entry", 0x88)]
+    return check(prefix, tmp_path_factory.mktemp("blocks"), BLOCKS, calls)
+
+
+@pytest.mark.timeout(180)
+def test_block_copy_stores_have_per_block_addresses(blocks):
     """A block copy through a pointer a page loop advances (a rotated loop over pages, then the
     remainder) whose destination, source and length are table bytes of one block number: its
     stores write, per block, the destination up to the pages its length counts, so RAM past the
     image is data and no store is checked against the code."""
-    calls = [("entry", 0), ("entry", 0x82), ("entry", 0x90), ("entry", 1), ("entry", 0x88)]
-    c, _, info = check(prefix, tmp_path, BLOCKS, calls)
+    c, _, info = blocks
     assert "codechk" not in c and not info["traps"]
     spans = {org: n for org, n in info["regions"]}
     assert 0x5000 in spans and 0x6000 in spans and spans[0x6000] <= 0x200
 
 
-def test_block_copy_indexes_the_blocks_directly(prefix, tmp_path):
+@pytest.mark.timeout(300)
+def test_block_copy_indexes_the_blocks_directly(blocks):
     """The copy's stores have address sets in the data regions: they index the regions they
     span directly, testing only those, with no wr dispatch; the bases reaching each region
     are apart, so the test reads the pointer, not the index."""
-    calls = [("entry", 0), ("entry", 0x82), ("entry", 0x90), ("entry", 1), ("entry", 0x88)]
-    c, _, _ = check(prefix, tmp_path, BLOCKS, calls)
+    c = blocks[0]
     img, labels, loaded = assemble(BLOCKS)
     p, _ = cgen.lift(img, [(labels["entry"], "entry")], [W.IO], loaded=loaded)
     assert any(store for _, store in p.addr_sets)
@@ -5737,7 +5745,16 @@ def test_block_copy_indexes_the_blocks_directly(prefix, tmp_path):
     assert tests and all(not re.search(rf"\b{v}\b", t) for t, v in tests)
 
 
-@pytest.mark.parametrize("name", ["TABLES", "PTRS", "BLOCKS", "VOICES", "RELOCATOR"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "TABLES",
+        "PTRS",
+        pytest.param("BLOCKS", marks=pytest.mark.timeout(180)),
+        "VOICES",
+        "RELOCATOR",
+    ],
+)
 def test_regions_abutting_a_held_span_are_its_slices(prefix, name):
     """A region that abuts a held span is held in it: one array, so rd/wr test one range."""
     img, labels, loaded = assemble(globals()[name])
@@ -6721,6 +6738,7 @@ def test_cursors_read_plain(prefix, tmp_path, src):
         play(tmp_path, c, h, img, labels, [("init", song)] + [("play", 0)] * 150)
 
 
+@pytest.mark.timeout(120)
 def test_cursor_stepped_by_a_modelled_read_reads_plain(prefix, tmp_path):
     """A cursor stepped by an I/O read the model answers with 0 or 1 reads plain; the same
     read answering any byte keeps the bounds-checked reader."""

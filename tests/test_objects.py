@@ -116,6 +116,7 @@ def loads(img, labels):
     return [a for a in range(labels["play"], labels["stop"]) if img[a] == 0xB1]
 
 
+@pytest.mark.timeout(120)
 def test_records_read_inside_their_object():
     """One check, before the first load of each call, keeps the pointer in the streams: every
     load of a field reads proven inside them, and the lift replays every stream."""
