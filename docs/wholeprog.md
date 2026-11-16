@@ -433,7 +433,11 @@ the facts, so a proof holds on every execution that stays in lifted code.
   bytes pushed since the function's entry, or a `JMP (ind)` pointer byte stored at an exact
   address, as is a constant there; the tag records whether the index is still the register's
   value, and where an instruction writes the register the bytes it indexed form a group that
-  shares one index value.
+  shares one index value. Groups of writes whose carried values meet (paths or contexts
+  joining, two loads of one table indexed by them) form one carry class, whose writes all
+  carry into one register: the fixpoint reruns with the classes united, each write of a class
+  then forming its group (and undoing the one an earlier write of the class made); bytes two
+  loads of one table read by one class's value are that value's.
 - **Calls.** A callee is analysed in the context of each `JSR` return site and its `RTS`s
   return there; it also records each of `A`/`X`/`Y` as its entry value plus an offset where
   that holds, so a caller keeps a register through any depth of calls that preserve it.
@@ -969,11 +973,13 @@ aux]` with varnodes `[space, offset, size]` (`c` constant, `r` register, `u` tem
 
 Registers are `lift()`'s file (A X Y SP = 0-3, C Z I D B V N = 8-14) plus `E` (16, 2 bytes:
 the entry returns once `SP >= E`), `CY` (17, 4 bytes: cycles since the entry started, with
-cycle counting) and per function its stack slots (18 + `i`: the byte `i` below its entry SP,
+cycle counting), the file's carry registers (18-25, `carry.rs`: indices a computed transfer
+switches on past their register's write in another function, passed through calls with the
+file) and per function its stack slots (26 + `i`: the byte `i` below its entry SP,
 printed `s<i>`; a continuation function's two return-address bytes last) followed by its carry
-registers (`carry.rs`: per index a computed transfer switches on past its register's write, the
-register copied before each write; never machine state, so a deopt hands none over) and its
-status lanes (one bit each, never stack bytes). Block 0 of each function is its entry; the executor (`exec.rs`) runs the
+registers (`carry.rs`: per carry class a computed transfer switches on past its register's
+write, the register copied before each write of the class; never machine state, as the file's
+are not, so a deopt hands none over) and its status lanes (one bit each, never stack bytes). Block 0 of each function is its entry; the executor (`exec.rs`) runs the
 program over any `di_pcode::Bus`, relocating each function's slots in its value file and,
 with cycle counting, calling `Bus::now(cycle)` before possibly volatile accesses.
 
@@ -1029,8 +1035,10 @@ and the code using it deopts or traps.
 - Continuation functions and the stack bytes the interval analysis tracks (pushes, the bytes
   above the entry, a `TSX`'s snapshot of the top three) add no iteration: the return
   addresses are per context, whose keys are finite, and the rest is of finite height.
-- Carries (`carry::alloc`) add no iteration: per function one walk of its callees and per
-  carried transfer one of its nodes, each visited once.
+- Carry classes only unite, so the fixpoint reruns (`vsa::analyze`) at most once per pair of
+  write groups joins find to meet, ending when no join meets two classes. Carries
+  (`carry::alloc`) add no iteration: per function one walk of its callees and per carried
+  transfer one of its nodes, each visited once.
 - Pointer reach (`vsa::reach`): byte bounds only descend (each round's meet with the last),
   word columns and floors only rise, to the end of the run of data bytes they move in or the
   extremes, so a pointer every call advances rises once per run; the callees' store

@@ -248,7 +248,7 @@ fn tabled(code: &Code, st: &St, q: u16) -> Option<Wv> {
     else {
         return None;
     };
-    if r == NOREG || (r, ix) != (r1, ix1) || ix == Ix::Lost {
+    if r == NOREG || (r, ix) != (r1, ix1) || matches!(ix, Ix::Lost | Ix::Mrg(_)) {
         return None;
     }
     let b0 = crate::dispatch::load_addr(code, p0, o0, r, 0)?;
@@ -527,7 +527,7 @@ fn relocate(code: &Code, st: &St, op: u8, ld: Option<u16>) -> Option<Half> {
     let m = ld?;
     let run = match (st.half[0], st.tag[0]) {
         (Some(Half::Data(lo, hi)), _) => code.run_of(lo).filter(|r| r.1 == hi + 1)?,
-        (_, Some(Tab::T { pc, .. })) => {
+        (_, Some(Tab::T { pc, ix, .. })) if !matches!(ix, Ix::Mrg(_)) => {
             let mut at = code.clip.get(&pc)?.iter().map(|&a| code.run_of(a as u32));
             let r = at.next()??;
             at.all(|x| x == Some(r)).then_some(r)?

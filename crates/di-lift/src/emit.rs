@@ -10,7 +10,7 @@ use crate::bank::{Back, BankMap};
 use crate::dispatch::Index;
 use crate::func::{Arm, Ctl, Exit, Key, Plan, H};
 use crate::ir::{
-    cy, k, mem, other, r1, reg, tmp, Block, Function, LOp, E, KREG, NREG, OPHI, OPLO, XREG,
+    cy, k, mem, other, r1, reg, tmp, Block, Function, LOp, E, FCARRY, KREG, NREG, OPHI, OPLO, XREG,
 };
 use crate::vsa::NOREG;
 use di_pcode::{reg as R, CtrlKind, Op, Opc, PenKind, Slot, Space, Template, Vn};
@@ -1016,9 +1016,13 @@ impl<'a> Em<'a, '_> {
     /// Before the instruction at `pc`, the copy of each index register it writes whose value
     /// a transfer switches on into that carry's register.
     fn carry(&mut self, pc: u16) {
-        for (i, &(cp, r)) in self.carries.regs.iter().enumerate() {
+        let c = self.carries;
+        let local = (c.regs.iter().enumerate())
+            .flat_map(|(i, ms)| ms.iter().map(move |m| (m.0, m.1, CARRY + i as u16)));
+        let file = (c.file.iter()).map(|&(cp, r, j)| (cp, r, (FCARRY as u16) + j));
+        for (cp, r, to) in local.chain(file) {
             if cp == pc {
-                self.emit(Opc::Copy, reg(CARRY + i as u16, 1), r1(r as usize), NONE, 0);
+                self.emit(Opc::Copy, reg(to, 1), r1(r as usize), NONE, 0);
             }
         }
     }
@@ -1038,7 +1042,10 @@ impl<'a> Em<'a, '_> {
                 };
                 self.load(a, Iv { lo, hi }, 0)
             }
-            Index::Carry(..) => reg(CARRY + *self.carries.at.get(&at)?, 1),
+            Index::Carry(..) => match *self.carries.at.get(&at)? {
+                crate::carry::Reg::Local(i) => reg(CARRY + i, 1),
+                crate::carry::Reg::File(j) => reg(FCARRY as u16 + j, 1),
+            },
         })
     }
     fn goto(&mut self, pc: u16, t: &Tg, calc: impl FnOnce(&mut Self) -> Vn) {

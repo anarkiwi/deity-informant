@@ -27,7 +27,9 @@
 //! tracked bytes also keep their value intervals, which bound the addresses of the pointer
 //! accesses through them. A tag is live while its index register keeps its value; where the
 //! register is written, the live tags it indexed become one group (they share an index value)
-//! and the group an earlier execution of that write made becomes unrelated.
+//! and the group an earlier execution of that write made becomes unrelated. Writes whose
+//! groups joins meet form one carry class, a group of its own: the fixpoint reruns until no
+//! join meets two classes.
 //!
 //! `A`, `X` and `Y` keep value sets ([`St::set`]) from loads of constant bytes, and `(zp),Y`
 //! pointer pairs the words seeded from their tables with the `Y` values each is accessed with
@@ -84,13 +86,15 @@ struct Pred {
 }
 
 /// How the index of a table byte relates to its index register: still the register's value,
-/// the value the register held when the instruction at `pc` wrote it (group `pc << 2 | r`;
-/// bytes of one group share their index), the byte at a base plus a register ([`St::src`])
-/// while neither changes (and the group it was made in, [`NOGRP`]: none), or unrelated.
+/// the value the register held when an instruction of a carry class wrote it (group: the
+/// class's least `pc << 2 | r`, [`Code::grp`]; bytes of one group share their index), the
+/// same of bytes read by different loads of one table (the tag's load one of them), the byte at a base plus a register ([`St::src`]) while neither changes
+/// (and the group it was made in, [`NOGRP`]: none), or unrelated.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Ix {
     Live,
     Grp(u32),
+    Mrg(u32),
     Byte(u16, u8, u32),
     Lost,
 }
@@ -107,17 +111,41 @@ impl Ix {
             ix => ix,
         }
     }
-    /// What holds of an index related `a` on one path and `b` on another.
-    fn join(a: Ix, b: Ix) -> Ix {
+    /// The group whose carried value the index is, if any.
+    pub(crate) fn group(self) -> Option<u32> {
+        match self {
+            Ix::Grp(g) | Ix::Mrg(g) => Some(g),
+            Ix::Byte(_, _, g) if g != NOGRP => Some(g),
+            _ => None,
+        }
+    }
+    /// The relation as tags of one index compare it: a merged group as its group.
+    pub(crate) fn rel(self) -> Ix {
+        match self {
+            Ix::Mrg(g) => Ix::Grp(g),
+            ix => ix,
+        }
+    }
+    /// What holds of an index related `a` on one path and `b` on another; groups that differ
+    /// are noted to share a class ([`Code::grp`]).
+    fn join(code: &Code, a: Ix, b: Ix) -> Ix {
         match (a, b) {
             _ if a == b => a,
             (Ix::Byte(m, x, g), Ix::Byte(n, y, h)) if (m, x) == (n, y) => {
+                code.unite(g, h);
                 Ix::Byte(m, x, if g == h { g } else { NOGRP })
             }
-            (Ix::Byte(_, _, g), Ix::Grp(h)) | (Ix::Grp(h), Ix::Byte(_, _, g)) if g == h => {
-                Ix::Grp(g)
-            }
-            _ => Ix::Lost,
+            _ => match (a.group(), b.group()) {
+                (Some(g), Some(h)) if g == h => match (a, b) {
+                    (Ix::Mrg(_), _) | (_, Ix::Mrg(_)) => Ix::Mrg(g),
+                    _ => Ix::Grp(g),
+                },
+                (Some(g), Some(h)) => {
+                    code.unite(g, h);
+                    Ix::Lost
+                }
+                _ => Ix::Lost,
+            },
         }
     }
 }
@@ -216,8 +244,9 @@ impl Bits {
     }
 }
 
-/// What holds of a byte tagged `a` on one path and `b` on another.
-fn join_tab(a: Tab, b: Tab) -> Option<Tab> {
+/// What holds of a byte tagged `a` on one path and `b` on another: bytes of two loads of one
+/// table both indexed by the value one class carries are that value's ([`Ix::Mrg`]).
+fn join_tab(code: &Code, a: Tab, b: Tab) -> Option<Tab> {
     match (a, b) {
         _ if a == b => Some(a),
         (
@@ -228,12 +257,28 @@ fn join_tab(a: Tab, b: Tab) -> Option<Tab> {
                 reg: r2,
                 ix: i2,
             },
-        ) if (pc, op, reg) == (p2, o2, r2) => Some(Tab::T {
-            pc,
-            op,
-            reg,
-            ix: Ix::join(ix, i2),
-        }),
+        ) if (op, reg) == (o2, r2) => {
+            if pc == p2 {
+                return Some(Tab::T {
+                    pc,
+                    op,
+                    reg,
+                    ix: Ix::join(code, ix, i2),
+                });
+            }
+            let at = |p: u16| crate::dispatch::load_addr(code, p, op, reg, 0);
+            let (g, h) = (ix.group()?, i2.group()?);
+            if at(pc)? != at(p2)? {
+                return None;
+            }
+            code.unite(g, h);
+            (g == h).then_some(Tab::T {
+                pc: pc.min(p2),
+                op,
+                reg,
+                ix: Ix::Mrg(g),
+            })
+        }
         _ => None,
     }
 }
@@ -344,6 +389,14 @@ impl St {
     fn has(&self, a: u32) -> bool {
         self.stored[(a >> 7) as usize] >> (a & 127) & 1 == 1
     }
+    /// Every tag the state holds, read only.
+    pub(crate) fn tags(&self) -> impl Iterator<Item = &Tab> {
+        let arm = self.arm.iter().flat_map(|a| [&a.lo, &a.hi]);
+        (self.tag.iter().chain(&self.push).chain(&self.above))
+            .flatten()
+            .chain(self.mem.iter().flat_map(|e| e.1.as_ref()))
+            .chain(arm)
+    }
     /// Every tag the state holds.
     fn tabs(&mut self) -> impl Iterator<Item = &mut Tab> {
         let arm = self.arm.iter_mut().flat_map(|a| [&mut a.lo, &mut a.hi]);
@@ -356,16 +409,15 @@ impl St {
         .chain(self.mem.iter_mut().flat_map(|e| e.1.as_mut()))
         .chain(arm)
     }
-    /// The instruction at `pc` writes data register `r`, which held the byte `src`: bytes
-    /// indexed by its old value become indexed by that byte, else a group (the group an
-    /// earlier execution made becomes unrelated); bytes indexed by a byte at a base plus `r`
-    /// become unrelated.
-    fn detach(&mut self, pc: u16, r: usize, src: Option<(u16, u8)>) {
-        let g = (pc as u32) << 2 | r as u32;
+    /// An instruction of carry group `g` writes data register `r`, which held the byte `src`:
+    /// bytes indexed by its old value become indexed by that byte, else the group (the group
+    /// an earlier execution of an instruction of its class made becomes unrelated); bytes
+    /// indexed by a byte at a base plus `r` become unrelated.
+    fn detach(&mut self, g: u32, r: usize, src: Option<(u16, u8)>) {
         let f = |t: &mut Tab| {
             if let Tab::T { reg, ix, .. } = t {
                 *ix = match *ix {
-                    Ix::Grp(x) if x == g => Ix::Lost,
+                    Ix::Grp(x) | Ix::Mrg(x) if x == g => Ix::Lost,
                     Ix::Byte(m, x, h) => {
                         let b = Ix::Byte(m, x, if h == g { NOGRP } else { h });
                         if x as usize == r {
@@ -895,6 +947,11 @@ pub(crate) struct Code<'a> {
     pub(crate) dev: FixedBitSet,
     /// What the volatile addresses answer ([`crate::dev`]).
     pub(crate) devices: &'a crate::dev::Devices,
+    /// Carry classes: per instruction and register `pc << 2 | r` writing it, the least of its
+    /// class (absent: itself). The instructions of one class write one carried value.
+    pub(crate) classes: FxHashMap<u32, u32>,
+    /// The classes joins found to meet, to unite ([`Code::settle`]).
+    pub(crate) meets: std::cell::RefCell<Vec<(u32, u32)>>,
 }
 
 /// Per store `(pc, opcode, access index)` the addresses it writes: a store with a set
@@ -905,6 +962,50 @@ pub type Aimed = FxHashMap<(u16, u8, usize), Vec<u16>>;
 pub(crate) type Seeds = FxHashMap<(u16, u8), (u8, Vec<u16>)>;
 
 impl Code<'_> {
+    /// The carry group of the instruction at `pc` writing register `r`: its class's least.
+    pub(crate) fn grp(&self, pc: u16, r: usize) -> u32 {
+        let g = (pc as u32) << 2 | r as u32;
+        self.classes.get(&g).copied().unwrap_or(g)
+    }
+    /// Note that groups `g` and `h` meet in a join.
+    fn unite(&self, g: u32, h: u32) {
+        if g != h && g != NOGRP && h != NOGRP {
+            self.meets.borrow_mut().push((g.min(h), g.max(h)));
+        }
+    }
+    /// Unite the classes the joins found to meet; whether any changed.
+    fn settle(&mut self) -> bool {
+        let meets = std::mem::take(self.meets.get_mut());
+        let mut changed = false;
+        for (g, h) in meets {
+            let of = |x: u32| self.classes.get(&x).copied().unwrap_or(x);
+            let (a, b) = (of(g), of(h));
+            if a == b {
+                continue;
+            }
+            let (lo, hi) = (a.min(b), a.max(b));
+            for v in self.classes.values_mut().filter(|v| **v == hi) {
+                *v = lo;
+            }
+            self.classes.insert(hi, lo);
+            changed = true;
+        }
+        changed
+    }
+    /// The instruction and register writes of each class with more than one, by its least.
+    pub(crate) fn members(&self) -> FxHashMap<(u16, u8), Vec<(u16, u8)>> {
+        let mut out: FxHashMap<(u16, u8), Vec<(u16, u8)>> = FxHashMap::default();
+        let key = |g: u32| ((g >> 2) as u16, (g & 3) as u8);
+        for (&g, &c) in &self.classes {
+            out.entry(key(c))
+                .or_insert_with(|| vec![key(c)])
+                .push(key(g));
+        }
+        for v in out.values_mut() {
+            v.sort_unstable();
+        }
+        out
+    }
     /// The hull of the bytes a load from `a` reads when every one is constant: a table no
     /// lifted store with an address set writes (guarded like one read for a jump).
     pub(crate) fn konst(&self, a: Iv) -> Option<Iv> {
@@ -1437,7 +1538,7 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
         s.stored_at(&st.env, t, b, a);
     }
     for r in (0..DATA).filter(|&r| written >> r & 1 == 1) {
-        s.detach(pc, r, st.src[r]);
+        s.detach(code.grp(pc, r), r, st.src[r]);
     }
     seat(code, pc, v.op, &sym, written, &unseat, &mut s);
     s
@@ -1752,8 +1853,8 @@ fn join(code: &Code, a: &St, b: &St, widen: Option<&Thresholds>) -> St {
         }),
         t => t,
     };
-    let jt = |x: Tab, y: Tab| match join_tab(x, y) {
-        Some(Tab::T { ix: Ix::Lost, .. }) => join_tab(byte(a, x), byte(b, y)),
+    let jt = |x: Tab, y: Tab| match join_tab(code, x, y) {
+        Some(Tab::T { ix: Ix::Lost, .. }) => join_tab(code, byte(a, x), byte(b, y)),
         t => t,
     };
     let tab = |x: Option<Tab>, y: Option<Tab>| jt(x?, y?);
@@ -2191,6 +2292,9 @@ pub struct Analysis {
     pub jumps: FxHashMap<u16, crate::dispatch::Jump>,
     /// The jumps among them that select their target by an index register's value.
     pub sels: FxHashMap<u16, crate::dispatch::Selector>,
+    /// The instructions and registers of each carry class of more than one, by its least
+    /// ([`crate::dispatch::Index::Carry`]).
+    pub carried: FxHashMap<(u16, u8), Vec<(u16, u8)>>,
     /// Every store's addresses and values.
     pub stores: Vec<crate::dispatch::Store>,
     /// Index guards the resolved transfers, stored table bytes and unbounded stores need.
@@ -2490,6 +2594,27 @@ pub(crate) fn arm(code: &Code, pc: u16, st: &St, f: &Flow, k: usize) -> Option<A
     })
 }
 
+/// Join the states of each computed transfer over its contexts: the carry classes its index
+/// takes in them meet ([`Code::unite`]).
+fn transfers_meet(code: &Code, vars: &FxHashMap<u16, Vec<Var>>, state: &FxHashMap<Key, St>) {
+    let computed = |pc: &u16| {
+        vars[pc].iter().any(|v| {
+            crate::dispatch::operand_len(&v.flow) > 0
+                || matches!(v.flow, Flow::JmpInd(_) | Flow::Rts(_) | Flow::Rti(_))
+        })
+    };
+    let mut keys: Vec<&Key> = state.keys().filter(|k| computed(&k.0)).collect();
+    keys.sort_unstable();
+    let mut acc: Option<(u16, St)> = None;
+    for k in keys {
+        let st = &state[k];
+        acc = Some(match acc {
+            Some((pc, o)) if pc == k.0 => (pc, join(code, &o, st, None)),
+            _ => (k.0, st.clone()),
+        });
+    }
+}
+
 /// Each start's states joined over its contexts.
 fn merge(code: &Code, state: &FxHashMap<Key, St>) -> FxHashMap<u16, St> {
     let mut merged: FxHashMap<u16, St> = FxHashMap::default();
@@ -2753,6 +2878,8 @@ fn reach(
         ram: code.ram.clone(),
         dev: code.dev.clone(),
         devices: code.devices,
+        classes: code.classes.clone(),
+        meets: Default::default(),
     };
     let mut sh = p.sh;
     c.mods = mods(&c, p.vars, &FxHashMap::default(), &sh.live);
@@ -3188,6 +3315,8 @@ pub fn analyze(
         ram: ram(given),
         dev,
         devices: given.devices,
+        classes: FxHashMap::default(),
+        meets: Default::default(),
     };
     let thr = Thresholds::new(vars, &code);
     // The starts reached whatever the data: no table taken as constant.
@@ -3225,7 +3354,15 @@ pub fn analyze(
     let mut code = code;
     let mut seeded: Option<crate::dispatch::SeedReads> = None;
     loop {
-        let (state, ret) = fixpoint(&code, vars, entries, sh, disp, &thr);
+        // Carry classes only unite, so the rounds end.
+        let (state, ret) = loop {
+            code.meets.get_mut().clear();
+            let r = fixpoint(&code, vars, entries, sh, disp, &thr);
+            transfers_meet(&code, vars, &r.0);
+            if !code.settle() {
+                break r;
+            }
+        };
         let (roots, heads) = (&sh.roots, &sh.heads);
         let merged = merge(&code, &state);
         let succs = &sh.succs;
@@ -3547,6 +3684,7 @@ pub fn analyze(
             ind,
             jumps,
             sels,
+            carried: code.members(),
             stores,
             guards,
             cellvals,

@@ -625,10 +625,14 @@ so, the index itself possibly a byte read from data) is a switch over that value
 the values selecting one target sharing its arm), the same for every origin: the register
 holding it; where the register is written before the transfer, the byte of data it was read
 from (read again, as no store may have written it), else a variable holding its value from
-before that write, a local of the transfer's function copied before each write (one per
-written index and function, in an instance function per merged instruction; held where every
-path from the function's entry to the transfer passes the write and none of its callees runs
-the writing instruction, else the switch is over addresses). Any other, as one whose index paths hold in unlike ways or a target computed by
+before that write, copied before each write (writes on paths that join, or of contexts the
+transfer is reached in, share one variable, as their values do: `y = x` on one path, `y = b`
+on the other, `switch (y)`): a local of the transfer's function where every path from its
+entry to the transfer passes a write and none of its callees runs one (in an instance function
+one write per merged instruction); else a parameter of the functions on the path from the
+write's function (`f1(a, y)`) where the transfer's function is on no call cycle and calls no
+function running a write, and no function running one is on a call cycle or an instance
+function (at most eight such variables; else the switch is over addresses). Any other, as one whose index paths hold in unlike ways or a target computed by
 arithmetic, is a switch over code addresses (`case CODE_ORG + 0x23:`); either has its last
 target as the default, with no trap. A `JSR` through cells calls one function whose body is
 the switch over its targets (the handlers its arms): over the index when every `JSR` it serves

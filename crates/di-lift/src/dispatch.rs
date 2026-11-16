@@ -556,6 +556,8 @@ pub(crate) fn vectors(
         ram: Vec::new(),
         dev: FixedBitSet::new(),
         devices: &none,
+        classes: FxHashMap::default(),
+        meets: Default::default(),
     };
     let mut v: Vec<u16> = vars
         .iter()
@@ -874,7 +876,7 @@ type Byte = (Option<u8>, u8, Option<u16>);
 /// Whether tags `ts` are indexed by one value: one register, still its value or one group.
 fn joint(ts: &[Tab]) -> bool {
     let ix = |t: &Tab| match *t {
-        Tab::T { reg, ix, .. } if reg != NOREG && ix != Ix::Lost => Some((reg, ix)),
+        Tab::T { reg, ix, .. } if reg != NOREG && ix != Ix::Lost => Some((reg, ix.rel())),
         _ => None,
     };
     ts.len() > 1 && ts.iter().all(|t| ix(t).is_some() && ix(t) == ix(&ts[0]))
@@ -886,6 +888,39 @@ fn base(code: &Code, t: Tab) -> Option<u16> {
         Tab::T { pc, op, reg, .. } => load_addr(code, pc, op, reg, 0),
         _ => None,
     }
+}
+
+/// The loads a tag may have been read by: its own, or for bytes different loads of one table
+/// read ([`Ix::Mrg`]) each load of that table whose byte an instruction of the class carries
+/// the index of.
+fn loads_of(code: &Code, sets: &Sets, t: Tab) -> Vec<u16> {
+    let Tab::T { pc, op, reg, ix } = t else {
+        return Vec::new();
+    };
+    let Ix::Mrg(g) = ix else {
+        return vec![pc];
+    };
+    let at = base(code, t);
+    let members = (code.classes.iter())
+        .filter(|e| *e.1 == g)
+        .map(|e| *e.0)
+        .chain([g])
+        .filter(|&m| (m & 3) as u8 == reg);
+    let mut out: BTreeSet<u16> = BTreeSet::new();
+    for w in members.map(|m| (m >> 2) as u16) {
+        for st in sets.states.get(&w).into_iter().flatten() {
+            out.extend(st.tags().filter_map(|t| match *t {
+                Tab::T {
+                    pc: l,
+                    op: o,
+                    reg: r,
+                    ix: Ix::Live,
+                } if (o, r) == (op, reg) && base(code, *t) == at => Some(l),
+                _ => None,
+            }));
+        }
+    }
+    out.into_iter().collect()
 }
 
 /// The bytes tags `ts` stand for, per index value inside their tables' extent
@@ -915,14 +950,19 @@ fn bytes(
             let r = reg as usize;
             (sets.of(pc, r).or_else(|| sets.held(code, pc, r))).unwrap_or_else(|| sets.any(pc, r))
         };
+        let tag_idx = |t: Tab, reg: u8| -> BTreeSet<u8> {
+            (loads_of(code, sets, t).into_iter())
+                .flat_map(|l| idx(l, reg))
+                .collect()
+        };
         for t in g {
             match *t {
                 Tab::K(_) => {}
                 Tab::Any => return None,
-                Tab::T { pc, reg, .. } => {
+                Tab::T { reg, .. } => {
                     bases.push(base(code, *t)?);
                     if reg != NOREG {
-                        let v: BTreeSet<u8> = idx(pc, reg).into_iter().collect();
+                        let v = tag_idx(*t, reg);
                         xs = Some(match xs {
                             None => v,
                             Some(o) => o.intersection(&v).copied().collect(),
@@ -946,12 +986,14 @@ fn bytes(
                 // An index value one load reads with that another of the group never does
                 // pairs with nothing: only one all of them read past the extent is guarded.
                 for t in g.iter().filter(|_| n < v.len()) {
-                    if let Tab::T { pc, reg, .. } = *t {
-                        if idx(pc, reg)
-                            .iter()
-                            .any(|&x| !(ok.lo..=ok.hi).contains(&(x as u32)))
-                        {
-                            guards.push((pc, reg, ok));
+                    if let Tab::T { reg, .. } = *t {
+                        for pc in loads_of(code, sets, *t) {
+                            if idx(pc, reg)
+                                .iter()
+                                .any(|&x| !(ok.lo..=ok.hi).contains(&(x as u32)))
+                            {
+                                guards.push((pc, reg, ok));
+                            }
                         }
                     }
                 }
@@ -1108,6 +1150,7 @@ fn index_of(ts: &[Tab], st: &St) -> Option<Index> {
         match *t {
             Tab::K(_) | Tab::T { reg: NOREG, .. } => {}
             Tab::T { reg, ix, .. } => {
+                let ix = ix.rel();
                 if one.replace((reg, ix)).is_some_and(|o| o != (reg, ix)) {
                     return None;
                 }
@@ -1915,6 +1958,7 @@ fn advanced_at(
         }
     }
     let rel = |t: &Tab| match *t {
+        Tab::T { ix: Ix::Mrg(_), .. } => None,
         Tab::T { reg, ix, .. } => Some((reg, ix)),
         _ => None,
     };
