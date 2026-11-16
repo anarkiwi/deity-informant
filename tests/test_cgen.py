@@ -28,6 +28,7 @@ import cgenplay  # noqa: E402  pylint: disable=wrong-import-position
 import cmetrics  # noqa: E402  pylint: disable=wrong-import-position
 from test_pcode2mlir import OPS, UNARY, VALUES, op_function, unary_function  # noqa: E402
 import test_polling as P  # noqa: E402  pylint: disable=wrong-import-position
+import test_valuesets as VS  # noqa: E402  pylint: disable=wrong-import-position
 
 pytestmark = pytest.mark.skipif(
     not NATIVE or not shutil.which("gcc") or not shutil.which("clang-format"),
@@ -4924,3 +4925,15 @@ def test_strided_records_aliased_by_an_interval_stay_memory(prefix, tmp_path):
     held = info["state"]["vars"].values()
     assert not [a for a in held if 0x3000 <= a < 0x3010] and 0x3147 in held
     assert "R0[" in body_of(c, "entry")
+
+
+def test_record_walk_store_is_c_state(prefix, tmp_path):
+    """The store patched from a record walk's selectors writes its three words: its operand
+    is C state, with no check against code and no dispatch."""
+    c, _, info = check(prefix, tmp_path, VS.WALK, entry_calls(range(4), 2))
+    body = body_of(c, "entry")
+    assert "codechk" not in c and "rd(" not in body and "wr(" not in body
+    assert "trap(" not in body
+    img, labels, _ = assemble(VS.WALK)
+    assert info["ptr_sets"][labels["loop"]] == sorted([labels["r0"], labels["r1"]])
+    assert img[labels["dst"]] == 0x8D

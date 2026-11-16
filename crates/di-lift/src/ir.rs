@@ -341,6 +341,8 @@ pub struct Program {
     /// Address sets of data accesses through pointers or with several addresses, as
     /// `(pc, store, [(lo, hi)])` runs (`hi` exclusive).
     pub addr_sets: Vec<AddrSet>,
+    /// Per `(zp),Y` access whose pointer holds a set of words on every path, the words.
+    pub ptr_sets: Vec<(u16, Vec<u16>)>,
     /// Address hulls of the loads through pointers and cell operands while the program's
     /// table loads stay inside their extents ([`Reach`], one per load of the instruction).
     pub reach: Vec<Reach>,

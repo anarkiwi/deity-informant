@@ -414,6 +414,8 @@ class Program:  # pylint: disable=too-many-instance-attributes
     written: list = ()
     bounds: dict | None = None
     addr_sets: dict | None = None
+    #: Per ``(zp),Y`` access, the words its pointer may hold (``Program.ptr_sets``).
+    ptr_sets: dict | None = None
     reach: dict | None = None
     proven: dict | None = None
     regs: dict | None = None
@@ -564,6 +566,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     p.written = list(prog.written)
     p.bounds, p.addr_sets, p.reach = dict(prog.bounds), dict(prog.addr_sets), dict(prog.reach)
     p.proven, p.regs, p.bounded = dict(prog.proven), dict(prog.regs), dict(prog.bounded)
+    p.ptr_sets = {pc: set(w) for pc, w in prog.ptr_sets.items()}
     if state is not None:
         p.init, p.fixed = (entries[init], state), np.array(sorted(fixed), dtype=np.int64)
     if len(lifts) > 1:
@@ -572,6 +575,8 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
         p.origin, p.start = origin, start
         p.lifted = (frozenset(lone.code), set(lone.starts), _facts(lone))
         p.jumps.update(dict(lone.jumps))
+        for pc, w in lone.ptr_sets.items():
+            p.ptr_sets.setdefault(pc, set()).update(w)
         p.written += list(lone.written)
     return p, prog.stats
 
@@ -737,6 +742,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         "traps": {k: key for key, k in traps.items() if k in mod.traps},
         "unknown_access": mem.unknown,
         "jumps": p.jumps or {},
+        "ptr_sets": {pc: sorted(w) for pc, w in sorted((p.ptr_sets or {}).items())},
         "structure": dict(mod.made),
         "provenance": {**mod.prov, "cells": [int(a) for a in np.flatnonzero(cells)]},
         "fixed": [] if p.fixed is None else p.fixed.tolist(),

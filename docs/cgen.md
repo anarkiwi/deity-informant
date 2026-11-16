@@ -37,7 +37,9 @@ python tools/cgenplay.py tune.sid --psid --volatile 0xD400-0xD41D -o out/   # tr
 `info` holds the stage times (`lift`, `mlir`, `layout`, `structure`, `print`), the regions
 `[(origin, length)]`, the code span, the traps in the `.c` (`{k: ("deopt", pc)}` or `("ind", pc,
 ...)` for a computed jump with no target), the computed jumps resolved from the code (`jumps`),
-the fact edges used, the lift's `stats`, whether some access has an unknown address and the
+per `(zp),Y` access the words its pointer may hold where the lift finds a set of them
+(`ptr_sets`, `{pc: [word]}`, every lift's), the fact edges used, the lift's `stats`, whether
+some access has an unknown address and the
 `structure` counts: C `functions` (and the identical ones `folded` into them) and the
 `gotos` printed, the `provenance` of the printed constructs in the machine code (below), the instruction
 starts translated (`starts`), the cells held as C variables (`state`, *State*) and, with
@@ -409,7 +411,8 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   the set (its addresses less the index's interval) are disjoint intervals, the test reads the
   base alone, the same for every index (a block copy's loop over a page tests its pointer, not
   each byte). One at a constant base plus an index whose set
-  spans several regions (operand cells of several copies) goes through `rd`/`wr`.
+  spans several regions (operand cells of several copies) goes through `rd`/`wr`. A run of
+  a set as wide as an access of unknown address touches its bytes alone.
 - A store the lift bounds to the array holding its base (`Program.bounded`: an index any byte,
   the store reaching code past the array) writes the region holding its base inside it and
   calls `oob_wr` past it: `if ((uint16_t)(a - Rk_ORG) < Rk_LEN) Rk[...] = v; else oob_wr(a,
