@@ -331,12 +331,19 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                         self.arg_src.setdefault(a, []).append((o, i, case))
 
     def reindex(self):
-        """Record definitions, types and uses again after operations were rewritten."""
+        """Record definitions, types and uses again after operations were rewritten: every
+        interval of the module is found again (:meth:`Module.forget`)."""
         self.defs, self.types, self.uses, self.where = {}, {}, {}, {}
-        self.users, self.ivs, self.globals, self.arg_src = {}, {}, set(), {}
-        self.arg_block, self.flags, self.kmemo, self.kiv = {}, set(), {}, {}
-        self.addr_edges, self.knowns = set(), {}
+        self.users, self.globals, self.arg_src = {}, set(), {}
+        self.arg_block, self.flags, self.kmemo = {}, set(), {}
+        self.addr_edges = set()
         self.index()
+        self.mod.forget()
+
+    def forget(self):
+        """Drop the intervals found, per value, per instance index, per block and the
+        constants loads read by them."""
+        self.ivs, self.kiv, self.contexts, self.knowns = {}, {}, {}, {}
 
     def instance(self, kpos):
         """Take block argument ``kpos`` as the instance index when every call site passes
@@ -3071,7 +3078,26 @@ def _copies(items, pcs):
 class Module:  # pylint: disable=too-many-instance-attributes
     """The functions of the optimized module and the memory they share."""
 
+    #: The facts the intervals read besides the operations: setting one forgets them.
+    FACTS = frozenset(
+        "mem sites free folded after scope sets regs reach proven bounded addr_sets copy_pcs "
+        "fixed lifted regfile symbols by_name".split()
+    )
+
+    def __setattr__(self, name, value):
+        super().__setattr__(name, value)
+        if name in Module.FACTS:
+            self.forget()
+
+    def forget(self):
+        """Drop every interval found (the functions' and their results'): each is found
+        again from the operations and facts as they are."""
+        self.results_ivs = {}
+        for f in self.__dict__.get("funcs", ()):
+            f.forget()
+
     def __init__(self, top, mem):
+        self.results_ivs = {}
         self.mem, self.used, self.helpers, self.regions_used = mem, set(), set(), set()
         self.addr_sets, self.spans_used = {}, set()
         self.traps, self.funcs, self.mains, self.structs = set(), [], {}, {}
@@ -3087,7 +3113,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         #: The held spans whose bounds-checked readers find promoted cells' variables.
         self.var_spans, self.var_at = set(), []
         self.offsets, self.insn = {}, np.zeros(0x10000, dtype=bool)
-        self.inert, self.regs, self.regfile, self.results_ivs = set(), {}, [], {}
+        self.inert, self.regs, self.regfile = set(), {}, []
         self.bounded, self.cells, self.state = {}, None, State()
         #: Per entry name, the C lines that start it (the host's check of its arguments).
         self.guards = {}
@@ -3146,11 +3172,12 @@ class Module:  # pylint: disable=too-many-instance-attributes
         parameters used, functions return only the results used, the rest is dropped. The
         bytes no store writes (:meth:`unwritten`) are found first."""
         self.unwritten()
-        self.sites = sites = {f.name: [] for f in self.funcs}
+        sites = {f.name: [] for f in self.funcs}
         for f in self.funcs:
             for o in f.walk():
                 if o.name == "func.call" and o.prop("callee")[1:] in sites:
                     sites[o.prop("callee")[1:]].append((f, o))
+        self.sites = sites
         for f in self.funcs if self.kpos is not None else ():
             if self.lifted.get(f.name, (0, ()))[1]:
                 f.instance(self.kpos)
@@ -3647,9 +3674,6 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 may[lo : hi + 1] = True
             if may is None:
                 break
-        for f in self.funcs:
-            f.reindex()
-        self.results_ivs = {}
         self.free = None if may is None else ~may
         return self.free
 

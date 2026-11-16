@@ -2029,6 +2029,19 @@ def play(tmp_path, c, h, img, labels, calls, sensitive=()):
     return cgenplay.replay(lib, img, {n: labels[n] for n in names}, calls, [W.IO], sensitive)
 
 
+def plain(c):
+    """``c`` without the lines whose compiling ``CGEN_OOB`` or ``CGEN_OOB_EXACT`` decides."""
+    out, skip = [], []
+    for line in c.splitlines():
+        if line.startswith("#if"):
+            skip.append(bool(re.search(r"\bCGEN_OOB(?:_EXACT)?\b", line)))
+        if not any(skip):
+            out.append(line)
+        if line.startswith("#endif"):
+            skip.pop()
+    return "\n".join(out)
+
+
 def body_of(c, name):
     """The text of entry ``name``'s function in ``c``."""
     start = c.index(f"void {name}(")
@@ -2202,7 +2215,7 @@ def test_checked_store_in_a_condition_is_a_statement(prefix, tmp_path):
     # not composed into the test before it as a comma expression.
     img, labels, loaded = assemble(PUSHIF)
     c, h, _ = translate(prefix, img, labels, loaded)
-    play(tmp_path, c, h, img, labels, entry_calls([3, 0xFF, 0xFF, 2, 0xFF, 0xFF, 1]))
+    play(tmp_path, c, h, img, labels, entry_calls([3, 0xFF, 0xFF, 2, 0xFF, 0]))
     assert "oob_wr(" in c and not re.search(r", +if \(", c)
 
 
@@ -2283,7 +2296,7 @@ def test_pointer_loaded_from_song_data_and_its_stack(prefix, tmp_path, src, boun
     img, labels, loaded = assemble(src)
     c, h, info = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
     assert not re.search(r"\brd\(", c) and "rdC0(" in c
-    assert "oob_wr(" in c and not re.search(r"\bwr\(", c)
+    assert "oob_wr(" in c and not re.search(r"\bwr\(", plain(c))
     if bounded:
         [(lo, hi)] = info["code_held"]
         assert lo <= labels["song"] and labels["end"] <= hi
@@ -2656,6 +2669,31 @@ def test_effect_index_copied_by_its_command_handler(prefix, tmp_path):
         play(tmp_path / str(org), c, h, img, labels, entry_calls(range(4), 2))
         outs.append(c)
     assert outs[0] == outs[1]
+
+
+def test_intervals_found_before_the_rewrites_are_found_again(prefix, tmp_path, monkeypatch):
+    """Every interval found before ``prune`` rewrites the operations (the instance index
+    folded, carries joined) is found again after: the checks printed are the rewritten
+    module's whatever was asked of it before."""
+    img, labels, loaded = assemble(CMDFX)
+    cold = translate(prefix, img, labels, loaded)[0]
+    unwritten = printer.Module.unwritten
+
+    def warm(mod):
+        free = unwritten(mod)
+        for f in mod.funcs:
+            for o in f.walk():
+                if o.name in ("memref.load", "memref.store") and o.args[-2] in f.globals:
+                    f.addr_iv(o)
+                for r in (r for r in o.res if f.types.get(r) in ("i1", "i8", "i16")):
+                    f.iv(r)
+        assert mod.results_ivs
+        return free
+
+    monkeypatch.setattr(printer.Module, "unwritten", warm)
+    c, h, _ = translate(prefix, img, labels, loaded)
+    assert c == cold and "oob_rd" not in c
+    play(tmp_path, c, h, img, labels, entry_calls(range(4), 2))
 
 
 @pytest.mark.parametrize(
@@ -3293,6 +3331,36 @@ def test_switch_from_a_jump_table(prefix, tmp_path):
     c, _, _ = check(prefix, tmp_path, LOHI, entry_calls(range(4)))
     assert "switch (" in c and "case CODE_ORG" not in c and "default:" in c
     assert [int(k) for k in re.findall(r"case (\d+):", c)] == [0, 1, 2]
+
+
+#: LOHI with its handler of index 0 running into the default's (index 3), placed after it.
+LOHIFALL = LOHI.replace(
+    """        RTS
+j1:""",
+    """j3:     STY $C053
+        RTS
+j1:""",
+).replace(
+    """j3:     STY $C053
+        RTS
+tlo:""",
+    "tlo:",
+)
+
+
+def test_switch_arm_running_into_another_is_followed_by_it(prefix, tmp_path):
+    """The arms print in the order of their targets in the machine code, the case labels the
+    index's values: the handler of index 0 runs into the default's after it, no ``goto``."""
+    outs = []
+    for org in (0x1000, 0x2300):
+        img, labels, loaded = assemble(LOHIFALL, org)
+        c, h, info = translate(prefix, img, labels, loaded)
+        assert info["structure"]["gotos"] == 0 and "fallthrough" in c
+        assert re.findall(r"(case \w+|default):", c) == ["case 0", "default", "case 1", "case 2"]
+        (tmp_path / str(org)).mkdir()
+        play(tmp_path / str(org), c, h, img, labels, entry_calls(range(4), 2))
+        outs.append(c)
+    assert outs[0] == outs[1]
 
 
 @pytest.mark.parametrize(
@@ -5668,9 +5736,7 @@ def test_null_voice_pointer_into_unpacked_records_is_bounded(prefix, tmp_path):
     lo, hi = p.reach[labels["read"]][:2]
     assert labels["vlo"] <= lo < labels["end"] and 0x3007 <= hi < 0x3100
     c, info, _ = songs(prefix, tmp_path, UNPACK, (0, 1))
-    assert (
-        info["state"]["cells"]["scalars"] == 1 and "cgen_var" not in c.split("#ifdef CGEN_OOB")[0]
-    )
+    assert info["state"]["cells"]["scalars"] == 1 and "cgen_var" not in plain(c)
 
 
 #: Play forming its pointer from a table of offsets plus the origin init leaves (a
@@ -5716,9 +5782,7 @@ def test_offsets_plus_init_origin_point_into_its_run(prefix, tmp_path):
     assert labels["offlo"] <= lo and hi < labels["end"] + 0x100
     assert p.proven[labels["read"]][:2] == (lo, hi) and p.fixed.tolist() == [0xFD, 0xFE]
     c, info, _ = songs(prefix, tmp_path, ORIGIN, (0,))
-    assert (
-        info["state"]["cells"]["scalars"] == 1 and "cgen_var" not in c.split("#ifdef CGEN_OOB")[0]
-    )
+    assert info["state"]["cells"]["scalars"] == 1 and "cgen_var" not in plain(c)
 
 
 #: :data:`INITREL` then adding ``A``'s low bit to the operands' low bytes.
@@ -5747,8 +5811,8 @@ def test_bounded_store_leaves_cells_to_promotion(prefix, tmp_path):
         if probe:
             assert cells["scalars"] >= 2
         else:
-            assert cells["bytes"]["pointer"] >= 2 and not DISPATCH.search(c)
-            assert "cgen_var" not in c.split("#ifdef CGEN_OOB")[0]
+            assert cells["bytes"]["pointer"] >= 2 and not DISPATCH.search(plain(c))
+            assert "cgen_var" not in plain(c)
 
 
 #: A pointer whose high byte is the argument reads, and writes, the immediate play patches.
@@ -5816,8 +5880,7 @@ def test_read_past_the_assumed_hull_reads_the_promoted_cell(prefix, tmp_path):
     img, labels, loaded = assemble(STRAY)
     c, h, info = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
     assert info["state"]["cells"]["scalars"] == 1
-    exact = c[c.index("#ifdef CGEN_OOB_EXACT") :]
-    assert "cgen_var" in exact and "cgen_var" not in c[: c.index("#ifdef CGEN_OOB_EXACT")]
+    assert "cgen_var" in c and "cgen_var" not in plain(c)
     calls = [("init", 0), ("play", 0), ("play", 0), ("play", 1), ("play", 0), ("play", 3)]
     play(tmp_path, c, h, img, labels, calls)
 
@@ -6075,6 +6138,57 @@ def test_unknown_read_of_unheld_byte(prefix, tmp_path):
     lib = cgenplay.build(tmp_path / "t.c", tmp_path / "t.so")
     k = lib.call(ctypes.cast(lib.entry, ctypes.c_void_p), labels["entry"] >> 8)
     assert k == cgen.OOB_TRAP
+
+
+UNHELD_RMW = UNHELD_PTR.replace(
+    "        STA $C000",
+    "        CLC\n        ADC #$01\n        STA ($FB),Y\n        LDA ($FB),Y\n        STA $C000",
+)
+
+
+def test_unknown_write_of_unheld_byte_reads_back(prefix, tmp_path):
+    """A store of unknown address to a byte no array holds takes a slot the reads of it then
+    read, each slot a byte; one more than ``CGEN_OOB_SLOTS`` traps (``OOB_TRAP``), as a
+    write into the program does."""
+    img, labels, loaded = poweron(UNHELD_RMW)
+    c, h, _ = translate(prefix, img, labels, loaded)
+    assert re.search(r"\bwr\(", body_of(c, "entry")) and "#define CGEN_RAM_LEN 0xFFFF, 0x1" in h
+    play(tmp_path, c, h, img, labels, entry_calls([0x31, 0x50, 0x31, 0x90, 0xE5, 0x50], 2))
+    lib = cgenplay.build(
+        tmp_path / "t.c", tmp_path / "t2.so", (*cgenplay.CFLAGS, "-DCGEN_OOB_SLOTS=2")
+    )
+    lib.call.argtypes = [ctypes.c_void_p, ctypes.c_uint8]
+    fn = ctypes.cast(lib.entry, ctypes.c_void_p)
+    got = [lib.call(fn, p) for p in (0x31, 0x50, 0x31, 0x90)]
+    assert got == [-1, -1, -1, cgen.OOB_TRAP]
+
+
+def test_store_past_its_array_into_the_program_traps(prefix, tmp_path):
+    """A bounds-checked store past its array into a byte of the program the translation
+    holds no copy of traps (``OOB_TRAP``) where the 6502 would change the program."""
+    img, labels, loaded = assemble(PUSH)
+    c, h, _ = translate(prefix, img, labels, loaded)
+    play(tmp_path, c, h, img, labels, entry_calls([5, 6, 7]))
+    lib = cgenplay.build(tmp_path / "t.c", tmp_path / "t2.so")
+    lib.call.argtypes = [ctypes.c_void_p, ctypes.c_uint8]
+    fn = ctypes.cast(lib.entry, ctypes.c_void_p)
+    assert [lib.call(fn, a) for a in (5, 6, 7, 8)] == [-1, -1, -1, cgen.OOB_TRAP]
+
+
+@pytest.mark.parametrize("src", ["PUSH", "UNHELD_RMW", "ZPPTR", "STRAY", "CALLRET"])
+def test_dispatch_compiles_for_every_host(prefix, tmp_path, src):
+    """The dispatch compiles with no warning with the host's ``oob_*`` (``CGEN_OOB``), with
+    ``CGEN_OOB_EXACT`` and with neither."""
+    text = globals()[src]
+    img, labels, loaded = assemble(text)
+    kw = {"entries": ("init", "play"), "init": 0} if "init:" in text else {}
+    c, h, _ = translate(prefix, img, labels, loaded, **kw)
+    (tmp_path / "t.c").write_text(c)
+    (tmp_path / "t.h").write_text(h)
+    base = [f for f in cgenplay.CFLAGS if f not in ("-DCGEN_OOB_EXACT", "-shared")]
+    for k, extra in enumerate(([], ["-DCGEN_OOB_EXACT"], ["-DCGEN_OOB"])):
+        out = str(tmp_path / f"t{k}.o")
+        subprocess.run(["gcc", *base, *extra, "-c", "-o", out, str(tmp_path / "t.c")], check=True)
 
 
 def test_background_table_is_exact_and_small():

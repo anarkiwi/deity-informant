@@ -713,7 +713,7 @@ class Structurer:
         for i, it in enumerate(items):
             follow = _labels(items[i + 1 :], nxt)
             if it[0] == "if":
-                arms, rest, fam = [], [it], None
+                arms, rest, fam, srcs = [], [it], None, []
                 while True:
                     shown = [x for x in rest if not self.quiet([x])]
                     head = shown[0] if len(shown) == 1 and shown[0][0] == "if" else None
@@ -725,6 +725,7 @@ class Structurer:
                         break
                     fam = a[0]
                     arms.append((a[1], hit))
+                    srcs.append(head[5])
                     rest = head[4] if hit is head[3] else head[3]
                 arms += [([None], rest)] if rest else []
                 cases = [k for c, _ in arms for k in c]
@@ -733,6 +734,7 @@ class Structurer:
                     and len(set(cases)) == len(cases)
                     and not any(_breaks(b) for _, b in arms)
                 ):
+                    arms = self.arm_order(arms, srcs + srcs[-1:])
                     arms = [(c, _arm_breaks(self.chains(b, follow), follow)) for c, b in arms]
                     arms = [
                         (c, _fall_into(b, arms[j + 1][1] if j + 1 < len(arms) else []))
@@ -745,6 +747,25 @@ class Structurer:
                 it = ("loop", self.chains(it[1], frozenset()), *it[2:])
             out.append(it)
         return out
+
+    def arm_order(self, arms, srcs):
+        """The ``arms`` ``[(cases, items)]`` of a switch in the order of their targets in the
+        machine code, an arm reached from its branch ``srcs`` by the edge its first case takes
+        (the default by the edge none takes), so an arm running into the next is followed by
+        it; as they are when an arm's edge is not found."""
+        at = []
+        for (ks, _), x in zip(arms, srcs):
+            ts = [t for t, c in self.g.succ.get(x, ()) if ks[0] in self._cases(c)]
+            if len(ts) != 1:
+                return arms
+            at.append(self.place(ts[0]))
+        return [arms[j] for j in sorted(range(len(arms)), key=at.__getitem__)]
+
+    def _cases(self, c):
+        """The constants of the selector family an edge's condition ``c`` takes (None: none
+        of them), the ``[None]`` of an unconditional edge."""
+        a = self.atoms(c) if c is not None else None
+        return a[1] if a else [None]
 
 
 def _fall_into(items, nxt):

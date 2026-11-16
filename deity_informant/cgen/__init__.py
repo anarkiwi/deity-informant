@@ -33,7 +33,6 @@ void io_write(uint16_t a, uint8_t v);
 __attribute__((noreturn, leaf)) void trap(uint16_t k);
 """
 OOB = {"oob_rd": "uint8_t oob_rd(uint16_t a);", "oob_wr": "void oob_wr(uint16_t a, uint8_t v);"}
-OOB_WR = ["static void oob_wr(uint16_t a, uint8_t v) {", "(void)a;", "(void)v;", "}"]
 #: Trap code of a read outside every array the program holds (not a ``CGEN_TRAPS`` index).
 OOB_TRAP = 0xFFFF
 OOB_RD_TRAP = f"static uint8_t oob_rd(uint16_t a) {{ (void)a; trap(0x{OOB_TRAP:04X}); }}"
@@ -128,64 +127,114 @@ def _var(cases):
     ]
 
 
-#: A reader's test for a promoted cell at ``a`` (``cgen_var``).
+#: A reader's test for a promoted cell at ``a`` (``cgen_var``), and a writer's.
 VAR_RD = ["uint8_t *c = cgen_var_at(a);", "if (c) return *c;"]
+VAR_WR = ["uint8_t *c = cgen_var_at(a);", "if (c) {", "*c = v;", "return;", "}"]
 
 
-#: ``cgen_rd``'s read of a byte no array holds: a byte of the program (``CGEN_PROG_*``) traps,
-#: any other reads the machine's entry byte, its run's in the background table (``CGEN_BG*``).
+def _runs(t):
+    """The tables of the runs ``CGEN_t_*``."""
+    return [f"static const uint16_t {t}_{k}[] = {{CGEN_{t}_{k}}};" for k in ("ORG", "LEN")]
+
+
+#: The tables of a byte no array holds: the program's runs (``CGEN_PROG_*``) and the
+#: background table (``CGEN_BG*``).
 UNHELD = [
-    "static const uint16_t PROG_ORG[] = {CGEN_PROG_ORG};",
-    "static const uint16_t PROG_LEN[] = {CGEN_PROG_LEN};",
+    *_runs("PROG"),
     *(f"static const uint16_t BG_{k}[] = {{CGEN_BG_{k}}};" for k in ("ORG", "AT", "M")),
     "static const uint8_t BG[] = {CGEN_BG_INIT};",
 ]
-UNHELD_RD = [
-    "for (uint16_t i = 0; i < sizeof PROG_ORG / sizeof *PROG_ORG; ++i) {",
-    "if ((uint16_t)(a - PROG_ORG[i]) < PROG_LEN[i])",
-    f"trap(0x{OOB_TRAP:04X});",
-    "}",
-    "uint16_t i = sizeof BG_ORG / sizeof *BG_ORG - 1;",
-    "while (a < BG_ORG[i])",
-    "--i;",
-    "return BG[(uint16_t)(BG_AT[i] + (a & BG_M[i]))];",
-    "}",
+#: Not the host's ``oob_wr``.
+NOOB = "!defined(CGEN_OOB)"
+#: The runs of the bytes no array holds a store may write (``CGEN_RAM_*``), and those of them
+#: written, at most ``CGEN_OOB_SLOTS``: addresses and values.
+SLOTS = [
+    *_runs("RAM"),
+    "#ifndef CGEN_OOB_SLOTS",
+    "#define CGEN_OOB_SLOTS 16",
+    "#endif",
+    "static uint16_t SLOT_AT[CGEN_OOB_SLOTS];",
+    "static uint8_t SLOT_V[CGEN_OOB_SLOTS], SLOT_N;",
 ]
+
+
+def _within(t):
+    """A test of ``a`` in one of the runs ``t`` (``t_ORG``, ``t_LEN``)."""
+    return [
+        f"for (uint16_t i = 0; i < sizeof {t}_ORG / sizeof *{t}_ORG; ++i) {{",
+        f"if ((uint16_t)(a - {t}_ORG[i]) < {t}_LEN[i])",
+    ]
+
+
+def _unheld(slots):
+    """``cgen_unheld``: the byte read at ``a`` where no array holds it: a byte of the program
+    traps (``OOB_TRAP``), a written one (where the conditions ``slots`` hold) reads its slot,
+    any other the machine's entry byte, its run's in the background table."""
+    out = ["static uint8_t cgen_unheld(uint16_t a) {", *_within("PROG"), f"trap(0x{OOB_TRAP:04X});"]
+    out.append("}")
+    find = ["for (uint8_t i = 0; i < SLOT_N; ++i) {", "if (SLOT_AT[i] == a)", "return SLOT_V[i];"]
+    out += _guarded([*find, "}"], slots)
+    return out + [
+        "uint16_t i = sizeof BG_ORG / sizeof *BG_ORG - 1;",
+        "while (a < BG_ORG[i])",
+        "--i;",
+        "return BG[(uint16_t)(BG_AT[i] + (a & BG_M[i]))];",
+        "}",
+    ]
+
+
+def _unheld_wr(spans):
+    """``cgen_unheld_wr``: the write of ``v`` at ``a`` where no region holds it, exact as
+    :func:`_unheld` reads it back or a trap (``OOB_TRAP``): a constant byte of a held span
+    ``spans`` or of the program, or one no store may write (outside ``CGEN_RAM_*``), keeps its
+    value or traps; a written byte's slot takes it; any other byte a store may write takes a
+    free slot, the trap when none is left."""
+    out = ["static __attribute__((noinline)) void cgen_unheld_wr(uint16_t a, uint8_t v) {"]
+    for j in spans:
+        out += [f"if ({_inside(f'C{j}')}) {{", f"if (C{j}[a - C{j}_ORG] != v)"]
+        out += [f"trap(0x{OOB_TRAP:04X});", "return;", "}"]
+    out += ["for (uint8_t i = 0; i < SLOT_N; ++i) {", "if (SLOT_AT[i] == a) {", "SLOT_V[i] = v;"]
+    out += ["return;", "}", "}", "if (cgen_unheld(a) == v)", "return;", *_within("RAM"), "{"]
+    out += ["if (SLOT_N == CGEN_OOB_SLOTS)", f"trap(0x{OOB_TRAP:04X});", "SLOT_AT[SLOT_N] = a;"]
+    return out + ["SLOT_V[SLOT_N++] = v;", "return;", "}", "}", f"trap(0x{OOB_TRAP:04X});", "}"]
 
 
 def _rd(regions, vol, spans, var=False):
     """``cgen_rd``: the byte the 6502 reads at ``a``, by the promoted cells (with ``var``), the
     volatile condition ``vol``, the origins and lengths of ``regions`` and the held ``spans``,
-    then where the program holds none :data:`UNHELD_RD`."""
+    then where the program holds none :func:`_unheld`."""
     arrays = [*regions, *(f"C{j}" for j in spans)]
     out = ["static __attribute__((noinline)) uint8_t cgen_rd(uint16_t a) {"]
     out += VAR_RD if var else []
     out += [f"if ({vol}) return io_read(a);"] if vol else []
     if not arrays:
-        return UNHELD + out + UNHELD_RD
+        return out + ["return cgen_unheld(a);", "}"]
     tables = ["static uint8_t *const OOB_AT[] = {CGEN_ARRAYS};"] + [
         f"static const uint16_t OOB_{k}[] = {{CGEN_ARRAYS_{k}}};" for k in ("ORG", "LEN")
     ]
     return (
         tables
-        + UNHELD
         + out
         + [
             "for (uint8_t i = 0; i < sizeof OOB_ORG / sizeof *OOB_ORG; ++i) {",
             "uint16_t o = a - OOB_ORG[i];",
             "if (o < OOB_LEN[i]) return OOB_AT[i][o];",
             "}",
+            "return cgen_unheld(a);",
+            "}",
         ]
-        + UNHELD_RD
     )
 
 
-def _unheld_h(mem, used, cases, program):
-    """The ``.h``'s tables of :data:`UNHELD_RD` over the bytes ``cgen_rd`` finds in no array
+def _unheld_h(mem, used, cases, program, free=False):
+    """The ``.h``'s tables of :func:`_unheld` over the bytes ``cgen_rd`` finds in no array
     (none in a region, a held span when ``used`` holds the code, or a promoted cell of
     ``cases``) outside the volatile ranges: those of ``loaded`` and the ``program`` mask
-    (init's stores) as runs ``CGEN_PROG_*`` (joined across the others), the rest the
-    machine's entry bytes (``Memory.image``) as :func:`regions.background`'s table."""
+    (init's stores) as runs ``CGEN_PROG_*`` (joined across the held bytes), unless ``free`` is
+    False the others a store may write (all but the ``free`` mask's,
+    :meth:`printer.Module.unwritten`, every one when None) as runs ``CGEN_RAM_*`` (joined
+    across the held and the program's), the machine's entry bytes (``Memory.image``) as
+    :func:`regions.background`'s table."""
     held = (mem.owner >= 0) | mem.vol
     for lo, hi in mem.held if "CODE" in used else ():
         held[lo:hi] = True
@@ -193,19 +242,22 @@ def _unheld_h(mem, used, cases, program):
     prog = program.copy()
     prog[mem.loaded[0] : mem.loaded[1]] = True
     prog &= ~held
-    traps = []
-    for o, n in mask_runs(prog | held):
-        t = np.flatnonzero(prog[o : o + n])
-        if t.size:
-            traps.append((o + int(t[0]), int(t[-1] - t[0]) + 1))
+    out, masks = [], [("PROG", prog, held)]
+    if free is not False:
+        masks.append(("RAM", ~prog & ~held & (True if free is None else ~free), held | prog))
+    for name, mask, join in masks:
+        runs = []
+        for o, n in mask_runs(mask | join):
+            t = np.flatnonzero(mask[o : o + n])
+            if t.size:
+                runs.append((o + int(t[0]), int(t[-1] - t[0]) + 1))
+        # A run of every byte is two: a length is 16 bits.
+        runs = [(0, 0xFFFF), (0xFFFF, 1)] if runs == [(0, 0x10000)] else runs
+        out += [
+            f"#define CGEN_{name}_ORG {', '.join(f'0x{o:04X}' for o, _ in runs) or '0'}",
+            f"#define CGEN_{name}_LEN {', '.join(f'0x{n:X}' for _, n in runs) or '0'}",
+        ]
     entries, pool = background(mem.image, ~prog & ~held)
-    out = [
-        f"#define CGEN_PROG_{k} {', '.join(v) or '0'}"
-        for k, v in (
-            ("ORG", [f"0x{o:04X}" for o, _ in traps]),
-            ("LEN", [f"0x{n:X}" for _, n in traps]),
-        )
-    ]
     out += [
         f"#define CGEN_BG_{k} {', '.join(f'0x{e[i]:X}' for e in entries)}"
         for i, k in enumerate(("ORG", "AT", "M"))
@@ -216,12 +268,13 @@ def _unheld_h(mem, used, cases, program):
 def _wr(vol, var=False):
     """``wr``: a write dispatcher over the promoted cells (with ``var``), the regions
     (``CGEN_REGIONS``, slices of held spans included: those are the spans' data bytes) and the
-    volatile condition ``vol``."""
+    volatile condition ``vol``, then the host's ``oob_wr`` (``CGEN_OOB``) or
+    :func:`_unheld_wr`."""
     out = ["static uint8_t *const WR_AT[] = {CGEN_REGIONS};"] + [
         f"static const uint16_t WR_{k}[] = {{CGEN_REGIONS_{k}}};" for k in ("ORG", "LEN")
     ]
     out += ["static __attribute__((noinline)) void wr(uint16_t a, uint8_t v) {"]
-    out += ["uint8_t *c = cgen_var_at(a);", "if (c) {", "*c = v;", "return;", "}"] if var else []
+    out += VAR_WR if var else []
     out += [
         "for (uint8_t i = 0; i < sizeof WR_ORG / sizeof *WR_ORG; ++i) {",
         "uint16_t o = a - WR_ORG[i];",
@@ -232,7 +285,8 @@ def _wr(vol, var=False):
         "}",
     ]
     out += [f"if ({vol}) {{ io_write(a, v); return; }}"] if vol else []
-    return out + ["oob_wr(a, v);", "}"]
+    tail = ["#ifdef CGEN_OOB", "oob_wr(a, v);", "#else", "cgen_unheld_wr(a, v);", "#endif"]
+    return out + tail + ["}"]
 
 
 def _storage(mem, used, helpers, regions):
@@ -266,13 +320,28 @@ def _storage(mem, used, helpers, regions):
     return out
 
 
-def _dispatch(mem, helpers, used, cases=(), program=None):
+def _guarded(lines, conds):
+    """``lines`` compiled where one of the preprocessor conditions ``conds`` holds (``"1"``:
+    always), none when there are none."""
+    if not lines or not conds:
+        return []
+    if "1" in conds:
+        return lines
+    test = conds[0] if len(conds) == 1 else " || ".join(f"({c})" for c in conds)
+    return [f"#if {test}", *lines, "#endif"]
+
+
+def _dispatch(
+    mem, helpers, used, cases=(), program=None, free=None
+):  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     """``(c lines, h lines)``: ``oob_rd`` (unless the host's) and ``wr`` over the regions
     outside the held spans, the volatile ranges and the held spans (whose data bytes ``Cj_DATA``
-    marks), ``wr`` then ``oob_wr``; ``rd``, ``oob_rd`` for a load the lift places nowhere; and
-    ``codechk``: whether a held constant byte would change. ``cgen_rd`` finds the promoted
-    cells ``cases`` (``cgen_var``) first, as ``wr`` does where an access needs it, and the
-    bytes in no array by :func:`_unheld_h` (``program`` init's stores)."""
+    marks), ``wr`` then :func:`_unheld_wr` (unless the host's ``oob_wr``, which ``wr`` then
+    calls), ``oob_wr`` (unless the host's) ``wr``; ``rd``, ``oob_rd`` for a load the lift
+    places nowhere; and ``codechk``: whether a held constant byte would change. ``cgen_rd``
+    and ``oob_wr`` find the promoted cells ``cases`` (``cgen_var``) first, as ``wr`` does
+    where an access needs it, and the bytes in no array by :func:`_unheld_h` (``program``
+    init's stores, ``free`` the bytes no store may write)."""
     out, h = [], []
     vol = " || ".join(
         f"(a >= 0x{lo:04X} && a < 0x{hi:04X})" if hi < 0x10000 else f"a >= 0x{lo:04X}"
@@ -281,28 +350,37 @@ def _dispatch(mem, helpers, used, cases=(), program=None):
     spans = range(len(mem.held)) if "CODE" in used else range(0)
     sliced = [j for j in spans if _sliced(mem, used, j)]
     regions = [f"R{k}" for k in range(len(mem.regions)) if _slice(mem, used, k) is None]
-    var = _var(cases) if cases and helpers & {"cgen_var", "rd", "oob_rd"} else []
-    exact = _rd(regions, vol, spans, bool(var))
-    if helpers & {"rd", "oob_rd"}:
-        free = np.zeros(0x10000, dtype=bool) if program is None else program
-        h = _unheld_h(mem, used, cases if var else (), free)
-    if helpers & {"cgen_var", "rd"}:
-        out, var = out + var, []
+    writes = bool(helpers & {"wr", "oob_wr"})
+    exact = NOOB + " && defined(CGEN_OOB_EXACT)"
+    rd = ["1"] if "rd" in helpers else [exact] if "oob_rd" in helpers else []
+    unheld = rd + ([NOOB] if writes else [])
+    var = ["1"] if helpers & {"cgen_var", "rd"} else rd + ([NOOB] if "oob_wr" in helpers else [])
+    var = var if cases else []
+    if var:
         used.add("CODE_ORG")
+        out += _guarded(_var(cases), var)
+    if unheld:
+        program = np.zeros(0x10000, dtype=bool) if program is None else program
+        h = _unheld_h(mem, used, cases if var else (), program, free if writes else False)
+        inner = ([NOOB] if unheld != [NOOB] else ["1"]) if writes else []
+        out += _guarded(UNHELD + _guarded(SLOTS, inner) + _unheld(inner), unheld)
+    out += _guarded(_rd(regions, vol, spans, bool(var)), rd)
     if "rd" in helpers:
-        out += [*exact, "static inline uint8_t rd(uint16_t a) { return cgen_rd(a); }"]
-    oob = sorted(helpers & set(OOB))
+        out.append("static inline uint8_t rd(uint16_t a) { return cgen_rd(a); }")
+    oob = sorted(helpers & set(OOB) | ({"oob_wr"} if writes else set()))
     if oob:
-        out += ["#ifdef CGEN_OOB", *(OOB[h] for h in oob), "#else"]
-        out += OOB_WR if "oob_wr" in oob else []
+        out += ["#ifdef CGEN_OOB", *(OOB[h] for h in oob)]
         if "oob_rd" in oob:
-            used |= {"CODE_ORG"} if var else set()
-            out += ["#ifdef CGEN_OOB_EXACT", *([] if "rd" in helpers else var + exact)]
+            out += ["#else", "#ifdef CGEN_OOB_EXACT"]
             out += ["static uint8_t oob_rd(uint16_t a) { return cgen_rd(a); }", "#else"]
             out += [OOB_RD_TRAP, "#endif"]
         out.append("#endif")
-    if "wr" in helpers:
-        out += _wr(vol, "cgen_var" in helpers)
+    if writes:
+        out += _guarded(_unheld_wr(spans), [NOOB])
+        out += _guarded(_wr(vol, "cgen_var" in helpers), ["1" if "wr" in helpers else NOOB])
+        own = VAR_WR if var and "cgen_var" not in helpers else []
+        oob_wr = ["static void oob_wr(uint16_t a, uint8_t v) {", *own, "wr(a, v);", "}"]
+        out += _guarded(oob_wr, [NOOB] if "oob_wr" in helpers else [])
     if "codechk" in helpers:
         out += ["static __attribute__((noinline)) uint8_t codechk(uint16_t a, uint8_t v) {"]
         for j in spans:
@@ -824,19 +902,18 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     fns = mod.functions()
     used, helpers = set(mod.used), mod.helpers
     helpers |= {"oob_rd"} if mod.checked else set()
-    helpers |= {"oob_wr"} if "wr" in helpers else set()
     if helpers & {"oob_rd", "rd", "codechk"} and mem.held:
         used.add("CODE")
     regions = sorted(
         mod.regions_used
-        | (set(range(len(mem.regions))) if helpers & {"oob_rd", "rd", "wr"} else set())
+        | (set(range(len(mem.regions))) if helpers & {"oob_rd", "rd", "wr", "oob_wr"} else set())
     )
     c = [PROLOGUE.format(header=header)]
     if "CGEN_IX" in used:
         c.append(IX)
     c.append("CGEN_STORAGE")
     c += mod.state_c()
-    dispatch, unheld = _dispatch(mem, helpers, used, mod.var_at, mod.init_stored)
+    dispatch, unheld = _dispatch(mem, helpers, used, mod.var_at, mod.init_stored, mod.free)
     c += dispatch
     for j in sorted(mod.checked):
         var = ["uint16_t a = p + y;", *VAR_RD] if j in mod.var_spans else []
