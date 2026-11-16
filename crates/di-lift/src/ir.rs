@@ -228,6 +228,9 @@ pub struct Function {
     pub ntemps: u32,
     /// Promoted stack slots (registers `NREG..NREG + nslots`).
     pub nslots: u32,
+    /// Lane registers (`NREG + nslots..`): one bit each of a stack slot that packs single-bit
+    /// values ([`crate::lanes`]); never stack bytes.
+    pub nlanes: u32,
     /// The slot indices whose stack bytes the function keeps in slot registers (the bytes of
     /// the others stay in memory).
     pub slotted: FixedBitSet,
@@ -243,9 +246,9 @@ pub struct Function {
 }
 
 impl Function {
-    /// Registers including promoted stack slots.
+    /// Registers including promoted stack slots and lanes.
     pub fn nregs(&self) -> usize {
-        NREG + self.nslots as usize
+        NREG + (self.nslots + self.nlanes) as usize
     }
 }
 

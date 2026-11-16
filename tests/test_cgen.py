@@ -3997,6 +3997,182 @@ def test_brk_handler_of_two_sites_is_a_function(prefix, tmp_path):
     assert translate(prefix, img2, labels2, (0x2400, labels2["end"]))[0] == c
 
 
+BRKFLAGS = """
+entry:  CMP #$80
+        BCS play
+        LDA #lo(handler)
+        STA $FFFE
+        LDA #hi(handler)
+        STA $FFFF
+        RTS
+play:   AND #$03
+        CMP #$02
+        TAX
+        BRK
+        .byte $EA
+        BCS big
+        STX $C000
+        RTS
+big:    STX $C002
+        RTS
+handler: FRAME
+        LDA cnt
+        CLC
+        ADC #$01
+        STA cnt
+        STA $C001
+        RTI
+cnt:    .byte 0
+end:
+"""
+STATUS_SAVE = """
+entry:  CMP #$40
+        PHP
+        AND #$0F
+        BEQ zero
+        CLC
+        ADC #$70
+        STA $C001
+zero:   PLP
+        BCS hi
+        LDA #$01
+        STA $C002
+        RTS
+hi:     LDA #$02
+        STA $C002
+        RTS
+end:
+"""
+STATUS_BYTE = """
+entry:  CMP #$80
+        BCC bin
+        SED
+bin:    CMP #$40
+        PHP
+        CLD
+        LDX #$00
+        BCC lo
+        LDX #$01
+lo:     STX $C003
+        PLA
+        AND #MASK
+        STA $C001
+        RTS
+end:
+"""
+STATUS_FROM_BYTE = """
+entry:  ORA #$01
+        PHA
+        AND #$02
+        TAX
+        BEQ skip
+        INX
+skip:   STX $C003
+        PLP
+        BCS one
+        LDA #$00
+        STA $C001
+        RTS
+one:    LDA #$01
+        STA $C001
+        RTS
+end:
+"""
+STATUS_DECIMAL = """
+entry:  CMP #$80
+        BCC bin
+        SED
+bin:    PHP
+        CLD
+        LDX #$00
+        AND #$0F
+        BEQ zero
+        INX
+zero:   STX $C003
+        PLP
+        CLC
+        ADC #$19
+        STA $C001
+        CLD
+        RTS
+end:
+"""
+STATUS_READ = """
+entry:  CMP #$40
+        PHP
+        TSX
+        LDA $0101,X
+        STA $C001
+        AND #$03
+        BEQ zero
+        STA $C002
+zero:   PLP
+        LDA #$00
+        ROL A
+        STA $C003
+        RTS
+end:
+"""
+
+
+@pytest.mark.parametrize("byte", [False, True])
+def test_status_saved_through_the_stack_is_its_flags(prefix, tmp_path, byte):
+    """A status ``PHP`` pushes that only ``PLP`` pulls is the flags it saved: no packed byte,
+    and the decimal flag the pull restores is the clear one pushed, so no check of it; also
+    where a byte saved by ``PHA`` and restored by ``PLA`` earlier takes the same stack byte."""
+    pha = "entry:  PHA\n        LDA #$00\n        STA $C004\n        PLA\n        CMP #$40"
+    src = STATUS_SAVE.replace("entry:  CMP #$40", pha) if byte else STATUS_SAVE
+    c, _, info = check(prefix, tmp_path, src, entry_calls(range(0, 256, 5)))
+    assert "0x30" not in body_of(c, "entry") and not info["traps"]
+
+
+@pytest.mark.parametrize(
+    "mask,bits", [(0x08, ["<< 3"]), (0xC3, ["<< 1", "<< 7"])], ids=["d", "czn"]
+)
+def test_status_read_as_a_byte_packs_the_flags_read(prefix, tmp_path, mask, bits):
+    """A status pulled as data (``PHP; PLA; AND #mask``) packs only the flags the mask keeps:
+    the decimal flag alone, or carry, zero and negative (overflow and interrupt are clear)."""
+    src = STATUS_BYTE.replace("MASK", f"${mask:02X}")
+    c, _, _ = check(prefix, tmp_path, src, entry_calls(range(0, 256, 3)))
+    body = body_of(c, "entry")
+    assert "0x30" not in body and all(b in body for b in bits)
+    assert {"<< 2", "<< 6"}.isdisjoint(re.findall(r"<< \d", body))
+
+
+def test_status_set_from_a_byte_unpacks_the_flags_read(prefix, tmp_path):
+    """``PHA; PLP`` sets the flags from a byte: only those read after it (carry, and the
+    decimal flag the pull is checked for) are taken from it."""
+    calls = entry_calls([a for a in range(0, 256, 3) if not a & 8])
+    c, _, _ = check(prefix, tmp_path, STATUS_FROM_BYTE, calls)
+    assert re.findall(r">> (\d)", body_of(c, "entry")) == ["3"]
+
+
+def test_pulled_decimal_flag_feeds_arithmetic(prefix, tmp_path):
+    """A decimal flag saved by ``PHP`` and restored by ``PLP`` before an ``ADC`` keeps its
+    value: binary and decimal sums both match the reference, with no packed byte."""
+    c, _, _ = check(prefix, tmp_path, STATUS_DECIMAL, entry_calls(range(0, 256, 3)))
+    assert "0x30" not in body_of(c, "entry")
+
+
+def test_status_read_through_the_stack_page_stays_packed(prefix, tmp_path):
+    """A status a load reads from the stack page (``TSX; LDA $0101,X``) is stored packed and
+    read exactly; the ``PLP`` still restores the flags it saved."""
+    c, _, _ = check(prefix, tmp_path, STATUS_READ, entry_calls(range(0, 256, 5)))
+    assert "0x30" in body_of(c, "entry")
+
+
+@pytest.mark.parametrize("reads", [False, True])
+def test_interrupt_frame_status(prefix, tmp_path, reads):
+    """A ``BRK`` handler's ``RTI`` restores the flags the frame saved; the status byte is
+    packed only for a handler reading the frame as data (``TSX; LDA $0101,X``)."""
+    src = BRKFLAGS.replace(
+        "FRAME", "TSX\n        LDA $0101,X\n        STA $C004" if reads else "NOP"
+    )
+    calls = [("entry", 0)] + entry_calls([0x80, 0x81, 0x82, 0x83], 2)
+    c, _, _ = check(prefix, tmp_path, src, calls)
+    assert ("0x30" in body_of(c, "entry")) == reads
+
+
 @pytest.mark.parametrize("sites", [2, 1])
 def test_call_with_inline_arguments(prefix, tmp_path, sites):
     """A callee that pulls its return address, reads the bytes after the call and pushes the

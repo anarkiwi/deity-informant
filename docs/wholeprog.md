@@ -301,11 +301,19 @@ the program, and checks it against the reference.
    (page crosses from the effective address, taken branches) and are added to `CY` before any
    possibly volatile access, so each sees its instruction's start cycle, and at block ends;
    without it none of this is emitted.
-5. **Optimization** (`opt.rs`), to a fixpoint: CFG cleanup (constant branches, threading,
+5. **Optimization** (`opt.rs`). First *status lanes* (`lanes.rs`): per web of a stack
+   slot (its definitions and the reads they reach), when every definition packs one-bit
+   values (the status `PHP`, `BRK` or an interrupt frame pushes), each bit not constant
+   across them is a lane register copied beside each definition and every read reads the
+   byte rebuilt from the lanes it observes (demanded bits to the end of its block): a `PLP`
+   or `RTI` restores each flag from its lane, `PHP; PLA; AND #$08` builds only `D`. The
+   slot keeps its packed definition for deopts and the memory copy a load other than a pull
+   may read. Then, to a fixpoint: CFG cleanup (constant branches, threading,
    merging, unreachable blocks); temporaries renumbered per extended basic block; register
    and stack-slot constant propagation across blocks and across calls (keeping what the
    callee cannot write); value numbering over extended basic blocks (constant folding with
-   interval and algebraic rules, copy propagation, common subexpressions, store-to-load
+   interval, known-bit (a mask or right shift through disjoint ors and lossless left shifts)
+   and algebraic rules, copy propagation, common subexpressions, store-to-load
    forwarding with alias analysis over constant, stack-relative and interval addresses);
    combining adds to a register; liveness-based dead-code elimination over registers, stack
    slots and temporaries; without cycle counting, carry-chain fusion (*Carry chains*). Once
@@ -817,7 +825,8 @@ analysis (`vsa::symbolic_in` evaluates constants, `AND 0` and `OR`/`XOR 0`) reco
 may be set the operations stay, tagged `ir::DECIMAL`. When the program has no `SED` variant and no
 entry declares `d` set, nothing but a pull from the stack can set the flag: `PLP` and `RTI` are
 then checked after the pull (the lifted code deopts if the pulled byte has `D` set) and the flag
-is clear everywhere (`vsa::pull_clear`). `tests/test_decimal*.py` run Clark's
+is clear everywhere (`vsa::pull_clear`); a pull of a status a `PHP` saved restores the
+clear `D` it pushed (status lanes), so its check folds away. `tests/test_decimal*.py` run Clark's
 exhaustive cases (every accumulator, operand and carry, decimal flag set and clear) on the
 Python VM, the native interpreter, the lift (entries that declare `d`, do not declare it, or set
 it in the code) and the SLEIGH module.
@@ -840,7 +849,7 @@ aux]` with varnodes `[space, offset, size]` (`c` constant, `r` register, `u` tem
 Registers are `lift()`'s file (A X Y SP = 0-3, C Z I D B V N = 8-14) plus `E` (16, 2 bytes:
 the entry returns once `SP >= E`), `CY` (17, 4 bytes: cycles since the entry started, with
 cycle counting) and per function its stack slots (18 + `i`: the byte `i` below its entry SP,
-printed `s<i>`). Block 0 of each function is its entry; the executor (`exec.rs`) runs the
+printed `s<i>`) followed by its status lanes (one bit each, never stack bytes). Block 0 of each function is its entry; the executor (`exec.rs`) runs the
 program over any `di_pcode::Bus`, relocating each function's slots in its value file and,
 with cycle counting, calling `Bus::now(cycle)` before possibly volatile accesses.
 

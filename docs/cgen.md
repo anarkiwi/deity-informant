@@ -498,6 +498,13 @@ page 1 by its pointer's value: loads read the stack exactly (pushes and return a
 also stored where a load may reach page 1), and a store that may hit the stack bytes traps
 before it does.
 
+Flags saved through the stack (`PHP`/`PLP`, a `BRK` frame and its handler's `RTI`) are the
+flags themselves: the status byte (`0x30 | c | z << 1 | ...`) is packed only where it is read
+as data (`PLA`, a load from page 1 such as a handler's `TSX; LDA $0101,X`), with only the flags
+that read keeps (`PHP; PLA; AND #$08` packs `D`), and a byte pulled into the status
+(`PHA; PLP`) is unpacked only into the flags read after it ([wholeprog](wholeprog.md#pipeline),
+*status lanes*).
+
 ## Validation
 
 `tests/test_cgen.py` compiles each output with gcc (`-std=c99 -Wall -Wextra -Werror`) against

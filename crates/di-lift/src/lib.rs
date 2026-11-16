@@ -16,6 +16,7 @@ pub mod inst;
 pub mod ir;
 pub mod jit;
 pub mod known;
+pub mod lanes;
 pub mod opt;
 pub mod ptr;
 pub mod scev;
