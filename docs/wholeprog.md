@@ -354,6 +354,18 @@ has an address set; one of an interval needs it only where the interval meets a 
 constant or code that may run after it. Code a store overwrites after it ran (a block copy
 over the routine that chose its source) stays constant code. Interrupts are not modelled.
 
+With one entry and a declared `entry_sp`, an entry no input decides makes one run
+(`once.rs`): its inputs are the registers not declared one value, the bytes outside `loaded`,
+the volatile bytes, `free` and the stack above SP. The entry runs on the reference interpreter
+from `image` while the interval interpreter follows each instruction with every input unknown;
+when every branch's flag, jump or call operand, return address, SP and store address of the
+run is exact up to the entry's return (a `BRK` ends it), the run is the only one, and each
+instruction it ran read, on every run, the operand bytes it read at each of its executions
+when those were the same. A store or load through operand cells such a run decided has the
+address they make (`Program.addr_sets`), with no page check: a relocator's walk over a table
+ending at a zero, then a copy through the operands it patched, is a load and a store at the
+addresses the walk wrote.
+
 For the entries lifted from what init leaves, `free` (`{addr: values}`) names the
 bytes init stored, whose values are the song's, and their values on each of its runs in order;
 each is a variable:
@@ -466,10 +478,16 @@ the facts, so a proof holds on every execution that stays in lifted code.
 - **Constant tables.** A volatile byte is never constant: a device answers any value. A load
   whose address interval (at most a page) holds only loaded bytes taken as constant (*Table extents*: none a store with an address set writes) and no cell
   reads the hull of those bytes, and they join the tables read as constant, so a store of
-  unknown address that may hit them is checked like one into code (`codechk`). A byte a store
-  with an address set may write is not constant from the next round of discovery on, nor is
-  a table byte inside the address interval of a store from a constant base plus an index
-  with no address set (a page from its base at most): data it may write.
+  unknown address that may hit them is checked like one into code (`codechk`). The constant
+  set is an assumption discovery verifies: it starts at every loaded byte, the analysis
+  resolves the stores' address sets under it (a store through a pointer from a table of
+  addresses, `LDA tab,X`/`LDA tab+1,X` into the pair, has the words the table holds), and a
+  byte a store with an address set may write is not constant from the next round of discovery
+  on, nor is a table byte inside the address interval of a store from a constant base plus an
+  index with no address set (a page from its base at most): data it may write. Only the bytes
+  a store reaches leave, so the set settles at the greatest one no resolved store writes; a
+  table entry naming the table leaves the store it makes with no set, checked. An init lifted
+  once is its own program: the other entries run after it.
 - **Value sets.** `A`, `X` and `Y` keep the set of values they may hold where their interval
   and known bits do not give it, at most 64 values (past them, the interval). A load from a
   constant base plus an index register whose addresses at the index's values are all
@@ -1011,7 +1029,10 @@ Every iteration of the lift ends on every input; where precision runs out a valu
 and the code using it deopts or traps.
 
 - Discovery repeats (`analysis::discover`) only when bytes leave the constant set or a
-  transfer joins the unresolved ones: at most once per address. Its rounds
+  transfer joins the unresolved ones: at most once per address. The constant set only
+  shrinks (it starts at the loaded bytes, `loaded`), so it reruns at most once per loaded
+  byte plus once per transfer. The one run of an entry no input decides (*Init*) is at most
+  `once::STEPS` instructions, else it gives nothing. Its rounds
   (`Fixpoint::run`) unite the cells, their values, the resolved targets and the stores'
   address sets with the last round's; a store a round finds no set for, or no longer has, is
   dropped for good. All are finite sets of addresses and bytes.

@@ -1649,6 +1649,74 @@ d0:     .byte 1,2,3,4
 d1:     .byte 5,6,7,8
 end:
 """
+#: A relocator walking a table of operand addresses to its zero high byte, adding a base
+#: word to each operand in place through the pointer an entry makes.
+WALKREL = """
+init:   LDX #$00
+r:      LDA sites+1,X
+        BEQ done
+        STA $FC
+        LDA sites,X
+        STA $FB
+        LDY #$01
+        LDA ($FB),Y
+        CLC
+        ADC base
+        STA ($FB),Y
+        INY
+        LDA ($FB),Y
+        ADC base+1
+        STA ($FB),Y
+        INX
+        INX
+        BNE r
+done:   RTS
+play:   AND #$03
+        TAY
+o0:     LDA {d0-0x800},Y
+        STA $C000
+o1:     LDA {d1-0x800},Y
+        STA $C001
+o2:     LDA {d0-0x800},Y
+        STA $C002
+        RTS
+base:   .byte $00, $08
+sites:  .byte lo(o0), hi(o0), lo(o1), hi(o1), lo(o2), hi(o2), 0, 0
+d0:     .byte 1,2,3,4
+d1:     .byte 5,6,7,8
+end:
+"""
+#: :data:`WALKREL` relocating the operands of a load and a store it then runs: a copy
+#: through operands the walk patched.
+PAIRREL = WALKREL.replace(
+    "done:   RTS\n",
+    "done:   JSR cp\n        RTS\ncp:     LDA {d1-0x800}\n        STA {d0-0x800}\n        RTS\n",
+).replace("lo(o2), hi(o2), 0, 0", "lo(o2), hi(o2), lo(cp), hi(cp), lo(cp+3), hi(cp+3), 0, 0")
+#: An entry walking a table of record addresses, storing into each record through the
+#: pointer an entry makes.
+DATAWALK = """
+entry:  AND #$03
+        TAY
+        LDX #$00
+r:      LDA recs+1,X
+        BEQ done
+        STA $FC
+        LDA recs,X
+        STA $FB
+        LDA ($FB),Y
+        CLC
+        ADC #$01
+        STA ($FB),Y
+        STA $C000
+        INX
+        INX
+        BNE r
+done:   RTS
+recs:   .byte lo(q0), hi(q0), lo(q1), hi(q1), 0, 0
+q0:     .byte 1,2,3,4
+q1:     .byte 5,6,7,8
+end:
+"""
 ADD16 = """
 entry:  AND #$0F
         CLC
@@ -3877,7 +3945,9 @@ def test_registers_a_callee_leaves_are_its_arguments(prefix, tmp_path):
 
 OPERAND_PTR = r"rdC\d+\(S_\w+ \| \(\(uint16_t\)S_\w+ << 8\), "
 #: A direct access of the span at an operand init leaves constant, named by the ``.h``.
-OPERAND_K = r"\bC0\[\(uint16_t\)\(\(K_\w+ \| \(\(uint16_t\)K_\w+ << 8\)\) \+ "
+#: A byte variable: a cell init sets, promoted or in its region.
+BYTE = r"S_\w+|R\d+\[\w+\]"
+OPERAND_K = r"\bC\d+\[\(uint16_t\)\(\(K_\w+ \| \(\(uint16_t\)K_\w+ << 8\)\) \+ "
 
 
 @pytest.mark.parametrize("src", ["RUNREL", "RELOCATE"])
@@ -3894,7 +3964,7 @@ def test_operands_init_relocates_by_a_constant_base_are_constant(prefix, tmp_pat
     body = body_of(c, "play")
     assert ops <= set(info["fixed"]) and "codechk(" not in c and info["init"] == "translated"
     assert re.search(OPERAND_K, body) and not re.search(r"rdC|\bS_", body)
-    assert "CGEN_CP_N" not in h and "wr(" in body_of(c, "init")
+    assert "CGEN_CP_N" not in h and not DISPATCH.search(body_of(c, "init"))
 
 
 def test_carry_chain_identity():
@@ -4157,9 +4227,9 @@ def test_song_values_are_a_range(prefix):
 )
 def test_init_reading_song_data_leaves_variables(prefix, tmp_path, order):
     """Init reads each voice's first order byte with the routine play reads them with (song
-    data), skipping commands: the positions and patterns it leaves are variables, so the
-    ``.c`` is the same for every order list and song count, the header holding their
-    values."""
+    data), skipping commands: the positions and patterns it leaves are variables, so play's
+    function is the same for every order list and the ``.c`` for every song count, the header
+    holding their values (init's own bounds follow the data it is lifted from)."""
     img, labels, loaded = assemble(SONGDATA, patch={"order": order})
     texts = set()
     for count in (1, 2):
@@ -4170,7 +4240,7 @@ def test_init_reading_song_data_leaves_variables(prefix, tmp_path, order):
         play(tmp_path / str(count), c, h, img, labels, [("init", 0)] + [("play", 0)] * 9)
         texts.add(c)
     base = translate(prefix, *assemble(SONGDATA), ("init", "play"), init=0, songs=range(1))[0]
-    assert texts == {base}
+    assert len(texts) == 1 and {body_of(c, "play") for c in texts} == {body_of(base, "play")}
 
 
 def test_init_io_writes_song_data_decides_are_replayed(prefix, tmp_path):
@@ -5454,7 +5524,7 @@ def test_operands_set_from_one_word_are_one_pointer(prefix, tmp_path):
         ops = {labels[o] + k for o in ("o0", "o1", "o2") for k in (1, 2)}
         assert ops <= set(info["provenance"]["cells"])
         body = body_of(c, "play")
-        pairs = set(re.findall(r"\b(S_\w+) \| \(\(uint16_t\)(S_\w+) << 8\)", body))
+        pairs = set(re.findall(rf"({BYTE}) \| \(\(uint16_t\)({BYTE}) << 8\)", body))
         assert len(pairs) == 2 and "1 + v" in body
         texts.add(c)
     assert len(texts) == 1
@@ -5665,16 +5735,20 @@ INITBIT = INITREL.replace(
 def test_bounded_store_leaves_cells_to_promotion(prefix, tmp_path):
     """A store through an operand init relocated into a run of data bytes touches that run,
     not every byte: the operand cells the entry reads at their addresses (the low bytes,
-    which differ between values of ``A``) are scalars, which only the translated init's
-    stores through its pointer find by address (``cgen_var``)."""
+    which differ between values of ``A``) are scalars where init is replayed; a translated
+    init's stores through its pointer write them by their address set, so they stay bytes of
+    their region and no access finds them by address (``cgen_var``)."""
     for probe in (False, True):
         src = probed(INITBIT) if probe else INITBIT
         c, info, labels = songs(prefix, tmp_path / str(probe), src, (0, 1, 5))
         cells = info["state"]["cells"]
         assert {labels["o0"] + 1, labels["o1"] + 1}.isdisjoint(info["fixed"])
-        assert cells["scalars"] >= 2 and "unknown" not in cells
-        assert ("cgen_var" in c.split("#ifdef CGEN_OOB")[0]) != probe
-        assert "cgen_var" not in body_of(c, "play")
+        assert "unknown" not in cells["bytes"] and "cgen_var" not in body_of(c, "play")
+        if probe:
+            assert cells["scalars"] >= 2
+        else:
+            assert cells["bytes"]["pointer"] >= 2 and not DISPATCH.search(c)
+            assert "cgen_var" not in c.split("#ifdef CGEN_OOB")[0]
 
 
 #: A pointer whose high byte is the argument reads, and writes, the immediate play patches.
@@ -6019,3 +6093,55 @@ def test_background_table_is_exact_and_small():
     assert len(entries) * regions.ENTRY + len(pool) < 0x8000
     entries, pool = regions.background(poweron_ram(), np.ones(0x10000, dtype=bool))
     assert [(o, m) for o, _, m in entries] == [(q << 14, 7) for q in range(4)] and len(pool) == 16
+
+
+#: The helpers a lifted access of unknown address goes through.
+DISPATCH = re.compile(r"\b(?:wr|rd|codechk)\(")
+
+
+def test_init_walking_a_table_of_operands_writes_them_directly(prefix, tmp_path):
+    """An init relocating operands in place through a pointer from a table of their
+    addresses ending at a zero high byte: the table is constant, so the stores' address sets
+    are the operands, which init's translated code writes in their storage directly, no
+    access of unknown address left; the ``.c`` is the same whichever order the table lists
+    them (its values are the ``.h``'s)."""
+    texts = set()
+    for order in (
+        "o0), hi(o0), lo(o1), hi(o1), lo(o2), hi(o2)",
+        "o2), hi(o2), lo(o0), hi(o0), lo(o1), hi(o1)",
+    ):
+        src = WALKREL.replace("o0), hi(o0), lo(o1), hi(o1), lo(o2), hi(o2)", order)
+        img, labels, loaded = assemble(src)
+        c, h, info = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
+        (tmp_path / order[:2]).mkdir()
+        play(
+            tmp_path / order[:2],
+            c,
+            h,
+            img,
+            labels,
+            [("init", 0)] + [("play", a) for a in range(4)] * 2,
+        )
+        ops = {labels[o] + k for o in ("o0", "o1", "o2") for k in (1, 2)}
+        assert info["init"] == "translated" and ops <= set(info["fixed"])
+        assert not DISPATCH.search(c) and re.search(OPERAND_K, body_of(c, "play"))
+        texts.add(c)
+    assert len(texts) == 1
+
+
+def test_table_walk_stores_into_its_records_directly(prefix, tmp_path):
+    """Stores through a pointer from a table of record addresses write the records' region
+    directly: no access of unknown address."""
+    c, _, _ = check(prefix, tmp_path, DATAWALK, entry_calls(range(4), 3))
+    assert not DISPATCH.search(c)
+
+
+def test_init_running_operands_it_relocated_reads_and_writes_directly(prefix, tmp_path):
+    """Init runs a copy through operands its walk patched: no input decides init's run, so
+    the copy's load and store have the addresses that run patched in, with no check of the
+    pages they reach and no ``codechk``."""
+    img, labels, loaded = assemble(PAIRREL)
+    c, h, info = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
+    play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", a) for a in range(4)])
+    assert info["init"] == "translated" and not DISPATCH.search(c)
+    assert {labels["cp"], labels["cp"] + 3}.isdisjoint(pc for _, pc in info["traps"].values())

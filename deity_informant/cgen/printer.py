@@ -3334,7 +3334,12 @@ class Module:  # pylint: disable=too-many-instance-attributes
         kind ``kind``) leaves the cells it may reach to promotion: a load through a pointer the
         lift bounds by a hull, or a load or store of unknown address, of code span cells only,
         goes through a reader or ``wr`` that finds a promoted cell's variable."""
-        hull = kind == POINTER and o.name == "memref.load" and self.reach_of(f, o) is not None
+        hull = (
+            kind == POINTER
+            and o.name == "memref.load"
+            and not self.fx(f.name).addr_sets.get((o.pc, False))
+            and self.reach_of(f, o) is not None
+        )
         if o.name == "func.call" or not (hull or kind == UNKNOWN):
             return False
         lo, hi = self.mem.code_span

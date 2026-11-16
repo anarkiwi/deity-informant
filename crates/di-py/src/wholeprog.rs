@@ -1576,6 +1576,7 @@ pub fn plan_program<'py>(
         None,
         &Default::default(),
         false,
+        None,
     );
     let pcs: Vec<u16> = es.iter().map(|e| e.pc).collect();
     let out = PyList::empty(py);

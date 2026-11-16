@@ -952,6 +952,8 @@ pub(crate) struct Code<'a> {
     pub(crate) classes: FxHashMap<u32, u32>,
     /// The classes joins found to meet, to unite ([`Code::settle`]).
     pub(crate) meets: std::cell::RefCell<Vec<(u32, u32)>>,
+    /// The operands of the one run no input decides ([`crate::once`]).
+    pub(crate) ran: &'a crate::once::Ran,
 }
 
 /// Per store `(pc, opcode, access index)` the addresses it writes: a store with a set
@@ -2880,6 +2882,7 @@ fn reach(
         devices: code.devices,
         classes: code.classes.clone(),
         meets: Default::default(),
+        ran: code.ran,
     };
     let mut sh = p.sh;
     c.mods = mods(&c, p.vars, &FxHashMap::default(), &sh.live);
@@ -3252,6 +3255,8 @@ pub struct Given<'a> {
     pub aimed: &'a Aimed,
     /// What the volatile addresses answer ([`crate::dev`]).
     pub devices: &'a crate::dev::Devices,
+    /// The operands of the one run no input decides ([`crate::once`]).
+    pub ran: &'a crate::once::Ran,
 }
 
 /// The runs of the loaded program outside page 1 and the volatile ranges ([`Code::ram`]).
@@ -3317,6 +3322,7 @@ pub fn analyze(
         devices: given.devices,
         classes: FxHashMap::default(),
         meets: Default::default(),
+        ran: given.ran,
     };
     let thr = Thresholds::new(vars, &code);
     // The starts reached whatever the data: no table taken as constant.

@@ -1551,3 +1551,89 @@ fn walks_read_to_their_marker() {
     assert_eq!(p.stats.obj_guards, 0);
     assert_eq!(diff_at(&img, &p, &calls(32, |_| 0), IO, 1_000_000, 0xff), 0);
 }
+
+/// A walk over a table of addresses ending in a zero high byte, each entry's second byte
+/// incremented through the pointer it makes, at `$1000`; `d1` the second entry's word.
+fn addr_walk(d1: u16) -> Vec<u8> {
+    let [lo, hi] = d1.to_le_bytes();
+    #[rustfmt::skip]
+    let prog = vec![
+        0xa2, 0x00, 0xbd, 0x1d, 0x10, 0xf0, 0x14, 0x85, 0xfc, 0xbd, 0x1c, 0x10, 0x85, 0xfb,
+        0xa0, 0x01, 0xb1, 0xfb, 0x18, 0x69, 0x01, 0x91, 0xfb, 0xe8, 0xe8, 0xd0, 0xe7, 0x60,
+        0x24, 0x10, lo, hi, 0x28, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
+    prog
+}
+
+/// The table the stores' pointer comes from is constant under the assumption their address
+/// set then verifies: the store writes the bytes its entries name, none of the table's.
+#[test]
+fn table_of_addresses_resolves_its_stores() {
+    let prog = addr_walk(0x1026);
+    let p = static_lift(&prog);
+    let set = p.addr_sets.iter().find(|s| (s.0, s.1) == (0x1015, true));
+    let runs = vec![(0x1025, 0x1026), (0x1027, 0x1028), (0x1029, 0x102a)];
+    assert_eq!(set.map(|s| &s.2), Some(&runs));
+    let code: Vec<u16> = p.code.iter().map(|c| c.0).collect();
+    assert!((0x101c..0x1024).all(|a| code.contains(&a)));
+    assert_eq!(diff(&static_image(&prog), &p, &calls(3, |_| 0), IO), 0);
+}
+
+/// An entry naming a table byte makes the store meet the assumed table: it has no address
+/// set, so its check leaves the lifted code where it hits the table.
+#[test]
+fn table_entry_naming_the_table_leaves_its_store_checked() {
+    let prog = addr_walk(0x101f);
+    let p = static_lift(&prog);
+    assert!(!p.addr_sets.iter().any(|s| (s.0, s.1) == (0x1015, true)));
+    assert!(diff(&static_image(&prog), &p, &calls(4, |_| 0), IO) > 0);
+}
+
+/// An init storing through an absolute operand it patches from a table: `$1000` onward, its
+/// first three bytes `head`.
+fn patched_store(head: [u8; 3]) -> Vec<u8> {
+    let mut prog = vec![
+        0xad, 0x12, 0x10, 0x8d, 0x0f, 0x10, 0xad, 0x13, 0x10, 0x8d, 0x10, 0x10, 0xa9, 0x5a, 0x8d,
+        0xff, 0xff, 0x60, 0x14, 0x10, 0x00,
+    ];
+    prog[..3].copy_from_slice(&head);
+    prog
+}
+
+/// The static lift of `prog` at `$1000` run once.
+fn once_lift(prog: &[u8]) -> Program {
+    let opts = Opts {
+        loaded: Some((0x1000, 0x1000 + prog.len() as u32)),
+        entry_sp: Some(0xfd),
+        fold: true,
+        once: true,
+        ..Opts::default()
+    };
+    lift_with(
+        &static_image(prog),
+        &entries(&[0x1000]),
+        &[(0xc000, 0xc100)],
+        &Facts::default(),
+        opts,
+    )
+}
+
+/// Run once, an init no input decides makes one run: the store through the operand it
+/// patches writes the address the run patched in.
+#[test]
+fn once_run_gives_a_patched_operand_its_address() {
+    let prog = patched_store([0xad, 0x12, 0x10]);
+    let p = once_lift(&prog);
+    let set = p.addr_sets.iter().find(|s| (s.0, s.1) == (0x100e, true));
+    assert_eq!(set.map(|s| &s.2), Some(&vec![(0x1014, 0x1015)]));
+    assert_eq!(diff(&static_image(&prog), &p, &calls(1, |_| 0), IO), 0);
+}
+
+/// An operand patched from the argument is decided by an input: the store has no address.
+#[test]
+fn once_run_an_input_decides_gives_no_address() {
+    let prog = patched_store([0xea, 0xea, 0xea]);
+    let p = once_lift(&prog);
+    assert!(!p.addr_sets.iter().any(|s| (s.0, s.1) == (0x100e, true)));
+    diff(&static_image(&prog), &p, &calls(1, |_| 0x14), IO);
+}
