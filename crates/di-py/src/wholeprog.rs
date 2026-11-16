@@ -436,14 +436,7 @@ fn hulls(r: &[di_lift::ir::Reach]) -> HashMap<u16, (u32, u32, u32, u32)> {
 
 /// The inclusive runs of the values of a 256-bit set.
 fn values(b: &di_lift::why::Bits) -> Vec<(u32, u32)> {
-    let mut out: Vec<(u32, u32)> = Vec::new();
-    for v in (0..256u32).filter(|&v| b[v as usize >> 6] >> (v & 63) & 1 == 1) {
-        match out.last_mut() {
-            Some(r) if r.1 + 1 == v => r.1 = v,
-            _ => out.push((v, v)),
-        }
-    }
-    out
+    di_lift::inclusive_runs((0..256u32).filter(|&v| b[v as usize >> 6] >> (v & 63) & 1 == 1))
 }
 
 /// The name of register `r` (`a`, `x`, `y`, `sp`, a flag `c`, `z`, `i`, `d`, `b`, `v`, `n`).

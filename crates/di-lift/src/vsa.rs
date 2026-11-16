@@ -2836,14 +2836,7 @@ pub(crate) fn data_runs(given: &Given, insn: &FixedBitSet) -> Vec<(u32, u32)> {
         data.insert_range(hi as usize..top.max(hi as usize));
     }
     data.difference_with(insn);
-    let mut runs: Vec<(u32, u32)> = Vec::new();
-    for a in data.ones().map(|a| a as u32) {
-        match runs.last_mut() {
-            Some(r) if r.1 == a => r.1 += 1,
-            _ => runs.push((a, a + 1)),
-        }
-    }
-    runs
+    crate::runs(data.ones().map(|a| a as u32))
 }
 
 /// Address hulls of the loads through pointers and cell operands and of their bases (the

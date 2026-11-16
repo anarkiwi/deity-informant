@@ -594,16 +594,23 @@ fn aliases(g: &analysis::Graph, alias: &[(u16, u16, u16)]) -> FxHashMap<u16, (u1
         .collect()
 }
 
-/// Runs `[lo, hi)` of the bytes of `b`.
-fn runs(b: &FixedBitSet) -> Vec<(u32, u32)> {
+/// Runs `[lo, hi)` of the strictly ascending values `vs`.
+pub fn runs(vs: impl IntoIterator<Item = u32>) -> Vec<(u32, u32)> {
     let mut runs: Vec<(u32, u32)> = Vec::new();
-    for a in b.ones().map(|a| a as u32) {
+    for a in vs {
         match runs.last_mut() {
             Some(r) if r.1 == a => r.1 = a + 1,
             _ => runs.push((a, a + 1)),
         }
     }
     runs
+}
+
+/// Inclusive runs `[lo, hi]` of the strictly ascending values `vs`.
+pub fn inclusive_runs(vs: impl IntoIterator<Item = u32>) -> Vec<(u32, u32)> {
+    let mut v = runs(vs);
+    v.iter_mut().for_each(|r| r.1 -= 1);
+    v
 }
 
 /// Pointer-load hulls by `(pc, opcode, access index)` as sorted [`ir::Reach`]es.
@@ -1141,8 +1148,8 @@ pub fn lift_banked(
             c.ones().map(|a| (a as u16, img[a])).collect()
         },
         volatile: volatile.to_vec(),
-        written: runs(&g.written),
-        stored: runs(&analysis::stored(&g)),
+        written: runs(g.written.ones().map(|a| a as u32)),
+        stored: runs(analysis::stored(&g).ones().map(|a| a as u32)),
         stores: {
             let mut v: Vec<(u16, u32, u32)> = (g.vars.iter())
                 .filter(|(pc, _)| planned.contains(**pc as usize))
@@ -1190,16 +1197,7 @@ pub fn lift_banked(
             let mut v: Vec<ir::AddrSet> = g
                 .addr_sets
                 .iter()
-                .map(|(&(pc, st), a)| {
-                    let mut runs: Vec<(u32, u32)> = Vec::new();
-                    for &x in a {
-                        match runs.last_mut() {
-                            Some(r) if r.1 == x as u32 => r.1 += 1,
-                            _ => runs.push((x as u32, x as u32 + 1)),
-                        }
-                    }
-                    (pc, st, runs)
-                })
+                .map(|(&(pc, st), a)| (pc, st, runs(a.iter().map(|&x| x as u32))))
                 .collect();
             v.sort_unstable();
             v

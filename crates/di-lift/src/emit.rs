@@ -94,14 +94,7 @@ fn runs(vs: impl IntoIterator<Item = u32>) -> Vec<(u32, u32)> {
     let mut v: Vec<u32> = vs.into_iter().collect();
     v.sort_unstable();
     v.dedup();
-    let mut out: Vec<(u32, u32)> = Vec::new();
-    for x in v {
-        match out.last_mut() {
-            Some(r) if r.1 + 1 == x => r.1 = x,
-            _ => out.push((x, x)),
-        }
-    }
-    out
+    crate::inclusive_runs(v)
 }
 
 /// Prefix counts over a bitset of 65536 bits.
