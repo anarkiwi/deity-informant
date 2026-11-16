@@ -246,6 +246,11 @@ def _resolve(sub, v):
     return v
 
 
+def is_write(o):
+    """Whether ``o`` writes memory: a store or an ``io_write`` call."""
+    return o.name == "memref.store" or o.prop("callee") == "@io_write"
+
+
 def _add16(name, pc, x, y):
     """``(operations, low byte, high byte)`` of the 16-bit sum of the byte pairs ``x`` and
     ``y`` (``(high, low)`` values), its results named from ``name``."""
@@ -2247,8 +2252,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         part of the address set (its addresses less the index's interval) are disjoint
         intervals, so the test holds for every index the base is used with."""
         bi = self.base_index(o)
-        store = o.name == "memref.store" or o.prop("callee") == "@io_write"
-        runs = self.mod.fx(self.f.name).addr_sets.get((o.pc, store))
+        runs = self.mod.addr_set(self.f.name, o)
         if bi is None or not runs:
             return None
         ylo, yhi = self.f.iv(bi[1])
@@ -2315,8 +2319,8 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             return ("io",)
         if mem.is_code(lo, hi):
             return ("code",)
-        store = o.name == "memref.store" or o.prop("callee") == "@io_write"
-        found = self.mod.owners(self.mod.fx(self.f.name).addr_sets.get((o.pc, store)), not store)
+        store = is_write(o)
+        found = self.mod.owners(self.mod.addr_set(self.f.name, o), not store)
         if found:
             regs, spans = found
             if len(regs) + len(spans) == 1:
@@ -3298,6 +3302,13 @@ class Module:  # pylint: disable=too-many-instance-attributes
         """The instruction PCs of every copy of instruction ``pc`` of function ``name``."""
         return [q for q in self.copy_pcs.get(name, {}).get(pc, [pc]) if q is not None]
 
+    def addr_set(self, name, o, calls=True):
+        """The address set of access ``o`` of function ``name`` (a load's, else a write's,
+        :func:`is_write`; None for an I/O call unless ``calls``)."""
+        if not calls and o.name == "func.call":
+            return None
+        return self.fx(name).addr_sets.get((o.pc, is_write(o)))
+
     def fx(self, name):
         """The facts of the lift function ``name`` comes from: ``sets``, ``regs``, ``reach``,
         ``proven``, ``bounded`` and ``addr_sets``."""
@@ -3509,8 +3520,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
             return per, INDEXED
         if hi - lo < regions.BOUNDED:
             return [(lo, hi)], INDEXED
-        store = o.name == "memref.store" or o.prop("callee") == "@io_write"
-        aset = self.fx(f.name).addr_sets.get((o.pc, store))
+        aset = self.addr_set(f.name, o)
         if aset:
             return [(a, b - 1) for a, b in aset], POINTER
         hull = self.reach_of(f, o) if o.name == "memref.load" else None
@@ -3524,7 +3534,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         hull = (
             kind == POINTER
             and o.name == "memref.load"
-            and not self.fx(f.name).addr_sets.get((o.pc, False))
+            and not self.addr_set(f.name, o)
             and self.reach_of(f, o) is not None
         )
         if o.name == "func.call" or not (hull or kind == UNKNOWN):
@@ -3691,9 +3701,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 # it, through one span holding them, as the image holds the bytes between; a
                 # run of the set as wide as an access of unknown address touches its bytes.
                 store = o.name == "memref.store"
-                aset = (
-                    self.fx(f.name).addr_sets.get((o.pc, store)) if o.name != "func.call" else None
-                )
+                aset = self.addr_set(f.name, o, calls=False)
                 a0, a1 = self.mem.loaded
                 inside = all(a0 <= a < b <= a1 for a, b in aset or ())
                 if not store and not inside and not any(self.mem.code[a:b].any() for a, b in aset):
@@ -3720,7 +3728,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
                     stores.add(lo)
                 if per and len(set(per)) > 1 and hi - lo < regions.BOUNDED:
                     joined.append((lo, hi))
-                write = o.name == "memref.store" or o.prop("callee") == "@io_write"
+                write = is_write(o)
                 unknown |= write and hi - lo >= regions.BOUNDED
                 if write and hi - lo < regions.BOUNDED:
                     writes.append((lo, hi))
@@ -3819,11 +3827,9 @@ class Module:  # pylint: disable=too-many-instance-attributes
         may = np.zeros(0x10000, dtype=bool)
         for f in self.funcs:
             for o, iv, per in f.accesses():
-                if o.name != "memref.store" and o.prop("callee") != "@io_write":
+                if not is_write(o):
                     continue
-                aset = (
-                    self.fx(f.name).addr_sets.get((o.pc, True)) if o.name != "func.call" else None
-                )
+                aset = self.addr_set(f.name, o, calls=False)
                 masks.mask(aset or (), out=may)
                 if aset:
                     continue
