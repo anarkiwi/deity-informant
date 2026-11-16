@@ -240,7 +240,7 @@ pub fn emit(
             seen: em.seen(plan.pc, *i),
             ..Why::new(Kind::Entry, plan.pc)
         };
-        em.side_exit(bad, true, |em| em.deopt(k(plan.pc as u32, 2), vec![why]));
+        em.guard(bad, plan.pc, vec![why]);
         if lo == hi {
             em.emit(Opc::Copy, r1(*i), k(lo as u32, 1), NONE, 0);
         }
@@ -252,7 +252,7 @@ pub fn emit(
             ok: vec![(s as u32, s as u32)],
             ..Why::new(Kind::EntrySp, plan.pc)
         };
-        em.side_exit(bad, true, |em| em.deopt(k(plan.pc as u32, 2), vec![why]));
+        em.guard(bad, plan.pc, vec![why]);
         em.emit(Opc::Copy, r1(R::SP), k(s as u32, 1), NONE, 0);
     }
     if plan.top {
@@ -272,7 +272,7 @@ pub fn emit(
             w.at = plan.pc;
         }
         if let Some(c) = bad.into_iter().reduce(|a, b| em.op(Opc::IntOr, 1, a, b)) {
-            em.side_exit(c, true, |em| em.deopt(k(plan.pc as u32, 2), whys));
+            em.guard(c, plan.pc, whys);
         }
     }
     let roots: Vec<Key> = plan
@@ -539,11 +539,7 @@ impl<'a> Em<'a, '_> {
                     self.op(Opc::IntLess, 1, off, k(n.min(0xff), 1))
                 }
             };
-            hit = if hit.is_none() {
-                c
-            } else {
-                self.op(Opc::IntOr, 1, hit, c)
-            };
+            hit = self.or(hit, c);
         }
         hit
     }
@@ -557,17 +553,21 @@ impl<'a> Em<'a, '_> {
             let out = self.op(Opc::IntLess, 1, k(r.hi - r.lo, 2), off);
             hit = self.op(Opc::IntAnd, 1, hit, out);
         }
-        self.n.stack_guards += 1;
         let mut ok = complement(vec![(0x100, 0x1ff)], 0xffff);
         ok.extend(allow.map(|r| (r.lo, r.hi)));
         ok.sort_unstable();
+        self.stack_guard(hit, iv, pc, ok);
+    }
+    /// Deopt to `pc`, replaying the instruction, when `hit` holds for the access at an
+    /// address in `iv`, a stack guard letting the addresses `ok` pass.
+    fn stack_guard(&mut self, hit: Vn, iv: Iv, pc: u16, ok: Vec<(u32, u32)>) {
+        self.n.stack_guards += 1;
         let why = Why {
             ok,
             addr: Some(iv),
             ..Why::new(Kind::Stack, pc)
         };
-        let x = self.side_exit(hit, true, |em| em.deopt(k(pc as u32, 2), vec![why]));
-        self.f.blocks[x as usize].replay = Some(self.istart);
+        self.replay_guard(hit, pc, vec![why]);
     }
     /// A `CALL` of `fs[0]`, or with `tv` a `BRANCHIND` on `tv` to a `CALL` of each of `fs`
     /// (every target when the jump is resolved from the code), returning to `ret`.
@@ -878,14 +878,7 @@ impl<'a> Em<'a, '_> {
     fn range_guard(&mut self, addr: Vn, iv: Iv, pc: u16, r: Iv) {
         let off = self.op(Opc::IntSub, 2, addr, k(r.lo, 2));
         let hit = self.op(Opc::IntLess, 1, off, k(r.hi - r.lo + 1, 2));
-        self.n.stack_guards += 1;
-        let why = Why {
-            ok: complement(vec![(r.lo, r.hi)], 0xffff),
-            addr: Some(iv),
-            ..Why::new(Kind::Stack, pc)
-        };
-        let x = self.side_exit(hit, true, |em| em.deopt(k(pc as u32, 2), vec![why]));
-        self.f.blocks[x as usize].replay = Some(self.istart);
+        self.stack_guard(hit, iv, pc, complement(vec![(r.lo, r.hi)], 0xffff));
     }
     /// Whether an access in `iv` may reach a volatile address in the current configuration.
     fn reaches(&self, iv: Iv) -> bool {
@@ -984,6 +977,22 @@ impl<'a> Em<'a, '_> {
         let why = self.exit(whys);
         self.emit(Opc::CallOther, NONE, pc, NONE, other::DEOPT);
         self.f.blocks[self.cur].ops.last_mut().unwrap().why = why;
+    }
+    /// `x | c` (one byte), `c` alone when `x` is [`NONE`].
+    fn or(&mut self, x: Vn, c: Vn) -> Vn {
+        match x.is_none() {
+            true => c,
+            false => self.op(Opc::IntOr, 1, x, c),
+        }
+    }
+    /// Deopt to `pc`, the exit standing for `whys`, when `cond` holds (a soft exit).
+    fn guard(&mut self, cond: Vn, pc: u16, whys: Vec<Why>) -> u32 {
+        self.side_exit(cond, true, |em| em.deopt(k(pc as u32, 2), whys))
+    }
+    /// [`Self::guard`] whose exit replays the current instruction.
+    fn replay_guard(&mut self, cond: Vn, pc: u16, whys: Vec<Why>) {
+        let x = self.guard(cond, pc, whys);
+        self.f.blocks[x as usize].replay = Some(self.istart);
     }
     /// Leave through a new block when `cond` holds (the block sees the pending cycles), and
     /// continue in a fresh block. A `soft` exit's deopt state is what the continuation would
@@ -1216,11 +1225,7 @@ impl<'a> Em<'a, '_> {
             }
             let off = self.op(Opc::IntSub, 2, p, k(zl.wrapping_sub(t) & 0xffff, 2));
             let c = self.op(Opc::IntLess, 1, off, k(zh - zl + t, 2));
-            bad = if bad.is_none() {
-                c
-            } else {
-                self.op(Opc::IntOr, 1, bad, c)
-            };
+            bad = self.or(bad, c);
         }
         let why = Why {
             pair: Some(q),
@@ -1311,11 +1316,7 @@ impl<'a> Em<'a, '_> {
                 let mut hit = NONE;
                 for (i, _) in ms.iter().enumerate().filter(|(_, p)| p.is_some()) {
                     let e = self.op(Opc::IntEqual, 1, r1(KREG), k(i as u32, 1));
-                    hit = if hit.is_none() {
-                        e
-                    } else {
-                        self.op(Opc::IntOr, 1, hit, e)
-                    };
+                    hit = self.or(hit, e);
                 }
                 let run = self.new_block(pc);
                 self.emit(Opc::CBranch, NONE, hit, NONE, run);
@@ -1453,17 +1454,12 @@ impl<'a> Em<'a, '_> {
                         addr: Some(ac.addr),
                         ..Why::new(Kind::Zone, pc)
                     });
-                    zone = if zone.is_none() {
-                        c
-                    } else {
-                        self.op(Opc::IntOr, 1, zone, c)
-                    };
+                    zone = self.or(zone, c);
                     let later = (ai + 1..acc.len()).any(|j| checked(&acc[j], j));
                     if !later {
                         self.n.zone_guards += 1;
                         let whys = std::mem::take(&mut zwhy);
-                        let x = self.side_exit(zone, true, |em| em.deopt(k(pc as u32, 2), whys));
-                        self.f.blocks[x as usize].replay = Some(self.istart);
+                        self.replay_guard(zone, pc, whys);
                     }
                 }
                 if op.opc == Opc::Load && op.out.is_none() {
@@ -1662,8 +1658,7 @@ impl<'a> Em<'a, '_> {
                 seen: self.seen(pc, r as usize),
                 ..Why::new(Kind::Index, pc)
             };
-            let x = self.side_exit(out, true, |em| em.deopt(k(pc as u32, 2), vec![why]));
-            self.f.blocks[x as usize].replay = Some(self.istart);
+            self.replay_guard(out, pc, vec![why]);
         }
         let next = pc.wrapping_add(t.len as u16);
         // A data operand of bytes the host's init holds is read as a cell's is; a control
@@ -1725,13 +1720,9 @@ impl<'a> Em<'a, '_> {
                 };
                 let (b, why) = self.obj_bad(at, iv, c, "load");
                 whys.push(why);
-                bad = match bad.is_none() {
-                    true => b,
-                    false => self.op(Opc::IntOr, 1, bad, b),
-                };
+                bad = self.or(bad, b);
             }
-            let x = self.side_exit(bad, true, |em| em.deopt(k(pc as u32, 2), whys));
-            self.f.blocks[x as usize].replay = Some(self.istart);
+            self.replay_guard(bad, pc, whys);
         }
         let mut memo: FxHashMap<(Slot, u8), Vn> = FxHashMap::default();
         let mut slot = move |em: &mut Self, s: Slot, size: u8| -> Vn {
@@ -1769,8 +1760,7 @@ impl<'a> Em<'a, '_> {
                 reg: Some(R::X as u8),
                 ..Why::new(Kind::Txs, pc)
             };
-            let x = self.side_exit(bad, true, |em| em.deopt(k(pc as u32, 2), vec![why]));
-            self.f.blocks[x as usize].replay = Some(self.istart);
+            self.replay_guard(bad, pc, vec![why]);
         }
         let mut umap = FxHashMap::default();
         let stack = is_stack_op(*op);
