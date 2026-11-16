@@ -26,7 +26,7 @@
 use crate::analysis::{flow_succs, is_stack_op, Flow, Graph, Iv, Var};
 use crate::bank::BankMap;
 use crate::ptr::{completer, usable, zp_stores, StoreKey};
-use crate::vsa::Bits;
+use crate::vsa::{hull, Bits};
 use crate::walks::Mk;
 use fixedbitset::FixedBitSet;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -868,10 +868,7 @@ impl<H: Fn(Iv) -> bool> Walked<'_, H> {
                         return false;
                     };
                     for (h, x) in hulls.iter_mut().zip(r.hulls) {
-                        *h = Some(h.map_or(x, |h| Iv {
-                            lo: h.lo.min(x.lo),
-                            hi: h.hi.max(x.hi),
-                        }));
+                        *h = Some(h.map_or(x, |h| hull(h, x)));
                     }
                     true
                 })
@@ -897,10 +894,7 @@ impl<H: Fn(Iv) -> bool> Walked<'_, H> {
             })),
             None => steps.iter().try_fold(None, |h: Option<Iv>, s| {
                 let b = s.l.base?;
-                Some(Some(h.map_or(b, |h| Iv {
-                    lo: h.lo.min(b.lo),
-                    hi: h.hi.max(b.hi),
-                })))
+                Some(Some(h.map_or(b, |h| hull(h, b))))
             }),
         }
         .flatten();
@@ -1014,19 +1008,16 @@ fn loads(g: &Graph, volatile: &[(u32, u32)], bank: Option<&BankMap>) -> FxHashMa
 /// bytes, to the greatest, up to the end of the last run starting between them that ends in
 /// the bytes the host holds (`end`, exclusive; the pointer may stand past its last byte).
 fn object(g: &Graph, ls: &[&Load], end: u32) -> Option<((u16, u16), u32)> {
-    let mut hull: Option<Iv> = None;
+    let mut span: Option<Iv> = None;
     let mut m = 0;
     for l in ls {
         let b = l.base?;
-        hull = Some(hull.map_or(b, |h| Iv {
-            lo: h.lo.min(b.lo),
-            hi: h.hi.max(b.hi),
-        }));
+        span = Some(span.map_or(b, |h| hull(h, b)));
         if l.y.lo == l.y.hi {
             m = m.max(l.y.hi);
         }
     }
-    let h = hull?;
+    let h = span?;
     let i = g.runs.partition_point(|r| r.1 <= h.lo);
     g.runs.get(i).filter(|r| r.0 <= h.lo)?;
     let last = (g.runs[i..].iter())

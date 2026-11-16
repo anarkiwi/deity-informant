@@ -284,10 +284,7 @@ fn byte_bounds(g: &analysis::Graph, free: &FxHashMap<u16, Vec<u8>>) -> Vec<Optio
         if ac.addr.value().is_none() || ac.val.hi - ac.val.lo >= 0xff {
             held[ac.addr.lo as usize..=ac.addr.hi.min(0xffff) as usize].fill(None);
         } else if let Some(h) = held[ac.addr.lo as usize].as_mut() {
-            *h = Iv {
-                lo: h.lo.min(ac.val.lo),
-                hi: h.hi.max(ac.val.hi),
-            };
+            *h = vsa::hull(*h, ac.val);
         }
     }
     held
