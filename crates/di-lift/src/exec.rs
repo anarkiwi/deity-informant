@@ -160,6 +160,27 @@ impl<B: Bus> Bus for NoClock<'_, B> {
     }
 }
 
+/// `Cpu::run_clocked` on the reference interpreter over `bus`, through `bank` when given, its
+/// accesses carrying their cycle when `clocked`.
+pub fn reference<B: Bus>(
+    cpu: &mut Cpu,
+    bus: &mut B,
+    bank: Option<&BankMap>,
+    clocked: bool,
+    sp_above: i32,
+    end: u64,
+    ret: Option<u16>,
+) -> Halt {
+    match (bank, clocked) {
+        (Some(m), true) => cpu.run_clocked(&mut Banked::new(m, bus), sp_above, end, ret),
+        (Some(m), false) => {
+            cpu.run_clocked(&mut Banked::new(m, &mut NoClock(bus)), sp_above, end, ret)
+        }
+        (None, true) => cpu.run_clocked(bus, sp_above, end, ret),
+        (None, false) => cpu.run_clocked(&mut NoClock(bus), sp_above, end, ret),
+    }
+}
+
 impl Exec {
     pub fn new(p: &Program) -> Self {
         let mut slots = Vec::with_capacity(p.functions.len());
@@ -752,15 +773,8 @@ impl<'a> Runner<'a> {
 
     /// The reference interpreter from `cpu`'s PC until the entry returns.
     fn interpret<B: Bus>(&self, cpu: &mut Cpu, bus: &mut B, sp_above: i32, end: u64) -> Outcome {
-        let ret = self.ret;
-        let halt = match (&self.x.bank, self.x.cycles) {
-            (Some(m), true) => cpu.run_clocked(&mut Banked::new(m, bus), sp_above, end, ret),
-            (Some(m), false) => {
-                cpu.run_clocked(&mut Banked::new(m, &mut NoClock(bus)), sp_above, end, ret)
-            }
-            (None, true) => cpu.run_clocked(bus, sp_above, end, ret),
-            (None, false) => cpu.run_clocked(&mut NoClock(bus), sp_above, end, ret),
-        };
+        let b = self.x.bank.as_ref();
+        let halt = reference(cpu, bus, b, self.x.cycles, sp_above, end, self.ret);
         Outcome { halt, deopt: None }
     }
 }

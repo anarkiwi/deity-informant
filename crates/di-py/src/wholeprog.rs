@@ -2,7 +2,7 @@
 //! and the reference `reference_call` with the same bus.
 
 use di_lift::ir::{mem, other, Program as LProgram};
-use di_lift::{Back, Backend, BankMap, Banked, Entry, Exec, Facts, Job, Opts, Outcome, Runner};
+use di_lift::{Back, Backend, BankMap, Entry, Exec, Facts, Job, Opts, Outcome, Runner};
 use di_pcode::{reg as R, Bus, Cpu, Halt, Lead, Opc, Space, Vn, RETURN};
 use indicatif::{ProgressBar, ProgressStyle};
 use pyo3::exceptions::PyValueError;
@@ -255,36 +255,6 @@ impl Bus for PyBus<'_> {
     fn flat(&mut self) -> Option<(*mut u8, *mut u8)> {
         let ram = self.mem.as_mut_ptr();
         Some((self.dev.as_mut().map_or(ram, |d| d.as_mut_ptr()), ram))
-    }
-}
-
-/// A bus that ignores cycles.
-struct Unclocked<'a, 'b>(&'a mut PyBus<'b>);
-
-impl Bus for Unclocked<'_, '_> {
-    fn read(&mut self, a: u16) -> u8 {
-        self.0.read(a)
-    }
-    fn write(&mut self, a: u16, v: u8) {
-        self.0.write(a, v)
-    }
-    fn fetch(&mut self, a: u16) -> u8 {
-        self.0.fetch(a)
-    }
-    fn lead(&mut self, pc: u16) -> Lead {
-        self.0.lead(pc)
-    }
-    fn boundary(&mut self, cpu: &mut Cpu) -> Option<Halt> {
-        self.0.boundary(cpu)
-    }
-    fn ram_read(&mut self, a: u16) -> u8 {
-        self.0.ram_read(a)
-    }
-    fn ram_write(&mut self, a: u16, v: u8) {
-        self.0.ram_write(a, v)
-    }
-    fn flat(&mut self) -> Option<(*mut u8, *mut u8)> {
-        self.0.flat()
     }
 }
 
@@ -1479,14 +1449,7 @@ fn reference_run(
     cpu.pc = pc;
     let end = cpu.cycles.saturating_add(max_cycles).saturating_add(1);
     let above = start as i32 - 1;
-    match (bank, clocked) {
-        (Some(b), true) => cpu.run_clocked(&mut Banked::new(b, bus), above, end, ret),
-        (Some(b), false) => {
-            cpu.run_clocked(&mut Banked::new(b, &mut Unclocked(bus)), above, end, ret)
-        }
-        (None, true) => cpu.run_clocked(bus, above, end, ret),
-        (None, false) => cpu.run_clocked(&mut Unclocked(bus), above, end, ret),
-    }
+    di_lift::exec::reference(cpu, bus, bank, clocked, above, end, ret)
 }
 
 /// ``n`` :func:`reference_call` s of ``pc`` (A 0) on ``mem``, each from the registers the last
