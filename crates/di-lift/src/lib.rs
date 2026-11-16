@@ -586,6 +586,26 @@ fn aliases(g: &analysis::Graph, alias: &[(u16, u16, u16)]) -> FxHashMap<u16, (u1
         .collect()
 }
 
+/// Union-find with path halving: [`Uf::union`] roots `a`'s class at `b`'s root.
+pub(crate) struct Uf(Vec<usize>);
+
+impl Uf {
+    pub(crate) fn new(n: usize) -> Self {
+        Uf((0..n).collect())
+    }
+    pub(crate) fn find(&mut self, mut x: usize) -> usize {
+        while self.0[x] != x {
+            self.0[x] = self.0[self.0[x]];
+            x = self.0[x];
+        }
+        x
+    }
+    pub(crate) fn union(&mut self, a: usize, b: usize) {
+        let (x, y) = (self.find(a), self.find(b));
+        self.0[x] = y;
+    }
+}
+
 /// Runs `[lo, hi)` of the strictly ascending values `vs`.
 pub fn runs(vs: impl IntoIterator<Item = u32>) -> Vec<(u32, u32)> {
     let mut runs: Vec<(u32, u32)> = Vec::new();

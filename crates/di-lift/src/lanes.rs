@@ -210,14 +210,7 @@ fn webs(f: &Function, u: &Uses) -> Vec<Option<(Vec<usize>, Vec<usize>)>> {
             }
         }
     }
-    let mut up: Vec<usize> = (0..=entry).collect();
-    fn root(up: &mut [usize], mut x: usize) -> usize {
-        while up[x] != x {
-            up[x] = up[up[x]];
-            x = up[x];
-        }
-        x
-    }
+    let mut up = crate::Uf::new(entry + 1);
     let reach: Vec<Vec<usize>> = u
         .reads
         .iter()
@@ -228,18 +221,17 @@ fn webs(f: &Function, u: &Uses) -> Vec<Option<(Vec<usize>, Vec<usize>)>> {
         .collect();
     for r in &reach {
         for w in r.windows(2) {
-            let (x, y) = (root(&mut up, w[0]), root(&mut up, w[1]));
-            up[x] = y;
+            up.union(w[0], w[1]);
         }
     }
     let mut by: FxHashMap<usize, (Vec<usize>, Vec<usize>)> = FxHashMap::default();
     for (j, r) in reach.iter().enumerate() {
         if let Some(&d) = r.first() {
-            by.entry(root(&mut up, d)).or_default().1.push(j);
+            by.entry(up.find(d)).or_default().1.push(j);
         }
     }
     for i in 0..=entry {
-        let x = root(&mut up, i);
+        let x = up.find(i);
         if let Some(w) = by.get_mut(&x) {
             w.0.push(i);
         }

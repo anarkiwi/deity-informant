@@ -87,15 +87,6 @@ enum Def {
     },
 }
 
-/// Union-find over definitions.
-fn find(up: &mut [usize], mut i: usize) -> usize {
-    while up[i] != i {
-        up[i] = up[up[i]];
-        i = up[i];
-    }
-    i
-}
-
 /// The control flow the definitions reach along: every flow edge, and from each return whose
 /// targets are not computed to every return site.
 pub(crate) struct Cfg<'a> {
@@ -301,7 +292,7 @@ pub fn objects(
             Some(i)
         };
         let n = defs.len();
-        let mut up: Vec<usize> = (0..n).collect();
+        let mut up = crate::Uf::new(n);
         let mut by: Vec<(usize, &Load)> = Vec::new();
         for l in reads {
             let Some(i) = seen(l.pc) else {
@@ -312,19 +303,16 @@ pub fn objects(
                 continue;
             };
             for d in it {
-                let (a, b) = (find(&mut up, f), find(&mut up, d));
-                up[a] = b;
+                up.union(f, d);
             }
             by.push((f, l));
         }
         let mut comps: FxHashMap<usize, (Vec<usize>, Vec<&Load>)> = FxHashMap::default();
         for d in 0..n {
-            let r = find(&mut up, d);
-            comps.entry(r).or_default().0.push(d);
+            comps.entry(up.find(d)).or_default().0.push(d);
         }
         for &(f, l) in &by {
-            let r = find(&mut up, f);
-            comps.entry(r).or_default().1.push(l);
+            comps.entry(up.find(f)).or_default().1.push(l);
         }
         let mut keys: Vec<usize> = comps.keys().copied().collect();
         keys.sort_unstable();
