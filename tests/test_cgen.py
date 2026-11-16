@@ -313,6 +313,46 @@ entry:  LDX idx
 idx:    .byte 0
 end:
 """
+STRIDED = """
+entry:  LDX #14
+loop:   LDA $3000,X
+        CLC
+        ADC $3001,X
+        STA $3001,X
+        STA $C000,X
+        LDA $3140,X
+        EOR #$5A
+        STA $3140,X
+        TXA
+        SEC
+        SBC #7
+        TAX
+        BPL loop
+        RTS
+end:
+"""
+STRIDED_CALLED = """
+entry:  LDX #0
+        JSR rec
+        LDX #7
+        JSR rec
+        LDX #14
+        JSR rec
+        RTS
+rec:    LDA $3000,X
+        CLC
+        ADC #3
+        STA $3000,X
+        STA $C000,X
+        LDA $3001,X
+        ADC $3000,X
+        STA $3001,X
+        RTS
+end:
+"""
+STRIDED_ALIASED = STRIDED.replace(
+    "entry:  LDX #14", "entry:  TAY\n        LDA $3000,Y\n        STA $C010\n        LDX #14"
+)
 SMCOP = """
 entry:  AND #$01
         BEQ add
@@ -4710,3 +4750,34 @@ def test_patched_index_cell_bounded_by_its_stores(prefix, tmp_path):
     assert held.get(tab) == 4, (hex(tab), held)
     calls = [("init", 0), ("play", 0), ("play", 1), ("play", 3)]
     play(tmp_path, c, h, img, labels, calls)
+
+
+def test_strided_records_are_struct_fields(prefix, tmp_path):
+    # X steps 14, 7, 0: $3000/$3001 are two fields of one array of three 7-byte records,
+    # $3140 a field of another; each is an array over the records, indexed by the element.
+    c, h, info = check(prefix, tmp_path, STRIDED, entry_calls([0], 6))
+    body = body_of(c, "entry")
+    assert "rd(" not in body and "R0[" not in body
+    assert {"V0_f00[0]", "V0_f01[2]", "V1_f00[1]"} <= set(info["state"]["vars"])
+    assert info["state"]["vars"]["V0_f01[2]"] == 0x300F
+    assert "V0_f00_INIT" in h
+
+
+def test_strided_records_indexed_by_a_parameter(prefix, tmp_path):
+    # A routine called with X = 0, 7, 14 indexes the records by X / 7.
+    c, _, info = check(prefix, tmp_path, STRIDED_CALLED, entry_calls([0], 6))
+    assert "rd(" not in c and "/ 7]" in c
+    img, labels, loaded = assemble(STRIDED_CALLED)
+    p, _ = cgen.lift(img, [(labels["entry"], "entry")], [W.IO], loaded=loaded)
+    rec = labels["rec"]
+    assert p.addr_sets[rec, False] == [(0x3000, 0x3001), (0x3007, 0x3008), (0x300E, 0x300F)]
+    assert info["state"]["vars"]["V0_f01[1]"] == 0x3008
+
+
+def test_strided_records_aliased_by_an_interval_stay_memory(prefix, tmp_path):
+    # A load at $3000 plus the entry's A may reach any record byte at $3000: those stay bytes
+    # of a region, the records at $3140 no other access reaches are fields.
+    c, _, info = check(prefix, tmp_path, STRIDED_ALIASED, entry_calls(range(16), 3))
+    held = info["state"]["vars"].values()
+    assert not [a for a in held if 0x3000 <= a < 0x3010] and 0x3147 in held
+    assert "R0[" in body_of(c, "entry")

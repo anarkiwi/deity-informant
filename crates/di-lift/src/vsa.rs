@@ -1748,6 +1748,9 @@ pub struct Analysis {
     pub cellvals: FxHashMap<u16, Option<std::collections::BTreeSet<u8>>>,
     /// Address sets of loads through pointers, by `(pc, opcode, access index)`.
     pub loads: FxHashMap<(u16, u8, usize), Vec<u16>>,
+    /// Address sets of loads from an operand plus bounded index registers
+    /// ([`crate::dispatch::indexed_loads`]).
+    pub indexed: FxHashMap<(u16, u8, usize), Vec<u16>>,
     /// Address hulls of loads through pointers and cell operands, and of their bases (the
     /// index registers zero) ([`reach`]), while table loads stay inside their extents and
     /// on every run.
@@ -2828,6 +2831,7 @@ pub fn analyze(
     ran.intersect_with(&bytes);
     let objs = crate::dispatch::Objects::new(&code, vars, &merged, &ran, loaded, &sets.states);
     let mut stores = crate::dispatch::stores(&code, vars, &sets);
+    let indexed = crate::dispatch::indexed_loads(&code, vars, &sets);
     let (reach, proven, regs, runs) = if given.reach {
         let pass = Pass {
             code: &code,
@@ -2992,6 +2996,7 @@ pub fn analyze(
         cellvals,
         reads,
         loads,
+        indexed,
         reach,
         proven,
         regs,

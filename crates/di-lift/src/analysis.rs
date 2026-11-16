@@ -1276,7 +1276,7 @@ impl Fixpoint<'_> {
                     dispatch,
                     addr_sets: {
                         let mut m: FxHashMap<(u16, bool), BTreeSet<u16>> = FxHashMap::default();
-                        for ((pc, _, _), a) in &an.loads {
+                        for ((pc, _, _), a) in an.loads.iter().chain(&an.indexed) {
                             m.entry((*pc, false)).or_default().extend(a);
                         }
                         for s in &an.stores {

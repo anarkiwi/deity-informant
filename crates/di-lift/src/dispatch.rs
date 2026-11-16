@@ -688,6 +688,59 @@ fn var_stores(
         .collect()
 }
 
+/// The address sets of the loads from an operand plus index registers whose index sets are
+/// bounded, by `(pc, opcode, access index)`: the address for each value of their index
+/// sets, each evaluated exactly (a load through a pointer or a cell operand has none).
+pub(crate) fn indexed_loads(
+    code: &Code,
+    vars: &FxHashMap<u16, Vec<Var>>,
+    sets: &Sets,
+) -> FxHashMap<(u16, u8, usize), Vec<u16>> {
+    let mut out = FxHashMap::default();
+    let mut acc = Vec::new();
+    for (&pc, vs) in vars {
+        let base = sets.merged.get(&pc).map_or(TOP_ENV, |s| s.env);
+        for v in vs {
+            let t = Template::of(v.op);
+            let b = operand_bytes(code.img, code.cells, pc, t.len);
+            let loads = |a: &Access| !a.store && !a.dummy && a.ptr.is_none();
+            if b[..t.len as usize - 1].iter().any(Option::is_none) || !v.acc.iter().any(loads) {
+                continue;
+            }
+            let idx: Option<Vec<(usize, Vec<u8>)>> = [reg::X, reg::Y]
+                .into_iter()
+                .filter(|&r| reads(t, r) && moves(t, b, r))
+                .map(|r| sets.of(pc, r).map(|s| (r, s)))
+                .collect();
+            let Some(idx) = idx.filter(|i| !i.is_empty() && i.iter().all(|e| !e.1.is_empty()))
+            else {
+                continue;
+            };
+            let mut found: FxHashMap<usize, BTreeSet<u16>> = FxHashMap::default();
+            let n: usize = idx.iter().map(|e| e.1.len()).product();
+            for k in 0..n {
+                let mut env = base;
+                let mut q = k;
+                for (r, xs) in &idx {
+                    env[*r] = Iv::exact(xs[q % xs.len()] as u32);
+                    q /= xs.len();
+                }
+                acc.clear();
+                absint(t.ops(), b, &mut env, &mut acc);
+                for (i, a) in acc.iter().enumerate().filter(|a| loads(a.1)) {
+                    if let Some(x) = a.addr.value() {
+                        found.entry(i).or_default().insert(x as u16);
+                    }
+                }
+            }
+            for (ai, s) in found.into_iter().filter(|e| e.1.len() > 1) {
+                out.insert((pc, v.op, ai), s.into_iter().collect());
+            }
+        }
+    }
+    out
+}
+
 /// The values of the cells ([`cell_values`]) with each store whose address is unknown only
 /// through its own operand cells taken at their values: the stores' addresses and the cells'
 /// values are found together, from none of those stores writing up to their fixpoint (both

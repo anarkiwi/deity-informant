@@ -583,6 +583,8 @@ the facts, so a proof holds on every execution that stays in lifted code.
   are data (`Program.written`), and the reached instructions it overwrites are cells. A load
   through such a pointer gets its set the same way (when its tables need no index guard: it
   is a fact the lift does not rely on), and its interval is the set's hull.
+  A load from an operand plus index registers whose index sets are bounded has the address
+  for each of their values likewise.
   `Program.addr_sets` gives these sets per instruction and kind (`{(pc, store): [(lo, hi)]}`).
   Discovery's rounds take each store's address set as what the store writes: a store with a
   set stops tracking only the bytes the set holds, so a relocator's store of an operand's low

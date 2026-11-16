@@ -31,6 +31,7 @@ BINOP = {
     "arith.addi": ("+", 12),
     "arith.subi": ("-", 12),
     "arith.muli": ("*", 13),
+    "arith.divui": ("/", 13),
     "arith.andi": ("&", 8),
     "arith.ori": ("|", 6),
     "arith.xori": ("^", 7),
@@ -173,6 +174,7 @@ NUMPY = {
     "arith.addi": operator.add,
     "arith.subi": operator.sub,
     "arith.muli": operator.mul,
+    "arith.divui": operator.floordiv,
     "arith.andi": operator.and_,
     "arith.ori": operator.or_,
     "arith.xori": operator.xor,
@@ -832,6 +834,9 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         elif o.name == "arith.muli":
             a, b = self.iv(o.args[0]), self.iv(o.args[1])
             r = (a[0] * b[0], a[1] * b[1]) if a[1] * b[1] <= top else full
+        elif o.name == "arith.divui":
+            a, b = self.iv(o.args[0]), self.iv(o.args[1])
+            r = (a[0] // b[1], a[1] // b[0]) if b[0] else full
         elif o.name in ("arith.ori", "arith.xori"):
             a, b = sorted((self.iv(o.args[0]), self.iv(o.args[1])), key=lambda x: x[0] != x[1])
             c = a[0]
@@ -1083,6 +1088,59 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         vals = self.stepped(w)[0]
         top = (1 << self.width(self.address(o))) - 1
         return ((c + ((vals + off) & 0xFF)) & top).tolist(), w, off
+
+    def strided_access(self, o):
+        """``(addresses, w, base, k)`` of load or store ``o`` at a constant ``c`` plus a byte
+        ``w`` whose address set from the lift is ``n >= 2`` addresses at a stride ``k >= 2``
+        from ``c + base``, none wrapping past ``c + 255``: the records of an object ``w``
+        indexes, element ``(w - base) / k``; else None."""
+        if o.name not in ("memref.load", "memref.store") or o.pc in self.mod.copy_pcs.get(
+            self.name, {}
+        ):
+            return None
+        runs = self.mod.fx(self.name).addr_sets.get((o.pc, o.name == "memref.store"))
+        addrs = sorted({a for lo, hi in runs or () for a in range(lo, hi)})
+        steps = set(np.diff(addrs).tolist())
+        if len(addrs) < 2 or len(steps) != 1 or min(steps) < 2:
+            return None
+        c, rest = self.split(self.address(o))
+        d = self.defs.get(rest)
+        if rest is None or d is None or d.name != "arith.extui" or self.width(d.args[0]) != 8:
+            return None
+        base, top = addrs[0] - c, (1 << self.width(self.address(o))) - 1
+        if not 0 <= base <= addrs[-1] - c <= 0xFF or addrs[-1] > top:
+            return None
+        return addrs, d.args[0], base, min(steps)
+
+    def divided(self, o, w, base, k, first):
+        """The element number ``first + (w - base) / k`` (:meth:`strided_access`), computed
+        just before access ``o``."""
+        new = {}
+        consts = [
+            self.kop(new, "arith.constant", [], "i8", None, f"value = {x} : i8", prefix="%dc")
+            for x in (base, k, first)
+        ]
+        self.prepend(new)
+        blk, at = self.where[id(o)]
+        made, x = [], w
+        for name, c, used in (
+            ("arith.subi", consts[0], base),
+            ("arith.divui", consts[1], k),
+            ("arith.addi", consts[2], first),
+        ):
+            if name == "arith.divui" or used:
+                res = f"%dv{len(self.defs)}.{len(made)}"
+                y = Op(name, [res], [x, c], "", [], (("i8", "i8"), ("i8",)), parent=blk, pc=o.pc)
+                made.append(y)
+                self.defs[res], self.types[res] = y, "i8"
+                for a in (x, c):
+                    self.uses[a] = self.uses.get(a, 0) + 1
+                    self.users.setdefault(a, []).append(y)
+                x = res
+        blk.ops[at:at] = made
+        for j, y in enumerate(blk.ops):
+            self.where[id(y)] = (blk, j)
+        return x
 
     def evaluate(self, v, env, memo):  # pylint: disable=too-many-branches
         """The values of ``v`` (an array or scalar) for the block arguments ``env``."""
@@ -3070,17 +3128,20 @@ class Module:  # pylint: disable=too-many-instance-attributes
         seen = np.zeros(0x10000, dtype=bool)
         for lo, hi in self.held_runs:
             why[lo : hi + 1] = INIT
+        cells = self.objects()
         for f in self.funcs:
             for o, (lo, hi), per in f.accesses():
                 if id(o) in f.dropped or o.name == "func.call" and self.mem.is_volatile(lo, hi):
                     continue
                 one = [x for x, y in per if x == y] if per else [lo] if lo == hi else []
                 if o.name != "func.call" and one and len(one) == len(per or one):
-                    if self.cells[one].all():
+                    if cells[one].all():
                         found.append((f, o, one, None))
                         continue
                 step = None if per or o.name == "func.call" else f.stepped_access(o)
-                if step is not None and self.cells[step[0]].all():
+                if step is None and not per and (sa := f.strided_access(o)) is not None:
+                    step = (sa[0], ("div", *sa[1:]))
+                if step is not None and cells[step[0]].all():
                     found.append((f, o, step[0], step[1]))
                     continue
                 if step is not None:
@@ -3098,7 +3159,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
                     sel = why[x : y + 1]
                     sel[sel == 0] = kind
         stepped = [a for _, _, a, v in found if v is not None]
-        st = classify(self.cells, [a for _, _, a, _ in found], why, stepped)
+        st = classify(cells, [a for _, _, a, _ in found], why, stepped)
         self.state = st = _read_only(st, found, seen)
         self.var_at = self.var_cases()
         made, gone = {}, set(st.unread)
@@ -3114,7 +3175,9 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 continue
             s, d, els = place
             key = (f.name, v, int(els[0])) if v is not None else (f.name, tuple(els.tolist()))
-            if key in made:
+            if isinstance(v, tuple):
+                e = f.divided(o, *v[1:], int(els[0]))
+            elif key in made:
                 e = made[key]
             elif v is not None:
                 e = f.plus(f.element(v), int(els[0]))
@@ -3127,6 +3190,26 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 f.prepend(new)
             made[key] = e
             f.promoted[id(o)] = ("v", s, d, e)
+
+    def objects(self):
+        """The promotion candidates: the code cells and the other variable bytes of the code
+        span (:attr:`cells`), and the data bytes outside it (not volatile, the stack page or a
+        table) an access reaches at a stride of at least 2 for each value of its index
+        (:meth:`CFunc.stepped_access`, :meth:`CFunc.strided_access`): records of objects."""
+        out, (lo, hi) = self.cells.copy(), self.mem.code_span
+        for f in self.funcs:
+            for o, _, per in f.accesses():
+                if per or o.name == "func.call" or id(o) in f.dropped:
+                    continue
+                step = f.stepped_access(o) or f.strided_access(o)
+                addrs = np.array(sorted(set(step[0])) if step else [], dtype=np.int64)
+                if len(addrs) < 2 or np.diff(addrs).min() < 2:
+                    continue
+                addrs = addrs[(addrs < lo) | (addrs >= hi)]
+                keep = ~self.mem.vol[addrs] & ~self.mem.constant[addrs]
+                keep &= (addrs < 0x100) | (addrs >= 0x200)
+                out[addrs[keep]] = True
+        return out
 
     def var_name(self, a):
         """The name of scalar ``a``: by its offset from the code span's origin (or the loaded
