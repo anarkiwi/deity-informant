@@ -410,6 +410,16 @@ def _dispatch(
 SONG = "(uint8_t)(a - CGEN_SONG0)"
 
 
+def _song_trap(k):
+    """The init entry's trap ``k`` on a song outside the ``.h``'s range."""
+    return [f"if ({SONG} >= CGEN_SONGS) {{", f"trap({k});", "}"]
+
+
+def _songs_h(state):
+    """The ``.h``'s range of init's songs (those of :class:`postinit.Init` ``state``)."""
+    return [f"#define CGEN_SONG0 0x{state.songs[0]:02X}", f"#define CGEN_SONGS {len(state.songs)}"]
+
+
 def _init_c(name, k):
     """The init entry ``name``: it traps (``k``) on a song outside the ``.h``'s range, then
     replays init's volatile writes and makes the song's copies into the variables, from the
@@ -433,9 +443,7 @@ def _init_c(name, k):
         "static const uint16_t CP_FROM[CGEN_SONGS + 1] = {CGEN_CP_FROM};",
         "#endif",
         f"void {name}(uint8_t a) {{",
-        f"if ({SONG} >= CGEN_SONGS) {{",
-        f"trap({k});",
-        "}",
+        *_song_trap(k),
         "#if CGEN_IO_N",
         "#if CGEN_IO_ROWS > 1",
         f"uint8_t r = IO_ROW[{SONG}];",
@@ -987,7 +995,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         mod.after = frozenset(names | {name for _, name in p.entries[:-1]})
         k = song["k"] = traps.setdefault(("deopt", pc), len(traps))
         mod.traps.add(k)
-        mod.guards[name] = [f"if ({SONG} >= CGEN_SONGS) {{", f"trap({k});", "}"]
+        mod.guards[name] = _song_trap(k)
     elif p.init is not None:
         mod.traps.add(traps.setdefault(("deopt", p.init[0][0]), len(traps)))
         mod.held_runs = sorted(
@@ -1027,23 +1035,12 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
             f"return o < C{j}_LEN ? C{j}[o] : oob_rd(p + y);",
             "}",
         ]
-    sets = []
-    if p.lifted is not None:
-        state = p.init[1]
-        sets = [
-            f"#define CGEN_SONG0 0x{state.songs[0]:02X}",
-            f"#define CGEN_SONGS {len(state.songs)}",
-        ]
-    elif p.init is not None:
+    sets = [] if p.init is None else _songs_h(p.init[1])
+    if p.init is not None and p.lifted is None:
         (pc, name), state = p.init
-        sets, named = _copies_h(mem, plan, mod.var_ref)
+        copies, named = _copies_h(mem, plan, mod.var_ref)
         regions = sorted(set(regions) | named)
-        sets = [
-            f"#define CGEN_SONG0 0x{state.songs[0]:02X}",
-            f"#define CGEN_SONGS {len(state.songs)}",
-            *_io_h(state),
-            *sets,
-        ]
+        sets += [*_io_h(state), *copies]
         c += _init_c(name, traps[("deopt", pc)])
     c += fns
     c_text = clang_format("\n".join(c) + "\n")
