@@ -535,12 +535,19 @@ traps before a load past it. A store (or read-modify-write) to a constant base p
 index, whose table starts inside `loaded`, is guarded alike where some column reaches past
 `loaded` into bytes no store with an address set writes: it traps before a store there, so its
 interval, and its region, ends with `loaded`. A load past `loaded` reads out of bounds
-(`oob_rd`) and a store into code past its array writes out of bounds, as below. Such a jump is a switch over code addresses (`case CODE_ORG +
-0x23:`) whose last target is the default, with no trap; one whose low and high target bytes
-are a table pair indexed by a register still holding the index (`LDA lo,X; STA op+1; LDA hi,X;
-STA op+2; JMP op`) is a switch over the index's values (`case 3:`), the same for every origin; a `JSR` through cells calls one
-function whose body is the switch over its targets (the handlers its arms), handed the
-operand's low byte, so the high byte relocates in it (`switch (v2 | CODE_ORG)`). `info["jumps"]` lists them (`{pc: [target, ...]}`). Programs with the same
+(`oob_rd`) and a store into code past its array writes out of bounds, as below. A transfer whose target bytes are each a constant or a column of one
+table indexed by one value (`LDA lo,X; STA op+1; LDA hi,X; STA op+2; JMP op`: a `JMP (ind)`
+pointer, an address pushed for `RTS`/`RTI`, a `JMP`/`JSR` operand or a branch offset written
+so, the index itself possibly a byte read from data) is a switch over that value (`case 3:`,
+the values selecting one target sharing its arm), the same for every origin: the register
+holding it; where the register is written before the transfer, the byte of data it was read
+from (read again, as no store may have written it), else a variable holding its value from
+before that write (one such variable per program: when transfers need more, none carries). Any other, as one whose index paths hold in unlike ways or a target computed by
+arithmetic, is a switch over code addresses (`case CODE_ORG + 0x23:`); either has its last
+target as the default, with no trap. A `JSR` through cells calls one function whose body is
+the switch over its targets (the handlers its arms): over the index when every `JSR` it serves
+selects by one, else over the operand it is handed, whose high byte relocates in it
+(`switch (v2 | CODE_ORG)`). `info["jumps"]` lists them (`{pc: [target, ...]}`). Programs with the same
 code and tables give the same `.c`; a table a store with known addresses may write leaves the
 transfer unresolved. An unresolved one becomes a switch whose default traps; `facts` supplies
 its targets: `jump_facts` keeps only the edges leaving those instructions, and the `.c` then
@@ -582,7 +589,9 @@ provenance (instruction starts of
 the lift), short-circuit conditions, no structuring variables, the structuring (a shared tail kept in its function,
 multi-exit and two-entry loops, switches from compare chains and jump tables, kept callees' parameters, wrapping
 addresses), computed jumps and calls through operands written from tables (in the same call
-or an earlier one), an index past a split table's extent trapping, a split table at the end of the program stored
+or an earlier one), computed transfers switching on their index (carried past its register's
+write, pushed, a branch offset, read from data) and on the address where no one index
+selects, an index past a split table's extent trapping, a split table at the end of the program stored
 at an unbounded song byte held in arrays ending with the program and trapping past it, a cell reload forwarded from the register stored to it past such a guarded store, an opcode restored through
 the stack, a pointer into zero page with no stack check, a jump's or-ed high byte under
 relocation, determinism (repeated, with the blocks shuffled and under other hash seeds), play

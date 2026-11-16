@@ -168,7 +168,7 @@ pub struct Inst {
     pub calc: FxHashMap<u16, Vec<(u16, Key)>>,
     /// Per computed jump every copy selects by one index register: the register and, per
     /// index value, the node it enters.
-    pub sel: FxHashMap<u16, (u8, Vec<(u16, Key)>)>,
+    pub sel: FxHashMap<u16, (crate::dispatch::Index, Vec<(u16, Key)>)>,
 }
 
 /// The classes of copies being lifted as instance functions, and the class and copy index of
@@ -1215,7 +1215,7 @@ fn copy_sel<'a>(
     g: &Graph,
     pcs: impl Iterator<Item = &'a u16>,
     succ: &[Key],
-) -> Option<(u8, Vec<(u16, Key)>)> {
+) -> Option<(crate::dispatch::Index, Vec<(u16, Key)>)> {
     let mut reg = None;
     let mut out = Vec::new();
     for q in pcs {

@@ -2376,15 +2376,13 @@ def test_computed_jumps_from_the_code(prefix, tmp_path, name):
     assert len(targets) == (2 if name == "PUSHRTS" else 4)
     assert all(key[0] != "ind" for key in info["traps"].values())
     assert name == "PUSHRTS" or not info["traps"]
-    org = info["code_span"][0]
-    if name in ("LOHI", "JMPIND"):
-        # Target bytes from one table pair indexed by the register still holding the index:
-        # a switch on the index's values.
+    # Target bytes from one table pair indexed by the register still holding the index: a
+    # switch on the index's values (two targets: a test of it).
+    assert "CODE_ORG" not in c
+    if name != "PUSHRTS":
         step = 2 if name == "JMPIND" else 1
-        assert "case CODE_ORG" not in c and re.search(r"switch \(v\d+\)", c)
+        assert re.search(r"switch \(v\d+\)", c)
         assert all(f"case {i * step}:" in c for i in range(3))
-    else:
-        assert all(f"CODE_ORG + 0x{t - org:X}" in c for t in targets[:-1])
 
 
 def test_unresolved_jump_traps(prefix, tmp_path):
@@ -2440,10 +2438,11 @@ def test_pointer_stores_from_a_terminated_table_make_cells(prefix, tmp_path):
 
 
 def test_branch_offset_written_from_a_table(prefix, tmp_path):
-    # Offsets 0, 5 and 10 enter one straight-line run at three points: a switch whose cases
-    # fall through into the next.
+    # Offsets 0, 5 and 10 (and 10 again) enter one straight-line run at three points: a switch
+    # on the offset's index whose cases fall through into the next.
     c, _, info = check(prefix, tmp_path, BRTAB, entry_calls([0, 1, 2, 3, 1]))
-    assert c.count("case CODE_ORG") == 2 and "break;" not in c
+    assert re.findall(r"case (\w+):", c) == ["0", "1"] and "default:" in c
+    assert "CODE_ORG" not in c and "break;" not in c
     _, labels, _ = assemble(BRTAB)
     br = labels["br"]
     assert info["jumps"] == {br: [br + 2, br + 7, br + 12]} and not info["traps"]
@@ -2592,7 +2591,9 @@ def test_unbounded_table_store_inside_the_program_is_unguarded(prefix, tmp_path)
 
 
 def test_or_ed_high_byte_relocates(prefix, tmp_path):
-    src = OPJMP.replace("        LDA thi,Y\n        STA site+2\n", "")
+    src = OPJMP.replace("        LDA thi,Y\n        STA site+2\n", "").replace(
+        "site:   JMP j0", "        CPY #2\n        BCC site\n        LDY #0\nsite:   JMP j0"
+    )
     outs = []
     for org in (0x1000, 0x2300):
         img, labels, loaded = assemble(src, org)
@@ -2918,7 +2919,7 @@ def test_cli_writes_c_and_header(prefix, tmp_path):
         [str(tmp_path / "prog.bin"), *args, "--facts", str(tmp_path / "facts.json"), "-o", str(out)]
     )
     c, h = out.read_text(), (tmp_path / "prog.h").read_text()
-    assert '#include "prog.h"' in c and "case CODE_ORG + " in c
+    assert '#include "prog.h"' in c and "switch (" in c
     play(tmp_path, c, h, img, labels, entry_calls(range(4)))
 
 
@@ -3007,17 +3008,186 @@ def test_switch_from_a_jump_table(prefix, tmp_path):
 @pytest.mark.parametrize(
     "edit",
     [
-        ("site:   JMP j0", "        LDY #0\nsite:   JMP j0"),
         ("        LDA thi,Y", "        INY\n        LDA thi,Y"),
+        ("site:   JMP j0", "        CPY #2\n        BCC site\n        LDY #0\nsite:   JMP j0"),
     ],
-    ids=["index-overwritten", "columns-apart"],
+    ids=["columns-apart", "index-joined"],
 )
-def test_switch_on_the_target_without_a_live_index(prefix, tmp_path, edit):
-    """A jump whose target bytes no live register indexes as one table switches on the
-    target address."""
+def test_switch_on_the_target_without_one_index(prefix, tmp_path, edit):
+    """A jump whose target bytes are not indexed by one value (two columns read at unlike
+    values, or an index held on one path and overwritten on another) switches on the target
+    address."""
     c, _, info = check(prefix, tmp_path, OPJMP.replace(*edit), entry_calls([0, 1, 2, 2, 0]))
     assert "case CODE_ORG" in c and not re.search(r"case \d+:", c)
     assert len(next(iter(info["jumps"].values()))) >= 3
+
+
+LOHIX = """
+entry:  AND #$03
+        TAX
+        LDA tlo,X
+        STA ptr
+        LDA thi,X
+        STA ptr+1
+        LDX #$00
+        JMP (ptr)
+j0:     STX $C050
+        RTS
+j1:     LDA #$11
+        STA $C051
+        RTS
+j2:     LDA $C052
+        STA $C053
+        RTS
+j3:     RTS
+tlo:    .byte lo(j0),lo(j1),lo(j2),lo(j3)
+thi:    .byte hi(j0),hi(j1),hi(j2),hi(j3)
+ptr:    .byte 0,0
+end:
+"""
+
+OPJSR = """
+entry:  AND #$03
+        TAY
+        LDA tlo,Y
+        STA site+1
+        LDA thi,Y
+        STA site+2
+site:   JSR j0
+        STA $C000
+        RTS
+j0:     LDA #$10
+        RTS
+j1:     LDA $C001
+        RTS
+j2:     STY $C002
+        RTS
+j3:     LDA #$13
+        RTS
+tlo:    .byte lo(j0),lo(j1),lo(j2),lo(j3)
+thi:    .byte hi(j0),hi(j1),hi(j2),hi(j3)
+end:
+"""
+
+OPJSRS = """
+entry:  AND #$03
+        TAY
+        LDA tlo,Y
+        STA s1+1
+        STA s2+1
+        LDA thi,Y
+        STA s1+2
+        STA s2+2
+s1:     JSR h0
+        STA $C000
+s2:     JSR h0
+        STA $C001
+        RTS
+h0:     LDA #$10
+        JMP tail
+h1:     LDA #$11
+tail:   STA $C002
+        RTS
+h2:     LDA #$12
+        RTS
+h3:     LDA $C003
+        RTS
+tlo:    .byte lo(h0),lo(h1),lo(h2),lo(h3)
+thi:    .byte hi(h0),hi(h1),hi(h2),hi(h3)
+end:
+"""
+
+TWOLEVEL = """
+entry:  AND #$07
+        TAX
+        LDY seq,X
+        LDA tlo,Y
+        STA ptr
+        LDA thi,Y
+        STA ptr+1
+        LDY #$00
+        JMP (ptr)
+j0:     STX $C050
+        RTS
+j1:     STX $C051
+        RTS
+j2:     STX $C052
+        RTS
+seq:    .byte 2,0,1,1,0,2,2,1
+tlo:    .byte lo(j0),lo(j1),lo(j2)
+thi:    .byte hi(j0),hi(j1),hi(j2)
+ptr:    .byte 0,0
+end:
+"""
+
+# The index register written by one of two instructions on the way to the jump.
+TWO_WRITES = (
+    "        LDY #$00\n",
+    "        CPX #$04\n        BCC low\n        LDY #$01\n        JMP go\nlow:    LDY #$00\ngo:\n",
+)
+
+BRCALC = """
+entry:  AND #$03
+        ASL A
+        ASL A
+        STA br+1
+        CLC
+br:     BCC br+2
+        STA $C000
+        RTS
+        STA $C001
+        RTS
+        STA $C002
+        RTS
+        STA $C003
+        RTS
+end:
+"""
+
+
+@pytest.mark.parametrize(
+    "src,cases",
+    [
+        (LOHIX, [0, 1, 2]),
+        (W.JUMPTAB + "end:\n", [0, 1, 2]),
+        (OPJSR, [0, 1, 2]),
+        (BRTAB, [0, 1]),
+        (TWOLEVEL, [0, 1]),
+        (TWOLEVEL.replace(*TWO_WRITES), [0, 1]),
+        (OPJSRS, [0, 1, 2]),
+    ],
+    ids=[
+        "carried",
+        "pushed",
+        "operand-jsr",
+        "branch-offset",
+        "two-level",
+        "two-level-written-apart",
+        "dispatch-function",
+    ],
+)
+def test_computed_transfer_switches_on_its_index(prefix, tmp_path, src, cases):
+    """A transfer whose target bytes are columns of one table indexed by one value switches
+    on that value: a register holding it, or a variable carrying it past the register's
+    overwrite (an index read from data included), the same for every origin."""
+    outs = []
+    for org in (0x1000, 0x2345):
+        img, labels, loaded = assemble(src, org)
+        c, h, info = translate(prefix, img, labels, loaded)
+        assert len(set(map(tuple, info["jumps"].values()))) == 1 and not info["traps"]
+        (tmp_path / str(org)).mkdir()
+        play(tmp_path / str(org), c, h, img, labels, entry_calls(range(8), 2))
+        outs.append(c)
+    assert outs[0] == outs[1] and "CODE_ORG" not in outs[0]
+    assert [int(k) for k in re.findall(r"case (\w+):", outs[0])] == cases
+
+
+def test_target_by_arithmetic_switches_on_the_address(prefix, tmp_path):
+    """A branch offset computed from the index rather than read from a table switches on the
+    target address."""
+    c, _, info = check(prefix, tmp_path, BRCALC, entry_calls(range(4), 2))
+    [targets] = info["jumps"].values()
+    assert len(targets) == 4 and c.count("case CODE_ORG + ") == 3
 
 
 def test_callee_called_twice_keeps_its_used_parameters(prefix, tmp_path):

@@ -7,10 +7,12 @@ use crate::analysis::{
     is_stack_op, operand_bytes, page1_check, Access, Check, Entry, Graph, Iv, Tg,
 };
 use crate::bank::{Back, BankMap};
+use crate::dispatch::Index;
 use crate::func::{Arm, Ctl, Exit, Key, Plan, H};
 use crate::ir::{
-    cy, k, mem, other, r1, reg, tmp, Block, Function, LOp, E, KREG, NREG, OPHI, OPLO, XREG,
+    cy, k, mem, other, r1, reg, tmp, Block, Function, LOp, E, IREG, KREG, NREG, OPHI, OPLO, XREG,
 };
+use crate::vsa::NOREG;
 use di_pcode::{reg as R, CtrlKind, Op, Opc, PenKind, Slot, Space, Template, Vn};
 use fixedbitset::FixedBitSet;
 use rustc_hash::FxHashMap;
@@ -506,11 +508,14 @@ impl<'a> Em<'a, '_> {
             Some(tv) => {
                 let pc = self.f.blocks[self.cur].pc;
                 let t: Vec<(u16, u32)> = fs.iter().map(|&f| (f, self.new_block(pc))).collect();
-                self.f.tables.push(t.clone());
-                let i = self.f.tables.len() - 1;
-                self.f.closed.grow(i + 1);
-                self.f.closed.set(i, self.sh.g.stat.contains_key(&pc));
-                self.emit(Opc::BranchInd, NONE, tv, NONE, i as u32);
+                let (tv, i) = self.selected_call(self.ipc, &t).unwrap_or_else(|| {
+                    self.f.tables.push(t.clone());
+                    let i = self.f.tables.len() - 1;
+                    self.f.closed.grow(i + 1);
+                    self.f.closed.set(i, self.sh.g.stat.contains_key(&pc));
+                    (tv, i as u32)
+                });
+                self.emit(Opc::BranchInd, NONE, tv, NONE, i);
                 for ((_, b), &fi) in t.iter().zip(&fis) {
                     self.cur = *b as usize;
                     self.emit(Opc::Call, NONE, rav, NONE, fi);
@@ -890,7 +895,7 @@ impl<'a> Em<'a, '_> {
         if !self.sh.g.stat.contains_key(&pc) {
             return None;
         }
-        let xs: (u8, Vec<(u16, Key)>) = match &self.plan.inst {
+        let xs: (Index, Vec<(u16, Key)>) = match &self.plan.inst {
             Some(x) => x.sel.get(&self.mem.as_ref()?.0)?.clone(),
             None => {
                 let (r, xs) = self.sh.g.sels.get(&pc)?;
@@ -908,7 +913,66 @@ impl<'a> Em<'a, '_> {
         let i = self.f.tables.len() - 1;
         self.f.closed.grow(i + 1);
         self.f.closed.set(i, true);
-        Some((r1(xs.0 as usize), i as u32))
+        Some((self.index_vn(xs.0), i as u32))
+    }
+    /// The table of a computed `JSR` at `pc` to functions `fs` (their call blocks `t`) that
+    /// selects its target by an index ([`Self::selected`]).
+    fn selected_call(&mut self, pc: u16, t: &[(u16, u32)]) -> Option<(Vn, u32)> {
+        if self.plan.inst.is_some() || !self.sh.g.stat.contains_key(&pc) {
+            return None;
+        }
+        let (ix, xs) = self.sh.g.sels.get(&pc)?.clone();
+        let to: FxHashMap<u16, u32> = t.iter().copied().collect();
+        let tb = (xs.iter())
+            .map(|&(x, f)| Some((x as u16, *to.get(&f)?)))
+            .collect::<Option<Vec<_>>>()?;
+        self.f.tables.push(tb);
+        let i = self.f.tables.len() - 1;
+        self.f.closed.grow(i + 1);
+        self.f.closed.set(i, true);
+        Some((self.index_vn(ix), i as u32))
+    }
+    /// Before the instruction at `pc` writes the register whose value [`IREG`] carries, the
+    /// copy into it (in an instance function, only for the copy at that instruction).
+    fn carry(&mut self, pc: u16) {
+        let Some((cp, r)) = self.sh.g.carry else {
+            return;
+        };
+        let at = match &self.mem {
+            Some((_, _, ms)) => ms.iter().position(|&p| p == Some(cp)).map(Some),
+            None => (pc == cp).then_some(None),
+        };
+        match at {
+            None => {}
+            Some(None) => self.emit(Opc::Copy, r1(IREG), r1(r as usize), NONE, 0),
+            Some(Some(j)) => {
+                let hit = self.op(Opc::IntEqual, 1, r1(KREG), k(j as u32, 1));
+                let (run, cont) = (self.new_block(pc), self.new_block(pc));
+                self.emit(Opc::CBranch, NONE, hit, NONE, run);
+                self.emit(Opc::Branch, NONE, NONE, NONE, cont);
+                self.cur = run as usize;
+                self.emit(Opc::Copy, r1(IREG), r1(r as usize), NONE, 0);
+                self.emit(Opc::Branch, NONE, NONE, NONE, cont);
+                self.cur = cont as usize;
+            }
+        }
+    }
+    /// The varnode holding a selector's index, a byte it was read from read again.
+    fn index_vn(&mut self, ix: Index) -> Vn {
+        match ix {
+            Index::Reg(r) => r1(r as usize),
+            Index::Byte { base, reg, lo, hi } => {
+                let a = match reg {
+                    NOREG => k(base as u32, 2),
+                    r => {
+                        let x = self.zext(r1(r as usize), 2);
+                        self.op(Opc::IntAdd, 2, x, k(base as u32, 2))
+                    }
+                };
+                self.load(a, Iv { lo, hi }, 0)
+            }
+            Index::Carry(..) => r1(IREG),
+        }
     }
     fn goto(&mut self, pc: u16, t: &Tg, calc: impl FnOnce(&mut Self) -> Vn) {
         match t {
@@ -1303,6 +1367,7 @@ impl<'a> Em<'a, '_> {
     }
 
     fn insn(&mut self, pc: u16, op: &u8, arm: &'a Arm) {
+        self.carry(pc);
         let (ctl, exit, acc) = (&arm.ctl, arm.exit, &arm.acc[..]);
         self.succ = &arm.succ;
         self.istart = self.cur as u32;
@@ -1516,8 +1581,10 @@ impl<'a> Em<'a, '_> {
                             self.pend = (1, vec![d]);
                             self.flush();
                         }
-                        let tb = self.table(ts, self.sh.g.stat.contains_key(&pc));
-                        self.emit(Opc::BranchInd, NONE, tgt, NONE, tb);
+                        let (v, tb) = self.selected(pc).unwrap_or_else(|| {
+                            (tgt, self.table(ts, self.sh.g.stat.contains_key(&pc)))
+                        });
+                        self.emit(Opc::BranchInd, NONE, v, NONE, tb);
                     }
                 }
             }
@@ -1632,8 +1699,10 @@ impl<'a> Em<'a, '_> {
                 }
                 self.flush();
                 self.exit_or(exit, tgt, |em| {
-                    let tb = em.table(ts, em.sh.g.stat.contains_key(&pc));
-                    em.emit(Opc::BranchInd, NONE, tgt, NONE, tb);
+                    let (v, tb) = em
+                        .selected(pc)
+                        .unwrap_or_else(|| (tgt, em.table(ts, em.sh.g.stat.contains_key(&pc))));
+                    em.emit(Opc::BranchInd, NONE, v, NONE, tb);
                 });
             }
             Ctl::Brk(ts) => {

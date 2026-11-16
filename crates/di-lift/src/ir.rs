@@ -18,6 +18,10 @@ pub const XREG: usize = 5;
 /// dispatch function ([`crate::func::Ctl::CallOp`]), never handed back to the machine.
 pub const OPLO: usize = 6;
 pub const OPHI: usize = 7;
+/// The register of the file no 6502 template uses that carries the index a computed transfer
+/// switches on past the write of its register ([`crate::dispatch::Index::Carry`]), never
+/// handed back to the machine.
+pub const IREG: usize = 15;
 /// Bit mask of the registers below [`NREG`].
 pub const ALL_REGS: u32 = (1 << NREG) - 1;
 

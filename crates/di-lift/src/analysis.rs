@@ -570,8 +570,12 @@ pub struct Graph {
     /// Per computed transfer of `stat`, `(low byte address, target)` of each target read from
     /// a table, ascending.
     pub origins: FxHashMap<u16, Vec<(u16, u16)>>,
-    /// Computed jumps selecting their target by an index register ([`crate::dispatch::Selector`]).
+    /// Computed transfers selecting their target by an index ([`crate::dispatch::Selector`]);
+    /// a dispatch function's key has the selector every `JSR` it serves agrees on.
     pub sels: FxHashMap<u16, crate::dispatch::Selector>,
+    /// The instruction and register whose value before it [`crate::ir::IREG`] carries
+    /// ([`crate::dispatch::Index::Carry`]).
+    pub carry: Option<(u16, u8)>,
     /// Stores `(pc, opcode, access index)` none of whose addresses is constant code.
     pub nocode: FxHashSet<(u16, u8, usize)>,
     /// The bytes the targets in `stat` and the values of stores into cells were read from:
@@ -1252,6 +1256,29 @@ impl Fixpoint<'_> {
                         .flatten()
                         .collect()
                 };
+                let mut sels: FxHashMap<u16, crate::dispatch::Selector> = (an.sels.iter())
+                    .filter(|(pc, _)| !self.failed.contains(pc))
+                    .map(|(&pc, x)| (pc, x.clone()))
+                    .collect();
+                let mut served: BTreeMap<u16, Vec<u16>> = BTreeMap::new();
+                for (&s, d) in &dispatch {
+                    served.entry(d.0).or_default().push(s);
+                }
+                for (key, sites) in served {
+                    let one = (sites.iter())
+                        .map(|s| sels.get(s).cloned())
+                        .reduce(crate::dispatch::meet_sel)
+                        .flatten();
+                    match one {
+                        Some(x) => sels.insert(key, x),
+                        None => sels.remove(&key),
+                    };
+                }
+                crate::dispatch::one_carry(&mut sels);
+                let carry = sels.values().find_map(|s| match s.0 {
+                    crate::dispatch::Index::Carry(pc, r) => Some((pc, r)),
+                    _ => None,
+                });
                 let g = Graph {
                     reach: FxHashMap::default(),
                     proven: FxHashMap::default(),
@@ -1286,12 +1313,8 @@ impl Fixpoint<'_> {
                             crate::dispatch::Jump::Fail => None,
                         })
                         .collect(),
-                    sels: an
-                        .sels
-                        .iter()
-                        .filter(|(pc, _)| !self.failed.contains(pc))
-                        .map(|(&pc, x)| (pc, x.clone()))
-                        .collect(),
+                    sels,
+                    carry,
                     nocode,
                     closed,
                     vals,
