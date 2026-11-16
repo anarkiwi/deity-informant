@@ -2940,24 +2940,16 @@ end:
 """
 
 
-def test_init_song_guard_implies_the_store_on_its_argument(prefix, tmp_path):
-    """Init traps on a song outside the declared ones; its store at the song, past a guard the
-    table's extent sets, is implied by that trap, as every declared song is inside it."""
+def test_init_songs_bound_the_store_at_its_argument(prefix, tmp_path):
+    """Init's lift takes the declared songs its trap checks: its store at the song stays
+    inside the table for every one of them, with no guard."""
     _, info, labels = songs(prefix, tmp_path, SONGSTORE, range(3))
     meta_keyed(info)
     assert info["init"] == "translated"
-    k0 = next(k for k, key in info["traps"].items() if key == ("deopt", labels["init"]))
-    t0 = info["trap_info"][k0]
-    [song] = [g for g in t0["guards"] if g["reg"] == "a"]
-    assert (song["kind"], song["at"], as_runs(song["ok"])) == ("entry", labels["init"], [(0, 2)])
-    assert t0["implied_by"] is None
-    [(k, t)] = [(k, t) for k, t in info["trap_info"].items() if k != k0]
-    [g] = t["guards"]
-    store = labels["init"] + 3
-    assert (t["kind"], g["at"], g["reg"], as_runs(g["ok"])) == ("index", store, "y", [(0, 2)])
-    assert g["tables"] == tables_at(labels, [("store", "tab", "end", "loaded", ("init", 3))])
-    assert g["held"]["src"] == "a" and as_runs(g["held"]["vals"]) == [(0, 0xFF)]
-    assert g["implied_by"] == t["implied_by"] == [k0] and info["traps"][k] == ("deopt", store)
+    [(k, key)] = info["traps"].items()
+    [song] = info["trap_info"][k]["guards"]
+    assert key == ("deopt", labels["init"]) and song["kind"] == "entry"
+    assert (song["reg"], as_runs(song["ok"])) == ("a", [(0, 2)])
 
 
 #: Two stores at an unbounded song byte into a table ending the program, the tighter first.
@@ -2974,21 +2966,242 @@ end:
 """
 
 
-def test_index_guard_implied_by_a_dominating_one(prefix):
+def test_index_guard_implied_by_a_dominating_one(prefix, tmp_path):
     """The second store's guard lets through what the first's does: past the first, ``Y``
-    holds only values the second's lets pass, so its trap is implied by the first's."""
-    labels, info = trap_meta(prefix, TWOSTORES)
-    pcs = {key[1]: k for k, key in info["traps"].items()}
-    first, second = labels["entry"] + 7, labels["entry"] + 10
-    assert set(pcs) == {first, second}
-    t1, t2 = info["trap_info"][pcs[first]], info["trap_info"][pcs[second]]
-    [g1], [g2] = t1["guards"], t2["guards"]
-    assert (as_runs(g1["ok"]), as_runs(g2["ok"])) == ([(0, 2)], [(0, 3)])
+    holds only values the second's lets pass, so it is not emitted."""
+    img, labels, loaded = assemble(TWOSTORES)
+    c, h, info = translate(prefix, img, labels, loaded)
+    meta_keyed(info)
+    first = labels["entry"] + 7
+    k, t, g = only_guard(info)
+    assert info["traps"][k] == ("deopt", first) and as_runs(g["ok"]) == [(0, 2)]
     table = {"of": "store", "base": labels["thi"] + 1, "end": labels["end"], "by": "loaded"}
-    assert g1["tables"] == [dict(table, store=first)]
-    assert g2["tables"] == [dict(g1["tables"][0], base=labels["thi"], store=second)]
-    assert as_runs(g1["held"]["vals"]) == [(0, 0xFF)] and as_runs(g2["held"]["vals"]) == [(0, 2)]
-    assert t1["implied_by"] is None and t2["implied_by"] == [pcs[first]]
+    assert g["tables"] == [dict(table, store=first)] and t["implied_by"] is None
+    play(tmp_path, c, h, img, labels, [("entry", 0)] * 3)
+
+
+#: Init narrowing its song by a compare, offsetting it and keeping it on the stack across
+#: device writes before it indexes the word columns of a pointer it reads through.
+SONGSTACK = (
+    """
+init:   CMP #$0B
+        BPL far
+        TAY
+        LDA near,Y
+        STA $C001
+        RTS
+far:    SEC
+        SBC #$0A
+        PHA
+        LDA #$0F
+        STA $C018
+        PLA
+        TAX
+        LDA plo,X
+        STA $FB
+        LDA phi,X
+        STA $FC
+        LDY #0
+        LDA ($FB),Y
+        STA $C000
+        RTS
+play:   LDA $C002
+        STA $C003
+        RTS
+near:   .byte 0,1,2,3,4,5,6,7,8,9,10
+plo:    .byte """
+    + ", ".join(f"lo(near+{i % 11})" for i in range(22))
+    + """
+phi:    .byte """
+    + ", ".join(f"hi(near+{i % 11})" for i in range(22))
+    + """
+end:
+"""
+)
+
+
+def index_traps(info):
+    """The instructions the index guards of ``info``'s traps guard."""
+    guards = (g for t in info["trap_info"].values() for g in t["guards"])
+    return sorted(g["at"] for g in guards if g["kind"] == "index")
+
+
+@pytest.mark.parametrize("edit", [None, ("STA $C018", "STA $0100,Y")], ids=["songs", "stack"])
+def test_init_song_carried_through_the_stack_bounds_its_index(prefix, tmp_path, edit):
+    """The declared songs seed init's lift: a song past the compare, less ten, pushed and
+    pulled back, indexes the pointer's columns inside their extent with no guard; a store
+    between that may reach the pushed byte keeps the guard."""
+    src = SONGSTACK if edit is None else SONGSTACK.replace(*edit)
+    _, info, labels = songs(prefix, tmp_path, src, (0, 10, 11, 31), declared=range(32))
+    meta_keyed(info)
+    assert info["init"] == "translated"
+    load = labels["far"] + 11
+    assert index_traps(info) == ([] if edit is None else [load])
+
+
+#: Per-voice bytes stored masked to a nibble (a voice's data byte where it is not zero), each
+#: indexing the sixteen words of a pointer it reads through.
+VOICEBYTE = (
+    """
+entry:  LDX #0
+voice:  LDA $C000,X
+        BEQ keep
+        AND #$0F
+        STA state,X
+keep:   LDY state,X
+        LDA plo,Y
+        STA $FB
+        LDA phi,Y
+        STA $FC
+        LDY #0
+        LDA ($FB),Y
+        STA $C010,X
+        TXA
+        CLC
+        ADC #7
+        TAX
+        CPX #21
+        BNE voice
+        LDA next
+        STA $C020
+        RTS
+state:  .byte """
+    + ", ".join(["0"] * 15)
+    + """
+plo:    .byte """
+    + ", ".join(f"lo(next+{i})" for i in range(16))
+    + """
+phi:    .byte """
+    + ", ".join(f"hi(next+{i})" for i in range(16))
+    + """
+next:   .byte """
+    + ", ".join(str(i * 5) for i in range(16))
+    + """
+end:
+"""
+)
+
+
+@pytest.mark.parametrize("wild", [False, True])
+def test_byte_bound_through_an_address_set_frees_its_index(prefix, tmp_path, wild):
+    """Each byte the per-voice store's address set holds is bound by its entry byte and the
+    nibbles stored: the load it indexes needs no guard. A store through a pointer of unknown
+    address may leave them any value: the guard stays."""
+    src = VOICEBYTE
+    if wild:
+        src = src.replace(
+            "        LDA next",
+            "        LDY #0\n        LDA $C003\n        STA ($FD),Y\n        LDA next",
+        )
+    img, labels, loaded = assemble(src)
+    c, h, info = translate(prefix, img, labels, loaded)
+    meta_keyed(info)
+    assert (labels["keep"] + 3 in index_traps(info)) == wild
+    if not wild:
+        play(tmp_path, c, h, img, labels, [("entry", 0)] * 4)
+
+
+#: Per-voice commands dispatched through a call whose operand a table of targets patches; the
+#: arm the first five commands share stores the command into another byte, which indexes the
+#: five words of a pointer it reads through.
+CMDARMS = (
+    """
+entry:  LDX #0
+voice:  LDY cmd,X
+        LDA jlo,Y
+        STA call+1
+        LDA jhi,Y
+        STA call+2
+        LDY #0
+call:   JSR none
+        LDY last,X
+        LDA plo,Y
+        STA $FB
+        LDA phi,Y
+        STA $FC
+        LDY #0
+        LDA ($FB),Y
+        STA $C010,X
+        LDA $C000,X
+        AND #$07
+        STA cmd,X
+        TXA
+        CLC
+        ADC #7
+        TAX
+        CPX #21
+        BNE voice
+        LDA next
+        STA $C020
+        RTS
+put:    LDA cmd,X
+        STA last,X
+none:   RTS
+cmd:    .byte """
+    + ", ".join(["0"] * 15)
+    + """
+last:   .byte """
+    + ", ".join(["0"] * 15)
+    + """
+jlo:    .byte {lo}
+jhi:    .byte {hi}
+plo:    .byte lo(next), lo(next+1), lo(next+2), lo(next+3), lo(next+4)
+phi:    .byte hi(next), hi(next+1), hi(next+2), hi(next+3), hi(next+4)
+next:   .byte 4, 8, 15, 16, 23
+end:
+"""
+)
+
+
+@pytest.mark.parametrize("arms", [5, 6])
+def test_switch_arm_stores_its_case_value(prefix, tmp_path, arms):
+    """Inside each arm of the switch on a command byte the byte is that arm's case value: the
+    byte the arm of the first five commands stores it into indexes the table of five with no
+    guard; an arm a sixth command shares leaves the guard."""
+    targets = ["put"] * arms + ["none"] * (8 - arms)
+    src = CMDARMS.replace("{lo}", ", ".join(f"lo({t})" for t in targets))
+    src = src.replace("{hi}", ", ".join(f"hi({t})" for t in targets))
+    img, labels, loaded = assemble(src)
+    c, h, info = translate(prefix, img, labels, loaded)
+    meta_keyed(info)
+    assert (labels["call"] + 6 in index_traps(info)) == (arms == 6)
+    if arms == 5:
+        play(tmp_path, c, h, img, labels, [("entry", 0)] * 4)
+
+
+#: Init writing play's opcode by its song.
+INITCELL = """
+init:   AND #$01
+        BEQ nop
+        LDA #$0A
+        STA op
+        RTS
+nop:    LDA #$EA
+        STA op
+        RTS
+play:   LDA $C000
+op:     NOP
+        STA $C001
+        RTS
+end:
+"""
+
+
+@pytest.mark.parametrize("wild", [False, True])
+def test_init_alone_writing_a_cell_closes_it(prefix, tmp_path, wild):
+    """A translated init's stores of known values are the only writers of play's opcode cell:
+    its dispatch has no trap. A store of play writing it from data leaves the trap."""
+    if wild:
+        src = INITCELL.replace(
+            "play:   LDA $C000", "play:   LDA $C002\n        STA op\n        LDA $C000"
+        )
+        labels, info = trap_meta(prefix, src, ("init", "play"), init=0, songs=range(2))
+    else:
+        _, info, labels = songs(prefix, tmp_path, INITCELL, (0, 1))
+        meta_keyed(info)
+    assert info["init"] == "translated"
+    guards = (g for t in info["trap_info"].values() for g in t["guards"])
+    assert [g["at"] for g in guards if g["kind"] == "opcode"] == ([labels["op"]] if wild else [])
 
 
 def test_init_entry_trap_names_the_songs(prefix):

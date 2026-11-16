@@ -658,14 +658,17 @@ def _facts(prog):
 def _lift_init(
     start, entry, volatile, facts, sensitive, kw, state, runs, bare
 ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    """Init's lift (at ``entry``, run once from ``start``, any ``A``: the host's check of the
-    argument is the ``.h``'s range) when it is exact for every declared argument value: its
+    """Init's lift (at ``entry``, run once from ``start``, for the declared argument values:
+    the host's check of the argument is the ``.h``'s range) when it is exact for each: its
     lift without throw-away reads ``bare`` reproduces each of the reference's ``runs`` per
     value (:func:`deity_informant.postinit.reproduces`: polls and probes answered as there,
     one run the machine's) and their accesses lie inside what it bounds them to; else None."""
     if None in runs or not postinit.reproduces(bare, start, state, runs):
         return None
-    lone = wholeprog.lift(start, [entry], volatile, facts, sensitive=sensitive, **kw, once=True)
+    entry = (entry, {"a": state.songs})
+    lone = wholeprog.lift(
+        start, [entry], volatile, facts, sensitive=sensitive, **kw, once=True, checked=True
+    )
     return lone if postinit.bounded(lone, [r for rs in runs for r in rs]) else None
 
 
@@ -740,6 +743,9 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
         other = state if lone is None else state.extended(flat)
     free = None if other is None else other.values()
 
+    # The values init's translation may leave in its variables, where its lift knows them.
+    known = None if lone is None else lone.values
+
     def entries_lift(held):
         """The lift of the entries but init, the bytes ``held`` constant (:func:`_fixed`)."""
         return wholeprog.lift(
@@ -752,6 +758,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
             alias=[g for g in alias if held.isdisjoint({g[0], g[0] + 1, g[1], g[1] + 1})],
             held=held,
             holds=[] if lone is None else list(lone.written),
+            known=known,
             **kw,
         )
 

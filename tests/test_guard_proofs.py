@@ -2,6 +2,7 @@
 
 import pytest
 
+from test_cgen import VOICEBYTE
 from test_wholeprog import differential, facts_for
 from wholeprog_progs import IO, assemble
 from deity_informant import NATIVE, wholeprog
@@ -112,3 +113,16 @@ def test_code_rewritten_to_jump_into_a_device_deopts(cycles):
     img, pcs, prog = lift(DEVICE_JUMP, cycles, calls)
     differential(img, prog, pcs, calls)
     assert sum(prog.deopts.values()) > 0
+
+
+def test_left_out_guard_keeps_the_bound_it_relies_on():
+    """An index guard the bound of the per-voice bytes proves is left out of the static lift,
+    so the program matches memory only while those bytes stay inside their bound."""
+    img, labels = assemble(VOICEBYTE)
+    pcs = [labels["entry"]]
+    prog = wholeprog.lift(img, pcs, [IO], entry_sp=0xFD, loaded=(0x1000, labels["end"]))
+    differential(img, prog, pcs, [(0, 0)] * 3)
+    mem = bytearray(img)
+    assert prog.matches(mem)
+    mem[labels["state"] + 7] = 0x10
+    assert not prog.matches(mem)

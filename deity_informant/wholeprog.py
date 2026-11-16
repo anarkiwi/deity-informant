@@ -64,7 +64,9 @@ def lift(
     held=(),
     devices=None,
     holds=(),
-):  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    checked=False,
+    known=None,
+):  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     """Lift ``entries`` of the program in ``image`` (the memory each entry starts from);
     ``cycles=True`` counts cycles and stamps volatile accesses with them; ``bank`` is a bank
     map (e.g. ``deity_informant.c64.bank_map()``) memory is seen through; ``backend`` (default
@@ -84,7 +86,10 @@ def lift(
     :class:`deity_informant.devices.Model` of what the volatile addresses answer; ``holds``
     ``[(lo, hi)]`` runs past the program the host holds as data besides those the lift's
     stores write (another lift's stores: a pointer object's loads may read them,
-    ``docs/wholeprog.md``, *Pointer objects*)."""
+    ``docs/wholeprog.md``, *Pointer objects*); ``checked=True`` that the host checks the
+    entries' declared ``A``, ``X`` and ``Y`` values before each call (the analysis takes them,
+    no entry guard tests them); ``known`` ``{addr: values}`` every value a byte of ``free``
+    may hold after the init, which that init's lift bounds it to (*Init*)."""
     n = _native_or_raise()
     prog = n.lift_program(
         bytes(image),
@@ -104,6 +109,8 @@ def lift(
         held=sorted(set(held)),
         devices=None if devices is None else devices.lower(_ranges(volatile)),
         holds=sorted((int(a), int(b)) for a, b in holds),
+        checked=checked,
+        known=sorted((int(a), sorted(int(x) for x in v)) for a, v in (known or {}).items()),
     )
     prog.backend = backend or BACKEND
     return prog

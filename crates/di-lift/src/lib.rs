@@ -84,6 +84,13 @@ pub struct Opts {
     /// lift's stores write (another lift's stores, a host's init's): a pointer object's loads
     /// may read them ([`objects`]).
     pub holds: Vec<(u32, u32)>,
+    /// The host checks the entries' declared `A`, `X` and `Y` values before each call: the
+    /// analysis takes them, and no entry guard tests them.
+    pub checked: bool,
+    /// Bytes of `free` and every value each may hold after the host's init: its entry byte
+    /// and the values of the init's stores that may write it, each of known addresses and
+    /// values.
+    pub known: Vec<(u16, Vec<u8>)>,
 }
 
 impl Default for Opts {
@@ -101,6 +108,8 @@ impl Default for Opts {
             once: false,
             devices: dev::Devices::default(),
             holds: Vec::new(),
+            checked: false,
+            known: Vec::new(),
         }
     }
 }
@@ -614,6 +623,10 @@ pub fn lift_banked(
     let entries = declared(entries);
     let entries = &entries[..];
     let free: FxHashMap<u16, Vec<u8>> = opts.free.iter().cloned().collect();
+    let known: FxHashMap<u16, Vec<u8>> = (opts.known.iter())
+        .filter(|e| free.contains_key(&e.0))
+        .cloned()
+        .collect();
     let mut held = FixedBitSet::with_capacity(0x10000);
     held.extend(opts.held.iter().map(|&a| a as usize));
     let mut matched = true;
@@ -629,6 +642,7 @@ pub fn lift_banked(
             &opts.devices,
             opts.entry_sp.map(|_| vsa::Wanted { held: &held }),
             &free,
+            &known,
             opts.once,
             opts.entry_sp,
         );
@@ -910,6 +924,16 @@ pub fn lift_banked(
             .count(),
         ..Stats::default()
     };
+    // The entry registers the host checks are taken, not tested.
+    let tested: Vec<Entry> = (entries.iter())
+        .map(|e| Entry {
+            regs: (e.regs.iter())
+                .filter(|r| !opts.checked || r.0 > di_pcode::reg::Y)
+                .cloned()
+                .collect(),
+            ..e.clone()
+        })
+        .collect();
     let mut functions: Vec<Function> = plans
         .iter()
         .enumerate()
@@ -922,7 +946,7 @@ pub fn lift_banked(
                     [r] => Some(r),
                     _ => None,
                 });
-            let (mut f, n) = emit::emit(&sh, p, entries.get(i), port, i);
+            let (mut f, n) = emit::emit(&sh, p, tested.get(i), port, i);
             why::imply(&mut f);
             stats.insns += n.insns;
             stats.raw_ops += n.raw;
@@ -1100,6 +1124,14 @@ pub fn lift_banked(
             b.dedup();
             b
         },
+        values: {
+            let mut v: Vec<(u16, Vec<u8>)> = (g.known.iter())
+                .map(|(&a, vs)| (a, vs.iter().copied().collect()))
+                .collect();
+            v.sort_unstable();
+            v
+        },
+        kept: g.kept.clone(),
         sets: {
             let mut s: Vec<(u16, Vec<u8>)> = g
                 .closed

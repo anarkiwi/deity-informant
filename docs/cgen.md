@@ -154,7 +154,9 @@ storage starting from `image`, while the other entries' functions read the names
 Init is then lifted itself, from `image`, as an entry run once (`once`,
 [wholeprog](wholeprog.md#init): a store into code makes cells only of the instructions that
 may run after it, so a block copy over code init already ran leaves that code constant), for
-any `A`. It is **translated** when that lift is exact for every declared argument value:
+the declared songs, which its entry function checks (`checked`: the analysis takes them, no
+guard of the lift tests them). It is **translated** when that lift is exact for every declared
+argument value:
 
 - lifted without throw-away reads, its run from `image` (`postinit.reproduces`) returns with
   no deopt and no volatile read but those of its polling loops (*Polling loops*), so it
@@ -174,9 +176,13 @@ bytes decode from `image`, the bytes it patches are cells unless the other entri
 them as constants (which init then leaves), and the `.h` holds `image`. Init's entry function
 traps an `A` outside `CGEN_SONG0` and the `CGEN_SONGS` after it, then runs the translated code;
 a self-modified operand is a code cell (*State*), an `(zp),Y` block copy a pointer access
-(*Memory*). The `.c` is the same for every count of argument values (the range is the `.h`'s);
-init's code is lifted from the image, so where the lift decides a branch from constant bytes
-init reads the `.c` follows those bytes.
+(*Memory*). The `.c` is the same for every count of argument values (the range is the `.h`'s)
+but where the lift proves from the songs a guard it leaves out; init's code is lifted from the
+image, so where the lift decides a branch from constant bytes init reads the `.c` follows those
+bytes. A translated init's lift bounds each byte every store that may write it writes with
+known addresses and values (`Program.values`, its image byte among them): the other entries'
+lift takes those as the byte's values (`known`), so a cell only such stores of init write is
+closed, its dispatch with no trap.
 
 ### Polling loops
 
@@ -722,7 +728,9 @@ every path through the function as emitted: `vals` (runs) left by the register g
 constants before it (copies keep a register's fact; other writes and calls lose it), `by` the
 guards that narrowed it and `src` the entry register it still holds; `implied_by` is then the
 traps whose guards (or, holding init's `A`, whose `songs`) already keep the register inside
-`ok` (`[]`: constants alone), else `None`. `opcode`, `codechk` and `cell` guards list their
+`ok` (`[]`: constants alone), else `None`. A guard the register guards before it imply on every
+path is not emitted (wholeprog *Implied guards*), nor an index guard whose register holds only
+values inside `ok` on every run (`proven`), so neither has a trap. `opcode`, `codechk` and `cell` guards list their
 `writers`, `{pc, entry, exact}`: the stores that may write the byte, from the entries' lift
 (`"play"`) or init's (`"init"`), `exact` for a store with one address or an address set.
 

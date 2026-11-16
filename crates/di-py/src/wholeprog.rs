@@ -859,6 +859,14 @@ impl Program {
         self.prog.sets.iter().cloned().collect()
     }
 
+    /// The bytes stores write whose values are known: ``{address: [value, ...]}``, the entry
+    /// byte and the values of every store that may write it, each of known addresses and
+    /// values.
+    #[getter]
+    fn values(&self) -> HashMap<u16, Vec<u8>> {
+        self.prog.values.iter().cloned().collect()
+    }
+
     /// The instruction starts the functions plan, ascending.
     #[getter]
     fn starts(&self) -> Vec<u16> {
@@ -1246,7 +1254,9 @@ impl Program {
     }
 
     /// True when every byte the program treats as constant code holds its lifted value in
-    /// ``mem`` (a host that writes code between calls checks this or re-lifts).
+    /// ``mem``, every closed opcode cell one of its values and every byte whose bound proves a
+    /// guard the lift leaves out a value inside it (a host that writes code between calls
+    /// checks this or re-lifts).
     fn matches(&self, mem: &Bound<'_, PyByteArray>) -> PyResult<bool> {
         with_mem(mem, |m| self.exec.matches(m))
     }
@@ -1536,12 +1546,14 @@ pub fn reference_calls(
 /// the host's init stored that hold one value after it, the image's; ``devices`` what the
 /// volatile addresses answer (``deity_informant.devices.Model.lower``); ``holds``
 /// ``[(lo, hi)]`` runs past the program the host holds as data besides those the lift's stores
-/// write.
+/// write; ``checked=True`` that the host checks the entries' declared ``A``, ``X`` and ``Y``
+/// values before each call (no entry guard); ``known`` ``[(addr, values)]`` the values each
+/// of ``free`` may hold that the host's init's lift bounds it to.
 /// ``bank`` is a bank map: ``dir``/``data`` port
 /// cells, ``mask`` and ``pull`` bits, ``lut`` (configuration per effective port value),
 /// ``configs`` (per configuration 256 page kinds: 0 RAM, 1 ROM, 2 I/O) and ``rom``.
 #[pyfunction]
-#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None, fold=false, sensitive=None, free=vec![], alias=vec![], once=false, held=vec![], devices=None, holds=vec![]))]
+#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None, fold=false, sensitive=None, free=vec![], alias=vec![], once=false, held=vec![], devices=None, holds=vec![], checked=false, known=vec![]))]
 #[allow(clippy::too_many_arguments)]
 pub fn lift_program(
     py: Python<'_>,
@@ -1562,6 +1574,8 @@ pub fn lift_program(
     held: Vec<u16>,
     devices: Option<Lowered>,
     holds: Vec<(u32, u32)>,
+    checked: bool,
+    known: Vec<(u16, Vec<u8>)>,
 ) -> PyResult<Program> {
     let img = self::image(image)?;
     let es = self::entries(entries);
@@ -1580,6 +1594,8 @@ pub fn lift_program(
         once,
         devices: devices_of(devices)?,
         holds,
+        checked,
+        known,
     };
     Ok(Program::new(py.detach(|| {
         di_lift::lift_banked(&img, &es, &volatile, &f, opts, bank.as_ref())
@@ -1649,6 +1665,7 @@ pub fn plan_program<'py>(
         &[],
         &Default::default(),
         None,
+        &Default::default(),
         &Default::default(),
         false,
         None,

@@ -552,6 +552,9 @@ pub struct Graph {
     pub proven: crate::vsa::Hulls,
     /// Per instruction start the values `A`, `X` and `Y` hold on every run.
     pub regs: crate::vsa::Regs,
+    /// Bytes `(addr, lo, hi)` a load may read whose bound on every run proves an index guard
+    /// left out ([`crate::ir::Program::kept`]).
+    pub kept: Vec<(u16, u8, u8)>,
     /// The runs `[lo, hi)` of data bytes of the pointer reach pass ([`crate::vsa::data_runs`]).
     pub runs: Vec<(u32, u32)>,
     /// Stores whose index the code does not bound and the run `[lo, hi)` of data bytes each
@@ -589,6 +592,9 @@ pub struct Graph {
     pub closed: FixedBitSet,
     /// The values of the closed cells ([`crate::dispatch::cell_values`]).
     pub vals: FxHashMap<u16, BTreeSet<u8>>,
+    /// Every byte stores write whose values are known: its entry byte and the values of the
+    /// stores that may write it, each of known addresses and values.
+    pub known: FxHashMap<u16, BTreeSet<u8>>,
     /// Index guards by instruction ([`crate::dispatch::Guard`]).
     pub guards: FxHashMap<u16, (u8, Iv)>,
     /// The tables each index guard keeps its instruction's accesses inside.
@@ -805,6 +811,7 @@ pub fn discover(
     devices: &crate::dev::Devices,
     reach: Option<crate::vsa::Wanted>,
     free: &FxHashMap<u16, Vec<u8>>,
+    known: &FxHashMap<u16, Vec<u8>>,
     once: bool,
     entry_sp: Option<u8>,
 ) -> Graph {
@@ -848,6 +855,7 @@ pub fn discover(
         devices,
         reach,
         free,
+        known,
         once,
         constant: {
             let mut c = FixedBitSet::with_capacity(0x10000);
@@ -974,6 +982,8 @@ struct Fixpoint<'a> {
     reach: Option<crate::vsa::Wanted<'a>>,
     /// The variables the host's init leaves, with their values per run.
     free: &'a FxHashMap<u16, Vec<u8>>,
+    /// The values of the variables in `free` the host's init's lift bounds.
+    known: &'a FxHashMap<u16, Vec<u8>>,
     /// Each entry runs once ([`discover`]).
     once: bool,
     /// The operands of the one run no input decides ([`crate::once`]).
@@ -986,8 +996,9 @@ impl Fixpoint<'_> {
         let mut m: FxHashMap<u16, BTreeSet<u8>> = (self.free.iter())
             .map(|(&a, v)| (a, v.iter().copied().collect()))
             .collect();
-        for (a, v) in &self.facts.writes {
-            m.entry(*a).or_default().extend(v.iter().copied());
+        let known = self.known.iter().map(|(a, v)| (*a, v));
+        for (a, v) in self.facts.writes.iter().map(|(a, v)| (*a, v)).chain(known) {
+            m.entry(a).or_default().extend(v.iter().copied());
         }
         m
     }
@@ -1014,6 +1025,7 @@ impl Fixpoint<'_> {
             observed: &seen_writes,
             values: &values,
             runs: self.free,
+            known: self.known,
             free: &self.free_bits(),
             constant: &self.constant,
             volatile: self.volatile,
@@ -1036,6 +1048,22 @@ impl Fixpoint<'_> {
         g.nocode.extend(an.bounded.keys().copied());
         g.bounded = an.bounded;
         guarded(g);
+        // An index guard whose register holds only values inside its range on every run is
+        // not emitted: the accesses keep the intervals it gave them, and the bytes loads read
+        // must keep their bounds.
+        let regs = &g.regs;
+        let n = g.guards.len();
+        g.guards.retain(|pc, &mut (r, ok)| {
+            let held = regs
+                .get(pc)
+                .map(|x| crate::vsa::Bits::from_words(x[r as usize]));
+            !held.is_some_and(|h| h.hull().is_some_and(|iv| ok.lo <= iv.lo && iv.hi <= ok.hi))
+        });
+        let guards = &g.guards;
+        g.extents.retain(|pc, _| guards.contains_key(pc));
+        if g.guards.len() < n {
+            g.kept = kept(g, &an.bound, self.volatile);
+        }
     }
 
     fn run(&self) -> (Graph, FxHashMap<u16, crate::dispatch::Jump>) {
@@ -1131,6 +1159,7 @@ impl Fixpoint<'_> {
                 observed: &seen_writes,
                 values: &observed,
                 runs: self.free,
+                known: self.known,
                 free: &free_bits,
                 constant: &self.constant,
                 volatile: self.volatile,
@@ -1341,6 +1370,7 @@ impl Fixpoint<'_> {
                     proven: FxHashMap::default(),
                     runs: Vec::new(),
                     regs: FxHashMap::default(),
+                    kept: Vec::new(),
                     bounded: FxHashMap::default(),
                     disp,
                     vars,
@@ -1377,6 +1407,9 @@ impl Fixpoint<'_> {
                     nocode,
                     closed,
                     vals,
+                    known: (an.cellvals.iter())
+                        .filter_map(|(&a, v)| Some((a, v.clone()?)))
+                        .collect(),
                     guards: {
                         // Index guards: what the program reads past its tables' extents.
                         let mut gs: FxHashMap<u16, (u8, Iv)> = FxHashMap::default();
@@ -1443,6 +1476,27 @@ impl Fixpoint<'_> {
             stat = nstat;
         }
     }
+}
+
+/// The bytes `(addr, lo, hi)` a load of `g` may read, outside page 1 and the volatile ranges,
+/// whose `bound` is narrower than a byte.
+fn kept(g: &Graph, bound: &[Option<Iv>], volatile: &[(u32, u32)]) -> Vec<(u16, u8, u8)> {
+    let mut read = FixedBitSet::with_capacity(0x10000);
+    for a in g.vars.values().flatten().flat_map(|v| &v.acc) {
+        if !a.store && !a.dummy {
+            read.insert_range(a.addr.lo as usize..(a.addr.hi as usize + 1).min(0x10000));
+        }
+    }
+    read.set_range(0x100..0x200, false);
+    for &(lo, hi) in volatile {
+        read.set_range(lo as usize..(hi as usize).min(0x10000), false);
+    }
+    (read.ones())
+        .filter_map(|a| {
+            let b = bound.get(a).copied().flatten()?;
+            (b.hi - b.lo < 0xff).then_some((a as u16, b.lo as u8, b.hi as u8))
+        })
+        .collect()
 }
 
 /// The accesses of `g` at each instruction an index guard checks met with the addresses they

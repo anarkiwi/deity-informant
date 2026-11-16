@@ -584,6 +584,7 @@ pub(crate) fn vectors(
 ) -> Vec<u16> {
     let none = crate::dev::Devices::default();
     let ran = crate::once::Ran::default();
+    let known = FxHashMap::default();
     let code = Code {
         img,
         cells,
@@ -591,6 +592,7 @@ pub(crate) fn vectors(
         vecs: Vec::new(),
         observed: FixedBitSet::new(),
         free: FixedBitSet::new(),
+        known: &known,
         constant: FixedBitSet::new(),
         clip: FxHashMap::default(),
         bound: Vec::new(),
@@ -2129,14 +2131,25 @@ fn advanced_at(
 /// ([`Code::free`], [`Code::dev`]).
 pub(crate) fn cell_values(code: &Code, stores: &[Store]) -> FxHashMap<u16, Option<BTreeSet<u8>>> {
     let mut out: FxHashMap<u16, Option<BTreeSet<u8>>> = FxHashMap::default();
-    let init = |a: u16| {
-        let known = !code.free.contains(a as usize) && !code.dev.contains(a as usize);
-        known.then(|| BTreeSet::from([code.img[a as usize]]))
+    let init = |a: u16| match code.known.get(&a) {
+        Some(v) => Some(v.iter().copied().collect()),
+        None => {
+            let known = !code.free.contains(a as usize) && !code.dev.contains(a as usize);
+            known.then(|| BTreeSet::from([code.img[a as usize]]))
+        }
     };
     for s in stores {
         for &a in s.addrs.iter().flatten().chain(&s.deps) {
             out.entry(a).or_insert_with(|| init(a));
         }
+    }
+    // A cell the host's init's lift bounds holds those values where no store writes it.
+    for &a in code
+        .known
+        .keys()
+        .filter(|&&a| code.cells.contains(a as usize))
+    {
+        out.entry(a).or_insert_with(|| init(a));
     }
     let unknown: Vec<&Store> = stores.iter().filter(|s| s.addrs.is_none()).collect();
     for (a, v) in out.iter_mut() {
