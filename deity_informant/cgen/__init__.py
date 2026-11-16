@@ -71,7 +71,7 @@ def _sliced(mem, used, j):
     return any(_slice(mem, used, k) == j for k in range(len(mem.regions)))
 
 
-def _header(mem, used, traps, konsts=None, store=()):
+def _header(mem, used, traps, konsts, store):
     """The ``.h``: origins, lengths and initial bytes of the regions (those inside a held span
     are its slices) and of the held spans when ``used``, the constant bytes ``konsts``
     (``{name: byte}``) the ``.c`` reads by name and the arrays' definitions ``store``."""
@@ -92,7 +92,7 @@ def _header(mem, used, traps, konsts=None, store=()):
             out += [f"#define C{j}_BITS {top - lo}", f"#define C{j}_DATA_INIT {hexes(bits)}"]
     if "IMG_ORG" in used:
         out.append(f"#define IMG_ORG 0x{mem.loaded[0]:04X}")
-    out += [f"#define {k} 0x{v:02X}" for k, v in sorted((konsts or {}).items())]
+    out += [f"#define {k} 0x{v:02X}" for k, v in sorted(konsts.items())]
     out.append(f"#define CGEN_TRAPS {hexes(traps, 4)}")
     return "\n".join([*out, *store, "#endif"]) + "\n"
 
@@ -345,7 +345,7 @@ def _guarded(lines, conds):
 
 
 def _dispatch(
-    mem, helpers, used, cases=(), program=None, ram=True
+    mem, helpers, used, cases, program, ram
 ):  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     """``(c lines, h lines)``: ``oob_rd`` (unless the host's) and ``wr`` over the regions
     outside the held spans, the volatile ranges and the held spans (whose data bytes ``Cj_DATA``
@@ -488,7 +488,7 @@ def _array_of(mem, a):
     return (f"R{k}", mem.regions[k][0]) if k >= 0 else None
 
 
-def _copies_h(mem, plan, var=lambda a: None):
+def _copies_h(mem, plan, var):
     """The ``.h``'s copies (``plan``, :meth:`deity_informant.postinit.Init.copies`) into the
     regions the program holds and its promoted cells (``var``: an address's lvalue, or None),
     cut where a region ends, the literal bytes they copy, and the regions they name."""
