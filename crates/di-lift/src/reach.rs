@@ -46,8 +46,10 @@ pub struct Caps {
     pub states: usize,
     /// Bytes and volatile reads of one slice.
     pub cells: usize,
-    /// Instructions evaluated in one slice's fixpoints, per run.
+    /// Instructions evaluated in one slice's fixpoints over every run.
     pub steps: u64,
+    /// Instructions evaluated in the whole search.
+    pub total: u64,
     /// Rounds of slices growing or their values narrowing.
     pub rounds: usize,
     /// Configurations of one call.
@@ -59,7 +61,8 @@ impl Default for Caps {
         Caps {
             states: 1 << 13,
             cells: 32,
-            steps: 1 << 25,
+            steps: 1 << 26,
+            total: 1 << 29,
             rounds: 12,
             configs: 1 << 14,
         }
@@ -68,16 +71,19 @@ impl Default for Caps {
 
 /// The instructions one slice's evaluations may spend, have spent, and whether one of them
 /// stopped.
-pub struct Budget {
+pub struct Budget<'a> {
     cap: u64,
     spent: AtomicU64,
     stop: AtomicBool,
+    /// The instructions every slice's evaluations have spent, of `Caps::total`.
+    total: &'a AtomicU64,
 }
 
-impl Budget {
-    /// Spend `n` instructions of `cap`: whether the evaluations are to stop.
-    fn spend(&self, n: u64, cap: u64) -> bool {
-        let over = self.spent.fetch_add(n, Ordering::Relaxed) + n > cap;
+impl Budget<'_> {
+    /// Spend `n` instructions of `cap` (and of `total`): whether the evaluations are to stop.
+    fn spend(&self, n: u64, cap: u64, total: u64) -> bool {
+        let over = self.spent.fetch_add(n, Ordering::Relaxed) + n > cap
+            || self.total.fetch_add(n, Ordering::Relaxed) + n > total;
         if over {
             self.stop.store(true, Ordering::Relaxed);
         }
@@ -400,7 +406,7 @@ pub struct Cx<'a> {
     mem0: &'a [u8; 0x10000],
     ranges: &'a FxHashMap<u16, [u32; 2]>,
     caps: Caps,
-    budget: &'a Budget,
+    budget: &'a Budget<'a>,
     kcell: FxHashMap<u16, usize>,
     kmask: FixedBitSet,
     kdev: FxHashSet<u16>,
@@ -425,7 +431,7 @@ impl<'a> Cx<'a> {
         targets: &'a FxHashSet<Key>,
         mem0: &'a [u8; 0x10000],
         ranges: &'a FxHashMap<u16, [u32; 2]>,
-        (caps, budget): (Caps, &'a Budget),
+        (caps, budget): (Caps, &'a Budget<'a>),
         (slice, others): (&[u32], &[u16]),
     ) -> Self {
         let cells: Vec<u16> = slice
@@ -1024,7 +1030,9 @@ impl<'a> Cx<'a> {
                         break;
                     }
                     o.steps += 1;
-                    if o.steps.is_multiple_of(SPEND) && self.budget.spend(SPEND, self.budget.cap) {
+                    if o.steps.is_multiple_of(SPEND)
+                        && self.budget.spend(SPEND, self.budget.cap, self.caps.total)
+                    {
                         o.fail = true;
                     }
                     if o.fail {
@@ -1095,7 +1103,9 @@ impl<'a> Cx<'a> {
                 }
             }
         }
-        o.fail |= self.budget.spend(o.steps % SPEND, self.budget.cap);
+        o.fail |= self
+            .budget
+            .spend(o.steps % SPEND, self.budget.cap, self.caps.total);
         let set = |p: &u32| o.provs.sets[*p as usize].clone();
         let found = Found {
             addrs: std::mem::take(&mut o.addrs),
@@ -1129,7 +1139,8 @@ impl<'a> Cx<'a> {
                 f.absorb(g);
                 layer.extend(succ.into_iter().filter(|s| seen.insert(s.clone())));
             }
-            f.fail |= seen.len() > self.caps.states || self.budget.spend(0, self.budget.cap);
+            f.fail |= seen.len() > self.caps.states
+                || self.budget.spend(0, self.budget.cap, self.caps.total);
             if f.fail {
                 self.budget.stop.store(true, Ordering::Relaxed);
             }
@@ -1299,11 +1310,13 @@ fn search(
     for &(a, b) in vol {
         vbits.insert_range(a as usize..(b as usize).min(0x10000));
     }
+    let total = AtomicU64::new(0);
     let eval = |slice: &[u32], ranges: &[FxHashMap<u16, [u32; 2]>], keyed: &[u16]| {
         let budget = Budget {
-            cap: caps.steps.saturating_mul(mems.len() as u64),
+            cap: caps.steps,
             spent: AtomicU64::new(0),
             stop: AtomicBool::new(false),
+            total: &total,
         };
         let (b, s) = ((caps, &budget), (slice, keyed));
         (mems.par_iter().zip(ranges))

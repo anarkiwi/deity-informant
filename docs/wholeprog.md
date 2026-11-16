@@ -1148,13 +1148,14 @@ and the code using it deopts or traps.
   of the pair restarts it.
 
 - Reachable states (`reach::bounds`): per slice and run a fixpoint of slice states, a set
-  that only rises, at most `reach::Caps::states` states, and `reach::Caps::steps`
-  instructions per run; within a call, at most `reach::Caps::configs` configurations, each
-  of whose key only rises (intervals widen, provenance unites, a finite lattice). Slices
-  only grow (at most `reach::Caps::cells` bytes, a larger one is not evaluated) and the
-  intervals of other slices' bytes only narrow (each round's meet with the last) while the
-  bytes keying configurations only grow, over at most `reach::Caps::rounds` rounds. A slice
-  past a cap proves nothing; its loads keep their checks.
+  that only rises, at most `reach::Caps::states` states, `reach::Caps::steps` instructions
+  per slice over every run and `reach::Caps::total` over the search; within a call, at most
+  `reach::Caps::configs` configurations, each of whose key only rises (intervals widen,
+  provenance unites, a finite lattice). Slices only grow (at most `reach::Caps::cells`
+  bytes, a larger one is not evaluated) and the intervals of other slices' bytes only narrow
+  (each round's meet with the last) while the bytes keying configurations only grow, over at
+  most `reach::Caps::rounds` rounds. A slice past a cap proves nothing; its loads keep their
+  checks.
 
 `tests/test_termination.py` lifts such programs under a wall-clock limit and replays them.
 `tools/liftsweep.py` translates PSID files to C, each under a limit, and replays the C: per file

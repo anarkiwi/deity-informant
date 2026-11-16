@@ -1742,6 +1742,10 @@ fn cursor_states_bound_their_loads() {
             configs: 1,
             ..Caps::default()
         },
+        Caps {
+            total: 64,
+            ..Caps::default()
+        },
     ] {
         let q = lift(caps);
         assert!(!within(&q, 0x104e, 0x107d, 0x1099), "{caps:?}");
