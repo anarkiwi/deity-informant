@@ -1352,6 +1352,13 @@ fn search(
     if base.iter().any(|f| f.fail) {
         return Bounds::default();
     }
+    // The loads the program reaches: those the evaluation with no slice visits.
+    let reached = (targets.iter())
+        .filter(|k| {
+            base.iter()
+                .any(|f| f.addrs.contains_key(k) || f.tops.contains_key(k))
+        })
+        .count();
     let mut sl = Slices::default();
     for ((p, _), h) in base.iter().flat_map(|f| f.tops.values().flatten()) {
         if !inside(h) {
@@ -1409,28 +1416,27 @@ fn search(
                 }
             }
         }
-        // Done when no slice changes, or every load the evaluations reach is proven.
-        let (proven, reached) = judge(&sl, &found, &base, targets, &inside);
-        if (!grew && !narrowed && !rekeyed) || proven.loads.len() == reached {
+        // Done when no slice changes, or every load the program reaches is proven.
+        let proven = judge(&sl, &found, &base, targets, &inside).loads.len();
+        if (!grew && !narrowed && !rekeyed) || proven == reached {
             break;
         }
         if !narrowed && !rekeyed {
             found.values_mut().for_each(|f| f.0 = round + 1);
         }
     }
-    judge(&sl, &found, &base, targets, &inside).0
+    judge(&sl, &found, &base, targets, &inside)
 }
 
 /// What the completed evaluations `found` of slices `sl` (none: `base`, the evaluation with
-/// none) prove of the loads `targets`, inside the bytes `inside` admits: per load the hull of
-/// its addresses and bases, and the loads they reach.
+/// none) prove of the loads `targets`, inside the bytes `inside` admits ([`Bounds`]).
 fn judge(
     sl: &Slices,
     found: &FxHashMap<Vec<u32>, (usize, Vec<Found>)>,
     base: &[Found],
     targets: &FxHashSet<Key>,
     inside: &dyn Fn(&Hull) -> bool,
-) -> (Bounds, usize) {
+) -> Bounds {
     let mut out = Bounds::default();
     let live = sl.live();
     let runs: Vec<(&[u32], &[Found])> = match live.is_empty() {
@@ -1447,7 +1453,6 @@ fn judge(
     out.states = runs.iter().flat_map(|r| r.1.iter().map(|f| f.states)).sum();
     let joined = |p: &[u32]| p.iter().any(|&e| e == J || e >= JC);
     let meets = |p: &[u32], s: &[u32]| cells(p).any(|e| s.binary_search(&e).is_ok());
-    let mut reached = 0;
     for &key in targets {
         // Whether slice `s`'s evaluations know every address of the load whose provenance
         // meets `s` outside the held bytes.
@@ -1461,15 +1466,12 @@ fn judge(
         };
         let mut h: Option<Hull> = None;
         let mut fine = !runs.is_empty();
-        let mut seen = false;
         for (s, fs) in &runs {
             for f in fs.iter() {
                 if let Some(&x) = f.addrs.get(&key) {
                     h = Some(h.map_or(x, |y| hull(x, y)));
-                    seen = true;
                 }
                 for ((p, m), x) in f.tops.get(&key).into_iter().flatten() {
-                    seen = true;
                     if inside(x) {
                         h = Some(h.map_or(*x, |y| hull(*x, y)));
                         continue;
@@ -1483,7 +1485,6 @@ fn judge(
                 }
             }
         }
-        reached += seen as usize;
         // From the least base on: the base an indexed operand names is the program's, so the
         // array the load reads starts where the code says, whatever the data.
         let h = h.map(|h| [h[0].min(h[2]), h[1], h[2], h[3]]);
@@ -1491,7 +1492,7 @@ fn judge(
             out.loads.insert(key, h);
         }
     }
-    (out, reached)
+    out
 }
 
 #[cfg(test)]

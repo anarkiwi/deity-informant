@@ -615,10 +615,10 @@ fn reaches(r: &vsa::Hulls) -> Vec<ir::Reach> {
     v
 }
 
-/// The loads of `g` no proof or address set holds in the bytes `held` that the reachable
-/// states of its `entries` (called at `sp` from each of init's runs, `free`, with `volatile`
-/// ranges answering as `devices` say, within `caps`) bound there ([`reach`]): their hulls
-/// join [`analysis::Graph::proven`].
+/// The loads of `g` no proof holds in the bytes `held` that the reachable states of its
+/// `entries` (called at `sp` from each of init's runs, `free`, with `volatile` ranges
+/// answering as `devices` say, within `caps`) bound there ([`reach`]): their hulls join
+/// [`analysis::Graph::proven`].
 #[allow(clippy::too_many_arguments)]
 fn reach_bounds(
     g: &mut analysis::Graph,
@@ -639,9 +639,7 @@ fn reach_bounds(
         for v in vs.iter().filter(|v| !is_stack_op(v.op)) {
             for (ai, a) in v.acc.iter().enumerate() {
                 let key = (pc, v.op, ai);
-                // A load with an address set reads its addresses already.
-                let done = g.proven.get(&key).is_some_and(|h| inside(h.0))
-                    || g.addr_sets.contains_key(&(pc, false));
+                let done = g.proven.get(&key).is_some_and(|h| inside(h.0));
                 if !a.store && !a.dummy && a.addr.value().is_none() && !done {
                     targets.insert(key);
                 }
@@ -669,8 +667,22 @@ fn reach_bounds(
     let out = reach::bounds(
         g, entries, sp, volatile, devices, &mems, &w, &targets, held, caps,
     );
+    // A hull reaches out to the ends of the runs of data bytes holding its ends: the bounds
+    // the states give move with the data, the runs only with the program.
+    let run = |x: u32| g.runs.iter().find(|r| (r.0..r.1).contains(&x)).copied();
     for (&key, h) in &out.loads {
-        let (a, b) = (Iv { lo: h[0], hi: h[1] }, Iv { lo: h[2], hi: h[3] });
+        let wide = match (run(h[0]), run(h[1])) {
+            (Some(l), Some(r)) => Iv {
+                lo: l.0,
+                hi: r.1 - 1,
+            },
+            _ => Iv { lo: h[0], hi: h[1] },
+        };
+        let a = match inside(wide) {
+            true => wide,
+            false => Iv { lo: h[0], hi: h[1] },
+        };
+        let b = Iv { lo: h[2], hi: h[3] };
         let e = g.proven.entry(key).or_insert((a, b));
         *e = (
             vsa::meet(e.0, a).unwrap_or(a),
