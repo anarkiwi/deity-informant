@@ -146,15 +146,24 @@ UNHELD = [
 ]
 #: Not the host's ``oob_wr``.
 NOOB = "!defined(CGEN_OOB)"
-#: The runs of the bytes no array holds a store may write (``CGEN_RAM_*``), and those of them
-#: written, at most ``CGEN_OOB_SLOTS``: addresses and values.
-SLOTS = [
+#: ``cgen_ram``: the byte at ``a`` of the bytes no array holds a store may write
+#: (``CGEN_RAM_*``: their runs, each run's offset into ``RAM`` and the entry bytes), else a
+#: null pointer.
+RAM = [
+    "static uint8_t *cgen_ram(uint16_t a) {",
+    "#if CGEN_RAM_N",
     *_runs("RAM"),
-    "#ifndef CGEN_OOB_SLOTS",
-    "#define CGEN_OOB_SLOTS 16",
+    "static const uint16_t RAM_AT[] = {CGEN_RAM_AT};",
+    "static uint8_t RAM[CGEN_RAM_N] = {CGEN_RAM_INIT};",
+    "for (uint8_t i = 0; i < sizeof RAM_ORG / sizeof *RAM_ORG; ++i) {",
+    "uint16_t o = a - RAM_ORG[i];",
+    "if (o < RAM_LEN[i])",
+    "return RAM + RAM_AT[i] + o;",
+    "}",
     "#endif",
-    "static uint16_t SLOT_AT[CGEN_OOB_SLOTS];",
-    "static uint8_t SLOT_V[CGEN_OOB_SLOTS], SLOT_N;",
+    "(void)a;",
+    "return 0;",
+    "}",
 ]
 
 
@@ -166,14 +175,13 @@ def _within(t):
     ]
 
 
-def _unheld(slots):
+def _unheld(ram):
     """``cgen_unheld``: the byte read at ``a`` where no array holds it: a byte of the program
-    traps (``OOB_TRAP``), a written one (where the conditions ``slots`` hold) reads its slot,
-    any other the machine's entry byte, its run's in the background table."""
+    traps (``OOB_TRAP``), one a store may write (where the conditions ``ram`` hold) reads
+    ``cgen_ram``, any other the machine's entry byte, its run's in the background table."""
     out = ["static uint8_t cgen_unheld(uint16_t a) {", *_within("PROG"), f"trap(0x{OOB_TRAP:04X});"]
     out.append("}")
-    find = ["for (uint8_t i = 0; i < SLOT_N; ++i) {", "if (SLOT_AT[i] == a)", "return SLOT_V[i];"]
-    out += _guarded([*find, "}"], slots)
+    out += _guarded(["uint8_t *r = cgen_ram(a);", "if (r)", "return *r;"], ram)
     return out + [
         "uint16_t i = sizeof BG_ORG / sizeof *BG_ORG - 1;",
         "while (a < BG_ORG[i])",
@@ -185,18 +193,15 @@ def _unheld(slots):
 
 def _unheld_wr(spans):
     """``cgen_unheld_wr``: the write of ``v`` at ``a`` where no region holds it, exact as
-    :func:`_unheld` reads it back or a trap (``OOB_TRAP``): a constant byte of a held span
-    ``spans`` or of the program, or one no store may write (outside ``CGEN_RAM_*``), keeps its
-    value or traps; a written byte's slot takes it; any other byte a store may write takes a
-    free slot, the trap when none is left."""
+    :func:`_unheld` reads it back or a trap (``OOB_TRAP``): a byte a store may write
+    (``cgen_ram``) takes it; a constant byte of a held span ``spans`` or of the program, or
+    one outside every store's addresses, keeps its value or traps."""
     out = ["static __attribute__((noinline)) void cgen_unheld_wr(uint16_t a, uint8_t v) {"]
     for j in spans:
         out += [f"if ({_inside(f'C{j}')}) {{", f"if (C{j}[a - C{j}_ORG] != v)"]
         out += [f"trap(0x{OOB_TRAP:04X});", "return;", "}"]
-    out += ["for (uint8_t i = 0; i < SLOT_N; ++i) {", "if (SLOT_AT[i] == a) {", "SLOT_V[i] = v;"]
-    out += ["return;", "}", "}", "if (cgen_unheld(a) == v)", "return;", *_within("RAM"), "{"]
-    out += ["if (SLOT_N == CGEN_OOB_SLOTS)", f"trap(0x{OOB_TRAP:04X});", "SLOT_AT[SLOT_N] = a;"]
-    return out + ["SLOT_V[SLOT_N++] = v;", "return;", "}", "}", f"trap(0x{OOB_TRAP:04X});", "}"]
+    out += ["uint8_t *r = cgen_ram(a);", "if (r) {", "*r = v;", "return;", "}"]
+    return out + ["if (cgen_unheld(a) != v)", f"trap(0x{OOB_TRAP:04X});", "}"]
 
 
 def _rd(regions, vol, spans, var=False):
@@ -226,15 +231,15 @@ def _rd(regions, vol, spans, var=False):
     )
 
 
-def _unheld_h(mem, used, cases, program, free=False):
+def _unheld_h(mem, used, cases, program, ram=None):
     """The ``.h``'s tables of :func:`_unheld` over the bytes ``cgen_rd`` finds in no array
     (none in a region, a held span when ``used`` holds the code, or a promoted cell of
     ``cases``) outside the volatile ranges: those of ``loaded`` and the ``program`` mask
-    (init's stores) as runs ``CGEN_PROG_*`` (joined across the held bytes), unless ``free`` is
-    False the others a store may write (all but the ``free`` mask's,
-    :meth:`printer.Module.unwritten`, every one when None) as runs ``CGEN_RAM_*`` (joined
-    across the held and the program's), the machine's entry bytes (``Memory.image``) as
-    :func:`regions.background`'s table."""
+    (init's stores) as runs ``CGEN_PROG_*`` (joined across the held bytes), unless ``ram`` is
+    None the others a store may write (the ``ram`` mask, every byte when True) as runs
+    ``CGEN_RAM_*`` (joined across the held and the program's, each run's offset ``_AT`` into
+    the entry bytes ``_INIT``, ``_N`` of them), the machine's entry bytes (``Memory.image``)
+    of the rest as :func:`regions.background`'s table."""
     held = (mem.owner >= 0) | mem.vol
     for lo, hi in mem.held if "CODE" in used else ():
         held[lo:hi] = True
@@ -243,8 +248,9 @@ def _unheld_h(mem, used, cases, program, free=False):
     prog[mem.loaded[0] : mem.loaded[1]] = True
     prog &= ~held
     out, masks = [], [("PROG", prog, held)]
-    if free is not False:
-        masks.append(("RAM", ~prog & ~held & (True if free is None else ~free), held | prog))
+    rest = ~prog & ~held
+    if ram is not None:
+        masks.append(("RAM", rest & ram, np.zeros_like(held)))
     for name, mask, join in masks:
         runs = []
         for o, n in mask_runs(mask | join):
@@ -257,7 +263,16 @@ def _unheld_h(mem, used, cases, program, free=False):
             f"#define CGEN_{name}_ORG {', '.join(f'0x{o:04X}' for o, _ in runs) or '0'}",
             f"#define CGEN_{name}_LEN {', '.join(f'0x{n:X}' for _, n in runs) or '0'}",
         ]
-    entries, pool = background(mem.image, ~prog & ~held)
+        if name == "RAM":
+            at = np.cumsum([0] + [n for _, n in runs])
+            data = b"".join(bytes(mem.image[o : o + n]) for o, n in runs)
+            out += [
+                f"#define CGEN_RAM_AT {', '.join(f'0x{x:X}' for x in at[:-1]) or '0'}",
+                f"#define CGEN_RAM_N {len(data)}",
+                f"#define CGEN_RAM_INIT {_hex(data) or '0'}",
+            ]
+            rest &= ~mask
+    entries, pool = background(mem.image, rest)
     out += [
         f"#define CGEN_BG_{k} {', '.join(f'0x{e[i]:X}' for e in entries)}"
         for i, k in enumerate(("ORG", "AT", "M"))
@@ -332,7 +347,7 @@ def _guarded(lines, conds):
 
 
 def _dispatch(
-    mem, helpers, used, cases=(), program=None, free=None
+    mem, helpers, used, cases=(), program=None, ram=True
 ):  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     """``(c lines, h lines)``: ``oob_rd`` (unless the host's) and ``wr`` over the regions
     outside the held spans, the volatile ranges and the held spans (whose data bytes ``Cj_DATA``
@@ -341,7 +356,7 @@ def _dispatch(
     places nowhere; and ``codechk``: whether a held constant byte would change. ``cgen_rd``
     and ``oob_wr`` find the promoted cells ``cases`` (``cgen_var``) first, as ``wr`` does
     where an access needs it, and the bytes in no array by :func:`_unheld_h` (``program``
-    init's stores, ``free`` the bytes no store may write)."""
+    init's stores, ``ram`` the bytes a store may write, every one when True)."""
     out, h = [], []
     vol = " || ".join(
         f"(a >= 0x{lo:04X} && a < 0x{hi:04X})" if hi < 0x10000 else f"a >= 0x{lo:04X}"
@@ -361,9 +376,9 @@ def _dispatch(
         out += _guarded(_var(cases), var)
     if unheld:
         program = np.zeros(0x10000, dtype=bool) if program is None else program
-        h = _unheld_h(mem, used, cases if var else (), program, free if writes else False)
+        h = _unheld_h(mem, used, cases if var else (), program, ram if writes else None)
         inner = ([NOOB] if unheld != [NOOB] else ["1"]) if writes else []
-        out += _guarded(UNHELD + _guarded(SLOTS, inner) + _unheld(inner), unheld)
+        out += _guarded(UNHELD + _guarded(RAM, inner) + _unheld(inner), unheld)
     out += _guarded(_rd(regions, vol, spans, bool(var)), rd)
     if "rd" in helpers:
         out.append("static inline uint8_t rd(uint16_t a) { return cgen_rd(a); }")
@@ -941,7 +956,9 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         c.append(IX)
     c.append("CGEN_STORAGE")
     c += mod.state_c()
-    dispatch, unheld = _dispatch(mem, helpers, used, mod.var_at, mod.init_stored, mod.free)
+    ram = mod.stored()
+    ram = True if ram is None else ram
+    dispatch, unheld = _dispatch(mem, helpers, used, mod.var_at, mod.init_stored, ram)
     c += dispatch
     for j in sorted(mod.checked):
         var = ["uint16_t a = p + y;", *VAR_RD] if j in mod.var_spans else []

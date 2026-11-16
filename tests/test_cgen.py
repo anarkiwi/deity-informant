@@ -2697,6 +2697,61 @@ def test_intervals_found_before_the_rewrites_are_found_again(prefix, tmp_path, m
     play(tmp_path, c, h, img, labels, entry_calls(range(4), 2))
 
 
+#: Three copies, each storing at its own base plus a byte its own constant table entry holds.
+PERCOPY = """
+entry:  LDX $31
+        STX $C001
+        LDX $35
+        STX $C002
+        LDX $39
+        STX $C003
+        AND #$03
+        STA $13
+v0:     LDX t0
+        LDA $13
+        STA $30,X
+        STA $C000
+        JMP v1
+v1:     LDX t1
+        LDA $13
+        STA $34,X
+        STA $C007
+        JMP v2
+v2:     LDX t2
+        LDA $13
+        STA $38,X
+        STA $C00E
+        RTS
+t0:     .byte 1
+t1:     .byte 3
+t2:     .byte 2
+end:
+"""
+
+
+def test_intervals_asked_in_an_instances_context_are_its_own(prefix, tmp_path, monkeypatch):
+    """Intervals an instance function finds for one copy's index stay that copy's: asked
+    first for each copy (every interval forgotten before), a load of the copy's own constant
+    is still a load of the copy's table entry, not one copy's constant for every copy, and
+    the checks printed are those found in no context."""
+    img, labels, loaded = assemble(PERCOPY)
+    cold = translate(prefix, img, labels, loaded)[0]
+    structure = printer.Module.structure
+
+    def warm(mod):
+        mod.forget()
+        for f in (f for f in mod.funcs if f.kparam is not None):
+            for o in f.walk():
+                if o.name in ("memref.load", "memref.store") and o.args[-2] in f.globals:
+                    assert f.kivs(f.address(o))
+        return structure(mod)
+
+    monkeypatch.setattr(printer.Module, "structure", warm)
+    c, h, info = translate(prefix, img, labels, loaded)
+    assert info["stats"]["instances"] == 1 and c == cold and "CODE_K" not in c
+    play(tmp_path, c, h, img, labels, entry_calls(range(4), 2))
+
+
 @pytest.mark.parametrize(
     "edit",
     [
@@ -3821,6 +3876,33 @@ def test_switch_default_keeps_its_tests_operands(prefix, tmp_path):
     calls = entry_calls([0, 2, 0, 1, 0, 2, 0, 5, 9, 1, 0])
     c, _, _ = check(prefix, tmp_path, CHAIN_TAIL, calls)
     assert "switch (" in c and "default:" in c
+
+
+#: OPJMP with a second entry storing into one of the jump's operand bytes by an index: the
+#: operand cells stay bytes of a region.
+OPJMP_RESET = OPJMP.replace(
+    "tlo:",
+    """reset:  AND #$01
+        TAX
+        LDA #$00
+        STA site+1,X
+        RTS
+tlo:""",
+)
+
+
+def test_operand_stores_of_a_switched_jump_are_dead(prefix, tmp_path):
+    """A computed ``JMP`` that switches on its index reads its operand cells no more; no other
+    load reads them, so every store into them (the dispatch's, another entry's by an index)
+    is dead and dropped with the cells: no array holds them."""
+    img, labels, loaded = assemble(OPJMP_RESET)
+    c, h, info = translate(prefix, img, labels, loaded, entries=("entry", "reset"))
+    [k] = [k for k, (org, _) in enumerate(info["regions"]) if org == labels["site"] + 1]
+    storage = re.search(r"^#define CGEN_STORAGE (.*)$", h, re.M)[1]
+    assert re.search(r"switch \(v\d+\)", c) and f"R{k}" not in storage + c
+    assert info["state"]["cells"]["bytes"].get("indexed", 0) == 0
+    assert re.search(r"void reset\(uint8_t a\) \{ \(void\)a; \}", c)
+    play(tmp_path, c, h, img, labels, [(n, a) for a in range(8) for n in ("entry", "reset")])
 
 
 def test_switch_from_a_jump_table(prefix, tmp_path):
@@ -6643,27 +6725,27 @@ UNHELD_RMW = UNHELD_PTR.replace(
 
 
 def test_unknown_write_of_unheld_byte_reads_back(prefix, tmp_path):
-    """A store of unknown address to a byte no array holds takes a slot the reads of it then
-    read, each slot a byte; one more than ``CGEN_OOB_SLOTS`` traps (``OOB_TRAP``), as a
-    write into the program does."""
+    """A store of unknown address may write any byte, so every byte no array holds outside
+    the program is held (``CGEN_RAM``, from the machine's entry bytes): each of more pages
+    than any fixed count of written bytes reads back what was written."""
     img, labels, loaded = poweron(UNHELD_RMW)
     c, h, _ = translate(prefix, img, labels, loaded)
-    assert re.search(r"\bwr\(", body_of(c, "entry")) and "#define CGEN_RAM_LEN 0xFFFF, 0x1" in h
-    play(tmp_path, c, h, img, labels, entry_calls([0x31, 0x50, 0x31, 0x90, 0xE5, 0x50], 2))
-    lib = cgenplay.build(
-        tmp_path / "t.c", tmp_path / "t2.so", (*cgenplay.CFLAGS, "-DCGEN_OOB_SLOTS=2")
-    )
-    lib.call.argtypes = [ctypes.c_void_p, ctypes.c_uint8]
-    fn = ctypes.cast(lib.entry, ctypes.c_void_p)
-    got = [lib.call(fn, p) for p in (0x31, 0x50, 0x31, 0x90)]
-    assert got == [-1, -1, -1, cgen.OOB_TRAP]
+    assert re.search(r"\bwr\(", body_of(c, "entry")) and "#define CGEN_RAM_LEN 0xFFFF, 0x1" not in h
+    n = int(re.search(r"^#define CGEN_RAM_N (\d+)$", h, re.M)[1])
+    lo, hi = loaded
+    assert n >= 0xFF00 - (hi - lo) - (W.IO[1] - W.IO[0])
+    pages = [p for p in range(0x02, 0xC0) if not lo >> 8 <= p <= hi >> 8][::3]
+    assert len(pages) > 32
+    play(tmp_path, c, h, img, labels, entry_calls(pages, 2))
 
 
 def test_store_past_its_array_into_the_program_traps(prefix, tmp_path):
     """A bounds-checked store past its array into a byte of the program the translation
-    holds no copy of traps (``OOB_TRAP``) where the 6502 would change the program."""
+    holds no copy of traps (``OOB_TRAP``) where the 6502 would change the program: every
+    byte a store may write is in an array, so none is held besides (``CGEN_RAM``)."""
     img, labels, loaded = assemble(PUSH)
     c, h, _ = translate(prefix, img, labels, loaded)
+    assert "#define CGEN_RAM_N 0\n" in h
     play(tmp_path, c, h, img, labels, entry_calls([5, 6, 7]))
     lib = cgenplay.build(tmp_path / "t.c", tmp_path / "t2.so")
     lib.call.argtypes = [ctypes.c_void_p, ctypes.c_uint8]

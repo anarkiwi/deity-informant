@@ -409,7 +409,10 @@ every access the layout places (`state.py`):
   after one range test), so its reader (`rdCj`, `rd`) reads the variable and `wr` writes it.
   Pointers the lift bounds to the song data reach no code byte and need none of it.
 
-A promoted byte no load reads is dropped with its stores (`unread`). The `.c` defines the
+A promoted byte no load reads is dropped with its stores (`unread`), and a store into cells
+left bytes no load may read is dead too (`Module.unread_stores`: only the constant bytes of the
+code span count as read, a store there being a code check): a computed jump switching on its
+index reads its operand cells no more, so their stores go and no array holds them. The `.c` defines the
 variables (`uint8_t S_23 = S_23_INIT;`, `uint8_t V0_f0A[3] = {V0_f0A_INIT};`) and the `.h`
 their initial values from the state it holds (init's copies write them by address, `&S_23`),
 so the `.c` is the same for every song and placement. Promoted bytes are in no region unless
@@ -454,7 +457,10 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   those at each `RTS`, and a byte an `LDA`/`LDX`/`LDY`/`LAX` loads those its register holds
   after it: a voice index a routine saves in an operand and reloads keeps its values. The
   intervals found (every function's and result's) are dropped whenever an operation is
-  rewritten or a fact they read is set, so each is the module's as it is when asked. A load
+  rewritten or a fact they read is set, so each is the module's as it is when asked. Those an
+  instance's copy index or a block's branches imply are kept per context (copy, block); what
+  is kept across contexts (another function's intervals, a call's result, the constant a load
+  reads) is found in no context, whichever context asks for it. A load
   the lift proves inside a hull (`Program.proven`) touches that hull alone. `sensitive_reads` also goes to the lift, which makes no
   throw-away read that cannot reach one of them.
   An unknown access may touch every byte of `loaded`, so then every non-code byte of it is in a
@@ -581,14 +587,17 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   inverse, a run per 16 KiB). `rd` is `cgen_rd` too. Pushes are stored where a load may reach
   the stack page (*Traps and computed jumps*), so its other bytes read their entry bytes.
 - `oob_wr`, a write outside every array its site may address, is exact under the read rule:
-  `wr`'s dispatch (a promoted cell first), and where no array holds the byte
-  (`cgen_unheld_wr`) a byte of a held span keeps its value or traps, as does a byte of the
-  program (`CGEN_PROG_*`: the read traps, so its write does) and a byte no store may write
-  (the lift's bounds say so, and loads may read it as its entry byte, *Data regions*); any
-  other (`CGEN_RAM_ORG`/`_LEN`, every byte where a store's address is unknown) is valid to
-  write: the value it reads changes nothing, another takes one of `CGEN_OOB_SLOTS` slots (16
-  unless the host defines it), which `cgen_rd` reads back before the background table, and
-  with none left traps (`OOB_TRAP`). Defining `CGEN_OOB` replaces `oob_rd` and `oob_wr`
+  `wr`'s dispatch (a promoted cell first), then, where no array holds the byte
+  (`cgen_unheld_wr`), the bytes stores may write are known statically: each store's address
+  set, else its interval (each copy's in an instance) met with the run the lift bounds it to
+  (`printer.Module.stored`). Exactly those of them no array holds are held, from the
+  machine's entry bytes (`CGEN_RAM_ORG`/`_LEN`/`_AT` runs into `CGEN_RAM_INIT`, `CGEN_RAM_N`
+  bytes; `cgen_ram`), which the write sets and `cgen_rd` reads before the background table.
+  Any other byte, a constant byte of a held span or of the program (`CGEN_PROG_*`: the read
+  traps, so its write does) included, keeps its value or traps (`OOB_TRAP`, invalid input).
+  A store of unknown address may write every byte, so then every byte outside the arrays and
+  the program is held: that store is residue to bound in the lift, not a cache's to absorb.
+  Defining `CGEN_OOB` replaces `oob_rd` and `oob_wr`
   with the host's (`wr` then ends in its `oob_wr`). `trap` is declared `noreturn`
   and `leaf`: a host compiles it apart from the `.c`, and it calls back into nothing there.
   A store the lift found may hit constant code or a table it read is followed by `codechk`,

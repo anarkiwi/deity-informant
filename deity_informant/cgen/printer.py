@@ -283,7 +283,8 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         self.blocks = op.regions[0]
         self.block_of = {b.name: b for b in self.blocks}
         self.defs, self.types, self.uses, self.where = {}, {}, {}, {}
-        self.users, self.ivs, self.dropped, self.globals = {}, {}, set(), set()
+        self.users, self.dropped, self.globals = {}, set(), set()
+        self.ivs = self.ivs0 = {}
         self.unread = set()
         self.addr_edges, self.arg_src, self.arg_block, self.dead = set(), {}, {}, set()
         self.flags = set()
@@ -343,7 +344,20 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
     def forget(self):
         """Drop the intervals found, per value, per instance index, per block and the
         constants loads read by them."""
-        self.ivs, self.kiv, self.contexts, self.knowns = {}, {}, {}, {}
+        self.ivs = self.ivs0 = {}
+        self.kiv, self.contexts, self.knowns = {}, {}, {}
+
+    def iv0(self, v):
+        """The interval of value ``v`` in no context (no instance index, no block): what
+        another function's interval or a cached fact may read, whichever context this
+        function's intervals are switched to (:meth:`kivs`, :meth:`iv_at`)."""
+        if self.ivs is self.ivs0:
+            return self.iv(v)
+        saved, self.ivs = self.ivs, self.ivs0
+        try:
+            return self.iv(v)
+        finally:
+            self.ivs = saved
 
     def instance(self, kpos):
         """Take block argument ``kpos`` as the instance index when every call site passes
@@ -794,6 +808,12 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         bounded, whose intervals :meth:`iv` derives from ``ivs``."""
         if blk in self.contexts:
             return self.contexts[blk]
+        if self.ivs is not self.ivs0:
+            saved, self.ivs = self.ivs, self.ivs0
+            try:
+                return self.context(blk)
+            finally:
+                self.ivs = saved
         if self.preds is None:
             self.preds = Counter(s for b in self.blocks for s in b.ops[-1].succs)
         preds, facts, b = self.preds, {}, blk
@@ -1023,7 +1043,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         if not sites:
             return full
         self.ivs[v] = lift = self.mod.entry_iv(self.name, names.index(v)) or full
-        ivs = [f.iv(o.args[names.index(v)]) for f, o in sites]
+        ivs = [f.iv0(o.args[names.index(v)]) for f, o in sites]
         return meet((min(lo for lo, _ in ivs), max(hi for _, hi in ivs)), lift)
 
     def loop_iv(self, v, back, init):
@@ -1362,7 +1382,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         if o.name != "memref.load" or o.args[-2] not in self.globals:
             return None
         if id(o) not in self.knowns:
-            lo, hi = self.iv(self.address(o))
+            lo, hi = self.iv0(self.address(o))
             self.knowns[id(o)] = self.mod.known(self.name, lo) if lo == hi else None
         return self.knowns[id(o)]
 
@@ -1370,7 +1390,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         """Whether named load ``o`` (:meth:`named`) stands for a constant of the code: a
         symbol, or an instruction's operand byte the lift reads as data init leaves constant
         (``Module.folded``), as the code would hold it."""
-        return o.args[0] == self.symbols or self.mod.folded[2][self.iv(self.address(o))[0]]
+        return o.args[0] == self.symbols or self.mod.folded[2][self.iv0(self.address(o))[0]]
 
     def accesses(self):
         """``[(op, (lo, hi), per)]`` of the memory accesses and I/O calls: the interval of
@@ -3145,10 +3165,11 @@ class Module:  # pylint: disable=too-many-instance-attributes
 
     def unread_stores(self):
         """Mark the stores no load reads back (``f.unread``): every byte they may write lies
-        outside the code span (whose cells :meth:`promote` drops when unread) and outside the
-        addresses any load of the module may read, over every call, and the sources of init's
-        copies. What they hold is never observed: a return address a callee pulls into a
-        pointer whose reads are forwarded, a vector the lift resolved its transfers through."""
+        outside the constant bytes of the code span (a store there is a code check) and
+        outside the addresses any load of the module may read, over every call, and the
+        sources of init's copies. What they hold is never observed: a return address a callee
+        pulls into a pointer whose reads are forwarded, a vector the lift resolved its
+        transfers through, the operand cells of a computed jump that switches on its index."""
         read = np.zeros(0x10000, dtype=bool)
         for lo, hi in self.held_runs:
             read[lo : hi + 1] = True
@@ -3160,7 +3181,8 @@ class Module:  # pylint: disable=too-many-instance-attributes
                         read[x : y + 1] = True
                 elif o.name == "memref.store":
                     stores.append((f, o, per or [(lo, hi)]))
-        read[slice(*self.mem.code_span)] = True
+        lo, hi = self.mem.code_span
+        read[lo:hi] |= True if self.cells is None else ~self.cells[lo:hi]
         for f, o, ivs in stores:
             if not any(read[x : y + 1].any() for x, y in ivs):
                 f.unread.add(id(o))
@@ -3312,7 +3334,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
             rts = pcs and all(self.fixed[q] and self.mem.image[q] in (0x40, 0x60) for q in pcs)
             r = self.reg_iv(name, pcs, j) if rts else None
             d = f.defs.get(o.args[j])
-            out.append(r if r or d is not None and d.name == "ub.poison" else f.iv(o.args[j]))
+            out.append(r if r or d is not None and d.name == "ub.poison" else f.iv0(o.args[j]))
         out = [r for r in out if r is not None]
         self.results_ivs[key] = r = (
             (min(lo for lo, _ in out), max(hi for _, hi in out)) if out else None
@@ -3643,39 +3665,45 @@ class Module:  # pylint: disable=too-many-instance-attributes
         return self.mem.image[a] if self.mem.constant[a] or free else None
 
     def unwritten(self):
-        """The bytes no store of any function may write (by its address set, else its address
-        interval met with the run the lift bounds it to), no store with an address set
-        (``Memory.written``) or init (:attr:`init_stored`) writes, outside the stack page and
-        the volatile ranges; None when a store of unknown address may write any byte. While
-        they are found no byte is known unwritten, and the functions' intervals are found
-        again after."""
+        """The bytes no store of any function may write (:meth:`stored`), no store with an
+        address set (``Memory.written``) or init (:attr:`init_stored`) writes, outside the
+        stack page and the volatile ranges; None when a store of unknown address may write any
+        byte. While they are found no byte is known unwritten, and the functions' intervals
+        are found again after."""
         self.free = None
-        may = self.mem.vol | self.init_stored
-        may[0x100:0x200] = True
-        for lo, hi in self.mem.written:
-            may[lo:hi] = True
+        may = self.stored()
+        if may is not None:
+            may |= self.mem.vol | self.init_stored
+            may[0x100:0x200] = True
+            for lo, hi in self.mem.written:
+                may[lo:hi] = True
+        self.free = None if may is None else ~may
+        return self.free
+
+    def stored(self):
+        """The bytes some store of any function may write: its address set, else its address
+        interval (each copy's in an instance) met with the run the lift bounds it to; None
+        when one of unknown address may write any byte."""
+        may = np.zeros(0x10000, dtype=bool)
         for f in self.funcs:
-            for o in f.walk():
-                store = o.name == "memref.store" and o.args[-2] in f.globals
-                if not store and not (o.name == "func.call" and o.prop("callee") == "@io_write"):
+            for o, iv, per in f.accesses():
+                if o.name != "memref.store" and o.prop("callee") != "@io_write":
                     continue
-                aset = self.fx(f.name).addr_sets.get((o.pc, True)) if store else None
+                aset = (
+                    self.fx(f.name).addr_sets.get((o.pc, True)) if o.name != "func.call" else None
+                )
                 for lo, hi in aset or ():
                     may[lo:hi] = True
                 if aset:
                     continue
-                lo, hi = f.addr_iv(o)
                 run = self.run_of(f, o)
-                if run is not None:
-                    lo, hi = max(lo, run[0]), min(hi, run[1])
-                elif hi - lo >= regions.BOUNDED:
-                    may = None
-                    break
-                may[lo : hi + 1] = True
-            if may is None:
-                break
-        self.free = None if may is None else ~may
-        return self.free
+                for lo, hi in per or [iv]:
+                    if run is not None:
+                        lo, hi = max(lo, run[0]), min(hi, run[1])
+                    elif hi - lo >= regions.BOUNDED:
+                        return None
+                    may[lo : hi + 1] = True
+        return may
 
     def symbol(self, j):
         """The ``.h`` name of symbol ``j`` (:attr:`symbols`): ``G_`` and the offset of its
