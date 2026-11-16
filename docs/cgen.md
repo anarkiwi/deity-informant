@@ -539,10 +539,13 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   `.c` defines them by `CGEN_STORAGE` (the held spans, the regions not inside one, a span's
   data bits); a region inside a held span is a `#define` of its slice there; `cgen_rd` and
   `wr` loop over the `CGEN_ARRAYS` and `CGEN_REGIONS` lists (`wr` writes a span's data bytes
-  through its slices). An access's offset into a held span at a byte of no instruction (a
-  table of song data) is a name the `.h` defines by the first instruction reading it (`C1_AT1A3`
-  for the one at `CODE_ORG + 0x1A3`, `_1`, `_2` for its further constants). Tunes of one
-  player that differ in their song data and its placement give the same `.c`.
+  through its slices). An access's offset into a held span, where some byte from the span's
+  origin to its constant is no instruction's (a table of song data, or code past it), is a name
+  the `.h` defines by the first instruction reading it (`C1_AT1A3` for the one at
+  `CODE_ORG + 0x1A3`, `_1`, `_2` for its further constants). The constant is taken from every
+  addition printed in the address, as an instance's table base plus its copy's offset and an
+  index: `C1[C1_AT134 + v7 + v50]`, as is the offset a proven pointer read indexes (`CGEN_IX`).
+  Tunes of one player that differ in their song data and its placement give the same `.c`.
 - A load of a constant byte (constant code or a table the lift read as constant) at a fixed
   address prints as a name the `.h` defines, relative to the origin that places the byte
   (`CODE_KA3` for `CODE_ORG + 0xA3`; `K_A3` for a byte init leaves constant, *Init*): the `.c`
@@ -572,6 +575,15 @@ prints `(uint8_t)(R3_ORG + 4)`. A constant or-ed into a computed jump's target (
 `JMP` whose low operand byte is a cell) prints so too: `S_2F9 | CODE_ORG`. Not covered: an
 address half stored without its partner in the same block, or used other than as an address
 (compared, added to data).
+
+An access to an array never holds a code or image address: its constant is an offset
+(*Memory*). `CODE_ORG` and `IMG_ORG` stay in the `.c` only where the value is a 6502 address:
+the cases of a switch over code addresses (a computed jump the switch over its table index
+does not cover, *Traps and computed jumps*) and the relocated high byte of a stored code pointer it switches on (`S_2F9 |
+CODE_ORG`); a pointer the program stores (the pair stores above), whose bytes hold the
+address its reads take apart; the address argument of `rd`, `wr`, `oob_*`, `rdCj`, `io_*` and
+`codechk`, which find the byte by it; and `cgen_var`'s switch over the promoted bytes'
+addresses.
 
 ## Traps and computed jumps
 
