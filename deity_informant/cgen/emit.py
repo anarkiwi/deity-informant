@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from collections import Counter
 
+from .._native import NREG
+
 BIN = {
     "INT_ADD": "addi",
     "INT_SUB": "subi",
@@ -31,7 +33,8 @@ EXTERNS = {
 }
 #: Entry register values besides ``A`` (index: value; others 0): ``SP`` below the return address.
 ENTRY_REGS = {3: 0xFD, 16: 0xFF}
-NSLOT = 18
+#: The first register past the register file: a function's stack slots, carries and lanes.
+NSLOT = NREG
 #: The register holding an instance function's copy index.
 KREG = 4
 

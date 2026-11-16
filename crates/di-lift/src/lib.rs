@@ -838,6 +838,7 @@ pub fn lift_banked(
         .filter(|_| private)
         .map(|s| extent(&plans, &fidx, &g, s));
     let cont = continuations(&plans, &fidx, &promote, bank.is_some());
+    let carries = carry::alloc(&g, &plans, &callees, &recursive);
     let sh = emit::Shared {
         stack,
         img,
@@ -865,7 +866,7 @@ pub fn lift_banked(
             .collect(),
         cont,
         slots,
-        carries: carry::alloc(&g, &plans, &callees),
+        carries,
         seen,
         sensitive: opts.sensitive.as_deref(),
         alias: aliases(&g, &opts.alias),

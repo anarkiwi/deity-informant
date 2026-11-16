@@ -1238,7 +1238,10 @@ fn copy_sel(
     {
         let (r, xs) = g.sels.get(q)?;
         let r = match *r {
-            Index::Carry(cp, x) => Index::Carry(node(cp, k)?, x),
+            Index::Carry(cp, x) if !g.carried.contains_key(&(cp, x)) => {
+                Index::Carry(node(cp, k)?, x)
+            }
+            Index::Carry(..) => return None,
             r => r,
         };
         if reg.replace(r).is_some_and(|x| x != r) {

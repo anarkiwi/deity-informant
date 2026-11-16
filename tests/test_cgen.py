@@ -3469,6 +3469,148 @@ def test_copies_switch_on_their_carried_index(prefix, tmp_path):
     assert [int(k) for k in re.findall(r"case (\w+):", c)] == [0, 1, 2]
 
 
+# `Y` read from `sel,X` on one path and from a zero-page byte on the other, each path loading
+# the table pair with it and writing `Y` before the paths join at the jump.
+MERGED = """
+entry:  STA $02
+        AND #$03
+        TAX
+        LDA $02
+        BMI byzp
+        LDY sel,X
+        LDA tlo,Y
+        STA ptr
+        LDA thi,Y
+        STA ptr+1
+        LDY #$00
+        JMP go
+byzp:   AND #$03
+        STA $03
+        LDY $03
+        LDA tlo,Y
+        STA ptr
+        LDA thi,Y
+        STA ptr+1
+        STA $03
+        LDY #$01
+go:     JMP (ptr)
+j0:     STX $C050
+        STY $C054
+        RTS
+j1:     LDA #$11
+        STA $C051
+        RTS
+j2:     LDA $C052
+        STA $C053
+        RTS
+j3:     STY $C055
+        RTS
+sel:    .byte 2,0,3,1
+tlo:    .byte lo(j0),lo(j1),lo(j2),lo(j3)
+thi:    .byte hi(j0),hi(j1),hi(j2),hi(j3)
+ptr:    .byte 0,0
+end:
+"""
+
+# `X` indexes the table pair and is written in the caller; the jump is in the subroutine,
+# called twice.
+CALLED = """
+entry:  AND #$03
+        TAX
+        LDA tlo,X
+        STA ptr
+        LDA thi,X
+        STA ptr+1
+        LDX #$00
+        JSR sub
+        STA $C000
+        JSR sub
+        STA $C001
+        RTS
+sub:    JMP (ptr)
+j0:     STX $C050
+        RTS
+j1:     LDA #$11
+        RTS
+j2:     LDA $C052
+        RTS
+j3:     STX $C053
+        RTS
+tlo:    .byte lo(j0),lo(j1),lo(j2),lo(j3)
+thi:    .byte hi(j0),hi(j1),hi(j2),hi(j3)
+ptr:    .byte 0,0
+end:
+"""
+
+# [`CALLED`] with the subroutine calling itself once before its jump.
+RECURSIVE = (
+    CALLED.replace(
+        "        JSR sub\n",
+        "        LDA #$01\n        STA depth\n        JSR sub\n",
+    )
+    .replace(
+        "sub:    JMP (ptr)\n",
+        "sub:    LDA depth\n        BEQ go\n        DEC depth\n        JSR sub\ngo:     JMP (ptr)\n",
+    )
+    .replace("ptr:    .byte 0,0\n", "ptr:    .byte 0,0\ndepth:  .byte 0\n")
+)
+
+# The write in a subroutine called before the jump's subroutine, which calls it again from an
+# arm of the jump.
+RERUN = """
+entry:  AND #$03
+        TAX
+        LDA tlo,X
+        STA ptr
+        LDA thi,X
+        STA ptr+1
+        JSR clr
+        JSR sub
+        STA $C000
+        RTS
+clr:    LDX #$00
+        RTS
+sub:    JMP (ptr)
+j0:     STX $C050
+        RTS
+j1:     LDA #$11
+        RTS
+j2:     LDA $C052
+        RTS
+j3:     JSR clr
+        STX $C053
+        RTS
+tlo:    .byte lo(j0),lo(j1),lo(j2),lo(j3)
+thi:    .byte hi(j0),hi(j1),hi(j2),hi(j3)
+ptr:    .byte 0,0
+end:
+"""
+
+
+@pytest.mark.parametrize("src,values", [(MERGED, range(256)), (CALLED, range(8))])
+def test_carried_index_merged_or_called_switches_on_it(prefix, tmp_path, src, values):
+    """An index written on each of two paths after loading the table pair, or written in a
+    caller of the jump's function: a switch over the index, the same for every origin."""
+    outs = []
+    for org in (0x1000, 0x2345):
+        img, labels, loaded = assemble(src, org)
+        c, h, info = translate(prefix, img, labels, loaded)
+        assert len(info["jumps"]) == 1 and not info["traps"]
+        (tmp_path / str(org)).mkdir()
+        play(tmp_path / str(org), c, h, img, labels, entry_calls(values))
+        outs.append(c)
+    assert outs[0] == outs[1] and "CODE_ORG" not in outs[0]
+    assert sorted(int(k) for k in re.findall(r"case (\w+):", outs[0])) == [0, 1, 2]
+
+
+@pytest.mark.parametrize("src", [RECURSIVE, RERUN], ids=["recursive", "rerun"])
+def test_carried_index_recursive_or_rerun_switches_on_addresses(prefix, tmp_path, src):
+    """The jump's function on a call cycle, or calling the write again: a switch over code
+    addresses."""
+    c, _, info = check(prefix, tmp_path, src, entry_calls(range(8)))
+    assert len(info["jumps"]) == 1 and "CODE_ORG" in c
+
+
 def test_target_by_arithmetic_switches_on_the_address(prefix, tmp_path):
     """A branch offset computed from the index rather than read from a table switches on the
     target address."""

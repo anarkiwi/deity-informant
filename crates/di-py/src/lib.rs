@@ -141,8 +141,8 @@ fn with_image<R>(
     Ok(f(img))
 }
 
-/// The reference interpreter's state: ``reg`` (the 16-entry ``lift()`` register file),
-/// ``pc`` and ``cycles``; ``step``/``run`` execute over a 64 KiB ``bytearray``.
+/// The reference interpreter's state: ``reg`` (the ``lift()`` register file), ``pc`` and
+/// ``cycles``; ``step``/``run`` execute over a ``bytearray`` of the whole address space.
 #[pyclass(module = "deity_informant._native")]
 struct Cpu(di_pcode::Cpu);
 
@@ -228,5 +228,6 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(wholeprog::reference_call, m)?)?;
     m.add_function(wrap_pyfunction!(wholeprog::reference_calls, m)?)?;
     m.add("UNIQUE_SIZE", di_pcode::UNIQUE_SIZE)?;
+    m.add("NREG", di_lift::ir::NREG)?;
     Ok(())
 }

@@ -7,9 +7,13 @@ use fixedbitset::FixedBitSet;
 pub const E: u16 = 16;
 /// Cycles since the entry started, at the start of the next unaccounted instruction (4 bytes).
 pub const CY: u16 = 17;
-/// Register varnodes: the `lift()` file (0-15), `E` and `CY`; a function's promoted stack
-/// slots follow (`NREG + i` holds the byte `i` below its entry SP).
-pub const NREG: usize = 18;
+/// The file's carry registers (`FCARRY..NREG`): indices computed transfers switch on past
+/// their register's write in another function ([`crate::carry`]), never machine state.
+pub const FCARRY: usize = 18;
+pub const NFCARRY: usize = 8;
+/// Register varnodes: the `lift()` file (0-15), `E`, `CY` and the file's carry registers; a
+/// function's promoted stack slots follow (`NREG + i` holds the byte `i` below its entry SP).
+pub const NREG: usize = FCARRY + NFCARRY;
 /// Registers of the 16-entry file no 6502 template uses: an instance function's copy index
 /// and the exit it left by ([`crate::inst`]), never handed back to the machine.
 pub const KREG: usize = 4;

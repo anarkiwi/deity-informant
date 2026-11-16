@@ -577,6 +577,8 @@ pub struct Graph {
     /// Computed transfers selecting their target by an index ([`crate::dispatch::Selector`]);
     /// a dispatch function's key has the selector every `JSR` it serves agrees on.
     pub sels: FxHashMap<u16, crate::dispatch::Selector>,
+    /// The writes of each carry class of more than one, by its least ([`crate::carry`]).
+    pub carried: FxHashMap<(u16, u8), Vec<(u16, u8)>>,
     /// Stores `(pc, opcode, access index)` none of whose addresses is constant code.
     pub nocode: FxHashSet<(u16, u8, usize)>,
     /// The bytes the targets in `stat` and the values of stores into cells were read from:
@@ -1317,6 +1319,7 @@ impl Fixpoint<'_> {
                         })
                         .collect(),
                     sels,
+                    carried: an.carried.clone(),
                     nocode,
                     closed,
                     vals,
