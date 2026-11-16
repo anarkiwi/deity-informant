@@ -15,7 +15,7 @@ from jennings.devices.mpu6502 import NativeMPU
 from jennings.memory import NativeMemory
 from jennings.opcodes import OPCODES
 
-from . import wholeprog
+from . import polling, wholeprog
 
 __all__ = [
     "Init",
@@ -170,22 +170,25 @@ def run(image, pc, songs, volatile, machine=None):
     return Init(img, list(songs), np.stack(states), writes, np.flatnonzero(stored & ~vol), ~vol)
 
 
-def reproduces(prog, image, state):
+def reproduces(prog, image, state, runs):
     """Whether lift ``prog`` of init (its one entry; throw-away reads not made) reproduces the
-    :class:`Init` ``state`` from ``image`` for every argument value: it returns without a deopt
-    and without a volatile read, so its run depends on nothing but ``image`` and ``A``, makes
-    the machine's volatile writes and leaves its values in the bytes init stores (``free``)
-    and the image's in the others outside the stack page and the volatile ranges."""
+    :class:`Init` ``state`` from ``image`` for every argument value: it returns without a deopt,
+    its volatile reads those of the polling loops of the value's :class:`Run` (``runs``, in
+    order, given its bytes), so its run depends on nothing but ``image`` and ``A``, makes the
+    machine's volatile writes and leaves its values in the bytes init stores (``free``) and the
+    image's in the others outside the stack page and the volatile ranges."""
     img = np.frombuffer(bytes(image), np.uint8)
-    for a, want, writes in zip(state.songs, state.states, state.writes):
+    for a, want, writes, ran in zip(state.songs, state.states, state.writes, runs):
         mem = bytearray(image)
-        r = prog.call(mem, 0, a=a, log=True)
-        log = [tuple(e) for e in r["log"]]
-        if r["halt"] != "return" or r["deopt"] is not None or not all(e[3] for e in log):
+        polled = bytes(v for _, v in ran.reads)
+        r = prog.call(mem, 0, a=a, log=True, reads=polled)
+        log = [tuple(e[:2]) for e in r["log"] if e[3]]
+        reads = [tuple(e[:2]) for e in r["log"] if not e[3]]
+        if r["halt"] != "return" or r["deopt"] is not None or not ran.exact:
             return False
         got = np.frombuffer(bytes(mem), np.uint8)
         same = got == np.where(state.kept & ~state.mask, img, want)
-        if [e[:2] for e in log] != writes or not same[state.kept].all():
+        if reads != ran.reads or log != writes or not same[state.kept].all():
             return False
     return True
 
@@ -246,11 +249,13 @@ def _word(lo, hi):
     return (hi[1], n) if hi[0] == "W" and hi[2:] == (1, n) and hi[1] in keys else None
 
 
-class Run:
+class Run:  # pylint: disable=too-many-instance-attributes
     """One run of init: ``mem`` the memory it leaves, ``tags`` the tag of every byte it wrote
-    and ``vals`` the byte each key was loaded with."""
+    and ``vals`` the byte each key was loaded with. With ``polls``
+    (:func:`deity_informant.polling.loops`) the device answers each the least byte it leaves
+    on (``reads``), ``exact`` while it is read only there and its runs do not depend on it."""
 
-    def __init__(self, image, volatile):
+    def __init__(self, image, volatile, polls=None):
         self.mem = NativeMemory(bytes(image))
         self.mpu = NativeMPU(memory=self.mem)
         self.volatile = [tuple(v) for v in volatile]
@@ -259,6 +264,8 @@ class Run:
         self.touched = {}
         self.reg = dict.fromkeys("axyc")
         self.chain = 0
+        self.polls, self.reads, self.exact = polls or {}, [], True
+        self.varying, self._loop, self.strict = frozenset(), None, False
 
     def _key(self, tags, ea):
         """The key of the address ``ea`` reached from a base held in bytes tagged ``tags``."""
@@ -365,6 +372,41 @@ class Run:
         elif name in _CARRY_CONST:
             reg["c"] = None
 
+    def _poll(self):
+        """Settle a polling loop entered at the next instruction: the device answers it the
+        least byte it leaves on, the registers that differ between such bytes ``varying`` once
+        it is left. A device read outside it, a loop not settling, a read of ``varying`` ends
+        ``exact``."""
+        pc, inside = self.mpu.pc, self._loop
+        if inside is not None and pc in inside[0].pcs:
+            if pc == inside[0].at:
+                self.reads.append((inside[0].addr, inside[1]))
+            return
+        if inside is not None:
+            self.varying, self._loop = inside[2], None
+        elif any(not w and any(lo <= x < hi for lo, hi in self.volatile) for x, w in self.acc):
+            self._inexact(pc)
+        loop = self.polls.get(pc)
+        if loop is None:
+            if self.varying:
+                use, defs, _ = polling.flow(self.mem, pc)
+                if use & self.varying:
+                    self._inexact(pc)
+                self.varying -= defs
+            return
+        got = polling.settle(loop, self.mem, polling.registers(self.mpu), pc)
+        if got is None or self.varying & loop.live[pc]:
+            self._inexact(pc)
+            return
+        self.mem[loop.addr], self._loop = got[0], (loop, got[0], got[1])
+        if pc == loop.at:
+            self.reads.append((loop.addr, got[0]))
+
+    def _inexact(self, pc):
+        self.exact = False
+        if self.strict:
+            raise RuntimeError(f"init at ${pc:04X} depends on the device")
+
     def call(self, pc, a=0, max_steps=10_000_000):
         """``run_to_rts`` from ``pc`` with ``A = a``, returning to the dummy ``$0001``."""
         mpu = self.mpu
@@ -380,19 +422,27 @@ class Run:
             for _ in range(max_steps):
                 if mpu.sp > 0xFD:
                     return self
+                if self.polls:
+                    self._poll()
                 self.step()
         finally:
             self.mem.observe_data_access(None, None)
         raise RuntimeError(f"init at ${pc:04X} did not return")
 
 
-def traced(image, pc, a=0, volatile=((0xD000, 0xE000),)):
-    """The :class:`Run` of init at ``pc`` with ``A = a`` on ``image``; None when it does not
-    return on the reference interpreter (``wholeprog.reference_call``) within its budget."""
+def traced(image, pc, a=0, volatile=((0xD000, 0xE000),), polls=None):
+    """The :class:`Run` of init at ``pc`` with ``A = a`` on ``image`` and its ``polls``; None
+    when it does not return within the reference interpreter's budget
+    (``wholeprog.reference_call``; a run that only returns by its polls must stay ``exact``)."""
     ref = wholeprog.reference_call(bytearray(image), pc, a=a, volatile=list(volatile))
-    if ref["halt"] != "return":
+    if ref["halt"] != "return" and not polls:
         return None
-    return Run(image, volatile).call(pc, a, ref["cycles"] // 2 + 1)
+    r = Run(image, volatile, polls)
+    r.strict = ref["halt"] != "return"
+    try:
+        return r.call(pc, a, ref["cycles"] // 2 + 1)
+    except RuntimeError:
+        return None
 
 
 def pointers(r):

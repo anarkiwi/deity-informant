@@ -333,7 +333,8 @@ the program, and checks it against the reference.
 ## Init
 
 A host whose program has an init runs it and lifts the other entries from the memory it leaves
-(`cgen`, [*Init*](cgen.md#init)), and lifts init alone with `once`.
+(`cgen`, [*Init*](cgen.md#init)), and lifts init alone with `once`; its run replays the reads
+of init's polling loops (`Program.call`'s `reads`, [*Polling loops*](cgen.md#polling-loops)).
 
 `once` declares that each entry runs once, from `image`: a store makes cells only of the bytes
 of the instructions that may run after it in the same call (reachable from it, a call matched

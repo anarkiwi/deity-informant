@@ -120,9 +120,10 @@ may run after it, so a block copy over code init already ran leaves that code co
 any `A`. It is **translated** when that lift is exact for every declared argument value:
 
 - lifted without throw-away reads, its run from `image` (`postinit.reproduces`) returns with
-  no deopt and no volatile read, so it depends on nothing but `image` and `A`, makes the
-  machine's volatile writes in order and leaves the machine's values in the bytes init stores
-  and the image's in the others (outside the stack page and the volatile ranges);
+  no deopt and no volatile read but those of its polling loops (*Polling loops*), so it
+  depends on nothing but `image` and `A`, makes the machine's volatile writes in order and
+  leaves the machine's values in the bytes init stores and the image's in the others (outside
+  the stack page and the volatile ranges);
 - every access of the reference's run for each value (`postinit.Run.touched`, effective
   addresses per instruction) lies inside what the lift bounds it to: a pointer load's hulls
   (`reach`, `proven`), a bounded store's array (`bounded`), an address set (`addr_sets`), so no
@@ -138,9 +139,31 @@ a self-modified operand is a code cell (*State*), an `(zp),Y` block copy a point
 init's code is lifted from the image, so where the lift decides a branch from constant bytes
 init reads the `.c` follows those bytes.
 
-Otherwise init is **replayed**: an init whose run reads the device (a hardware probe patching
-code, which is so settled at the machine's value), loops on it, deopts or leaves bounds the
-lift assumed. The init function then puts the state in place:
+### Polling loops
+
+A polling loop (`polling.loops`, over init's lift) is a strongly connected set of instructions
+of constant bytes with no store, stack access, `SP` write or transfer but branches and jumps,
+reading only constant addresses, one instruction of them the device: a wait such as
+`L: LDA $D012; CMP #k; BNE L` or `L: BIT $DC0D; BPL L`. Each pass is the same function of
+the byte the device answers. Entered with registers `r`, the loop settles (`polling.settle`,
+each of the 256 bytes run on the jennings core from `r`) when every pass it stays on keeps the
+registers live into its entry (every register live where it is left) and every byte it leaves
+on leaves to one instruction; the registers differing between those bytes vary.
+
+The reference's run (`postinit.Run`, `polls`) answers each loop's device read with the least
+byte it leaves on (`reads`), and is `exact` while every loop it enters settles, no varying
+register is read before it is written (a register still varying where init returns is not
+read) and it reads the device nowhere else. Init's lift is then run with those reads replayed
+in order and must make exactly them: the wait leaves the state the machine's run leaves on
+every device that ends it, so its exit values that stay live (`A = k` after `CMP #k`) are
+constants of its code, and the C waits as the code does, the device read each pass by
+`io_read`. Without `polls` a run that does not return on the reference interpreter has no
+trace; with them one returning only by its waits must stay `exact`. A polling loop in another
+entry is lifted as the loop it is, reading the device each pass.
+
+Otherwise init is **replayed**: an init whose run reads the device elsewhere (a hardware probe
+patching code, which is so settled at the machine's value), keeps or counts what it polls,
+deopts or leaves bounds the lift assumed. The init function then puts the state in place:
 
 - an `A` outside `CGEN_SONG0` and the `CGEN_SONGS` after it traps;
 - init's volatile writes are replayed in order (`CGEN_IO_*`, each distinct sequence once and
