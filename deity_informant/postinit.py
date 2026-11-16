@@ -575,13 +575,13 @@ def pointers(r):
     return out
 
 
-def groups(runs, pairs):
-    """``{lo: (g, delta)}``: each pair of ``pairs`` every run of ``runs`` left as a pointer on
-    the same word as pair ``g``, holding ``g``'s value plus ``delta``; ``g`` the least pair of
-    the group's most common value, so most of its pairs read it as it stands."""
+def groups(runs, pairs=None):
+    """``{lo: (g, delta)}``: each pair of ``pairs`` (default all) every run of ``runs`` left as
+    a pointer on the same word as pair ``g``, holding ``g``'s value plus ``delta``; ``g`` the
+    least pair of the group's most common value, so most of its pairs read it as it stands."""
     ps = [pointers(r) for r in runs]
     keys = {}
-    for lo in sorted(pairs):
+    for lo in sorted(set().union(*ps) if pairs is None else pairs):
         if all(lo in p for p in ps):
             keys.setdefault(tuple(p[lo][0] for p in ps), []).append(lo)
     out = {}
