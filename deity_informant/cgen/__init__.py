@@ -653,17 +653,22 @@ def _renumber(funcs, origin, base):
                 op[2][1] = [op[2][1][0], op[2][1][1] + base, op[2][1][2]]
 
 
-def _facts(prog):
-    """The facts of lift ``prog`` the layout reads (:meth:`printer.Module.fx`)."""
-    sets = {a: (min(v), max(v)) for a, v in dict(prog.sets).items() if v}
-    return SimpleNamespace(
-        sets={**dict(prog.bounds), **sets},
-        regs={pc: tuple(bytes(x) for x in r) for pc, r in dict(prog.regs).items()},
-        reach=dict(prog.reach),
-        proven=dict(prog.proven),
-        bounded=dict(prog.bounded),
-        addr_sets=dict(prog.addr_sets),
-    )
+#: The facts a lift gives the layout, as :class:`Program` holds them.
+_FACTS = ("sets", "bounds", "regs", "reach", "proven", "bounded", "addr_sets")
+
+
+def _raw(src):
+    """``{name: dict}`` of the :data:`_FACTS` of ``src``, a lift or a :class:`Program`."""
+    return {k: dict(getattr(src, k) or {}) for k in _FACTS}
+
+
+def _facts(src):
+    """The facts of ``src`` (:func:`_raw`) the layout reads (:meth:`printer.Module.fx`)."""
+    fx = _raw(src)
+    sets = {a: (min(v), max(v)) for a, v in fx.pop("sets").items() if v}
+    fx["sets"] = {**fx.pop("bounds"), **sets}
+    fx["regs"] = {pc: tuple(bytes(x) for x in r) for pc, r in fx["regs"].items()}
+    return SimpleNamespace(**fx)
 
 
 def _lift_init(once, start, entry, state, runs, bare):
@@ -845,10 +850,8 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     funcs, origin = _ranked(lifts)
     starts = set(prog.starts)
     p = Program(funcs, played, image, starts, [tuple(v) for v in volatile])
-    p.constant, p.jumps, p.sets = frozenset(prog.code), dict(prog.jumps), dict(prog.sets)
-    p.written = list(prog.written)
-    p.bounds, p.addr_sets, p.reach = dict(prog.bounds), dict(prog.addr_sets), dict(prog.reach)
-    p.proven, p.regs, p.bounded = dict(prog.proven), dict(prog.regs), dict(prog.bounded)
+    p.constant, p.jumps, p.written = frozenset(prog.code), dict(prog.jumps), list(prog.written)
+    vars(p).update(_raw(prog))
     p.ptr_sets = {pc: set(w) for pc, w in prog.ptr_sets.items()}
     p.objects = list(prog.objects)
     p.stores = {"play": trapinfo.stores(prog)}
@@ -964,18 +967,15 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     lo, hi = mem.code_span
     mod.cells = cells.copy()
     mod.cells[lo:hi] |= ~mem.constant[lo:hi] & ~mem.vol[lo:hi]
-    mod.sets = {**(p.bounds or {}), **{a: (min(v), max(v)) for a, v in (p.sets or {}).items() if v}}
     mod.lifted = {f"f{j}": (fn["pc"], list(fn.get("copies", ()))) for j, fn in enumerate(p.funcs)}
     mod.lifted.update({name: (pc, []) for pc, name in p.entries})
     mod.copy_pcs = {
         f"f{j}": {q: pcs for pcs in fn.get("copy_pcs", ()) for q in pcs if q}
         for j, fn in enumerate(p.funcs)
     }
-    mod.addr_sets = p.addr_sets or {}
-    mod.reach, mod.proven, mod.bounded = p.reach or {}, p.proven or {}, p.bounded or {}
+    vars(mod).update(vars(_facts(p)))
     mod.ptr_objects = list(p.objects)
     mod.regfile = regfile = [r for r, _ in emit.Context(p.funcs, False).regfile]
-    mod.regs = {pc: tuple(bytes(x) for x in r) for pc, r in (p.regs or {}).items()}
     mod.kpos = regfile.index(emit.KREG) if emit.KREG in regfile else None
     song = None
     if p.lifted is not None:
