@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 
 import numpy as np
-from tqdm import tqdm
 
 from .. import c64devices, polling, postinit, wholeprog
 from ..trace import Facts
@@ -589,7 +588,7 @@ class Program:  # pylint: disable=too-many-instance-attributes
     stores: dict | None = None
     #: The guards ``(kind, at, reg)`` of init's lift its declared argument values imply.
     entailed: frozenset = frozenset()
-    #: The bytes init stores for some argument value it takes (:func:`_accepted`).
+    #: The bytes init stores for some argument value it takes (:func:`_domain`).
     init_stored: np.ndarray | None = None
 
 
@@ -743,72 +742,41 @@ def _fixed(start, prog, lifted, every):
     return frozenset(np.flatnonzero(held).tolist())
 
 
-def _trace(prog, image, a, feed, held):
-    """What init's lift ``prog`` does from ``image`` with ``A = a`` and the volatile reads
-    ``feed``: its halt, deopt and volatile accesses, and the bytes ``held`` (indices) of the
-    memory it leaves, the only ones its stores may change."""
-    mem = bytearray(image)
-    r = prog.call(mem, 0, a=a, log=True, reads=feed)
-    return r["halt"], r["deopt"], r["log"], np.frombuffer(mem, np.uint8)[held].tobytes()
-
-
-def _makes(trace, run, image, held, kept):
-    """Whether lift ``trace`` (:func:`_trace`) from ``image`` is :class:`postinit.Run`
-    ``run``: it returns with no deopt, making the run's volatile reads and writes, and leaves
-    its memory on the bytes ``kept``: the run's ``held`` bytes, the image elsewhere."""
-    halt, deopt, log, left = trace
-    mem = np.frombuffer(bytes(run.mem[0:0x10000]), np.uint8)
-    rest = kept.copy()
-    rest[held] = False
-    return (
-        (halt, deopt) == ("return", None)
-        and [tuple(e[:2]) for e in log if not e[3]] == run.reads
-        and [tuple(e[:2]) for e in log if e[3]] == run.writes
-        and mem[held].tobytes() == left
-        and (mem[rest] == np.frombuffer(image, np.uint8)[rest]).all()
-    )
-
-
-def _accepted(image, pc, volatile, polls, devices, lift_, every):
-    """``{a: runs}`` of each argument value init (at ``pc`` on ``image``) takes, its
-    :func:`postinit.forks`: of ``every`` (its runs on the machine for each value it returns
-    with), those whose stores outside the stack page and the volatile ranges lie in what a
-    store of its lift ``lift_`` may write, on each of whose forks the lift returns with no
-    deopt making the fork's volatile accesses and leaving its memory (:func:`_makes`). Values
-    whose machine runs leave one memory and volatile writes are tried on the forks of the
-    least of them: one the lift runs as it runs the least shares its verdict, another is tried
-    on its own forks. Init's translation leaves one of their states or traps, whatever the host
-    declares."""
-    may = np.zeros(0x10000, dtype=bool)
+def _domain(lift_, image, every, songs):
+    """The argument values the other entries are lifted for: of those init returns with on the
+    machine (``every``, every value of ``A``), each whose stores outside the stack page and the
+    volatile ranges lie in what a store of its lift ``lift_`` may write and on which that lift,
+    run from ``image``, does not deopt (an index past its tables: a value init's translation
+    traps on), and the declared ``songs``. Values whose machine runs leave one memory and
+    volatile writes share the verdict of the least of them."""
+    may = ~every.kept
     for lo, hi in lift_.stored:
         may[lo:hi] = True
-    held = np.flatnonzero(may & every.kept)
-    may |= ~every.kept
     alike = {}
     for a, s, st, w in zip(every.songs, every.stored, every.states, every.writes):
         if may[s].all():
             alike.setdefault((st.tobytes(), tuple(w)), []).append(a)
+    out = set(songs)
+    for vals in alike.values():
+        if lift_.call(bytearray(image), 0, a=vals[0])["deopt"] is None:
+            out.update(vals)
+    return sorted(out)
 
-    def traces(a, rs):
-        return [_trace(lift_, image, a, bytes(v for _, v in r.reads), held) for r in rs]
 
-    def makes(a, rs):
-        return all(_makes(t, r, image, held, every.kept) for t, r in zip(traces(a, rs), rs))
+def _aliases(runs, states):
+    """``[(lo, g, delta)]`` of :func:`postinit.groups` of ``runs`` (init's runs of one argument
+    value) holding on each of ``states``: pair ``lo``'s word is pair ``g``'s plus ``delta``."""
+    pairs = set().union(*(postinit.pointers(r) for r in runs))
+    st = states.astype(np.int64)
 
-    out = {}
-    for vals in tqdm(alike.values(), desc="init values", unit="run", leave=False, disable=None):
-        rs = postinit.forks(image, pc, vals[0], volatile, polls, devices)
-        if rs is None:
-            continue
-        ran, ok = traces(vals[0], rs), makes(vals[0], rs)
-        for a in vals:
-            own, took = rs, ok
-            if traces(a, rs) != ran:
-                own = postinit.forks(image, pc, a, volatile, polls, devices) or []
-                took = bool(own) and makes(a, own)
-            if took:
-                out[a] = own
-    return out
+    def word(lo):
+        return st[:, lo] | st[:, (lo + 1) & 0xFFFF] << 8
+
+    return [
+        (lo, g, d)
+        for lo, (g, d) in sorted(postinit.groups(runs, pairs).items())
+        if ((word(lo) - word(g)) & 0xFFFF == d).all()
+    ]
 
 
 def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
@@ -845,26 +813,26 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
         every = postinit.run(image, pc, range(256), volatile, machine, skip=True)
         bare = wholeprog.lift(image, [pc], volatile, facts, sensitive=(), **kw, once=True)
         polls = polling.loops(image, bare.starts, bare.code, volatile)
-        took = _accepted(image, pc, volatile, polls, devices, bare, every)
-        runs = [took.get(a) or postinit.forks(image, pc, a, volatile, polls, devices) for a in vals]
-        # The values the other entries are lifted for: every one init takes, and the declared.
-        over = sorted(set(took) | set(vals))
-        byval = {**dict(zip(vals, runs)), **took}
-        # Values sharing their runs (``_accepted``) contribute them once.
-        shared = {id(byval[a]): byval[a] for a in over}
-        flat = [] if None in runs else [r for rs in shared.values() for r in rs]
-        if flat:
-            pairs = set().union(*(postinit.pointers(r) for r in flat))
-            alias = [(lo, g, d) for lo, (g, d) in sorted(postinit.groups(flat, pairs).items())]
+        runs = [postinit.forks(image, pc, a, volatile, polls, devices) for a in vals]
+        over = _domain(bare, image, every, vals)
+        rep = over[0]
+        first = (
+            runs[vals.index(rep)]
+            if rep in vals
+            else postinit.forks(image, pc, rep, volatile, polls, devices)
+        )
+        others = [r for a, rs in zip(vals, runs) if a != rep for r in rs or ()]
+        flat = [] if None in runs or first is None else [*first, *others]
         decided = every.select(over)
         image = decided.states[0].tobytes()
         played = [e for i, e in enumerate(entries) if i != init]
-        if took.keys() >= set(vals):
-            lone = _lift_init(start, pc, volatile, facts, sensitive, kw, state, runs, bare)
+        lone = _lift_init(start, pc, volatile, facts, sensitive, kw, state, runs, bare)
         if lone is not None:
             entailed = _entailed(start, pc, volatile, facts, sensitive, kw, lone, vals)
         # A translated init leaves the state of any value its probes read.
         other = decided if lone is None else decided.extended(flat)
+        if flat:
+            alias = _aliases(first, other.states)
     free = None if other is None else other.values()
 
     # The values init's translation may leave in its variables, where its lift knows them.

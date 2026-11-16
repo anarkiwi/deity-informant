@@ -117,14 +117,15 @@ With `init`, `translate` runs that entry once per value of `A` in `songs` (its d
 argument values) on `machine`, for the `.h`, and decides the `.c` as if `A` may be any byte:
 the declared values reach only the `.h` (`CGEN_SONG0`, `CGEN_SONGS`, a replayed init's
 copies), so the `.c` is the same for every count of them. The other entries are lifted for
-every value init **takes** (`_accepted`), and the declared ones: of the values its run on
-`machine` returns with, those whose stores lie in what a store of init's lift may write and
-whose runs (`postinit.forks`, one per sequence of values its probes may read) that lift makes
-to its return with no deopt (the same volatile accesses and memory). Values whose machine runs
-leave one memory and volatile writes are tried on the runs of the least of them: one the lift
-runs as it runs the least shares its verdict and runs, another is tried on its own. Init's translation leaves one of their states or traps, whatever
-the host declares; a value it does not take (an index past its tables) traps in it. They are
-lifted from the memory the first of those runs leaves. The bytes those runs store outside the
+every value init **takes** (`_domain`), and the declared ones: of the values its run on
+`machine` returns with (every `A` is run, as for the bytes it leaves constant), those whose
+stores lie in what a store of init's lift may write and on which that lift does not deopt;
+values whose machine runs leave one memory and volatile writes share the verdict of the least
+of them. A value it does not take (an index past its tables) is one init's translation traps
+on. The states the probes of a translated init may leave besides are its runs
+(`postinit.forks`) for the least value taken and the declared ones; operand pairs init sets
+from one word (`alias`, below) are those of the least value's runs that hold on every state. The
+other entries are lifted from the memory the least value's run leaves. The bytes those runs store outside the
 stack page and the volatile ranges are variables whose values are the runs' (`free`,
 [wholeprog](wholeprog.md#init)): the other entries' analysis takes none of them, so their lift
 holds for every run's state. Operand pairs init sets from one
@@ -164,8 +165,7 @@ storage starting from `image`, while the other entries' functions read the names
 Init is then lifted itself, from `image`, as an entry run once (`once`,
 [wholeprog](wholeprog.md#init): a store into code makes cells only of the instructions that
 may run after it, so a block copy over code init already ran leaves that code constant), for
-any `A`. It is **translated** when it takes every declared value and that lift is exact for
-each:
+any `A`. It is **translated** when that lift is exact for each declared value:
 
 - lifted without throw-away reads, its run from `image` (`postinit.reproduces`) returns with
   no deopt and no volatile read but those of its polling loops (*Polling loops*), so it
