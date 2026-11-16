@@ -8,6 +8,7 @@
 
 use crate::analysis::Iv;
 use crate::ir::{Block, Function};
+use crate::vsa::Bits;
 use di_pcode::{Opc, Space};
 
 /// What a deopt guards or stands for.
@@ -144,27 +145,6 @@ pub struct Extent {
     pub store: Option<u16>,
 }
 
-/// 256 bits: a set of byte values.
-pub type Bits = [u64; 4];
-
-pub const ALL: Bits = [!0; 4];
-
-pub fn bits(vals: impl IntoIterator<Item = u32>) -> Bits {
-    let mut b = [0; 4];
-    for v in vals {
-        b[(v as usize >> 6) & 3] |= 1 << (v & 63);
-    }
-    b
-}
-
-pub fn bits_iv(iv: Iv) -> Bits {
-    bits(iv.lo.min(0xff)..=iv.hi.min(0xff))
-}
-
-fn subset(a: &Bits, b: &Bits) -> bool {
-    a.iter().zip(b).all(|(x, y)| x & !y == 0)
-}
-
 /// One guard a deopt stands for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Why {
@@ -217,7 +197,7 @@ impl Why {
     fn allowed(&self) -> Option<(usize, Bits)> {
         let r = self.reg.filter(|&r| r < 3)? as usize;
         let runs = self.ok.iter().flat_map(|&(lo, hi)| lo..=hi.min(0xff));
-        Some((r, bits(runs)))
+        Some((r, runs.collect()))
     }
 }
 
@@ -250,16 +230,14 @@ struct Fact {
 impl Fact {
     fn top(src: Option<u8>) -> Self {
         Fact {
-            vals: ALL,
+            vals: Bits::ALL,
             by: Vec::new(),
             src,
         }
     }
     fn join(&mut self, o: &Fact) -> bool {
         let old = self.clone();
-        for (a, b) in self.vals.iter_mut().zip(o.vals) {
-            *a |= b;
-        }
+        self.vals = self.vals.or(o.vals);
         for &t in &o.by {
             if !self.by.contains(&t) {
                 self.by.push(t);
@@ -319,10 +297,8 @@ pub fn imply(f: &mut Function) {
                             e => *e = Some(st[r].clone()),
                         }
                         let s = &mut st[r];
-                        if !subset(&s.vals, &ok) {
-                            for (a, b) in s.vals.iter_mut().zip(ok) {
-                                *a &= b;
-                            }
+                        if !s.vals.subset(ok) {
+                            s.vals = s.vals.and(ok);
                             s.by = vec![j as u32];
                         }
                     }
@@ -349,7 +325,7 @@ pub fn imply(f: &mut Function) {
                                 st[a.off() as usize].clone()
                             }
                             (Opc::Copy, Space::Const) => Fact {
-                                vals: bits([a.off() & 0xff]),
+                                vals: Bits::from_iter([a.off() & 0xff]),
                                 by: Vec::new(),
                                 src: None,
                             },
@@ -377,7 +353,7 @@ pub fn imply(f: &mut Function) {
     // its deopt is never taken.
     let implied: Vec<bool> = (f.whys.iter().zip(&held))
         .map(|(w, h)| match (w.allowed(), h) {
-            (Some((_, ok)), Some(h)) => subset(&h.vals, &ok),
+            (Some((_, ok)), Some(h)) => h.vals.subset(ok),
             _ => false,
         })
         .collect();
@@ -408,8 +384,8 @@ mod tests {
 
     #[test]
     fn bits_sets() {
-        let b = bits_iv(Iv { lo: 3, hi: 70 });
-        assert!(subset(&bits([3, 64, 70]), &b));
-        assert!(!subset(&bits([2]), &b));
+        let b = Bits::range(Iv { lo: 3, hi: 70 });
+        assert!(Bits::from_iter([3, 64, 70]).subset(b));
+        assert!(!Bits::from_iter([2]).subset(b));
     }
 }

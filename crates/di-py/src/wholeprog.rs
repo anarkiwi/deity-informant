@@ -435,8 +435,8 @@ fn hulls(r: &[di_lift::ir::Reach]) -> HashMap<u16, (u32, u32, u32, u32)> {
 }
 
 /// The inclusive runs of the values of a 256-bit set.
-fn values(b: &di_lift::why::Bits) -> Vec<(u32, u32)> {
-    di_lift::inclusive_runs((0..256u32).filter(|&v| b[v as usize >> 6] >> (v & 63) & 1 == 1))
+fn values(b: &di_lift::vsa::Bits) -> Vec<(u32, u32)> {
+    di_lift::inclusive_runs(b.values())
 }
 
 /// The name of register `r` (`a`, `x`, `y`, `sp`, a flag `c`, `z`, `i`, `d`, `b`, `v`, `n`).
@@ -917,10 +917,8 @@ impl Program {
     #[getter]
     fn regs(&self) -> HashMap<u16, [Vec<u8>; 3]> {
         let vals = |b: &[u64; 4]| -> Vec<u8> {
-            (0..256u32)
-                .filter(|&v| b[(v >> 6) as usize] >> (v & 63) & 1 == 1)
-                .map(|v| v as u8)
-                .collect()
+            let b = di_lift::vsa::Bits::from_words(*b);
+            b.values().map(|v| v as u8).collect()
         };
         self.prog
             .regs

@@ -176,14 +176,23 @@ pub(crate) const NOREG: u8 = u8::MAX;
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Bits([u64; 4]);
 
+impl FromIterator<u32> for Bits {
+    fn from_iter<I: IntoIterator<Item = u32>>(vs: I) -> Bits {
+        let mut b = Bits::default();
+        vs.into_iter().for_each(|v| b.add(v));
+        b
+    }
+}
+
 impl Bits {
+    pub const ALL: Bits = Bits([!0; 4]);
     /// The set of a 32-byte bitmap: bit `v & 7` of byte `v >> 3` for `v`.
     pub fn from_bitmap(b: &[u8; 32]) -> Bits {
         Bits(std::array::from_fn(|i| {
             u64::from_le_bytes(b[i * 8..i * 8 + 8].try_into().unwrap())
         }))
     }
-    pub(crate) fn from_words(w: [u64; 4]) -> Bits {
+    pub fn from_words(w: [u64; 4]) -> Bits {
         Bits(w)
     }
     pub(crate) fn add(&mut self, v: u32) {
@@ -195,10 +204,13 @@ impl Bits {
     pub(crate) fn or(self, o: Bits) -> Bits {
         Bits(std::array::from_fn(|i| self.0[i] | o.0[i]))
     }
-    fn and(self, o: Bits) -> Bits {
+    pub(crate) fn and(self, o: Bits) -> Bits {
         Bits(std::array::from_fn(|i| self.0[i] & o.0[i]))
     }
-    pub(crate) fn values(self) -> impl Iterator<Item = u32> {
+    pub(crate) fn subset(self, o: Bits) -> bool {
+        self.and(o) == self
+    }
+    pub fn values(self) -> impl Iterator<Item = u32> {
         (0..4u32).flat_map(move |i| {
             let mut w = self.0[i as usize];
             std::iter::from_fn(move || {
@@ -209,7 +221,7 @@ impl Bits {
         })
     }
     /// The values of `iv` (inside a byte).
-    fn range(iv: Iv) -> Bits {
+    pub(crate) fn range(iv: Iv) -> Bits {
         Bits(std::array::from_fn(|i| {
             let (lo, hi) = (iv.lo.max(i as u32 * 64), iv.hi.min(i as u32 * 64 + 63));
             match lo <= hi {
@@ -220,9 +232,7 @@ impl Bits {
     }
     /// The values `v + k` (mod 256).
     fn shifted(self, k: u8) -> Bits {
-        let mut out = Bits::default();
-        self.values().for_each(|v| out.add((v + k as u32) & 0xff));
-        out
+        self.values().map(|v| (v + k as u32) & 0xff).collect()
     }
     /// The set while it holds at most [`CAP`] values, else none (its interval).
     fn capped(self) -> Option<Bits> {
@@ -241,9 +251,7 @@ impl Bits {
         Some(Iv { lo, hi })
     }
     fn filter(self, f: impl Fn(u32) -> bool) -> Bits {
-        let mut out = Bits::default();
-        self.values().filter(|&v| f(v)).for_each(|v| out.add(v));
-        out
+        self.values().filter(|&v| f(v)).collect()
     }
 }
 
@@ -546,12 +554,7 @@ impl St {
     }
     /// The value set of data register `r` where kept: its set, else its one value.
     fn held(&self, r: usize) -> Option<Bits> {
-        self.set[r].or_else(|| {
-            let v = self.env[r].value()?;
-            let mut b = Bits::default();
-            b.add(v);
-            Some(b)
-        })
+        self.set[r].or_else(|| self.env[r].value().map(|v| Bits::from_iter([v])))
     }
     pub(crate) fn vals(&self, r: usize) -> Bits {
         self.set[r].unwrap_or_else(|| {
@@ -559,9 +562,7 @@ impl St {
             if self.kb[r].u & 0xff == 0xff {
                 return Bits::range(iv);
             }
-            let mut b = Bits::default();
-            self.kb[r].values(iv).for_each(|v| b.add(v));
-            b
+            self.kb[r].values(iv).collect()
         })
     }
     /// What data register `r` holds as a tag: its table byte, else its constant.

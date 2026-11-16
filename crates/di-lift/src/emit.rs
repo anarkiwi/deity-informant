@@ -425,8 +425,9 @@ impl<'a> Em<'a, '_> {
         self.f.exits.len() as u32
     }
     /// The values the analysis finds register `r` (`A`, `X` or `Y`) holds at `pc`.
-    fn seen(&self, pc: u16, r: usize) -> Option<crate::why::Bits> {
-        (r < 3).then(|| self.sh.g.regs.get(&pc).map(|x| x[r]))?
+    fn seen(&self, pc: u16, r: usize) -> Option<crate::vsa::Bits> {
+        let held = self.sh.g.regs.get(&pc).filter(|_| r < 3);
+        held.map(|x| crate::vsa::Bits::from_words(x[r]))
     }
     /// `opc(a, b)` into a fresh temporary of `size` bytes.
     fn op(&mut self, opc: Opc, size: u8, a: Vn, b: Vn) -> Vn {

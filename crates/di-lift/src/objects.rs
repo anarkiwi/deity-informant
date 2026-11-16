@@ -26,6 +26,7 @@
 use crate::analysis::{flow_succs, is_stack_op, Flow, Graph, Iv, Var};
 use crate::bank::BankMap;
 use crate::ptr::{completer, usable, zp_stores, StoreKey};
+use crate::vsa::Bits;
 use crate::walks::Mk;
 use fixedbitset::FixedBitSet;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -432,7 +433,8 @@ fn pairs_of(g: &Graph, pc: u16, v: &Var, a: &crate::analysis::Access) -> Option<
         Y => vec![p.lo.and_then(Iv::value)? as u8],
         X if p.idx == 0 && !g.cells.contains(pc.wrapping_add(1) as usize) => {
             let o = g.img[pc.wrapping_add(1) as usize];
-            values(g.regs.get(&pc)?[X])
+            Bits::from_words(g.regs.get(&pc)?[X])
+                .values()
                 .map(|x| o.wrapping_add(x as u8))
                 .collect()
         }
@@ -441,19 +443,13 @@ fn pairs_of(g: &Graph, pc: u16, v: &Var, a: &crate::analysis::Access) -> Option<
     (!qs.is_empty() && !qs.contains(&0xff)).then_some(qs)
 }
 
-/// The values of a register's bits, ascending.
-fn values(b: [u64; 4]) -> impl Iterator<Item = u32> {
-    (0..256u32).filter(move |&x| b[x as usize >> 6] >> (x & 63) & 1 == 1)
-}
-
 /// The values of `Y` at `pc` on every run.
 fn ys(g: &Graph, pc: u16) -> Vec<u32> {
-    values(
-        g.regs
-            .get(&pc)
-            .map_or([u64::MAX; 4], |r| r[di_pcode::reg::Y]),
-    )
-    .collect()
+    let y = g
+        .regs
+        .get(&pc)
+        .map_or(Bits::ALL, |r| Bits::from_words(r[di_pcode::reg::Y]));
+    y.values().collect()
 }
 
 /// The address intervals an access `a` of variant `v` at `pc` may reach: through pointers of
@@ -999,13 +995,9 @@ fn loads(g: &Graph, volatile: &[(u32, u32)], bank: Option<&BankMap>) -> FxHashMa
                 }
                 let key = (pc, v.op, ai);
                 let ys = g.regs.get(&pc).map(|r| r[di_pcode::reg::Y]);
-                let has = |b: &[u64; 4], x: u32| b[x as usize >> 6] >> (x & 63) & 1 == 1;
+                let upto = Bits::range(Iv { lo: 0, hi: p.idx });
                 let y = ys
-                    .and_then(|b| {
-                        let lo = (0..=p.idx).find(|&x| has(&b, x))?;
-                        let hi = (lo..=p.idx).rev().find(|&x| has(&b, x))?;
-                        Some(Iv { lo, hi })
-                    })
+                    .and_then(|b| Bits::from_words(b).and(upto).hull())
                     .unwrap_or(Iv { lo: 0, hi: p.idx });
                 let base = g.reach.get(&key).map(|h| h.1);
                 out.entry(q as u8)
