@@ -6787,6 +6787,89 @@ def test_background_table_is_exact_and_small():
     assert [(o, m) for o, _, m in entries] == [(q << 14, 7) for q in range(4)] and len(pool) == 16
 
 
+#: Three records 7 bytes apart, each reached through its own zero-page pointer pair init
+#: leaves: ``($40,X)`` for ``X`` = 14, 7, 0.
+INDXREC = """
+init:   LDA #lo(rec)
+        STA $40
+        LDA #hi(rec)
+        STA $41
+        LDA #lo(rec+7)
+        STA $47
+        LDA #hi(rec+7)
+        STA $48
+        LDA #lo(rec+14)
+        STA $4E
+        LDA #hi(rec+14)
+        STA $4F
+        RTS
+play:   LDX #14
+pl:     JSR voice
+        TXA
+        SEC
+        SBC #7
+        TAX
+        BPL pl
+        RTS
+voice:  LDA ($40,X)
+        CLC
+        ADC #$22
+        STA ($40,X)
+        STA $C000,X
+        RTS
+rec:    .byte 1,0,0,0,0,0,0,2,0,0,0,0,0,0,3
+end:
+"""
+
+
+#: :data:`INDXREC` calling its voice routine with each ``X`` from its own site: ``X`` is the
+#: routine's parameter, no loop's progression.
+INDXREC_SITES = INDXREC.replace(
+    """play:   LDX #14
+pl:     JSR voice
+        TXA
+        SEC
+        SBC #7
+        TAX
+        BPL pl
+        RTS""",
+    """play:   LDX #14
+        JSR voice
+        LDX #7
+        JSR voice
+        LDX #0
+        JSR voice
+        RTS""",
+)
+
+
+@pytest.mark.parametrize("src", ["INDXREC", "INDXREC_SITES"])
+def test_zero_page_pairs_init_leaves_index_their_records(prefix, tmp_path, src):
+    """``(zp,X)`` through pairs init leaves, each pointing at its own record: the address is
+    the record's for each ``X`` (a loop's progression, or the values the lift finds ``X``
+    holding), so the access indexes the records by ``X`` or the element, no 16-bit address
+    subscript; the pairs are then never read, so no zero-page byte is held
+    and init stores none of them; the ``.c`` is the same wherever the program lies."""
+    outs = []
+    for org in (0x1000, 0x2345):
+        img, labels, loaded = assemble(globals()[src], org)
+        c, h, info = translate(
+            prefix, img, labels, loaded, entries=("init", "play"), init=0, songs=range(2)
+        )
+        assert not [
+            r
+            for r in info["regions"]
+            if r[0] < 0x100 and re.search(rf"\bR{info['regions'].index(r)}\b", c)
+        ]
+        lifted = c[c.index("CGEN_STORAGE") : c.index("void init(")]
+        assert not re.search(r"_ORG\)?\]", lifted)
+        assert re.search(r"\b(?:R\d+|V\d+_f00)\[v\d+\] = ", lifted)
+        (tmp_path / str(org)).mkdir()
+        play(tmp_path / str(org), c, h, img, labels, [("init", 0)] + [("play", 0)] * 8)
+        outs.append(c)
+    assert outs[0] == outs[1]
+
+
 #: The helpers a lifted access of unknown address goes through.
 DISPATCH = re.compile(r"\b(?:wr|rd|codechk)\(")
 

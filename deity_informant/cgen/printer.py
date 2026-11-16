@@ -1289,13 +1289,22 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             self.where[id(y)] = (blk, j)
         return x
 
-    def evaluate(self, v, env, memo):  # pylint: disable=too-many-branches
-        """The values of ``v`` (an array or scalar) for the block arguments ``env``."""
+    def evaluate(self, v, env, memo, known=False):  # pylint: disable=too-many-branches
+        """The values of ``v`` (an array or scalar) for the block arguments ``env``; with
+        ``known`` a byte load reads the bytes holding one value whenever this function runs
+        (:meth:`Module.known`)."""
         if v in env:
             return env[v]
         if v in memo:
             return memo[v]
         d = self.defs.get(v)
+        if known and d is not None and d.name == "memref.load" and d.args[-2] in self.globals:
+            a = np.asarray(self.evaluate(self.address(d), env, memo, known), dtype=np.int64)
+            got = [self.mod.known(self.name, int(x) & 0xFFFF) for x in a.ravel()]
+            if None in got:
+                raise Unknown(v)
+            memo[v] = r = np.array(got, dtype=np.int64).reshape(a.shape)
+            return r
         if d is None or not d.name.startswith(("arith.", "ub.")) or len(d.res) != 1:
             raise Unknown(v)
         top = (1 << self.width(v)) - 1
@@ -1305,10 +1314,10 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         elif name == "ub.poison":
             r = np.int64(0)
         elif name == "arith.select":
-            c, a, b = (self.evaluate(x, env, memo) for x in d.args)
+            c, a, b = (self.evaluate(x, env, memo, known) for x in d.args)
             r = np.where(c != 0, a, b)
         else:
-            args = [np.asarray(self.evaluate(x, env, memo), dtype=np.int64) for x in d.args]
+            args = [np.asarray(self.evaluate(x, env, memo, known), dtype=np.int64) for x in d.args]
             if name == "arith.kfam":
                 r = self.ktabs[v][args[0]]
             elif name in CASTS:
@@ -1331,6 +1340,130 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 raise Unknown(v)
         memo[v] = r
         return r
+
+    def free_args(self, v, seen=None):
+        """The block arguments value ``v`` is computed from, through operations and the
+        addresses of the loads among them."""
+        seen = set() if seen is None else seen
+        if v in seen:
+            return set()
+        seen.add(v)
+        d = self.defs.get(v)
+        if d is None:
+            return {v}
+        args = [self.address(d)] if d.name == "memref.load" else d.args
+        return set().union(*(self.free_args(a, seen) for a in args)) if args else set()
+
+    def fold_known_addresses(self):
+        """Rewrite the 16-bit address of each memory access computed from one byte index (a
+        block argument of an arithmetic progression, or the instance index) through loads of
+        bytes holding one value whenever this function runs (a pointer pair init leaves,
+        ``Module.known``) as the constant plus the index it equals for every value of the
+        index: the access indexes what the pointers address, and the pointers are not read."""
+        changed = False
+        for blk in self.blocks:
+            for i, o in enumerate(list(blk.ops)):
+                if o.name not in ("memref.load", "memref.store") or o.args[-2] not in self.globals:
+                    continue
+                a = self.address(o)
+                if self.width(a) != 16 or self.split(a)[1] is None:
+                    continue
+                free = self.free_args(a)
+                v = free.pop() if len(free) == 1 else None
+                if v is None or self.types.get(v) != "i8":
+                    continue
+                vals = self.index_values(v, a)
+                if vals is None:
+                    continue
+                try:
+                    self.evaluate(a, {v: vals}, {})
+                    continue
+                except Unknown:
+                    pass
+                try:
+                    got = self.evaluate(a, {v: vals}, {}, True)
+                except Unknown:
+                    continue
+                c = set(((np.broadcast_to(got, vals.shape) - vals) & 0xFFFF).tolist())
+                if len(c) != 1:
+                    continue
+                self.rebase(blk, blk.ops.index(o), o, c.pop(), v)
+                changed = True
+        if changed:
+            self.reindex()
+            self.drop_dead()
+        return changed
+
+    def drop_dead(self):
+        """Remove the pure operations (arithmetic, loads of memory) no operation uses."""
+        while True:
+            dead = {
+                id(o)
+                for o in self.walk()
+                if o.res
+                and (o.name.startswith("arith.") or o.name == "memref.load")
+                and not any(self.uses.get(r) for r in o.res)
+            }
+            if not dead:
+                return
+            for blk in self.blocks:
+                blk.ops = [o for o in blk.ops if id(o) not in dead]
+            self.reindex()
+
+    def index_values(self, v, a):
+        """The values byte ``v`` takes where address ``a`` is computed from it: the instance
+        index's, a block argument's arithmetic progression, or the values the lift finds ``X``
+        holding at a ``(zp,X)`` instruction one of whose pointer loads ``a`` reads at ``v``
+        plus its operand (every copy's); else None."""
+        if v == self.kparam:
+            return self.kvals
+        step = self.stepped(v)
+        if step is not None:
+            return step[0]
+        mod, regs = self.mod, self.mod.fx(self.name).regs
+        for d in self.loads_in(a):
+            b = self.address(d)
+            c, rest = self.split(b)
+            pcs = mod.copy_pcs.get(self.name, {}).get(d.pc, [d.pc])
+            if rest != v or None in pcs or self.width(b) != 8:
+                continue
+            ok = all(
+                mod.fixed[q]
+                and OPS.get(mod.mem.image[q], ("", ""))[1] == "indx"
+                and mod.mem.image[(q + 1) & 0xFFFF] == c & 0xFF
+                and q in regs
+                for q in pcs
+            )
+            if ok:
+                vals = set().union(*(regs[q][1] for q in pcs))
+                return np.array(sorted(vals), dtype=np.int64) if vals else None
+        return None
+
+    def loads_in(self, v, seen=None):
+        """The loads value ``v`` is computed from."""
+        seen = set() if seen is None else seen
+        d = self.defs.get(v)
+        if v in seen or d is None:
+            return []
+        seen.add(v)
+        args = [self.address(d)] if d.name == "memref.load" else d.args
+        out = [d] if d.name == "memref.load" else []
+        return out + [x for a in args for x in self.loads_in(a, seen)]
+
+    def rebase(self, blk, i, o, c, v):
+        """Make access ``o`` (at ``i`` in ``blk``) address constant ``c`` plus byte ``v``."""
+        n = f"%rb{len(self.defs)}.{i}"
+        ops = [
+            Op("arith.constant", [n + "c"], [], f"value = {c} : i16", [], ((), ("i16",))),
+            Op("arith.extui", [n + "e"], [v], "", [], (("i8",), ("i16",))),
+            Op("arith.addi", [n + "a"], [n + "c", n + "e"], "", [], (("i16", "i16"), ("i16",))),
+            Op("arith.index_castui", [n + "i"], [n + "a"], "", [], (("i16",), ("index",))),
+        ]
+        for x in ops:
+            x.parent, x.pc = blk, o.pc
+            self.defs[x.res[0]] = x
+        blk.ops[i:i] = ops
+        o.args[-1] = n + "i"
 
     def address(self, o):
         """The 16-bit address value of a memory access or I/O call ``o``."""
@@ -3207,6 +3340,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.forward()
         for f in self.funcs:
             f.carry16()
+            f.fold_known_addresses()
         self.unread_stores()
         live, work = {f.name: set() for f in self.funcs}, []
 

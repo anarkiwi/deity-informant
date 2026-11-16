@@ -487,6 +487,14 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   each byte). One at a constant base plus an index whose set
   spans several regions (operand cells of several copies) goes through `rd`/`wr`. A run of
   a set as wide as an access of unknown address touches its bytes alone.
+- An access whose 16-bit address is computed from one byte index (a loop's progression, the
+  instance index, or the values the lift finds `X` holding at a `(zp,X)` instruction, every
+  copy's) through loads of bytes holding one value whenever its function runs (a pointer pair
+  init leaves, `Module.known`) is that address for each value of the index; where it is a
+  constant plus the index for every value, the access is rewritten to address that constant
+  plus the index (`Func.fold_known_addresses`): it indexes what the pointers address (the
+  records `($40,X)` reaches, `V0_f00[e]`, or `R4[x]`), no 16-bit address subscript, and the
+  pairs, read no more, are neither held nor stored.
 - A store the lift bounds to the array holding its base (`Program.bounded`: an index any byte,
   the store reaching code past the array) writes the region holding its base inside it and
   calls `oob_wr` past it: `if ((uint16_t)(a - Rk_ORG) < Rk_LEN) Rk[...] = v; else oob_wr(a,
