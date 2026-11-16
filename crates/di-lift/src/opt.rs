@@ -1205,9 +1205,10 @@ fn number_block(lv: &mut Lvn, blk: &mut Block, tables: &[Vec<(u16, u32)>], st: &
                     let tb = &tables[op.aux as usize];
                     op = match tb.binary_search_by_key(&(t as u16), |e| e.0) {
                         Ok(i) => LOp::new(Opc::Branch, Vn::NONE, Vn::NONE, Vn::NONE, tb[i].1),
-                        Err(_) => {
-                            LOp::new(Opc::CallOther, Vn::NONE, k(t, 2), Vn::NONE, other::DEOPT)
-                        }
+                        Err(_) => LOp {
+                            why: op.why,
+                            ..LOp::new(Opc::CallOther, Vn::NONE, k(t, 2), Vn::NONE, other::DEOPT)
+                        },
                     };
                 }
             }

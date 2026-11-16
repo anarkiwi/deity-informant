@@ -53,6 +53,7 @@ class Body:  # pylint: disable=too-many-instance-attributes
 
     def __init__(self, fn, name, ctx):
         self.fn, self.name, self.ctx = fn, name, ctx
+        self.fi = ctx.names.index(name)
         self.lines, self.n, self.env, self.block_id, self.pc = [], 0, {}, 0, 0
         self.cells = {("r", r): s for r, s in ctx.regfile}
         for b in fn["blocks"]:
@@ -230,10 +231,15 @@ class Body:  # pylint: disable=too-many-instance-attributes
             return self.fit(self.shift("INT_RIGHT", sh, sa), sa, w)
         raise ValueError(name)
 
-    def trap(self, key):
+    def trap(self, key, op):
         """Call ``trap`` with the canonical index of ``key`` and return poison: ``trap``
-        does not return, so the registers it leaves are dead."""
+        does not return, so the registers it leaves are dead. What ``op`` stands for
+        (``fn["whys"]`` of its tag) joins the key's ``ctx.whys``."""
         k = self.ctx.traps.setdefault(key, len(self.ctx.traps))
+        whys = self.ctx.whys.setdefault(key, [])
+        for j in self.fn.get("exits", [])[op[5]] if len(op) > 5 else ():
+            if (self.fi, j) not in whys:
+                whys.append((self.fi, j))
         self.put(f"func.call @trap({self.const(k, 2)}) : (i16) -> ()")
         vals = [self.op(f"ub.poison : {ty(s)}") for _, s in self.ctx.regfile]
         self.put(f"func.return {', '.join(vals)} : {self.ctx.types}")
@@ -263,9 +269,9 @@ class Body:  # pylint: disable=too-many-instance-attributes
             elif name == "CALLOTHER":
                 pc = op[2][0]
                 if pc[0] == "c":
-                    return self.trap(("deopt", pc[1]))
+                    return self.trap(("deopt", pc[1]), op)
                 # A deopt of an instance function: the copy's start, one trap for all copies.
-                return self.trap(("deopt", self.fn["blocks"][i]["pc"], self.fn["pc"]))
+                return self.trap(("deopt", self.fn["blocks"][i]["pc"], self.fn["pc"]), op)
             elif name == "STORE":
                 self.store(op)
             elif op[1] is None:
@@ -300,7 +306,7 @@ class Body:  # pylint: disable=too-many-instance-attributes
         cases = "".join(f", {pc}: ^b{blk}" for pc, blk in table)
         self.put(f"cf.switch {target} : {t}, [default: ^b{i}_d{cases}]")
         self.lines.append(f"  ^b{i}_d:")
-        return self.trap(("ind", self.fn["blocks"][i]["pc"], self.fn["pc"], i))
+        return self.trap(("ind", self.fn["blocks"][i]["pc"], self.fn["pc"], i), op)
 
     def emit(self):
         """The MLIR text of the function."""
@@ -348,13 +354,15 @@ class Context:  # pylint: disable=too-few-public-methods
         for j, i in enumerate(rank):
             self.names[i] = f"f{j}"
         self.traps, self.keep_dummy, self.symbols, self.funcs = {}, keep_dummy, symbols, funcs
+        self.whys = {}
         self.sites = Counter(
             op[3] for fn in funcs for b in fn["blocks"] for op in b["ops"] if op[0] == "CALL"
         )
 
 
 def emit(funcs, entries, keep_dummy=False, symbols=0):
-    """The MLIR module of lifted ``funcs`` (sorted by entry PC) and ``{trap key: index}``.
+    """The MLIR module of lifted ``funcs`` (sorted by entry PC), ``{trap key: index}`` and
+    ``{trap key: [(function index, index into its "whys")]}``, what each trap stands for.
 
     ``entries`` are ``(pc, name)``; ``keep_dummy`` keeps throw-away reads as ``io_read`` s;
     a varnode ``["k", j, 1]`` reads element ``j`` of ``@G``, the ``symbols`` constants the
@@ -378,4 +386,4 @@ def emit(funcs, entries, keep_dummy=False, symbols=0):
         callee = f"@{ctx.names[by_pc[pc]]}({', '.join(args)})"
         out.append(f"    %r:{len(args)} = func.call {callee} : ({t}) -> ({t})")
         out += ["    func.return", "  }"]
-    return "\n".join(out + ["}"]) + "\n", ctx.traps
+    return "\n".join(out + ["}"]) + "\n", ctx.traps, ctx.whys

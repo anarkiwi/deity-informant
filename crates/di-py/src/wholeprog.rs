@@ -464,6 +464,64 @@ fn hulls(r: &[di_lift::ir::Reach]) -> HashMap<u16, (u32, u32, u32, u32)> {
     m
 }
 
+/// The inclusive runs of the values of a 256-bit set.
+fn values(b: &di_lift::why::Bits) -> Vec<(u32, u32)> {
+    let mut out: Vec<(u32, u32)> = Vec::new();
+    for v in (0..256u32).filter(|&v| b[v as usize >> 6] >> (v & 63) & 1 == 1) {
+        match out.last_mut() {
+            Some(r) if r.1 + 1 == v => r.1 = v,
+            _ => out.push((v, v)),
+        }
+    }
+    out
+}
+
+/// The name of register `r` (`a`, `x`, `y`, `sp`, a flag `c`, `z`, `i`, `d`, `b`, `v`, `n`).
+fn reg_name(r: u8) -> String {
+    const NAMES: [&str; 15] = [
+        "a", "x", "y", "sp", "r4", "r5", "r6", "r7", "c", "z", "i", "d", "b", "v", "n",
+    ];
+    NAMES
+        .get(r as usize)
+        .map_or_else(|| format!("r{r}"), |n| n.to_string())
+}
+
+/// A [`di_lift::why::Why`] as a dict.
+fn why<'py>(py: Python<'py>, w: &di_lift::why::Why) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("kind", w.kind.name())?;
+    d.set_item("at", w.at)?;
+    d.set_item("reg", w.reg.map(reg_name))?;
+    d.set_item("ok", w.ok.clone())?;
+    let tables = PyList::empty(py);
+    for e in &w.tables {
+        let t = PyDict::new(py);
+        t.set_item("of", e.of.name())?;
+        t.set_item("base", e.base)?;
+        t.set_item("end", e.end)?;
+        t.set_item("by", e.by.name())?;
+        t.set_item("store", e.store)?;
+        tables.append(t)?;
+    }
+    d.set_item("tables", tables)?;
+    d.set_item("pair", w.pair)?;
+    d.set_item("obj", w.obj)?;
+    d.set_item("def", w.def)?;
+    d.set_item("addr", w.addr.map(|a| (a.lo, a.hi)))?;
+    d.set_item("seen", w.seen.as_ref().map(values))?;
+    match &w.held {
+        Some((v, by, src)) => {
+            let h = PyDict::new(py);
+            h.set_item("vals", values(v))?;
+            h.set_item("by", by.clone())?;
+            h.set_item("src", src.map(reg_name))?;
+            d.set_item("held", h)?;
+        }
+        None => d.set_item("held", py.None())?,
+    }
+    Ok(d)
+}
+
 fn entries(e: Vec<PyEntry>) -> Vec<Entry> {
     e.into_iter().map(|(pc, regs)| Entry { pc, regs }).collect()
 }
@@ -596,10 +654,13 @@ fn with_mem<R>(
 
 #[pymethods]
 impl Program {
-    /// Functions: ``{"pc", "entry", "blocks": [{"pc", "ops"}], "tables"}``; an op is
-    /// ``[name, out, ins, aux, pc]``, varnodes ``[space, offset, size]``; ``aux`` is the
-    /// target block, table, callee, ``CALLOTHER`` name or ``"volatile"``, ``pc`` the
-    /// instruction the op was emitted for (0: made by the optimizer).
+    /// Functions: ``{"pc", "entry", "blocks": [{"pc", "ops"}], "tables", "whys", "exits"}``;
+    /// an op is ``[name, out, ins, aux, pc]``, varnodes ``[space, offset, size]``; ``aux`` is
+    /// the target block, table, callee, ``CALLOTHER`` name or ``"volatile"``, ``pc`` the
+    /// instruction the op was emitted for (0: made by the optimizer); a deopt or
+    /// ``BRANCHIND`` standing for guards or a transfer has a sixth element, its index into
+    /// ``exits``, each a list of indices into ``whys``, the guards (``docs/cgen.md``, *Trap
+    /// metadata*).
     #[getter]
     fn functions<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let fs = PyList::empty(py);
@@ -630,16 +691,17 @@ impl Program {
                         }
                         _ => (op.opc.name(), py.None().into_bound(py)),
                     };
-                    ops.append(PyList::new(
-                        py,
-                        [
-                            name.into_pyobject(py)?.into_any(),
-                            vn(py, op.out)?,
-                            ins.into_any(),
-                            aux,
-                            op.pc.into_pyobject(py)?.into_any(),
-                        ],
-                    )?)?;
+                    let mut row = vec![
+                        name.into_pyobject(py)?.into_any(),
+                        vn(py, op.out)?,
+                        ins.into_any(),
+                        aux,
+                        op.pc.into_pyobject(py)?.into_any(),
+                    ];
+                    if op.why > 0 {
+                        row.push((op.why - 1).into_pyobject(py)?.into_any());
+                    }
+                    ops.append(PyList::new(py, row)?)?;
                 }
                 let d = PyDict::new(py);
                 d.set_item("pc", b.pc)?;
@@ -656,6 +718,12 @@ impl Program {
             d.set_item("blocks", blocks)?;
             d.set_item("tables", f.tables.clone())?;
             d.set_item("closed", f.closed.ones().collect::<Vec<_>>())?;
+            let whys = PyList::empty(py);
+            for w in &f.whys {
+                whys.append(why(py, w)?)?;
+            }
+            d.set_item("whys", whys)?;
+            d.set_item("exits", f.exits.clone())?;
             fs.append(d)?;
         }
         Ok(fs)
@@ -808,6 +876,13 @@ impl Program {
     #[getter]
     fn stored(&self) -> Vec<(u32, u32)> {
         self.prog.stored.clone()
+    }
+
+    /// The stores the lift holds: ``[(pc, lo, hi)]``, the address interval (inclusive) of
+    /// each store access of the instruction at ``pc`` (``addr_sets`` its set, if one).
+    #[getter]
+    fn stores(&self) -> Vec<(u16, u32, u32)> {
+        self.prog.stores.clone()
     }
 
     /// Address sets of data accesses through pointers or with several addresses:

@@ -37,7 +37,8 @@ python tools/cgenplay.py tune.sid --psid --volatile 0xD400-0xD41D -o out/   # tr
 
 `info` holds the stage times (`lift`, `mlir`, `layout`, `structure`, `print`), the regions
 `[(origin, length)]`, the code span, the traps in the `.c` (`{k: ("deopt", pc)}` or `("ind", pc,
-...)` for a computed jump with no target), the computed jumps resolved from the code (`jumps`),
+...)` for a computed jump with no target) and what each stands for (`trap_info`, *Trap
+metadata*), the computed jumps resolved from the code (`jumps`),
 per `(zp),Y` access the words its pointer may hold where the lift finds a set of them
 (`ptr_sets`, `{pc: [word]}`, every lift's), the fact edges used, the lift's `stats`, whether
 some access has an unknown address and the
@@ -667,6 +668,50 @@ as data (`PLA`, a load from page 1 such as a handler's `TSX; LDA $0101,X`), with
 that read keeps (`PHP; PLA; AND #$08` packs `D`), and a byte pulled into the status
 (`PHA; PLP`) is unpacked only into the flags read after it ([wholeprog](wholeprog.md#pipeline),
 *status lanes*).
+
+### Trap metadata
+
+`info["trap_info"]` holds, per trap `k` of `info["traps"]`, what it stands for: the guards of
+the lift's deopts (and the defaults of the switches) the trap is reached by, as the lift
+emitted them (`crate::why`: the emitter tags each deopt and `BRANCHIND` with the guards it
+leaves by, and the tags survive optimization; one trap may stand for several guards, as a
+store's code check and the pointer checks of its instruction share one exit):
+
+| key | value |
+|---|---|
+| `kind` | the kind of its guards, `"mixed"` when they differ (`kinds`: each) |
+| `pc` | where it leaves for the reference (`info["traps"][k][1]`) |
+| `fn`, `copies` | for an instance function's trap, the function and each copy's `pc` |
+| `guards` | one dict per guard (below) |
+| `implied_by` | the union of the guards' `implied_by` when every guard is implied, else `None` |
+
+A guard has `kind`, `at` (the instruction it guards; in an instance function the start its
+node is keyed by, `copies` each copy's), `fn`, `reg` (`"a"`, `"x"`, `"y"`, `"sp"`, a flag) and
+`ok`, the values it lets pass as inclusive runs `[(lo, hi)]` (of the register, the opcode
+cell, the pointer or the address), and as the kind has them:
+
+| `kind` | guards |
+|---|---|
+| `entry` | an entry register outside its declared values; `init`'s `A` outside `songs` |
+| `entry_sp`, `port` | an entry's SP or bank port registers other than the ones it is lifted for |
+| `index` | an index past its table's extent: `tables`, each `{of, base, end, by, store}`, `of` `"jump"` (a transfer's target words), `"branch"` (branch offsets), `"cell"` (values a store at `store` writes into a code cell), `"data"` (a pointer's seed words or other values) or `"store"` (a store's run inside `loaded`), the column at `base` ending at `end` (exclusive) at `by` `"object"` (the next object the code accesses), `"code"` (an instruction byte), `"loaded"` (the end of `loaded`), `"target"` (a target of the transfer), `"column"` (a byte another column reads) or `"wrap"` |
+| `opcode` | an opcode cell holding a value outside its variants (`ok`) |
+| `codechk` | a store (`addr` its interval) changing constant code |
+| `window`, `objchk` | a pointer pair's (`pair`) word in a zone's window; outside object `obj`, checked at an entry, a defining load, after a defining store or after a walk (`def`) |
+| `stack`, `zone` | an access (`addr`) reaching page 1 outside the bytes it may, or a pointer store reaching a zone |
+| `return`, `txs`, `decimal`, `sp`, `bank` | a callee returning elsewhere than its call pushed; a `TXS` off the saved height; a pulled status setting `D`; SP or the bank configuration at no planned node |
+| `transfer`, `ind` | a computed transfer to an address its table lacks; an unresolved transfer's switch default (`targets` the table's, `resolved` whether the code resolves it) |
+| `path`, `jam` | a successor the plan has no node for; a `JAM` |
+
+`seen` is the runs of values the analysis finds the register holds at the guard (what the
+lift proves). For `entry` and `index` guards on `A`, `X` or `Y`, `held` is what holds there on
+every path through the function as emitted: `vals` (runs) left by the register guards and
+constants before it (copies keep a register's fact; other writes and calls lose it), `by` the
+guards that narrowed it and `src` the entry register it still holds; `implied_by` is then the
+traps whose guards (or, holding init's `A`, whose `songs`) already keep the register inside
+`ok` (`[]`: constants alone), else `None`. `opcode`, `codechk` and `cell` guards list their
+`writers`, `{pc, entry, exact}`: the stores that may write the byte, from the entries' lift
+(`"play"`) or init's (`"init"`), `exact` for a store with one address or an address set.
 
 ## Validation
 

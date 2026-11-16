@@ -18,7 +18,7 @@ import numpy as np
 
 from .. import c64devices, polling, postinit, wholeprog
 from ..trace import Facts
-from . import emit, mlir, printer
+from . import emit, mlir, printer, traps as trapinfo
 from ..lifter import MODE_LEN, OPS
 from .regions import Memory, background, code_bytes, pointer_pairs
 from .regions import runs as mask_runs
@@ -491,6 +491,8 @@ class Program:  # pylint: disable=too-many-instance-attributes
     lifted: tuple | None = None
     #: The bytes init leaves constant for the other entries (*Init*), ascending.
     fixed: np.ndarray | None = None
+    #: The stores of the entries' lift and init's (``"play"``, ``"init"``: :func:`traps.stores`).
+    stores: dict | None = None
 
 
 def _ranked(progs):
@@ -689,6 +691,9 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     p.proven, p.regs, p.bounded = dict(prog.proven), dict(prog.regs), dict(prog.bounded)
     p.ptr_sets = {pc: set(w) for pc, w in prog.ptr_sets.items()}
     p.objects = list(prog.objects)
+    p.stores = {"play": trapinfo.stores(prog)}
+    if init is not None:
+        p.stores["init"] = trapinfo.stores(lone if lone is not None else bare)
     if state is not None:
         p.init, p.fixed = (entries[init], state), np.array(sorted(fixed), dtype=np.int64)
     if len(lifts) > 1:
@@ -705,6 +710,17 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     return p, prog.stats
 
 
+def _song_guard(p):
+    """``{key: guard}`` of the init entry's trap on an argument outside its songs."""
+    if p.init is None:
+        return {}
+    (pc, _), state = p.init
+    guard = dict.fromkeys(("pair", "obj", "def", "addr", "seen", "held", "implied_by"))
+    guard.update(kind="entry", at=pc, fn=None, reg="a", tables=[], copies=[], writers=None)
+    guard["ok"] = [(state.songs[0], state.songs[-1])]
+    return {("deopt", pc): guard}
+
+
 def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     """``(c_text, h_text, info)`` of :class:`Program` ``p``: MLIR, structured and printed."""
     times, t0 = {}, time.perf_counter()
@@ -713,7 +729,9 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         funcs = copy.deepcopy(funcs)
         own = [fn for j, fn in enumerate(funcs) if not p.lifted or not p.origin[j]]
         symbols = _guard_symbols(own, _reads_fixed(p.image, p.starts, p.fixed))
-    text, traps = emit.emit(funcs, p.entries, keep_dummy=bool(p.sensitive), symbols=len(symbols))
+    text, traps, whys = emit.emit(
+        funcs, p.entries, keep_dummy=bool(p.sensitive), symbols=len(symbols)
+    )
     run = mlir.runner(build=True) if prefix is None else prefix
     if run is None:
         raise RuntimeError("needs mlir-opt on PATH or Docker")
@@ -800,13 +818,15 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     mod.regfile = regfile = [r for r, _ in emit.Context(p.funcs, False).regfile]
     mod.regs = {pc: tuple(bytes(x) for x in r) for pc, r in (p.regs or {}).items()}
     mod.kpos = regfile.index(emit.KREG) if emit.KREG in regfile else None
+    song = None
     if p.lifted is not None:
         (pc, name), _ = p.init
+        song = {"fn": pc, "lo": p.init[1].songs[0], "hi": p.init[1].songs[-1]}
         mod.scope = {f"f{j}": p.lifted[2] for j, k in enumerate(p.origin) if k}
         mod.scope[name] = p.lifted[2]
         names = {f"f{j}" for j, k in enumerate(p.origin) if not k}
         mod.after = frozenset(names | {name for _, name in p.entries[:-1]})
-        k = traps.setdefault(("deopt", pc), len(traps))
+        k = song["k"] = traps.setdefault(("deopt", pc), len(traps))
         mod.traps.add(k)
         mod.guards[name] = [f"if ({SONG} >= CGEN_SONGS) {{", f"trap({k});", "}"]
     elif p.init is not None:
@@ -883,6 +903,19 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         "code_span": mem.code_span,
         "code_held": mem.held,
         "traps": {k: key for key, k in traps.items() if k in mod.traps},
+        "trap_info": trapinfo.trap_info(
+            funcs,
+            traps,
+            whys,
+            mod.traps,
+            {
+                "origin": p.origin,
+                "stores": p.stores or {},
+                "jumps": p.jumps or {},
+                "song": song,
+                "extra": _song_guard(p),
+            },
+        ),
         "unknown_access": mem.unknown,
         "jumps": p.jumps or {},
         "ptr_sets": {pc: sorted(w) for pc, w in sorted((p.ptr_sets or {}).items())},

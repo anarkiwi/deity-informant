@@ -26,6 +26,7 @@ pub mod ptr;
 pub mod scev;
 pub mod vsa;
 pub mod walks;
+pub mod why;
 pub mod wide;
 pub mod word;
 
@@ -921,7 +922,8 @@ pub fn lift_banked(
                     [r] => Some(r),
                     _ => None,
                 });
-            let (f, n) = emit::emit(&sh, p, entries.get(i), port, i);
+            let (mut f, n) = emit::emit(&sh, p, entries.get(i), port, i);
+            why::imply(&mut f);
             stats.insns += n.insns;
             stats.raw_ops += n.raw;
             stats.code_guards += n.code_guards;
@@ -1025,6 +1027,20 @@ pub fn lift_banked(
         volatile: volatile.to_vec(),
         written: runs(&g.written),
         stored: runs(&analysis::stored(&g)),
+        stores: {
+            let mut v: Vec<(u16, u32, u32)> = (g.vars.iter())
+                .filter(|(pc, _)| planned.contains(**pc as usize))
+                .flat_map(|(&pc, vs)| {
+                    vs.iter()
+                        .flat_map(move |v| v.acc.iter().map(move |a| (pc, a)))
+                })
+                .filter(|(_, a)| a.store && !a.dummy)
+                .map(|(pc, a)| (pc, a.addr.lo, a.addr.hi.min(0xffff)))
+                .collect();
+            v.sort_unstable();
+            v.dedup();
+            v
+        },
         starts,
         elide_ret: private,
         bank: bank.cloned(),
