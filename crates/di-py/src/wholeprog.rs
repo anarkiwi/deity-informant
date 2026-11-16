@@ -650,6 +650,7 @@ impl Program {
             d.set_item("pc", f.pc)?;
             d.set_item("entry", f.top)?;
             d.set_item("recursive", f.recursive)?;
+            d.set_item("continuation", f.cont.is_some())?;
             d.set_item("copies", f.copies.clone())?;
             d.set_item("copy_pcs", f.copy_pcs.clone())?;
             d.set_item("blocks", blocks)?;

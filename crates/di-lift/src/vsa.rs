@@ -268,6 +268,9 @@ pub(crate) struct St {
     pub(crate) above: [Option<Tab>; 2],
     /// Pushes less pulls since the function's entry, where known.
     pub(crate) depth: Option<i8>,
+    /// While `X` holds the SP a `TSX` took: the top three stack bytes then, which a load
+    /// through `X` from `$0101`-`$0103` reads (a handler reading its `BRK` frame).
+    pub(crate) xsp: Option<[Option<Tab>; 3]>,
     /// Tracked bytes ([`Code::vecs`]) whose contents are known, by address: the table byte or
     /// constant they hold, and their interval.
     pub(crate) mem: Vec<(u16, Option<Tab>, Iv)>,
@@ -305,6 +308,7 @@ impl St {
             push: [None; 3],
             above: [None; 2],
             depth: Some(0),
+            xsp: None,
             mem: Vec::new(),
             wide: Vec::new(),
             half: [None; DATA],
@@ -1233,6 +1237,11 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
         push: st.push,
         above: st.above,
         depth: st.depth,
+        xsp: if v.op == 0xba {
+            Some(st.push)
+        } else {
+            st.xsp.filter(|_| written >> 1 & 1 == 0)
+        },
         mem: st.mem.clone(),
         wide: st.wide.clone(),
         half: st.half,
@@ -1275,7 +1284,7 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
             if stack_delta(op).is_none()
                 || acc.iter().any(|a| a.store && a.addr.meets(0x100, 0x200)) =>
         {
-            (s.push, s.above) = ([None; 3], [None; 2])
+            (s.push, s.above, s.xsp) = ([None; 3], [None; 2], None)
         }
         _ => {}
     }
@@ -1344,12 +1353,22 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
             code, pc, v.op, ops, b, st, &mut s, acc, &sym, written, vacant,
         );
     }
+    // A load of a tracked byte stored since the entry, its one read, reads what was stored: a
+    // return address pulled into a pointer and loaded back is the address, not the image's.
+    let mut reads = acc.iter().filter(|a| !a.store && !a.dummy);
+    let stored = match (reads.next(), reads.next()) {
+        (Some(a), None) => a.addr.value(),
+        _ => None,
+    }
+    .and_then(|m| st.mem.iter().find(|e| e.0 as u32 == m))
+    .map(|e| e.1.or_else(|| e.2.value().map(|x| Tab::K(x as u8))));
     for r in (0..DATA).filter(|&r| written >> r & 1 == 1) {
         s.tag[r] = match sym[r] {
             Some(Sym::Lin(b0, 0)) if (b0 as usize) < DATA => st.tag[b0 as usize],
-            Some(Sym::Lin(b0, 0)) if b0 >= DATA as u8 && b0 != MEM => match v.op {
-                0x68 => pulled.or(st.push[0]),
-                op => table(code, pc, op),
+            Some(Sym::Lin(b0, 0)) if b0 >= DATA as u8 && b0 != MEM => match (v.op, stored) {
+                (0x68, _) => pulled.or(st.push[0]),
+                (_, Some(t)) => t,
+                (op, None) => table(code, pc, op),
             },
             _ => None,
         };
@@ -1360,6 +1379,19 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
         0 => [None; DATA],
         m => eval_sets(ops, b, st, m),
     };
+    // `LDA`/`LDY abs,X` of the frame above the SP `TSX` took reads the byte pushed there.
+    if let (0xbd | 0xbc, Some(p)) = (v.op, st.xsp) {
+        if let (Some(l), Some(1)) = (b[0], b[1]) {
+            let r = if v.op == 0xbd { 0 } else { 2 };
+            if let Some(&Some(t)) = (l as usize).checked_sub(1).and_then(|i| p.get(i)) {
+                s.tag[r] = Some(t).filter(|t| !matches!(t, Tab::K(_) | Tab::Any));
+                if let Tab::K(x) = t {
+                    s.env[r] = Iv::exact(x as u32);
+                    s.kb[r] = Kb::of(s.env[r]);
+                }
+            }
+        }
+    }
     for r in (0..DATA).filter(|&r| written >> r & 1 == 1) {
         s.set[r] = match sym[r] {
             Some(Sym::Lin(b0, k)) if (b0 as usize) < DATA => {
@@ -1757,6 +1789,7 @@ fn join(code: &Code, a: &St, b: &St, widen: Option<&Thresholds>) -> St {
         depth: if a.depth == b.depth { a.depth } else { None },
         pw: join_pw(&a.pw, &b.pw),
         via: std::array::from_fn(|r| a.via[r].filter(|_| a.via[r] == b.via[r])),
+        xsp: a.xsp.filter(|_| a.xsp == b.xsp),
         mem: a
             .mem
             .iter()
@@ -1956,6 +1989,7 @@ fn unlinked(st: &St) -> St {
         push: [None; 3],
         above: [None; 2],
         depth: None,
+        xsp: None,
         ..st.clone()
     }
 }

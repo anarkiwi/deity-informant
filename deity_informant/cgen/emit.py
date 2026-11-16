@@ -3,7 +3,8 @@
 Each lifted function is a private ``func.func`` taking and returning the register file; its
 registers, stack slots and block-crossing temporaries are ``alloca`` s for ``mem2reg``. Memory
 is the global ``@M``; volatile accesses, traps and code checks call external functions. A call
-of a function called from more than one site is ``no_inline``.
+of a function called from more than one site is ``no_inline``, unless the function holds the
+return address its call hands it (a continuation function): it is specialized to each.
 """
 
 from __future__ import annotations
@@ -278,7 +279,8 @@ class Body:  # pylint: disable=too-many-instance-attributes
         args, t = self.regs(), self.ctx.types
         res = self.new()
         name = self.ctx.names[callee]
-        attr = " {no_inline}" if self.ctx.sites[callee] > 1 else ""
+        keep = self.ctx.sites[callee] > 1 and not self.ctx.funcs[callee].get("continuation")
+        attr = " {no_inline}" if keep else ""
         self.put(f"{res}:{len(args)} = func.call @{name}({', '.join(args)}){attr} : ({t}) -> ({t})")
         for j, (r, s) in enumerate(self.ctx.regfile):
             self.write(["r", r, s], f"{res}#{j}")
@@ -341,7 +343,7 @@ class Context:  # pylint: disable=too-few-public-methods
         self.names = [""] * len(funcs)
         for j, i in enumerate(rank):
             self.names[i] = f"f{j}"
-        self.traps, self.keep_dummy, self.symbols = {}, keep_dummy, symbols
+        self.traps, self.keep_dummy, self.symbols, self.funcs = {}, keep_dummy, symbols, funcs
         self.sites = Counter(
             op[3] for fn in funcs for b in fn["blocks"] for op in b["ops"] if op[0] == "CALL"
         )

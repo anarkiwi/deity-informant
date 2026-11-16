@@ -797,3 +797,236 @@ entry:  JSR last
 .org $BFFF
 last:   RTS
 """
+
+# Inline arguments of one and two bytes, each callee called from two sites: it pulls its
+# return address into a pointer, reads the bytes after the call through it and pushes the
+# address back advanced past them (by `INC`, or by an `ADC` chain stored and loaded back).
+INLINE_ARGS = """
+entry:  JSR arg2
+        .byte $11, $22
+        STA $C000
+        STX $C001
+        JSR arg1
+        .byte $33
+        STA $C002
+        JSR arg2
+        .byte $44, $55
+        STA $C003
+        STX $C004
+        JSR arg1
+        .byte $66
+        STA $C005
+        RTS
+arg1:   PLA
+        STA $F0
+        PLA
+        STA $F1
+        LDY #$01
+        LDA ($F0),Y
+        TAX
+        INC $F0
+        BNE arg1n
+        INC $F1
+arg1n:  LDA $F1
+        PHA
+        LDA $F0
+        PHA
+        TXA
+        RTS
+arg2:   PLA
+        STA $F2
+        PLA
+        STA $F3
+        LDY #$02
+        LDA ($F2),Y
+        TAX
+        DEY
+        LDA ($F2),Y
+        TAY
+        LDA $F2
+        CLC
+        ADC #$02
+        STA $F2
+        LDA $F3
+        ADC #$00
+        PHA
+        LDA $F2
+        PHA
+        TYA
+        RTS
+end:
+"""
+
+# The callee advances its return address by a bit of an I/O byte: it returns to the byte after
+# the call or past it, which the code does not decide.
+RET_UNKNOWN = """
+entry:  JSR skip
+        .byte $EA
+        LDA #$01
+        STA $C000
+        JSR skip
+        .byte $EA
+        LDA #$02
+        STA $C001
+        RTS
+skip:   PLA
+        STA $F0
+        PLA
+        STA $F1
+        LDA $C010
+        AND #$01
+        CLC
+        ADC $F0
+        STA $F0
+        LDA $F1
+        ADC #$00
+        PHA
+        LDA $F0
+        PHA
+        RTS
+end:
+"""
+
+# An inline argument a store writes before the call: a variable byte, the other constant.
+ARG_WRITTEN = """
+entry:  LDA $C011
+        STA a1
+        JSR arg
+a1:     .byte $00
+        STA $C000
+        JSR arg
+        .byte $22
+        STA $C001
+        RTS
+arg:    PLA
+        STA $F0
+        PLA
+        STA $F1
+        LDY #$01
+        LDA ($F0),Y
+        TAX
+        LDA $F0
+        CLC
+        ADC #$01
+        TAY
+        LDA $F1
+        ADC #$00
+        PHA
+        TYA
+        PHA
+        TXA
+        RTS
+end:
+"""
+
+# After pushing back its advanced return address the callee stores through an index it does
+# not bound: past its table the store deopts, the return address the callee holds in memory.
+ARG_DEOPT = """
+entry:  JSR arg
+        .byte $11
+        STA $C000
+        JSR arg
+        .byte $22
+        STA $C001
+        RTS
+arg:    PLA
+        STA $F0
+        PLA
+        STA $F1
+        LDY #$01
+        LDA ($F0),Y
+        TAX
+        LDA $F0
+        CLC
+        ADC #$01
+        TAY
+        LDA $F1
+        ADC #$00
+        PHA
+        TYA
+        PHA
+        LDY $C010
+        STA tab,Y
+        TXA
+        RTS
+tab:    .byte 1,2
+end:
+"""
+
+# `PHA`/`PHA`/`RTS` to a constant target.
+PUSH_RET = """
+entry:  LDA #hi(tgt-1)
+        PHA
+        LDA #lo(tgt-1)
+        PHA
+        RTS
+        BRK
+tgt:    LDA #$12
+        STA $C000
+        RTS
+end:
+"""
+
+# A `BRK` handler reading the signature byte through the address the `BRK` pushed (two
+# `BRK`s; one in BRK_SIG1).
+BRK_SIG = """
+entry:  LDA #lo(handler)
+        STA $FFFE
+        LDA #hi(handler)
+        STA $FFFF
+        BRK
+        .byte $21
+        STA $C000
+        BRK
+        .byte $42
+        STA $C001
+        RTS
+handler: TSX
+        LDA $0102,X
+        SEC
+        SBC #1
+        STA $F0
+        LDA $0103,X
+        SBC #0
+        STA $F1
+        LDY #0
+        LDA ($F0),Y
+        RTI
+end:
+"""
+BRK_SIG1 = BRK_SIG.replace("        BRK\n        .byte $42\n        STA $C001\n", "")
+
+# A `BRK` through a vector the image holds and no store writes.
+BRK_IMAGE = """
+entry:  BRK
+        .byte $21
+        STA $C000
+        RTS
+handler: LDA #$11
+        STA $C001
+        RTI
+end:
+        .org $FFFE
+        .byte lo(handler), hi(handler)
+"""
+
+# An `RTI` through a frame of a table word indexed by `Y` and the status.
+RTI_TABLE = """
+entry:  AND #1
+        TAY
+        LDA thi,Y
+        PHA
+        LDA tlo,Y
+        PHA
+        PHP
+        RTI
+t0:     LDA #1
+        STA $C000
+        RTS
+t1:     LDA #2
+        STA $C001
+        RTS
+tlo:    .byte lo(t0), lo(t1)
+thi:    .byte hi(t0), hi(t1)
+end:
+"""

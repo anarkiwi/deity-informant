@@ -616,6 +616,22 @@ def test_reads_replay_volatile_reads_in_order():
     assert wholeprog.reference_call(bytearray(img), 0x1000, **kw)["reg"][2] == 0x77
 
 
+@pytest.mark.parametrize("name,cont", [("INLINE_ARGS", 2), ("ARG_DEOPT", 1), ("RET_UNKNOWN", 0)])
+def test_continuation_functions_replay(name, cont):
+    """Callees reading inline arguments through the return address they pull, called from two
+    sites, are continuation functions: each call hands its return address in registers and
+    the callee holds it in two slots, which a deopt after it pushed back the advanced address
+    writes as its frame's. One returning past an amount the code does not decide is not one;
+    its calls deopt where it returns elsewhere."""
+    img, labels = W.assemble(getattr(W, name))
+    pc = labels["entry"]
+    kw = {"entry_sp": 0xFD, "loaded": (0x1000, labels["end"]), "fold": True}
+    prog = wholeprog.lift(img, [pc], [IO], **kw)
+    assert sum(f["continuation"] for f in prog.functions) == cont
+    differential(img, prog, [pc], [(0, 0)] * 8)
+    assert bool(prog.deopts) == (name != "INLINE_ARGS")
+
+
 def test_calls_return_past_their_return_address():
     img = bytearray(0x10000)
     img[0x1000:0x1003] = bytes.fromhex("a90560")  # LDA #5; RTS

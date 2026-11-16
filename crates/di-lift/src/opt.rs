@@ -1353,10 +1353,15 @@ impl Live<'_> {
         live.insert(R::SP);
         self.slots(live, h);
     }
+    /// The stack slots pushed above `h` (every slot when `h` is unknown) and a continuation
+    /// function's return address, which a deopt writes as its frame's.
     fn slots(&self, live: &mut FixedBitSet, h: Option<i32>) {
-        let n = self.f.nslots as i32;
+        let n = self.f.cont.unwrap_or(self.f.nslots) as i32;
         let d = h.map_or(n, |h| (-h).clamp(0, n));
         live.insert_range(NREG..NREG + d as usize);
+        if let Some(c) = self.f.cont {
+            live.insert_range(NREG + c as usize..NREG + c as usize + 2);
+        }
     }
     /// Backward over block `b` from `live` (its live-out); which ops to keep, calling `call`
     /// with each `CALL`'s callee and registers live after it.

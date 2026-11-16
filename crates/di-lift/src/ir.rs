@@ -15,7 +15,9 @@ pub const NREG: usize = 18;
 pub const KREG: usize = 4;
 pub const XREG: usize = 5;
 /// Registers of the file no 6502 template uses: the operand bytes a computed `JSR` hands its
-/// dispatch function ([`crate::func::Ctl::CallOp`]), never handed back to the machine.
+/// dispatch function ([`crate::func::Ctl::CallOp`]) and the return address a call hands a
+/// continuation function and takes back from it ([`Function::cont`]), never handed back to the
+/// machine.
 pub const OPLO: usize = 6;
 pub const OPHI: usize = 7;
 /// The register of the file no 6502 template uses that carries the index a computed transfer
@@ -240,6 +242,10 @@ pub struct Function {
     pub slotted: FixedBitSet,
     /// In a call-graph cycle: checks its own stack depth at entry.
     pub recursive: bool,
+    /// A continuation function: the slot index of the low byte of its return address, which
+    /// it holds with the high byte in the next slot (the two bytes above its entry SP), handed
+    /// in and back in [`OPLO`]/[`OPHI`] ([`crate::func::Ctl::Call`]).
+    pub cont: Option<u32>,
     /// Carry chains fused into wide operations.
     pub chains: Vec<crate::wide::Chain>,
     /// An instance function ([`crate::inst`]): the entries of the copies it merges, by index.
