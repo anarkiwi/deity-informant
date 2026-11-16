@@ -431,12 +431,6 @@ fn reaching(
     let mut out = BTreeSet::new();
     let mut seen: FxHashSet<u16> = FxHashSet::default();
     let mut work = vec![pc];
-    let writes = |op: u8| {
-        Template::of(op)
-            .ops()
-            .iter()
-            .any(|o| o.out.space() == Space::Reg && o.out.off() as usize == r)
-    };
     while let Some(p) = work.pop() {
         if sets.roots.contains(&p) {
             return None;
@@ -447,7 +441,7 @@ fn reaching(
             }
             let st = sets.merged.get(&q)?;
             for v in &vars[&q] {
-                if !writes(v.op) {
+                if !crate::objects::writes(v.op, r) {
                     work.push(q);
                     continue;
                 }

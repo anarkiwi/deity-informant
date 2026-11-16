@@ -219,7 +219,8 @@ fn zone_checks(g: &mut analysis::Graph, free: &FxHashMap<u16, Vec<u8>>) {
                     && !a.windowed(win)
                     && zones.iter().any(|&(lo, hi)| a.addr.meets(lo, hi))
             };
-            let step = index_reads(v.op);
+            // An indexed access may cross a page.
+            let step = u32::from(ptr::index_regs(v.op) != 0);
             let clear = |p: u32| (p..=p + step).all(|q| !in_zone(q & 0xff));
             // An address set no page of which, nor the page before (its throw-away read's),
             // is a zone's.
@@ -283,15 +284,6 @@ fn byte_bounds(g: &analysis::Graph, free: &FxHashMap<u16, Vec<u8>>) -> Vec<Optio
         }
     }
     held
-}
-
-/// 1 when opcode `op`'s template reads `X` or `Y` (an indexed access may cross a page).
-fn index_reads(op: u8) -> u32 {
-    let ops = di_pcode::Template::of(op).ops();
-    u32::from(ops.iter().flat_map(|o| o.ins).any(|v| {
-        v.space() == di_pcode::Space::Reg
-            && matches!(v.off() as usize, di_pcode::reg::X | di_pcode::reg::Y)
-    }))
 }
 
 /// Whether variant `v` at `pc` has an access other than a push or pull that may reach page 1

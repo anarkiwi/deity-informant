@@ -14,7 +14,7 @@
 
 use crate::analysis::{absint_known, operand_bytes, Flow, Iv, Tg, Var};
 use crate::vsa::{hull, meet, refine, shift, step, symbolic_in, Code, St, Sym, MEM, VAR};
-use di_pcode::{reg, CtrlKind, Space, Template};
+use di_pcode::{reg, CtrlKind, Template};
 use petgraph::algo::dominators::simple_fast;
 use petgraph::graphmap::DiGraphMap;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -832,12 +832,8 @@ fn trips(
         _ => return None,
     };
     let writes = |pc: u16| {
-        vars[&pc].iter().any(|v| {
-            Template::of(v.op)
-                .ops()
-                .iter()
-                .any(|o| o.out.space() == Space::Reg && o.out.off() == flag as u32)
-        })
+        let f = flag as usize;
+        vars[&pc].iter().any(|v| crate::objects::writes(v.op, f))
     };
     let mut set = s;
     loop {

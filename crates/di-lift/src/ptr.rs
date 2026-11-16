@@ -452,7 +452,7 @@ pub(crate) fn completer(
 }
 
 /// The index registers (bit 0 `X`, bit 1 `Y`) opcode `op`'s template reads.
-fn index_regs(op: u8) -> u8 {
+pub(crate) fn index_regs(op: u8) -> u8 {
     regs(op, |o| o.ins.to_vec())
 }
 
