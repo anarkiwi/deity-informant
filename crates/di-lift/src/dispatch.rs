@@ -534,7 +534,16 @@ pub(crate) fn pointer(code: &Code, pc: u16) -> Option<(u16, u16)> {
         return None;
     };
     let w = u16::from_le_bytes([lo, hi]);
-    Some((w, (w & 0xff00) | (w.wrapping_add(1) & 0xff)))
+    Some((w, di_pcode::ind_hi(w)))
+}
+
+/// The hull of the pointer bytes of a `JMP (w)`.
+pub(crate) fn ind_iv(w: u16) -> Iv {
+    let h = di_pcode::ind_hi(w);
+    Iv {
+        lo: w.min(h) as u32,
+        hi: w.max(h) as u32,
+    }
 }
 
 /// How many operand bytes give the target of `f` when they are cells: a `JMP`/`JSR`'s two,

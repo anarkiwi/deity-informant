@@ -1915,12 +1915,8 @@ impl<'a> Em<'a, '_> {
                 let (lo_a, hi_a, iv) = match bytes {
                     [Some(a), Some(b)] => {
                         let w = u16::from_le_bytes([a, b]);
-                        let h = (w & 0xff00) | (w.wrapping_add(1) & 0xff);
-                        let iv = Iv {
-                            lo: w.min(h) as u32,
-                            hi: w.max(h) as u32,
-                        };
-                        (k(w as u32, 2), k(h as u32, 2), iv)
+                        let h = di_pcode::ind_hi(w);
+                        (k(w as u32, 2), k(h as u32, 2), crate::dispatch::ind_iv(w))
                     }
                     _ => {
                         let w = slot(self, Slot::Word, 2);

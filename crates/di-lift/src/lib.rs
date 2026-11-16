@@ -165,12 +165,7 @@ fn ind_ptr(img: &[u8; 0x10000], g: &analysis::Graph, pc: u16) -> (Iv, bool) {
         img[pc.wrapping_add(1) as usize],
         img[pc.wrapping_add(2) as usize],
     ]);
-    let h = (w & 0xff00) | (w.wrapping_add(1) & 0xff);
-    let iv = Iv {
-        lo: w.min(h) as u32,
-        hi: w.max(h) as u32,
-    };
-    (iv, false)
+    (dispatch::ind_iv(w), false)
 }
 
 /// Marks the accesses a static lift keeps out of the zones (page 1 and the volatile pages):

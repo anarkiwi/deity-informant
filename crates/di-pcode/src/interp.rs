@@ -44,7 +44,8 @@ pub trait Bus {
     }
     /// Flat memory standing for this bus, for compiled code to access directly: what
     /// `read`/`write` reach at non-volatile addresses and what `ram_read`/`ram_write` reach,
-    /// each 64 KiB and without side effects. `None` routes every access through the bus.
+    /// each spanning the address space and without side effects. `None` routes every access
+    /// through the bus.
     #[inline(always)]
     fn flat(&mut self) -> Option<(*mut u8, *mut u8)> {
         None
@@ -95,6 +96,11 @@ pub mod reg {
 
 /// The return address `run_to_rts` pushes by default: its entry returns to `RETURN + 1`.
 pub const RETURN: u16 = 0x0001;
+
+/// The address a `JMP (w)` reads its target's high byte from: `w + 1` inside `w`'s page.
+pub fn ind_hi(w: u16) -> u16 {
+    (w & 0xff00) | (w.wrapping_add(1) & 0xff)
+}
 
 /// Why [`Cpu::run_clocked`] stopped.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -329,7 +335,7 @@ impl Cpu {
             CtrlKind::Jmp => w as u16,
             CtrlKind::JmpInd => {
                 let lo = bus.read(w as u16);
-                let hi = bus.read((w as u16 & 0xff00) | (w as u16).wrapping_add(1) & 0xff);
+                let hi = bus.read(ind_hi(w as u16));
                 u16::from_le_bytes([lo, hi])
             }
             CtrlKind::Jsr => {

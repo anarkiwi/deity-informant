@@ -74,7 +74,7 @@ pub fn run(img: &[u8; 0x10000], entry: &Entry, sp: u8, input: &FixedBitSet) -> O
             0x6c => {
                 whole && {
                     let p = u16::from_le_bytes([ops[1], ops[2]]);
-                    at(p).is_some() && at(p & 0xff00 | p.wrapping_add(1) & 0xff).is_some()
+                    at(p).is_some() && at(di_pcode::ind_hi(p)).is_some()
                 }
             }
             0x60 => stacked(2),
