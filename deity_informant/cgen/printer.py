@@ -19,7 +19,7 @@ import numpy as np
 from .. import masks
 from ..lifter import MODE_LEN, OPS
 from .mlir import Op
-from .csyntax import declare, drop_unread, ends_in_jump, names_in, render, walk
+from .csyntax import declare, drop_unread, ends_in_jump, hexes, names_in, render, walk
 from . import regions
 from .state import INDEXED, INIT, POINTER, UNKNOWN, State, classify
 from .structure import Conds, Graph, Structurer, new_ids
@@ -1970,10 +1970,6 @@ def _read_only(st, found, seen):
     )
 
 
-def _hex(data):
-    return ", ".join(f"0x{b:02X}" for b in data)
-
-
 def _types(text):
     """The types of a result list ``(i8, i16)`` or ``i8``."""
     text = text.strip()
@@ -3672,7 +3668,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         out = [f"#define {self.var_name(a)}_INIT 0x{img[a]:02X}" for a in self.state.scalars]
         for s, (bases, fields) in enumerate(self.state.structs):
             out += [
-                f"#define V{s}_f{d:02X}_INIT {_hex(img[(int(b) + d) & 0xFFFF] for b in bases)}"
+                f"#define V{s}_f{d:02X}_INIT {hexes(img[(int(b) + d) & 0xFFFF] for b in bases)}"
                 for d in fields
             ]
         return out

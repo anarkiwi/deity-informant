@@ -19,6 +19,7 @@ import numpy as np
 from .. import c64devices, masks, polling, postinit, wholeprog
 from ..trace import Facts
 from . import emit, mlir, printer, traps as trapinfo
+from .csyntax import hexes
 from ..lifter import MODE_LEN, OPS
 from .regions import Memory, background, code_bytes, pointer_pairs
 
@@ -60,10 +61,6 @@ def jump_facts(facts, image):
     return Facts(edges=sorted(set(edges)))
 
 
-def _hex(data):
-    return ", ".join(f"0x{b:02X}" for b in data)
-
-
 def _slice(mem, used, k):
     """The held span region ``k`` is a slice of, or None."""
     return mem.holding(mem.regions[k][0], sum(mem.regions[k]) - 1) if "CODE" in used else None
@@ -82,21 +79,21 @@ def _header(mem, used, traps, konsts=None, store=()):
     for k, (org, n) in enumerate(mem.regions):
         out += [f"#define R{k}_ORG 0x{org:04X}", f"#define R{k}_LEN {n}"]
         if _slice(mem, used, k) is None:
-            out.append(f"#define R{k}_INIT {_hex(mem.init[org : org + n])}")
+            out.append(f"#define R{k}_INIT {hexes(mem.init[org : org + n])}")
     if "CODE" in used or "CODE_ORG" in used:
         out.append(f"#define CODE_ORG 0x{mem.code_span[0]:04X}")
     for j, (lo, hi) in enumerate(mem.held if "CODE" in used else ()):
         out += [f"#define C{j}_ORG 0x{lo:04X}", f"#define C{j}_LEN {hi - lo}"]
-        out.append(f"#define C{j}_INIT {_hex(mem.init[lo:hi])}")
+        out.append(f"#define C{j}_INIT {hexes(mem.init[lo:hi])}")
         if _sliced(mem, used, j):
             # Past the span's last constant byte every byte is data: the bits stop there.
             top = lo + int(np.flatnonzero(mem.constant[lo:hi]).max(initial=-1)) + 1
             bits = np.packbits(mem.owner[lo : max(top, lo + 1)] >= 0, bitorder="little")
-            out += [f"#define C{j}_BITS {top - lo}", f"#define C{j}_DATA_INIT {_hex(bits)}"]
+            out += [f"#define C{j}_BITS {top - lo}", f"#define C{j}_DATA_INIT {hexes(bits)}"]
     if "IMG_ORG" in used:
         out.append(f"#define IMG_ORG 0x{mem.loaded[0]:04X}")
     out += [f"#define {k} 0x{v:02X}" for k, v in sorted((konsts or {}).items())]
-    out.append(f"#define CGEN_TRAPS {', '.join(f'0x{pc:04X}' for pc in traps)}")
+    out.append(f"#define CGEN_TRAPS {hexes(traps, 4)}")
     return "\n".join([*out, *store, "#endif"]) + "\n"
 
 
@@ -261,24 +258,24 @@ def _unheld_h(mem, used, cases, program, ram=None):
         # A run of every byte is two: a length is 16 bits.
         runs = [(0, 0xFFFF), (0xFFFF, 1)] if runs == [(0, 0x10000)] else runs
         out += [
-            f"#define CGEN_{name}_ORG {', '.join(f'0x{o:04X}' for o, _ in runs) or '0'}",
-            f"#define CGEN_{name}_LEN {', '.join(f'0x{n:X}' for _, n in runs) or '0'}",
+            f"#define CGEN_{name}_ORG {hexes((o for o, _ in runs), 4) or '0'}",
+            f"#define CGEN_{name}_LEN {hexes((n for _, n in runs), 0) or '0'}",
         ]
         if name == "RAM":
             at = np.cumsum([0] + [n for _, n in runs])
             data = b"".join(bytes(mem.image[o : o + n]) for o, n in runs)
             out += [
-                f"#define CGEN_RAM_AT {', '.join(f'0x{x:X}' for x in at[:-1]) or '0'}",
+                f"#define CGEN_RAM_AT {hexes(at[:-1], 0) or '0'}",
                 f"#define CGEN_RAM_N {len(data)}",
-                f"#define CGEN_RAM_INIT {_hex(data) or '0'}",
+                f"#define CGEN_RAM_INIT {hexes(data) or '0'}",
             ]
             rest &= ~mask
     entries, pool = background(mem.image, rest)
     out += [
-        f"#define CGEN_BG_{k} {', '.join(f'0x{e[i]:X}' for e in entries)}"
+        f"#define CGEN_BG_{k} {hexes((e[i] for e in entries), 0)}"
         for i, k in enumerate(("ORG", "AT", "M"))
     ]
-    return out + [f"#define CGEN_BG_INIT {_hex(pool)}"]
+    return out + [f"#define CGEN_BG_INIT {hexes(pool)}"]
 
 
 def _wr(vol, var=False):
@@ -475,8 +472,8 @@ def _io_h(state):
         ends = np.cumsum([0] + [len(r) for r in rows])
         out += [
             f"#define CGEN_IO_ROWS {len(rows)}",
-            f"#define CGEN_IO_AT {', '.join(f'0x{x:04X}' for x, _ in flat)}",
-            f"#define CGEN_IO_VAL {_hex(v for _, v in flat)}",
+            f"#define CGEN_IO_AT {hexes((x for x, _ in flat), 4)}",
+            f"#define CGEN_IO_VAL {hexes(v for _, v in flat)}",
             f"#define CGEN_IO_FROM {', '.join(str(e) for e in ends)}",
         ]
         if len(rows) > 1:
@@ -526,7 +523,7 @@ def _copies_h(mem, plan, var=lambda a: None):
         ends.append(len(dst))
     out = [f"#define CGEN_LIT_N {len(lit)}", f"#define CGEN_CP_N {len(dst)}"]
     if lit:
-        out.append(f"#define CGEN_LIT {_hex(lit)}")
+        out.append(f"#define CGEN_LIT {hexes(lit)}")
     if dst:
         out += [
             f"#define CGEN_CP_DST {', '.join(dst)}",

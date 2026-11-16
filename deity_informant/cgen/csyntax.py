@@ -262,3 +262,8 @@ def names_in(items):
         for sub in children(st):
             out |= names_in(sub)
     return out
+
+
+def hexes(vals, width=2):
+    """``vals`` as a C initializer list of hex literals, ``width`` digits at least."""
+    return ", ".join(f"0x{v:0{width}X}" for v in vals)
