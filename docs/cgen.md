@@ -114,6 +114,20 @@ jennings core (`postinit.Run`: each stored byte tagged as a constant, a byte loa
 address or through a word, or a byte of an addition chain on a word) when init returns on the
 reference interpreter.
 
+The bytes init leaves **constant** are the exception (`_fixed`): a byte init stores that holds
+one value after init for every value of `A` it returns with on `machine` (all 256 are run, so
+the values deciding it do not depend on the declared ones: `postinit.Init.same`) and that no
+store of the other entries' lift may write (`Program.stored`, a store's address set, else its
+address interval: a store of unknown address reaches every byte) is a byte of the image their
+lift starts from, lifted again with it `held`. A pair of bytes an instruction reads as one
+address is constant as a whole or not at all: a variable byte keeps the other a variable, the
+pair the word init's runs bound (*Pointer pairs*). An operand of such bytes is a constant
+operand (a direct access), a pointer pair of them a constant address, a load of one a constant
+the `.h` names. A byte whose value differs between values of `A`, or one the other entries may
+write, stays a variable init sets. A replayed init's `.h` holds their values in its image (no
+copy writes them); a translated init's code writes them, its storage starting from `image`,
+while the other entries' functions read the constants. `info["fixed"]` lists them.
+
 Init is then lifted itself, from `image`, as an entry run once (`once`,
 [wholeprog](wholeprog.md#init): a store into code makes cells only of the instructions that
 may run after it, so a block copy over code init already ran leaves that code constant), for

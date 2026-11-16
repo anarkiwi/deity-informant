@@ -3279,17 +3279,19 @@ OPERAND_PTR = r"rdC\d+\(S_\w+ \| \(\(uint16_t\)S_\w+ << 8\), "
 
 
 @pytest.mark.parametrize("src", ["RUNREL", "RELOCATE"])
-def test_operands_init_writes_through_a_pointer_are_pointer_variables(prefix, tmp_path, src):
-    """A relocator storing each operand's two bytes through a ``(zp),Y`` pointer read from a
-    table of patch sites runs, and play is lifted from what it leaves: both bytes of each
-    operand are cells play reads through as a pointer variable; init is translated, its
-    stores through the pointer finding the operands' variables."""
+def test_operands_init_relocates_by_a_constant_base_are_constant(prefix, tmp_path, src):
+    """A relocator storing each operand's two bytes, a base word plus an offset, through a
+    ``(zp),Y`` pointer read from a table of patch sites runs, and the other entry is lifted
+    from what it leaves: init leaves the operands one value for every ``A`` and no store of
+    the entry may write them, so they are constants of its code and its accesses direct;
+    init is translated, its stores through the pointer writing the operands' storage."""
     img, labels, loaded = assemble(globals()[src])
     c, h, info = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
     play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", a) for a in range(4)] * 2)
     ops = {labels[o] + k for o in ("o0", "o1") for k in (1, 2)}
-    assert ops <= set(info["provenance"]["cells"]) and "codechk(" not in c
-    assert re.search(OPERAND_PTR, body_of(c, "play")) and info["init"] == "translated"
+    body = body_of(c, "play")
+    assert ops <= set(info["fixed"]) and "codechk(" not in c and info["init"] == "translated"
+    assert re.search(r"\bC0\[C0_AT\w+ \+ ", body) and not re.search(r"rdC|\bS_", body)
     assert "CGEN_CP_N" not in h and "wr(" in body_of(c, "init")
 
 
@@ -3342,27 +3344,77 @@ def songs(  # pylint: disable=too-many-arguments,too-many-positional-arguments
 
 @pytest.mark.parametrize("probe", [False, True])
 def test_play_is_lifted_from_each_songs_state(prefix, tmp_path, probe):
-    """Init relocating the other entry's operands and storing ``A`` is run for every value:
-    the entry reads through the operand init patches as a pointer variable. Init is
-    translated, unless its run reads the device: then the init function traps an undeclared
-    value, replays init's I/O write and copies each value's state from the header's literals
-    into the variable."""
+    """Init relocating the other entry's operands by a constant word and storing ``A`` is
+    run for every value: the operands are constants, the entry's accesses through them
+    direct, and the byte holding ``A`` a variable. Init is translated, unless its run reads
+    the device: then the init function traps an undeclared value, replays init's I/O write
+    and copies each value's state from the header's literals into the variable."""
     src = probed(INITREL) if probe else INITREL
     c, info, labels = songs(prefix, tmp_path, src, (0, 1, 5))
     ops = {labels[o] + k for o in ("o0", "o1") for k in (1, 2)}
-    assert ops <= set(info["provenance"]["cells"]) and "codechk(" not in c
+    assert ops <= set(info["fixed"]) and labels["song"] not in info["fixed"]
+    assert "codechk(" not in c
     init = body_of(c, "init")
     replay = "io_write(IO_AT[i], IO_VAL[i]);" in init and "CP_DST[i][j] = CP_SRC[i][j];" in init
     assert replay == probe and info["init"] == ("replayed" if probe else "translated")
-    assert re.search(OPERAND_PTR, body_of(c, "play"))
+    body = body_of(c, "play")
+    assert re.search(r"\bC0\[C0_AT\w+ \+ ", body) and not re.search(OPERAND_PTR, body)
+
+
+#: Init setting a pointer pair and a count the other entry reads; ``{w}`` more of its code.
+PTRSET = """
+init:   LDA #lo(tab)
+        STA $FB
+        LDA #hi(tab)
+        STA $FC
+        LDA #$07
+        STA cnt
+        RTS
+play:   AND #$03
+        TAY
+        LDA ($FB),Y
+        STA $C000
+        LDA cnt
+        STA $C001
+{w}        RTS
+cnt:    .byte 0
+tab:    .byte 1,2,3,4
+end:
+"""
+
+
+@pytest.mark.parametrize(
+    "w, held",
+    [
+        ("", ("$FB", "$FC", "cnt")),
+        ("        DEC cnt\n", ("$FB", "$FC")),
+        ("        STA $FD\n        LDA $C010\n        STA $FE\n        STA ($FD),Y\n", ()),
+    ],
+    ids=["constant", "written", "unknown"],
+)
+def test_bytes_init_leaves_constant(prefix, tmp_path, w, held):
+    """The bytes init stores, the same for every ``A``, that no store of the other entry may
+    write are constants of its lift: a pointer pair a constant address (its read through it
+    direct), a count a constant it reads by name. A byte the entry writes, and every byte
+    where a store of the entry of unknown address may reach it, stays a variable."""
+    c, info, labels = songs(prefix, tmp_path, PTRSET.format(w=w), (0, 1))
+    assert set(info["fixed"]) == {int(x[1:], 16) if x[0] == "$" else labels[x] for x in held}
+    body = body_of(c, "play")
+    assert bool(re.search(r"\bS_FB\b|rdC", body)) == (not held)
+    assert bool(re.search(r"io_write\(0xC001, \w+_K\w+\)", body)) == ("cnt" in held)
 
 
 def test_init_relocating_by_the_song_leaves_pointer_cells(prefix, tmp_path):
-    """Init computing an operand from the song writes both its bytes: play reads through
-    them as a pointer, bounded to the table the song indexes."""
+    """Init computing an operand from ``A`` writes both its bytes: the low byte's value
+    differs between values of ``A``, so the operand is a variable the other entry reads
+    through as a pointer bounded to the table ``A`` indexes, its high byte too though init
+    leaves it one value; the flag init leaves one value for every ``A`` is a constant."""
     c, info, labels = songs(prefix, tmp_path, INITA, range(4))
     assert {labels["o0"] + 1, labels["o0"] + 2} <= set(info["provenance"]["cells"])
-    assert re.search(r"rdC0\(S_\w+ \| \(\(uint16_t\)S_\w+ << 8\), a & 3\)", c)
+    assert info["fixed"] == [labels["flag"]]
+    body = body_of(c, "play")
+    assert re.search(r"rdC0\(S_\w+ \| \(\(uint16_t\)S_\w+ << 8\), a & 3\)", body)
+    assert "_K0" in body
 
 
 def test_song_range_is_checked_not_assumed(prefix, tmp_path):
@@ -3431,8 +3483,9 @@ def test_init_io_writes_song_data_decides_are_replayed(prefix, tmp_path):
 
 def test_init_io_writes_are_replayed_in_order(prefix, tmp_path):
     """A replayed init's I/O writes are replayed in their order (a clearing loop's one by
-    one), and the bytes it stores are data play reads, their values in the header; the
-    translated init makes them as its code does."""
+    one), and the bytes it stores, which the other entry never writes, are constants it
+    reads by name, their values in the header; the translated init makes them as its code
+    does."""
     c, info, _ = songs(prefix, tmp_path / "t", IOCLEAR, (0,), declared=(0,))
     assert info["init"] == "translated" and "io_write(0xC020, 0x11);" in body_of(c, "init")
     c, _, _ = songs(prefix, tmp_path, probed(IOCLEAR), (0,), declared=(0,))
@@ -3440,7 +3493,7 @@ def test_init_io_writes_are_replayed_in_order(prefix, tmp_path):
     h = translate(prefix, img, labels, loaded, ("init", "play"), init=0)[1]
     assert "#define CGEN_IO_AT 0xC013, 0xC012, 0xC011, 0xC010, 0xC020\n" in h
     assert "#define CGEN_IO_VAL 0x00, 0x00, 0x00, 0x00, 0x11\n" in h
-    assert not re.search(r"io_write\(0xC00[01], CODE_K", c)
+    assert len(re.findall(r"io_write\(0xC00[01], CODE_K", c)) == 2
 
 
 PROBE = """
@@ -3486,8 +3539,9 @@ end:
 @pytest.mark.parametrize("model", [0, 1])
 def test_init_io_probe_is_settled_by_the_machine(prefix, tmp_path, model):
     """Init probing the hardware (an I/O read) and patching play's opcode by what it reads
-    is settled at the machine's value: no ``io_read``, and the opcode a cell only where init
-    stored it, play running the value the machine's run left (any other traps)."""
+    is settled at the machine's value: no ``io_read``, and the opcode init stores, the same
+    for every ``A``, a constant of the other entry's code: it runs the value the machine's
+    run left."""
     img, labels, loaded = assemble(PROBE)
     img[0xC030] = model
     c, h, info = translate(
@@ -3495,7 +3549,8 @@ def test_init_io_probe_is_settled_by_the_machine(prefix, tmp_path, model):
     )
     play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", k) for k in range(4)])
     assert "io_read(0x" not in c and info["init"] == "replayed"
-    assert (labels["shift"] in info["provenance"]["cells"]) == bool(model)
+    assert labels["shift"] not in info["provenance"]["cells"]
+    assert (labels["shift"] in info["fixed"]) == bool(model)
 
 
 @pytest.mark.parametrize(
@@ -3721,10 +3776,11 @@ end:
 @pytest.mark.parametrize("plain", [False, True])
 def test_relocated_operands_point_into_the_song(prefix, tmp_path, plain):
     """Init relocating play's operands from the song's header words plus the song's base, through
-    a table of patch sites, leaves pointer variables bounded to the song: play reads through
-    them with the song span's bounds-checked reader, not ``rd``. An operand play also writes
-    with a byte of no pointer stays a pointer variable of unbounded values, read through the
-    same reader, ``oob_rd`` outside the song."""
+    a table of patch sites, leaves them one value for every ``A``: constants, the other
+    entry's accesses direct. An operand the entry also writes with a byte of no pointer stays
+    a pointer variable of unbounded values, read through the data span's bounds-checked
+    reader (not ``rd``), ``oob_rd`` outside it, its byte the entry never writes with it; the
+    other operand is a constant."""
     src = (
         SWPREL.replace("        STA $C001\n", "        STA $C001\n        INC o1+1\n")
         if plain
@@ -3735,9 +3791,12 @@ def test_relocated_operands_point_into_the_song(prefix, tmp_path, plain):
     calls = [("init", 0)] + [("play", k) for k in range(4)]
     play(tmp_path, c, h, img, labels, calls)
     ops = {labels[o] + k for o in ("o0", "o1") for k in (1, 2)}
-    assert ops <= set(info["provenance"]["cells"])
+    assert set(info["fixed"]) & ops == ops - (
+        {labels["o1"] + 1, labels["o1"] + 2} if plain else set()
+    )
     body = body_of(c, "play")
-    assert re.search(r"rdC\d+\(", body) and not re.search(r"\brd\(", body)
+    assert bool(re.search(r"rdC\d+\(", body)) == plain and not re.search(r"\brd\(", body)
+    assert re.search(r"\bC0\[C0_AT\w+ \+ ", body)
 
 
 @pytest.mark.parametrize("bounded", [True, False])
@@ -4464,13 +4523,41 @@ void entry(uint8_t a) {
     assert owner[6] == "entry" and owner[2] == "rd"
 
 
-def test_operands_set_from_one_word_are_one_pointer(prefix, tmp_path):
-    """Play is lifted from what init's run leaves: operand pairs init sets from one song word
-    are one pointer variable, the others read as it plus their constant offset, and the
-    ``.c`` is the same wherever the song puts its tables."""
+#: :data:`WORDREL` taking its words from the header row ``A`` chooses.
+WORDROW = (
+    WORDREL.replace("init:   LDX #$00\n", "init:   ASL A\n        ASL A\n        STA sel\n        LDX #$00\n")
+    .replace("        LDY words,X\n", "        LDA words,X\n        CLC\n        ADC sel\n        TAY\n")
+    .replace("tmp:    .byte 0\n", "tmp:    .byte 0\nsel:    .byte 0\n")
+    .replace("hi(tab2)\n", "hi(tab2)\n        .byte lo(tab2), hi(tab2), lo(tab1), hi(tab1)\n")
+)  # fmt: skip
+
+
+def test_operands_set_from_one_constant_word_are_constants(prefix, tmp_path):
+    """Operands init sets from header words, the same for every ``A``, are constants: the
+    other entry's accesses through them direct, the ``.c`` the same wherever its tables
+    lie."""
     texts = set()
     for pad in ("", "        .byte 0,0,0\n"):
         img, labels, loaded = assemble(WORDREL.replace("pad:\n", f"pad:\n{pad}"))
+        c, h, info = translate(
+            prefix, img, labels, loaded, entries=("init", "play"), init=0, songs=range(2)
+        )
+        (tmp_path / str(len(pad))).mkdir()
+        play(tmp_path / str(len(pad)), c, h, img, labels, [("init", 1)] + [("play", 3)] * 2)
+        ops = {labels[o] + k for o in ("o0", "o1", "o2") for k in (1, 2)}
+        body = body_of(c, "play")
+        assert ops <= set(info["fixed"]) and not re.search(r"rdC|\bS_", body)
+        texts.add(c)
+    assert len(texts) == 1
+
+
+def test_operands_set_from_one_word_are_one_pointer(prefix, tmp_path):
+    """Play is lifted from what init's run leaves: operand pairs init sets from one song word
+    (the header row ``A`` chooses) are one pointer variable, the others read as it plus their
+    constant offset, and the ``.c`` is the same wherever the tables lie."""
+    texts = set()
+    for pad in ("", "        .byte 0,0,0\n"):
+        img, labels, loaded = assemble(WORDROW.replace("pad:\n", f"pad:\n{pad}"))
         c, h, info = translate(
             prefix, img, labels, loaded, entries=("init", "play"), init=0, songs=range(1)
         )
@@ -4663,29 +4750,42 @@ end:
 def test_offsets_plus_init_origin_point_into_its_run(prefix, tmp_path):
     """A pair stored from the two parts of a table byte plus the origin init leaves (added
     with carry) points into the run of data bytes the origin points into: the read reaches
-    no code, so the patched immediate is a scalar. The hulls that hold on every run take
-    nothing of it."""
+    no code, so the patched immediate is a scalar. The origin is one value for every ``A``,
+    a constant: the hulls that hold on every run are the same."""
     img, labels, loaded = assemble(ORIGIN)
     ents = [(labels["init"], "init"), (labels["play"], "play")]
     p, _ = cgen.lift(img, ents, [W.IO], loaded=loaded, init=0)
     lo, hi = p.reach[labels["read"]][:2]
     assert labels["offlo"] <= lo and hi < labels["end"] + 0x100
-    assert p.proven[labels["read"]][:2] == (0, 0xFFFF)
+    assert p.proven[labels["read"]][:2] == (lo, hi) and p.fixed.tolist() == [0xFD, 0xFE]
     c, info, _ = songs(prefix, tmp_path, ORIGIN, (0,))
     assert (
         info["state"]["cells"]["scalars"] == 1 and "cgen_var" not in c.split("#ifdef CGEN_OOB")[0]
     )
 
 
+#: :data:`INITREL` then adding ``A``'s low bit to the operands' low bytes.
+INITBIT = INITREL.replace(
+    "done:   LDA song\n",
+    "".join(
+        f"        LDA song\n        AND #$01\n        CLC\n        ADC {o}+1\n        STA {o}+1\n"
+        for o in ("o0", "o1")
+    )
+    + "done:   LDA song\n",
+).replace("rel:    .byte 0, 0, 4, 0", "rel:    .byte 0, 0, 3, 0")
+
+
 def test_bounded_store_leaves_cells_to_promotion(prefix, tmp_path):
     """A store through an operand init relocated into a run of data bytes touches that run,
-    not every byte: the operand cells the entry reads at their addresses are scalars, which
-    only the translated init's stores through its pointer find by address (``cgen_var``)."""
+    not every byte: the operand cells the entry reads at their addresses (the low bytes,
+    which differ between values of ``A``) are scalars, which only the translated init's
+    stores through its pointer find by address (``cgen_var``)."""
     for probe in (False, True):
-        src = probed(INITREL) if probe else INITREL
-        c, info, _ = songs(prefix, tmp_path / str(probe), src, (0, 1, 5))
+        src = probed(INITBIT) if probe else INITBIT
+        c, info, labels = songs(prefix, tmp_path / str(probe), src, (0, 1, 5))
         cells = info["state"]["cells"]
-        assert cells["scalars"] >= 4 and "unknown" not in cells
+        assert {labels["o0"] + 1, labels["o1"] + 1}.isdisjoint(info["fixed"])
+        assert cells["scalars"] >= 2 and "unknown" not in cells
         assert ("cgen_var" in c.split("#ifdef CGEN_OOB")[0]) != probe
         assert "cgen_var" not in body_of(c, "play")
 

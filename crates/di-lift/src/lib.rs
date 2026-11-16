@@ -65,6 +65,9 @@ pub struct Opts {
     /// Operand pairs of `free` one pointer variable holds: `(lo, g, delta)`, the pair at `lo`
     /// holding the pair at `g` plus `delta` (`deity_informant.postinit`). Play reads `g`.
     pub alias: Vec<(u16, u16, u16)>,
+    /// Bytes the host's init stored that hold one value after it on every run, the image's:
+    /// data the program has past its image, as the bytes of `free` are (*Init*).
+    pub held: Vec<u16>,
     /// Each entry runs once, from `img` (a host's init): a store into code makes cells only of
     /// the instructions that may run after it in the same call, and needs no code check of the
     /// others, which ran or never run (*Init*).
@@ -82,6 +85,7 @@ impl Default for Opts {
             fold: false,
             free: Vec::new(),
             alias: Vec::new(),
+            held: Vec::new(),
             once: false,
         }
     }
@@ -559,6 +563,8 @@ pub fn lift_banked(
     let entries = declared(entries);
     let entries = &entries[..];
     let free: FxHashMap<u16, Vec<u8>> = opts.free.iter().cloned().collect();
+    let mut held = FixedBitSet::with_capacity(0x10000);
+    held.extend(opts.held.iter().map(|&a| a as usize));
     let mut matched = true;
     let (g, plans, fidx, callees, recursive, slots, constcode, touches, seen, sites, private) = loop {
         let mut g = discover(
@@ -568,7 +574,10 @@ pub fn lift_banked(
             bank,
             matched,
             opts.loaded,
-            opts.entry_sp.map(|_| vsa::Wanted { volatile }),
+            opts.entry_sp.map(|_| vsa::Wanted {
+                volatile,
+                held: &held,
+            }),
             &free,
             opts.once,
         );
@@ -927,6 +936,7 @@ pub fn lift_banked(
         },
         volatile: volatile.to_vec(),
         written: runs(&g.written),
+        stored: runs(&analysis::stored(&g)),
         starts,
         elide_ret: private,
         bank: bank.cloned(),

@@ -356,6 +356,8 @@ pub struct Program {
     pub volatile: Vec<(u32, u32)>,
     /// Runs `[lo, hi)` of the bytes stores with address sets may write.
     pub written: Vec<(u32, u32)>,
+    /// Runs `[lo, hi)` of the bytes any store may write ([`crate::analysis::stored`]).
+    pub stored: Vec<(u32, u32)>,
     /// The instruction starts the functions plan (every copy's of an instance function),
     /// ascending.
     pub starts: Vec<u16>,

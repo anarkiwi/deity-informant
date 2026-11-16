@@ -801,6 +801,13 @@ impl Program {
         self.prog.written.clone()
     }
 
+    /// Runs ``[(lo, hi)]`` (``hi`` exclusive) of the bytes any store may write: its address
+    /// set, else its address interval.
+    #[getter]
+    fn stored(&self) -> Vec<(u32, u32)> {
+        self.prog.stored.clone()
+    }
+
     /// Address sets of data accesses through pointers or with several addresses:
     /// ``{(pc, store): [(lo, hi), ...]}`` runs, ``hi`` exclusive.
     #[getter]
@@ -1434,12 +1441,13 @@ pub fn reference_calls(
 /// ``[(addr, values)]`` the variables the host's init leaves, of unknown value (their values
 /// over its runs), ``alias`` ``[(lo, g, delta)]`` the operand pairs of them one pointer
 /// variable holds; ``once=True`` runs each entry once from ``image`` (a host's init): a store
-/// into code makes cells only of the instructions that may run after it.
+/// into code makes cells only of the instructions that may run after it; ``held`` the bytes
+/// the host's init stored that hold one value after it, the image's.
 /// ``bank`` is a bank map: ``dir``/``data`` port
 /// cells, ``mask`` and ``pull`` bits, ``lut`` (configuration per effective port value),
 /// ``configs`` (per configuration 256 page kinds: 0 RAM, 1 ROM, 2 I/O) and ``rom``.
 #[pyfunction]
-#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None, fold=false, sensitive=None, free=vec![], alias=vec![], once=false))]
+#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None, fold=false, sensitive=None, free=vec![], alias=vec![], once=false, held=vec![]))]
 #[allow(clippy::too_many_arguments)]
 pub fn lift_program(
     py: Python<'_>,
@@ -1457,6 +1465,7 @@ pub fn lift_program(
     free: Vec<(u16, Vec<u8>)>,
     alias: Vec<(u16, u16, u16)>,
     once: bool,
+    held: Vec<u16>,
 ) -> PyResult<Program> {
     let img = self::image(image)?;
     let es = self::entries(entries);
@@ -1471,6 +1480,7 @@ pub fn lift_program(
         fold,
         free,
         alias,
+        held,
         once,
     };
     Ok(Program::new(py.detach(|| {

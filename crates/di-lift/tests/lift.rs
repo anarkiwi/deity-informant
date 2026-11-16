@@ -992,3 +992,34 @@ fn store_over_its_own_operand_ends() {
         .expect("lift ends");
     assert!(diff(&img, &p, &acc_calls(&[0, 0, 0, 0]), IO) > 0);
 }
+
+#[test]
+fn stored_bytes_cover_every_store() {
+    // TAX; STA $1100,X; LDY #0; LDA #0; STA $FD; LDA #$20; STA $FE; TXA; STA ($FD),Y; RTS
+    let known = image(&[(
+        0x1000,
+        &[
+            0xaa, 0x9d, 0x00, 0x11, 0xa0, 0x00, 0xa9, 0x00, 0x85, 0xfd, 0xa9, 0x20, 0x85, 0xfe,
+            0x8a, 0x91, 0xfd, 0x60,
+        ],
+    )]);
+    let p = lift(
+        &known,
+        &entries(&[0x1000]),
+        &[(0xc000, 0xc100)],
+        &Facts::default(),
+    );
+    assert_eq!(p.stored, [(0xfd, 0xff), (0x1100, 0x1200), (0x2000, 0x2001)]);
+    // STA $FD; STA $FE; LDY #0; STA ($FD),Y; RTS: a pointer of unknown value reaches any byte.
+    let unknown = image(&[(
+        0x1000,
+        &[0x85, 0xfd, 0x85, 0xfe, 0xa0, 0x00, 0x91, 0xfd, 0x60],
+    )]);
+    let p = lift(
+        &unknown,
+        &entries(&[0x1000]),
+        &[(0xc000, 0xc100)],
+        &Facts::default(),
+    );
+    assert_eq!(p.stored, [(0, 0x10000)]);
+}

@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from tqdm import tqdm
 
 from jennings.devices.mpu6502 import NativeMPU
 from jennings.memory import NativeMemory
@@ -76,6 +77,11 @@ class Init:
         """``{addr: [values]}``: the value each free byte holds on each song, in order."""
         held = self.states[:, self.free]
         return {int(a): held[:, i].tolist() for i, a in enumerate(self.free)}
+
+    def same(self):
+        """The free bytes holding one value on every run, ascending."""
+        held = self.states[:, self.free]
+        return self.free[(held == held[:1]).all(axis=0)]
 
     def varying(self):
         """The free bytes whose value differs between songs, ascending."""
@@ -150,24 +156,32 @@ def _find(segs, t, memo):
     return memo[t]
 
 
-def run(image, pc, songs, volatile, machine=None):
+def run(image, pc, songs, volatile, machine=None, skip=False):
     """The :class:`Init` of init at ``pc`` on ``image`` for each value of ``A`` in ``songs``,
-    on ``machine`` (default :func:`reference` over ``volatile``)."""
+    on ``machine`` (default :func:`reference` over ``volatile``); with ``skip``, of each
+    value it returns with (the others left out of ``songs``)."""
     machine = machine or reference(volatile)
     vol = np.zeros(0x10000, dtype=bool)
     vol[0x100:0x200] = True
     for lo, hi in volatile:
         vol[lo:hi] = True
-    states, writes = [], []
+    states, writes, kept = [], [], []
     stored = np.zeros(0x10000, dtype=bool)
-    for a in songs:
+    for a in tqdm(songs, desc="init runs", unit="run", leave=False, disable=None):
         mem = bytearray(image)
-        w, s = machine(mem, pc, a)
+        try:
+            w, s = machine(mem, pc, a)
+        except RuntimeError:
+            if not skip:
+                raise
+            continue
+        kept.append(a)
         states.append(np.frombuffer(bytes(mem), dtype=np.uint8))
         writes.append([(int(x), int(v)) for x, v in w])
         stored[np.asarray(list(s), dtype=np.int64)] = True
     img = np.frombuffer(bytes(image), dtype=np.uint8)
-    return Init(img, list(songs), np.stack(states), writes, np.flatnonzero(stored & ~vol), ~vol)
+    held = np.stack(states) if states else np.zeros((0, 0x10000), np.uint8)
+    return Init(img, kept, held, writes, np.flatnonzero(stored & ~vol), ~vol)
 
 
 def reproduces(prog, image, state, runs):

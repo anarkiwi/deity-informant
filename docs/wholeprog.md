@@ -364,6 +364,12 @@ each is a variable:
 an operand pair `lo` read as pair `g` plus `delta`, where all four bytes are free cells no lifted
 store may write: the operands init set from one word at constant offsets are one variable.
 
+`stored` (runs `[lo, hi)`) are the bytes any store of the lift may write: its address set where
+it has one, else its address interval. A host passes as `held` instead of `free` the bytes init
+leaves one value on every run that none of them is (cgen [*Init*](cgen.md#init)): the lift
+reads them from the image like any other byte, and they are data the program has past its
+image, as `free` bytes are, for the runs a pointer pair's floor is taken from.
+
 ## Guards
 
 | Assumption | Check | Exit |
