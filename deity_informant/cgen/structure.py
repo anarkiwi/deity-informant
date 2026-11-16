@@ -595,7 +595,8 @@ class Structurer:
             inside = [it for y in ys if y in self.loops[x] and y != u for it in self.tree(y)]
             outside = [it for y in ys if y not in self.loops[x] for it in self.tree(y)]
             exit_ = next(t for t, _ in self.g.succ[u] if t not in self.loops[x] and t != x)
-            return [("loop", body + inside, x, u), *self.branch(u, exit_), *outside]
+            loop = ("loop", [*body, *inside, ("label", u)], x, u)
+            return [loop, *self.branch(u, exit_), *outside]
         inside = [it for y in ys if y in self.loops[x] for it in self.tree(y)]
         outside = [it for y in ys if y not in self.loops[x] for it in self.tree(y)]
         return [("loop", body + inside, x), *outside]

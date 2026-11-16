@@ -891,6 +891,35 @@ tab:    .byte 3,1,2,0
 marks:  .byte 1,2,9,3
 end:
 """
+NESTED_LATCH = """
+entry:  LDX #$0E
+outer:  JSR sub
+latch:  TXA
+        SEC
+        SBC #$07
+        TAX
+        BPL outer
+        RTS
+sub:    LDY #$03
+inner:  INC $20,X
+        DEY
+        BPL inner
+        LDA $20,X
+        STA $C000,X
+        LDA $21,X
+        AND #$40
+        BEQ skip
+        INC $22,X
+skip:   LDY #$02
+again:  INC $21,X
+        DEY
+        BPL again
+        LDA $21,X
+        BPL done
+        INC $22,X
+done:   RTS
+end:
+"""
 IRRED = """
 entry:  LDX #$05
         AND #$01
@@ -1846,9 +1875,9 @@ def translate(  # pylint: disable=too-many-arguments,too-many-positional-argumen
     init=None,
     songs=None,
 ):
-    """``(c, h, info)`` of the program."""
+    """``(c, h, info)`` of the program; every ``goto`` names a label of its function."""
     ents = [(labels[n], n) for n in entries]
-    return cgen.translate(
+    out = cgen.translate(
         img,
         ents,
         [W.IO],
@@ -1860,6 +1889,8 @@ def translate(  # pylint: disable=too-many-arguments,too-many-positional-argumen
         init=init,
         songs=songs,
     )
+    assert not cmetrics.unlabeled(out[0])
+    return out
 
 
 def play(tmp_path, c, h, img, labels, calls, sensitive=()):
@@ -2850,6 +2881,25 @@ def test_multi_exit_loop_breaks_to_its_follow(prefix, tmp_path):
     # goto; `none`'s jump past `found` to the latch `next` continues the outer do/while.
     c, _, _ = check(prefix, tmp_path, EXITS, entry_calls(range(4), 2), gotos=1)
     assert c.count("break;") == 2 and "continue;" in c and "} while (" in c
+
+
+def test_jump_from_nested_loops_to_a_latch_is_a_goto_to_its_label(prefix, tmp_path):
+    """NESTED_LATCH: the do/while's latch (`sub`, inlined, returning to `latch`) is entered
+    from inside two nested counted loops, where ``continue`` is the inner loop's: `BPL done`
+    is a goto to the label ending the do body, before its condition."""
+    c, _, info = check(prefix, tmp_path, NESTED_LATCH, entry_calls(range(2), 4), gotos=1)
+    _, labels, _ = assemble(NESTED_LATCH)
+    assert [e[0] for e in info["provenance"]["gotos"]] == [labels["done"] - 4]
+    assert re.search(r"goto (L\d+);(?s:.*)\n\s*\1:;\n\s*\} while \(", c)
+
+
+def test_unlabeled_gotos_are_found_per_function(tmp_path):
+    text = "void f(void) {\n  goto L1;\nL2:;\n}\nvoid g(void) {\n  L1:;\n  goto L2;\n}\n"
+    assert cmetrics.unlabeled(text) == ["L1", "L2"]
+    assert not cmetrics.unlabeled(text.replace("L2:", "L1:", 1).replace("goto L2", "goto L1"))
+    (tmp_path / "t.c").write_text(text)
+    assert cmetrics.main(["--labels", str(tmp_path / "t.c")]) == 1
+    assert cmetrics.main([str(tmp_path / "t.c")]) == 0
 
 
 def test_two_entry_loop_jumps_to_its_second_entry(prefix, tmp_path):

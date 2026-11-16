@@ -10,7 +10,7 @@
 | `tools/cslice.py IN.c` | Frama-C slice on bus writes, deopts and writes to `M` |
 | `tools/cplay.py SRC.c --state IMAGE --meta META` | plays C from `A = X = Y = 0`, `SP = $FD` against `wholeprog.reference_call`: the bus writes must be equal (`--ram`: RAM too) |
 | `tools/pcode2c.py ... --compact` | optimized, structured C (`tools/pcodeopt.py`, `tools/pcodec.py`), below |
-| `tools/cmetrics.py A.c ...` | lines, statements, `if`, `goto`, `switch`, loops, `int32_t` variables |
+| `tools/cmetrics.py A.c ...` | lines, statements, `if`, `goto`, `switch`, loops, `int32_t` variables; `--labels`: each `goto` its function has no label for (exit 1) |
 
 `FUNCS.pkl` is a pickle of `prog.functions`; the C expects `M`, `io_read`, `io_write`, `deopt` and `codechk` from the host (`tools/cplay.c` is one).
 
