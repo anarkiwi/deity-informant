@@ -289,16 +289,36 @@ fn byte_bounds(g: &analysis::Graph, free: &FxHashMap<u16, Vec<u8>>) -> Vec<Optio
 /// Whether variant `v` at `pc` has an access other than a push or pull that may reach page 1
 /// and cannot be checked at its instruction boundary, or jumps through a fixed page-1 pointer.
 fn unchecked(img: &[u8; 0x10000], g: &analysis::Graph, pc: u16, v: &analysis::Var) -> bool {
-    let acc = !is_stack_op(v.op)
-        && v.acc
-            .iter()
-            .enumerate()
-            .any(|(i, a)| !a.dummy && a.page1(&g.prot.win) && page1_check(v.op, i) == Check::No);
-    let ind = matches!(v.flow, Flow::JmpInd(_)) && {
-        let (iv, cell) = ind_ptr(img, g, pc);
-        !cell && iv.meets(0x100, 0x200)
-    };
-    acc || ind
+    let mut acc = v.acc.iter().enumerate();
+    acc.any(|(i, a)| page1_access(g, v, i, a, false)) || page1_ind(img, g, pc, v, false).is_some()
+}
+
+/// Whether access `i` (`a`) of variant `v`, not a push or pull, may reach page 1 and is
+/// `seen` there or cannot be checked at its instruction boundary.
+fn page1_access(
+    g: &analysis::Graph,
+    v: &analysis::Var,
+    i: usize,
+    a: &analysis::Access,
+    seen: bool,
+) -> bool {
+    !is_stack_op(v.op)
+        && !a.dummy
+        && a.page1(&g.prot.win)
+        && (seen || page1_check(v.op, i) == Check::No)
+}
+
+/// The pointer interval of variant `v` at `pc` when it jumps through a pointer that may be in
+/// page 1, fixed or (when `seen` there) in cells.
+fn page1_ind(
+    img: &[u8; 0x10000],
+    g: &analysis::Graph,
+    pc: u16,
+    v: &analysis::Var,
+    seen: bool,
+) -> Option<Iv> {
+    let (iv, cell) = matches!(v.flow, Flow::JmpInd(_)).then(|| ind_ptr(img, g, pc))?;
+    (iv.page1() && (!cell || seen)).then_some(iv)
 }
 
 /// Per access of plan `p` other than a push or pull that may reach page 1 and reached it in
@@ -312,17 +332,11 @@ fn unguarded<'a>(
 ) -> impl Iterator<Item = (Iv, H)> + 'a {
     p.nodes.iter().flat_map(move |(&(pc, h, _), node)| {
         g.vars[&pc].iter().zip(&node.arms).flat_map(move |(v, a)| {
-            let acc = a.acc.iter().enumerate().filter(move |&(i, ac)| {
-                !is_stack_op(v.op)
-                    && !ac.dummy
-                    && ac.page1(&g.prot.win)
-                    && (seen.contains_key(&pc) || page1_check(v.op, i) == Check::No)
-            });
-            let ind = matches!(v.flow, Flow::JmpInd(_))
-                .then(|| ind_ptr(img, g, pc))
-                .filter(|&(iv, cell)| iv.meets(0x100, 0x200) && (!cell || seen.contains_key(&pc)));
+            let hit = seen.contains_key(&pc);
+            let acc =
+                (a.acc.iter().enumerate()).filter(move |&(i, ac)| page1_access(g, v, i, ac, hit));
             acc.map(move |(i, ac)| p.narrowed(seen, pc, v.op, i, ac.addr).unwrap_or(ac.addr))
-                .chain(ind.map(|x| x.0))
+                .chain(page1_ind(img, g, pc, v, hit))
                 .map(move |iv| (iv, h))
         })
     })
@@ -846,7 +860,6 @@ pub fn lift_banked(
         let mut constcode = g.code.clone();
         constcode.difference_with(&g.cells);
         constcode.difference_with(&g.rom_code);
-        let page1 = |iv: Iv| iv.meets(0x100, 0x200);
         // Per function whether a load or store other than a push or pull may reach page 1.
         let touches: Vec<(bool, bool)> = plans
             .iter()
@@ -859,7 +872,7 @@ pub fn lift_banked(
                                 *(if a.store { &mut store } else { &mut load }) = true;
                             }
                         }
-                        load |= matches!(v.flow, Flow::JmpInd(_)) && page1(ind_ptr(img, &g, pc).0);
+                        load |= matches!(v.flow, Flow::JmpInd(_)) && ind_ptr(img, &g, pc).0.page1();
                     }
                 }
                 (load, store)
@@ -934,19 +947,17 @@ pub fn lift_banked(
     // restore those of returned frames, so pushes also store where a load, whatever the
     // facts saw and the pointer windows assume, may reach page 1: a read of them is then
     // exact. A static lift (declared entry SP) relies on its windows and zone checks.
-    let page1 = |iv: Iv| iv.meets(0x100, 0x200);
     let reads_page1 = |a: &analysis::Access| match opts.entry_sp {
         Some(_) => a.page1(&g.prot.win),
-        None => page1(a.addr),
+        None => a.addr.page1(),
     };
-    let page1 = |iv: Iv| iv.meets(0x100, 0x200);
     let shadow = private
         && plans.iter().any(|p| {
             p.pcs().any(|pc| {
                 g.vars[&pc].iter().any(|v| {
                     !is_stack_op(v.op)
                         && (v.acc.iter().any(|a| !a.dummy && !a.store && reads_page1(a))
-                            || matches!(v.flow, Flow::JmpInd(_)) && page1(ind_ptr(img, &g, pc).0))
+                            || matches!(v.flow, Flow::JmpInd(_)) && ind_ptr(img, &g, pc).0.page1())
                 })
             })
         });

@@ -1467,8 +1467,7 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
             }
         }
         (op, Flow::Next(_))
-            if stack_delta(op).is_none()
-                || acc.iter().any(|a| a.store && a.addr.meets(0x100, 0x200)) =>
+            if stack_delta(op).is_none() || acc.iter().any(|a| a.store && a.addr.page1()) =>
         {
             (s.push, s.pv, s.above, s.xsp) = ([None; 3], [None; 3], [None; 2], None)
         }
@@ -3393,7 +3392,7 @@ fn ram(given: &Given) -> Vec<(u32, u32)> {
     let mut out = Vec::new();
     if let Some((mut lo, hi)) = given.loaded {
         let mut vol = given.volatile.to_vec();
-        vol.push((0x100, 0x200));
+        vol.push(crate::ptr::PAGE1);
         vol.sort_unstable();
         for (a, b) in vol.into_iter().chain([(hi, hi)]) {
             if a.min(hi) > lo {

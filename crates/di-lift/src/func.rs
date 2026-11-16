@@ -254,7 +254,7 @@ impl Plan {
     /// memory: in a callee any page-1 byte; in an outermost plan one of `slots` above SP, or
     /// anywhere below the entry once SP may be set (a later pull may read it).
     pub fn kept(&self, slots: &FixedBitSet, h: H, addr: Iv) -> bool {
-        if !addr.meets(0x100, 0x200) {
+        if !addr.page1() {
             return false;
         }
         let (true, H::Known(h)) = (self.top, h) else {

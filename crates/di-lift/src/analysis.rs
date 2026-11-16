@@ -77,6 +77,10 @@ impl Iv {
     pub fn meets(self, lo: u32, hi: u32) -> bool {
         self.lo < hi && lo <= self.hi
     }
+    /// Whether the interval meets page 1 ([`crate::ptr::PAGE1`]).
+    pub fn page1(self) -> bool {
+        self.meets(crate::ptr::PAGE1.0, crate::ptr::PAGE1.1)
+    }
 }
 
 /// Interval of `opc(a, b)` with an `out`-sized result and `a` of `size0` bytes.
@@ -313,7 +317,7 @@ pub struct Access {
 impl Access {
     /// Whether the access may reach page 1 given the pointer windows `win`.
     pub fn page1(&self, win: &Win) -> bool {
-        self.addr.meets(0x100, 0x200) && !self.windowed(win)
+        self.addr.page1() && !self.windowed(win)
     }
     /// Whether the access is kept out of every zone: by its own check, or through pairs the
     /// windows `win` keep.
