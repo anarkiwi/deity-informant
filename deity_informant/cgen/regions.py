@@ -118,6 +118,8 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         self, image, code, volatile, loaded, sensitive=(), pairs=None, tables=None, written=()
     ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self.image, self.code, self.pairs = bytes(image), code, pairs or {}
+        #: The initial bytes of the regions: ``image`` unless an init run on them differs.
+        self.init = self.image
         self.written = list(written)
         self.tables = np.zeros(0x10000, dtype=bool) if tables is None else tables
         self.pairs_to = {}

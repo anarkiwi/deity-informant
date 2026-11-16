@@ -81,12 +81,12 @@ def _header(mem, used, traps, konsts=None, store=()):
     for k, (org, n) in enumerate(mem.regions):
         out += [f"#define R{k}_ORG 0x{org:04X}", f"#define R{k}_LEN {n}"]
         if _slice(mem, used, k) is None:
-            out.append(f"#define R{k}_INIT {_hex(mem.image[org : org + n])}")
+            out.append(f"#define R{k}_INIT {_hex(mem.init[org : org + n])}")
     if "CODE" in used or "CODE_ORG" in used:
         out.append(f"#define CODE_ORG 0x{mem.code_span[0]:04X}")
     for j, (lo, hi) in enumerate(mem.held if "CODE" in used else ()):
         out += [f"#define C{j}_ORG 0x{lo:04X}", f"#define C{j}_LEN {hi - lo}"]
-        out.append(f"#define C{j}_INIT {_hex(mem.image[lo:hi])}")
+        out.append(f"#define C{j}_INIT {_hex(mem.init[lo:hi])}")
         if _sliced(mem, used, j):
             # Past the span's last constant byte every byte is data: the bits stop there.
             top = lo + int(np.flatnonzero(mem.constant[lo:hi]).max(initial=-1)) + 1
@@ -424,6 +424,8 @@ class Program:  # pylint: disable=too-many-instance-attributes
     #: The memory init's lift starts from, and its constant bytes, starts and facts.
     start: bytes | None = None
     lifted: tuple | None = None
+    #: The bytes init leaves constant for the other entries (*Init*), ascending.
+    fixed: np.ndarray | None = None
 
 
 def _ranked(progs):
@@ -470,6 +472,33 @@ def _lift_init(
     return lone if postinit.bounded(lone, runs) else None
 
 
+def _fixed(start, pc, prog, lifted, volatile, machine):
+    """The bytes init (at ``pc`` on ``start``) leaves constant for the entries lifted as
+    ``prog`` from its declared runs (*Init*): of the bytes it stores on those runs
+    (``lifted``: their :class:`postinit.Init` and init's lift), those holding one value after
+    it for every value of ``A`` it returns with on ``machine`` that no store of ``prog`` may
+    write (its address set, else its address interval), outside init's instructions when it
+    is lifted. A pair of bytes an instruction reads as one address is constant as a whole or
+    not at all: one of its bytes a variable keeps the other a variable, the pair the word
+    init's runs bound."""
+    state, lone = lifted
+    every = postinit.run(start, pc, range(256), volatile, machine, skip=True)
+    cand = np.intersect1d(state.free, every.same())
+    if lone is not None:
+        cand = cand[~code_bytes(start, lone.starts)[cand]]
+    var, held = np.zeros(0x10000, dtype=bool), np.zeros(0x10000, dtype=bool)
+    for lo, hi in prog.stored:
+        var[lo:hi] = True
+    held[cand] = ~var[cand]
+    var[state.free] |= ~held[state.free]
+    image = state.states[0].tobytes()
+    pairs = [(lo, hi) for lo, hi in pointer_pairs(image, prog.starts).items() if lo >> 8 != 1]
+    while split := [(lo, hi) for lo, hi in pairs if held[lo] != held[hi] and var[[lo, hi]].any()]:
+        for lo, hi in split:
+            held[[lo, hi]], var[[lo, hi]] = False, True
+    return frozenset(np.flatnonzero(held).tolist())
+
+
 def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     image,
     entries,
@@ -486,16 +515,17 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     ``sensitive`` the volatile addresses whose throw-away reads are kept. ``entries[init]``
     (``None``: none) is called once, first, with ``A`` each of the range ``songs`` (default
     ``[0]``): it runs on ``machine`` (:func:`deity_informant.postinit.run`), the other
-    entries are lifted from the memory it leaves, every byte it stores a variable, and init
-    is lifted from ``image`` where its lift reproduces every run (*Init*)."""
+    entries are lifted from the memory it leaves, every byte it stores a variable but those
+    it leaves constant (:func:`_fixed`), and init is lifted from ``image`` where its lift
+    reproduces every run (*Init*)."""
     image, entries = bytes(image), list(entries)
-    played, state, alias, start = entries, None, [], image
+    played, state, alias, start, lone, fixed = entries, None, [], image, None, frozenset()
+    pc = None if init is None else entries[init][0]
     kw = {"entry_sp": emit.ENTRY_REGS[3], "loaded": loaded, "fold": True}
     if init is not None:
         vals = sorted(set(range(1) if songs is None else songs))
         if not vals or vals[-1] - vals[0] + 1 != len(vals):
             raise ValueError("songs must be a range")
-        pc = entries[init][0]
         state = postinit.run(image, pc, vals, volatile, machine)
         bare = wholeprog.lift(image, [pc], volatile, facts, sensitive=(), **kw, once=True)
         polls = polling.loops(image, bare.starts, bare.code, volatile)
@@ -505,20 +535,28 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
             alias = [(lo, g, d) for lo, (g, d) in sorted(postinit.groups(runs, pairs).items())]
         image = state.states[0].tobytes()
         played = [e for i, e in enumerate(entries) if i != init]
-    prog = wholeprog.lift(
-        image,
-        [pc for pc, _ in played],
-        volatile,
-        facts=facts,
-        sensitive=sensitive,
-        free=None if state is None else state.values(),
-        alias=alias,
-        **kw,
-    )
-    lifts = [prog]
-    if state is not None:
         lone = _lift_init(start, pc, volatile, facts, sensitive, kw, state, runs, bare)
-        lifts += [lone] if lone is not None else []
+    free = None if state is None else state.values()
+
+    def entries_lift(held):
+        """The lift of the entries but init, the bytes ``held`` constant (:func:`_fixed`)."""
+        return wholeprog.lift(
+            image,
+            [q for q, _ in played],
+            volatile,
+            facts=facts,
+            sensitive=sensitive,
+            free=None if free is None else {a: v for a, v in free.items() if a not in held},
+            alias=[g for g in alias if held.isdisjoint({g[0], g[0] + 1, g[1], g[1] + 1})],
+            held=held,
+            **kw,
+        )
+
+    prog = entries_lift(fixed)
+    if state is not None:
+        fixed = _fixed(start, pc, prog, (state, lone), volatile, machine)
+        prog = entries_lift(fixed) if fixed else prog
+    lifts = [prog] + ([lone] if lone is not None else [])
     funcs, origin = _ranked(lifts)
     starts = set(prog.starts)
     p = Program(funcs, played, image, starts, [tuple(v) for v in volatile])
@@ -527,7 +565,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     p.bounds, p.addr_sets, p.reach = dict(prog.bounds), dict(prog.addr_sets), dict(prog.reach)
     p.proven, p.regs, p.bounded = dict(prog.proven), dict(prog.regs), dict(prog.bounded)
     if state is not None:
-        p.init = (entries[init], state)
+        p.init, p.fixed = (entries[init], state), np.array(sorted(fixed), dtype=np.int64)
     if len(lifts) > 1:
         lone = lifts[1]
         p.entries = [*played, entries[init]]
@@ -555,6 +593,9 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     if p.constant is not None:
         constant = np.zeros(0x10000, dtype=bool)
         constant[list(p.constant)] = True
+        if p.lifted is not None:
+            # Init's code reads and writes the bytes it leaves constant: they are data.
+            constant[p.fixed] = False
         cells = code & ~constant
         code &= constant
         tables = constant & ~ran
@@ -564,6 +605,14 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         loaded = (int(span[0]), int(span[-1]) + 1) if len(span) else (0, 0)
     pairs = pointer_pairs(p.image, p.starts)
     data, plan, fixed = p.image, None, code
+
+    def held(b):
+        """``b`` holding the values a replayed init leaves in the bytes it leaves constant."""
+        b = np.frombuffer(bytes(b), np.uint8).copy()
+        if p.fixed is not None and p.lifted is None:
+            b[p.fixed] = np.frombuffer(p.image, np.uint8)[p.fixed]
+        return b
+
     if p.lifted is not None:
         # Init's lift: its instructions decode from the image it runs on; the bytes it patches
         # are cells unless the entries' lift reads them as constants, which init leaves.
@@ -583,10 +632,14 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         source[:0x200] = False
         source[: loaded[0]] = source[loaded[1] :] = False
         data, plan = min(
-            ((b.tobytes(), state.copies(source, b)) for b in (state.image, state.states[0])),
+            (
+                (b.tobytes(), state.copies(source, b))
+                for b in map(held, (state.image, state.states[0]))
+            ),
             key=lambda x: postinit.cost(x[1]),
         )
-    mem = Memory(data, code, p.volatile, loaded, p.sensitive, pairs, tables, p.written)
+    mem = Memory(held(data), code, p.volatile, loaded, p.sensitive, pairs, tables, p.written)
+    mem.init = bytes(data)
     mod = printer.Module(top, mem)
     mod.insn, mod.fixed = ran, fixed
     # Promotion candidates: the cells and the other variable bytes inside the code span.
@@ -607,6 +660,11 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     mod.kpos = regfile.index(emit.KREG) if emit.KREG in regfile else None
     if p.lifted is not None:
         mod.scope = {f"f{j}": p.lifted[2] for j, k in enumerate(p.origin) if k}
+        if p.fixed.size:
+            after = np.zeros(0x10000, dtype=bool)
+            after[p.fixed] = True
+            names = {f"f{j}" for j, k in enumerate(p.origin) if not k}
+            mod.after = (after, p.image, names | {name for _, name in p.entries[:-1]})
         (pc, name), _ = p.init
         k = traps.setdefault(("deopt", pc), len(traps))
         mod.traps.add(k)
@@ -681,6 +739,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         "jumps": p.jumps or {},
         "structure": dict(mod.made),
         "provenance": {**mod.prov, "cells": [int(a) for a in np.flatnonzero(cells)]},
+        "fixed": [] if p.fixed is None else p.fixed.tolist(),
         "state": {
             "cells": mod.state.counts(cells),
             "span": mod.state.counts(mod.cells & ~cells),

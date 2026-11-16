@@ -129,6 +129,16 @@ def test_init_that_never_returns_leaves_nothing():
         postinit.run(img, lab["init"], [0], [W.IO])
 
 
+def test_runs_skip_the_values_init_never_returns_with():
+    """With ``skip``, the runs are those of the values of ``A`` init returns with: below 2
+    here, the byte it stores the same on each."""
+    img, lab = W.assemble("init:   CMP #$02\nhang:   BCS hang\n        STA $FB\n        RTS\n")
+    st = postinit.run(img, lab["init"], range(4), [W.IO], skip=True)
+    assert st.songs == [0, 1] and st.free.tolist() == [0xFB] and not st.same().size
+    with pytest.raises(RuntimeError, match="init at"):
+        postinit.run(img, lab["init"], range(4), [W.IO])
+
+
 SONGS = """
 init:   TAX
         LDA plo,X
@@ -177,6 +187,7 @@ def test_copies_put_each_songs_state_in_place(first):
     assert free == {0xFB, 0xFC, lab["song"], *range(lab["buf"], lab["buf"] + 8)}
     assert st.writes[0] == [(0xC018, 0x0F)] and st.writes[1] == [(0xC018, 0x0F), (0xC017, 0x0F)]
     assert set(st.varying().tolist()) == free - {0xFC}
+    assert st.same().tolist() == [0xFC]
     source = np.zeros(0x10000, dtype=bool)
     source[lab["plo"] : lab["song"]] = True
     base = st.states[0] if first else st.image

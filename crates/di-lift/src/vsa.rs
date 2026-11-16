@@ -2615,10 +2615,12 @@ fn bounded_stores(
     out
 }
 
-/// What [`reach`] takes: the volatile ranges.
+/// What [`reach`] takes: the volatile ranges, and the bytes the host's init stored that hold
+/// one value after it (data the program has, like those stores with address sets write).
 #[derive(Clone, Copy)]
 pub struct Wanted<'a> {
     pub volatile: &'a [(u32, u32)],
+    pub held: &'a FixedBitSet,
 }
 
 /// What the analysis takes beyond the program: the `[lo, hi)` the program was loaded to, the

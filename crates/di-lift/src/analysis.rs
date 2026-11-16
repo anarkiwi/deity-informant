@@ -866,6 +866,32 @@ pub fn discover(
     }
 }
 
+/// The bytes a store of `g` may write: its address set where it has one, else its address
+/// interval (an address past `$FFFF` wraps).
+pub fn stored(g: &Graph) -> FixedBitSet {
+    let mut out = FixedBitSet::with_capacity(0x10000);
+    for (&pc, vs) in &g.vars {
+        if let Some(set) = g.addr_sets.get(&(pc, true)) {
+            out.extend(set.iter().map(|&a| a as usize));
+            continue;
+        }
+        for x in vs
+            .iter()
+            .flat_map(|v| &v.acc)
+            .filter(|x| x.store && !x.dummy)
+        {
+            let (lo, n) = (
+                x.addr.lo as usize & 0xffff,
+                (x.addr.hi - x.addr.lo) as usize + 1,
+            );
+            let end = lo + n.min(0x10000);
+            out.insert_range(lo..end.min(0x10000));
+            out.insert_range(..end.saturating_sub(0x10000));
+        }
+    }
+    out
+}
+
 /// The bytes the stores of `g` from a constant base plus an index register with no address
 /// set may write: their address intervals.
 fn indexed_writes(g: &Graph) -> FixedBitSet {
@@ -936,7 +962,8 @@ impl Fixpoint<'_> {
         };
         let mut seen_writes = FixedBitSet::with_capacity(0x10000);
         seen_writes.extend(self.observed().keys().map(|&a| a as usize));
-        let written = g.written.clone();
+        let mut written = g.written.clone();
+        written.union_with(r.held);
         let values = self.observed();
         let given = crate::vsa::Given {
             loaded: self.loaded,

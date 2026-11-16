@@ -2119,7 +2119,12 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         if id(o) in self.f.promoted:
             return self.var(o)
         lo, hi = self.f.iv(self.f.address(o))
-        if lo == hi and self.mod.mem.constant[lo] and not self.mod.mem.vol[lo]:
+        after = self.mod.after is not None and self.f.name in self.mod.after[2]
+        if (
+            lo == hi
+            and not self.mod.mem.vol[lo]
+            and (self.mod.mem.constant[lo] or after and self.mod.after[0][lo])
+        ):
             name = self.mod.konst(lo)
             if name is not None:
                 return E(name, 16, "", 0, 255, False, False)
@@ -2911,6 +2916,9 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.scope = {}
         #: The instruction bytes each lift decodes as constant (opcodes intervals are read by).
         self.fixed = mem.code
+        #: ``(mask, image, names)``: the data bytes init's code stores that the functions
+        #: ``names`` of the other entries' lift read as constants, the values it leaves.
+        self.after = None
         for o in top.regions[0][0].ops:
             if o.name == "func.func" and o.regions[0] and o.regions[0][0].ops:
                 self.funcs.append(Func(o, self))
@@ -3246,7 +3254,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
 
     def state_h(self):
         """The ``.h``'s initial values of the promoted state."""
-        img = self.mem.image
+        img = self.mem.init
         out = [f"#define {self.var_name(a)}_INIT 0x{img[a]:02X}" for a in self.state.scalars]
         for s, (bases, fields) in enumerate(self.state.structs):
             out += [
@@ -3380,7 +3388,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         if sym is None:
             return None
         name = f"{sym[:-4]}_K{off:X}"
-        self.konsts[name] = self.mem.image[addr]
+        self.konsts[name] = (self.mem.image if self.after is None else self.after[1])[addr]
         if sym == "CODE_ORG":
             self.used.add("CODE_ORG")
         elif sym == "IMG_ORG":
