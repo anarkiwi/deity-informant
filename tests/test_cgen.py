@@ -259,7 +259,7 @@ end:
 """
 ORDERBAD = ORDER.replace(
     "phi:    .byte hi(p0),hi(p1),hi(p0),0", "phi:    .byte hi(p0),hi(p1),0,0"
-).replace("back:   .byte 0,0,0,1", "back:   .byte 0,0,0,2")
+).replace("back:   .byte 0,0,0,1", "back:   .byte 0,0,3,2")
 ZPCLEAR = """
 entry:  LDX #$00
         TXA
@@ -2221,14 +2221,15 @@ def test_pointer_advanced_by_record_lengths(prefix, tmp_path, src):
     assert lo <= labels["p0"] and labels["end"] <= hi and not info["unknown_access"]
 
 
-@pytest.mark.parametrize("src", [ORDER, ORDERBAD], ids=["ok", "bad"])
-def test_end_marker_tested_before_its_pointer(prefix, tmp_path, src):
+@pytest.mark.parametrize("src,unchecked", [(ORDER, True), (ORDERBAD, False)], ids=["ok", "bad"])
+def test_end_marker_tested_before_its_pointer(prefix, tmp_path, src, unchecked):
     # The pointer's high byte comes from a table whose zero marks the end of the order: the
     # branch on it leaves only indices of nonzero bytes, and the restart index the marker's
-    # entry gives names a nonzero byte, so the pointer never names zero page. When a restart
-    # names another marker, it may: the span's reader reads zero page through ``oob_rd``.
+    # entry gives names a nonzero byte, so at the order positions play reaches the pointer
+    # never names zero page and its read is plain. When a restart play reaches names another
+    # marker, it does: the span's reader reads zero page through ``oob_rd``.
     c, _, _ = songs(prefix, tmp_path, src, (0,))
-    assert not re.search(r"\brd\(", c) and "rdC0(" in c
+    assert not re.search(r"\brd\(", c) and ("rdC0(" in c) != unchecked
 
 
 PUSH = """
@@ -2357,12 +2358,12 @@ IOJUMP = CALLRET.replace(
 def test_pointer_loaded_from_song_data_and_its_stack(prefix, tmp_path, src, bounded):
     # A jump loads the song pointer from two song bytes, a call pushes it (advanced past the
     # command) on a stack whose depth nothing bounds and a return pops it: the pointer points
-    # into the song on every path, so its reads are one span's bounds-checked reads, and the
-    # push is bounds-checked against the stack. Loaded from I/O instead, it may point anywhere:
-    # the same reader reads ``oob_rd`` outside the program.
+    # into the song on every path, so its reads are one span's, plain where the states play
+    # reaches bound them, and the push is bounds-checked against the stack. Loaded from I/O
+    # instead, it may point anywhere: the span's reader reads ``oob_rd`` outside the program.
     img, labels, loaded = assemble(src)
     c, h, info = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
-    assert not re.search(r"\brd\(", c) and "rdC0(" in c
+    assert not re.search(r"\brd\(", c) and ("rdC0(" in c) != bounded
     assert "oob_wr(" in c and not re.search(r"\bwr\(", plain(c))
     if bounded:
         [(lo, hi)] = info["code_held"]
@@ -4934,13 +4935,15 @@ def test_bytes_init_leaves_constant_are_held_where_read(prefix, tmp_path, indexe
 def test_init_relocating_by_the_song_leaves_pointer_cells(prefix, tmp_path):
     """Init computing an operand from ``A`` writes both its bytes: the low byte's value
     differs between values of ``A``, so the operand is a variable the other entry reads
-    through as a pointer bounded to the table ``A`` indexes, its high byte too though init
-    leaves it one value; the flag init leaves one value for every ``A`` is a constant."""
+    through as a pointer, its high byte too though init leaves it one value, plain inside the
+    table ``A`` indexes on every state play reaches; the flag init leaves one value for every
+    ``A`` is a constant."""
     c, info, labels = songs(prefix, tmp_path, INITA, range(4))
     assert {labels["o0"] + 1, labels["o0"] + 2} <= set(info["provenance"]["cells"])
     assert info["fixed"] == [labels["flag"]]
     body = body_of(c, "play")
-    assert re.search(r"rdC0\(S_\w+ \| \(\(uint16_t\)S_\w+ << 8\), a & 3\)", body)
+    ix = r"CGEN_IX\(C0, \(S_\w+ \| \(\(uint16_t\)S_\w+ << 8\)\) - C0_ORG, a & 3\)"
+    assert re.search(ix, body) and "rdC" not in body
     assert "K_I" in body
 
 

@@ -1266,6 +1266,27 @@ pub fn bounds(
     held: (u32, u32),
     caps: Caps,
 ) -> Bounds {
+    // A pool of its own: a process forked after a search finds no threads of the global pool.
+    let go = || search(g, entries, sp, vol, dev, mems, w, targets, held, caps);
+    match rayon::ThreadPoolBuilder::new().build() {
+        Ok(pool) => pool.install(go),
+        Err(_) => go(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn search(
+    g: &Graph,
+    entries: &[Entry],
+    sp: u8,
+    vol: &[(u32, u32)],
+    dev: &Devices,
+    mems: &[Box<[u8; 0x10000]>],
+    w: &FixedBitSet,
+    targets: &FxHashSet<Key>,
+    held: (u32, u32),
+    caps: Caps,
+) -> Bounds {
     let mut out = Bounds::default();
     if targets.is_empty() || mems.is_empty() {
         return out;
