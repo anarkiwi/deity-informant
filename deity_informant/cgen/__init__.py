@@ -16,12 +16,11 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from .. import c64devices, polling, postinit, wholeprog
+from .. import c64devices, masks, polling, postinit, wholeprog
 from ..trace import Facts
 from . import emit, mlir, printer, traps as trapinfo
 from ..lifter import MODE_LEN, OPS
 from .regions import Memory, background, code_bytes, pointer_pairs
-from ..masks import runs as mask_runs
 
 __all__ = ["Program", "jump_facts", "lift", "render", "translate"]
 
@@ -241,19 +240,21 @@ def _unheld_h(mem, used, cases, program, ram=None):
     the entry bytes ``_INIT``, ``_N`` of them), the machine's entry bytes (``Memory.image``)
     of the rest as :func:`regions.background`'s table."""
     held = (mem.owner >= 0) | mem.vol
-    for lo, hi in mem.held if "CODE" in used else ():
-        held[lo:hi] = True
-    held[[(mem.code_span[0] + d) & 0xFFFF for d, _ in cases]] = True
+    masks.mask(
+        mem.held if "CODE" in used else (),
+        at=[(mem.code_span[0] + d) & 0xFFFF for d, _ in cases],
+        out=held,
+    )
     prog = program.copy()
     prog[mem.loaded[0] : mem.loaded[1]] = True
     prog &= ~held
-    out, masks = [], [("PROG", prog, held)]
+    out, kinds = [], [("PROG", prog, held)]
     rest = ~prog & ~held
     if ram is not None:
-        masks.append(("RAM", rest & ram, np.zeros_like(held)))
-    for name, mask, join in masks:
+        kinds.append(("RAM", rest & ram, np.zeros_like(held)))
+    for name, mask, join in kinds:
         runs = []
-        for o, n in mask_runs(mask | join):
+        for o, n in masks.runs(mask | join):
             t = np.flatnonzero(mask[o : o + n])
             if t.size:
                 runs.append((o + int(t[0]), int(t[-1] - t[0]) + 1))
@@ -476,14 +477,6 @@ def _io_h(state):
     return out
 
 
-def _volatile_mask(volatile):
-    """The bytes of the ``volatile`` ranges, as a boolean array."""
-    vol = np.zeros(0x10000, dtype=bool)
-    for lo, hi in volatile:
-        vol[lo:hi] = True
-    return vol
-
-
 def _array_of(mem, a):
     """``(name, origin)`` of the region holding byte ``a``, None when none does."""
     k = int(mem.owner[a])
@@ -611,8 +604,7 @@ def _ranked(progs):
 def _reads_fixed(image, starts, fixed):
     """The instructions of ``starts`` (in ``image``) whose data operand holds a byte of
     ``fixed``: not a branch, jump or call, whose operand is a target deciding the code."""
-    mask = np.zeros(0x10000, dtype=bool)
-    mask[fixed] = True
+    fixed = masks.mask(at=fixed)
     out = set()
     for pc in starts:
         mn, mode = OPS.get(image[pc], ("", "impl"))
@@ -620,7 +612,7 @@ def _reads_fixed(image, starts, fixed):
         if (
             mode != "rel"
             and mn not in ("JMP", "JSR")
-            and mask[(pc + np.arange(1, n)) & 0xFFFF].any()
+            and fixed[(pc + np.arange(1, n)) & 0xFFFF].any()
         ):
             out.add(pc)
     return out
@@ -729,9 +721,7 @@ def _fixed(start, prog, lifted, every):
     cand = np.intersect1d(np.intersect1d(state.free, every.same()), state.same())
     if lone is not None:
         cand = cand[~code_bytes(start, lone.starts)[cand]]
-    var, held = np.zeros(0x10000, dtype=bool), np.zeros(0x10000, dtype=bool)
-    for lo, hi in prog.stored:
-        var[lo:hi] = True
+    var, held = masks.mask(prog.stored), np.zeros(0x10000, dtype=bool)
     held[cand] = ~var[cand]
     var[state.free] |= ~held[state.free]
     image = state.states[0].tobytes()
@@ -749,9 +739,7 @@ def _domain(lift_, image, every, songs):
     run from ``image``, does not deopt (an index past its tables: a value init's translation
     traps on), and the declared ``songs``. Values whose machine runs leave one memory and
     volatile writes share the verdict of the least of them."""
-    may = ~every.kept
-    for lo, hi in lift_.stored:
-        may[lo:hi] = True
+    may = masks.mask(lift_.stored, out=~every.kept)
     alike = {}
     for a, s, st, w in zip(every.songs, every.stored, every.states, every.writes):
         if may[s].all():
@@ -922,8 +910,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     cells = np.zeros_like(code)
     tables = None
     if p.constant is not None:
-        constant = np.zeros(0x10000, dtype=bool)
-        constant[list(p.constant)] = True
+        constant = masks.mask(at=p.constant)
         if p.lifted is not None:
             # Init's code reads and writes the bytes it leaves constant: they are data.
             constant[p.fixed] = False
@@ -949,8 +936,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         # are cells unless the entries' lift reads them as constants, which init leaves.
         iconst, istarts, _ = p.lifted
         icode = code_bytes(p.start, istarts)
-        imask = np.zeros(0x10000, dtype=bool)
-        imask[list(iconst)] = True
+        imask = masks.mask(at=iconst)
         ran |= icode
         cells |= icode & ~imask & ~code
         fixed = code | (icode & imask)
@@ -959,7 +945,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     elif p.init is not None:
         # The .h holds the image or the first song's state, whichever needs the smaller copies.
         state = p.init[1]
-        source = ~(code if tables is None else code | tables) & ~_volatile_mask(p.volatile)
+        source = ~(code if tables is None else code | tables) & ~masks.mask(p.volatile)
         source[:0x200] = False
         source[: loaded[0]] = source[loaded[1] :] = False
         data, plan = min(
@@ -974,8 +960,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     mod = printer.Module(top, mem)
     mod.insn, mod.fixed = ran, fixed
     if p.fixed is not None:
-        folded = np.zeros(0x10000, dtype=bool)
-        folded[p.fixed] = True
+        folded = masks.mask(at=p.fixed)
         mod.folded = (folded, p.image, folded & code_bytes(p.image, p.starts))
     mod.symbols = symbols
     if p.init is not None:

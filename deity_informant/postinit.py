@@ -73,9 +73,7 @@ class Init:
     @property
     def mask(self):
         """The free bytes, as a boolean array."""
-        m = np.zeros(0x10000, dtype=bool)
-        m[self.free] = True
-        return m
+        return masks.mask(at=self.free)
 
     def values(self):
         """``{addr: [values]}``: the value each free byte holds on each song, in order."""
@@ -196,10 +194,7 @@ def run(image, pc, songs, volatile, machine=None, skip=False):
     on ``machine`` (default :func:`reference` over ``volatile``); with ``skip``, of each
     value it returns with (the others left out of ``songs``)."""
     machine = machine or reference(volatile)
-    vol = np.zeros(0x10000, dtype=bool)
-    vol[0x100:0x200] = True
-    for lo, hi in volatile:
-        vol[lo:hi] = True
+    vol = masks.mask([(0x100, 0x200), *volatile])
     states, writes, kept, each = [], [], [], []
     stored = np.zeros(0x10000, dtype=bool)
     for a in tqdm(songs, desc="init runs", unit="run", leave=False, disable=None):

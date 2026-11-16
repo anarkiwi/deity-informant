@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .. import masks
+
 #: Why a cell stays a byte, by the kind of access (or its absence) that keeps it there.
 WHY = ("", "indexed", "pointer", "unknown", "init", "family", "unaccessed")
 INDEXED, POINTER, UNKNOWN, INIT, FAMILY, UNACCESSED = range(1, 7)
@@ -37,9 +39,7 @@ class State:
 
     def mask(self):
         """The promoted and dropped cells, as a boolean array."""
-        out = np.zeros(0x10000, dtype=bool)
-        out[list(self.at) + list(self.unread)] = True
-        return out
+        return masks.mask(at=[*self.at, *self.unread])
 
     def field_of(self, addrs):
         """``(struct, field, elements)`` of a family's per-copy addresses ``addrs`` when they
@@ -125,10 +125,8 @@ def classify(cells, sets, why, stepped=()):
         for a in bad:
             sel = list(a)
             why[sel] = np.where(why[sel] == 0, FAMILY, why[sel])
-    owner = np.zeros(0x10000, dtype=bool)
-    owner[list(at)] = True
-    const = np.zeros(0x10000, dtype=bool)
-    const[[int(s[0]) for s in sets if len(set(s)) == 1]] = True
+    owner = masks.mask(at=at)
+    const = masks.mask(at=[int(s[0]) for s in sets if len(set(s)) == 1])
     scalars = np.flatnonzero(cells & (why == 0) & const & ~owner).tolist()
     out = [(base + np.array(n), sorted(f)) for n, base, f in structs]
     out.sort(key=lambda x: x[0][0])

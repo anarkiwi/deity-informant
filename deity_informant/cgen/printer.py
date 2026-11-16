@@ -16,6 +16,7 @@ from dataclasses import dataclass, field, replace
 import networkx as nx
 import numpy as np
 
+from .. import masks
 from ..lifter import MODE_LEN, OPS
 from .mlir import Op
 from .csyntax import declare, drop_unread, ends_in_jump, names_in, render, walk
@@ -3305,15 +3306,12 @@ class Module:  # pylint: disable=too-many-instance-attributes
         sources of init's copies. What they hold is never observed: a return address a callee
         pulls into a pointer whose reads are forwarded, a vector the lift resolved its
         transfers through, the operand cells of a computed jump that switches on its index."""
-        read = np.zeros(0x10000, dtype=bool)
-        for lo, hi in self.held_runs:
-            read[lo : hi + 1] = True
+        read = masks.mask(self.held_runs, True)
         stores = []
         for f in self.funcs:
             for o, (lo, hi), per in f.accesses():
                 if o.name == "memref.load":
-                    for x, y in per or [(lo, hi)]:
-                        read[x : y + 1] = True
+                    masks.mask(per or [(lo, hi)], True, out=read)
                 elif o.name == "memref.store":
                     stores.append((f, o, per or [(lo, hi)]))
         lo, hi = self.mem.code_span
@@ -3563,8 +3561,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 if self.mapped(f, o, runs, kind):
                     f.aware.add(id(o))
                     if o.name == "memref.load":
-                        for x, y in runs:
-                            seen[x : y + 1] = True
+                        masks.mask(runs, True, out=seen)
                     continue
                 for x, y in runs:
                     sel = why[x : y + 1]
@@ -3810,9 +3807,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         may = self.stored()
         if may is not None:
             may |= self.mem.vol | self.init_stored
-            may[0x100:0x200] = True
-            for lo, hi in self.mem.written:
-                may[lo:hi] = True
+            masks.mask([(0x100, 0x200), *self.mem.written], out=may)
         self.free = None if may is None else ~may
         return self.free
 
@@ -3828,8 +3823,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 aset = (
                     self.fx(f.name).addr_sets.get((o.pc, True)) if o.name != "func.call" else None
                 )
-                for lo, hi in aset or ():
-                    may[lo:hi] = True
+                masks.mask(aset or (), out=may)
                 if aset:
                     continue
                 run = self.run_of(f, o)

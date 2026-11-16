@@ -12,7 +12,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..lifter import MODE_LEN, OPS
-from ..masks import runs
+from .. import masks
 
 #: Widest address interval treated as bounded; wider accesses are of unknown address.
 BOUNDED = 0x200
@@ -120,9 +120,7 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         self.pairs_to = {}
         for lo, hi in self.pairs.items():
             self.pairs_to.setdefault(hi, []).append(lo)
-        self.vol = np.zeros(0x10000, dtype=bool)
-        for lo, hi in volatile:
-            self.vol[lo:hi] = True
+        self.vol = masks.mask(volatile)
         self.volatile = [tuple(r) for r in volatile]
         self.loaded, self.sensitive = loaded, sorted(sensitive)
         self.regions, self.owner, self.unknown = [], np.full(0x10000, -1, dtype=np.int32), False
@@ -190,17 +188,11 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         the others, so the ``.c`` names the same regions whatever songs init runs for."""
         for a in stores:
             self.code[a] = False
-        touched = np.zeros(0x10000, dtype=bool)
-        for r in accesses:
-            if r is None or r[1] - r[0] >= BOUNDED:
-                self.unknown = True
-            else:
-                touched[r[0] : r[1] + 1] = True
+        bounded = [r for r in accesses if r is not None and r[1] - r[0] < BOUNDED]
+        self.unknown |= len(bounded) < len(accesses)
+        touched = masks.mask(bounded, True)
         if writes is not None:
-            kept = np.zeros(0x10000, dtype=bool)
-            kept[: self.loaded[1]] = True
-            for lo, hi in [(lo, hi - 1) for lo, hi in self.written] + list(writes):
-                kept[lo : hi + 1] = True
+            kept = masks.mask(writes, True, out=masks.mask([(0, self.loaded[1]), *self.written]))
             # The copies of an instance index one array: the bytes between theirs are no read.
             for lo, hi in joined:
                 kept[lo : hi + 1] |= kept[lo] and kept[hi]
@@ -209,18 +201,16 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         need = constant.copy() if unknown_store else touched & self.code | self.tables
         if self.unknown:
             touched[self.loaded[0] : self.loaded[1]] = True
-        for lo, hi in wide:
-            touched[lo : hi + 1] = True
+        masks.mask(wide, True, out=touched)
         played = touched & ~constant & ~self.vol
         for lo, hi in self.written:
             touched[lo:hi] |= True if state is None else ~state[lo:hi]
         touched &= ~constant & ~self.vol
         for lo, hi in joined:
             need[lo : hi + 1] |= constant[lo : hi + 1] | touched[lo : hi + 1]
-        for lo, hi in sources:
-            touched[lo : hi + 1] = True
+        masks.mask(sources, True, out=touched)
         touched &= ~constant & ~self.vol
-        found = runs(touched)
+        found = masks.runs(touched)
         self.regions = sorted(found, key=lambda r: not played[r[0] : r[0] + r[1]].any())
         for k, (org, n) in enumerate(self.regions):
             self.owner[org : org + n] = k
@@ -245,7 +235,7 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         each widened over the regions it overlaps: any other byte of a gap would be held as data
         the program never reads."""
         spans = []
-        for org, n in runs(need):
+        for org, n in masks.runs(need):
             if spans and (self.owner[spans[-1][1] : org] >= 0).all():
                 spans[-1][1] = org + n
             else:
