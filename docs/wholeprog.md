@@ -825,11 +825,12 @@ the facts, so a proof holds on every execution that stays in lifted code.
   before the greatest, at the last marker every run holds: a valid run's walk ends at one, so
   no bound below what the reach hulls assume fails a run that keeps them. The anchor's check is
   made where it serves more than one load or a walk.
-- **Reachable states** (`reach.rs`, static lifts with an entry SP, flat memory). After init
-  the entries are a closed system: memory changes only through them, their inputs are their
-  declared registers and the volatile reads (the device models' value sets), so the bytes a
-  load's address is computed from reach a finite set of states from each of init's runs. A
-  load no proof above holds in held bytes is evaluated on a *slice*: the bytes (and volatile
+- **Reachable states** (`reach.rs`, static lifts with an entry SP over flat memory whose
+  entries are called repeatedly, not `once`). After init the entries are a closed system:
+  memory changes only through them, their inputs are their declared registers and the
+  volatile reads (the device models' value sets), so the bytes a load's address is computed
+  from reach a finite set of states from each of init's runs. A load no proof above holds in
+  held bytes and with no address set is evaluated on a *slice*: the bytes (and volatile
   reads) whose values its addresses are computed from, through data and addresses, closed
   under the stores into them. Every other byte is an interval: one no store may write
   (`analysis::stored`) holds its run's value; any other is unknown at an entry, within the
@@ -864,11 +865,12 @@ the facts, so a proof holds on every execution that stays in lifted code.
   unknown read) the provenance holds every byte the address is computed from, one of that
   slice's on every path, and that slice's evaluations know every address of the load outside
   the held bytes whose provenance meets it, so they compute it. `Program.proven` holds the
-  hull of those addresses and their bases where it lies in the held bytes and meets no
-  volatile range. The bounds rest on what seeds and constant cells rest on: memory changes
-  only through init and the entries, so a state outside the reachable set is invalid input,
-  and its loads are not checked (a check at the cursor's stores would test what the fixpoint
-  proves of every valid run).
+  hull of those addresses from their least base (an indexed operand's own address: where the
+  array starts does not move with the data) and of their bases, where it lies in the held
+  bytes and meets no volatile range. The bounds rest on what seeds and constant cells rest
+  on: memory changes only through init and the entries, so a state outside the reachable set
+  is invalid input, and its loads are not checked (a check at the cursor's stores would test
+  what the fixpoint proves of every valid run).
 - **Computed jumps** (`dispatch.rs`). A `JMP (ind)` whose pointer bytes are tagged on every
   path into it, a `JMP`/`JSR` whose cell operand bytes are (a byte that is not a cell is a
   constant), and an `RTS`/`RTI` whose return-address bytes are pushed so on every path, goes
