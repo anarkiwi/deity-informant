@@ -328,7 +328,9 @@ steps in order, each deciding on the graph the earlier ones leave:
 - *Tests an enclosing test decides* are dropped, and each condition prints as an irredundant
   sum of products where its enclosing tests are don't-cares.
 - *Switches*: a chain of three or more `if`/`else` tests of one selector family against sets of
-  its constants is a `switch`; one whose arm would `break` a loop stays an `if` chain.
+  its constants is a `switch`; one whose arm would `break` a loop stays an `if` chain. Its arms
+  (the default among them) print in the order of their targets in the machine code, each
+  labelled by the constants its edge takes, so an arm running into the next falls through.
 - *Loops* print as `while` when the body starts with its exit test, as `do` ... `while` when it
   ends with one and has no other `continue`, else `for (;;)`.
 
@@ -443,7 +445,9 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   pass met with the values the lift finds its register holding at its entry on every run
   (`Program.regs`, every copy's entry), a call's result the hull over the callee's returns of
   those at each `RTS`, and a byte an `LDA`/`LDX`/`LDY`/`LAX` loads those its register holds
-  after it: a voice index a routine saves in an operand and reloads keeps its values. A load
+  after it: a voice index a routine saves in an operand and reloads keeps its values. The
+  intervals found (every function's and result's) are dropped whenever an operation is
+  rewritten or a fact they read is set, so each is the module's as it is when asked. A load
   the lift proves inside a hull (`Program.proven`) touches that hull alone. `sensitive_reads` also goes to the lift, which makes no
   throw-away read that cannot reach one of them.
   An unknown access may touch every byte of `loaded`, so then every non-code byte of it is in a
@@ -534,7 +538,7 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   image leaves the `.c` unchanged); a load of constants in one span is `Cj[off + index]`
   alike. One in volatile memory is `io_read`/`io_write`. One wholly in other constant code is `oob_rd`/`oob_wr`. Any
   other goes through `rd(a)` or `wr(a, v)`: the volatile ranges and the arrays (by the `Rk_ORG`
-  symbols, so data pointers holding original addresses resolve), then `oob_wr`; each finds the
+  symbols, so data pointers holding original addresses resolve), then the unheld write below; each finds the
   array by tables of their origins and lengths (`OOB_*` over the regions outside the spans and
   the spans for `rd` (`cgen_rd`), `WR_*` over every region for `wr`). They and
   `codechk` are `noinline`, as llvm-mos would otherwise copy them into every caller.
@@ -568,8 +572,17 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   `CGEN_BG_INIT[(CGEN_BG_AT + (a & CGEN_BG_M)) & 0xFFFF]`, a unit repeating every power of two
   bytes or a literal, the period the smallest table's (power-on RAM: one 8-byte unit and its
   inverse, a run per 16 KiB). `rd` is `cgen_rd` too. Pushes are stored where a load may reach
-  the stack page (*Traps and computed jumps*), so its other bytes read their entry bytes. `oob_wr`
-  discards. Defining `CGEN_OOB` replaces both with the host's. `trap` is declared `noreturn`
+  the stack page (*Traps and computed jumps*), so its other bytes read their entry bytes.
+- `oob_wr`, a write outside every array its site may address, is exact under the read rule:
+  `wr`'s dispatch (a promoted cell first), and where no array holds the byte
+  (`cgen_unheld_wr`) a byte of a held span keeps its value or traps, as does a byte of the
+  program (`CGEN_PROG_*`: the read traps, so its write does) and a byte no store may write
+  (the lift's bounds say so, and loads may read it as its entry byte, *Data regions*); any
+  other (`CGEN_RAM_ORG`/`_LEN`, every byte where a store's address is unknown) is valid to
+  write: the value it reads changes nothing, another takes one of `CGEN_OOB_SLOTS` slots (16
+  unless the host defines it), which `cgen_rd` reads back before the background table, and
+  with none left traps (`OOB_TRAP`). Defining `CGEN_OOB` replaces `oob_rd` and `oob_wr`
+  with the host's (`wr` then ends in its `oob_wr`). `trap` is declared `noreturn`
   and `leaf`: a host compiles it apart from the `.c`, and it calls back into nothing there.
   A store the lift found may hit constant code or a table it read is followed by `codechk`,
   which traps when a constant byte of a span would change.
