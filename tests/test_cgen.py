@@ -2591,6 +2591,125 @@ def test_unbounded_table_store_inside_the_program_is_unguarded(prefix, tmp_path)
     play(tmp_path, c, h, img, labels, entry_calls([0], 9))
 
 
+GUARDLD = """
+entry:  LDY song
+        INC song
+        TYA
+        STA thi,Y
+        LDA tlo,Y
+        STA $C000
+        INY
+        LDA thi,Y
+        STA $C001
+        RTS
+song:   .byte 0
+tlo:    .byte $10,$20,$30,$40
+thi:    .byte $11,$21,$31,$41
+end:
+"""
+
+
+def test_guarded_store_and_the_loads_it_dominates_are_plain(prefix, tmp_path):
+    """A store into a table ending the program past an index guard, and a load of the same
+    index after it, address the region with no run test; the load of the index plus one keeps
+    its test, and an index past the table traps."""
+    img, labels, loaded = assemble(GUARDLD)
+    c, h, info = translate(prefix, img, labels, loaded)
+    body = body_of(c, "entry")
+    [(t, key)] = info["traps"].items()
+    assert key == ("deopt", labels["entry"] + 7) and f"trap({t})" in body
+    assert "oob_wr(" not in body and re.search(r"\bR0\[5 \+ (v\d+)\] = \1;", body)
+    assert re.search(r"io_write\(0xC000, R0\[1 \+ v\d+\]\)", body)
+    assert body.count("oob_rd(") == body.count("R0_LEN") == 1
+    play(tmp_path, c, h, img, labels, entry_calls([0], 4))
+    (tmp_path / "past").mkdir()
+    with pytest.raises(AssertionError, match="trap"):
+        play(tmp_path / "past", c, h, img, labels, entry_calls([0], 5))
+
+
+def test_load_the_guard_does_not_dominate_keeps_its_test(prefix, tmp_path):
+    """A load of the guarded index reached past the guarded store or around it is tested."""
+    src = GUARDLD.replace("        TYA\n", "        LSR A\n        BCC skip\n        TYA\n")
+    src = src.replace("        LDA tlo,Y\n", "skip:   LDA tlo,Y\n")
+    img, labels, loaded = assemble(src)
+    c, h, info = translate(prefix, img, labels, loaded)
+    body = body_of(c, "entry")
+    assert len(info["traps"]) == 1 and "oob_wr(" not in body
+    assert body.count("oob_rd(") == 2
+    play(tmp_path, c, h, img, labels, [("entry", a) for a in (0, 1, 2, 3)])
+
+
+BRANCHED = """
+"builtin.module"() ({
+  "func.func"() <{function_type = (i8, i8) -> (), sym_name = "f"}> ({
+  ^bb0(%a: i8, %b: i8):
+    %k3 = "arith.constant"() <{value = 3 : i8}> : () -> i8
+    %k5 = "arith.constant"() <{value = 5 : i8}> : () -> i8
+    %w3 = "arith.constant"() <{value = 3 : i16}> : () -> i16
+    %one = "arith.constant"() <{value = true}> : () -> i1
+    %x = "arith.addi"(%a, %k5) : (i8, i8) -> i8
+    %w = "arith.extui"(%a) : (i8) -> i16
+    %s = "arith.subi"(%a, %k3) : (i8, i8) -> i8
+    %u = "arith.addi"(%a, %k3) : (i8, i8) -> i8
+    %c = "arith.cmpi"(%a, %k3) <{predicate = 8 : i64}> : (i8, i8) -> i1
+    %d = "arith.cmpi"(%b, %k5) <{predicate = 8 : i64}> : (i8, i8) -> i1
+    {cond}
+    {term}
+  ^bb1:
+    "cf.br"()[^bb3] : () -> ()
+  ^bb2:
+    "cf.br"()[^bb3] : () -> ()
+  ^bb3:
+    "func.return"() : () -> ()
+  }) : () -> ()
+}) : () -> ()
+"""
+BRANCH_TERM = (
+    '"cf.cond_br"(%t)[^bb1, ^bb2] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()'
+)
+SWITCH_TERM = (
+    '"cf.switch"(%a)[^bb1, ^bb2] <{case_operand_segments = array<i32: 0>, case_values = '
+    "dense<5> : vector<1xi8>, operandSegmentSizes = array<i32: 1, 0, 0>}> : (i8) -> ()"
+)
+
+
+def cmp(pred, a, b):
+    """The ``%t`` of ``cmpi`` predicate ``pred`` of ``a`` and ``b``."""
+    return f'%t = "arith.cmpi"({a}, {b}) <{{predicate = {pred} : i64}}> : (i8, i8) -> i1'
+
+
+@pytest.mark.parametrize(
+    "cond,value,block,want",
+    [
+        (cmp(8, "%a", "%k3"), "%a", "bb2", (0, 3)),
+        (cmp(8, "%a", "%k3"), "%a", "bb1", (4, 255)),
+        (cmp(8, "%a", "%k3"), "%a", "bb3", (0, 255)),
+        (cmp(6, "%k3", "%a"), "%a", "bb1", (4, 255)),
+        (cmp(0, "%a", "%k3"), "%a", "bb1", (3, 3)),
+        (cmp(1, "%a", "%k3"), "%a", "bb1", (0, 255)),
+        (cmp(4, "%a", "%k3"), "%a", "bb1", (0, 255)),
+        (cmp(8, "%s", "%k5"), "%a", "bb2", (3, 8)),
+        (cmp(8, "%u", "%k5"), "%a", "bb2", (0, 255)),
+        (cmp(8, "%u", "%k5"), "%u", "bb2", (0, 5)),
+        (cmp(8, "%a", "%k3"), "%x", "bb2", (5, 8)),
+        (cmp(8, "%a", "%k3"), "%x", "bb3", (0, 255)),
+        (cmp(7, "%w", "%w3").replace("(i8, i8)", "(i16, i16)"), "%a", "bb1", (0, 3)),
+        ('%t = "arith.xori"(%c, %one) : (i1, i1) -> i1', "%a", "bb1", (0, 3)),
+        ('%t = "arith.ori"(%c, %d) : (i1, i1) -> i1', "%b", "bb2", (0, 5)),
+        ('%t = "arith.ori"(%c, %d) : (i1, i1) -> i1', "%a", "bb1", (0, 255)),
+        ('%t = "arith.andi"(%c, %d) : (i1, i1) -> i1', "%a", "bb1", (4, 255)),
+        ("", "%a", "bb2", (5, 5)),
+        ("", "%a", "bb1", (0, 255)),
+    ],
+)
+def test_branch_conditions_bound_the_values_they_test(cond, value, block, want):
+    """The interval of a value where a block runs meets what the conditions of the branches
+    every path to it takes imply."""
+    text = BRANCHED.replace("{cond}", cond).replace("{term}", BRANCH_TERM if cond else SWITCH_TERM)
+    f = printer.Func(mlir.parse(text).regions[0][0].ops[0], None)
+    assert f.iv_at(value, block) == want
+
+
 def test_or_ed_high_byte_relocates(prefix, tmp_path):
     src = OPJMP.replace("        LDA thi,Y\n        STA site+2\n", "").replace(
         "site:   JMP j0", "        CPY #2\n        BCC site\n        LDY #0\nsite:   JMP j0"
@@ -5422,6 +5541,7 @@ def test_records_read_their_object_unchecked(prefix, tmp_path):
     )
     body = body_of(c, "play")
     assert "rdC" not in c and body.count("CGEN_IX(") == 4
+    assert not re.search(r"_LEN\b|\boob_", body)
     assert body.count("CGEN_OBJ0_ORG") == 1 and "#define CGEN_OBJ0_ORG" in h
     words = {labels[f"s{i}"] for i in range(4)} | {labels["play"]}
     assert not {int(x, 16) for x in re.findall(r"0x([0-9A-F]{3,4})\b", c)} & words
