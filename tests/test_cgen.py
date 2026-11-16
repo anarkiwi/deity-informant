@@ -391,6 +391,21 @@ tlo:    .byte $10,$20,$30,$40
 thi:    .byte $11,$21,$31,$41
 end:
 """
+GUARDFWD = """
+entry:  TAY
+        LDX cell
+        INX
+        STX cell
+        LDX $C000
+        STA tab,Y
+        STA $C001,X
+        LDX cell
+        STX $C002
+        RTS
+cell:   .byte 0
+tab:    .byte $11,$22,$33,$44
+end:
+"""
 LOHI = """
 entry:  AND #$03
         TAY
@@ -2490,6 +2505,11 @@ def arrays_end(h):
     return max(int(org, 16) + int(n) for _, org, n in ends)
 
 
+def regions_of(h):
+    """``{name: origin}`` of the regions the ``.h`` defines."""
+    return {k: int(org, 16) for k, org in re.findall(r"#define (R\d+)_ORG (0x[0-9A-F]+)\n", h)}
+
+
 def test_unbounded_table_store_ends_with_the_program(prefix, tmp_path):
     """A split table at the end of the program stored at a song byte the code does not bound:
     its arrays end with the program, and a store past it traps."""
@@ -2502,6 +2522,22 @@ def test_unbounded_table_store_ends_with_the_program(prefix, tmp_path):
     (tmp_path / "past").mkdir()
     with pytest.raises(AssertionError, match="trap"):
         play(tmp_path / "past", c, h, img, labels, entry_calls([0], 5))
+
+
+def test_reload_forwarded_past_a_guarded_store(prefix, tmp_path):
+    """A register stored to a cell and overwritten before a guarded store into a table that
+    ends the program: the cell's reload past the store is forwarded, so the cell is read once
+    and written once, and an index past the table traps."""
+    img, labels, loaded = assemble(GUARDFWD)
+    c, h, info = translate(prefix, img, labels, loaded)
+    [k] = [k for k, a in regions_of(h).items() if a == labels["cell"]]
+    assert body_of(c, "entry").count(f"{k}[0]") == 2
+    [(t, key)] = info["traps"].items()
+    assert key == ("deopt", labels["entry"] + 11) and f"trap({t})" in c
+    play(tmp_path, c, h, img, labels, entry_calls(range(4), 2))
+    (tmp_path / "past").mkdir()
+    with pytest.raises(AssertionError, match="trap"):
+        play(tmp_path / "past", c, h, img, labels, entry_calls([4]))
 
 
 def test_unbounded_table_store_inside_the_program_is_unguarded(prefix, tmp_path):

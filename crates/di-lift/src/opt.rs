@@ -1,7 +1,7 @@
 //! Optimization of lifted functions: CFG cleanup, register constant propagation across
 //! blocks, value numbering over extended basic blocks (constant folding, copy propagation,
-//! common subexpressions, store-to-load forwarding), and liveness-based dead-code
-//! elimination with callee register summaries.
+//! common subexpressions, store-to-load forwarding), liveness-based dead-code elimination
+//! with callee register summaries, and sinking of register copies some path leaves dead.
 
 use crate::analysis::{iv_op, Iv};
 use crate::ir::{fold, k, mask, mem, other, r1, reg, Block, Function, LOp, ALL_REGS, CY, E, NREG};
@@ -74,10 +74,11 @@ pub fn optimize(f: &mut Function, cx: &Ctx, fi: usize) {
             } else {
                 crate::wide::fuse(f, &|g, c| block_costs(g, cx, fi, c), &mut |g| round(g))
             };
-            if fused.is_empty() {
+            if !fused.is_empty() {
+                f.chains.extend(fused);
+            } else if !sink(f, cx, fi) {
                 break;
             }
-            f.chains.extend(fused);
         }
         last = f.blocks.iter().map(|b| b.ops.len()).sum();
     }
@@ -1424,6 +1425,88 @@ fn live<'a>(f: &'a Function, cx: &'a Ctx<'a>, fi: usize) -> Live<'a> {
         nregs: f.nregs(),
         cps: checkpoints(f, cx.cycles),
         hin,
+    }
+}
+
+/// Sink each register `COPY` that some path from its block leaves dead (the register written
+/// before it is read, as past a side exit that alone reads it) to the start of the extended
+/// basic block descendants where the register is next read: the register keeps its value on
+/// the other paths, so value numbering can forward through it what it held. No block between
+/// runs a `CALL`, return, computed jump or deopt, none reads or writes the copy's source or
+/// register, and no descendant the register is live into is a checkpoint or has another
+/// predecessor. Per liveness
+/// solution at most one copy of each register moves, and none into or out of a block another
+/// moved one leaves or enters; whether any moved.
+fn sink(f: &mut Function, cx: &Ctx, fi: usize) -> bool {
+    let root = roots(f);
+    let mut moved = false;
+    loop {
+        let (live_in, cps) = {
+            let lv = live(f, cx, fi);
+            (lv.solve(&mut |_, _| {}), lv.cps)
+        };
+        let nregs = f.nregs();
+        let blocks = &f.blocks;
+        let touches = |op: &LOp, r: Vn, src: Vn| {
+            matches!(op.opc, Opc::Call | Opc::Return | Opc::BranchInd)
+                || op.is_deopt()
+                || op.volatile() && cx.cycles
+                || op.out == r
+                || op.out == src && src.space() != Space::Const
+                || op.inputs().contains(&r)
+        };
+        let mut done = FixedBitSet::with_capacity(nregs);
+        let mut busy = FixedBitSet::with_capacity(blocks.len());
+        let mut moves: Vec<(usize, usize, Vec<u32>)> = Vec::new();
+        for (b, blk) in blocks.iter().enumerate() {
+            if busy.contains(b) {
+                continue;
+            }
+            for (i, op) in blk.ops.iter().enumerate() {
+                let (r, src) = (op.out, op.ins[0]);
+                if op.opc != Opc::Copy || r.space() != Space::Reg || done.contains(r.off() as usize)
+                {
+                    continue;
+                }
+                if blk.ops[i + 1..].iter().any(|o| touches(o, r, src)) {
+                    continue;
+                }
+                let x = lidx(r, nregs).unwrap();
+                let (mut to, mut dead) = (Vec::new(), false);
+                let mut work: Vec<u32> = blk.succs(&f.tables).collect();
+                let mut ok = true;
+                while let Some(s) = work.pop() {
+                    let su = s as usize;
+                    if !live_in[su].contains(x) {
+                        dead = true;
+                    } else if root.contains(su) || cps.contains(su) {
+                        ok = false;
+                        break;
+                    } else if blocks[su].ops.iter().any(|o| touches(o, r, src)) {
+                        to.push(s);
+                    } else {
+                        work.extend(blocks[su].succs(&f.tables));
+                    }
+                }
+                if ok && dead && to.iter().all(|&t| !busy.contains(t as usize)) {
+                    done.insert(r.off() as usize);
+                    busy.insert(b);
+                    busy.extend(to.iter().map(|&t| t as usize));
+                    moves.push((b, i, to));
+                    break;
+                }
+            }
+        }
+        if moves.is_empty() {
+            return moved;
+        }
+        moved = true;
+        for (b, i, to) in moves {
+            let op = f.blocks[b].ops.remove(i);
+            for t in to {
+                f.blocks[t as usize].ops.insert(0, op);
+            }
+        }
     }
 }
 

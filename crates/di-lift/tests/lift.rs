@@ -778,6 +778,39 @@ fn unbounded_stores_stay_inside_the_program() {
     }
 }
 
+/// A register stored to a cell, overwritten, then read past a guarded store into a table that
+/// ends the loaded program: the cell's reload is forwarded from the register, whose
+/// overwriting copy only the guard's deopt reads, so no load of the cell follows the store.
+#[test]
+fn reload_forwarded_past_a_guarded_store() {
+    let (cell, tab) = (0x1018u16, 0x1019u16);
+    let [cl, ch] = cell.to_le_bytes();
+    let [tl, th] = tab.to_le_bytes();
+    let prog: &[u8] = &[
+        0xa8, 0xae, cl, ch, 0xe8, 0x8e, cl, ch, 0xae, 0x00, 0xc0, 0x99, tl, th, 0x9d, 0x01, 0xc0,
+        0xae, cl, ch, 0x8e, 0x02, 0xc0, 0x60, 0x07, 0x11, 0x22, 0x33, 0x44,
+    ];
+    let img = image(&[(0x1000, prog)]);
+    let opts = Opts {
+        loaded: Some((0x1000, 0x1000 + prog.len() as u32)),
+        ..Opts::default()
+    };
+    let p = lift_with(
+        &img,
+        &entries(&[0x1000]),
+        &[(0xc000, 0xc100)],
+        &Facts::default(),
+        opts,
+    );
+    let loads = (p.functions.iter().flat_map(|f| &f.blocks))
+        .flat_map(|b| &b.ops)
+        .filter(|o| o.opc == di_pcode::Opc::Load && o.ins[0] == di_lift::ir::k(cell as u32, 2))
+        .count();
+    assert_eq!(loads, 1);
+    assert_eq!(diff(&img, &p, &acc_calls(&[0, 3, 1, 2, 3, 0]), IO), 0);
+    assert!(diff(&img, &p, &acc_calls(&[4]), IO) > 0);
+}
+
 /// A table byte a store from a constant base plus an unbounded index may write is data, not
 /// constant code the store is checked against.
 #[test]

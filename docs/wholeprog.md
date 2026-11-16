@@ -308,7 +308,12 @@ the program, and checks it against the reference.
    interval and algebraic rules, copy propagation, common subexpressions, store-to-load
    forwarding with alias analysis over constant, stack-relative and interval addresses);
    combining adds to a register; liveness-based dead-code elimination over registers, stack
-   slots and temporaries; without cycle counting, carry-chain fusion (*Carry chains*). Without cycle counting the functions are then summarized (registers
+   slots and temporaries; without cycle counting, carry-chain fusion (*Carry chains*). Once
+   these converge, a register copy dead on some path from its block (the register written
+   before it is read, as past a side exit whose deopt alone reads it) is sunk to the extended
+   basic block descendants that read the register, and the rounds run again: the register
+   keeps its old value on the other paths, so a later load of a cell it was stored to is
+   forwarded from it. Without cycle counting the functions are then summarized (registers
    each may and must define by fixpoints over the call graph, then the registers each uses
    and its callers read after it returns by a least fixpoint of liveness over the whole
    program, so recursion converges like a loop) and optimized again: a `CALL` uses and kills
