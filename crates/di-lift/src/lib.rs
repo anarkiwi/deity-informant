@@ -574,10 +574,8 @@ pub fn lift_banked(
             bank,
             matched,
             opts.loaded,
-            opts.entry_sp.map(|_| vsa::Wanted {
-                volatile,
-                held: &held,
-            }),
+            volatile,
+            opts.entry_sp.map(|_| vsa::Wanted { held: &held }),
             &free,
             opts.once,
         );

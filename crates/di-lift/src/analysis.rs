@@ -778,8 +778,9 @@ pub fn entry_config(m: &BankMap, img: &[u8; 0x10000], facts: &Facts, pc: u16) ->
 /// loaded to, where tables end at the latest. An `RTS`/`RTI` whose pulled address the code
 /// gives targets for jumps through it within the same fixpoint; which computed transfers stay
 /// unresolved (to their facts' targets) is decided on a converged program, and the fixpoint is
-/// recomputed until that does not grow. With `reach` (the volatile ranges) the graph holds the
-/// address hulls of pointer loads. `free` holds the variables the host's init leaves: bytes of
+/// recomputed until that does not grow. The bytes of the `volatile` ranges are never
+/// constant: a device answers any value. With `reach` the graph holds the address hulls of
+/// pointer loads. `free` holds the variables the host's init leaves: bytes of
 /// unknown value (their values over its runs, in run order), as the facts' writes are. With
 /// `once` each entry runs once from `img`: a store makes cells only of the code bytes of the
 /// instructions that may run after it ([`After`]) and needs no code check.
@@ -791,6 +792,7 @@ pub fn discover(
     bank: Option<&BankMap>,
     matched: bool,
     loaded: Option<(u32, u32)>,
+    volatile: &[(u32, u32)],
     reach: Option<crate::vsa::Wanted>,
     free: &FxHashMap<u16, Vec<u8>>,
     once: bool,
@@ -812,6 +814,7 @@ pub fn discover(
         edges,
         failed: FxHashSet::default(),
         loaded,
+        volatile,
         reach,
         free,
         once,
@@ -819,6 +822,9 @@ pub fn discover(
             let mut c = FixedBitSet::with_capacity(0x10000);
             if let Some((lo, hi)) = loaded {
                 c.insert_range(lo as usize..(hi as usize).min(0x10000));
+            }
+            for &(lo, hi) in volatile {
+                c.set_range(lo as usize..(hi as usize).min(0x10000), false);
             }
             for a in facts.writes.iter().map(|w| w.0).chain(free.keys().copied()) {
                 c.set(a as usize, false);
@@ -931,7 +937,8 @@ struct Fixpoint<'a> {
     /// Loaded bytes taken as constant: those no store with an address set wrote in an
     /// earlier round, nor the facts.
     constant: FixedBitSet,
-    /// The volatile ranges, when the address hulls of pointer loads are wanted.
+    volatile: &'a [(u32, u32)],
+    /// What the address hulls of pointer loads take, when wanted.
     reach: Option<crate::vsa::Wanted<'a>>,
     /// The variables the host's init leaves, with their values per run.
     free: &'a FxHashMap<u16, Vec<u8>>,
@@ -975,7 +982,7 @@ impl Fixpoint<'_> {
             runs: self.free,
             free: &self.free_bits(),
             constant: &self.constant,
-            volatile: r.volatile,
+            volatile: self.volatile,
             reach: true,
             written: &written,
             aimed: &g.aimed,
@@ -1090,7 +1097,7 @@ impl Fixpoint<'_> {
                 runs: self.free,
                 free: &free_bits,
                 constant: &self.constant,
-                volatile: self.reach.map_or(&[], |r| r.volatile),
+                volatile: self.volatile,
                 reach: false,
                 written: &none,
                 aimed: &aimed,

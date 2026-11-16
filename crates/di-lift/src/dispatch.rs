@@ -549,6 +549,7 @@ pub(crate) fn vectors(
         aimed: FxHashMap::default(),
         seeds: FxHashMap::default(),
         ram: Vec::new(),
+        dev: FixedBitSet::new(),
     };
     let mut v: Vec<u16> = vars
         .iter()
@@ -837,12 +838,13 @@ fn resolve(
         .filter(|x| x.addrs.is_some())
 }
 
-/// The bytes a store of `stores` with known addresses may write and those the facts saw
-/// written. A store of unknown address is checked against every byte the lift takes as
-/// constant (`codechk`), tables included.
+/// The bytes a store of `stores` with known addresses may write, those the facts saw written
+/// and the volatile bytes. A store of unknown address is checked against every byte the lift
+/// takes as constant (`codechk`), tables included.
 fn written(code: &Code, stores: &[Store]) -> FixedBitSet {
     let mut w = code.observed.clone();
     w.grow(0x10000);
+    w.union_with(&code.dev);
     for a in stores.iter().filter_map(|s| s.addrs.as_ref()) {
         a.iter().for_each(|&x| w.insert(x as usize));
     }
@@ -1900,11 +1902,13 @@ fn advanced_at(
 /// The values each byte some store writes may hold, from its entry byte and the stores that
 /// may write it (with the values of the cells they copy, a least fixpoint); `None` where a
 /// store of unknown address or values may write it, or its entry byte is not known
-/// ([`Code::free`]).
+/// ([`Code::free`], [`Code::dev`]).
 pub(crate) fn cell_values(code: &Code, stores: &[Store]) -> FxHashMap<u16, Option<BTreeSet<u8>>> {
     let mut out: FxHashMap<u16, Option<BTreeSet<u8>>> = FxHashMap::default();
-    let init =
-        |a: u16| (!code.free.contains(a as usize)).then(|| BTreeSet::from([code.img[a as usize]]));
+    let init = |a: u16| {
+        let known = !code.free.contains(a as usize) && !code.dev.contains(a as usize);
+        known.then(|| BTreeSet::from([code.img[a as usize]]))
+    };
     for s in stores {
         for &a in s.addrs.iter().flatten().chain(&s.deps) {
             out.entry(a).or_insert_with(|| init(a));

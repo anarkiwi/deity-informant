@@ -12,7 +12,19 @@ from jennings.memory import NativeMemory
 import wholeprog_progs as W
 from deity_informant import NATIVE, c64, trace, wholeprog
 from deity_informant.smc import machine
-from wholeprog_progs import CODEHIT, GEN, INVALIDATE, IO, JMPIND, PATCH, TOGGLE, WRAP, assemble
+from wholeprog_progs import (
+    CODEHIT,
+    GEN,
+    INVALIDATE,
+    IO,
+    JMPIND,
+    PATCH,
+    TOGGLE,
+    WRAP,
+    assemble,
+    hi,
+    lo,
+)
 
 pytestmark = pytest.mark.skipif(not NATIVE, reason="needs the native extension")
 
@@ -304,6 +316,45 @@ def test_no_facts_is_exact():
     assert not prog.deopts and len(prog.jumps[labels["entry"] + 14]) == 4
     differential(img, prog, pc, [(0, 4)])
     assert sum(prog.deopts.values()) == 1
+
+
+# A jump through a word read from the device: indexed, absolute, and stored then read back.
+VOLATILE_WORD = """
+entry:  {read}
+        STA ptr
+        {read1}
+        STA ptr+1
+        JMP (ptr)
+j0:     LDA #$01
+        RTS
+j1:     LDA #$02
+        RTS
+.org $1810
+ptr:    .byte 0,0
+"""
+DEVICE_READS = {
+    "indexed": ("AND #$01\n        ASL A\n        TAX\n        LDA $C010,X", "LDA $C011,X"),
+    "absolute": ("LDA $C010", "LDA $C011"),
+    "stored": (
+        "LDA #lo(j0)\n        STA $C010\n        LDA $C010",
+        "LDA #hi(j0)\n        STA $C011\n        LDA $C011",
+    ),
+}
+
+
+@pytest.mark.parametrize("entry_sp", [None, 0xFD])
+@pytest.mark.parametrize("kind", sorted(DEVICE_READS))
+def test_volatile_bytes_are_not_constants(kind, entry_sp):
+    img, labels = assemble(
+        VOLATILE_WORD.format(read=DEVICE_READS[kind][0], read1=DEVICE_READS[kind][1])
+    )
+    img = bytearray(img)
+    j0, j1 = labels["j0"], labels["j1"]
+    img[0xC010:0xC014] = bytes([lo(j0), hi(j0), lo(j1), hi(j1)])
+    pc = [labels["entry"]]
+    prog = wholeprog.lift(bytes(img), pc, [IO], entry_sp=entry_sp)
+    assert not any(t in (j0, j1) for ts in prog.jumps.values() for t in ts)
+    differential(bytes(img), prog, pc, [(0, a) for a in range(2)])
 
 
 def test_matches_constant_code():

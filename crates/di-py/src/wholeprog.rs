@@ -1518,6 +1518,7 @@ pub fn plan_program<'py>(
         bank.as_ref(),
         true,
         None,
+        &[],
         None,
         &Default::default(),
         false,
