@@ -557,7 +557,7 @@ the facts, so a proof holds on every execution that stays in lifted code.
   every store that may write it, those of the cells they copy included (a least fixpoint).
   In a static lift a store whose address is unknown only through its own operand cells has
   the addresses the values those cells may hold give, the cells' values and those addresses
-  found together from none (both only grow).
+  found together from none (*Termination*).
   A cell is closed when every store that may write it has an address set and known values:
   an opcode cell's dispatch chain then has no deopt, and `Program.sets` holds it. A store
   through a `(zp),Y` pointer whose two bytes hold table bytes or constants on every path
@@ -876,6 +876,36 @@ The IR prints as C and as structured C: [structured.md](structured.md).
 
 Both give the same registers, memory, volatile stream, deopts and halts; the differential
 tests run every lift test on both and random programs through both (`tests/jit.rs`).
+
+## Termination
+
+Every iteration of the lift ends on every input; where precision runs out a value is unknown
+and the code using it deopts or traps.
+
+- Discovery repeats (`analysis::discover`) only when bytes leave the constant set or a
+  transfer joins the unresolved ones: at most once per address. Its rounds
+  (`Fixpoint::run`) unite the cells, their values, the resolved targets and the stores'
+  address sets with the last round's; a store a round finds no set for, or no longer has, is
+  dropped for good. All are finite sets of addresses and bytes.
+- The interval analysis (`vsa::fixpoint`) has finitely many keys (start, call context). At
+  loop heads, the targets of depth-first back edges over every control edge (a return's to
+  its sites included, so every cycle of keys passes one), an interval rises only to the next
+  program constant; the rest of a state (tags, known bits, value sets, stack bytes, depth,
+  tracked bytes) is of finite height. Balance is refined while fewer returns are wild.
+- Cell values (`dispatch::cell_values`) are a least fixpoint of byte-set unions. A store whose
+  address is unknown only through its own operand cells may write those cells unknown values,
+  which leave it unresolved and writing nowhere known, so the values it is resolved with would
+  alternate; each round of `dispatch::cell_addressed` joins them with the last round's instead
+  (a missing cell holds its entry byte, below any set; unknown absorbs), so they only rise and
+  the rounds end at values that hold of the stores resolved with them.
+- Pointer reach (`vsa::reach`): byte bounds only descend (each round's meet with the last),
+  word columns and floors only rise, to the end of the run of data bytes they move in or the
+  extremes; the callees' store intervals are recomputed until they repeat.
+
+`tests/test_termination.py` lifts such programs under a wall-clock limit and replays them.
+`tools/liftsweep.py` translates PSID files to C, each under a limit, and replays the C: per file
+the time, whether it replays exactly, deopts or differs, and the calls the reference returns
+from.
 
 ## Limitations
 

@@ -743,8 +743,11 @@ pub(crate) fn indexed_loads(
 
 /// The values of the cells ([`cell_values`]) with each store whose address is unknown only
 /// through its own operand cells taken at their values: the stores' addresses and the cells'
-/// values are found together, from none of those stores writing up to their fixpoint (both
-/// only grow; a store whose operand cells have no values stays unknown).
+/// values are found together, from none of those stores writing up to their fixpoint (a store
+/// whose operand cells have no values stays unknown). Each round joins what the stores
+/// resolved with the cells' values write into those values ([`join_cells`]), so the values
+/// only rise in a lattice of finite height and the rounds end, at values that hold of the
+/// stores resolved with them.
 pub(crate) fn cell_addressed(
     code: &Code,
     vars: &FxHashMap<u16, Vec<Var>>,
@@ -769,12 +772,28 @@ pub(crate) fn cell_addressed(
         for (s0, &i) in orig.iter().zip(&open) {
             stores[i] = resolve(code, vars, sets, s0, &cv).unwrap_or_else(|| s0.clone());
         }
-        let new = cell_values(code, stores);
+        let new = join_cells(&cv, cell_values(code, stores));
         if new == cv {
             return cv;
         }
         cv = new;
     }
+}
+
+/// `a` joined with `b` by cell (one missing holds only its entry byte, which every set
+/// holds): sets unite and unknown values absorb.
+fn join_cells(
+    a: &FxHashMap<u16, Option<BTreeSet<u8>>>,
+    mut b: FxHashMap<u16, Option<BTreeSet<u8>>>,
+) -> FxHashMap<u16, Option<BTreeSet<u8>>> {
+    for (&k, v) in a {
+        match (b.entry(k).or_insert_with(|| v.clone()), v) {
+            (Some(x), Some(y)) => x.extend(y),
+            (x, None) => *x = None,
+            (None, _) => {}
+        }
+    }
+    b
 }
 
 /// Store `s` with its operand cells taken at their values `cv`, when they all have some.
