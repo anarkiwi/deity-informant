@@ -259,7 +259,7 @@ end:
 """
 ORDERBAD = ORDER.replace(
     "phi:    .byte hi(p0),hi(p1),hi(p0),0", "phi:    .byte hi(p0),hi(p1),0,0"
-).replace("back:   .byte 0,0,0,1", "back:   .byte 0,0,0,2")
+).replace("back:   .byte 0,0,0,1", "back:   .byte 0,0,3,2")
 ZPCLEAR = """
 entry:  LDX #$00
         TXA
@@ -2221,14 +2221,15 @@ def test_pointer_advanced_by_record_lengths(prefix, tmp_path, src):
     assert lo <= labels["p0"] and labels["end"] <= hi and not info["unknown_access"]
 
 
-@pytest.mark.parametrize("src", [ORDER, ORDERBAD], ids=["ok", "bad"])
-def test_end_marker_tested_before_its_pointer(prefix, tmp_path, src):
+@pytest.mark.parametrize("src,unchecked", [(ORDER, True), (ORDERBAD, False)], ids=["ok", "bad"])
+def test_end_marker_tested_before_its_pointer(prefix, tmp_path, src, unchecked):
     # The pointer's high byte comes from a table whose zero marks the end of the order: the
     # branch on it leaves only indices of nonzero bytes, and the restart index the marker's
-    # entry gives names a nonzero byte, so the pointer never names zero page. When a restart
-    # names another marker, it may: the span's reader reads zero page through ``oob_rd``.
+    # entry gives names a nonzero byte, so at the order positions play reaches the pointer
+    # never names zero page and its read is plain. When a restart play reaches names another
+    # marker, it does: the span's reader reads zero page through ``oob_rd``.
     c, _, _ = songs(prefix, tmp_path, src, (0,))
-    assert not re.search(r"\brd\(", c) and "rdC0(" in c
+    assert not re.search(r"\brd\(", c) and ("rdC0(" in c) != unchecked
 
 
 PUSH = """
@@ -2357,12 +2358,12 @@ IOJUMP = CALLRET.replace(
 def test_pointer_loaded_from_song_data_and_its_stack(prefix, tmp_path, src, bounded):
     # A jump loads the song pointer from two song bytes, a call pushes it (advanced past the
     # command) on a stack whose depth nothing bounds and a return pops it: the pointer points
-    # into the song on every path, so its reads are one span's bounds-checked reads, and the
-    # push is bounds-checked against the stack. Loaded from I/O instead, it may point anywhere:
-    # the same reader reads ``oob_rd`` outside the program.
+    # into the song on every path, so its reads are one span's, plain where the states play
+    # reaches bound them, and the push is bounds-checked against the stack. Loaded from I/O
+    # instead, it may point anywhere: the span's reader reads ``oob_rd`` outside the program.
     img, labels, loaded = assemble(src)
     c, h, info = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
-    assert not re.search(r"\brd\(", c) and "rdC0(" in c
+    assert not re.search(r"\brd\(", c) and ("rdC0(" in c) != bounded
     assert "oob_wr(" in c and not re.search(r"\bwr\(", plain(c))
     if bounded:
         [(lo, hi)] = info["code_held"]
@@ -4934,13 +4935,15 @@ def test_bytes_init_leaves_constant_are_held_where_read(prefix, tmp_path, indexe
 def test_init_relocating_by_the_song_leaves_pointer_cells(prefix, tmp_path):
     """Init computing an operand from ``A`` writes both its bytes: the low byte's value
     differs between values of ``A``, so the operand is a variable the other entry reads
-    through as a pointer bounded to the table ``A`` indexes, its high byte too though init
-    leaves it one value; the flag init leaves one value for every ``A`` is a constant."""
+    through as a pointer, its high byte too though init leaves it one value, plain inside the
+    table ``A`` indexes on every state play reaches; the flag init leaves one value for every
+    ``A`` is a constant."""
     c, info, labels = songs(prefix, tmp_path, INITA, range(4))
     assert {labels["o0"] + 1, labels["o0"] + 2} <= set(info["provenance"]["cells"])
     assert info["fixed"] == [labels["flag"]]
     body = body_of(c, "play")
-    assert re.search(r"rdC0\(S_\w+ \| \(\(uint16_t\)S_\w+ << 8\), a & 3\)", body)
+    ix = r"CGEN_IX\(C0, \(S_\w+ \| \(\(uint16_t\)S_\w+ << 8\)\) - C0_ORG, a & 3\)"
+    assert re.search(ix, body) and "rdC" not in body
     assert "K_I" in body
 
 
@@ -6704,6 +6707,51 @@ def test_seeded_walks_c_is_the_same_across_runs(prefix, tmp_path):
             play(tmp_path / str(i), c, h, img, labels, calls)
         out.append((c, h))
     assert out[0][0] == out[1][0] and out[0][1] != out[1][1]
+
+
+@pytest.mark.parametrize("src", [TO.CURSOR, TO.COUNTED], ids=["plain", "counted"])
+def test_cursors_read_plain(prefix, tmp_path, src):
+    """Cursors play keeps between calls, reset at their data's markers, read the records and
+    segments with no bounds-checked reader: the states play reaches from each of init's runs
+    bound them; every argument replays past many resets."""
+    c, h, img, labels = walk_c(prefix, src)
+    assert "rdC" not in c and "CGEN_IX(" in body_of(c, "play")
+    for song in range(4):
+        play(tmp_path, c, h, img, labels, [("init", song)] + [("play", 0)] * 150)
+
+
+def test_cursor_stepped_by_a_modelled_read_reads_plain(prefix, tmp_path):
+    """A cursor stepped by an I/O read the model answers with 0 or 1 reads plain; the same
+    read answering any byte keeps the bounds-checked reader."""
+    img, labels, loaded = assemble(TO.POLLED)
+    img[0xC003] = 1
+    ents = [(labels[n], n) for n in ("init", "play")]
+    kw = {"loaded": loaded, "header": "t.h", "prefix": prefix, "init": 0, "songs": range(4)}
+    c, h, _ = cgen.translate(img, ents, [W.IO], devices=TO.STEP, **kw)
+    assert "rdC" not in c
+    for song in range(4):
+        play(tmp_path, c, h, img, labels, [("init", song)] + [("play", 0)] * 150)
+    assert "rdC" in cgen.translate(img, ents, [W.IO], devices=None, **kw)[0]
+
+
+def test_cursor_a_store_may_write_keeps_its_check(prefix, tmp_path):
+    """A cursor another entry's store of unknown address may write bounds nothing: its record
+    load keeps the bounds-checked reader, and the program replays."""
+    img, labels, loaded = assemble(TO.POKED)
+    c, h, _ = translate(
+        prefix, img, labels, loaded, entries=("init", "play", "poke"), init=0, songs=range(4)
+    )
+    assert "rdC" in body_of(c, "play")
+    play(tmp_path, c, h, img, labels, [("init", 1)] + [("play", 0), ("poke", 0)] * 40)
+
+
+def test_cursor_bounds_are_the_headers(prefix):
+    """The bounds the reachable states give the cursors' loads are the ``.h``'s: the spans they
+    read are named there, and no record or segment address is a literal of the ``.c``."""
+    c, h, _, labels = walk_c(prefix, TO.CURSOR)
+    assert "rdC" not in c and re.search(r"#define C\d+_ORG", h)
+    starts = {labels[f"r{i}"] for i in range(4)} | {labels["flat"]}
+    assert not {int(x, 16) for x in re.findall(r"0x([0-9A-F]{3,4})\b", c)} & starts
 
 
 INDX = """

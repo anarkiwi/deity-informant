@@ -314,6 +314,12 @@ pub struct Stats {
     pub ptr_guards: usize,
     /// Checks keeping pointers in their objects ([`crate::objects`]).
     pub obj_guards: usize,
+    /// Loads the reachable states bound ([`crate::reach`]).
+    pub reach_loads: usize,
+    /// Slices whose reachable-state evaluations completed.
+    pub reach_slices: usize,
+    /// States of those slices over every run.
+    pub reach_states: usize,
     /// Checks keeping a pointer access out of page 1 and the volatile pages.
     pub zone_guards: usize,
     /// Accesses that reached page 1 in the facts or cannot be checked (each keeps the stack

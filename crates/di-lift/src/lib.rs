@@ -23,6 +23,7 @@ pub mod objects;
 pub mod once;
 pub mod opt;
 pub mod ptr;
+pub mod reach;
 pub mod scev;
 pub mod vsa;
 pub mod walks;
@@ -91,6 +92,8 @@ pub struct Opts {
     /// and the values of the init's stores that may write it, each of known addresses and
     /// values.
     pub known: Vec<(u16, Vec<u8>)>,
+    /// The bounds of the reachable-state search ([`reach`]).
+    pub reach: reach::Caps,
 }
 
 impl Default for Opts {
@@ -110,6 +113,7 @@ impl Default for Opts {
             holds: Vec::new(),
             checked: false,
             known: Vec::new(),
+            reach: reach::Caps::default(),
         }
     }
 }
@@ -611,6 +615,83 @@ fn reaches(r: &vsa::Hulls) -> Vec<ir::Reach> {
     v
 }
 
+/// The loads of `g` no proof holds in the bytes `held` that the reachable states of its
+/// `entries` (called at `sp` from each of init's runs, `free`, with `volatile` ranges
+/// answering as `devices` say, within `caps`) bound there ([`reach`]): their hulls join
+/// [`analysis::Graph::proven`].
+#[allow(clippy::too_many_arguments)]
+fn reach_bounds(
+    g: &mut analysis::Graph,
+    entries: &[Entry],
+    sp: u8,
+    volatile: &[(u32, u32)],
+    devices: &dev::Devices,
+    free: &FxHashMap<u16, Vec<u8>>,
+    held: Option<(u32, u32)>,
+    caps: reach::Caps,
+) -> reach::Bounds {
+    let Some((lo, end)) = held else {
+        return reach::Bounds::default();
+    };
+    let inside = |h: Iv| lo <= h.lo && h.hi < end && !volatile.iter().any(|&(a, b)| h.meets(a, b));
+    let mut targets = FxHashSet::default();
+    for (&pc, vs) in &g.vars {
+        for v in vs.iter().filter(|v| !is_stack_op(v.op)) {
+            for (ai, a) in v.acc.iter().enumerate() {
+                let key = (pc, v.op, ai);
+                let done = g.proven.get(&key).is_some_and(|h| inside(h.0));
+                if !a.store && !a.dummy && a.addr.value().is_none() && !done {
+                    targets.insert(key);
+                }
+            }
+        }
+    }
+    if targets.is_empty() {
+        return reach::Bounds::default();
+    }
+    let n = free.values().map(Vec::len).max().unwrap_or(1).max(1);
+    let mems: Vec<Box<[u8; 0x10000]>> = (0..n)
+        .map(|r| {
+            let mut m = g.img.clone();
+            for (&a, vs) in free {
+                if let Some(&x) = vs.get(r) {
+                    m[a as usize] = x;
+                }
+            }
+            m
+        })
+        .collect();
+    let mut w = analysis::stored(g);
+    w.insert_range(0x100..0x200);
+    let held = (lo, end);
+    let out = reach::bounds(
+        g, entries, sp, volatile, devices, &mems, &w, &targets, held, caps,
+    );
+    // A hull reaches out to the ends of the runs of data bytes holding its ends: the bounds
+    // the states give move with the data, the runs only with the program.
+    let run = |x: u32| g.runs.iter().find(|r| (r.0..r.1).contains(&x)).copied();
+    for (&key, h) in &out.loads {
+        let wide = match (run(h[0]), run(h[1])) {
+            (Some(l), Some(r)) => Iv {
+                lo: l.0,
+                hi: r.1 - 1,
+            },
+            _ => Iv { lo: h[0], hi: h[1] },
+        };
+        let a = match inside(wide) {
+            true => wide,
+            false => Iv { lo: h[0], hi: h[1] },
+        };
+        let b = Iv { lo: h[2], hi: h[3] };
+        let e = g.proven.entry(key).or_insert((a, b));
+        *e = (
+            vsa::meet(e.0, a).unwrap_or(a),
+            vsa::meet(e.1, b).unwrap_or(b),
+        );
+    }
+    out
+}
+
 /// [`lift_with`] over memory seen through `bank` (flat when `None`).
 pub fn lift_banked(
     img: &[u8; 0x10000],
@@ -630,7 +711,7 @@ pub fn lift_banked(
     let mut held = FixedBitSet::with_capacity(0x10000);
     held.extend(opts.held.iter().map(|&a| a as usize));
     let mut matched = true;
-    let (g, plans, fidx, callees, recursive, slots, constcode, touches, seen, sites, private) = loop {
+    let (mut g, plans, fidx, callees, recursive, slots, constcode, touches, seen, sites, private) = loop {
         let mut g = discover(
             img,
             entries,
@@ -791,6 +872,14 @@ pub fn lift_banked(
         }
         matched = false;
     };
+    let reached = match (opts.entry_sp, bank) {
+        (Some(sp), None) if !opts.once => {
+            let held = objects::held(opts.loaded, &g.written, &opts.holds, volatile);
+            let (dev, caps) = (&opts.devices, opts.reach);
+            reach_bounds(&mut g, entries, sp, volatile, dev, &free, held, caps)
+        }
+        _ => reach::Bounds::default(),
+    };
     let img: &[u8; 0x10000] = &g.img;
     let pcs: Vec<u16> = entries.iter().map(|e| e.pc).collect();
     let mut promote = FixedBitSet::with_capacity(plans.len());
@@ -922,6 +1011,9 @@ pub fn lift_banked(
             .iter()
             .filter(|s| !g.vars.contains_key(s))
             .count(),
+        reach_loads: reached.loads.len(),
+        reach_slices: reached.slices,
+        reach_states: reached.states,
         ..Stats::default()
     };
     // The entry registers the host checks are taken, not tested.
