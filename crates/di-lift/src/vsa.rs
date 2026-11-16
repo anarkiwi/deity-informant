@@ -96,7 +96,7 @@ pub(crate) enum Ix {
 }
 
 /// No group ([`Ix::Byte`]).
-const NOGRP: u32 = u32::MAX;
+pub(crate) const NOGRP: u32 = u32::MAX;
 
 impl Ix {
     /// What holds once the byte an index is may have changed: its group.

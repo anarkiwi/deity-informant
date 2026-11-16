@@ -647,6 +647,7 @@ impl<'a> Runner<'a> {
                 crate::ir::XREG,
                 crate::ir::OPLO,
                 crate::ir::OPHI,
+                crate::ir::IREG,
             ]
             .contains(&i)
             {

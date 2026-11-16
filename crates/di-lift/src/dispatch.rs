@@ -33,11 +33,12 @@
 //! may write; otherwise, or when a byte is not tagged on some path, an index is unbounded or
 //! two bytes are indexed by unrelated values, the transfer is not resolved. A store of the byte
 //! a transfer the path took ([`crate::vsa::Arm`]) is indexed by stores the index values whose
-//! word is a target taken ([`arm_values`]).
+//! word is a target taken ([`arm_values`]). A transfer whose target bytes are constants or
+//! tags indexed by one value selects its target by that value ([`Selector`]).
 
 use crate::analysis::{absint, operand_bytes, Access, Flow, Iv, Tg, Var, TOP_ENV};
 use crate::scev::{Induction, Place};
-use crate::vsa::{Code, Ix, Key, St, Tab, NOREG};
+use crate::vsa::{Code, Ix, Key, St, Tab, NOGRP, NOREG};
 use di_pcode::{reg, Opc, Space, Template, Vn};
 use fixedbitset::FixedBitSet;
 use petgraph::algo::dominators::{simple_fast, Dominators};
@@ -1043,51 +1044,128 @@ fn pair(
     Some((t, read, guards, origin))
 }
 
-/// A jump's selector: the index register and, per index value, the target, when its low and
-/// high target bytes are columns of one table both indexed by the register's current value.
-pub type Selector = (u8, Vec<(u8, u16)>);
+/// What a computed transfer switches on: an index register still holding the index; the byte
+/// of the loaded program at `base` plus register `reg` ([`NOREG`]: none) it was read from,
+/// read again (its addresses within `[lo, hi]`); or the value index register `r` held before
+/// the instruction at `pc` wrote it, carried in [`crate::ir::IREG`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
+pub enum Index {
+    Reg(u8),
+    Byte {
+        base: u16,
+        reg: u8,
+        lo: u32,
+        hi: u32,
+    },
+    Carry(u16, u8),
+}
 
-/// The [`Selector`] of target bytes `lo`, `hi` when every byte read is one no store writes
-/// (see [`pair`]).
+/// The index two contexts of a transfer agree on: the same, or the same byte at addresses
+/// within either's.
+fn meet_ix(a: Index, b: Index) -> Option<Index> {
+    match (a, b) {
+        _ if a == b => Some(a),
+        (
+            Index::Byte { base, reg, lo, hi },
+            Index::Byte {
+                base: c,
+                reg: r,
+                lo: l,
+                hi: h,
+            },
+        ) if (base, reg) == (c, r) => Some(Index::Byte {
+            base,
+            reg,
+            lo: lo.min(l),
+            hi: hi.max(h),
+        }),
+        _ => None,
+    }
+}
+
+/// A transfer's selector: its [`Index`] and, per index value, the target, when every byte its
+/// target is made of is a constant or a column of one table indexed by that value.
+pub type Selector = (Index, Vec<(u8, u16)>);
+
+/// The [`Index`] tags `ts` are read with in state `st`: the one register and index relation
+/// every table tag shares (still the register's value, a byte read again, or one group), none
+/// when no tag is indexed.
+fn index_of(ts: &[Tab], st: &St) -> Option<Index> {
+    let mut one = None;
+    for t in ts {
+        match *t {
+            Tab::K(_) | Tab::T { reg: NOREG, .. } => {}
+            Tab::T { reg, ix, .. } => {
+                if one.replace((reg, ix)).is_some_and(|o| o != (reg, ix)) {
+                    return None;
+                }
+            }
+            Tab::Any => return None,
+        }
+    }
+    match one? {
+        (r, Ix::Live) => Some(Index::Reg(r)),
+        (_, Ix::Byte(base, reg, _)) => {
+            let i = match reg {
+                NOREG => Iv::exact(0),
+                r => st.env[r as usize],
+            };
+            Some(Index::Byte {
+                base,
+                reg,
+                lo: base as u32 + i.lo,
+                hi: base as u32 + i.hi,
+            })
+        }
+        (_, Ix::Grp(g)) if g != NOGRP => Some(Index::Carry((g >> 2) as u16, (g & 3) as u8)),
+        _ => None,
+    }
+}
+
+/// The [`Selector`] of a transfer to `word` of the bytes tagged `ts` (`to` as in
+/// [`word_bytes`] for a pair), when every byte read is one no store writes and each index
+/// value selects one target.
 fn selector(
     code: &Code,
     sets: &Sets,
     objs: &Objects,
     w: &FixedBitSet,
-    lo: Tab,
-    hi: Tab,
+    (ts, to, st): (&[Tab], Option<u16>, &St),
+    word: impl Fn(&[u8]) -> u16,
 ) -> Option<Selector> {
-    let Tab::T {
-        reg, ix: Ix::Live, ..
-    } = lo
-    else {
-        return None;
+    let ix = index_of(ts, st)?;
+    let (b, _) = match ts {
+        &[lo, hi] => word_bytes(code, sets, objs, lo, hi, to)?,
+        _ => bytes(code, sets, objs, ts, &[])?,
     };
-    if reg == NOREG || !joint(&[lo, hi]) {
-        return None;
-    }
-    let (b, _) = word_bytes(code, sets, objs, lo, hi, Some(0))?;
     if b.iter()
         .flatten()
         .any(|x| x.2.is_some_and(|a| w.contains(a as usize)))
     {
         return None;
     }
-    let words = b[0]
-        .iter()
-        .zip(&b[1])
-        .map(|(l, h)| Some((l.0?, u16::from_le_bytes([l.1, h.1]))))
-        .collect::<Option<_>>()?;
-    Some((reg, words))
+    let n = b.iter().map(Vec::len).max()?;
+    let mut out = (0..n)
+        .map(|j| {
+            let row: Vec<&Byte> = (b.iter())
+                .map(|c| c.get(j).or_else(|| c.first().filter(|_| c.len() == 1)))
+                .collect::<Option<_>>()?;
+            let x = row.iter().find_map(|e| e.0)?;
+            Some((x, word(&row.iter().map(|e| e.1).collect::<Vec<_>>())))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    out.sort_unstable();
+    out.dedup();
+    out.windows(2)
+        .all(|p| p[0].0 != p[1].0)
+        .then_some((ix, out))
 }
 
-/// The selectors two contexts of one jump agree on: the same register, and one target per
+/// The selectors two contexts of one jump agree on: the same index, and one target per
 /// index value.
-fn meet_sel(a: Option<Selector>, b: Option<Selector>) -> Option<Selector> {
+pub(crate) fn meet_sel(a: Option<Selector>, b: Option<Selector>) -> Option<Selector> {
     let ((r, mut x), (q, y)) = (a?, b?);
-    if r != q {
-        return None;
-    }
+    let r = meet_ix(r, q)?;
     x.extend(y);
     x.sort_unstable();
     x.dedup();
@@ -1179,14 +1257,35 @@ pub(crate) fn jumps(
             }
         };
         for v in &vars[&pc] {
+            let le = |b: &[u8]| u16::from_le_bytes([b[0], b[1]]);
+            let sel = |ts: &[Option<Tab>], to: u16, word: &dyn Fn(&[u8]) -> u16| {
+                let ts: Vec<Tab> = ts.iter().copied().collect::<Option<_>>()?;
+                selector(code, sets, objs, &w, (&ts, Some(to), st), word)
+            };
             let sel = match v.flow {
                 Flow::JmpInd(_) => {
-                    pointer(code, pc).and_then(|(lo, hi)| Some((tag(lo)?, tag(hi)?)))
+                    pointer(code, pc).and_then(|(lo, hi)| sel(&[tag(lo), tag(hi)], 0, &le))
                 }
-                Flow::Jmp(Tg::Calc(_)) => opnd(pc.wrapping_add(1)).zip(opnd(pc.wrapping_add(2))),
+                Flow::Br { t: Tg::Calc(_), f } => sel(&[opnd(pc.wrapping_add(1))], 0, &|b| {
+                    f.wrapping_add(b[0] as i8 as u16)
+                }),
+                ref f if operand_len(f) == 2 => sel(
+                    &[opnd(pc.wrapping_add(1)), opnd(pc.wrapping_add(2))],
+                    0,
+                    &le,
+                ),
+                Flow::Rts(_) => match st.push {
+                    [Some(l), Some(h), _] => {
+                        sel(&[Some(l), Some(h)], 1, &|b| le(b).wrapping_add(1))
+                    }
+                    _ => None,
+                },
+                Flow::Rti(_) => match st.push {
+                    [Some(_), Some(l), Some(h)] => sel(&[Some(l), Some(h)], 0, &le),
+                    _ => None,
+                },
                 _ => None,
-            }
-            .and_then(|(l, h)| selector(code, sets, objs, &w, l, h));
+            };
             let e = sels.entry(pc).or_insert_with(|| sel.clone());
             *e = meet_sel(e.take(), sel);
             let r = match v.flow {
@@ -1299,11 +1398,12 @@ pub(crate) fn jumps(
             *r = Some(Some((t, BTreeSet::new(), Vec::new(), BTreeSet::new())));
         }
     }
-    let sels = sels
+    let mut sels: FxHashMap<u16, Selector> = sels
         .into_iter()
         .filter(|(pc, _)| matches!(res.get(pc), Some(Some(Some(_)))))
         .filter_map(|(pc, x)| Some((pc, x?)))
         .collect();
+    one_carry(&mut sels);
     let jumps = res
         .into_iter()
         .filter_map(|(pc, r)| match r {
@@ -1321,6 +1421,18 @@ pub(crate) fn jumps(
         })
         .collect();
     (jumps, sels)
+}
+
+/// Keep the selectors carrying an index ([`Index::Carry`]) only when they all carry one: the
+/// carry register holds a single value.
+pub(crate) fn one_carry(sels: &mut FxHashMap<u16, Selector>) {
+    let carried: BTreeSet<Index> = (sels.values())
+        .map(|s| s.0)
+        .filter(|i| matches!(i, Index::Carry(..)))
+        .collect();
+    if carried.len() > 1 {
+        sels.retain(|_, s| !carried.contains(&s.0));
+    }
 }
 
 /// Address sets for the stores through a `(zp),Y` pointer whose two bytes hold, on every
