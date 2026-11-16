@@ -278,6 +278,15 @@ impl Function {
     pub fn lane0(&self) -> u32 {
         NREG as u32 + self.nslots + self.ncarries
     }
+    /// The lane registers.
+    pub fn lanes(&self) -> std::ops::Range<u32> {
+        self.lane0()..self.lane0() + self.nlanes
+    }
+}
+
+/// A varnode's space and offset as one key.
+pub fn key(v: Vn) -> u32 {
+    (v.space() as u32) << 16 | v.off()
 }
 
 /// Counts describing a lift.

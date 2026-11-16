@@ -23,7 +23,7 @@
 //! store is plain; the conversion is kept only when it completes a fused chain.
 
 use crate::analysis::{iv_op, Iv};
-use crate::ir::{k, tmp, Block, Function, LOp, DECIMAL};
+use crate::ir::{k, key, tmp, Block, Function, LOp, DECIMAL};
 use di_pcode::{Opc, Space, Vn};
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -111,10 +111,6 @@ struct View<'a> {
     ops: &'a [LOp],
     ins: Vec<[R; 2]>,
     uses: Vec<Vec<u32>>,
-}
-
-fn key(v: Vn) -> u32 {
-    (v.space() as u32) << 16 | v.off()
 }
 
 impl<'a> View<'a> {

@@ -4,7 +4,9 @@
 //! with callee register summaries, and sinking of register copies some path leaves dead.
 
 use crate::analysis::{iv_op, Iv};
-use crate::ir::{fold, k, mask, mem, other, r1, reg, Block, Function, LOp, ALL_REGS, CY, E, NREG};
+use crate::ir::{
+    fold, k, key, mask, mem, other, r1, reg, Block, Function, LOp, ALL_REGS, CY, E, NREG,
+};
 use di_pcode::{reg as R, Opc, Space, Vn};
 use fixedbitset::FixedBitSet;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -136,10 +138,6 @@ fn guard_regs(ops: &[LOp], c: Vn) -> u32 {
         }
     }
     regs
-}
-
-fn key(v: Vn) -> u32 {
-    (v.space() as u32) << 16 | v.off()
 }
 
 /// Index of a register or temporary in liveness sets of a function with `nregs` registers.
@@ -1005,10 +1003,7 @@ impl Lvn<'_> {
     fn key_iv(&self, m: MemKey) -> Iv {
         match m {
             MemKey::Const(a) => Iv::exact(a as u32),
-            MemKey::Stack(..) => Iv {
-                lo: 0x100,
-                hi: 0x1ff,
-            },
+            MemKey::Stack(..) => crate::ptr::PAGE1_IV,
             MemKey::Other(s) => self.syms[s as usize].iv,
         }
     }
@@ -1122,10 +1117,9 @@ fn rename(f: &mut Function) {
 /// Value numbering over extended basic blocks, seeded with `consts` at their roots.
 fn number(f: &mut Function, cx: &Ctx, consts: &[Vec<(u16, u32)>]) {
     let root = roots(f);
-    let lanes = f.lane0();
     let mut lv = Lvn {
         cx,
-        lanes: lanes..lanes + f.nlanes,
+        lanes: f.lanes(),
         syms: Vec::new(),
         hc: FxHashMap::default(),
         holders: FxHashMap::default(),

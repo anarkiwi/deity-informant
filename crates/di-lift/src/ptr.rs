@@ -55,6 +55,11 @@ impl Default for Prot {
 
 /// Page 1, the zone every window keeps a pointer out of.
 pub const PAGE1: (u32, u32) = (0x100, 0x200);
+/// [`PAGE1`] as an interval.
+pub const PAGE1_IV: Iv = Iv {
+    lo: PAGE1.0,
+    hi: PAGE1.1 - 1,
+};
 
 /// Whether the pointer `p` is in the window of index `m`: `p + i` may be in page 1 for some
 /// `i <= m`.

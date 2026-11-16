@@ -20,10 +20,7 @@ use rustc_hash::FxHashMap;
 use std::collections::VecDeque;
 
 const NONE: Vn = Vn::NONE;
-const PAGE1: Iv = Iv {
-    lo: crate::ptr::PAGE1.0,
-    hi: crate::ptr::PAGE1.1 - 1,
-};
+use crate::ptr::PAGE1_IV as PAGE1;
 
 /// Program-wide facts the emitter consults.
 pub struct Shared<'a> {
