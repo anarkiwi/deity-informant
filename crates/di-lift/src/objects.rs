@@ -26,16 +26,27 @@
 use crate::analysis::{flow_succs, is_stack_op, Flow, Graph, Iv, Var};
 use crate::bank::BankMap;
 use crate::ptr::{completer, usable, zp_stores, StoreKey};
+use crate::walks::Mk;
 use fixedbitset::FixedBitSet;
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
 
-/// A check of pair `q`'s pointer against object `obj` ([`Objs::objects`]): with `flag` (a
-/// flag register), of the pointer plus the flag times 256.
+/// A check of pair `q`'s pointer (as `of` reads it) against object `obj` ([`Objs::objects`]):
+/// with `flag` (a flag register), of the pointer plus the flag times 256.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ObjChk {
     pub q: u8,
     pub obj: u16,
     pub flag: Option<u8>,
+    pub of: Of,
+}
+
+/// What a check reads: the pair's pointer, or the pointer plus `Y`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Of {
+    Ptr,
+    PtrY,
 }
 
 /// The pointer objects of a program and the checks keeping them.
@@ -48,6 +59,8 @@ pub struct Objs {
     pub chk: FxHashMap<StoreKey, Vec<ObjChk>>,
     /// Per instruction start, the checks before it of the pairs its loads read through.
     pub pre: FxHashMap<u16, Vec<ObjChk>>,
+    /// Per instruction start, the checks after it of the walks it anchors ([`crate::walks`]).
+    pub post: FxHashMap<u16, Vec<ObjChk>>,
 }
 
 /// A load through a pair: its instruction, access, the values of `Y` it adds and its base
@@ -84,14 +97,14 @@ fn find(up: &mut [usize], mut i: usize) -> usize {
 
 /// The control flow the definitions reach along: every flow edge, and from each return whose
 /// targets are not computed to every return site.
-struct Cfg<'a> {
-    g: &'a Graph,
-    rets: Vec<u16>,
+pub(crate) struct Cfg<'a> {
+    pub(crate) g: &'a Graph,
+    pub(crate) rets: Vec<u16>,
     preds: FxHashMap<u16, Vec<u16>>,
 }
 
 impl<'a> Cfg<'a> {
-    fn new(g: &'a Graph) -> Self {
+    pub(crate) fn new(g: &'a Graph) -> Self {
         let mut preds: FxHashMap<u16, Vec<u16>> = FxHashMap::default();
         let mut rets = Vec::new();
         for (&pc, vs) in &g.vars {
@@ -201,13 +214,17 @@ pub fn held(
 
 /// The objects of `g` with entries `roots`, and the proven hulls of the loads they serve. A
 /// load is served where its proven hull lies in the bytes `held` ([`held`]) and meets no
-/// volatile range.
+/// volatile range. A pair of `seeds` needs no check: its loads read its words plus `Y`; the
+/// loads of others an object leaves are served by walks ([`walked`]), whose data bytes are
+/// those of the image, or of each of init's runs for the variables `free` it leaves.
 pub fn objects(
     g: &Graph,
     roots: &[u16],
     volatile: &[(u32, u32)],
     bank: Option<&BankMap>,
     held: Option<(u32, u32)>,
+    seeds: &Seeds,
+    free: &FxHashMap<u16, Vec<u8>>,
 ) -> (Objs, Proven) {
     let mut out = Objs::default();
     let mut proven = Vec::new();
@@ -215,7 +232,16 @@ pub fn objects(
         return (out, proven);
     };
     let held = |h: Iv| lo0 <= h.lo && h.hi < end && !volatile.iter().any(|&(a, b)| h.meets(a, b));
-    let loads = loads(g, volatile, bank);
+    let mut loads = loads(g, volatile, bank);
+    for (key, ws) in indexed_x(g, seeds) {
+        let h = Iv {
+            lo: *ws.first().unwrap() as u32,
+            hi: *ws.last().unwrap() as u32,
+        };
+        if held(h) {
+            proven.push((key, (h, h)));
+        }
+    }
     if loads.is_empty() {
         return (out, proven);
     }
@@ -225,7 +251,7 @@ pub fn objects(
     let cfg = Cfg::new(g);
     let mut pairs: Vec<u8> = loads.keys().copied().collect();
     pairs.sort_unstable();
-    for q in pairs {
+    for &q in pairs.iter().filter(|q| !seeds.contains_key(q)) {
         let reads = &loads[&q];
         let hits: Vec<usize> = (0..stores.len())
             .filter(|&i| stores[i].addr.meets(q as u32, q as u32 + 2))
@@ -338,6 +364,7 @@ pub fn objects(
                             q,
                             obj: id,
                             flag: None,
+                            of: Of::Ptr,
                         };
                         out.pre.entry(pc).or_default().push(c);
                         continue;
@@ -345,7 +372,12 @@ pub fn objects(
                     Def::Store { s, flag, .. } => (stores[s].key, flag),
                     Def::Entry => continue,
                 };
-                let c = ObjChk { q, obj: id, flag };
+                let c = ObjChk {
+                    q,
+                    obj: id,
+                    flag,
+                    of: Of::Ptr,
+                };
                 out.chk.entry(key).or_default().push(c);
             }
             let base = Iv {
@@ -357,7 +389,595 @@ pub fn objects(
             }
         }
     }
+    // Loads proven inside held bytes already need no walk.
+    let done: FxHashSet<StoreKey> = (proven.iter().map(|p| p.0))
+        .chain(g.proven.iter().filter(|e| held(e.1 .0)).map(|e| *e.0))
+        .collect();
+    for l in loads.values_mut() {
+        l.retain(|l| !done.contains(&l.key));
+    }
+    let cx = Walked {
+        g,
+        cfg: &cfg,
+        roots,
+        held: &held,
+        end,
+        bytes: Bytes::new(g, free),
+        stored: crate::analysis::stored(g),
+    };
+    for q in pairs {
+        let kill = (stores.iter())
+            .filter(|s| s.addr.meets(q as u32, q as u32 + 2))
+            .map(|s| s.key.0)
+            .collect();
+        cx.walked(q, &loads[&q], seeds.get(&q), &kill, &mut out, &mut proven);
+    }
     (out, proven)
+}
+
+/// Per pointer pair no lifted store may write, by its low byte, the words it holds at every
+/// entry, ascending: of the image's bytes, or of each of init's runs for its variables.
+pub type Seeds = FxHashMap<u8, Vec<u16>>;
+
+/// The pairs a pointer access `a` of variant `v` at `pc` reads through: a `(zp),Y` access's,
+/// or a `(zp,X)` access's for each value `X` holds there; None for another access.
+fn pairs_of(g: &Graph, pc: u16, v: &Var, a: &crate::analysis::Access) -> Option<Vec<u8>> {
+    use di_pcode::reg::{X, Y};
+    let p = a.ptr.filter(|_| !a.dummy)?;
+    let t = di_pcode::Template::of(v.op);
+    if t.len != 2 {
+        return None;
+    }
+    let qs: Vec<u8> = match crate::dispatch::index_reg(t)? {
+        Y => vec![p.lo.and_then(Iv::value)? as u8],
+        X if p.idx == 0 && !g.cells.contains(pc.wrapping_add(1) as usize) => {
+            let o = g.img[pc.wrapping_add(1) as usize];
+            values(g.regs.get(&pc)?[X])
+                .map(|x| o.wrapping_add(x as u8))
+                .collect()
+        }
+        _ => return None,
+    };
+    (!qs.is_empty() && !qs.contains(&0xff)).then_some(qs)
+}
+
+/// The values of a register's bits, ascending.
+fn values(b: [u64; 4]) -> impl Iterator<Item = u32> {
+    (0..256u32).filter(move |&x| b[x as usize >> 6] >> (x & 63) & 1 == 1)
+}
+
+/// The values of `Y` at `pc` on every run.
+fn ys(g: &Graph, pc: u16) -> Vec<u32> {
+    values(
+        g.regs
+            .get(&pc)
+            .map_or([u64::MAX; 4], |r| r[di_pcode::reg::Y]),
+    )
+    .collect()
+}
+
+/// The address intervals an access `a` of variant `v` at `pc` may reach: through pointers of
+/// `seeds`, their words plus `Y` (an address past `$FFFF` wrapping); else its interval.
+fn reach_of(g: &Graph, pc: u16, v: &Var, a: &crate::analysis::Access, seeds: &Seeds) -> Vec<Iv> {
+    let wide = |lo: u32, hi: u32| match hi > 0xffff {
+        true => vec![
+            Iv { lo, hi: 0xffff },
+            Iv {
+                lo: 0,
+                hi: hi - 0x10000,
+            },
+        ],
+        false => vec![Iv { lo, hi }],
+    };
+    let qs = pairs_of(g, pc, v, a).filter(|qs| qs.iter().all(|q| seeds.contains_key(q)));
+    let Some(qs) = qs else {
+        return wide(a.addr.lo, a.addr.hi);
+    };
+    let y = match a.ptr.is_some_and(|p| p.idx == 0) {
+        true => vec![0],
+        false => ys(g, pc),
+    };
+    let (Some(&ylo), Some(&yhi)) = (y.first(), y.last()) else {
+        return Vec::new();
+    };
+    (qs.iter().flat_map(|q| &seeds[q]))
+        .flat_map(|&w| wide(w as u32 + ylo, w as u32 + yhi))
+        .collect()
+}
+
+/// The seeds of `g` ([`Seeds`]) with init's variables `free` and the bytes `known` whose
+/// entry value is the image's (those init leaves one value in, and the loaded program's):
+/// of the pairs of usable such bytes pointer accesses read through, those no store may write
+/// while every pair of them holds one of its words, a greatest fixpoint: a store through
+/// pairs of them writes their words plus `Y`.
+pub fn seeds(
+    g: &Graph,
+    free: &FxHashMap<u16, Vec<u8>>,
+    known: &FixedBitSet,
+    volatile: &[(u32, u32)],
+    bank: Option<&BankMap>,
+) -> Seeds {
+    let mut ok = usable(g, volatile, bank);
+    for a in 0..0x100usize {
+        ok.set(
+            a,
+            ok.contains(a) && (known.contains(a) || free.contains_key(&(a as u16))),
+        );
+    }
+    let bytes = |a: u8| match free.get(&(a as u16)) {
+        Some(v) if !v.is_empty() => v.clone(),
+        _ => vec![g.img[a as usize]],
+    };
+    let mut out = Seeds::default();
+    for (&pc, vs) in &g.vars {
+        for v in vs.iter().filter(|v| !is_stack_op(v.op)) {
+            for q in v.acc.iter().filter_map(|a| pairs_of(g, pc, v, a)).flatten() {
+                if !ok.contains(q as usize) || !ok.contains(q as usize + 1) {
+                    continue;
+                }
+                let (l, h) = (bytes(q), bytes(q + 1));
+                let mut ws: Vec<u16> = match l.len() == h.len() {
+                    true => (l.iter().zip(&h))
+                        .map(|(&l, &h)| u16::from_le_bytes([l, h]))
+                        .collect(),
+                    false => (l.iter())
+                        .flat_map(|&l| h.iter().map(move |&h| u16::from_le_bytes([l, h])))
+                        .collect(),
+                };
+                ws.sort_unstable();
+                ws.dedup();
+                out.insert(q, ws);
+            }
+        }
+    }
+    loop {
+        let mut hit = FixedBitSet::with_capacity(0x100);
+        for (&pc, vs) in &g.vars {
+            for v in vs.iter().filter(|v| !is_stack_op(v.op)) {
+                for a in v.acc.iter().filter(|a| a.store && !a.dummy && !a.back) {
+                    for iv in reach_of(g, pc, v, a, &out)
+                        .into_iter()
+                        .filter(|iv| iv.lo < 0x100)
+                    {
+                        hit.insert_range(iv.lo as usize..(iv.hi as usize + 1).min(0x100));
+                    }
+                }
+            }
+        }
+        let n = out.len();
+        out.retain(|&q, _| !hit.contains(q as usize) && !hit.contains(q as usize + 1));
+        if out.len() == n {
+            return out;
+        }
+    }
+}
+
+/// Narrow the pointer accesses of `g` through pairs of `seeds` to what their words reach:
+/// each access's interval to its hull and, where it is a few addresses, the instruction's
+/// address set where it has none ([`Graph::addr_sets`]; a store's addresses are then
+/// [`Graph::written`] and, none of code, [`Graph::nocode`]).
+pub fn seat(g: &mut Graph, seeds: &Seeds) {
+    type Seat = ((u16, bool), Option<BTreeSet<u16>>, StoreKey, Iv);
+    let mut sets: Vec<Seat> = Vec::new();
+    for (&pc, vs) in &g.vars {
+        for v in vs.iter().filter(|v| !is_stack_op(v.op)) {
+            for (ai, a) in v.acc.iter().enumerate() {
+                let all = pairs_of(g, pc, v, a)
+                    .is_some_and(|qs| qs.iter().all(|q| seeds.contains_key(q)));
+                let ivs = reach_of(g, pc, v, a, seeds);
+                if !all || ivs.is_empty() {
+                    continue;
+                }
+                let n: u32 = ivs.iter().map(|iv| iv.hi - iv.lo + 1).sum();
+                let set = (n as usize <= crate::vsa::CAP).then(|| {
+                    (ivs.iter().flat_map(|iv| iv.lo..=iv.hi))
+                        .map(|x| x as u16)
+                        .collect()
+                });
+                let h = Iv {
+                    lo: ivs.iter().map(|iv| iv.lo).min().unwrap(),
+                    hi: ivs.iter().map(|iv| iv.hi).max().unwrap(),
+                };
+                sets.push(((pc, a.store), set, (pc, v.op, ai), h));
+            }
+        }
+    }
+    for (key, set, (pc, op, ai), h) in sets {
+        for v in g
+            .vars
+            .get_mut(&pc)
+            .into_iter()
+            .flatten()
+            .filter(|v| v.op == op)
+        {
+            let a = &mut v.acc[ai];
+            a.addr = crate::vsa::meet(a.addr, h).unwrap_or(a.addr);
+        }
+        let Some(set) = set else {
+            continue;
+        };
+        if key.1 {
+            g.written.extend(set.iter().map(|&x| x as usize));
+            if !set.iter().any(|&x| g.code.contains(x as usize)) {
+                g.nocode.insert((pc, op, ai));
+            }
+        }
+        g.addr_sets.entry(key).or_insert(set);
+    }
+}
+
+/// The `(zp,X)` loads whose every pair is one of `seeds`, and the words they read, ascending.
+fn indexed_x(g: &Graph, seeds: &Seeds) -> Vec<(StoreKey, Vec<u16>)> {
+    let mut out = Vec::new();
+    for (&pc, vs) in &g.vars {
+        for v in vs.iter().filter(|v| !is_stack_op(v.op)) {
+            for (ai, a) in v.acc.iter().enumerate().filter(|(_, a)| !a.store) {
+                let x = crate::dispatch::index_reg(di_pcode::Template::of(v.op));
+                let qs = pairs_of(g, pc, v, a).filter(|_| x == Some(di_pcode::reg::X));
+                let Some(qs) = qs.filter(|qs| qs.iter().all(|q| seeds.contains_key(q))) else {
+                    continue;
+                };
+                let mut ws: Vec<u16> = qs.iter().flat_map(|q| seeds[q].iter().copied()).collect();
+                ws.sort_unstable();
+                ws.dedup();
+                out.push(((pc, v.op, ai), ws));
+            }
+        }
+    }
+    out.sort_unstable_by_key(|e| e.0);
+    out
+}
+
+/// The data bytes walks read: the image's, and per run of init its variables'.
+struct Bytes<'a> {
+    img: &'a [u8; 0x10000],
+    free: &'a FxHashMap<u16, Vec<u8>>,
+    runs: usize,
+    /// Per marker and run, the first marker at or after each byte.
+    next: RefCell<FxHashMap<Mk, Vec<Vec<u32>>>>,
+}
+
+/// No marker.
+const NO: u32 = u32::MAX;
+
+impl<'a> Bytes<'a> {
+    fn new(g: &'a Graph, free: &'a FxHashMap<u16, Vec<u8>>) -> Self {
+        let runs = free.values().map(Vec::len).max().unwrap_or(1).max(1);
+        Bytes {
+            img: &g.img,
+            free,
+            runs,
+            next: RefCell::default(),
+        }
+    }
+    fn at(&self, x: u32, r: usize) -> u8 {
+        match self.free.get(&(x as u16)) {
+            Some(v) if !v.is_empty() => v[r.min(v.len() - 1)],
+            _ => self.img[x as usize],
+        }
+    }
+    /// The greatest first marker `m` at or after a byte of `[lo, hi]` over the runs, and the
+    /// greatest count of bytes from such a byte to it; None where a run has none.
+    fn reach(&self, m: Mk, lo: u32, hi: u32) -> Option<(u32, u32)> {
+        let mut memo = self.next.borrow_mut();
+        let next = memo.entry(m).or_insert_with(|| {
+            (0..self.runs)
+                .map(|r| {
+                    let mut out = vec![NO; 0x10000];
+                    let mut n = NO;
+                    for x in (0..0x10000u32).rev() {
+                        if m.hit(self.at(x, r)) {
+                            n = x;
+                        }
+                        out[x as usize] = n;
+                    }
+                    out
+                })
+                .collect()
+        });
+        let mut out = (0, 0);
+        for r in next.iter() {
+            for x in lo..=hi.min(0xffff) {
+                let n = r[x as usize];
+                if n == NO {
+                    return None;
+                }
+                out = (out.0.max(n), out.1.max(n - x));
+            }
+        }
+        Some(out)
+    }
+}
+
+/// What the walks of a program's pairs share: its flow, entries, held bytes (and the end of
+/// those past the program), data bytes and the bytes its stores may write.
+struct Walked<'a, H: Fn(Iv) -> bool> {
+    g: &'a Graph,
+    cfg: &'a Cfg<'a>,
+    roots: &'a [u16],
+    held: &'a H,
+    end: u32,
+    bytes: Bytes<'a>,
+    stored: FixedBitSet,
+}
+
+/// A load a walk serves and its offsets from the anchor's pointer plus `Y`.
+struct Step<'l> {
+    l: &'l Load,
+    w: crate::walks::Walk,
+}
+
+/// What the loads of an anchor's walks read from starts `[lo, hi]`: per load its hull, and
+/// the least and greatest offset from the starts.
+struct Reads {
+    hulls: Vec<Iv>,
+    dlo: i64,
+    dhi: i64,
+}
+
+impl<H: Fn(Iv) -> bool> Walked<'_, H> {
+    /// Serve the loads `ls` of pair `q` an object leaves (its words `ws` where it is a seed;
+    /// its stores at `kill`): those an anchor's walk reaches read the anchor's pointer plus `Y`
+    /// and their offsets; a seed's others read its words plus `Y`.
+    fn walked(
+        &self,
+        q: u8,
+        ls: &[Load],
+        ws: Option<&Vec<u16>>,
+        kill: &FxHashSet<u16>,
+        out: &mut Objs,
+        proven: &mut Proven,
+    ) {
+        let rest: Vec<&Load> = ls.iter().collect();
+        let mut pcs: Vec<u16> = rest.iter().map(|l| l.pc).collect();
+        pcs.sort_unstable();
+        pcs.dedup();
+        let walks = crate::walks::walks(self.cfg, self.roots, q, kill, &pcs);
+        let mut by: BTreeMap<u16, Vec<Step>> = BTreeMap::new();
+        for l in rest {
+            if let Some(&w) = walks.get(&l.pc) {
+                by.entry(w.at).or_default().push(Step { l, w });
+            }
+        }
+        for (at, steps) in by {
+            if let Some([v]) = self.g.vars.get(&at).map(|v| &v[..]) {
+                if let Flow::Next(n) = v.flow {
+                    // `Y` after the anchor: an immediate's, else the values at its successor.
+                    const LDY: u8 = 0xa0;
+                    let imm = !self.g.cells.contains(at.wrapping_add(1) as usize);
+                    let yv = match v.op == LDY && imm {
+                        true => vec![self.g.img[at.wrapping_add(1) as usize] as u32],
+                        false => ys(self.g, n),
+                    };
+                    // The words: the seed's, else those the pair holds at every load on every run.
+                    let held: Option<Vec<u16>> = match ws {
+                        Some(ws) => Some(ws.clone()),
+                        None => steps
+                            .iter()
+                            .try_fold(BTreeSet::new(), |mut u, s| {
+                                u.extend(self.g.ptr_sets.get(&s.l.pc)?);
+                                Some(u)
+                            })
+                            .map(|u| u.into_iter().collect()),
+                    };
+                    self.anchor(q, at, &yv, &steps, held.as_ref(), out, proven);
+                }
+            }
+        }
+        // A seed's loads no walk served read its words plus `Y`.
+        let Some(ws) = ws else {
+            return;
+        };
+        let done: FxHashSet<StoreKey> = proven.iter().map(|p| p.0).collect();
+        let b = Iv {
+            lo: ws[0] as u32,
+            hi: *ws.last().unwrap() as u32,
+        };
+        for l in ls.iter().filter(|l| !done.contains(&l.key)) {
+            let h = Iv {
+                lo: b.lo + l.y.lo,
+                hi: b.hi + l.y.hi,
+            };
+            if (self.held)(h) {
+                proven.push((l.key, (h, b)));
+            }
+        }
+    }
+
+    /// What the loads `steps` read from starts `[lo, hi]` with data bytes up to `stop`: a
+    /// load at offsets `d` reads `[lo + d.lo, hi + d.hi]`, one walking to a marker from its
+    /// start to the greatest first marker after it, the walk's bytes written by no store;
+    /// None where a load may read past `stop` or below 0.
+    fn reads(&self, steps: &[Step], lo: i64, hi: i64, stop: u32) -> Option<Reads> {
+        let mut r = Reads {
+            hulls: Vec::new(),
+            dlo: i64::MAX,
+            dhi: i64::MIN,
+        };
+        for s in steps {
+            let (a, b, d) = match (s.w.d, s.w.run) {
+                (Some(d), _) => (lo + d.0 as i64, hi + d.1 as i64, (d.0 as i64, d.1 as i64)),
+                (None, Some((st, m))) => {
+                    let (x0, x1) = (lo + st.0 as i64, hi + st.1 as i64);
+                    if x0 < 0 || x1 >= stop as i64 {
+                        return None;
+                    }
+                    let (top, run) = self.bytes.reach(m, x0 as u32, x1 as u32)?;
+                    if self
+                        .stored
+                        .contains_any_in_range(x0 as usize..top as usize + 1)
+                    {
+                        return None;
+                    }
+                    (x0, top as i64, (st.0 as i64, run as i64 + st.1 as i64))
+                }
+                (None, None) => return None,
+            };
+            if a < 0 || b >= stop as i64 {
+                return None;
+            }
+            (r.dlo, r.dhi) = (r.dlo.min(d.0), r.dhi.max(d.1));
+            r.hulls.push(Iv {
+                lo: a as u32,
+                hi: b as u32,
+            });
+        }
+        Some(r)
+    }
+
+    /// The greatest start from which every walk of `steps` ends at a marker before `stop`:
+    /// the last byte every run holds its marker at, less its starts' greatest offset.
+    fn shrink(&self, steps: &[Step], lo: i64, stop: u32) -> i64 {
+        let over = steps.iter().map(|s| match s.w.run {
+            Some((st, m)) => (lo..stop as i64)
+                .rev()
+                .find(|&x| (0..self.bytes.runs).all(|r| m.hit(self.bytes.at(x as u32, r))))
+                .map_or(i64::MIN, |x| x - st.1 as i64),
+            None => i64::MIN,
+        });
+        over.min().unwrap_or(i64::MIN)
+    }
+
+    /// Serve the loads `steps` of the walks from anchor `at` of pair `q`, after which `Y`
+    /// holds `yv`: without a check where the pair's words `ws` are known and the walks from
+    /// each word plus each value of `Y` read held bytes; else with a check after the anchor
+    /// of its pointer plus `Y` (and of `Y`, where an offset may carry it past `$FF`) against
+    /// an object of the data bytes the walks start in, where it serves more than one load or
+    /// a walk.
+    #[allow(clippy::too_many_arguments)]
+    fn anchor(
+        &self,
+        q: u8,
+        at: u16,
+        yv: &[u32],
+        steps: &[Step],
+        ws: Option<&Vec<u16>>,
+        out: &mut Objs,
+        proven: &mut Proven,
+    ) {
+        let (Some(&ylo), Some(&yhi)) = (yv.first(), yv.last()) else {
+            return;
+        };
+        let carry =
+            |r: &Reads, ylo: u32, yhi: u32| ylo as i64 + r.dlo < 0 || yhi as i64 + r.dhi > 0xff;
+        if let Some(ws) = ws {
+            let mut hulls: Vec<Option<Iv>> = vec![None; steps.len()];
+            let fits = ws.iter().all(|&w| {
+                yv.iter().all(|&y| {
+                    let a = w as i64 + y as i64;
+                    let Some(r) = self
+                        .reads(steps, a, a, self.end)
+                        .filter(|r| !carry(r, y, y))
+                    else {
+                        return false;
+                    };
+                    for (h, x) in hulls.iter_mut().zip(r.hulls) {
+                        *h = Some(h.map_or(x, |h| Iv {
+                            lo: h.lo.min(x.lo),
+                            hi: h.hi.max(x.hi),
+                        }));
+                    }
+                    true
+                })
+            });
+            if fits && hulls.iter().all(|h| h.is_some_and(self.held)) {
+                let b = Iv {
+                    lo: ws[0] as u32,
+                    hi: *ws.last().unwrap() as u32,
+                };
+                for (s, h) in steps.iter().zip(hulls) {
+                    proven.push((s.l.key, (h.unwrap(), b)));
+                }
+                return;
+            }
+        }
+        if steps.len() < 2 && steps.iter().all(|s| s.w.d.is_some()) {
+            return;
+        }
+        let base = match ws {
+            Some(ws) => Some(Some(Iv {
+                lo: ws[0] as u32,
+                hi: *ws.last().unwrap() as u32,
+            })),
+            None => steps.iter().try_fold(None, |h: Option<Iv>, s| {
+                let b = s.l.base?;
+                Some(Some(h.map_or(b, |h| Iv {
+                    lo: h.lo.min(b.lo),
+                    hi: h.hi.max(b.hi),
+                })))
+            }),
+        }
+        .flatten();
+        let Some(base) = base else {
+            return;
+        };
+        // The starts lie in the data bytes from the run holding the least to the end of the
+        // last run starting by the greatest that the host holds.
+        let (slo, shi) = (base.lo as i64 + ylo as i64, base.hi as i64 + yhi as i64);
+        let runs = &self.g.runs;
+        let i = runs.partition_point(|r| (r.1 as i64) <= slo);
+        let Some(first) = runs.get(i).filter(|r| r.0 as i64 <= slo) else {
+            return;
+        };
+        let Some(last) = (runs[i..].iter())
+            .take_while(|r| (r.0 as i64) <= shi && r.1 <= self.end)
+            .last()
+        else {
+            return;
+        };
+        let (lo, stop) = (slo.max(first.0 as i64), last.1);
+        // Only walks' starts shrink below the reach hull's, to their last marker: valid runs
+        // end their walks there.
+        let walk = steps.iter().all(|s| s.w.d.is_none());
+        let mut hi = match walk {
+            true => shi.min(stop as i64 - 1),
+            false => shi,
+        };
+        let mut r = self.reads(steps, lo, hi, stop);
+        if r.is_none() && walk {
+            hi = hi.min(self.shrink(steps, lo, stop));
+            r = (hi >= lo)
+                .then(|| self.reads(steps, lo, hi, stop))
+                .flatten();
+        }
+        let Some(r) = r.filter(|r| r.hulls.iter().all(|&h| (self.held)(h))) else {
+            return;
+        };
+        if carry(&r, ylo, yhi) {
+            return;
+        }
+        let obj = object_id(out, lo as u16, hi as u16, steps.iter().map(|s| s.l.pc));
+        let chk = ObjChk {
+            q,
+            obj,
+            flag: None,
+            of: Of::PtrY,
+        };
+        out.post.entry(at).or_default().push(chk);
+        let b = Iv {
+            lo: (lo - yhi as i64).max(0) as u32,
+            hi: (hi - ylo as i64).max(0) as u32,
+        };
+        for (s, h) in steps.iter().zip(r.hulls) {
+            proven.push((s.l.key, (h, b)));
+        }
+    }
+}
+
+/// The index of object `[lo, hi]` among `out`'s, made where new, serving the loads `pcs`.
+fn object_id(out: &mut Objs, lo: u16, hi: u16, pcs: impl Iterator<Item = u16>) -> u16 {
+    let id = match out.objects.iter().position(|o| (o.0, o.1) == (lo, hi)) {
+        Some(i) => i,
+        None => {
+            out.objects.push((lo, hi, Vec::new()));
+            out.objects.len() - 1
+        }
+    };
+    let ps = &mut out.objects[id].2;
+    ps.extend(pcs);
+    ps.sort_unstable();
+    ps.dedup();
+    id as u16
 }
 
 /// The loads through `(zp),Y` pairs of usable bytes, by the pair's low byte.
@@ -496,7 +1116,7 @@ fn settled(
 }
 
 /// Whether opcode `op`'s template writes register `r`.
-fn writes(op: u8, r: usize) -> bool {
+pub(crate) fn writes(op: u8, r: usize) -> bool {
     use di_pcode::ir::Space;
     di_pcode::Template::of(op)
         .ops()

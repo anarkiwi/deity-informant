@@ -154,7 +154,7 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         one array (code bytes and the bytes between the program and those inside it held too);
         the hull's other addresses read ``oob_rd``. None when the hull meets a volatile range
         there, or holds no data byte of the program, or (``whole``) leaves the program and
-        those bytes."""
+        those bytes; with ``whole`` a hull in those bytes alone is its own span."""
         lo, hi = hull[:2]
         a0, a1 = self.loaded
         vol = np.flatnonzero(self.vol[a1:])
@@ -164,7 +164,7 @@ class Memory:  # pylint: disable=too-many-instance-attributes
             return None
         lo, hi = max(lo, a0), min(hi, max([a1, *past]) - 1)
         data = np.flatnonzero(~self.code[lo : hi + 1]) if lo <= hi else np.zeros(0, int)
-        if not data.size or lo + data[0] >= a1 or self.vol[lo : hi + 1].any():
+        if not data.size or (lo + data[0] >= a1 and not whole) or self.vol[lo : hi + 1].any():
             return None
         return lo + int(data[0]), lo + int(data[-1])
 

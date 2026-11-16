@@ -629,7 +629,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     p.bounds, p.addr_sets, p.reach = dict(prog.bounds), dict(prog.addr_sets), dict(prog.reach)
     p.proven, p.regs, p.bounded = dict(prog.proven), dict(prog.regs), dict(prog.bounded)
     p.ptr_sets = {pc: set(w) for pc, w in prog.ptr_sets.items()}
-    p.objects = [o[:2] for o in prog.objects]
+    p.objects = list(prog.objects)
     if state is not None:
         p.init, p.fixed = (entries[init], state), np.array(sorted(fixed), dtype=np.int64)
     if len(lifts) > 1:
@@ -641,7 +641,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
         for pc, w in lone.ptr_sets.items():
             p.ptr_sets.setdefault(pc, set()).update(w)
         _renumber(funcs, origin, len(p.objects))
-        p.objects += [o[:2] for o in lone.objects]
+        p.objects += list(lone.objects)
         p.written += list(lone.written)
     return p, prog.stats
 

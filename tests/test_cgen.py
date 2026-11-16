@@ -2009,12 +2009,22 @@ def test_matches_reference(prefix, tmp_path, src, values):
     assert "trap(" not in c.split("void entry")[1] or pointer_checks_only(info, src)
 
 
+# The strings are written by the entry.
+PTRS_WRITTEN = PTRS.replace(
+    "        INY\n        BNE loop", "        STA s1\n        INY\n        BNE loop"
+)
+
+
 def test_pointer_reads_go_through_regions(prefix, tmp_path):
-    # The pointer's bases are the words of its table: the read is a bounds-checked read of
-    # the span holding the strings, no dispatch over every region.
+    # The pointer's bases are the words of its table: its walks to their zero markers read
+    # the span holding the strings unchecked; strings the entry writes are read by a
+    # bounds-checked read of the span, no dispatch over every region.
     c, h, info = check(prefix, tmp_path, PTRS, entry_calls([0, 1, 1, 0]))
-    assert not info["unknown_access"] and not re.search(r"\brd\(", c) and "rdC0(" in c
+    assert not info["unknown_access"] and "rdC" not in c and "CGEN_IX(" in c
     assert all(f"R{k}_ORG" in h for k in range(len(info["regions"])))
+    (tmp_path / "w").mkdir()
+    c, h, info = check(prefix, tmp_path / "w", PTRS_WRITTEN, entry_calls([0, 1, 1, 0]))
+    assert not info["unknown_access"] and not re.search(r"\brd\(", c) and "rdC0(" in c
 
 
 def test_pointer_reads_are_kept_off_the_stack_and_io(prefix, tmp_path):
@@ -3971,18 +3981,19 @@ def test_init_relocating_by_the_song_leaves_pointer_cells(prefix, tmp_path):
 
 
 def test_song_range_is_checked_not_assumed(prefix, tmp_path):
-    """The songs the host calls init with are checked at init, not assumed: the pointer each
-    song's init leaves is a variable whose reads are bounds-checked, so the ``.c`` is the
-    same for every song count (songs pointing at I/O among them), the header holding each
-    song's values, and a song outside the range traps."""
+    """The songs the host calls init with are checked at init: the pointer each declared
+    song's init leaves, which play never stores, seeds the pair, so its reads lie in the data
+    those songs point at, unchecked, the ``.c`` the same for each count of such songs, the
+    header holding each song's values; with songs pointing at I/O among them the reads keep
+    their checks, and a song outside the range traps."""
     c, _, labels = songs(prefix, tmp_path, SONGINIT, (0, 1), declared=range(2))
     guard = r"if \(\(uint8_t\)\(a - CGEN_SONG0\) >= CGEN_SONGS\) \{\s*trap\("
-    assert "rdC0(" in body_of(c, "play") and re.search(guard, c)
+    assert "rdC" not in body_of(c, "play") and re.search(guard, c)
     img, labels, loaded = assemble(SONGINIT)
     one = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=range(1))
     assert one[0] == c and "#define CGEN_SONGS 1" in one[1]
     four = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=range(4))
-    assert four[0] == c
+    assert "rdC0(" in body_of(four[0], "play")
     with pytest.raises(AssertionError, match="trap"):
         songs(prefix, tmp_path / "out", SONGINIT, (2,), declared=range(2))
 
@@ -5190,7 +5201,7 @@ def test_size_attribution(prefix, tmp_path):
     """tools/csize.py splits a compiled translation's bytes by C function and origin, each
     function against the instruction bytes of the 6502 code its provenance names."""
     csize = pytest.importorskip("csize")
-    img, labels, loaded = assemble(PTRS)
+    img, labels, loaded = assemble(PTRS_WRITTEN)
     c, h, info = translate(prefix, img, labels, loaded)
     (tmp_path / "t.c").write_text(c, encoding="utf-8")
     (tmp_path / "t.h").write_text(h, encoding="utf-8")
@@ -5687,3 +5698,93 @@ def test_records_read_their_object_unchecked(prefix, tmp_path):
     assert not {int(x, 16) for x in re.findall(r"0x([0-9A-F]{3,4})\b", c)} & words
     for song in range(4):
         play(tmp_path, c, h, img, labels, [("init", song)] + [("play", 0)] * 120)
+
+
+def walk_c(prefix, src, songs=range(4)):
+    """``(c, h, image, labels)`` of ``src``'s ``init`` and ``play`` translated, init called
+    with ``A`` each of ``songs``."""
+    img, labels, loaded = assemble(src)
+    c, h, _ = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0, songs=songs)
+    return c, h, img, labels
+
+
+def test_walks_read_their_runs_unchecked(prefix, tmp_path):
+    """A walk to a sign-bit marker from the pointer init leaves per argument reads plain:
+    no bounds-checked reader, and every argument replays."""
+    c, h, img, labels = walk_c(prefix, TO.SIGN)
+    assert "rdC" not in c and "CGEN_IX(" in body_of(c, "play")
+    for song in range(4):
+        play(tmp_path, c, h, img, labels, [("init", song)] + [("play", 0)] * 20)
+
+
+def test_walk_anchor_checks_pointer_plus_y(prefix, tmp_path):
+    """A walk from a pointer play sets reads plain after one test of the pointer plus ``Y``
+    against its object, whose bounds the ``.h`` names."""
+    c, h, img, labels = walk_c(prefix, TO.SET)
+    body = body_of(c, "play")
+    assert "rdC" not in body and "CGEN_OBJ0_ORG" in body and "#define CGEN_OBJ0_LIM" in h
+    for song in range(4):
+        play(tmp_path, c, h, img, labels, [("init", song)] + [("play", song)] * 20)
+
+
+def test_seeded_walks_c_is_the_same_across_runs(prefix, tmp_path):
+    """Runs that differ only in where their zero markers fall translate to the same ``.c``:
+    their bounds are the ``.h``'s; each replays every argument."""
+    out = []
+    for i, lens in enumerate(([5, 9, 3, 12], [2, 13, 7, 4])):
+        src = TO.walk_src(TO.runs(0, lens), test="BEQ done")
+        c, h, img, labels = walk_c(prefix, src)
+        assert "rdC" not in c
+        (tmp_path / str(i)).mkdir()
+        for song in range(4):
+            calls = [("init", song)] + [("play", 0)] * 20
+            play(tmp_path / str(i), c, h, img, labels, calls)
+        out.append((c, h))
+    assert out[0][0] == out[1][0] and out[0][1] != out[1][1]
+
+
+INDX = """
+init:   AND #$03
+        ASL A
+        ASL A
+        ASL A
+        TAY
+        LDX #0
+fill:   TYA
+        STA $40,X
+        LDA #$30
+        STA $41,X
+        LDA #7
+        STA $3000,Y
+        INY
+        INY
+        INX
+        INX
+        CPX #6
+        BNE fill
+        RTS
+play:   LDX #4
+loop:   LDA ($40,X)
+        CLC
+        ADC #1
+        STA ($40,X)
+        STA $C001
+        DEX
+        DEX
+        BPL loop
+        RTS
+end:
+"""
+
+
+def test_indexed_pointers_init_fills_are_plain(prefix, tmp_path):
+    """``(zp,X)`` pointers init fills per argument, which play never stores, read and write
+    their words: no dispatch, no bounds-checked reader and no code check."""
+    img, labels, loaded = assemble(INDX)
+    c, h, _ = translate(
+        prefix, img, labels, loaded, entries=("init", "play"), init=0, songs=range(4)
+    )
+    body = body_of(c, "play")
+    assert not any(f in body for f in ("rdC", "rd(", "wr(", "codechk"))
+    for song in range(4):
+        play(tmp_path, c, h, img, labels, [("init", song)] + [("play", 0)] * 20)

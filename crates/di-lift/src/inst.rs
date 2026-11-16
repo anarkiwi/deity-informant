@@ -77,6 +77,8 @@ struct Shape {
     guard: Option<(u8, Iv)>,
     /// The objects of the checks before the instruction ([`crate::objects::Objs::pre`]).
     pre: Vec<u16>,
+    /// The checks after the instruction ([`crate::objects::Objs::post`]).
+    post: Vec<crate::objects::ObjChk>,
     call: Option<u16>,
     stores: Vec<(bool, bool, Vec<ObjSig>)>,
 }
@@ -151,6 +153,7 @@ impl Cx<'_> {
             pre: (self.g.objs.pre.get(&pc).into_iter().flatten())
                 .map(|c| c.obj)
                 .collect(),
+            post: self.g.objs.post.get(&pc).cloned().unwrap_or_default(),
             call,
             stores,
         })

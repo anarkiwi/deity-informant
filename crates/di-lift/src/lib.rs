@@ -24,6 +24,7 @@ pub mod opt;
 pub mod ptr;
 pub mod scev;
 pub mod vsa;
+pub mod walks;
 pub mod wide;
 pub mod word;
 
@@ -634,12 +635,25 @@ pub fn lift_banked(
             Some(_) => ptr::zones(volatile),
             None => vec![ptr::PAGE1],
         };
+        let seeds = match opts.entry_sp.is_some() && !g.runs.is_empty() {
+            true => {
+                let mut known = held.clone();
+                if let Some((lo, hi)) = opts.loaded {
+                    known.insert_range(lo as usize..(hi as usize).min(0x10000));
+                }
+                objects::seeds(&g, &free, &known, volatile, bank)
+            }
+            false => Default::default(),
+        };
+        objects::seat(&mut g, &seeds);
         let (objs, proven) = objects::objects(
             &g,
             &roots,
             volatile,
             bank,
             objects::held(opts.loaded, &g.written, &opts.holds, volatile),
+            &seeds,
+            &free,
         );
         for (key, (a, b)) in proven {
             let h = g.proven.entry(key).or_insert((a, b));

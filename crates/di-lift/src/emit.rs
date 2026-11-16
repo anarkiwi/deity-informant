@@ -1138,8 +1138,10 @@ impl<'a> Em<'a, '_> {
         bad
     }
     /// Whether the pointer of the pair at `at` (its bytes in `iv`), plus the flag `c.flag`
-    /// times 256, lies outside object `c.obj`.
+    /// times 256, lies outside object `c.obj`: with `c.of`, the pointer plus `Y`.
     fn obj_bad(&mut self, at: Vn, iv: Iv, c: crate::objects::ObjChk) -> Vn {
+        use crate::objects::Of;
+        self.n.obj_guards += 1;
         let lo = self.load(
             at,
             Iv {
@@ -1163,7 +1165,10 @@ impl<'a> Em<'a, '_> {
             let cy = self.op(Opc::IntLeft, 2, cy, k(8, 1));
             p = self.op(Opc::IntAdd, 2, p, cy);
         }
-        self.n.obj_guards += 1;
+        if c.of == Of::PtrY {
+            let y = self.zext(r1(R::Y), 2);
+            p = self.op(Opc::IntAdd, 2, p, y);
+        }
         let bad = self.op(Opc::CallOther, 1, p, k(c.obj as u32, 2));
         self.f.blocks[self.cur].ops.last_mut().unwrap().aux = other::OBJCHK;
         bad
@@ -1621,6 +1626,12 @@ impl<'a> Em<'a, '_> {
         let mut umap = FxHashMap::default();
         let stack = is_stack_op(*op);
         let mut chk = self.ops(pc, *op, t.ops(), acc, stack, &mut slot, &mut umap);
+        // A walk's anchor checks its pair's pointer plus the `Y` it leaves.
+        for &c in self.sh.g.objs.post.get(&pc).into_iter().flatten() {
+            let q = c.q as u32;
+            let bad = self.obj_bad(k(q, 2), Iv { lo: q, hi: q + 1 }, c);
+            chk.push(bad);
+        }
         // Penalties use the registers the instruction leaves.
         let maxpen = match t.pen {
             _ if !self.sh.cycles => 0,
