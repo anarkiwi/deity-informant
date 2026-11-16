@@ -1362,7 +1362,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         index: the access indexes what the pointers address, and the pointers are not read."""
         changed = False
         for blk in self.blocks:
-            for i, o in enumerate(list(blk.ops)):
+            for o in list(blk.ops):
                 if o.name not in ("memref.load", "memref.store") or o.args[-2] not in self.globals:
                     continue
                 a = self.address(o)
