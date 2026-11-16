@@ -878,6 +878,8 @@ pub(crate) struct Code<'a> {
     /// The runs `[lo, hi)` of the loaded program outside page 1 and the volatile ranges:
     /// memory only stores change ([`St::src`]).
     pub(crate) ram: Vec<(u32, u32)>,
+    /// The bytes of the volatile ranges: a device answers them, so none is constant.
+    pub(crate) dev: FixedBitSet,
 }
 
 /// Per store `(pc, opcode, access index)` the addresses it writes: a store with a set
@@ -2638,6 +2640,7 @@ fn reach(
         aimed: code.aimed.clone(),
         seeds: Seeds::default(),
         ram: code.ram.clone(),
+        dev: code.dev.clone(),
     };
     let mut sh = p.sh;
     c.mods = mods(p.vars, &FxHashMap::default(), &sh.live);
@@ -2973,11 +2976,10 @@ fn bounded_stores(
     out
 }
 
-/// What [`reach`] takes: the volatile ranges, and the bytes the host's init stored that hold
-/// one value after it (data the program has, like those stores with address sets write).
+/// What [`reach`] takes: the bytes the host's init stored that hold one value after it (data
+/// the program has, like those stores with address sets write).
 #[derive(Clone, Copy)]
 pub struct Wanted<'a> {
-    pub volatile: &'a [(u32, u32)],
     pub held: &'a FixedBitSet,
 }
 
@@ -2995,7 +2997,7 @@ pub struct Given<'a> {
     /// The variables the host's init leaves ([`Code::free`]).
     pub free: &'a FixedBitSet,
     pub constant: &'a FixedBitSet,
-    /// Volatile ranges `[lo, hi)`: their bytes have no bounds.
+    /// Volatile ranges `[lo, hi)`: their bytes have no bounds and are never constant.
     pub volatile: &'a [(u32, u32)],
     /// Find the address hulls of the loads through pointers ([`reach`]).
     pub reach: bool,
@@ -3039,11 +3041,17 @@ pub fn analyze(
     let mut live = FixedBitSet::with_capacity(0x10000);
     live.extend(vars.keys().map(|&pc| pc as usize));
     let full = shape(vars, entries, matched, disp, live);
+    let mut dev = FixedBitSet::with_capacity(0x10000);
+    for &(lo, hi) in given.volatile {
+        dev.insert_range(lo as usize..(hi as usize).min(0x10000));
+    }
+    let mut vecs = crate::dispatch::vectors(img, cells, vars);
+    vecs.retain(|&a| !dev.contains(a as usize));
     let code = Code {
         img,
         cells,
         pull_clear: pull_clear(vars, entries),
-        vecs: crate::dispatch::vectors(img, cells, vars),
+        vecs,
         observed: observed.clone(),
         free: given.free.clone(),
         constant: given.constant.clone(),
@@ -3059,6 +3067,7 @@ pub fn analyze(
         aimed: given.aimed.clone(),
         seeds: Seeds::default(),
         ram: ram(given),
+        dev,
     };
     let thr = Thresholds::new(vars, &code);
     // The starts reached whatever the data: no table taken as constant.

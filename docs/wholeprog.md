@@ -434,15 +434,15 @@ the facts, so a proof holds on every execution that stays in lifted code.
   The same happens everywhere when the stack is not private: other stores may then rewrite
   return addresses, so the lift analyses the program again without the call pairing.
 - **Memory.** The state tracks the contents of the cell operand bytes of instructions and of
-  the bytes the code both loads and stores at a constant address (with the `JMP (ind)` and
-  `(zp),Y` pointers): a store at an exact address sets the byte's interval, a store that may
+  the bytes the code both loads and stores at a constant address outside the volatile
+  ranges (with the `JMP (ind)` and `(zp),Y` pointers): a store at an exact address sets the byte's interval, a store that may
   reach it forgets it, and a load or an instruction's operand reads it. A store's values are
   those of the definitions reaching it, else its register's interval at the store; a store
   that steers control (into an opcode or a jump's operand) takes the table bytes its register
   was loaded from when it holds one on every path, which are exact where the interval is a
   hull.
-- **Constant tables.** A load whose address interval (at most a page) holds only loaded bytes
-  taken as constant (*Table extents*: none a store with an address set writes) and no cell
+- **Constant tables.** A volatile byte is never constant: a device answers any value. A load
+  whose address interval (at most a page) holds only loaded bytes taken as constant (*Table extents*: none a store with an address set writes) and no cell
   reads the hull of those bytes, and they join the tables read as constant, so a store of
   unknown address that may hit them is checked like one into code (`codechk`). A byte a store
   with an address set may write is not constant from the next round of discovery on, nor is
@@ -711,8 +711,8 @@ the facts, so a proof holds on every execution that stays in lifted code.
   are not tagged on some path goes to every word their closed values (*Stores*) make, as when
   the operand was written by an earlier call. A `JMP (ind)` through a pointer in the code
   span that no store may write goes to the pointer's word. The bytes read must be ones no
-  store with an address set writes and the facts did not see written (a store of unknown
-  address is checked against them, `codechk`); otherwise, or when a byte is untagged on a
+  store with an address set writes, the facts did not see written (a store of unknown
+  address is checked against them, `codechk`) and outside the volatile ranges; otherwise, or when a byte is untagged on a
   path or two bytes are indexed by unrelated values, the transfer is unresolved and keeps its
   facts' targets. An index the code does not bound that its register holds as a byte of the
   loaded program (outside page 1 and the volatile ranges), read from an operand plus an index
