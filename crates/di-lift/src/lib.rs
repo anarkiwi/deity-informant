@@ -790,6 +790,11 @@ pub fn lift_banked(
         seen,
         sensitive: opts.sensitive.as_deref(),
         alias: aliases(&g, &opts.alias),
+        read: {
+            let mut r = g.cells.clone();
+            r.union_with(&held);
+            r
+        },
     };
     let mut stats = Stats {
         cells: g.cells.count_ones(..),

@@ -2,9 +2,9 @@
 
 `deity_informant.cgen` translates the entry points of a 6502/6510 program to C99, structured
 with a `goto` exactly at each edge that has no structured form (*Structuring*): a `.c` holding only the code and a `.h` holding the data (each memory region's origin,
-length and initial bytes). The `.c` names nothing by address or content, so two programs with
-the same code and different data, or the same program at another origin, give a byte-identical
-`.c`. Every path the static lift reaches is translated; one it cannot express calls `trap(k)`.
+length and initial bytes). The `.c` names nothing by address or content, nor any value init
+leaves (*Init*), so two programs with the same code and different data, or the same program at
+another origin, give a byte-identical `.c`. Every path the static lift reaches is translated; one it cannot express calls `trap(k)`.
 
 ```python
 from deity_informant import cgen
@@ -123,12 +123,26 @@ store of the other entries' lift may write (`Program.stored`, a store's address 
 address interval: a store of unknown address reaches every byte) is a byte of the image their
 lift starts from, lifted again with it `held`. A pair of bytes an instruction reads as one
 address is constant as a whole or not at all: a variable byte keeps the other a variable, the
-pair the word init's runs bound (*Pointer pairs*). An operand of such bytes is a constant
-operand (a direct access), a pointer pair of them a constant address, a load of one a constant
-the `.h` names. A byte whose value differs between values of `A`, or one the other entries may
-write, stays a variable init sets. A replayed init's `.h` holds their values in its image (no
-copy writes them); a translated init's code writes them, its storage starting from `image`,
-while the other entries' functions read the constants. `info["fixed"]` lists them.
+pair the word init's runs bound (*Pointer pairs*). A byte whose value differs between values of
+`A`, or one the other entries may write, stays a variable init sets. `info["fixed"]` lists them.
+
+Their values are data: the other entries' functions read each as `K_<offset>`, the `.h`'s
+`#define`, named by the offset its variable would have (`S_<offset>`, *State*), and the `.c`
+holds no value computed from them. The lift loads a data operand of them from memory as it does
+a cell's (wholeprog `held`), so an operand init relocated is `K_336 | ((uint16_t)K_337 << 8)`
+(the compiler folds it), a pointer pair of them alike, a patched immediate or count `K_15`; the
+analysis takes their values, so the access through such an address is direct where its value
+lies in one region or span (`R2[(uint16_t)(K_... + y - R2_ORG)]`, `CGEN_IX(C0, K_... - C0_ORG,
+y)`), and an index guard of the instruction reading them (its bounds the lift draws from them)
+is `G_<offset>` (`if (G_1C < y) trap(k);`, the test's constants loads of `@G` no pass folds).
+Which region or span such an access goes through, whether a store through it needs `codechk`,
+and the code of an opcode or a branch's, jump's or call's target init leaves are decided by the
+values: data that moves a folded address into another region, or changes which code runs,
+changes the `.c` as code would. A byte is held only where an access other than a read by name
+reaches it: one at an address it does not fold (an index over the instruction holding it), or a
+translated init's store; a byte read only by name is in no array. A replayed init's `.h` holds
+their values in its image (no copy writes them); a translated init's code writes them, its
+storage starting from `image`, while the other entries' functions read the names.
 
 Init is then lifted itself, from `image`, as an entry run once (`once`,
 [wholeprog](wholeprog.md#init): a store into code makes cells only of the instructions that
@@ -482,8 +496,9 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   player that differ in their song data and its placement give the same `.c`.
 - A load of a constant byte (constant code or a table the lift read as constant) at a fixed
   address prints as a name the `.h` defines, relative to the origin that places the byte
-  (`CODE_KA3` for `CODE_ORG + 0xA3`): the `.c` holds neither its value nor its address, and the
-  compiler folds it.
+  (`CODE_KA3` for `CODE_ORG + 0xA3`; `K_A3` for a byte init leaves constant, *Init*): the `.c`
+  holds neither its value nor its address, and the compiler folds it. It is no access: no array
+  holds the byte for it.
 - `oob_rd`, a read outside every array its site may address, calls `trap(0xFFFF)`
   (`OOB_TRAP`). With `CGEN_OOB_EXACT` defined it is `cgen_rd`, the byte the 6502 reads there:
   a region's or span's live byte, an I/O register, 0 where the program holds none. `oob_wr`

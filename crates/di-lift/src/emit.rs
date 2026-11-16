@@ -61,6 +61,9 @@ pub struct Shared<'a> {
     pub sensitive: Option<&'a [u16]>,
     /// Operand pairs read as another pair plus a constant: `lo -> (g, delta)`.
     pub alias: FxHashMap<u16, (u16, u16)>,
+    /// The bytes data operands are read from memory at: the cells and the bytes the host's
+    /// init holds ([`crate::Opts::held`]), whose values are data the program has, not code.
+    pub read: FixedBitSet,
 }
 
 impl Shared<'_> {
@@ -1250,9 +1253,14 @@ impl<'a> Em<'a, '_> {
 
     /// The operand bytes of an instance node whose copies start at `ms`: constant bytes as
     /// computed from the copy index (a two-byte operand as one word), cells read from the
-    /// current copy's operand address.
-    fn inst_operands(&mut self, ms: &[Option<u16>], len: u8) -> ([Vn; 2], Option<Vn>) {
-        let (img, cells) = (self.sh.img, &self.sh.g.cells);
+    /// current copy's operand address (those of `read`).
+    fn inst_operands(
+        &mut self,
+        ms: &[Option<u16>],
+        len: u8,
+        read: &FixedBitSet,
+    ) -> ([Vn; 2], Option<Vn>) {
+        let (img, cells) = (self.sh.img, read);
         let bytes: Vec<Option<[Option<u8>; 2]>> = ms
             .iter()
             .map(|p| p.map(|p| operand_bytes(img, cells, p, len)))
@@ -1314,13 +1322,19 @@ impl<'a> Em<'a, '_> {
             self.f.blocks[x as usize].replay = Some(self.istart);
         }
         let next = pc.wrapping_add(t.len as u16);
-        let bytes = operand_bytes(self.sh.img, &self.sh.g.cells, pc, t.len);
+        // A data operand of bytes the host's init holds is read as a cell's is; a control
+        // transfer's stays constant, as its target decides the code.
+        let read = match t.ctrl {
+            CtrlKind::Next => &self.sh.read,
+            _ => &self.sh.g.cells,
+        };
+        let bytes = operand_bytes(self.sh.img, read, pc, t.len);
         // Operand bytes that are cells are read once, before the instruction's ops.
         let alias = (t.len == 3 && bytes[0].is_none() && bytes[1].is_none())
             .then(|| self.sh.alias.get(&pc.wrapping_add(1)).copied())
             .flatten();
         let (ob, wv): ([Vn; 2], Option<Vn>) = match self.mem.clone() {
-            Some((_, _, ms)) => self.inst_operands(&ms, t.len),
+            Some((_, _, ms)) => self.inst_operands(&ms, t.len, read),
             None if alias.is_some() => {
                 let (q, d) = alias.unwrap();
                 let ld = |em: &mut Self, a: u16| em.load(k(a as u32, 2), Iv::exact(a as u32), 0);

@@ -273,7 +273,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         self.flags = set()
         self.kparam, self.kvals, self.ktabs, self.kmemo, self.kiv = None, None, {}, {}, {}
         self.kptrs, self.wide, self.promoted, self.aware = {}, {}, {}, set()
-        self.steps, self.elements = {}, {}
+        self.steps, self.elements, self.knowns, self.symbols = {}, {}, {}, None
         self.index()
         self.idom = self.dominators()
         self.live_args = list(range(len(self.blocks[0].args)))
@@ -297,7 +297,9 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 self.types[n], self.arg_block[n] = t, blk
             for i, o in enumerate(blk.ops):
                 self.where[id(o)] = (blk, i)
-                if o.name == "memref.get_global":
+                if o.name == "memref.get_global" and o.prop("name") == "@G":
+                    self.symbols = o.res[0]
+                elif o.name == "memref.get_global":
                     self.globals.add(o.res[0])
                 for j, r in enumerate(o.res):
                     self.defs[r] = o
@@ -316,7 +318,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         self.defs, self.types, self.uses, self.where = {}, {}, {}, {}
         self.users, self.ivs, self.globals, self.arg_src = {}, {}, set(), {}
         self.arg_block, self.flags, self.kmemo, self.kiv = {}, set(), {}, {}
-        self.addr_edges = set()
+        self.addr_edges, self.knowns = set(), {}
         self.index()
 
     def instance(self, kpos):
@@ -789,6 +791,8 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         full = (0, top)
         if o is None:
             r = self.iv_joined(v)
+        elif o.name == "memref.load" and (k := self.named(o)) is not None and self.exact(o):
+            r = (k, k)
         elif o.name == "memref.load" and w == 8:
             r = self.mod.fx(self.name).sets.get(
                 self.const_of(self.address(o))
@@ -1226,12 +1230,36 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 return ("held", js.pop())
         return None
 
+    def named(self, o):
+        """The value load ``o`` reads when it is of one byte holding one value whenever this
+        function runs (:meth:`Module.known`) that the ``.h`` names (:meth:`Module.konst`),
+        else None: no access of memory."""
+        if o.name == "memref.load" and o.args[0] == self.symbols:
+            return self.mod.symbols[self.const_of(o.args[1])][1]
+        if o.name != "memref.load" or o.args[-2] not in self.globals:
+            return None
+        if id(o) not in self.knowns:
+            lo, hi = self.iv(self.address(o))
+            k = self.mod.known(self.name, lo) if lo == hi else None
+            nameless = self.mod.mem.base(lo)[0] is None and not self.mod.folded[0][lo]
+            self.knowns[id(o)] = None if k is None or nameless else k
+        return self.knowns[id(o)]
+
+    def exact(self, o):
+        """Whether named load ``o`` (:meth:`named`) stands for a constant of the code: a
+        symbol, or an instruction's operand byte the lift reads as data init leaves constant
+        (``Module.folded``), as the code would hold it."""
+        return o.args[0] == self.symbols or self.mod.folded[2][self.iv(self.address(o))[0]]
+
     def accesses(self):
         """``[(op, (lo, hi), per)]`` of the memory accesses and I/O calls: the interval of
-        the address and, in an instance, ``per`` index (else None)."""
+        the address and, in an instance, ``per`` index (else None); a load the ``.h`` names
+        (:meth:`named`) is none."""
         out = []
         for o in self.walk():
             if o.name in ("memref.load", "memref.store") and o.args[-2] in self.globals:
+                if self.named(o) is not None:
+                    continue
                 a = self.address(o)
             elif o.name == "func.call" and o.prop("callee") in ("@io_read", "@io_write"):
                 a = o.args[0]
@@ -1513,7 +1541,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 continue
             if o.name == "func.call" or not self.pure(o):
                 return False
-            if o.name == "memref.load" and id(o) not in self.promoted:
+            if o.name == "memref.load" and id(o) not in self.promoted and self.named(o) is None:
                 lo, hi = self.iv(self.address(o))
                 if mem.region(lo, hi) is None and not mem.is_code(lo, hi):
                     return False
@@ -1824,11 +1852,10 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             if v in forced and self.offset_of(o) is None and o.name != "arith.constant":
                 self.memf[v] = False
                 continue
-            mem = o.name == "memref.load" or any(
-                self.memf.get(a) for a in o.args if a in self.inline
-            )
+            mem = o.name == "memref.load" and f.named(o) is None
+            mem = mem or any(self.memf.get(a) for a in o.args if a in self.inline)
             self.memf[v] = mem
-            if o.name in ("arith.constant", "ub.poison"):
+            if o.name in ("arith.constant", "ub.poison") or f.named(o) is not None:
                 self.inline.add(v)
                 continue
             if self.uses.get(v) != 1:
@@ -2116,18 +2143,12 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
     def load(self, o):
         """The C expression of a memory load ``o``: of a constant byte at a fixed address, its
         name in the ``.h`` (:meth:`Module.konst`)."""
+        if o.args[0] == self.f.symbols:
+            return E(self.mod.symbol(self.f.const_of(o.args[1])), 16, "", 0, 255)
+        if self.f.named(o) is not None:
+            return E(self.mod.konst(self.f.iv(self.f.address(o))[0]), 16, "", 0, 255)
         if id(o) in self.f.promoted:
             return self.var(o)
-        lo, hi = self.f.iv(self.f.address(o))
-        after = self.mod.after is not None and self.f.name in self.mod.after[2]
-        if (
-            lo == hi
-            and not self.mod.mem.vol[lo]
-            and (self.mod.mem.constant[lo] or after and self.mod.after[0][lo])
-        ):
-            name = self.mod.konst(lo)
-            if name is not None:
-                return E(name, 16, "", 0, 255, False, False)
         how = self.target(o)
         if id(o) in self.f.aware and self.mod.var_at and how[0] != "checked":
             how = ("any",)
@@ -2916,9 +2937,16 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.scope = {}
         #: The instruction bytes each lift decodes as constant (opcodes intervals are read by).
         self.fixed = mem.code
-        #: ``(mask, image, names)``: the data bytes init's code stores that the functions
-        #: ``names`` of the other entries' lift read as constants, the values it leaves.
+        #: ``(mask, image, operands)``: the bytes init leaves constant (``Program.fixed``),
+        #: the values it leaves in them, and those of them in the instructions planned.
+        none = np.zeros(0x10000, dtype=bool)
+        self.folded = (none, mem.image, none)
+        #: The functions of the other entries' lift, which read them as constants, when a
+        #: translated init's are others (None: every function).
         self.after = None
+        #: ``[(pc, value)]``: the constants of the tests of the instructions at ``pc`` the
+        #: ``.h`` names, from bytes init leaves constant (``@G``'s elements).
+        self.symbols = []
         for o in top.regions[0][0].ops:
             if o.name == "func.func" and o.regions[0] and o.regions[0][0].ops:
                 self.funcs.append(Func(o, self))
@@ -3384,15 +3412,39 @@ class Module:  # pylint: disable=too-many-instance-attributes
             out.append((f"{off} < {n}_LEN", el))
         return out if tests is None else [(t, e) for t, (_, e) in zip(tests, out)]
 
+    def known(self, name, a):
+        """The value byte ``a`` holds whenever function ``name`` runs, or None: for the other
+        entries' lift (:attr:`after`) one init leaves constant (:attr:`folded`), else a
+        constant byte's (code, or a table the lift read as constant); not a volatile one."""
+        if self.mem.vol[a]:
+            return None
+        if self.folded[0][a] and (self.after is None or name in self.after):
+            return self.folded[1][a]
+        return self.mem.image[a] if self.mem.constant[a] else None
+
+    def symbol(self, j):
+        """The ``.h`` name of symbol ``j`` (:attr:`symbols`): ``G_`` and the offset of its
+        instruction as :meth:`var_name` gives it, numbered from its second."""
+        pc, v = self.symbols[j]
+        n = sum(q == pc for q, _ in self.symbols[:j])
+        name = "G_" + self.var_name(pc)[2:] + (f"_{n}" if n else "")
+        self.konsts[name] = v
+        return name
+
     def konst(self, addr):
         """The ``.h`` name of the constant byte at ``addr``, relative to the origin it is
         placed by (so the ``.c`` holds neither its value nor its address), or None outside
-        the program."""
+        the program; of a byte init leaves constant (:attr:`folded`) ``K_`` and the offset
+        its variable would be named by (:meth:`var_name`)."""
+        if self.folded[0][addr]:
+            name = "K_" + self.var_name(addr)[2:]
+            self.konsts[name] = self.folded[1][addr]
+            return name
         sym, off = self.mem.base(addr)
         if sym is None:
             return None
         name = f"{sym[:-4]}_K{off:X}"
-        self.konsts[name] = (self.mem.image if self.after is None else self.after[1])[addr]
+        self.konsts[name] = self.mem.image[addr]
         if sym == "CODE_ORG":
             self.used.add("CODE_ORG")
         elif sym == "IMG_ORG":

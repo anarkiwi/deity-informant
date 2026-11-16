@@ -3277,6 +3277,8 @@ def test_registers_a_callee_leaves_are_its_arguments(prefix, tmp_path):
 
 
 OPERAND_PTR = r"rdC\d+\(S_\w+ \| \(\(uint16_t\)S_\w+ << 8\), "
+#: A direct access of the span at an operand init leaves constant, named by the ``.h``.
+OPERAND_K = r"\bC0\[\(uint16_t\)\(\(K_\w+ \| \(\(uint16_t\)K_\w+ << 8\)\) \+ "
 
 
 @pytest.mark.parametrize("src", ["RUNREL", "RELOCATE"])
@@ -3292,7 +3294,7 @@ def test_operands_init_relocates_by_a_constant_base_are_constant(prefix, tmp_pat
     ops = {labels[o] + k for o in ("o0", "o1") for k in (1, 2)}
     body = body_of(c, "play")
     assert ops <= set(info["fixed"]) and "codechk(" not in c and info["init"] == "translated"
-    assert re.search(r"\bC0\[C0_AT\w+ \+ ", body) and not re.search(r"rdC|\bS_", body)
+    assert re.search(OPERAND_K, body) and not re.search(r"rdC|\bS_", body)
     assert "CGEN_CP_N" not in h and "wr(" in body_of(c, "init")
 
 
@@ -3359,7 +3361,7 @@ def test_play_is_lifted_from_each_songs_state(prefix, tmp_path, probe):
     replay = "io_write(IO_AT[i], IO_VAL[i]);" in init and "CP_DST[i][j] = CP_SRC[i][j];" in init
     assert replay == probe and info["init"] == ("replayed" if probe else "translated")
     body = body_of(c, "play")
-    assert re.search(r"\bC0\[C0_AT\w+ \+ ", body) and not re.search(OPERAND_PTR, body)
+    assert re.search(OPERAND_K, body) and not re.search(OPERAND_PTR, body)
 
 
 #: Init setting a pointer pair and a count the other entry reads; ``{w}`` more of its code.
@@ -3402,7 +3404,111 @@ def test_bytes_init_leaves_constant(prefix, tmp_path, w, held):
     assert set(info["fixed"]) == {int(x[1:], 16) if x[0] == "$" else labels[x] for x in held}
     body = body_of(c, "play")
     assert bool(re.search(r"\bS_FB\b|rdC", body)) == (not held)
-    assert bool(re.search(r"io_write\(0xC001, \w+_K\w+\)", body)) == ("cnt" in held)
+    assert bool(re.search(r"io_write\(0xC001, K_\w+\)", body)) == ("cnt" in held)
+
+
+#: Init setting, from its header, an operand into a table, a pointer pair into it, a loop
+#: count and the operand of a store into the table ending the program; ``{0}``-``{3}`` the
+#: header's offsets and count.
+FOLDS = """
+init:   LDA hdr
+        STA o0+1
+        LDA hdr+1
+        STA o0+2
+        LDA hdr+2
+        STA $FB
+        LDA hdr+3
+        STA $FC
+        LDA hdr+4
+        STA n+1
+        LDA hdr+5
+        STA o1+1
+        LDA hdr+6
+        STA o1+2
+        RTS
+play:   AND #$03
+        TAY
+o0:     LDA $FFFF,Y
+        STA $C000
+        LDA ($FB),Y
+        STA $C001
+        LDX #$00
+lp:     STX $C002
+        INX
+n:      CPX #$00
+        BNE lp
+        LDY $C010
+        TXA
+o1:     STA $FFFF,Y
+        RTS
+hdr:    .byte lo(tab+{0}), hi(tab+{0}), lo(tab+{1}), hi(tab+{1}), {2}, lo(last+{3}), hi(last+{3})
+tab:    .byte 1,2,3,4,5,6,7,8,9,10,11,12
+last:   .byte 0,0,0,0,0,0
+end:
+"""
+
+
+@pytest.mark.parametrize("probe", [False, True])
+def test_constants_init_leaves_are_named_by_the_header(prefix, tmp_path, probe):
+    """Programs of the same code whose init leaves other constants (operands and a pointer
+    pair at other offsets into a table, another loop count, a store's operand at another
+    offset into the table ending the program, so another bound for its index guard) give
+    the same ``.c``: each constant is a name the ``.h`` defines, the accesses direct."""
+    texts, headers = set(), set()
+    for k, offs in enumerate(((0, 2, 3, 1), (1, 3, 5, 2))):
+        src = FOLDS.format(*offs)
+        img, labels, loaded = assemble(probed(src) if probe else src)
+        c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+        (tmp_path / str(k)).mkdir()
+        play(tmp_path / str(k), c, h, img, labels, [("init", 0)] + [("play", a) for a in range(4)])
+        ops = {labels[o] + j for o in ("o0", "o1") for j in (1, 2)} | {labels["n"] + 1}
+        assert ops | {0xFB, 0xFC} <= set(info["fixed"])
+        assert info["init"] == ("replayed" if probe else "translated")
+        body = body_of(c, "play")
+        assert re.search(OPERAND_K, body) and re.search(r"\bG_\w+ < ", body)
+        assert not re.search(r"rdC|\bS_|\brd\(", body)
+        texts.add(c)
+        headers.add(h)
+    assert len(texts) == 1 and len(headers) == 2
+
+
+def held_bytes(h):
+    """The addresses the arrays the ``.h`` defines hold."""
+    ends = re.findall(r"#define ([RC]\d+)_ORG (0x[0-9A-F]+)\n#define \1_LEN (\d+)", h)
+    return {a for _, org, n in ends for a in range(int(org, 16), int(org, 16) + int(n))}
+
+
+#: A count init patches into an immediate, which the other entry also loads by its
+#: address; ``{w}`` more of its code.
+COUNT = """
+init:   LDA #$05
+        STA n+1
+        RTS
+play:   LDX #$00
+lp:     STX $C000
+        INX
+n:      CPX #$00
+        BNE lp
+        LDA n+1
+        STA $C001
+{w}        RTS
+end:
+"""
+
+
+@pytest.mark.parametrize("indexed", [False, True])
+def test_bytes_init_leaves_constant_are_held_where_read(prefix, tmp_path, indexed):
+    """A byte a replayed init leaves constant that the other entry reads only by its
+    address is a name the ``.h`` defines and no array holds it; read also by an access not
+    at its address (an index over the instruction holding it), it is held."""
+    w = "        AND #$01\n        TAY\n        LDA n,Y\n        STA $C002\n" if indexed else ""
+    img, labels, loaded = assemble(probed(COUNT.format(w=w)))
+    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+    play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", a) for a in range(4)])
+    a = labels["n"] + 1
+    assert a in info["fixed"] and info["init"] == "replayed"
+    assert re.search(r"io_write\(0xC001, K_\w+\)", body_of(c, "play"))
+    assert (a in held_bytes(h)) == indexed
 
 
 def test_init_relocating_by_the_song_leaves_pointer_cells(prefix, tmp_path):
@@ -3415,7 +3521,7 @@ def test_init_relocating_by_the_song_leaves_pointer_cells(prefix, tmp_path):
     assert info["fixed"] == [labels["flag"]]
     body = body_of(c, "play")
     assert re.search(r"rdC0\(S_\w+ \| \(\(uint16_t\)S_\w+ << 8\), a & 3\)", body)
-    assert "_K0" in body
+    assert "K_I" in body
 
 
 def test_song_range_is_checked_not_assumed(prefix, tmp_path):
@@ -3494,7 +3600,7 @@ def test_init_io_writes_are_replayed_in_order(prefix, tmp_path):
     h = translate(prefix, img, labels, loaded, ("init", "play"), init=0)[1]
     assert "#define CGEN_IO_AT 0xC013, 0xC012, 0xC011, 0xC010, 0xC020\n" in h
     assert "#define CGEN_IO_VAL 0x00, 0x00, 0x00, 0x00, 0x11\n" in h
-    assert len(re.findall(r"io_write\(0xC00[01], CODE_K", c)) == 2
+    assert len(re.findall(r"io_write\(0xC00[01], K_", c)) == 2
 
 
 PROBE = """
@@ -3797,7 +3903,7 @@ def test_relocated_operands_point_into_the_song(prefix, tmp_path, plain):
     )
     body = body_of(c, "play")
     assert bool(re.search(r"rdC\d+\(", body)) == plain and not re.search(r"\brd\(", body)
-    assert re.search(r"\bC0\[C0_AT\w+ \+ ", body)
+    assert re.search(OPERAND_K, body)
 
 
 @pytest.mark.parametrize("bounded", [True, False])

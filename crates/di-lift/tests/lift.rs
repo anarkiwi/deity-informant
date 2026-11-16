@@ -1023,3 +1023,40 @@ fn stored_bytes_cover_every_store() {
     );
     assert_eq!(p.stored, [(0, 0x10000)]);
 }
+
+/// A data operand of bytes the host's init holds is read from memory, as a cell's, with the
+/// analysis taking its value; a branch's operand stays its target.
+#[test]
+fn held_operands_are_loaded() {
+    // TAY; LDA $1100,Y; STA $C000; BNE +3; STA $C001; RTS
+    let img = image(&[
+        (
+            0x1000,
+            &[
+                0xa8, 0xb9, 0x00, 0x11, 0x8d, 0x00, 0xc0, 0xd0, 0x03, 0x8d, 0x01, 0xc0, 0x60,
+            ],
+        ),
+        (0x1100, &[1, 2, 3, 4]),
+    ]);
+    let run = |held: Vec<u16>| {
+        let opts = Opts {
+            entry_sp: Some(0xfd),
+            fold: true,
+            held,
+            ..Opts::default()
+        };
+        lift_with(
+            &img,
+            &entries(&[0x1000]),
+            &[(0xc000, 0xc100)],
+            &Facts::default(),
+            opts,
+        )
+    };
+    let (plain, held) = (run(vec![]), run(vec![0x1002, 0x1003, 0x1008]));
+    let (bare, text) = (plain.to_string(), held.to_string());
+    assert!(!bare.contains("LOAD #1002") && text.contains("LOAD #1002"));
+    assert!(!text.contains("#1008") && text.contains("#c001"));
+    assert_eq!(held.stored, plain.stored);
+    assert_eq!(diff(&img, &held, &acc_calls(&[0, 3]), IO), 0);
+}

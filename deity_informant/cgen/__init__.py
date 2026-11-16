@@ -6,6 +6,7 @@ that differ only in their data or their origin give the same ``.c``.
 
 from __future__ import annotations
 
+import copy
 import itertools
 import shutil
 import subprocess
@@ -18,6 +19,7 @@ import numpy as np
 from .. import polling, postinit, wholeprog
 from ..trace import Facts
 from . import emit, mlir, printer
+from ..lifter import MODE_LEN, OPS
 from .regions import Memory, code_bytes, pointer_pairs
 
 __all__ = ["Program", "jump_facts", "lift", "render", "translate"]
@@ -446,6 +448,50 @@ def _ranked(progs):
     return funcs, origin
 
 
+def _reads_fixed(image, starts, fixed):
+    """The instructions of ``starts`` (in ``image``) whose data operand holds a byte of
+    ``fixed``: not a branch, jump or call, whose operand is a target deciding the code."""
+    mask = np.zeros(0x10000, dtype=bool)
+    mask[fixed] = True
+    out = set()
+    for pc in starts:
+        mn, mode = OPS.get(image[pc], ("", "impl"))
+        n = MODE_LEN[mode]
+        if (
+            mode != "rel"
+            and mn not in ("JMP", "JSR")
+            and mask[(pc + np.arange(1, n)) & 0xFFFF].any()
+        ):
+            out.add(pc)
+    return out
+
+
+def _exit_tests(fn, pcs):
+    """The ops of ``fn`` testing a side exit at an instruction of ``pcs``: those of that
+    instruction ending in a ``CBRANCH`` to a block that deopts there."""
+    blocks = fn["blocks"]
+    for ops in (b["ops"] for b in blocks):
+        for t, op in enumerate(ops):
+            last = blocks[op[3]]["ops"][-1] if op[0] == "CBRANCH" and op[4] in pcs else None
+            if last is None or last[0] != "CALLOTHER" or last[2][0] != ["c", op[4], 2]:
+                continue
+            yield from itertools.takewhile(lambda g, pc=op[4]: g[4] == pc, reversed(ops[:t]))
+
+
+def _guard_symbols(funcs, pcs):
+    """``funcs`` with the byte constants of each side exit's test at an instruction of
+    ``pcs`` (:func:`_exit_tests`) made symbols ``["k", j, 1]``, and ``[(pc, value)]`` of the
+    symbols: the bounds the lift draws from bytes init leaves constant are named by the
+    ``.h``."""
+    out = []
+    for g in (g for fn in funcs for g in _exit_tests(fn, pcs)):
+        for i, v in enumerate(g[2]):
+            if v and v[0] == "c" and v[2] == 1:
+                g[2][i] = ["k", len(out), 1]
+                out.append((g[4], v[1]))
+    return out
+
+
 def _facts(prog):
     """The facts of lift ``prog`` the layout reads (:meth:`printer.Module.fx`)."""
     sets = {a: (min(v), max(v)) for a, v in dict(prog.sets).items() if v}
@@ -584,7 +630,12 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
 def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     """``(c_text, h_text, info)`` of :class:`Program` ``p``: MLIR, structured and printed."""
     times, t0 = {}, time.perf_counter()
-    text, traps = emit.emit(p.funcs, p.entries, keep_dummy=bool(p.sensitive))
+    symbols, funcs = [], p.funcs
+    if p.fixed is not None and p.fixed.size:
+        funcs = copy.deepcopy(funcs)
+        own = [fn for j, fn in enumerate(funcs) if not p.lifted or not p.origin[j]]
+        symbols = _guard_symbols(own, _reads_fixed(p.image, p.starts, p.fixed))
+    text, traps = emit.emit(funcs, p.entries, keep_dummy=bool(p.sensitive), symbols=len(symbols))
     run = mlir.runner(build=True) if prefix is None else prefix
     if run is None:
         raise RuntimeError("needs mlir-opt on PATH or Docker")
@@ -647,6 +698,11 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     mem.init = bytes(data)
     mod = printer.Module(top, mem)
     mod.insn, mod.fixed = ran, fixed
+    if p.fixed is not None:
+        folded = np.zeros(0x10000, dtype=bool)
+        folded[p.fixed] = True
+        mod.folded = (folded, p.image, folded & code_bytes(p.image, p.starts))
+    mod.symbols = symbols
     # Promotion candidates: the cells and the other variable bytes inside the code span.
     lo, hi = mem.code_span
     mod.cells = cells.copy()
@@ -665,11 +721,8 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     mod.kpos = regfile.index(emit.KREG) if emit.KREG in regfile else None
     if p.lifted is not None:
         mod.scope = {f"f{j}": p.lifted[2] for j, k in enumerate(p.origin) if k}
-        if p.fixed.size:
-            after = np.zeros(0x10000, dtype=bool)
-            after[p.fixed] = True
-            names = {f"f{j}" for j, k in enumerate(p.origin) if not k}
-            mod.after = (after, p.image, names | {name for _, name in p.entries[:-1]})
+        names = {f"f{j}" for j, k in enumerate(p.origin) if not k}
+        mod.after = frozenset(names | {name for _, name in p.entries[:-1]})
         (pc, name), _ = p.init
         k = traps.setdefault(("deopt", pc), len(traps))
         mod.traps.add(k)
