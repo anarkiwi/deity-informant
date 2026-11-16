@@ -131,11 +131,11 @@ jobs:
         run: |
           if command -v cargo; then exit 1; fi
           python -m venv /tmp/venv
-          /tmp/venv/bin/pip install dist/*.tar.gz pytest numpy
+          /tmp/venv/bin/pip install dist/*.tar.gz pytest pytest-timeout numpy
       # Tests run from a copy without the in-tree package so imports resolve to the install.
       - name: Test pure-Python install
         run: |
-          mkdir /tmp/sd && cp -r tests /tmp/sd/
+          mkdir /tmp/sd && cp -r tests pyproject.toml /tmp/sd/
           cd /tmp/sd
           /tmp/venv/bin/python -c "import deity_informant as d; assert not d.NATIVE"
           /tmp/venv/bin/pytest -q tests/test_vm.py tests/test_lifter.py tests/test_native.py

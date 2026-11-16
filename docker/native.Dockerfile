@@ -40,7 +40,7 @@ RUN pip install --no-cache-dir --no-deps /wheels/*.whl \
     && python -c "import deity_informant as d; assert d.NATIVE" \
     && deity-informant emit-sleigh
 # Only tests, tools and docs are copied so imports resolve to the installed wheel.
-COPY README.md ./
+COPY README.md pyproject.toml ./
 COPY docs docs
 COPY tests tests
 COPY tools tools

@@ -98,6 +98,9 @@ maturin develop --release   # the coverage gate measures the native build
 pytest tests/ -n auto --cov=deity_informant --cov-fail-under=85
 ```
 
+Each test is bounded in time and memory; [docs/testing.md](docs/testing.md) has the guards, the
+inner loop and the generated-output identity check.
+
 ## References
 
 Illegal-opcode semantics and cycles: "No More Secrets — NMOS 6510 Unintended Opcodes" ([csdb.dk/release/?id=258111](https://csdb.dk/release/?id=258111)).

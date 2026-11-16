@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deity-informant"
-version = "0.40.2"
+version = "0.40.3"
 description = "NMOS 6510 illegal-opcode toolkit: a standalone 6510 -> raw-P-Code lifter + pure-Python P-Code VM, and a 6510 Ghidra/pypcode SLEIGH processor module."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -24,7 +24,7 @@ dependencies = ["jennings>=0.9.0", "numpy", "networkx", "tqdm", "dd==0.6.0"]
 
 [project.optional-dependencies]
 ghidra = ["pypcode"]
-dev = ["pytest", "pytest-xdist", "pytest-cov", "build", "black", "pylint", "py65", "pypcode", "maturin", "pebble", "vagrant-moses[cpu]>=0.13.0", "pylibresidfp>=0.6.1", "zstandard", "pyelftools"]
+dev = ["pytest", "pytest-xdist", "pytest-cov", "pytest-timeout", "build", "black", "pylint", "py65", "pypcode", "maturin", "pebble", "vagrant-moses[cpu]>=0.13.0", "pylibresidfp>=0.6.1", "zstandard", "pyelftools"]
 
 [project.urls]
 Homepage = "https://github.com/anarkiwi/deity-informant"
@@ -47,6 +47,12 @@ module-name = "deity_informant._native"
 python-source = "."
 python-packages = ["deity_informant"]
 features = ["pyo3/extension-module"]
+
+# Per-test guards (docs/testing.md): a runaway lift fails with its stacks within `timeout`
+# seconds; tests/conftest.py caps each worker's heap.
+[tool.pytest.ini_options]
+timeout = 30
+timeout_method = "thread"
 
 [tool.coverage.run]
 source = ["deity_informant"]
