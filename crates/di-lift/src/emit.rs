@@ -1121,15 +1121,18 @@ impl<'a> Em<'a, '_> {
             let mut aux = 0;
             if stack && matches!(op.opc, Opc::Load | Opc::Store) {
                 let h = self.h.map(|h| h + (op.opc == Opc::Load) as i32);
-                if let Some(s) = h.and_then(|d| self.slot(d)) {
+                let slot = h.and_then(|d| self.slot(d));
+                if let Some(s) = slot {
                     match op.opc {
                         Opc::Store => self.emit(Opc::Copy, s, b, NONE, 0),
                         _ => self.emit(Opc::Copy, out, s, NONE, 0),
                     }
-                    self.h = self.h.map(|h| h + if op.opc == Opc::Load { 1 } else { -1 });
-                    continue;
                 }
                 self.h = self.h.map(|h| h + if op.opc == Opc::Load { 1 } else { -1 });
+                // A push is also stored where a load other than a pull may read it.
+                if slot.is_some() && (op.opc == Opc::Load || !self.sh.shadow) {
+                    continue;
+                }
             }
             if matches!(op.opc, Opc::Load | Opc::Store) {
                 let ac = acc.get(ai).copied().unwrap_or(Access {

@@ -165,7 +165,7 @@ fn guarded_stack_and_forced_page1_access() {
     let p = check(&img, &pc, &calls(4, |_| 0x18), IO);
     let s = &p.stats;
     assert!(s.stack_private && s.page1_sites == 0);
-    assert_eq!((s.stack_guards, s.slot_ops, s.stack_ops), (2, 2, 4));
+    assert_eq!((s.stack_guards, s.slot_ops, s.stack_ops), (2, 2, 5));
     let f = facts(&img, &[(pc[0], 0x18); 4], 1_000_000);
     let forced = calls(6, |i| if i % 2 == 1 { 0x01 } else { 0x18 });
     for cycles in [true, false] {
@@ -927,4 +927,35 @@ fn unrolled_copies_fold() {
         assert_eq!((p.stats.instances, p.stats.instance_copies), (1, 3));
         assert_eq!(diff(&img, &p, &calls(12, |i| i as u8), IO), 0);
     }
+}
+
+/// Ops of `p` reading register `r` (as printed).
+fn reads(p: &Program, r: &str) -> usize {
+    p.to_string()
+        .lines()
+        .filter(|l| {
+            let rhs = l.split_once('=').map_or(l.trim(), |(_, x)| x);
+            rhs.split([' ', ',']).skip(2).any(|t| t == r)
+        })
+        .count()
+}
+
+#[test]
+fn status_saved_through_the_stack_in_lanes() {
+    // STA $1008; CMP #$E9; PHP; LDX #0; (opcode cell) NOP/INX; STX $C001; PLP; LDA #0;
+    // ROL A; STA $C002; RTS
+    let img = image(&[(
+        0x1000,
+        &[
+            0x8d, 0x08, 0x10, 0xc9, 0xe9, 0x08, 0xa2, 0x00, 0xea, 0x8e, 0x01, 0xc0, 0x28, 0xa9,
+            0x00, 0x2a, 0x8d, 0x02, 0xc0, 0x60,
+        ],
+    )]);
+    let seen = calls(4, |i| [0xea, 0xe8][i % 2]);
+    let p = check(&img, &[0x1000], &seen, IO);
+    assert_eq!(reads(&p, "s0"), 0, "{p}");
+    // An opcode the facts never saw deopts with the status pushed: its byte is in memory.
+    let f = facts(&img, &[(0x1000, 0xea), (0x1000, 0xe8)], 1_000_000);
+    let p = lift(&img, &entries(&[0x1000]), &[(0xc000, 0xc100)], &f);
+    assert!(diff(&img, &p, &calls(3, |i| [0xea, 0xf8, 0xe8][i]), IO) > 0);
 }

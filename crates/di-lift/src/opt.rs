@@ -50,6 +50,8 @@ impl Ctx<'_> {
 /// the op count unchanged.
 pub fn optimize(f: &mut Function, cx: &Ctx, fi: usize) {
     pin_resume(f, cx, fi);
+    cleanup(f);
+    crate::lanes::split(f);
     let round = |f: &mut Function| {
         cleanup(f);
         rename(f);
@@ -595,6 +597,8 @@ struct Sym {
     key: Option<SKey>,
     size: u8,
     iv: Iv,
+    /// The bits that may be set.
+    bits: u32,
 }
 
 impl Sym {
@@ -668,6 +672,8 @@ impl St {
 
 struct Lvn<'a> {
     cx: &'a Ctx<'a>,
+    /// The function's lane registers, which hold 0 or 1.
+    lanes: std::ops::Range<u32>,
     syms: Vec<Sym>,
     hc: FxHashMap<SKey, u32>,
     holders: FxHashMap<u32, Vec<Vn>>,
@@ -679,6 +685,7 @@ impl Lvn<'_> {
             key: None,
             size,
             iv,
+            bits: below(iv.hi),
         });
         (self.syms.len() - 1) as u32
     }
@@ -694,6 +701,26 @@ impl Lvn<'_> {
             Val::S(s) => self.syms[s as usize].is_bool(),
         }
     }
+    /// The bits of `v` that may be set.
+    fn bits(&self, v: Val) -> u32 {
+        match v {
+            Val::K(x) => x,
+            Val::S(s) => self.syms[s as usize].bits,
+        }
+    }
+    /// The operands of `v` when it is `opc(x, y)` of its own size.
+    fn split(&self, v: Val, opc: Opc, size: u8) -> Option<(Val, Val)> {
+        match self.skey(v) {
+            Some(SKey {
+                opc: o,
+                a,
+                b,
+                size: sz,
+                ..
+            }) if o == opc && sz == size => Some((a, b)),
+            _ => None,
+        }
+    }
     fn skey(&self, v: Val) -> Option<SKey> {
         match v {
             Val::S(s) => self.syms[s as usize].key,
@@ -707,7 +734,8 @@ impl Lvn<'_> {
         if let Some(&x) = st.vmap.get(&key(v)) {
             return x;
         }
-        let flag = v.space() == Space::Reg && (8..15).contains(&v.off());
+        let flag = v.space() == Space::Reg
+            && ((8..15).contains(&v.off()) || self.lanes.contains(&v.off()));
         let iv = if flag {
             Iv { lo: 0, hi: 1 }
         } else {
@@ -771,6 +799,38 @@ impl Lvn<'_> {
                 _ => None,
             },
             (Opc::IntAnd, _, K(0)) => Some(K(0)),
+            (Opc::IntAnd, S(_), K(c)) if self.bits(a) & c == 0 => Some(K(0)),
+            (Opc::IntAnd, S(_), K(c)) if self.bits(a) & !c & m == 0 => Some(a),
+            // Terms of an or with no bit in the mask drop out.
+            (Opc::IntAnd, S(_), K(c)) if matches!(self.split(a, Opc::IntOr, size), Some((x, y)) if self.bits(x) & c == 0 || self.bits(y) & c == 0) =>
+            {
+                let (x, y) = self.split(a, Opc::IntOr, size).unwrap();
+                let z = if self.bits(x) & c == 0 { y } else { x };
+                return self.simplify(Opc::IntAnd, z, K(c), size, size0);
+            }
+            (Opc::IntRight, S(_), K(c)) if c < 32 && self.bits(a) >> c == 0 => Some(K(0)),
+            // A right shift distributes over an or and undoes a left shift losing no bits.
+            (Opc::IntRight, S(_), K(c)) if c < 32 && self.split(a, Opc::IntOr, size).is_some() => {
+                let (x, y) = self.split(a, Opc::IntOr, size).unwrap();
+                let x = self.simplify(Opc::IntRight, x, K(c), size, size0).0;
+                let y = self.simplify(Opc::IntRight, y, K(c), size, size0).0;
+                return self.simplify(Opc::IntOr, x, y, size, size0);
+            }
+            (Opc::IntRight, S(_), K(c)) if matches!(self.split(a, Opc::IntLeft, size), Some((x, K(d))) if d < 32 && (self.bits(x) as u64) << d & !(m as u64) == 0) =>
+            {
+                let Some((x, K(d))) = self.split(a, Opc::IntLeft, size) else {
+                    unreachable!()
+                };
+                return match d.cmp(&c) {
+                    std::cmp::Ordering::Equal => (x, false),
+                    std::cmp::Ordering::Greater => {
+                        self.simplify(Opc::IntLeft, x, K(d - c), size, size0)
+                    }
+                    std::cmp::Ordering::Less => {
+                        self.simplify(Opc::IntRight, x, K(c - d), size, size0)
+                    }
+                };
+            }
             (Opc::IntAnd, S(_), K(c)) if self.iv(a).hi < c.isolate_lowest_one() => Some(K(0)),
             (Opc::IntAnd | Opc::IntOr | Opc::IntXor, S(_), K(c)) if matches!(self.skey(a), Some(SKey { opc: o, b: K(_), size: sz, .. }) if o == opc && sz == size) =>
             {
@@ -839,10 +899,21 @@ impl Lvn<'_> {
             Opc::IntZext => self.iv(a),
             _ => iv_op(opc, self.iv(a), self.iv(b), size as u32, size0 as u32),
         };
+        let (p, q) = (self.bits(a), self.bits(b));
+        let bits = below(iv.hi)
+            & match (opc, b) {
+                (Opc::Copy | Opc::IntZext, _) => p,
+                (Opc::IntAnd, _) => p & q,
+                (Opc::IntOr | Opc::IntXor, _) => p | q,
+                (Opc::IntLeft, K(c)) if c < 32 => p << c & m,
+                (Opc::IntRight, K(c)) if c < 32 => p >> c,
+                _ => m,
+            };
         self.syms.push(Sym {
             key: Some(sk),
             size,
             iv,
+            bits,
         });
         let s = (self.syms.len() - 1) as u32;
         self.hc.insert(sk, s);
@@ -934,6 +1005,11 @@ impl Lvn<'_> {
     }
 }
 
+/// The bits of values up to `hi`.
+fn below(hi: u32) -> u32 {
+    u32::MAX >> hi.leading_zeros()
+}
+
 /// Extended-basic-block roots: the entry, blocks without exactly one predecessor, and
 /// `CALL` returns.
 fn roots(f: &Function) -> FixedBitSet {
@@ -1013,8 +1089,10 @@ fn rename(f: &mut Function) {
 /// Value numbering over extended basic blocks, seeded with `consts` at their roots.
 fn number(f: &mut Function, cx: &Ctx, consts: &[Vec<(u16, u32)>]) {
     let root = roots(f);
+    let lanes = NREG as u32 + f.nslots;
     let mut lv = Lvn {
         cx,
+        lanes: lanes..lanes + f.nlanes,
         syms: Vec::new(),
         hc: FxHashMap::default(),
         holders: FxHashMap::default(),
@@ -1276,7 +1354,7 @@ impl Live<'_> {
         self.slots(live, h);
     }
     fn slots(&self, live: &mut FixedBitSet, h: Option<i32>) {
-        let n = self.nregs as i32 - NREG as i32;
+        let n = self.f.nslots as i32;
         let d = h.map_or(n, |h| (-h).clamp(0, n));
         live.insert_range(NREG..NREG + d as usize);
     }
