@@ -960,6 +960,39 @@ fn status_saved_through_the_stack_in_lanes() {
     assert!(diff(&img, &p, &calls(3, |i| [0xea, 0xf8, 0xe8][i]), IO) > 0);
 }
 
+#[test]
+fn status_pulled_as_data_beside_data_pulled_as_status() {
+    // SEC; PHP; PLA; TAY; LDA #1; PHA; PLP; STY $C003; RTS: TAY's flags are dead, Y is not.
+    let img = image(&[(
+        0x1000,
+        &[
+            0x38, 0x08, 0x68, 0xa8, 0xa9, 0x01, 0x48, 0x28, 0x8c, 0x03, 0xc0, 0x60,
+        ],
+    )]);
+    let p = check(&img, &[0x1000], &calls(2, |i| i as u8), IO);
+    let mut cpu = di_pcode::Cpu::new();
+    let mut bus = tbus(&img, IO, None);
+    ref_call(&mut cpu, &mut bus, 0x1000, 0, 1_000_000);
+    assert_eq!(bus.log[0].1, 0x31);
+    assert_eq!(reads(&p, "s0"), 0, "{p}");
+}
+
+#[test]
+fn pulled_decimal_flag_reaches_the_deopt() {
+    // ADC #$40; PHP; PLA; LSR A x3; PHA; PLP; PHP; INY; PLP; PHP; PLA; STA $C003; RTS: the
+    // pulled decimal flag is the overflow flag, which the guard on it reads in its place.
+    let img = image(&[(
+        0x1000,
+        &[
+            0x69, 0x40, 0x08, 0x68, 0x4a, 0x4a, 0x4a, 0x48, 0x28, 0x08, 0xc8, 0x28, 0x08, 0x68,
+            0x8d, 0x03, 0xc0, 0x60,
+        ],
+    )]);
+    let f = facts(&img, &[(0x1000, 0)], 1_000_000);
+    let p = lift(&img, &entries(&[0x1000]), &[(0xc000, 0xc100)], &f);
+    assert!(diff(&img, &p, &acc_calls(&[0, 0x40, 0x41, 0x80, 0xc3]), IO) > 0);
+}
+
 /// A store indexed over its own operand bytes, of a value read from I/O: resolved with its
 /// operands' entry bytes it makes them cells of unknown values, which leave it unresolved.
 /// The values only rise, so the lift ends: the store's address is unknown and a run that

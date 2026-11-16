@@ -111,14 +111,38 @@ fn eval(
     }
 }
 
+/// The temporaries some block reads before writing: live across blocks.
+fn open_temps(f: &Function) -> FixedBitSet {
+    let mut open = FixedBitSet::with_capacity(f.ntemps as usize);
+    let mut set = FixedBitSet::with_capacity(f.ntemps as usize);
+    for b in &f.blocks {
+        set.clear();
+        for op in &b.ops {
+            for v in op.inputs() {
+                if v.space() == Space::Unique && !set.contains(v.off() as usize) {
+                    open.grow_and_insert(v.off() as usize);
+                }
+            }
+            if op.out.space() == Space::Unique {
+                set.grow_and_insert(op.out.off() as usize);
+            }
+        }
+    }
+    open
+}
+
 /// The bits of slot `s` that op `o` of block `b` reads and the rest of the block may observe,
-/// by demanded bits backward from the block's end, where every value is demanded whole, as is
-/// every register at an op handing the machine state over.
-fn demand(f: &Function, b: usize, o: usize, s: u32) -> u32 {
+/// by demanded bits backward from the block's end, where every register and every temporary
+/// in `open` is demanded whole, as is every register at an op handing the machine state over.
+fn demand(f: &Function, b: usize, o: usize, s: u32, open: &FixedBitSet) -> u32 {
     let ops = &f.blocks[b].ops;
     let mut dm: FxHashMap<u32, u32> = FxHashMap::default();
     let key = |v: Vn| (v.space() as u32) << 16 | v.off();
-    let get = |dm: &FxHashMap<u32, u32>, v: Vn| dm.get(&key(v)).copied().unwrap_or(mask(v.size()));
+    let out = |v: Vn| match v.space() {
+        Space::Unique if !open.contains(v.off() as usize) => 0,
+        _ => mask(v.size()),
+    };
+    let get = |dm: &FxHashMap<u32, u32>, v: Vn| dm.get(&key(v)).copied().unwrap_or(out(v));
     let mut slot = 0;
     for (i, op) in ops.iter().enumerate().skip(o).rev() {
         if matches!(
@@ -150,7 +174,7 @@ fn demand(f: &Function, b: usize, o: usize, s: u32) -> u32 {
             if i == o && v.space() == Space::Reg && v.off() == s {
                 slot |= x;
             } else if matches!(v.space(), Space::Reg | Space::Unique) {
-                *dm.entry(key(v)).or_insert(0) |= x;
+                *dm.entry(key(v)).or_insert_with(|| out(v)) |= x;
             }
         }
     }
@@ -331,6 +355,7 @@ pub fn split(f: &mut Function) {
     }
     // Per block: (op index, after it, ops to insert, the slot read and its rebuilt byte).
     let mut edits: Vec<Vec<Edit>> = vec![Vec::new(); f.blocks.len()];
+    let open = open_temps(f);
     let mut order: Vec<_> = slots.into_iter().collect();
     order.sort_unstable_by_key(|e| e.0);
     for (s, mut u) in order {
@@ -349,7 +374,7 @@ pub fn split(f: &mut Function) {
                     (
                         u.reads[j].0,
                         u.reads[j].1,
-                        demand(f, u.reads[j].0, u.reads[j].1, s),
+                        demand(f, u.reads[j].0, u.reads[j].1, s, &open),
                     )
                 })
                 .collect();

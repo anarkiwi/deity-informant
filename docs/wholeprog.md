@@ -316,7 +316,8 @@ the program, and checks it against the reference.
    slot (its definitions and the reads they reach), when every definition packs one-bit
    values (the status `PHP`, `BRK` or an interrupt frame pushes), each bit not constant
    across them is a lane register copied beside each definition and every read reads the
-   byte rebuilt from the lanes it observes (demanded bits to the end of its block): a `PLP`
+   byte rebuilt from the lanes it observes (demanded bits to the end of its block, where every
+   register and every temporary another block reads is demanded whole): a `PLP`
    or `RTI` restores each flag from its lane, `PHP; PLA; AND #$08` builds only `D`. The
    slot keeps its packed definition for deopts and the memory copy a load other than a pull
    may read. Then, to a fixpoint: CFG cleanup (constant branches, threading,
@@ -338,8 +339,9 @@ the program, and checks it against the reference.
    program, so recursion converges like a loop) and optimized again: a `CALL` uses and kills
    only its callee's registers, a callee computes only what its callers read, and a deopt
    whose continuation is lifted (a checked access, a code check) needs only what that
-   continuation reads, and what the instruction reads when the reference re-executes it
-   (a check before an instruction).
+   continuation reads, what the instruction reads when the reference re-executes it
+   (a check before an instruction), and the registers its condition reads (the continuation
+   takes them to hold what the check excludes, as a pulled `D` clear).
 
 ## Init
 

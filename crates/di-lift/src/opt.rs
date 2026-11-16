@@ -7,7 +7,7 @@ use crate::analysis::{iv_op, Iv};
 use crate::ir::{fold, k, mask, mem, other, r1, reg, Block, Function, LOp, ALL_REGS, CY, E, NREG};
 use di_pcode::{reg as R, Opc, Space, Vn};
 use fixedbitset::FixedBitSet;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// What the optimizer may assume.
 pub struct Ctx<'a> {
@@ -88,21 +88,54 @@ pub fn optimize(f: &mut Function, cx: &Ctx, fi: usize) {
 }
 
 /// Replace each side exit's continuation by the registers it reads in the emitted code, where
-/// its uses are those of the instructions the reference resumes with after the deopt.
+/// its uses are those of the instructions the reference resumes with after the deopt, and the
+/// registers its condition reads: the continuation may take them to be what the exit tests
+/// they are not.
 fn pin_resume(f: &mut Function, cx: &Ctx, fi: usize) {
     if cx.cycles || f.blocks.iter().all(|b| b.resume.is_none()) {
         return;
     }
     let live_in = live(f, cx, fi).solve(&mut |_, _| {});
-    for b in &mut f.blocks {
+    let mut tested = vec![0u32; f.blocks.len()];
+    for b in &f.blocks {
+        for (i, op) in b.ops.iter().enumerate() {
+            if op.opc == Opc::CBranch && f.blocks[op.aux as usize].resume.is_some() {
+                tested[op.aux as usize] |= guard_regs(&b.ops[..i], op.ins[0]);
+            }
+        }
+    }
+    for (b, t) in f.blocks.iter_mut().zip(tested) {
         if let Some(r) = b.resume.take() {
             let mut l = live_in[r as usize].clone();
             if let Some(s) = b.replay.take() {
                 l.union_with(&live_in[s as usize]);
             }
-            b.resume_live = Some((0..NREG).fold(0, |m, i| m | (l.contains(i) as u32) << i));
+            b.resume_live = Some((0..NREG).fold(t, |m, i| m | (l.contains(i) as u32) << i));
         }
     }
+}
+
+/// The machine registers (bits below `NREG`) value `c` after `ops` is computed from, through
+/// the temporaries they define.
+fn guard_regs(ops: &[LOp], c: Vn) -> u32 {
+    let mut temps: FxHashSet<u32> = FxHashSet::default();
+    let mut regs = 0u32;
+    let mut need = |v: Vn, temps: &mut FxHashSet<u32>| match v.space() {
+        Space::Reg if (v.off() as usize) < NREG => regs |= 1 << v.off(),
+        Space::Unique => {
+            temps.insert(v.off());
+        }
+        _ => {}
+    };
+    need(c, &mut temps);
+    for op in ops.iter().rev() {
+        if op.out.space() == Space::Unique && temps.remove(&op.out.off()) {
+            for &v in op.inputs() {
+                need(v, &mut temps);
+            }
+        }
+    }
+    regs
 }
 
 fn key(v: Vn) -> u32 {
