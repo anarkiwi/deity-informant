@@ -1118,6 +1118,72 @@ join:   STA $C001
         RTS
 end:
 """
+FXSHARE = """
+entry:  AND #$03
+        TAY
+        JSR fx1
+        JSR fx2
+        TYA
+        EOR #$01
+        TAY
+        JSR fx1
+        JSR fx2
+        RTS
+fx1:    LDX #$00
+        LDA tlo,Y
+        STA ptr
+        LDA thi,Y
+        STA ptr+1
+        JMP (ptr)
+fx2:    LDX #$01
+        STX $C010
+        LDA tlo,Y
+        STA ptr
+        LDA thi,Y
+        STA ptr+1
+        JMP (ptr)
+h0:     LDA #$10
+        JMP t1
+h1:     LDA #$11
+t1:     STA $C000,X
+        RTS
+h2:     LDA #$12
+        JMP t2
+h3:     LDA #$13
+t2:     STA $C004,X
+        RTS
+tlo:    .byte lo(h0),lo(h1),lo(h2),lo(h3)
+thi:    .byte hi(h0),hi(h1),hi(h2),hi(h3)
+ptr:    .byte 0,0
+end:
+"""
+OPSHARE = """
+entry:  CMP #$04
+        BCS call
+        TAY
+        LDA tlo,Y
+        STA s1+1
+        RTS
+call:   AND #$01
+        BEQ jump
+s1:     JSR h0
+        STA $C000
+        RTS
+jump:   LDA #$20
+        JSR other
+        JMP other
+other:  STA $C003
+        JMP h2
+h0:     LDA #$10
+        STA $C001
+        RTS
+h1:     LDA #$11
+        RTS
+h2:     STA $C002
+        RTS
+tlo:    .byte lo(h0),lo(h1),lo(h2),lo(h0)
+end:
+"""
 BRKVEC = """
 entry:  CMP #$80
         BCS play
@@ -3824,14 +3890,53 @@ def test_shared_tail_stays_in_its_function(prefix, tmp_path, src, places):
     assert c.count("entry") == 1 and places > 1
 
 
-def test_code_past_a_shared_tail_stays_in_it(prefix, tmp_path):
-    """Code two procedures share past the shared tail they enter stays in its function, also
-    where it returns to the entry height after a push and a pull."""
-    img, labels, _ = assemble(SHARED)
+def entries_of(info):
+    """The entries of the C functions."""
+    return {f["entry"] for f in info["provenance"]["functions"].values()}
+
+
+def test_shared_tail_entered_by_jumps_is_each_procedures_code(prefix, tmp_path):
+    """A tail two procedures enter by `JMP` and by falling through, which no `JSR` targets,
+    is code of each, also past a push and a pull returning to the entry height."""
+    _, labels, _ = assemble(SHARED)
     _, _, info = check(prefix, tmp_path, SHARED, entry_calls(range(4), 2))
-    entries = {f["entry"] for f in info["provenance"]["functions"].values()}
-    assert labels["shared"] in entries and labels["join"] not in entries
-    assert labels["join"] - 3 not in entries
+    assert not entries_of(info) & {labels["shared"], labels["join"], labels["join"] - 3}
+
+
+def test_dispatch_arms_sharing_a_tail_stay_in_the_dispatching_function(prefix, tmp_path):
+    """Two procedures jump through one table into handlers that share tails by `JMP` and
+    fall-through: each procedure holds the handlers as its switch's arms, each tail printed in
+    the arms entering it (code two functions hold, ending the procedure), with no goto and no
+    function of its own; the `.c` is the same at another origin."""
+    outs = []
+    for org in (0x1000, 0x2300):
+        img, labels, loaded = assemble(FXSHARE, org)
+        c, h, info = translate(prefix, img, labels, loaded)
+        assert entries_of(info) == {labels[n] for n in ("entry", "fx1", "fx2")}
+        assert info["structure"]["gotos"] == 0 and c.count("switch (") == 2
+        assert c.count("io_write(0xC004, ") == c.count("io_write(0xC005, ") == 2
+        (tmp_path / str(org)).mkdir()
+        play(tmp_path / str(org), c, h, img, labels, entry_calls(range(4), 2))
+        outs.append(c)
+    assert outs[0] == outs[1]
+
+
+def test_tails_one_procedure_holds_follow_the_goto_rule(prefix, tmp_path):
+    """The same handlers reached from one procedure: its switch's two tails are joins, the
+    one placed after the switch reached by ``break``, the other by a goto from each arm."""
+    src = FXSHARE.replace("        JSR fx2\n", "")
+    c, _, info = check(prefix, tmp_path, src, entry_calls(range(4), 2), gotos=2)
+    assert len(entries_of(info)) == 2 and c.count("io_write(0xC004, ") == 1
+
+
+def test_shared_tail_a_jsr_targets_is_a_function(prefix, tmp_path):
+    """A computed `JSR`'s arm another procedure jumps into is a procedure: a function both
+    reach, the dispatch's other arms inline in it."""
+    _, labels, _ = assemble(OPSHARE)
+    calls = [("entry", a) for a in (2, 5, 4, 1, 5, 0, 4, 5)]
+    _, _, info = check(prefix, tmp_path, OPSHARE, calls)
+    entries = entries_of(info)
+    assert labels["h2"] in entries and not entries & {labels["h0"], labels["h1"]}
 
 
 def test_multi_exit_loop_breaks_to_its_follow(prefix, tmp_path):

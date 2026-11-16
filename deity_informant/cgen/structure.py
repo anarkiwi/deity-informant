@@ -342,6 +342,47 @@ def split_tails(g, tail):
                 work += [u for u, _ in g.succ[n] if u not in work]
 
 
+def ending_tails(g, keep):
+    """``{node: its region}`` of each join ``keep`` holds (two or more predecessors) whose
+    region, the nodes it reaches, has no cycle and no node but it entered from outside the
+    region: code that ends the procedure and is entered only at its head, so a copy of it in
+    place of a jump into it runs the same."""
+    preds = g.preds()
+    out = {}
+    for t in g.items:
+        if len(preds[t]) < 2 or t == g.entry or not keep(t):
+            continue
+        region, work = {t}, [t]
+        while work:
+            for u, _ in g.succ[work.pop()]:
+                if u not in region:
+                    region.add(u)
+                    work.append(u)
+        if any(p not in region for u in region - {t} for p in preds[u]):
+            continue
+        if nx.is_directed_acyclic_graph(nx.DiGraph([(n, u) for n in region for u, _ in g.succ[n]])):
+            out[t] = region
+    return out
+
+
+def copy_tail(g, x, t, region):
+    """Redirect the edge from ``x`` into tail ``t`` (its ``region``) to a copy of the tail;
+    the copy's nodes."""
+    m = {u: next(g.ids) for u in sorted(region)}
+    for u, n in m.items():
+        g.items[n] = [
+            ("site", m.get(it[1], x if u == t else it[1]), n) if it[0] == "site" else it
+            for it in g.items[u]
+        ]
+        g.succ[n] = [[m.get(v, v), c] for v, c in g.succ[u]]
+        if u in g.effects:
+            g.effects[n] = g.effects[u]
+        if u in g.composed:
+            g.composed.add(n)
+    g.succ[x] = [[m[t] if v == t else v, c] for v, c in g.succ[x]]
+    return set(m.values())
+
+
 def select_entries(g, place):
     """Give each cycle entered at two nodes from one two-way branch (through copies) a head
     choosing the entry by a selector variable: the branch's condition, saved on entry, and the
@@ -424,20 +465,58 @@ class Structurer:
     def __init__(self, conds, quiet=lambda items: False, hoistable=lambda items: False,
                  falls=lambda p, y: False, place=lambda n: 0,
                  tail=lambda items: False, exprable=lambda items: False,
-                 latchable=lambda items: False):  # fmt: skip
+                 latchable=lambda items: False, shared=lambda n: False):  # fmt: skip
         self.conds, self.quiet, self.hoistable, self.falls = conds, quiet, hoistable, falls
         self.place, self.tail, self.exprable, self.latchable = place, tail, exprable, latchable
+        self.shared = shared
         self.latch, self.cases = {}, {}
         self.g = self.kids = self.loops = self.back = self.rank = None
         self.at, self.after, self.follows, self.idom = {}, {}, set(), {}
 
     def structure(self, g):
-        """The statements of ``g``, with ``label`` statements where jumps go."""
+        """The statements of ``g`` (:meth:`finish`ed), with ``label`` statements where jumps
+        go. A ``goto`` to a node of :func:`ending_tails` gets a copy of the tail in its place,
+        one to a tail call continuing elsewhere (:meth:`calls_into`) a copy of the call, the
+        ``goto`` then leaving it, and the graph is placed again, until no ``goto`` goes to
+        either."""
         self.g = g
         prune(g)
         short_circuit(g, self.hoistable, self.exprable)
         split_tails(g, self.tail)
         select_entries(g, self.place)
+        tails = ending_tails(g, self.shared)
+        while True:
+            out = self.finish(self.place_all())
+            gotos = set(_walk(out, lambda it: it[1:] if it[0] == "goto" else None))
+            hits = sorted((t, x) for t, x in gotos if t in tails or self.calls_into(t))
+            if not hits:
+                return out
+            for t, x in hits:
+                if t in tails:
+                    new = copy_tail(g, x, t, tails[t])
+                else:
+                    new = {g.add([], g.succ[t])}
+                    (n,) = new
+                    g.items[n] = [("site", x, n), *(it for it in g.items[t] if it[0] != "site")]
+                    g.succ[x] = [[n if v == t else v, c] for v, c in g.succ[x]]
+                for region in tails.values():
+                    if x in region:
+                        region.update(new)
+
+    def calls_into(self, t):
+        """Whether node ``t`` is a tail call's code (``tail``) continuing unconditionally into
+        a node that does not reach it."""
+        es = self.g.succ[t]
+        return (
+            len(es) == 1
+            and es[0][1] is None
+            and self.tail([it for it in self.g.items[t] if it[0] != "site"])
+            and t not in self.reach(es[0][0], ())
+        )
+
+    def place_all(self):
+        """The placed statements of the graph."""
+        g = self.g
         pre, _, back = g.dfs(key=self.place)
         g.remove(set(g.items) - set(pre))
         self.rank = _layout(g, pre, back, self.place)
