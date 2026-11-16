@@ -1356,9 +1356,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             return None
         if id(o) not in self.knowns:
             lo, hi = self.iv(self.address(o))
-            k = self.mod.known(self.name, lo) if lo == hi else None
-            nameless = self.mod.mem.base(lo)[0] is None and not self.mod.folded[0][lo]
-            self.knowns[id(o)] = None if k is None or nameless else k
+            self.knowns[id(o)] = self.mod.known(self.name, lo) if lo == hi else None
         return self.knowns[id(o)]
 
     def exact(self, o):
@@ -3080,6 +3078,9 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.order, self.edges, self.ids, self.entries = [], {}, new_ids(), []
         self.sites, self.made, self.lifted, self.prov = {}, Counter(), {}, {}
         self.copy_pcs, self.sets, self.kpos, self.tables = {}, {}, None, {}
+        #: The bytes init stores (``postinit.Init.mask``), and those no store may write
+        #: (:meth:`unwritten`, None until found or when a store of unknown address may).
+        self.init_stored, self.free = np.zeros(0x10000, dtype=bool), None
         self.reach, self.proven, self.checked, self.konsts = {}, {}, set(), {}
         #: The pointer objects ``[(lo, hi)]`` the lift checks, and those the ``.c`` names.
         self.ptr_objects, self.objs_used = [], set()
@@ -3142,7 +3143,9 @@ class Module:  # pylint: disable=too-many-instance-attributes
         """Keep the values something observable needs, over the whole module: a store, an
         I/O access, a trap or a branch needs its operands, a used result of a lifted function
         its returned operands, a used parameter its call sites' arguments. Calls pass only the
-        parameters used, functions return only the results used, the rest is dropped."""
+        parameters used, functions return only the results used, the rest is dropped. The
+        bytes no store writes (:meth:`unwritten`) are found first."""
+        self.unwritten()
         self.sites = sites = {f.name: [] for f in self.funcs}
         for f in self.funcs:
             for o in f.walk():
@@ -3597,12 +3600,53 @@ class Module:  # pylint: disable=too-many-instance-attributes
     def known(self, name, a):
         """The value byte ``a`` holds whenever function ``name`` runs, or None: for the other
         entries' lift (:attr:`after`) one init leaves constant (:attr:`folded`), else a
-        constant byte's (code, or a table the lift read as constant); not a volatile one."""
+        constant byte's (code, or a table the lift read as constant) or the entry value of a
+        machine byte outside ``loaded`` no store may write (:meth:`unwritten`); not a volatile
+        one."""
         if self.mem.vol[a]:
             return None
         if self.folded[0][a] and (self.after is None or name in self.after):
             return self.folded[1][a]
-        return self.mem.image[a] if self.mem.constant[a] else None
+        free = self.free is not None and self.free[a] and not self.mem.moves(a)
+        return self.mem.image[a] if self.mem.constant[a] or free else None
+
+    def unwritten(self):
+        """The bytes no store of any function may write (by its address set, else its address
+        interval met with the run the lift bounds it to), no store with an address set
+        (``Memory.written``) or init (:attr:`init_stored`) writes, outside the stack page and
+        the volatile ranges; None when a store of unknown address may write any byte. While
+        they are found no byte is known unwritten, and the functions' intervals are found
+        again after."""
+        self.free = None
+        may = self.mem.vol | self.init_stored
+        may[0x100:0x200] = True
+        for lo, hi in self.mem.written:
+            may[lo:hi] = True
+        for f in self.funcs:
+            for o in f.walk():
+                store = o.name == "memref.store" and o.args[-2] in f.globals
+                if not store and not (o.name == "func.call" and o.prop("callee") == "@io_write"):
+                    continue
+                aset = self.fx(f.name).addr_sets.get((o.pc, True)) if store else None
+                for lo, hi in aset or ():
+                    may[lo:hi] = True
+                if aset:
+                    continue
+                lo, hi = f.addr_iv(o)
+                run = self.run_of(f, o)
+                if run is not None:
+                    lo, hi = max(lo, run[0]), min(hi, run[1])
+                elif hi - lo >= regions.BOUNDED:
+                    may = None
+                    break
+                may[lo : hi + 1] = True
+            if may is None:
+                break
+        for f in self.funcs:
+            f.reindex()
+        self.results_ivs = {}
+        self.free = None if may is None else ~may
+        return self.free
 
     def symbol(self, j):
         """The ``.h`` name of symbol ``j`` (:attr:`symbols`): ``G_`` and the offset of its
@@ -3615,17 +3659,18 @@ class Module:  # pylint: disable=too-many-instance-attributes
 
     def konst(self, addr):
         """The ``.h`` name of the constant byte at ``addr``, relative to the origin it is
-        placed by (so the ``.c`` holds neither its value nor its address), or None outside
-        the program; of a byte init leaves constant (:attr:`folded`) ``K_`` and the offset
-        its variable would be named by (:meth:`var_name`)."""
+        placed by (so the ``.c`` holds neither its value nor its address), a byte of the image
+        relative to it, a fixed machine address's ``MEM_K`` and the address; of a byte init
+        leaves constant (:attr:`folded`) ``K_`` and the offset its variable would be named by
+        (:meth:`var_name`)."""
         if self.folded[0][addr]:
             name = "K_" + self.var_name(addr)[2:]
             self.konsts[name] = self.folded[1][addr]
             return name
         sym, off = self.mem.base(addr)
-        if sym is None:
-            return None
-        name = f"{sym[:-4]}_K{off:X}"
+        if sym is None and self.mem.moves(addr):
+            sym, off = "IMG_ORG", addr - self.mem.loaded[0]
+        name = f"MEM_K{addr:04X}" if sym is None else f"{sym[:-4]}_K{off:X}"
         self.konsts[name] = self.mem.image[addr]
         if sym == "CODE_ORG":
             self.used.add("CODE_ORG")

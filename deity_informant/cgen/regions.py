@@ -328,3 +328,85 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         if self.code_span[0] <= addr < self.code_span[1]:
             return "CODE_ORG", addr - self.code_span[0]
         return "IMG_ORG", addr - self.loaded[0]
+
+
+#: Bytes of one entry of a :func:`background` table: its origin, pool offset and mask.
+ENTRY = 6
+
+
+def _cuts(values, care, p):
+    """The run starts of a fewest-runs partition of the address space in which each run's
+    ``care`` bytes at one phase (address modulo ``p``) hold one value: each pair of cared bytes
+    of one phase, unlike and with none between, needs a start in ``(first, second]``, and the
+    second of the pairs by ascending second that the last start misses is one."""
+    idx = np.flatnonzero(care)
+    order = np.lexsort((idx, idx & (p - 1)))
+    a = idx[order]
+    bad = ((a[1:] ^ a[:-1]) & (p - 1) == 0) & (values[a[1:]] != values[a[:-1]])
+    firsts, seconds = a[:-1][bad], a[1:][bad]
+    by = np.argsort(seconds, kind="stable")
+    cuts = [0]
+    for first, second in zip(firsts[by].tolist(), seconds[by].tolist()):
+        if first >= cuts[-1]:
+            cuts.append(second)
+    return cuts
+
+
+def _table(values, care, p):
+    """``(entries, pool)`` of the runs of :func:`_cuts` at period ``p``: a run whose cared
+    bytes span no more than ``p`` is literal (``mask`` 0xFFFF, the pool offset less its first
+    cared byte, so ``pool[offset + a]`` reads it; neighbours joined across gaps no wider than
+    an entry), any other periodic (``mask`` ``p - 1``, ``pool[offset + (a & mask)]``, units
+    shared)."""
+    cuts = _cuts(values, care, p)
+    ends = cuts[1:] + [0x10000]
+    pool, units, parts = bytearray(), {}, []
+    for s, e in zip(cuts, ends):
+        at = np.flatnonzero(care[s:e]) + s
+        if not at.size:
+            continue
+        lo, hi = int(at[0]), int(at[-1])
+        if hi - lo < p:
+            if parts and parts[-1][1] == "lit" and lo - parts[-1][3] <= ENTRY:
+                parts[-1][3] = hi
+            else:
+                parts.append([s, "lit", lo, hi])
+            continue
+        unit = np.zeros(p, np.uint8)
+        unit[at & (p - 1)] = values[at]
+        parts.append([s, "per", bytes(unit), None])
+    entries = []
+    for s, kind, x, y in parts:
+        if kind == "lit":
+            entries.append((s, (len(pool) - x) & 0xFFFF, 0xFFFF))
+            pool += bytes(values[x : y + 1])
+        else:
+            if x not in units:
+                units[x] = len(pool)
+                pool += x
+            entries.append((s, units[x], p - 1))
+    if not entries:
+        entries, pool = [(0, 0, 0)], bytearray(1)
+    entries[0] = (0, *entries[0][1:])
+    return entries, bytes(pool)
+
+
+def _size(table):
+    """The bytes of a :func:`_table`."""
+    return len(table[0]) * ENTRY + len(table[1])
+
+
+def background(values, care):
+    """``(entries, pool)``: the bytes of ``values`` where ``care`` holds as a table of runs
+    ``(origin, offset, mask)`` (ascending, the first at 0; a byte ``a`` reads ``pool[(offset +
+    (a & mask)) & 0xFFFF]`` of the last run starting at or below it) over a pool of byte units
+    repeating every power of two bytes, or literal, the period the one giving the smallest
+    table of those below its size (:data:`ENTRY` bytes an entry): exact on the cared bytes,
+    any value elsewhere."""
+    values, care = np.frombuffer(bytes(values), np.uint8), np.asarray(care, bool)
+    best, p = _table(values, care, 1), 2
+    while p <= 0x8000 and p < _size(best):
+        t = _table(values, care, p)
+        best = t if _size(t) < _size(best) else best
+        p *= 2
+    return best
