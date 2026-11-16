@@ -102,9 +102,9 @@ fn hi_certain(zones: &[(u32, u32)], v: Iv, t: u32) -> bool {
     })
 }
 
-struct Store {
-    key: StoreKey,
-    addr: Iv,
+pub(crate) struct Store {
+    pub(crate) key: StoreKey,
+    pub(crate) addr: Iv,
     val: Iv,
     above: bool,
 }
@@ -142,19 +142,7 @@ pub fn protect(
     roots: &[u16],
     bank: Option<&BankMap>,
 ) -> Prot {
-    let mut usable = FixedBitSet::with_capacity(0x100);
-    usable.insert_range(..);
-    for &(lo, hi) in volatile {
-        usable.remove_range((lo as usize).min(0x100)..(hi as usize).min(0x100));
-    }
-    for a in g.code.ones().take_while(|&a| a < 0x100) {
-        usable.set(a, false);
-    }
-    if let Some(m) = bank {
-        for a in [m.dir, m.data].into_iter().filter(|&a| a < 0x100) {
-            usable.set(a as usize, false);
-        }
-    }
+    let usable = usable(g, volatile, bank);
     let mut seen_lo = [0u32; 0x100];
     let mut seen_hi = [(false, false); 0x100];
     for (a, v) in facts.writes.iter().filter(|w| w.0 < 0x100) {
@@ -211,11 +199,10 @@ pub fn protect(
     }
     let seen: FxHashSet<u16> = facts.page1.iter().map(|x| x.0).collect();
     let mut sites: Vec<Site> = Vec::new();
-    let mut stores: Vec<Store> = Vec::new();
     let reach = |a: &crate::analysis::Access| zones.iter().any(|&(lo, hi)| a.addr.meets(lo, hi));
     for (&pc, vs) in &g.vars {
         for v in vs.iter().filter(|v| !is_stack_op(v.op)) {
-            for (ai, a) in v.acc.iter().enumerate().filter(|(_, a)| !a.dummy) {
+            for a in v.acc.iter().filter(|a| !a.dummy) {
                 if let Some(p) = a.ptr.filter(|_| reach(a) && !seen.contains(&pc)) {
                     let (qs, m) = p.need();
                     let qs: Vec<u8> = qs.collect();
@@ -228,17 +215,10 @@ pub fn protect(
                         });
                     }
                 }
-                if a.store && !a.back && a.addr.lo < 0x100 {
-                    stores.push(Store {
-                        key: (pc, v.op, ai),
-                        addr: a.addr,
-                        val: a.val,
-                        above: a.above,
-                    });
-                }
             }
         }
     }
+    let stores = zp_stores(g);
     let mut at: Vec<Vec<usize>> = vec![Vec::new(); 0x100];
     for (i, s) in sites.iter().enumerate() {
         for &q in &s.qs {
@@ -354,12 +334,56 @@ pub fn protect(
     prot
 }
 
+/// The zero-page bytes a pointer pair may use: none volatile, of code or a port register.
+pub(crate) fn usable(g: &Graph, volatile: &[(u32, u32)], bank: Option<&BankMap>) -> FixedBitSet {
+    let mut usable = FixedBitSet::with_capacity(0x100);
+    usable.insert_range(..);
+    for &(lo, hi) in volatile {
+        usable.remove_range((lo as usize).min(0x100)..(hi as usize).min(0x100));
+    }
+    for a in g.code.ones().take_while(|&a| a < 0x100) {
+        usable.set(a, false);
+    }
+    if let Some(m) = bank {
+        for a in [m.dir, m.data].into_iter().filter(|&a| a < 0x100) {
+            usable.set(a as usize, false);
+        }
+    }
+    usable
+}
+
+/// The stores of `g` (no push, no write-back of the byte just loaded) that may write zero page.
+pub(crate) fn zp_stores(g: &Graph) -> Vec<Store> {
+    let mut stores = Vec::new();
+    for (&pc, vs) in &g.vars {
+        for v in vs.iter().filter(|v| !is_stack_op(v.op)) {
+            for (ai, a) in v.acc.iter().enumerate().filter(|(_, a)| !a.dummy) {
+                if a.store && !a.back && a.addr.lo < 0x100 {
+                    stores.push(Store {
+                        key: (pc, v.op, ai),
+                        addr: a.addr,
+                        val: a.val,
+                        above: a.above,
+                    });
+                }
+            }
+        }
+    }
+    stores.sort_unstable_by_key(|s| s.key);
+    stores
+}
+
 /// The store completing pair `q` after store `s` on its straight instruction chain, when
 /// nothing between them reads through the pair or may store into it.
 ///
 /// An indexed store is completed by one whose address is its own plus one through the same,
 /// unchanged index register (`STA $21,X; ...; STA $22,X`).
-fn completer(g: &Graph, index: &FxHashMap<StoreKey, usize>, s: &Store, q: u8) -> Option<usize> {
+pub(crate) fn completer(
+    g: &Graph,
+    index: &FxHashMap<StoreKey, usize>,
+    s: &Store,
+    q: u8,
+) -> Option<usize> {
     let idx = index_regs(s.key.1);
     let other = match s.addr.value() {
         Some(e) if e == q as u32 => Some(q.wrapping_add(1)),

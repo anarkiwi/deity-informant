@@ -63,6 +63,7 @@ def lift(
     once=False,
     held=(),
     devices=None,
+    holds=(),
 ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
     """Lift ``entries`` of the program in ``image`` (the memory each entry starts from);
     ``cycles=True`` counts cycles and stamps volatile accesses with them; ``bank`` is a bank
@@ -80,7 +81,10 @@ def lift(
     (a host's init): a store into code makes cells only of the instructions that may run after
     it in the same call, and needs no code check (``docs/wholeprog.md``, *Init*); ``held`` the
     bytes such an init stored that hold one value on every run, the image's; ``devices`` a
-    :class:`deity_informant.devices.Model` of what the volatile addresses answer."""
+    :class:`deity_informant.devices.Model` of what the volatile addresses answer; ``holds``
+    ``[(lo, hi)]`` runs past the program the host holds as data besides those the lift's
+    stores write (another lift's stores: a pointer object's loads may read them,
+    ``docs/wholeprog.md``, *Pointer objects*)."""
     n = _native_or_raise()
     prog = n.lift_program(
         bytes(image),
@@ -99,6 +103,7 @@ def lift(
         once=once,
         held=sorted(set(held)),
         devices=None if devices is None else devices.lower(_ranges(volatile)),
+        holds=sorted((int(a), int(b)) for a, b in holds),
     )
     prog.backend = backend or BACKEND
     return prog

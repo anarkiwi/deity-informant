@@ -418,6 +418,8 @@ class Program:  # pylint: disable=too-many-instance-attributes
     addr_sets: dict | None = None
     #: Per ``(zp),Y`` access, the words its pointer may hold (``Program.ptr_sets``).
     ptr_sets: dict | None = None
+    #: The pointer objects ``[(lo, hi)]`` the functions' ``objchk`` checks name, by index.
+    objects: list = ()
     reach: dict | None = None
     proven: dict | None = None
     regs: dict | None = None
@@ -490,6 +492,15 @@ def _guard_symbols(funcs, pcs):
                 g[2][i] = ["k", len(out), 1]
                 out.append((g[4], v[1]))
     return out
+
+
+def _renumber(funcs, origin, base):
+    """Number the objects the ``objchk`` checks of the functions of init's lift name (origin 1)
+    after the ``base`` of the other entries' lift."""
+    for fn in (fn for fn, k in zip(funcs, origin) if k):
+        for op in (op for b in fn["blocks"] for op in b["ops"]):
+            if op[0] == "CALLOTHER" and op[3] == "objchk":
+                op[2][1] = [op[2][1][0], op[2][1][1] + base, op[2][1][2]]
 
 
 def _facts(prog):
@@ -601,6 +612,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
             free=None if free is None else {a: v for a, v in free.items() if a not in held},
             alias=[g for g in alias if held.isdisjoint({g[0], g[0] + 1, g[1], g[1] + 1})],
             held=held,
+            holds=[] if lone is None else list(lone.written),
             **kw,
         )
 
@@ -617,6 +629,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     p.bounds, p.addr_sets, p.reach = dict(prog.bounds), dict(prog.addr_sets), dict(prog.reach)
     p.proven, p.regs, p.bounded = dict(prog.proven), dict(prog.regs), dict(prog.bounded)
     p.ptr_sets = {pc: set(w) for pc, w in prog.ptr_sets.items()}
+    p.objects = [o[:2] for o in prog.objects]
     if state is not None:
         p.init, p.fixed = (entries[init], state), np.array(sorted(fixed), dtype=np.int64)
     if len(lifts) > 1:
@@ -627,6 +640,8 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
         p.jumps.update(dict(lone.jumps))
         for pc, w in lone.ptr_sets.items():
             p.ptr_sets.setdefault(pc, set()).update(w)
+        _renumber(funcs, origin, len(p.objects))
+        p.objects += [o[:2] for o in lone.objects]
         p.written += list(lone.written)
     return p, prog.stats
 
@@ -720,6 +735,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     }
     mod.addr_sets = p.addr_sets or {}
     mod.reach, mod.proven, mod.bounded = p.reach or {}, p.proven or {}, p.bounded or {}
+    mod.ptr_objects = list(p.objects)
     mod.regfile = regfile = [r for r, _ in emit.Context(p.funcs, False).regfile]
     mod.regs = {pc: tuple(bytes(x) for x in r) for pc, r in (p.regs or {}).items()}
     mod.kpos = regfile.index(emit.KREG) if emit.KREG in regfile else None
@@ -789,7 +805,14 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     c += fns
     c_text = clang_format("\n".join(c) + "\n")
     store = _storage(mem, used, helpers, regions) + mod.state_h() + sets
-    h_text = clang_format(_header(mem, used, [key[1] for key in traps], mod.konsts, store))
+    objs = [
+        f"#define CGEN_OBJ{j}_{k} 0x{v:04X}"
+        for j in sorted(mod.objs_used)
+        for k, v in zip(
+            ("ORG", "LIM"), (mod.ptr_objects[j][0], mod.ptr_objects[j][1] - mod.ptr_objects[j][0])
+        )
+    ]
+    h_text = clang_format(_header(mem, used, [key[1] for key in traps], mod.konsts, objs + store))
     times["print"] = time.perf_counter() - t1
     info = {
         "times": times,

@@ -76,6 +76,7 @@ pub struct Exec {
     sets: Vec<(u16, Vec<u8>)>,
     pub(crate) constcode: FixedBitSet,
     pub(crate) img: Box<[u8]>,
+    pub(crate) objects: Vec<(u16, u16, Vec<u16>)>,
     elide_ret: bool,
     cycles: bool,
     /// Per function: first value-file index and count of its stack slots, and which slots
@@ -183,6 +184,7 @@ impl Exec {
             sets: p.sets.clone(),
             constcode: FixedBitSet::with_capacity(0x10000),
             img: vec![0u8; 0x10000].into_boxed_slice(),
+            objects: p.objects.clone(),
             elide_ret: p.elide_ret,
             cycles: p.cycles,
             slots,
@@ -627,6 +629,12 @@ impl<'a> Runner<'a> {
                     Opc::CallOther => {
                         if o.aux == other::DEOPT {
                             break (get(f, o.a) as u16, Stop::Deopt);
+                        }
+                        if o.aux == other::OBJCHK {
+                            let (lo, hi, _) = x.objects[get(f, o.b) as usize];
+                            let off = get(f, o.a).wrapping_sub(lo as u32) & 0xffff;
+                            f[o.out as usize] = (off > (hi - lo) as u32) as u32;
+                            continue;
                         }
                         let a = get(f, o.a) as usize;
                         let hit = x.constcode.contains(a) && x.img[a] as u32 != get(f, o.b);

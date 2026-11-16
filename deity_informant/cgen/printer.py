@@ -40,6 +40,8 @@ BINOP = {
 }
 NOISY = {"<<", ">>", "&", "|", "^", "&&", "||"}
 INT16 = (-0x8000, 0x7FFF)
+#: The lift's checks: calls computing a value with no effect.
+CHECKS = ("@codechk", "@objchk")
 
 
 @dataclass(frozen=True)
@@ -1333,14 +1335,14 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         """Whether ``o`` computes a value with no effect."""
         if o.name in ("memref.load",) or o.name.startswith("arith.") or o.name == "ub.poison":
             return True
-        return o.name == "func.call" and o.prop("callee") == "@codechk"
+        return o.name == "func.call" and o.prop("callee") in CHECKS
 
     def effect(self, o):
         """Whether ``o`` may write memory or call out."""
         if id(o) in self.dropped:
             return False
         if o.name == "func.call":
-            return o.prop("callee") != "@codechk"
+            return o.prop("callee") not in CHECKS
         return o.name == "memref.store"
 
     def mark_addresses(self):
@@ -2183,6 +2185,14 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             self.mod.helpers.add("cgen_var")
         return E(f"{fn}({a.text})", 16, "", 0, 255, False, True, a.refs)
 
+    def objchk(self, o):
+        """The test ``objchk(p, j)`` of call ``o``: whether pointer ``p`` lies outside object
+        ``j``, whose bounds the ``.h`` names."""
+        p, j = self.ex(o.args[0]), self.f.defs[o.args[1]].int_prop("value")
+        self.mod.objs_used.add(j)
+        text = f"((uint16_t)({par(p, 12, '-')} - CGEN_OBJ{j}_ORG) > CGEN_OBJ{j}_LIM)"
+        return E(text, 16, "", 0, 1, **join(p))
+
     def checked(self, o, j, a):
         """Pointer load ``o`` of address ``a`` (an expression) through held span ``j``'s
         bounds-checked reader ``rdCj(base, index)``: the address as a 16-bit base plus a byte
@@ -2226,6 +2236,8 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             return self.load(o)
         if name == "arith.kfam":
             return self.kfam(o)
+        if name == "func.call" and o.prop("callee") == "@objchk":
+            return self.objchk(o)
         if name == "func.call":
             a, v = self.addr(o.args[0]), self.ex(o.args[1])
             self.mod.helpers.add("codechk")
@@ -2364,7 +2376,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             return
         if (
             name == "func.call"
-            and o.prop("callee") == "@codechk"
+            and o.prop("callee") in CHECKS
             or (name != "func.call" and f.pure(o))
         ):
             v = o.res[0]
@@ -2930,6 +2942,8 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.sites, self.made, self.lifted, self.prov = {}, Counter(), {}, {}
         self.copy_pcs, self.sets, self.kpos, self.tables = {}, {}, None, {}
         self.reach, self.proven, self.checked, self.konsts = {}, {}, set(), {}
+        #: The pointer objects ``[(lo, hi)]`` the lift checks, and those the ``.c`` names.
+        self.ptr_objects, self.objs_used = [], set()
         #: The held spans whose bounds-checked readers find promoted cells' variables.
         self.var_spans, self.var_at = set(), []
         self.offsets, self.insn = {}, np.zeros(0x10000, dtype=bool)
