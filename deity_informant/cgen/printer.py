@@ -2227,27 +2227,18 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         text = f"{sym} + {lit(off, 16).text}" if off else sym
         return E(text, 12 if off else 16, "+" if off else "", c, c, True)
 
-    def split(self, a):
-        """``(constant, rest)`` of an address value: ``rest`` is None or a value."""
-        return self.f.split(a)
-
     def indexed(self, o):
         """``(base, index)`` texts of the address of access ``o`` when it is a 16-bit value
         plus a zero-extended byte, else None."""
-        bi = self.base_index(o)
+        bi = self.f.base_index(o)
         return None if bi is None else (self.addr(bi[0]).text, self.ex(bi[1]).text)
-
-    def base_index(self, o):
-        """``(base, index)`` values of the address of access ``o`` when it is a 16-bit value
-        plus a zero-extended byte, else None."""
-        return self.f.base_index(o)
 
     def base_tests(self, o, how):
         """Per choice of a pointer access ``o`` over regions and spans (``how``), a test of its
         base alone, when the base determines the choice: the bases that reach each choice's
         part of the address set (its addresses less the index's interval) are disjoint
         intervals, so the test holds for every index the base is used with."""
-        bi = self.base_index(o)
+        bi = self.f.base_index(o)
         runs = self.mod.addr_set(self.f.name, o)
         if bi is None or not runs:
             return None
@@ -2277,7 +2268,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
 
     def addr(self, a):
         """The address value ``a`` with its constant relocated (a zero-page one as is)."""
-        c, rest = self.split(a)
+        c, rest = self.f.split(a)
         if self.f.width(a) < 16 and rest is not None:
             r = self.ex(rest) if c == 0 else binary("+", 12, lit(c, 8), self.ex(rest), 8)
             return clean(r, 8)
@@ -2352,7 +2343,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
     def pointer(self, o):
         """Whether access ``o``'s address is a constant plus a value no byte extends: a
         pointer, not an indexed constant base."""
-        rest = self.split(self.f.address(o))[1]
+        rest = self.f.split(self.f.address(o))[1]
         d = self.f.defs.get(rest)
         byte = d is not None and d.name == "arith.extui" and self.f.width(d.args[0]) == 8
         return rest is not None and self.f.width(rest) == 16 and not byte
@@ -2378,7 +2369,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         that access ``o`` addresses: the address modulo its width (16 bits, or 8 for a
         zero-page one), as the 6502 wraps it, less the origin."""
         name = f"C{k}" if held else f"R{k}"
-        c, rest = self.split(self.f.address(o))
+        c, rest = self.f.split(self.f.address(o))
         if rest in self.f.kptrs:
             p = self.ex(rest)
             return E(f"{p.text}[{lit(c, 8).text}]", 16, "", 0, 255, False, True, p.refs)
@@ -2400,7 +2391,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         org, n = mem.held[k] if held else mem.regions[k]
         n = n - org if held else n
         sym = E(f"{name}_ORG", lo=org, hi=org, uns=True)
-        c, rest = self.split(a)
+        c, rest = self.f.split(a)
         top = (1 << f.width(a)) - 1
         c &= top
         deep, parts = self.terms(a) if top == 0xFFFF else (c, [])
@@ -2467,7 +2458,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             return self.checked(o, how[2], a)
         if how[0] == "bounded":
             # A constant base plus a byte inside one held span: its bounds-checked reader.
-            if not how[1] and self.base_index(o) is not None:
+            if not how[1] and self.f.base_index(o) is not None:
                 return self.checked(o, how[2][0], a)
             ((test, el),) = self.mod.choices(how[1], how[2], a.text, self.indexed(o))
             self.mod.helpers.add("oob_rd")
@@ -2507,8 +2498,8 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             self.mod.var_spans.add(j)
         if not sure:
             self.mod.checked.add(j)
-        bi = self.base_index(o)
-        c, rest = self.split(self.f.address(o))
+        bi = self.f.base_index(o)
+        c, rest = self.f.split(self.f.address(o))
         if bi is not None:
             at, idx = bi[0], self.ex(bi[1])
         elif rest is not None and self.f.width(rest) == 16 and 0 < c < 0x100:
@@ -2721,7 +2712,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         """The value of a constant store ``o`` that, with a constant store to the other byte
         of a pointer pair in its block, writes an address: relative to its region."""
         f = self.f
-        c, a = f.const_of(o.args[0]), self.split(f.address(o))
+        c, a = f.const_of(o.args[0]), self.f.split(f.address(o))
         if c is not None and a[1] is not None:
             return self.stack_halves(o, c)
         if c is None or a[1] is not None:
@@ -2733,7 +2724,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         cells = {}
         for j, x in enumerate(blk.ops):
             if x.name == "memref.store" and x.args[-2] in f.globals:
-                xa = self.split(f.address(x))
+                xa = self.f.split(f.address(x))
                 if xa[1] is None:
                     cells.setdefault(xa[0], []).append((j, f.const_of(x.args[0])))
         found = []
