@@ -8,6 +8,7 @@
 
 pub mod analysis;
 pub mod bank;
+pub mod dev;
 pub mod dispatch;
 pub mod emit;
 pub mod exec;
@@ -72,6 +73,8 @@ pub struct Opts {
     /// the instructions that may run after it in the same call, and needs no code check of the
     /// others, which ran or never run (*Init*).
     pub once: bool,
+    /// What the volatile addresses answer ([`dev`]).
+    pub devices: dev::Devices,
 }
 
 impl Default for Opts {
@@ -87,6 +90,7 @@ impl Default for Opts {
             alias: Vec::new(),
             held: Vec::new(),
             once: false,
+            devices: dev::Devices::default(),
         }
     }
 }
@@ -575,6 +579,7 @@ pub fn lift_banked(
             matched,
             opts.loaded,
             volatile,
+            &opts.devices,
             opts.entry_sp.map(|_| vsa::Wanted { held: &held }),
             &free,
             opts.once,

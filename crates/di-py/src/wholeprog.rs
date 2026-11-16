@@ -1449,12 +1449,13 @@ pub fn reference_calls(
 /// over its runs), ``alias`` ``[(lo, g, delta)]`` the operand pairs of them one pointer
 /// variable holds; ``once=True`` runs each entry once from ``image`` (a host's init): a store
 /// into code makes cells only of the instructions that may run after it; ``held`` the bytes
-/// the host's init stored that hold one value after it, the image's.
+/// the host's init stored that hold one value after it, the image's; ``devices`` what the
+/// volatile addresses answer (``deity_informant.devices.Model.lower``).
 /// ``bank`` is a bank map: ``dir``/``data`` port
 /// cells, ``mask`` and ``pull`` bits, ``lut`` (configuration per effective port value),
 /// ``configs`` (per configuration 256 page kinds: 0 RAM, 1 ROM, 2 I/O) and ``rom``.
 #[pyfunction]
-#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None, fold=false, sensitive=None, free=vec![], alias=vec![], once=false, held=vec![]))]
+#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None, fold=false, sensitive=None, free=vec![], alias=vec![], once=false, held=vec![], devices=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn lift_program(
     py: Python<'_>,
@@ -1473,6 +1474,7 @@ pub fn lift_program(
     alias: Vec<(u16, u16, u16)>,
     once: bool,
     held: Vec<u16>,
+    devices: Option<Lowered>,
 ) -> PyResult<Program> {
     let img = self::image(image)?;
     let es = self::entries(entries);
@@ -1489,10 +1491,48 @@ pub fn lift_program(
         alias,
         held,
         once,
+        devices: devices_of(devices)?,
     };
     Ok(Program::new(py.detach(|| {
         di_lift::lift_banked(&img, &es, &volatile, &f, opts, bank.as_ref())
     })))
+}
+
+/// A lowered device model: per canonical register `(canon, latch, ones, live, ctrl, cmask,
+/// sets)` (`ctrl` -1: none; `sets` 32-byte bitmaps), and `(addr, canon)` per described address.
+type Lowered = (
+    Vec<(u16, u8, u8, u8, i32, u8, Vec<Vec<u8>>)>,
+    Vec<(u16, u16)>,
+);
+
+fn devices_of(d: Option<Lowered>) -> PyResult<di_lift::dev::Devices> {
+    let mut out = di_lift::dev::Devices::default();
+    let Some((regs, addrs)) = d else {
+        return Ok(out);
+    };
+    for (c, latch, ones, live, ctrl, cmask, sets) in regs {
+        let sets =
+            sets.iter()
+                .map(|b| {
+                    let b: &[u8; 32] = b.as_slice().try_into().map_err(|_| {
+                        pyo3::exceptions::PyValueError::new_err("a set is 32 bytes")
+                    })?;
+                    Ok(di_lift::vsa::Bits::from_bitmap(b))
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+        let ctrl = u16::try_from(ctrl).ok();
+        let reg = di_lift::dev::Reg {
+            latch,
+            ones,
+            live,
+            ctrl,
+            cmask,
+            sets,
+        };
+        out.regs.insert(c, reg);
+    }
+    out.canon.extend(addrs);
+    Ok(out)
 }
 
 /// The function plans the lift starts from: ``[{"pc", "top", "balanced", "heights"}]`` with
@@ -1519,6 +1559,7 @@ pub fn plan_program<'py>(
         true,
         None,
         &[],
+        &Default::default(),
         None,
         &Default::default(),
         false,

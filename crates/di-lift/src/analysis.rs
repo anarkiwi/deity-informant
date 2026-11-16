@@ -783,8 +783,8 @@ pub fn entry_config(m: &BankMap, img: &[u8; 0x10000], facts: &Facts, pc: u16) ->
 /// gives targets for jumps through it within the same fixpoint; which computed transfers stay
 /// unresolved (to their facts' targets) is decided on a converged program, and the fixpoint is
 /// recomputed until that does not grow. The bytes of the `volatile` ranges are never
-/// constant: a device answers any value. With `reach` the graph holds the address hulls of
-/// pointer loads. `free` holds the variables the host's init leaves: bytes of
+/// constant: a device answers any value, what `devices` gives. With `reach` the graph holds
+/// the address hulls of pointer loads. `free` holds the variables the host's init leaves: bytes of
 /// unknown value (their values over its runs, in run order), as the facts' writes are. With
 /// `once` each entry runs once from `img`: a store makes cells only of the code bytes of the
 /// instructions that may run after it ([`After`]) and needs no code check.
@@ -797,6 +797,7 @@ pub fn discover(
     matched: bool,
     loaded: Option<(u32, u32)>,
     volatile: &[(u32, u32)],
+    devices: &crate::dev::Devices,
     reach: Option<crate::vsa::Wanted>,
     free: &FxHashMap<u16, Vec<u8>>,
     once: bool,
@@ -819,6 +820,7 @@ pub fn discover(
         failed: FxHashSet::default(),
         loaded,
         volatile,
+        devices,
         reach,
         free,
         once,
@@ -942,6 +944,7 @@ struct Fixpoint<'a> {
     /// earlier round, nor the facts.
     constant: FixedBitSet,
     volatile: &'a [(u32, u32)],
+    devices: &'a crate::dev::Devices,
     /// What the address hulls of pointer loads take, when wanted.
     reach: Option<crate::vsa::Wanted<'a>>,
     /// The variables the host's init leaves, with their values per run.
@@ -990,6 +993,7 @@ impl Fixpoint<'_> {
             reach: true,
             written: &written,
             aimed: &g.aimed,
+            devices: self.devices,
         };
         let an = crate::vsa::analyze(
             &g.img,
@@ -1105,6 +1109,7 @@ impl Fixpoint<'_> {
                 reach: false,
                 written: &none,
                 aimed: &aimed,
+                devices: self.devices,
             };
             let an = crate::vsa::analyze(
                 &cimg,

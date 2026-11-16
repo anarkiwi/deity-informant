@@ -5,7 +5,7 @@ from jennings.devices.mpu6502 import NativeMPU
 from jennings.memory import NativeMemory
 
 import wholeprog_progs as W
-from deity_informant import NATIVE, cgen, polling, postinit, wholeprog
+from deity_informant import NATIVE, c64devices, cgen, devices, polling, postinit, wholeprog
 
 pytestmark = pytest.mark.skipif(not NATIVE, reason="needs the native extension")
 
@@ -13,9 +13,9 @@ pytestmark = pytest.mark.skipif(not NATIVE, reason="needs the native extension")
 VOLATILE = [W.IO, (0xD000, 0xD400)]
 
 
-def machine(count=3, flag=0xC1):
-    """A ``postinit`` machine on the jennings core: ``$D011``/``$D012`` the beam, ``$C00D``
-    answering 0 to its first ``count`` reads, then ``flag``."""
+def machine(count=3, flag=0xC1, addr=0xC00D, volatile=VOLATILE):
+    """A ``postinit`` machine on the jennings core: ``$D011``/``$D012`` the beam, ``addr``
+    answering 0 to its first ``count`` reads, then ``flag``; ``volatile`` logged."""
 
     def run(mem, pc, a):
         m = NativeMemory(bytes(mem))
@@ -27,12 +27,12 @@ def machine(count=3, flag=0xC1):
             seen[0] += 1
             return flag if seen[0] > count else 0
 
-        m.subscribe_to_read([0xC00D], status)
+        m.subscribe_to_read([addr], status)
         io, stored = [], set()
 
         def wrote(x, v):
             stored.add(x)
-            if any(lo <= x < hi for lo, hi in VOLATILE):
+            if any(lo <= x < hi for lo, hi in volatile):
                 io.append((x, v))
 
         m.observe_data_access(on_read=None, on_write=wrote, stack=True)
@@ -179,6 +179,40 @@ def test_settle_gives_the_least_leaving_byte_and_what_varies(src, byte, varying)
     mpu = NativeMPU(memory=NativeMemory(bytes(img)))
     got = polling.settle(loops[lab["wait"]], mpu.memory, polling.registers(mpu), lab["wait"])
     assert got == (byte, frozenset(varying))
+
+
+@pytest.mark.parametrize(
+    "src,model,want",
+    [
+        (KEPT, True, (0x30, frozenset())),
+        (
+            "init:\nwait:   LDA $D019\n        AND #$70\n        BEQ wait\n        RTS\n",
+            True,
+            (0x70, frozenset()),
+        ),
+        (
+            "init:\nwait:   LDA $D019\n        AND #$70\n        BEQ wait\n        RTS\n",
+            False,
+            (0x10, frozenset({0})),
+        ),
+        ("init:\nwait:   LDA $D011\n        AND #$40\n        BEQ wait\n        RTS\n", True, None),
+        (
+            "init:\nwait:   LDA $D011\n        AND #$40\n        BEQ wait\n        RTS\n",
+            False,
+            (0x40, frozenset()),
+        ),
+    ],
+    ids=["counter", "status-model", "status-any", "latched-model", "latched-any"],
+)
+def test_settle_over_the_models_values(src, model, want):
+    """With the device model a loop is decided over the values the register answers (bits a
+    status register always reads set), and only where it leaves on values the device reads
+    eventually (a latched bit never changes); without, over every byte."""
+    img, lab, loops = loops_of(src)
+    mpu = NativeMPU(memory=NativeMemory(bytes(img)))
+    dev = devices.State(c64devices.MODEL) if model else None
+    got = polling.settle(loops[lab["wait"]], mpu.memory, polling.registers(mpu), lab["wait"], dev)
+    assert got == want
 
 
 @pytest.mark.parametrize(

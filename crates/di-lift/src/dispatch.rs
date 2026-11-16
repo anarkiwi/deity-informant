@@ -523,13 +523,17 @@ pub(crate) fn target_operands(vs: &[Var], pc: u16) -> impl Iterator<Item = u16> 
 }
 
 /// The bytes whose contents the analysis tracks: the pointers of `JMP (ind)`s and of
-/// `(zp),Y` accesses, the cell operand bytes of instructions and the bytes both loaded and
-/// stored at a constant address.
+/// `(zp),Y` accesses, the cell operand bytes of instructions, the bytes outside `dev` both
+/// loaded and stored at a constant address, and the canonical device registers whose values
+/// reads depend on that a store at a constant address writes.
 pub(crate) fn vectors(
     img: &[u8; 0x10000],
     cells: &FixedBitSet,
     vars: &FxHashMap<u16, Vec<Var>>,
+    dev: &FixedBitSet,
+    devices: &crate::dev::Devices,
 ) -> Vec<u16> {
+    let none = crate::dev::Devices::default();
     let code = Code {
         img,
         cells,
@@ -551,6 +555,7 @@ pub(crate) fn vectors(
         seeds: FxHashMap::default(),
         ram: Vec::new(),
         dev: FixedBitSet::new(),
+        devices: &none,
     };
     let mut v: Vec<u16> = vars
         .iter()
@@ -586,7 +591,14 @@ pub(crate) fn vectors(
             }
         }
     }
+    let held: FxHashSet<u16> = devices.held().collect();
+    v.extend(
+        (stores.ones())
+            .filter_map(|a| devices.canon(a as u16))
+            .filter(|c| held.contains(c)),
+    );
     loads.intersect_with(&stores);
+    loads.difference_with(dev);
     v.extend(loads.ones().map(|a| a as u16));
     v.sort_unstable();
     v.dedup();

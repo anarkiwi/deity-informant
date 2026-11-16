@@ -33,6 +33,7 @@ python tools/cgenplay.py tune.sid --psid --volatile 0xD400-0xD41D -o out/   # tr
 | `init` | the index of the entry the host calls once, first, on `image` (`None`, the default: entries in any order); run per argument value, and translated where its lift is exact for every one (*Init*) |
 | `songs` | the range of values of `A` the `init` entry is called with (default `[0]`); another traps |
 | `machine` | runs init (`postinit.run`; default the reference interpreter over `volatile`, whose device bytes hold what was written) |
+| `devices` | what the volatile addresses answer (*Devices*; default the C64's, `c64devices.MODEL`; `None`: any byte) |
 
 `info` holds the stage times (`lift`, `mlir`, `layout`, `structure`, `print`), the regions
 `[(origin, length)]`, the code span, the traps in the `.c` (`{k: ("deopt", pc)}` or `("ind", pc,
@@ -176,9 +177,13 @@ of constant bytes with no store, stack access, `SP` write or transfer but branch
 reading only constant addresses, one instruction of them the device: a wait such as
 `L: LDA $D012; CMP #k; BNE L` or `L: BIT $DC0D; BPL L`. Each pass is the same function of
 the byte the device answers. Entered with registers `r`, the loop settles (`polling.settle`,
-each of the 256 bytes run on the jennings core from `r`) when every pass it stays on keeps the
-registers live into its entry (every register live where it is left) and every byte it leaves
-on leaves to one instruction; the registers differing between those bytes vary.
+each byte the device model answers in the run's device state, every byte for a register it
+does not describe, run on the jennings core from `r`) when every pass it stays on keeps the
+registers live into its entry (every register live where it is left), every byte it leaves on
+leaves to one instruction and, where the model gives sets a read eventually hits (a counter's
+values, a running timer's flag), one of them lies in the bytes it leaves on; the registers
+differing between those bytes vary. Time since the device writes before a wait is unknown
+after it.
 
 The reference's run (`postinit.Run`, `polls`) answers each loop's device read with the least
 byte it leaves on (`reads`), and is `exact` while every loop it enters settles, no varying
@@ -191,9 +196,39 @@ constants of its code, and the C waits as the code does, the device read each pa
 trace; with them one returning only by its waits must stay `exact`. A polling loop in another
 entry is lifted as the loop it is, reading the device each pass.
 
-Otherwise init is **replayed**: an init whose run reads the device elsewhere (a hardware probe
-patching code, which is so settled at the machine's value), keeps or counts what it polls,
-deopts or leaves bounds the lift assumed. The init function then puts the state in place:
+### Devices
+
+A device model (`devices.Model`; the C64's `c64devices.MODEL`: VIC-II, SID, colour RAM, CIA 1
+and 2, 6510 port) describes registers by address, mirrors as one register. A read answers a
+value set over the abstract device state (`devices.State`): the value each register's writes
+hold and when. Kinds: a *latch* reads its bits `latch` as written, `ones` as 1, `live` any; a
+*write-only* register its `live` bits any; a *counter* recurs at every value of its live
+bits; a *status* register answers a set per state, may be acknowledged by a read (`ack`:
+such reads are sensitive, never merged, dropped or duplicated) and says which sets a read
+eventually hits (`recur`); a *derived* register's set is computed from the registers it
+depends on (voice 3's output from its waveform, test bit, frequency and the cycles since its
+release). An address the model does not describe answers any byte. The sets over-approximate
+both SID models, PAL and NTSC, an access's cycle within its instruction and the VIC-II's DMA;
+`tests/test_devices.py` checks every read of random programs on vagrant-moses' C64 lies in
+them. The static lift takes the lowered model (`Model.lower`, [wholeprog](wholeprog.md),
+*Devices*) with time unknown.
+
+### Probes
+
+A device read outside a polling loop of a register the model describes is a **probe**: the
+reference's run (`postinit.forks`) is made once per value of each probe's set in the run's
+device state, at most `postinit.FORKS` runs per argument value. Each must be reproduced by
+init's lift with its reads replayed (`postinit.reproduces`), and one of each value's runs must
+leave the machine's state. Translated, the C reads the device once (`io_read`) and takes the
+path the value selects, which is sound for any value of the set: the other entries are lifted
+from the states of every run (`Init.extended`), so a code byte the probe's paths patch
+differently (an opcode, an operand) is a cell with each run's value, and none of those bytes
+is held constant. A probe of voice 3's output after releasing its test bit (`LDA $D41B` read a
+few cycles after writing `$D412`) selecting between two patchings is a two-way choice.
+
+Otherwise init is **replayed**: an init whose run reads the device elsewhere (an undescribed
+register, a probe with too many runs, which is so settled at the machine's value), keeps or
+counts what it polls, deopts or leaves bounds the lift assumed. The init function then puts the state in place:
 
 - an `A` outside `CGEN_SONG0` and the `CGEN_SONGS` after it traps;
 - init's volatile writes are replayed in order (`CGEN_IO_*`, each distinct sequence once and
