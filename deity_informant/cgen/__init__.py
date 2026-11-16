@@ -21,7 +21,7 @@ from ..trace import Facts
 from . import emit, mlir, printer, traps as trapinfo
 from ..lifter import MODE_LEN, OPS
 from .regions import Memory, background, code_bytes, pointer_pairs
-from .regions import runs as mask_runs
+from ..masks import runs as mask_runs
 
 __all__ = ["Program", "jump_facts", "lift", "render", "translate"]
 

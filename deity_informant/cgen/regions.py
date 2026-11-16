@@ -12,6 +12,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..lifter import MODE_LEN, OPS
+from ..masks import runs
 
 #: Widest address interval treated as bounded; wider accesses are of unknown address.
 BOUNDED = 0x200
@@ -100,12 +101,6 @@ def pointer_pairs(image, starts):
                 p = image[(pc + 1) & 0xFFFF] | image[(pc + 2) & 0xFFFF] << 8
                 pairs[p] = (p & 0xFF00) | ((p + 1) & 0xFF)
     return pairs
-
-
-def runs(mask):
-    """``[(start, length)]`` of the runs of True in ``mask``."""
-    edges = np.flatnonzero(np.diff(np.concatenate(([0], mask.view(np.int8), [0]))))
-    return [(int(a), int(b - a)) for a, b in zip(edges[::2], edges[1::2])]
 
 
 class Memory:  # pylint: disable=too-many-instance-attributes

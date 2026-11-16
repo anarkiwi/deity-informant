@@ -16,7 +16,7 @@ from jennings.devices.mpu6502 import NativeMPU
 from jennings.memory import NativeMemory
 from jennings.opcodes import OPCODES
 
-from . import devices, polling, wholeprog
+from . import devices, masks, polling, wholeprog
 
 __all__ = [
     "Init",
@@ -137,7 +137,7 @@ class Init:
         over doubling then halving lengths), else a ``bytes`` literal."""
         free = self.mask
         ok = np.asarray(source, dtype=bool) & ~free
-        segs = [(a, base[a : a + n].tobytes()) for a, n in _runs(ok) if n > ENTRY]
+        segs = [(a, base[a : a + n].tobytes()) for a, n in masks.runs(ok) if n > ENTRY]
         found = {}
 
         def longest(t):
@@ -155,7 +155,7 @@ class Init:
         out = []
         for st in self.states:
             ops, same = [], st == base
-            for a, n in _runs(free):
+            for a, n in masks.runs(free):
                 t, i, lit = st[a : a + n].tobytes(), 0, None
                 while i < n:
                     if same[a + i] and lit is None:
@@ -182,12 +182,6 @@ def cost(plan):
     """The table bytes of a ``plan`` of :meth:`Init.copies`: an entry per copy, and its
     literal bytes."""
     return sum(ENTRY + (n if isinstance(s, bytes) else 0) for ops in plan for _, s, n in ops)
-
-
-def _runs(mask):
-    """``[(start, length)]`` of the runs of True in ``mask``."""
-    edges = np.flatnonzero(np.diff(np.concatenate(([0], np.asarray(mask, np.int8), [0]))))
-    return [(int(a), int(b - a)) for a, b in zip(edges[::2], edges[1::2])]
 
 
 def _find(segs, t, memo):
