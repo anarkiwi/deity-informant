@@ -146,16 +146,22 @@ pub(crate) const NOREG: u8 = u8::MAX;
 
 /// A set of byte values, bit `v` for `v`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub(crate) struct Bits([u64; 4]);
+pub struct Bits([u64; 4]);
 
 impl Bits {
-    fn add(&mut self, v: u32) {
+    /// The set of a 32-byte bitmap: bit `v & 7` of byte `v >> 3` for `v`.
+    pub fn from_bitmap(b: &[u8; 32]) -> Bits {
+        Bits(std::array::from_fn(|i| {
+            u64::from_le_bytes(b[i * 8..i * 8 + 8].try_into().unwrap())
+        }))
+    }
+    pub(crate) fn add(&mut self, v: u32) {
         self.0[(v >> 6) as usize & 3] |= 1 << (v & 63);
     }
     pub(crate) fn has(&self, v: u32) -> bool {
         self.0[(v >> 6) as usize & 3] >> (v & 63) & 1 == 1
     }
-    fn or(self, o: Bits) -> Bits {
+    pub(crate) fn or(self, o: Bits) -> Bits {
         Bits(std::array::from_fn(|i| self.0[i] | o.0[i]))
     }
     fn and(self, o: Bits) -> Bits {
@@ -197,7 +203,7 @@ impl Bits {
             <= CAP)
             .then_some(self)
     }
-    fn hull(self) -> Option<Iv> {
+    pub(crate) fn hull(self) -> Option<Iv> {
         let lo = self.values().next()?;
         let i = (0..4).rev().find(|&i| self.0[i] != 0)?;
         let hi = i as u32 * 64 + 63 - self.0[i].leading_zeros();
@@ -880,6 +886,8 @@ pub(crate) struct Code<'a> {
     pub(crate) ram: Vec<(u32, u32)>,
     /// The bytes of the volatile ranges: a device answers them, so none is constant.
     pub(crate) dev: FixedBitSet,
+    /// What the volatile addresses answer ([`crate::dev`]).
+    pub(crate) devices: &'a crate::dev::Devices,
 }
 
 /// Per store `(pc, opcode, access index)` the addresses it writes: a store with a set
@@ -938,6 +946,9 @@ impl Code<'_> {
     /// bound (of the stored values alone for a zero-page byte every path since the entry
     /// stored).
     pub(crate) fn byte(&self, x: u32, st: &St) -> Option<Iv> {
+        if self.dev.contains(x as usize) {
+            return self.dev_set(x as u16, st).and_then(Bits::hull);
+        }
         let k = self.constant.contains(x as usize) && !self.cells.contains(x as usize);
         if k {
             Some(Iv::exact(self.img[x as usize] as u32))
@@ -963,13 +974,48 @@ impl Code<'_> {
         }
     }
     /// The values the load of opcode `op` at `pc` reads in state `st` when it reads only
-    /// constant bytes from its operand plus its index register's values.
+    /// constant bytes and described device registers from its operand plus its index
+    /// register's values.
     fn load_set(&self, pc: u16, op: u8, st: &St) -> Option<Bits> {
         let mut out = Bits::default();
         for a in self.set_addrs(pc, op, st)? {
-            out.add(self.byte(a, st)?.value()?);
+            match self.dev.contains(a as usize) {
+                true => out = out.or(self.dev_set(a as u16, st)?),
+                false => out.add(self.byte(a, st)?.value()?),
+            }
         }
         out.hull().map(|_| out)
+    }
+    /// The values a read of volatile address `a` answers in state `st` ([`crate::dev`]):
+    /// its registers' written values are the tracked bytes at their canonical addresses.
+    pub(crate) fn dev_set(&self, a: u16, st: &St) -> Option<Bits> {
+        let val = |c: u16| st.mem.iter().find(|e| e.0 == c).map(|e| e.2);
+        self.devices.read(a, val)
+    }
+    /// The canonical registers a store into `[lo, hi]` may write: the one it names, or every
+    /// one where it may reach a described register at another address.
+    fn dev_mods(&self, lo: u32, hi: u32) -> Option<(u32, u32)> {
+        let (at, wide) = self.dev_store(Iv { lo, hi });
+        match wide {
+            true => {
+                let cs = self.devices.regs.keys().map(|&c| c as u32);
+                Some((cs.clone().min()?, cs.max()?))
+            }
+            false => (at.lo != lo).then_some((at.lo, at.lo)),
+        }
+    }
+    /// The canonical address a store at `a` writes for the tracked bytes: a described
+    /// register's, else `a`; whether a store that may reach `a` may reach a described
+    /// register at another address.
+    fn dev_store(&self, a: Iv) -> (Iv, bool) {
+        match a.value().and_then(|x| self.devices.canon(x as u16)) {
+            Some(c) => (Iv::exact(c as u32), false),
+            None => {
+                let span = a.lo as usize..(a.hi as usize + 1).min(0x10000);
+                let wide = !self.devices.canon.is_empty() && a.value().is_none();
+                (a, wide && self.dev.count_ones(span) > 0)
+            }
+        }
     }
     /// The pointer pair, by its low byte, of the `(zp),Y` access of opcode `op` at `pc`.
     pub(crate) fn zpy(&self, pc: u16, op: u8) -> Option<u8> {
@@ -1075,6 +1121,7 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
     });
     let load = |a: Iv| {
         a.value()
+            .filter(|&x| !code.dev.contains(x as usize))
             .and_then(held)
             .or_else(|| code.load(pc, v.op, a, st))
     };
@@ -1252,6 +1299,22 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
         };
         let ptr_hit = |q: u8| hit(q as u16) || hit(q.wrapping_add(1) as u16);
         unseat.extend(s.pw.iter().map(|e| e.0).filter(|&q| ptr_hit(q)));
+        let (at, wide) = code.dev_store(a.addr);
+        if wide {
+            s.mem.retain(|e| !code.devices.regs.contains_key(&e.0));
+        }
+        if at != a.addr {
+            s.mem.retain(|e| e.0 as u32 != at.lo);
+            if code.vecs.binary_search(&(at.lo as u16)).is_ok() {
+                let iv = a.val;
+                let t = iv.value().map(|x| Tab::K(x as u8));
+                if t.is_some() || iv != Iv::full(1) {
+                    s.mem.push((at.lo as u16, t, iv));
+                    s.mem.sort_unstable_by_key(|e| e.0);
+                }
+            }
+            continue;
+        }
         if !code.vecs.iter().any(|&m| tracked(m)) {
             continue;
         }
@@ -2179,6 +2242,7 @@ fn shape(
 /// has them, else from its access): none for a callee that runs a `BRK` or an `RTI`. Starts
 /// outside `live` are not run.
 fn mods(
+    code: &Code,
     vars: &FxHashMap<u16, Vec<Var>>,
     at: &FxHashMap<u16, Vec<(u32, u32)>>,
     live: &FixedBitSet,
@@ -2215,6 +2279,9 @@ fn mods(
                     }
                 }
             }
+            let regs = ivs.iter().filter_map(|&(lo, hi)| code.dev_mods(lo, hi));
+            let regs: Vec<(u32, u32)> = regs.collect();
+            ivs.extend(regs);
             ivs.sort_unstable();
             Some(ivs)
         });
@@ -2641,15 +2708,16 @@ fn reach(
         seeds: Seeds::default(),
         ram: code.ram.clone(),
         dev: code.dev.clone(),
+        devices: code.devices,
     };
     let mut sh = p.sh;
-    c.mods = mods(p.vars, &FxHashMap::default(), &sh.live);
+    c.mods = mods(&c, p.vars, &FxHashMap::default(), &sh.live);
     let mut acc = Vec::new();
     let merged = loop {
         let (state, _) = fixpoint(&c, p.vars, p.entries, sh, p.disp, p.thr);
         if state.keys().any(|k| !sh.live.contains(k.0 as usize)) {
             sh = p.full;
-            c.mods = mods(p.vars, &FxHashMap::default(), &sh.live);
+            c.mods = mods(&c, p.vars, &FxHashMap::default(), &sh.live);
             continue;
         }
         // Each pair's floor widens to the hull of the values an entry's return leaves in it.
@@ -2795,7 +2863,7 @@ fn reach(
                     (*k, (l, h))
                 })
                 .collect();
-            let mods = mods(p.vars, &stored_at, &sh.live);
+            let mods = mods(&c, p.vars, &stored_at, &sh.live);
             if mods != c.mods {
                 c.mods = mods;
             } else if words.keys().any(|k| !c.words.contains_key(k)) {
@@ -3005,6 +3073,8 @@ pub struct Given<'a> {
     pub written: &'a FixedBitSet,
     /// The address sets stores write, taken as given ([`Aimed`]).
     pub aimed: &'a Aimed,
+    /// What the volatile addresses answer ([`crate::dev`]).
+    pub devices: &'a crate::dev::Devices,
 }
 
 /// The runs of the loaded program outside page 1 and the volatile ranges ([`Code::ram`]).
@@ -3045,8 +3115,7 @@ pub fn analyze(
     for &(lo, hi) in given.volatile {
         dev.insert_range(lo as usize..(hi as usize).min(0x10000));
     }
-    let mut vecs = crate::dispatch::vectors(img, cells, vars);
-    vecs.retain(|&a| !dev.contains(a as usize));
+    let vecs = crate::dispatch::vectors(img, cells, vars, &dev, given.devices);
     let code = Code {
         img,
         cells,
@@ -3068,6 +3137,7 @@ pub fn analyze(
         seeds: Seeds::default(),
         ram: ram(given),
         dev,
+        devices: given.devices,
     };
     let thr = Thresholds::new(vars, &code);
     // The starts reached whatever the data: no table taken as constant.

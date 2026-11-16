@@ -3830,6 +3830,106 @@ def test_init_io_probe_is_settled_by_the_machine(prefix, tmp_path, model):
     assert (labels["shift"] in info["fixed"]) == bool(model)
 
 
+#: Init reading voice 3's output after releasing its test bit at full frequency, patching
+#: play's opcode by the bit it reads: a sawtooth's first few values, both parities.
+DERIVED = """
+init:   STA song
+        LDA #$FF
+        STA $D40E
+        STA $D40F
+        STA $D412
+        LDA #$20
+        STA $D412
+        LDA $D41B
+        LSR A
+        BCC six
+        LDA #$0A
+        BNE put
+six:    LDA #$EA
+put:    STA patch
+        RTS
+play:   LDA song
+patch:  NOP
+        STA $C000
+        RTS
+song:   .byte 0
+end:
+"""
+
+
+def test_init_probe_of_a_derived_register_is_a_run_time_choice(prefix, tmp_path):
+    """Init probing a register its own writes derive (voice 3's oscillator) and patching
+    play's opcode by what it reads is translated: the C reads the device once and patches
+    as the code does, play runs either opcode, and the C plays as the reference whichever
+    value of the model's set the device answers."""
+    volatile = [W.IO, (0xD000, 0xD800)]
+    img, labels = W.assemble(DERIVED, 0x1000)
+    img[0xD41B] = 3
+    ents = [(labels[n], n) for n in ("init", "play")]
+    c, h, info = cgen.translate(
+        img, ents, volatile, loaded=(0x1000, labels["end"]), header="t.h", prefix=prefix, init=0
+    )
+    assert info["init"] == "translated" and body_of(c, "init").count("io_read(0xD41B)") == 1
+    assert labels["patch"] in info["provenance"]["cells"]
+    (tmp_path / "t.c").write_text(c)
+    (tmp_path / "t.h").write_text(h)
+    lib = cgenplay.build(tmp_path / "t.c", tmp_path / "t.so")
+    calls = [("init", 0)] + [("play", k) for k in range(4)]
+    for v in (2, 3):
+        img[0xD41B] = v
+        cgenplay.replay(lib, img, {n: labels[n] for n, _ in calls}, calls, volatile)
+    p, _ = cgen.lift(img, ents, volatile, loaded=(0x1000, labels["end"]), init=0, devices=None)
+    assert p.lifted is None
+
+
+#: Init starting CIA 1's timer A with its interrupt masked off and waiting for its flag,
+#: play acknowledging the flag twice, the reads' values unused.
+TIMERFLAG = """
+init:   STA song
+        LDA #$7F
+        STA $DC0D
+        LDA #$01
+        STA $DC0E
+wait:   LDA $DC0D
+        AND #$01
+        BEQ wait
+        RTS
+play:   BIT $DC0D
+        BIT $DC0D
+        LDA song
+        STA $C000
+        RTS
+song:   .byte 0
+end:
+"""
+
+
+def test_timer_flag_wait_and_acknowledges_are_kept(prefix, tmp_path):
+    """A wait on a timer's flag the model says recurs is translated, reading the device each
+    pass; reads that acknowledge it are each made though their values are not used."""
+    volatile = [W.IO, (0xDC00, 0xDD00)]
+    img, labels = W.assemble(TIMERFLAG, 0x1000)
+    ents = [(labels[n], n) for n in ("init", "play")]
+    c, h, info = cgen.translate(
+        img,
+        ents,
+        volatile,
+        loaded=(0x1000, labels["end"]),
+        header="t.h",
+        prefix=prefix,
+        init=0,
+        machine=P.machine(flag=0x01, addr=0xDC0D, volatile=volatile),
+    )
+    assert info["init"] == "translated" and "io_read(0xDC0D)" in body_of(c, "init")
+    assert body_of(c, "play").count("io_read(0xDC0D)") == 2
+    img[0xDC0D] = 0x01
+    (tmp_path / "t.c").write_text(c)
+    (tmp_path / "t.h").write_text(h)
+    lib = cgenplay.build(tmp_path / "t.c", tmp_path / "t.so")
+    calls = [("init", 0)] + [("play", k) for k in range(4)]
+    cgenplay.replay(lib, img, {n: labels[n] for n, _ in calls}, calls, volatile, (0xDC0D,))
+
+
 @pytest.mark.parametrize(
     "src,polled,translated",
     [

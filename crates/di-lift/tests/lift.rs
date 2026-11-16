@@ -1110,3 +1110,116 @@ fn indices_carried_in_two_values_switch_on_addresses() {
     assert_eq!(keys.len(), 2);
     assert!(keys.iter().flatten().all(|&a| a >= 0x1000));
 }
+
+/// A device model: a latch at `$C020` (mirrored at `$C060`) whose high nibble reads 1, and
+/// a register at `$C01B` reading `0` while bit 3 of `$C012` is set, any byte otherwise.
+fn devices() -> di_lift::dev::Devices {
+    use di_lift::dev::{Devices, Reg};
+    let mut all = [0u8; 32];
+    all.fill(0xff);
+    let mut zero = [0u8; 32];
+    zero[0] = 1;
+    let bits = di_lift::vsa::Bits::from_bitmap;
+    let mut d = Devices::default();
+    let latch = Reg {
+        latch: 0x0f,
+        ones: 0xf0,
+        ..Reg::default()
+    };
+    let osc = Reg {
+        ctrl: Some(0xc012),
+        cmask: 0x08,
+        sets: vec![bits(&all), bits(&zero)],
+        ..Reg::default()
+    };
+    let ctrl = Reg {
+        sets: vec![bits(&all)],
+        ..Reg::default()
+    };
+    d.regs
+        .extend([(0xc020, latch), (0xc01b, osc), (0xc012, ctrl)]);
+    d.canon.extend([
+        (0xc020, 0xc020),
+        (0xc060, 0xc020),
+        (0xc01b, 0xc01b),
+        (0xc012, 0xc012),
+    ]);
+    d
+}
+
+/// The values a register holds at `pc` in the lift's analysis.
+fn held(p: &Program, pc: u16, r: usize) -> Vec<u32> {
+    let w = p.regs.iter().find(|x| x.0 == pc).map(|x| x.1[r]).unwrap();
+    (0..256)
+        .filter(|&v| w[v as usize >> 6] >> (v & 63) & 1 == 1)
+        .collect()
+}
+
+/// A read of a latch gives the value written through a mirror; a read of a derived register
+/// the set its control register's written value selects; an undescribed address any byte.
+#[test]
+fn device_reads_take_the_models_sets() {
+    let code: &[u8] = &[
+        0xa9, 0x05, 0x8d, 0x60, 0xc0, // LDA #$05; STA $C060
+        0xad, 0x20, 0xc0, 0xaa, // LDA $C020; TAX
+        0xa9, 0x28, 0x8d, 0x12, 0xc0, // LDA #$28; STA $C012
+        0xad, 0x1b, 0xc0, 0xa8, // LDA $C01B; TAY
+        0xad, 0x30, 0xc0, 0x60, // LDA $C030; RTS
+    ];
+    let img = image(&[(0x1000, code)]);
+    let lift = |devices| {
+        let opts = Opts {
+            entry_sp: Some(0xfd),
+            loaded: Some((0x1000, 0x1016)),
+            devices,
+            ..Opts::default()
+        };
+        lift_with(
+            &img,
+            &entries(&[0x1000]),
+            &[(0xc000, 0xc100)],
+            &Facts::default(),
+            opts,
+        )
+    };
+    let p = lift(devices());
+    assert_eq!(held(&p, 0x1009, 1), vec![0xf5]);
+    assert_eq!(held(&p, 0x1012, 2), vec![0]);
+    assert_eq!(held(&p, 0x1015, 0).len(), 256);
+    assert_eq!(diff(&img, &p, &calls(2, |_| 0), IO), 0);
+    let q = lift(di_lift::dev::Devices::default());
+    assert_eq!(held(&q, 0x1009, 1).len(), 256);
+}
+
+/// A store to a register's mirror in a callee, and one of unknown address that may reach it,
+/// leave the caller's read of the register what they may have written.
+#[test]
+fn device_writes_through_mirrors_and_callees() {
+    let code: &[u8] = &[
+        0xa9, 0x05, 0x8d, 0x20, 0xc0, // LDA #$05; STA $C020
+        0x20, 0x20, 0x10, // JSR $1020
+        0xad, 0x20, 0xc0, 0xaa, // LDA $C020; TAX
+        0xac, 0x30, 0xc0, // LDY $C030
+        0x99, 0x00, 0xc0, // STA $C000,Y
+        0xad, 0x20, 0xc0, 0xaa, // LDA $C020; TAX
+        0x60, // RTS
+    ];
+    let sub: &[u8] = &[0xa9, 0x07, 0x8d, 0x60, 0xc0, 0x60]; // LDA #$07; STA $C060; RTS
+    let img = image(&[(0x1000, code), (0x1020, sub)]);
+    let opts = Opts {
+        entry_sp: Some(0xfd),
+        loaded: Some((0x1000, 0x1026)),
+        devices: devices(),
+        ..Opts::default()
+    };
+    let p = lift_with(
+        &img,
+        &entries(&[0x1000]),
+        &[(0xc000, 0xc100)],
+        &Facts::default(),
+        opts,
+    );
+    assert_eq!(held(&p, 0x100c, 1), vec![0xf7]);
+    assert_eq!(held(&p, 0x1016, 1), (0xf0..0x100).collect::<Vec<_>>());
+    assert_eq!(diff(&img, &p, &calls(2, |_| 0), IO), 0);
+}

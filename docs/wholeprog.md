@@ -84,6 +84,7 @@ Inputs:
 | `free` | `{addr: [values]}`: the variables an init the host ran on `image` left, and their values over its runs (*Init*; a static lift). |
 | `alias` | `[(lo, g, delta)]`: operand pairs of `free` holding pair `g` plus `delta`, which play reads instead (*Init*). |
 | `once` | Each entry runs once, from `image` (an init): stores into code make cells only of what may run after them (*Init*). |
+| `devices` | A `devices.Model` of what the volatile addresses answer (*Devices*; default none: any byte). |
 
 `trace.collect(image, driver)` runs `driver(session)` twice on the jennings native core over a
 copy of `image`: `session.call(pc, a)` is `run_to_rts`; `session.mem`/`session.mpu` are the
@@ -441,6 +442,13 @@ the facts, so a proof holds on every execution that stays in lifted code.
   that steers control (into an opcode or a jump's operand) takes the table bytes its register
   was loaded from when it holds one on every path, which are exact where the interval is a
   hull.
+- **Devices** (`dev.rs`, from `deity_informant.devices`). A read of a volatile address the
+  model describes answers its register's set: the bits `latch` the value last written (to
+  any of its mirrors), `ones` 1, `live` any; a derived or status register the set of the
+  value bits `cmask` of its control register hold (time unknown). The values written to the
+  registers reads depend on are tracked bytes at their canonical addresses: a store to a
+  mirror sets its register's, one of unknown address that may reach a register forgets them
+  all, and so does a callee storing so. Any other volatile read is any byte.
 - **Constant tables.** A volatile byte is never constant: a device answers any value. A load
   whose address interval (at most a page) holds only loaded bytes taken as constant (*Table extents*: none a store with an address set writes) and no cell
   reads the hull of those bytes, and they join the tables read as constant, so a store of
@@ -931,6 +939,8 @@ and the code using it deopts or traps.
   tracked bytes) is of finite height: a register's value set is at most 64 of the 256 byte
   values (more: its interval), a pointer pair's words at most 64 of its seeds' words (more:
   dropped), each with a subset of the 256 `Y` values, and joins unite them or drop them.
+  The abstract device state is finite: the tracked bytes of the model's registers, intervals
+  of bytes like any tracked byte; a read's set is a function of them.
   Balance is refined while fewer returns are wild. The analysis runs at most twice per
   round, the second time with the seeds the first found, which it does not change.
 - Cell values (`dispatch::cell_values`) are a least fixpoint of byte-set unions. A store whose

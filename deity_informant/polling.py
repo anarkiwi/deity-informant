@@ -2,7 +2,8 @@
 
 A polling loop is a strongly connected set of constant instructions that write nothing, read
 constant addresses and have one instruction reading the device: each pass through it is the
-same function of the byte the device answers, which :func:`settle` decides from its entry.
+same function of the byte the device answers, which :func:`settle` decides from its entry over
+the values the device model gives (``deity_informant.devices``), else every byte.
 """
 
 from __future__ import annotations
@@ -122,15 +123,16 @@ def registers(mpu):
     return regs
 
 
-def settle(loop, mem, regs, pc):
+def settle(loop, mem, regs, pc, dev=None):
     """``(byte, varying)`` of ``loop`` entered at ``pc`` with registers ``regs`` on ``mem``:
-    the least device byte it leaves on and the registers that differ between the bytes it
-    leaves on; None unless a pass it stays on keeps the registers live into ``pc`` and every
-    byte it leaves on leaves to one instruction."""
+    the least device byte it leaves on and the registers differing between such bytes, of the
+    bytes device state ``dev`` answers (else all); None unless a pass it stays on keeps the
+    live registers, it leaves to one instruction and on a set ``dev`` says a read hits."""
     scratch = NativeMemory(bytes(mem[0:0x10000]))
     mpu = NativeMPU(memory=scratch)
     ends = {}
-    for v in range(256):
+    held = None if dev is None else dev.read(loop.addr)
+    for v in range(256) if held is None else sorted(held):
         scratch[loop.addr] = v
         mpu.a, mpu.x, mpu.y, mpu.sp, mpu.pc = regs[0], regs[1], regs[2], regs[3], pc
         mpu.p = 0x30 | sum(regs[i] << b for i, b in STATUS_BITS)
@@ -145,7 +147,12 @@ def settle(loop, mem, regs, pc):
             ends[v] = (mpu.pc, got)
         elif any(got[r] != regs[r] for r in loop.live[pc]):
             return None
-    if len({e for e, _ in ends.values()}) != 1:
+    recur = [] if dev is None else dev.recur(loop.addr)
+    if (
+        len({e for e, _ in ends.values()}) != 1
+        or recur
+        and not any(r <= ends.keys() for r in recur)
+    ):
         return None
     varying = frozenset(r for r in REGS if len({s[r] for _, s in ends.values()}) > 1)
     return min(ends), varying

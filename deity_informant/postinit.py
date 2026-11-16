@@ -16,7 +16,7 @@ from jennings.devices.mpu6502 import NativeMPU
 from jennings.memory import NativeMemory
 from jennings.opcodes import OPCODES
 
-from . import polling, wholeprog
+from . import devices, polling, wholeprog
 
 __all__ = [
     "Init",
@@ -28,6 +28,8 @@ __all__ = [
     "ENTRY",
     "Run",
     "traced",
+    "forks",
+    "FORKS",
     "pointers",
     "groups",
 ]
@@ -87,6 +89,23 @@ class Init:
         """The free bytes whose value differs between songs, ascending."""
         held = self.states[:, self.free]
         return self.free[(held != held[0]).any(axis=0)]
+
+    def extended(self, runs):
+        """This init with the distinct states the :class:`Run` s ``runs`` leave that it lacks
+        (their volatile writes alongside): its free bytes and the bytes those store."""
+        states, writes = list(self.states), list(self.writes)
+        free = self.mask
+        for r in runs:
+            st = np.frombuffer(bytes(r.mem[0:0x10000]), np.uint8)
+            stored = [x for (_, w), xs in r.touched.items() if w for x in xs]
+            free[np.asarray(stored, dtype=np.int64)] = True
+            if not any((st == o)[self.kept].all() for o in states):
+                states.append(st)
+                writes.append(list(r.writes))
+        free &= self.kept
+        return Init(
+            self.image, self.songs, np.stack(states), writes, np.flatnonzero(free), self.kept
+        )
 
     def copies(self, source, base):
         """Per song, the copies ``[(dst, src, n)]`` making ``base`` its state on the free bytes.
@@ -185,24 +204,27 @@ def run(image, pc, songs, volatile, machine=None, skip=False):
 
 
 def reproduces(prog, image, state, runs):
-    """Whether lift ``prog`` of init (its one entry; throw-away reads not made) reproduces the
-    :class:`Init` ``state`` from ``image`` for every argument value: it returns without a deopt,
-    its volatile reads those of the polling loops of the value's :class:`Run` (``runs``, in
-    order, given its bytes), so its run depends on nothing but ``image`` and ``A``, makes the
-    machine's volatile writes and leaves its values in the bytes init stores (``free``) and the
-    image's in the others outside the stack page and the volatile ranges."""
+    """Whether lift ``prog`` of init (its one entry; throw-away reads not made) reproduces from
+    ``image`` each run of ``runs`` (per argument value of the :class:`Init` ``state``, its
+    :func:`forks`): it returns without a deopt making the run's volatile reads (its polls and
+    probes) and writes, leaves the run's memory outside the stack page and the volatile
+    ranges, and one run of each value is the machine's (its writes and state)."""
     img = np.frombuffer(bytes(image), np.uint8)
-    for a, want, writes, ran in zip(state.songs, state.states, state.writes, runs):
-        mem = bytearray(image)
-        polled = bytes(v for _, v in ran.reads)
-        r = prog.call(mem, 0, a=a, log=True, reads=polled)
-        log = [tuple(e[:2]) for e in r["log"] if e[3]]
-        reads = [tuple(e[:2]) for e in r["log"] if not e[3]]
-        if r["halt"] != "return" or r["deopt"] is not None or not ran.exact:
-            return False
-        got = np.frombuffer(bytes(mem), np.uint8)
-        same = got == np.where(state.kept & ~state.mask, img, want)
-        if reads != ran.reads or log != writes or not same[state.kept].all():
+    for a, want, writes, rs in zip(state.songs, state.states, state.writes, runs):
+        machine, want = False, np.where(state.kept & ~state.mask, img, want)
+        for ran in rs:
+            mem = bytearray(image)
+            r = prog.call(mem, 0, a=a, log=True, reads=bytes(v for _, v in ran.reads))
+            log = [tuple(e[:2]) for e in r["log"] if e[3]]
+            reads = [tuple(e[:2]) for e in r["log"] if not e[3]]
+            if r["halt"] != "return" or r["deopt"] is not None or not ran.exact:
+                return False
+            got = np.frombuffer(bytes(mem), np.uint8)
+            left = np.frombuffer(bytes(ran.mem[0:0x10000]), np.uint8)
+            if reads != ran.reads or log != ran.writes or not (got == left)[state.kept].all():
+                return False
+            machine |= log == writes and (left == want)[state.kept].all()
+        if not machine:
             return False
     return True
 
@@ -267,9 +289,9 @@ class Run:  # pylint: disable=too-many-instance-attributes
     """One run of init: ``mem`` the memory it leaves, ``tags`` the tag of every byte it wrote
     and ``vals`` the byte each key was loaded with. With ``polls``
     (:func:`deity_informant.polling.loops`) the device answers each the least byte it leaves
-    on (``reads``), ``exact`` while it is read only there and its runs do not depend on it."""
+    on (``reads``), ``exact`` while it is read only there or where ``model`` describes it."""
 
-    def __init__(self, image, volatile, polls=None):
+    def __init__(self, image, volatile, polls=None, model=None, answers=()):
         self.mem = NativeMemory(bytes(image))
         self.mpu = NativeMPU(memory=self.mem)
         self.volatile = [tuple(v) for v in volatile]
@@ -280,6 +302,12 @@ class Run:  # pylint: disable=too-many-instance-attributes
         self.chain = 0
         self.polls, self.reads, self.exact = polls or {}, [], True
         self.varying, self._loop, self.strict = frozenset(), None, False
+        #: The device state (:class:`deity_informant.devices.State`), the volatile writes and
+        #: the probes ``[(addr, values, answer)]`` (reads the model answers), in order; the
+        #: cycle of the running instruction's last access.
+        self.dev = None if model is None else devices.State(model)
+        self.writes, self.probes, self.answers = [], [], tuple(answers)
+        self._at, self._answered = None, set()
 
     def _key(self, tags, ea):
         """The key of the address ``ea`` reached from a base held in bytes tagged ``tags``."""
@@ -326,6 +354,32 @@ class Run:  # pylint: disable=too-many-instance-attributes
         self.chain += 1
         return ("W", keys, 0, self.chain), ("C", keys, self.chain)
 
+    def _vol(self, x):
+        return any(lo <= x < hi for lo, hi in self.volatile)
+
+    def _answer(self, addr):
+        """A volatile read outside a polling loop: the model's least value, or the one
+        :attr:`answers` gives this probe; None (the memory's byte) where undescribed."""
+        if self.dev is None or self._loop is not None or self._at is None:
+            return None
+        vals = self.dev.read(addr, self._at)
+        if vals is None:
+            return None
+        vals = tuple(sorted(vals))
+        k = len(self.probes)
+        v = self.answers[k] if k < len(self.answers) else vals[0]
+        self.probes.append((addr, vals, v))
+        self.reads.append((addr, v))
+        self._answered.add(addr)
+        return v
+
+    def _wrote(self, x, v):
+        self.acc.append((x, True))
+        if self._vol(x):
+            self.writes.append((x, v))
+            if self.dev is not None:
+                self.dev.write(x, v, self._at)
+
     def _base(self, mode, ops):
         """The tags of the bytes holding the base of the access of an instruction in ``mode``
         with operand bytes at ``ops``, before it runs: its zero-page pointer's or operand's."""
@@ -343,8 +397,10 @@ class Run:  # pylint: disable=too-many-instance-attributes
         ops = [(pc + 1 + i) & 0xFFFF for i in range(n)]
         imm = self.tags.get(ops[0]) if mode == "imm" else None
         mtag, tags = None, self._base(mode, ops) if mode in _MEM else []
-        self.acc = []
+        self.acc, self._answered = [], set()
+        self._at = mpu.processorCycles + mpu.cycletime[mem[pc]] - 1
         mpu.step()
+        self._at = None
         for x, w in self.acc if mode in _MEM else ():
             if x == self.acc[-1][0]:
                 self.touched.setdefault((pc, w), set()).add(x)
@@ -370,6 +426,8 @@ class Run:  # pylint: disable=too-many-instance-attributes
             reg["a"] = None if reg["a"] is None and mtag is None else X
         elif name in _RMW and mode in _MEM:
             self.tags[ea] = mtag = None if mtag is None else X
+            if self.writes and self.writes[-1][0] == ea and ea in self._answered:
+                self.writes.insert(len(self.writes) - 1, (ea, self.reads[-1][1]))
             if name in ("SLO", "RLA", "SRE", "RRA", "ISC"):
                 reg["a"] = None if reg["a"] is None and mtag is None else X
         elif name in ("PHA", "PHP"):
@@ -398,7 +456,9 @@ class Run:  # pylint: disable=too-many-instance-attributes
             return
         if inside is not None:
             self.varying, self._loop = inside[2], None
-        elif any(not w and any(lo <= x < hi for lo, hi in self.volatile) for x, w in self.acc):
+            if self.dev is not None:
+                self.dev.wait()
+        elif any(not w and self._vol(x) and x not in self._answered for x, w in self.acc):
             self._inexact(pc)
         loop = self.polls.get(pc)
         if loop is None:
@@ -408,7 +468,7 @@ class Run:  # pylint: disable=too-many-instance-attributes
                     self._inexact(pc)
                 self.varying -= defs
             return
-        got = polling.settle(loop, self.mem, polling.registers(self.mpu), pc)
+        got = polling.settle(loop, self.mem, polling.registers(self.mpu), pc, self.dev)
         if got is None or self.varying & loop.live[pc]:
             self._inexact(pc)
             return
@@ -429,9 +489,12 @@ class Run:  # pylint: disable=too-many-instance-attributes
         self.tags[0x1FF] = self.tags[0x1FE] = None
         self.mem.observe_data_access(
             on_read=lambda x: self.acc.append((x, False)),
-            on_write=lambda x, _: self.acc.append((x, True)),
+            on_write=self._wrote,
             stack=True,
         )
+        if self.dev is not None:
+            vol = [range(lo, min(hi, 0x10000)) for lo, hi in self.volatile]
+            self.mem.subscribe_to_read([a for r in vol for a in r], self._answer)
         try:
             for _ in range(max_steps):
                 if mpu.sp > 0xFD:
@@ -444,19 +507,48 @@ class Run:  # pylint: disable=too-many-instance-attributes
         raise RuntimeError(f"init at ${pc:04X} did not return")
 
 
-def traced(image, pc, a=0, volatile=((0xD000, 0xE000),), polls=None):
-    """The :class:`Run` of init at ``pc`` with ``A = a`` on ``image`` and its ``polls``; None
-    when it does not return within the reference interpreter's budget
-    (``wholeprog.reference_call``; a run that only returns by its polls must stay ``exact``)."""
-    ref = wholeprog.reference_call(bytearray(image), pc, a=a, volatile=list(volatile))
+def traced(
+    image, pc, a=0, volatile=((0xD000, 0xE000),), polls=None, model=None, answers=(), ref=None
+):  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    """The :class:`Run` of init at ``pc`` with ``A = a`` on ``image``, its ``polls`` and
+    device ``model`` (its probes answered by ``answers``, then their least values); None when
+    it does not return within the reference interpreter's budget (its run ``ref``,
+    ``wholeprog.reference_call``; a run that only returns by its polls must stay ``exact``)."""
+    if ref is None:
+        ref = wholeprog.reference_call(bytearray(image), pc, a=a, volatile=list(volatile))
     if ref["halt"] != "return" and not polls:
         return None
-    r = Run(image, volatile, polls)
+    r = Run(image, volatile, polls, model, answers)
     r.strict = ref["halt"] != "return"
     try:
-        return r.call(pc, a, ref["cycles"] // 2 + 1)
+        return r.call(pc, a, ref["cycles"] // (1 if model else 2) + 1)
     except RuntimeError:
         return None
+
+
+#: The most runs :func:`forks` makes of one argument value.
+FORKS = 1024
+
+
+def forks(image, pc, a, volatile, polls=None, model=None, cap=FORKS):
+    """The :class:`Run` s of init at ``pc`` with ``A = a`` (:func:`traced`), one per sequence
+    of values its probes may read (every value of each probe's set); None where one does
+    not return or there are more than ``cap``."""
+    out, work = [], [()]
+    ref = wholeprog.reference_call(bytearray(image), pc, a=a, volatile=list(volatile))
+    with tqdm(desc="init forks", unit="run", leave=False, disable=None) as progress:
+        while work:
+            r = traced(image, pc, a, volatile, polls, model, work.pop(), ref)
+            if r is None:
+                return None
+            for j in range(len(r.answers), len(r.probes)):
+                prefix = tuple(v for _, _, v in r.probes[:j])
+                work.extend(prefix + (x,) for x in r.probes[j][1] if x != r.probes[j][2])
+            out.append(r)
+            progress.update()
+            if len(out) + len(work) > cap:
+                return None
+    return out
 
 
 def pointers(r):
