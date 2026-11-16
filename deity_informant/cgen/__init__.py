@@ -666,17 +666,15 @@ def _facts(prog):
     )
 
 
-def _lift_init(
-    start, entry, volatile, facts, sensitive, kw, state, runs, bare
-):  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    """Init's lift (at ``entry``, run once from ``start``, for any argument value: the host's
+def _lift_init(once, start, entry, state, runs, bare):
+    """Init's lift (``once`` at ``entry`` from ``start``, for any argument value: the host's
     check of the declared ones is the ``.h``'s range) when it is exact for each declared value:
     its lift without throw-away reads ``bare`` reproduces each of the reference's ``runs`` per
     value (:func:`deity_informant.postinit.reproduces`: polls and probes answered as there,
     one run the machine's) and their accesses lie inside what it bounds them to; else None."""
     if None in runs or not postinit.reproduces(bare, start, state, runs):
         return None
-    lone = wholeprog.lift(start, [entry], volatile, facts, sensitive=sensitive, **kw, once=True)
+    lone = once(entry)
     return lone if postinit.bounded(lone, [r for rs in runs for r in rs]) else None
 
 
@@ -692,21 +690,12 @@ def _guards(prog):
     return out
 
 
-def _entailed(start, entry, volatile, facts, sensitive, kw, lone, songs):
-    """The guards of init's lift ``lone`` (:func:`_guards`) its lift for the declared argument
-    values ``songs`` alone leaves out (``checked``: the host's check of them is the entry's):
-    implied by the entry's declaration. That lift decides nothing of the ``.c``."""
-    alone = wholeprog.lift(
-        start,
-        [(entry, {"a": songs})],
-        volatile,
-        facts,
-        sensitive=sensitive,
-        **kw,
-        once=True,
-        checked=True,
-    )
-    return frozenset(_guards(lone) - _guards(alone))
+def _entailed(once, entry, lone, songs):
+    """The guards of init's lift ``lone`` (:func:`_guards`) its lift (``once`` at ``entry``)
+    for the declared argument values ``songs`` alone leaves out (``checked``: the host's check
+    of them is the entry's): implied by the entry's declaration. That lift decides nothing of
+    the ``.c``."""
+    return frozenset(_guards(lone) - _guards(once((entry, {"a": songs}), checked=True)))
 
 
 def _fixed(start, prog, lifted, every):
@@ -793,13 +782,19 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     pc = None if init is None else entries[init][0]
     kw = {"entry_sp": emit.ENTRY_REGS[3], "loaded": loaded, "fold": True, "devices": devices}
     other = state
+
+    def once(entry, **more):
+        """The lift of init at ``entry`` from ``start``, called once."""
+        more = {"sensitive": sensitive, **kw, **more}
+        return wholeprog.lift(start, [entry], volatile, facts, once=True, **more)
+
     if init is not None:
         vals = sorted(set(range(1) if songs is None else songs))
         if not vals or vals[-1] - vals[0] + 1 != len(vals):
             raise ValueError("songs must be a range")
         state = postinit.run(image, pc, vals, volatile, machine)
         every = postinit.run(image, pc, range(256), volatile, machine, skip=True)
-        bare = wholeprog.lift(image, [pc], volatile, facts, sensitive=(), **kw, once=True)
+        bare = once(pc, sensitive=())
         polls = polling.loops(image, bare.starts, bare.code, volatile)
         runs = [postinit.forks(image, pc, a, volatile, polls, devices) for a in vals]
         over = _domain(bare, image, every, vals)
@@ -814,9 +809,9 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
         decided = every.select(over)
         image = decided.states[0].tobytes()
         played = [e for i, e in enumerate(entries) if i != init]
-        lone = _lift_init(start, pc, volatile, facts, sensitive, kw, state, runs, bare)
+        lone = _lift_init(once, start, pc, state, runs, bare)
         if lone is not None:
-            entailed = _entailed(start, pc, volatile, facts, sensitive, kw, lone, vals)
+            entailed = _entailed(once, pc, lone, vals)
         # A translated init leaves the state of any value its probes read.
         other = decided if lone is None else decided.extended(flat)
         if flat:
