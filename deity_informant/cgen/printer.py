@@ -3294,6 +3294,10 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 self.funcs.append(Func(o, self))
         self.by_name = {f.name: f for f in self.funcs}
 
+    def copies_of(self, name, pc):
+        """The instruction PCs of every copy of instruction ``pc`` of function ``name``."""
+        return [q for q in self.copy_pcs.get(name, {}).get(pc, [pc]) if q is not None]
+
     def fx(self, name):
         """The facts of the lift function ``name`` comes from: ``sets``, ``regs``, ``reach``,
         ``proven``, ``bounded`` and ``addr_sets``."""
@@ -3435,7 +3439,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         (every copy's, constant code) loads it into a register (``LDA``, ``LDX``, ``LDY``,
         ``LAX``): that register's values at the next instruction start (:meth:`reg_iv`), else
         None."""
-        pcs = [q for q in self.copy_pcs.get(f.name, {}).get(o.pc, [o.pc]) if q is not None]
+        pcs = self.copies_of(f.name, o.pc)
         ops = {OPS.get(self.mem.image[q], ("", "imm")) for q in pcs}
         if len(ops) != 1 or not all(self.fixed[q] for q in pcs):
             return None
@@ -3464,7 +3468,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.results_ivs[key] = None
         out = []
         for o in (o for o in f.walk() if o.name == "func.return"):
-            pcs = [q for q in self.copy_pcs.get(name, {}).get(o.pc, [o.pc]) if q is not None]
+            pcs = self.copies_of(name, o.pc)
             rts = pcs and all(self.fixed[q] and self.mem.image[q] in (0x40, 0x60) for q in pcs)
             r = self.reg_iv(name, pcs, j) if rts else None
             d = f.defs.get(o.args[j])
@@ -3478,7 +3482,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
     def run_of(self, f, o):
         """The run ``(lo, hi)`` (inclusive) of data bytes store ``o`` of function ``f`` writes
         when the lift bounds it to the array holding its base (every copy's), else None."""
-        pcs = [q for q in self.copy_pcs.get(f.name, {}).get(o.pc, [o.pc]) if q is not None]
+        pcs = self.copies_of(f.name, o.pc)
         runs = [self.fx(f.name).bounded.get(q) for q in pcs]
         if o.name != "memref.store" or not runs or None in runs:
             return None
