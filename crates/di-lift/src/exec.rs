@@ -74,6 +74,7 @@ pub struct Exec {
     pub(crate) temps: u32,
     code: Vec<(u16, u8)>,
     sets: Vec<(u16, Vec<u8>)>,
+    kept: Vec<(u16, u8, u8)>,
     pub(crate) constcode: FixedBitSet,
     pub(crate) img: Box<[u8]>,
     pub(crate) objects: Vec<(u16, u16, Vec<u16>)>,
@@ -182,6 +183,7 @@ impl Exec {
                     .unwrap_or(0),
             code: p.code.clone(),
             sets: p.sets.clone(),
+            kept: p.kept.clone(),
             constcode: FixedBitSet::with_capacity(0x10000),
             img: vec![0u8; 0x10000].into_boxed_slice(),
             objects: p.objects.clone(),
@@ -388,13 +390,15 @@ impl Exec {
     pub fn guard_evals(&self) -> u64 {
         self.guards.load(Ordering::Relaxed)
     }
-    /// Every byte the program treats as constant code holds its lifted value in `bus`.
+    /// Every byte the program treats as constant code holds its lifted value in `bus`, every
+    /// closed cell one of its values and every byte a left-out guard relies on its bound.
     pub fn matches<B: Bus>(&self, bus: &mut B) -> bool {
         self.code.iter().all(|&(a, v)| bus.ram_read(a) == v)
             && self
                 .sets
                 .iter()
                 .all(|(a, vs)| vs.contains(&bus.ram_read(*a)))
+            && (self.kept.iter()).all(|&(a, lo, hi)| (lo..=hi).contains(&bus.ram_read(a)))
     }
 }
 

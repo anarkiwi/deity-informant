@@ -394,13 +394,20 @@ image, as `free` bytes are, for the runs a pointer pair's floor is taken from. I
 takes their values; its code loads a data operand of them from memory as a cell's (a branch's,
 jump's or call's stays its target), so the values are data of the code, not code.
 
+`known` (`{addr: values}`) gives a byte of `free` every value it may hold after init, where
+init's own lift bounds it (`Program.values` of that lift: the byte's entry value and those of
+every store that may write it, each of known addresses and values): its value set, so a cell
+only init writes, with known values, is closed. `checked=True` declares that the host checks
+the entries' declared `A`, `X` and `Y` values before each call: the analysis takes them, and
+no entry guard tests them (a translated init's songs, which its C entry checks).
+
 ## Guards
 
 | Assumption | Check | Exit |
 |---|---|---|
 | Opcode cell holds a value of its set | dispatch chain; none for a *closed* cell, which every store that may write it does with known addresses and values | deopt before the instruction |
 | Computed target is in the table | `BRANCHIND` table lookup; a table resolved from the code holds every target (the function's `closed` tables) | deopt at the target |
-| A table read for a computed transfer or a cell's values stays in the table's extent (*Table extents*) | the index register is compared with the extent's index range before the load | deopt before the instruction |
+| A table read for a computed transfer or a cell's values stays in the table's extent (*Table extents*) | the index register is compared with the extent's index range before the load; none where its values on every run lie inside (`Program.regs`, *Pointer reach*) or the register guards before it keep it there on every path (*Implied guards*) | deopt before the instruction |
 | A store to a constant base plus an index the code does not bound stays inside the loaded program (*Table extents*) | the index register is compared with the index range before the store | deopt before the instruction |
 | An edge reaches a start at a stack height the plan has no node for (never seen there) | none: the edge is the deopt | deopt at the start |
 | A callee's `TXS` restoring a saved stack pointer sets SP to its saved height | `X` compared with SP plus the height difference | deopt before the instruction |
@@ -411,7 +418,7 @@ jump's or call's stays its target), so the values are data of the code, not code
 | A zero-page pointer pair that accesses rely on stays outside the window of their indices (*Pointer windows*) | an entry reads back the pairs some access reads before every path to it stores their high byte; a store that may write a byte of one and may leave it in its window reads the pair back after the instruction, a pair's two stores on one instruction chain once after the second (`stats["ptr_guards"]`) | deopt at the entry; deopt after the store |
 | An access that may reach page 1 (by its address interval) does not, while stack bytes are kept out of memory | the address's page is compared with 1 before the access (`stats["stack_guards"]`); with `entry_sp`, only a store that may hit the *Stack extent*, against it | deopt before the instruction |
 | A callee that may store into page 1 returns to its caller (stack not private) | the return-address bytes are compared after `CALL` | deopt at the address the `RTS` pulled |
-| Entry register value (its declared values) | compare at entry: one value, a range check for a run of values, else a test of each | deopt at the entry |
+| Entry register value (its declared values) | compare at entry: one value, a range check for a run of values, else a test of each; none for `A`, `X`, `Y` with `checked` (the host's) | deopt at the entry |
 | The decimal flag is clear at an entry (unless the entry declares `d`) | compare at entry | deopt at the entry |
 | Entry SP of a specialized entry (`stats["sp_guards"]`) | compare at entry | deopt at the entry |
 | The port registers an entry was always called with (banked) | compare at entry; restated so later configurations fold | deopt at the entry |
@@ -499,6 +506,17 @@ the facts, so a proof holds on every execution that stays in lifted code.
   reach*, only there: the guards on a table's extent do not depend on its bytes). Joins
   unite sets. So a selector read from a constant table bounds the index set a later
   table read, a store's address set or a computed jump's words come from (`Sets::values`).
+  The top three bytes pushed since the function's entry keep what was pushed (`A`'s
+  interval, known bits and set; for `PHP` the status byte's known bits) through a call that
+  returns to its site, and lose it to an instruction that may store into page 1 or sets SP:
+  a `PLA` takes it, a `PLP` the flags its known bits give. A declared entry value seeds its
+  register (`SEC; SBC #$0A; PHA; ...; PLA; TAX` after `CMP #$0B; BPL` carries the songs past
+  ten into `X`).
+- **Implied guards** (`why.rs`). Over each function as emitted, a register keeps its values
+  through copies, takes a constant's, is narrowed past each register guard (an entry's or an
+  index guard) and is unknown after any other write or a call; a register guard whose values
+  there lie inside its range on every path is not taken (`info["trap_info"]`'s `held`): the
+  later of two guards on one index is left out where the earlier lets through no more.
 - **Pointer word sets.** The analysis runs twice when the first run finds a store at an
   exact address into a byte of a `(zp),Y` pointer pair after which both bytes hold tagged
   table bytes or constants in every context (*Computed jumps*): the words they make (at most
@@ -521,7 +539,7 @@ the facts, so a proof holds on every execution that stays in lifted code.
   its entry byte and the stored values: what it holds whenever lifted code runs.
 - **Unknown.** Other memory contents (a loaded value is its full range); the stack; `SP`.
 - **Dependencies.** The analysis assumes the entries are called with the registers they
-  declare (guarded at entry) and that control follows the edges the lift contains (every
+  declare (guarded at entry, or by the host with `checked`) and that control follows the edges the lift contains (every
   other edge deopts). It reads no runtime fact beyond those edges and no data byte, so it
   remains valid after any deopt and from any memory state. The stack-privacy decision still
   uses the facts' page-1 accesses as before.
@@ -677,7 +695,9 @@ the facts, so a proof holds on every execution that stays in lifted code.
   writes, reads its table only inside its extent (a table one value of a bounded index fills
   is read whole: its columns overlap), and so does an indexed store whose index the code does
   not bound. Every byte only stores with bounded addresses write (each store's address set
-  where it has one) holds the hull of its entry byte and the values they store; a zero-page
+  where it has one) holds the hull of its entry byte and the values they store (those its
+  definitions give where known: inside an arm of a switch on a byte, a store of the byte
+  writes the arm's case values, *Computed jumps*); a zero-page
   byte every path since the entry stored, of those values alone. Loads take a byte's hull where it is not tracked (of the bytes its
   index register's values address, for a constant base plus an index register). A store whose
   index register holds a value set writes the addresses of its values alone.
@@ -686,8 +706,12 @@ the facts, so a proof holds on every execution that stays in lifted code.
   hulls hold only for runs that keep those assumptions (cgen reads past them through
   `oob_rd`). It runs again with none (`Program.proven`, which also holds the address hulls
   of loads from a constant base plus an index register): an indexed access reaches every byte
-  its index set gives, so those hulls hold on every run. Both passes run once, on the program discovery
-  settles on, and refine the domain:
+  its index set gives, so those hulls hold on every run, and so do its registers
+  (`Program.regs`): an index guard whose register's values there lie inside its range is
+  not emitted, as no run that stays in lifted code leaves them. The proof reads memory, so
+  the bytes a load may read keep their bounds while the lifted code runs (`Program.kept`,
+  which `matches` checks after a deopt, *Limitations*). Both passes run once, on the program
+  discovery settles on, and refine the domain:
   - *Value sets* (*Value sets* above) over the bytes' bounds too: a load gives the set of
     the bytes at the index register's values (inside the extent) where each byte's bound is
     one value. A conditional branch also cuts the set of the index register of a table byte
@@ -1060,6 +1084,10 @@ and the code using it deopts or traps.
   write groups joins find to meet, ending when no join meets two classes. Carries
   (`carry::alloc`) add no iteration: per function one walk of its callees and per carried
   transfer one of its nodes, each visited once.
+- Pushed values are of finite height (intervals widen at loop heads as registers do), and
+  the implied guards are one forward pass over each function's blocks (a union of byte
+  sets per register: each block is revisited only when its entry facts grow); the guards the
+  proof pass leaves out are read once off its registers.
 - Pointer reach (`vsa::reach`): byte bounds only descend (each round's meet with the last),
   word columns and floors only rise, to the end of the run of data bytes they move in or the
   extremes, so a pointer every call advances rises once per run; the callees' store
@@ -1098,8 +1126,9 @@ from.
   reference's halt (`cycles`) but not its state.
 - The host must keep constant code (with the jump tables resolved from the code) unchanged
   between calls, or check `matches` and re-lift. After a deopt the program is invalid until
-  `matches` holds: its constant bytes and every closed opcode cell's value in its set, which
-  the reference may have changed running code the lift does not contain.
+  `matches` holds: its constant bytes, every closed opcode cell's value in its set and every
+  byte of `Program.kept` inside its bound (the guards the proof pass leaves out rely on it),
+  which the reference may have changed running code the lift does not contain.
   After a deopt the reference may have stored into constant code, so the next call compares it
   with the lifted bytes first and runs on the reference while they differ.
 - A start runs from one backing: one executed from ROM in some configurations and from RAM in

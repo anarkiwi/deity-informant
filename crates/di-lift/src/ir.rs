@@ -368,6 +368,13 @@ pub struct Program {
     /// Bytes outside page 1 every store that may write has an exact address and a bounded
     /// value: `(addr, lo, hi)`, the hull of its entry byte and the stored values.
     pub bounds: Vec<(u16, u8, u8)>,
+    /// Bytes stores write whose values are known `(addr, values)`: the entry byte and the
+    /// values of the stores that may write it, each of known addresses and values.
+    pub values: Vec<(u16, Vec<u8>)>,
+    /// Bytes `(addr, lo, hi)` whose bound on every run (the hull of their entry byte and the
+    /// values stores write) proves an index guard the lift leaves out: each holds a value in
+    /// it whenever the lifted code runs.
+    pub kept: Vec<(u16, u8, u8)>,
     /// Address sets of data accesses through pointers or with several addresses, as
     /// `(pc, store, [(lo, hi)])` runs (`hi` exclusive).
     pub addr_sets: Vec<AddrSet>,

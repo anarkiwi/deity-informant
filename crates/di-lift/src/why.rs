@@ -336,7 +336,13 @@ pub fn imply(f: &mut Function) {
                 Opc::Call => st = std::array::from_fn(|_| Fact::top(None)),
                 _ => {
                     let o = op.out;
-                    if o.space() == Space::Reg && o.off() < 3 {
+                    if o.space() == Space::Reg && o.size() > 1 {
+                        for r in (o.off() as usize..o.off() as usize + o.size() as usize)
+                            .filter(|&r| r < 3)
+                        {
+                            st[r] = Fact::top(None);
+                        }
+                    } else if o.space() == Space::Reg && o.off() < 3 {
                         let a = op.ins[0];
                         let v = match (op.opc, a.space()) {
                             (Opc::Copy, Space::Reg) if a.off() < 3 && a.size() == 1 => {
@@ -365,6 +371,20 @@ pub fn imply(f: &mut Function) {
             if changed {
                 work.push(t);
             }
+        }
+    }
+    // A guard the register's values on every path already pass is not taken: each branch to
+    // its deopt is never taken.
+    let implied: Vec<bool> = (f.whys.iter().zip(&held))
+        .map(|(w, h)| match (w.allowed(), h) {
+            (Some((_, ok)), Some(h)) => subset(&h.vals, &ok),
+            _ => false,
+        })
+        .collect();
+    let cbranches = f.blocks.iter_mut().flat_map(|b| &mut b.ops);
+    for op in cbranches.filter(|op| op.opc == Opc::CBranch) {
+        if guard_of[op.aux as usize].is_some_and(|(j, _, _)| implied[j]) {
+            op.ins[0] = crate::ir::k(0, 1);
         }
     }
     for (w, h) in f.whys.iter_mut().zip(held) {

@@ -293,3 +293,62 @@ def test_table_entry_naming_the_table_is_checked():
     assert (labels["put"], True) not in dict(prog.addr_sets)
     differential(img, prog, [labels["entry"]], calls([0], 4))
     assert labels["put"] + 2 in dict(prog.deopts)
+
+
+# Bytes pushed and pulled back: a constant across a device read and a balanced call, a
+# constant pulled into the status, and a constant a store that may reach the stack lies
+# between.
+PUSHED = """
+entry:  LDA #$05
+        PHA
+        LDA $C000
+        JSR sub
+        PLA
+        TAX
+p1:     LDA #$01
+        PHA
+        PLP
+        LDA #0
+        ADC #0
+p2:     STA $C001
+        STX $C002
+        LDA #$07
+        PHA
+        LDY $C004
+        STA $0100,Y
+        PLA
+p3:     STA $C005
+        RTS
+sub:    PHA
+        LDA $C006
+        PLA
+        RTS
+end:
+"""
+
+# The status pushed after `SEC` and pulled as data.
+STATUS = """
+entry:  SEC
+        PHP
+        LDA #0
+        PLA
+        TAY
+p1:     STY $C003
+        RTS
+end:
+"""
+
+
+def test_pulls_take_what_their_pushes_stored():
+    """A pull takes the value its push stored: a constant pushed across a device read and a
+    balanced call, a constant's bits pulled into the flags, the status byte's known bits; a
+    store that may reach the pushed byte leaves the pull any value."""
+    img, labels, prog = lift(PUSHED)
+    regs = prog.regs
+    assert list(regs[labels["p1"]][1]) == [5] and list(regs[labels["p2"]][0]) == [1]
+    assert len(regs[labels["p3"]][0]) == 256
+    differential(img, prog, [labels["entry"]], calls(range(3)))
+    img, labels, prog = lift(STATUS)
+    y = prog.regs[labels["p1"]][2]
+    assert 0 < len(y) < 256 and all(v & 0x31 == 0x31 for v in y)
+    differential(img, prog, [labels["entry"]], calls(range(3)))
