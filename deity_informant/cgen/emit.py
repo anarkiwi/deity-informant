@@ -98,6 +98,9 @@ class Body:  # pylint: disable=too-many-instance-attributes
         """The value of varnode ``v``."""
         if v[0] == "c":
             return self.const(v[1], v[2])
+        if v[0] == "k":
+            at = self.op(f"arith.constant {v[1]} : index")
+            return self.op(f"memref.load %G[{at}] : memref<{self.ctx.symbols}xi8>")
         if _key(v) not in self.cells:
             return self.env[_key(v)]
         return self.op(f"memref.load {self.cell(_key(v))}[] : memref<{ty(v[2])}>")
@@ -303,6 +306,8 @@ class Body:  # pylint: disable=too-many-instance-attributes
         params = ", ".join(f"%p{j}: {ty(s)}" for j, (_, s) in enumerate(self.ctx.regfile))
         head = [f"  func.func private @{self.name}({params}) -> ({self.ctx.types}) {{"]
         head.append("    %M = memref.get_global @M : memref<65536xi8>")
+        if self.ctx.symbols:
+            head.append(f"    %G = memref.get_global @G : memref<{self.ctx.symbols}xi8>")
         head += [
             f"    {self.cell(k)} = memref.alloca() : memref<{ty(self.cells[k])}>"
             for k in self.order
@@ -321,7 +326,7 @@ class Body:  # pylint: disable=too-many-instance-attributes
 class Context:  # pylint: disable=too-few-public-methods
     """What the functions of one program share: the register file, names and traps."""
 
-    def __init__(self, funcs, keep_dummy):
+    def __init__(self, funcs, keep_dummy, symbols=0):
         sizes = {r: {2 if r == 16 else 1} for r in (0, *ENTRY_REGS)}
         for fn in funcs:
             for b in fn["blocks"]:
@@ -336,18 +341,22 @@ class Context:  # pylint: disable=too-few-public-methods
         self.names = [""] * len(funcs)
         for j, i in enumerate(rank):
             self.names[i] = f"f{j}"
-        self.traps, self.keep_dummy = {}, keep_dummy
+        self.traps, self.keep_dummy, self.symbols = {}, keep_dummy, symbols
         self.sites = Counter(
             op[3] for fn in funcs for b in fn["blocks"] for op in b["ops"] if op[0] == "CALL"
         )
 
 
-def emit(funcs, entries, keep_dummy=False):
+def emit(funcs, entries, keep_dummy=False, symbols=0):
     """The MLIR module of lifted ``funcs`` (sorted by entry PC) and ``{trap key: index}``.
 
-    ``entries`` are ``(pc, name)``; ``keep_dummy`` keeps throw-away reads as ``io_read`` s."""
-    ctx = Context(funcs, keep_dummy)
+    ``entries`` are ``(pc, name)``; ``keep_dummy`` keeps throw-away reads as ``io_read`` s;
+    a varnode ``["k", j, 1]`` reads element ``j`` of ``@G``, the ``symbols`` constants the
+    ``.h`` names, which no pass folds."""
+    ctx = Context(funcs, keep_dummy, symbols)
     out = ["module {", '  memref.global "private" @M : memref<65536xi8>']
+    if symbols:
+        out.append(f'  memref.global "private" @G : memref<{symbols}xi8>')
     out += [f"  func.func private @{n}{t}" for n, t in EXTERNS.items()]
     for fn, name in zip(funcs, ctx.names):
         out += Body(fn, name, ctx).emit()

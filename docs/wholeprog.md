@@ -369,7 +369,9 @@ store may write: the operands init set from one word at constant offsets are one
 it has one, else its address interval. A host passes as `held` instead of `free` the bytes init
 leaves one value on every run that none of them is (cgen [*Init*](cgen.md#init)): the lift
 reads them from the image like any other byte, and they are data the program has past its
-image, as `free` bytes are, for the runs a pointer pair's floor is taken from.
+image, as `free` bytes are, for the runs a pointer pair's floor is taken from. Its analysis
+takes their values; its code loads a data operand of them from memory as a cell's (a branch's,
+jump's or call's stays its target), so the values are data of the code, not code.
 
 ## Guards
 
