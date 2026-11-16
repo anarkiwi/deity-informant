@@ -3752,12 +3752,9 @@ class Module:  # pylint: disable=too-many-instance-attributes
         idx = np.concatenate([np.arange(lo, hi) for lo, hi in runs]) & 0xFFFF
         reg = mem.owner[idx]
         whole = held or bool((reg >= 0).all())
-        for j, (a, b) in enumerate(mem.held if whole else ()):
-            if a <= idx.min() and idx.max() < b:
-                return (), (j,)
-        span = np.full(len(idx), -1)
-        for j, (a, b) in enumerate(mem.held if held else ()):
-            span[(idx >= a) & (idx < b) & mem.constant[idx]] = j
+        if whole and (j := mem.holding(idx.min(), idx.max())) is not None:
+            return (), (j,)
+        span = np.where(held & mem.constant[idx], mem.spans_at(idx), -1)
         if ((reg < 0) & (span < 0)).any():
             return None
         return tuple(int(k) for k in np.unique(reg[reg >= 0])), tuple(

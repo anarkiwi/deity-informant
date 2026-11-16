@@ -256,11 +256,19 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         held = data if store else data | self.constant[lo : hi + 1]
         if hi - lo >= BOUNDED and not wide or not held.all():
             return None
+        return self.holding(lo, hi)
+
+    def holding(self, lo, hi):
+        """The index of the held span ``[lo, hi]`` lies in, else None."""
         return next((j for j, (a, b) in enumerate(self.held) if a <= lo and hi < b), None)
 
-    def span_of(self, org, n):
-        """The index of the held span a region ``(org, n)`` lies in, else None."""
-        return next((j for j, (a, b) in enumerate(self.held) if a <= org and org + n <= b), None)
+    def spans_at(self, idx):
+        """Per address of ``idx``, the index of the held span holding it, else -1."""
+        if not self.held:
+            return np.full(len(idx), -1)
+        a, b = np.array(self.held).T
+        j = np.searchsorted(a, idx, "right") - 1
+        return np.where((j >= 0) & (idx < b[j]), j, -1)
 
     def region(self, lo, hi, wide=False):
         """The region holding all of ``[lo, hi]`` (narrower than ``BOUNDED`` unless ``wide``),
@@ -276,9 +284,7 @@ class Memory:  # pylint: disable=too-many-instance-attributes
             return None
         idx = np.arange(lo, hi + 1)
         own = self.owner[lo : hi + 1]
-        span = np.full(len(idx), -1)
-        for j, (a, b) in enumerate(self.held):
-            span[(idx >= a) & (idx < b) & (self.constant[lo : hi + 1] | (own >= 0))] = j
+        span = np.where(self.constant[lo : hi + 1] | (own >= 0), self.spans_at(idx), -1)
         inside = (idx >= self.loaded[0]) & (idx < self.loaded[1])
         sel = inside | ~inside.any()
         ks, js = np.unique(own[sel & (own >= 0) & (span < 0)]), np.unique(span[sel & (span >= 0)])

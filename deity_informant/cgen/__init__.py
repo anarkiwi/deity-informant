@@ -66,7 +66,7 @@ def _hex(data):
 
 def _slice(mem, used, k):
     """The held span region ``k`` is a slice of, or None."""
-    return mem.span_of(*mem.regions[k]) if "CODE" in used else None
+    return mem.holding(mem.regions[k][0], sum(mem.regions[k]) - 1) if "CODE" in used else None
 
 
 def _sliced(mem, used, j):
