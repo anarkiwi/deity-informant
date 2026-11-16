@@ -102,7 +102,9 @@ pub mod mem {
 /// One lifted op: `out = opc(ins[0], ins[1])`; `aux` is the target block (`BRANCH`,
 /// `CBRANCH`), target table (`BRANCHIND`), function (`CALL`), operation (`CALLOTHER`) or
 /// access flags (`LOAD`, `STORE`); `pc` is the instruction it was emitted for (0 for one the
-/// optimizer made), provenance only: ops compare equal whatever their `pc`.
+/// optimizer made) and `why` what a deopt or `BRANCHIND` stands for ([`crate::why`]: 0 none,
+/// else one plus an index into [`Function::exits`]), provenance only: ops compare equal
+/// whatever their `pc` and `why`.
 #[derive(Clone, Copy, Debug)]
 pub struct LOp {
     pub opc: Opc,
@@ -110,6 +112,7 @@ pub struct LOp {
     pub ins: [Vn; 2],
     pub aux: u32,
     pub pc: u16,
+    pub why: u32,
 }
 
 impl PartialEq for LOp {
@@ -128,6 +131,7 @@ impl LOp {
             ins: [a, b],
             aux,
             pc: 0,
+            why: 0,
         }
     }
     /// Number of used inputs: the opcode's, plus a throw-away read's predicate.
@@ -259,6 +263,10 @@ pub struct Function {
     /// Per merged instruction of an instance function, each copy's instruction start (0: a copy
     /// without it).
     pub copy_pcs: Vec<Vec<u16>>,
+    /// The guards and transfers its deopts and `BRANCHIND`s stand for ([`crate::why`]).
+    pub whys: Vec<crate::why::Why>,
+    /// Per tag ([`LOp::why`] less one), the indices into `whys` of what it stands for.
+    pub exits: Vec<Vec<u32>>,
 }
 
 impl Function {
@@ -385,6 +393,9 @@ pub struct Program {
     pub written: Vec<(u32, u32)>,
     /// Runs `[lo, hi)` of the bytes any store may write ([`crate::analysis::stored`]).
     pub stored: Vec<(u32, u32)>,
+    /// The stores the lift holds, `(pc, lo, hi)`: the address interval (inclusive) of each
+    /// store access of the instruction at `pc` (an address set's in `addr_sets`), ascending.
+    pub stores: Vec<(u16, u32, u32)>,
     /// The instruction starts the functions plan (every copy's of an instance function),
     /// ascending.
     pub starts: Vec<u16>,

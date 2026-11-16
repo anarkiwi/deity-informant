@@ -591,6 +591,8 @@ pub struct Graph {
     pub vals: FxHashMap<u16, BTreeSet<u8>>,
     /// Index guards by instruction ([`crate::dispatch::Guard`]).
     pub guards: FxHashMap<u16, (u8, Iv)>,
+    /// The tables each index guard keeps its instruction's accesses inside.
+    pub extents: FxHashMap<u16, Vec<crate::why::Extent>>,
     /// The bytes stores with address sets may write, the host init's variables included.
     pub written: FixedBitSet,
     /// Per return site, the addresses past it a call returns to (inline arguments).
@@ -1333,6 +1335,7 @@ impl Fixpoint<'_> {
                         }
                     }
                 }
+                let mut extents: FxHashMap<u16, Vec<crate::why::Extent>> = FxHashMap::default();
                 let g = Graph {
                     reach: FxHashMap::default(),
                     proven: FxHashMap::default(),
@@ -1382,14 +1385,21 @@ impl Fixpoint<'_> {
                             crate::dispatch::Jump::Targets(_, _, g, _) => g.clone(),
                             crate::dispatch::Jump::Fail => Vec::new(),
                         });
-                        for (pc, r, ok) in an.guards.iter().copied().chain(from_jumps) {
-                            let e = gs.entry(pc).or_insert((r, ok));
-                            if let (true, Some(m)) = (e.0 == r, crate::vsa::meet(e.1, ok)) {
+                        for x in an.guards.iter().copied().chain(from_jumps) {
+                            let e = gs.entry(x.pc).or_insert((x.reg, x.ok));
+                            if e.0 == x.reg {
+                                let ext = extents.entry(x.pc).or_default();
+                                if !ext.contains(&x.ext) {
+                                    ext.push(x.ext);
+                                }
+                            }
+                            if let (true, Some(m)) = (e.0 == x.reg, crate::vsa::meet(e.1, x.ok)) {
                                 e.1 = m;
                             }
                         }
                         gs
                     },
+                    extents,
                     past: an.past.clone(),
                     dispatch,
                     ptr_sets: {

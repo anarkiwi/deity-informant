@@ -13,6 +13,7 @@ use crate::ir::{
     cy, k, mem, other, r1, reg, tmp, Block, Function, LOp, E, FCARRY, KREG, NREG, OPHI, OPLO, XREG,
 };
 use crate::vsa::NOREG;
+use crate::why::{complement, Kind, Why};
 use di_pcode::{reg as R, CtrlKind, Op, Opc, PenKind, Slot, Space, Template, Vn};
 use fixedbitset::FixedBitSet;
 use rustc_hash::FxHashMap;
@@ -86,6 +87,21 @@ impl Shared<'_> {
         let hi = (a.hi as usize).min(0xffff) + 1;
         self.constcode[hi] - self.constcode[a.lo as usize] == (hi - a.lo as usize) as u32
     }
+}
+
+/// Inclusive runs of the values `vs`.
+fn runs(vs: impl IntoIterator<Item = u32>) -> Vec<(u32, u32)> {
+    let mut v: Vec<u32> = vs.into_iter().collect();
+    v.sort_unstable();
+    v.dedup();
+    let mut out: Vec<(u32, u32)> = Vec::new();
+    for x in v {
+        match out.last_mut() {
+            Some(r) if r.1 + 1 == x => r.1 = x,
+            _ => out.push((x, x)),
+        }
+    }
+    out
 }
 
 /// Prefix counts over a bitset of 65536 bits.
@@ -225,14 +241,25 @@ pub fn emit(
                 em.op(Opc::IntAnd, 1, c, n)
             })
         };
-        em.side_exit(bad, true, |em| em.deopt(k(plan.pc as u32, 2)));
+        let why = Why {
+            reg: Some(*i as u8),
+            ok: runs(vals.iter().map(|&v| v as u32)),
+            seen: em.seen(plan.pc, *i),
+            ..Why::new(Kind::Entry, plan.pc)
+        };
+        em.side_exit(bad, true, |em| em.deopt(k(plan.pc as u32, 2), vec![why]));
         if lo == hi {
             em.emit(Opc::Copy, r1(*i), k(lo as u32, 1), NONE, 0);
         }
     }
     if let Some(s) = plan.sp {
         let bad = em.op(Opc::IntNotEqual, 1, r1(R::SP), k(s as u32, 1));
-        em.side_exit(bad, true, |em| em.deopt(k(plan.pc as u32, 2)));
+        let why = Why {
+            reg: Some(R::SP as u8),
+            ok: vec![(s as u32, s as u32)],
+            ..Why::new(Kind::EntrySp, plan.pc)
+        };
+        em.side_exit(bad, true, |em| em.deopt(k(plan.pc as u32, 2), vec![why]));
         em.emit(Opc::Copy, r1(R::SP), k(s as u32, 1), NONE, 0);
     }
     if plan.top {
@@ -242,13 +269,17 @@ pub fn emit(
                 .get(&plan.pc)
                 .into_iter()
                 .flat_map(|b| b.ones());
-        let mut bad: Vec<Vn> = pre.map(|q| em.window(q as u8)).collect();
+        let mut bad: Vec<(Vn, Why)> = pre.map(|q| em.window(q as u8)).collect();
         for &c in sh.g.objs.pre.get(&plan.pc).into_iter().flatten() {
             let q = c.q as u32;
-            bad.push(em.obj_bad(k(q, 2), Iv { lo: q, hi: q + 1 }, c));
+            bad.push(em.obj_bad(k(q, 2), Iv { lo: q, hi: q + 1 }, c, "entry"));
+        }
+        let (bad, mut whys): (Vec<Vn>, Vec<Why>) = bad.into_iter().unzip();
+        for w in &mut whys {
+            w.at = plan.pc;
         }
         if let Some(c) = bad.into_iter().reduce(|a, b| em.op(Opc::IntOr, 1, a, b)) {
-            em.side_exit(c, true, |em| em.deopt(k(plan.pc as u32, 2)));
+            em.side_exit(c, true, |em| em.deopt(k(plan.pc as u32, 2), whys));
         }
     }
     let roots: Vec<Key> = plan
@@ -348,7 +379,7 @@ impl<'a> Em<'a, '_> {
             self.cur = save;
         } else {
             let save = std::mem::replace(&mut self.cur, b as usize);
-            self.deopt(k(pc as u32, 2));
+            self.deopt(k(pc as u32, 2), vec![Why::new(Kind::Path, pc)]);
             self.cur = save;
         }
         b
@@ -382,11 +413,27 @@ impl<'a> Em<'a, '_> {
         tmp((self.next - 1) as u16, size)
     }
     fn emit(&mut self, opc: Opc, out: Vn, a: Vn, b: Vn, aux: u32) {
+        let why = match opc {
+            Opc::BranchInd => self.exit(vec![Why::new(Kind::Transfer, self.ipc)]),
+            _ => 0,
+        };
         let op = LOp {
             pc: self.ipc,
+            why,
             ..LOp::new(opc, out, a, b, aux)
         };
         self.f.blocks[self.cur].ops.push(op);
+    }
+    /// The tag ([`LOp::why`]) of an exit standing for `whys`.
+    fn exit(&mut self, whys: Vec<Why>) -> u32 {
+        let at = self.f.whys.len() as u32;
+        self.f.exits.push((at..at + whys.len() as u32).collect());
+        self.f.whys.extend(whys);
+        self.f.exits.len() as u32
+    }
+    /// The values the analysis finds register `r` (`A`, `X` or `Y`) holds at `pc`.
+    fn seen(&self, pc: u16, r: usize) -> Option<crate::why::Bits> {
+        (r < 3).then(|| self.sh.g.regs.get(&pc).map(|x| x[r]))?
     }
     /// `opc(a, b)` into a fresh temporary of `size` bytes.
     fn op(&mut self, opc: Opc, size: u8, a: Vn, b: Vn) -> Vn {
@@ -506,8 +553,9 @@ impl<'a> Em<'a, '_> {
         }
         hit
     }
-    /// Deopt to `pc` before the access at `addr` when it reaches page 1 (outside `allow`).
-    fn page1_guard(&mut self, addr: Vn, pc: u16, allow: Option<Iv>) {
+    /// Deopt to `pc` before the access at `addr` (interval `iv`) when it reaches page 1
+    /// (outside `allow`).
+    fn page1_guard(&mut self, addr: Vn, iv: Iv, pc: u16, allow: Option<Iv>) {
         let page = self.op(Opc::IntAnd, 2, addr, k(0xff00, 2));
         let mut hit = self.op(Opc::IntEqual, 1, page, k(0x100, 2));
         if let Some(r) = allow {
@@ -516,7 +564,15 @@ impl<'a> Em<'a, '_> {
             hit = self.op(Opc::IntAnd, 1, hit, out);
         }
         self.n.stack_guards += 1;
-        let x = self.side_exit(hit, true, |em| em.deopt(k(pc as u32, 2)));
+        let mut ok = complement(vec![(0x100, 0x1ff)], 0xffff);
+        ok.extend(allow.map(|r| (r.lo, r.hi)));
+        ok.sort_unstable();
+        let why = Why {
+            ok,
+            addr: Some(iv),
+            ..Why::new(Kind::Stack, pc)
+        };
+        let x = self.side_exit(hit, true, |em| em.deopt(k(pc as u32, 2), vec![why]));
         self.f.blocks[x as usize].replay = Some(self.istart);
     }
     /// A `CALL` of `fs[0]`, or with `tv` a `BRANCHIND` on `tv` to a `CALL` of each of `fs`
@@ -528,7 +584,7 @@ impl<'a> Em<'a, '_> {
         tv: Option<Vn>,
         (ret, to): (u16, u16),
         c: u8,
-        mut chk: Vec<Vn>,
+        mut chk: Vec<(Vn, Why)>,
         (cyc, maxpen): (u32, u32),
         port: bool,
     ) {
@@ -628,10 +684,17 @@ impl<'a> Em<'a, '_> {
         {
             let w = pulled(self);
             let bad = self.op(Opc::IntNotEqual, 1, w, rav);
+            let why = Why {
+                ok: match self.mem.is_some() {
+                    true => Vec::new(),
+                    false => vec![(ra, ra)],
+                },
+                ..Why::new(Kind::Return, self.ipc)
+            };
             self.side_exit(bad, false, |em| {
                 em.touch_ret(w, Iv::full(2));
                 let t = em.op(Opc::IntAdd, 2, w, k(1, 2));
-                em.deopt(t);
+                em.deopt(t, vec![why]);
             });
         }
         let riv = match self.mem.is_some() {
@@ -652,7 +715,7 @@ impl<'a> Em<'a, '_> {
     /// with no return address of its own; after the handler's `RTI` the flags restored from the
     /// status pushed and, where the handler may store into page 1, the address it returned
     /// through checked.
-    fn brk_call(&mut self, f: u16, ret: u16, mut chk: Vec<Vn>, (cyc, maxpen): (u32, u32)) {
+    fn brk_call(&mut self, f: u16, ret: u16, mut chk: Vec<(Vn, Why)>, (cyc, maxpen): (u32, u32)) {
         const FLAGS: [(usize, u32); 6] = [
             (R::C, 0),
             (R::Z, 1),
@@ -692,7 +755,11 @@ impl<'a> Em<'a, '_> {
             let h = self.load(a, PAGE1, mem::STACK);
             let w = self.word(l, h);
             let bad = self.op(Opc::IntNotEqual, 1, w, k(ret as u32, 2));
-            self.side_exit(bad, false, |em| em.deopt(w));
+            let why = Why {
+                ok: vec![(ret as u32, ret as u32)],
+                ..Why::new(Kind::Return, self.ipc)
+            };
+            self.side_exit(bad, false, |em| em.deopt(w, vec![why]));
         }
         let pv = match h0.and_then(|h| self.slot(h - 2)) {
             Some(s) => self.op(Opc::Copy, 1, s, NONE),
@@ -813,12 +880,17 @@ impl<'a> Em<'a, '_> {
             _ => k(pc, 2),
         }
     }
-    /// Deopt to `pc` before the access at `addr` when it lies in `r`.
-    fn range_guard(&mut self, addr: Vn, pc: u16, r: Iv) {
+    /// Deopt to `pc` before the access at `addr` (interval `iv`) when it lies in `r`.
+    fn range_guard(&mut self, addr: Vn, iv: Iv, pc: u16, r: Iv) {
         let off = self.op(Opc::IntSub, 2, addr, k(r.lo, 2));
         let hit = self.op(Opc::IntLess, 1, off, k(r.hi - r.lo + 1, 2));
         self.n.stack_guards += 1;
-        let x = self.side_exit(hit, true, |em| em.deopt(k(pc as u32, 2)));
+        let why = Why {
+            ok: complement(vec![(r.lo, r.hi)], 0xffff),
+            addr: Some(iv),
+            ..Why::new(Kind::Stack, pc)
+        };
+        let x = self.side_exit(hit, true, |em| em.deopt(k(pc as u32, 2), vec![why]));
         self.f.blocks[x as usize].replay = Some(self.istart);
     }
     /// Whether an access in `iv` may reach a volatile address in the current configuration.
@@ -902,7 +974,8 @@ impl<'a> Em<'a, '_> {
         self.pend.0 += cyc;
         self.f.blocks[self.cur].maxcyc += cyc + maxpen;
     }
-    fn deopt(&mut self, pc: Vn) {
+    /// Leave for the reference at `pc`, the exit standing for `whys`.
+    fn deopt(&mut self, pc: Vn, whys: Vec<Why>) {
         let pc = match (&self.mem, pc.space()) {
             (Some((rep, len, _)), Space::Const) => {
                 let (rep, len, v) = (*rep as u32, *len as u32, pc.off());
@@ -914,7 +987,9 @@ impl<'a> Em<'a, '_> {
             }
             _ => pc,
         };
+        let why = self.exit(whys);
         self.emit(Opc::CallOther, NONE, pc, NONE, other::DEOPT);
+        self.f.blocks[self.cur].ops.last_mut().unwrap().why = why;
     }
     /// Leave through a new block when `cond` holds (the block sees the pending cycles), and
     /// continue in a fresh block. A `soft` exit's deopt state is what the continuation would
@@ -1091,7 +1166,7 @@ impl<'a> Em<'a, '_> {
         self.emit(Opc::Store, NONE, a, v, flags);
         a
     }
-    fn push(&mut self, v: Vn, chk: &mut Vec<Vn>) {
+    fn push(&mut self, v: Vn, chk: &mut Vec<(Vn, Why)>) {
         let slot = self.h.and_then(|h| self.slot(h));
         if let Some(s) = slot {
             self.emit(Opc::Copy, s, v, NONE, 0);
@@ -1100,7 +1175,11 @@ impl<'a> Em<'a, '_> {
             let a = self.store_stack(v);
             if self.sh.hits_code(PAGE1) {
                 self.n.code_guards += 1;
-                chk.push(self.op(Opc::CallOther, 1, a, v));
+                let why = Why {
+                    addr: Some(PAGE1),
+                    ..Why::new(Kind::Code, self.ipc)
+                };
+                chk.push((self.op(Opc::CallOther, 1, a, v), why));
                 self.f.blocks[self.cur].ops.last_mut().unwrap().aux = other::CODECHK;
                 self.coded = true;
             }
@@ -1125,7 +1204,7 @@ impl<'a> Em<'a, '_> {
         self.op(Opc::IntOr, 2, h, l)
     }
     /// Whether the pointer pair at `q` is in its window, read from memory.
-    fn window(&mut self, q: u8) -> Vn {
+    fn window(&mut self, q: u8) -> (Vn, Why) {
         let t = self.sh.g.prot.win[q as usize].unwrap() as u32;
         let ld = |em: &mut Self, a: u8| em.load(k(a as u32, 2), Iv::exact(a as u32), 0);
         let lo = ld(self, q);
@@ -1133,7 +1212,14 @@ impl<'a> Em<'a, '_> {
         let p = self.word(lo, hi);
         self.n.ptr_guards += 1;
         let mut bad = NONE;
+        let mut runs = Vec::new();
         for &(zl, zh) in &self.sh.g.zones {
+            let lo = zl.wrapping_sub(t) & 0xffff;
+            let hi = lo + zh - zl + t - 1;
+            runs.push((lo, hi.min(0xffff)));
+            if hi > 0xffff {
+                runs.push((0, hi - 0x10000));
+            }
             let off = self.op(Opc::IntSub, 2, p, k(zl.wrapping_sub(t) & 0xffff, 2));
             let c = self.op(Opc::IntLess, 1, off, k(zh - zl + t, 2));
             bad = if bad.is_none() {
@@ -1142,11 +1228,22 @@ impl<'a> Em<'a, '_> {
                 self.op(Opc::IntOr, 1, bad, c)
             };
         }
-        bad
+        let why = Why {
+            pair: Some(q),
+            ok: complement(runs, 0xffff),
+            ..Why::new(Kind::Window, self.ipc)
+        };
+        (bad, why)
     }
     /// Whether the pointer of the pair at `at` (its bytes in `iv`), plus the flag `c.flag`
     /// times 256, lies outside object `c.obj`: with `c.of`, the pointer plus `Y`.
-    fn obj_bad(&mut self, at: Vn, iv: Iv, c: crate::objects::ObjChk) -> Vn {
+    fn obj_bad(
+        &mut self,
+        at: Vn,
+        iv: Iv,
+        c: crate::objects::ObjChk,
+        def: &'static str,
+    ) -> (Vn, Why) {
         use crate::objects::Of;
         self.n.obj_guards += 1;
         let lo = self.load(
@@ -1178,7 +1275,13 @@ impl<'a> Em<'a, '_> {
         }
         let bad = self.op(Opc::CallOther, 1, p, k(c.obj as u32, 2));
         self.f.blocks[self.cur].ops.last_mut().unwrap().aux = other::OBJCHK;
-        bad
+        let why = Why {
+            pair: Some(c.q),
+            obj: Some(c.obj as u32),
+            def: Some(def),
+            ..Why::new(Kind::Obj, self.ipc)
+        };
+        (bad, why)
     }
     /// Whether access `ac` is through pairs whose windows keep it out of the volatile
     /// ranges (pointer windows with a declared entry SP).
@@ -1187,15 +1290,16 @@ impl<'a> Em<'a, '_> {
     }
     /// Deopt to `pc` when any check fired; after a code check with every register handed
     /// over, as the reference may run changed code.
-    fn check(&mut self, chk: Vec<Vn>, pc: Vn) {
-        let Some(mut c) = chk.first().copied() else {
+    fn check(&mut self, chk: Vec<(Vn, Why)>, pc: Vn) {
+        let Some(mut c) = chk.first().map(|e| e.0) else {
             return;
         };
-        for &d in &chk[1..] {
+        for &(d, _) in &chk[1..] {
             c = self.op(Opc::IntOr, 1, c, d);
         }
         let soft = !std::mem::take(&mut self.coded);
-        self.side_exit(c, soft, |em| em.deopt(pc));
+        let whys = chk.into_iter().map(|e| e.1).collect();
+        self.side_exit(c, soft, |em| em.deopt(pc, whys));
     }
 
     fn node(&mut self, key: Key) {
@@ -1250,7 +1354,12 @@ impl<'a> Em<'a, '_> {
             self.insn(pc, &var.op, arm);
             self.cur = cont as usize;
         }
-        self.deopt(k(pc as u32, 2));
+        let why = Why {
+            ok: runs(vars.iter().map(|v| v.op as u32)),
+            addr: Some(Iv::exact(pc as u32)),
+            ..Why::new(Kind::Opcode, pc)
+        };
+        self.deopt(k(pc as u32, 2), vec![why]);
     }
 
     /// Instantiate template `ops` of opcode `opc` at `pc` with operand values from `slot`,
@@ -1266,12 +1375,13 @@ impl<'a> Em<'a, '_> {
         stack: bool,
         slot: &mut dyn FnMut(&mut Self, Slot, u8) -> Vn,
         umap: &mut FxHashMap<u32, Vn>,
-    ) -> Vec<Vn> {
+    ) -> Vec<(Vn, Why)> {
         let mut chk = Vec::new();
         // Object checks read the pair and the flags once the instruction is done.
         let mut objs_after = Vec::new();
         let mut ai = 0;
         let mut zone = NONE;
+        let mut zwhy = Vec::new();
         for op in ops {
             let mut map = |em: &mut Self, v: Vn| -> Vn {
                 match v.space() {
@@ -1335,6 +1445,20 @@ impl<'a> Em<'a, '_> {
                 if checked(&ac, ai) && !stack {
                     // One exit before the last checked access covers the instruction's.
                     let c = self.in_zone(a);
+                    let ok = complement(
+                        self.sh
+                            .g
+                            .zones
+                            .iter()
+                            .map(|&(lo, hi)| (lo, hi - 1))
+                            .collect(),
+                        0xffff,
+                    );
+                    zwhy.push(Why {
+                        ok,
+                        addr: Some(ac.addr),
+                        ..Why::new(Kind::Zone, pc)
+                    });
                     zone = if zone.is_none() {
                         c
                     } else {
@@ -1343,7 +1467,8 @@ impl<'a> Em<'a, '_> {
                     let later = (ai + 1..acc.len()).any(|j| checked(&acc[j], j));
                     if !later {
                         self.n.zone_guards += 1;
-                        let x = self.side_exit(zone, true, |em| em.deopt(k(pc as u32, 2)));
+                        let whys = std::mem::take(&mut zwhy);
+                        let x = self.side_exit(zone, true, |em| em.deopt(k(pc as u32, 2), whys));
                         self.f.blocks[x as usize].replay = Some(self.istart);
                     }
                 }
@@ -1364,7 +1489,7 @@ impl<'a> Em<'a, '_> {
                     (self.sh.stack, stack, page1_check(opc, ai), op.opc)
                 {
                     if ac.addr.meets(r.lo, r.hi + 1) && ac.page1(&self.sh.g.prot.win) {
-                        self.range_guard(a, pc, r);
+                        self.range_guard(a, ac.addr, pc, r);
                     }
                 } else if self.sh.stack.is_none()
                     && !stack
@@ -1373,8 +1498,8 @@ impl<'a> Em<'a, '_> {
                     && ac.page1(&self.sh.g.prot.win)
                 {
                     match self.plan.narrowed(&self.sh.seen, pc, opc, ai, ac.addr) {
-                        Some(r) => self.page1_guard(a, pc, Some(r)),
-                        None if self.kept(ac.addr) => self.page1_guard(a, pc, None),
+                        Some(r) => self.page1_guard(a, ac.addr, pc, Some(r)),
+                        None if self.kept(ac.addr) => self.page1_guard(a, ac.addr, pc, None),
                         None => {}
                     }
                 }
@@ -1401,7 +1526,7 @@ impl<'a> Em<'a, '_> {
                     self.emit(Opc::Store, out, a, b, aux);
                     let pairs = self.sh.g.prot.chk.get(&(pc, opc, ai - 1));
                     for &q in pairs.into_iter().flatten().filter(|_| !stack) {
-                        let mut bad = self.window(q);
+                        let (mut bad, why) = self.window(q);
                         if ac.addr.value().is_none() {
                             // Only the pair the store wrote: the others keep their state.
                             // A completing store also stands for its pair's other byte.
@@ -1409,7 +1534,13 @@ impl<'a> Em<'a, '_> {
                             let hit = self.op(Opc::IntLess, 1, off, k(3, 2));
                             bad = self.op(Opc::IntAnd, 1, bad, hit);
                         }
-                        chk.push(bad);
+                        chk.push((
+                            bad,
+                            Why {
+                                addr: Some(ac.addr),
+                                ..why
+                            },
+                        ));
                     }
                     let objs = self.sh.g.objs.chk.get(&(pc, opc, ai - 1));
                     for &c in objs.into_iter().flatten().filter(|_| !stack) {
@@ -1442,7 +1573,11 @@ impl<'a> Em<'a, '_> {
                     if self.sh.hits_code(ac.addr) && !self.sh.g.nocode.contains(&(pc, opc, ai - 1))
                     {
                         self.n.code_guards += 1;
-                        chk.push(self.op(Opc::CallOther, 1, a, b));
+                        let why = Why {
+                            addr: Some(ac.addr),
+                            ..Why::new(Kind::Code, pc)
+                        };
+                        chk.push((self.op(Opc::CallOther, 1, a, b), why));
                         self.f.blocks[self.cur].ops.last_mut().unwrap().aux = other::CODECHK;
                         self.coded = true;
                     }
@@ -1453,7 +1588,7 @@ impl<'a> Em<'a, '_> {
             self.emit(op.opc, out, a, b, aux);
         }
         for (at, iv, c) in objs_after {
-            chk.push(self.obj_bad(at, iv, c));
+            chk.push(self.obj_bad(at, iv, c, "store"));
         }
         chk
     }
@@ -1526,7 +1661,14 @@ impl<'a> Em<'a, '_> {
         if let Some(&(r, ok)) = self.sh.g.guards.get(&pc) {
             let off = self.op(Opc::IntSub, 1, r1(r as usize), k(ok.lo, 1));
             let out = self.op(Opc::IntLess, 1, k(ok.hi - ok.lo, 1), off);
-            let x = self.side_exit(out, true, |em| em.deopt(k(pc as u32, 2)));
+            let why = Why {
+                reg: Some(r),
+                ok: vec![(ok.lo, ok.hi)],
+                tables: self.sh.g.extents.get(&pc).cloned().unwrap_or_default(),
+                seen: self.seen(pc, r as usize),
+                ..Why::new(Kind::Index, pc)
+            };
+            let x = self.side_exit(out, true, |em| em.deopt(k(pc as u32, 2), vec![why]));
             self.f.blocks[x as usize].replay = Some(self.istart);
         }
         let next = pc.wrapping_add(t.len as u16);
@@ -1581,18 +1723,20 @@ impl<'a> Em<'a, '_> {
                 hi: *qs.iter().max().unwrap() + 1,
             };
             let mut bad = NONE;
+            let mut whys = Vec::new();
             for &c in cs {
                 let at = match self.mem.is_some() {
                     true => self.zext(ob[0], 2),
                     false => k(c.q as u32, 2),
                 };
-                let b = self.obj_bad(at, iv, c);
+                let (b, why) = self.obj_bad(at, iv, c, "load");
+                whys.push(why);
                 bad = match bad.is_none() {
                     true => b,
                     false => self.op(Opc::IntOr, 1, bad, b),
                 };
             }
-            let x = self.side_exit(bad, true, |em| em.deopt(k(pc as u32, 2)));
+            let x = self.side_exit(bad, true, |em| em.deopt(k(pc as u32, 2), whys));
             self.f.blocks[x as usize].replay = Some(self.istart);
         }
         let mut memo: FxHashMap<(Slot, u8), Vn> = FxHashMap::default();
@@ -1627,7 +1771,11 @@ impl<'a> Em<'a, '_> {
         {
             let want = self.op(Opc::IntAdd, 1, r1(R::SP), k((hs - h) as u32 & 0xff, 1));
             let bad = self.op(Opc::IntNotEqual, 1, r1(R::X), want);
-            let x = self.side_exit(bad, true, |em| em.deopt(k(pc as u32, 2)));
+            let why = Why {
+                reg: Some(R::X as u8),
+                ..Why::new(Kind::Txs, pc)
+            };
+            let x = self.side_exit(bad, true, |em| em.deopt(k(pc as u32, 2), vec![why]));
             self.f.blocks[x as usize].replay = Some(self.istart);
         }
         let mut umap = FxHashMap::default();
@@ -1636,8 +1784,7 @@ impl<'a> Em<'a, '_> {
         // A walk's anchor checks its pair's pointer plus the `Y` it leaves.
         for &c in self.sh.g.objs.post.get(&pc).into_iter().flatten() {
             let q = c.q as u32;
-            let bad = self.obj_bad(k(q, 2), Iv { lo: q, hi: q + 1 }, c);
-            chk.push(bad);
+            chk.push(self.obj_bad(k(q, 2), Iv { lo: q, hi: q + 1 }, c, "walk"));
         }
         // Penalties use the registers the instruction leaves.
         let maxpen = match t.pen {
@@ -1667,7 +1814,7 @@ impl<'a> Em<'a, '_> {
             Ctl::Next(n) => {
                 self.account(cyc, maxpen);
                 if *op == 0x28 && self.sh.g.pull_clear {
-                    chk.push(r1(R::D));
+                    chk.push((r1(R::D), Why::new(Kind::Decimal, pc)));
                 }
                 self.check(chk, k(next as u32, 2));
                 let sets_sp = crate::analysis::stack_delta(*op).is_none();
@@ -1790,8 +1937,8 @@ impl<'a> Em<'a, '_> {
                     }
                 };
                 if self.kept(iv) {
-                    self.page1_guard(lo_a, pc, None);
-                    self.page1_guard(hi_a, pc, None);
+                    self.page1_guard(lo_a, iv, pc, None);
+                    self.page1_guard(hi_a, iv, pc, None);
                 }
                 let lo = self.load(lo_a, iv, 0);
                 let hi = self.load(hi_a, iv, 0);
@@ -1876,7 +2023,7 @@ impl<'a> Em<'a, '_> {
                 }
                 self.account(cyc, maxpen);
                 if matches!(ctl, Ctl::Rti(_)) && self.sh.g.pull_clear {
-                    self.check(vec![r1(R::D)], tgt);
+                    self.check(vec![(r1(R::D), Why::new(Kind::Decimal, pc))], tgt);
                 }
                 self.flush();
                 self.exit_or(exit, tgt, |em| {
@@ -1924,7 +2071,7 @@ impl<'a> Em<'a, '_> {
             }
             Ctl::Jam => {
                 self.flush();
-                self.deopt(k(pc as u32, 2));
+                self.deopt(k(pc as u32, 2), vec![Why::new(Kind::Jam, pc)]);
             }
         }
     }
@@ -1971,7 +2118,11 @@ impl<'a> Em<'a, '_> {
             self.emit(Opc::Branch, NONE, NONE, NONE, b);
             self.cur = save;
         }
-        self.deopt(k(pc as u32, 2));
+        let why = Why {
+            reg: Some(R::SP as u8),
+            ..Why::new(Kind::Sp, self.ipc)
+        };
+        self.deopt(k(pc as u32, 2), vec![why]);
     }
 
     /// Branch to the node of `keys` at `pc` whose configuration the port registers select,
@@ -1993,7 +2144,7 @@ impl<'a> Em<'a, '_> {
                 self.emit(Opc::CBranch, NONE, hit, NONE, b);
             }
         }
-        self.deopt(k(pc as u32, 2));
+        self.deopt(k(pc as u32, 2), vec![Why::new(Kind::Bank, self.ipc)]);
     }
 
     /// An outermost entry: with the port registers its calls were always entered with, check
@@ -2005,7 +2156,9 @@ impl<'a> Em<'a, '_> {
             let bd = self.op(Opc::IntNotEqual, 1, d, k(d0 as u32, 1));
             let bv = self.op(Opc::IntNotEqual, 1, v, k(v0 as u32, 1));
             let bad = self.op(Opc::IntOr, 1, bd, bv);
-            self.side_exit(bad, true, |em| em.deopt(k(pc as u32, 2)));
+            self.side_exit(bad, true, |em| {
+                em.deopt(k(pc as u32, 2), vec![Why::new(Kind::Port, pc)])
+            });
             self.emit(
                 Opc::Store,
                 NONE,

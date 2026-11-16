@@ -39,6 +39,7 @@
 use crate::analysis::{absint, operand_bytes, Access, Flow, Iv, Tg, Var, TOP_ENV};
 use crate::scev::{Induction, Place};
 use crate::vsa::{Code, Ix, Key, St, Tab, NOGRP, NOREG};
+use crate::why::{By, Extent, Of};
 use di_pcode::{reg, Opc, Space, Template, Vn};
 use fixedbitset::FixedBitSet;
 use petgraph::algo::dominators::{simple_fast, Dominators};
@@ -63,8 +64,32 @@ pub struct Store {
 }
 
 /// An index guard: the instruction at `pc` deopts before it unless index register `reg` is in
-/// `ok` (a table read outside its extent).
-pub type Guard = (u16, u8, Iv);
+/// `ok` (a table read outside its extent `ext`, which guards compare equal whatever).
+#[derive(Clone, Copy, Debug)]
+pub struct Guard {
+    pub pc: u16,
+    pub reg: u8,
+    pub ok: Iv,
+    pub ext: Extent,
+}
+
+impl PartialEq for Guard {
+    fn eq(&self, o: &Self) -> bool {
+        (self.pc, self.reg, self.ok) == (o.pc, o.reg, o.ok)
+    }
+}
+
+impl Eq for Guard {}
+
+/// `gs` as guards of tables of kind `of`.
+pub(crate) fn of(gs: Vec<Guard>, of: Of) -> Vec<Guard> {
+    gs.into_iter()
+        .map(|g| Guard {
+            ext: Extent { of, ..g.ext },
+            ..g
+        })
+        .collect()
+}
 
 /// A computed transfer's targets and the bytes they were read from, or that some path leaves
 /// it unresolved.
@@ -307,51 +332,75 @@ impl Objects {
         t
     }
     /// The first address from `s` on that holds an instruction byte or lies past the loaded
-    /// program, or past `s` at which the code starts accessing a base other than `bases`.
-    fn end(&self, s: u32, bases: &[u16]) -> u32 {
+    /// program, or past `s` at which the code starts accessing a base other than `bases`, and
+    /// which of them it is.
+    fn end(&self, s: u32, bases: &[u16]) -> (u32, By) {
         let i = self.starts.partition_point(|e| e.0 <= s);
-        let o = self.starts[i..]
-            .iter()
-            .find(|e| !bases.contains(&e.1))
-            .map_or(0x10000, |e| e.0);
-        let c = self.code[self.code.partition_point(|&a| a < s)..]
-            .first()
-            .map_or(0x10000, |&a| a);
-        o.min(c).min(self.end.max(s))
+        let o = self.starts[i..].iter().find(|e| !bases.contains(&e.1));
+        let c = self.code[self.code.partition_point(|&a| a < s)..].first();
+        [
+            o.map(|e| (e.0, By::Object)),
+            c.map(|&a| (a, By::Code)),
+            Some((0x10000, By::Wrap)),
+            Some((self.end.max(s), By::Loaded)),
+        ]
+        .into_iter()
+        .flatten()
+        .min_by_key(|e| e.0)
+        .unwrap()
     }
     /// How many of the index values `xs` (ascending) read every column `bases` inside its
     /// extent: from its first byte to its end ([`Objects::end`], the table's other columns,
     /// those the code reads with the same index value too, not counted, and the first of
     /// `stops` (ascending) past its first byte), and no byte another column read at an
-    /// earlier value. A prefix of `xs`.
-    pub(crate) fn valid(&self, bases: &[u16], xs: &[u8], stops: &[u32]) -> usize {
-        let Some(&x0) = xs.first() else { return 0 };
+    /// earlier value. A prefix of `xs`; with fewer than all, the extent that ended it.
+    pub(crate) fn valid(&self, bases: &[u16], xs: &[u8], stops: &[u32]) -> (usize, Option<Extent>) {
+        let Some(&x0) = xs.first() else {
+            return (0, None);
+        };
         let mut same = bases.to_vec();
         for b in bases {
             same.extend(self.columns.get(b).into_iter().flatten());
         }
-        let ends: Vec<u32> = bases
+        let ends: Vec<(u32, By)> = bases
             .iter()
             .map(|&b| {
                 let s = b as u32 + x0 as u32;
                 let stop = stops[stops.partition_point(|&t| t <= s)..].first();
-                self.end(s, &same).min(stop.map_or(0x10000, |&t| t))
+                let e = self.end(s, &same);
+                match stop {
+                    Some(&t) if t < e.0 => (t, By::Target),
+                    _ => e,
+                }
             })
             .collect();
         let mut claimed: FxHashMap<u32, usize> = FxHashMap::default();
         for (n, &x) in xs.iter().enumerate() {
             let at: Vec<u32> = bases.iter().map(|&b| b as u32 + x as u32).collect();
-            let bad = at.iter().enumerate().any(|(j, &a)| {
-                a >= ends[j] || claimed.get(&a).is_some_and(|&c| bases[c] != bases[j])
+            let bad = at.iter().enumerate().find_map(|(j, &a)| {
+                let ext = |end, by| Extent {
+                    of: Of::Data,
+                    base: bases[j],
+                    end,
+                    by,
+                    store: None,
+                };
+                if a >= ends[j].0 {
+                    return Some(ext(ends[j].0, ends[j].1));
+                }
+                claimed
+                    .get(&a)
+                    .filter(|&&c| bases[c] != bases[j])
+                    .map(|_| ext(a, By::Column))
             });
-            if bad {
-                return n;
+            if bad.is_some() {
+                return (n, bad);
             }
             for (j, a) in at.into_iter().enumerate() {
                 claimed.insert(a, j);
             }
         }
-        xs.len()
+        (xs.len(), None)
     }
 }
 
@@ -979,7 +1028,7 @@ fn bytes(
             None => vec![None],
             Some(v) => {
                 let v: Vec<u8> = v.into_iter().collect();
-                let n = objs.valid(&bases, &v, stops);
+                let (n, ext) = objs.valid(&bases, &v, stops);
                 if n == 0 {
                     return None;
                 }
@@ -996,7 +1045,12 @@ fn bytes(
                                 .iter()
                                 .any(|&x| !(ok.lo..=ok.hi).contains(&(x as u32)))
                             {
-                                guards.push((pc, reg, ok));
+                                guards.push(Guard {
+                                    pc,
+                                    reg,
+                                    ok,
+                                    ext: ext.unwrap(),
+                                });
                             }
                         }
                     }
@@ -1374,7 +1428,7 @@ pub(crate) fn jumps(
                         .iter()
                         .filter_map(|x| Some((x.2?, f.wrapping_add(x.1 as i8 as u16))))
                         .collect();
-                    Some(Some((to.collect(), read, g, origin)))
+                    Some(Some((to.collect(), read, of(g, Of::Branch), origin)))
                 }),
                 ref f if operand_len(f) == 2 => {
                     let (lo, hi) = (pc.wrapping_add(1), pc.wrapping_add(2));
@@ -1470,7 +1524,18 @@ pub(crate) fn jumps(
                 Jump::Targets(
                     t.into_iter().collect(),
                     b.into_iter().collect(),
-                    g,
+                    (g.into_iter())
+                        .map(|x| match x.ext.of {
+                            Of::Data => Guard {
+                                ext: Extent {
+                                    of: Of::Jump,
+                                    ..x.ext
+                                },
+                                ..x
+                            },
+                            _ => x,
+                        })
+                        .collect(),
                     o.into_iter().collect(),
                 ),
             )),
@@ -1688,7 +1753,7 @@ pub(crate) fn pointer_seeds(
                         return false;
                     };
                     if !read_only(code, &r)
-                        || g.iter().any(|&(p, x, _)| sets.of(p, x as usize).is_some())
+                        || g.iter().any(|x| sets.of(x.pc, x.reg as usize).is_some())
                     {
                         return false;
                     }
@@ -2185,7 +2250,7 @@ pub(crate) fn arm_values(
                 Some(v) => v.intersection(&vals).copied().collect(),
                 None => vals,
             });
-            guards.extend(g);
+            guards.extend(of(g, Of::Jump));
         }
     }
 }
@@ -2252,14 +2317,25 @@ pub(crate) fn access_guards(
             .iter()
             .position(|&x| bases.iter().any(|&c| closes(c as u32 + x as u32)));
         if let Some(n) = n.filter(|&n| n > 0) {
-            out.push((
+            let (c, end) = (bases.iter())
+                .map(|&c| (c, c as u32 + xs[n] as u32))
+                .find(|e| closes(e.1))
+                .unwrap();
+            out.push(Guard {
                 pc,
                 reg,
-                Iv {
+                ok: Iv {
                     lo: x0 as u32,
                     hi: xs[n - 1] as u32,
                 },
-            ));
+                ext: Extent {
+                    of: Of::Store,
+                    base: c,
+                    end: end.min(0x10000),
+                    by: if end > 0xffff { By::Wrap } else { By::Loaded },
+                    store: Some(pc),
+                },
+            });
         }
     }
     out
@@ -2329,7 +2405,14 @@ pub(crate) fn tag_values(
             deps.sort_unstable();
             deps.dedup();
             s.deps = deps;
-            guards.extend(g);
+            guards.extend(g.into_iter().map(|x| Guard {
+                ext: Extent {
+                    of: Of::Cell,
+                    store: Some(s.pc),
+                    ..x.ext
+                },
+                ..x
+            }));
         }
     }
 }
