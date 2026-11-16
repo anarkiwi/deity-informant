@@ -373,6 +373,14 @@ impl Pv {
             set: None,
         }
     }
+    /// The constant byte `x`.
+    fn of(x: u8) -> Pv {
+        Pv {
+            iv: Iv::exact(x as u32),
+            kb: Kb::exact(x as u32),
+            set: None,
+        }
+    }
     fn join(self, o: Pv, w: impl Fn(Iv, Iv) -> Iv) -> Pv {
         Pv {
             iv: w(self.iv, hull(self.iv, o.iv)),
@@ -1327,6 +1335,16 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
             None => vacant = true,
         }
     }
+    if v.op == 0x40 {
+        let pulled = match st.depth {
+            Some(d) if d <= 0 => match st.above.get((-d) as usize).copied().flatten() {
+                Some(Tab::K(x)) => Some(Kb::exact(x as u32)),
+                _ => None,
+            },
+            _ => st.pv[0].map(|p| p.kb),
+        };
+        status(&mut env, pulled.unwrap_or(Kb::any(1)));
+    }
     if code.pull_clear && matches!(v.op, 0x28 | 0x40) {
         env[di_pcode::reg::D] = Iv::exact(0);
     }
@@ -1621,9 +1639,20 @@ fn pull(s: &mut St, op: u8, p: Pv) {
         return;
     }
     for (r, bit) in di_pcode::reg::STATUS_BITS {
-        if p.kb.u >> bit & 1 == 0 && r != di_pcode::reg::D {
+        if p.kb.u >> bit & 1 == 0 {
             s.env[r] = Iv::exact(p.kb.v >> bit & 1);
         }
+    }
+}
+
+/// The flags of `env` as a pulled status byte of known bits `kb` sets them: a known bit's flag
+/// is exact, an unknown one's may be either.
+fn status(env: &mut Env, kb: Kb) {
+    for (r, bit) in di_pcode::reg::STATUS_BITS {
+        env[r] = match kb.u >> bit & 1 {
+            0 => Iv::exact(kb.v >> bit & 1),
+            _ => Iv::full(1),
+        };
     }
 }
 
@@ -2634,10 +2663,16 @@ fn fixpoint(
                         w.caller(ret, cx, &out);
                     }
                     let [lo, hi] = ret.to_le_bytes();
-                    let h = St {
+                    let mut h = St {
                         push: [Some(Tab::Any), Some(Tab::K(lo)), Some(Tab::K(hi))],
+                        pv: [
+                            Some(Pv::pushed(&out, 0x08)),
+                            Some(Pv::of(lo)),
+                            Some(Pv::of(hi)),
+                        ],
                         ..unlinked(&out)
                     };
+                    h.env[di_pcode::reg::I] = Iv::exact(1);
                     for &t in ts {
                         w.flow((t, ret as u32), h.clone());
                     }

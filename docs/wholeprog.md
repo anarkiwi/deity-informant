@@ -1038,7 +1038,9 @@ template serves the interpreter, the generated native templates and the lift. At
 where the interval analysis proves `D` clear the template reads `D` as the constant 0 and the
 decimal operations fold away, leaving the binary form the carry-chain matcher and the induction
 analysis (`vsa::symbolic_in` evaluates constants, `AND 0` and `OR`/`XOR 0`) recognize. Where `D`
-may be set the operations stay, tagged `ir::DECIMAL`. When the program has no `SED` variant and no
+may be set the operations stay, tagged `ir::DECIMAL`. After a `PLP` or `RTI` each flag is the
+pulled byte's bit where the push is known to have stored it (a `PHP`'s status, a `PHA`'s known
+bits, the status a `BRK` frame holds), else either value. When the program has no `SED` variant and no
 entry declares `d` set, nothing but a pull from the stack can set the flag: `PLP` and `RTI` are
 then checked after the pull (the lifted code deopts if the pulled byte has `D` set) and the flag
 is clear everywhere (`vsa::pull_clear`); a pull of a status a `PHP` saved restores the

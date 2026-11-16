@@ -1751,3 +1751,61 @@ fn cursor_states_bound_their_loads() {
         assert!(!within(&q, 0x104e, 0x106d, 0x10c3), "{caps:?}");
     }
 }
+
+/// A pulled status sets the flags the code after the pull runs with: a `BRK` handler that
+/// sets the carry or sets or clears `D` in the status it returns with, one that keeps it, one
+/// that returns with the caller's `A`, and a status pulled from data whose `D` bit the
+/// accumulator decides, with and without a `SED`.
+#[test]
+fn pulled_status_decides_decimal_mode() {
+    let tail = [0x8d, 0x03, 0xc0, 0x08, 0x68, 0x8d, 0x04, 0xc0, 0x60];
+    let cases: [(&[u8], &[u8]); 8] = [
+        (
+            &[0x18, 0x00, 0xea, 0xb0, 0x02, 0xa9, 0x11],
+            &[0x68, 0x09, 0x01, 0x48, 0x40],
+        ),
+        (
+            &[0x00, 0xea, 0x69, 0x09, 0xf8],
+            &[0x68, 0x09, 0x08, 0x48, 0x40],
+        ),
+        (
+            &[0xf8, 0x00, 0xea, 0x69, 0x09],
+            &[0x68, 0x29, 0xf7, 0x48, 0x40],
+        ),
+        (&[0xf8, 0x00, 0xea, 0x69, 0x09, 0xd8], &[0x68, 0x48, 0x40]),
+        (
+            &[0x00, 0xea, 0x69, 0x09, 0xf8],
+            &[0xaa, 0x68, 0x8a, 0x48, 0x40],
+        ),
+        (&[0x48, 0x28, 0x69, 0x09], &[0x40]),
+        (&[0x48, 0x28, 0x69, 0x09, 0xf8], &[0x40]),
+        (
+            &[0x48, 0x28, 0x08, 0x68, 0x48, 0x28, 0x69, 0x09, 0xf8],
+            &[0x40],
+        ),
+    ];
+    let accs = calls(6, |i| [0x00, 0x08, 0x41, 0x49, 0xc3, 0xcb][i]);
+    for (main, irq) in cases {
+        let code = [main, &tail[..]].concat();
+        // The reference's return from the entry lands at `$0002`: a `JAM` there.
+        let img = image(&[
+            (0x0002, &[0x02]),
+            (0x1000, &code),
+            (0x1100, irq),
+            (0xfffe, &[0x00, 0x11]),
+        ]);
+        let fc: Vec<(u16, u8)> = accs.iter().map(|&(_, a)| (0x1000, a)).collect();
+        let f = facts(&img, &fc, 1_000_000);
+        for cycles in [true, false] {
+            for optimize in [false, true] {
+                let o = Opts {
+                    optimize,
+                    cycles,
+                    ..Opts::default()
+                };
+                let p = lift_with(&img, &entries(&[0x1000]), &[(0xc000, 0xc100)], &f, o);
+                diff(&img, &p, &accs, IO);
+            }
+        }
+    }
+}

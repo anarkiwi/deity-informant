@@ -173,3 +173,31 @@ def test_status_read_as_data_keeps_every_bit():
     prog = wholeprog.lift(img, pcs, [IO], facts_for(img, pcs, [(0, 0)]))
     out = prog.call(bytearray(img), 0, a=0, log=True)
     assert [tuple(e[:2]) for e in out["log"]] == [(0xC003, 0x31)]
+
+
+HANDLED = {
+    "sets_decimal": ("BRK; .byte $EA; ADC #$09; SED", "PLA; ORA #$08; PHA"),
+    "clears_decimal": ("SED; BRK; .byte $EA; ADC #$09; CLD", "PLA; AND #$F7; PHA"),
+    "keeps_decimal": ("SED; BRK; .byte $EA; ADC #$09; CLD", "PLA; PHA"),
+    "caller_status": ("BRK; .byte $EA; ADC #$09; CLD; SED", "TAX; PLA; TXA; PHA"),
+    "sets_carry": ("CLC; BRK; .byte $EA; BCS skip; LDA #$11; skip: ADC #$01", "PLA; ORA #$01; PHA"),
+    "pulled_data": ("PHA; PLP; ADC #$09; CLD; SED", ""),
+    "pulled_data_clear": ("PHA; PLP; ADC #$09; CLD", ""),
+}
+
+
+@pytest.mark.parametrize("backend", ["jit", "interp"])
+@pytest.mark.parametrize("cycles", [False, True])
+@pytest.mark.parametrize("name", HANDLED)
+def test_pulled_status_sets_decimal_mode(name, cycles, backend, monkeypatch):
+    monkeypatch.setattr(wholeprog, "BACKEND", backend)
+    body, irq = HANDLED[name]
+    src = _src(body + "; STA $C003; PHP; PLA; STA $C004").replace("        skip: ", "skip:   ")
+    irq = "".join("        %s\n" % s.strip() for s in irq.split(";") if s.strip())
+    img, labels = assemble(
+        src + "\nirq:\n" + irq + "        RTI\n        .org $FFFE\n        .byte lo(irq), hi(irq)\n"
+    )
+    pcs = [labels["entry"]]
+    calls = [(0, a) for a in (0x00, 0x08, 0x41, 0x49, 0xC3, 0xCB)]
+    prog = wholeprog.lift(img, pcs, [IO], facts_for(img, pcs, calls), cycles=cycles)
+    differential(img, prog, pcs, calls)
