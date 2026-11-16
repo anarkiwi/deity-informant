@@ -681,7 +681,7 @@ store's code check and the pointer checks of its instruction share one exit):
 |---|---|
 | `kind` | the kind of its guards, `"mixed"` when they differ (`kinds`: each) |
 | `pc` | where it leaves for the reference (`info["traps"][k][1]`) |
-| `fn`, `copies` | for an instance function's trap, the function and each copy's `pc` |
+| `fn`, `copies` | the function a trap keyed by one (`("deopt", pc, fn)`, `("ind", ...)`) is in; for an instance function each copy's `pc` |
 | `guards` | one dict per guard (below) |
 | `implied_by` | the union of the guards' `implied_by` when every guard is implied, else `None` |
 

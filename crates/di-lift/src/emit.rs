@@ -274,7 +274,10 @@ pub fn emit(
             let q = c.q as u32;
             bad.push(em.obj_bad(k(q, 2), Iv { lo: q, hi: q + 1 }, c, "entry"));
         }
-        let (bad, whys): (Vec<Vn>, Vec<Why>) = bad.into_iter().unzip();
+        let (bad, mut whys): (Vec<Vn>, Vec<Why>) = bad.into_iter().unzip();
+        for w in &mut whys {
+            w.at = plan.pc;
+        }
         if let Some(c) = bad.into_iter().reduce(|a, b| em.op(Opc::IntOr, 1, a, b)) {
             em.side_exit(c, true, |em| em.deopt(k(plan.pc as u32, 2), whys));
         }

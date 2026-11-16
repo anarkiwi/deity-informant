@@ -716,7 +716,8 @@ def _song_guard(p):
         return {}
     (pc, _), state = p.init
     guard = dict.fromkeys(("pair", "obj", "def", "addr", "seen", "held", "implied_by"))
-    guard.update(kind="entry", at=pc, fn=None, reg="a", tables=[], copies=[], writers=None)
+    guard.update(kind="entry", at=pc, fn=pc, reg="a", tables=[], copies=[], writers=None)
+    guard["proven"] = False
     guard["ok"] = [(state.songs[0], state.songs[-1])]
     return {("deopt", pc): guard}
 

@@ -2,6 +2,9 @@
 untranslated paths of the lift's deopts and switch defaults reaching it, the values each lets
 pass and the analysis finds, the traps implying it, and the stores writing code it checks."""
 
+from ..wholeprog import REGS
+from .emit import ENTRY_REGS
+
 __all__ = ["stores", "trap_info"]
 
 
@@ -82,10 +85,20 @@ class _Census:
         pcs = sorted({t["store"] for t in w["tables"] if t["of"] == "cell"})
         return [{"pc": pc, "entry": entry, "exact": True} for pc in pcs] if pcs else None
 
+    def passed(self, fi, j):
+        """Whether guard ``j`` of function ``fi`` is an entry's on a register the C entry
+        passes as a constant (all but ``A``) that it lets pass."""
+        fn, w = self.funcs[fi], self.funcs[fi]["whys"][j]
+        if w["kind"] not in ("entry", "entry_sp") or not fn["entry"] or w["at"] != fn["pc"]:
+            return False
+        r = REGS.get(w["reg"], 0)
+        return r != 0 and _passes(w["ok"], [ENTRY_REGS.get(r, 0)])
+
     def guard(self, fi, j, ind):
         """Guard ``j`` of function ``fi`` as reported (``ind``: a switch's default)."""
         fn = self.funcs[fi]
         w = dict(fn["whys"][j], fn=fn["pc"])
+        w["proven"] = w["seen"] is not None and _passes(w["ok"], _values(w["seen"]))
         w["copies"] = self.copies(fi, w["at"]) if fn.get("copies") else []
         w["implied_by"] = self.implied(fi, w)
         w["writers"] = self.writers(fi, w)
@@ -102,23 +115,24 @@ class _Census:
 
     def trap(self, key):
         """The metadata of the trap of ``key``."""
-        guards = [self.guard(fi, j, key[0] == "ind") for fi, j in self.whys.get(key, ())]
+        whys = [(fi, j) for fi, j in self.whys.get(key, ()) if not self.passed(fi, j)]
+        guards = [self.guard(fi, j, key[0] == "ind") for fi, j in whys]
         if key in self.ctx["extra"]:
             guards.insert(0, self.ctx["extra"][key])
         kinds = sorted({g["kind"] for g in guards})
-        fn = key[2] if len(key) > 2 else None
-        fi = next((i for i, f in enumerate(self.funcs) if f["pc"] == fn), None)
+        fis = {fi for fi, _ in whys if self.funcs[fi].get("copies")}
         implied = [g["implied_by"] for g in guards]
         return {
             "kind": kinds[0] if len(kinds) == 1 else "mixed",
             "kinds": kinds,
             "pc": key[1],
-            "fn": fn,
-            "copies": [] if fi is None else self.copies(fi, key[1]),
+            "fn": key[2] if len(key) > 2 else None,
+            "copies": sorted({q for fi in fis for q in self.copies(fi, key[1])}),
             "guards": guards,
             "implied_by": (
                 sorted({k for i in implied for k in i}) if implied and None not in implied else None
             ),
+            "proven": bool(guards) and all(g["proven"] for g in guards),
         }
 
 

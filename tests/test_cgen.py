@@ -31,6 +31,7 @@ from test_pcode2mlir import OPS, UNARY, VALUES, op_function, unary_function  # n
 import test_polling as P  # noqa: E402  pylint: disable=wrong-import-position
 import test_valuesets as VS  # noqa: E402  pylint: disable=wrong-import-position
 import test_objects as TO  # noqa: E402  pylint: disable=wrong-import-position
+import test_ptr_guards as PG  # noqa: E402  pylint: disable=wrong-import-position
 
 pytestmark = pytest.mark.skipif(
     not NATIVE or not shutil.which("gcc") or not shutil.which("clang-format"),
@@ -2791,6 +2792,288 @@ def test_load_the_guard_does_not_dominate_keeps_its_test(prefix, tmp_path):
     assert len(info["traps"]) == 1 and "oob_wr(" not in body
     assert body.count("oob_rd(") == 2
     play(tmp_path, c, h, img, labels, [("entry", a) for a in (0, 1, 2, 3)])
+
+
+def meta_keyed(info):
+    """``trap_info`` keyed as ``traps``, each trap at its key's address, its kind its
+    guards'."""
+    assert set(info["trap_info"]) == set(info["traps"])
+    for k, t in info["trap_info"].items():
+        key = info["traps"][k]
+        assert isinstance(key, tuple) and key[0] in ("deopt", "ind") and t["pc"] == key[1]
+        kinds = sorted({g["kind"] for g in t["guards"]})
+        assert t["kinds"] == kinds and t["kind"] == (kinds[0] if len(kinds) == 1 else "mixed")
+
+
+def trap_meta(prefix, src, entries=("entry",), **kw):
+    """``(labels, info)`` of ``src`` translated, its ``trap_info`` checked by
+    :func:`meta_keyed`."""
+    img, labels, loaded = assemble(src)
+    _, _, info = translate(prefix, img, labels, loaded, entries=entries, **kw)
+    meta_keyed(info)
+    return labels, info
+
+
+def as_runs(ok):
+    """Inclusive runs as tuples."""
+    return [tuple(r) for r in ok]
+
+
+def only_guard(info):
+    """The one guard of the one trap of ``info``: ``(k, trap, guard)``."""
+    [(k, t)] = info["trap_info"].items()
+    [g] = t["guards"]
+    return k, t, g
+
+
+def tables_at(labels, spec):
+    """Index guard tables of ``spec`` ``[(of, base, end, by, store)]``, labels as names and
+    ``store`` a ``(label, offset)`` or None."""
+    return [
+        {
+            "of": of,
+            "base": labels[base],
+            "end": labels[end],
+            "by": by,
+            "store": None if store is None else labels[store[0]] + store[1],
+        }
+        for of, base, end, by, store in spec
+    ]
+
+
+LOHI_FREE = LOHI.replace("AND #$03\n", "")
+BRTAB_FREE = BRTAB.replace("entry:  AND #$03\n", "entry:  ")
+
+
+@pytest.mark.parametrize(
+    "src,at,ok,spec,writers",
+    [
+        (LOHI_FREE, ("entry", 1), 3, [("jump", "tlo", "thi", "column", None)], None),
+        (
+            BRTAB_FREE,
+            ("entry", 1),
+            3,
+            [
+                ("cell", "offs", "end", "loaded", ("entry", 4)),
+                ("branch", "offs", "end", "loaded", None),
+            ],
+            [("entry", 4)],
+        ),
+        (
+            CMDFX,
+            ("chan", 3),
+            3,
+            [
+                ("cell", "t0tbl", "fxtbl", "object", ("chan", 6)),
+                ("jump", "t0tbl", "fxtbl", "object", None),
+            ],
+            [("chan", 6)],
+        ),
+        (SONGPTR, ("entry", 1), 2, [("data", "plo", "phi", "column", None)], None),
+        (SONGTAB, ("entry", 19), 3, [("store", "thi", "end", "loaded", ("entry", 19))], None),
+    ],
+    ids=["jump", "branch", "cell", "data", "store"],
+)
+def test_index_trap_names_its_table(prefix, src, at, ok, spec, writers):
+    """An index past its table's extent traps with the table it guards: what the table holds,
+    where its column starts and what ends it, and for a code cell the store writing it."""
+    labels, info = trap_meta(prefix, src)
+    _, t = min(info["trap_info"].items())
+    pc = labels[at[0]] + at[1]
+    [g] = t["guards"]
+    assert (t["kind"], t["pc"], t["fn"], t["copies"]) == ("index", pc, None, [])
+    assert (g["kind"], g["at"], g["reg"], as_runs(g["ok"])) == ("index", pc, "y", [(0, ok)])
+    assert g["tables"] == tables_at(labels, spec) and as_runs(g["seen"]) == [(0, 0xFF)]
+    want = [{"pc": labels[a] + o, "entry": "play", "exact": True} for a, o in writers or ()]
+    assert g["writers"] == (want or None) and t["implied_by"] is None
+
+
+#: Init storing at its song into a table ending the program; play reads the table.
+SONGSTORE = """
+init:   TAY
+        LDA #$01
+        STA tab,Y
+        RTS
+play:   LDA tab
+        STA $C000
+        RTS
+tab:    .byte 0,0,0
+end:
+"""
+
+
+def test_init_song_guard_implies_the_store_on_its_argument(prefix, tmp_path):
+    """Init traps on a song outside the declared ones; its store at the song, past a guard the
+    table's extent sets, is implied by that trap, as every declared song is inside it."""
+    _, info, labels = songs(prefix, tmp_path, SONGSTORE, range(3))
+    meta_keyed(info)
+    assert info["init"] == "translated"
+    k0 = next(k for k, key in info["traps"].items() if key == ("deopt", labels["init"]))
+    t0 = info["trap_info"][k0]
+    [song] = [g for g in t0["guards"] if g["reg"] == "a"]
+    assert (song["kind"], song["at"], as_runs(song["ok"])) == ("entry", labels["init"], [(0, 2)])
+    assert t0["implied_by"] is None
+    [(k, t)] = [(k, t) for k, t in info["trap_info"].items() if k != k0]
+    [g] = t["guards"]
+    store = labels["init"] + 3
+    assert (t["kind"], g["at"], g["reg"], as_runs(g["ok"])) == ("index", store, "y", [(0, 2)])
+    assert g["tables"] == tables_at(labels, [("store", "tab", "end", "loaded", ("init", 3))])
+    assert g["held"]["src"] == "a" and as_runs(g["held"]["vals"]) == [(0, 0xFF)]
+    assert g["implied_by"] == t["implied_by"] == [k0] and info["traps"][k] == ("deopt", store)
+
+
+#: Two stores at an unbounded song byte into a table ending the program, the tighter first.
+TWOSTORES = """
+entry:  LDY song
+        INC song
+        TYA
+        STA thi+1,Y
+        STA thi,Y
+        RTS
+song:   .byte 0
+thi:    .byte 0,0,0,0
+end:
+"""
+
+
+def test_index_guard_implied_by_a_dominating_one(prefix):
+    """The second store's guard lets through what the first's does: past the first, ``Y``
+    holds only values the second's lets pass, so its trap is implied by the first's."""
+    labels, info = trap_meta(prefix, TWOSTORES)
+    pcs = {key[1]: k for k, key in info["traps"].items()}
+    first, second = labels["entry"] + 7, labels["entry"] + 10
+    assert set(pcs) == {first, second}
+    t1, t2 = info["trap_info"][pcs[first]], info["trap_info"][pcs[second]]
+    [g1], [g2] = t1["guards"], t2["guards"]
+    assert (as_runs(g1["ok"]), as_runs(g2["ok"])) == ([(0, 2)], [(0, 3)])
+    table = {"of": "store", "base": labels["thi"] + 1, "end": labels["end"], "by": "loaded"}
+    assert g1["tables"] == [dict(table, store=first)]
+    assert g2["tables"] == [dict(g1["tables"][0], base=labels["thi"], store=second)]
+    assert as_runs(g1["held"]["vals"]) == [(0, 0xFF)] and as_runs(g2["held"]["vals"]) == [(0, 2)]
+    assert t1["implied_by"] is None and t2["implied_by"] == [pcs[first]]
+
+
+def test_init_entry_trap_names_the_songs(prefix):
+    """Init's trap on its argument lets the declared songs pass; its guards on the registers
+    the C entry passes as constants, which they let pass, are left out."""
+    labels, info = trap_meta(prefix, TABLECOPY, ("init", "play"), init=0, songs=range(3))
+    assert info["init"] == "translated"
+    [(k, key)] = info["traps"].items()
+    t = info["trap_info"][k]
+    assert key == ("deopt", labels["init"]) and t["kind"] == "entry" and not t["proven"]
+    [g] = t["guards"]
+    assert (g["reg"], g["at"], g["fn"], as_runs(g["ok"])) == (
+        "a",
+        labels["init"],
+        labels["init"],
+        [(0, 2)],
+    )
+
+
+def test_code_traps_name_their_writers(prefix):
+    """Opcode cells of the routine init's copy may overwrite trap on bytes other than their
+    own opcodes, naming the stores that may write them; a store that may write anything also
+    checks the code and the stack."""
+    labels, info = trap_meta(prefix, TABLECOPY, ("init", "play"))
+    pre, copy = labels["pre"], labels["copy"]
+    writers = [
+        {"pc": copy + 2, "entry": "play", "exact": True},
+        {"pc": pre + 2, "entry": "play", "exact": False},
+    ]
+    ops = {}
+    for t in info["trap_info"].values():
+        for g in t["guards"]:
+            ops.setdefault(g["kind"], []).append(g)
+    assert [(g["at"], as_runs(g["ok"])) for g in ops["opcode"]] == [
+        (pre, [(0xA9, 0xA9)]),
+        (pre + 2, [(0x8D, 0x8D)]),
+        (pre + 5, [(0x60, 0x60)]),
+    ]
+    assert all(g["writers"] == writers for g in ops["opcode"])
+    assert all(tuple(g["addr"]) == (g["at"],) * 2 for g in ops["opcode"])
+    [code] = ops["codechk"]
+    assert (code["at"], tuple(code["addr"])) == (pre + 2, (0, 0xFFFF))
+    assert code["writers"] == [writers[1]]
+    [stack] = ops["stack"]
+    assert (stack["at"], tuple(stack["addr"])) == (pre + 2, (0, 0xFFFF))
+    assert as_runs(stack["ok"]) == [(0, 0x1FB), (0x200, 0xFFFF)]
+
+
+def test_code_check_names_its_store(prefix):
+    """A store through a pointer into the code checks the code it writes: its own writer."""
+    labels, info = trap_meta(prefix, PSTORE)
+    k, t, g = only_guard(info)
+    store = labels["entry"] + 14
+    assert info["traps"][k] == ("deopt", store + 2) and t["kind"] == "codechk"
+    assert (g["at"], tuple(g["addr"]), g["fn"]) == (store, (0x1000, 0x10FF), labels["entry"])
+    assert g["writers"] == [{"pc": store, "entry": "play", "exact": False}]
+
+
+def test_zone_trap_names_the_pages_a_pointer_store_may_not_reach(prefix):
+    """A store through a pointer pair holding any value traps when it reaches the stack page
+    or the I/O page, and checks the code."""
+    labels, info = trap_meta(prefix, FIXED, ("init", "play"))
+    store = labels["play"] + 18
+    by = {g["kind"]: g for t in info["trap_info"].values() for g in t["guards"]}
+    assert set(by) == {"zone", "codechk"}
+    zone = by["zone"]
+    assert (zone["at"], tuple(zone["addr"]), zone["fn"]) == (store, (0, 0xFFFF), labels["play"])
+    assert as_runs(zone["ok"]) == [(0, 0xFF), (0x200, 0xBFFF), (0xC100, 0xFFFF)]
+    assert by["codechk"]["writers"] == [{"pc": store, "entry": "play", "exact": False}]
+
+
+def test_window_trap_names_its_pair(prefix):
+    """The pair defined from a table traps after its high byte's store when its word lies
+    within a window of the stack or the I/O page."""
+    labels, info = trap_meta(prefix, PG.TABLE + "end:\n")
+    k, t, g = only_guard(info)
+    store = labels["entry"] + 12
+    assert info["traps"][k] == ("deopt", store + 2) and t["kind"] == "window"
+    assert (g["at"], g["pair"], tuple(g["addr"])) == (store, PG.PTR, (PG.PTR + 1,) * 2)
+    assert as_runs(g["ok"]) == [(0x200, 0xBEFF), (0xC100, 0xFFFF)]
+
+
+def test_entry_window_trap_is_at_the_entry(prefix):
+    """A pair left by another entry is checked at the entry using it: the guard is at that
+    entry, and the entry's guards on registers its C entry passes as constants are left out."""
+    labels, info = trap_meta(prefix, PG.ZP_PERSIST + "end:\n", ("init", "entry"))
+    [t] = [t for t in info["trap_info"].values() if t["pc"] == labels["entry"]]
+    [g] = t["guards"]
+    assert t["kind"] == "window" and t["kinds"] == ["window"]
+    assert (g["at"], g["fn"], g["pair"], g["addr"]) == (labels["entry"],) * 2 + (PG.PTR, None)
+
+
+def test_object_check_names_its_pair_and_object(prefix):
+    """Records read through a pair advanced by I/O past its object trap at the load checking
+    the pointer is inside it."""
+    labels, info = trap_meta(prefix, TO.FAR, ("init", "play"), init=0, songs=range(4))
+    [t] = [t for t in info["trap_info"].values() if t["kind"] == "objchk"]
+    [g] = t["guards"]
+    load = labels["play"] + 2
+    assert (t["pc"], g["at"], g["fn"]) == (load, load, labels["play"])
+    assert (g["pair"], g["obj"], g["def"]) == (0xFB, 0, "load")
+
+
+def test_jam_trap_of_an_instance_names_its_copies(prefix):
+    """Copies sharing one trap name each copy's `JAM`."""
+    labels, info = trap_meta(prefix, GUARDED)
+    _, t, g = only_guard(info)
+    jams = [labels[s] - 1 for s in ("s0", "s1", "s2")]
+    assert (t["kind"], t["pc"], t["fn"], t["copies"]) == ("jam", jams[0], labels["entry"] + 8, jams)
+    assert (g["at"], g["copies"]) == (jams[0], jams)
+
+
+@pytest.mark.parametrize("resolved", [True, False])
+def test_switch_default_trap_names_its_targets(prefix, resolved):
+    """A computed transfer's switch default traps with the table's targets and whether the
+    code resolves the transfer."""
+    edit = ("entry:  AND #$03", "entry:  LDX tlo\n        STX tlo\n        AND #$03")
+    src = BRKVEC if resolved else LOHI.replace(*edit)
+    labels, info = trap_meta(prefix, src)
+    k, t, g = only_guard(info)
+    assert info["traps"][k][0] == "ind" and t["kind"] == g["kind"] == "ind"
+    at, targets = (labels["brk"], [labels["handler"]]) if resolved else (labels["j0"] - 3, [])
+    assert (g["at"], g["targets"], g["resolved"]) == (at, targets, resolved)
 
 
 BRANCHED = """
