@@ -20,10 +20,6 @@ pub const XREG: usize = 5;
 /// machine.
 pub const OPLO: usize = 6;
 pub const OPHI: usize = 7;
-/// The register of the file no 6502 template uses that carries the index a computed transfer
-/// switches on past the write of its register ([`crate::dispatch::Index::Carry`]), never
-/// handed back to the machine.
-pub const IREG: usize = 15;
 /// Bit mask of the registers below [`NREG`].
 pub const ALL_REGS: u32 = (1 << NREG) - 1;
 
@@ -237,8 +233,11 @@ pub struct Function {
     pub ntemps: u32,
     /// Promoted stack slots (registers `NREG..NREG + nslots`).
     pub nslots: u32,
-    /// Lane registers (`NREG + nslots..`): one bit each of a stack slot that packs single-bit
-    /// values ([`crate::lanes`]); never stack bytes.
+    /// Carry registers (`NREG + nslots..`): the indices its computed transfers switch on past
+    /// the write of their register ([`crate::carry`]); never machine state.
+    pub ncarries: u32,
+    /// Lane registers (after the carry registers): one bit each of a stack slot that packs
+    /// single-bit values ([`crate::lanes`]); never stack bytes.
     pub nlanes: u32,
     /// The slot indices whose stack bytes the function keeps in slot registers (the bytes of
     /// the others stay in memory).
@@ -259,9 +258,13 @@ pub struct Function {
 }
 
 impl Function {
-    /// Registers including promoted stack slots and lanes.
+    /// Registers including promoted stack slots, carries and lanes.
     pub fn nregs(&self) -> usize {
-        NREG + (self.nslots + self.nlanes) as usize
+        NREG + (self.nslots + self.ncarries + self.nlanes) as usize
+    }
+    /// The first lane register.
+    pub fn lane0(&self) -> u32 {
+        NREG as u32 + self.nslots + self.ncarries
     }
 }
 

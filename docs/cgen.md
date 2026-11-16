@@ -598,7 +598,10 @@ so, the index itself possibly a byte read from data) is a switch over that value
 the values selecting one target sharing its arm), the same for every origin: the register
 holding it; where the register is written before the transfer, the byte of data it was read
 from (read again, as no store may have written it), else a variable holding its value from
-before that write (one such variable per program: when transfers need more, none carries). Any other, as one whose index paths hold in unlike ways or a target computed by
+before that write, a local of the transfer's function copied before each write (one per
+written index and function, in an instance function per merged instruction; held where every
+path from the function's entry to the transfer passes the write and none of its callees runs
+the writing instruction, else the switch is over addresses). Any other, as one whose index paths hold in unlike ways or a target computed by
 arithmetic, is a switch over code addresses (`case CODE_ORG + 0x23:`); either has its last
 target as the default, with no trap. A `JSR` through cells calls one function whose body is
 the switch over its targets (the handlers its arms): over the index when every `JSR` it serves

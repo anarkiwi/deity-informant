@@ -36,7 +36,7 @@ struct Uses {
 
 /// Whether register `r` of `f` holds 0 or 1: a flag or a lane.
 fn one_bit(f: &Function, r: u32) -> bool {
-    let lanes = NREG as u32 + f.nslots;
+    let lanes = f.lane0();
     (8..15).contains(&r) || (lanes..lanes + f.nlanes).contains(&r)
 }
 
@@ -247,7 +247,7 @@ fn lane(
     let lanes: Vec<(usize, Vn)> = free
         .map(|i| {
             f.nlanes += 1;
-            (i, reg((NREG as u32 + f.nslots + f.nlanes - 1) as u16, 1))
+            (i, reg((f.lane0() + f.nlanes - 1) as u16, 1))
         })
         .collect();
     for &(b, o, d) in defs {

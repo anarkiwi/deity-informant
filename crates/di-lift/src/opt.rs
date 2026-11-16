@@ -1089,7 +1089,7 @@ fn rename(f: &mut Function) {
 /// Value numbering over extended basic blocks, seeded with `consts` at their roots.
 fn number(f: &mut Function, cx: &Ctx, consts: &[Vec<(u16, u32)>]) {
     let root = roots(f);
-    let lanes = NREG as u32 + f.nslots;
+    let lanes = f.lane0();
     let mut lv = Lvn {
         cx,
         lanes: lanes..lanes + f.nlanes,

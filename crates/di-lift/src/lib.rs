@@ -8,6 +8,7 @@
 
 pub mod analysis;
 pub mod bank;
+pub mod carry;
 pub mod dev;
 pub mod dispatch;
 pub mod emit;
@@ -850,6 +851,7 @@ pub fn lift_banked(
             .collect(),
         cont,
         slots,
+        carries: carry::alloc(&g, &plans, &callees),
         seen,
         sensitive: opts.sensitive.as_deref(),
         alias: aliases(&g, &opts.alias),
