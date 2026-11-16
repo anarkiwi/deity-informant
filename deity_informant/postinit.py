@@ -67,6 +67,8 @@ class Init:
     free: np.ndarray
     #: The bytes outside the stack page and the volatile ranges.
     kept: np.ndarray | None = None
+    #: Per run, the addresses it stored to (:func:`run`), where known.
+    stored: list | None = None
 
     @property
     def mask(self):
@@ -89,6 +91,26 @@ class Init:
         """The free bytes whose value differs between songs, ascending."""
         held = self.states[:, self.free]
         return self.free[(held != held[0]).any(axis=0)]
+
+    def select(self, songs):
+        """This init's runs of the values ``songs`` (of :attr:`songs`, its runs' ``stored``
+        known)."""
+        rows = [self.songs.index(a) for a in songs]
+        stored = [self.stored[i] for i in rows]
+        free = np.zeros(0x10000, dtype=bool)
+        for s in stored:
+            free[s] = True
+        writes = [self.writes[i] for i in rows]
+        free &= self.kept
+        return Init(
+            self.image,
+            list(songs),
+            self.states[rows],
+            writes,
+            np.flatnonzero(free),
+            self.kept,
+            stored,
+        )
 
     def extended(self, runs):
         """This init with the distinct states the :class:`Run` s ``runs`` leave that it lacks
@@ -184,7 +206,7 @@ def run(image, pc, songs, volatile, machine=None, skip=False):
     vol[0x100:0x200] = True
     for lo, hi in volatile:
         vol[lo:hi] = True
-    states, writes, kept = [], [], []
+    states, writes, kept, each = [], [], [], []
     stored = np.zeros(0x10000, dtype=bool)
     for a in tqdm(songs, desc="init runs", unit="run", leave=False, disable=None):
         mem = bytearray(image)
@@ -197,10 +219,11 @@ def run(image, pc, songs, volatile, machine=None, skip=False):
         kept.append(a)
         states.append(np.frombuffer(bytes(mem), dtype=np.uint8))
         writes.append([(int(x), int(v)) for x, v in w])
-        stored[np.asarray(list(s), dtype=np.int64)] = True
+        each.append(np.asarray(sorted(s), dtype=np.int64))
+        stored[each[-1]] = True
     img = np.frombuffer(bytes(image), dtype=np.uint8)
     held = np.stack(states) if states else np.zeros((0, 0x10000), np.uint8)
-    return Init(img, kept, held, writes, np.flatnonzero(stored & ~vol), ~vol)
+    return Init(img, kept, held, writes, np.flatnonzero(stored & ~vol), ~vol, each)
 
 
 def reproduces(prog, image, state, runs):

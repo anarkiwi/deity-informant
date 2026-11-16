@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 
 import numpy as np
+from tqdm import tqdm
 
 from .. import c64devices, polling, postinit, wholeprog
 from ..trace import Facts
@@ -586,6 +587,10 @@ class Program:  # pylint: disable=too-many-instance-attributes
     fixed: np.ndarray | None = None
     #: The stores of the entries' lift and init's (``"play"``, ``"init"``: :func:`traps.stores`).
     stores: dict | None = None
+    #: The guards ``(kind, at, reg)`` of init's lift its declared argument values imply.
+    entailed: frozenset = frozenset()
+    #: The bytes init stores for some argument value it takes (:func:`_accepted`).
+    init_stored: np.ndarray | None = None
 
 
 def _ranked(progs):
@@ -673,31 +678,55 @@ def _facts(prog):
 def _lift_init(
     start, entry, volatile, facts, sensitive, kw, state, runs, bare
 ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    """Init's lift (at ``entry``, run once from ``start``, for the declared argument values:
-    the host's check of the argument is the ``.h``'s range) when it is exact for each: its
-    lift without throw-away reads ``bare`` reproduces each of the reference's ``runs`` per
+    """Init's lift (at ``entry``, run once from ``start``, for any argument value: the host's
+    check of the declared ones is the ``.h``'s range) when it is exact for each declared value:
+    its lift without throw-away reads ``bare`` reproduces each of the reference's ``runs`` per
     value (:func:`deity_informant.postinit.reproduces`: polls and probes answered as there,
     one run the machine's) and their accesses lie inside what it bounds them to; else None."""
     if None in runs or not postinit.reproduces(bare, start, state, runs):
         return None
-    entry = (entry, {"a": state.songs})
-    lone = wholeprog.lift(
-        start, [entry], volatile, facts, sensitive=sensitive, **kw, once=True, checked=True
-    )
+    lone = wholeprog.lift(start, [entry], volatile, facts, sensitive=sensitive, **kw, once=True)
     return lone if postinit.bounded(lone, [r for rs in runs for r in rs]) else None
 
 
-def _fixed(start, pc, prog, lifted, volatile, machine):
-    """The bytes init (at ``pc`` on ``start``) leaves constant for the entries lifted as
-    ``prog`` from its declared runs (*Init*): of the bytes it stores on those runs
-    (``lifted``: their :class:`postinit.Init` and init's lift), those holding one value after
-    it for every value of ``A`` it returns with on ``machine`` that no store of ``prog`` may
-    write (its address set, else its address interval), outside init's instructions when it
-    is lifted. A pair of bytes an instruction reads as one address is constant as a whole or
-    not at all: one of its bytes a variable keeps the other a variable, the pair the word
-    init's runs bound."""
+def _guards(prog):
+    """``{(kind, at, reg)}`` of the guards the deopts and switch defaults of lift ``prog``'s
+    functions leave by."""
+    out = set()
+    for fn in prog.functions:
+        exits, whys = fn.get("exits", []), fn["whys"]
+        for op in (op for b in fn["blocks"] for op in b["ops"]):
+            if op[0] in ("CALLOTHER", "BRANCHIND") and len(op) > 5:
+                out |= {(whys[j]["kind"], whys[j]["at"], whys[j]["reg"]) for j in exits[op[5]]}
+    return out
+
+
+def _entailed(start, entry, volatile, facts, sensitive, kw, lone, songs):
+    """The guards of init's lift ``lone`` (:func:`_guards`) its lift for the declared argument
+    values ``songs`` alone leaves out (``checked``: the host's check of them is the entry's):
+    implied by the entry's declaration. That lift decides nothing of the ``.c``."""
+    alone = wholeprog.lift(
+        start,
+        [(entry, {"a": songs})],
+        volatile,
+        facts,
+        sensitive=sensitive,
+        **kw,
+        once=True,
+        checked=True,
+    )
+    return frozenset(_guards(lone) - _guards(alone))
+
+
+def _fixed(start, prog, lifted, every):
+    """The bytes init (on ``start``) leaves constant for the entries lifted as ``prog`` from its
+    runs (*Init*): of the bytes it stores on those runs (``lifted``: their
+    :class:`postinit.Init` and init's lift), those holding one value after it for every value
+    of ``A`` it returns with on the machine (``every``) that no store of ``prog`` may write (its
+    address set, else its address interval), outside init's instructions when it is lifted. A
+    pair of bytes an instruction reads as one address is constant as a whole or not at all: one
+    of its bytes a variable keeps the other a variable, the pair the word init's runs bound."""
     state, lone = lifted
-    every = postinit.run(start, pc, range(256), volatile, machine, skip=True)
     cand = np.intersect1d(np.intersect1d(state.free, every.same()), state.same())
     if lone is not None:
         cand = cand[~code_bytes(start, lone.starts)[cand]]
@@ -712,6 +741,32 @@ def _fixed(start, pc, prog, lifted, volatile, machine):
         for lo, hi in split:
             held[[lo, hi]], var[[lo, hi]] = False, True
     return frozenset(np.flatnonzero(held).tolist())
+
+
+def _takes(prog, image, a, run):
+    """Whether init's lift ``prog`` runs from ``image`` with ``A = a`` and the volatile reads of
+    :class:`postinit.Run` ``run`` to its return with no deopt."""
+    r = prog.call(bytearray(image), 0, a=a, reads=bytes(v for _, v in run.reads))
+    return r["halt"] == "return" and r["deopt"] is None
+
+
+def _accepted(image, pc, volatile, polls, devices, lift_, every):
+    """``{a: runs}`` of each argument value init (at ``pc`` on ``image``) takes, its
+    :func:`postinit.forks`: of ``every`` (its runs on the machine for each value it returns
+    with), those whose stores outside the stack page and the volatile ranges lie in what a
+    store of its lift ``lift_`` may write, each of whose forks the lift runs to its return with
+    no deopt. Init's translation leaves one of their states or traps, whatever the host
+    declares."""
+    may = ~every.kept
+    for lo, hi in lift_.stored:
+        may[lo:hi] = True
+    out = {}
+    cand = [a for a, s in zip(every.songs, every.stored) if may[s].all()]
+    for a in tqdm(cand, desc="init values", unit="value", leave=False, disable=None):
+        rs = postinit.forks(image, pc, a, volatile, polls, devices)
+        if rs is not None and all(_takes(lift_, image, a, r) for r in rs):
+            out[a] = rs
+    return out
 
 
 def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
@@ -736,6 +791,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     (:func:`_fixed`), and init from ``image`` where its lift reproduces every run (*Init*)."""
     image, entries = bytes(image), list(entries)
     played, state, alias, start, lone, fixed = entries, None, [], image, None, frozenset()
+    entailed = frozenset()
     pc = None if init is None else entries[init][0]
     kw = {"entry_sp": emit.ENTRY_REGS[3], "loaded": loaded, "fold": True, "devices": devices}
     other = state
@@ -744,18 +800,27 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
         if not vals or vals[-1] - vals[0] + 1 != len(vals):
             raise ValueError("songs must be a range")
         state = postinit.run(image, pc, vals, volatile, machine)
+        every = postinit.run(image, pc, range(256), volatile, machine, skip=True)
         bare = wholeprog.lift(image, [pc], volatile, facts, sensitive=(), **kw, once=True)
         polls = polling.loops(image, bare.starts, bare.code, volatile)
-        runs = [postinit.forks(image, pc, a, volatile, polls, devices) for a in vals]
-        flat = [] if None in runs else [r for rs in runs for r in rs]
+        took = _accepted(image, pc, volatile, polls, devices, bare, every)
+        runs = [took.get(a) or postinit.forks(image, pc, a, volatile, polls, devices) for a in vals]
+        # The values the other entries are lifted for: every one init takes, and the declared.
+        over = sorted(set(took) | set(vals))
+        byval = {**dict(zip(vals, runs)), **took}
+        flat = [] if None in runs else [r for a in over for r in byval[a]]
         if flat:
             pairs = set().union(*(postinit.pointers(r) for r in flat))
             alias = [(lo, g, d) for lo, (g, d) in sorted(postinit.groups(flat, pairs).items())]
-        image = state.states[0].tobytes()
+        decided = every.select(over)
+        image = decided.states[0].tobytes()
         played = [e for i, e in enumerate(entries) if i != init]
-        lone = _lift_init(start, pc, volatile, facts, sensitive, kw, state, runs, bare)
+        if took.keys() >= set(vals):
+            lone = _lift_init(start, pc, volatile, facts, sensitive, kw, state, runs, bare)
+        if lone is not None:
+            entailed = _entailed(start, pc, volatile, facts, sensitive, kw, lone, vals)
         # A translated init leaves the state of any value its probes read.
-        other = state if lone is None else state.extended(flat)
+        other = decided if lone is None else decided.extended(flat)
     free = None if other is None else other.values()
 
     # The values init's translation may leave in its variables, where its lift knows them.
@@ -779,7 +844,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
 
     prog = entries_lift(fixed)
     if state is not None:
-        fixed = _fixed(start, pc, prog, (other, lone), volatile, machine)
+        fixed = _fixed(start, prog, (other, lone), every)
         prog = entries_lift(fixed) if fixed else prog
     lifts = [prog] + ([lone] if lone is not None else [])
     funcs, origin = _ranked(lifts)
@@ -796,6 +861,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
         p.stores["init"] = trapinfo.stores(lone if lone is not None else bare)
     if state is not None:
         p.init, p.fixed = (entries[init], state), np.array(sorted(fixed), dtype=np.int64)
+        p.entailed, p.init_stored = entailed, decided.mask
     if len(lifts) > 1:
         lone = lifts[1]
         p.entries = [*played, entries[init]]
@@ -901,7 +967,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         mod.folded = (folded, p.image, folded & code_bytes(p.image, p.starts))
     mod.symbols = symbols
     if p.init is not None:
-        mod.init_stored = p.init[1].mask
+        mod.init_stored = p.init_stored
     # Promotion candidates: the cells and the other variable bytes inside the code span.
     lo, hi = mem.code_span
     mod.cells = cells.copy()
@@ -1015,6 +1081,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
                 "stores": p.stores or {},
                 "jumps": p.jumps or {},
                 "song": song,
+                "entailed": p.entailed,
                 "extra": _song_guard(p),
             },
         ),

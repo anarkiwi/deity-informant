@@ -114,10 +114,18 @@ every operation, so a small line parser replaces a native dependency.
 ## Init
 
 With `init`, `translate` runs that entry once per value of `A` in `songs` (its declared
-argument values) on `machine` and lifts the other entries from the memory the first run
-leaves. The bytes it stores outside the stack page and the volatile ranges are variables whose
-values are the run's (`free`, [wholeprog](wholeprog.md#init)): the other entries' analysis
-takes none of them, so their lift holds for every run's state. Operand pairs init sets from one
+argument values) on `machine`, for the `.h`, and decides the `.c` as if `A` may be any byte:
+the declared values reach only the `.h` (`CGEN_SONG0`, `CGEN_SONGS`, a replayed init's
+copies), so the `.c` is the same for every count of them. The other entries are lifted for
+every value init **takes** (`_accepted`), and the declared ones: of the values its run on
+`machine` returns with, those whose stores lie in what a store of init's lift may write and
+whose runs (`postinit.forks`, one per sequence of values its probes may read) that lift makes
+to its return with no deopt. Init's translation leaves one of their states or traps, whatever
+the host declares; a value it does not take (an index past its tables) traps in it. They are
+lifted from the memory the first of those runs leaves. The bytes those runs store outside the
+stack page and the volatile ranges are variables whose values are the runs' (`free`,
+[wholeprog](wholeprog.md#init)): the other entries' analysis takes none of them, so their lift
+holds for every run's state. Operand pairs init sets from one
 word at constant offsets are one variable (`alias`), from the provenance of its run on the
 jennings core (`postinit.Run`: each stored byte tagged as a constant, a byte loaded at an
 address or through a word, or a byte of an addition chain on a word) when init returns on the
@@ -154,9 +162,8 @@ storage starting from `image`, while the other entries' functions read the names
 Init is then lifted itself, from `image`, as an entry run once (`once`,
 [wholeprog](wholeprog.md#init): a store into code makes cells only of the instructions that
 may run after it, so a block copy over code init already ran leaves that code constant), for
-the declared songs, which its entry function checks (`checked`: the analysis takes them, no
-guard of the lift tests them). It is **translated** when that lift is exact for every declared
-argument value:
+any `A`. It is **translated** when it takes every declared value and that lift is exact for
+each:
 
 - lifted without throw-away reads, its run from `image` (`postinit.reproduces`) returns with
   no deopt and no volatile read but those of its polling loops (*Polling loops*), so it
@@ -176,10 +183,13 @@ bytes decode from `image`, the bytes it patches are cells unless the other entri
 them as constants (which init then leaves), and the `.h` holds `image`. Init's entry function
 traps an `A` outside `CGEN_SONG0` and the `CGEN_SONGS` after it, then runs the translated code;
 a self-modified operand is a code cell (*State*), an `(zp),Y` block copy a pointer access
-(*Memory*). The `.c` is the same for every count of argument values (the range is the `.h`'s)
-but where the lift proves from the songs a guard it leaves out; init's code is lifted from the
-image, so where the lift decides a branch from constant bytes init reads the `.c` follows those
-bytes. A translated init's lift bounds each byte every store that may write it writes with
+(*Memory*). A guard only the declared values keep from trapping (an index into a table of
+the songs the argument selects, or one computed from it, past the table's extent) stays: its
+`implied_by` is `"entry"` (*Trap metadata*), found by lifting init again for the declared
+values alone (`checked`: the analysis takes them, no entry guard tests them) and taking the
+guards that lift leaves out; that lift decides nothing of the `.c`. Init's code is lifted from
+the image, so where the lift decides a branch from constant bytes init reads the `.c` follows
+those bytes. A translated init's lift bounds each byte every store that may write it writes with
 known addresses and values (`Program.values`, its image byte among them): the other entries'
 lift takes those as the byte's values (`known`), so a cell only such stores of init write is
 closed, its dispatch with no trap.
@@ -754,8 +764,10 @@ lift proves). For `entry` and `index` guards on `A`, `X` or `Y`, `held` is what 
 every path through the function as emitted: `vals` (runs) left by the register guards and
 constants before it (copies keep a register's fact; other writes and calls lose it), `by` the
 guards that narrowed it and `src` the entry register it still holds; `implied_by` is then the
-traps whose guards (or, holding init's `A`, whose `songs`) already keep the register inside
-`ok` (`[]`: constants alone), else `None`. A guard the register guards before it imply on every
+traps whose guards already keep the register inside `ok` (`[]`: constants alone), with
+`"entry"` last where the entry's declared values do (holding init's `A` inside `songs`, or a
+guard of init's lift its lift for the declared values leaves out, *Init*: an argument outside
+them is invalid input the entry's trap stops), else `None`. A guard the register guards before it imply on every
 path is not emitted (wholeprog *Implied guards*), nor an index guard whose register holds only
 values inside `ok` on every run (`proven`), so neither has a trap. `opcode`, `codechk` and `cell` guards list their
 `writers`, `{pc, entry, exact}`: the stores that may write the byte, from the entries' lift
@@ -787,7 +799,8 @@ once against any number of times; an init reading the device replayed; a relocat
 pointer variables bounded to the data they point into
 and one variable per source word; init relocating by `A`, reading data, making I/O writes the
 data decides or copying a block per value of `A`, replayed with the same `.c` for every value,
-count of values and data; a probe patching an opcode settled at the machine's value), each
+count of values and data; a translated init storing at its song, the same `.c` for one, three or
+32 declared songs and its store guard implied by the entry; a probe patching an opcode settled at the machine's value), each
 value from a fresh image, and an llvm-mos build. `tools/cgenplay.py` does the
 same for a PSID (its init called once, first: `--init`) or raw image (`--loaded LO-HI`
 names the program's bytes in a raw 64 KiB state, as a memory dump after an init routine) and

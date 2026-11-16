@@ -402,7 +402,9 @@ init's own lift bounds it (`Program.values` of that lift: the byte's entry value
 every store that may write it, each of known addresses and values): its value set, so a cell
 only init writes, with known values, is closed. `checked=True` declares that the host checks
 the entries' declared `A`, `X` and `Y` values before each call: the analysis takes them, and
-no entry guard tests them (a translated init's songs, which its C entry checks).
+no entry guard tests them. A translated init is lifted for any `A`, so its lift holds whatever
+values the host declares; cgen lifts it again `checked` for the declared songs only to name the
+guards they imply (cgen [*Init*](cgen.md#init)).
 
 ## Guards
 
