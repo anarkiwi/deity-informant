@@ -940,7 +940,10 @@ aux]` with varnodes `[space, offset, size]` (`c` constant, `r` register, `u` tem
 Registers are `lift()`'s file (A X Y SP = 0-3, C Z I D B V N = 8-14) plus `E` (16, 2 bytes:
 the entry returns once `SP >= E`), `CY` (17, 4 bytes: cycles since the entry started, with
 cycle counting) and per function its stack slots (18 + `i`: the byte `i` below its entry SP,
-printed `s<i>`; a continuation function's two return-address bytes last) followed by its status lanes (one bit each, never stack bytes). Block 0 of each function is its entry; the executor (`exec.rs`) runs the
+printed `s<i>`; a continuation function's two return-address bytes last) followed by its carry
+registers (`carry.rs`: per index a computed transfer switches on past its register's write, the
+register copied before each write; never machine state, so a deopt hands none over) and its
+status lanes (one bit each, never stack bytes). Block 0 of each function is its entry; the executor (`exec.rs`) runs the
 program over any `di_pcode::Bus`, relocating each function's slots in its value file and,
 with cycle counting, calling `Bus::now(cycle)` before possibly volatile accesses.
 
@@ -996,6 +999,8 @@ and the code using it deopts or traps.
 - Continuation functions and the stack bytes the interval analysis tracks (pushes, the bytes
   above the entry, a `TSX`'s snapshot of the top three) add no iteration: the return
   addresses are per context, whose keys are finite, and the rest is of finite height.
+- Carries (`carry::alloc`) add no iteration: per function one walk of its callees and per
+  carried transfer one of its nodes, each visited once.
 - Pointer reach (`vsa::reach`): byte bounds only descend (each round's meet with the last),
   word columns and floors only rise, to the end of the run of data bytes they move in or the
   extremes, so a pointer every call advances rises once per run; the callees' store

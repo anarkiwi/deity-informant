@@ -1118,6 +1118,11 @@ fn plan_inst(g: &Graph, ci: u32, c: &Arc<Class>) -> Plan {
         Succ::Node(i) => (rep(i), H::Known(hs[i as usize]), cf),
         Succ::Exit(j) => (c.exits[j as usize][0], H::Known(0), cf),
     };
+    let copy_at: FxHashMap<u16, (u32, usize)> = (c.nodes.iter().enumerate())
+        .flat_map(|(i, n)| {
+            (n.pcs.iter().enumerate()).filter_map(move |(k, p)| Some(((*p)?, (i as u32, k))))
+        })
+        .collect();
     let mut calc = FxHashMap::default();
     let mut sel = FxHashMap::default();
     let mut nodes = BTreeMap::new();
@@ -1143,7 +1148,10 @@ fn plan_inst(g: &Graph, ci: u32, c: &Arc<Class>) -> Plan {
                 ts.dedup();
                 let all: Vec<u16> = ts.iter().map(|t| t.0).collect();
                 calc.insert(p, ts);
-                if let Some(x) = copy_sel(g, n.pcs.iter().flatten(), &succ) {
+                if let Some(x) = copy_sel(g, &n.pcs, &succ, |q, k| {
+                    let &(m, j) = copy_at.get(&q)?;
+                    (j == k).then(|| rep(m))
+                }) {
                     sel.insert(p, x);
                 }
                 Ctl::Jmp(Tg::Calc(all))
@@ -1209,18 +1217,31 @@ fn plan_inst(g: &Graph, ci: u32, c: &Arc<Class>) -> Plan {
     }
 }
 
-/// The selector of a computed jump merged from copies `pcs` whose targets enter `succ` in
-/// order: one index register, each index value entering one node.
-fn copy_sel<'a>(
+/// The selector of a computed jump merged from copies `pcs` (per copy, its start) whose
+/// targets enter `succ` in order: one index, each index value entering one node. A carried
+/// index is the same in every copy when each copy's is written by its own copy of one merged
+/// instruction (`node(q, k)`: the start of the merged instruction copy `k` holds at `q`),
+/// carried from that instruction's start.
+fn copy_sel(
     g: &Graph,
-    pcs: impl Iterator<Item = &'a u16>,
+    pcs: &[Option<u16>],
     succ: &[Key],
+    node: impl Fn(u16, usize) -> Option<u16>,
 ) -> Option<(crate::dispatch::Index, Vec<(u16, Key)>)> {
+    use crate::dispatch::Index;
     let mut reg = None;
     let mut out = Vec::new();
-    for q in pcs {
+    for (k, q) in pcs
+        .iter()
+        .enumerate()
+        .filter_map(|(k, q)| Some((k, q.as_ref()?)))
+    {
         let (r, xs) = g.sels.get(q)?;
-        if reg.replace(*r).is_some_and(|x| x != *r) {
+        let r = match *r {
+            Index::Carry(cp, x) => Index::Carry(node(cp, k)?, x),
+            r => r,
+        };
+        if reg.replace(r).is_some_and(|x| x != r) {
             return None;
         }
         let to: FxHashMap<u16, Key> = g.origins[q]

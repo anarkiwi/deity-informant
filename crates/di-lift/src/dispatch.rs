@@ -1059,7 +1059,7 @@ fn pair(
 /// What a computed transfer switches on: an index register still holding the index; the byte
 /// of the loaded program at `base` plus register `reg` ([`NOREG`]: none) it was read from,
 /// read again (its addresses within `[lo, hi]`); or the value index register `r` held before
-/// the instruction at `pc` wrote it, carried in [`crate::ir::IREG`].
+/// the instruction at `pc` wrote it, carried in a register of the function ([`crate::carry`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
 pub enum Index {
     Reg(u8),
@@ -1410,12 +1410,11 @@ pub(crate) fn jumps(
             *r = Some(Some((t, BTreeSet::new(), Vec::new(), BTreeSet::new())));
         }
     }
-    let mut sels: FxHashMap<u16, Selector> = sels
+    let sels: FxHashMap<u16, Selector> = sels
         .into_iter()
         .filter(|(pc, _)| matches!(res.get(pc), Some(Some(Some(_)))))
         .filter_map(|(pc, x)| Some((pc, x?)))
         .collect();
-    one_carry(&mut sels);
     let jumps = res
         .into_iter()
         .filter_map(|(pc, r)| match r {
@@ -1433,18 +1432,6 @@ pub(crate) fn jumps(
         })
         .collect();
     (jumps, sels)
-}
-
-/// Keep the selectors carrying an index ([`Index::Carry`]) only when they all carry one: the
-/// carry register holds a single value.
-pub(crate) fn one_carry(sels: &mut FxHashMap<u16, Selector>) {
-    let carried: BTreeSet<Index> = (sels.values())
-        .map(|s| s.0)
-        .filter(|i| matches!(i, Index::Carry(..)))
-        .collect();
-    if carried.len() > 1 {
-        sels.retain(|_, s| !carried.contains(&s.0));
-    }
 }
 
 /// Address sets for the stores through a `(zp),Y` pointer whose two bytes hold, on every

@@ -165,7 +165,7 @@ impl Exec {
         let mut next = NREG as u32;
         for f in &p.functions {
             slots.push((next, f.nslots));
-            next += f.nslots + f.nlanes;
+            next += f.nslots + f.ncarries + f.nlanes;
         }
         let mut x = Exec {
             ops: Vec::new(),
@@ -658,7 +658,6 @@ impl<'a> Runner<'a> {
                 crate::ir::XREG,
                 crate::ir::OPLO,
                 crate::ir::OPHI,
-                crate::ir::IREG,
             ]
             .contains(&i)
             {

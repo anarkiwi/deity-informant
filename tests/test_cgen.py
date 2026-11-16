@@ -3318,6 +3318,71 @@ def test_computed_transfer_switches_on_its_index(prefix, tmp_path, src, cases):
     assert [int(k) for k in re.findall(r"case (\w+):", outs[0])] == cases
 
 
+def carried_stages(regs):
+    """Stage ``i`` per register ``r`` of ``regs``: ``LDA save`` shifted right ``2i`` times;
+    ``AND #3; TAr; LDA lo,r; STA ptr; LDA hi,r; STA ptr+1; LDr #i; JMP (ptr)`` to four arms,
+    each storing ``r`` and a constant and going on to the next stage."""
+    out = ["entry:  STA save"]
+    for i, r in enumerate(regs):
+        out += ["        LDA save"] + ["        LSR A"] * (2 * i)
+        out += [f"        AND #$03\n        TA{r}\n        LDA t{i}lo,{r}\n        STA ptr"]
+        out += [
+            f"        LDA t{i}hi,{r}\n        STA ptr+1\n        LD{r} #${i:02X}\n        JMP (ptr)"
+        ]
+        for j in range(4):
+            out += [f"s{i}a{j}:  LDA #${16 * i + j:02X}\n        ST{r} $C0{4 * i + j:02X}"]
+            out += [f"        STA $C0{0x40 + 4 * i + j:02X}\n        JMP s{i + 1}"]
+        out.append(f"s{i + 1}:")
+    out.append("        RTS")
+    for i in range(len(regs)):
+        for half in ("lo", "hi"):
+            out.append(f"t{i}{half}:   .byte " + ",".join(f"{half}(s{i}a{j})" for j in range(4)))
+    return "\n".join(out + ["ptr:    .byte 0,0", "save:   .byte 0", "end:"]) + "\n"
+
+
+def carried_copies(n):
+    """``n`` copies of ``LDA $1k; AND #3; TAX; LDA lo,X; STA op+1; LDA hi,X; STA op+2; LDX #0;
+    op: JMP`` to four arms storing a constant and going on to the next copy, copy ``k``'s
+    bytes at a stride, its tables its own."""
+    out = ["entry:  " + "\n        ".join(f"STA $1{k}" for k in range(n))]
+    for k in range(n):
+        out += [f"v{k}:     LDA $1{k}\n        AND #$03\n        TAX\n        LDA tl{k},X"]
+        out += [f"        STA j{k}+1\n        LDA th{k},X\n        STA j{k}+2\n        LDX #$00"]
+        out.append(f"j{k}:     JMP a{k}0")
+        for j in range(4):
+            out += [f"a{k}{j}:    LDA #${j + 1:02X}\n        STA $C0{8 * k + j:02X}"]
+            out.append(f"        JMP v{k + 1}")
+        for half in ("lo", "hi"):
+            out.append(f"t{half[0]}{k}:    .byte " + ",".join(f"{half}(a{k}{j})" for j in range(4)))
+    return "\n".join(out + [f"v{n}:     RTS", "end:"]) + "\n"
+
+
+@pytest.mark.parametrize("regs", ["XY", "XYX"])
+def test_transfers_each_switch_on_their_carried_index(prefix, tmp_path, regs):
+    """Transfers of one function each switching on an index carried past its register's
+    write: each a switch over its own index, the same for every origin."""
+    outs = []
+    for org in (0x1000, 0x2345):
+        img, labels, loaded = assemble(carried_stages(regs), org)
+        c, h, info = translate(prefix, img, labels, loaded)
+        assert len(info["jumps"]) == len(regs) and not info["traps"]
+        (tmp_path / str(org)).mkdir()
+        play(tmp_path / str(org), c, h, img, labels, entry_calls(range(64)))
+        outs.append(c)
+    assert outs[0] == outs[1] and "CODE_ORG" not in outs[0]
+    assert len(set(re.findall(r"switch \((.+)\) \{", outs[0]))) == len(regs)
+    assert [int(k) for k in re.findall(r"case (\w+):", outs[0])] == [0, 1, 2] * len(regs)
+
+
+def test_copies_switch_on_their_carried_index(prefix, tmp_path):
+    """Copies merged into an instance function, each carrying its index past its register's
+    write: the instance function switches on the index."""
+    c, _, info = check(prefix, tmp_path, carried_copies(3), entry_calls(range(16), 2))
+    assert (info["stats"]["instances"], info["stats"]["instance_copies"]) == (1, 3)
+    assert not info["traps"] and "CODE_ORG" not in c
+    assert [int(k) for k in re.findall(r"case (\w+):", c)] == [0, 1, 2]
+
+
 def test_target_by_arithmetic_switches_on_the_address(prefix, tmp_path):
     """A branch offset computed from the index rather than read from a table switches on the
     target address."""

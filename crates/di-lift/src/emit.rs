@@ -10,7 +10,7 @@ use crate::bank::{Back, BankMap};
 use crate::dispatch::Index;
 use crate::func::{Arm, Ctl, Exit, Key, Plan, H};
 use crate::ir::{
-    cy, k, mem, other, r1, reg, tmp, Block, Function, LOp, E, IREG, KREG, NREG, OPHI, OPLO, XREG,
+    cy, k, mem, other, r1, reg, tmp, Block, Function, LOp, E, KREG, NREG, OPHI, OPLO, XREG,
 };
 use crate::vsa::NOREG;
 use di_pcode::{reg as R, CtrlKind, Op, Opc, PenKind, Slot, Space, Template, Vn};
@@ -57,6 +57,8 @@ pub struct Shared<'a> {
     pub cont: FixedBitSet,
     /// Per function: the slot indices whose stack bytes it keeps in slot registers.
     pub slots: Vec<FixedBitSet>,
+    /// Per function: the carried indices it holds ([`crate::carry`]).
+    pub carries: Vec<crate::carry::Carries>,
     /// The `[lo, hi]` page-1 addresses each instruction reached in the facts.
     pub seen: FxHashMap<u16, (u16, u16)>,
     /// With a declared entry SP and a private stack, the addresses the stack may hold: only
@@ -130,6 +132,7 @@ struct Em<'a, 'b> {
     /// In an instance function: the start the current node is keyed by, its length and each
     /// copy's start (`None`: a copy that does not run it).
     mem: Option<(u16, u16, Vec<Option<u16>>)>,
+    carries: &'a crate::carry::Carries,
 }
 
 /// What emitting a function produced.
@@ -196,6 +199,7 @@ pub fn emit(
         dec: false,
         coded: false,
         mem: None,
+        carries: &sh.carries[fi],
     };
     em.new_block(plan.pc);
     if em.cont {
@@ -275,9 +279,22 @@ pub fn emit(
         let to = NREG as u32 + em.f.nslots;
         em.f.nslots += 2;
         let at = |v: Vn| match v.space() {
-            Space::Reg if v.off() >= ABOVE as u32 => {
+            Space::Reg if (ABOVE as u32..ABOVE as u32 + 2).contains(&v.off()) => {
                 reg((v.off() - ABOVE as u32 + to) as u16, v.size() as u8)
             }
+            _ => v,
+        };
+        for op in em.f.blocks.iter_mut().flat_map(|b| &mut b.ops) {
+            op.out = at(op.out);
+            op.ins = op.ins.map(at);
+        }
+    }
+    em.f.ncarries = em.carries.regs.len() as u32;
+    if em.f.ncarries > 0 {
+        let to = NREG as u32 + em.f.nslots;
+        let n = CARRY as u32..CARRY as u32 + em.f.ncarries;
+        let at = |v: Vn| match v.space() {
+            Space::Reg if n.contains(&v.off()) => reg((v.off() - n.start + to) as u16, 1),
             _ => v,
         };
         for op in em.f.blocks.iter_mut().flat_map(|b| &mut b.ops) {
@@ -291,6 +308,9 @@ pub fn emit(
 /// The register a continuation function's low return-address byte is emitted in (the high
 /// byte's is the next), numbered past its stack slots once they are known.
 const ABOVE: u16 = NREG as u16 + 0x100;
+/// The register a function's first carry ([`crate::carry`]) is emitted in, numbered past its
+/// stack slots once they are known.
+const CARRY: u16 = NREG as u16 + 0x200;
 
 impl<'a> Em<'a, '_> {
     fn new_block(&mut self, pc: u16) -> u32 {
@@ -953,8 +973,9 @@ impl<'a> Em<'a, '_> {
         if !self.sh.g.stat.contains_key(&pc) {
             return None;
         }
+        let at = self.mem.as_ref().map_or(pc, |m| m.0);
         let xs: (Index, Vec<(u16, Key)>) = match &self.plan.inst {
-            Some(x) => x.sel.get(&self.mem.as_ref()?.0)?.clone(),
+            Some(x) => x.sel.get(&at)?.clone(),
             None => {
                 let (r, xs) = self.sh.g.sels.get(&pc)?;
                 (
@@ -966,12 +987,13 @@ impl<'a> Em<'a, '_> {
         if !xs.1.iter().all(|k| self.planned(&k.1)) {
             return None;
         }
+        let v = self.index_vn(at, xs.0)?;
         let t: Vec<(u16, u32)> = xs.1.into_iter().map(|(x, k)| (x, self.block(k))).collect();
         self.f.tables.push(t);
         let i = self.f.tables.len() - 1;
         self.f.closed.grow(i + 1);
         self.f.closed.set(i, true);
-        Some((self.index_vn(xs.0), i as u32))
+        Some((v, i as u32))
     }
     /// The table of a computed `JSR` at `pc` to functions `fs` (their call blocks `t`) that
     /// selects its target by an index ([`Self::selected`]).
@@ -984,40 +1006,27 @@ impl<'a> Em<'a, '_> {
         let tb = (xs.iter())
             .map(|&(x, f)| Some((x as u16, *to.get(&f)?)))
             .collect::<Option<Vec<_>>>()?;
+        let v = self.index_vn(pc, ix)?;
         self.f.tables.push(tb);
         let i = self.f.tables.len() - 1;
         self.f.closed.grow(i + 1);
         self.f.closed.set(i, true);
-        Some((self.index_vn(ix), i as u32))
+        Some((v, i as u32))
     }
-    /// Before the instruction at `pc` writes the register whose value [`IREG`] carries, the
-    /// copy into it (in an instance function, only for the copy at that instruction).
+    /// Before the instruction at `pc`, the copy of each index register it writes whose value
+    /// a transfer switches on into that carry's register.
     fn carry(&mut self, pc: u16) {
-        let Some((cp, r)) = self.sh.g.carry else {
-            return;
-        };
-        let at = match &self.mem {
-            Some((_, _, ms)) => ms.iter().position(|&p| p == Some(cp)).map(Some),
-            None => (pc == cp).then_some(None),
-        };
-        match at {
-            None => {}
-            Some(None) => self.emit(Opc::Copy, r1(IREG), r1(r as usize), NONE, 0),
-            Some(Some(j)) => {
-                let hit = self.op(Opc::IntEqual, 1, r1(KREG), k(j as u32, 1));
-                let (run, cont) = (self.new_block(pc), self.new_block(pc));
-                self.emit(Opc::CBranch, NONE, hit, NONE, run);
-                self.emit(Opc::Branch, NONE, NONE, NONE, cont);
-                self.cur = run as usize;
-                self.emit(Opc::Copy, r1(IREG), r1(r as usize), NONE, 0);
-                self.emit(Opc::Branch, NONE, NONE, NONE, cont);
-                self.cur = cont as usize;
+        for (i, &(cp, r)) in self.carries.regs.iter().enumerate() {
+            if cp == pc {
+                self.emit(Opc::Copy, reg(CARRY + i as u16, 1), r1(r as usize), NONE, 0);
             }
         }
     }
-    /// The varnode holding a selector's index, a byte it was read from read again.
-    fn index_vn(&mut self, ix: Index) -> Vn {
-        match ix {
+    /// The varnode holding the index the transfer at `at` switches on: a register, a byte it
+    /// was read from read again, or its carry register (none: the function holds no carry
+    /// for it).
+    fn index_vn(&mut self, at: u16, ix: Index) -> Option<Vn> {
+        Some(match ix {
             Index::Reg(r) => r1(r as usize),
             Index::Byte { base, reg, lo, hi } => {
                 let a = match reg {
@@ -1029,8 +1038,8 @@ impl<'a> Em<'a, '_> {
                 };
                 self.load(a, Iv { lo, hi }, 0)
             }
-            Index::Carry(..) => r1(IREG),
-        }
+            Index::Carry(..) => reg(CARRY + *self.carries.at.get(&at)?, 1),
+        })
     }
     fn goto(&mut self, pc: u16, t: &Tg, calc: impl FnOnce(&mut Self) -> Vn) {
         match t {
