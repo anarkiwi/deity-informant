@@ -67,7 +67,10 @@ pub mod other {
     /// `codechk(addr, value)`: 1 when `addr` is a code byte the program treats as constant and
     /// `value` differs from it.
     pub const CODECHK: u32 = 1;
-    pub const NAMES: [&str; 2] = ["deopt", "codechk"];
+    /// `objchk(p, j)`: 1 when the pointer `p` lies outside object `j`
+    /// ([`super::Program::objects`]).
+    pub const OBJCHK: u32 = 2;
+    pub const NAMES: [&str; 3] = ["deopt", "codechk", "objchk"];
 }
 
 /// `aux` of a value op emitted for an instruction at which the decimal flag may be set: its
@@ -294,6 +297,8 @@ pub struct Stats {
     pub stack_guards: usize,
     /// Checks on zero-page pointer high bytes: entries and stores.
     pub ptr_guards: usize,
+    /// Checks keeping pointers in their objects ([`crate::objects`]).
+    pub obj_guards: usize,
     /// Checks keeping a pointer access out of page 1 and the volatile pages.
     pub zone_guards: usize,
     /// Accesses that reached page 1 in the facts or cannot be checked (each keeps the stack
@@ -353,6 +358,9 @@ pub struct Program {
     pub addr_sets: Vec<AddrSet>,
     /// Per `(zp),Y` access whose pointer holds a set of words on every path, the words.
     pub ptr_sets: Vec<(u16, Vec<u16>)>,
+    /// The pointer objects `[lo, hi]` the `objchk` checks name ([`crate::objects`]), each with
+    /// the instruction starts of the loads it serves.
+    pub objects: Vec<(u16, u16, Vec<u16>)>,
     /// Address hulls of the loads through pointers and cell operands while the program's
     /// table loads stay inside their extents ([`Reach`], one per load of the instruction).
     pub reach: Vec<Reach>,

@@ -7,7 +7,8 @@
 //! a reader of a held span treats as out of bounds. Between the two stores of such an
 //! advance the pair owes its high byte the carry: it holds 256 less while the carry flag is
 //! set (`Owe::C`), 256 less once a branch found it set (`Owe::One`), either (`Owe::Either`)
-//! once another instruction wrote the flag.
+//! once another instruction wrote the flag. `INC lo; BNE; INC hi` advances it by one alike,
+//! owing while the zero flag is set (`Owe::Z`, the low byte wrapped).
 //!
 //! A byte moved through a register keeps what it is of a 16-bit quantity ([`Half`]): the byte
 //! at a tracked address as it stands, or a part of the sum an `ADC` made; a pair whose two
@@ -37,6 +38,8 @@ pub(crate) const NONE: u32 = 0x7fff_ffff;
 pub(crate) enum Owe {
     No,
     C,
+    /// 256 less while the zero flag is set: `INC` of the low byte wrapped it.
+    Z,
     One,
     Either,
 }
@@ -62,7 +65,7 @@ impl Wv {
     pub(crate) fn range(self) -> Option<(u32, u32)> {
         let (dl, dh) = match self.owe {
             Owe::No => (0, 0),
-            Owe::C | Owe::Either => (256, 0),
+            Owe::C | Owe::Z | Owe::Either => (256, 0),
             Owe::One => (256, 256),
         };
         (self.lo <= self.hi).then(|| (self.lo.saturating_sub(dl), self.hi.saturating_sub(dh)))
@@ -599,6 +602,13 @@ pub(crate) fn step(
     written: u32,
     vacant: bool,
 ) {
+    if written >> reg::Z & 1 == 1 {
+        for w in s.wide.iter_mut().flat_map(|e| e.1.as_mut()) {
+            if w.owe == Owe::Z {
+                w.owe = Owe::Either;
+            }
+        }
+    }
     if written >> reg::C & 1 == 1 {
         for w in s.wide.iter_mut().flat_map(|e| e.1.as_mut()) {
             if w.owe == Owe::C {
@@ -818,6 +828,15 @@ fn store(code: &Code, st: &St, s: &mut St, ops: &[di_pcode::Op], b: [Option<u8>;
     if pair(code, x) {
         let next = half_at(s, x + 1);
         let w = match h {
+            None if rmw == Some(1) => match value(code, st, x) {
+                w @ Wv { owe: Owe::No, .. } => Some(Wv {
+                    lo: w.lo + 1,
+                    hi: (w.hi + 1).min(MAX),
+                    owe: Owe::Z,
+                    ..w
+                }),
+                _ => None,
+            },
             Some(Half::Sum {
                 pc,
                 src: Some(q),
@@ -884,6 +903,15 @@ fn store(code: &Code, st: &St, s: &mut St, ops: &[di_pcode::Op], b: [Option<u8>;
     if let (Some(h), None) = (h, rmw) {
         let i = s.mhalf.partition_point(|e| e.0 < x);
         s.mhalf.insert(i, (x, h));
+    }
+}
+
+/// `s` on the edge where the zero flag is `z`.
+pub(crate) fn zero(s: &mut St, z: bool) {
+    for w in s.wide.iter_mut().flat_map(|e| e.1.as_mut()) {
+        if w.owe == Owe::Z {
+            w.owe = if z { Owe::One } else { Owe::No };
+        }
     }
 }
 

@@ -27,6 +27,7 @@ EXTERNS = {
     "io_write": "(i16, i8) -> ()",
     "trap": "(i16) -> ()",
     "codechk": "(i16, i8) -> i8",
+    "objchk": "(i16, i16) -> i8",
 }
 #: Entry register values besides ``A`` (index: value; others 0): ``SP`` below the return address.
 ENTRY_REGS = {3: 0xFD, 16: 0xFF}
@@ -253,9 +254,9 @@ class Body:  # pylint: disable=too-many-instance-attributes
                 return self.switch(op, i)
             elif name == "CALL":
                 self.call(op[3])
-            elif name == "CALLOTHER" and op[3] == "codechk":
+            elif name == "CALLOTHER" and op[3] in ("codechk", "objchk"):
                 a, v = (self.read(x) for x in op[2] if x)
-                self.write(op[1], self.op(f"func.call @codechk({a}, {v}) : (i16, i8) -> i8"))
+                self.write(op[1], self.op(f"func.call @{op[3]}({a}, {v}) : {EXTERNS[op[3]]}"))
             elif name == "CALLOTHER":
                 pc = op[2][0]
                 if pc[0] == "c":

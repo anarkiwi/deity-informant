@@ -141,6 +141,7 @@ pub struct Counts {
     pub code_guards: usize,
     pub stack_guards: usize,
     pub ptr_guards: usize,
+    pub obj_guards: usize,
     pub zone_guards: usize,
     pub slot_ops: usize,
     /// Dispatches on SP after SP-setting instructions.
@@ -237,7 +238,11 @@ pub fn emit(
                 .get(&plan.pc)
                 .into_iter()
                 .flat_map(|b| b.ones());
-        let bad: Vec<Vn> = pre.map(|q| em.window(q as u8)).collect();
+        let mut bad: Vec<Vn> = pre.map(|q| em.window(q as u8)).collect();
+        for &c in sh.g.objs.pre.get(&plan.pc).into_iter().flatten() {
+            let q = c.q as u32;
+            bad.push(em.obj_bad(k(q, 2), Iv { lo: q, hi: q + 1 }, c));
+        }
         if let Some(c) = bad.into_iter().reduce(|a, b| em.op(Opc::IntOr, 1, a, b)) {
             em.side_exit(c, true, |em| em.deopt(k(plan.pc as u32, 2)));
         }
@@ -1123,6 +1128,37 @@ impl<'a> Em<'a, '_> {
         }
         bad
     }
+    /// Whether the pointer of the pair at `at` (its bytes in `iv`), plus the flag `c.flag`
+    /// times 256, lies outside object `c.obj`.
+    fn obj_bad(&mut self, at: Vn, iv: Iv, c: crate::objects::ObjChk) -> Vn {
+        let lo = self.load(
+            at,
+            Iv {
+                hi: iv.hi - 1,
+                ..iv
+            },
+            0,
+        );
+        let a1 = self.op(Opc::IntAdd, 2, at, k(1, 2));
+        let hi = self.load(
+            a1,
+            Iv {
+                lo: iv.lo + 1,
+                ..iv
+            },
+            0,
+        );
+        let mut p = self.word(lo, hi);
+        if let Some(f) = c.flag {
+            let cy = self.zext(r1(f as usize), 2);
+            let cy = self.op(Opc::IntLeft, 2, cy, k(8, 1));
+            p = self.op(Opc::IntAdd, 2, p, cy);
+        }
+        self.n.obj_guards += 1;
+        let bad = self.op(Opc::CallOther, 1, p, k(c.obj as u32, 2));
+        self.f.blocks[self.cur].ops.last_mut().unwrap().aux = other::OBJCHK;
+        bad
+    }
     /// Whether access `ac` is through pairs whose windows keep it out of the volatile
     /// ranges (pointer windows with a declared entry SP).
     fn quiet(&self, ac: &Access) -> bool {
@@ -1211,6 +1247,8 @@ impl<'a> Em<'a, '_> {
         umap: &mut FxHashMap<u32, Vn>,
     ) -> Vec<Vn> {
         let mut chk = Vec::new();
+        // Object checks read the pair and the flags once the instruction is done.
+        let mut objs_after = Vec::new();
         let mut ai = 0;
         let mut zone = NONE;
         for op in ops {
@@ -1352,6 +1390,34 @@ impl<'a> Em<'a, '_> {
                         }
                         chk.push(bad);
                     }
+                    let objs = self.sh.g.objs.chk.get(&(pc, opc, ai - 1));
+                    for &c in objs.into_iter().flatten().filter(|_| !stack) {
+                        let q = c.q as u32;
+                        // The pair the store's own byte is in, per copy of an instance.
+                        let own = (self.sh.g.vars.get(&pc).into_iter().flatten())
+                            .find(|v| v.op == opc)
+                            .and_then(|v| v.acc[ai - 1].addr.value())
+                            .map(|x| x.wrapping_sub(q))
+                            .filter(|&d| d < 2);
+                        let (at, iv) = match own {
+                            Some(0) => (
+                                a,
+                                Iv {
+                                    lo: ac.addr.lo,
+                                    hi: ac.addr.hi + 1,
+                                },
+                            ),
+                            Some(d) => (
+                                self.op(Opc::IntSub, 2, a, k(d, 2)),
+                                Iv {
+                                    lo: ac.addr.lo - d,
+                                    hi: ac.addr.hi,
+                                },
+                            ),
+                            None => (k(q, 2), Iv { lo: q, hi: q + 1 }),
+                        };
+                        objs_after.push((at, iv, c));
+                    }
                     if self.sh.hits_code(ac.addr) && !self.sh.g.nocode.contains(&(pc, opc, ai - 1))
                     {
                         self.n.code_guards += 1;
@@ -1364,6 +1430,9 @@ impl<'a> Em<'a, '_> {
             }
             let aux = if self.dec { crate::ir::DECIMAL } else { aux };
             self.emit(op.opc, out, a, b, aux);
+        }
+        for (at, iv, c) in objs_after {
+            chk.push(self.obj_bad(at, iv, c));
         }
         chk
     }
@@ -1477,6 +1546,34 @@ impl<'a> Em<'a, '_> {
                 None,
             ),
         };
+        // A load defining its pair's pointer checks it against the pair's object, per copy
+        // the pair its operand names.
+        if let Some(cs) = self.sh.g.objs.pre.get(&pc) {
+            let qs: Vec<u32> = match &self.mem {
+                Some((_, _, ms)) => (ms.iter().flatten())
+                    .map(|&m| self.sh.img[m.wrapping_add(1) as usize] as u32)
+                    .collect(),
+                None => cs.iter().map(|c| c.q as u32).collect(),
+            };
+            let iv = Iv {
+                lo: *qs.iter().min().unwrap(),
+                hi: *qs.iter().max().unwrap() + 1,
+            };
+            let mut bad = NONE;
+            for &c in cs {
+                let at = match self.mem.is_some() {
+                    true => self.zext(ob[0], 2),
+                    false => k(c.q as u32, 2),
+                };
+                let b = self.obj_bad(at, iv, c);
+                bad = match bad.is_none() {
+                    true => b,
+                    false => self.op(Opc::IntOr, 1, bad, b),
+                };
+            }
+            let x = self.side_exit(bad, true, |em| em.deopt(k(pc as u32, 2)));
+            self.f.blocks[x as usize].replay = Some(self.istart);
+        }
         let mut memo: FxHashMap<(Slot, u8), Vn> = FxHashMap::default();
         let mut slot = move |em: &mut Self, s: Slot, size: u8| -> Vn {
             if let Some(&v) = memo.get(&(s, size)) {

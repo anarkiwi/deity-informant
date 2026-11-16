@@ -541,6 +541,8 @@ pub struct Graph {
     pub prot: crate::ptr::Prot,
     /// The zones the pointer windows keep pointers out of (page 1 first).
     pub zones: Vec<(u32, u32)>,
+    /// Pointer objects and the checks keeping them (see [`crate::objects`]).
+    pub objs: crate::objects::Objs,
     /// Address hulls of the loads through pointers and cell operands while table loads stay
     /// inside their extents ([`crate::vsa`]'s `reach`) and of their bases, by `(pc, opcode,
     /// access index)`.
@@ -550,6 +552,8 @@ pub struct Graph {
     pub proven: crate::vsa::Hulls,
     /// Per instruction start the values `A`, `X` and `Y` hold on every run.
     pub regs: crate::vsa::Regs,
+    /// The runs `[lo, hi)` of data bytes of the pointer reach pass ([`crate::vsa::data_runs`]).
+    pub runs: Vec<(u32, u32)>,
     /// Stores whose index the code does not bound and the run `[lo, hi)` of data bytes each
     /// writes, by `(pc, opcode, access index)`: past it a write is out of bounds.
     pub bounded: FxHashMap<(u16, u8, usize), (u32, u32)>,
@@ -1004,7 +1008,7 @@ impl Fixpoint<'_> {
             &g.disp,
             &given,
         );
-        (g.reach, g.proven, g.regs) = (an.reach, an.proven, an.regs);
+        (g.reach, g.proven, g.regs, g.runs) = (an.reach, an.proven, an.regs, an.runs);
         g.nocode.extend(an.bounded.keys().copied());
         g.bounded = an.bounded;
         guarded(g);
@@ -1287,6 +1291,7 @@ impl Fixpoint<'_> {
                 let g = Graph {
                     reach: FxHashMap::default(),
                     proven: FxHashMap::default(),
+                    runs: Vec::new(),
                     regs: FxHashMap::default(),
                     bounded: FxHashMap::default(),
                     disp,
@@ -1299,6 +1304,7 @@ impl Fixpoint<'_> {
                     rom_code,
                     cfg,
                     prot: crate::ptr::Prot::default(),
+                    objs: crate::objects::Objs::default(),
                     zones: vec![crate::ptr::PAGE1],
                     from: an.from,
                     live: an.live,

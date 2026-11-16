@@ -1211,6 +1211,9 @@ fn number_block(lv: &mut Lvn, blk: &mut Block, tables: &[Vec<(u16, u32)>], st: &
                     };
                 }
             }
+            Opc::CallOther if op.aux == other::OBJCHK => {
+                result = Some((Val::S(lv.leaf(1, Iv { lo: 0, hi: 1 })), true));
+            }
             Opc::CallOther if op.aux == other::CODECHK => {
                 let c = match (a, b) {
                     (Val::K(x), _) if !cx.constcode.contains(x as usize) => Some(0),

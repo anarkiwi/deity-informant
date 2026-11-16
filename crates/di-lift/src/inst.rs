@@ -75,9 +75,16 @@ struct Shape {
     cells: [bool; 2],
     dec: bool,
     guard: Option<(u8, Iv)>,
+    /// The objects of the checks before the instruction ([`crate::objects::Objs::pre`]).
+    pre: Vec<u16>,
     call: Option<u16>,
-    stores: Vec<(bool, bool)>,
+    stores: Vec<(bool, bool, Vec<ObjSig>)>,
 }
+
+/// An object check of a store ([`crate::objects::ObjChk`]) as copies share it: the pair at the
+/// store's own address less `0` or `1` (its low or high byte), else at the absolute address,
+/// the object and the flag it adds.
+type ObjSig = (Option<u32>, Option<u8>, u16, Option<u8>);
 
 struct Cx<'a> {
     g: &'a Graph,
@@ -119,10 +126,20 @@ impl Cx<'_> {
             .iter()
             .enumerate()
             .filter(|(_, a)| a.store)
-            .map(|(i, _)| {
+            .map(|(i, a)| {
+                let objs = (self.g.objs.chk.get(&(pc, v.op, i)).into_iter().flatten())
+                    .map(|c| {
+                        let d = a.addr.value().map(|x| x.wrapping_sub(c.q as u32));
+                        match d.filter(|&d| d < 2) {
+                            Some(d) => (Some(d), None, c.obj, c.flag),
+                            None => (None, Some(c.q), c.obj, c.flag),
+                        }
+                    })
+                    .collect();
                 (
                     self.g.nocode.contains(&(pc, v.op, i)),
                     self.g.prot.chk.contains_key(&(pc, v.op, i)),
+                    objs,
                 )
             })
             .collect();
@@ -131,6 +148,9 @@ impl Cx<'_> {
             cells: [t.len > 1 && b[0].is_none(), t.len > 2 && b[1].is_none()],
             dec: self.g.dec.contains(pc as usize),
             guard: self.g.guards.get(&pc).copied(),
+            pre: (self.g.objs.pre.get(&pc).into_iter().flatten())
+                .map(|c| c.obj)
+                .collect(),
             call,
             stores,
         })

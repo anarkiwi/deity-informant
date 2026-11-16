@@ -486,8 +486,9 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   constant offset below 256, else 0): `noinline`, it reads `Cj` where the address lies in it,
   else `oob_rd`, so a pointer below the program (zero page, a pointer still 0) or walked past
   it reads what the 6502 would. Where the hull the
-  lift proves on every run (`Program.proven`: no table taken to be read inside its extent)
-  lies inside `loaded`, the span is that hull and the
+  lift proves on every run (`Program.proven`: no table taken to be read inside its extent,
+  or a pointer object's check keeping its pointer in bounds) lies inside `loaded` and the
+  bytes past it a block copy writes, the span is that hull and the
   load indexes it unchecked: `CGEN_IX(Cj, base - Cj_ORG, y)`. Not taken when the
   hull meets a volatile range inside `loaded`, or holds no data byte of it; then `rd`.
   `oob_rd` and the regions only it reaches are left out when no load needs it.
@@ -546,6 +547,12 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   and `leaf`: a host compiles it apart from the `.c`, and it calls back into nothing there.
   A store the lift found may hit constant code or a table it read is followed by `codechk`,
   which traps when a constant byte of a span would change.
+- A pointer object's check ([wholeprog](wholeprog.md#static-proofs), *Pointer objects*:
+  after a store defining a `(zp),Y` pair, before a load an entry reaches first) is the test
+  `(uint16_t)(p - CGEN_OBJj_ORG) > CGEN_OBJj_LIM` of the pair's pointer `p` before its trap:
+  the `.h` names object `j`'s first byte and the last less it, as the data decide them, so
+  the `.c` holds no pointer init leaves and no bound. The entries' lift takes the bytes past
+  the program init's lift writes as held (`holds`), as the spans hold them.
 
 Address constants print relative to the region holding them, or to the code span or loaded image when the program holds them (any other, a device's or a vector's, prints as it is)
 (`R2_ORG + 0x10`, `CODE_ORG + 0x21`, `IMG_ORG + ...`): a constant reaching an access address

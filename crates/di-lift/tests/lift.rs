@@ -1282,3 +1282,59 @@ fn static_lift(prog: &[u8]) -> Program {
         opts,
     )
 }
+
+/// A pointer play sets from I/O into the middle of a page of records and advances with
+/// `INC; BNE; INC` reads its three fields unchecked: checks after its definition (the pair's two
+/// stores) and after the advance (the pointer plus the zero flag times 256, so the low byte's
+/// wrap is no transient leaving the object) keep it in the records, past whose end its fields
+/// read the code that follows. Run off them by a count from I/O, the advance's check deopts;
+/// both engines match the reference.
+#[test]
+fn pointer_objects_check_their_definitions() {
+    let walk = |count: &[u8]| -> Vec<u8> {
+        let mut p = vec![
+            0xad, 0x00, 0xc0, 0x29, 0x3f, 0x09, 0x80, 0x85, 0xfb, 0xa9, 0x11, 0x85, 0xfc,
+        ];
+        p.extend(count);
+        p.extend([
+            0xa0, 0x00, 0xb1, 0xfb, 0x8d, 0x01, 0xc0, 0xa0, 0x01, 0xb1, 0xfb, 0x8d, 0x02, 0xc0,
+            0xc8, 0xb1, 0xfb, 0x8d, 0x03, 0xc0, 0xe6, 0xfb, 0xd0, 0x02, 0xe6, 0xfc, 0xca, 0xd0,
+            0xe3, 0x60,
+        ]);
+        p
+    };
+    let data: Vec<u8> = (0..0x80u32).map(|i| (i * 7) as u8).collect();
+    for (count, deopts) in [
+        (&[0xa2u8, 0x04][..], false),
+        (&[0xae, 0x04, 0xc0][..], true),
+    ] {
+        let prog = walk(count);
+        let img = image(&[
+            (0x1150, &prog),
+            (0x1180, &data),
+            (0x1200, &[0xa9, 0x00, 0x60]),
+        ]);
+        let opts = Opts {
+            entry_sp: Some(0xfd),
+            loaded: Some((0x1150, 0x1203)),
+            ..Opts::default()
+        };
+        let p = lift_with(
+            &img,
+            &entries(&[0x1150, 0x1200]),
+            &[(0xc000, 0xc100)],
+            &Facts::default(),
+            opts,
+        );
+        assert_eq!(p.objects.len(), 1, "{count:x?}");
+        assert_eq!((p.objects[0].0, p.objects[0].1), (0x1180, 0x1200));
+        assert_eq!(p.objects[0].2.len(), 3);
+        assert_eq!(p.stats.obj_guards, 2);
+        for &pc in &p.objects[0].2 {
+            let h = p.proven.iter().find(|r| r.0 == pc).unwrap();
+            assert!(h.1 >= 0x1180 && h.2 <= 0x1202, "{h:x?}");
+        }
+        let n = diff_at(&img, &p, &calls(64, |_| 0), IO, 1_000_000, 0xff);
+        assert_eq!(n > 0, deopts, "{count:x?}");
+    }
+}

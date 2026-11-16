@@ -18,6 +18,7 @@ pub mod ir;
 pub mod jit;
 pub mod known;
 pub mod lanes;
+pub mod objects;
 pub mod opt;
 pub mod ptr;
 pub mod scev;
@@ -75,6 +76,10 @@ pub struct Opts {
     pub once: bool,
     /// What the volatile addresses answer ([`dev`]).
     pub devices: dev::Devices,
+    /// Runs `[lo, hi)` of bytes past the program the host holds as data besides those the
+    /// lift's stores write (another lift's stores, a host's init's): a pointer object's loads
+    /// may read them ([`objects`]).
+    pub holds: Vec<(u32, u32)>,
 }
 
 impl Default for Opts {
@@ -91,6 +96,7 @@ impl Default for Opts {
             held: Vec::new(),
             once: false,
             devices: dev::Devices::default(),
+            holds: Vec::new(),
         }
     }
 }
@@ -627,6 +633,21 @@ pub fn lift_banked(
             Some(_) => ptr::zones(volatile),
             None => vec![ptr::PAGE1],
         };
+        let (objs, proven) = objects::objects(
+            &g,
+            &roots,
+            volatile,
+            bank,
+            objects::held(opts.loaded, &g.written, &opts.holds, volatile),
+        );
+        for (key, (a, b)) in proven {
+            let h = g.proven.entry(key).or_insert((a, b));
+            *h = (
+                vsa::meet(h.0, a).unwrap_or(a),
+                vsa::meet(h.1, b).unwrap_or(b),
+            );
+        }
+        g.objs = objs;
         g.prot = ptr::protect(&g, facts, volatile, &zones, &roots, bank);
         g.zones = zones;
         if opts.entry_sp.is_some() {
@@ -887,6 +908,7 @@ pub fn lift_banked(
             stats.code_guards += n.code_guards;
             stats.stack_guards += n.stack_guards;
             stats.ptr_guards += n.ptr_guards;
+            stats.obj_guards += n.obj_guards;
             stats.zone_guards += n.zone_guards;
             stats.slot_ops += n.slot_ops;
             stats.sp_dispatch += n.sp_dispatch;
@@ -993,6 +1015,7 @@ pub fn lift_banked(
         induction: g.ind.clone(),
         reach: reaches(&g.reach),
         proven: reaches(&g.proven),
+        objects: g.objs.objects.clone(),
         bounded: {
             let mut v: Vec<(u16, u32, u32)> =
                 g.bounded.iter().map(|(k, r)| (k.0, r.0, r.1)).collect();

@@ -648,6 +648,7 @@ impl<'a, 'b> Fb<'a, 'b> {
                 self.leave(1, pc);
                 return false;
             }
+            Opc::CallOther if o.aux == other::OBJCHK => self.objchk(o),
             Opc::CallOther => self.codechk(o),
             opc => {
                 let (a, b) = (self.get(o.a), self.get(o.b));
@@ -705,6 +706,20 @@ impl<'a, 'b> Fb<'a, 'b> {
         };
         let c = self.b.ins().icmp(cc, a, b);
         self.b.ins().uextend(types::I32, c)
+    }
+
+    /// `objchk(p, j)`: whether `p` lies outside object `j`.
+    fn objchk(&mut self, o: &crate::exec::X) {
+        let (lo, hi, _) = self.x.objects[(o.b & !IMM) as usize];
+        let p = self.get(o.a);
+        let off = self.b.ins().iadd_imm_s(p, -(lo as i64));
+        let off = self.b.ins().band_imm_u(off, 0xffff);
+        let c = self
+            .b
+            .ins()
+            .icmp_imm_u(IntCC::UnsignedGreaterThan, off, (hi - lo) as i64);
+        let out = self.b.ins().uextend(types::I32, c);
+        self.set(o.out, out);
     }
 
     fn codechk(&mut self, o: &crate::exec::X) {

@@ -780,6 +780,9 @@ pub(crate) fn refine(code: &Code, st: &St, flag: usize, want: bool) -> Option<St
     if flag == di_pcode::reg::C && code.reach_pass() {
         crate::word::carry(&mut s, want);
     }
+    if flag == di_pcode::reg::Z && code.reach_pass() {
+        crate::word::zero(&mut s, want);
+    }
     let pred = FLAGS
         .iter()
         .position(|&f| f == flag)
@@ -2220,6 +2223,8 @@ pub struct Analysis {
     /// Per `(zp),Y` access whose pointer pair holds a set of words on every path, the words
     /// ([`St::pw`]).
     pub ptrs: ByAccess,
+    /// The runs `[lo, hi)` of data bytes ([`data_runs`]) of a pass finding pointer reach.
+    pub runs: Vec<(u32, u32)>,
 }
 
 /// What the fixpoint walks besides the states: the returns, the roots, the loop heads, the
@@ -2565,6 +2570,37 @@ fn clips(img: &[u8; 0x10000], idx: &[Indexed], bound: &[Option<Iv>]) -> FxHashMa
         .collect()
 }
 
+/// The runs `[lo, hi)` of data bytes: the program's bytes of no instruction (`insn`), and the
+/// bytes from the program's start up stores with address sets (a block copy's destination,
+/// the host init's stores) write, past the program to the last of them below the volatile
+/// ranges, with the bytes between.
+pub(crate) fn data_runs(given: &Given, insn: &FixedBitSet) -> Vec<(u32, u32)> {
+    let Some((lo, hi)) = given.loaded else {
+        return Vec::new();
+    };
+    let mut data = given.written.clone();
+    data.grow(0x10000);
+    data.set_range(..lo as usize, false);
+    data.insert_range(lo as usize..hi as usize);
+    let below = (given.volatile.iter())
+        .filter(|v| v.0 >= hi)
+        .map(|v| v.0)
+        .min()
+        .unwrap_or(0x10000);
+    if let Some(top) = data.ones().take_while(|&a| a < below as usize).last() {
+        data.insert_range(hi as usize..top.max(hi as usize));
+    }
+    data.difference_with(insn);
+    let mut runs: Vec<(u32, u32)> = Vec::new();
+    for a in data.ones().map(|a| a as u32) {
+        match runs.last_mut() {
+            Some(r) if r.1 == a => r.1 += 1,
+            _ => runs.push((a, a + 1)),
+        }
+    }
+    runs
+}
+
 /// Address hulls of the loads through pointers and cell operands and of their bases (the
 /// index registers zero), by `(pc, opcode, access index)`, from a pass in which an indexed
 /// access reaches the bytes its index set gives, only those inside the table's extent
@@ -2638,35 +2674,9 @@ fn reach(
         entry[a] = None;
     }
     let top = vec![None; 0x10000];
-    let runs = match given.loaded.filter(|_| !proof) {
-        Some((lo, hi)) => {
-            // Data bytes: the program's bytes of no instruction, and the bytes from the
-            // program's start up stores with address sets (a block copy's destination, the
-            // host init's stores) write, past the program to the last of them below the
-            // volatile ranges, with the bytes between.
-            let mut data = given.written.clone();
-            data.grow(0x10000);
-            data.set_range(..lo as usize, false);
-            data.insert_range(lo as usize..hi as usize);
-            let below = (given.volatile.iter())
-                .filter(|v| v.0 >= hi)
-                .map(|v| v.0)
-                .min()
-                .unwrap_or(0x10000);
-            if let Some(top) = data.ones().take_while(|&a| a < below as usize).last() {
-                data.insert_range(hi as usize..top.max(hi as usize));
-            }
-            data.difference_with(p.insn);
-            let mut runs: Vec<(u32, u32)> = Vec::new();
-            for a in data.ones().map(|a| a as u32) {
-                match runs.last_mut() {
-                    Some(r) if r.1 == a => r.1 += 1,
-                    _ => runs.push((a, a + 1)),
-                }
-            }
-            runs
-        }
-        None => Vec::new(),
+    let runs = match proof {
+        true => Vec::new(),
+        false => data_runs(given, p.insn),
     };
     // A pair's floor starts at its entry word; one with a byte the facts saw written (an init's
     // variable) at the run of data bytes holding every word its bytes were seen to make (an
@@ -2754,7 +2764,9 @@ fn reach(
             c.mods = mods(&c, p.vars, &FxHashMap::default(), &sh.live);
             continue;
         }
-        // Each pair's floor widens to the hull of the values an entry's return leaves in it.
+        // Each pair's floor widens to the hull of the values an entry's return leaves in it: an
+        // upper bound that rises widens to the end of the run of data bytes it lies in, past
+        // every run to the top, so a pointer advanced on every call rises once per run.
         let mut floor = c.floor.clone();
         for (&(pc, cx), st) in &state {
             let exit = p.vars[&pc]
@@ -2769,7 +2781,11 @@ fn reach(
                     Err(_) => None,
                 };
                 if let Some((lo, hi)) = r {
-                    *l = (l.0.min(lo), l.1.max(hi));
+                    let h = match hi > l.1 && l.0 <= l.1 {
+                        true => c.run_of(hi).map_or(crate::word::MAX, |r| r.1 - 1),
+                        false => l.1.max(hi),
+                    };
+                    *l = (l.0.min(lo), h);
                 }
             }
         }
@@ -3512,6 +3528,10 @@ pub fn analyze(
             crate::dispatch::jumps(&code, vars, &state, &sets, &objs, &stores, &cellvals);
         return Analysis {
             ptrs,
+            runs: match given.reach {
+                true => data_runs(given, &bytes),
+                false => Vec::new(),
+            },
             past: ret
                 .iter()
                 .filter(|(_, s)| !s.past.is_empty())

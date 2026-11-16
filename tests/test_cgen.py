@@ -29,6 +29,7 @@ import cmetrics  # noqa: E402  pylint: disable=wrong-import-position
 from test_pcode2mlir import OPS, UNARY, VALUES, op_function, unary_function  # noqa: E402
 import test_polling as P  # noqa: E402  pylint: disable=wrong-import-position
 import test_valuesets as VS  # noqa: E402  pylint: disable=wrong-import-position
+import test_objects as TO  # noqa: E402  pylint: disable=wrong-import-position
 
 pytestmark = pytest.mark.skipif(
     not NATIVE or not shutil.which("gcc") or not shutil.which("clang-format"),
@@ -5409,3 +5410,20 @@ def test_record_walk_store_is_c_state(prefix, tmp_path):
     img, labels, _ = assemble(VS.WALK)
     assert info["ptr_sets"][labels["loop"]] == sorted([labels["r0"], labels["r1"]])
     assert img[labels["dst"]] == 0x8D
+
+
+def test_records_read_their_object_unchecked(prefix, tmp_path):
+    """The pointer init leaves per argument in one of the streams reads its fields unchecked
+    from one array: one test of the pointer against its object, whose bounds the ``.h``
+    names, and the streams' addresses in no literal of the ``.c``."""
+    img, labels, loaded = assemble(TO.STREAM)
+    c, h, _ = translate(
+        prefix, img, labels, loaded, entries=("init", "play"), init=0, songs=range(4)
+    )
+    body = body_of(c, "play")
+    assert "rdC" not in c and body.count("CGEN_IX(") == 4
+    assert body.count("CGEN_OBJ0_ORG") == 1 and "#define CGEN_OBJ0_ORG" in h
+    words = {labels[f"s{i}"] for i in range(4)} | {labels["play"]}
+    assert not {int(x, 16) for x in re.findall(r"0x([0-9A-F]{3,4})\b", c)} & words
+    for song in range(4):
+        play(tmp_path, c, h, img, labels, [("init", song)] + [("play", 0)] * 120)

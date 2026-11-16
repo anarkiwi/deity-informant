@@ -153,14 +153,15 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         writes (``written``) the hull reaches: from its first non-code byte to its last, held as
         one array (code bytes and the bytes between the program and those inside it held too);
         the hull's other addresses read ``oob_rd``. None when the hull meets a volatile range
-        there, or holds no data byte of the program, or (``whole``) leaves the program."""
+        there, or holds no data byte of the program, or (``whole``) leaves the program and
+        those bytes."""
         lo, hi = hull[:2]
         a0, a1 = self.loaded
-        if whole and not a0 <= lo <= hi < a1:
-            return None
         vol = np.flatnonzero(self.vol[a1:])
         below = a1 + int(vol[0]) if vol.size else 0x10000
         past = [b for a, b in self.written if a1 <= a <= hi and b <= below]
+        if whole and not a0 <= lo <= hi < max([a1, *past]):
+            return None
         lo, hi = max(lo, a0), min(hi, max([a1, *past]) - 1)
         data = np.flatnonzero(~self.code[lo : hi + 1]) if lo <= hi else np.zeros(0, int)
         if not data.size or lo + data[0] >= a1 or self.vol[lo : hi + 1].any():

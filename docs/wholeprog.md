@@ -54,7 +54,8 @@ prog.addr_sets        # {(pc, store): [(lo, hi), ...]} address sets of pointer a
 prog.ptr_sets         # {pc: [word, ...]} the words a (zp),Y access's pointer may hold
 prog.reach            # {pc: (lo, hi, base_lo, base_hi)} pointer loads' hulls (*Pointer reach*;
                       #   hi past $FFFF: a pointer advanced without bound)
-prog.proven           # the hulls of reach that hold on every run (*Pointer reach*)
+prog.proven           # the hulls of reach that hold on every run (*Pointer reach*, *Pointer objects*)
+prog.objects          # [(lo, hi, [pc, ...])] pointer objects and the loads each serves (*Pointer objects*)
 prog.regs             # {pc: (a, x, y)} values the registers hold there on every run, as bytes
 prog.bounded          # {pc: (lo, hi)} stores bounded to the array holding their base (*Pointer reach*)
 prog.bounds           # {address: (lo, hi)} bytes whose every store has an exact address
@@ -85,6 +86,7 @@ Inputs:
 | `alias` | `[(lo, g, delta)]`: operand pairs of `free` holding pair `g` plus `delta`, which play reads instead (*Init*). |
 | `once` | Each entry runs once, from `image` (an init): stores into code make cells only of what may run after them (*Init*). |
 | `devices` | A `devices.Model` of what the volatile addresses answer (*Devices*; default none: any byte). |
+| `holds` | `[(lo, hi)]`: bytes past the program the host holds as data besides those the lift's stores write (another lift's stores), which a pointer object's loads may read (*Pointer objects*). |
 
 `trace.collect(image, driver)` runs `driver(session)` twice on the jennings native core over a
 copy of `image`: `session.call(pc, a)` is `run_to_rts`; `session.mem`/`session.mpu` are the
@@ -392,6 +394,7 @@ jump's or call's stays its target), so the values are data of the code, not code
 | A callee's `TXS` restoring a saved stack pointer sets SP to its saved height | `X` compared with SP plus the height difference | deopt before the instruction |
 | After an SP-setting instruction, SP is at a height the facts saw the next start at | SP dispatch: `SP - E` compared per height without wrapping (`stats["sp_dispatch"]`), SP restated as `E + height - 2`; a function with a dispatch loads its stack slots from memory at entry | deopt at the next start |
 | A store may hit constant code | `codechk(addr, value)` after the store, when the address interval (*Static proofs*) meets constant code or a table the lift read (*Computed jumps*, *Stores*) and its address set, when it has one, does too | deopt after the instruction; the program stays invalid until its constant code matches again |
+| A zero-page pointer pair whose loads read unchecked lies in its object (*Pointer objects*) | a store that may write a byte of the pair reads it back after its instruction (a pair's two stores on one instruction chain once after the second; a low byte left to a flag adds the flag times 256), and a load an entry reaches before any store checks the pair before its instruction (`stats["obj_guards"]`, `objchk`) | deopt after the store; deopt before the instruction |
 | A zero-page pointer pair that accesses rely on stays outside the window of their indices (*Pointer windows*) | an entry reads back the pairs some access reads before every path to it stores their high byte; a store that may write a byte of one and may leave it in its window reads the pair back after the instruction, a pair's two stores on one instruction chain once after the second (`stats["ptr_guards"]`) | deopt at the entry; deopt after the store |
 | An access that may reach page 1 (by its address interval) does not, while stack bytes are kept out of memory | the address's page is compared with 1 before the access (`stats["stack_guards"]`); with `entry_sp`, only a store that may hit the *Stack extent*, against it | deopt before the instruction |
 | A callee that may store into page 1 returns to its caller (stack not private) | the return-address bytes are compared after `CALL` | deopt at the address the `RTS` pulled |
@@ -672,12 +675,14 @@ the facts, so a proof holds on every execution that stays in lifted code.
     of the pair's low byte stored back into it owes the high byte the carry until the branch
     on the carry and an `INC` of the high byte (or an `ADC #0` of it stored there) settle it,
     and a pair whose two bytes are stored from the two bytes of one pair or sum holds that
-    value; any other store gives a pair its bytes' hull, or, where its bytes hold table bytes
+    value; `INC lo; BNE; INC hi` advances it by one alike, owing the high byte while the zero
+    flag is set; any other store gives a pair its bytes' hull, or, where its bytes hold table bytes
     indexed by one value, the hull of the words of the index values both loads read. A value past `$FFFF` is a pointer
     walked past the top of memory, which reads out of bounds. A pair no instruction since
     the entry stored holds a value in its floor: the hull of its entry word (*Init* for a
     pair with a free byte) and of the values every return of an entry leaves, a least
-    fixpoint the rounds reach once the byte bounds hold. At a loop head
+    fixpoint the rounds reach once the byte bounds hold, whose upper bound, where a return
+    raises it, widens as at a loop head (a pointer advanced on every call). At a loop head
     an upper bound that rises widens to the end of the run of data bytes it lies in, past
     every run to the top; a pair's first value and its bytes' hull do not widen. A callee
     keeps the caller's tracked bytes and pairs it stores into none of (the address intervals
@@ -716,6 +721,31 @@ the facts, so a proof holds on every execution that stays in lifted code.
     pointer into one run of data bytes.
   An index register is one the instruction's template reads before writing (`LDX abs,Y`
   reads `Y`).
+- **Pointer objects** (`objects.rs`, static lifts). The hulls of *Pointer reach* hold of the
+  loads through a `(zp),Y` pair only while tables are read inside their extents; checks at
+  the pair's definitions make them hold on every run. The definitions of a pair are the
+  stores that may write either byte (one whose address is exact replaces it), and, where a
+  path from an entry reaches a load before any store or other load, that load: the pointer
+  an entry finds (one init left per argument). A forward dataflow over every flow edge (a
+  return whose targets are not computed reaching every return site) gives the definitions
+  reaching each load; definitions sharing a load, and the loads they reach, are one
+  *object*: from the least base of the loads' reach hulls (a data byte) to the greatest, up
+  to the end of the last run of data bytes starting between them that the host holds (a
+  pointer may stand one past its last byte). Each
+  store definition reads the pair back after its instruction and each load definition before
+  it, and deopts where the pointer lies outside the object; two stores on one straight chain
+  are read back once, after the second, and a store of the low byte that leaves the high byte
+  to a flag (`STA lo; BCC l; INC hi` after an add, `INC lo; BNE l; INC hi`; nothing between
+  writes the flag or the pair or reads through it, the increment entered from the branch
+  alone) checks the pointer plus the flag times 256, the increment none. Between those points
+  only lifted stores, whose address intervals are sound, write the pair, so a load of the
+  object reads its base plus `Y` (its values on every run, `Program.regs`): `Program.proven`
+  holds that hull for each load whose `Y` stays within the object's fields (the largest `Y`
+  a load adds as one value) and whose hull lies in the bytes the host holds (`loaded`, and
+  the bytes past it below the volatile ranges that stores with address sets or `holds`
+  write); a load reading until its data says stop keeps its hull. An object is made where
+  the loads it serves outnumber its checks; `Program.objects` lists each object's bounds and
+  the loads it serves, which the checks (`objchk`) name.
 - **Computed jumps** (`dispatch.rs`). A `JMP (ind)` whose pointer bytes are tagged on every
   path into it, a `JMP`/`JSR` whose cell operand bytes are (a byte that is not a cell is a
   constant), and an `RTS`/`RTI` whose return-address bytes are pushed so on every path, goes
@@ -968,7 +998,11 @@ and the code using it deopts or traps.
   addresses are per context, whose keys are finite, and the rest is of finite height.
 - Pointer reach (`vsa::reach`): byte bounds only descend (each round's meet with the last),
   word columns and floors only rise, to the end of the run of data bytes they move in or the
-  extremes; the callees' store intervals are recomputed until they repeat.
+  extremes, so a pointer every call advances rises once per run; the callees' store
+  intervals are recomputed until they repeat.
+- Pointer objects (`objects::objects`): per pair a reaching-definitions fixpoint of bit sets
+  over its definitions (unions only rise), run twice, the second with the loads the first
+  found an entry reaching.
 
 `tests/test_termination.py` lifts such programs under a wall-clock limit and replays them.
 `tools/liftsweep.py` translates PSID files to C, each under a limit, and replays the C: per file
