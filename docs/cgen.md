@@ -284,6 +284,15 @@ every access the layout places (`state.py`):
   by its copy. One array per field, not an array of structs: the 6502 indexes it with
   `abs,X`, where an element of a struct would be a multiplication, and separate arrays keep
   their accesses apart for the compiler's alias analysis.
+- **Records.** A data byte outside the code span (not volatile, the stack page or a table) is
+  a candidate too where an access reaches it at a stride of at least 2 for each value of its
+  index: a counted loop's block argument (above), or a byte whose values the lift bounds to
+  `n >= 2` addresses `k >= 2` apart (`Program.addr_sets`, loads and stores from a constant
+  base plus an index register), the per-object state a program lays out at a fixed stride and
+  addresses `abs,X`. Its families are a struct's fields as above (bases within one stride are
+  fields of one record, `V0_f00`, `V0_f01`); such an access's element is `(w - base) / k`
+  of the byte `w`. Any access that may reach a record byte otherwise (an interval, a pointer,
+  an unknown address) keeps all of them bytes of a region.
 - Any other byte stays a byte of its region (*Memory*), with the reason
   (`info["state"]`): an access touches it by an interval (`indexed`: an index, a copy's
   range, the run a bounded store writes), through a pointer whose address set holds it
