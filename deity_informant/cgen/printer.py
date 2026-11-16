@@ -269,6 +269,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         self.block_of = {b.name: b for b in self.blocks}
         self.defs, self.types, self.uses, self.where = {}, {}, {}, {}
         self.users, self.ivs, self.dropped, self.globals = {}, {}, set(), set()
+        self.unread = set()
         self.addr_edges, self.arg_src, self.arg_block, self.dead = set(), {}, {}, set()
         self.flags = set()
         self.kparam, self.kvals, self.ktabs, self.kmemo, self.kiv = None, None, {}, {}, {}
@@ -1269,10 +1270,11 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         return out
 
     def root(self, o):
-        """Whether operation ``o`` is observable by itself: a store, an I/O write, a trap,
-        or a read that may meet a read-sensitive address."""
+        """Whether operation ``o`` is observable by itself: a store some load may read back
+        (:meth:`Module.unread_stores`), an I/O write, a trap, or a read that may meet a
+        read-sensitive address."""
         if o.name == "memref.store":
-            return True
+            return id(o) not in self.unread
         callee = o.prop("callee") if o.name == "func.call" else None
         if callee in ("@io_write", "@trap"):
             return True
@@ -1285,7 +1287,11 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         self.uses = {}
         for o in self.walk():
             callee = o.prop("callee")[1:] if o.name == "func.call" else None
-            if callee in self.mod.inert and not any(r in live for r in o.res):
+            if (
+                callee in self.mod.inert
+                and not any(r in live for r in o.res)
+                or id(o) in self.unread
+            ):
                 self.dropped.add(id(o))
                 continue
             if callee in funcs:
@@ -2957,6 +2963,28 @@ class Module:  # pylint: disable=too-many-instance-attributes
         ``proven``, ``bounded`` and ``addr_sets``."""
         return self.scope.get(name, self)
 
+    def unread_stores(self):
+        """Mark the stores no load reads back (``f.unread``): every byte they may write lies
+        outside the code span (whose cells :meth:`promote` drops when unread) and outside the
+        addresses any load of the module may read, over every call, and the sources of init's
+        copies. What they hold is never observed: a return address a callee pulls into a
+        pointer whose reads are forwarded, a vector the lift resolved its transfers through."""
+        read = np.zeros(0x10000, dtype=bool)
+        for lo, hi in self.held_runs:
+            read[lo : hi + 1] = True
+        stores = []
+        for f in self.funcs:
+            for o, (lo, hi), per in f.accesses():
+                if o.name == "memref.load":
+                    for x, y in per or [(lo, hi)]:
+                        read[x : y + 1] = True
+                elif o.name == "memref.store":
+                    stores.append((f, o, per or [(lo, hi)]))
+        read[slice(*self.mem.code_span)] = True
+        for f, o, ivs in stores:
+            if not any(read[x : y + 1].any() for x, y in ivs):
+                f.unread.add(id(o))
+
     def prune(self):
         """Keep the values something observable needs, over the whole module: a store, an
         I/O access, a trap or a branch needs its operands, a used result of a lifted function
@@ -2974,6 +3002,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.forward()
         for f in self.funcs:
             f.carry16()
+        self.unread_stores()
         live, work = {f.name: set() for f in self.funcs}, []
 
         def mark(f, v):

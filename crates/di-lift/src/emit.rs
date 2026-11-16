@@ -52,6 +52,9 @@ pub struct Shared<'a> {
     /// Callees that pull and push back their return address: their calls keep it in memory
     /// and continue where it then points.
     pub above: FixedBitSet,
+    /// Continuation functions ([`Function::cont`]): callees of `above` entered only by calls,
+    /// with the stack private.
+    pub cont: FixedBitSet,
     /// Per function: the slot indices whose stack bytes it keeps in slot registers.
     pub slots: Vec<FixedBitSet>,
     /// The `[lo, hi]` page-1 addresses each instruction reached in the facts.
@@ -75,6 +78,11 @@ impl Shared<'_> {
     fn hits_code(&self, a: Iv) -> bool {
         let hi = (a.hi as usize).min(0xffff) + 1;
         self.constcode[hi] > self.constcode[a.lo as usize]
+    }
+    /// Whether every byte of `a` is constant code.
+    fn constant(&self, a: Iv) -> bool {
+        let hi = (a.hi as usize).min(0xffff) + 1;
+        self.constcode[hi] - self.constcode[a.lo as usize] == (hi - a.lo as usize) as u32
     }
 }
 
@@ -106,6 +114,8 @@ struct Em<'a, 'b> {
     /// pushes and pulls are stack slots.
     h: Option<i32>,
     promote: bool,
+    /// A continuation function: the two bytes above the entry are [`ABOVE`] registers.
+    cont: bool,
     slots: &'a FixedBitSet,
     n: Counts,
     /// The block the current instruction started in.
@@ -177,6 +187,7 @@ pub fn emit(
         pend: (0, Vec::new()),
         h: None,
         promote: sh.promote.contains(fi),
+        cont: sh.cont.contains(fi),
         slots: &sh.slots[fi],
         n: Counts::default(),
         istart: 0,
@@ -186,6 +197,10 @@ pub fn emit(
         mem: None,
     };
     em.new_block(plan.pc);
+    if em.cont {
+        em.emit(Opc::Copy, reg(ABOVE, 1), r1(OPLO), NONE, 0);
+        em.emit(Opc::Copy, reg(ABOVE + 1, 1), r1(OPHI), NONE, 0);
+    }
     // The entry's declared register values, guarded before anything the entry makes: one
     // value is then a constant, a run of values a range check, others a test of each.
     for (i, vals) in entry.into_iter().flat_map(|e| &e.regs) {
@@ -213,6 +228,7 @@ pub fn emit(
     if let Some(s) = plan.sp {
         let bad = em.op(Opc::IntNotEqual, 1, r1(R::SP), k(s as u32, 1));
         em.side_exit(bad, true, |em| em.deopt(k(plan.pc as u32, 2)));
+        em.emit(Opc::Copy, r1(R::SP), k(s as u32, 1), NONE, 0);
     }
     if plan.top {
         let pre =
@@ -249,8 +265,27 @@ pub fn emit(
     if em.promote {
         em.f.slotted = em.slots.clone();
     }
+    if em.cont {
+        em.f.cont = Some(em.f.nslots);
+        let to = NREG as u32 + em.f.nslots;
+        em.f.nslots += 2;
+        let at = |v: Vn| match v.space() {
+            Space::Reg if v.off() >= ABOVE as u32 => {
+                reg((v.off() - ABOVE as u32 + to) as u16, v.size() as u8)
+            }
+            _ => v,
+        };
+        for op in em.f.blocks.iter_mut().flat_map(|b| &mut b.ops) {
+            op.out = at(op.out);
+            op.ins = op.ins.map(at);
+        }
+    }
     (em.f, em.n)
 }
+
+/// The register a continuation function's low return-address byte is emitted in (the high
+/// byte's is the next), numbered past its stack slots once they are known.
+const ABOVE: u16 = NREG as u16 + 0x100;
 
 impl<'a> Em<'a, '_> {
     fn new_block(&mut self, pc: u16) -> u32 {
@@ -408,6 +443,10 @@ impl<'a> Em<'a, '_> {
     /// The stack-slot register of the byte at offset `d` from the entry SP, if promoted and
     /// a slot (other bytes stay in memory).
     fn slot(&mut self, d: i32) -> Option<Vn> {
+        if self.cont && self.h.is_some() && (1..=2).contains(&d) {
+            self.n.slot_ops += 1;
+            return Some(reg(ABOVE + d as u16 - 1, 1));
+        }
         let i = u32::try_from(-d)
             .ok()
             .filter(|&i| i < 0x100 && self.h.is_some() && self.slots.contains(i as usize))?;
@@ -481,7 +520,12 @@ impl<'a> Em<'a, '_> {
             None => (k(ra, 2), k(ra & 0xff, 1), k(ra >> 8, 1)),
         };
         let fis: Vec<u32> = fs.iter().map(|f| self.sh.fidx[&(*f, c)]).collect();
-        let above = fis.iter().any(|&fi| self.sh.above.contains(fi as usize));
+        let cont = fis.iter().all(|&fi| self.sh.cont.contains(fi as usize));
+        let above = !cont && fis.iter().any(|&fi| self.sh.above.contains(fi as usize));
+        if cont {
+            self.emit(Opc::Copy, r1(OPLO), rlo, NONE, 0);
+            self.emit(Opc::Copy, r1(OPHI), rhi, NONE, 0);
+        }
         if self.sh.private {
             let kept = self.sh.shadow || above;
             let bytes: &[Vn] = if kept { &[rhi, rlo] } else { &[] };
@@ -535,6 +579,15 @@ impl<'a> Em<'a, '_> {
             let hi = em.load(a, PAGE1, mem::STACK);
             em.word(lo, hi)
         };
+        // A continuation function hands back the address its return pulled.
+        if cont {
+            let w = self.word(r1(OPLO), r1(OPHI));
+            self.touch_ret(w, Iv::full(2));
+            let t = self.op(Opc::IntAdd, 2, w, k(1, 2));
+            let tb = self.table(&[to], false);
+            self.emit(Opc::BranchInd, NONE, t, NONE, tb);
+            return;
+        }
         if to != ret && !port {
             let w = pulled(self);
             self.touch_ret(w, Iv::full(2));
@@ -1672,6 +1725,10 @@ impl<'a> Em<'a, '_> {
                 self.emit(Opc::Return, NONE, NONE, NONE, 0);
             }
             Ctl::Return => {
+                if self.cont {
+                    self.emit(Opc::Copy, r1(OPLO), reg(ABOVE, 1), NONE, 0);
+                    self.emit(Opc::Copy, r1(OPHI), reg(ABOVE + 1, 1), NONE, 0);
+                }
                 self.emit(Opc::IntAdd, r1(R::SP), r1(R::SP), k(2, 1), 0);
                 self.account(cyc, maxpen);
                 self.flush();
@@ -1736,7 +1793,9 @@ impl<'a> Em<'a, '_> {
                 self.account(cyc, maxpen);
                 self.check(chk, tgt);
                 self.flush();
-                let tb = self.table(ts, false);
+                // A vector no store may write is constant: its handlers are all it holds.
+                let fixed = self.sh.g.stat.contains_key(&pc) && self.sh.constant(vec);
+                let tb = self.table(ts, fixed);
                 self.emit(Opc::BranchInd, NONE, tgt, NONE, tb);
             }
             Ctl::Jam => {

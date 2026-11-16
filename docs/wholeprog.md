@@ -210,10 +210,16 @@ the program, and checks it against the reference.
    the candidates); other callees are inlined: the `JSR` pushes and jumps. A callee that
    pulls and pushes back its own return address (inline arguments: it never goes more than
    the address's two bytes above its entry) is lifted separately when two or more `JSR`s call
-   it (a procedure), else inlined; its calls keep the return address in memory, and one
-   whose `RTS` returns past the call's inline arguments (`Graph::past`, per return site)
-   continues through a computed jump on the address the callee left (the table's one target
-   that address, any other deopts). An `RTS`/`RTI`
+   it (a procedure), else inlined. With the stack private, no bank map and only `JSR`s
+   entering it, the procedure is a **continuation function** (`Function::cont`): each call
+   hands it its return address in registers 6 and 7 (`OPLO`/`OPHI`) instead of memory, it
+   holds the two bytes above its entry in two slot registers (pulls past its entry read them,
+   pushes there write them, and the stores too where pushes are shadowed), and its `RETURN`
+   hands them back; the call continues through a computed jump on the address handed back
+   plus one, whose one target is where the callee returns in that call's context (past its
+   inline arguments, `Graph::past`), any other deopts. A deopt writes the two slots as the
+   frame's return address. Otherwise its calls keep the return address in memory and continue
+   through the same computed jump on the address the callee left there. An `RTS`/`RTI`
    below the entry height is a computed jump to its facts' targets plus the return sites
    inline `JSR`s pushed at the height it lands on, or to the targets the code gives it
    (*Computed jumps*) alone. At an entry, the instruction whose height
@@ -747,10 +753,16 @@ the facts, so a proof holds on every execution that stays in lifted code.
   callee that pulls its return address into a pointer, reads the bytes after the call through
   it and pushes the address back advanced past them has an `RTS` at its entry depth through a
   return address the `JSR` did not push. That `RTS` returns, in its caller's context, to the
-  address it pulls plus one (a call with inline arguments, returning past them). A `BRK`
+  address it pulls plus one (a call with inline arguments, returning past them). A load of a
+  tracked byte stored on every path since the entry holds what was stored (the pointer's
+  bytes loaded back to advance it), and the reads through the pointer, its value known in
+  each context, read the argument bytes as constant bytes. While `X` holds the SP a `TSX` took
+  (no store into page 1 since), `LDA`/`LDY abs,X` from `$0101`-`$0103` reads the top three
+  stack bytes pushed then: a `BRK` handler reads its frame's return address. A `BRK`
   goes to the words its vector `$FFFE`/`$FFFF` may hold: the values the stores with known
   addresses write there (a vector the program sets before it runs `BRK`; any other deopts),
-  else the image's bytes; it calls the handler in the context of its address plus two, which
+  else the image's bytes, which then are constant: their words are every target, with no
+  deopt; it calls the handler in the context of its address plus two, which
   it pushes as constants, so the handler's `RTI` returns there, past the signature byte; a
   routine running such a `BRK` whose handlers' `RTI`s run at their entry height is as
   balanced as one making a call, its `RTS` returning to its own call sites. A
@@ -807,8 +819,10 @@ the facts, so a proof holds on every execution that stays in lifted code.
 
 A deopt sets the reference `Cpu` to the architectural state (registers, PC, and with cycle
 counting cycles), writes the stack bytes each active frame pushed (from its slot registers)
-and the return addresses of active `CALL`s when the program elides them, and runs it to the
-entry's return. `stats["stack_private"]` tells whether stack traffic was removed;
+and the return addresses of active `CALL`s when the program elides them (a continuation
+function's as its slots hold it), and runs it to the entry's return. An outermost plan
+specialized to its entry SP restates SP as that constant past its check, so its stack
+addresses are constants the forwarding resolves. `stats["stack_private"]` tells whether stack traffic was removed;
 `page1_sites` counts the accesses that prevented it, `unknown_heights` the plan nodes of unknown
 height, `slot_ops` the pushes and pulls lifted as slots and `stack_ops` the stack accesses left
 in memory (an entry's `RTS` reads its caller's return address); `split_nodes` counts plan nodes
@@ -896,7 +910,7 @@ aux]` with varnodes `[space, offset, size]` (`c` constant, `r` register, `u` tem
 Registers are `lift()`'s file (A X Y SP = 0-3, C Z I D B V N = 8-14) plus `E` (16, 2 bytes:
 the entry returns once `SP >= E`), `CY` (17, 4 bytes: cycles since the entry started, with
 cycle counting) and per function its stack slots (18 + `i`: the byte `i` below its entry SP,
-printed `s<i>`) followed by its status lanes (one bit each, never stack bytes). Block 0 of each function is its entry; the executor (`exec.rs`) runs the
+printed `s<i>`; a continuation function's two return-address bytes last) followed by its status lanes (one bit each, never stack bytes). Block 0 of each function is its entry; the executor (`exec.rs`) runs the
 program over any `di_pcode::Bus`, relocating each function's slots in its value file and,
 with cycle counting, calling `Bus::now(cycle)` before possibly volatile accesses.
 
@@ -949,6 +963,9 @@ and the code using it deopts or traps.
   alternate; each round of `dispatch::cell_addressed` joins them with the last round's instead
   (a missing cell holds its entry byte, below any set; unknown absorbs), so they only rise and
   the rounds end at values that hold of the stores resolved with them.
+- Continuation functions and the stack bytes the interval analysis tracks (pushes, the bytes
+  above the entry, a `TSX`'s snapshot of the top three) add no iteration: the return
+  addresses are per context, whose keys are finite, and the rest is of finite height.
 - Pointer reach (`vsa::reach`): byte bounds only descend (each round's meet with the last),
   word columns and floors only rise, to the end of the run of data bytes they move in or the
   extremes; the callees' store intervals are recomputed until they repeat.

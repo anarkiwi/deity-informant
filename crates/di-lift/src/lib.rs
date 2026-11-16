@@ -401,6 +401,43 @@ fn extent(
     }
 }
 
+/// Continuation functions: callees that pull and push back their return address (`above`),
+/// whose stack bytes are slots (`promote`), entered only by `JSR` calls, without a bank map.
+/// Each call hands one its return address in registers and it holds it in two slots.
+fn continuations(
+    plans: &[func::Plan],
+    fidx: &FxHashMap<(u16, u8), u32>,
+    promote: &FixedBitSet,
+    banked: bool,
+) -> FixedBitSet {
+    let mut out = FixedBitSet::with_capacity(plans.len());
+    if banked {
+        return out;
+    }
+    out.extend(
+        (0..plans.len()).filter(|&i| plans[i].above && !plans[i].top && promote.contains(i)),
+    );
+    for p in plans {
+        let other = p.tails.iter().map(|k| (k.0, k.2)).chain(
+            p.nodes
+                .values()
+                .flat_map(|n| &n.arms)
+                .flat_map(|a| match &a.ctl {
+                    func::Ctl::CallInd { fs, c, .. } => fs.iter().map(|&f| (f, *c)).collect(),
+                    func::Ctl::CallOp { f, c, .. } => vec![(*f, *c)],
+                    func::Ctl::BrkCall { f, .. } => vec![(*f, p.entry[0])],
+                    _ => Vec::new(),
+                }),
+        );
+        for k in other.collect::<Vec<_>>() {
+            if let Some(&i) = fidx.get(&k) {
+                out.remove(i as usize);
+            }
+        }
+    }
+    out
+}
+
 /// Slot indices the unguarded page-1 accesses of plan `p` may hit.
 fn exposed(
     img: &[u8; 0x10000],
@@ -764,6 +801,7 @@ pub fn lift_banked(
         .entry_sp
         .filter(|_| private)
         .map(|s| extent(&plans, &fidx, &g, s));
+    let cont = continuations(&plans, &fidx, &promote, bank.is_some());
     let sh = emit::Shared {
         stack,
         img,
@@ -789,6 +827,7 @@ pub fn lift_banked(
             .filter(|p| p.1.above)
             .map(|p| p.0)
             .collect(),
+        cont,
         slots,
         seen,
         sensitive: opts.sensitive.as_deref(),

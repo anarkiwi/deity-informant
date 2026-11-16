@@ -70,15 +70,20 @@ caller's return address. `tools/cgenplay.c` is a host harness.
    register file as values; its registers, stack slots and block-crossing temporaries are
    rank-0 `memref.alloca`s, memory one global `@M`, volatile accesses `io_read`/`io_write`
    calls. Each entry is a public function calling its body with the entry registers. A call of
-   a function the lift calls from more than one site carries `no_inline`; a trap returns
-   `ub.poison`, as `trap` does not return.
+   a function the lift calls from more than one site carries `no_inline`, unless it is a
+   continuation function (handed its return address, [wholeprog](wholeprog.md#pipeline)): each
+   call is then specialized to its constant return address, so the inline arguments it reads
+   through it are constant code bytes and its return a branch; a trap returns `ub.poison`, as
+   `trap` does not return.
 3. **Optimize** (`mlir.py`). Upstream passes only: `canonicalize`, `mem2reg`, `inline`,
    `symbol-dce`, `cse`, `sccp`, printed in generic form as a `cf` CFG (`cf.br`, `cf.cond_br`,
    `cf.switch` with block arguments). The inliner honours `no_inline`, so a callee with one
    call site is inlined and the others stay functions; when optimization leaves a `no_inline`
    callee with one call site the pipeline runs again with that call inlinable.
 4. **Liveness** (`printer.Module.prune`). An optimistic liveness over the whole module: a
-   store, an I/O write, a trap, a read that may meet a read-sensitive address and a branch
+   store some load may read back (outside the code span, a byte no load of any entry may read
+   by its address interval, nor init's copies, is never observed: such a store is dropped, as
+   a return address pulled into a pointer whose reads the lift forwarded), an I/O write, a trap, a read that may meet a read-sensitive address and a branch
    need their operands; a used result of a function needs the values its returns give; a used
    parameter needs its call sites' arguments. A result a function returns unchanged from a
    parameter (on every return, through block arguments and calls forwarding theirs) is read as
@@ -560,7 +565,8 @@ from constants, or is a constant word of the code span no store writes), a `JMP`
 operand bytes a store writes so (in the same call, or earlier: then from the values every
 store may leave in them), an `RTS`/`RTI` that returns through an address pushed so, a `BRK`
 through the vector the program stores, and an `RTS` returning past a call's inline arguments,
-from the code alone ([wholeprog](wholeprog.md#static-proofs), *Computed jumps*): the targets are
+from the code alone ([wholeprog](wholeprog.md#static-proofs), *Computed jumps*; one through a
+vector no store writes is a call of the handler it holds, with no trap): the targets are
 the table's words over the index values inside the table's extent, which no store may change.
 An index the code does not bound, such as a command byte of song data, reads the table up to
 where the layout ends it (*Table extents*: a split table's low column at its high column, any
@@ -653,8 +659,14 @@ branches on them as constant tables; statements alike only in a prefix of their 
 folded; copies at a stride wider than 8 bits reach holding their cells as fields and data
 indexed by a byte from per-copy pointer tables into a region; a
 compare only some copies have one compare with the index or a table; copies entered at a
-branch after loads they differ in one class entered at the branch), and a voice loop's index bounding the throw-away read of the indexed I/O store in the
-routine it calls through a `BRK` and through a stack switch.
+branch after loads they differ in one class entered at the branch), a voice loop's index bounding the throw-away read of the indexed I/O store in the
+routine it calls through a `BRK` and through a stack switch, and return addresses as
+continuations (inline arguments of one and two bytes read through the pulled return address
+from several sites, each a constant code byte with no code address a value; one advanced by
+an amount the code does not decide trapping; one a store writes a variable; `PHA`/`PHA`/`RTS`
+to a constant; a `BRK` handler reading its signature byte through the pushed address; a
+`BRK` through a constant vector; an `RTI` through a table frame choosing on its index; stores
+no load reads dropped).
 
 `tools/cgengraph.py TUNE.sid --pc ADDR` prints the structuring graph of the functions holding
 an instruction (nodes by instruction address, back edges, copies, `--ops` the operations) and

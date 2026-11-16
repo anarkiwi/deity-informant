@@ -82,6 +82,8 @@ pub struct Exec {
     /// hold stack bytes.
     slots: Vec<(u32, u32)>,
     slotted: Vec<FixedBitSet>,
+    /// Per function: [`crate::ir::Function::cont`].
+    cont: Vec<Option<u32>>,
     bank: Option<BankMap>,
     jit: OnceLock<Option<Arc<Jit>>>,
     guards: Arc<AtomicU64>,
@@ -185,6 +187,7 @@ impl Exec {
             cycles: p.cycles,
             slots,
             slotted: p.functions.iter().map(|f| f.slotted.clone()).collect(),
+            cont: p.functions.iter().map(|f| f.cont).collect(),
             bank: p.bank.clone(),
             jit: OnceLock::new(),
             guards: Arc::default(),
@@ -673,12 +676,14 @@ impl<'a> Runner<'a> {
         }
         if self.x.elide_ret {
             // Each active frame's pushed bytes (entry SP down to the SP it called or deopted
-            // at) and the return addresses of the `CALL`s.
+            // at) and the return addresses of the `CALL`s: a continuation function's as it
+            // holds it.
             let mut e = sp as u8;
             let mut fun = fi;
             for j in 0..=self.frames.len() {
                 let cut = self.frames.get(j).map_or(f[R::SP] as u8, |fr| fr.sp);
                 let (base, n) = self.x.slots[fun as usize];
+                let n = self.x.cont[fun as usize].unwrap_or(n);
                 let slotted = &self.x.slotted[fun as usize];
                 for i in 0..(e as i32 - cut as i32).clamp(0, n as i32) as u32 {
                     if !slotted.contains(i as usize) {
@@ -699,8 +704,15 @@ impl<'a> Runner<'a> {
                         (e, fun) = (s, c);
                         continue;
                     }
-                    bus.ram_write(0x100 | s as u16, (ra >> 8) as u8);
-                    bus.ram_write(0x100 | s.wrapping_sub(1) as u16, ra as u8);
+                    let [lo, hi] = match self.x.cont[c as usize] {
+                        Some(i) => {
+                            let at = (self.x.slots[c as usize].0 + i) as usize;
+                            [f[at] as u8, f[at + 1] as u8]
+                        }
+                        None => ra.to_le_bytes(),
+                    };
+                    bus.ram_write(0x100 | s as u16, hi);
+                    bus.ram_write(0x100 | s.wrapping_sub(1) as u16, lo);
                     (e, fun) = (s.wrapping_sub(2), c);
                 }
             }

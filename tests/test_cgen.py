@@ -2874,6 +2874,13 @@ def compiled(tmp_path, c, h):
     return cgenplay.build(tmp_path / "t.c", tmp_path / "t.so")
 
 
+READBACK = [
+    ["LOAD", ["u", 1, 2], [["c", 0x20, 2]], None],
+    ["STORE", None, [["c", 0xC000, 2], ["u", 1, 2]], None],
+    ["RETURN", None, [None], None],
+]
+
+
 @pytest.mark.parametrize("name", sorted(OPS) + sorted(UNARY))
 def test_op_semantics(prefix, tmp_path, name):
     """Every P-Code op through MLIR and the printer, on edge values, against its meaning."""
@@ -2884,7 +2891,16 @@ def test_op_semantics(prefix, tmp_path, name):
         size, out, extra, unary = UNARY[name]
         sizes, fn = (size, 1), unary_function(name, size, out, extra)
         meaning = lambda a, b, s, f=unary: f(a)  # noqa: E731
-    p = cgen.Program([fn], [(0x1000, "entry")], bytes(0x10000), set(), [], loaded=(0x10, 0x22))
+    # Another entry reads the result back: a store no load reads is not kept.
+    probe = {**fn, "pc": 0x1100, "blocks": [{"pc": 0x1100, "ops": READBACK}]}
+    p = cgen.Program(
+        [fn, probe],
+        [(0x1000, "entry"), (0x1100, "probe")],
+        bytes(0x10000),
+        set(),
+        [W.IO],
+        loaded=(0x10, 0x22),
+    )
     c, h, info = cgen.render(p, header="t.h", prefix=prefix)
     lib = compiled(tmp_path, c, h)
     cells = {}
@@ -4696,16 +4712,96 @@ def test_interrupt_frame_status(prefix, tmp_path, reads):
 def test_call_with_inline_arguments(prefix, tmp_path, sites):
     """A callee that pulls its return address, reads the bytes after the call and pushes the
     address back past them returns past its inline argument: called from two sites it is a
-    function whose calls keep the address in memory, from one it is inlined; either way the
-    `.c` is the same at another origin."""
+    continuation function, handed its return address and specialized to each call, from one
+    it is inlined; either way each argument is a constant code byte, no code address is a
+    value and the `.c` is the same at another origin."""
     src = INLINE if sites == 2 else INLINE.replace("        JSR arg\n        .byte $22\n", "")
     c, _, info = check(prefix, tmp_path, src, entry_calls(range(3)))
-    img, labels, _ = assemble(src)
+    img, labels, loaded = assemble(src)
     assert info["jumps"][labels["end"] - 1] == [labels["entry"] + 4, labels["entry"] + 11][:sites]
     entries = {f["entry"] for f in info["provenance"]["functions"].values()}
-    assert (labels["arg"] in entries) == (sites == 2)
+    assert labels["arg"] not in entries and "CODE_ORG" not in c and "R0" not in c
+    assert [f"CODE_K{k:X}" in c for k in (3, 0xA)] == [True, sites == 2]
+    p, _ = cgen.lift(img, [(labels["entry"], "entry")], [W.IO], loaded=loaded)
+    assert sum(f.get("continuation", False) for f in p.funcs) == (sites == 2)
     img2, labels2 = W.assemble(src, 0x2400)
     assert translate(prefix, img2, labels2, (0x2400, labels2["end"]))[0] == c
+
+
+def test_inline_arguments_of_several_sites_are_constants(prefix, tmp_path):
+    """One- and two-byte inline arguments read through the pulled return address, each callee
+    called from two sites: every call's arguments are constant code bytes, no code address is a
+    value (the pointer the callees pull it into is read back only through forwarded loads) and
+    the `.c` is the same at another origin."""
+    c, _, info = check(prefix, tmp_path, W.INLINE_ARGS, entry_calls(range(3), 2))
+    img, labels, loaded = assemble(W.INLINE_ARGS)
+    assert "CODE_ORG" not in c and "R0" not in c and not info["traps"]
+    org = labels["entry"]
+    args = [i for i in range(labels["arg1"] - org) if img[org + i] in (0x11, 0x22, 0x33, 0x44)]
+    assert all(f"CODE_K{i:X}" in c for i in args) and len(args) == 4
+    p, _ = cgen.lift(img, [(org, "entry")], [W.IO], loaded=loaded)
+    assert sum(f.get("continuation", False) for f in p.funcs) == 2
+    img2, labels2 = W.assemble(W.INLINE_ARGS, 0x2400)
+    assert translate(prefix, img2, labels2, (0x2400, labels2["end"]))[0] == c
+
+
+def test_return_past_an_unknown_amount_traps(prefix, tmp_path):
+    """A callee advancing its return address by a byte the code does not decide returns
+    where the call continues or traps: its targets are not the code's."""
+    calls = entry_calls(range(4), 3)
+    c, _, info = check(prefix, tmp_path, W.RET_UNKNOWN, calls)
+    assert "trap(" in c and info["traps"]
+
+
+def test_written_inline_argument_is_a_variable(prefix, tmp_path):
+    """An inline argument a store writes is a variable of the code span, which the callee's
+    read of it at each call reads: not a constant, and no code address a value."""
+    c, _, _ = check(prefix, tmp_path, W.ARG_WRITTEN, entry_calls(range(3), 2))
+    at = W.assemble(W.ARG_WRITTEN)[1]["a1"] - 0x1000
+    assert f"S_{at:X} = v1;" in c and f"CODE_K{at:X}" not in c and "CODE_ORG" not in c
+
+
+def test_pushed_constant_return_is_a_branch(prefix, tmp_path):
+    """`PHA`/`PHA`/`RTS` to a constant target is a branch to it: no code address, no trap."""
+    c, _, info = check(prefix, tmp_path, W.PUSH_RET, entry_calls(range(2)))
+    assert "CODE_ORG" not in c and not info["traps"]
+
+
+@pytest.mark.parametrize("sites", [1, 2])
+def test_brk_signature_read_through_the_pushed_address(prefix, tmp_path, sites):
+    """A `BRK` handler reading the signature byte through the address `BRK` pushed (`TSX;
+    LDA $0102,X`): with one `BRK` the byte is a constant, with two the handler is a function
+    reading its frame from memory; either way the replay matches."""
+    src = W.BRK_SIG1 if sites == 1 else W.BRK_SIG
+    c, _, _ = check(prefix, tmp_path, src, entry_calls(range(2), 2))
+    img, labels, _ = assemble(src)
+    sig = labels["entry"] + 11
+    assert img[sig] == 0x21
+    assert (f"CODE_K{sig - labels['entry']:X}" in c and "CODE_ORG" not in c) == (sites == 1)
+
+
+def test_brk_through_a_constant_vector_is_a_call(prefix, tmp_path):
+    """A `BRK` through a vector no store writes goes to the handler it holds: no compare of
+    the vector, no trap."""
+    c, _, info = check(prefix, tmp_path, W.BRK_IMAGE, entry_calls(range(2)))
+    assert "CODE_ORG" not in c and not info["traps"]
+
+
+def test_rti_through_a_table_frame_selects_on_its_index(prefix, tmp_path):
+    """An `RTI` through a frame pushed from a table pair indexed by `Y` chooses on `Y`."""
+    c, _, info = check(prefix, tmp_path, W.RTI_TABLE, entry_calls(range(4)))
+    assert "CODE_ORG" not in c and not info["traps"]
+
+
+def test_unread_stores_are_dropped(prefix, tmp_path):
+    """A store no load of any entry reads back is dropped; one another entry reads is kept."""
+    src = (
+        "entry:  STA $F0\n        STA $C000\n        RTS\n"
+        "probe:  LDA $F0\n        STA $C001\n        RTS\nend:\n"
+    )
+    img, labels, loaded = assemble(src)
+    assert "R0" not in translate(prefix, img, labels, loaded)[0]
+    assert "R0[0] = a;" in translate(prefix, img, labels, loaded, entries=("entry", "probe"))[0]
 
 
 def test_txs_to_a_saved_stack_pointer_unwinds(prefix, tmp_path):
