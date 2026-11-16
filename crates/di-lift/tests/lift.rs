@@ -1416,3 +1416,36 @@ fn pointer_objects_check_their_definitions() {
         assert_eq!(n > 0, deopts, "{count:x?}");
     }
 }
+
+/// A pointer set from I/O to one of four runs of records by a table of their starts, walked
+/// from its start to a sign-bit marker: from the table's words the walk's load reads proven
+/// inside the runs with no check; both engines match the reference.
+#[test]
+fn walks_read_to_their_marker() {
+    let code = [
+        0xad, 0x00, 0xc0, 0x29, 0x03, 0xaa, 0xbd, 0x80, 0x11, 0x85, 0xfb, 0xbd, 0x84, 0x11, 0x85,
+        0xfc, 0xa0, 0x00, 0xb1, 0xfb, 0x30, 0x06, 0x8d, 0x01, 0xc0, 0xc8, 0xd0, 0xf6, 0x60,
+    ];
+    let mut data = vec![0x88, 0x90, 0x98, 0xa0, 0x11, 0x11, 0x11, 0x11];
+    for r in 0..4u8 {
+        data.extend((0..7).map(|i| (r * 7 + i) & 0x7f));
+        data.push(0x80 | r);
+    }
+    let img = image(&[(0x1150, &code), (0x1180, &data)]);
+    let opts = Opts {
+        entry_sp: Some(0xfd),
+        loaded: Some((0x1150, 0x11a8)),
+        ..Opts::default()
+    };
+    let p = lift_with(
+        &img,
+        &entries(&[0x1150]),
+        &[(0xc000, 0xc100)],
+        &Facts::default(),
+        opts,
+    );
+    let h = p.proven.iter().find(|r| r.0 == 0x1162).unwrap();
+    assert!(h.1 >= 0x1188 && h.2 < 0x11a8, "{h:x?}");
+    assert_eq!(p.stats.obj_guards, 0);
+    assert_eq!(diff_at(&img, &p, &calls(32, |_| 0), IO, 1_000_000, 0xff), 0);
+}

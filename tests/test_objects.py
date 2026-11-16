@@ -6,7 +6,7 @@ import pytest
 
 import wholeprog_progs as W
 from test_wholeprog import differential
-from deity_informant import NATIVE, wholeprog
+from deity_informant import NATIVE, postinit, wholeprog
 
 ProcessPool = pytest.importorskip("pebble").ProcessPool
 
@@ -187,3 +187,161 @@ def test_objects_end():
     with ProcessPool(max_workers=1) as pool:
         objs, deopts = pool.schedule(lift_and_replay, (src, plan(0, 30)), timeout=LIMIT).result()
     assert objs and not deopts
+
+
+def runs(marker, lens, slot=16, fill=0x11):
+    """Per run of ``lens`` a ``slot`` of bytes: ``n`` data bytes (no marker), ``marker``, then
+    ``fill``; None for a run with no marker in its slot."""
+    out = []
+    for i, n in enumerate(lens):
+        body = [(3 * i + j) % 0x70 + 1 for j in range(slot if n is None else n)]
+        out.append(body if n is None else body + [marker] + [fill] * (slot - n - 1))
+    return out
+
+
+def walk_src(data, test="BMI done", step="", tail="", setter=None):
+    """Pair ``$FB`` set to one of the runs ``data`` by ``A`` (by ``init``, or by ``setter``
+    run at ``play``'s start), read by ``play`` from its start until ``test`` finds a marker,
+    ``step`` before each ``INY``; ``tail`` follows play."""
+    rows = "".join(f"r{i}:     .byte {', '.join(map(str, d))}\n" for i, d in enumerate(data))
+    n = len(data)
+    sets = """        AND #$03
+        TAX
+        LDA tlo,X
+        STA $FB
+        LDA thi,X
+        STA $FC
+"""
+    return f"""
+init:   {"STA $F0" if setter else sets.strip()}
+        RTS
+tlo:    .byte {', '.join(f'lo(r{i})' for i in range(n))}
+thi:    .byte {', '.join(f'hi(r{i})' for i in range(n))}
+{rows}play:   {sets.strip() if setter else "NOP"}
+        LDY #0
+loop:   LDA ($FB),Y
+        {test}
+        STA $C001
+{step}        INY
+        BNE loop
+done:   RTS
+{tail}end:
+"""
+
+
+SIGN = walk_src(runs(0x80, [5, 9, 3, 12]))
+
+# The records are written by play.
+WRITTEN = walk_src(runs(0x80, [5, 9, 3, 12]), step="        STA r1+2\n")
+
+# A path increments `Y` past a byte it did not test.
+UNTESTED = walk_src(runs(0x80, [6, 8, 4, 12]), step="        INY\n        LDA ($FB),Y\n")
+
+# The last run has no marker before play's code.
+OPEN = walk_src(runs(0x80, [5, 9, 3, None]))
+
+# Play sets the pointer itself, from A, a byte past the run's start by I/O.
+SET = walk_src(runs(0, [5, 9, 3, 12]), test="BEQ done", setter=True).replace(
+    "        LDA tlo,X\n        STA $FB\n        LDA thi,X\n",
+    "        LDA $C000\n        AND #$01\n        CLC\n        ADC tlo,X\n        STA $FB\n"
+    "        LDA thi,X\n        ADC #0\n",
+)
+
+
+def walk_lift(src, entries=("init", "play")):
+    """``(image, labels, program)``: the static lift of ``src``'s ``entries``, the pair holding
+    the first run's start."""
+    img, labels = W.assemble(src)
+    img[0xFB], img[0xFC] = labels["r0"] & 0xFF, labels["r0"] >> 8
+    loaded = (0x1000, labels["end"])
+    prog = wholeprog.lift(
+        img, [labels[e] for e in entries], [W.IO], entry_sp=0xFD, loaded=loaded, fold=True
+    )
+    return img, labels, prog
+
+
+def served(prog, pc):
+    """The objects serving the load at ``pc``."""
+    return [o for o in prog.objects if pc in o[2]]
+
+
+def test_walk_to_a_marker_reads_its_runs():
+    """The walk from the pointer to its run's sign-bit marker reads proven inside the runs:
+    one check after ``LDY`` of the pointer plus ``Y``; every run replays."""
+    img, labels, prog = walk_lift(SIGN)
+    [(lo, hi, pcs)] = served(prog, labels["loop"])
+    assert lo == labels["r0"] and hi < labels["play"] and pcs == [labels["loop"]]
+    a, b = dict(prog.proven)[labels["loop"]][:2]
+    assert labels["r0"] <= a and b < labels["play"]
+    for song in range(4):
+        differential(img, prog, [labels["init"], labels["play"]], plan(song, 30))
+    assert not dict(prog.deopts)
+
+
+@pytest.mark.parametrize("src", [WRITTEN, UNTESTED], ids=["written", "untested"])
+def test_walk_unproven_keeps_its_check(src):
+    """A walk over bytes a store may write, or past a byte it did not test, holds no bound:
+    its load keeps its check, and every run replays."""
+    img, labels, prog = walk_lift(src)
+    assert not served(prog, labels["loop"])
+    for song in range(4):
+        differential(img, prog, [labels["init"], labels["play"]], plan(song, 30))
+
+
+def test_walk_with_no_marker_deopts_when_run_off():
+    """A run with no marker before the held bytes end fails the check after ``LDY``: its
+    walk leaves the lifted code there, the others read unchecked."""
+    img, labels, prog = walk_lift(OPEN)
+    [(lo, hi, _)] = served(prog, labels["loop"])
+    assert lo == labels["r0"] and hi < labels["r3"]
+    for song in range(3):
+        differential(img, prog, [labels["init"], labels["play"]], plan(song, 30))
+    assert not dict(prog.deopts)
+    differential(img, prog, [labels["init"], labels["play"]], plan(3, 30))
+    assert dict(prog.deopts)
+
+
+def test_seeded_pairs_need_no_check():
+    """Init's per-argument pointers, which play never stores, seed the pair: the walk from
+    each to its zero marker reads proven inside its run with no check."""
+    src = walk_src(runs(0, [5, 9, 3, 12]), test="BEQ done")
+    img, labels = W.assemble(src)
+    init = postinit.run(img, labels["init"], range(4), [W.IO])
+    image = init.states[0].tobytes()
+    prog = wholeprog.lift(
+        image,
+        [labels["play"]],
+        [W.IO],
+        entry_sp=0xFD,
+        loaded=(0x1000, labels["end"]),
+        fold=True,
+        free=init.values(),
+    )
+    assert not prog.stats["obj_guards"]
+    a, b = dict(prog.proven)[labels["loop"]][:2]
+    assert labels["r0"] <= a and b < labels["play"]
+    for song in range(4):
+        mem = bytearray(init.states[song].tobytes())
+        differential(image, prog, [labels["play"]], [(0, 0)] * 5, mem=mem)
+
+
+def chain_lift(n):
+    """The object guards of the static lift of a chain of ``n`` pairs loaded with the program,
+    each stored through the one before, replayed."""
+    chain = "".join(
+        f"        LDA #${0x12 + 2 * k:02X}\n        STA (${0x10 + 2 * k:02X}),Y\n" for k in range(n)
+    )
+    src = f"play:   LDY #0\n{chain}        LDA ($FB),Y\n        RTS\nend:\n"
+    img, labels = W.assemble(src)
+    for k in range(n + 1):
+        img[0x10 + 2 * k], img[0x11 + 2 * k] = 0x12 + 2 * k, 0
+    prog = wholeprog.lift(img, [labels["play"]], [W.IO], entry_sp=0xFD, loaded=(0, labels["end"]))
+    differential(img, prog, [labels["play"]], [(0, 0)] * 3)
+    return prog.stats["obj_guards"]
+
+
+def test_seeds_end():
+    """The seeds of a chain of pairs, each stored through the one before, end within the
+    limit: a store through a pair no longer a seed may write any."""
+    with ProcessPool(max_workers=1) as pool:
+        assert pool.schedule(chain_lift, (40,), timeout=LIMIT).result() == 0

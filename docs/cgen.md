@@ -563,7 +563,9 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   `(uint16_t)(p - CGEN_OBJj_ORG) > CGEN_OBJj_LIM` of the pair's pointer `p` before its trap:
   the `.h` names object `j`'s first byte and the last less it, as the data decide them, so
   the `.c` holds no pointer init leaves and no bound. The entries' lift takes the bytes past
-  the program init's lift writes as held (`holds`), as the spans hold them.
+  the program init's lift writes as held (`holds`), as the spans hold them. A walk's check
+  (*Walks*, after the instruction setting `Y`) tests `p + y` alike; a load through
+  a pair init leaves that the entries never store (*Seeds*) reads its words with no test.
 
 Address constants print relative to the region holding them, or to the code span or loaded image when the program holds them (any other, a device's or a vector's, prints as it is)
 (`R2_ORG + 0x10`, `CODE_ORG + 0x21`, `IMG_ORG + ...`): a constant reaching an access address

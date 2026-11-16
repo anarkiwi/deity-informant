@@ -395,6 +395,7 @@ jump's or call's stays its target), so the values are data of the code, not code
 | After an SP-setting instruction, SP is at a height the facts saw the next start at | SP dispatch: `SP - E` compared per height without wrapping (`stats["sp_dispatch"]`), SP restated as `E + height - 2`; a function with a dispatch loads its stack slots from memory at entry | deopt at the next start |
 | A store may hit constant code | `codechk(addr, value)` after the store, when the address interval (*Static proofs*) meets constant code or a table the lift read (*Computed jumps*, *Stores*) and its address set, when it has one, does too | deopt after the instruction; the program stays invalid until its constant code matches again |
 | A zero-page pointer pair whose loads read unchecked lies in its object (*Pointer objects*) | a store that may write a byte of the pair reads it back after its instruction (a pair's two stores on one instruction chain once after the second; a low byte left to a flag adds the flag times 256), and a load an entry reaches before any store checks the pair before its instruction (`stats["obj_guards"]`, `objchk`) | deopt after the store; deopt before the instruction |
+| A walk's pointer plus `Y` lies in its object (*Walks*) | after the anchor setting `Y`, the pair's pointer plus `Y` (`stats["obj_guards"]`, `objchk`) | deopt after the anchor |
 | A zero-page pointer pair that accesses rely on stays outside the window of their indices (*Pointer windows*) | an entry reads back the pairs some access reads before every path to it stores their high byte; a store that may write a byte of one and may leave it in its window reads the pair back after the instruction, a pair's two stores on one instruction chain once after the second (`stats["ptr_guards"]`) | deopt at the entry; deopt after the store |
 | An access that may reach page 1 (by its address interval) does not, while stack bytes are kept out of memory | the address's page is compared with 1 before the access (`stats["stack_guards"]`); with `entry_sp`, only a store that may hit the *Stack extent*, against it | deopt before the instruction |
 | A callee that may store into page 1 returns to its caller (stack not private) | the return-address bytes are compared after `CALL` | deopt at the address the `RTS` pulled |
@@ -746,6 +747,35 @@ the facts, so a proof holds on every execution that stays in lifted code.
   write); a load reading until its data says stop keeps its hull. An object is made where
   the loads it serves outnumber its checks; `Program.objects` lists each object's bounds and
   the loads it serves, which the checks (`objchk`) name.
+- **Seeds** (`objects::seeds`, static lifts). A pair some pointer access reads through
+  (`(zp),Y`, or `(zp,X)` for each value of `X`) that no lifted store may write holds, at
+  every entry, one of its *words*: the image's, or, for bytes of `free`, those of init's runs
+  (lo and hi paired by run). A greatest fixpoint drops a pair a store may write while every
+  remaining pair holds its words (a store through such pairs writes their words plus `Y`).
+  An access through seeds alone reaches its words plus `Y`: its address interval narrows to
+  their hull and, where they are a few, they are its address set (`Program.addr_sets`; a
+  store's are then written, and with no code byte need no `codechk`). A load through a seed
+  needs no check: `Program.proven` holds its words plus `Y` where that lies in held bytes.
+- **Walks** (`walks.rs`, static lifts). The loads of a `(zp),Y` pair neither an object nor a
+  seed serves are read from an *anchor*: an instruction writing `Y` other than `INY`/`DEY`.
+  A forward dataflow per pair carries, from each anchor until another or a store that may
+  write the pair, the offsets of `Y` from the anchor's (`INY` adds one, `DEY` takes one;
+  offsets wider than a byte are none) and a *marker walk*: an `INY` on the edge where the byte
+  at `p + Y` was found no marker (after its `LDA`/`LAX`, `N` clear (sign bit) or `Z` clear
+  (zero); after a `CMP #k` of it, `Z` clear (`k`) or `C` clear (at least `k`)) leaves every
+  byte from the walk's start to `p + Y` short of a marker. An `INY` without the test, or a
+  `DEY`, ends the walk; joins hull offsets and keep a marker both paths imply. A load at
+  offsets `d` reads the anchor's `p + Y` plus `d`; one walking reads from its start to the
+  first marker after it, on the image's bytes and each of init's runs, where no store may
+  write them. Where the pair's words are known (a seed's, or `Program.ptr_sets`) and each
+  word plus each value `Y` leaves the anchor with reads held bytes on every walk, the loads
+  need no check. Otherwise the anchor checks its pointer plus
+  `Y` (`objchk`, deopt after it) against an object: from the least start (a data byte of the
+  loads' reach bases, or the words, plus `Y`) to the greatest, where every load then ends in
+  the data bytes the host holds and no offset carries `Y` past `$FF`. Only walks' starts end
+  before the greatest, at the last marker every run holds: a valid run's walk ends at one, so
+  no bound below what the reach hulls assume fails a run that keeps them. The anchor's check is
+  made where it serves more than one load or a walk.
 - **Computed jumps** (`dispatch.rs`). A `JMP (ind)` whose pointer bytes are tagged on every
   path into it, a `JMP`/`JSR` whose cell operand bytes are (a byte that is not a cell is a
   constant), and an `RTS`/`RTI` whose return-address bytes are pushed so on every path, goes
@@ -1008,6 +1038,10 @@ and the code using it deopts or traps.
 - Pointer objects (`objects::objects`): per pair a reaching-definitions fixpoint of bit sets
   over its definitions (unions only rise), run twice, the second with the loads the first
   found an entry reaching.
+- Seeds (`objects::seeds`): the pairs only shrink, by at least one a round.
+- Walks (`walks::walks`): per pair and instruction an anchor, offsets whose hull only widens
+  (to none past a byte's width) and a marker only weakening (to none); an anchor or a store
+  of the pair restarts it.
 
 `tests/test_termination.py` lifts such programs under a wall-clock limit and replays them.
 `tools/liftsweep.py` translates PSID files to C, each under a limit, and replays the C: per file
