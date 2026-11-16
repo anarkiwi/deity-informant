@@ -209,6 +209,11 @@ OFFSETS = {
     "arith.subi": lambda k, c: k + c,
     "arith.xori": lambda k, c: k ^ c,
 }
+#: The pure operations whose intervals :meth:`Func.iv` derives from their operands'.
+DERIVED = CASTS | set(BINOP) | {"arith.select"}
+#: An unsigned or equality ``cmpi`` predicate with its operands swapped, and negated.
+SWAPPED = {0: 0, 1: 1, 6: 8, 7: 9, 8: 6, 9: 7}
+NEGATED = {0: 1, 1: 0, 6: 9, 7: 8, 8: 7, 9: 6}
 
 
 def line(pts, m):
@@ -295,6 +300,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
 
     def index(self):
         """Record definitions, types, uses and positions, and the edges into block arguments."""
+        self.contexts, self.preds = {}, None
         for blk in self.blocks:
             for n, t in blk.args:
                 self.types[n], self.arg_block[n] = t, blk
@@ -766,6 +772,105 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             g.add_edges_from((b.name, s) for s in b.ops[-1].succs)
         return nx.immediate_dominators(g, self.blocks[0].name)
 
+    def context(self, blk):
+        """``(ivs, values)`` wherever block ``blk`` runs: ``ivs`` the intervals the branches
+        every path to it takes imply (into each block of its dominator chain entered by that
+        edge alone) and the other operands' of ``values``, the pure values computed from those
+        bounded, whose intervals :meth:`iv` derives from ``ivs``."""
+        if blk in self.contexts:
+            return self.contexts[blk]
+        if self.preds is None:
+            self.preds = Counter(s for b in self.blocks for s in b.ops[-1].succs)
+        preds, facts, b = self.preds, {}, blk
+        while (d := self.idom.get(b, b)) != b:
+            term = self.block_of[d].ops[-1]
+            if preds[b] == 1 and term.name in ("cf.cond_br", "cf.switch"):
+                case = next(c for s, _, c in term.edges() if s == b)
+                if term.name == "cf.cond_br":
+                    self.implied(term.args[0], case, facts)
+                elif case is not None:
+                    k = case & (1 << self.width(term.args[0])) - 1
+                    self.narrow(term.args[0], (k, k), facts)
+            b = d
+        ivs = {v: meet(self.iv(v), r) for v, r in facts.items()}
+        values, work = set(ivs), list(ivs)
+        while work:
+            for o in self.users.get(work.pop(), ()):
+                if o.name in DERIVED and len(o.res) == 1 and o.res[0] not in values:
+                    values.add(o.res[0])
+                    work.append(o.res[0])
+        for v in values - set(ivs):
+            for a in self.defs[v].args:
+                if a not in values:
+                    ivs[a] = self.iv(a)
+        self.contexts[blk] = ivs, values
+        return ivs, values
+
+    def implied(self, c, truth, facts):
+        """Meet into ``facts`` the intervals truth value ``c`` being ``truth`` implies: of the
+        operand of an unsigned or equality compare with a constant, through its negation and
+        the operands of an ``||`` false or an ``&&`` true."""
+        d = self.defs.get(c)
+        if d is None:
+            return
+        k = [self.const_of(a) for a in d.args]
+        if d.name == "arith.xori" and k[1] is not None and k[1] & 1:
+            self.implied(d.args[0], not truth, facts)
+        elif d.name == ("arith.andi" if truth else "arith.ori") and self.width(c) == 1:
+            for a in d.args:
+                self.implied(a, truth, facts)
+        elif d.name == "arith.cmpi" and None in k and k != [None, None]:
+            pred, x = d.int_prop("predicate"), d.args[k.index(None)]
+            pred = pred if k[1] is not None else SWAPPED.get(pred)
+            pred = pred if truth else NEGATED.get(pred)
+            top = (1 << self.width(x)) - 1
+            n = next(v for v in k if v is not None) & top
+            r = {0: (n, n), 6: (0, n - 1), 7: (0, n), 8: (n + 1, top), 9: (n, top)}.get(pred)
+            if r is not None and r[0] <= r[1]:
+                self.narrow(x, r, facts)
+
+    def narrow(self, v, r, facts):
+        """Meet interval ``r`` of value ``v`` into ``facts``, and the interval it gives the value
+        ``v`` extends or offsets by a constant (where that does not wrap)."""
+        while True:
+            facts[v] = meet(facts.get(v, r), r)
+            d = self.defs.get(v)
+            if d is None:
+                return
+            if d.name in ("arith.extui", "arith.index_castui"):
+                top = (1 << self.width(d.args[0])) - 1
+                if r[0] > top:
+                    return
+                v, r = d.args[0], (r[0], min(r[1], top))
+                continue
+            k = [self.const_of(a) for a in d.args]
+            if d.name not in ("arith.addi", "arith.subi") or k.count(None) != 1:
+                return
+            j = k.index(None)
+            if d.name == "arith.subi" and j:
+                return
+            off = k[1 - j] if d.name == "arith.addi" else -k[1]
+            top = (1 << self.width(v)) - 1
+            lo, hi = (r[0] - off) & top, (r[1] - off) & top
+            if hi - lo != r[1] - r[0]:
+                return
+            v, r = d.args[j], (lo, hi)
+
+    def iv_at(self, v, blk):
+        """The interval of value ``v`` wherever block ``blk`` runs (:meth:`context`)."""
+        ivs, values = self.context(blk)
+        if v not in values:
+            return self.iv(v)
+        saved, self.ivs = self.ivs, ivs
+        try:
+            return self.iv(v)
+        finally:
+            self.ivs = saved
+
+    def addr_iv(self, o):
+        """The interval of access ``o``'s address where it runs."""
+        return self.iv_at(self.address(o), self.where[id(o)][0].name)
+
     def dominates(self, a, b):
         """Whether block ``a`` dominates block ``b`` (names)."""
         while True:
@@ -1203,7 +1308,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
     def proven_iv(self, o):
         """The interval of load ``o``'s address met with the hull the lift proves of its
         instruction (every copy's, the bounds of the bytes its index comes from), or None."""
-        lo, hi = self.iv(self.address(o))
+        lo, hi = self.addr_iv(o)
         h = self.mod.reach_of(self, o, "proven") if o.name == "memref.load" else None
         if h is None or hi - lo >= regions.BOUNDED or h[0] > hi or lo > h[1]:
             return None
@@ -1214,7 +1319,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         span) access ``o`` lies in, over all its addresses or, in an instance, for each copy's;
         else None."""
         mem, a = self.mod.mem, self.address(o)
-        lo, hi = self.iv(a)
+        lo, hi = self.addr_iv(o)
         direct = o.name in ("memref.load", "memref.store")
         store = o.name != "memref.load"
         k = mem.region(lo, hi)
@@ -1268,7 +1373,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 a = o.args[0]
             else:
                 continue
-            out.append((o, self.iv(a), self.kivs(a)))
+            out.append((o, self.addr_iv(o), self.kivs(a)))
         return out
 
     def root(self, o):
@@ -2022,7 +2127,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         several) or ``("any",)`` (``rd``/``wr``)."""
         if id(o) in self.f.promoted:
             return ("var",)
-        lo, hi = self.f.iv(self.f.address(o))
+        lo, hi = self.f.addr_iv(o)
         mem = self.mod.mem
         if o.name == "func.call" and mem.is_volatile(lo, hi):
             return ("io",)

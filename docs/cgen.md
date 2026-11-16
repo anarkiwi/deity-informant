@@ -471,6 +471,14 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   the store reaching code past the array) writes the region holding its base inside it and
   calls `oob_wr` past it: `if ((uint16_t)(a - Rk_ORG) < Rk_LEN) Rk[...] = v; else oob_wr(a,
   v);`, the write-side counterpart of `rdCj`.
+- An access's address interval is met with what the branches on every path to it imply
+  (`printer.Func.context`): each block of its dominator chain entered by one edge, a
+  `cond_br` on an unsigned or equality compare of a value (offset by a constant, extended)
+  with a constant, its negation, an `||` false or an `&&` true, or a `switch` case, bounds
+  that value and the pure values computed from it there. A store past an index guard and the
+  loads of its index the guard dominates lie in the guard's range, so inside one region they
+  index it with no run test and no `oob_*` arm; an access the guard does not dominate, or at
+  an index whose range leaves the region, keeps its test.
 - A load of unknown address through a pointer whose hull the lift bounds (`Program.reach`,
   [wholeprog](wholeprog.md#static-proofs), *Pointer reach*: bases from tables read inside their
   extents, constants, a relocation constant added with carry, an offset in `Y`, a pointer
@@ -640,7 +648,8 @@ addresses), computed jumps and calls through operands written from tables (in th
 or an earlier one), computed transfers switching on their index (carried past its register's
 write, pushed, a branch offset, read from data) and on the address where no one index
 selects, an index past a split table's extent trapping, a split table at the end of the program stored
-at an unbounded song byte held in arrays ending with the program and trapping past it, a cell reload forwarded from the register stored to it past such a guarded store, an opcode restored through
+at an unbounded song byte held in arrays ending with the program and trapping past it, a cell reload forwarded from the register stored to it past such a guarded store, that store and a load of its index past it untested (one around the guard or
+past the table tested), an opcode restored through
 the stack, a pointer into zero page with no stack check, a jump's or-ed high byte under
 relocation, determinism (repeated, with the blocks shuffled and under other hash seeds), play
 lifted from the state init leaves and init translated (a table-driven block copy with a
