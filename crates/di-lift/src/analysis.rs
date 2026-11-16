@@ -804,6 +804,7 @@ pub fn discover(
     reach: Option<crate::vsa::Wanted>,
     free: &FxHashMap<u16, Vec<u8>>,
     once: bool,
+    entry_sp: Option<u8>,
 ) -> Graph {
     let mut edges: FxHashMap<u16, Vec<u16>> = FxHashMap::default();
     for &(p, q) in &facts.edges {
@@ -813,7 +814,26 @@ pub fn discover(
         v.sort_unstable();
         v.dedup();
     }
+    // Run once from the image, an entry no input decides runs one path: its instructions'
+    // operands are those of that run.
+    let ran = match (once, entries, bank, entry_sp) {
+        (true, [e], None, Some(sp)) => {
+            let mut input = FixedBitSet::with_capacity(0x10000);
+            input.insert_range(..);
+            if let Some((lo, hi)) = loaded {
+                input.set_range(lo as usize..(hi as usize).min(0x10000), false);
+            }
+            for &(lo, hi) in volatile {
+                input.insert_range(lo as usize..(hi as usize).min(0x10000));
+            }
+            input.extend(facts.writes.iter().map(|w| w.0 as usize));
+            input.extend(free.keys().map(|&a| a as usize));
+            crate::once::run(img, e, sp, &input).unwrap_or_default()
+        }
+        _ => crate::once::Ran::default(),
+    };
     let mut fix = Fixpoint {
+        ran,
         img,
         entries,
         facts,
@@ -954,6 +974,8 @@ struct Fixpoint<'a> {
     free: &'a FxHashMap<u16, Vec<u8>>,
     /// Each entry runs once ([`discover`]).
     once: bool,
+    /// The operands of the one run no input decides ([`crate::once`]).
+    ran: crate::once::Ran,
 }
 
 impl Fixpoint<'_> {
@@ -997,6 +1019,7 @@ impl Fixpoint<'_> {
             written: &written,
             aimed: &g.aimed,
             devices: self.devices,
+            ran: &self.ran,
         };
         let an = crate::vsa::analyze(
             &g.img,
@@ -1113,6 +1136,7 @@ impl Fixpoint<'_> {
                 written: &none,
                 aimed: &aimed,
                 devices: self.devices,
+                ran: &self.ran,
             };
             let an = crate::vsa::analyze(
                 &cimg,
@@ -1282,6 +1306,33 @@ impl Fixpoint<'_> {
                         None => sels.remove(&key),
                     };
                 }
+                let mut ran_sets: FxHashMap<(u16, bool), BTreeSet<u16>> = FxHashMap::default();
+                // An access through operand cells the one run gives reaches the
+                // address their bytes make.
+                for (&pc, o) in &self.ran {
+                    let t = Template::of(o[0]);
+                    let celled =
+                        (1..t.len as u16).any(|i| cells.contains(pc.wrapping_add(i) as usize));
+                    if !celled
+                        || !vars
+                            .get(&pc)
+                            .is_some_and(|vs| vs.iter().any(|v| v.op == o[0]))
+                    {
+                        continue;
+                    }
+                    let mut acc = Vec::new();
+                    absint(
+                        t.ops(),
+                        [Some(o[1]), Some(o[2])],
+                        &mut TOP_ENV.clone(),
+                        &mut acc,
+                    );
+                    for x in acc.iter().filter(|x| !x.dummy) {
+                        if let Some(a) = x.addr.value() {
+                            ran_sets.entry((pc, x.store)).or_default().insert(a as u16);
+                        }
+                    }
+                }
                 let g = Graph {
                     reach: FxHashMap::default(),
                     proven: FxHashMap::default(),
@@ -1357,6 +1408,9 @@ impl Fixpoint<'_> {
                             if let Some(a) = s.addrs.as_ref().filter(|a| a.len() > 1) {
                                 m.entry((s.pc, true)).or_default().extend(a);
                             }
+                        }
+                        for (k, a) in ran_sets {
+                            m.entry(k).or_default().extend(a);
                         }
                         m
                     },

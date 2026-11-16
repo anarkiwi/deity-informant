@@ -20,6 +20,7 @@ pub mod jit;
 pub mod known;
 pub mod lanes;
 pub mod objects;
+pub mod once;
 pub mod opt;
 pub mod ptr;
 pub mod scev;
@@ -216,7 +217,7 @@ fn zone_checks(g: &mut analysis::Graph, free: &FxHashMap<u16, Vec<u8>>) {
             let set_free = [false, true].iter().any(|&st| {
                 v.acc
                     .iter()
-                    .any(|a| a.store == st && a.ptr.is_some() && !a.dummy)
+                    .any(|a| a.store == st && (a.ptr.is_some() || operand) && !a.dummy)
                     && addr_sets.get(&(pc, st)).is_some_and(|set| {
                         set.iter().all(|&x| {
                             let p = x as u32 >> 8;
@@ -628,6 +629,7 @@ pub fn lift_banked(
             opts.entry_sp.map(|_| vsa::Wanted { held: &held }),
             &free,
             opts.once,
+            opts.entry_sp,
         );
         let roots: Vec<u16> = entries.iter().map(|e| e.pc).collect();
         // Declared entry SP: the windows also keep pointers out of the volatile pages.

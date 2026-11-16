@@ -801,10 +801,11 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     mod.regs = {pc: tuple(bytes(x) for x in r) for pc, r in (p.regs or {}).items()}
     mod.kpos = regfile.index(emit.KREG) if emit.KREG in regfile else None
     if p.lifted is not None:
+        (pc, name), _ = p.init
         mod.scope = {f"f{j}": p.lifted[2] for j, k in enumerate(p.origin) if k}
+        mod.scope[name] = p.lifted[2]
         names = {f"f{j}" for j, k in enumerate(p.origin) if not k}
         mod.after = frozenset(names | {name for _, name in p.entries[:-1]})
-        (pc, name), _ = p.init
         k = traps.setdefault(("deopt", pc), len(traps))
         mod.traps.add(k)
         mod.guards[name] = [f"if ({SONG} >= CGEN_SONGS) {{", f"trap({k});", "}"]

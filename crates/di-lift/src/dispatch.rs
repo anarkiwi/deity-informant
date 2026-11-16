@@ -534,6 +534,7 @@ pub(crate) fn vectors(
     devices: &crate::dev::Devices,
 ) -> Vec<u16> {
     let none = crate::dev::Devices::default();
+    let ran = crate::once::Ran::default();
     let code = Code {
         img,
         cells,
@@ -558,6 +559,7 @@ pub(crate) fn vectors(
         devices: &none,
         classes: FxHashMap::default(),
         meets: Default::default(),
+        ran: &ran,
     };
     let mut v: Vec<u16> = vars
         .iter()
@@ -827,9 +829,11 @@ fn resolve(
     let v = vars.get(&s.pc)?.iter().find(|v| v.op == s.op)?;
     let t = Template::of(v.op);
     let b = operand_bytes(code.img, code.cells, s.pc, t.len);
+    let ran = code.ran.get(&s.pc).filter(|o| o[0] == v.op);
     let choice = |j: usize| -> Option<Vec<Option<u8>>> {
         match b[j] {
             Some(x) => Some(vec![Some(x)]),
+            None if j + 1 < t.len as usize && ran.is_some() => Some(vec![ran.map(|o| o[j + 1])]),
             None if j + 1 < t.len as usize => {
                 let a = s.pc.wrapping_add(1 + j as u16);
                 let vs = match cv.get(&a) {

@@ -166,7 +166,9 @@ any `A`. It is **translated** when that lift is exact for every declared argumen
   layout the lift's assumptions give traps on a declared value (`postinit.bounded`).
 
 Its functions join the other entries' in one module, each reading its own lift's facts (value
-sets, register sets, hulls, bounded stores, address sets: `printer.Module.fx`); its instruction
+sets, register sets, hulls, bounded stores, address sets: `printer.Module.fx`), init's entry
+function, into which the compiler inlines its body, included: a relocator's stores through a
+pointer from a table of patch sites write the sites' storage by their address set, not `wr`; its instruction
 bytes decode from `image`, the bytes it patches are cells unless the other entries' lift reads
 them as constants (which init then leaves), and the `.h` holds `image`. Init's entry function
 traps an `A` outside `CGEN_SONG0` and the `CGEN_SONGS` after it, then runs the translated code;
@@ -392,8 +394,8 @@ every access the layout places (`state.py`):
   (`pointer`), at an unknown address (`unknown`), as a source of init's copies (`init`), or a
   family reaching it also reaches a byte that stays one or another struct's (`family`); a
   byte no other access reaches is `unaccessed`.
-- A load through a pointer whose hull the lift bounds (*Memory*) or an access of unknown
-  address keeps no byte of the code span a byte: what it reads or writes there goes through
+- A load through a pointer whose hull the lift bounds and no address set does (*Memory*) or
+  an access of unknown address keeps no byte of the code span a byte: what it reads or writes there goes through
   `cgen_var`, the promoted byte at an address (a `switch` on its offset from `CODE_ORG`,
   after one range test), so its reader (`rdCj`, `rd`) reads the variable and `wr` writes it.
   Pointers the lift bounds to the song data reach no code byte and need none of it.

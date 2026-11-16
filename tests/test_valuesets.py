@@ -119,6 +119,33 @@ phi:    .byte hi(perm)
 perm:   .byte """ + ", ".join(str(i * 7 + 3 & 0xFF) for i in range(256)) + "\nend:\n"
 
 
+# A table of addresses ending in a zero high byte walked two bytes a step, each entry's second
+# byte incremented through the pointer it makes: the stores' addresses come from the table
+# they may write.
+ADDRS = """
+entry:  LDX #0
+loop:   LDA tab+1,X
+        BEQ done
+        STA $FC
+        LDA tab,X
+        STA $FB
+        LDY #1
+        LDA ($FB),Y
+        CLC
+        ADC #1
+put:    STA ($FB),Y
+        INX
+        INX
+        BNE loop
+done:   RTS
+tab:    .byte lo(d0), hi(d0), lo(d1), hi(d1), lo(d2), hi(d2), 0, 0
+d0:     .byte 0, 0
+d1:     .byte 0, 0
+d2:     .byte 0, 0
+end:
+"""
+
+
 def spread(n):
     """An index from ``n`` entries of a table spread over the byte, reading a second table."""
     vals = ", ".join(str(i * 37 % 256) for i in range(n))
@@ -242,3 +269,27 @@ def test_growing_sets_end():
     """Sets growing around a loop and through a patched immediate end within the limit."""
     with ProcessPool(max_workers=1) as pool:
         pool.schedule(lift_and_replay, (GROW, calls([0], 4)), timeout=LIMIT).result()
+
+
+def test_table_of_addresses_stores_resolve():
+    """The table is constant under the assumption the stores through its words then verify:
+    each store's address set is the bytes its entries name, none of them the table's."""
+    img, labels, prog = lift(ADDRS)
+    tab = range(labels["tab"], labels["d0"])
+    assert dict(prog.addr_sets)[(labels["put"], True)] == runs(
+        labels[d] + 1 for d in ("d0", "d1", "d2")
+    )
+    assert set(tab) <= set(prog.code)
+    differential(img, prog, [labels["entry"]], calls([0], 3))
+    assert not dict(prog.deopts)
+
+
+def test_table_entry_naming_the_table_is_checked():
+    """An entry whose word names a table byte makes a store into the table: the store's set
+    meets the bytes assumed constant, so it has none, and its runtime check leaves the lifted
+    code on the call it hits the table, the lift replaying exactly."""
+    src = ADDRS.replace("lo(d1), hi(d1)", "lo(tab+3), hi(tab+3)")
+    img, labels, prog = lift(src)
+    assert (labels["put"], True) not in dict(prog.addr_sets)
+    differential(img, prog, [labels["entry"]], calls([0], 4))
+    assert labels["put"] + 2 in dict(prog.deopts)
