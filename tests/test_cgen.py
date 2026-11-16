@@ -6706,6 +6706,51 @@ def test_seeded_walks_c_is_the_same_across_runs(prefix, tmp_path):
     assert out[0][0] == out[1][0] and out[0][1] != out[1][1]
 
 
+@pytest.mark.parametrize("src", [TO.CURSOR, TO.COUNTED], ids=["plain", "counted"])
+def test_cursors_read_plain(prefix, tmp_path, src):
+    """Cursors play keeps between calls, reset at their data's markers, read the records and
+    segments with no bounds-checked reader: the states play reaches from each of init's runs
+    bound them; every argument replays past many resets."""
+    c, h, img, labels = walk_c(prefix, src)
+    assert "rdC" not in c and "CGEN_IX(" in body_of(c, "play")
+    for song in range(4):
+        play(tmp_path, c, h, img, labels, [("init", song)] + [("play", 0)] * 150)
+
+
+def test_cursor_stepped_by_a_modelled_read_reads_plain(prefix, tmp_path):
+    """A cursor stepped by an I/O read the model answers with 0 or 1 reads plain; the same
+    read answering any byte keeps the bounds-checked reader."""
+    img, labels, loaded = assemble(TO.POLLED)
+    img[0xC003] = 1
+    ents = [(labels[n], n) for n in ("init", "play")]
+    kw = {"loaded": loaded, "header": "t.h", "prefix": prefix, "init": 0, "songs": range(4)}
+    c, h, _ = cgen.translate(img, ents, [W.IO], devices=TO.STEP, **kw)
+    assert "rdC" not in c
+    for song in range(4):
+        play(tmp_path, c, h, img, labels, [("init", song)] + [("play", 0)] * 150)
+    assert "rdC" in cgen.translate(img, ents, [W.IO], devices=None, **kw)[0]
+
+
+def test_cursor_a_store_may_write_keeps_its_check(prefix, tmp_path):
+    """A cursor another entry's store of unknown address may write bounds nothing: its record
+    load keeps the bounds-checked reader, and the program replays."""
+    img, labels, loaded = assemble(TO.POKED)
+    c, h, _ = translate(
+        prefix, img, labels, loaded, entries=("init", "play", "poke"), init=0, songs=range(4)
+    )
+    assert "rdC" in body_of(c, "play")
+    play(tmp_path, c, h, img, labels, [("init", 1)] + [("play", 0), ("poke", 0)] * 40)
+
+
+def test_cursor_bounds_are_the_headers(prefix):
+    """The bounds the reachable states give the cursors' loads are the ``.h``'s: the spans they
+    read are named there, and no record or segment address is a literal of the ``.c``."""
+    c, h, _, labels = walk_c(prefix, TO.CURSOR)
+    assert "rdC" not in c and re.search(r"#define C\d+_ORG", h)
+    starts = {labels[f"r{i}"] for i in range(4)} | {labels["flat"]}
+    assert not {int(x, 16) for x in re.findall(r"0x([0-9A-F]{3,4})\b", c)} & starts
+
+
 INDX = """
 init:   AND #$03
         ASL A

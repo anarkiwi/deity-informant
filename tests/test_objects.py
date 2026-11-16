@@ -6,7 +6,7 @@ import pytest
 
 import wholeprog_progs as W
 from test_wholeprog import differential
-from deity_informant import NATIVE, postinit, wholeprog
+from deity_informant import NATIVE, devices, postinit, wholeprog
 
 ProcessPool = pytest.importorskip("pebble").ProcessPool
 
@@ -345,3 +345,167 @@ def test_seeds_end():
     limit: a store through a pair no longer a seed may write any."""
     with ProcessPool(max_workers=1) as pool:
         assert pool.schedule(chain_lift, (40,), timeout=LIMIT).result() == 0
+
+
+def cursor_src(gate="", step="INC cur,X", tail=""):
+    """Three objects, each with a record selector ``sel,X``, a cursor ``cur,X`` into the record
+    the selector's pointer names and an offset ``pos,X`` into one array of segments, kept
+    between calls of ``play``: each call reads the byte at each, advances past it with ``step``
+    (the record cursor) or ``INC`` (the offset), and at a record's sign-bit marker resets the
+    cursor and selects the next record by a table; at a segment's marker the offset restarts at
+    its selector's segment. Init sets the selectors from ``A``; ``gate`` starts each object's
+    turn and ``tail`` follows play."""
+    recs = [[(5 * i + j) % 0x70 + 1 for j in range(3 + 2 * i)] + [0x80] for i in range(4)]
+    rows = "".join(f"r{i}:     .byte {', '.join(map(str, d))}\n" for i, d in enumerate(recs))
+    segs = [[(7 * i + j) % 0x70 + 1 for j in range(2 + 3 * i)] + [0x80] for i in range(4)]
+    starts = [sum(len(s) for s in segs[:i]) for i in range(4)]
+    flat = ", ".join(str(b) for s in segs for b in s)
+    return f"""
+init:   AND #$03
+        LDX #2
+iloop:  STA sel,X
+        TAY
+        LDA start,Y
+        STA pos,X
+        LDA #0
+        STA cur,X
+        LDA #1
+        STA cnt,X
+        TYA
+        CLC
+        ADC #1
+        AND #$03
+        DEX
+        BPL iloop
+        RTS
+play:   LDX #2
+vloop:  {gate}
+        LDY pos,X
+seg:    LDA flat,Y
+        BPL keep
+        LDY sel,X
+        LDA start,Y
+        STA pos,X
+        JMP rec
+keep:   STA $C002
+        INC pos,X
+rec:    LDY sel,X
+        LDA tlo,Y
+        STA $FB
+        LDA thi,Y
+        STA $FC
+        LDY cur,X
+rd:     LDA ($FB),Y
+        BMI next
+        STA $C001
+        {step}
+        JMP done
+next:   LDA #0
+        STA cur,X
+        LDY sel,X
+        LDA nxt,Y
+        STA sel,X
+done:   DEX
+        BPL vloop
+        RTS
+{tail}tlo:    .byte lo(r0), lo(r1), lo(r2), lo(r3)
+thi:    .byte hi(r0), hi(r1), hi(r2), hi(r3)
+nxt:    .byte 2, 0, 3, 1
+start:  .byte {', '.join(map(str, starts))}
+{rows}flat:   .byte {flat}
+sel:    .byte 0, 0, 0
+cur:    .byte 0, 0, 0
+pos:    .byte 0, 0, 0
+cnt:    .byte 0, 0, 0
+end:
+"""
+
+
+CURSOR = cursor_src()
+
+# Each object's turn waits on its counter.
+COUNTED = cursor_src(gate="DEC cnt,X\n        BNE done\n        LDA #2\n        STA cnt,X")
+
+# The record cursor advances by an I/O read, which the model answers with 0 or 1.
+POLLED = cursor_src(step="LDA $C003\n        CLC\n        ADC cur,X\n        STA cur,X")
+
+# Another entry stores through a pointer read from I/O: it may write a cursor.
+POKED = cursor_src(
+    tail="poke:   LDA $C004\n        STA $F0\n        LDA $C005\n        STA $F1\n"
+    "        LDY #0\n        LDA $C006\n        STA ($F0),Y\n        RTS\n"
+)
+
+# Play writes the records from I/O: a marker may not hold.
+REWRITTEN = cursor_src(step="INC cur,X\n        LDA $C004\n        STA r3+9")
+
+#: A model answering the record cursor's step.
+STEP = devices.Model({0xC003: devices.derived(lambda st, at: [0, 1])})
+
+
+def cursor_lift(src, entries=("play",), model=None):
+    """``(image, labels, init runs, program)``: ``src``'s ``entries`` lifted from what its
+    ``init`` leaves with ``A`` each of 0..3."""
+    img, labels = W.assemble(src)
+    img[0xC003] = 1
+    init = postinit.run(img, labels["init"], range(4), [W.IO])
+    image = init.states[0].tobytes()
+    prog = wholeprog.lift(
+        image,
+        [labels[e] for e in entries],
+        [W.IO],
+        entry_sp=0xFD,
+        loaded=(0x1000, labels["end"]),
+        fold=True,
+        free=init.values(),
+        devices=model,
+    )
+    return image, labels, init, prog
+
+
+@pytest.mark.parametrize(
+    "src,model",
+    [(CURSOR, None), (COUNTED, None), (POLLED, STEP)],
+    ids=["plain", "counted", "polled"],
+)
+def test_cursors_read_inside_the_states_play_reaches(src, model):
+    """Cursors kept between calls, reset at their data's markers, read proven inside the
+    records and segments: the states play reaches from each of init's runs bound them (a
+    counter deciding a turn taken both ways, an I/O step its modelled values); every run
+    replays past many resets."""
+    img, labels, init, prog = cursor_lift(src, model=model)
+    proven = dict(prog.proven)
+    rec, seg = labels["r0"], labels["flat"]
+    (a, b), (c, d) = proven[labels["rd"]][:2], proven[labels["seg"]][:2]
+    assert rec <= a and b < seg <= c and d < labels["sel"]
+    assert not prog.stats["obj_guards"]
+    assert prog.stats["reach_loads"] >= 2 and prog.stats["reach_slices"] == 3
+    for song in range(4):
+        mem = bytearray(init.states[song].tobytes())
+        differential(img, prog, [labels["play"]], [(0, 0)] * 200, synth=False, mem=mem)
+
+
+@pytest.mark.parametrize(
+    "src,entries,model",
+    [(POKED, ("play", "poke"), None), (REWRITTEN, ("play",), None), (POLLED, ("play",), None)],
+    ids=["poked", "rewritten", "unmodelled"],
+)
+def test_cursors_no_state_bounds_keep_their_hulls(src, entries, model):
+    """A cursor a store of unknown address may write, records play rewrites from I/O, or a
+    step I/O answers with any byte bound no load: the record loads keep the hulls past the
+    records."""
+    _, labels, _, prog = cursor_lift(src, entries, model)
+    h = dict(prog.proven).get(labels["rd"])
+    assert h is None or h[1] >= labels["flat"]
+
+
+def cursor_states_lift(src, entries):
+    """The proven hull of the record load of ``src``'s ``entries`` lifted."""
+    _, labels, _, prog = cursor_lift(src, entries)
+    return dict(prog.proven).get(labels["rd"])
+
+
+@pytest.mark.parametrize("src,entries", [(CURSOR, ("play",)), (POKED, ("play", "poke"))])
+def test_cursor_states_end(src, entries):
+    """The states of the cursors' slices are found, or their caps reached, within the limit."""
+    with ProcessPool(max_workers=1) as pool:
+        pool.schedule(cursor_states_lift, (src, entries), timeout=LIMIT).result()

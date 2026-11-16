@@ -479,7 +479,9 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   tests its address against it and reads `oob_rd` outside (`(uint16_t)(a - R2_ORG) < R2_LEN ?
   ... : oob_rd(a)`); from a constant base plus a byte inside one held span, through the span's
   bounds-checked reader `rdCj(base, index)`. One the lift proves (`Program.proven`: the bounds
-  of the bytes its index comes from) inside one region or held span indexes it unchecked.
+  of the bytes its index comes from, or of the cursor states the entries reach,
+  [wholeprog](wholeprog.md#static-proofs), *Reachable states*) inside one region or held span
+  indexes it unchecked.
   Every byte a store with an address set may write (`Program.written`: a block copy's
   destinations past the image) is in a region, which pointer reads find through `rd` or a
   held span; the stack page
@@ -530,7 +532,8 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   else `oob_rd`, so a pointer below the program (zero page, a pointer still 0) or walked past
   it reads what the 6502 would. Where the hull the
   lift proves on every run (`Program.proven`: no table taken to be read inside its extent,
-  or a pointer object's check keeping its pointer in bounds) lies inside `loaded` and the
+  a pointer object's check keeping its pointer in bounds, or the pointer and cursor states
+  the entries reach from init's runs) lies inside `loaded` and the
   bytes past it a block copy writes, the span is that hull and the
   load indexes it unchecked: `CGEN_IX(Cj, base - Cj_ORG, y)`. Not taken when the
   hull meets a volatile range inside `loaded`, or holds no data byte of it; then `rd`.

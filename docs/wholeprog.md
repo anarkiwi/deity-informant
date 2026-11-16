@@ -825,6 +825,50 @@ the facts, so a proof holds on every execution that stays in lifted code.
   before the greatest, at the last marker every run holds: a valid run's walk ends at one, so
   no bound below what the reach hulls assume fails a run that keeps them. The anchor's check is
   made where it serves more than one load or a walk.
+- **Reachable states** (`reach.rs`, static lifts with an entry SP, flat memory). After init
+  the entries are a closed system: memory changes only through them, their inputs are their
+  declared registers and the volatile reads (the device models' value sets), so the bytes a
+  load's address is computed from reach a finite set of states from each of init's runs. A
+  load no proof above holds in held bytes is evaluated on a *slice*: the bytes (and volatile
+  reads) whose values its addresses are computed from, through data and addresses, closed
+  under the stores into them. Every other byte is an interval: one no store may write
+  (`analysis::stored`) holds its run's value; any other is unknown at an entry, within the
+  values another slice's states give it where one holds it, and joins what stores of unknown
+  address may write into it (inside their address intervals). An entry is evaluated from
+  each state of the slice over every path an unknown branch condition, jump target (the
+  lift's targets) or opcode (its variants) allows, a volatile read of the slice once per
+  value its model answers (any byte when undescribed), each path on to its next transfer;
+  configurations at one PC with the same `A`, `X`, `Y`, `SP`, `D`, stack above `SP` and
+  slice join (the rest unites into intervals), taken a lower PC's first. Bytes of other
+  slices whose joins left a load's address unknown join the key in the next round. A cursor
+  whose advance a counter decides reaches both outcomes: the counter is not in the slice.
+  The states after each call are the slice's next states; their least fixpoint from each run
+  holds every state any sequence of calls reaches, and the addresses the evaluation computes
+  for the load on them are every address it reads. Each value carries its provenance: the
+  bytes and volatile reads it was computed from (through data and addresses) on any path
+  joined into it, a join of paths on which it differs (and the byte that did), a read
+  through an unknown address that may name a byte stores write, an undeclared register; and
+  the bytes it was computed from on every path joined into it (a join intersects them). A
+  store of an unknown value into the slice, or of unknown address that may reach it, adds
+  its provenance to the slice; a load whose unknown address lies outside the held bytes and
+  whose provenance meets the slice adds the rest of it (where the slice holds it all
+  already, the bytes whose joins it passed), one whose provenance lies in no one slice joins
+  the slices it meets. Slices share no byte (volatile reads have no state, so they share
+  them): the cursor and pointer of one object are evaluated apart from the next object's,
+  whose loads in that evaluation have unknown addresses within the intervals that object's
+  states give. A load is proven where on every completed slice's evaluation from every run
+  each of its addresses is known, lies in an interval inside the held bytes, or is unknown
+  with no undeclared register in its provenance and the bytes of it inside one other
+  completed slice, which reads it: with no join in its provenance its value is unknown only
+  through one of that slice's bytes, which that slice's evaluation knows; with joins (and no
+  unknown read) the provenance holds every byte the address is computed from, one of that
+  slice's on every path, and that slice's evaluations know every address of the load outside
+  the held bytes whose provenance meets it, so they compute it. `Program.proven` holds the
+  hull of those addresses and their bases where it lies in the held bytes and meets no
+  volatile range. The bounds rest on what seeds and constant cells rest on: memory changes
+  only through init and the entries, so a state outside the reachable set is invalid input,
+  and its loads are not checked (a check at the cursor's stores would test what the fixpoint
+  proves of every valid run).
 - **Computed jumps** (`dispatch.rs`). A `JMP (ind)` whose pointer bytes are tagged on every
   path into it, a `JMP`/`JSR` whose cell operand bytes are (a byte that is not a cell is a
   constant), and an `RTS`/`RTI` whose return-address bytes are pushed so on every path, goes
@@ -1102,6 +1146,15 @@ and the code using it deopts or traps.
 - Walks (`walks::walks`): per pair and instruction an anchor, offsets whose hull only widens
   (to none past a byte's width) and a marker only weakening (to none); an anchor or a store
   of the pair restarts it.
+
+- Reachable states (`reach::bounds`): per slice and run a fixpoint of slice states, a set
+  that only rises, at most `reach::Caps::states` states, and `reach::Caps::steps`
+  instructions per run; within a call, at most `reach::Caps::configs` configurations, each
+  of whose key only rises (intervals widen, provenance unites, a finite lattice). Slices
+  only grow (at most `reach::Caps::cells` bytes, a larger one is not evaluated) and the
+  intervals of other slices' bytes only narrow (each round's meet with the last) while the
+  bytes keying configurations only grow, over at most `reach::Caps::rounds` rounds. A slice
+  past a cap proves nothing; its loads keep their checks.
 
 `tests/test_termination.py` lifts such programs under a wall-clock limit and replays them.
 `tools/liftsweep.py` translates PSID files to C, each under a limit, and replays the C: per file
