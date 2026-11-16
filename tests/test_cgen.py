@@ -27,6 +27,7 @@ import cclones  # noqa: E402  pylint: disable=wrong-import-position
 import cgenplay  # noqa: E402  pylint: disable=wrong-import-position
 import cmetrics  # noqa: E402  pylint: disable=wrong-import-position
 from test_pcode2mlir import OPS, UNARY, VALUES, op_function, unary_function  # noqa: E402
+import test_polling as P  # noqa: E402  pylint: disable=wrong-import-position
 
 pytestmark = pytest.mark.skipif(
     not NATIVE or not shutil.which("gcc") or not shutil.which("clang-format"),
@@ -3495,6 +3496,48 @@ def test_init_io_probe_is_settled_by_the_machine(prefix, tmp_path, model):
     play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", k) for k in range(4)])
     assert "io_read(0x" not in c and info["init"] == "replayed"
     assert (labels["shift"] in info["provenance"]["cells"]) == bool(model)
+
+
+@pytest.mark.parametrize(
+    "src,polled,translated",
+    [
+        (P.RASTER, {0xD012: 0x30}, True),
+        (P.TIMER, {0xC00D: 0x80}, True),
+        (P.STATUS, {0xC00D: 0x80}, False),
+        (P.PLAYWAIT, {0xC00D: 0x80}, True),
+    ],
+    ids=["raster", "timer", "status", "play"],
+)
+def test_init_waiting_on_the_device_waits_in_c(
+    prefix, tmp_path, src, polled, translated
+):  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    """Init waiting on the device (a raster line, a status flag) on a machine whose device
+    satisfies it later is translated with the wait reading the device each pass, as play's
+    wait is; one storing the byte it polls, which varies, is replayed. The C plays as the
+    reference with the device holding a byte each wait leaves on."""
+    img, labels, loaded = assemble(src)
+    ents = [(labels[n], n) for n in ("init", "play")]
+    c, h, info = cgen.translate(
+        img,
+        ents,
+        P.VOLATILE,
+        loaded=loaded,
+        header="t.h",
+        prefix=prefix,
+        init=0,
+        songs=range(2),
+        machine=P.machine(),
+    )
+    assert info["init"] == ("translated" if translated else "replayed")
+    waits = [a for a in polled if f"io_read(0x{a:04X})" in c]
+    assert bool(waits) == (translated or src is P.PLAYWAIT)
+    for a, v in polled.items():
+        img[a] = v
+    (tmp_path / "t.c").write_text(c)
+    (tmp_path / "t.h").write_text(h)
+    lib = cgenplay.build(tmp_path / "t.c", tmp_path / "t.so")
+    calls = [("init", 1)] + [("play", k) for k in range(4)]
+    cgenplay.replay(lib, img, {n: labels[n] for n, _ in calls}, calls, P.VOLATILE)
 
 
 #: Init running a routine, then copying a block from word tables an index derived from ``A``

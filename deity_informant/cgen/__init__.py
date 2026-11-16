@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from .. import postinit, wholeprog
+from .. import polling, postinit, wholeprog
 from ..trace import Facts
 from . import emit, mlir, printer
 from .regions import Memory, code_bytes, pointer_pairs
@@ -456,23 +456,17 @@ def _facts(prog):
 
 
 def _lift_init(
-    start, entry, volatile, facts, sensitive, kw, state, runs
+    start, entry, volatile, facts, sensitive, kw, state, runs, bare
 ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
     """Init's lift (at ``entry``, run once from ``start``, any ``A``: the host's check of the
     argument is the ``.h``'s range) when it is exact for every declared argument value: its
-    run reproduces the
-    machine's (:func:`deity_informant.postinit.reproduces`, lifted without throw-away reads
-    so every volatile read it makes is one it uses) and the accesses of the reference's
-    ``runs`` lie inside what it bounds them to (:func:`deity_informant.postinit.bounded`);
-    else None."""
-    if None in runs:
+    lift without throw-away reads ``bare`` (every volatile read it makes one it uses)
+    reproduces the machine's run (:func:`deity_informant.postinit.reproduces`, its polling
+    loops answered as in the reference's ``runs``) and the accesses of ``runs`` lie inside
+    what it bounds them to (:func:`deity_informant.postinit.bounded`); else None."""
+    if None in runs or not postinit.reproduces(bare, start, state, runs):
         return None
-    kw, spec = {**kw, "once": True}, [entry]
-    if not postinit.reproduces(
-        wholeprog.lift(start, spec, volatile, facts, sensitive=(), **kw), start, state
-    ):
-        return None
-    lone = wholeprog.lift(start, spec, volatile, facts, sensitive=sensitive, **kw)
+    lone = wholeprog.lift(start, [entry], volatile, facts, sensitive=sensitive, **kw, once=True)
     return lone if postinit.bounded(lone, runs) else None
 
 
@@ -501,8 +495,11 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
         vals = sorted(set(range(1) if songs is None else songs))
         if not vals or vals[-1] - vals[0] + 1 != len(vals):
             raise ValueError("songs must be a range")
-        state = postinit.run(image, entries[init][0], vals, volatile, machine)
-        runs = [postinit.traced(image, entries[init][0], a, volatile) for a in vals]
+        pc = entries[init][0]
+        state = postinit.run(image, pc, vals, volatile, machine)
+        bare = wholeprog.lift(image, [pc], volatile, facts, sensitive=(), **kw, once=True)
+        polls = polling.loops(image, bare.starts, bare.code, volatile)
+        runs = [postinit.traced(image, pc, a, volatile, polls) for a in vals]
         if None not in runs:
             pairs = set().union(*(postinit.pointers(r) for r in runs))
             alias = [(lo, g, d) for lo, (g, d) in sorted(postinit.groups(runs, pairs).items())]
@@ -520,7 +517,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     )
     lifts = [prog]
     if state is not None:
-        lone = _lift_init(start, entries[init][0], volatile, facts, sensitive, kw, state, runs)
+        lone = _lift_init(start, pc, volatile, facts, sensitive, kw, state, runs, bare)
         lifts += [lone] if lone is not None else []
     funcs, origin = _ranked(lifts)
     starts = set(prog.starts)
