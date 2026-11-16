@@ -2783,6 +2783,12 @@ impl Pass<'_> {
 /// Address hulls of loads and of their bases by `(pc, opcode, access index)` ([`reach`]).
 pub type Hulls = FxHashMap<(u16, u8, usize), (Iv, Iv)>;
 
+/// Narrows `h`'s hulls of `key` by `(a, b)` (each taken alone where they do not meet).
+pub(crate) fn prove(h: &mut Hulls, key: (u16, u8, usize), (a, b): (Iv, Iv)) {
+    let e = h.entry(key).or_insert((a, b));
+    *e = (meet(e.0, a).unwrap_or(a), meet(e.1, b).unwrap_or(b));
+}
+
 /// Per instruction start the value sets of `A`, `X` and `Y`, bit `v` for `v`.
 pub type Regs = FxHashMap<u16, [[u64; 4]; DATA]>;
 

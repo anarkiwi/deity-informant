@@ -658,7 +658,7 @@ fn reach_bounds(
     let Some((lo, end)) = held else {
         return reach::Bounds::default();
     };
-    let inside = |h: Iv| lo <= h.lo && h.hi < end && !volatile.iter().any(|&(a, b)| h.meets(a, b));
+    let inside = |h: Iv| objects::serves((lo, end), volatile, h);
     let mut targets = FxHashSet::default();
     for (&pc, vs) in &g.vars {
         for v in vs.iter().filter(|v| !is_stack_op(v.op)) {
@@ -708,11 +708,7 @@ fn reach_bounds(
             false => Iv { lo: h[0], hi: h[1] },
         };
         let b = Iv { lo: h[2], hi: h[3] };
-        let e = g.proven.entry(key).or_insert((a, b));
-        *e = (
-            vsa::meet(e.0, a).unwrap_or(a),
-            vsa::meet(e.1, b).unwrap_or(b),
-        );
+        vsa::prove(&mut g.proven, key, (a, b));
     }
     out
 }
@@ -778,12 +774,8 @@ pub fn lift_banked(
             &seeds,
             &free,
         );
-        for (key, (a, b)) in proven {
-            let h = g.proven.entry(key).or_insert((a, b));
-            *h = (
-                vsa::meet(h.0, a).unwrap_or(a),
-                vsa::meet(h.1, b).unwrap_or(b),
-            );
+        for (key, h) in proven {
+            vsa::prove(&mut g.proven, key, h);
         }
         g.objs = objs;
         g.prot = ptr::protect(&g, facts, volatile, &zones, &roots, bank);

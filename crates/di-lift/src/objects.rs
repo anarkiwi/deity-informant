@@ -184,6 +184,11 @@ fn transfer(defs: &[Def], ds: Option<&Vec<usize>>, o: &mut FixedBitSet, loads: b
 /// The proven hulls of loads by access, with their bases' (as [`crate::vsa::Hulls`]).
 pub type Proven = Vec<(StoreKey, (Iv, Iv))>;
 
+/// Whether the bytes `h` lie in the held run `[lo, end)` outside the `volatile` ranges.
+pub(crate) fn serves((lo, end): (u32, u32), volatile: &[(u32, u32)], h: Iv) -> bool {
+    lo <= h.lo && h.hi < end && !volatile.iter().any(|&(a, b)| h.meets(a, b))
+}
+
 /// The bytes `[lo, hi)` the host holds of a program `loaded`: it, and the bytes past it below
 /// the volatile ranges that the lift's stores (`written`) or the host (`holds`) write.
 pub fn held(
@@ -223,7 +228,7 @@ pub fn objects(
     let Some((lo0, end)) = held.filter(|_| !g.runs.is_empty() && !roots.is_empty()) else {
         return (out, proven);
     };
-    let held = |h: Iv| lo0 <= h.lo && h.hi < end && !volatile.iter().any(|&(a, b)| h.meets(a, b));
+    let held = |h: Iv| serves((lo0, end), volatile, h);
     let mut loads = loads(g, volatile, bank);
     for (key, ws) in indexed_x(g, seeds) {
         let h = Iv {
