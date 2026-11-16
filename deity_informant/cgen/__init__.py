@@ -902,9 +902,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         funcs = copy.deepcopy(funcs)
         own = [fn for j, fn in enumerate(funcs) if not p.lifted or not p.origin[j]]
         symbols = _guard_symbols(own, _reads_fixed(p.image, p.starts, p.fixed))
-    text, traps, whys = emit.emit(
-        funcs, p.entries, keep_dummy=bool(p.sensitive), symbols=len(symbols)
-    )
+    text, traps, whys, regfile = emit.emit(funcs, p.entries, bool(p.sensitive), len(symbols))
     run = mlir.runner(build=True) if prefix is None else prefix
     if run is None:
         raise RuntimeError("needs mlir-opt on PATH or Docker")
@@ -983,7 +981,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     }
     vars(mod).update(vars(_facts(p)))
     mod.ptr_objects = list(p.objects)
-    mod.regfile = regfile = [r for r, _ in emit.Context(p.funcs, False).regfile]
+    mod.regfile = regfile = [r for r, _ in regfile]
     mod.kpos = regfile.index(emit.KREG) if emit.KREG in regfile else None
     song = None
     if p.lifted is not None:

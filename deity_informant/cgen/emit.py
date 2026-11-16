@@ -360,9 +360,10 @@ class Context:  # pylint: disable=too-few-public-methods
         )
 
 
-def emit(funcs, entries, keep_dummy=False, symbols=0):
-    """The MLIR module of lifted ``funcs`` (sorted by entry PC), ``{trap key: index}`` and
-    ``{trap key: [(function index, index into its "whys")]}``, what each trap stands for.
+def emit(funcs, entries, keep_dummy, symbols):
+    """The MLIR module of lifted ``funcs`` (sorted by entry PC), ``{trap key: index}``,
+    ``{trap key: [(function index, index into its "whys")]}``, what each trap stands for, and
+    the register file ``[(slot, size)]`` the functions pass.
 
     ``entries`` are ``(pc, name)``; ``keep_dummy`` keeps throw-away reads as ``io_read`` s;
     a varnode ``["k", j, 1]`` reads element ``j`` of ``@G``, the ``symbols`` constants the
@@ -386,4 +387,4 @@ def emit(funcs, entries, keep_dummy=False, symbols=0):
         callee = f"@{ctx.names[by_pc[pc]]}({', '.join(args)})"
         out.append(f"    %r:{len(args)} = func.call {callee} : ({t}) -> ({t})")
         out += ["    func.return", "  }"]
-    return "\n".join(out + ["}"]) + "\n", ctx.traps, ctx.whys
+    return "\n".join(out + ["}"]) + "\n", ctx.traps, ctx.whys, ctx.regfile
