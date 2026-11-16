@@ -187,7 +187,7 @@ impl Exec {
         let mut next = NREG as u32;
         for f in &p.functions {
             slots.push((next, f.nslots));
-            next += f.nslots + f.ncarries + f.nlanes;
+            next += (f.nregs() - NREG) as u32;
         }
         let mut x = Exec {
             ops: Vec::new(),

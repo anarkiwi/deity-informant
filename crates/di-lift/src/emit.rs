@@ -302,31 +302,32 @@ pub fn emit(
         em.f.cont = Some(em.f.nslots);
         let to = NREG as u32 + em.f.nslots;
         em.f.nslots += 2;
-        let at = |v: Vn| match v.space() {
-            Space::Reg if (ABOVE as u32..ABOVE as u32 + 2).contains(&v.off()) => {
-                reg((v.off() - ABOVE as u32 + to) as u16, v.size() as u8)
-            }
-            _ => v,
-        };
-        for op in em.f.blocks.iter_mut().flat_map(|b| &mut b.ops) {
-            op.out = at(op.out);
-            op.ins = op.ins.map(at);
-        }
+        remap(&mut em.f.blocks, ABOVE as u32..ABOVE as u32 + 2, to);
     }
     em.f.ncarries = em.carries.regs.len() as u32;
     if em.f.ncarries > 0 {
         let to = NREG as u32 + em.f.nslots;
-        let n = CARRY as u32..CARRY as u32 + em.f.ncarries;
-        let at = |v: Vn| match v.space() {
-            Space::Reg if n.contains(&v.off()) => reg((v.off() - n.start + to) as u16, 1),
-            _ => v,
-        };
-        for op in em.f.blocks.iter_mut().flat_map(|b| &mut b.ops) {
-            op.out = at(op.out);
-            op.ins = op.ins.map(at);
-        }
+        remap(
+            &mut em.f.blocks,
+            CARRY as u32..CARRY as u32 + em.f.ncarries,
+            to,
+        );
     }
     (em.f, em.n)
+}
+
+/// Renumbers the registers `from` of `blocks`' ops to start at `to`.
+fn remap(blocks: &mut [Block], from: std::ops::Range<u32>, to: u32) {
+    let at = |v: Vn| match v.space() {
+        Space::Reg if from.contains(&v.off()) => {
+            reg((v.off() - from.start + to) as u16, v.size() as u8)
+        }
+        _ => v,
+    };
+    for op in blocks.iter_mut().flat_map(|b| &mut b.ops) {
+        op.out = at(op.out);
+        op.ins = op.ins.map(at);
+    }
 }
 
 /// The register a continuation function's low return-address byte is emitted in (the high
