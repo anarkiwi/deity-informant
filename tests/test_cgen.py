@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import cclones  # noqa: E402  pylint: disable=wrong-import-position
 import cgenplay  # noqa: E402  pylint: disable=wrong-import-position
 import cmetrics  # noqa: E402  pylint: disable=wrong-import-position
+from testimages import MOS  # noqa: E402  pylint: disable=wrong-import-position
 from test_pcode2mlir import OPS, UNARY, VALUES, op_function, unary_function  # noqa: E402
 import test_polling as P  # noqa: E402  pylint: disable=wrong-import-position
 import test_valuesets as VS  # noqa: E402  pylint: disable=wrong-import-position
@@ -37,7 +38,6 @@ pytestmark = pytest.mark.skipif(
     not NATIVE or not shutil.which("gcc") or not shutil.which("clang-format"),
     reason="needs the native extension, gcc and clang-format",
 )
-MOS = "ghcr.io/anarkiwi/docker-mos-llvm-sdk:v23.4.0"
 
 TABLES = """
 entry:  AND #$03
@@ -4468,6 +4468,7 @@ def _shuffled(parse, seed):
     return run
 
 
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize("name", ["EXITS", "IRRED", "TAIL3", "SUBS", "VOICES"])
 def test_deterministic(prefix, monkeypatch, name):
     img, labels, loaded = assemble(globals()[name])
@@ -4949,6 +4950,7 @@ def test_init_relocating_by_the_song_leaves_pointer_cells(prefix, tmp_path):
     assert "K_I" in body
 
 
+@pytest.mark.timeout(120)
 def test_song_range_is_checked_not_assumed(prefix, tmp_path):
     """The songs the host calls init with are checked at init, and assumed nowhere: the
     pointer each song init takes leaves, which play never stores, seeds the pair, songs
@@ -4975,6 +4977,7 @@ def test_song_values_are_a_range(prefix):
     assert "#define CGEN_SONG0 0x01" in h and "#define CGEN_SONGS 2" in h
 
 
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize(
     "order",
     [[1, 2, 3, 4, 5, 6, 7, 8], [0x81, 2, 0x90, 0xA0, 5, 6, 7, 8], [0x81] * 7 + [3]],
@@ -5013,6 +5016,7 @@ def test_init_io_writes_song_data_decides_are_replayed(prefix, tmp_path):
     assert len(texts) == 1
 
 
+@pytest.mark.timeout(120)
 def test_init_io_writes_are_replayed_in_order(prefix, tmp_path):
     """A replayed init's I/O writes are replayed in their order (a clearing loop's one by
     one), and the bytes it stores, which the other entry never writes, are constants it
@@ -5112,6 +5116,7 @@ end:
 """
 
 
+@pytest.mark.timeout(120)
 def test_init_probe_of_a_derived_register_is_a_run_time_choice(prefix, tmp_path):
     """Init probing a register its own writes derive (voice 3's oscillator) and patching
     play's opcode by what it reads is translated: the C reads the device once and patches
@@ -6727,6 +6732,7 @@ def test_seeded_walks_c_is_the_same_across_runs(prefix, tmp_path):
     assert out[0][0] == out[1][0] and out[0][1] != out[1][1]
 
 
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize("src", [TO.CURSOR, TO.COUNTED], ids=["plain", "counted"])
 def test_cursors_read_plain(prefix, tmp_path, src):
     """Cursors play keeps between calls, reset at their data's markers, read the records and
@@ -6738,7 +6744,7 @@ def test_cursors_read_plain(prefix, tmp_path, src):
         play(tmp_path, c, h, img, labels, [("init", song)] + [("play", 0)] * 150)
 
 
-@pytest.mark.timeout(120)
+@pytest.mark.timeout(600)
 def test_cursor_stepped_by_a_modelled_read_reads_plain(prefix, tmp_path):
     """A cursor stepped by an I/O read the model answers with 0 or 1 reads plain; the same
     read answering any byte keeps the bounds-checked reader."""
@@ -6764,6 +6770,7 @@ def test_cursor_a_store_may_write_keeps_its_check(prefix, tmp_path):
     play(tmp_path, c, h, img, labels, [("init", 1)] + [("play", 0), ("poke", 0)] * 40)
 
 
+@pytest.mark.timeout(120)
 def test_cursor_bounds_are_the_headers(prefix):
     """The bounds the reachable states give the cursors' loads are the ``.h``'s: the spans they
     read are named there, and no record or segment address is a literal of the ``.c``."""

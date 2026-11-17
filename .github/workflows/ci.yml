@@ -48,6 +48,8 @@ jobs:
         run: pylint deity_informant/
       - name: Build 6510 SLEIGH module (pypcode-bundled compiler)
         run: deity-informant emit-sleigh
+      - name: Test images
+        run: python tools/testimages.py
       - name: Test
         run: pytest tests/ -n auto --cov=deity_informant --cov-fail-under=85
 

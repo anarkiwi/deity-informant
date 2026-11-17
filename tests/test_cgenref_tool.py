@@ -57,21 +57,24 @@ def test_diff_counts_changed_and_missing_cases(tmp_path, capsys):
 
 
 def test_plugin_dumps_each_translation_by_its_arguments(tmp_path, monkeypatch):
+    def fake(image, entries, volatile, **kw):
+        return f"c{len(image)}{entries}", f"h{kw}", {"times": {"lift": 1.0}, "traps": {1: 2}}
+
     monkeypatch.setenv(cgenref.DUMP, str(tmp_path))
-    inner, cleanups = cgen.translate, []
+    monkeypatch.setattr(cgen, "translate", fake)
+    cleanups = []
     cgenref.pytest_configure(SimpleNamespace(add_cleanup=cleanups.append))
-    try:
-        img, labels = W.assemble("entry: LDA #$01\n STA $C000\n RTS\n")
-        for _ in range(2):
-            c, h, _ = cgen.translate(img, [(labels["entry"], "entry")], [W.IO])
-    finally:
-        for f in cleanups:
-            f()
-    assert cgen.translate is inner
-    (name,) = {p.stem for p in tmp_path.iterdir()}
-    assert (tmp_path / f"{name}.c").read_text() == c
-    assert (tmp_path / f"{name}.h").read_text() == h
-    assert "times" not in json.loads((tmp_path / f"{name}.json").read_text())
+    for _ in range(2):
+        out = cgen.translate(bytearray(4), [(1, "e")], [W.IO], header="t.h")
+    cgen.translate(bytes(5), [(1, "e")], [W.IO])
+    for f in cleanups:
+        f()
+    assert cgen.translate is fake
+    names = sorted({p.stem for p in tmp_path.iterdir()})
+    assert len(names) == 2
+    (name,) = [n for n in names if (tmp_path / f"{n}.c").read_text() == out[0]]
+    assert (tmp_path / f"{name}.h").read_text() == out[1]
+    assert json.loads((tmp_path / f"{name}.json").read_text()) == {"traps": {"1": 2}}
 
 
 def test_plugin_is_inert_without_a_dump(monkeypatch):

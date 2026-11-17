@@ -8,13 +8,19 @@ rather than holding a worker and the host's memory:
 - **Time**: `pytest-timeout` (`[tool.pytest.ini_options]` in `pyproject.toml`) fails a test
   after 30 s with `timeout_method = "thread"`, which dumps every thread's stack. A test that
   legitimately needs longer carries `@pytest.mark.timeout(n)`; `--timeout 0` disables the guard
-  for a run.
+  for a run. The thread method ends the process, so a native lift stops too; under xdist a test
+  that timed out shows as a crashed worker naming it, and run alone it prints the stacks.
+  Lifts parallelise over the host's cores, so a test's time scales with them: an override is
+  measured on a runner of CI's size (`taskset -c 0-3 pytest -n 4`).
 - **Memory**: `tests/conftest.py` sets each test process's `RLIMIT_DATA` to its share of the
   host's RAM among the xdist workers, at most 4 GiB. `RLIMIT_DATA` counts the writable memory a
   process maps but not what it only reserves (thread arenas, JIT pools), so it bounds the heap
   where `RLIMIT_AS` would trip on reservations. A Python allocation over the limit raises
   `MemoryError`; a native one aborts the worker, which xdist reports and replaces.
   `DI_TEST_HEAP=<bytes>` overrides it (`0`: no limit).
+
+`python tools/testimages.py` builds and pulls the Docker images the tests use (CI runs it before
+the tests), so no test spends its timeout provisioning one.
 
 ## Inner loop
 
