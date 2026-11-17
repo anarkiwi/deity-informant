@@ -2320,6 +2320,34 @@ def test_cursor_bounded_across_calls(prefix, tmp_path):
     assert "0xC011" not in body_of(c, "play") and len(info["traps"]) == 1
 
 
+COUNTWRAP = COUNTDOWN.replace(
+    """wait
+        LDA #3""",
+    """wait
+        LDA #0""",
+)
+COUNTPAST = COUNTDOWN.replace("CPY #16", "CPY #17")
+
+
+def test_countdown_reloaded_with_zero_wraps(prefix, tmp_path):
+    """Reloaded with 0, the counter wraps to $FF on the next call: the branch on its sign
+    stays."""
+    calls = [("init", 0)] + [("play", 0)] * 40
+    c, _, _ = check(prefix, tmp_path, COUNTWRAP, calls, entries=("init", "play"), init=0, songs=[0])
+    assert "0xC018" in body_of(c, "play")
+
+
+def test_cursor_past_its_table_keeps_its_guard(prefix, tmp_path):
+    """Reset at 17 over a 16-byte table, the position reaches the byte past it: the read keeps
+    its check, which traps on the reload reaching it."""
+    img, labels, loaded = assemble(COUNTPAST)
+    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=[0])
+    k = machine_guard(info, labels["play"] + 13)
+    assert k is not None
+    calls = [("init", 0)] + [("play", 0)] * 60
+    play(tmp_path, c, h, img, labels, calls, trap=(1 + 3 * 17 - 1, k))
+
+
 def test_countdown_reloaded_across_calls(prefix, tmp_path):
     """A speed counter play decrements and reloads with 3 at zero holds 1-3 at every call: the
     branch on its sign folds. The position it steps on each reload stays in its table."""
