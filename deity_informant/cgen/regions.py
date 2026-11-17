@@ -54,7 +54,7 @@ def edge(image, p, q):
                 return [p, q]
             hit = [s for s in ss if through(image, s) == q]
             if hit:
-                return [_last_jump(image, hit[0]), q]
+                return [_chain(image, hit[0])[-2], q]
             below = [s for s in ss if s <= q]
             return [p, max(below) if below else ss[0]]
         if ss[0] == q:
@@ -63,22 +63,20 @@ def edge(image, p, q):
     return [p, q]
 
 
-def _last_jump(image, pc):
-    """The last ``JMP abs`` of the chain from ``pc``."""
-    seen = set()
-    while (n := successors(image, pc)[0]) not in seen and OPS.get(image[n]) == ("JMP", "abs"):
+def _chain(image, pc):
+    """``[pc, ...]``: the chain of ``JMP abs`` from ``pc`` and where it ends (in a cycle, the
+    ``JMP`` it reaches again)."""
+    out, seen = [pc], set()
+    while OPS.get(image[pc]) == ("JMP", "abs") and pc not in seen:
         seen.add(pc)
-        pc = n
-    return pc
+        pc = successors(image, pc)[0]
+        out.append(pc)
+    return out
 
 
 def through(image, pc):
     """Where a chain of ``JMP abs`` from ``pc`` ends."""
-    seen = set()
-    while OPS.get(image[pc]) == ("JMP", "abs") and pc not in seen:
-        seen.add(pc)
-        pc = successors(image, pc)[0]
-    return pc
+    return _chain(image, pc)[-1]
 
 
 def pointer_pairs(image, starts):
