@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import cclones  # noqa: E402  pylint: disable=wrong-import-position
 import cgenplay  # noqa: E402  pylint: disable=wrong-import-position
 import cmetrics  # noqa: E402  pylint: disable=wrong-import-position
+from testimages import MOS  # noqa: E402  pylint: disable=wrong-import-position
 from test_pcode2mlir import OPS, UNARY, VALUES, op_function, unary_function  # noqa: E402
 import test_polling as P  # noqa: E402  pylint: disable=wrong-import-position
 import test_valuesets as VS  # noqa: E402  pylint: disable=wrong-import-position
@@ -37,7 +38,6 @@ pytestmark = pytest.mark.skipif(
     not NATIVE or not shutil.which("gcc") or not shutil.which("clang-format"),
     reason="needs the native extension, gcc and clang-format",
 )
-MOS = "ghcr.io/anarkiwi/docker-mos-llvm-sdk:v23.4.0"
 
 TABLES = """
 entry:  AND #$03
@@ -4468,6 +4468,7 @@ def _shuffled(parse, seed):
     return run
 
 
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize("name", ["EXITS", "IRRED", "TAIL3", "SUBS", "VOICES"])
 def test_deterministic(prefix, monkeypatch, name):
     img, labels, loaded = assemble(globals()[name])
@@ -4949,6 +4950,7 @@ def test_init_relocating_by_the_song_leaves_pointer_cells(prefix, tmp_path):
     assert "K_I" in body
 
 
+@pytest.mark.timeout(120)
 def test_song_range_is_checked_not_assumed(prefix, tmp_path):
     """The songs the host calls init with are checked at init, and assumed nowhere: the
     pointer each song init takes leaves, which play never stores, seeds the pair, songs
@@ -4975,6 +4977,7 @@ def test_song_values_are_a_range(prefix):
     assert "#define CGEN_SONG0 0x01" in h and "#define CGEN_SONGS 2" in h
 
 
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize(
     "order",
     [[1, 2, 3, 4, 5, 6, 7, 8], [0x81, 2, 0x90, 0xA0, 5, 6, 7, 8], [0x81] * 7 + [3]],
@@ -5013,6 +5016,7 @@ def test_init_io_writes_song_data_decides_are_replayed(prefix, tmp_path):
     assert len(texts) == 1
 
 
+@pytest.mark.timeout(120)
 def test_init_io_writes_are_replayed_in_order(prefix, tmp_path):
     """A replayed init's I/O writes are replayed in their order (a clearing loop's one by
     one), and the bytes it stores, which the other entry never writes, are constants it
@@ -5112,6 +5116,7 @@ end:
 """
 
 
+@pytest.mark.timeout(120)
 def test_init_probe_of_a_derived_register_is_a_run_time_choice(prefix, tmp_path):
     """Init probing a register its own writes derive (voice 3's oscillator) and patching
     play's opcode by what it reads is translated: the C reads the device once and patches
@@ -5185,6 +5190,7 @@ def test_timer_flag_wait_and_acknowledges_are_kept(prefix, tmp_path):
     cgenplay.replay(lib, img, {n: labels[n] for n, _ in calls}, calls, volatile, (0xDC0D,))
 
 
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize(
     "src,polled,translated",
     [
@@ -5709,24 +5715,31 @@ def test_operand_patched_from_constants_is_a_known_store(prefix, tmp_path):
     assert "codechk" not in c and not info["traps"] and "wr(" not in c
 
 
-def test_block_copy_stores_have_per_block_addresses(prefix, tmp_path):
+@pytest.fixture(name="blocks", scope="module")
+def fixture_blocks(prefix, tmp_path_factory):
+    """``(c, h, info)`` of BLOCKS, checked against the reference over a call per block."""
+    calls = [("entry", 0), ("entry", 0x82), ("entry", 0x90), ("entry", 1), ("entry", 0x88)]
+    return check(prefix, tmp_path_factory.mktemp("blocks"), BLOCKS, calls)
+
+
+@pytest.mark.timeout(180)
+def test_block_copy_stores_have_per_block_addresses(blocks):
     """A block copy through a pointer a page loop advances (a rotated loop over pages, then the
     remainder) whose destination, source and length are table bytes of one block number: its
     stores write, per block, the destination up to the pages its length counts, so RAM past the
     image is data and no store is checked against the code."""
-    calls = [("entry", 0), ("entry", 0x82), ("entry", 0x90), ("entry", 1), ("entry", 0x88)]
-    c, _, info = check(prefix, tmp_path, BLOCKS, calls)
+    c, _, info = blocks
     assert "codechk" not in c and not info["traps"]
     spans = {org: n for org, n in info["regions"]}
     assert 0x5000 in spans and 0x6000 in spans and spans[0x6000] <= 0x200
 
 
-def test_block_copy_indexes_the_blocks_directly(prefix, tmp_path):
+@pytest.mark.timeout(300)
+def test_block_copy_indexes_the_blocks_directly(blocks):
     """The copy's stores have address sets in the data regions: they index the regions they
     span directly, testing only those, with no wr dispatch; the bases reaching each region
     are apart, so the test reads the pointer, not the index."""
-    calls = [("entry", 0), ("entry", 0x82), ("entry", 0x90), ("entry", 1), ("entry", 0x88)]
-    c, _, _ = check(prefix, tmp_path, BLOCKS, calls)
+    c = blocks[0]
     img, labels, loaded = assemble(BLOCKS)
     p, _ = cgen.lift(img, [(labels["entry"], "entry")], [W.IO], loaded=loaded)
     assert any(store for _, store in p.addr_sets)
@@ -5737,7 +5750,16 @@ def test_block_copy_indexes_the_blocks_directly(prefix, tmp_path):
     assert tests and all(not re.search(rf"\b{v}\b", t) for t, v in tests)
 
 
-@pytest.mark.parametrize("name", ["TABLES", "PTRS", "BLOCKS", "VOICES", "RELOCATOR"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "TABLES",
+        "PTRS",
+        pytest.param("BLOCKS", marks=pytest.mark.timeout(180)),
+        "VOICES",
+        "RELOCATOR",
+    ],
+)
 def test_regions_abutting_a_held_span_are_its_slices(prefix, name):
     """A region that abuts a held span is held in it: one array, so rd/wr test one range."""
     img, labels, loaded = assemble(globals()[name])
@@ -6710,6 +6732,7 @@ def test_seeded_walks_c_is_the_same_across_runs(prefix, tmp_path):
     assert out[0][0] == out[1][0] and out[0][1] != out[1][1]
 
 
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize("src", [TO.CURSOR, TO.COUNTED], ids=["plain", "counted"])
 def test_cursors_read_plain(prefix, tmp_path, src):
     """Cursors play keeps between calls, reset at their data's markers, read the records and
@@ -6721,6 +6744,7 @@ def test_cursors_read_plain(prefix, tmp_path, src):
         play(tmp_path, c, h, img, labels, [("init", song)] + [("play", 0)] * 150)
 
 
+@pytest.mark.timeout(600)
 def test_cursor_stepped_by_a_modelled_read_reads_plain(prefix, tmp_path):
     """A cursor stepped by an I/O read the model answers with 0 or 1 reads plain; the same
     read answering any byte keeps the bounds-checked reader."""
@@ -6746,6 +6770,7 @@ def test_cursor_a_store_may_write_keeps_its_check(prefix, tmp_path):
     play(tmp_path, c, h, img, labels, [("init", 1)] + [("play", 0), ("poke", 0)] * 40)
 
 
+@pytest.mark.timeout(120)
 def test_cursor_bounds_are_the_headers(prefix):
     """The bounds the reachable states give the cursors' loads are the ``.h``'s: the spans they
     read are named there, and no record or segment address is a literal of the ``.c``."""

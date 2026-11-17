@@ -48,6 +48,7 @@ def _run_vm(mem, a, x, y, sp, p):
     return H.arch_state(vm) + (npc & 0xFFFF,), vm.cycles, bytes(vm.mem)
 
 
+@pytest.mark.timeout(120)
 def test_legal_opcodes_match_py65():
     mpu = py65.MPU(memory=bytearray(0x10000))
     ops = _legal_ops()

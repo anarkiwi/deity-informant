@@ -2,6 +2,7 @@
 
 import re
 
+import numpy as np
 import pytest
 
 import decimal_ref as ref
@@ -31,20 +32,20 @@ def instruction(ctx6510, op, m, zero_page):
 def test_sleigh_matches_the_reference(ctx6510, case, quarter, d):
     op, fn, zero_page = CASES[case]
     reg = {k: ctx6510.registers[k].offset for k in "ANVZCD"}
+    a, c = (g.ravel() for g in np.meshgrid(range(quarter * 64, quarter * 64 + 64), (0, 1)))
     for m in range(256):
         ops = instruction(ctx6510, op, m, zero_page)
-        for a in range(quarter * 64, quarter * 64 + 64):
-            for c in (0, 1):
-                vm = Machine()
-                regs = vm.spaces["register"]
-                regs[reg["A"]], regs[reg["C"]], regs[reg["D"]] = a, c, d
-                vm.spaces["RAM"][0x10] = m
-                vm.run(ops)
-                want = fn(a, m, c, d)
-                got = tuple(regs[reg[k]] for k in "ANVZC")
-                assert got == tuple(want[:5]), (case, a, m, c, d)
-                if case in ("RRA", "ISC"):
-                    assert vm.spaces["RAM"][0x10] == want[5], (case, a, m, c, d)
+        vm = Machine(len(a))
+        regs = vm.spaces["register"]
+        regs[reg["A"]], regs[reg["C"]], regs[reg["D"]] = a, c, np.full(len(a), d)
+        vm.spaces["RAM"][0x10] = np.full(len(a), m)
+        assert (vm.run(ops) == len(ops)).all()
+        want = np.array([fn(int(x), m, int(y), d) for x, y in zip(a, c)])
+        got = np.stack([regs[reg[k]] for k in "ANVZC"], axis=1)
+        if case in ("RRA", "ISC"):
+            got = np.column_stack([got, vm.spaces["RAM"][0x10]])
+        bad = np.flatnonzero((got != want[:, : got.shape[1]]).any(axis=1))
+        assert not bad.size, (case, int(a[bad[0]]), m, int(c[bad[0]]), d)
 
 
 def test_install_brings_every_included_source_along(tmp_path):

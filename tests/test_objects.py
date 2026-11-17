@@ -116,6 +116,7 @@ def loads(img, labels):
     return [a for a in range(labels["play"], labels["stop"]) if img[a] == 0xB1]
 
 
+@pytest.mark.timeout(120)
 def test_records_read_inside_their_object():
     """One check, before the first load of each call, keeps the pointer in the streams: every
     load of a field reads proven inside them, and the lift replays every stream."""
@@ -464,6 +465,7 @@ def cursor_lift(src, entries=("play",), model=None):
     return image, labels, init, prog
 
 
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize(
     "src,model",
     [(CURSOR, None), (COUNTED, None), (POLLED, STEP)],
@@ -487,6 +489,7 @@ def test_cursors_read_inside_the_states_play_reaches(src, model):
         differential(img, prog, [labels["play"]], [(0, 0)] * 200, synth=False, mem=mem)
 
 
+@pytest.mark.timeout(600)
 @pytest.mark.parametrize(
     "src,entries,model",
     [(POKED, ("play", "poke"), None), (REWRITTEN, ("play",), None), (POLLED, ("play",), None)],

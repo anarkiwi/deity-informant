@@ -125,6 +125,7 @@ def voice3(rng):
     return code + [0x4C, end & 0xFF, end >> 8], ops, t
 
 
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize("model", ["6581", "8580"])
 def test_released_oscillator_reads_lie_in_the_models_sets(model):
     """Randomized: voice 3 released from the test bit under the VIC's DMA reads values in

@@ -1,94 +1,114 @@
-"""A small evaluator for pypcode translations: enough to run one 6510 instruction."""
+"""A small evaluator for pypcode translations: one 6510 instruction over many machine states.
+
+Each byte of a space holds one value per lane (a numpy array); a lane runs the ops its own
+branches take. Branches within an instruction go forward, so one pass over the ops in order
+runs every lane, each op writing only the lanes standing at it.
+"""
 
 from collections import defaultdict
 
+import numpy as np
+
 
 def MASK(size):
-    return (1 << (8 * size)) - 1
+    return np.uint64((1 << (8 * size)) - 1)
 
 
 def signed(x, size):
-    return x - (1 << (8 * size)) if x >> (8 * size - 1) else x
+    """``x`` (``size`` bytes) as a signed int64 array."""
+    x = np.asarray(x, np.uint64)
+    top = np.uint64(1 << (8 * size - 1))
+    return (x ^ top).astype(np.int64) - np.int64(top)
 
 
-def _bin(name, x, y, size, insize):
+def _bin(name, x, y, insize):
     sx, sy = signed(x, insize), signed(y, insize)
     top = 1 << (8 * insize)
-    return {
-        "INT_ADD": x + y,
-        "INT_SUB": x - y,
-        "INT_AND": x & y,
-        "INT_OR": x | y,
-        "INT_XOR": x ^ y,
-        "INT_LEFT": x << y if y < 64 else 0,
-        "INT_RIGHT": x >> y if y < 64 else 0,
-        "INT_SRIGHT": sx >> min(y, 63),
-        "INT_EQUAL": x == y,
-        "INT_NOTEQUAL": x != y,
-        "INT_LESS": x < y,
-        "INT_LESSEQUAL": x <= y,
-        "INT_SLESS": sx < sy,
-        "INT_SLESSEQUAL": sx <= sy,
-        "INT_CARRY": x + y >= top,
-        "INT_SCARRY": not -top // 2 <= sx + sy < top // 2,
-        "INT_SBORROW": not -top // 2 <= sx - sy < top // 2,
-        "BOOL_AND": x & y,
-        "BOOL_OR": x | y,
-        "BOOL_XOR": x ^ y,
-        "INT_MULT": x * y,
-    }[name]
+    shift = np.minimum(y, np.uint64(63))
+    ops = {
+        "INT_ADD": lambda: x + y,
+        "INT_SUB": lambda: x - y,
+        "INT_AND": lambda: x & y,
+        "INT_OR": lambda: x | y,
+        "INT_XOR": lambda: x ^ y,
+        "INT_LEFT": lambda: np.where(y < 64, x << shift, 0),
+        "INT_RIGHT": lambda: np.where(y < 64, x >> shift, 0),
+        "INT_SRIGHT": lambda: sx >> shift.astype(np.int64),
+        "INT_EQUAL": lambda: x == y,
+        "INT_NOTEQUAL": lambda: x != y,
+        "INT_LESS": lambda: x < y,
+        "INT_LESSEQUAL": lambda: x <= y,
+        "INT_SLESS": lambda: sx < sy,
+        "INT_SLESSEQUAL": lambda: sx <= sy,
+        "INT_CARRY": lambda: x + y >= top,
+        "INT_SCARRY": lambda: ~((-top // 2 <= sx + sy) & (sx + sy < top // 2)),
+        "INT_SBORROW": lambda: ~((-top // 2 <= sx - sy) & (sx - sy < top // 2)),
+        "BOOL_AND": lambda: x & y,
+        "BOOL_OR": lambda: x | y,
+        "BOOL_XOR": lambda: x ^ y,
+        "INT_MULT": lambda: x * y,
+    }
+    return np.asarray(ops[name](), np.uint64)
 
 
 class Machine:
-    """Byte-addressed spaces; ``run`` executes the ops of one translated instruction."""
+    """Byte-addressed spaces of ``lanes`` states; ``run`` executes the ops of one translated
+    instruction on each."""
 
-    def __init__(self):
-        self.spaces = defaultdict(lambda: defaultdict(int))
+    def __init__(self, lanes):
+        self.lanes = lanes
+        self.spaces = defaultdict(lambda: defaultdict(lambda: np.zeros(lanes, np.uint64)))
 
     def read(self, vn):
         space, off, size = vn.space.name, vn.offset, vn.size
+        if size >= 8:
+            raise NotImplementedError("varnodes of 8 bytes or more")
         if space == "const":
-            return off & MASK(size)
+            return np.full(self.lanes, np.uint64(off) & MASK(size))
         mem = self.spaces[space]
-        return sum(mem[off + i] << (8 * i) for i in range(size))
+        out = np.zeros(self.lanes, np.uint64)
+        for i in range(size):
+            out |= np.asarray(mem[off + i], np.uint64) << np.uint64(8 * i)
+        return out
 
-    def write(self, vn, value):
+    def write(self, vn, value, act):
         mem = self.spaces[vn.space.name]
+        value = np.asarray(value, np.uint64)
         for i in range(vn.size):
-            mem[vn.offset + i] = value >> (8 * i) & 0xFF
+            byte = value >> np.uint64(8 * i) & np.uint64(0xFF)
+            mem[vn.offset + i] = np.where(act, byte, mem[vn.offset + i])
 
     def run(self, ops):
-        i = 0
-        while i < len(ops):
-            op = ops[i]
+        at = np.zeros(self.lanes, np.int64)
+        for i, op in enumerate(ops):
+            act = at == i
+            if not act.any():
+                continue
             name = op.opcode.name
             ins = op.inputs
-            i += 1
+            at[act] = i + 1
+            if name in ("BRANCH", "CBRANCH"):
+                to = i + int(signed(ins[0].offset, 4))
+                if to <= i:
+                    raise NotImplementedError("a backward branch")
+                at[act & (name == "BRANCH" or self.read(ins[1]) != 0)] = to
+                continue
             if name == "IMARK":
                 continue
-            if name == "BRANCH":
-                i += signed(ins[0].offset, 4) - 1
-                continue
-            if name == "CBRANCH":
-                if self.read(ins[1]):
-                    i += signed(ins[0].offset, 4) - 1
-                continue
             out = op.output
-            if name == "COPY":
-                self.write(out, self.read(ins[0]))
-            elif name == "INT_ZEXT":
-                self.write(out, self.read(ins[0]))
+            if name in ("COPY", "INT_ZEXT"):
+                v = self.read(ins[0])
             elif name == "INT_SEXT":
-                self.write(out, signed(self.read(ins[0]), ins[0].size) & MASK(out.size))
-            elif name in ("BOOL_NEGATE", "INT_NEGATE", "INT_2COMP"):
-                x = self.read(ins[0])
-                self.write(
-                    out,
-                    {"BOOL_NEGATE": x ^ 1, "INT_NEGATE": ~x, "INT_2COMP": -x}[name]
-                    & MASK(out.size),
-                )
+                v = signed(self.read(ins[0]), ins[0].size).astype(np.uint64)
+            elif name == "BOOL_NEGATE":
+                v = self.read(ins[0]) ^ np.uint64(1)
+            elif name == "INT_NEGATE":
+                v = ~self.read(ins[0])
+            elif name == "INT_2COMP":
+                v = np.uint64(0) - self.read(ins[0])
             elif name == "SUBPIECE":
-                self.write(out, self.read(ins[0]) >> (8 * self.read(ins[1])))
+                v = self.read(ins[0]) >> (np.uint64(8) * self.read(ins[1]))
             else:
-                x, y = self.read(ins[0]), self.read(ins[1])
-                self.write(out, int(_bin(name, x, y, out.size, ins[0].size)) & MASK(out.size))
+                v = _bin(name, self.read(ins[0]), self.read(ins[1]), ins[0].size)
+            self.write(out, v & MASK(out.size), act)
+        return at
