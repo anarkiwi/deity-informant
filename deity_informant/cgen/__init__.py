@@ -599,7 +599,7 @@ def _ranked(progs):
     funcs, origin = [], []
     for j in order:
         fn, k, _ = items[j]
-        for op in (op for b in fn["blocks"] for op in b["ops"] if op[0] == "CALL"):
+        for op in (op for op in emit.ops(fn) if op[0] == "CALL"):
             op[3] = remap[(k, op[3])]
         funcs.append(fn)
         origin.append(k)
@@ -653,7 +653,7 @@ def _renumber(funcs, origin, base):
     """Number the objects the ``objchk`` checks of the functions of init's lift name (origin 1)
     after the ``base`` of the other entries' lift."""
     for fn in (fn for fn, k in zip(funcs, origin) if k):
-        for op in (op for b in fn["blocks"] for op in b["ops"]):
+        for op in emit.ops(fn):
             if op[0] == "CALLOTHER" and op[3] == "objchk":
                 op[2][1] = [op[2][1][0], op[2][1][1] + base, op[2][1][2]]
 
@@ -693,10 +693,12 @@ def _guards(prog):
     functions leave by."""
     out = set()
     for fn in prog.functions:
-        exits, whys = fn.get("exits", []), fn["whys"]
-        for op in (op for b in fn["blocks"] for op in b["ops"]):
-            if op[0] in ("CALLOTHER", "BRANCHIND") and len(op) > 5:
-                out |= {(whys[j]["kind"], whys[j]["at"], whys[j]["reg"]) for j in exits[op[5]]}
+        whys = fn["whys"]
+        for op in emit.ops(fn):
+            if op[0] in ("CALLOTHER", "BRANCHIND"):
+                out |= {
+                    (whys[j]["kind"], whys[j]["at"], whys[j]["reg"]) for j in emit.exits(fn, op)
+                }
     return out
 
 

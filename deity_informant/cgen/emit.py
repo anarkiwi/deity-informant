@@ -237,7 +237,7 @@ class Body:  # pylint: disable=too-many-instance-attributes
         (``fn["whys"]`` of its tag) joins the key's ``ctx.whys``."""
         k = self.ctx.traps.setdefault(key, len(self.ctx.traps))
         whys = self.ctx.whys.setdefault(key, [])
-        for j in self.fn.get("exits", [])[op[5]] if len(op) > 5 else ():
+        for j in exits(self.fn, op):
             if (self.fi, j) not in whys:
                 whys.append((self.fi, j))
         self.put(f"func.call @trap({self.const(k, 2)}) : (i16) -> ()")
@@ -335,17 +335,26 @@ class Body:  # pylint: disable=too-many-instance-attributes
         return head + ["    cf.br ^b0"] + body + ["  }"]
 
 
+def ops(fn):
+    """The ops of lifted function ``fn``, block by block."""
+    return (op for b in fn["blocks"] for op in b["ops"])
+
+
+def exits(fn, op):
+    """The indices into ``fn["whys"]`` of the guards op ``op`` of ``fn`` leaves by."""
+    return fn.get("exits", [])[op[5]] if len(op) > 5 else ()
+
+
 class Context:  # pylint: disable=too-few-public-methods
     """What the functions of one program share: the register file, names and traps."""
 
     def __init__(self, funcs, keep_dummy, symbols=0):
         sizes = {r: {2 if r == 16 else 1} for r in (0, *ENTRY_REGS)}
         for fn in funcs:
-            for b in fn["blocks"]:
-                for op in b["ops"]:
-                    for v in filter(None, [op[1], *op[2]]):
-                        if v[0] == "r" and v[1] < NSLOT:
-                            sizes.setdefault(v[1], set()).add(v[2])
+            for op in ops(fn):
+                for v in filter(None, [op[1], *op[2]]):
+                    if v[0] == "r" and v[1] < NSLOT:
+                        sizes.setdefault(v[1], set()).add(v[2])
         assert all(len(s) == 1 for s in sizes.values()), sizes
         self.regfile = [(r, next(iter(s))) for r, s in sorted(sizes.items())]
         self.types = ", ".join(ty(s) for _, s in self.regfile)
@@ -355,9 +364,7 @@ class Context:  # pylint: disable=too-few-public-methods
             self.names[i] = f"f{j}"
         self.traps, self.keep_dummy, self.symbols, self.funcs = {}, keep_dummy, symbols, funcs
         self.whys = {}
-        self.sites = Counter(
-            op[3] for fn in funcs for b in fn["blocks"] for op in b["ops"] if op[0] == "CALL"
-        )
+        self.sites = Counter(op[3] for fn in funcs for op in ops(fn) if op[0] == "CALL")
 
 
 def emit(funcs, entries, keep_dummy, symbols):

@@ -3,7 +3,7 @@ untranslated paths of the lift's deopts and switch defaults reaching it, the val
 pass and the analysis finds, the traps implying it, and the stores writing code it checks."""
 
 from ..wholeprog import REGS
-from .emit import ENTRY_REGS
+from .emit import ENTRY_REGS, exits, ops
 
 __all__ = ["ENTRY", "stores", "trap_info"]
 
@@ -118,9 +118,7 @@ class _Census:
         if ind:
             w["kind"] = "ind"
             tables = [
-                fn["tables"][op[3]]
-                for op in (op for b in fn["blocks"] for op in b["ops"])
-                if op[0] == "BRANCHIND" and len(op) > 5 and j in fn["exits"][op[5]]
+                fn["tables"][op[3]] for op in ops(fn) if op[0] == "BRANCHIND" and j in exits(fn, op)
             ]
             w["targets"] = sorted({pc for t in tables for pc, _ in t})
             w["resolved"] = w["at"] in self.ctx["jumps"]
