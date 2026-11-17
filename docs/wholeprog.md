@@ -406,6 +406,38 @@ no entry guard tests them. A translated init is lifted for any `A`, so its lift 
 values the host declares; cgen lifts it again `checked` for the declared songs only to name the
 guards they imply (cgen [*Init*](cgen.md#init)).
 
+### Driver loop
+
+A host that runs init and then calls the other entries in a loop (`init(A); for (;;) play();`)
+passes `driven` (`{addr: values}`): what init leaves whatever the data, `Program.exit` of its
+`once` lift. That lift finds it with no table taken as constant, with `A` unknown, every byte a
+store of known address writes tracked, devices answering what their model allows: the join of
+the tracked bytes at every return that may reach the host (all but a callee's at its entry
+height to its call's return site and one at a known height above its entry, through what it
+pushed; a return at an unknown height counts). Immediates and device answers reach it, a byte
+loaded from the song does not, so it holds for every song and none of its data reaches the
+`.c`.
+
+The entries' lift (its pointer reach pass) then solves the driver head: what every call of an
+entry starts with of the tracked bytes, the least fixpoint of `driven` joined with what every
+return to the host leaves, widened at the head with the loop thresholds, the value sets of
+tracked bytes joined exactly (each at most `CAP` values), again with no table taken as
+constant. Every analysis of that pass starts each entry from the head, and its byte bounds
+start from the head's intervals where init's variables have none. Per byte the head knows,
+the hull of what it holds at every start the entries reach (still with no table taken as
+constant) bounds each plain load of its address in the optimizer's value numbering, so a
+branch on a cursor init zeroes and play wraps folds where its bound decides it. A store
+keeps a register's value set in a tracked byte only where no table is taken as constant:
+a set read from the song's tables never crosses a store. A tracked byte with a value set has
+the set's hull as its interval, so widening never loses it; a flag an instruction sets from
+a tracked byte it reads (`DEC speed`) narrows the byte's set on each branch on it.
+
+The head's entries are the declared ones (`for (;;) play();`, a PSID's play address). Entries
+reached through the interrupt vectors init installs (`$0314/5`, `$0318/9`, `$FFFE/F`,
+`$FFFA/B` by the bank configuration, live as the CIA and VIC interrupt registers init writes
+allow) are a follow-up: the head would jump through the vector's bytes as tracked state, one
+entry per value they may hold, joined with discovery's rounds.
+
 ## Guards
 
 | Assumption | Check | Exit |

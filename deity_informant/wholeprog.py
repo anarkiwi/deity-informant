@@ -66,6 +66,7 @@ def lift(
     holds=(),
     checked=False,
     known=None,
+    driven=None,
 ):  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     """Lift ``entries`` of the program in ``image`` (the memory each entry starts from);
     ``cycles=True`` counts cycles and stamps volatile accesses with them; ``bank`` is a bank
@@ -89,7 +90,10 @@ def lift(
     ``docs/wholeprog.md``, *Pointer objects*); ``checked=True`` that the host checks the
     entries' declared ``A``, ``X`` and ``Y`` values before each call (the analysis takes them,
     no entry guard tests them); ``known`` ``{addr: values}`` every value a byte of ``free``
-    may hold after the init, which that init's lift bounds it to (*Init*)."""
+    may hold after the init, which that init's lift bounds it to (*Init*); ``driven``
+    ``{addr: values}``, where the host calls the entries in a loop after such an init, what
+    the init leaves whatever the data (``Program.exit`` of its lift): every entry starts
+    from the driver head (*Driver loop*)."""
     n = _native_or_raise()
     prog = n.lift_program(
         bytes(image),
@@ -111,6 +115,11 @@ def lift(
         holds=sorted((int(a), int(b)) for a, b in holds),
         checked=checked,
         known=sorted((int(a), sorted(int(x) for x in v)) for a, v in (known or {}).items()),
+        driven=(
+            None
+            if driven is None
+            else sorted((int(a), sorted(int(x) for x in v)) for a, v in driven.items())
+        ),
     )
     prog.backend = backend or BACKEND
     return prog

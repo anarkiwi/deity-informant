@@ -75,10 +75,12 @@ impl Rel {
 }
 
 /// The flag is `rel((x + off) mod 256, k)` for a value `x` bounded by `pre` that each data
-/// register `r` with a `shift[r]` holds as `x + shift[r]` (at least one does).
+/// register `r` with a `shift[r]` holds as `x + shift[r]`, and the tracked byte `mem.0` as
+/// `x + mem.1` (at least one does).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Pred {
     shift: [Option<u8>; DATA],
+    mem: Option<(u16, u8)>,
     off: u8,
     rel: Rel,
     k: u8,
@@ -332,6 +334,9 @@ pub(crate) struct St {
     /// Tracked bytes ([`Code::vecs`]) whose contents are known, by address: the table byte or
     /// constant they hold, and their interval.
     pub(crate) mem: Vec<(u16, Option<Tab>, Iv)>,
+    /// The values tracked bytes of [`St::mem`] may hold beyond their intervals, by address,
+    /// at most [`CAP`] each.
+    pub(crate) mset: Vec<(u16, Bits)>,
     /// Pointer pairs some instruction since the entry stored, by low byte, and their values
     /// ([`crate::word`], [`reach`]'s pass only).
     pub(crate) wide: Vec<(u16, Option<crate::word::Wv>)>,
@@ -389,11 +394,19 @@ impl Pv {
             set: None,
         }
     }
+    /// Its value set where kept: its set, else its one value.
+    fn held(self) -> Option<Bits> {
+        self.set
+            .or_else(|| self.iv.value().map(|v| Bits::from_iter([v])))
+    }
     fn join(self, o: Pv, w: impl Fn(Iv, Iv) -> Iv) -> Pv {
         Pv {
             iv: w(self.iv, hull(self.iv, o.iv)),
             kb: self.kb.join(o.kb),
-            set: self.set.zip(o.set).and_then(|(a, b)| a.or(b).capped()),
+            set: self
+                .held()
+                .zip(o.held())
+                .and_then(|(a, b)| a.or(b).capped()),
         }
     }
 }
@@ -421,11 +434,46 @@ impl St {
             depth: Some(0),
             xsp: None,
             mem: Vec::new(),
+            mset: Vec::new(),
             wide: Vec::new(),
             half: [None; DATA],
             mhalf: Vec::new(),
             pw: Vec::new(),
             via: [None; DATA],
+        }
+    }
+    /// The values tracked byte `a` may hold, where known: its set, else its one value.
+    pub(crate) fn mvals(&self, a: u16) -> Option<Bits> {
+        if let Ok(i) = self.mset.binary_search_by_key(&a, |e| e.0) {
+            return Some(self.mset[i].1);
+        }
+        let v = self.mem.iter().find(|e| e.0 == a)?.2.value()?;
+        Some(Bits::from_iter([v]))
+    }
+    /// Per tracked byte known, its values.
+    fn mem_values(&self) -> Vec<(u16, Vec<u8>)> {
+        (self.mem.iter())
+            .filter(|e| e.2 != Iv::full(1))
+            .map(|e| {
+                let vs = self.mvals(e.0);
+                let vs = vs.unwrap_or_else(|| (e.2.lo..=e.2.hi.min(0xff)).collect());
+                (e.0, vs.values().map(|v| v as u8).collect())
+            })
+            .collect()
+    }
+    /// Keep only the sets of the tracked bytes `keep` holds.
+    fn mset_keep(&mut self, keep: impl Fn(u16) -> bool) {
+        self.mset.retain(|e| keep(e.0));
+    }
+    /// Give tracked byte `a` the values `b` (none: only its interval).
+    fn mset_put(&mut self, a: u16, b: Option<Bits>) {
+        self.mset.retain(|e| e.0 != a);
+        if let Some(b) = b
+            .and_then(Bits::capped)
+            .filter(|b| b.values().nth(1).is_some())
+        {
+            let i = self.mset.partition_point(|e| e.0 < a);
+            self.mset.insert(i, (a, b));
         }
     }
     /// The words pointer pair `q` holds and the values of `Y` with each ([`St::pw`]).
@@ -581,6 +629,7 @@ impl St {
             src: self.src,
             set: self.set,
             mem: self.mem.clone(),
+            mset: self.mset.clone(),
             wide: self.wide.clone(),
             half: self.half,
             mhalf: self.mhalf.clone(),
@@ -904,6 +953,18 @@ pub(crate) fn refine(code: &Code, st: &St, flag: usize, want: bool) -> Option<St
             meet(x, shift(st.env[r], d.wrapping_neg()))
         })?;
         let p = Pred { pre, ..p };
+        if let Some((m, d)) = p.mem {
+            if let Some(i) = s.mem.iter().position(|e| e.0 == m) {
+                let e = s.mem[i];
+                let vals = s
+                    .mvals(m)
+                    .unwrap_or_else(|| (e.2.lo..=e.2.hi.min(0xff)).collect());
+                let keep = vals.filter(|v| sat(&p, d, want, v));
+                let iv = keep.hull()?;
+                s.mem[i] = (m, iv.value().map(|x| Tab::K(x as u8)).or(e.1), iv);
+                s.mset_put(m, Some(keep));
+            }
+        }
         for (r, d) in regs() {
             s.env[r] = restrict(&p, d, want).and_then(|iv| meet(iv, s.env[r]))?;
             s.kb[r] = s.kb[r].meet(Kb::of(s.env[r]));
@@ -1016,6 +1077,11 @@ pub(crate) struct Code<'a> {
     pub(crate) meets: std::cell::RefCell<Vec<(u32, u32)>>,
     /// The operands of the one run no input decides ([`crate::once`]).
     pub(crate) ran: &'a crate::once::Ran,
+    /// What every entry starts with of the tracked bytes: the driver head ([`head`]).
+    pub(crate) seed: Option<St>,
+    /// Iterate the driver head: each entry is called again with what the returns to the host
+    /// leave joined into its start ([`Work::drive`]).
+    pub(crate) drive: bool,
 }
 
 /// Per store `(pc, opcode, access index)` the addresses it writes: a store with a set
@@ -1109,6 +1175,11 @@ impl Code<'_> {
         };
         let (lo, hi) = (base as u32 + i.lo, base as u32 + i.hi + 1);
         (self.ram.iter().any(|&(a, b)| a <= lo && hi <= b)).then_some((base, reg))
+    }
+    /// Whether no loaded byte is read as constant (no table, no bound): a register's value set
+    /// is then of immediates and device answers alone, which a store keeps in the byte.
+    fn blind(&self) -> bool {
+        self.constant.is_empty() && self.bound.is_empty()
     }
     /// Whether this is [`reach`]'s pass (byte bounds, pointer pairs).
     fn reach_pass(&self) -> bool {
@@ -1371,27 +1442,80 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
         });
         d.iter().any(Option::is_some).then_some(d)
     };
+    // The tracked byte the instruction reads at an exact address, alone of its reads, and
+    // what it holds after as that read plus a constant (`None`: not so).
+    let mut reads = acc.iter().filter(|a| !a.store && !a.dummy);
+    let tracked = match (reads.next(), reads.next()) {
+        (Some(a), None) => a
+            .addr
+            .value()
+            .filter(|&m| st.mem.iter().any(|e| e.0 as u32 == m)),
+        _ => None,
+    };
+    let hits = |m: u32| {
+        acc.iter()
+            .any(|a| a.store && a.addr.lo <= m && m <= a.addr.hi)
+    };
+    let msym = tracked.map(|m| {
+        let (sy, _, held) = symbolic_in(ops, b, (None, None, [None; DATA]), Some(m));
+        let d = match held {
+            None if !hits(m) => Some(0),
+            Some(Some(Sym::Lin(MEM, k))) => Some(k),
+            _ => None,
+        };
+        (m as u16, sy, d)
+    });
     let mut pred = [None; 3];
     for (i, &f) in FLAGS.iter().enumerate() {
         pred[i] = if written >> f & 1 == 0 {
             st.pred[i].and_then(|p| {
-                let shift = holds(&|b| p.shift.get(b as usize).copied().flatten())?;
-                Some(Pred { shift, ..p })
-            })
-        } else if let Some(Sym::Cond(base, off, rel, k)) = sym[f] {
-            holds(&|b| (b == base).then_some(0)).map(|shift| Pred {
-                shift,
-                off,
-                rel,
-                k,
-                pre: if (base as usize) < DATA {
-                    st.env[base as usize]
-                } else {
-                    Iv::full(1)
-                },
+                let mem = p.mem.filter(|&(m, _)| !hits(m as u32));
+                let shift = holds(&|b| p.shift.get(b as usize).copied().flatten());
+                if shift.is_none() && mem.is_none() {
+                    return None;
+                }
+                Some(Pred {
+                    shift: shift.unwrap_or([None; DATA]),
+                    mem,
+                    ..p
+                })
             })
         } else {
-            None
+            let by_reg = match sym[f] {
+                Some(Sym::Cond(base, off, rel, k)) => {
+                    holds(&|b| (b == base).then_some(0)).map(|shift| Pred {
+                        shift,
+                        mem: None,
+                        off,
+                        rel,
+                        k,
+                        pre: if (base as usize) < DATA {
+                            st.env[base as usize]
+                        } else {
+                            Iv::full(1)
+                        },
+                    })
+                }
+                _ => None,
+            };
+            by_reg.or_else(|| match msym? {
+                (m, sy, Some(d)) => match sy[f] {
+                    Some(Sym::Cond(MEM, off, rel, k)) => Some(Pred {
+                        shift: [None; DATA],
+                        mem: Some((m, d)),
+                        off,
+                        rel,
+                        k,
+                        pre: st
+                            .mem
+                            .iter()
+                            .find(|e| e.0 == m)
+                            .map_or(Iv::full(1), |e| e.2),
+                    }),
+                    _ => None,
+                },
+                _ => None,
+            })
         };
     }
     let rel = std::array::from_fn(|r| match sym[r] {
@@ -1422,6 +1546,7 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
             st.xsp.filter(|_| written >> 1 & 1 == 0)
         },
         mem: st.mem.clone(),
+        mset: st.mset.clone(),
         wide: st.wide.clone(),
         half: st.half,
         mhalf: st.mhalf.clone(),
@@ -1496,9 +1621,11 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
         let (at, wide) = code.dev_store(a.addr);
         if wide {
             s.mem.retain(|e| !code.devices.regs.contains_key(&e.0));
+            s.mset_keep(|m| !code.devices.regs.contains_key(&m));
         }
         if at != a.addr {
             s.mem.retain(|e| e.0 as u32 != at.lo);
+            s.mset_keep(|m| m as u32 != at.lo);
             if code.vecs.binary_search(&(at.lo as u16)).is_ok() {
                 let iv = a.val;
                 let t = iv.value().map(|x| Tab::K(x as u8));
@@ -1518,19 +1645,30 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
             .find(|e| Some(e.0 as u32) == a.addr.value())
             .copied();
         s.mem.retain(|e| !hit(e.0));
+        s.mset_keep(|m| !hit(m));
         let Some(m) = a.addr.value() else { continue };
         let (_, _, held) = symbolic_in(ops, b, (None, None, [None; DATA]), Some(m));
-        let (t, iv) = match held {
+        let (t, iv, vals) = match held {
             Some(Some(Sym::Lin(r, 0))) if (r as usize) < DATA => {
-                (st.val(r as usize), st.env[r as usize])
+                let vals = st.held(r as usize).filter(|_| code.blind());
+                (st.val(r as usize), st.env[r as usize], vals)
             }
-            Some(Some(Sym::K(k))) => (Some(Tab::K(k)), Iv::exact(k as u32)),
-            Some(Some(Sym::Lin(MEM, k))) => (None, old.map_or(Iv::full(1), |e| shift(e.2, k))),
-            _ => (a.val.value().map(|x| Tab::K(x as u8)), a.val),
+            Some(Some(Sym::K(k))) => (Some(Tab::K(k)), Iv::exact(k as u32), None),
+            Some(Some(Sym::Lin(MEM, k))) => {
+                let vals = old.and_then(|e| st.mvals(e.0)).map(|b| b.shifted(k));
+                let iv = vals.and_then(Bits::hull);
+                (
+                    None,
+                    iv.or(old.map(|e| shift(e.2, k))).unwrap_or(Iv::full(1)),
+                    vals,
+                )
+            }
+            _ => (a.val.value().map(|x| Tab::K(x as u8)), a.val, None),
         };
         if t.is_some() || iv != Iv::full(1) {
             s.mem.push((m as u16, t, iv));
             s.mem.sort_unstable_by_key(|e| e.0);
+            s.mset_put(m as u16, vals);
         }
     }
     if code.reach_pass() {
@@ -1541,12 +1679,12 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
     // A load of a tracked byte stored since the entry, its one read, reads what was stored: a
     // return address pulled into a pointer and loaded back is the address, not the image's.
     let mut reads = acc.iter().filter(|a| !a.store && !a.dummy);
-    let stored = match (reads.next(), reads.next()) {
+    let one = match (reads.next(), reads.next()) {
         (Some(a), None) => a.addr.value(),
         _ => None,
     }
-    .and_then(|m| st.mem.iter().find(|e| e.0 as u32 == m))
-    .map(|e| e.1.or_else(|| e.2.value().map(|x| Tab::K(x as u8))));
+    .and_then(|m| st.mem.iter().find(|e| e.0 as u32 == m));
+    let stored = one.map(|e| e.1.or_else(|| e.2.value().map(|x| Tab::K(x as u8))));
     for r in (0..DATA).filter(|&r| written >> r & 1 == 1) {
         s.tag[r] = match sym[r] {
             Some(Sym::Lin(b0, 0)) if (b0 as usize) < DATA => st.tag[b0 as usize],
@@ -1584,6 +1722,7 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
             }
             Some(Sym::Lin(b0, 0)) if b0 >= DATA as u8 && b0 != MEM && v.op != 0x68 => code
                 .load_set(pc, v.op, st)
+                .or_else(|| one.and_then(|e| st.mvals(e.0)))
                 .or_else(|| code.ptr_set(pc, v.op, st)),
             _ => evals[r],
         };
@@ -1935,8 +2074,10 @@ fn join(code: &Code, a: &St, b: &St, widen: Option<&Thresholds>) -> St {
             (Some(x), Some(y)) if (x.off, x.rel, x.k) == (y.off, y.rel, y.k) => {
                 let shift =
                     std::array::from_fn(|r| x.shift[r].filter(|_| x.shift[r] == y.shift[r]));
-                shift.iter().any(Option::is_some).then_some(Pred {
+                let mem = x.mem.filter(|_| x.mem == y.mem);
+                (shift.iter().any(Option::is_some) || mem.is_some()).then_some(Pred {
                     shift,
+                    mem,
                     pre: w(x.pre, hull(x.pre, y.pre)),
                     ..*x
                 })
@@ -2009,8 +2150,18 @@ fn join(code: &Code, a: &St, b: &St, widen: Option<&Thresholds>) -> St {
             .filter_map(|&(m, x, i)| {
                 let (_, y, j) = *b.mem.iter().find(|e| e.0 == m)?;
                 let t = x.zip(y).and_then(|(x, y)| jt(x, y));
-                let iv = w(i, hull(i, j));
+                let set = a
+                    .mvals(m)
+                    .zip(b.mvals(m))
+                    .and_then(|(p, q)| p.or(q).capped());
+                let iv = set.and_then(Bits::hull).unwrap_or_else(|| w(i, hull(i, j)));
                 (t.is_some() || iv != Iv::full(1)).then_some((m, t, iv))
+            })
+            .collect(),
+        mset: (a.mem.iter())
+            .filter_map(|e| {
+                let u = a.mvals(e.0)?.or(b.mvals(e.0)?).capped()?;
+                u.values().nth(1).is_some().then_some((e.0, u))
             })
             .collect(),
     }
@@ -2221,6 +2372,12 @@ struct Work<'a> {
     /// Per return site, the addresses its callee may store into, where they are bounded
     /// ([`mods`]).
     mods: FxHashMap<u16, Vec<(u32, u32)>>,
+    /// The driver head ([`Code::drive`]): the tracked bytes at every call of an entry.
+    drv: Option<St>,
+    /// The tracked bytes every return that may go to the host leaves, joined.
+    rets: Option<St>,
+    /// The entries and their declared registers.
+    envs: Vec<(u16, Env)>,
 }
 
 #[derive(Default)]
@@ -2273,6 +2430,9 @@ fn apply(ret: &St, call: &St, linked: bool, kept: Option<&[(u32, u32)]>) -> St {
                     (a, t, i)
                 }));
             s.mem.sort_unstable_by_key(|e| e.0);
+            s.mset_keep(|m| !free(m));
+            s.mset.extend(call.mset.iter().filter(|e| free(e.0)));
+            s.mset.sort_unstable_by_key(|e| e.0);
             s.mhalf.retain(|e| !free(e.0));
             s.mhalf.extend(call.mhalf.iter().filter(|e| free(e.0)));
             s.mhalf.sort_unstable_by_key(|e| e.0);
@@ -2296,6 +2456,53 @@ fn apply(ret: &St, call: &St, linked: bool, kept: Option<&[(u32, u32)]>) -> St {
 }
 
 impl Work<'_> {
+    /// Join into [`Work::rets`] the tracked bytes of the return at `st` in context `cx` when
+    /// it may go to the host: all but a callee's return at its entry height to its call's site
+    /// (`home`) and a return at a known height above an entry's, through what it pushed.
+    fn back(&mut self, cx: u32, st: &St, home: bool) {
+        let inside = match (cx, st.depth) {
+            (NONE, Some(d)) => d > 0,
+            (ANY, _) | (NONE, None) => false,
+            (_, d) => home && d == Some(0),
+        };
+        if inside {
+            return;
+        }
+        let back = St {
+            mem: (st.mem.iter())
+                .map(|&(a, t, i)| (a, t.filter(|t| matches!(t, Tab::K(_))), i))
+                .filter(|e| e.1.is_some() || e.2 != Iv::full(1))
+                .collect(),
+            mset: st.mset.clone(),
+            ..St::new(TOP_ENV)
+        };
+        self.rets = Some(match &self.rets {
+            Some(r) => join(self.code, r, &back, None),
+            None => back,
+        });
+    }
+    /// The driver head joins, widened as a loop head, what the returns to the host left, and
+    /// calls each entry again with what it holds; whether that changed it.
+    fn drive(&mut self) -> bool {
+        let (Some(old), Some(back)) = (&self.drv, &self.rets) else {
+            return false;
+        };
+        let new = join(self.code, old, back, Some(self.thr));
+        if &new == old {
+            return false;
+        }
+        for (i, &(pc, env)) in self.envs.clone().iter().enumerate() {
+            let st = St {
+                from: 1 << (i % 64),
+                mem: new.mem.clone(),
+                mset: new.mset.clone(),
+                ..St::new(env)
+            };
+            self.flow((pc, NONE), st);
+        }
+        self.drv = Some(new);
+        true
+    }
     /// Merge `st` into the state at `key` (widening at loop heads), queueing it if it grew.
     fn flow(&mut self, key: Key, st: St) {
         let new = match self.state.get(&key) {
@@ -2391,6 +2598,14 @@ impl Work<'_> {
 
 /// What [`analyze`] finds.
 pub struct Analysis {
+    /// Per byte every return to the host may leave known whatever the data ([`Given::exit`]),
+    /// its values: the immediates and device answers that reach it, never a table's.
+    pub exit: Option<Vec<(u16, Vec<u8>)>>,
+    /// The driver head ([`Given::drive`]): per tracked byte it knows, its values.
+    pub head: Vec<(u16, Vec<u8>)>,
+    /// Per byte the driver head knows, the hull of what it holds wherever the entries run,
+    /// whatever the data.
+    pub steady: Vec<(u16, Iv)>,
     /// The entries (as in `St::from`) that reach each start.
     pub from: FxHashMap<u16, u64>,
     /// The starts reached whatever the data (no table taken as constant).
@@ -2560,6 +2775,70 @@ fn fixpoint(
     disp: &FxHashSet<u16>,
     thr: &Thresholds,
 ) -> (FxHashMap<Key, St>, FxHashMap<u16, Site>) {
+    let w = solve(code, vars, entries, sh, disp, thr, false);
+    (w.state, w.ret)
+}
+
+/// The driver loop `for (;;) entry()` after the host's init (`init`: the tracked bytes it
+/// leaves): the least fixpoint of the head, what every call of an entry starts with, joined
+/// from `init` and what every return to the host leaves, widened at the head; and per byte it
+/// knows, the hull of what the byte holds at every start the entries reach.
+fn head(
+    code: &Code,
+    vars: &FxHashMap<u16, Vec<Var>>,
+    entries: &[Entry],
+    sh: &Shape,
+    disp: &FxHashSet<u16>,
+    thr: &Thresholds,
+    init: St,
+) -> (St, Vec<(u16, Iv)>) {
+    let c = Code {
+        seed: Some(init),
+        drive: true,
+        ..code.clone()
+    };
+    let w = solve(&c, vars, entries, sh, disp, thr, true);
+    let head = w.drv.expect("driven");
+    let mut steady: Vec<(u16, Option<Iv>)> = (head.mem.iter())
+        .filter(|e| !(0x100..0x200).contains(&e.0) && !code.dev.contains(e.0 as usize))
+        .map(|e| (e.0, Some(e.2)))
+        .collect();
+    for st in w.state.values() {
+        for (a, iv) in &mut steady {
+            *iv = iv
+                .zip(st.mem.iter().find(|e| e.0 == *a))
+                .map(|(i, e)| hull(i, e.2));
+        }
+    }
+    let steady = (steady.into_iter())
+        .filter_map(|(a, iv)| Some((a, iv.filter(|&i| i != Iv::full(1))?)))
+        .collect();
+    (head, steady)
+}
+
+/// The tracked bytes every return of `entries` to the host leaves, joined, from no tracked
+/// byte known: a host's init's exit.
+fn exit(
+    code: &Code,
+    vars: &FxHashMap<u16, Vec<Var>>,
+    entries: &[Entry],
+    sh: &Shape,
+    disp: &FxHashSet<u16>,
+    thr: &Thresholds,
+) -> Option<St> {
+    solve(code, vars, entries, sh, disp, thr, true).rets
+}
+
+/// The fixpoint's work, with [`Work::rets`] where `collect`.
+fn solve<'a>(
+    code: &'a Code<'a>,
+    vars: &FxHashMap<u16, Vec<Var>>,
+    entries: &[Entry],
+    sh: &'a Shape,
+    disp: &FxHashSet<u16>,
+    thr: &'a Thresholds,
+    collect: bool,
+) -> Work<'a> {
     let (rets, heads, brk_rets) = (&sh.rets, &sh.heads, &sh.brk_rets);
     let mut w = Work {
         code,
@@ -2570,22 +2849,35 @@ fn fixpoint(
         thr,
         ret: FxHashMap::default(),
         mods: code.mods.clone(),
+        drv: None,
+        rets: None,
+        envs: entries.iter().map(|e| (e.pc, e.env())).collect(),
     };
+    let seed = code.seed.clone().unwrap_or_else(|| St::new(TOP_ENV));
+    w.drv = code.drive.then(|| seed.clone());
     for (i, e) in entries.iter().enumerate() {
         let env = e.env();
         w.flow(
             (e.pc, NONE),
             St {
                 from: 1 << (i % 64),
+                mem: seed.mem.clone(),
+                mset: seed.mset.clone(),
                 ..St::new(env)
             },
         );
     }
     let mut acc = Vec::new();
-    while let Some(key @ (pc, cx)) = w.queue.pop_front() {
+    while let Some(key @ (pc, cx)) = w.queue.pop_front().or_else(|| {
+        w.drive();
+        w.queue.pop_front()
+    }) {
         w.queued.remove(&key);
         let st = w.state[&key].clone();
         for v in &vars[&pc] {
+            if collect && matches!(v.flow, Flow::Rts(_) | Flow::Rti(_)) {
+                w.back(cx, &st, !rets.wild.contains(&pc));
+            }
             acc.clear();
             let out = step(code, pc, v, &st, &mut acc);
             match (&v.flow, Template::of(v.op).ctrl) {
@@ -2687,7 +2979,7 @@ fn fixpoint(
             }
         }
     }
-    (w.state, w.ret)
+    w
 }
 
 /// The [`Arm`] of the computed transfer `f` at `pc` to its `k`th target, where its target
@@ -2930,6 +3222,9 @@ fn reach(
     for a in code.observed.ones() {
         entry[a] = None;
     }
+    for &(a, _, iv) in code.seed.iter().flat_map(|s| &s.mem) {
+        entry[a as usize] = Some(iv);
+    }
     let top = vec![None; 0x10000];
     let runs = match proof {
         true => Vec::new(),
@@ -3014,6 +3309,8 @@ fn reach(
         classes: code.classes.clone(),
         meets: Default::default(),
         ran: code.ran,
+        seed: code.seed.clone(),
+        drive: false,
     };
     let mut sh = p.sh;
     c.mods = mods(&c, p.vars, &FxHashMap::default(), &sh.live);
@@ -3398,6 +3695,9 @@ fn bounded_stores(
 #[derive(Clone, Copy)]
 pub struct Wanted<'a> {
     pub held: &'a FixedBitSet,
+    /// Where the host calls the entries in a loop after its init, what init leaves
+    /// ([`Given::drive`]).
+    pub driven: Option<&'a [(u16, Vec<u8>)]>,
 }
 
 /// What the analysis takes beyond the program: the `[lo, hi)` the program was loaded to, the
@@ -3428,6 +3728,12 @@ pub struct Given<'a> {
     pub devices: &'a crate::dev::Devices,
     /// The operands of the one run no input decides ([`crate::once`]).
     pub ran: &'a crate::once::Ran,
+    /// Where the host calls the entries in a loop after its init: the values init leaves in
+    /// the bytes it leaves known whatever the data ([`Analysis::exit`] of its lift), from
+    /// which the driver head starts ([`head`]).
+    pub drive: Option<&'a [(u16, Vec<u8>)]>,
+    /// Find [`Analysis::exit`].
+    pub exit: bool,
 }
 
 /// The runs of the loaded program outside page 1 and the volatile ranges ([`Code::ram`]).
@@ -3495,8 +3801,49 @@ pub fn analyze(
         classes: FxHashMap::default(),
         meets: Default::default(),
         ran: given.ran,
+        seed: None,
+        drive: false,
     };
     let thr = Thresholds::new(vars, &code);
+    // Init's exit and the driver head are taken whatever the data: no table as constant.
+    let exit = given.exit.then(|| {
+        let mut vecs = code.vecs.clone();
+        vecs.extend(vars.values().flatten().flat_map(|v| {
+            (v.acc.iter())
+                .filter(|a| a.store && !a.dummy)
+                .filter_map(|a| a.addr.value())
+                .filter(|&a| !(0x100..0x200).contains(&a) && !code.dev.contains(a as usize))
+                .map(|a| a as u16)
+        }));
+        vecs.sort_unstable();
+        vecs.dedup();
+        let c = Code {
+            constant: FixedBitSet::new(),
+            vecs,
+            ..code.clone()
+        };
+        exit(&c, vars, entries, &full, disp, &thr).map_or_else(Vec::new, |s| s.mem_values())
+    });
+    let mut code = code;
+    let mut steady = Vec::new();
+    if let Some(init) = given.drive {
+        let mut st = St::new(TOP_ENV);
+        for (a, vs) in init
+            .iter()
+            .filter(|e| code.vecs.binary_search(&e.0).is_ok())
+        {
+            let b: Bits = vs.iter().map(|&v| v as u32).collect();
+            let Some(iv) = b.hull() else { continue };
+            st.mem.push((*a, iv.value().map(|x| Tab::K(x as u8)), iv));
+            st.mset_put(*a, Some(b));
+        }
+        let blind = Code {
+            constant: FixedBitSet::new(),
+            ..code.clone()
+        };
+        let (h, s) = head(&blind, vars, entries, &full, disp, &thr, st);
+        (code.seed, steady) = (Some(h), s);
+    }
     // The starts reached whatever the data: no table taken as constant.
     let blind = Code {
         constant: FixedBitSet::new(),
@@ -3850,6 +4197,9 @@ pub fn analyze(
         let (jumps, sels) =
             crate::dispatch::jumps(&code, vars, &state, &sets, &objs, &stores, &cellvals);
         return Analysis {
+            exit,
+            head: code.seed.as_ref().map_or_else(Vec::new, St::mem_values),
+            steady,
             ptrs,
             runs: match given.reach {
                 true => data_runs(given, &bytes),

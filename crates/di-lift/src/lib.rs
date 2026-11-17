@@ -91,6 +91,10 @@ pub struct Opts {
     /// and the values of the init's stores that may write it, each of known addresses and
     /// values.
     pub known: Vec<(u16, Vec<u8>)>,
+    /// The host calls the entries in a loop after its init, which leaves these values in
+    /// these bytes whatever the data (`Program::exit` of its lift): each entry starts from the
+    /// driver head ([`vsa`]).
+    pub driven: Option<Vec<(u16, Vec<u8>)>>,
 }
 
 impl Default for Opts {
@@ -110,6 +114,7 @@ impl Default for Opts {
             holds: Vec::new(),
             checked: false,
             known: Vec::new(),
+            driven: None,
         }
     }
 }
@@ -258,7 +263,9 @@ fn zone_checks(g: &mut analysis::Graph, free: &FxHashMap<u16, Vec<u8>>) {
 /// Per byte, the values it may hold when every store that may write it has an exact address
 /// and a value interval narrower than a byte: its entry byte (for a code cell the host's init
 /// leaves, its values over init's runs) and the stored values (`None`: unbounded, as for page 1
-/// where pushes land and the other variables init leaves, whose words the reach pass takes).
+/// where pushes land and the other variables init leaves, whose words the reach pass takes);
+/// for another variable init leaves that the driver head knows, its hull wherever the entries
+/// run ([`analysis::Graph::steady`]).
 fn byte_bounds(g: &analysis::Graph, free: &FxHashMap<u16, Vec<u8>>) -> Vec<Option<Iv>> {
     let mut held: Vec<Option<Iv>> = (0..0x10000)
         .map(|a| match free.get(&(a as u16)) {
@@ -277,6 +284,11 @@ fn byte_bounds(g: &analysis::Graph, free: &FxHashMap<u16, Vec<u8>>) -> Vec<Optio
             held[ac.addr.lo as usize..=ac.addr.hi.min(0xffff) as usize].fill(None);
         } else if let Some(h) = held[ac.addr.lo as usize].as_mut() {
             *h = vsa::hull(*h, ac.val);
+        }
+    }
+    for &(a, iv) in &g.steady {
+        if free.contains_key(&a) && !g.cells.contains(a as usize) {
+            held[a as usize] = Some(iv);
         }
     }
     held
@@ -665,7 +677,10 @@ pub fn lift_banked(
             opts.loaded,
             volatile,
             &opts.devices,
-            opts.entry_sp.map(|_| vsa::Wanted { held: &held }),
+            opts.entry_sp.map(|_| vsa::Wanted {
+                held: &held,
+                driven: opts.driven.as_deref(),
+            }),
             &free,
             &known,
             opts.once,
@@ -1002,6 +1017,7 @@ pub fn lift_banked(
             volatile,
             cycles: opts.cycles,
             sums: None,
+            steady: &g.steady,
         };
         let run = |fs: &mut Vec<Function>, cx: &opt::Ctx| {
             fs.iter_mut()
@@ -1162,6 +1178,8 @@ pub fn lift_banked(
             v
         },
         kept: g.kept.clone(),
+        exit: g.exit.clone(),
+        head: g.head.clone(),
         sets: {
             let mut s: Vec<(u16, Vec<u8>)> = g
                 .closed

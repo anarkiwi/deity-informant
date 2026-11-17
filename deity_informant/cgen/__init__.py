@@ -789,6 +789,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     (:func:`_fixed`), and init from ``image`` where its lift reproduces every run (*Init*)."""
     image, entries = bytes(image), list(entries)
     played, state, alias, start, lone, fixed = entries, None, [], image, None, frozenset()
+    bare = None
     entailed = frozenset()
     pc = None if init is None else entries[init][0]
     kw = {"entry_sp": emit.ENTRY_REGS[3], "loaded": loaded, "fold": True, "devices": devices}
@@ -845,6 +846,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
             held=held,
             holds=[] if lone is None else list(lone.written),
             known=known,
+            driven=None if bare is None else bare.exit,
             **kw,
         )
 

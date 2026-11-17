@@ -194,7 +194,10 @@ the image, so where the lift decides a branch from constant bytes init reads the
 those bytes. A translated init's lift bounds each byte every store that may write it writes with
 known addresses and values (`Program.values`, its image byte among them): the other entries'
 lift takes those as the byte's values (`known`), so a cell only such stores of init write is
-closed, its dispatch with no trap.
+closed, its dispatch with no trap. What init's lift leaves at its return whatever the data (`Program.exit`: immediates
+and device answers, no table) starts the other entries' driver head (`driven`,
+[wholeprog](wholeprog.md#driver-loop)): a cursor init zeroes and play wraps is bounded at every
+call, so a read it indexes needs no check and a branch it decides folds.
 
 ### Polling loops
 
