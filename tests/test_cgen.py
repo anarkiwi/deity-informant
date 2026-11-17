@@ -4192,6 +4192,81 @@ def entries_of(info):
     return {f["entry"] for f in info["provenance"]["functions"].values()}
 
 
+FLAG_CMP = """
+entry:  AND #$03
+        CMP #$02
+        BCC low
+        SBC #$01
+        STA $C000
+        RTS
+low:    STA $C001
+        RTS
+end:
+"""
+FLAG_ADC = """
+entry:  AND #$0F
+        CLC
+        ADC #$10
+        STA $C000
+        LDA #$20
+        ADC #$00
+        STA $C001
+        RTS
+end:
+"""
+FLAG_ASL = """
+entry:  TAX
+        BPL done
+        ASL A
+        STA $C000
+        TXA
+        SBC #$01
+        STA $C001
+done:   RTS
+end:
+"""
+
+
+@pytest.mark.parametrize(
+    "src,values,want",
+    [
+        (FLAG_CMP, range(4), r"io_write\(0xC000, \w+ - 1\)"),
+        (FLAG_ADC, range(4), r"io_write\(0xC001, 0x20\)"),
+        (FLAG_ASL, (0, 0x7F, 0x80, 0xC3, 0xFF), r"io_write\(0xC001, a - 1\)"),
+    ],
+    ids=["cmp-bcc-sbc", "adc-leftover", "asl-sbc"],
+)
+def test_carry_known_where_consumed(prefix, tmp_path, src, values, want):
+    """A carry the code leaves for an ADC or SBC without CLC or SEC is the constant it is
+    there: set by a compare the branch on it decides, by a shift of a bit the branch tests,
+    never by an add of register values that cannot carry; no flag of it is left."""
+    c, _, _ = check(prefix, tmp_path, src, entry_calls(values))
+    assert re.search(want, c), c
+    assert not re.search(r"\(\w+ [<>]=? \w+[^)]*\) \+|- \(\d+ -", c), c
+
+
+FLAG_LEFT = """
+entry:  AND #$0F
+        CLC
+        ADC #$F8
+        STA $C000
+        LDA #$20
+        SBC #$00
+        STA $C001
+        RTS
+end:
+"""
+
+
+def test_carry_left_for_another_value_is_its_own_variable(prefix, tmp_path):
+    """A carry one add leaves that varies and a later SBC reads is a variable of its own,
+    set where the add makes it; the subtract reads it, not the add's operands."""
+    c, _, _ = check(prefix, tmp_path, FLAG_LEFT, entry_calls(range(16)))
+    body = body_of(c, "entry")
+    name = re.search(r"uint8_t (c\d+) = ", body).group(1)
+    assert re.search(r"io_write\(0xC001, " + name + r" \+ 0x1F\)", body), body
+
+
 def test_shared_tail_entered_by_jumps_is_a_function(prefix, tmp_path):
     """A tail two procedures enter by `JMP` and by falling through at their entry height,
     which no `JSR` targets, is one function both tail-call; code past a push and a pull

@@ -8,6 +8,7 @@ is made unsigned only where 16-bit ``int`` arithmetic could overflow.
 from __future__ import annotations
 
 import bisect
+import math
 import operator
 import re
 from collections import Counter
@@ -223,6 +224,10 @@ OFFSETS = {
 }
 #: The pure operations whose intervals :meth:`Func.iv` derives from their operands'.
 DERIVED = CASTS | set(BINOP) | {"arith.select"}
+#: Operations whose second operand zero leaves the first.
+IDENTITY = {"arith.addi", "arith.subi", "arith.ori", "arith.xori", "arith.shli", "arith.shrui"}
+#: Most combinations of inputs a flag is evaluated over (:meth:`Func.flag_at`).
+FLAG_INPUTS = 1 << 12
 #: An unsigned or equality ``cmpi`` predicate with its operands swapped, and negated.
 SWAPPED = {0: 0, 1: 1, 6: 8, 7: 9, 8: 6, 9: 7}
 NEGATED = {0: 1, 1: 0, 6: 9, 7: 8, 8: 7, 9: 6}
@@ -453,6 +458,132 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                     o.args[i] = hi_of[x]
                 elif x in lo_of and self.after(lo_of[x][0], o):
                     o.args[i] = lo_of[x][1]
+        self.reindex()
+
+    def fold_flags(self):
+        """Read each truth value (:meth:`is_flag`) an arithmetic operation consumes as the
+        constant it is wherever that operation runs: its interval there (the branches every
+        path to it takes, :meth:`iv_at`), else every combination of the values it is computed
+        from there (:meth:`flag_at`). The constants fold forward; a flag left unused dies."""
+        new, changed = {}, {}
+        for o in list(self.walk()):
+            if not o.name.startswith("arith.") or o.name == "arith.constant":
+                continue
+            blk = self.where[id(o)][0].name
+            for i, c in enumerate(o.args):
+                if (c in self.defs or c in self.arg_block) and self.types.get(c) in WIDTH:
+                    k = self.flag_at(c, blk)
+                    if k is not None:
+                        o.args[i] = self.constant(new, self.types[c], k, o.pc, "%fc")
+                        changed[id(o)] = o
+        if changed:
+            self.prepend(new)
+            self.reindex()
+            self.fold_from(list(changed.values()))
+
+    def flag_at(self, c, blk):
+        """The one value truth value ``c`` (:meth:`is_flag`) takes wherever block ``blk`` runs, or
+        None: its interval there when it reads no memory, else its values over every
+        combination (at most :data:`FLAG_INPUTS`) of the values it is computed from, each in its
+        interval there and a load over every byte: no byte of memory decides it, so the data
+        does not shape the C."""
+        if self.iv(c) != (0, 1) or not self.is_flag(c, set()):
+            return None
+        used = sorted(self.free_values(c, set()))
+        loads = {x for x in used if x in self.defs and self.defs[x].name == "memref.load"}
+        if not loads:
+            lo, hi = self.iv_at(c, blk)
+            if lo == hi:
+                return lo
+        ranges = [(0, 255) if x in loads else self.iv_at(x, blk) for x in used]
+        if math.prod(h - l + 1 for l, h in ranges) > FLAG_INPUTS:
+            return None
+        grid = np.meshgrid(*(np.arange(l, h + 1) for l, h in ranges), indexing="ij")
+        try:
+            vals = np.unique(self.evaluate(c, {x: g.ravel() for x, g in zip(used, grid)}, {}))
+        except Unknown:
+            return None
+        return int(vals[0]) if len(vals) == 1 else None
+
+    def is_flag(self, v, seen):
+        """Whether value ``v`` is a truth value: an ``i1``, its zero extension, or a block
+        argument every edge gives one."""
+        if v in seen:
+            return True
+        seen.add(v)
+        if self.types.get(v) == "i1":
+            return True
+        d = self.defs.get(v)
+        if d is not None:
+            return d.name == "arith.extui" and self.types.get(d.args[0]) == "i1"
+        srcs = self.arg_src.get(v)
+        return bool(srcs) and all(self.is_flag(o.args[i], seen) for o, i, _ in srcs)
+
+    def carry(self, v):
+        """Whether value ``v`` is a truth value (:meth:`is_flag`) an add or subtract reads as
+        data: a carry or borrow the code leaves for an ``ADC`` or ``SBC``, its own variable."""
+        if self.types.get(v) != "i1" and v not in self.arg_block:
+            return False
+        if self.iv(v) != (0, 1) or not self.is_flag(v, set()):
+            return False
+        work, seen = [v], set()
+        while work:
+            x = work.pop()
+            for u in self.users.get(x, ()):
+                if u.name in ("arith.addi", "arith.subi"):
+                    return True
+                if u.name in ("arith.extui", "arith.xori") and u.res[0] not in seen:
+                    seen.add(u.res[0])
+                    work.append(u.res[0])
+        return False
+
+    def free_values(self, v, seen):
+        """The values ``v`` is computed from through arithmetic: block arguments, loads and
+        results of other operations."""
+        if v in seen:
+            return set()
+        seen.add(v)
+        d = self.defs.get(v)
+        if d is not None and d.name == "arith.constant":
+            return set()
+        if d is None or not d.name.startswith("arith."):
+            return {v}
+        return set().union(*(self.free_values(a, seen) for a in d.args))
+
+    def constant(self, new, t, v, pc, prefix):
+        """The value of a constant ``v`` of type ``t`` among the new operations ``new``, its
+        definition recorded at once."""
+        k = self.kop(new, "arith.constant", [], t, pc, f"value = {v} : {t}", prefix=prefix)
+        self.defs[k] = next(x for x in new.values() if x.res[0] == k)
+        return k
+
+    def fold_from(self, ops):
+        """Fold forward from operations ``ops``: one of constants becomes its value, one adding,
+        subtracting, or-ing or xor-ing a zero its other operand."""
+        sub, new, work = {}, {}, list(ops)
+        while work:
+            o = work.pop()
+            if len(o.res) != 1 or not o.name.startswith("arith.") or o.res[0] in sub:
+                continue
+            o.args = [_resolve(sub, a) for a in o.args]
+            r, k = o.res[0], [self.const_of(a) for a in o.args]
+            if o.name in IDENTITY and k[1] == 0:
+                sub[r] = o.args[0]
+            elif o.name in ("arith.addi", "arith.ori", "arith.xori") and k[0] == 0:
+                sub[r] = o.args[1]
+            elif o.name != "arith.constant" and k and None not in k:
+                try:
+                    v = int(self.evaluate(r, {}, {}))
+                except Unknown:
+                    continue
+                sub[r] = self.constant(new, self.types[r], v, o.pc, "%ff")
+            else:
+                continue
+            work += self.users.get(r, [])
+        if new:
+            self.prepend(new)
+        for o in self.walk():
+            o.args = [_resolve(sub, a) for a in o.args]
         self.reindex()
 
     def after(self, a, b):
@@ -893,6 +1024,9 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             top = (1 << self.width(x)) - 1
             n = next(v for v in k if v is not None) & top
             r = {0: (n, n), 6: (0, n - 1), 7: (0, n), 8: (n + 1, top), 9: (n, top)}.get(pred)
+            if pred == 1:
+                lo, hi = self.iv(x)
+                r = (lo + 1, hi) if n == lo else (lo, hi - 1) if n == hi else None
             if r is not None and r[0] <= r[1]:
                 self.narrow(x, r, facts)
 
@@ -2177,6 +2311,8 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             mem = o.name == "memref.load" and f.named(o) is None
             mem = mem or any(self.memf.get(a) for a in o.args if a in self.inline)
             self.memf[v] = mem
+            if f.carry(v):
+                continue
             if o.name in ("arith.constant", "ub.poison") or f.named(o) is not None:
                 self.inline.add(v)
                 continue
@@ -2231,7 +2367,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         """The C variable of value ``v`` (or structuring variable), named on first use."""
         if v not in self.names:
             self.nvar += 1
-            self.names[v] = f"v{self.nvar}"
+            self.names[v] = f"{'c' if self.f.carry(v) else 'v'}{self.nvar}"
             self.types[self.names[v]] = "uint8_t *" if v in self.f.kptrs else CTYPE[width]
         return self.names[v]
 
@@ -3703,6 +3839,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         for f in self.funcs:
             f.carry16()
             f.fold_known_addresses()
+            f.fold_flags()
         self.unread_stores()
         live, work = {f.name: set() for f in self.funcs}, []
 
