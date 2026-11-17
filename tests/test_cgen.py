@@ -7698,6 +7698,50 @@ def test_cell_from_song_data_before_its_first_read(prefix, tmp_path, init, aim):
     play(tmp_path, c, h, img, labels, calls, trap=(1 + 4, k) if aim else None)
 
 
+CELLSUM = """
+init:   LDA #0
+        STA pos
+        RTS
+play:   LDX pos
+        LDA ordlo,X
+        CLC
+        ADC base
+        STA rd+1
+        LDA ordhi,X
+        ADC base+1
+        STA rd+2
+        LDY #2
+rd:     LDA $FFFF,Y
+        STA $C000
+        BEQ rest
+        INC pos
+        RTS
+rest:   LDA #0
+        STA pos
+        RTS
+pos:    .byte 0
+base:   .byte lo(i0),hi(i0)
+ordlo:  .byte 0,3,6
+ordhi:  .byte 0,0,0
+i0:     .byte 1,2,3
+i1:     .byte 4,5,6
+i2:     .byte 0,0,0
+end:
+"""
+
+
+def test_operand_cell_pointer_checked_at_its_definition(prefix, tmp_path):
+    """A song pointer play stores into an access's operand cells is checked once, after the
+    store completing it, with the ``Y`` the access adds (``objchk``, ``def`` "machine"): the
+    read through it is plain."""
+    img, labels, loaded = assemble(CELLSUM)
+    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+    assert not re.search(r"\b(?:rd|oob_rd|rdC\d+|cgen_var)\(", body_of(c, "play"))
+    assert machine_guard(info, labels["rd"]) is None
+    assert machine_guard(info, labels["rd"] - 5) is not None
+    play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", 0)] * 8)
+
+
 JUMPS = """
 init:   LDA #$00
         STA pos

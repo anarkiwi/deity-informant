@@ -2515,10 +2515,17 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         """The test ``objchk(p, j)`` of call ``o``: whether pointer ``p`` lies outside object
         ``j``, whose bounds the ``.h`` names."""
         p, j = self.ex(o.args[0]), self.f.defs[o.args[1]].int_prop("value")
+        # A check after a pointer's definition: the pointer plus ``lo`` in the block ``j``
+        # with ``k`` bytes past it.
+        j, lo, k = self.mod.ptr_slack.get(j, (j, 0, 0))
         self.mod.objs_used.add(j)
+        at = f"(uint16_t)({par(p, 12, '+')} + {lo})" if lo else par(p, 12, "-")
         if j in self.mod.ptr_parts:
-            return E(f"cgen_out{j}({p.text})", 16, "", 0, 1, **join(p))
-        text = f"((uint16_t)({par(p, 12, '-')} - CGEN_OBJ{j}_ORG) > CGEN_OBJ{j}_LIM)"
+            return E(f"cgen_out{j}({at if lo else p.text}, {k})", 16, "", 0, 1, **join(p))
+        off = f"(uint16_t)({at} - CGEN_OBJ{j}_ORG)"
+        text = f"({off} > CGEN_OBJ{j}_LIM)"
+        if k:
+            text = f"({off} > CGEN_OBJ{j}_LIM || CGEN_OBJ{j}_LIM - {off} < {k})"
         return E(text, 16, "", 0, 1, **join(p))
 
     def checked(self, o, j, a):
@@ -3373,6 +3380,8 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.reach, self.proven, self.checked, self.konsts = {}, {}, set(), {}
         #: The pointer objects ``[(lo, hi)]`` the lift checks, and those the ``.c`` names.
         self.ptr_objects, self.objs_used, self.ptr_parts = [], set(), {}
+        #: Per object of a pointer's check after its definition, ``(block, lo, k)``.
+        self.ptr_slack = {}
         #: The held spans whose bounds-checked readers find promoted cells' variables.
         self.var_spans, self.var_at = set(), []
         self.offsets, self.insn = {}, np.zeros(0x10000, dtype=bool)
@@ -3941,27 +3950,45 @@ class Module:  # pylint: disable=too-many-instance-attributes
         ``CGEN_OBJj_OUT``)."""
         out = []
         for j in sorted(self.objs_used & set(self.ptr_parts)):
+            lo, lim = f"cgen_lo{j}", f"cgen_lim{j}"
             out += [
-                f"static __attribute__((noinline)) uint8_t cgen_out{j}(uint16_t p) {{",
-                f"return CGEN_OBJ{j}_OUT(p);",
+                f"static const uint16_t {lo}[] = {{CGEN_OBJ{j}_LO}};",
+                f"static const uint16_t {lim}[] = {{CGEN_OBJ{j}_LIM}};",
+                f"static __attribute__((noinline)) uint8_t cgen_out{j}(uint16_t p, uint8_t k) {{",
+                f"for (uint16_t i = 0; i < sizeof {lo} / sizeof *{lo}; ++i) {{",
+                f"uint16_t d = p - {lo}[i];",
+                f"if (d <= {lim}[i] && k <= (uint16_t)({lim}[i] - d)) {{",
+                "return 0;",
+                "}",
+                "}",
+                "return 1;",
                 "}",
             ]
         for (kind, regs, spans), name in sorted(self.block_fns.items(), key=lambda kv: kv[1]):
-            *tests, last = self.choices(regs, spans, "a")
+            names = [f"R{k}" for k in regs] + [f"C{j}" for j in spans]
+            self.choices(regs, spans, "a")
+            ptr = "const uint8_t *const" if kind == "rd" else "uint8_t *const"
+            n = len(names)
+            # Its runs' origins, lengths and arrays, the address's run found by a search: the
+            # last needs no test.
+            out += [
+                f"static const uint16_t {name}_org[] = {{{', '.join(f'{x}_ORG' for x in names)}}};",
+                f"static const uint16_t {name}_len[] = {{{', '.join(f'{x}_LEN' for x in names)}}};",
+                f"static {ptr} {name}_at[] = {{{', '.join(names)}}};",
+            ]
+            find = [
+                "uint16_t i = 0;",
+                f"while (i < {n - 1} && (uint16_t)(a - {name}_org[i]) >= {name}_len[i]) {{",
+                "++i;",
+                "}",
+            ]
+            el = f"{name}_at[i][(uint16_t)(a - {name}_org[i])]"
             if kind == "rd":
-                body = "".join(f"{t} ? {r} : " for t, r in tests) + last[1]
-                out += [
-                    f"static __attribute__((noinline)) uint8_t {name}(uint16_t a) {{",
-                    f"return {body};",
-                    "}",
-                ]
+                sig = f"static __attribute__((noinline)) uint8_t {name}(uint16_t a) {{"
+                out += [sig, *find, f"return {el};", "}"]
             else:
-                body = "".join(f"if ({t}) {r} = v; else " for t, r in tests) + f"{last[1]} = v;"
-                out += [
-                    f"static __attribute__((noinline)) void {name}(uint16_t a, uint8_t v) {{",
-                    body,
-                    "}",
-                ]
+                sig = f"static __attribute__((noinline)) void {name}(uint16_t a, uint8_t v) {{"
+                out += [sig, *find, f"{el} = v;", "}"]
         return out
 
     def choices(self, regs, spans, addr, indexed=None, tests=None):

@@ -400,6 +400,9 @@ pub struct Program {
     pub objects: Vec<(u16, u16, Vec<u16>)>,
     /// Per object of several runs (a data block, [`crate::objects`]), its runs `[lo, hi)`.
     pub parts: Vec<(u16, Vec<(u32, u32)>)>,
+    /// Per object of a pointer's check after its definition, the block it checks the pointer
+    /// plus `lo` in with `k` bytes past it: `(object, (block, lo, k))` ([`crate::objects`]).
+    pub slack: Vec<(u16, (u16, u16, u16))>,
     /// The accesses `(pc, store, runs)` through pointers from the program's data: plain
     /// accesses into the runs `[lo, hi)` of the data block they lie in, their address sets.
     pub data: Vec<AddrSet>,

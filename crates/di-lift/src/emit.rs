@@ -1269,7 +1269,7 @@ impl<'a> Em<'a, '_> {
             let y = self.zext(r1(R::Y), 2);
             p = self.op(Opc::IntAdd, 2, p, y);
         }
-        self.obj_test(p, c.obj, Some(c.q), def)
+        self.obj_test(p, c.obj, u8::try_from(c.q).ok(), def)
     }
     /// Whether address `p` lies outside object `obj`, the check of pair `pair`.
     fn obj_test(&mut self, p: Vn, obj: u16, pair: Option<u8>, def: &'static str) -> (Vn, Why) {

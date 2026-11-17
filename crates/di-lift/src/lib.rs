@@ -1217,6 +1217,12 @@ pub fn lift_banked(
             v.sort_unstable();
             v
         },
+        slack: {
+            let mut v: Vec<(u16, (u16, u16, u16))> =
+                g.objs.slack.iter().map(|(&j, &e)| (j, e)).collect();
+            v.sort_unstable();
+            v
+        },
         data: data_accesses(&g),
         bounded: {
             let mut v: Vec<(u16, u32, u32)> =

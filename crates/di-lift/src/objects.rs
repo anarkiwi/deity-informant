@@ -37,7 +37,8 @@ use std::collections::{BTreeMap, BTreeSet};
 /// with `flag` (a flag register), of the pointer plus the flag times 256.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ObjChk {
-    pub q: u8,
+    /// The pair's first byte: a zero-page pair, or an instruction's operand cells.
+    pub q: u16,
     pub obj: u16,
     pub flag: Option<u8>,
     pub of: Of,
@@ -72,6 +73,9 @@ pub struct Objs {
     pub data: FxHashMap<StoreKey, Vec<(u32, u32)>>,
     /// The objects of the memory map's checks of a pointer after its definition ([`hoist`]).
     pub defined: FxHashSet<u16>,
+    /// Per such object, the block it checks `P + lo` in with `k` bytes past it: `(block, lo,
+    /// k)`, its own bounds the block's runs less `[lo, lo + k]`.
+    pub slack: FxHashMap<u16, (u16, u16, u16)>,
 }
 
 /// A load through a pair: its instruction, access, the values of `Y` it adds and its base
@@ -367,7 +371,7 @@ pub fn objects(
                 let (key, flag) = match defs[d] {
                     Def::Load(pc) => {
                         let c = ObjChk {
-                            q,
+                            q: q as u16,
                             obj: id,
                             flag: None,
                             of: Of::Ptr,
@@ -379,7 +383,7 @@ pub fn objects(
                     Def::Entry => continue,
                 };
                 let c = ObjChk {
-                    q,
+                    q: q as u16,
                     obj: id,
                     flag,
                     of: Of::Ptr,
@@ -954,7 +958,7 @@ impl<H: Fn(Iv) -> bool> Walked<'_, H> {
         }
         let obj = object_id(out, lo as u16, hi as u16, steps.iter().map(|s| s.l.pc));
         let chk = ObjChk {
-            q,
+            q: q as u16,
             obj,
             flag: None,
             of: Of::PtrY,
@@ -1573,9 +1577,9 @@ fn machine_pass<H: Fn(Iv) -> bool>(
     let done: FxHashSet<StoreKey> = (proven.iter().map(|p| p.0))
         .chain(g.proven.iter().filter(|e| (cx.held)(e.1 .0)).map(|e| *e.0))
         .collect();
-    // A player's song data block: the data bytes of the held run outside the span of its
-    // code, its first instruction byte or cell to its last (its bytes, those of its variables
-    // and those it skips among them are its own). A program that is no player has none.
+    // A player's song data block: the data bytes of the held run, none an instruction's, a
+    // cell, or a variable among the code (a byte a store writes between its first
+    // instruction and its last). A program that is no player has none.
     let mut code = g.cells.clone();
     code.grow(0x10000);
     for (&pc, vs) in &g.vars {
@@ -1587,10 +1591,20 @@ fn machine_pass<H: Fn(Iv) -> bool>(
         code.insert_range(pc as usize..(pc as usize + n as usize).min(0x10000));
     }
     let span = code.minimum().zip(code.maximum());
+    let mut state = g.written.clone();
+    state.grow(0x10000);
+    for a in g.vars.values().flatten().flat_map(|v| &v.acc) {
+        if let Some(x) = a.addr.value().filter(|_| a.store && !a.dummy) {
+            state.insert(x as usize);
+        }
+    }
     let song_block: Vec<(u32, u32)> = crate::runs(
         (g.runs.iter().filter(|_| player))
             .flat_map(|&(a, b)| a.max(run.lo)..b.min(run.hi + 1))
-            .filter(|&x| !span.is_some_and(|(lo, hi)| lo <= x as usize && x as usize <= hi)),
+            .filter(|&x| {
+                let inside = span.is_some_and(|(lo, hi)| lo <= x as usize && x as usize <= hi);
+                !code.contains(x as usize) && !(inside && state.contains(x as usize))
+            }),
     );
     let mut src = Sources {
         cx,
@@ -1695,19 +1709,7 @@ fn machine_pass<H: Fn(Iv) -> bool>(
                 lo: rs[0].0,
                 hi: rs[rs.len() - 1].1 - 1,
             };
-            let obj = match rs.len() {
-                1 => object_id(out, hull.lo as u16, hull.hi as u16, std::iter::empty()),
-                _ => match out.parts.iter().find(|p| *p.1 == rs) {
-                    Some(p) => *p.0,
-                    None => {
-                        out.objects
-                            .push((hull.lo as u16, hull.hi as u16, Vec::new()));
-                        let id = out.objects.len() as u16 - 1;
-                        out.parts.insert(id, rs.clone());
-                        id
-                    }
-                },
-            };
+            let obj = block_id(out, &rs);
             out.objects[obj as usize].2.push(pc);
             out.machine.insert(key, (obj, hull));
             out.data.insert(key, rs.clone());
@@ -1827,7 +1829,7 @@ fn hoist<H: Fn(Iv) -> bool>(g: &Graph, src: &mut Sources<'_, H>, out: &mut Objs)
     };
     // Per access through a pair: the pair, the `Y` it adds, its guard points, and whether the
     // pair's value at an entry reaches it.
-    let mut accs: Vec<(StoreKey, u8, Iv, Vec<StoreKey>, bool)> = Vec::new();
+    let mut accs: Vec<(StoreKey, u16, Iv, Vec<StoreKey>, bool)> = Vec::new();
     for key in keys {
         let (pc, op, ai) = key;
         let Some(v) = g
@@ -1840,19 +1842,24 @@ fn hoist<H: Fn(Iv) -> bool>(g: &Graph, src: &mut Sources<'_, H>, out: &mut Objs)
         if v.acc[ai].store {
             continue;
         }
-        if op & 0x1f != 0x11 {
-            continue;
-        }
-        let Some(q) = v.acc[ai].ptr.and_then(|p| p.lo).and_then(|l| l.value()) else {
-            continue;
+        // The pair and the index register its address adds: a zero-page pair with `Y`, or
+        // the operand cells of an absolute access with its index.
+        use di_pcode::reg::{X, Y};
+        let cells = (1..3).all(|i| g.cells.contains(pc.wrapping_add(i) as usize));
+        let (q, ix) = match (op & 0x1f, op) {
+            (0x11, _) => match v.acc[ai].ptr.and_then(|p| p.lo).and_then(|l| l.value()) {
+                Some(q) if q < 0xff => (q, Some(Y)),
+                _ => continue,
+            },
+            (0x0c..=0x0e, _) if cells => (pc as u32 + 1, None),
+            (0x19, _) | (_, 0xbe) if cells => (pc as u32 + 1, Some(Y)),
+            (0x1c..=0x1e, _) if cells => (pc as u32 + 1, Some(X)),
+            _ => continue,
         };
-        if q >= 0xff {
-            continue;
-        }
-        let y = g
-            .regs
-            .get(&pc)
-            .and_then(|r| Bits::from_words(r[di_pcode::reg::Y]).hull());
+        let y = match ix {
+            Some(r) => g.regs.get(&pc).and_then(|x| Bits::from_words(x[r]).hull()),
+            None => Some(Iv { lo: 0, hi: 0 }),
+        };
         let y = y.unwrap_or(Iv { lo: 0, hi: 0xff });
         let (mut guards, mut entry) = (Vec::new(), false);
         let ok = [q, q + 1].iter().all(|&x| {
@@ -1867,11 +1874,11 @@ fn hoist<H: Fn(Iv) -> bool>(g: &Graph, src: &mut Sources<'_, H>, out: &mut Objs)
         if ok {
             guards.sort_unstable();
             guards.dedup();
-            accs.push((key, q as u8, y, guards, entry));
+            accs.push((key, q as u16, y, guards, entry));
         }
     }
     // The guard points of every definition of pair `q` (None: one is no chain's store).
-    let defs = |q: u8| -> Option<Vec<StoreKey>> {
+    let defs = |q: u16| -> Option<Vec<StoreKey>> {
         let q = q as u32;
         (g.vars.iter())
             .flat_map(|(&pc, vs)| vs.iter().map(move |v| (pc, v)))
@@ -1918,8 +1925,8 @@ fn hoist<H: Fn(Iv) -> bool>(g: &Graph, src: &mut Sources<'_, H>, out: &mut Objs)
     };
     // Each access's guard points: its definitions', or every definition of its pair where
     // its value at an entry reaches it (the entries' stores left it, not init).
-    let mut whole: FxHashMap<u8, Option<Vec<StoreKey>>> = FxHashMap::default();
-    let accs: Vec<(StoreKey, u8, Iv, Vec<StoreKey>)> = (accs.into_iter())
+    let mut whole: FxHashMap<u16, Option<Vec<StoreKey>>> = FxHashMap::default();
+    let accs: Vec<(StoreKey, u16, Iv, Vec<StoreKey>)> = (accs.into_iter())
         .filter_map(|(key, q, y, gs, entry)| match entry {
             false => Some((key, q, y, gs)),
             true => {
@@ -1963,24 +1970,21 @@ fn hoist<H: Fn(Iv) -> bool>(g: &Graph, src: &mut Sources<'_, H>, out: &mut Objs)
     }
     for (pt, r) in ranges.into_iter().filter(|e| need.contains(&e.0)) {
         let (gk, q, rs) = pt;
-        let runs = shrunk(&rs, r);
-        let obj = match runs.len() {
-            1 => object_id(
-                out,
-                runs[0].0 as u16,
-                (runs[0].1 - 1) as u16,
-                std::iter::empty(),
-            ),
-            _ => match out.parts.iter().find(|p| *p.1 == runs) {
-                Some(p) => *p.0,
-                None => {
-                    let (lo, hi) = (runs[0].0 as u16, (runs[runs.len() - 1].1 - 1) as u16);
-                    out.objects.push((lo, hi, Vec::new()));
-                    let id = out.objects.len() as u16 - 1;
+        let b = block_id(out, &rs);
+        let key = (b, r.lo as u16, (r.hi - r.lo) as u16);
+        let obj = match out.slack.iter().find(|e| *e.1 == key) {
+            Some(e) => *e.0,
+            None => {
+                let runs = shrunk(&rs, r);
+                let (lo, hi) = (runs[0].0 as u16, (runs[runs.len() - 1].1 - 1) as u16);
+                out.objects.push((lo, hi, Vec::new()));
+                let id = out.objects.len() as u16 - 1;
+                if runs.len() > 1 {
                     out.parts.insert(id, runs);
-                    id
                 }
-            },
+                out.slack.insert(id, key);
+                id
+            }
         };
         out.defined.insert(obj);
         let c = ObjChk {
@@ -1996,8 +2000,28 @@ fn hoist<H: Fn(Iv) -> bool>(g: &Graph, src: &mut Sources<'_, H>, out: &mut Objs)
     }
 }
 
+/// The object of the runs `rs` `[lo, hi)` (one interval, or a block of several), made where
+/// new.
+fn block_id(out: &mut Objs, rs: &[(u32, u32)]) -> u16 {
+    let (lo, hi) = (rs[0].0 as u16, (rs[rs.len() - 1].1 - 1) as u16);
+    if rs.len() == 1 {
+        return object_id(out, lo, hi, std::iter::empty());
+    }
+    if let Some(p) = out
+        .parts
+        .iter()
+        .find(|p| p.1 == rs && !out.slack.contains_key(p.0))
+    {
+        return *p.0;
+    }
+    out.objects.push((lo, hi, Vec::new()));
+    let id = out.objects.len() as u16 - 1;
+    out.parts.insert(id, rs.to_vec());
+    id
+}
+
 /// A guard point ([`hoist`]), the zero-page pair it checks and the runs it checks it against.
-type Point = (StoreKey, u8, Vec<(u32, u32)>);
+type Point = (StoreKey, u16, Vec<(u32, u32)>);
 
 /// The key of the one store of the instruction at `pc`.
 fn store_any(g: &Graph, pc: u16) -> Option<StoreKey> {

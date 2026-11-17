@@ -104,8 +104,7 @@ caller's return address. `tools/cgenplay.c` is a host harness.
 7. **Print** (`printer.py`, `csyntax.py`). The generic text is parsed for the operations the
    pipeline leaves (`func`, `cf`, `arith`, `memref`, `ub.poison`; anything else raises), the
    structured statements are printed with each variable declared at the innermost scope
-   holding its uses, and the C is run through `clang-format --style=LLVM`. A `trap`, which
-   does not return, ends its branch as a jump does: the `else` after it is unnested.
+   holding its uses, and the C is run through `clang-format --style=LLVM`.
 
 The printer reads `mlir-opt --mlir-print-op-generic` output: the image the tools come from
 (`docker/mlir.Dockerfile`, apt.llvm.org LLVM 22) has no Python bindings, the bindings are not
@@ -503,8 +502,10 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   model*) touches the block's runs alone, each a region whatever the lift read of it, and
   reaches them through the region holding its address; where they are several, through the
   block's reader or writer (`rdBj`, `wrBj`: the element of the region its address lies
-  in), after the memory map's check against the runs (`cgen_outj`, of the `.h`'s
-  `CGEN_OBJj_OUT`). `sensitive_reads` also goes to the lift, which makes no
+  in, found by a search of tables of the regions' origins, lengths and arrays), after the
+  memory map's check against the runs (`cgen_outj(p, k)`: whether `p` lies outside every
+  run of the `.h`'s `CGEN_OBJj_LO` and `CGEN_OBJj_LIM` with `k` bytes past it, the slack of
+  a check at a pointer's definition). `sensitive_reads` also goes to the lift, which makes no
   throw-away read that cannot reach one of them.
   An unknown access may touch every byte of `loaded`, so then every non-code byte of it is in a
   region. Zero page, the stack page and RAM below the image are regions when accessed; a byte

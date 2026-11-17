@@ -882,6 +882,13 @@ impl Program {
         self.prog.parts.iter().cloned().collect()
     }
 
+    /// Per object of a pointer's check after its definition, the block it checks the pointer
+    /// plus ``lo`` in with ``k`` bytes past it: ``{j: (block, lo, k)}``.
+    #[getter]
+    fn slack(&self) -> HashMap<u16, (u16, u16, u16)> {
+        self.prog.slack.iter().cloned().collect()
+    }
+
     /// The accesses through pointers from the program's data, plain accesses into the data
     /// block: ``{(pc, store): [(lo, hi), ...]}``, its runs (``hi`` exclusive).
     #[getter]

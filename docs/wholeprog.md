@@ -876,9 +876,9 @@ the facts, so a proof holds on every execution that stays in lifted code.
   program at the entries), or anything else (arithmetic on them, an entry register, a
   device). In a player's entries, lifted apart from the init that selects the song, a pointer
   from the song's data stays in the *data block*: the data bytes the host holds of the
-  program outside the span of the entries' code, their first instruction byte or cell to
-  their last (the bytes among their instructions are theirs: variables, cells, gaps); init's
-  code outside that span, which they never run, is bytes they may read. Its
+  program, none an instruction of the entries', a cell, or a variable among their code (a
+  byte a store writes between the first instruction and the last); init's code, which they
+  never run, is bytes they may read. Its
   high byte's value comes, along every definition reaching it, from the data block (the
   program's data bytes or init's runs at an entry, a table in the data block the code reads,
   a byte read through such a pointer), through copies and arithmetic on one such value (the
@@ -892,16 +892,18 @@ the facts, so a proof holds on every execution that stays in lifted code.
   Were it to reach the code, the player would take its own instructions for song data and
   the song would not play, so leaving the block is invalid input: it is checked before its
   instruction against the block (`objchk`, `def` `"machine"`; a block of several runs is
-  one test the `.h` defines, `CGEN_OBJj_OUT`) and every such access, load or store, is a
+  one search of the runs the `.h` lists, `CGEN_OBJj_LO` and `CGEN_OBJj_LIM`) and every such access, load or store, is a
   plain access into the block (`Program.data`, its address set the block's runs; a store
   needs no code check), as is a load the code keeps to one run of data bytes (below), in
   that run's part of the block. It holds no code as data and finds no cell by address.
   A routine's pointer summary moves the check of the reads through a zero-page pair to the
   pair's definitions (`objects::hoist`): where every definition of both bytes reaching such
-  a read is a store of a register whose other byte is stored on the same straight chain of
+  a read (a zero-page pair, or an absolute access's operand cells) is a store of a register
+  whose other byte is stored on the same straight chain of
   instructions, the pair is checked once after the chain's later store, against the block's
   runs less the range of the constant `Y` of the reads every path from there makes before
-  it returns or redefines the pair (`[lo − min Y, hi − max Y]` of a run): those reads happen whatever
+  it returns or redefines the pair (`P + min Y` in a run with `max Y − min Y` bytes past it,
+  the block's one test taking the slack, `Program.slack`): those reads happen whatever
   the data, so a pair failing the check would leave the block. A read whose `Y` lies in the
   range of each check reaching it is plain; the others keep their own checks. A pair whose
   value at an entry reaches a read (one play stored on an earlier call, not init's) is

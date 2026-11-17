@@ -98,15 +98,15 @@ def _inside(r):
 
 def _obj_h(j, obj, parts):
     """The ``.h`` bounds of object ``j`` (``obj``, ``(lo, hi)`` inclusive): its origin and
-    limit, or of one of several runs ``parts`` (``hi`` exclusive) the test of a pointer outside
-    every one."""
+    limit, or of one of several runs ``parts`` (``hi`` exclusive) their origins and limits."""
     if not parts:
         return "\n".join(
             f"#define CGEN_OBJ{j}_{k} 0x{v:04X}"
             for k, v in (("ORG", obj[0]), ("LIM", obj[1] - obj[0]))
         )
-    out = " && ".join(f"(uint16_t)((p) - 0x{lo:04X}) > 0x{hi - 1 - lo:X}" for lo, hi in parts)
-    return f"#define CGEN_OBJ{j}_OUT(p) ({out})"
+    los = ", ".join(f"0x{lo:04X}" for lo, _ in parts)
+    lims = ", ".join(f"0x{hi - 1 - lo:X}" for lo, hi in parts)
+    return f"#define CGEN_OBJ{j}_LO {los}\n#define CGEN_OBJ{j}_LIM {lims}"
 
 
 def _data(j):
@@ -583,6 +583,9 @@ class Program:  # pylint: disable=too-many-instance-attributes
     objects: list = ()
     #: Per object of several runs (a data block), its runs ``[(lo, hi)]`` (``hi`` exclusive).
     parts: dict | None = None
+    #: Per object of a pointer's check after its definition, ``(block, lo, k)``: the block it
+    #: checks the pointer plus ``lo`` in with ``k`` bytes past it (``Program.slack``).
+    slack: dict | None = None
     reach: dict | None = None
     proven: dict | None = None
     #: Per access of no one address its hull and its base's (``Program.bases``).
@@ -879,7 +882,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     p.constant, p.jumps, p.written = frozenset(prog.code), dict(prog.jumps), list(prog.written)
     vars(p).update(_raw(prog))
     p.ptr_sets = {pc: set(w) for pc, w in prog.ptr_sets.items()}
-    p.objects, p.parts = list(prog.objects), dict(prog.parts)
+    p.objects, p.parts, p.slack = list(prog.objects), dict(prog.parts), dict(prog.slack)
     p.machine = frozenset(prog.machine)
     p.stores = {"play": trapinfo.stores(prog)}
     if init is not None:
@@ -1003,6 +1006,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     }
     vars(mod).update(vars(_facts(p)))
     mod.ptr_objects, mod.ptr_parts = list(p.objects), dict(p.parts or {})
+    mod.ptr_slack = dict(p.slack or {})
     mod.regfile = regfile = [r for r, _ in regfile]
     mod.kpos = regfile.index(emit.KREG) if emit.KREG in regfile else None
     song = None
