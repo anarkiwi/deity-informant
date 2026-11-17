@@ -654,6 +654,11 @@ pub fn lift_banked(
         .collect();
     let mut held = FixedBitSet::with_capacity(0x10000);
     held.extend(opts.held.iter().map(|&a| a as usize));
+    let mut init = held.clone();
+    for &(lo, hi) in &opts.holds {
+        init.insert_range(lo as usize..(hi as usize).min(0x10000));
+    }
+    init.extend(opts.free.iter().map(|e| e.0 as usize));
     let mut matched = true;
     let (g, plans, fidx, callees, recursive, slots, constcode, touches, seen, sites, private) = loop {
         let mut g = discover(
@@ -665,7 +670,10 @@ pub fn lift_banked(
             opts.loaded,
             volatile,
             &opts.devices,
-            opts.entry_sp.map(|_| vsa::Wanted { held: &held }),
+            opts.entry_sp.map(|_| vsa::Wanted {
+                held: &held,
+                init: &init,
+            }),
             &free,
             &known,
             opts.once,

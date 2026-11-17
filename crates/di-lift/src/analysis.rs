@@ -1041,6 +1041,7 @@ impl Fixpoint<'_> {
             aimed: &g.aimed,
             devices: self.devices,
             ran: &self.ran,
+            drive: (!self.once).then_some(r.init),
         };
         let an = crate::vsa::analyze(
             &g.img,
@@ -1176,6 +1177,7 @@ impl Fixpoint<'_> {
                 aimed: &aimed,
                 devices: self.devices,
                 ran: &self.ran,
+                drive: self.reach.filter(|_| !self.once).map(|r| r.init),
             };
             let an = crate::vsa::analyze(
                 &cimg,

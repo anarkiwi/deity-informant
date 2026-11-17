@@ -596,6 +596,7 @@ pub(crate) fn vectors(
         classes: FxHashMap::default(),
         meets: Default::default(),
         ran: &ran,
+        drive: None,
     };
     let mut v: Vec<u16> = vars
         .iter()

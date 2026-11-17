@@ -332,6 +332,9 @@ pub(crate) struct St {
     /// Tracked bytes ([`Code::vecs`]) whose contents are known, by address: the table byte or
     /// constant they hold, and their interval.
     pub(crate) mem: Vec<(u16, Option<Tab>, Iv)>,
+    /// The values tracked bytes of [`St::mem`] may hold beyond their intervals, by address,
+    /// at most [`CAP`] each.
+    pub(crate) mset: Vec<(u16, Bits)>,
     /// Pointer pairs some instruction since the entry stored, by low byte, and their values
     /// ([`crate::word`], [`reach`]'s pass only).
     pub(crate) wide: Vec<(u16, Option<crate::word::Wv>)>,
@@ -389,11 +392,19 @@ impl Pv {
             set: None,
         }
     }
+    /// Its value set where kept: its set, else its one value.
+    fn held(self) -> Option<Bits> {
+        self.set
+            .or_else(|| self.iv.value().map(|v| Bits::from_iter([v])))
+    }
     fn join(self, o: Pv, w: impl Fn(Iv, Iv) -> Iv) -> Pv {
         Pv {
             iv: w(self.iv, hull(self.iv, o.iv)),
             kb: self.kb.join(o.kb),
-            set: self.set.zip(o.set).and_then(|(a, b)| a.or(b).capped()),
+            set: self
+                .held()
+                .zip(o.held())
+                .and_then(|(a, b)| a.or(b).capped()),
         }
     }
 }
@@ -421,11 +432,35 @@ impl St {
             depth: Some(0),
             xsp: None,
             mem: Vec::new(),
+            mset: Vec::new(),
             wide: Vec::new(),
             half: [None; DATA],
             mhalf: Vec::new(),
             pw: Vec::new(),
             via: [None; DATA],
+        }
+    }
+    /// The values tracked byte `a` may hold, where known: its set, else its one value.
+    pub(crate) fn mvals(&self, a: u16) -> Option<Bits> {
+        if let Ok(i) = self.mset.binary_search_by_key(&a, |e| e.0) {
+            return Some(self.mset[i].1);
+        }
+        let v = self.mem.iter().find(|e| e.0 == a)?.2.value()?;
+        Some(Bits::from_iter([v]))
+    }
+    /// Keep only the sets of the tracked bytes `keep` holds.
+    fn mset_keep(&mut self, keep: impl Fn(u16) -> bool) {
+        self.mset.retain(|e| keep(e.0));
+    }
+    /// Give tracked byte `a` the values `b` (none: only its interval).
+    fn mset_put(&mut self, a: u16, b: Option<Bits>) {
+        self.mset.retain(|e| e.0 != a);
+        if let Some(b) = b
+            .and_then(Bits::capped)
+            .filter(|b| b.values().nth(1).is_some())
+        {
+            let i = self.mset.partition_point(|e| e.0 < a);
+            self.mset.insert(i, (a, b));
         }
     }
     /// The words pointer pair `q` holds and the values of `Y` with each ([`St::pw`]).
@@ -581,6 +616,7 @@ impl St {
             src: self.src,
             set: self.set,
             mem: self.mem.clone(),
+            mset: self.mset.clone(),
             wide: self.wide.clone(),
             half: self.half,
             mhalf: self.mhalf.clone(),
@@ -1016,6 +1052,10 @@ pub(crate) struct Code<'a> {
     pub(crate) meets: std::cell::RefCell<Vec<(u32, u32)>>,
     /// The operands of the one run no input decides ([`crate::once`]).
     pub(crate) ran: &'a crate::once::Ran,
+    /// Where the host calls the entries again and again after its init, the bytes init may
+    /// store: each entry starts from the tracked bytes init leaves joined with
+    /// those every entry's return leaves ([`fixpoint`]).
+    pub(crate) drive: Option<FixedBitSet>,
 }
 
 /// Per store `(pc, opcode, access index)` the addresses it writes: a store with a set
@@ -1130,6 +1170,35 @@ impl Code<'_> {
             self.bound.get(x as usize).copied().flatten()
         }
     }
+    /// The tracked bytes the host's init leaves known: a byte of the code or the loaded program
+    /// init does not store holds its image byte, a variable of init the hull of the values
+    /// init's lift bounds it to; any other byte init may store (`init`) is not known, as init's
+    /// translation may store another value (one read from a device).
+    fn init_mem(&self, init: &FixedBitSet) -> Vec<(u16, Option<Tab>, Iv)> {
+        let loaded = |x: u32| self.ram.iter().any(|&(lo, hi)| (lo..hi).contains(&x));
+        let of = |a: u16| {
+            let i = a as usize;
+            if !(self.cells.contains(i) || loaded(a as u32)) || self.dev.contains(i) {
+                return None;
+            }
+            match (self.free.contains(i), self.observed.contains(i)) {
+                (true, _) => {
+                    let v = self.known.get(&a)?;
+                    Some(Iv {
+                        lo: *v.iter().min()? as u32,
+                        hi: *v.iter().max()? as u32,
+                    })
+                }
+                (false, true) => None,
+                _ if init.contains(i) => None,
+                (false, false) => Some(Iv::exact(self.img[i] as u32)),
+            }
+        };
+        (self.vecs.iter())
+            .filter_map(|&a| Some((a, of(a)?)))
+            .map(|(a, iv)| (a, iv.value().map(|x| Tab::K(x as u8)), iv))
+            .collect()
+    }
     /// The operand of the table load of opcode `op` at `pc` indexed by register `r`, and
     /// whether it indexes zero page.
     fn base(&self, pc: u16, op: u8, r: usize) -> Option<(u32, bool)> {
@@ -1151,8 +1220,10 @@ impl Code<'_> {
     fn load_set(&self, pc: u16, op: u8, st: &St) -> Option<Bits> {
         let mut out = Bits::default();
         for a in self.set_addrs(pc, op, st)? {
+            let tracked = st.mem.iter().any(|e| e.0 as u32 == a);
             match self.dev.contains(a as usize) {
                 true => out = out.or(self.dev_set(a as u16, st)?),
+                false if tracked => out = out.or(st.mvals(a as u16)?),
                 false => out.add(self.byte(a, st)?.value()?),
             }
         }
@@ -1422,6 +1493,7 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
             st.xsp.filter(|_| written >> 1 & 1 == 0)
         },
         mem: st.mem.clone(),
+        mset: st.mset.clone(),
         wide: st.wide.clone(),
         half: st.half,
         mhalf: st.mhalf.clone(),
@@ -1496,9 +1568,11 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
         let (at, wide) = code.dev_store(a.addr);
         if wide {
             s.mem.retain(|e| !code.devices.regs.contains_key(&e.0));
+            s.mset_keep(|m| !code.devices.regs.contains_key(&m));
         }
         if at != a.addr {
             s.mem.retain(|e| e.0 as u32 != at.lo);
+            s.mset_keep(|m| m as u32 != at.lo);
             if code.vecs.binary_search(&(at.lo as u16)).is_ok() {
                 let iv = a.val;
                 let t = iv.value().map(|x| Tab::K(x as u8));
@@ -1518,19 +1592,25 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
             .find(|e| Some(e.0 as u32) == a.addr.value())
             .copied();
         s.mem.retain(|e| !hit(e.0));
+        s.mset_keep(|m| !hit(m));
         let Some(m) = a.addr.value() else { continue };
         let (_, _, held) = symbolic_in(ops, b, (None, None, [None; DATA]), Some(m));
-        let (t, iv) = match held {
+        let (t, iv, vals) = match held {
             Some(Some(Sym::Lin(r, 0))) if (r as usize) < DATA => {
-                (st.val(r as usize), st.env[r as usize])
+                (st.val(r as usize), st.env[r as usize], st.held(r as usize))
             }
-            Some(Some(Sym::K(k))) => (Some(Tab::K(k)), Iv::exact(k as u32)),
-            Some(Some(Sym::Lin(MEM, k))) => (None, old.map_or(Iv::full(1), |e| shift(e.2, k))),
-            _ => (a.val.value().map(|x| Tab::K(x as u8)), a.val),
+            Some(Some(Sym::K(k))) => (Some(Tab::K(k)), Iv::exact(k as u32), None),
+            Some(Some(Sym::Lin(MEM, k))) => (
+                None,
+                old.map_or(Iv::full(1), |e| shift(e.2, k)),
+                old.and_then(|e| st.mvals(e.0)).map(|b| b.shifted(k)),
+            ),
+            _ => (a.val.value().map(|x| Tab::K(x as u8)), a.val, None),
         };
         if t.is_some() || iv != Iv::full(1) {
             s.mem.push((m as u16, t, iv));
             s.mem.sort_unstable_by_key(|e| e.0);
+            s.mset_put(m as u16, vals);
         }
     }
     if code.reach_pass() {
@@ -1541,12 +1621,12 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
     // A load of a tracked byte stored since the entry, its one read, reads what was stored: a
     // return address pulled into a pointer and loaded back is the address, not the image's.
     let mut reads = acc.iter().filter(|a| !a.store && !a.dummy);
-    let stored = match (reads.next(), reads.next()) {
+    let one = match (reads.next(), reads.next()) {
         (Some(a), None) => a.addr.value(),
         _ => None,
     }
-    .and_then(|m| st.mem.iter().find(|e| e.0 as u32 == m))
-    .map(|e| e.1.or_else(|| e.2.value().map(|x| Tab::K(x as u8))));
+    .and_then(|m| st.mem.iter().find(|e| e.0 as u32 == m));
+    let stored = one.map(|e| e.1.or_else(|| e.2.value().map(|x| Tab::K(x as u8))));
     for r in (0..DATA).filter(|&r| written >> r & 1 == 1) {
         s.tag[r] = match sym[r] {
             Some(Sym::Lin(b0, 0)) if (b0 as usize) < DATA => st.tag[b0 as usize],
@@ -1584,6 +1664,7 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
             }
             Some(Sym::Lin(b0, 0)) if b0 >= DATA as u8 && b0 != MEM && v.op != 0x68 => code
                 .load_set(pc, v.op, st)
+                .or_else(|| one.and_then(|e| st.mvals(e.0)))
                 .or_else(|| code.ptr_set(pc, v.op, st)),
             _ => evals[r],
         };
@@ -2013,6 +2094,12 @@ fn join(code: &Code, a: &St, b: &St, widen: Option<&Thresholds>) -> St {
                 (t.is_some() || iv != Iv::full(1)).then_some((m, t, iv))
             })
             .collect(),
+        mset: (a.mem.iter())
+            .filter_map(|e| {
+                let u = a.mvals(e.0)?.or(b.mvals(e.0)?).capped()?;
+                u.values().nth(1).is_some().then_some((e.0, u))
+            })
+            .collect(),
     }
 }
 
@@ -2221,6 +2308,10 @@ struct Work<'a> {
     /// Per return site, the addresses its callee may store into, where they are bounded
     /// ([`mods`]).
     mods: FxHashMap<u16, Vec<(u32, u32)>>,
+    /// The driver head ([`Code::drive`]): the tracked bytes at every call of an entry.
+    drv: Option<St>,
+    /// The entries and their declared registers.
+    envs: Vec<(u16, Env)>,
 }
 
 #[derive(Default)]
@@ -2273,6 +2364,9 @@ fn apply(ret: &St, call: &St, linked: bool, kept: Option<&[(u32, u32)]>) -> St {
                     (a, t, i)
                 }));
             s.mem.sort_unstable_by_key(|e| e.0);
+            s.mset_keep(|m| !free(m));
+            s.mset.extend(call.mset.iter().filter(|e| free(e.0)));
+            s.mset.sort_unstable_by_key(|e| e.0);
             s.mhalf.retain(|e| !free(e.0));
             s.mhalf.extend(call.mhalf.iter().filter(|e| free(e.0)));
             s.mhalf.sort_unstable_by_key(|e| e.0);
@@ -2296,6 +2390,43 @@ fn apply(ret: &St, call: &St, linked: bool, kept: Option<&[(u32, u32)]>) -> St {
 }
 
 impl Work<'_> {
+    /// The driver head ([`Code::drive`]) joins, widened as a loop head, the tracked bytes the
+    /// return at `st` in context `cx` leaves: those of an entry's own return, none of a return
+    /// at a height not known there (it may return to the host), nothing of a callee's. Each
+    /// entry is called again with what the head holds.
+    fn back(&mut self, cx: u32, st: &St) {
+        let Some(old) = &self.drv else { return };
+        let (mem, mset) = match (cx, st.depth) {
+            (NONE, Some(0)) => (
+                (st.mem.iter())
+                    .map(|&(a, t, i)| (a, t.filter(|t| matches!(t, Tab::K(_))), i))
+                    .filter(|e| e.1.is_some() || e.2 != Iv::full(1))
+                    .collect(),
+                st.mset.clone(),
+            ),
+            (NONE | ANY, None) => Default::default(),
+            _ => return,
+        };
+        let back = St {
+            mem,
+            mset,
+            ..St::new(TOP_ENV)
+        };
+        let new = join(self.code, old, &back, Some(self.thr));
+        if &new == old {
+            return;
+        }
+        for (i, &(pc, env)) in self.envs.clone().iter().enumerate() {
+            let st = St {
+                from: 1 << (i % 64),
+                mem: new.mem.clone(),
+                mset: new.mset.clone(),
+                ..St::new(env)
+            };
+            self.flow((pc, NONE), st);
+        }
+        self.drv = Some(new);
+    }
     /// Merge `st` into the state at `key` (widening at loop heads), queueing it if it grew.
     fn flow(&mut self, key: Key, st: St) {
         let new = match self.state.get(&key) {
@@ -2570,13 +2701,30 @@ fn fixpoint(
         thr,
         ret: FxHashMap::default(),
         mods: code.mods.clone(),
+        drv: None,
+        envs: entries.iter().map(|e| (e.pc, e.env())).collect(),
     };
+    let init = match &code.drive {
+        Some(held) => code.init_mem(held),
+        None => Vec::new(),
+    };
+    let mut seed = St {
+        mem: init,
+        ..St::new(TOP_ENV)
+    };
+    for &(a, _, iv) in &seed.mem.clone() {
+        let vs = code.known.get(&a).filter(|_| iv.value().is_none());
+        seed.mset_put(a, vs.map(|v| v.iter().map(|&x| x as u32).collect()));
+    }
+    w.drv = code.drive.as_ref().map(|_| seed.clone());
     for (i, e) in entries.iter().enumerate() {
         let env = e.env();
         w.flow(
             (e.pc, NONE),
             St {
                 from: 1 << (i % 64),
+                mem: seed.mem.clone(),
+                mset: seed.mset.clone(),
                 ..St::new(env)
             },
         );
@@ -2586,6 +2734,9 @@ fn fixpoint(
         w.queued.remove(&key);
         let st = w.state[&key].clone();
         for v in &vars[&pc] {
+            if matches!(v.flow, Flow::Rts(_) | Flow::Rti(_)) {
+                w.back(cx, &st);
+            }
             acc.clear();
             let out = step(code, pc, v, &st, &mut acc);
             match (&v.flow, Template::of(v.op).ctrl) {
@@ -3014,6 +3165,7 @@ fn reach(
         classes: code.classes.clone(),
         meets: Default::default(),
         ran: code.ran,
+        drive: code.drive.clone(),
     };
     let mut sh = p.sh;
     c.mods = mods(&c, p.vars, &FxHashMap::default(), &sh.live);
@@ -3398,6 +3550,8 @@ fn bounded_stores(
 #[derive(Clone, Copy)]
 pub struct Wanted<'a> {
     pub held: &'a FixedBitSet,
+    /// The bytes the host's init stores on some run, its translation's stores included.
+    pub init: &'a FixedBitSet,
 }
 
 /// What the analysis takes beyond the program: the `[lo, hi)` the program was loaded to, the
@@ -3428,6 +3582,9 @@ pub struct Given<'a> {
     pub devices: &'a crate::dev::Devices,
     /// The operands of the one run no input decides ([`crate::once`]).
     pub ran: &'a crate::once::Ran,
+    /// Where the host calls the entries in a loop after its init, the bytes init may store
+    /// ([`Code::drive`]).
+    pub drive: Option<&'a FixedBitSet>,
 }
 
 /// The runs of the loaded program outside page 1 and the volatile ranges ([`Code::ram`]).
@@ -3495,11 +3652,13 @@ pub fn analyze(
         classes: FxHashMap::default(),
         meets: Default::default(),
         ran: given.ran,
+        drive: given.drive.cloned(),
     };
     let thr = Thresholds::new(vars, &code);
     // The starts reached whatever the data: no table taken as constant.
     let blind = Code {
         constant: FixedBitSet::new(),
+        drive: None,
         ..code.clone()
     };
     let reached = |sh: &Shape| {
