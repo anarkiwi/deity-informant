@@ -62,6 +62,9 @@ pub struct Objs {
     pub pre: FxHashMap<u16, Vec<ObjChk>>,
     /// Per instruction start, the checks after it of the walks it anchors ([`crate::walks`]).
     pub post: FxHashMap<u16, Vec<ObjChk>>,
+    /// Per access the memory map bounds ([`machine`]), the object its address is checked to
+    /// lie in before it, and the object's bytes.
+    pub machine: FxHashMap<StoreKey, (u16, Iv)>,
 }
 
 /// A load through a pair: its instruction, access, the values of `Y` it adds and its base
@@ -213,7 +216,10 @@ pub fn held(
 /// load is served where its proven hull lies in the bytes `held` ([`held`]) and meets no
 /// volatile range. A pair of `seeds` needs no check: its loads read its words plus `Y`; the
 /// loads of others an object leaves are served by walks ([`walked`]), whose data bytes are
-/// those of the image, or of each of init's runs for the variables `free` it leaves.
+/// those of the image, or of each of init's runs for the variables `free` it leaves. With
+/// `machine` (a closed program over a fixed memory map) the accesses whose bases lie in the
+/// held bytes stay in them ([`machine`]).
+#[allow(clippy::too_many_arguments)]
 pub fn objects(
     g: &Graph,
     roots: &[u16],
@@ -222,6 +228,7 @@ pub fn objects(
     held: Option<(u32, u32)>,
     seeds: &Seeds,
     free: &FxHashMap<u16, Vec<u8>>,
+    machine: bool,
 ) -> (Objs, Proven) {
     let mut out = Objs::default();
     let mut proven = Vec::new();
@@ -238,9 +245,6 @@ pub fn objects(
         if held(h) {
             proven.push((key, (h, h)));
         }
-    }
-    if loads.is_empty() {
-        return (out, proven);
     }
     let stores = zp_stores(g);
     let index: FxHashMap<StoreKey, usize> =
@@ -399,12 +403,19 @@ pub fn objects(
         bytes: Bytes::new(g, free),
         stored: crate::analysis::stored(g),
     };
-    for q in pairs {
+    for &q in &pairs {
         let kill = (stores.iter())
             .filter(|s| s.addr.meets(q as u32, q as u32 + 2))
             .map(|s| s.key.0)
             .collect();
         cx.walked(q, &loads[&q], seeds.get(&q), &kill, &mut out, &mut proven);
+    }
+    if machine {
+        let run = Iv {
+            lo: lo0,
+            hi: end - 1,
+        };
+        self::machine(g, &cx, run, &mut out, &mut proven);
     }
     (out, proven)
 }
@@ -943,6 +954,133 @@ impl<H: Fn(Iv) -> bool> Walked<'_, H> {
         };
         for (s, h) in steps.iter().zip(r.hulls) {
             proven.push((s.l.key, (h, b)));
+        }
+    }
+}
+
+/// The machine model: the memory map is fixed (the program, other RAM, the I/O pages, the
+/// ROMs), so an access whose every base lies in the bytes `run` the host holds of the program
+/// (its image and the bytes past it it writes) stays in them on every valid run of a closed
+/// program: outside them it would take I/O, ROM or RAM the program never held for its own,
+/// and the program, which works, would not behave as it does. Over every access of no one
+/// address ([`Graph::bases`]: its address hull and its base's, the index registers zero; a
+/// pointer's words on every path where known), the bases widened by the words its pointer pair
+/// or operand cells hold at the entries where a path from an entry reaches it before a store
+/// into them: one whose least address from its greatest base lies in `run` reaches `run` (a
+/// store the lift bounds to a run of data bytes, that run), with no check where its address
+/// interval lies in it, else checked before it (`Objs::machine`), and is proven there. Bases
+/// outside it, or unknown, leave the access as it was.
+fn machine<H: Fn(Iv) -> bool>(
+    g: &Graph,
+    cx: &Walked<'_, H>,
+    run: Iv,
+    out: &mut Objs,
+    proven: &mut Proven,
+) {
+    let done: FxHashSet<StoreKey> = (proven.iter().map(|p| p.0))
+        .chain(g.proven.iter().filter(|e| (cx.held)(e.1 .0)).map(|e| *e.0))
+        .collect();
+    let words = |q: u32| {
+        (0..cx.bytes.runs).map(move |r| {
+            let hi = cx.bytes.at((q + 1) & 0xffff, r) as u32;
+            Iv::exact(cx.bytes.at(q & 0xffff, r) as u32 | hi << 8)
+        })
+    };
+    // Per byte, the instruction starts a path from an entry reaches before any store that
+    // may write it: where the access reads the byte's value at the entries.
+    let mut memo: FxHashMap<u32, FxHashSet<u16>> = FxHashMap::default();
+    let mut entered = |x: u32, pc: u16| -> bool {
+        let pcs = memo.entry(x).or_insert_with(|| {
+            let mut defs = vec![Def::Entry];
+            let mut at: FxHashMap<u16, Vec<usize>> = FxHashMap::default();
+            for (&pc, vs) in &g.vars {
+                for v in vs {
+                    for a in v
+                        .acc
+                        .iter()
+                        .filter(|a| a.store && !a.dummy && a.addr.meets(x, x + 1))
+                    {
+                        let kill = vs.len() == 1 && a.addr.value() == Some(x);
+                        at.entry(pc).or_default().push(defs.len());
+                        defs.push(Def::Store {
+                            s: 0,
+                            kill,
+                            flag: None,
+                        });
+                    }
+                }
+            }
+            let ins = cx.cfg.reaching(cx.roots, &defs, &at);
+            (ins.into_iter())
+                .filter(|(_, i)| i.contains(0))
+                .map(|(pc, _)| pc)
+                .collect()
+        });
+        pcs.contains(&pc)
+    };
+    let mut keys: Vec<&StoreKey> = g.bases.keys().collect();
+    keys.sort_unstable();
+    for &key in keys {
+        let (pc, op, ai) = key;
+        let (reach, base) = g.bases[&key];
+        // The words a pointer holds on every path, where known, are its bases.
+        let set = g.ptr_sets.get(&pc);
+        let base = match set.and_then(|ws| Some((*ws.first()?, *ws.last()?))) {
+            Some((lo, hi)) => Iv {
+                lo: lo as u32,
+                hi: hi as u32,
+            },
+            None => base,
+        };
+        let Some(v) = g
+            .vars
+            .get(&pc)
+            .and_then(|vs| vs.iter().find(|v| v.op == op))
+        else {
+            continue;
+        };
+        let a = v.acc[ai];
+        if is_stack_op(op) || a.dummy || a.addr.value().is_some() || done.contains(&key) {
+            continue;
+        }
+        // The pairs the address is read from: a pointer's, or the operand cells.
+        let t = di_pcode::Template::of(op);
+        let b = crate::analysis::operand_bytes(&g.img, &g.cells, pc, t.len);
+        let qs = match a.ptr.and_then(|p| p.lo) {
+            Some(l) => l.lo..l.hi + 1,
+            None if t.len == 3 && b.contains(&None) => pc as u32 + 1..pc as u32 + 2,
+            None => 0..0,
+        };
+        let qs: Vec<u32> = qs
+            .filter(|&q| [q, q + 1].into_iter().any(|x| entered(x & 0xffff, pc)))
+            .collect();
+        let Some(base) = qs.into_iter().flat_map(words).chain([base]).reduce(hull) else {
+            continue;
+        };
+        // A store the lift bounds to the run of data bytes holding its base, taking it to
+        // change no constant code ([`Graph::bounded`]), stays in that run; any other store's
+        // code checks keep the code it may write.
+        let bounded = (g.bounded.get(&key)).filter(|_| a.store);
+        let run = bounded.map_or(run, |r| Iv {
+            lo: r.0,
+            hi: r.1 - 1,
+        });
+        let least = base.hi + reach.lo.saturating_sub(base.lo);
+        if base.lo < run.lo || least > run.hi {
+            continue;
+        }
+        // A store bounded so is taken to stay in its run, which a run past it does not but
+        // where an index guard keeps its base plus the index there.
+        let kept = |&(_, ok): &(u8, Iv)| base.hi + ok.hi <= run.hi;
+        let sure = bounded.is_none() || g.guards.get(&pc).is_some_and(kept);
+        if sure && run.lo <= a.addr.lo && a.addr.hi <= run.hi {
+            proven.push((key, (a.addr, base)));
+            continue;
+        }
+        let obj = object_id(out, run.lo as u16, run.hi as u16, [pc].into_iter());
+        out.machine.insert(key, (obj, run));
+        if let Some(m) = crate::vsa::meet(a.addr, run) {
+            proven.push((key, (m, base)));
         }
     }
 }

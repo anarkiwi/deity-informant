@@ -164,7 +164,8 @@ pub struct Why {
     pub obj: Option<u32>,
     /// What an object check checks: the pair's pointer at an entry (`"entry"`), at a load
     /// defining it (`"load"`), after a store defining it (`"store"`) or after a walk's anchor
-    /// (`"walk"`).
+    /// (`"walk"`); an access's address before it, its bases in the program (`"machine"`: the
+    /// memory map holds a valid run's access there, [`crate::objects`]).
     pub def: Option<&'static str>,
     /// The guarded access's address interval.
     pub addr: Option<Iv>,

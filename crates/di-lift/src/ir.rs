@@ -323,12 +323,6 @@ pub struct Stats {
     pub ptr_guards: usize,
     /// Checks keeping pointers in their objects ([`crate::objects`]).
     pub obj_guards: usize,
-    /// Loads the reachable states bound ([`crate::reach`]).
-    pub reach_loads: usize,
-    /// Slices whose reachable-state evaluations completed.
-    pub reach_slices: usize,
-    /// States of those slices over every run.
-    pub reach_states: usize,
     /// Checks keeping a pointer access out of page 1 and the volatile pages.
     pub zone_guards: usize,
     /// Accesses that reached page 1 in the facts or cannot be checked (each keeps the stack
@@ -403,6 +397,11 @@ pub struct Program {
     pub reach: Vec<Reach>,
     /// The hulls of `reach` that hold on every run.
     pub proven: Vec<Reach>,
+    /// Every access of no one address: its address hull and its base's, the index registers
+    /// zero, as the pointers' provenance gives them ([`crate::objects`], *Machine model*).
+    pub bases: Vec<Reach>,
+    /// The instruction starts of the accesses the memory map checks before them.
+    pub machine: Vec<u16>,
     /// Per instruction start the values `A`, `X` and `Y` hold on every run (bit `v` for
     /// `v`), ascending by start.
     pub regs: Vec<(u16, [[u64; 4]; 3])>,

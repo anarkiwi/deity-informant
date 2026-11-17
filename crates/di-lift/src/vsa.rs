@@ -2426,6 +2426,8 @@ pub struct Analysis {
     /// on every run.
     pub reach: Hulls,
     pub proven: Hulls,
+    /// Every access of no one address: its hull and its base's ([`reach`]).
+    pub bases: Hulls,
     /// Per instruction start the values `A`, `X` and `Y` hold on every run ([`reach`]'s proof
     /// pass).
     pub regs: Regs,
@@ -2864,7 +2866,7 @@ fn reach(
     stores: &[crate::dispatch::Store],
     given: &Given,
     proof: bool,
-) -> (Hulls, Regs, Runs, Vec<Option<Iv>>) {
+) -> (Hulls, Hulls, Regs, Runs, Vec<Option<Iv>>) {
     let code = p.code;
     let addrs: FxHashMap<(u16, u8, usize), &[u16]> = stores
         .iter()
@@ -3195,6 +3197,7 @@ fn reach(
         (c.bound, c.stored) = (bound, stored);
     };
     let mut out = FxHashMap::default();
+    let mut bases = Hulls::default();
     let mut regs = Regs::default();
     let mut runs = Runs::default();
     for (&pc, vs) in p.vars {
@@ -3234,6 +3237,40 @@ fn reach(
                 }
             }
             for (ai, (a, b)) in acc.iter().zip(&base).enumerate() {
+                // Every access of no one address: its hull and its base's, the index
+                // registers zero (a pointer they select, `(zp,X)`, its every word), the
+                // pointer pair or operand cells it is formed from at their words.
+                if !a.dummy && a.addr.value().is_none() {
+                    let q = match a.ptr {
+                        Some(crate::analysis::Ptr {
+                            lo: Some(l), hi, ..
+                        }) => (l.value())
+                            .filter(|&l| hi.value() == Some(l + 1))
+                            .map(|l| l as u16),
+                        Some(_) => None,
+                        None => (cell && t.len == 3).then_some(pc.wrapping_add(1)),
+                    }
+                    .filter(|&q| crate::word::pair(&c, q));
+                    let w = |i: Iv| q.and_then(|q| crate::word::reach(&c, &st, q, i));
+                    // `(zp,X)`: the words of the pairs `X` selects.
+                    let selected = || {
+                        let xs = Bits::from_words(st.vals(di_pcode::reg::X).0);
+                        let o = code.img[pc.wrapping_add(1) as usize];
+                        (xs.values().map(|x| o.wrapping_add(x as u8) as u16))
+                            .map(|q| {
+                                let q = Some(q).filter(|&q| crate::word::pair(&c, q))?;
+                                crate::word::reach(&c, &st, q, Iv::exact(0))
+                            })
+                            .reduce(|x, y| Some(hull(x?, y?)))
+                            .flatten()
+                    };
+                    let base = match a.ptr {
+                        Some(p) if p.idx == 0 && q.is_none() => narrow(a.addr, selected()),
+                        Some(p) if p.idx == 0 => narrow(a.addr, w(idx)),
+                        _ => narrow(b.addr, w(Iv::exact(0))),
+                    };
+                    bases.insert((pc, v.op, ai), (narrow(a.addr, w(idx)), base));
+                }
                 // With `proof`, a load from a constant base and an index register too: the
                 // bounds of the bytes its index comes from hold for every run.
                 let indexed = proof
@@ -3261,7 +3298,7 @@ fn reach(
             }
         }
     }
-    (out, regs, runs, c.bound)
+    (out, bases, regs, runs, c.bound)
 }
 
 /// Stores writing one run of data bytes `[lo, hi)`, by `(pc, opcode, access index)`.
@@ -3623,7 +3660,7 @@ pub fn analyze(
             }
         }
         let indexed = crate::dispatch::indexed_loads(&code, vars, &sets);
-        let (reach, proven, regs, runs, bound) = if given.reach {
+        let (reach, bases, proven, regs, runs, bound) = if given.reach {
             // A store of the byte a switch's arm was selected by writes the arm's case values.
             let mut armed = stores.clone();
             crate::dispatch::arm_values(&code, vars, &sets, &objs, &mut armed, &mut Vec::new());
@@ -3638,9 +3675,14 @@ pub fn analyze(
                 xy: [&xb, &yb],
                 insn: &bytes,
             };
-            let (assumed, _, runs, _) = reach(&pass, &sets, &objs, &armed, given, false);
-            let (proven, regs, _, bound) = reach(&pass, &sets, &objs, &armed, given, true);
-            (assumed, proven, regs, runs, bound)
+            let (assumed, mut bases, _, runs, _) = reach(&pass, &sets, &objs, &armed, given, false);
+            let (proven, sure, regs, _, bound) = reach(&pass, &sets, &objs, &armed, given, true);
+            // An access the pass taking tables inside their extents never reaches has the
+            // proof pass's hulls.
+            for (k, h) in sure {
+                bases.entry(k).or_insert(h);
+            }
+            (assumed, bases, proven, regs, runs, bound)
         } else {
             Default::default()
         };
@@ -3836,6 +3878,7 @@ pub fn analyze(
             loads,
             indexed,
             reach,
+            bases,
             proven,
             regs,
             bound,

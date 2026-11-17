@@ -43,3 +43,25 @@ def test_rows_name_each_pointer_load(tmp_path, capsys):
     assert f"${labels['loop']:04X} (zp),Y $FB" in capsys.readouterr().out
     assert json.loads(out.read_text())[str(f)][0]["pc"] == rows[0]["pc"]
     assert ptrloads._span(b"") == "-" and ptrloads._hex(None) == "-"
+
+
+def test_every_access_has_the_memory_maps_verdict(tmp_path, capsys):
+    """``--all``: the cursors' loads, their bases in the program, read plain; the verdicts
+    name why an access is held to the program or not."""
+    data, labels = psid(TO.CURSOR)
+    rows = {r["pc"]: r for r in ptrloads.survey(data, every=True)}
+    assert all(rows[labels[n]]["verdict"].startswith("plain") for n in ("rd", "seg"))
+    assert ptrloads.verdict((0x1000, 0x1000), (0x1000, 0x1001), True, (0x1000, 0x1010)) == (
+        "plain, checked by the memory map"
+    )
+    held = (0x1000, labels["end"])
+    assert ptrloads.verdict(None, None, False, held) == "no base"
+    assert ptrloads.verdict((0, 0xFFFF), None, False, held) == "base unknown"
+    assert ptrloads.verdict((0xD400, 0xD400), None, False, held) == "base in I/O"
+    assert ptrloads.verdict((0x4000, 0x4000), None, False, held) == "base outside the program"
+    assert ptrloads.verdict((0x1000, 0x1000), None, False, held).startswith("entry words")
+    assert ptrloads.verdict((0x1000, 0x1000), (0x1000, 0x1001), False, held) == "plain"
+    f = tmp_path / "t.sid"
+    f.write_bytes(data)
+    assert ptrloads.main([str(f), "--all"]) == 0
+    assert f"${labels['rd']:04X} LDA indy" in capsys.readouterr().out

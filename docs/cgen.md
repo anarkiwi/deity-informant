@@ -491,8 +491,8 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   tests its address against it and reads `oob_rd` outside (`(uint16_t)(a - R2_ORG) < R2_LEN ?
   ... : oob_rd(a)`); from a constant base plus a byte inside one held span, through the span's
   bounds-checked reader `rdCj(base, index)`. One the lift proves (`Program.proven`: the bounds
-  of the bytes its index comes from, or of the cursor states the entries reach,
-  [wholeprog](wholeprog.md#static-proofs), *Reachable states*) inside one region or held span
+  of the bytes its index comes from, or the program the memory map holds it to,
+  [wholeprog](wholeprog.md#static-proofs), *Machine model*) inside one region or held span
   indexes it unchecked.
   Every byte a store with an address set may write (`Program.written`: a block copy's
   destinations past the image) is in a region, which pointer reads find through `rd` or a
@@ -640,6 +640,15 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   the program init's lift writes as held (`holds`), as the spans hold them. A walk's check
   (*Walks*, after the instruction setting `Y`) tests `p + y` alike; a load through
   a pair init leaves that the entries never store (*Seeds*) reads its words with no test.
+- An access whose bases lie in the program (an operand, a pointer's or operand cells'
+  provenance; [wholeprog](wholeprog.md#static-proofs), *Machine model*) reaches the array
+  holding it unchecked, after `objchk` of its address where its interval may leave the
+  program (`def` `"machine"`); the lift's proven hull decides it (`Program.proven`), cgen
+  reads it. The C64's memory map is fixed: outside the program the access would take I/O,
+  ROM or RAM the program never loaded for its own, and play after init is a closed program
+  that works, so a valid run stays inside and the trap stops invalid input. Bases unknown,
+  or reaching I/O (a device read through a pointer) or unloaded RAM, keep the bounds-checked
+  reader.
 
 Address constants print relative to the region holding them, or to the code span or loaded image when the program holds them (any other, a device's or a vector's, prints as it is)
 (`R2_ORG + 0x10`, `CODE_ORG + 0x21`, `IMG_ORG + ...`): a constant reaching an access address
@@ -755,7 +764,7 @@ cell, the pointer or the address), and as the kind has them:
 | `index` | an index past its table's extent: `tables`, each `{of, base, end, by, store}`, `of` `"jump"` (a transfer's target words), `"branch"` (branch offsets), `"cell"` (values a store at `store` writes into a code cell), `"data"` (a pointer's seed words or other values) or `"store"` (a store's run inside `loaded`), the column at `base` ending at `end` (exclusive) at `by` `"object"` (the next object the code accesses), `"code"` (an instruction byte), `"loaded"` (the end of `loaded`), `"target"` (a target of the transfer), `"column"` (a byte another column reads) or `"wrap"` |
 | `opcode` | an opcode cell holding a value outside its variants (`ok`) |
 | `codechk` | a store (`addr` its interval) changing constant code |
-| `window`, `objchk` | a pointer pair's (`pair`) word in a zone's window; outside object `obj`, checked at an entry, a defining load, after a defining store or after a walk (`def`) |
+| `window`, `objchk` | a pointer pair's (`pair`) word in a zone's window; outside object `obj`, checked at an entry, a defining load, after a defining store or after a walk, or before a load the memory map bounds (`def`: `entry`, `load`, `store`, `walk`, `machine`) |
 | `stack`, `zone` | an access (`addr`) reaching page 1 outside the bytes it may, or a pointer store reaching a zone |
 | `return`, `txs`, `decimal`, `sp`, `bank` | a callee returning elsewhere than its call pushed; a `TXS` off the saved height; a pulled status setting `D`; SP or the bank configuration at no planned node |
 | `transfer`, `ind` | a computed transfer to an address its table lacks; an unresolved transfer's switch default (`targets` the table's, `resolved` whether the code resolves it) |

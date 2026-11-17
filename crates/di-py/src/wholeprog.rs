@@ -694,9 +694,6 @@ impl Program {
         d.set_item("stack_guards", s.stack_guards)?;
         d.set_item("ptr_guards", s.ptr_guards)?;
         d.set_item("obj_guards", s.obj_guards)?;
-        d.set_item("reach_loads", s.reach_loads)?;
-        d.set_item("reach_slices", s.reach_slices)?;
-        d.set_item("reach_states", s.reach_states)?;
         d.set_item("zone_guards", s.zone_guards)?;
         d.set_item("guard_evals", self.exec.guard_evals())?;
         d.set_item("page1_sites", s.page1_sites)?;
@@ -877,6 +874,20 @@ impl Program {
     #[getter]
     fn proven(&self) -> HashMap<u16, (u32, u32, u32, u32)> {
         hulls(&self.prog.proven)
+    }
+
+    /// Every access of no one address: ``{pc: (lo, hi, base_lo, base_hi)}``, its address hull
+    /// and its base's (the index registers zero, the pointers' words as their provenance gives
+    /// them), each the hull over the instruction's accesses.
+    #[getter]
+    fn bases(&self) -> HashMap<u16, (u32, u32, u32, u32)> {
+        hulls(&self.prog.bases)
+    }
+
+    /// The instruction starts whose accesses the memory map checks before them.
+    #[getter]
+    fn machine(&self) -> Vec<u16> {
+        self.prog.machine.clone()
     }
 
     /// Stores from a constant base plus an index the code does not bound: ``{pc: (lo, hi)}``,
@@ -1533,7 +1544,6 @@ pub fn lift_program(
         holds,
         checked,
         known,
-        ..Opts::default()
     };
     Ok(Program::new(py.detach(|| {
         di_lift::lift_banked(&img, &es, &volatile, &f, opts, bank.as_ref())
