@@ -282,10 +282,10 @@ def test_walk_to_a_marker_reads_its_runs():
 @pytest.mark.parametrize("src", [WRITTEN, UNTESTED], ids=["written", "untested"])
 def test_walk_unproven_keeps_its_check(src):
     """A walk over bytes a store may write, or past a byte it did not test, holds no bound of
-    its own: the memory map alone checks its load, against the program its pointer's bases
-    lie in, and every run replays."""
+    its own: the memory map alone checks its load, against the run of data the tables its
+    pointer is copied from lie in, and every run replays."""
     img, labels, prog = walk_lift(src)
-    assert [o[:2] for o in served(prog, labels["loop"])] == [(0x1000, labels["end"] - 1)]
+    assert [o[:2] for o in served(prog, labels["loop"])] == [(labels["tlo"], labels["play"] - 1)]
     for song in range(4):
         differential(img, prog, [labels["init"], labels["play"]], plan(song, 30))
 

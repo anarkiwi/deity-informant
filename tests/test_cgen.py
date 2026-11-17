@@ -2239,16 +2239,16 @@ def test_end_marker_tested_before_its_pointer(prefix, tmp_path):
 
 
 def test_end_marker_restart_past_the_order(prefix, tmp_path):
-    """When a restart play reaches names another marker, the pointer names zero page: the
-    span's reader reads it through ``oob_rd``. The order position then runs on past the
-    order's tables: calls replay exactly until its read would leave the program, invalid
-    input, where it traps at the memory map's check of that read."""
+    """When a restart play reaches names another marker, the pointer the order's tables make
+    names zero page, outside the program: invalid input, whatever the tables hold. The calls
+    replay exactly until that read, which traps at the memory map's check of it, as does the
+    order position run on past the order's tables."""
     img, labels, loaded = assemble(ORDERBAD)
     c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=[0])
-    assert not re.search(r"\brd\(", c) and "rdC0(" in c
-    k = machine_guard(info, labels["play"] + 3)
+    assert not re.search(r"\brd\(", c) and machine_guard(info, labels["play"] + 3) is not None
+    k = machine_guard(info, labels["ok"] + 13)
     calls = [("init", 0)] + [("play", k) for k in range(4)] * 2
-    play(tmp_path, c, h, img, labels, calls, trap=(7, k))
+    play(tmp_path, c, h, img, labels, calls, trap=(3, k))
 
 
 PUSH = """
@@ -2699,7 +2699,13 @@ def test_table_region_past_the_code_span(prefix, tmp_path):
 def test_pointer_stores_from_a_terminated_table_make_cells(prefix, tmp_path):
     c, _, info = check(prefix, tmp_path, RELOCATOR, entry_calls([0, 1, 1, 0, 1]))
     st = info["stats"]
-    assert pointer_checks_only(info, RELOCATOR) and "codechk" not in c
+    # The stores through the pointers the table makes are checked by the memory map, whatever
+    # words the table holds.
+    rloop = assemble(RELOCATOR)[1]["rloop"]
+    machine = {machine_guard(info, rloop + 16), machine_guard(info, rloop + 21)}
+    assert None not in machine and "codechk" not in c
+    rest = {k: t for k, t in info["traps"].items() if k not in machine}
+    assert pointer_checks_only({**info, "traps": rest}, RELOCATOR)
     assert (st["code_guards"], st["cells"]) == (0, 4)
 
 
@@ -3380,8 +3386,8 @@ def test_init_entry_trap_names_the_songs(prefix):
 
 def test_code_traps_name_their_writers(prefix):
     """Opcode cells of the routine init's copy may overwrite trap on bytes other than their
-    own opcodes, naming the stores that may write them; a store that may write anything also
-    checks the code and the stack."""
+    own opcodes, naming the stores that may write them; a store that may write any of the
+    program's bytes also checks the code."""
     labels, info = trap_meta(prefix, TABLECOPY, ("init", "play"))
     pre, copy = labels["pre"], labels["copy"]
     writers = [
@@ -3399,12 +3405,13 @@ def test_code_traps_name_their_writers(prefix):
     ]
     assert all(g["writers"] == writers for g in ops["opcode"])
     assert all(tuple(g["addr"]) == (g["at"],) * 2 for g in ops["opcode"])
+    # The store's address is formed from the bytes the copy writes, the program's whatever
+    # they hold: the memory map keeps it in the bytes the host holds, so it checks the code
+    # there, and no stack.
     [code] = ops["codechk"]
-    assert (code["at"], tuple(code["addr"])) == (pre + 2, (0, 0xFFFF))
-    assert code["writers"] == [writers[1]]
-    [stack] = ops["stack"]
-    assert (stack["at"], tuple(stack["addr"])) == (pre + 2, (0, 0xFFFF))
-    assert as_runs(stack["ok"]) == [(0, 0x1FB), (0x200, 0xFFFF)]
+    [held] = [g for g in ops["objchk"] if g["at"] == pre + 2]
+    assert (code["at"], code["addr"]) == (pre + 2, held["addr"]) and held["addr"][0] == 0x1000
+    assert code["writers"] == [writers[1]] and "stack" not in ops
 
 
 def test_code_check_names_its_store(prefix):
@@ -3432,10 +3439,12 @@ def test_zone_trap_names_the_pages_a_pointer_store_may_not_reach(prefix):
 
 def test_window_trap_names_its_pair(prefix):
     """The pair defined from a table traps after its high byte's store when its word lies
-    within a window of the stack or the I/O page."""
-    labels, info = trap_meta(prefix, PG.TABLE + "end:\n")
+    within a window of the stack or the I/O page. Its high byte is computed from the table's,
+    no copy of it, so the memory map does not bound it."""
+    src = PG.TABLE.replace("        LDA hitab,X\n", "        LDA hitab,X\n        ORA #$00\n")
+    labels, info = trap_meta(prefix, src + "end:\n")
     k, t, g = only_guard(info)
-    store = labels["entry"] + 12
+    store = labels["entry"] + 14
     assert info["traps"][k] == ("deopt", store + 2) and t["kind"] == "window"
     assert (g["at"], g["pair"], tuple(g["addr"])) == (store, PG.PTR, (PG.PTR + 1,) * 2)
     assert as_runs(g["ok"]) == [(0x200, 0xBEFF), (0xC100, 0xFFFF)]
@@ -3780,7 +3789,8 @@ def test_relocation_invariance(prefix, tmp_path):
     for org in (0x1000, 0x2345):
         img, labels, loaded = assemble(RELOC, org)
         c, h, _ = translate(prefix, img, labels, loaded)
-        play(tmp_path, c, h, img, labels, entry_calls(range(4), 2))
+        # An odd ``A`` makes a pointer of two words' halves: invalid input.
+        play(tmp_path, c, h, img, labels, entry_calls([0, 2, 2, 0], 2))
         outs.append((c, h))
     assert outs[0][0] == outs[1][0] and outs[0][1] != outs[1][1]
     assert not re.search(r"0x1[0-9A-F]{3}\b|0x23[0-9A-F]{2}\b", outs[0][0])
@@ -4971,28 +4981,29 @@ def test_bytes_init_leaves_constant_are_held_where_read(prefix, tmp_path, indexe
 def test_init_relocating_by_the_song_leaves_pointer_cells(prefix, tmp_path):
     """Init computing an operand from ``A`` writes both its bytes: the low byte's value
     differs between values of ``A``, so the operand is a variable the other entry reads
-    through as a pointer, its high byte too though init leaves it one value, plain inside the
-    program its words lie in, the memory map checking it; the flag init leaves one value for
-    every ``A`` is a constant."""
+    through as a pointer, its high byte too though init leaves it one value. Its words are
+    init's, and no table of the code's lies between the program's cells (scalars in the C) to
+    bound them: its read keeps the data span's bounds-checked reader, no check of the memory
+    map's; the flag init leaves one value for every ``A`` is a constant."""
     c, info, labels = songs(prefix, tmp_path, INITA, range(4))
     assert {labels["o0"] + 1, labels["o0"] + 2} <= set(info["provenance"]["cells"])
     assert info["fixed"] == [labels["flag"]]
     body = body_of(c, "play")
-    word = r"(v\d+) = S_\w+ \| \(\(uint16_t\)S_\w+ << 8\);"
-    m = re.search(word, body)
-    assert m and re.search(rf"CGEN_IX\(C0, {m[1]} - C0_ORG, v\d+\)", body) and "rdC" not in body
-    assert machine_guard(info, labels["o0"]) is not None
+    assert re.search(r"rdC\d+\(S_\w+ \| \(\(uint16_t\)S_\w+ << 8\), ", body)
+    assert machine_guard(info, labels["o0"]) is None
     assert "K_I" in body
 
 
 def test_song_range_is_checked_not_assumed(prefix, tmp_path):
     """The songs the host calls init with are checked at init, and assumed nowhere: the
     pointer each song init takes leaves, which play never stores, seeds the pair, songs
-    pointing at I/O among them, so its reads keep their checks for every count of songs, the
-    ``.c`` the same, the header holding each song's values; a song outside the range traps."""
-    c, _, labels = songs(prefix, tmp_path, SONGINIT, (0, 1), declared=range(2))
+    pointing at I/O among them, so the memory map checks its reads for every count of songs,
+    the ``.c`` the same, the header holding each song's values; a song outside the range
+    traps."""
+    c, info, labels = songs(prefix, tmp_path, SONGINIT, (0, 1), declared=range(2))
     guard = r"if \(\(uint8_t\)\(a - CGEN_SONG0\) >= CGEN_SONGS\) \{\s*trap\("
-    assert "rdC0(" in body_of(c, "play") and re.search(guard, c)
+    machine = [g for t in info["trap_info"].values() for g in t["guards"] if g["def"] == "machine"]
+    assert machine and re.search(guard, c)
     img, labels, loaded = assemble(SONGINIT)
     one = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=range(1))
     assert one[0] == c and "#define CGEN_SONGS 1" in one[1]
@@ -6699,12 +6710,15 @@ def test_strided_records_aliased_by_an_interval_stay_memory(prefix, tmp_path):
 
 def test_record_walk_store_is_c_state(prefix, tmp_path):
     """The store patched from a record walk's selectors writes its three words: its operand
-    is C state, with no check against code and no dispatch."""
+    is C state, with no check against code and no dispatch, the memory map checking it."""
     c, _, info = check(prefix, tmp_path, VS.WALK, entry_calls(range(4), 2))
     body = body_of(c, "entry")
     assert "codechk" not in c and "rd(" not in body and "wr(" not in body
-    assert "trap(" not in body
     img, labels, _ = assemble(VS.WALK)
+    # The words the walk's selectors copy, whatever they hold, the memory map bounds alone.
+    guards = [g for t in info["trap_info"].values() for g in t["guards"]]
+    assert machine_guard(info, labels["dst"]) is not None
+    assert all(g["def"] == "machine" for g in guards)
     assert info["ptr_sets"][labels["loop"]] == sorted([labels["r0"], labels["r1"]])
     assert img[labels["dst"]] == 0x8D
 
@@ -7301,16 +7315,34 @@ def test_machine_model_bounds_every_mode(prefix, tmp_path, mode):
     play(tmp_path / "bad", c, h, img, labels, calls, trap=(n, k))
 
 
+@pytest.mark.parametrize("mode", list(MODES))
+def test_machine_model_is_independent_of_the_data(prefix, tmp_path, mode):
+    """Song data reaches only the .h: whatever words the pointer table holds, the read through
+    the pointer they make is checked by the memory map, the .c the same. A word naming bytes
+    outside the program (RAM it never loaded) is invalid input: the calls
+    replay exactly up to the read through it, which traps at that check."""
+    img, labels, loaded = assemble(machine_src(mode))
+    c, _, _ = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+    img, labels, loaded = assemble(machine_src(mode, lo2="$00", hi2="$40"))
+    c2, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+    k = machine_guard(info, labels["rd"])
+    assert c2 == c and k is not None
+    calls = [("init", 0)] + [("play", 0)] * 20
+    play(tmp_path, c2, h, img, labels, calls, trap=(1 + 4 + 3, k))
+
+
 @pytest.mark.parametrize(
-    "edit",
-    [{"lo2": "$00", "hi2": "$40"}, {"lo2": "$10", "hi2": "$C0"}, {"hi": "$C011"}],
-    ids=["unloaded", "device", "unknown"],
+    "src",
+    [
+        machine_src("zpy", hi="$C011").replace("LDA $C011,Y", "LDA $C011"),
+        machine_src("zpy").replace("LDA phi,Y", "LDA #$C0"),
+    ],
+    ids=["unknown", "constant"],
 )
-def test_machine_model_leaves_bases_outside_the_program_checked(prefix, tmp_path, edit):
-    """A pointer whose bases leave the program (RAM it never loaded, an I/O register) or are
-    unknown (a byte read from I/O) keeps its bounds-checked or device read, no check of the
-    memory map's; the program replays."""
-    src = machine_src("zpy", **edit).replace("LDA $C011,Y", "LDA $C011")
+def test_machine_model_leaves_bases_outside_the_program_checked(prefix, tmp_path, src):
+    """A pointer whose high byte is unknown (read from I/O) or a constant of the code naming
+    an I/O page keeps its bounds-checked or device read, no check of the memory map's; the
+    program replays."""
     img, labels, loaded = assemble(src)
     c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
     assert machine_guard(info, labels["rd"]) is None

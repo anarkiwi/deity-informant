@@ -643,8 +643,9 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
 - An access whose bases lie in the program (an operand, a pointer's or operand cells'
   provenance; [wholeprog](wholeprog.md#static-proofs), *Machine model*) reaches the array
   holding it unchecked, after `objchk` of its address where its interval may leave the
-  program (`def` `"machine"`); the lift's proven hull decides it (`Program.proven`), cgen
-  reads it. The C64's memory map is fixed: outside the program the access would take I/O,
+  program (`def` `"machine"`, always for an address the program's bytes form: the check's
+  bounds are the `.h`'s, so the `.c` is the same whatever the song data holds); the lift's
+  proven hull decides it (`Program.proven`), cgen reads it. The C64's memory map is fixed: outside the program the access would take I/O,
   ROM or RAM the program never loaded for its own, and play after init is a closed program
   that works, so a valid run stays inside and the trap stops invalid input. Bases unknown,
   or reaching I/O (a device read through a pointer) or unloaded RAM, keep the bounds-checked

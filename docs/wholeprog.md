@@ -834,18 +834,25 @@ the facts, so a proof holds on every execution that stays in lifted code.
   works, so an access whose every base lies in the bytes the host holds of the program (its
   image and the bytes past it its stores write, *Pointer objects*) stays in them on every
   valid run: outside them it would take I/O, ROM or RAM the program never held for its own.
-  The rule is one over every load and store of no one address, whatever its addressing mode:
-  its address is a *base*, the address with the index registers zero (`Graph::bases`: an
-  operand constant; the words of the pointer pair, or of each pair `X` selects for
-  `(zp,X)`, or of the operand cells it is read from, as *Pointer reach* gives them, widened
-  by their words at the entries where a path from an entry reaches the access before any
-  store into them), plus an index. Where the least address from the greatest base lies in
-  those bytes, the access is proven there (`Program.proven`, a store's too): with no check
-  where its address interval already lies in them, else checked before its instruction
-  against them (`objchk` of the address itself, `def` `"machine"`; a store *Bounded stores*
-  holds to its run of data bytes, which it takes to change no code, against that run unless
-  an index guard keeps it inside). A base outside them (a device, RAM never loaded), or one
-  no provenance knows, leaves the access as it was. Zero-page indexing wraps inside zero
+  The rule is one over every load and store of no one address, whatever its addressing mode
+  (`Graph::bases`), and the code alone decides it, so song data reaches only the `.h`: along
+  the definitions reaching the access, through copies (loads, transfers, stores), the
+  sources of its address's bytes (its pointer pair's, the pairs `X` selects for `(zp,X)`, or
+  its operand's) are the program's bytes (a table the code indexes, or the held bytes and
+  init's runs at the entries), constants (the code's, or the machine's state outside the
+  program at the entries), or anything else (arithmetic on them, an entry register, a
+  device). An address the program's bytes form, whatever they hold, stays in its block on
+  every valid run: a load's the run of data bytes holding every table its high byte is
+  copied from, or with no such table the held bytes where no cell (a scalar in the C) lies
+  in them; a store's the held bytes, its stores' checks keeping the code it may write. It
+  is checked before its instruction against the block (`objchk` of the address itself,
+  `def` `"machine"`), always: an address outside the block is invalid input, trapped there.
+  An address the code's constants form, its bases in the held bytes (a store *Bounded
+  stores* holds to its run of data bytes, which it takes to change no code, that run), is
+  proven there (`Program.proven`), with no check where its index (one the code's constants
+  and their arithmetic give, else any its index guard passes) keeps it inside. Any other
+  source, a constant base outside the held bytes (a device, RAM never loaded) or one of a
+  page holding a cell, leaves the access as it was. Zero-page indexing wraps inside zero
   page: its base is no byte of the program and it needs none.
 - **Computed jumps** (`dispatch.rs`). A `JMP (ind)` whose pointer bytes are tagged on every
   path into it, a `JMP`/`JSR` whose cell operand bytes are (a byte that is not a cell is a
