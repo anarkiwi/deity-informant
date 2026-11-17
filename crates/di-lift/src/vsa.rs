@@ -1220,10 +1220,8 @@ impl Code<'_> {
     fn load_set(&self, pc: u16, op: u8, st: &St) -> Option<Bits> {
         let mut out = Bits::default();
         for a in self.set_addrs(pc, op, st)? {
-            let tracked = st.mem.iter().any(|e| e.0 as u32 == a);
             match self.dev.contains(a as usize) {
                 true => out = out.or(self.dev_set(a as u16, st)?),
-                false if tracked => out = out.or(st.mvals(a as u16)?),
                 false => out.add(self.byte(a, st)?.value()?),
             }
         }
