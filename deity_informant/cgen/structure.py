@@ -66,9 +66,10 @@ class Conds:
 
     def cover(self, f, ctx):
         """An irredundant sum of products (Minato-Morreale ISOP) equal to ``f`` where ``ctx``
-        holds: ``[[(key, polarity), ...], ...]``, literals and cubes by level."""
-        cubes = sorted(self._isop(f & ctx, f | ~ctx)[0])
-        return [[(self.keys[self.bdd.var_at_level(lv)], p) for lv, p in c] for c in cubes]
+        holds: ``[[(key, polarity), ...], ...]``, literals and cubes in the order the
+        variables were declared, as the conditions are evaluated (reordering moves levels)."""
+        cubes = sorted(sorted(c) for c in self._isop(f & ctx, f | ~ctx)[0])
+        return [[(self.keys[f"x{i}"], p) for i, p in c] for c in cubes]
 
     def _isop(self, lo, hi):
         bdd = self.bdd
@@ -79,14 +80,15 @@ class Conds:
         if (lo, hi) in self.memo:
             return self.memo[(lo, hi)]
         level = min(lo.level, hi.level)
+        name = bdd.var_at_level(level)
         l0, l1 = _cof(lo, level)
         h0, h1 = _cof(hi, level)
         c0, f0 = self._isop(l0 & ~h1, h0)
         c1, f1 = self._isop(l1 & ~h0, h1)
         cs, fs = self._isop((l0 & ~f0) | (l1 & ~f1), h0 & h1)
-        v = bdd.var(bdd.var_at_level(level))
-        cubes = tuple(((level, False),) + c for c in c0)
-        cubes += tuple(((level, True),) + c for c in c1) + cs
+        v, i = bdd.var(name), int(name[1:])
+        cubes = tuple(((i, False),) + c for c in c0)
+        cubes += tuple(((i, True),) + c for c in c1) + cs
         out = cubes, (~v & f0) | (v & f1) | fs
         self.memo[(lo, hi)] = out
         return out

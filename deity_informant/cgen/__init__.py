@@ -96,6 +96,19 @@ def _inside(r):
     return f"(uint16_t)(a - {r}_ORG) < {r}_LEN"
 
 
+def _obj_h(j, obj, parts):
+    """The ``.h`` bounds of object ``j`` (``obj``, ``(lo, hi)`` inclusive): its origin and
+    limit, or of one of several runs ``parts`` (``hi`` exclusive) the test of a pointer outside
+    every one."""
+    if not parts:
+        return "\n".join(
+            f"#define CGEN_OBJ{j}_{k} 0x{v:04X}"
+            for k, v in (("ORG", obj[0]), ("LIM", obj[1] - obj[0]))
+        )
+    out = " && ".join(f"(uint16_t)((p) - 0x{lo:04X}) > 0x{hi - 1 - lo:X}" for lo, hi in parts)
+    return f"#define CGEN_OBJ{j}_OUT(p) ({out})"
+
+
 def _data(j):
     off = f"(uint16_t)(a - C{j}_ORG)"
     return f"({off} >= C{j}_BITS || C{j}_DATA[{off} >> 3] >> ({off} & 7) & 1)"
@@ -562,10 +575,14 @@ class Program:  # pylint: disable=too-many-instance-attributes
     written: list = ()
     bounds: dict | None = None
     addr_sets: dict | None = None
+    #: The accesses into the data block, ``{(pc, store): runs}`` (``Program.data``).
+    data: dict | None = None
     #: Per ``(zp),Y`` access, the words its pointer may hold (``Program.ptr_sets``).
     ptr_sets: dict | None = None
     #: The pointer objects ``[(lo, hi)]`` the functions' ``objchk`` checks name, by index.
     objects: list = ()
+    #: Per object of several runs (a data block), its runs ``[(lo, hi)]`` (``hi`` exclusive).
+    parts: dict | None = None
     reach: dict | None = None
     proven: dict | None = None
     #: Per access of no one address its hull and its base's (``Program.bases``).
@@ -659,7 +676,7 @@ def _renumber(funcs, origin, base):
 
 
 #: The facts a lift gives the layout, as :class:`Program` holds them.
-_FACTS = ("sets", "bounds", "regs", "reach", "proven", "bounded", "addr_sets", "bases")
+_FACTS = ("sets", "bounds", "regs", "reach", "proven", "bounded", "addr_sets", "bases", "data")
 
 
 def _raw(src):
@@ -845,6 +862,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
             alias=[g for g in alias if held.isdisjoint({g[0], g[0] + 1, g[1], g[1] + 1})],
             held=held,
             holds=[] if lone is None else list(lone.written),
+            player=lone is not None,
             known=known,
             driven=None if bare is None else bare.exit,
             **kw,
@@ -861,7 +879,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     p.constant, p.jumps, p.written = frozenset(prog.code), dict(prog.jumps), list(prog.written)
     vars(p).update(_raw(prog))
     p.ptr_sets = {pc: set(w) for pc, w in prog.ptr_sets.items()}
-    p.objects = list(prog.objects)
+    p.objects, p.parts = list(prog.objects), dict(prog.parts)
     p.machine = frozenset(prog.machine)
     p.stores = {"play": trapinfo.stores(prog)}
     if init is not None:
@@ -877,6 +895,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
         for pc, w in lone.ptr_sets.items():
             p.ptr_sets.setdefault(pc, set()).update(w)
         _renumber(funcs, origin, len(p.objects))
+        p.parts.update({j + len(p.objects): r for j, r in lone.parts.items()})
         p.objects += list(lone.objects)
         p.written += list(lone.written)
     return p, prog.stats
@@ -983,7 +1002,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         for j, fn in enumerate(p.funcs)
     }
     vars(mod).update(vars(_facts(p)))
-    mod.ptr_objects = list(p.objects)
+    mod.ptr_objects, mod.ptr_parts = list(p.objects), dict(p.parts or {})
     mod.regfile = regfile = [r for r, _ in regfile]
     mod.kpos = regfile.index(emit.KREG) if emit.KREG in regfile else None
     song = None
@@ -1026,7 +1045,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     ram = mod.stored()
     ram = True if ram is None else ram
     dispatch, unheld = _dispatch(mem, helpers, used, mod.var_at, mod.init_stored, ram)
-    c += dispatch
+    c += dispatch + mod.block_c()
     for j in sorted(mod.checked):
         var = ["uint16_t a = p + y;", *VAR_RD] if j in mod.var_spans else []
         c += [
@@ -1046,13 +1065,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     c += fns
     c_text = clang_format("\n".join(c) + "\n")
     store = _storage(mem, used, helpers, regions) + mod.state_h() + sets + unheld
-    objs = [
-        f"#define CGEN_OBJ{j}_{k} 0x{v:04X}"
-        for j in sorted(mod.objs_used)
-        for k, v in zip(
-            ("ORG", "LIM"), (mod.ptr_objects[j][0], mod.ptr_objects[j][1] - mod.ptr_objects[j][0])
-        )
-    ]
+    objs = [_obj_h(j, mod.ptr_objects[j], mod.ptr_parts.get(j)) for j in sorted(mod.objs_used)]
     h_text = clang_format(_header(mem, used, [key[1] for key in traps], mod.konsts, objs + store))
     times["print"] = time.perf_counter() - t1
     info = {

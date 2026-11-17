@@ -2272,14 +2272,24 @@ def test_pointer_pair_reused_as_scratch(prefix, tmp_path):
 )
 def test_pointer_advanced_by_record_lengths(prefix, tmp_path, src):
     # Init points the pair at a song's records; play reads one and advances the pair by its
-    # length (`ADC lo; BCC; INC hi`, or into a copy's operand cells): the pair stays at or
-    # above the least record start, so every read is one of the span holding the records.
-    # Stepped back with a borrow, or never set from the image's zeros, it is not bounded: its
-    # reads below the program read ``oob_rd``.
-    c, info, labels = songs(prefix, tmp_path, src, (0, 1))
-    assert not re.search(r"\brd\(", c) and "rdC0(" in c
-    [(lo, hi)] = info["code_held"]
-    assert lo <= labels["p0"] and labels["end"] <= hi and not info["unknown_access"]
+    # length (`ADC lo; BCC; INC hi`, or into a copy's operand cells), or steps it back with a
+    # borrow: the pair is the song's, so every read is a plain read of the song's data block,
+    # the memory map checking it there. Stepped back from the second song's start, read from
+    # its tables, it leaves the block and traps at that check. Never set from the image's
+    # zeros, it is no song's: its reads keep the span's reader, ``oob_rd`` below the program.
+    song = src is not UNSET
+    c, info, labels = songs(prefix, tmp_path, src, (0,) if src is STEPBACK else (0, 1), 0, range(2))
+    assert not re.search(r"\brd\(", c) and ("rdC0(" in c) != song
+    assert bool(machine_guards(info)) == song and not info["unknown_access"]
+    if src is STEPBACK:
+        img, _, loaded = assemble(src)
+        c, h, info = translate(
+            prefix, img, labels, loaded, ("init", "play"), init=0, songs=range(2)
+        )
+        k = machine_guard(info, labels["play"] + 2)
+        calls = [("init", 1)] + [("play", a) for a in range(4)] * 2
+        (tmp_path / "1").mkdir()
+        play(tmp_path / "1", c, h, img, labels, calls, trap=(1, k))
 
 
 def test_end_marker_tested_before_its_pointer(prefix, tmp_path):
@@ -2486,16 +2496,18 @@ IOJUMP = CALLRET.replace(
 def test_pointer_loaded_from_song_data_and_its_stack(prefix, tmp_path, src, bounded):
     # A jump loads the song pointer from two song bytes, a call pushes it (advanced past the
     # command) on a stack whose depth nothing bounds and a return pops it: the pointer's
-    # words, popped past the stack's bytes as the depth runs on, are no provenance's, so its
-    # reads keep the span's reader; the push is checked by the memory map against the
-    # stack's bytes. Loaded from I/O instead, it may point anywhere: the span's reader reads
+    # words, popped past the stack's bytes as the depth runs on, come from the song's data
+    # whatever they hold, so its reads are plain reads of the data block, the memory map
+    # checking them against it; the push is checked by the memory map against the stack's
+    # bytes. Loaded from I/O instead, it may point anywhere: the span's reader reads
     # ``oob_rd`` outside the program.
     img, labels, loaded = assemble(src)
     c, h, info = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
-    assert not re.search(r"\brd\(", c) and "rdC0(" in c
+    assert not re.search(r"\brd\(", c) and ("rdC0(" in c) != bounded
     assert machine_guard(info, labels["call"] + 8) is not None
     assert not re.search(r"\b(?:oob_wr|wr)\(", plain(c))
     if bounded:
+        assert machine_guard(info, labels["play"] + 2) is not None
         [(lo, hi)] = info["code_held"]
         assert lo <= labels["song"] and labels["end"] <= hi
         calls = [("init", 0)] + [("play", 0)] * 12
@@ -2573,8 +2585,9 @@ def test_pointer_init_leaves_bounds_its_reads(at):
     # The pair init leaves is a variable: pointing into the records' run of data bytes, play's
     # reads through it are bounded to that run in the pass that bounds pointers into the
     # program's data; pointing at an instruction, it is taken not to be read through, and the
-    # reads are bounded by what play stores. Either value lies in the program, so the reads
-    # hold to it on every valid run, the memory map checking them.
+    # reads are bounded by what play stores. Either value is the song's, init's or its
+    # table's, so the reads hold to the song's data block (init's code, which play never
+    # runs, among it) on every valid run, the memory map checking them.
     src = LEFT.replace("lo(read)", f"lo({at})").replace("hi(read)", f"hi({at})")
     img, labels, loaded = assemble(src)
     ents = [(labels["init"], "init"), (labels["play"], "play")]
@@ -4794,6 +4807,20 @@ def test_conditions_cover_and_definite_assignment():
     assert csyntax.render(csyntax.declare(body, {"x": "uint8_t"}))[0] == "uint8_t x = 0;"
 
 
+def test_condition_literals_keep_their_evaluation_order():
+    """A cover's literals follow the order the conditions were declared in, as they are
+    evaluated (a literal may carry the statements before its test), whatever levels the BDD
+    manager's reordering moves the variables to."""
+    conds = structure.Conds()
+    keys = [("c", f"%{i}") for i in range(4)]
+    xs = [conds.var(k) for k in keys]
+    f = xs[0] & xs[1] & ~xs[2] & xs[3]
+    conds.bdd.reorder({f"x{i}": 3 - i for i in range(4)})
+    assert [conds.bdd.level_of_var(f"x{i}") for i in range(4)] == [3, 2, 1, 0]
+    assert conds.cover(f, conds.bdd.true) == [[(k, i != 2) for i, k in enumerate(keys)]]
+    conds.close()
+
+
 def test_clone_metrics():
     body = "  v1 = R0[3];\n  io_write(0xD400, v1);\n  v2 = v1 + 1;\n  R0[4] = v2;\n"
     text = (
@@ -4980,7 +5007,7 @@ OPERAND_PTR = r"rdC\d+\(S_\w+ \| \(\(uint16_t\)S_\w+ << 8\), "
 #: A direct access of the span at an operand init leaves constant, named by the ``.h``.
 #: A byte variable: a cell init sets, promoted or in its region.
 BYTE = r"S_\w+|R\d+\[\w+\]"
-OPERAND_K = r"\bC\d+\[\(uint16_t\)\(\(K_\w+ \| \(\(uint16_t\)K_\w+ << 8\)\) \+ "
+OPERAND_K = r"\b[CR]\d+\[\(uint16_t\)\(\(K_\w+ \| \(\(uint16_t\)K_\w+ << 8\)\) \+ "
 
 
 @pytest.mark.parametrize("src", ["RUNREL", "RELOCATE"])
@@ -5217,15 +5244,14 @@ def test_init_relocating_by_the_song_leaves_pointer_cells(prefix, tmp_path):
     """Init computing an operand from ``A`` writes both its bytes: the low byte's value
     differs between values of ``A``, so the operand is a variable the other entry reads
     through as a pointer, its high byte too though init leaves it one value. Its words are
-    init's, and no table of the code's lies between the program's cells (scalars in the C) to
-    bound them: its read keeps the data span's bounds-checked reader, no check of the memory
-    map's; the flag init leaves one value for every ``A`` is a constant."""
+    init's, the song's: its read is a plain read of the song's data block, the memory map
+    checking it there; the flag init leaves one value for every ``A`` is a constant."""
     c, info, labels = songs(prefix, tmp_path, INITA, range(4))
     assert {labels["o0"] + 1, labels["o0"] + 2} <= set(info["provenance"]["cells"])
     assert info["fixed"] == [labels["flag"]]
     body = body_of(c, "play")
-    assert re.search(r"rdC\d+\(S_\w+ \| \(\(uint16_t\)S_\w+ << 8\), ", body)
-    assert machine_guard(info, labels["o0"]) is None
+    assert re.search(r"\(S_\w+ \| \(\(uint16_t\)S_\w+ << 8\)\)", body)
+    assert "rdC" not in body and machine_guard(info, labels["o0"]) is not None
     assert "K_I" in body
 
 
@@ -5692,10 +5718,9 @@ end:
 def test_relocated_operands_point_into_the_song(prefix, tmp_path, plain):
     """Init relocating play's operands from the song's header words plus the song's base, through
     a table of patch sites, leaves them one value for every ``A``: constants, the other
-    entry's accesses direct. An operand the entry also writes with a byte of no pointer stays
-    a pointer variable of unbounded values, read through the data span's bounds-checked
-    reader (not ``rd``), ``oob_rd`` outside it, its byte the entry never writes with it; the
-    other operand is a constant."""
+    entry's accesses direct. An operand the entry also advances stays a pointer variable, the
+    song's: its reads are plain reads of the song's data block, checked there by the memory
+    map, and it traps there once it runs past the song; the other operand is a constant."""
     src = (
         SWPREL.replace("        STA $C001\n", "        STA $C001\n        INC o1+1\n")
         if plain
@@ -5704,14 +5729,15 @@ def test_relocated_operands_point_into_the_song(prefix, tmp_path, plain):
     img, labels, loaded = assemble(src)
     c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
     calls = [("init", 0)] + [("play", k) for k in range(4)]
-    play(tmp_path, c, h, img, labels, calls)
+    k = machine_guard(info, labels["o1"])
+    assert (k is not None) == plain
+    play(tmp_path, c, h, img, labels, calls, trap=(3, k) if plain else None)
     ops = {labels[o] + k for o in ("o0", "o1") for k in (1, 2)}
     assert set(info["fixed"]) & ops == ops - (
         {labels["o1"] + 1, labels["o1"] + 2} if plain else set()
     )
     body = body_of(c, "play")
-    assert bool(re.search(r"rdC\d+\(", body)) == plain and not re.search(r"\brd\(", body)
-    assert re.search(OPERAND_K, body)
+    assert not re.search(r"\b(?:rd|rdC\d+)\(", body) and re.search(OPERAND_K, body)
 
 
 @pytest.mark.parametrize("bounded", [True, False])
@@ -6767,13 +6793,14 @@ def test_offsets_plus_init_origin_point_into_its_run(prefix, tmp_path):
     """A pair stored from the two parts of a table byte plus the origin init leaves (added
     with carry) points into the run of data bytes the origin points into: the read reaches
     no code, so the patched immediate is a scalar. The origin is one value for every ``A``,
-    a constant: the hulls that hold on every run are the same."""
+    a constant. The read stays in that run's part of the song's data block, the records."""
     img, labels, loaded = assemble(ORIGIN)
     ents = [(labels["init"], "init"), (labels["play"], "play")]
     p, _ = cgen.lift(img, ents, [W.IO], loaded=loaded, init=0)
     lo, hi = p.reach[labels["read"]][:2]
     assert labels["offlo"] <= lo and hi < labels["end"] + 0x100
-    assert p.proven[labels["read"]][:2] == (lo, hi) and p.fixed.tolist() == [0xFD, 0xFE]
+    assert p.proven[labels["read"]][:2] == (labels["recs"], labels["end"] - 1)
+    assert p.fixed.tolist() == [0xFD, 0xFE]
     c, info, _ = songs(prefix, tmp_path, ORIGIN, (0,))
     assert info["state"]["cells"]["scalars"] == 1 and "cgen_var" not in plain(c)
 
@@ -6866,16 +6893,16 @@ lv:     LDA #$00
 
 
 def test_read_past_the_assumed_hull_reads_the_promoted_cell(prefix, tmp_path):
-    """The word init leaves pointing at code is taken not to be read through: play's reads
-    are bounded to its records and the patched immediate is a scalar. A read through it
-    anyway leaves the records' span for ``oob_rd``, which under ``CGEN_OOB_EXACT`` finds the
-    scalar (``cgen_var``)."""
+    """The word init leaves pointing at code is the song's: play's reads are bounded to the
+    song's data block and the patched immediate is a scalar no read finds by address. A read
+    through it anyway would take the code for the song's data: it traps at the memory map's
+    check, the calls before it exact."""
     img, labels, loaded = assemble(STRAY)
     c, h, info = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
-    assert info["state"]["cells"]["scalars"] == 1
-    assert "cgen_var" in c and "cgen_var" not in plain(c)
+    assert info["state"]["cells"]["scalars"] == 1 and "cgen_var" not in c
+    k = machine_guard(info, labels["read"] + 7)
     calls = [("init", 0), ("play", 0), ("play", 0), ("play", 1), ("play", 0), ("play", 3)]
-    play(tmp_path, c, h, img, labels, calls)
+    play(tmp_path, c, h, img, labels, calls, trap=(1, k))
 
 
 #: An index kept in a compare's operand, which init and play patch with bytes they bound.
@@ -7058,10 +7085,10 @@ def test_cursor_a_store_may_write_keeps_its_check(prefix, tmp_path):
 
 
 def test_cursor_bounds_are_the_headers(prefix):
-    """The bounds the reachable states give the cursors' loads are the ``.h``'s: the spans they
-    read are named there, and no record or segment address is a literal of the ``.c``."""
+    """The bounds the reachable states give the cursors' loads are the ``.h``'s: the regions
+    they read are named there, and no record or segment address is a literal of the ``.c``."""
     c, h, _, labels = walk_c(prefix, TO.CURSOR)
-    assert "rdC" not in c and re.search(r"#define C\d+_ORG", h)
+    assert "rdC" not in c and re.search(r"#define R\d+_ORG", h)
     starts = {labels[f"r{i}"] for i in range(4)} | {labels["flat"]}
     assert not {int(x, 16) for x in re.findall(r"0x([0-9A-F]{3,4})\b", c)} & starts
 
@@ -7512,6 +7539,18 @@ def machine_src(mode, p2="6, 7, 8, 9, 0", hi2="hi(p2)", lo2="lo(p2)", hi="phi"):
     return MACHINE.format(set=MODES[mode].format(hi=hi), p2=p2, lo2=lo2, hi2=hi2)
 
 
+def machine_guards(info):
+    """The traps of the memory map's checks, ascending."""
+    return sorted(
+        {
+            int(k)
+            for k, t in info["trap_info"].items()
+            for g in t["guards"]
+            if g["kind"] == "objchk" and g["def"] == "machine"
+        }
+    )
+
+
 def machine_guard(info, pc):
     """The trap of the memory map's check of the access at ``pc``, or None."""
     ks = [
@@ -7657,3 +7696,67 @@ def test_zero_page_index_wraps_inside_zero_page(prefix, tmp_path):
     assert machine_guard(info, labels["play"] + 2) is None
     assert not re.search(r"\b(?:rd|oob_rd|rdC\d+)\(", body_of(c, "play"))
     play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", 0)] * 600)
+
+
+SONGBLOCK = """
+init:   LDX #2
+        LDA #0
+iloop:  STA cur,X
+        DEX
+        BPL iloop
+        RTS
+play:   LDX #2
+vloop:  LDA ordlo,X
+        CLC
+        ADC base
+        STA $FB
+        LDA ordhi,X
+        ADC base+1
+        STA $FC
+        LDY cur,X
+rd:     LDA ($FB),Y
+        CMP #$FF
+        BNE note
+        LDA #0
+        STA cur,X
+        BEQ next
+note:   STA add+1
+        CLC
+add:    ADC #0
+        STA $C000,X
+        INC cur,X
+next:   DEX
+        BPL vloop
+        RTS
+cur:    .byte 0,0,0
+base:   .byte lo(pats),hi(pats)
+ordlo:  .byte 0,4,10
+ordhi:  .byte 0,0,0
+pats:   .byte 1,2,3,$FF
+        .byte 4,5,6,7,8,$FF
+        .byte 9,$FF
+end:
+"""
+
+
+@pytest.mark.parametrize("aim", [None, "play"])
+def test_pointer_from_song_data_stays_in_the_data_block(prefix, tmp_path, aim):
+    """A pattern pointer formed from the program's data (a table's offset plus a base word the
+    program holds) stays in the data block, the program's data bytes, none of its code or
+    cells: reaching the code, the player would read its own instructions as song data. Its
+    reads are plain reads of the data, checked against the block first (``objchk``, ``def``
+    "machine"), with no cell found by address and no code held; init's code, which play never
+    runs, is bytes play may read. A song pointer aimed into play's code traps at that check."""
+    img, labels, loaded = assemble(SONGBLOCK)
+    if aim:
+        off = (labels[aim] - labels["pats"]) & 0xFFFF
+        img[labels["ordlo"] + 1], img[labels["ordhi"] + 1] = off & 0xFF, off >> 8
+    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+    body = body_of(c, "play")
+    assert not re.search(r"\b(?:rd|oob_rd|rdC\d+|cgen_var)\(", body)
+    assert all(labels["cur"] <= lo and hi <= labels["end"] for lo, hi in info["code_held"])
+    k = machine_guard(info, labels["rd"])
+    [ok] = [g["ok"] for g in info["trap_info"][k]["guards"]]
+    assert ok == [(labels["init"], labels["play"] - 1), (labels["cur"], labels["end"] - 1)]
+    calls = [("init", 0)] + [("play", 0)] * 200
+    play(tmp_path, c, h, img, labels, calls, trap=(1, k) if aim else None)

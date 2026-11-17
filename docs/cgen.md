@@ -497,7 +497,13 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   instance's copy index or a block's branches imply are kept per context (copy, block); what
   is kept across contexts (another function's intervals, a call's result, the constant a load
   reads) is found in no context, whichever context asks for it. A load
-  the lift proves inside a hull (`Program.proven`) touches that hull alone. `sensitive_reads` also goes to the lift, which makes no
+  the lift proves inside a hull (`Program.proven`) touches that hull alone. An access into
+  the song's data block (`Program.data`, [wholeprog](wholeprog.md#static-proofs), *Machine
+  model*) touches the block's runs alone, each a region whatever the lift read of it, and
+  reaches them through the region holding its address; where they are several, through the
+  block's reader or writer (`rdBj`, `wrBj`: the element of the region its address lies
+  in), after the memory map's check against the runs (`cgen_outj`, of the `.h`'s
+  `CGEN_OBJj_OUT`). `sensitive_reads` also goes to the lift, which makes no
   throw-away read that cannot reach one of them.
   An unknown access may touch every byte of `loaded`, so then every non-code byte of it is in a
   region. Zero page, the stack page and RAM below the image are regions when accessed; a byte

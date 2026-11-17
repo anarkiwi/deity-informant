@@ -1441,9 +1441,13 @@ impl<'a> Em<'a, '_> {
                 if let Some(&(obj, run)) = mapped.filter(|_| !machined.contains(&a)) {
                     machined.push(a);
                     let (bad, why) = self.obj_test(a, obj, None, "machine");
+                    let ok = match self.sh.g.objs.parts.get(&obj) {
+                        Some(rs) => rs.iter().map(|r| (r.0, r.1 - 1)).collect(),
+                        None => vec![(run.lo, run.hi)],
+                    };
                     let why = Why {
                         addr: Some(ac.addr),
-                        ok: vec![(run.lo, run.hi)],
+                        ok,
                         ..why
                     };
                     self.replay_guard(bad, pc, vec![why]);

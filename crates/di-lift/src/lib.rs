@@ -95,6 +95,9 @@ pub struct Opts {
     /// these bytes whatever the data (`Program::exit` of its lift): each entry starts from the
     /// driver head ([`vsa`]).
     pub driven: Option<Vec<(u16, Vec<u8>)>>,
+    /// The entries are a player's, lifted apart from the init that selects the song: its
+    /// pointers from the song's data stay in the song's data block ([`objects`]).
+    pub player: bool,
 }
 
 impl Default for Opts {
@@ -115,6 +118,7 @@ impl Default for Opts {
             checked: false,
             known: Vec::new(),
             driven: None,
+            player: false,
         }
     }
 }
@@ -620,6 +624,38 @@ impl Uf {
     }
 }
 
+/// Whether access `k` of `g` is a store.
+fn data_store(g: &analysis::Graph, k: &ptr::StoreKey) -> bool {
+    (g.vars.get(&k.0).into_iter().flatten())
+        .find(|v| v.op == k.1)
+        .is_some_and(|v| v.acc[k.2].store)
+}
+
+/// The accesses `(pc, store, runs)` of `g` into the data block ([`objects::Objs::data`]):
+/// per instruction start and kind the runs its accesses lie in, ascending.
+fn data_accesses(g: &analysis::Graph) -> Vec<ir::AddrSet> {
+    let mut m: std::collections::BTreeMap<(u16, bool), std::collections::BTreeSet<(u32, u32)>> =
+        Default::default();
+    for (k, rs) in &g.objs.data {
+        m.entry((k.0, data_store(g, k))).or_default().extend(rs);
+    }
+    m.into_iter()
+        .map(|((pc, st), rs)| (pc, st, merged(rs)))
+        .collect()
+}
+
+/// The runs `[lo, hi)` covering the ascending runs `rs`, overlapping or abutting ones merged.
+fn merged(rs: impl IntoIterator<Item = (u32, u32)>) -> Vec<(u32, u32)> {
+    let mut out: Vec<(u32, u32)> = Vec::new();
+    for (a, b) in rs {
+        match out.last_mut() {
+            Some(r) if a <= r.1 => r.1 = r.1.max(b),
+            _ => out.push((a, b)),
+        }
+    }
+    out
+}
+
 /// Runs `[lo, hi)` of the strictly ascending values `vs`.
 pub fn runs(vs: impl IntoIterator<Item = u32>) -> Vec<(u32, u32)> {
     let mut runs: Vec<(u32, u32)> = Vec::new();
@@ -711,7 +747,7 @@ pub fn lift_banked(
             objects::held(opts.loaded, &g.written, &opts.holds, volatile),
             &seeds,
             &free,
-            opts.entry_sp.is_some() && !opts.once && bank.is_none(),
+            (opts.entry_sp.is_some() && !opts.once && bank.is_none()).then_some(opts.player),
         );
         for (key, h) in proven {
             vsa::prove(&mut g.proven, key, h);
@@ -727,6 +763,14 @@ pub fn lift_banked(
             {
                 let a = &mut v.acc[ai];
                 a.addr = vsa::meet(a.addr, run).unwrap_or(a.addr);
+            }
+        }
+        // A store into the data block writes no code.
+        for &(pc, op, ai) in objs.data.keys() {
+            let store =
+                (g.vars.get(&pc).into_iter().flatten()).any(|v| v.op == op && v.acc[ai].store);
+            if store {
+                g.nocode.insert((pc, op, ai));
             }
         }
         g.objs = objs;
@@ -1130,6 +1174,14 @@ pub fn lift_banked(
             v
         },
         objects: g.objs.objects.clone(),
+        parts: {
+            let mut v: Vec<(u16, Vec<(u32, u32)>)> = (g.objs.parts.iter())
+                .map(|(&j, r)| (j, r.clone()))
+                .collect();
+            v.sort_unstable();
+            v
+        },
+        data: data_accesses(&g),
         bounded: {
             let mut v: Vec<(u16, u32, u32)> =
                 g.bounded.iter().map(|(k, r)| (k.0, r.0, r.1)).collect();
@@ -1150,10 +1202,13 @@ pub fn lift_banked(
             v
         },
         addr_sets: {
+            let data = data_accesses(&g);
             let mut v: Vec<ir::AddrSet> = g
                 .addr_sets
                 .iter()
                 .map(|(&(pc, st), a)| (pc, st, runs(a.iter().map(|&x| x as u32))))
+                .filter(|s| !data.iter().any(|d| (d.0, d.1) == (s.0, s.1)))
+                .chain(data.iter().cloned())
                 .collect();
             v.sort_unstable();
             v

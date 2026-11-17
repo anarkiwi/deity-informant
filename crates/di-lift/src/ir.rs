@@ -398,6 +398,11 @@ pub struct Program {
     /// The pointer objects `[lo, hi]` the `objchk` checks name ([`crate::objects`]), each with
     /// the instruction starts of the loads it serves.
     pub objects: Vec<(u16, u16, Vec<u16>)>,
+    /// Per object of several runs (a data block, [`crate::objects`]), its runs `[lo, hi)`.
+    pub parts: Vec<(u16, Vec<(u32, u32)>)>,
+    /// The accesses `(pc, store, runs)` through pointers from the program's data: plain
+    /// accesses into the runs `[lo, hi)` of the data block they lie in, their address sets.
+    pub data: Vec<AddrSet>,
     /// Address hulls of the loads through pointers and cell operands while the program's
     /// table loads stay inside their extents ([`Reach`], one per load of the instruction).
     pub reach: Vec<Reach>,
