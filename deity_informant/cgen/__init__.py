@@ -903,8 +903,8 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     top = mlir.parse(mlir.optimize(text, run))
     times["mlir"] = time.perf_counter() - t0
     t1 = time.perf_counter()
-    code = code_bytes(p.image, p.starts)
-    ran = code.copy()
+    insn = code_bytes(p.image, p.starts)
+    code, ran = insn.copy(), insn.copy()
     cells = np.zeros_like(code)
     tables = None
     if p.constant is not None:
@@ -959,7 +959,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     mod.insn, mod.fixed = ran, fixed
     if p.fixed is not None:
         folded = masks.mask(at=p.fixed)
-        mod.folded = (folded, p.image, folded & code_bytes(p.image, p.starts))
+        mod.folded = (folded, p.image, folded & insn)
     mod.symbols = symbols
     if p.init is not None:
         mod.init_stored = p.init_stored
