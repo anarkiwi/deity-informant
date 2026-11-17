@@ -972,6 +972,9 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     # Promotion candidates: the cells and the other variable bytes inside the code span.
     lo, hi = mem.code_span
     mod.cells = cells.copy()
+    mod.opcodes = {
+        int(a): sorted(v) for a, v in sorted((p.sets or {}).items()) if a in p.starts and cells[a]
+    }
     mod.cells[lo:hi] |= ~mem.constant[lo:hi] & ~mem.vol[lo:hi]
     mod.lifted = {f"f{j}": (fn["pc"], list(fn.get("copies", ()))) for j, fn in enumerate(p.funcs)}
     mod.lifted.update({name: (pc, []) for pc, name in p.entries})
@@ -1082,6 +1085,14 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
             "cells": mod.state.counts(cells),
             "span": mod.state.counts(mod.cells & ~cells),
             "vars": {mod.var_ref(a): a for a in sorted(mod.state.at)},
+            "opcodes": {
+                a: {
+                    "values": v,
+                    "name": mod.var_ref(a),
+                    "enum": list((mod.enum_of(a) or {}).values()),
+                }
+                for a, v in mod.opcodes.items()
+            },
         },
     }
     return c_text, h_text, info
