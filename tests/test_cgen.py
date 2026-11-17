@@ -2795,6 +2795,19 @@ def test_opcode_cells_are_states(prefix, tmp_path):
     play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", 0)] * 200)
 
 
+def test_opcode_state_names():
+    """A state is named by its mnemonic, with its mode where the mnemonic repeats and its
+    value where both do."""
+    names = printer.enum_names("S_3", [0x02, 0x12, 0x69, 0xA9, 0xAD])
+    assert list(names.values()) == [
+        "S_3_JAM_IMPL_02",
+        "S_3_JAM_IMPL_12",
+        "S_3_ADC",
+        "S_3_LDA_IMM",
+        "S_3_LDA_ABS",
+    ]
+
+
 def test_opcode_cell_of_another_length_keeps_its_check(prefix, tmp_path):
     """Toggled between ``LDA #imm`` and ``LDA abs``, which reads its operand and the next
     byte, the cell has no state: its variant past the one it lifts traps."""
