@@ -4107,6 +4107,7 @@ pub fn analyze(
             &mut reads,
         );
         crate::dispatch::arm_values(&code, vars, &sets, &objs, &mut stores, &mut guards);
+        crate::dispatch::cell_maps(&code, vars, &sets, &mut stores, &konst);
         through.extend(seated);
         // A store whose address is unknown only through its own operand cells writes where the
         // values those cells may hold address.

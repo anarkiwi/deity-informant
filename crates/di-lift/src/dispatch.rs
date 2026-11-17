@@ -40,7 +40,7 @@ use crate::analysis::{absint, operand_bytes, Access, Flow, Iv, Tg, Var, TOP_ENV}
 use crate::scev::{Induction, Place};
 use crate::vsa::{Code, Ix, Key, St, Tab, NOGRP, NOREG};
 use crate::why::{By, Extent, Of};
-use di_pcode::{reg, Opc, Space, Template, Vn};
+use di_pcode::{reg, CtrlKind, Opc, Space, Template, Vn};
 use fixedbitset::FixedBitSet;
 use petgraph::algo::dominators::{simple_fast, Dominators};
 use petgraph::graphmap::DiGraphMap;
@@ -61,6 +61,9 @@ pub struct Store {
     pub deps: Vec<u16>,
     /// The `(address, value)` pairs it writes, when an entry's run gives them all.
     pub pairs: Option<Vec<(u16, u8)>>,
+    /// The cell whose byte decides the value written, with the value each byte of it leaves
+    /// (`None`: any) ([`cell_maps`]).
+    pub from: Option<(u16, Vec<Option<u8>>)>,
 }
 
 /// An index guard: the instruction at `pc` deopts before it unless index register `reg` is in
@@ -744,6 +747,7 @@ fn var_stores(
             vals,
             deps: Vec::new(),
             pairs: None,
+            from: None,
         })
         .collect()
 }
@@ -2126,7 +2130,10 @@ pub(crate) fn cell_values(code: &Code, stores: &[Store]) -> FxHashMap<u16, Optio
         }
     };
     for s in stores {
-        for &a in s.addrs.iter().flatten().chain(&s.deps) {
+        for &a in (s.addrs.iter().flatten())
+            .chain(&s.deps)
+            .chain(s.from.iter().map(|f| &f.0))
+        {
             out.entry(a).or_insert_with(|| init(a));
         }
     }
@@ -2158,7 +2165,18 @@ pub(crate) fn cell_values(code: &Code, stores: &[Store]) -> FxHashMap<u16, Optio
         let mut changed = false;
         for s in stores.iter().filter(|s| s.pairs.is_none()) {
             let Some(addrs) = &s.addrs else { continue };
-            let mut v = s.vals.clone();
+            let mut v = match &s.from {
+                Some((c, f)) => (out[c].iter().flatten())
+                    .map(|&x| f[x as usize])
+                    .collect::<Option<BTreeSet<u8>>>()
+                    .filter(|v| {
+                        addrs.iter().all(|a| match &out[a] {
+                            Some(cur) => aligned(cur.iter().chain(v)),
+                            None => true,
+                        })
+                    }),
+                None => s.vals.clone(),
+            };
             for d in &s.deps {
                 v = match (v, &out[d]) {
                     (Some(mut x), Some(y)) => {
@@ -2409,6 +2427,98 @@ pub(crate) fn tag_values(
                 },
                 ..x
             }));
+        }
+    }
+}
+
+/// Whether the instructions opcodes `ops` make at one address that run on past it all end at
+/// one byte.
+fn aligned<'a>(ops: impl Iterator<Item = &'a u8>) -> bool {
+    let mut ends = ops.filter_map(|&op| {
+        let t = Template::of(op);
+        match t.ctrl {
+            CtrlKind::Jmp | CtrlKind::JmpInd | CtrlKind::Rts | CtrlKind::Rti | CtrlKind::Jam => {
+                None
+            }
+            _ => Some(t.len),
+        }
+    });
+    ends.next().is_none_or(|n| ends.all(|m| m == n))
+}
+
+/// Give each store into opcode cells whose value no path bounds the map from one cell's byte
+/// to the value it writes, where the straight chain of instructions ending at the store (each
+/// the one predecessor of the next, run from the join of the states at the first) computes it
+/// from that byte alone: [`cell_values`] then closes the cells' values under the stores' maps.
+pub(crate) fn cell_maps(
+    code: &Code,
+    vars: &FxHashMap<u16, Vec<Var>>,
+    sets: &Sets,
+    stores: &mut [Store],
+    konst: &dyn Fn(u32) -> Option<u8>,
+) {
+    let opcode = |a: &u16| vars.contains_key(a) && code.cells.contains(*a as usize);
+    let open = |s: &Store| {
+        s.vals.is_none()
+            && s.deps.is_empty()
+            && s.pairs.is_none()
+            && vars[&s.pc].len() == 1
+            && s.addrs.as_ref().is_some_and(|a| a.iter().all(opcode))
+    };
+    for s in stores.iter_mut().filter(|s| open(s)) {
+        let mut chain = vec![s.pc];
+        while let [m] = sets
+            .preds
+            .get(chain.last().unwrap())
+            .map_or(&[][..], |v| &v[..])
+        {
+            if !matches!(
+                vars[m][..],
+                [Var {
+                    flow: Flow::Next(_),
+                    ..
+                }]
+            ) || sets.roots.contains(m)
+                || chain.contains(m)
+            {
+                break;
+            }
+            chain.push(*m);
+        }
+        chain.reverse();
+        let Some(st) = sets.merged.get(&chain[0]) else {
+            continue;
+        };
+        let eval = |seed: Option<(u16, u8)>, cells: &mut BTreeSet<u16>| {
+            let mut env = st.env;
+            let mut mem: Known = (st.mem.iter())
+                .filter_map(|e| Some((e.0, e.2.value()? as u8)))
+                .chain(seed)
+                .collect();
+            let mut acc = Vec::new();
+            for &n in &chain {
+                acc = run(code, vars, n, &mut env, &mut mem, konst, &mut Vec::new());
+                cells.extend(
+                    (acc.iter().filter(|a| !a.store && !a.dummy))
+                        .filter_map(|a| a.addr.value())
+                        .filter(|&a| code.cells.contains(a as usize))
+                        .map(|a| a as u16),
+                );
+            }
+            acc.get(s.ai).and_then(|a| a.val.value()).map(|x| x as u8)
+        };
+        let mut cells = BTreeSet::new();
+        if eval(None, &mut cells).is_some() {
+            continue;
+        }
+        let [c] = cells.into_iter().collect::<Vec<_>>()[..] else {
+            continue;
+        };
+        let f: Vec<Option<u8>> = (0..=255u8)
+            .map(|x| eval(Some((c, x)), &mut BTreeSet::new()))
+            .collect();
+        if f.iter().any(Option::is_some) {
+            s.from = Some((c, f));
         }
     }
 }

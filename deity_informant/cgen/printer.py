@@ -269,6 +269,11 @@ def _add16(name, pc, x, y):
     return ops, low, op("arith.trunci", [op("arith.shrui", [w, f"{name}.c"], "i16")], "i8")
 
 
+def enum_lit(names, v):
+    """Enumerator ``names[v]`` as a constant expression."""
+    return E(names[int(v)], lo=int(v), hi=int(v))
+
+
 def logic(sym, es):
     """``es`` joined by ``&&`` or ``||`` (none: the operator's identity)."""
     if not es:
@@ -278,6 +283,22 @@ def logic(sym, es):
     prec = 5 if sym == "&&" else 4
     text = f" {sym} ".join(par(e, prec + 1, sym) for e in es)
     return E(text, prec, sym, 0, 1, **join(*es))
+
+
+def enum_names(cell, vals):
+    """``{value: name}`` of an opcode cell named ``cell`` holding ``vals``: each value by the
+    mnemonic of the instruction it makes, with its mode where the mnemonic repeats and its
+    value where both do."""
+    ops = [OPS[v] for v in vals]
+
+    def name(v, mn, mode):
+        if sum(m == mn for m, _ in ops) == 1:
+            return mn
+        return (
+            f"{mn}_{mode.upper()}" if ops.count((mn, mode)) == 1 else f"{mn}_{mode.upper()}_{v:02X}"
+        )
+
+    return {v: f"{cell}_{name(v, *op)}" for v, op in zip(vals, ops)}
 
 
 class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-methods
@@ -2550,6 +2571,8 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
                     else binary(sym, prec, a, b, 1)
                 )
             return binary(sym, prec, a, b, w)
+        if name == "arith.cmpi" and (st := self.over_state(o.res[0])) is not None:
+            return self.member(st[0], st[1], st[2] != 0)
         if name == "arith.cmpi":
             pred, w0 = o.int_prop("predicate"), self.f.width(o.args[0])
             d = self.f.defs.get(o.args[0])
@@ -2617,20 +2640,88 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             return truth(a) if (sym == "==") == (b.lo == 1) else negated(truth(a))
         return compare(sym, a, b)
 
+    def state_of(self, v):
+        """The opcode cell (:meth:`Module.enum_of`) whose load value ``v`` is, or None."""
+        d = self.f.defs.get(v)
+        p = self.f.promoted.get(id(d)) if d is not None and d.name == "memref.load" else None
+        return p[1] if p is not None and p[0] == "s" and self.mod.enum_of(p[1]) else None
+
+    def over_state(self, v):
+        """``(u, values, results)`` where value ``v`` is computed by arithmetic from the load
+        ``u`` of one opcode cell alone: the cell's values and ``v``'s for each; else None."""
+        if not self.mod.opcodes:
+            return None
+        leaves, work, seen = set(), [v], set()
+        while work:
+            x = work.pop()
+            if x not in seen:
+                seen.add(x)
+                d = self.f.defs.get(x)
+                if d is not None and d.name in REMAT:
+                    continue
+                if d is not None and d.name.startswith("arith.") and d.name != "arith.kfam":
+                    work.extend(d.args)
+                else:
+                    leaves.add(x)
+        u = leaves.pop() if len(leaves) == 1 else None
+        a = self.state_of(u)
+        if a is None:
+            return None
+        vals = np.array(self.mod.opcodes[a], dtype=np.int64)
+        try:
+            r = self.f.evaluate(v, {u: vals}, {})
+        except Unknown:
+            return None
+        return u, vals, np.broadcast_to(r, vals.shape)
+
+    def member(self, u, vals, hits):
+        """The test that the opcode cell load ``u`` holds one of ``vals[hits]``, by name."""
+        names, x = self.mod.enum_of(self.state_of(u)), self.ex(u)
+        if hits.sum() * 2 <= len(vals):
+            return logic("||", [compare("==", x, enum_lit(names, t)) for t in vals[hits]])
+        return logic("&&", [compare("!=", x, enum_lit(names, t)) for t in vals[~hits]])
+
+    def state_value(self, v, names):
+        """The value ``v`` stored into an opcode cell of enumerators ``names``, as one of
+        them: by the state the cell load it is computed from holds; None where ``v`` may
+        leave them or is that state."""
+        c = self.f.const_of(v)
+        if c is not None:
+            c &= 0xFF
+            return enum_lit(names, c) if c in names else None
+        st = self.over_state(v)
+        if st is None or (st[2] == st[1]).all() or not set(st[2].tolist()) <= set(names):
+            return None
+        u, vals, r = st
+        outs = sorted(set(r.tolist()), key=lambda y: (-(r == y).sum(), y))
+        e = enum_lit(names, outs[0])
+        for y in outs[1:]:
+            c = self.member(u, vals, r == y)
+            text = f"{par(c, 4)} ? {names[y]} : {par(e, 3)}"
+            e = E(text, 3, "?:", 0, 255, **join(c))
+        return e
+
     def literal(self, key, pol):
         """The C condition of literal ``key`` with polarity ``pol``."""
+        st = self.over_state(key[1]) if key[0] == "x" else None
         if key[0] == "v":
             e = var(self.selector(key[1]), 1)
         elif key[0] == "c":
             e = truth(self.ex(key[1]))
+        elif st is not None:
+            e = self.member(st[0], st[1], st[2] == key[2])
         else:
             x = key[1]
             e = self.cmpi(0, self.ex(x), self.label(x, key[2]), self.f.width(x))
         return e if pol else negated(e)
 
     def label(self, x, k):
-        """Case value ``k`` of selector ``x``: an address when ``x`` is a computed jump's."""
-        return self.reloc(k) if x in self.f.flags else lit(k, self.f.width(x))
+        """Case value ``k`` of selector ``x``: an address when ``x`` is a computed jump's, a
+        state's name when an opcode cell's."""
+        if x in self.f.flags:
+            return self.reloc(k)
+        names = self.mod.enum_of(self.state_of(x))
+        return enum_lit(names, k) if names and k in names else lit(k, self.f.width(x))
 
     def cond(self, f, ctx, fx=None):
         """The C condition of ``f`` where ``ctx`` holds; ``fx`` ``[(items, key, _)]``:
@@ -2759,7 +2850,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             how = ("any",)
             self.mod.helpers.add("cgen_var")
         if how[0] == "var":
-            ref = self.var(o)
+            ref, p = self.var(o), self.f.promoted[id(o)]
+            names = self.mod.enum_of(p[1]) if p[0] == "s" else None
+            v = (self.state_value(val, names) if names else None) or v
             out.append(("s", f"{ref.text} = {v.text};", ref.refs | v.refs))
             return
         if how[0] in ("region", "held"):
@@ -3264,6 +3357,8 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.offsets, self.insn = {}, np.zeros(0x10000, dtype=bool)
         self.inert, self.regs, self.regfile = set(), {}, []
         self.bounded, self.cells, self.state = {}, None, State()
+        #: Per opcode cell whose values the lift bounds, its values, ascending.
+        self.opcodes = {}
         #: Per entry name, the C lines that start it (the host's check of its arguments).
         self.guards = {}
         #: Runs ``(lo, hi)`` (inclusive) held in regions whatever reads them (init's sources).
@@ -3645,10 +3740,24 @@ class Module:  # pylint: disable=too-many-instance-attributes
         p = self.state.at[a]
         return self.var_name(a) if p is None else f"V{p[0]}_f{p[2]:02X}[{p[1]}]"
 
+    def enum_of(self, a):
+        """``{value: name}`` (:func:`enum_names`) of opcode cell ``a`` when promoted to a
+        scalar and the lift bounds its values (:attr:`opcodes`), else None."""
+        if a is None or a not in self.opcodes or self.state.at.get(a, 0) is not None:
+            return None
+        return enum_names(self.var_name(a), self.opcodes[a])
+
     def state_c(self):
         """The ``.c``'s definitions of the promoted state, initialized from the ``.h``: each
-        field of a struct is an array over its copies."""
-        out = [f"uint8_t {self.var_name(a)} = {self.var_name(a)}_INIT;" for a in self.state.scalars]
+        field of a struct is an array over its copies; an opcode cell's states are named."""
+        out = [
+            "enum { " + ", ".join(f"{n} = 0x{v:02X}" for v, n in names.items()) + " };"
+            for names in map(self.enum_of, self.state.scalars)
+            if names
+        ]
+        out += [
+            f"uint8_t {self.var_name(a)} = {self.var_name(a)}_INIT;" for a in self.state.scalars
+        ]
         for s, (bases, fields) in enumerate(self.state.structs):
             out += [
                 f"uint8_t V{s}_f{d:02X}[{len(bases)}] = {{V{s}_f{d:02X}_INIT}};" for d in fields

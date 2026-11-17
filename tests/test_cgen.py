@@ -2722,6 +2722,117 @@ def test_smc_opcode_cell(prefix, tmp_path):
     assert "0xE9" in c and "0x69" in c
 
 
+OPFLAGS = """
+init:   LDA #$A9
+        STA gate
+        LDA #$69
+        STA dir
+        LDA #0
+        STA val
+        RTS
+play:   LDA val
+        CLC
+dir:    ADC #1
+        STA val
+        STA $C001
+        CMP #$0F
+        BNE notop
+        LDA #$E9
+        STA dir
+notop:  LDA val
+        BNE notbot
+        LDA #$69
+        STA dir
+notbot: LDA gate
+        EOR #$C9
+        STA gate
+gate:   LDA #$07
+        STA $C000
+        RTS
+val:    .byte 0
+end:
+"""
+SONGOP = """
+init:   TAY
+        LDA plo,Y
+        STA $FB
+        LDA phi,Y
+        STA $FC
+        RTS
+play:   LDY #0
+        LDA ($FB),Y
+        STA dir
+        LDA #3
+        CLC
+dir:    ADC #1
+        STA $C001
+        RTS
+plo:    .byte lo(s0),lo(s1)
+phi:    .byte hi(s0),hi(s1)
+s0:     .byte $69
+s1:     .byte $E9
+end:
+"""
+
+
+def test_opcode_cells_are_states(prefix, tmp_path):
+    """Opcode cells the program uses as flags (``gate`` toggled between ``LDA #imm`` and
+    ``RTS`` by ``EOR``, ``dir`` turned between ``ADC #imm`` and ``SBC #imm``) are states named
+    by their instructions: play tests and assigns the names, the toggle maps state to state,
+    the ``RTS`` state returns, and it replays exactly."""
+    img, labels, loaded = assemble(OPFLAGS)
+    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+    body = body_of(c, "play")
+    assert not re.search(r"\b0x(?:60|A9|69|E9)\b", body) and "trap(" not in body
+    ops = info["state"]["opcodes"]
+    gate, turn = ops[labels["gate"]], ops[labels["dir"]]
+    assert gate["values"] == [0x60, 0xA9] and turn["values"] == [0x69, 0xE9]
+    g, d = gate["name"], turn["name"]
+    assert gate["enum"] == [f"{g}_RTS", f"{g}_LDA"] and turn["enum"] == [f"{d}_ADC", f"{d}_SBC"]
+    assert re.search(rf"{g} = (v\d+) == {g}_RTS \? {g}_LDA : {g}_RTS;", body)
+    assert f"{d} = {d}_SBC;" in body and f"{d} == {d}_ADC" in body
+    assert f"enum {{ {g}_RTS = 0x60, {g}_LDA = 0xA9 }};" in c
+    play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", 0)] * 200)
+
+
+def test_opcode_state_names():
+    """A state is named by its mnemonic, with its mode where the mnemonic repeats and its
+    value where both do."""
+    names = printer.enum_names("S_3", [0x02, 0x12, 0x69, 0xA9, 0xAD])
+    assert list(names.values()) == [
+        "S_3_JAM_IMPL_02",
+        "S_3_JAM_IMPL_12",
+        "S_3_ADC",
+        "S_3_LDA_IMM",
+        "S_3_LDA_ABS",
+    ]
+
+
+def test_opcode_cell_of_another_length_keeps_its_check(prefix, tmp_path):
+    """Toggled between ``LDA #imm`` and ``LDA abs``, which reads its operand and the next
+    byte, the cell has no state: its variant past the one it lifts traps."""
+    src = OPFLAGS.replace("EOR #$C9", "EOR #$04")
+    img, labels, loaded = assemble(src)
+    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+    assert labels["gate"] not in info["state"]["opcodes"] and "_LDA" not in c
+    [k] = [k for k, key in info["traps"].items() if key == ("deopt", labels["gate"])]
+    play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", 0)] * 4, trap=(1, k))
+
+
+def test_opcode_cell_from_song_data_is_a_byte(prefix, tmp_path):
+    """Written from the song's data through a pointer, the cell's values are unknown: no
+    state, the variant the lift takes is checked, and the ``.c`` is the same whatever the
+    songs hold."""
+    img, labels, loaded = assemble(SONGOP)
+    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=[0, 1])
+    other = assemble(SONGOP.replace("$E9\n", "$29\n"))[0]
+    assert translate(prefix, other, labels, loaded, ("init", "play"), init=0, songs=[0, 1])[0] == c
+    assert not info["state"]["opcodes"] and "enum" not in c
+    [k] = [k for k, key in info["traps"].items() if key == ("deopt", labels["dir"])]
+    play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", 0)] * 4)
+    play(tmp_path, c, h, img, labels, [("init", 1)] + [("play", 0)] * 4, trap=(1, k))
+
+
 @pytest.mark.parametrize("name", ["JUMPTAB", "JMPIND", "PUSHRTS"])
 def test_computed_jumps_from_facts(prefix, tmp_path, name):
     img, labels = W.assemble(getattr(W, name))

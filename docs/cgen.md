@@ -441,8 +441,22 @@ so the `.c` is the same for every song and placement. Promoted bytes are in no r
 another access's interval spans them; `oob_rd` under `CGEN_OOB_EXACT` (`cgen_rd`) finds the
 code span's promoted bytes through `cgen_var` first, so a read past the hull the lift assumed
 reads the variable. Patched immediates are then plain variables: a compare or loop bound reads
-one (`while (v < S_15)`), a patched opcode is a test of its value (`S_D5 == 0x69`, `ADC` or
-`SBC`). `info["state"]` gives per tune `{"cells": counts, "span": counts, "vars": at}`, each
+one (`while (v < S_15)`), a patched opcode is a test of its state.
+
+**Opcode states.** A scalar opcode cell whose values the lift bounds is an enumerated state:
+each value is named by the cell's variable and the mnemonic of the instruction it makes there
+(with its mode where the mnemonic repeats, and its value where both do), the enumerator's
+value its byte, so the `.h`'s initial values and `cgen_var` hold as for any scalar
+(`enum { S_27_RTS = 0x60, S_27_LDA = 0xA9 };`). A test computed by arithmetic from the cell's
+load alone is the set of states it holds for (`S_4 == S_4_ADC`, `v3 != S_27_LDA`); a store
+into the cell of a constant, or of a value computed from one such cell's load alone that
+stays among the states, assigns the state, as a choice over the states loaded
+(`S_27 = v3 == S_27_RTS ? S_27_LDA : S_27_RTS;`). Each state's instruction is lifted with its
+own control (an `RTS` state returns). `info["state"]["opcodes"]` lists each opcode cell
+whose values the lift bounds: `{address: {"values", "name", "enum"}}`, its values ascending,
+its variable (None when not promoted) and its enumerators by value (empty when it has none).
+
+`info["state"]` gives per tune `{"cells": counts, "span": counts, "vars": at}`, each
 count `{"scalars", "fields", "unread", "bytes": {reason: n}}`, over the cells and the other
 bytes of the span, and `at` each promoted byte's lvalue and original address (`{"S_23": 0x1023,
 "V0_f0A[1]": 0x1129}`), by which a tool maps the variables back to the original's memory.
@@ -722,7 +736,12 @@ set holds (an indexed store's base plus each value of its bounded index, as a pl
 its own operands with `STA abs,X` in a counted loop) is data, so its stores and the
 instruction's reads go to its region with no `codechk`. An opcode cell every store writes
 with known values (constants, table bytes, or its own byte saved with `PHA` and restored with
-`PLA`) dispatches over them with no trap. Other traps: a deopt the lift keeps (an index past
+`PLA`, or a byte the straight chain of instructions ending at the store computes from one
+cell's byte alone, as `LDA gate; EOR #$C9; STA gate` does: its values are the cell's values
+mapped through the chain, `dispatch::cell_maps`, closed to their least fixpoint) dispatches
+over them with no trap. A store whose mapped values would make an instruction that runs on
+past the cell end at another byte than the cell's other values (`LDA #imm` and `LDA abs`)
+leaves the cell's values unknown. Other traps: a deopt the lift keeps (an index past
 its table's extent or a store's past `loaded`, an opcode cell some store writes with unknown values holding a value
 outside its set, a store whose address is unknown into constant code or a table that
 changes it, a store that may hit the stack, a guard it could not prove).
