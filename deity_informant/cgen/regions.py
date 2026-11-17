@@ -169,6 +169,7 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         writes=None,
         state=None,
         sources=(),
+        blocks=(),
     ):
         """Regions for ``accesses`` (``(lo, hi)`` inclusive, None when unknown), given the
         ``stores`` at constant addresses (code bytes they hit are data). Constant bytes are
@@ -183,7 +184,8 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         of ``state`` (a mask: cells held as C variables) are in a region only where one of
         the ``accesses`` touches them. The regions only stores with address sets (``written``:
         init's among them) or ``sources`` (init's copies, a run each) touch are numbered after
-        the others, so the ``.c`` names the same regions whatever songs init runs for."""
+        the others, so the ``.c`` names the same regions whatever songs init runs for. The
+        ``blocks`` runs (a data block's, ``hi`` exclusive) are regions, tables or not."""
         for a in stores:
             self.code[a] = False
         bounded = [r for r in accesses if r is not None and r[1] - r[0] < BOUNDED]
@@ -208,6 +210,7 @@ class Memory:  # pylint: disable=too-many-instance-attributes
             need[lo : hi + 1] |= constant[lo : hi + 1] | touched[lo : hi + 1]
         masks.mask(sources, True, out=touched)
         touched &= ~constant & ~self.vol
+        touched |= masks.mask(blocks) & ~self.code & ~self.vol
         found = masks.runs(touched)
         self.regions = sorted(found, key=lambda r: not played[r[0] : r[0] + r[1]].any())
         for k, (org, n) in enumerate(self.regions):

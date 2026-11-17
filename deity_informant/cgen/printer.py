@@ -2034,7 +2034,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         print as assignments: none tested against the bounds of the array or the regions it
         may write."""
         return self.f.exprable(items) and not any(
-            o.name == "memref.store" and self.target(o)[0] in ("bound", "set")
+            o.name == "memref.store" and self.target(o)[0] in ("bound", "set", "block")
             for o in items[0][1].ops[:-1]
             if id(o) not in self.f.dropped
         )
@@ -2260,10 +2260,11 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         """Per choice of a pointer access ``o`` over regions and spans (``how``), a test of its
         base alone, when the base determines the choice: the bases that reach each choice's
         part of the address set (its addresses less the index's interval) are disjoint
-        intervals, so the test holds for every index the base is used with."""
+        intervals, so the test holds for every index the base is used with. An access into
+        the data block tests its address: what bases reach each part is the song's data."""
         bi = self.f.base_index(o)
         runs = self.mod.addr_set(self.f.name, o)
-        if bi is None or not runs:
+        if bi is None or not runs or self.mod.block(self.f, o):
             return None
         ylo, yhi = self.f.iv(bi[1])
         idx = np.concatenate([np.arange(lo, hi) for lo, hi in runs])
@@ -2306,13 +2307,21 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
     def target(self, o):
         """How access ``o`` reaches memory: ``("region", k)``, ``("held", j)``, ``("io",)``,
         ``("code",)``, ``("set", regions, spans)`` (a pointer access with an address set over
-        several) or ``("any",)`` (``rd``/``wr``)."""
+        several, or into one region of the data block), ``("block", regions, spans)`` (into a
+        data block of several, through its reader or writer) or ``("any",)``
+        (``rd``/``wr``)."""
         if id(o) in self.f.promoted:
             return ("var",)
         lo, hi = self.f.addr_iv(o)
         mem = self.mod.mem
         if o.name == "func.call" and mem.is_volatile(lo, hi):
             return ("io",)
+        blk = self.mod.block(self.f, o)
+        found = blk and self.mod.owners(blk, not is_write(o), False)
+        if found and len(found[0]) + len(found[1]) == 1:
+            return ("set", *found)
+        if found:
+            return ("block", *found)
         run = self.f.wide.get(id(o))
         if run is not None:
             j = mem.held_span(*run, wide=True)
@@ -2493,6 +2502,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             *tests, last = choices
             text = "".join(f"{t} ? {r} : " for t, r in tests) + last[1]
             return E(f"({text})", 16, "", 0, 255, False, True, a.refs)
+        if how[0] == "block":
+            name = self.mod.block_fn("rd", how[1], how[2])
+            return E(f"{name}({a.text})", 16, "", 0, 255, False, True, a.refs)
         fn = "oob_rd" if how[0] == "code" else "rd"
         self.mod.helpers.add(fn)
         if id(o) in self.f.aware and self.mod.var_at:
@@ -2504,6 +2516,8 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         ``j``, whose bounds the ``.h`` names."""
         p, j = self.ex(o.args[0]), self.f.defs[o.args[1]].int_prop("value")
         self.mod.objs_used.add(j)
+        if j in self.mod.ptr_parts:
+            return E(f"cgen_out{j}({p.text})", 16, "", 0, 1, **join(p))
         text = f"((uint16_t)({par(p, 12, '-')} - CGEN_OBJ{j}_ORG) > CGEN_OBJ{j}_LIM)"
         return E(text, 16, "", 0, 1, **join(p))
 
@@ -2858,6 +2872,11 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         if how[0] in ("region", "held"):
             ref = self.mem_ref(o, how[1], how[0] == "held")
             out.append(("s", f"{ref.text} = {v.text};", ref.refs | v.refs))
+            return
+        if how[0] == "block":
+            a = self.addr(self.f.address(o))
+            name = self.mod.block_fn("wr", how[1], how[2])
+            out.append(("s", f"{name}({a.text}, {v.text});", a.refs | v.refs))
             return
         if how[0] == "set":
             a = self.addr(self.f.address(o))
@@ -3321,8 +3340,8 @@ class Module:  # pylint: disable=too-many-instance-attributes
 
     #: The facts the intervals read besides the operations: setting one forgets them.
     FACTS = frozenset(
-        "mem sites free folded after scope sets regs reach proven bounded addr_sets copy_pcs "
-        "fixed lifted regfile symbols by_name".split()
+        "mem sites free folded after scope sets regs reach proven bounded addr_sets data "
+        "copy_pcs fixed lifted regfile symbols by_name".split()
     )
 
     def __setattr__(self, name, value):
@@ -3340,7 +3359,9 @@ class Module:  # pylint: disable=too-many-instance-attributes
     def __init__(self, top, mem):
         self.results_ivs = {}
         self.mem, self.used, self.helpers, self.regions_used = mem, set(), set(), set()
-        self.addr_sets, self.spans_used = {}, set()
+        self.addr_sets, self.data, self.spans_used = {}, {}, set()
+        #: The readers and writers of data blocks of several regions, by kind and places.
+        self.block_fns = {}
         self.traps, self.funcs, self.mains, self.structs = set(), [], {}, {}
         self.order, self.edges, self.ids, self.entries = [], {}, new_ids(), []
         self.sites, self.made, self.lifted, self.prov = {}, Counter(), {}, {}
@@ -3351,7 +3372,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.init_stored, self.free = np.zeros(0x10000, dtype=bool), None
         self.reach, self.proven, self.checked, self.konsts = {}, {}, set(), {}
         #: The pointer objects ``[(lo, hi)]`` the lift checks, and those the ``.c`` names.
-        self.ptr_objects, self.objs_used = [], set()
+        self.ptr_objects, self.objs_used, self.ptr_parts = [], set(), {}
         #: The held spans whose bounds-checked readers find promoted cells' variables.
         self.var_spans, self.var_at = set(), []
         self.offsets, self.insn = {}, np.zeros(0x10000, dtype=bool)
@@ -3392,6 +3413,18 @@ class Module:  # pylint: disable=too-many-instance-attributes
         if not calls and o.name == "func.call":
             return None
         return self.fx(name).addr_sets.get((o.pc, is_write(o)))
+
+    def block(self, f, o):
+        """The runs ``[(lo, hi)]`` (``hi`` exclusive) of the data block access ``o`` of function
+        ``f`` may reach (a pointer from the program's data the memory map checks into it: its
+        runs inside the interval of its address), else None."""
+        if o.name not in ("memref.load", "memref.store"):
+            return None
+        runs = self.fx(f.name).data.get((o.pc, is_write(o)))
+        if not runs:
+            return None
+        lo, hi = f.addr_iv(o)
+        return [(max(a, lo), min(b, hi + 1)) for a, b in runs if a <= hi and lo < b] or None
 
     def fx(self, name):
         """The facts of the lift function ``name`` comes from: ``sets``, ``regs``, ``reach``,
@@ -3596,6 +3629,9 @@ class Module:  # pylint: disable=too-many-instance-attributes
     def touched(self, f, o, lo, hi, per):
         """``([(lo, hi)], why)``: the addresses access ``o`` of function ``f`` (address interval
         ``(lo, hi)``, per copy ``per``) may touch, and the :data:`state.WHY` code of its kind."""
+        blk = self.block(f, o)
+        if blk:
+            return [(a, b - 1) for a, b in blk], POINTER
         run = self.run_of(f, o)
         if run is not None:
             return [(max(lo, run[0]), min(hi, run[1]))], INDEXED
@@ -3789,6 +3825,15 @@ class Module:  # pylint: disable=too-many-instance-attributes
             for o, (lo, hi), per in f.accesses():
                 if id(o) in f.dropped or id(o) in f.promoted:
                     continue
+                # An access into the data block touches its runs, none of the code between.
+                blk = self.block(f, o)
+                if blk:
+                    step = regions.BOUNDED
+                    rs = [(x, min(x + step, b) - 1) for a, b in blk for x in range(a, b, step)]
+                    ranges.extend(rs)
+                    if is_write(o):
+                        writes.extend(rs)
+                    continue
                 run = self.run_of(f, o)
                 if run is not None:
                     lo, hi = max(lo, run[0]), min(hi, run[1])
@@ -3851,17 +3896,23 @@ class Module:  # pylint: disable=too-many-instance-attributes
             writes + bound + self.held_runs,
             self.state.mask(),
             self.held_runs,
+            sorted({r for f in self.funcs for r in self.blocks(f)}),
         )
 
-    def owners(self, runs, held):
+    def blocks(self, f):
+        """The runs of the data blocks the accesses of function ``f`` lie in."""
+        return {tuple(r) for o, _, _ in f.accesses() for r in self.block(f, o) or ()}
+
+    def owners(self, runs, held, whole=True):
         """``(regions, held spans)`` the address ``runs`` (``[(lo, hi)]``, ``hi`` exclusive)
-        lie in (spans only when ``held``: a load), or None when some address is in none."""
+        lie in (spans only when ``held``: a load; with ``whole``, the one span holding them
+        all where there is one), or None when some address is in none."""
         if not runs:
             return None
         mem = self.mem
         idx = np.concatenate([np.arange(lo, hi) for lo, hi in runs]) & 0xFFFF
         reg = mem.owner[idx]
-        whole = held or bool((reg >= 0).all())
+        whole = whole and (held or bool((reg >= 0).all()))
         if whole and (j := mem.holding(idx.min(), idx.max())) is not None:
             return (), (j,)
         span = np.where(held & mem.constant[idx], mem.spans_at(idx), -1)
@@ -3870,6 +3921,48 @@ class Module:  # pylint: disable=too-many-instance-attributes
         return tuple(int(k) for k in np.unique(reg[reg >= 0])), tuple(
             int(j) for j in np.unique(span[(reg < 0) & (span >= 0)])
         )
+
+    def block_fn(self, kind, regs, spans):
+        """The name of the ``kind`` (``rd``, ``wr``) function of the data block over the
+        regions ``regs`` and held spans ``spans`` (an address in one of them): its element
+        there, chosen by the address."""
+        key = (kind, tuple(regs), tuple(spans))
+        self.regions_used.update(regs)
+        self.spans_used.update(spans)
+        if spans:
+            self.used.add("CODE")
+        if key not in self.block_fns:
+            self.block_fns[key] = f"{kind}B{sum(k[0] == kind for k in self.block_fns)}"
+        return self.block_fns[key]
+
+    def block_c(self):
+        """The definitions of the data blocks' readers and writers (:meth:`block_fn`) and of
+        the tests of a pointer outside an object of several runs (the ``.h``'s
+        ``CGEN_OBJj_OUT``)."""
+        out = []
+        for j in sorted(self.objs_used & set(self.ptr_parts)):
+            out += [
+                f"static __attribute__((noinline)) uint8_t cgen_out{j}(uint16_t p) {{",
+                f"return CGEN_OBJ{j}_OUT(p);",
+                "}",
+            ]
+        for (kind, regs, spans), name in sorted(self.block_fns.items(), key=lambda kv: kv[1]):
+            *tests, last = self.choices(regs, spans, "a")
+            if kind == "rd":
+                body = "".join(f"{t} ? {r} : " for t, r in tests) + last[1]
+                out += [
+                    f"static __attribute__((noinline)) uint8_t {name}(uint16_t a) {{",
+                    f"return {body};",
+                    "}",
+                ]
+            else:
+                body = "".join(f"if ({t}) {r} = v; else " for t, r in tests) + f"{last[1]} = v;"
+                out += [
+                    f"static __attribute__((noinline)) void {name}(uint16_t a, uint8_t v) {{",
+                    body,
+                    "}",
+                ]
+        return out
 
     def choices(self, regs, spans, addr, indexed=None, tests=None):
         """``[(test, element)]`` of address ``addr`` in each of the regions ``regs`` and held

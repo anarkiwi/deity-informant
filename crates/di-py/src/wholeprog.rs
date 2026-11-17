@@ -875,6 +875,22 @@ impl Program {
         self.prog.objects.clone()
     }
 
+    /// The runs of each object of several (a data block): ``{j: [(lo, hi), ...]}``, ``hi``
+    /// exclusive; a pointer lies in one of them.
+    #[getter]
+    fn parts(&self) -> HashMap<u16, Vec<(u32, u32)>> {
+        self.prog.parts.iter().cloned().collect()
+    }
+
+    /// The accesses through pointers from the program's data, plain accesses into the data
+    /// block: ``{(pc, store): [(lo, hi), ...]}``, its runs (``hi`` exclusive).
+    #[getter]
+    fn data(&self) -> HashMap<(u16, bool), Vec<(u32, u32)>> {
+        (self.prog.data.iter())
+            .map(|(pc, st, r)| ((*pc, *st), r.clone()))
+            .collect()
+    }
+
     /// Address hulls of the loads through pointers and cell operands while the program's
     /// table loads stay inside their extents, and of their bases (the index registers zero):
     /// ``{pc: (lo, hi, base_lo, base_hi)}``, each the hull over the instruction's loads.
@@ -1517,7 +1533,7 @@ pub fn reference_calls(
 /// cells, ``mask`` and ``pull`` bits, ``lut`` (configuration per effective port value),
 /// ``configs`` (per configuration 256 page kinds: 0 RAM, 1 ROM, 2 I/O) and ``rom``.
 #[pyfunction]
-#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None, fold=false, sensitive=None, free=vec![], alias=vec![], once=false, held=vec![], devices=None, holds=vec![], checked=false, known=vec![], driven=None))]
+#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None, fold=false, sensitive=None, free=vec![], alias=vec![], once=false, held=vec![], devices=None, holds=vec![], checked=false, known=vec![], driven=None, player=false))]
 #[allow(clippy::too_many_arguments)]
 pub fn lift_program(
     py: Python<'_>,
@@ -1541,6 +1557,7 @@ pub fn lift_program(
     checked: bool,
     known: Vec<(u16, Vec<u8>)>,
     driven: Option<Vec<(u16, Vec<u8>)>>,
+    player: bool,
 ) -> PyResult<Program> {
     let img = self::image(image)?;
     let es = self::entries(entries);
@@ -1562,6 +1579,7 @@ pub fn lift_program(
         checked,
         known,
         driven,
+        player,
     };
     Ok(Program::new(py.detach(|| {
         di_lift::lift_banked(&img, &es, &volatile, &f, opts, bank.as_ref())

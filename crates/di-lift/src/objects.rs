@@ -65,6 +65,11 @@ pub struct Objs {
     /// Per access the memory map bounds ([`machine`]), the object its address is checked to
     /// lie in before it, and the object's bytes.
     pub machine: FxHashMap<StoreKey, (u16, Iv)>,
+    /// Per object of several runs, its runs `[lo, hi)`: a pointer lies in one of them.
+    pub parts: FxHashMap<u16, Vec<(u32, u32)>>,
+    /// The accesses through pointers from the program's data, each checked into its part of
+    /// the data block ([`machine`]), the runs `[lo, hi)`: a plain access into them.
+    pub data: FxHashMap<StoreKey, Vec<(u32, u32)>>,
 }
 
 /// A load through a pair: its instruction, access, the values of `Y` it adds and its base
@@ -228,7 +233,7 @@ pub fn objects(
     held: Option<(u32, u32)>,
     seeds: &Seeds,
     free: &FxHashMap<u16, Vec<u8>>,
-    machine: bool,
+    machine: Option<bool>,
 ) -> (Objs, Proven) {
     let mut out = Objs::default();
     let mut proven = Vec::new();
@@ -410,12 +415,16 @@ pub fn objects(
             .collect();
         cx.walked(q, &loads[&q], seeds.get(&q), &kill, &mut out, &mut proven);
     }
-    if machine {
+    if let Some(player) = machine {
         let run = Iv {
             lo: lo0,
             hi: end - 1,
         };
-        self::machine(g, &cx, run, &mut out, &mut proven);
+        self::machine(g, &cx, run, player, &mut out, &mut proven);
+        for o in &mut out.objects {
+            o.2.sort_unstable();
+            o.2.dedup();
+        }
     }
     (out, proven)
 }
@@ -989,6 +998,14 @@ struct Sources<'a, H: Fn(Iv) -> bool> {
     /// Per access the sources of its address's high and low bytes (None: in progress, or a
     /// byte the code does not form).
     addr: FxHashMap<StoreKey, Option<AddrSrc>>,
+    /// Per value and whether a code constant may define it, whether it comes from the
+    /// program's data ([`Sources::song`]; true while in progress).
+    song: FxHashMap<(Val, bool), bool>,
+    /// While a classification runs, the values it classified and whether one was found not
+    /// to come from the data.
+    trial: Option<(Vec<(Val, bool)>, bool)>,
+    /// The data block ([`Objs::block`]).
+    block: &'a [(u32, u32)],
 }
 
 /// A target's definitions and those reaching each instruction start ([`Sources::defs`]).
@@ -1043,6 +1060,173 @@ fn mem_src(op: u8) -> Option<Option<usize>> {
 }
 
 impl<'a, H: Fn(Iv) -> bool> Sources<'a, H> {
+    /// Whether byte `x` lies in the data block.
+    fn datum(&self, x: u32) -> bool {
+        let i = self.block.partition_point(|r| r.1 <= x);
+        self.block.get(i).is_some_and(|r| r.0 <= x)
+    }
+
+    /// Whether the address access `ai` of variant `v` at `pc` is formed from is a pointer
+    /// from the program's data: its high byte's value comes from the data block, its low
+    /// byte's from it or from code constants ([`Sources::song`]).
+    fn song_access(&mut self, pc: u16, v: &Var, ai: usize) -> bool {
+        let g = self.cx.g;
+        let byte = |i: u16| {
+            let a = pc.wrapping_add(i);
+            g.cells
+                .contains(a as usize)
+                .then_some(Val::Mem(a as u32, pc))
+        };
+        let pairs: Vec<(Option<Val>, Option<Val>)> = match v.acc[ai].ptr {
+            Some(p) => match p.lo {
+                Some(l) => (l.lo..=l.hi.min(0xff))
+                    .map(|q| (Some(Val::Mem((q + 1) & 0xff, pc)), Some(Val::Mem(q, pc))))
+                    .collect(),
+                None => return false,
+            },
+            None if di_pcode::Template::of(v.op).len == 3 => vec![(byte(2), byte(1))],
+            None => return false,
+        };
+        pairs.into_iter().all(|(h, l)| {
+            h.is_some_and(|h| self.song(h, false)) && l.is_none_or(|l| self.song(l, true))
+        })
+    }
+
+    /// Whether value `val` comes from the program's data along every definition reaching it
+    /// (with `imm`, or from code constants): the program's bytes in the data block, or init's
+    /// runs, at an entry; a table in the data block the code reads; a byte read through a
+    /// pointer from the program's data; copies of such a value; arithmetic on one (the other
+    /// operand an offset, whatever it holds).
+    ///
+    /// The greatest such classification: a value in progress is taken to come from the data;
+    /// a value found not to is final, and the others are found again until none is.
+    fn song(&mut self, val: Val, imm: bool) -> bool {
+        if let Some(&r) = self.song.get(&(val, imm)) {
+            return r;
+        }
+        if self.trial.is_some() {
+            return self.visit(val, imm);
+        }
+        loop {
+            self.trial = Some((Vec::new(), false));
+            let r = self.visit(val, imm);
+            let (added, failed) = self.trial.take().unwrap();
+            if !failed {
+                return r;
+            }
+            for k in added {
+                if self.song.get(&k) == Some(&true) {
+                    self.song.remove(&k);
+                }
+            }
+        }
+    }
+
+    fn visit(&mut self, val: Val, imm: bool) -> bool {
+        if let Some(&r) = self.song.get(&(val, imm)) {
+            return r;
+        }
+        self.song.insert((val, imm), true);
+        let r = self.song_defs(val, imm);
+        self.song.insert((val, imm), r);
+        let t = self.trial.as_mut().unwrap();
+        t.0.push((val, imm));
+        t.1 |= !r;
+        r
+    }
+
+    fn song_defs(&mut self, val: Val, imm: bool) -> bool {
+        let g = self.cx.g;
+        let (t, pc) = match val {
+            Val::Reg(r, pc) => (0x10000 + r as u32, pc),
+            Val::Mem(x, pc) => (x, pc),
+        };
+        let mut ds = self.reaching(t, pc);
+        if matches!(val, Val::Mem(..)) && ds.contains(&None) {
+            ds.extend(self.defs[&t].0.iter().flatten().map(|&s| Some(s)));
+        }
+        for d in ds {
+            let Some(s) = d else {
+                let ok = match val {
+                    Val::Reg(..) => false,
+                    Val::Mem(x, _) => {
+                        ((self.cx.held)(Iv::exact(x)) && self.datum(x))
+                            || (self.cx.bytes.free.get(&(x as u16))).is_some_and(|v| !v.is_empty())
+                            || (imm && !(self.cx.held)(Iv::exact(x)))
+                    }
+                };
+                if !ok {
+                    return false;
+                }
+                continue;
+            };
+            for v in g.vars.get(&s).into_iter().flatten() {
+                let cell = |i: u16| {
+                    let a = s.wrapping_add(i);
+                    g.cells
+                        .contains(a as usize)
+                        .then_some(Val::Mem(a as u32, s))
+                };
+                let ok = match val {
+                    Val::Reg(r, _) if writes(v.op, r) => match reg_src(v.op) {
+                        RegSrc::Imm => cell(1).map_or(imm, |c| self.song(c, imm)),
+                        RegSrc::Copy(q) => self.song(Val::Reg(q, s), imm),
+                        RegSrc::Same => self.song(Val::Reg(r, s), imm),
+                        RegSrc::Load => self.song_read(s, v, imm),
+                        RegSrc::Alu => {
+                            self.song(Val::Reg(r, s), imm)
+                                || self.song_read(s, v, imm)
+                                || cell(1)
+                                    .filter(|_| (v.op >> 2) & 7 == 2)
+                                    .is_some_and(|c| self.song(c, imm))
+                        }
+                        RegSrc::Other => false,
+                    },
+                    Val::Reg(..) => true,
+                    Val::Mem(x, _) => {
+                        let w = |a: &crate::analysis::Access| {
+                            a.store && !a.dummy && a.addr.meets(x, x + 1)
+                        };
+                        !v.acc.iter().any(w)
+                            || match mem_src(v.op) {
+                                Some(Some(r)) => self.song(Val::Reg(r, s), imm),
+                                Some(None) => self.song(Val::Mem(x, s), imm),
+                                None => false,
+                            }
+                    }
+                };
+                if !ok {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Whether what variant `v` at `pc` reads comes from the program's data ([`Sources::song`]).
+    fn song_read(&mut self, pc: u16, v: &Var, imm: bool) -> bool {
+        let mut any = false;
+        for (ai, a) in v.acc.iter().enumerate() {
+            if a.store || a.dummy {
+                continue;
+            }
+            any = true;
+            let ok = match a.addr.value() {
+                Some(x) => self.song(Val::Mem(x, pc), imm),
+                None => {
+                    let mut out = FxHashSet::default();
+                    self.read(pc, v, &mut Vec::new(), &mut out);
+                    let table = |s: &Src| matches!(*s, Src::Prog(Some(t)) if self.datum(t as u32));
+                    out.iter().all(table) || self.song_access(pc, v, ai)
+                }
+            };
+            if !ok {
+                return false;
+            }
+        }
+        any
+    }
+
     /// The definitions of target `t` reaching `pc`.
     fn reaching(&mut self, t: u32, pc: u16) -> Vec<Option<u16>> {
         let (g, cx) = (self.cx.g, self.cx);
@@ -1105,7 +1289,11 @@ impl<'a, H: Fn(Iv) -> bool> Sources<'a, H> {
                         Val::Reg(..) => {
                             out.insert(Src::Entry);
                         }
-                        Val::Mem(x, _) if (self.cx.held)(Iv::exact(x)) => {
+                        Val::Mem(x, _)
+                            if (self.cx.held)(Iv::exact(x))
+                                && (g.cells.contains(x as usize)
+                                    || g.runs.iter().any(|r| r.0 <= x && x < r.1)) =>
+                        {
                             out.insert(Src::Prog(None));
                         }
                         Val::Mem(x, _)
@@ -1314,21 +1502,62 @@ impl<'a, H: Fn(Iv) -> bool> Sources<'a, H> {
 /// block (`Objs::machine`) and proven there, with no check only where the code's constants
 /// form its base and its index (or any index its guard passes) keeps it in the block. Song
 /// data decides neither. Other accesses are left as they were.
+///
+/// In a player's entries (`player`), a pointer from the song's data ([`Sources::song_access`])
+/// stays in the song's data block: the data bytes of `run`, none an instruction of the
+/// entries', a cell or a variable among their code (init's code, which they never run, is
+/// bytes they may read). Reaching that code, the player would take its own instructions for
+/// its song, which would not play: leaving the block is invalid input. Such an access, and a
+/// load the code keeps to one run of data bytes, is checked against its runs of the block (an
+/// object of several runs, `Objs::parts`) and is a plain access into them (`Objs::data`).
 fn machine<H: Fn(Iv) -> bool>(
     g: &Graph,
     cx: &Walked<'_, H>,
     run: Iv,
+    player: bool,
     out: &mut Objs,
     proven: &mut Proven,
 ) {
     let done: FxHashSet<StoreKey> = (proven.iter().map(|p| p.0))
         .chain(g.proven.iter().filter(|e| (cx.held)(e.1 .0)).map(|e| *e.0))
         .collect();
+    // A player's song data block: the data bytes of the held run, none an instruction's, a
+    // cell, or a variable among the code (a byte a store writes between its first
+    // instruction and its last). A program that is no player has none.
+    let mut code = g.cells.clone();
+    code.grow(0x10000);
+    for (&pc, vs) in &g.vars {
+        let n = vs
+            .iter()
+            .map(|v| di_pcode::Template::of(v.op).len)
+            .max()
+            .unwrap_or(1);
+        code.insert_range(pc as usize..(pc as usize + n as usize).min(0x10000));
+    }
+    let span = code.minimum().zip(code.maximum());
+    let mut state = g.written.clone();
+    state.grow(0x10000);
+    for a in g.vars.values().flatten().flat_map(|v| &v.acc) {
+        if let Some(x) = a.addr.value().filter(|_| a.store && !a.dummy) {
+            state.insert(x as usize);
+        }
+    }
+    let song_block: Vec<(u32, u32)> = crate::runs(
+        (g.runs.iter().filter(|_| player))
+            .flat_map(|&(a, b)| a.max(run.lo)..b.min(run.hi + 1))
+            .filter(|&x| {
+                let inside = span.is_some_and(|(lo, hi)| lo <= x as usize && x as usize <= hi);
+                !code.contains(x as usize) && !(inside && state.contains(x as usize))
+            }),
+    );
     let mut src = Sources {
         cx,
         run,
         defs: FxHashMap::default(),
         addr: FxHashMap::default(),
+        song: FxHashMap::default(),
+        trial: None,
+        block: &song_block,
     };
     let mut keys: Vec<&StoreKey> = g.bases.keys().collect();
     keys.sort_unstable();
@@ -1343,7 +1572,26 @@ fn machine<H: Fn(Iv) -> bool>(
             continue;
         };
         let a = v.acc[ai];
-        if is_stack_op(op) || a.dummy || a.addr.value().is_some() || done.contains(&key) {
+        if is_stack_op(op) || a.dummy || a.addr.value().is_some() {
+            continue;
+        }
+        // An access proven already is a plain access into the song's data block where its
+        // pointer is the song's and its proven hull lies in the held bytes.
+        if done.contains(&key) {
+            let hull = (proven.iter().find(|p| p.0 == key).map(|p| p.1 .0))
+                .or_else(|| g.proven.get(&key).map(|e| e.0));
+            let rs: Vec<(u32, u32)> = match hull {
+                Some(h) if !song_block.is_empty() && src.song_access(pc, v, ai) => (song_block
+                    .iter())
+                .map(|&(x, y)| (x.max(h.lo), y.min(h.hi + 1)))
+                .filter(|&(x, y)| x < y)
+                .collect(),
+                _ => Vec::new(),
+            };
+            let span = |r: &[(u32, u32)]| r.iter().map(|r| r.1 - r.0).sum::<u32>();
+            if hull.is_some_and(|h| span(&rs) == h.hi + 1 - h.lo) {
+                out.data.insert(key, rs);
+            }
             continue;
         }
         // A store the lift bounds to the run of data bytes holding its base, taking it to
@@ -1354,20 +1602,16 @@ fn machine<H: Fn(Iv) -> bool>(
             lo: r.0,
             hi: r.1 - 1,
         });
-        let Some((hi, lo)) = src.access(pc, v, ai) else {
-            continue;
-        };
-        let Some(code) = Sources::<H>::selects(&hi, &lo, block, &g.cells) else {
-            continue;
-        };
-        // A load from an address the program's bytes form, whatever they hold, reads the run
-        // of data bytes holding every table its high byte is copied from; one copied from no
-        // table, the held bytes where no cell (a scalar in the C) lies in them. A store so
-        // formed is bounded by `run` alone, its stores' checks keeping the code it may write.
-        if !code {
-            block = run;
-        }
-        if !code && !a.store {
+        // Where the code alone selects a block (`old`): a load from an address the program's
+        // bytes form, whatever they hold, reads the run of data bytes holding every table its
+        // high byte is copied from; one copied from no table, the held bytes where no cell (a
+        // scalar in the C) lies in them. A store so formed is bounded by `run` alone, its
+        // stores' checks keeping the code it may write.
+        let old = src.access(pc, v, ai).and_then(|(hi, lo)| {
+            let code = Sources::<H>::selects(&hi, &lo, block, &g.cells)?;
+            if code || a.store {
+                return Some((code, if code { block } else { run }));
+            }
             let ts: Option<Vec<u32>> = (hi.iter())
                 .filter_map(|s| match s {
                     Src::Prog(t) => Some(t.map(u32::from)),
@@ -1384,11 +1628,52 @@ fn machine<H: Fn(Iv) -> bool>(
                 })
             });
             match one {
-                Some(r) if Sources::<H>::selects(&hi, &lo, r, &g.cells).is_some() => block = r,
-                None if ts.as_ref().is_none_or(Vec::is_empty) && !celled => {}
-                _ => continue,
+                Some(r) if Sources::<H>::selects(&hi, &lo, r, &g.cells).is_some() => {
+                    Some((false, r))
+                }
+                None if ts.as_ref().is_none_or(Vec::is_empty) && !celled => Some((false, run)),
+                _ => None,
             }
+        });
+        // An address from the program's data stays in the data block: outside it the program
+        // would take its own code for its data, and would not play as it does. A load the code
+        // keeps to one run of data bytes stays in that run's part of the block.
+        let rs: Vec<(u32, u32)> = match old {
+            Some((false, r)) if r != run && !song_block.is_empty() => (song_block.iter())
+                .map(|&(x, y)| (x.max(r.lo), y.min(r.hi + 1)))
+                .filter(|&(x, y)| x < y)
+                .collect(),
+            _ if !song_block.is_empty() && src.song_access(pc, v, ai) => song_block.clone(),
+            _ => Vec::new(),
+        };
+        if !rs.is_empty() {
+            let hull = Iv {
+                lo: rs[0].0,
+                hi: rs[rs.len() - 1].1 - 1,
+            };
+            let obj = match rs.len() {
+                1 => object_id(out, hull.lo as u16, hull.hi as u16, std::iter::empty()),
+                _ => match out.parts.iter().find(|p| *p.1 == rs) {
+                    Some(p) => *p.0,
+                    None => {
+                        out.objects
+                            .push((hull.lo as u16, hull.hi as u16, Vec::new()));
+                        let id = out.objects.len() as u16 - 1;
+                        out.parts.insert(id, rs.clone());
+                        id
+                    }
+                },
+            };
+            out.objects[obj as usize].2.push(pc);
+            out.machine.insert(key, (obj, hull));
+            out.data.insert(key, rs.clone());
+            proven.push((key, (hull, hull)));
+            continue;
         }
+        let Some((code, b)) = old else {
+            continue;
+        };
+        block = b;
         if code {
             // A store bounded so is taken to stay in its run, which a run past it does not but
             // where an index guard keeps its base plus the index there.
@@ -1426,9 +1711,13 @@ fn machine<H: Fn(Iv) -> bool>(
     }
 }
 
-/// The index of object `[lo, hi]` among `out`'s, made where new, serving the loads `pcs`.
+/// The index of object `[lo, hi]` (one interval) among `out`'s, made where new, serving the
+/// loads `pcs`.
 fn object_id(out: &mut Objs, lo: u16, hi: u16, pcs: impl Iterator<Item = u16>) -> u16 {
-    let id = match out.objects.iter().position(|o| (o.0, o.1) == (lo, hi)) {
+    let one = |i: usize| !out.parts.contains_key(&(i as u16));
+    let id = match (out.objects.iter().enumerate())
+        .position(|(i, o)| (o.0, o.1) == (lo, hi) && one(i))
+    {
         Some(i) => i,
         None => {
             out.objects.push((lo, hi, Vec::new()));

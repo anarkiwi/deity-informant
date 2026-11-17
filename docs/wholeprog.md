@@ -870,10 +870,28 @@ the facts, so a proof holds on every execution that stays in lifted code.
   (`Graph::bases`), and the code alone decides it, so song data reaches only the `.h`: along
   the definitions reaching the access, through copies (loads, transfers, stores), the
   sources of its address's bytes (its pointer pair's, the pairs `X` selects for `(zp,X)`, or
-  its operand's) are the program's bytes (a table the code indexes, or the held bytes and
-  init's runs at the entries), constants (the code's, or the machine's state outside the
+  its operand's) are the program's bytes (a table the code indexes, or the held data bytes
+  and init's runs at the entries), constants (the code's, its instruction bytes among them,
+  or the machine's state outside the
   program at the entries), or anything else (arithmetic on them, an entry register, a
-  device). An address the program's bytes form, whatever they hold, stays in its block on
+  device). In a player's entries, lifted apart from the init that selects the song, a pointer
+  from the song's data stays in the *data block*: the data bytes the host holds of the
+  program, none an instruction of the entries', a cell, or a variable among their code (a
+  byte a store writes between the first instruction and the last); init's code, which they
+  never run, is bytes they may read. Its
+  high byte's value comes, along every definition reaching it, from the data block (the
+  program's data bytes or init's runs at an entry, a table in the data block the code reads,
+  a byte read through such a pointer), through copies and arithmetic on one such value (the
+  other operand an offset, whatever it holds); its low byte's from those or code constants.
+  Were it to reach the code, the player would take its own instructions for song data and
+  the song would not play, so leaving the block is invalid input: it is checked before its
+  instruction against the block (`objchk`, `def` `"machine"`; a block of several runs is
+  one test the `.h` defines, `CGEN_OBJj_OUT`) and every such access, load or store, is a
+  plain access into the block (`Program.data`, its address set the block's runs; a store
+  needs no code check), as is a load the code keeps to one run of data bytes (below), in
+  that run's part of the block. It holds no code as data and finds no cell by address.
+  Otherwise,
+  an address the program's bytes form, whatever they hold, stays in its block on
   every valid run: a load's the run of data bytes holding every table its high byte is
   copied from, or with no such table the held bytes where no cell (a scalar in the C) lies
   in them; a store's the held bytes, its stores' checks keeping the code it may write. It
