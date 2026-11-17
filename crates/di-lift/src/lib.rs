@@ -739,6 +739,33 @@ pub fn lift_banked(
             false => Default::default(),
         };
         objects::seat(&mut g, &seeds);
+        let unread = |xs: &[u16]| {
+            let values = analysis::observed(facts, &free, &known);
+            let mut observed = FixedBitSet::with_capacity(0x10000);
+            observed.extend(values.keys().map(|&a| a as usize));
+            let mut written = g.written.clone();
+            written.union_with(&held);
+            let given = vsa::Given {
+                loaded: opts.loaded,
+                observed: &observed,
+                values: &values,
+                runs: &free,
+                free: &g.free,
+                known: &known,
+                constant: &FixedBitSet::new(),
+                volatile,
+                reach: false,
+                written: &written,
+                aimed: &g.aimed,
+                devices: &opts.devices,
+                ran: &once::Ran::default(),
+                drive: opts.driven.as_deref(),
+                exit: false,
+            };
+            vsa::unread(
+                &g.img, &g.cells, &g.vars, entries, matched, &g.disp, &given, xs,
+            )
+        };
         let (objs, proven) = objects::objects(
             &g,
             &roots,
@@ -748,6 +775,7 @@ pub fn lift_banked(
             &seeds,
             &free,
             (opts.entry_sp.is_some() && !opts.once && bank.is_none()).then_some(opts.player),
+            &unread,
         );
         for (key, h) in proven {
             vsa::prove(&mut g.proven, key, h);
@@ -765,10 +793,18 @@ pub fn lift_banked(
                 a.addr = vsa::meet(a.addr, run).unwrap_or(a.addr);
             }
         }
-        // A store into the data block writes no code.
-        for &(pc, op, ai) in objs.data.keys() {
-            let store =
-                (g.vars.get(&pc).into_iter().flatten()).any(|v| v.op == op && v.acc[ai].store);
+        // An access into the data block touches its runs alone; a store there writes no code.
+        for (&(pc, op, ai), rs) in &objs.data {
+            let hull = Iv {
+                lo: rs[0].0,
+                hi: rs[rs.len() - 1].1 - 1,
+            };
+            let mut store = false;
+            for v in (g.vars.get_mut(&pc).into_iter().flatten()).filter(|v| v.op == op) {
+                let a = &mut v.acc[ai];
+                a.addr = vsa::meet(a.addr, hull).unwrap_or(a.addr);
+                store |= a.store;
+            }
             if store {
                 g.nocode.insert((pc, op, ai));
             }

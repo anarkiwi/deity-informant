@@ -227,7 +227,7 @@ def ends_in_jump(items):
     if not items:
         return False
     last = items[-1]
-    if last[0] == "j":
+    if last[0] == "j" or (last[0] == "s" and last[1].startswith("trap(")):
         return True
     if last[0] == "if":
         return bool(last[4]) and ends_in_jump(last[3]) and ends_in_jump(last[4])

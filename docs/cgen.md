@@ -104,7 +104,8 @@ caller's return address. `tools/cgenplay.c` is a host harness.
 7. **Print** (`printer.py`, `csyntax.py`). The generic text is parsed for the operations the
    pipeline leaves (`func`, `cf`, `arith`, `memref`, `ub.poison`; anything else raises), the
    structured statements are printed with each variable declared at the innermost scope
-   holding its uses, and the C is run through `clang-format --style=LLVM`.
+   holding its uses, and the C is run through `clang-format --style=LLVM`. A `trap`, which
+   does not return, ends its branch as a jump does: the `else` after it is unnested.
 
 The printer reads `mlir-opt --mlir-print-op-generic` output: the image the tools come from
 (`docker/mlir.Dockerfile`, apt.llvm.org LLVM 22) has no Python bindings, the bindings are not

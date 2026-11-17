@@ -1082,6 +1082,8 @@ pub(crate) struct Code<'a> {
     /// Iterate the driver head: each entry is called again with what the returns to the host
     /// leave joined into its start ([`Work::drive`]).
     pub(crate) drive: bool,
+    /// The variants, `(pc, op)` sorted, after which a path ends ([`unread`]).
+    pub(crate) kill: Vec<(u16, u8)>,
 }
 
 /// Per store `(pc, opcode, access index)` the addresses it writes: a store with a set
@@ -2880,6 +2882,9 @@ fn solve<'a>(
             }
             acc.clear();
             let out = step(code, pc, v, &st, &mut acc);
+            if code.kill.binary_search(&(pc, v.op)).is_ok() {
+                continue;
+            }
             match (&v.flow, Template::of(v.op).ctrl) {
                 (Flow::Br { t: tg, f }, CtrlKind::Br { flag, pol }) => {
                     let taken = refine(code, &out, flag as usize, pol != 0);
@@ -3311,6 +3316,7 @@ fn reach(
         ran: code.ran,
         seed: code.seed.clone(),
         drive: false,
+        kill: Vec::new(),
     };
     let mut sh = p.sh;
     c.mods = mods(&c, p.vars, &FxHashMap::default(), &sh.live);
@@ -3753,34 +3759,25 @@ fn ram(given: &Given) -> Vec<(u32, u32)> {
     out
 }
 
-/// Fill each variant's accesses from the interval states at its start. With `matched`, an
-/// `RTS` whose callee leaves the stack as it found it returns to its caller; otherwise any
-/// return may reach any return site. An `RTS`/`RTI` in `disp` jumps to its targets through
-/// the return address its function pushed.
-pub fn analyze(
-    img: &[u8; 0x10000],
-    cells: &FixedBitSet,
-    vars: &mut FxHashMap<u16, Vec<Var>>,
+/// The program's code as the analysis takes it from `given`.
+fn code_of<'a>(
+    img: &'a [u8; 0x10000],
+    cells: &'a FixedBitSet,
+    vars: &FxHashMap<u16, Vec<Var>>,
     entries: &[Entry],
-    matched: bool,
-    disp: &FxHashSet<u16>,
-    given: &Given,
-) -> Analysis {
-    let (loaded, observed) = (given.loaded, given.observed);
-    let mut live = FixedBitSet::with_capacity(0x10000);
-    live.extend(vars.keys().map(|&pc| pc as usize));
-    let full = shape(vars, entries, matched, disp, live);
+    given: &Given<'a>,
+) -> Code<'a> {
     let mut dev = FixedBitSet::with_capacity(0x10000);
     for &(lo, hi) in given.volatile {
         dev.insert_range(lo as usize..(hi as usize).min(0x10000));
     }
     let vecs = crate::dispatch::vectors(img, cells, vars, &dev, given.devices);
-    let code = Code {
+    Code {
         img,
         cells,
         pull_clear: pull_clear(vars, entries),
         vecs,
-        observed: observed.clone(),
+        observed: given.observed.clone(),
         free: given.free.clone(),
         known: given.known,
         constant: given.constant.clone(),
@@ -3803,7 +3800,111 @@ pub fn analyze(
         ran: given.ran,
         seed: None,
         drive: false,
+        kill: Vec::new(),
+    }
+}
+
+/// The driver head's first call: the tracked bytes of `code` init leaves known (`init`).
+fn drive_seed(code: &Code, init: &[(u16, Vec<u8>)]) -> St {
+    let mut st = St::new(TOP_ENV);
+    for (a, vs) in init
+        .iter()
+        .filter(|e| code.vecs.binary_search(&e.0).is_ok())
+    {
+        let b: Bits = vs.iter().map(|&v| v as u32).collect();
+        let Some(iv) = b.hull() else { continue };
+        st.mem.push((*a, iv.value().map(|x| Tab::K(x as u8)), iv));
+        st.mset_put(*a, Some(b));
+    }
+    st
+}
+
+/// Per byte of `xs`, the starts of the driver loop (`given.drive`) a path reaches from
+/// init's exit with no store of a register into the byte since: where the byte may hold
+/// what init left it. A path ends at such a store; the returns of the others join the head
+/// as in [`head`], whatever the data.
+#[allow(clippy::too_many_arguments)]
+pub fn unread(
+    img: &[u8; 0x10000],
+    cells: &FixedBitSet,
+    vars: &FxHashMap<u16, Vec<Var>>,
+    entries: &[Entry],
+    matched: bool,
+    disp: &FxHashSet<u16>,
+    given: &Given,
+    xs: &[u16],
+) -> FxHashMap<u16, FixedBitSet> {
+    let Some(init) = given.drive else {
+        let mut all = FixedBitSet::with_capacity(0x10000);
+        all.insert_range(..);
+        return xs.iter().map(|&x| (x, all.clone())).collect();
     };
+    let mut live = FixedBitSet::with_capacity(0x10000);
+    live.extend(vars.keys().map(|&pc| pc as usize));
+    let full = shape(vars, entries, matched, disp, live);
+    let mut kills: FxHashMap<u16, Vec<(u16, u8)>> = xs.iter().map(|&x| (x, Vec::new())).collect();
+    for (&pc, vs) in vars {
+        for v in vs
+            .iter()
+            .filter(|v| matches!(crate::objects::mem_src(v.op), Some(Some(_))))
+        {
+            for a in v.acc.iter().filter(|a| a.store && !a.dummy) {
+                if let Some(k) = a.addr.value().and_then(|x| kills.get_mut(&(x as u16))) {
+                    k.push((pc, v.op));
+                }
+            }
+        }
+    }
+    for k in kills.values_mut() {
+        k.sort_unstable();
+        k.dedup();
+    }
+    let mut groups: Vec<&Vec<(u16, u8)>> = kills.values().collect();
+    groups.sort_unstable();
+    groups.dedup();
+    use rayon::prelude::*;
+    let reached: FxHashMap<&Vec<(u16, u8)>, FixedBitSet> = groups
+        .into_par_iter()
+        .map(|kill| {
+            let base = code_of(img, cells, vars, entries, given);
+            let seed = drive_seed(&base, init);
+            let code = Code {
+                constant: FixedBitSet::new(),
+                seed: Some(seed),
+                drive: true,
+                kill: kill.clone(),
+                ..base
+            };
+            let thr = Thresholds::new(vars, &code);
+            let w = solve(&code, vars, entries, &full, disp, &thr, true);
+            let mut r = FixedBitSet::with_capacity(0x10000);
+            r.extend(w.state.keys().map(|k| k.0 as usize));
+            (kill, r)
+        })
+        .collect();
+    (kills.iter())
+        .map(|(&x, k)| (x, reached[k].clone()))
+        .collect()
+}
+
+/// Fill each variant's accesses from the interval states at its start. With `matched`, an
+/// `RTS` whose callee leaves the stack as it found it returns to its caller; otherwise any
+/// return may reach any return site. An `RTS`/`RTI` in `disp` jumps to its targets through
+/// the return address its function pushed.
+pub fn analyze(
+    img: &[u8; 0x10000],
+    cells: &FixedBitSet,
+    vars: &mut FxHashMap<u16, Vec<Var>>,
+    entries: &[Entry],
+    matched: bool,
+    disp: &FxHashSet<u16>,
+    given: &Given,
+) -> Analysis {
+    let loaded = given.loaded;
+    let mut live = FixedBitSet::with_capacity(0x10000);
+    live.extend(vars.keys().map(|&pc| pc as usize));
+    let full = shape(vars, entries, matched, disp, live);
+    let code = code_of(img, cells, vars, entries, given);
     let thr = Thresholds::new(vars, &code);
     // Init's exit and the driver head are taken whatever the data: no table as constant.
     let exit = given.exit.then(|| {
@@ -3827,16 +3928,7 @@ pub fn analyze(
     let mut code = code;
     let mut steady = Vec::new();
     if let Some(init) = given.drive {
-        let mut st = St::new(TOP_ENV);
-        for (a, vs) in init
-            .iter()
-            .filter(|e| code.vecs.binary_search(&e.0).is_ok())
-        {
-            let b: Bits = vs.iter().map(|&v| v as u32).collect();
-            let Some(iv) = b.hull() else { continue };
-            st.mem.push((*a, iv.value().map(|x| Tab::K(x as u8)), iv));
-            st.mset_put(*a, Some(b));
-        }
+        let st = drive_seed(&code, init);
         let blind = Code {
             constant: FixedBitSet::new(),
             ..code.clone()

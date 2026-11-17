@@ -601,6 +601,7 @@ pub(crate) fn vectors(
         ran: &ran,
         seed: None,
         drive: false,
+        kill: Vec::new(),
     };
     let mut v: Vec<u16> = vars
         .iter()

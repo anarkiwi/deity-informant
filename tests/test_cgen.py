@@ -2304,12 +2304,14 @@ def test_end_marker_tested_before_its_pointer(prefix, tmp_path):
 def test_end_marker_restart_past_the_order(prefix, tmp_path):
     """When a restart play reaches names another marker, the pointer the order's tables make
     names zero page, outside the program: invalid input, whatever the tables hold. The calls
-    replay exactly until that read, which traps at the memory map's check of it, as does the
-    order position run on past the order's tables."""
+    replay exactly until the pointer is made, which traps at the memory map's check of it
+    after the store completing it, as does the order position run on past the order's
+    tables."""
     img, labels, loaded = assemble(ORDERBAD)
     c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=[0])
     assert not re.search(r"\brd\(", c) and machine_guard(info, labels["play"] + 3) is not None
-    k = machine_guard(info, labels["ok"] + 13)
+    assert machine_guard(info, labels["ok"] + 13) is None
+    k = machine_guard(info, labels["ok"] + 5)
     calls = [("init", 0)] + [("play", k) for k in range(4)] * 2
     play(tmp_path, c, h, img, labels, calls, trap=(3, k))
 
@@ -7622,6 +7624,78 @@ def test_machine_model_leaves_bases_outside_the_program_checked(prefix, tmp_path
     assert machine_guard(info, labels["rd"]) is None
     assert re.search(r"\b(?:rd|rdC\d+|io_read)\(", body_of(c, "play"))
     play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", 0)] * 20)
+
+
+CELLHEAD = """
+init:   LDA #$80
+        STA flag+1
+        LDA #0
+        STA ord
+{init}  RTS
+play:
+flag:   LDA #$00
+        BPL step
+        LDA #0
+        STA flag+1
+        STA cur
+        LDX ord
+        LDA seq,X
+        BPL pick
+        LDX #0
+        STX ord
+        LDA seq
+pick:   INC ord
+        TAX
+        LDA ptlo,X
+        STA rd+1
+        LDA pthi,X
+        STA rd+2
+step:   LDY cur
+rd:     LDA $FFFF,Y
+        CMP #$FF
+        BNE note
+        LDA #$80
+        STA flag+1
+        RTS
+note:   STA $C000
+        INC cur
+        RTS
+ord:    .byte 0
+cur:    .byte 0
+seq:    .byte 0,1,1,0,$FF
+ptlo:   .byte lo(pat0),lo(pat1)
+pthi:   .byte hi(pat0),hi(pat1)
+pat0:   .byte 1,2,3,$FF
+pat1:   .byte 4,5,$FF
+end:
+"""
+
+
+@pytest.mark.parametrize(
+    "init, aim",
+    [
+        ("", None),
+        ("", "play"),
+        ("LDA ptlo\n        STA rd+1\n        LDA pthi\n        STA rd+2\n", None),
+    ],
+    ids=["play", "play-aimed", "init"],
+)
+def test_cell_from_song_data_before_its_first_read(prefix, tmp_path, init, aim):
+    """An operand cell holding a pattern pointer, stored from the song's tables before any
+    read of it: by play's first call, which init's exit sends down the path storing it, or
+    by init. Its image bytes never reach the read, so the pointer is the song's and its read
+    a plain read checked into the data block (``objchk``, ``def`` "machine"), with no cell
+    found by address. A song pointer aimed into play's code traps at that check."""
+    img, labels, loaded = assemble(CELLHEAD.format(init=init))
+    if aim:
+        img[labels["ptlo"] + 1] = labels[aim] & 0xFF
+        img[labels["pthi"] + 1] = labels[aim] >> 8
+    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+    assert not re.search(r"\b(?:rd|oob_rd|rdC\d+|cgen_var)\(", body_of(c, "play"))
+    k = machine_guard(info, labels["rd"])
+    assert k is not None
+    calls = [("init", 0)] + [("play", 0)] * 40
+    play(tmp_path, c, h, img, labels, calls, trap=(1 + 4, k) if aim else None)
 
 
 JUMPS = """

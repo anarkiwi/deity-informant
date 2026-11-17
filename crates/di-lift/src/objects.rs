@@ -70,6 +70,8 @@ pub struct Objs {
     /// The accesses through pointers from the program's data, each checked into its part of
     /// the data block ([`machine`]), the runs `[lo, hi)`: a plain access into them.
     pub data: FxHashMap<StoreKey, Vec<(u32, u32)>>,
+    /// The objects of the memory map's checks of a pointer after its definition ([`hoist`]).
+    pub defined: FxHashSet<u16>,
 }
 
 /// A load through a pair: its instruction, access, the values of `Y` it adds and its base
@@ -234,6 +236,7 @@ pub fn objects(
     seeds: &Seeds,
     free: &FxHashMap<u16, Vec<u8>>,
     machine: Option<bool>,
+    unread: Unread,
 ) -> (Objs, Proven) {
     let mut out = Objs::default();
     let mut proven = Vec::new();
@@ -420,7 +423,7 @@ pub fn objects(
             lo: lo0,
             hi: end - 1,
         };
-        self::machine(g, &cx, run, player, &mut out, &mut proven);
+        self::machine(g, &cx, run, player, unread, &mut out, &mut proven);
         for o in &mut out.objects {
             o.2.sort_unstable();
             o.2.dedup();
@@ -1006,6 +1009,10 @@ struct Sources<'a, H: Fn(Iv) -> bool> {
     trial: Option<(Vec<(Val, bool)>, bool)>,
     /// The data block ([`Objs::block`]).
     block: &'a [(u32, u32)],
+    /// Per byte, the starts it may hold init's value at ([`crate::vsa::unread`]).
+    fresh: &'a FxHashMap<u16, FixedBitSet>,
+    /// The bytes asked of [`Sources::fresh`] it does not hold.
+    asked: FxHashSet<u16>,
 }
 
 /// A target's definitions and those reaching each instruction start ([`Sources::defs`]).
@@ -1043,7 +1050,7 @@ fn reg_src(op: u8) -> RegSrc {
 
 /// The register a store of opcode `op` writes, `Some(None)` for a read-modify-write of its
 /// byte, None for another write.
-fn mem_src(op: u8) -> Option<Option<usize>> {
+pub(crate) fn mem_src(op: u8) -> Option<Option<usize>> {
     use di_pcode::reg::{A, X, Y};
     match op {
         0x81 | 0x85 | 0x8d | 0x91 | 0x95 | 0x99 | 0x9d => Some(Some(A)),
@@ -1064,6 +1071,18 @@ impl<'a, H: Fn(Iv) -> bool> Sources<'a, H> {
     fn datum(&self, x: u32) -> bool {
         let i = self.block.partition_point(|r| r.1 <= x);
         self.block.get(i).is_some_and(|r| r.0 <= x)
+    }
+
+    /// Whether byte `x` holds no value init left it at `pc`: every path there from init's exit
+    /// stored a register into it ([`crate::vsa::unread`]).
+    fn stored(&mut self, x: u32, pc: u16) -> bool {
+        match self.fresh.get(&(x as u16)) {
+            Some(r) => !r.contains(pc as usize),
+            None => {
+                self.asked.insert(x as u16);
+                false
+            }
+        }
     }
 
     /// Whether the address access `ai` of variant `v` at `pc` is formed from is a pointer
@@ -1153,6 +1172,7 @@ impl<'a, H: Fn(Iv) -> bool> Sources<'a, H> {
                         ((self.cx.held)(Iv::exact(x)) && self.datum(x))
                             || (self.cx.bytes.free.get(&(x as u16))).is_some_and(|v| !v.is_empty())
                             || (imm && !(self.cx.held)(Iv::exact(x)))
+                            || self.stored(x, pc)
                     }
                 };
                 if !ok {
@@ -1510,20 +1530,52 @@ impl<'a, H: Fn(Iv) -> bool> Sources<'a, H> {
 /// its song, which would not play: leaving the block is invalid input. Such an access, and a
 /// load the code keeps to one run of data bytes, is checked against its runs of the block (an
 /// object of several runs, `Objs::parts`) and is a plain access into them (`Objs::data`).
+///
+/// A byte's value at an entry is what init left it only where a path from init's exit
+/// reaches the access with no store into it since (`unread`, per byte the starts it may hold
+/// init's value at, [`crate::vsa::unread`]); elsewhere it is what the entries stored.
 fn machine<H: Fn(Iv) -> bool>(
     g: &Graph,
     cx: &Walked<'_, H>,
     run: Iv,
     player: bool,
+    unread: Unread,
     out: &mut Objs,
     proven: &mut Proven,
 ) {
+    let mut fresh = FxHashMap::default();
+    loop {
+        let (mut o, mut p) = (out.clone(), proven.clone());
+        let asked = machine_pass(g, cx, run, player, &fresh, &mut o, &mut p);
+        if asked.is_empty() {
+            (*out, *proven) = (o, p);
+            return;
+        }
+        let mut xs: Vec<u16> = asked.into_iter().collect();
+        xs.sort_unstable();
+        fresh.extend(unread(&xs));
+    }
+}
+
+/// Per byte of a list, the starts it may hold init's value at ([`crate::vsa::unread`]).
+pub type Unread<'a> = &'a dyn Fn(&[u16]) -> FxHashMap<u16, FixedBitSet>;
+
+/// One pass of [`machine`] with what `fresh` holds; the bytes it asked of it that it lacks.
+fn machine_pass<H: Fn(Iv) -> bool>(
+    g: &Graph,
+    cx: &Walked<'_, H>,
+    run: Iv,
+    player: bool,
+    fresh: &FxHashMap<u16, FixedBitSet>,
+    out: &mut Objs,
+    proven: &mut Proven,
+) -> FxHashSet<u16> {
     let done: FxHashSet<StoreKey> = (proven.iter().map(|p| p.0))
         .chain(g.proven.iter().filter(|e| (cx.held)(e.1 .0)).map(|e| *e.0))
         .collect();
-    // A player's song data block: the data bytes of the held run, none an instruction's, a
-    // cell, or a variable among the code (a byte a store writes between its first
-    // instruction and its last). A program that is no player has none.
+    // A player's song data block: the data bytes of the held run outside the span of its
+    // code, its first instruction byte or cell to its last (its bytes, those of its variables
+    // and those it skips among them are its own). A program that is no player has none.
     let mut code = g.cells.clone();
     code.grow(0x10000);
     for (&pc, vs) in &g.vars {
@@ -1535,20 +1587,10 @@ fn machine<H: Fn(Iv) -> bool>(
         code.insert_range(pc as usize..(pc as usize + n as usize).min(0x10000));
     }
     let span = code.minimum().zip(code.maximum());
-    let mut state = g.written.clone();
-    state.grow(0x10000);
-    for a in g.vars.values().flatten().flat_map(|v| &v.acc) {
-        if let Some(x) = a.addr.value().filter(|_| a.store && !a.dummy) {
-            state.insert(x as usize);
-        }
-    }
     let song_block: Vec<(u32, u32)> = crate::runs(
         (g.runs.iter().filter(|_| player))
             .flat_map(|&(a, b)| a.max(run.lo)..b.min(run.hi + 1))
-            .filter(|&x| {
-                let inside = span.is_some_and(|(lo, hi)| lo <= x as usize && x as usize <= hi);
-                !code.contains(x as usize) && !(inside && state.contains(x as usize))
-            }),
+            .filter(|&x| !span.is_some_and(|(lo, hi)| lo <= x as usize && x as usize <= hi)),
     );
     let mut src = Sources {
         cx,
@@ -1558,6 +1600,8 @@ fn machine<H: Fn(Iv) -> bool>(
         song: FxHashMap::default(),
         trial: None,
         block: &song_block,
+        fresh,
+        asked: FxHashSet::default(),
     };
     let mut keys: Vec<&StoreKey> = g.bases.keys().collect();
     keys.sort_unstable();
@@ -1709,6 +1753,257 @@ fn machine<H: Fn(Iv) -> bool>(
             (false, true) => {}
         }
     }
+    hoist(g, &mut src, out);
+    src.asked
+}
+
+/// A routine's pointer summary: the memory map's check of the accesses through a zero-page
+/// pair moved to the pair's definitions. Where every definition of both bytes reaching such
+/// an access ([`Sources::reaching`]) is a store of a register, its other byte stored on the
+/// same straight chain of instructions (each the one predecessor of the next), the pair is
+/// checked once after the chain's later store, against the access's runs less the `Y` the
+/// accesses it reaches add: `P` in `[lo - min Y, hi - max Y]` of a run keeps `P + Y` in it
+/// for each. The accesses are then plain accesses of their runs, unchecked.
+fn hoist<H: Fn(Iv) -> bool>(g: &Graph, src: &mut Sources<'_, H>, out: &mut Objs) {
+    let one = |pc: u16| -> Option<u16> {
+        let vs = g.vars.get(&pc)?;
+        let mut n = vs.iter().map(|v| match v.flow {
+            Flow::Next(n) => Some(n),
+            _ => None,
+        });
+        let first = n.next()??;
+        n.all(|x| x == Some(first)).then_some(first)
+    };
+    let mut preds: FxHashMap<u16, u32> = FxHashMap::default();
+    for vs in g.vars.values() {
+        let ts: FxHashSet<u16> = vs.iter().flat_map(|v| flow_succs(&v.flow)).collect();
+        for t in ts {
+            *preds.entry(t).or_default() += 1;
+        }
+    }
+    let next = |pc: u16| one(pc).filter(|n| preds.get(n) == Some(&1));
+    let prev: FxHashMap<u16, u16> = g
+        .vars
+        .keys()
+        .filter_map(|&p| next(p).map(|n| (n, p)))
+        .collect();
+    // The plain store of byte `x` at `pc`: its key.
+    let store = |pc: u16, x: u32| -> Option<StoreKey> {
+        let vs = g.vars.get(&pc)?;
+        let mut keys = vs.iter().filter_map(|v| {
+            let ai = v.acc.iter().position(|a| a.store && !a.dummy)?;
+            let ok = matches!(mem_src(v.op), Some(Some(_))) && v.acc[ai].addr.value() == Some(x);
+            ok.then_some((pc, v.op, ai))
+        });
+        let k = keys.next()?;
+        (keys.next().is_none() && vs.len() == 1).then_some(k)
+    };
+    // The later store of the chain storing byte `x` at `d` and pair byte `y` beside it.
+    let partner = |d: u16, y: u32| -> Option<StoreKey> {
+        let mut at = d;
+        while let Some(n) = next(at) {
+            if let Some(k) = store(n, y) {
+                return Some(k);
+            }
+            at = n;
+        }
+        let mut at = d;
+        while let Some(&p) = prev.get(&at) {
+            if store(p, y).is_some() {
+                return store_any(g, d);
+            }
+            at = p;
+        }
+        None
+    };
+    let mut keys: Vec<StoreKey> = (out.data.keys().copied())
+        .filter(|k| out.machine.contains_key(k))
+        .collect();
+    keys.sort_unstable();
+    // The guard point of a definition of pair byte `x` of pair `q`: the chain's later store.
+    let point = |d: u16, x: u32, q: u32| {
+        let y = if x == q { q + 1 } else { q };
+        store(d, x).and_then(|_| partner(d, y))
+    };
+    // Per access through a pair: the pair, the `Y` it adds, its guard points, and whether the
+    // pair's value at an entry reaches it.
+    let mut accs: Vec<(StoreKey, u8, Iv, Vec<StoreKey>, bool)> = Vec::new();
+    for key in keys {
+        let (pc, op, ai) = key;
+        let Some(v) = g
+            .vars
+            .get(&pc)
+            .and_then(|vs| vs.iter().find(|v| v.op == op))
+        else {
+            continue;
+        };
+        if v.acc[ai].store {
+            continue;
+        }
+        if op & 0x1f != 0x11 {
+            continue;
+        }
+        let Some(q) = v.acc[ai].ptr.and_then(|p| p.lo).and_then(|l| l.value()) else {
+            continue;
+        };
+        if q >= 0xff {
+            continue;
+        }
+        let y = g
+            .regs
+            .get(&pc)
+            .and_then(|r| Bits::from_words(r[di_pcode::reg::Y]).hull());
+        let y = y.unwrap_or(Iv { lo: 0, hi: 0xff });
+        let (mut guards, mut entry) = (Vec::new(), false);
+        let ok = [q, q + 1].iter().all(|&x| {
+            src.reaching(x, pc).into_iter().all(|d| match d {
+                Some(d) => point(d, x, q).inspect(|k| guards.push(*k)).is_some(),
+                None => {
+                    entry = true;
+                    src.stored(x, pc)
+                }
+            })
+        });
+        if ok {
+            guards.sort_unstable();
+            guards.dedup();
+            accs.push((key, q as u8, y, guards, entry));
+        }
+    }
+    // The guard points of every definition of pair `q` (None: one is no chain's store).
+    let defs = |q: u8| -> Option<Vec<StoreKey>> {
+        let q = q as u32;
+        (g.vars.iter())
+            .flat_map(|(&pc, vs)| vs.iter().map(move |v| (pc, v)))
+            .flat_map(|(pc, v)| v.acc.iter().map(move |a| (pc, a)))
+            .filter(|(_, a)| a.store && !a.dummy && a.addr.meets(q, q + 2))
+            .map(|(pc, a)| point(pc, a.addr.value().filter(|&x| x == q || x == q + 1)?, q))
+            .collect()
+    };
+    // Whether every path on from guard point `gk` reaches `pc` before it returns, jumps
+    // through a computed address, ends or stores into pair `q` (a call taken to return):
+    // the original reads there whatever the data.
+    let inevitable = |gk: StoreKey, q: u32, pc: u16| {
+        let leaves = |p: u16| {
+            (g.vars.get(&p).into_iter().flatten()).any(|v| {
+                matches!(
+                    v.flow,
+                    Flow::Rts(_) | Flow::Rti(_) | Flow::Brk(_) | Flow::Jam | Flow::JmpInd(_)
+                ) || v
+                    .acc
+                    .iter()
+                    .any(|a| a.store && !a.dummy && a.addr.meets(q, q + 2))
+            })
+        };
+        let succ = |p: u16| -> Vec<u16> {
+            (g.vars.get(&p).into_iter().flatten())
+                .flat_map(|v| match &v.flow {
+                    Flow::Jsr { ret, .. } => vec![*ret],
+                    f => flow_succs(f),
+                })
+                .collect()
+        };
+        let mut seen: FxHashSet<u16> = FxHashSet::default();
+        let mut work = succ(gk.0);
+        while let Some(p) = work.pop() {
+            if p == pc || !seen.insert(p) {
+                continue;
+            }
+            if !g.vars.contains_key(&p) || leaves(p) {
+                return false;
+            }
+            work.extend(succ(p));
+        }
+        true
+    };
+    // Each access's guard points: its definitions', or every definition of its pair where
+    // its value at an entry reaches it (the entries' stores left it, not init).
+    let mut whole: FxHashMap<u8, Option<Vec<StoreKey>>> = FxHashMap::default();
+    let accs: Vec<(StoreKey, u8, Iv, Vec<StoreKey>)> = (accs.into_iter())
+        .filter_map(|(key, q, y, gs, entry)| match entry {
+            false => Some((key, q, y, gs)),
+            true => {
+                let all = whole.entry(q).or_insert_with(|| defs(q)).clone()?;
+                Some((key, q, y, all))
+            }
+        })
+        .collect();
+    // Per guard point, pair and runs, the hull of the one `Y` each access every path from it
+    // makes adds: the pair as it leaves it stays in the runs for each, else the original
+    // leaves them (an access adding one of several `Y` says nothing of the others).
+    let mut ranges: BTreeMap<Point, Iv> = BTreeMap::new();
+    for (key, q, y, gs) in accs.iter().filter(|a| a.2.lo == a.2.hi) {
+        for &gk in gs.iter().filter(|gk| inevitable(**gk, *q as u32, key.0)) {
+            let e = ranges.entry((gk, *q, out.data[key].clone())).or_insert(*y);
+            *e = hull(*e, *y);
+        }
+    }
+    // The runs `rs` less `Y` in `r`: where the pair lies for `P + Y` to stay in one.
+    let shrunk = |rs: &[(u32, u32)], r: Iv| -> Vec<(u32, u32)> {
+        (rs.iter())
+            .filter_map(|&(a, b)| {
+                let (a, b) = (a.checked_sub(r.lo)?, b.checked_sub(r.hi)?);
+                (a < b).then_some((a, b))
+            })
+            .collect()
+    };
+    ranges.retain(|pt, r| !shrunk(&pt.2, *r).is_empty());
+    // An access is plain where each of its guard points keeps every `Y` it adds in its runs;
+    // a guard point is placed where it keeps one such access.
+    let mut need: FxHashSet<Point> = FxHashSet::default();
+    for (key, q, y, gs) in accs {
+        let rs = &out.data[&key];
+        let at = |gk: &StoreKey| (*gk, q, rs.clone());
+        let kept =
+            |gk: &StoreKey| (ranges.get(&at(gk))).is_some_and(|r| r.lo <= y.lo && y.hi <= r.hi);
+        if gs.iter().all(kept) {
+            out.machine.remove(&key);
+            need.extend(gs.iter().map(at));
+        }
+    }
+    for (pt, r) in ranges.into_iter().filter(|e| need.contains(&e.0)) {
+        let (gk, q, rs) = pt;
+        let runs = shrunk(&rs, r);
+        let obj = match runs.len() {
+            1 => object_id(
+                out,
+                runs[0].0 as u16,
+                (runs[0].1 - 1) as u16,
+                std::iter::empty(),
+            ),
+            _ => match out.parts.iter().find(|p| *p.1 == runs) {
+                Some(p) => *p.0,
+                None => {
+                    let (lo, hi) = (runs[0].0 as u16, (runs[runs.len() - 1].1 - 1) as u16);
+                    out.objects.push((lo, hi, Vec::new()));
+                    let id = out.objects.len() as u16 - 1;
+                    out.parts.insert(id, runs);
+                    id
+                }
+            },
+        };
+        out.defined.insert(obj);
+        let c = ObjChk {
+            q,
+            obj,
+            flag: None,
+            of: Of::Ptr,
+        };
+        let list = out.chk.entry(gk).or_default();
+        if !list.contains(&c) {
+            list.push(c);
+        }
+    }
+}
+
+/// A guard point ([`hoist`]), the zero-page pair it checks and the runs it checks it against.
+type Point = (StoreKey, u8, Vec<(u32, u32)>);
+
+/// The key of the one store of the instruction at `pc`.
+fn store_any(g: &Graph, pc: u16) -> Option<StoreKey> {
+    let v = g.vars.get(&pc)?.first()?;
+    let ai = v.acc.iter().position(|a| a.store && !a.dummy)?;
+    Some((pc, v.op, ai))
 }
 
 /// The index of object `[lo, hi]` (one interval) among `out`'s, made where new, serving the
