@@ -501,9 +501,13 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   the song's data block (`Program.data`, [wholeprog](wholeprog.md#static-proofs), *Machine
   model*) touches the block's runs alone, each a region whatever the lift read of it, and
   reaches them through the region holding its address; where they are several, through the
-  block's reader or writer (`rdBj`, `wrBj`: the element of the region its address lies
-  in), after the memory map's check against the runs (`cgen_outj`, of the `.h`'s
-  `CGEN_OBJj_OUT`). `sensitive_reads` also goes to the lift, which makes no
+  block's one array over its hull (`Bb[a - Bb_ORG]`: the regions and held spans in it are
+  its slices; its other bytes are padding, zero, `info["blocks"][b]["padding"]`, which no
+  valid run reads), after the memory map's check against the runs (`cgen_outj(p, k)`:
+  whether `p` lies outside every run of the `.h`'s `CGEN_OBJj_LO` and `CGEN_OBJj_LIM` with
+  `k` bytes past it, the slack of a check at a pointer's definition). A load the check
+  guards makes it itself (`Bbcj(base, y, k)`), leaving by the check's trap `k`, whose
+  metadata stays the check's. `sensitive_reads` also goes to the lift, which makes no
   throw-away read that cannot reach one of them.
   An unknown access may touch every byte of `loaded`, so then every non-code byte of it is in a
   region. Zero page, the stack page and RAM below the image are regions when accessed; a byte

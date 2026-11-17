@@ -1269,7 +1269,7 @@ impl<'a> Em<'a, '_> {
             let y = self.zext(r1(R::Y), 2);
             p = self.op(Opc::IntAdd, 2, p, y);
         }
-        self.obj_test(p, c.obj, Some(c.q), def)
+        self.obj_test(p, c.obj, u8::try_from(c.q).ok(), def)
     }
     /// Whether address `p` lies outside object `obj`, the check of pair `pair`.
     fn obj_test(&mut self, p: Vn, obj: u16, pair: Option<u8>, def: &'static str) -> (Vn, Why) {
@@ -1599,7 +1599,18 @@ impl<'a> Em<'a, '_> {
             self.emit(op.opc, out, a, b, aux);
         }
         for (at, iv, c) in objs_after {
-            chk.push(self.obj_bad(at, iv, c, "store"));
+            // The memory map check of a pointer after its definition (`objects::Objs::defined`).
+            if self.sh.g.objs.defined.contains(&c.obj) {
+                let (bad, why) = self.obj_bad(at, iv, c, "machine");
+                let o = &self.sh.g.objs.objects[c.obj as usize];
+                let ok = match self.sh.g.objs.parts.get(&c.obj) {
+                    Some(rs) => rs.iter().map(|r| (r.0, r.1 - 1)).collect(),
+                    None => vec![(o.0 as u32, o.1 as u32)],
+                };
+                chk.push((bad, Why { ok, ..why }));
+            } else {
+                chk.push(self.obj_bad(at, iv, c, "store"));
+            }
         }
         chk
     }

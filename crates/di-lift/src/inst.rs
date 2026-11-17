@@ -88,7 +88,7 @@ struct Shape {
 /// An object check of a store ([`crate::objects::ObjChk`]) as copies share it: the pair at the
 /// store's own address less `0` or `1` (its low or high byte), else at the absolute address,
 /// the object and the flag it adds.
-type ObjSig = (Option<u32>, Option<u8>, u16, Option<u8>);
+type ObjSig = (Option<u32>, Option<u16>, u16, Option<u8>);
 
 struct Cx<'a> {
     g: &'a Graph,

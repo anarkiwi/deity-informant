@@ -2304,12 +2304,14 @@ def test_end_marker_tested_before_its_pointer(prefix, tmp_path):
 def test_end_marker_restart_past_the_order(prefix, tmp_path):
     """When a restart play reaches names another marker, the pointer the order's tables make
     names zero page, outside the program: invalid input, whatever the tables hold. The calls
-    replay exactly until that read, which traps at the memory map's check of it, as does the
-    order position run on past the order's tables."""
+    replay exactly until the pointer is made, which traps at the memory map's check of it
+    after the store completing it, as does the order position run on past the order's
+    tables."""
     img, labels, loaded = assemble(ORDERBAD)
     c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=[0])
     assert not re.search(r"\brd\(", c) and machine_guard(info, labels["play"] + 3) is not None
-    k = machine_guard(info, labels["ok"] + 13)
+    assert machine_guard(info, labels["ok"] + 13) is None
+    k = machine_guard(info, labels["ok"] + 5)
     calls = [("init", 0)] + [("play", k) for k in range(4)] * 2
     play(tmp_path, c, h, img, labels, calls, trap=(3, k))
 
@@ -5030,10 +5032,11 @@ def test_operands_init_relocates_by_a_constant_base_are_constant(prefix, tmp_pat
 def test_carry_chain_identity():
     """``lo = a + b``, ``hi = d + e + (lo < a)`` are the bytes of ``(d:a) + (e:b)``, for every
     ``a``, ``b`` and every value of ``d + e``."""
-    a, b, de = np.meshgrid(*(np.arange(256),) * 3, indexing="ij")
+    v = np.arange(256, dtype=np.uint16)
+    a, b, de = v[:, None, None], v[None, :, None], v[None, None, :]
     lo = (a + b) & 0xFF
     hi = (de + (lo < a)) & 0xFF
-    w = ((de << 8) + a + b) & 0xFFFF
+    w = (de << 8) + a + b
     assert (lo == (w & 0xFF)).all() and (hi == (w >> 8)).all()
 
 
@@ -5250,7 +5253,7 @@ def test_init_relocating_by_the_song_leaves_pointer_cells(prefix, tmp_path):
     assert {labels["o0"] + 1, labels["o0"] + 2} <= set(info["provenance"]["cells"])
     assert info["fixed"] == [labels["flag"]]
     body = body_of(c, "play")
-    assert re.search(r"\(S_\w+ \| \(\(uint16_t\)S_\w+ << 8\)\)", body)
+    assert re.search(r"S_\w+ \| \(\(uint16_t\)S_\w+ << 8\)", body)
     assert "rdC" not in body and machine_guard(info, labels["o0"]) is not None
     assert "K_I" in body
 
@@ -7622,6 +7625,122 @@ def test_machine_model_leaves_bases_outside_the_program_checked(prefix, tmp_path
     assert machine_guard(info, labels["rd"]) is None
     assert re.search(r"\b(?:rd|rdC\d+|io_read)\(", body_of(c, "play"))
     play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", 0)] * 20)
+
+
+CELLHEAD = """
+init:   LDA #$80
+        STA flag+1
+        LDA #0
+        STA ord
+{init}  RTS
+play:
+flag:   LDA #$00
+        BPL step
+        LDA #0
+        STA flag+1
+        STA cur
+        LDX ord
+        LDA seq,X
+        BPL pick
+        LDX #0
+        STX ord
+        LDA seq
+pick:   INC ord
+        TAX
+        LDA ptlo,X
+        STA rd+1
+        LDA pthi,X
+        STA rd+2
+step:   LDY cur
+rd:     LDA $FFFF,Y
+        CMP #$FF
+        BNE note
+        LDA #$80
+        STA flag+1
+        RTS
+note:   STA $C000
+        INC cur
+        RTS
+ord:    .byte 0
+cur:    .byte 0
+seq:    .byte 0,1,1,0,$FF
+ptlo:   .byte lo(pat0),lo(pat1)
+pthi:   .byte hi(pat0),hi(pat1)
+pat0:   .byte 1,2,3,$FF
+pat1:   .byte 4,5,$FF
+end:
+"""
+
+
+@pytest.mark.parametrize(
+    "init, aim",
+    [
+        ("", None),
+        ("", "play"),
+        ("LDA ptlo\n        STA rd+1\n        LDA pthi\n        STA rd+2\n", None),
+    ],
+    ids=["play", "play-aimed", "init"],
+)
+def test_cell_from_song_data_before_its_first_read(prefix, tmp_path, init, aim):
+    """An operand cell holding a pattern pointer, stored from the song's tables before any
+    read of it: by play's first call, which init's exit sends down the path storing it, or
+    by init. Its image bytes never reach the read, so the pointer is the song's and its read
+    a plain read checked into the data block (``objchk``, ``def`` "machine"), with no cell
+    found by address. A song pointer aimed into play's code traps at that check."""
+    img, labels, loaded = assemble(CELLHEAD.format(init=init))
+    if aim:
+        img[labels["ptlo"] + 1] = labels[aim] & 0xFF
+        img[labels["pthi"] + 1] = labels[aim] >> 8
+    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+    assert not re.search(r"\b(?:rd|oob_rd|rdC\d+|cgen_var)\(", body_of(c, "play"))
+    k = machine_guard(info, labels["rd"])
+    assert k is not None
+    calls = [("init", 0)] + [("play", 0)] * 40
+    play(tmp_path, c, h, img, labels, calls, trap=(1 + 4, k) if aim else None)
+
+
+CELLSUM = """
+init:   LDA #0
+        STA pos
+        RTS
+play:   LDX pos
+        LDA ordlo,X
+        CLC
+        ADC base
+        STA rd+1
+        LDA ordhi,X
+        ADC base+1
+        STA rd+2
+        LDY #2
+rd:     LDA $FFFF,Y
+        STA $C000
+        BEQ rest
+        INC pos
+        RTS
+rest:   LDA #0
+        STA pos
+        RTS
+pos:    .byte 0
+base:   .byte lo(i0),hi(i0)
+ordlo:  .byte 0,3,6
+ordhi:  .byte 0,0,0
+i0:     .byte 1,2,3
+i1:     .byte 4,5,6
+i2:     .byte 0,0,0
+end:
+"""
+
+
+def test_operand_cell_pointer_checked_at_its_definition(prefix, tmp_path):
+    """A song pointer play stores into an access's operand cells is checked once, after the
+    store completing it, with the ``Y`` the access adds (``objchk``, ``def`` "machine"): the
+    read through it is plain."""
+    img, labels, loaded = assemble(CELLSUM)
+    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+    assert not re.search(r"\b(?:rd|oob_rd|rdC\d+|cgen_var)\(", body_of(c, "play"))
+    assert machine_guard(info, labels["rd"]) is None
+    assert machine_guard(info, labels["rd"] - 5) is not None
+    play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", 0)] * 8)
 
 
 JUMPS = """

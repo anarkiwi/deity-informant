@@ -1004,17 +1004,27 @@ struct Fixpoint<'a> {
     ran: crate::once::Ran,
 }
 
+/// The bytes `facts` saw written and the host init's variables (`free`, of which `known`
+/// bounds some), with their values.
+pub fn observed(
+    facts: &Facts,
+    free: &FxHashMap<u16, Vec<u8>>,
+    known: &FxHashMap<u16, Vec<u8>>,
+) -> FxHashMap<u16, BTreeSet<u8>> {
+    let mut m: FxHashMap<u16, BTreeSet<u8>> = (free.iter())
+        .map(|(&a, v)| (a, v.iter().copied().collect()))
+        .collect();
+    let known = known.iter().map(|(a, v)| (*a, v));
+    for (a, v) in facts.writes.iter().map(|(a, v)| (*a, v)).chain(known) {
+        m.entry(a).or_default().extend(v.iter().copied());
+    }
+    m
+}
+
 impl Fixpoint<'_> {
     /// The bytes the facts saw written and the host init's variables, with their values.
     fn observed(&self) -> FxHashMap<u16, BTreeSet<u8>> {
-        let mut m: FxHashMap<u16, BTreeSet<u8>> = (self.free.iter())
-            .map(|(&a, v)| (a, v.iter().copied().collect()))
-            .collect();
-        let known = self.known.iter().map(|(a, v)| (*a, v));
-        for (a, v) in self.facts.writes.iter().map(|(a, v)| (*a, v)).chain(known) {
-            m.entry(a).or_default().extend(v.iter().copied());
-        }
-        m
+        observed(self.facts, self.free, self.known)
     }
 
     /// The host init's variables as a bit set.
