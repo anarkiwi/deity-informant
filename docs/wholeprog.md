@@ -432,6 +432,12 @@ a set read from the song's tables never crosses a store. A tracked byte with a v
 the set's hull as its interval, so widening never loses it; a flag an instruction sets from
 a tracked byte it reads (`DEC speed`) narrows the byte's set on each branch on it.
 
+The head's entries are the declared ones (`for (;;) play();`, a PSID's play address). Entries
+reached through the interrupt vectors init installs (`$0314/5`, `$0318/9`, `$FFFE/F`,
+`$FFFA/B` by the bank configuration, live as the CIA and VIC interrupt registers init writes
+allow) are a follow-up: the head would jump through the vector's bytes as tracked state, one
+entry per value they may hold, joined with discovery's rounds.
+
 ## Guards
 
 | Assumption | Check | Exit |
