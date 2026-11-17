@@ -8,6 +8,8 @@ refs, [(labels, body)])``.
 
 from __future__ import annotations
 
+from .marks import CLOSE, OPEN
+
 ZERO = {"struct": "{0}"}
 
 
@@ -176,30 +178,47 @@ def _order(name):
     return (len(name), name)
 
 
+def _lead(text):
+    """``(marker, rest)`` of ``text``: its leading marker (:mod:`.marks`), moved to the start
+    of the line printing it, and the rest."""
+    if not text or not text.startswith(OPEN):
+        return "", text or ""
+    end = text.index(CLOSE) + 1
+    return text[:end], text[end:]
+
+
 def render(items):
     """The lines of ``items``."""
     out = []
     for st in items:
         kind = st[0]
         if kind == "a":
-            out.append(f"{st[1]} = {st[2]};")
+            m, text = _lead(st[2])
+            out.append(f"{m}{st[1]} = {text};")
         elif kind == "d":
-            names = ", ".join(n if e is None else f"{n} = {e}" for n, e in st[2])
-            out.append(f"{st[1]} {names};")
+            first = next((i for i, (_, e) in enumerate(st[2]) if e), None)
+            m = "" if first is None else _lead(st[2][first][1])[0]
+            parts = [
+                n if e is None else f"{n} = {_lead(e)[1] if i == first else e}"
+                for i, (n, e) in enumerate(st[2])
+            ]
+            out.append(f"{m}{st[1]} {', '.join(parts)};")
         elif kind in ("s", "j", "l"):
             out.append(st[1])
         elif kind == "if":
             out += _render_if(st)
         elif kind == "loop":
             body = render(st[4])
+            m, cond = _lead(st[2])
             if st[1] == "do":
-                out += ["do {", *body, f"}} while ({st[2]});"]
+                out += ["do {", *body, f"{m}}} while ({cond});"]
             elif st[1] == "while":
-                out += [f"while ({st[2]}) {{", *body, "}"]
+                out += [f"{m}while ({cond}) {{", *body, "}"]
             else:
                 out += ["for (;;) {", *body, "}"]
         else:
-            out.append(f"switch ({st[1]}) {{")
+            m, sel = _lead(st[1])
+            out.append(f"{m}switch ({sel}) {{")
             for labels, body in st[3]:
                 out += [f"case {x}:" if x is not None else "default:" for x in labels]
                 lines = render(body)
@@ -211,10 +230,12 @@ def render(items):
 
 def _render_if(st):
     """The lines of an ``if`` statement, an ``else`` holding one ``if`` as ``else if``."""
-    out = [f"if ({st[1]}) {{", *render(st[3])]
+    m, cond = _lead(st[1])
+    out = [f"{m}if ({cond}) {{", *render(st[3])]
     els = st[4]
     while len(els) == 1 and els[0][0] == "if":
-        out += [f"}} else if ({els[0][1]}) {{", *render(els[0][3])]
+        m, cond = _lead(els[0][1])
+        out += [f"{m}}} else if ({cond}) {{", *render(els[0][3])]
         els = els[0][4]
     if els:
         out += ["} else {", *render(els)]

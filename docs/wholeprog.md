@@ -922,6 +922,20 @@ the facts, so a proof holds on every execution that stays in lifted code.
   source, a constant base outside the held bytes (a device, RAM never loaded) or one of a
   page holding a cell, leaves the access as it was. Zero-page indexing wraps inside zero
   page: its base is no byte of the program and it needs none.
+- **Pointer definitions** (`pdefs.rs`). What each access's address is formed from, from
+  the code alone: a *location*, the word at a `(zp),Y` access's pair (its index lies in
+  `[0, 255]`) or at an instruction's stored operand bytes, else an index register added to a
+  constant base (`X` choosing a `(zp,X)` pair too), one per run of data bytes holding bases
+  (one bound of the register keeps every base of a run in it). A *definition* is a byte of a
+  location (a word's low or high byte, a register) and the instruction that last wrote it on
+  a path to the access (`None`: the value the entry starts with); a write of one known
+  address replaces the byte's, one that may miss it adds its own. Definitions flow along the
+  edges, into a call's callees and from a return back to the return sites of the calls of
+  each procedure reaching it without a call (through tail calls too); an entry's returns
+  leave. `Program.pdefs` lists them by id (`(loc, at, byte, by)`: `loc` `"w"` the word at
+  `at`, `"x"` or `"y"` the register of the run starting at `at`; `byte` 0 or 1; `by` the
+  writer), `pdefs_at` the ids reaching each access's instruction, `pdefs_past` those of a
+  word reaching past each instruction writing it and each anchor of a walk's check.
 - **Computed jumps** (`dispatch.rs`). A `JMP (ind)` whose pointer bytes are tagged on every
   path into it, a `JMP`/`JSR` whose cell operand bytes are (a byte that is not a cell is a
   constant), and an `RTS`/`RTI` whose return-address bytes are pushed so on every path, goes

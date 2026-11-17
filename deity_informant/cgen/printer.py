@@ -20,7 +20,8 @@ from .. import masks
 from ..lifter import MODE_LEN, OPS
 from .mlir import Op
 from .csyntax import declare, drop_unread, ends_in_jump, hexes, names_in, render, walk
-from . import regions
+from . import marks, regions
+from .marks import bare
 from .state import INDEXED, INIT, POINTER, UNKNOWN, State, classify
 from .structure import Conds, Graph, Structurer, new_ids
 
@@ -2019,6 +2020,10 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         self.prov = {"gotos": [], "loops": [], "conditions": [], "switches": []}
         self.edges = {}
         self._fused = None
+        #: The operations the statement being printed prints, and the block visit it is in.
+        self.printing, self.visit = None, (None, 0)
+        #: The branch whose condition is being printed (its node's last operation).
+        self.term = None
 
     def structure(self):
         """Structure the graph into statements."""
@@ -2521,7 +2526,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             else:
                 at, idx = self.f.address(o), lit(0, 8)
             p = self.addr(at)
-            text = f"{name}({p.text}, {idx.text}, {fused[1]})"
+            text = self.check("objchk", o, f"{name}({p.text}, {idx.text}, {fused[1]})", fused[1])
             return E(text, 16, "", 0, 255, False, True, p.refs | idx.refs)
         a = self.addr(self.f.address(o))
         if how[0] == "checked":
@@ -2532,7 +2537,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
                 return self.checked(o, how[2][0], a)
             ((test, el),) = self.mod.choices(how[1], how[2], a.text, self.indexed(o))
             self.mod.helpers.add("oob_rd")
-            return E(f"({test} ? {el} : oob_rd({a.text}))", 16, "", 0, 255, False, True, a.refs)
+            test = self.check("bounded", o, test)
+            text = f"({test} ? {el} : {self.arm(f'oob_rd({a.text})')})"
+            return E(text, 16, "", 0, 255, False, True, a.refs)
         if how[0] == "set":
             choices = self.mod.choices(
                 how[1], how[2], a.text, self.indexed(o), self.base_tests(o, how)
@@ -2546,13 +2553,15 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             if fused is not None:
                 self.mod.traps.add(fused[1])
                 name = self.mod.checked_fn(name, fused[0])
-                return E(f"{name}({a.text}, {fused[1]})", 16, "", 0, 255, False, True, a.refs)
+                text = self.check("objchk", o, f"{name}({a.text}, {fused[1]})", fused[1])
+                return E(text, 16, "", 0, 255, False, True, a.refs)
             return E(f"{name}({a.text})", 16, "", 0, 255, False, True, a.refs)
         fn = "oob_rd" if how[0] == "code" else "rd"
         self.mod.helpers.add(fn)
         if id(o) in self.f.aware and self.mod.var_at:
             self.mod.helpers.add("cgen_var")
-        return E(f"{fn}({a.text})", 16, "", 0, 255, False, True, a.refs)
+        text = self.check("oob" if how[0] == "code" else "rd", o, f"{fn}({a.text})")
+        return E(text, 16, "", 0, 255, False, True, a.refs)
 
     def fusion(self):
         """``{id(op): ...}`` of the object checks a load through the data block's reader
@@ -2624,12 +2633,45 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         self.mod.objs_used.add(j)
         at = f"(uint16_t)({par(p, 12, '+')} + {lo})" if lo else par(p, 12, "-")
         if j in self.mod.ptr_parts:
-            return E(f"cgen_out{j}({at if lo else p.text}, {k})", 16, "", 0, 1, **join(p))
-        off = f"(uint16_t)({at} - CGEN_OBJ{j}_ORG)"
-        text = f"({off} > CGEN_OBJ{j}_LIM)"
-        if k:
-            text = f"({off} > CGEN_OBJ{j}_LIM || CGEN_OBJ{j}_LIM - {off} < {k})"
-        return E(text, 16, "", 0, 1, **join(p))
+            text = f"cgen_out{j}({at if lo else p.text}, {k})"
+        else:
+            off = f"(uint16_t)({at} - CGEN_OBJ{j}_ORG)"
+            text = f"({off} > CGEN_OBJ{j}_LIM)"
+            if k:
+                text = f"({off} > CGEN_OBJ{j}_LIM || CGEN_OBJ{j}_LIM - {off} < {k})"
+        return E(self.check("objchk", o, text, self.trap_after(o)), 16, "", 0, 1, **join(p))
+
+    def check(self, kind, o, text, trap=None):
+        """``text`` marked as a check of access (or guard) ``o`` (*Translation cost*), ``trap``
+        the ``k`` its failure takes."""
+        return self.mod.marks.wrap(("check", kind, o, self.f.name, trap), text)
+
+    def arm(self, text):
+        """``text`` marked as the failure arm of the check last marked."""
+        return self.mod.marks.wrap(("arm", len(self.mod.marks.recs) - 1), text)
+
+    def trap_after(self, o):
+        """The ``k`` of the ``trap(k)`` a branch on the value of call ``o`` leads to directly,
+        through pure operations on it; None for no such branch or no result."""
+        f = self.f
+        work, seen = list(o.res), set()
+        named = {b.name: b for b in f.blocks}
+        while work:
+            v = work.pop()
+            for x in (x for b in f.blocks for x in b.ops if v in x.args):
+                if x.name == "cf.cond_br":
+                    traps = [
+                        t
+                        for b in (named[s] for s in x.succs if s in named)
+                        for t in b.ops
+                        if t.name == "func.call" and t.prop("callee") == "@trap"
+                    ]
+                    if traps:
+                        return f.const_of(traps[0].args[0])
+                elif f.pure(x) and x.res and x.res[0] not in seen:
+                    seen.add(x.res[0])
+                    work.append(x.res[0])
+        return None
 
     def checked(self, o, j, a):
         """Pointer load ``o`` of address ``a`` (an expression) through held span ``j``'s
@@ -2660,10 +2702,13 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             return E(text, 16, "", 0, 255, False, True, join(off, idx)["refs"])
         base = self.addr(at) if bi is not None else a if at == self.f.address(o) else self.ex(at)
         refs = join(base, idx)["refs"]
-        return E(f"rdC{j}({base.text}, {idx.text})", 16, "", 0, 255, False, True, refs)
+        text = self.check("rdC", o, f"rdC{j}({base.text}, {idx.text})")
+        return E(text, 16, "", 0, 255, False, True, refs)
 
     def build(self, o):  # pylint: disable=too-many-return-statements
         """The C expression of the single-result pure operation ``o``."""
+        if self.printing is not None:
+            self.printing.append(o)
         name, w = o.name, self.f.width(o.res[0])
         if name == "arith.constant":
             return lit(o.int_prop("value"), w)
@@ -2678,7 +2723,8 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         if name == "func.call":
             a, v = self.addr(o.args[0]), self.ex(o.args[1])
             self.mod.helpers.add("codechk")
-            return E(f"codechk({a.text}, {v.text})", 16, "", 0, 1, **join(a, v))
+            text = self.check("codechk", o, f"codechk({a.text}, {v.text})", self.trap_after(o))
+            return E(text, 16, "", 0, 1, **join(a, v))
         args = [self.ex(a, (o, i)) for i, a in enumerate(o.args)]
         if name in BINOP:
             sym, prec = BINOP[name]
@@ -2868,7 +2914,21 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
                     refs |= st[2]
             return E(f"({', '.join([*parts, e.text])})", lo=e.lo, hi=e.hi, refs=frozenset(refs))
 
-        return logic("||", [logic("&&", [lit_of(k, p) for k, p in c]) for c in cubes])
+        saved, self.printing, visit, term = self.printing, [], self.visit, self.term
+        e = logic("||", [logic("&&", [lit_of(k, p) for k, p in c]) for c in cubes])
+        got, self.printing, self.visit = self.printing, saved, visit
+        if saved is not None:
+            saved += got
+            return e
+        got = [o for o in (term,) if o is not None] + got
+        if not any(o.pc for o in got):
+            return e
+        return replace(e, text=self.mod.marks.put(("pc", self.f.name, *self.visit, got)) + e.text)
+
+    def branch_of(self, n):
+        """The last operation of graph node ``n``: the branch its condition prints."""
+        blocks = self.blocks(n)
+        return blocks[-1].ops[-1] if blocks and blocks[-1].ops else None
 
     # Statements.
 
@@ -3003,21 +3063,25 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             a = self.addr(self.f.address(o))
             ((test, el),) = self.mod.choices((how[1],), (), a.text, self.indexed(o))
             self.mod.helpers.add("oob_wr")
-            text = f"if ({test}) {el} = {v.text}; else oob_wr({a.text}, {v.text});"
+            test = self.check("bounded", o, test)
+            text = f"if ({test}) {el} = {v.text}; else {self.arm(f'oob_wr({a.text}, {v.text})')};"
             out.append(("s", text, a.refs | v.refs))
             return
         fn = "oob_wr" if how[0] == "code" else "wr"
         self.mod.helpers.add(fn)
         a = self.addr(self.f.address(o))
-        out.append(("s", f"{fn}({a.text}, {v.text});", a.refs | v.refs))
+        text = self.check("oob" if how[0] == "code" else "wr", o, f"{fn}({a.text}, {v.text})")
+        out.append(("s", f"{text};", a.refs | v.refs))
 
     def call(self, o, out):
         """A call of an external or lifted function."""
         f = self.f
         callee = o.prop("callee")[1:]
         if callee == "trap":
-            self.mod.traps.add(f.const_of(o.args[0]))
-            out.append(("s", f"trap({self.ex(o.args[0]).text});", frozenset()))
+            k = f.const_of(o.args[0])
+            self.mod.traps.add(k)
+            mark = self.mod.marks.put(("trap", k, f.name))
+            out.append(("s", f"{mark}trap({self.ex(o.args[0]).text});", frozenset()))
             return
         if callee not in ("io_read", "io_write"):
             target = self.mod.cfunc_of(callee)
@@ -3091,17 +3155,19 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         for it in items:
             kind = it[0]
             if kind == "ops":
+                self.visit = (it[1].name, self.mod.marks.visit())
                 for o in it[1].ops[:-1]:
-                    self.stmt(o, out)
+                    self.marked(out, lambda o=o: self.stmt(o, out), [o])
             elif kind == "copy":
-                self.assign(it[1], out)
+                self.marked(out, lambda it=it: self.assign(it[1], out), [], "copy")
             elif kind == "return":
-                out += self.jump(it[1])
+                self.marked(out, lambda it=it: out.extend(self.jump(it[1])), [], "copy")
             elif kind == "set":
                 f, bdd = it[2], self.f.conds.bdd
                 e = self.cond(f, self.f.conds.care) if f not in (bdd.true, bdd.false) else None
                 text = e.text if e else str(int(f == bdd.true))
                 out.append(("a", self.selector(it[1]), text, e.refs if e else frozenset()))
+                out[-1] = self.mark(out[-1], [], "copy")
             elif kind == "halt":
                 out.append(self.halt())
             elif kind == "site":
@@ -3131,6 +3197,35 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
                 self.prov["loops"].append(self.head_pc(it[2]))
         return _merge_tails(out)
 
+    def marked(self, out, emit, ops, file=None):
+        """Run ``emit``, which appends statements to ``out``, and mark each it appends as
+        printing ``ops`` and the operations it builds, else as artifact ``file``."""
+        saved, self.printing, n = self.printing, list(ops), len(out)
+        emit()
+        got, self.printing = self.printing, saved
+        for i in range(n, len(out)):
+            out[i] = self.mark(out[i], got, file)
+
+    def mark(self, st, ops, file=None):
+        """Statement ``st`` marked as printing ``ops`` in the current visit, or as ``file``
+        when it prints no instruction's; a jump, a statement already marked and one of
+        neither as it is."""
+        at = {"a": 2, "s": 1, "j": 1}.get(st[0])
+        if at is None or self.mod.marks.leading(st[at], "trap"):
+            return st
+        if st[0] == "j" and not st[1].startswith("return "):
+            return st
+        if any(o.pc for o in ops):
+            rec = ("pc", self.f.name, *self.visit, ops)
+        elif file and st[0] != "j":
+            rec = ("tag", file)
+        else:
+            return st
+        new = (*st[:at], self.mod.marks.put(rec) + st[at], *st[at + 1 :])
+        if self.copies.pop(id(st), None) is not None:
+            self.copies[id(new)] = new
+        return new
+
     def latch_edge(self, u, h):
         """``(condition, copy items)`` of latch ``u``'s back edge to loop head ``h``."""
         for t, c in self.g.succ[u]:
@@ -3154,7 +3249,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
                 assert st[0] == "a", st
                 out.append(f"{st[1]} = {st[2]}")
                 refs |= st[3] | {st[1]}
+        self.term = self.branch_of(it[3])
         c = self.cond(f, self.f.conds.care)
+        self.term = None
         text = f"({', '.join([*pre, c.text])})" if pre else c.text
         if post:
             text = f"{par(E(text, c.prec, c.op), 5, '&&')} && ({', '.join([*post, '1'])})"
@@ -3261,14 +3358,18 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         if x in self.g.composed and x not in self.prov.setdefault("composed", set()):
             self.prov["composed"].add(x)
             self.prov["conditions"].append([b.ops[-1].pc for b in self.blocks(x)])
+        visit = self.visit
         (then, els), tail = _shared_jump([self.convert(it[3]), self.convert(it[4])])
+        self.visit = visit
         f = it[1]
         if not then and not els and x not in self.g.effects:
             return tail
         if not then and els:
             then, els, f = els, then, ~f
         fx = self.g.effects.get(x)
+        self.term = self.branch_of(x)
         c, n = self.cond(f, it[2], fx), self.cond(~f, it[2], fx)
+        self.term = None
         if c.lo == c.hi and not fx:
             # A condition of one value (a check its load makes, :meth:`fusion`): its branch.
             return [*(then if c.lo else els), *tail]
@@ -3281,7 +3382,14 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
     def convert_switch(self, it):
         """A ``switch`` over a selector family."""
         fam = it[1]
+        saved, self.printing = self.printing, []
         sel = clean(self.ex(fam), self.f.width(fam))
+        got, self.printing = self.printing, saved
+        got = [o for o in (self.branch_of(it[3]),) if o is not None] + got
+        if any(o.pc for o in got):
+            sel = replace(
+                sel, text=self.mod.marks.put(("pc", self.f.name, *self.visit, got)) + sel.text
+            )
         labels = [[None if k is None else self.label(fam, k).text for k in ks] for ks, _ in it[2]]
         bodies, tail = [self.convert(b) for _, b in it[2]], []
         if any(None in ks for ks in labels):
@@ -3339,14 +3447,15 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         if not self.f.private:
             lines = self.mod.guards.get(self.name, []) + lines
         self.head_text = head
-        return "\n".join([f"{head} {{", *lines, "}"])
+        frame = self.mod.marks.put(("tag", "frame"))
+        return "\n".join([f"{frame}{head} {{", *lines, f"{self.mod.marks.put(('tag', 'frame'))}}}"])
 
 
 def _shared_jump(arms):
     """``(arms, [jump])`` without the jump every arm of a statement ends with, which then
     follows the statement once; else ``(arms, [])``."""
     last = arms[0][-1] if arms[0] else None
-    if last is None or last[0] != "j" or any(not a or a[-1] != last for a in arms):
+    if last is None or last[0] != "j" or any(not a or bare(a[-1]) != bare(last) for a in arms):
         return arms, []
     return [a[:-1] for a in arms], [last]
 
@@ -3357,7 +3466,7 @@ def _merge_tails(items):
     out = []
     for st in reversed(items):
         n = len(out)
-        if st[0] == "if" and not st[4] and n and st[3][-n:] == out[::-1]:
+        if st[0] == "if" and not st[4] and n and bare(st[3][-n:]) == bare(out[::-1]):
             if len(st[3]) == n:
                 continue
             st = (*st[:3], st[3][:-n], *st[4:])
@@ -3405,7 +3514,8 @@ def fold(defs, protos):
 
     def canon(n):
         return FUNC.sub(
-            lambda m: "f0" if m.group(0) == n else rep.get(m.group(0), m.group(0)), text[n]
+            lambda m: "f0" if m.group(0) == n else rep.get(m.group(0), m.group(0)),
+            marks.strip(text[n]),
         )
 
     while True:
@@ -3477,6 +3587,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         #: The readers and writers of data blocks of several regions, by kind and places.
         self.block_fns = {}
         self.traps, self.funcs, self.mains, self.structs = set(), [], {}, {}
+        self.marks = marks.Marks()
         self.order, self.edges, self.ids, self.entries = [], {}, new_ids(), []
         self.sites, self.made, self.lifted, self.prov = {}, Counter(), {}, {}
         self.copy_pcs, self.sets, self.kpos, self.tables = {}, {}, None, {}

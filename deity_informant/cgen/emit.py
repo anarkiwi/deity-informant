@@ -74,8 +74,9 @@ class Body:  # pylint: disable=too-many-instance-attributes
         return f"%v{self.n}"
 
     def put(self, text):
-        """Append an operation line, located at the instruction it is emitted for."""
-        loc = f' loc("{self.pc:#06x}")' if self.pc else ""
+        """Append an operation line, located at the instruction it is emitted for and the
+        lift node holding it (function and block index)."""
+        loc = f' loc("{self.pc:#06x}"("{self.fi}:{self.block_id}"))' if self.pc else ""
         self.lines.append(f"    {text}{loc}")
 
     def op(self, text):

@@ -18,7 +18,7 @@ import numpy as np
 
 from .. import c64devices, masks, polling, postinit, wholeprog
 from ..trace import Facts
-from . import emit, mlir, printer, traps as trapinfo
+from . import cost, emit, marks, mlir, printer, traps as trapinfo
 from .csyntax import hexes
 from ..lifter import MODE_LEN, OPS
 from .regions import Memory, background, code_bytes, pointer_pairs
@@ -629,6 +629,9 @@ class Program:  # pylint: disable=too-many-instance-attributes
     entailed: frozenset = frozenset()
     #: The bytes init stores for some argument value it takes (:func:`_domain`).
     init_stored: np.ndarray | None = None
+    #: Per lift (the entries', init's), its pointer definitions and where they reach
+    #: (``Program.pdefs``, ``pdefs_at``, ``pdefs_past``).
+    pdefs: list = ()
 
 
 def _ranked(progs):
@@ -905,6 +908,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     p.ptr_sets = {pc: set(w) for pc, w in prog.ptr_sets.items()}
     p.objects, p.parts, p.slack = list(prog.objects), dict(prog.parts), dict(prog.slack)
     p.machine = frozenset(prog.machine)
+    p.pdefs = [_pdefs(x) for x in (prog, lone) if x is not None]
     p.stores = {"play": trapinfo.stores(prog)}
     if init is not None:
         p.stores["init"] = trapinfo.stores(lone if lone is not None else bare)
@@ -925,6 +929,11 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     return p, prog.stats
 
 
+def _pdefs(prog):
+    """``(definitions, {pc: [id]} reaching, {pc: [id]} past)`` of a lift (``Program.pdefs``)."""
+    return list(prog.pdefs), dict(prog.pdefs_at), dict(prog.pdefs_past)
+
+
 def _song_guard(p):
     """``{key: guard}`` of the init entry's trap on an argument outside its songs."""
     if p.init is None:
@@ -937,8 +946,9 @@ def _song_guard(p):
     return {("deopt", pc): guard}
 
 
-def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
-    """``(c_text, h_text, info)`` of :class:`Program` ``p``: MLIR, structured and printed."""
+def render(p, header="cgen.h", prefix=None, lines=False):  # pylint: disable=too-many-locals
+    """``(c_text, h_text, info)`` of :class:`Program` ``p``: MLIR, structured and printed;
+    ``lines``: with ``#line`` markers (*Translation cost*)."""
     times, t0 = {}, time.perf_counter()
     symbols, funcs = [], p.funcs
     if p.fixed is not None and p.fixed.size:
@@ -1062,7 +1072,8 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         mod.regions_used
         | (set(range(len(mem.regions))) if helpers & {"oob_rd", "rd", "wr", "oob_wr"} else set())
     )
-    c = [PROLOGUE.format(header=header)]
+    tag = mod.marks.put
+    c = [tag(("tag", "runtime")) + PROLOGUE.format(header=header)]
     if "CGEN_IX" in used:
         c.append(IX)
     c.append("CGEN_STORAGE")
@@ -1070,11 +1081,12 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     ram = mod.stored()
     ram = True if ram is None else ram
     dispatch, unheld = _dispatch(mem, helpers, used, mod.var_at, mod.init_stored, ram)
-    c += dispatch + mod.block_c()
+    c += [tag(("tag", "access")) + x for x in dispatch + mod.block_c()]
     for j in sorted(mod.checked):
         var = ["uint16_t a = p + y;", *VAR_RD] if j in mod.var_spans else []
         c += [
-            f"static __attribute__((noinline)) uint8_t rdC{j}(uint16_t p, uint8_t y) {{",
+            tag(("tag", "access"))
+            + f"static __attribute__((noinline)) uint8_t rdC{j}(uint16_t p, uint8_t y) {{",
             *var,
             f"uint16_t o = p - C{j}_ORG + y;",
             f"return o < C{j}_LEN ? C{j}[o] : oob_rd(p + y);",
@@ -1086,13 +1098,31 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         copies, named = _copies_h(mem, plan, mod.var_ref)
         regions = sorted(set(regions) | named)
         sets += [*_io_h(state), *copies]
-        c += _init_c(name, traps[("deopt", pc)])
-    c += fns
-    c_text = clang_format("\n".join(c) + "\n")
+        c += [tag(("tag", "runtime")) + x for x in _init_c(name, traps[("deopt", pc)])]
+    c += [*fns, tag(("tag", "runtime"))]
+    plain, places, order = mod.marks.finish("\n".join(c) + "\n")
+    c_text = clang_format(plain)
     store = _storage(mem, used, helpers, regions) + mod.state_h() + sets + unheld
     objs = [_obj_h(j, mod.ptr_objects[j], mod.ptr_parts.get(j)) for j in sorted(mod.objs_used)]
     h_text = clang_format(_header(mem, used, [key[1] for key in traps], mod.konsts, objs + store))
     times["print"] = time.perf_counter() - t1
+    trap_info = trapinfo.trap_info(
+        funcs,
+        traps,
+        whys,
+        mod.traps,
+        {
+            "origin": p.origin,
+            "stores": p.stores or {},
+            "jumps": p.jumps or {},
+            "song": song,
+            "entailed": p.entailed,
+            "extra": _song_guard(p),
+        },
+    )
+    emission, line = cost.emission(p, mod, order, trap_info)
+    if lines:
+        c_text = marks.directives(c_text, places, line)
     info = {
         "times": times,
         "regions": mem.regions,
@@ -1110,20 +1140,8 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
             for b in sorted(mem.blocks_used)
         },
         "traps": {k: key for key, k in traps.items() if k in mod.traps},
-        "trap_info": trapinfo.trap_info(
-            funcs,
-            traps,
-            whys,
-            mod.traps,
-            {
-                "origin": p.origin,
-                "stores": p.stores or {},
-                "jumps": p.jumps or {},
-                "song": song,
-                "entailed": p.entailed,
-                "extra": _song_guard(p),
-            },
-        ),
+        "trap_info": trap_info,
+        "emission": emission,
         "unknown_access": mem.unknown,
         "jumps": p.jumps or {},
         "ptr_sets": {pc: sorted(w) for pc, w in sorted((p.ptr_sets or {}).items())},
@@ -1161,6 +1179,7 @@ def translate(  # pylint: disable=too-many-arguments
     songs=None,
     machine=None,
     devices=c64devices.MODEL,
+    lines=False,
 ):
     """``(c_text, h_text, info)`` of the program in ``image`` (the whole address space) called
     at ``entries`` (``(pc, name)``, ``A`` the argument) with ``volatile`` ``[(lo, hi)]`` I/O
@@ -1168,7 +1187,8 @@ def translate(  # pylint: disable=too-many-arguments
     device) are kept and ``devices`` what they answer; ``facts`` supply computed-jump targets only;
     ``entries[init]`` is called once, before any other entry (``None``: entries are called in
     any order), with ``A`` each of the range ``songs`` (default ``[0]``), run on ``machine``
-    (:func:`deity_informant.postinit.run`): the other entries are lifted from what it leaves."""
+    (:func:`deity_informant.postinit.run`): the other entries are lifted from what it leaves;
+    ``lines`` marks the ``.c`` with ``#line`` directives (*Translation cost*)."""
     t0 = time.perf_counter()
     jf = jump_facts(facts, image) if facts is not None else None
     if devices is not None:
@@ -1178,7 +1198,7 @@ def translate(  # pylint: disable=too-many-arguments
     )
     p.sensitive, p.loaded = tuple(sensitive_reads), loaded
     lift_time = time.perf_counter() - t0
-    c, h, info = render(p, header, prefix)
+    c, h, info = render(p, header, prefix, lines)
     info["times"] = {"lift": lift_time, **info["times"]}
     info["facts_edges"] = list(jf.edges) if jf is not None else []
     info["stats"] = stats

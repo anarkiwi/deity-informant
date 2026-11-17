@@ -398,6 +398,8 @@ pub struct Program {
     /// The pointer objects `[lo, hi]` the `objchk` checks name ([`crate::objects`]), each with
     /// the instruction starts of the loads it serves.
     pub objects: Vec<(u16, u16, Vec<u16>)>,
+    /// The pointer definitions of the accesses and where they reach ([`crate::pdefs`]).
+    pub pdefs: crate::pdefs::PDefs,
     /// Per object of several runs (a data block, [`crate::objects`]), its runs `[lo, hi)`.
     pub parts: Vec<(u16, Vec<(u32, u32)>)>,
     /// Per object of a pointer's check after its definition, the block it checks the pointer

@@ -34,6 +34,7 @@ python tools/cgenplay.py tune.sid --psid --volatile 0xD400-0xD41D -o out/   # tr
 | `songs` | the range of values of `A` the `init` entry is called with (default `[0]`); another traps |
 | `machine` | runs init (`postinit.run`; default the reference interpreter over `volatile`, whose device bytes hold what was written) |
 | `devices` | what the volatile addresses answer (*Devices*; default the C64's, `c64devices.MODEL`; `None`: any byte) |
+| `lines` | mark the `.c` with `#line` directives naming what each line's code comes from (*Translation cost*; CLI `--lines`) |
 
 `info` holds the stage times (`lift`, `mlir`, `layout`, `structure`, `print`), the regions
 `[(origin, length)]`, the code span, the traps in the `.c` (`{k: ("deopt", pc)}` or `("ind", pc,
@@ -45,7 +46,8 @@ some access has an unknown address and the
 `structure` counts: C `functions` (and the identical ones `folded` into them) and the
 `gotos` printed, the `provenance` of the printed constructs in the machine code (below), the instruction
 starts translated (`starts`), the cells held as C variables (`state`, *State*) and, with
-`init`, whether init is `"translated"` or `"replayed"` (`init`).
+`init`, whether init is `"translated"` or `"replayed"` (`init`), and what the `.c` prints per
+original instruction and per check (`emission`, *Translation cost*).
 
 The host supplies `uint8_t io_read(uint16_t)`, `void io_write(uint16_t, uint8_t)` and
 `void trap(uint16_t k)`, which must not return (`longjmp`, or abort the call). Each entry
@@ -816,6 +818,58 @@ path is not emitted (wholeprog *Implied guards*), nor an index guard whose regis
 values inside `ok` on every run (`proven`), so neither has a trap. `opcode`, `codechk` and `cell` guards list their
 `writers`, `{pc, entry, exact}`: the stores that may write the byte, from the entries' lift
 (`"play"`) or init's (`"init"`), `exact` for a store with one address or an address set.
+
+## Translation cost
+
+Every printed statement and check carries a marker of what it comes from (`marks.py`); what
+survives printing (folded functions, unread statements dropped) is read back in text order,
+so `info["emission"]` counts what the `.c` holds (`cost.py`):
+
+| key | value |
+|---|---|
+| `copies` | `{pc: n}`: the times each original instruction is printed, `n` at least 1 (below) |
+| `checks` | one per printed check, in text order: `kind`, `at` (the access or guard's instruction), `defs` (the ids of the pointer definitions it checks) and `trap` (the `k` its failure takes, else `None`) |
+| `traps` | `{k: n}`: the printed `trap(k)` calls |
+| `defs` | the pointer definitions by id: `[loc, at, byte, by, lift]` ([wholeprog](wholeprog.md#static-proofs), *Pointer definitions*; `lift` 0 the entries', 1 init's) |
+| `unproven` | `{entry: [id]}`: the definitions of the checks the entry's code reaches |
+
+An operation is printed once per visit of the blocks printing it: a block the structuring
+prints in two places (a shared tail, a tail call printed in place) prints its operations
+twice, a value printed at several uses of one visit once. An instruction's operations that one
+lift node holds and the inliner places through one chain of call sites (its MLIR location,
+`loc("pc"("function:block"))` and the `callsite` locations inlining adds) are one emission;
+`copies[pc]` sums, over its lift nodes and call chains, the most visits printing one of them.
+An instance function's operation is printed for each copy's instruction.
+
+The checks are the `objchk` tests (`cgen_outj` too, a checked read `Bbcj` one check), `codechk`, the bounds-checked readers'
+calls (`rdCj`), the tests of a bounded access before its `oob_*` arm, `rd`/`wr` and `oob_*`
+calls, and the `index`, `window`, `zone` and `stack` guards a deopt tests with no call (one per
+printed `trap(k)`). A check's definitions: an `objchk` guard's after its defining store or
+walk anchor, else those reaching the guarded instruction (of its pair where it names one); an
+`index` guard's of its register; any other check's those its access's instruction reads.
+
+`cost.sites(emission)` lists the cost sites: `E1` for each printed copy of an instruction past
+its first, `E2` for each check (in text order) all of whose definitions an earlier check
+already checks (`cost.redundant`: their indices), and for each printed `trap(k)` past the checks leading to it. A definition
+needs one check (one per definition is the least the code can need, the minimum
+`unproven` counts), covering every access through it, `p + y` with `y` a byte.
+
+With `lines`, each line holding code is preceded by `#line N "file"` naming the marker
+standing before it, and a marker inside a line breaks it there (`# line N "file"`):
+
+| file | line | code |
+|---|---|---|
+| `6502` | the instruction's address | an original instruction's statements and conditions |
+| `check` | the check's index in `checks` plus 1 | a check and its failure arm |
+| `trap` | `k` plus 1 | `trap(k)` |
+| `access` | 1 | the access helpers (`rd`, `wr`, `oob_*`, `rdCj`, `rdBj`, `cgen_outj`, `codechk`, `cgen_var`) |
+| `copy` | 1 | block arguments' copies, results left in `rv*`, structuring selectors |
+| `frame` | 1 | function heads and closing braces |
+| `runtime` | 1 | the prologue, init's replay and whatever follows the `.c` (the host's) |
+
+`marks.strip_lines` removes the directives, leaving the `.c` translated without `lines`
+byte for byte. `tools/csize.py`'s `owners` gives the bytes of each `(file, line)` of a build
+with `-g` from its DWARF line table.
 
 ## Validation
 
