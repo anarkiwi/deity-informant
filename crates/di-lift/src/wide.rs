@@ -23,7 +23,7 @@
 //! store is plain; the conversion is kept only when it completes a fused chain.
 
 use crate::analysis::{iv_op, Iv};
-use crate::ir::{k, tmp, Block, Function, LOp, DECIMAL};
+use crate::ir::{k, key, tmp, Block, Function, LOp, DECIMAL};
 use di_pcode::{Opc, Space, Vn};
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -111,10 +111,6 @@ struct View<'a> {
     ops: &'a [LOp],
     ins: Vec<[R; 2]>,
     uses: Vec<Vec<u32>>,
-}
-
-fn key(v: Vn) -> u32 {
-    (v.space() as u32) << 16 | v.off()
 }
 
 impl<'a> View<'a> {
@@ -644,18 +640,6 @@ impl Pre<'_> {
 struct Temps(u16);
 
 impl Temps {
-    fn of(f: &Function) -> Temps {
-        let n = f
-            .blocks
-            .iter()
-            .flat_map(|b| &b.ops)
-            .flat_map(|o| o.ins.iter().chain([&o.out]))
-            .filter(|v| v.space() == Space::Unique)
-            .map(|v| v.off() + 1)
-            .max()
-            .unwrap_or(0);
-        Temps(n.max(f.ntemps) as u16)
-    }
     fn get(&mut self, size: u32) -> Vn {
         self.0 += 1;
         tmp(self.0 - 1, size as u8)
@@ -1174,7 +1158,7 @@ fn straight(f: &mut Function, costs: &Costs, only: Option<u16>, tmps: &mut Temps
 /// (and re-optimizing with `round`) when that completes a fused chain storing the propagated
 /// byte; the fused chains.
 pub fn fuse(f: &mut Function, costs: &Costs, round: &mut dyn FnMut(&mut Function)) -> Vec<Chain> {
-    let mut tmps = Temps::of(f);
+    let mut tmps = Temps(f.ntemps as u16);
     let mut done = straight(f, costs, None, &mut tmps);
     let mut tried: FxHashSet<u16> = FxHashSet::default();
     let mut preds = edges_in(f);
@@ -1197,7 +1181,7 @@ pub fn fuse(f: &mut Function, costs: &Costs, round: &mut dyn FnMut(&mut Function
             g.blocks[b] = blk;
             g.ntemps = g.ntemps.max(tmps.0 as u32);
             round(&mut g);
-            let mut t = Temps::of(&g);
+            let mut t = Temps(g.ntemps as u16);
             let fused = straight(&mut g, costs, Some(pc), &mut t);
             round(&mut g);
             if fused.iter().any(|c| c.r.contains(&at)) && count(&g) < count(f) {

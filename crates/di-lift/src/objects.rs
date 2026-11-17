@@ -26,6 +26,7 @@
 use crate::analysis::{flow_succs, is_stack_op, Flow, Graph, Iv, Var};
 use crate::bank::BankMap;
 use crate::ptr::{completer, usable, zp_stores, StoreKey};
+use crate::vsa::{hull, Bits};
 use crate::walks::Mk;
 use fixedbitset::FixedBitSet;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -84,15 +85,6 @@ enum Def {
         kill: bool,
         flag: Option<u8>,
     },
-}
-
-/// Union-find over definitions.
-fn find(up: &mut [usize], mut i: usize) -> usize {
-    while up[i] != i {
-        up[i] = up[up[i]];
-        i = up[i];
-    }
-    i
 }
 
 /// The control flow the definitions reach along: every flow edge, and from each return whose
@@ -192,6 +184,11 @@ fn transfer(defs: &[Def], ds: Option<&Vec<usize>>, o: &mut FixedBitSet, loads: b
 /// The proven hulls of loads by access, with their bases' (as [`crate::vsa::Hulls`]).
 pub type Proven = Vec<(StoreKey, (Iv, Iv))>;
 
+/// Whether the bytes `h` lie in the held run `[lo, end)` outside the `volatile` ranges.
+pub(crate) fn serves((lo, end): (u32, u32), volatile: &[(u32, u32)], h: Iv) -> bool {
+    lo <= h.lo && h.hi < end && !volatile.iter().any(|&(a, b)| h.meets(a, b))
+}
+
 /// The bytes `[lo, hi)` the host holds of a program `loaded`: it, and the bytes past it below
 /// the volatile ranges that the lift's stores (`written`) or the host (`holds`) write.
 pub fn held(
@@ -231,7 +228,7 @@ pub fn objects(
     let Some((lo0, end)) = held.filter(|_| !g.runs.is_empty() && !roots.is_empty()) else {
         return (out, proven);
     };
-    let held = |h: Iv| lo0 <= h.lo && h.hi < end && !volatile.iter().any(|&(a, b)| h.meets(a, b));
+    let held = |h: Iv| serves((lo0, end), volatile, h);
     let mut loads = loads(g, volatile, bank);
     for (key, ws) in indexed_x(g, seeds) {
         let h = Iv {
@@ -300,7 +297,7 @@ pub fn objects(
             Some(i)
         };
         let n = defs.len();
-        let mut up: Vec<usize> = (0..n).collect();
+        let mut up = crate::Uf::new(n);
         let mut by: Vec<(usize, &Load)> = Vec::new();
         for l in reads {
             let Some(i) = seen(l.pc) else {
@@ -311,19 +308,16 @@ pub fn objects(
                 continue;
             };
             for d in it {
-                let (a, b) = (find(&mut up, f), find(&mut up, d));
-                up[a] = b;
+                up.union(f, d);
             }
             by.push((f, l));
         }
         let mut comps: FxHashMap<usize, (Vec<usize>, Vec<&Load>)> = FxHashMap::default();
         for d in 0..n {
-            let r = find(&mut up, d);
-            comps.entry(r).or_default().0.push(d);
+            comps.entry(up.find(d)).or_default().0.push(d);
         }
         for &(f, l) in &by {
-            let r = find(&mut up, f);
-            comps.entry(r).or_default().1.push(l);
+            comps.entry(up.find(f)).or_default().1.push(l);
         }
         let mut keys: Vec<usize> = comps.keys().copied().collect();
         keys.sort_unstable();
@@ -432,7 +426,8 @@ fn pairs_of(g: &Graph, pc: u16, v: &Var, a: &crate::analysis::Access) -> Option<
         Y => vec![p.lo.and_then(Iv::value)? as u8],
         X if p.idx == 0 && !g.cells.contains(pc.wrapping_add(1) as usize) => {
             let o = g.img[pc.wrapping_add(1) as usize];
-            values(g.regs.get(&pc)?[X])
+            Bits::from_words(g.regs.get(&pc)?[X])
+                .values()
                 .map(|x| o.wrapping_add(x as u8))
                 .collect()
         }
@@ -441,19 +436,13 @@ fn pairs_of(g: &Graph, pc: u16, v: &Var, a: &crate::analysis::Access) -> Option<
     (!qs.is_empty() && !qs.contains(&0xff)).then_some(qs)
 }
 
-/// The values of a register's bits, ascending.
-fn values(b: [u64; 4]) -> impl Iterator<Item = u32> {
-    (0..256u32).filter(move |&x| b[x as usize >> 6] >> (x & 63) & 1 == 1)
-}
-
 /// The values of `Y` at `pc` on every run.
 fn ys(g: &Graph, pc: u16) -> Vec<u32> {
-    values(
-        g.regs
-            .get(&pc)
-            .map_or([u64::MAX; 4], |r| r[di_pcode::reg::Y]),
-    )
-    .collect()
+    let y = g
+        .regs
+        .get(&pc)
+        .map_or(Bits::ALL, |r| Bits::from_words(r[di_pcode::reg::Y]));
+    y.values().collect()
 }
 
 /// The address intervals an access `a` of variant `v` at `pc` may reach: through pointers of
@@ -872,10 +861,7 @@ impl<H: Fn(Iv) -> bool> Walked<'_, H> {
                         return false;
                     };
                     for (h, x) in hulls.iter_mut().zip(r.hulls) {
-                        *h = Some(h.map_or(x, |h| Iv {
-                            lo: h.lo.min(x.lo),
-                            hi: h.hi.max(x.hi),
-                        }));
+                        *h = Some(h.map_or(x, |h| hull(h, x)));
                     }
                     true
                 })
@@ -901,10 +887,7 @@ impl<H: Fn(Iv) -> bool> Walked<'_, H> {
             })),
             None => steps.iter().try_fold(None, |h: Option<Iv>, s| {
                 let b = s.l.base?;
-                Some(Some(h.map_or(b, |h| Iv {
-                    lo: h.lo.min(b.lo),
-                    hi: h.hi.max(b.hi),
-                })))
+                Some(Some(h.map_or(b, |h| hull(h, b))))
             }),
         }
         .flatten();
@@ -999,13 +982,9 @@ fn loads(g: &Graph, volatile: &[(u32, u32)], bank: Option<&BankMap>) -> FxHashMa
                 }
                 let key = (pc, v.op, ai);
                 let ys = g.regs.get(&pc).map(|r| r[di_pcode::reg::Y]);
-                let has = |b: &[u64; 4], x: u32| b[x as usize >> 6] >> (x & 63) & 1 == 1;
+                let upto = Bits::range(Iv { lo: 0, hi: p.idx });
                 let y = ys
-                    .and_then(|b| {
-                        let lo = (0..=p.idx).find(|&x| has(&b, x))?;
-                        let hi = (lo..=p.idx).rev().find(|&x| has(&b, x))?;
-                        Some(Iv { lo, hi })
-                    })
+                    .and_then(|b| Bits::from_words(b).and(upto).hull())
                     .unwrap_or(Iv { lo: 0, hi: p.idx });
                 let base = g.reach.get(&key).map(|h| h.1);
                 out.entry(q as u8)
@@ -1022,19 +1001,16 @@ fn loads(g: &Graph, volatile: &[(u32, u32)], bank: Option<&BankMap>) -> FxHashMa
 /// bytes, to the greatest, up to the end of the last run starting between them that ends in
 /// the bytes the host holds (`end`, exclusive; the pointer may stand past its last byte).
 fn object(g: &Graph, ls: &[&Load], end: u32) -> Option<((u16, u16), u32)> {
-    let mut hull: Option<Iv> = None;
+    let mut span: Option<Iv> = None;
     let mut m = 0;
     for l in ls {
         let b = l.base?;
-        hull = Some(hull.map_or(b, |h| Iv {
-            lo: h.lo.min(b.lo),
-            hi: h.hi.max(b.hi),
-        }));
+        span = Some(span.map_or(b, |h| hull(h, b)));
         if l.y.lo == l.y.hi {
             m = m.max(l.y.hi);
         }
     }
-    let h = hull?;
+    let h = span?;
     let i = g.runs.partition_point(|r| r.1 <= h.lo);
     g.runs.get(i).filter(|r| r.0 <= h.lo)?;
     let last = (g.runs[i..].iter())

@@ -16,12 +16,12 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from .. import c64devices, polling, postinit, wholeprog
+from .. import c64devices, masks, polling, postinit, wholeprog
 from ..trace import Facts
 from . import emit, mlir, printer, traps as trapinfo
+from .csyntax import hexes
 from ..lifter import MODE_LEN, OPS
 from .regions import Memory, background, code_bytes, pointer_pairs
-from .regions import runs as mask_runs
 
 __all__ = ["Program", "jump_facts", "lift", "render", "translate"]
 
@@ -61,43 +61,34 @@ def jump_facts(facts, image):
     return Facts(edges=sorted(set(edges)))
 
 
-def _hex(data):
-    return ", ".join(f"0x{b:02X}" for b in data)
+def _slices(mem, used):
+    """Per region, the held span it is a slice of (none unless ``used`` holds the code)."""
+    return [mem.holding(org, org + n - 1) if "CODE" in used else None for org, n in mem.regions]
 
 
-def _slice(mem, used, k):
-    """The held span region ``k`` is a slice of, or None."""
-    return mem.span_of(*mem.regions[k]) if "CODE" in used else None
-
-
-def _sliced(mem, used, j):
-    """Whether some region is a slice of held span ``j``."""
-    return any(_slice(mem, used, k) == j for k in range(len(mem.regions)))
-
-
-def _header(mem, used, traps, konsts=None, store=()):
+def _header(mem, used, traps, konsts, store):
     """The ``.h``: origins, lengths and initial bytes of the regions (those inside a held span
     are its slices) and of the held spans when ``used``, the constant bytes ``konsts``
     (``{name: byte}``) the ``.c`` reads by name and the arrays' definitions ``store``."""
-    out = ["#ifndef CGEN_DATA_H", "#define CGEN_DATA_H"]
+    out, slices = ["#ifndef CGEN_DATA_H", "#define CGEN_DATA_H"], _slices(mem, used)
     for k, (org, n) in enumerate(mem.regions):
         out += [f"#define R{k}_ORG 0x{org:04X}", f"#define R{k}_LEN {n}"]
-        if _slice(mem, used, k) is None:
-            out.append(f"#define R{k}_INIT {_hex(mem.init[org : org + n])}")
+        if slices[k] is None:
+            out.append(f"#define R{k}_INIT {hexes(mem.init[org : org + n])}")
     if "CODE" in used or "CODE_ORG" in used:
         out.append(f"#define CODE_ORG 0x{mem.code_span[0]:04X}")
     for j, (lo, hi) in enumerate(mem.held if "CODE" in used else ()):
         out += [f"#define C{j}_ORG 0x{lo:04X}", f"#define C{j}_LEN {hi - lo}"]
-        out.append(f"#define C{j}_INIT {_hex(mem.init[lo:hi])}")
-        if _sliced(mem, used, j):
+        out.append(f"#define C{j}_INIT {hexes(mem.init[lo:hi])}")
+        if j in slices:
             # Past the span's last constant byte every byte is data: the bits stop there.
             top = lo + int(np.flatnonzero(mem.constant[lo:hi]).max(initial=-1)) + 1
             bits = np.packbits(mem.owner[lo : max(top, lo + 1)] >= 0, bitorder="little")
-            out += [f"#define C{j}_BITS {top - lo}", f"#define C{j}_DATA_INIT {_hex(bits)}"]
+            out += [f"#define C{j}_BITS {top - lo}", f"#define C{j}_DATA_INIT {hexes(bits)}"]
     if "IMG_ORG" in used:
         out.append(f"#define IMG_ORG 0x{mem.loaded[0]:04X}")
-    out += [f"#define {k} 0x{v:02X}" for k, v in sorted((konsts or {}).items())]
-    out.append(f"#define CGEN_TRAPS {', '.join(f'0x{pc:04X}' for pc in traps)}")
+    out += [f"#define {k} 0x{v:02X}" for k, v in sorted(konsts.items())]
+    out.append(f"#define CGEN_TRAPS {hexes(traps, 4)}")
     return "\n".join([*out, *store, "#endif"]) + "\n"
 
 
@@ -241,43 +232,45 @@ def _unheld_h(mem, used, cases, program, ram=None):
     the entry bytes ``_INIT``, ``_N`` of them), the machine's entry bytes (``Memory.image``)
     of the rest as :func:`regions.background`'s table."""
     held = (mem.owner >= 0) | mem.vol
-    for lo, hi in mem.held if "CODE" in used else ():
-        held[lo:hi] = True
-    held[[(mem.code_span[0] + d) & 0xFFFF for d, _ in cases]] = True
+    masks.mask(
+        mem.held if "CODE" in used else (),
+        at=[(mem.code_span[0] + d) & 0xFFFF for d, _ in cases],
+        out=held,
+    )
     prog = program.copy()
     prog[mem.loaded[0] : mem.loaded[1]] = True
     prog &= ~held
-    out, masks = [], [("PROG", prog, held)]
+    out, kinds = [], [("PROG", prog, held)]
     rest = ~prog & ~held
     if ram is not None:
-        masks.append(("RAM", rest & ram, np.zeros_like(held)))
-    for name, mask, join in masks:
+        kinds.append(("RAM", rest & ram, np.zeros_like(held)))
+    for name, mask, join in kinds:
         runs = []
-        for o, n in mask_runs(mask | join):
+        for o, n in masks.runs(mask | join):
             t = np.flatnonzero(mask[o : o + n])
             if t.size:
                 runs.append((o + int(t[0]), int(t[-1] - t[0]) + 1))
         # A run of every byte is two: a length is 16 bits.
         runs = [(0, 0xFFFF), (0xFFFF, 1)] if runs == [(0, 0x10000)] else runs
         out += [
-            f"#define CGEN_{name}_ORG {', '.join(f'0x{o:04X}' for o, _ in runs) or '0'}",
-            f"#define CGEN_{name}_LEN {', '.join(f'0x{n:X}' for _, n in runs) or '0'}",
+            f"#define CGEN_{name}_ORG {hexes((o for o, _ in runs), 4) or '0'}",
+            f"#define CGEN_{name}_LEN {hexes((n for _, n in runs), 0) or '0'}",
         ]
         if name == "RAM":
             at = np.cumsum([0] + [n for _, n in runs])
             data = b"".join(bytes(mem.image[o : o + n]) for o, n in runs)
             out += [
-                f"#define CGEN_RAM_AT {', '.join(f'0x{x:X}' for x in at[:-1]) or '0'}",
+                f"#define CGEN_RAM_AT {hexes(at[:-1], 0) or '0'}",
                 f"#define CGEN_RAM_N {len(data)}",
-                f"#define CGEN_RAM_INIT {_hex(data) or '0'}",
+                f"#define CGEN_RAM_INIT {hexes(data) or '0'}",
             ]
             rest &= ~mask
     entries, pool = background(mem.image, rest)
     out += [
-        f"#define CGEN_BG_{k} {', '.join(f'0x{e[i]:X}' for e in entries)}"
+        f"#define CGEN_BG_{k} {hexes((e[i] for e in entries), 0)}"
         for i, k in enumerate(("ORG", "AT", "M"))
     ]
-    return out + [f"#define CGEN_BG_INIT {_hex(pool)}"]
+    return out + [f"#define CGEN_BG_INIT {hexes(pool)}"]
 
 
 def _wr(vol, var=False):
@@ -311,18 +304,18 @@ def _storage(mem, used, helpers, regions):
     the ``CGEN_ARRAYS`` and ``CGEN_REGIONS`` lists."""
     spans = range(len(mem.held)) if "CODE" in used else range(0)
     defs = [f"uint8_t C{j}[C{j}_LEN] = {{C{j}_INIT}};" for j in spans]
-    out = []
+    out, slices = [], _slices(mem, used)
     for k in regions:
-        j = _slice(mem, used, k)
+        j = slices[k]
         if j is not None:
             out.append(f"#define R{k} (C{j} + (R{k}_ORG - C{j}_ORG))")
         else:
             defs.append(f"uint8_t R{k}[R{k}_LEN] = {{R{k}_INIT}};")
     for j in spans if "codechk" in helpers else ():
-        if _sliced(mem, used, j):
+        if j in slices:
             defs.append(f"static const uint8_t C{j}_DATA[] = {{C{j}_DATA_INIT}};")
     out.append(f"#define CGEN_STORAGE {' '.join(defs)}")
-    whole = [f"R{k}" for k in regions if _slice(mem, used, k) is None]
+    whole = [f"R{k}" for k in regions if slices[k] is None]
     for name, arrays in (
         ("ARRAYS", [*whole, *(f"C{j}" for j in spans)]),
         ("REGIONS", [f"R{k}" for k in regions]),
@@ -347,7 +340,7 @@ def _guarded(lines, conds):
 
 
 def _dispatch(
-    mem, helpers, used, cases=(), program=None, ram=True
+    mem, helpers, used, cases, program, ram
 ):  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     """``(c lines, h lines)``: ``oob_rd`` (unless the host's) and ``wr`` over the regions
     outside the held spans, the volatile ranges and the held spans (whose data bytes ``Cj_DATA``
@@ -363,8 +356,9 @@ def _dispatch(
         for lo, hi in mem.volatile
     )
     spans = range(len(mem.held)) if "CODE" in used else range(0)
-    sliced = [j for j in spans if _sliced(mem, used, j)]
-    regions = [f"R{k}" for k in range(len(mem.regions)) if _slice(mem, used, k) is None]
+    slices = _slices(mem, used)
+    sliced = [j for j in spans if j in slices]
+    regions = [f"R{k}" for k, j in enumerate(slices) if j is None]
     writes = bool(helpers & {"wr", "oob_wr"})
     exact = NOOB + " && defined(CGEN_OOB_EXACT)"
     rd = ["1"] if "rd" in helpers else [exact] if "oob_rd" in helpers else []
@@ -409,6 +403,16 @@ def _dispatch(
 SONG = "(uint8_t)(a - CGEN_SONG0)"
 
 
+def _song_trap(k):
+    """The init entry's trap ``k`` on a song outside the ``.h``'s range."""
+    return [f"if ({SONG} >= CGEN_SONGS) {{", f"trap({k});", "}"]
+
+
+def _songs_h(state):
+    """The ``.h``'s range of init's songs (those of :class:`postinit.Init` ``state``)."""
+    return [f"#define CGEN_SONG0 0x{state.songs[0]:02X}", f"#define CGEN_SONGS {len(state.songs)}"]
+
+
 def _init_c(name, k):
     """The init entry ``name``: it traps (``k``) on a song outside the ``.h``'s range, then
     replays init's volatile writes and makes the song's copies into the variables, from the
@@ -432,9 +436,7 @@ def _init_c(name, k):
         "static const uint16_t CP_FROM[CGEN_SONGS + 1] = {CGEN_CP_FROM};",
         "#endif",
         f"void {name}(uint8_t a) {{",
-        f"if ({SONG} >= CGEN_SONGS) {{",
-        f"trap({k});",
-        "}",
+        *_song_trap(k),
         "#if CGEN_IO_N",
         "#if CGEN_IO_ROWS > 1",
         f"uint8_t r = IO_ROW[{SONG}];",
@@ -466,8 +468,8 @@ def _io_h(state):
         ends = np.cumsum([0] + [len(r) for r in rows])
         out += [
             f"#define CGEN_IO_ROWS {len(rows)}",
-            f"#define CGEN_IO_AT {', '.join(f'0x{x:04X}' for x, _ in flat)}",
-            f"#define CGEN_IO_VAL {_hex(v for _, v in flat)}",
+            f"#define CGEN_IO_AT {hexes((x for x, _ in flat), 4)}",
+            f"#define CGEN_IO_VAL {hexes(v for _, v in flat)}",
             f"#define CGEN_IO_FROM {', '.join(str(e) for e in ends)}",
         ]
         if len(rows) > 1:
@@ -476,21 +478,13 @@ def _io_h(state):
     return out
 
 
-def _volatile_mask(volatile):
-    """The bytes of the ``volatile`` ranges, as a boolean array."""
-    vol = np.zeros(0x10000, dtype=bool)
-    for lo, hi in volatile:
-        vol[lo:hi] = True
-    return vol
-
-
 def _array_of(mem, a):
     """``(name, origin)`` of the region holding byte ``a``, None when none does."""
     k = int(mem.owner[a])
     return (f"R{k}", mem.regions[k][0]) if k >= 0 else None
 
 
-def _copies_h(mem, plan, var=lambda a: None):
+def _copies_h(mem, plan, var):
     """The ``.h``'s copies (``plan``, :meth:`deity_informant.postinit.Init.copies`) into the
     regions the program holds and its promoted cells (``var``: an address's lvalue, or None),
     cut where a region ends, the literal bytes they copy, and the regions they name."""
@@ -525,7 +519,7 @@ def _copies_h(mem, plan, var=lambda a: None):
         ends.append(len(dst))
     out = [f"#define CGEN_LIT_N {len(lit)}", f"#define CGEN_CP_N {len(dst)}"]
     if lit:
-        out.append(f"#define CGEN_LIT {_hex(lit)}")
+        out.append(f"#define CGEN_LIT {hexes(lit)}")
     if dst:
         out += [
             f"#define CGEN_CP_DST {', '.join(dst)}",
@@ -601,7 +595,7 @@ def _ranked(progs):
     funcs, origin = [], []
     for j in order:
         fn, k, _ = items[j]
-        for op in (op for b in fn["blocks"] for op in b["ops"] if op[0] == "CALL"):
+        for op in (op for op in emit.ops(fn) if op[0] == "CALL"):
             op[3] = remap[(k, op[3])]
         funcs.append(fn)
         origin.append(k)
@@ -611,8 +605,7 @@ def _ranked(progs):
 def _reads_fixed(image, starts, fixed):
     """The instructions of ``starts`` (in ``image``) whose data operand holds a byte of
     ``fixed``: not a branch, jump or call, whose operand is a target deciding the code."""
-    mask = np.zeros(0x10000, dtype=bool)
-    mask[fixed] = True
+    fixed = masks.mask(at=fixed)
     out = set()
     for pc in starts:
         mn, mode = OPS.get(image[pc], ("", "impl"))
@@ -620,7 +613,7 @@ def _reads_fixed(image, starts, fixed):
         if (
             mode != "rel"
             and mn not in ("JMP", "JSR")
-            and mask[(pc + np.arange(1, n)) & 0xFFFF].any()
+            and fixed[(pc + np.arange(1, n)) & 0xFFFF].any()
         ):
             out.add(pc)
     return out
@@ -656,35 +649,38 @@ def _renumber(funcs, origin, base):
     """Number the objects the ``objchk`` checks of the functions of init's lift name (origin 1)
     after the ``base`` of the other entries' lift."""
     for fn in (fn for fn, k in zip(funcs, origin) if k):
-        for op in (op for b in fn["blocks"] for op in b["ops"]):
+        for op in emit.ops(fn):
             if op[0] == "CALLOTHER" and op[3] == "objchk":
                 op[2][1] = [op[2][1][0], op[2][1][1] + base, op[2][1][2]]
 
 
-def _facts(prog):
-    """The facts of lift ``prog`` the layout reads (:meth:`printer.Module.fx`)."""
-    sets = {a: (min(v), max(v)) for a, v in dict(prog.sets).items() if v}
-    return SimpleNamespace(
-        sets={**dict(prog.bounds), **sets},
-        regs={pc: tuple(bytes(x) for x in r) for pc, r in dict(prog.regs).items()},
-        reach=dict(prog.reach),
-        proven=dict(prog.proven),
-        bounded=dict(prog.bounded),
-        addr_sets=dict(prog.addr_sets),
-    )
+#: The facts a lift gives the layout, as :class:`Program` holds them.
+_FACTS = ("sets", "bounds", "regs", "reach", "proven", "bounded", "addr_sets")
 
 
-def _lift_init(
-    start, entry, volatile, facts, sensitive, kw, state, runs, bare
-):  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    """Init's lift (at ``entry``, run once from ``start``, for any argument value: the host's
+def _raw(src):
+    """``{name: dict}`` of the :data:`_FACTS` of ``src``, a lift or a :class:`Program`."""
+    return {k: dict(getattr(src, k) or {}) for k in _FACTS}
+
+
+def _facts(src):
+    """The facts of ``src`` (:func:`_raw`) the layout reads (:meth:`printer.Module.fx`)."""
+    fx = _raw(src)
+    sets = {a: (min(v), max(v)) for a, v in fx.pop("sets").items() if v}
+    fx["sets"] = {**fx.pop("bounds"), **sets}
+    fx["regs"] = {pc: tuple(bytes(x) for x in r) for pc, r in fx["regs"].items()}
+    return SimpleNamespace(**fx)
+
+
+def _lift_init(once, start, entry, state, runs, bare):
+    """Init's lift (``once`` at ``entry`` from ``start``, for any argument value: the host's
     check of the declared ones is the ``.h``'s range) when it is exact for each declared value:
     its lift without throw-away reads ``bare`` reproduces each of the reference's ``runs`` per
     value (:func:`deity_informant.postinit.reproduces`: polls and probes answered as there,
     one run the machine's) and their accesses lie inside what it bounds them to; else None."""
     if None in runs or not postinit.reproduces(bare, start, state, runs):
         return None
-    lone = wholeprog.lift(start, [entry], volatile, facts, sensitive=sensitive, **kw, once=True)
+    lone = once(entry)
     return lone if postinit.bounded(lone, [r for rs in runs for r in rs]) else None
 
 
@@ -693,28 +689,21 @@ def _guards(prog):
     functions leave by."""
     out = set()
     for fn in prog.functions:
-        exits, whys = fn.get("exits", []), fn["whys"]
-        for op in (op for b in fn["blocks"] for op in b["ops"]):
-            if op[0] in ("CALLOTHER", "BRANCHIND") and len(op) > 5:
-                out |= {(whys[j]["kind"], whys[j]["at"], whys[j]["reg"]) for j in exits[op[5]]}
+        whys = fn["whys"]
+        for op in emit.ops(fn):
+            if op[0] in ("CALLOTHER", "BRANCHIND"):
+                out |= {
+                    (whys[j]["kind"], whys[j]["at"], whys[j]["reg"]) for j in emit.exits(fn, op)
+                }
     return out
 
 
-def _entailed(start, entry, volatile, facts, sensitive, kw, lone, songs):
-    """The guards of init's lift ``lone`` (:func:`_guards`) its lift for the declared argument
-    values ``songs`` alone leaves out (``checked``: the host's check of them is the entry's):
-    implied by the entry's declaration. That lift decides nothing of the ``.c``."""
-    alone = wholeprog.lift(
-        start,
-        [(entry, {"a": songs})],
-        volatile,
-        facts,
-        sensitive=sensitive,
-        **kw,
-        once=True,
-        checked=True,
-    )
-    return frozenset(_guards(lone) - _guards(alone))
+def _entailed(once, entry, lone, songs):
+    """The guards of init's lift ``lone`` (:func:`_guards`) its lift (``once`` at ``entry``)
+    for the declared argument values ``songs`` alone leaves out (``checked``: the host's check
+    of them is the entry's): implied by the entry's declaration. That lift decides nothing of
+    the ``.c``."""
+    return frozenset(_guards(lone) - _guards(once((entry, {"a": songs}), checked=True)))
 
 
 def _fixed(start, prog, lifted, every):
@@ -729,9 +718,7 @@ def _fixed(start, prog, lifted, every):
     cand = np.intersect1d(np.intersect1d(state.free, every.same()), state.same())
     if lone is not None:
         cand = cand[~code_bytes(start, lone.starts)[cand]]
-    var, held = np.zeros(0x10000, dtype=bool), np.zeros(0x10000, dtype=bool)
-    for lo, hi in prog.stored:
-        var[lo:hi] = True
+    var, held = masks.mask(prog.stored), np.zeros(0x10000, dtype=bool)
     held[cand] = ~var[cand]
     var[state.free] |= ~held[state.free]
     image = state.states[0].tobytes()
@@ -749,9 +736,7 @@ def _domain(lift_, image, every, songs):
     run from ``image``, does not deopt (an index past its tables: a value init's translation
     traps on), and the declared ``songs``. Values whose machine runs leave one memory and
     volatile writes share the verdict of the least of them."""
-    may = ~every.kept
-    for lo, hi in lift_.stored:
-        may[lo:hi] = True
+    may = masks.mask(lift_.stored, out=~every.kept)
     alike = {}
     for a, s, st, w in zip(every.songs, every.stored, every.states, every.writes):
         if may[s].all():
@@ -766,7 +751,6 @@ def _domain(lift_, image, every, songs):
 def _aliases(runs, states):
     """``[(lo, g, delta)]`` of :func:`postinit.groups` of ``runs`` (init's runs of one argument
     value) holding on each of ``states``: pair ``lo``'s word is pair ``g``'s plus ``delta``."""
-    pairs = set().union(*(postinit.pointers(r) for r in runs))
     st = states.astype(np.int64)
 
     def word(lo):
@@ -774,7 +758,7 @@ def _aliases(runs, states):
 
     return [
         (lo, g, d)
-        for lo, (g, d) in sorted(postinit.groups(runs, pairs).items())
+        for lo, (g, d) in sorted(postinit.groups(runs).items())
         if ((word(lo) - word(g)) & 0xFFFF == d).all()
     ]
 
@@ -805,13 +789,19 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     pc = None if init is None else entries[init][0]
     kw = {"entry_sp": emit.ENTRY_REGS[3], "loaded": loaded, "fold": True, "devices": devices}
     other = state
+
+    def once(entry, **more):
+        """The lift of init at ``entry`` from ``start``, called once."""
+        more = {"sensitive": sensitive, **kw, **more}
+        return wholeprog.lift(start, [entry], volatile, facts, once=True, **more)
+
     if init is not None:
         vals = sorted(set(range(1) if songs is None else songs))
         if not vals or vals[-1] - vals[0] + 1 != len(vals):
             raise ValueError("songs must be a range")
         state = postinit.run(image, pc, vals, volatile, machine)
         every = postinit.run(image, pc, range(256), volatile, machine, skip=True)
-        bare = wholeprog.lift(image, [pc], volatile, facts, sensitive=(), **kw, once=True)
+        bare = once(pc, sensitive=())
         polls = polling.loops(image, bare.starts, bare.code, volatile)
         runs = [postinit.forks(image, pc, a, volatile, polls, devices) for a in vals]
         over = _domain(bare, image, every, vals)
@@ -826,9 +816,9 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
         decided = every.select(over)
         image = decided.states[0].tobytes()
         played = [e for i, e in enumerate(entries) if i != init]
-        lone = _lift_init(start, pc, volatile, facts, sensitive, kw, state, runs, bare)
+        lone = _lift_init(once, start, pc, state, runs, bare)
         if lone is not None:
-            entailed = _entailed(start, pc, volatile, facts, sensitive, kw, lone, vals)
+            entailed = _entailed(once, pc, lone, vals)
         # A translated init leaves the state of any value its probes read.
         other = decided if lone is None else decided.extended(flat)
         if flat:
@@ -862,10 +852,8 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     funcs, origin = _ranked(lifts)
     starts = set(prog.starts)
     p = Program(funcs, played, image, starts, [tuple(v) for v in volatile])
-    p.constant, p.jumps, p.sets = frozenset(prog.code), dict(prog.jumps), dict(prog.sets)
-    p.written = list(prog.written)
-    p.bounds, p.addr_sets, p.reach = dict(prog.bounds), dict(prog.addr_sets), dict(prog.reach)
-    p.proven, p.regs, p.bounded = dict(prog.proven), dict(prog.regs), dict(prog.bounded)
+    p.constant, p.jumps, p.written = frozenset(prog.code), dict(prog.jumps), list(prog.written)
+    vars(p).update(_raw(prog))
     p.ptr_sets = {pc: set(w) for pc, w in prog.ptr_sets.items()}
     p.objects = list(prog.objects)
     p.stores = {"play": trapinfo.stores(prog)}
@@ -874,8 +862,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     if state is not None:
         p.init, p.fixed = (entries[init], state), np.array(sorted(fixed), dtype=np.int64)
         p.entailed, p.init_stored = entailed, decided.mask
-    if len(lifts) > 1:
-        lone = lifts[1]
+    if lone is not None:
         p.entries = [*played, entries[init]]
         p.origin, p.start = origin, start
         p.lifted = (frozenset(lone.code), set(lone.starts), _facts(lone))
@@ -908,22 +895,19 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         funcs = copy.deepcopy(funcs)
         own = [fn for j, fn in enumerate(funcs) if not p.lifted or not p.origin[j]]
         symbols = _guard_symbols(own, _reads_fixed(p.image, p.starts, p.fixed))
-    text, traps, whys = emit.emit(
-        funcs, p.entries, keep_dummy=bool(p.sensitive), symbols=len(symbols)
-    )
+    text, traps, whys, regfile = emit.emit(funcs, p.entries, bool(p.sensitive), len(symbols))
     run = mlir.runner(build=True) if prefix is None else prefix
     if run is None:
         raise RuntimeError("needs mlir-opt on PATH or Docker")
     top = mlir.parse(mlir.optimize(text, run))
     times["mlir"] = time.perf_counter() - t0
     t1 = time.perf_counter()
-    code = code_bytes(p.image, p.starts)
-    ran = code.copy()
+    insn = code_bytes(p.image, p.starts)
+    code, ran = insn.copy(), insn.copy()
     cells = np.zeros_like(code)
     tables = None
     if p.constant is not None:
-        constant = np.zeros(0x10000, dtype=bool)
-        constant[list(p.constant)] = True
+        constant = masks.mask(at=p.constant)
         if p.lifted is not None:
             # Init's code reads and writes the bytes it leaves constant: they are data.
             constant[p.fixed] = False
@@ -949,8 +933,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         # are cells unless the entries' lift reads them as constants, which init leaves.
         iconst, istarts, _ = p.lifted
         icode = code_bytes(p.start, istarts)
-        imask = np.zeros(0x10000, dtype=bool)
-        imask[list(iconst)] = True
+        imask = masks.mask(at=iconst)
         ran |= icode
         cells |= icode & ~imask & ~code
         fixed = code | (icode & imask)
@@ -959,7 +942,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     elif p.init is not None:
         # The .h holds the image or the first song's state, whichever needs the smaller copies.
         state = p.init[1]
-        source = ~(code if tables is None else code | tables) & ~_volatile_mask(p.volatile)
+        source = ~(code if tables is None else code | tables) & ~masks.mask(p.volatile)
         source[:0x200] = False
         source[: loaded[0]] = source[loaded[1] :] = False
         data, plan = min(
@@ -974,9 +957,8 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     mod = printer.Module(top, mem)
     mod.insn, mod.fixed = ran, fixed
     if p.fixed is not None:
-        folded = np.zeros(0x10000, dtype=bool)
-        folded[p.fixed] = True
-        mod.folded = (folded, p.image, folded & code_bytes(p.image, p.starts))
+        folded = masks.mask(at=p.fixed)
+        mod.folded = (folded, p.image, folded & insn)
     mod.symbols = symbols
     if p.init is not None:
         mod.init_stored = p.init_stored
@@ -984,18 +966,15 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
     lo, hi = mem.code_span
     mod.cells = cells.copy()
     mod.cells[lo:hi] |= ~mem.constant[lo:hi] & ~mem.vol[lo:hi]
-    mod.sets = {**(p.bounds or {}), **{a: (min(v), max(v)) for a, v in (p.sets or {}).items() if v}}
     mod.lifted = {f"f{j}": (fn["pc"], list(fn.get("copies", ()))) for j, fn in enumerate(p.funcs)}
     mod.lifted.update({name: (pc, []) for pc, name in p.entries})
     mod.copy_pcs = {
         f"f{j}": {q: pcs for pcs in fn.get("copy_pcs", ()) for q in pcs if q}
         for j, fn in enumerate(p.funcs)
     }
-    mod.addr_sets = p.addr_sets or {}
-    mod.reach, mod.proven, mod.bounded = p.reach or {}, p.proven or {}, p.bounded or {}
+    vars(mod).update(vars(_facts(p)))
     mod.ptr_objects = list(p.objects)
-    mod.regfile = regfile = [r for r, _ in emit.Context(p.funcs, False).regfile]
-    mod.regs = {pc: tuple(bytes(x) for x in r) for pc, r in (p.regs or {}).items()}
+    mod.regfile = regfile = [r for r, _ in regfile]
     mod.kpos = regfile.index(emit.KREG) if emit.KREG in regfile else None
     song = None
     if p.lifted is not None:
@@ -1007,7 +986,7 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         mod.after = frozenset(names | {name for _, name in p.entries[:-1]})
         k = song["k"] = traps.setdefault(("deopt", pc), len(traps))
         mod.traps.add(k)
-        mod.guards[name] = [f"if ({SONG} >= CGEN_SONGS) {{", f"trap({k});", "}"]
+        mod.guards[name] = _song_trap(k)
     elif p.init is not None:
         mod.traps.add(traps.setdefault(("deopt", p.init[0][0]), len(traps)))
         mod.held_runs = sorted(
@@ -1047,23 +1026,12 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
             f"return o < C{j}_LEN ? C{j}[o] : oob_rd(p + y);",
             "}",
         ]
-    sets = []
-    if p.lifted is not None:
-        state = p.init[1]
-        sets = [
-            f"#define CGEN_SONG0 0x{state.songs[0]:02X}",
-            f"#define CGEN_SONGS {len(state.songs)}",
-        ]
-    elif p.init is not None:
+    sets = [] if p.init is None else _songs_h(p.init[1])
+    if p.init is not None and p.lifted is None:
         (pc, name), state = p.init
-        sets, named = _copies_h(mem, plan, mod.var_ref)
+        copies, named = _copies_h(mem, plan, mod.var_ref)
         regions = sorted(set(regions) | named)
-        sets = [
-            f"#define CGEN_SONG0 0x{state.songs[0]:02X}",
-            f"#define CGEN_SONGS {len(state.songs)}",
-            *_io_h(state),
-            *sets,
-        ]
+        sets += [*_io_h(state), *copies]
         c += _init_c(name, traps[("deopt", pc)])
     c += fns
     c_text = clang_format("\n".join(c) + "\n")

@@ -20,10 +20,7 @@ use rustc_hash::FxHashMap;
 use std::collections::VecDeque;
 
 const NONE: Vn = Vn::NONE;
-const PAGE1: Iv = Iv {
-    lo: 0x100,
-    hi: 0x1ff,
-};
+use crate::ptr::PAGE1_IV as PAGE1;
 
 /// Program-wide facts the emitter consults.
 pub struct Shared<'a> {
@@ -94,14 +91,7 @@ fn runs(vs: impl IntoIterator<Item = u32>) -> Vec<(u32, u32)> {
     let mut v: Vec<u32> = vs.into_iter().collect();
     v.sort_unstable();
     v.dedup();
-    let mut out: Vec<(u32, u32)> = Vec::new();
-    for x in v {
-        match out.last_mut() {
-            Some(r) if r.1 + 1 == x => r.1 = x,
-            _ => out.push((x, x)),
-        }
-    }
-    out
+    crate::inclusive_runs(v)
 }
 
 /// Prefix counts over a bitset of 65536 bits.
@@ -247,7 +237,7 @@ pub fn emit(
             seen: em.seen(plan.pc, *i),
             ..Why::new(Kind::Entry, plan.pc)
         };
-        em.side_exit(bad, true, |em| em.deopt(k(plan.pc as u32, 2), vec![why]));
+        em.guard(bad, plan.pc, vec![why]);
         if lo == hi {
             em.emit(Opc::Copy, r1(*i), k(lo as u32, 1), NONE, 0);
         }
@@ -259,7 +249,7 @@ pub fn emit(
             ok: vec![(s as u32, s as u32)],
             ..Why::new(Kind::EntrySp, plan.pc)
         };
-        em.side_exit(bad, true, |em| em.deopt(k(plan.pc as u32, 2), vec![why]));
+        em.guard(bad, plan.pc, vec![why]);
         em.emit(Opc::Copy, r1(R::SP), k(s as u32, 1), NONE, 0);
     }
     if plan.top {
@@ -279,7 +269,7 @@ pub fn emit(
             w.at = plan.pc;
         }
         if let Some(c) = bad.into_iter().reduce(|a, b| em.op(Opc::IntOr, 1, a, b)) {
-            em.side_exit(c, true, |em| em.deopt(k(plan.pc as u32, 2), whys));
+            em.guard(c, plan.pc, whys);
         }
     }
     let roots: Vec<Key> = plan
@@ -309,31 +299,32 @@ pub fn emit(
         em.f.cont = Some(em.f.nslots);
         let to = NREG as u32 + em.f.nslots;
         em.f.nslots += 2;
-        let at = |v: Vn| match v.space() {
-            Space::Reg if (ABOVE as u32..ABOVE as u32 + 2).contains(&v.off()) => {
-                reg((v.off() - ABOVE as u32 + to) as u16, v.size() as u8)
-            }
-            _ => v,
-        };
-        for op in em.f.blocks.iter_mut().flat_map(|b| &mut b.ops) {
-            op.out = at(op.out);
-            op.ins = op.ins.map(at);
-        }
+        remap(&mut em.f.blocks, ABOVE as u32..ABOVE as u32 + 2, to);
     }
     em.f.ncarries = em.carries.regs.len() as u32;
     if em.f.ncarries > 0 {
         let to = NREG as u32 + em.f.nslots;
-        let n = CARRY as u32..CARRY as u32 + em.f.ncarries;
-        let at = |v: Vn| match v.space() {
-            Space::Reg if n.contains(&v.off()) => reg((v.off() - n.start + to) as u16, 1),
-            _ => v,
-        };
-        for op in em.f.blocks.iter_mut().flat_map(|b| &mut b.ops) {
-            op.out = at(op.out);
-            op.ins = op.ins.map(at);
-        }
+        remap(
+            &mut em.f.blocks,
+            CARRY as u32..CARRY as u32 + em.f.ncarries,
+            to,
+        );
     }
     (em.f, em.n)
+}
+
+/// Renumbers the registers `from` of `blocks`' ops to start at `to`.
+fn remap(blocks: &mut [Block], from: std::ops::Range<u32>, to: u32) {
+    let at = |v: Vn| match v.space() {
+        Space::Reg if from.contains(&v.off()) => {
+            reg((v.off() - from.start + to) as u16, v.size() as u8)
+        }
+        _ => v,
+    };
+    for op in blocks.iter_mut().flat_map(|b| &mut b.ops) {
+        op.out = at(op.out);
+        op.ins = op.ins.map(at);
+    }
 }
 
 /// The register a continuation function's low return-address byte is emitted in (the high
@@ -432,8 +423,9 @@ impl<'a> Em<'a, '_> {
         self.f.exits.len() as u32
     }
     /// The values the analysis finds register `r` (`A`, `X` or `Y`) holds at `pc`.
-    fn seen(&self, pc: u16, r: usize) -> Option<crate::why::Bits> {
-        (r < 3).then(|| self.sh.g.regs.get(&pc).map(|x| x[r]))?
+    fn seen(&self, pc: u16, r: usize) -> Option<crate::vsa::Bits> {
+        let held = self.sh.g.regs.get(&pc).filter(|_| r < 3);
+        held.map(|x| crate::vsa::Bits::from_words(x[r]))
     }
     /// `opc(a, b)` into a fresh temporary of `size` bytes.
     fn op(&mut self, opc: Opc, size: u8, a: Vn, b: Vn) -> Vn {
@@ -545,11 +537,7 @@ impl<'a> Em<'a, '_> {
                     self.op(Opc::IntLess, 1, off, k(n.min(0xff), 1))
                 }
             };
-            hit = if hit.is_none() {
-                c
-            } else {
-                self.op(Opc::IntOr, 1, hit, c)
-            };
+            hit = self.or(hit, c);
         }
         hit
     }
@@ -563,17 +551,21 @@ impl<'a> Em<'a, '_> {
             let out = self.op(Opc::IntLess, 1, k(r.hi - r.lo, 2), off);
             hit = self.op(Opc::IntAnd, 1, hit, out);
         }
-        self.n.stack_guards += 1;
         let mut ok = complement(vec![(0x100, 0x1ff)], 0xffff);
         ok.extend(allow.map(|r| (r.lo, r.hi)));
         ok.sort_unstable();
+        self.stack_guard(hit, iv, pc, ok);
+    }
+    /// Deopt to `pc`, replaying the instruction, when `hit` holds for the access at an
+    /// address in `iv`, a stack guard letting the addresses `ok` pass.
+    fn stack_guard(&mut self, hit: Vn, iv: Iv, pc: u16, ok: Vec<(u32, u32)>) {
+        self.n.stack_guards += 1;
         let why = Why {
             ok,
             addr: Some(iv),
             ..Why::new(Kind::Stack, pc)
         };
-        let x = self.side_exit(hit, true, |em| em.deopt(k(pc as u32, 2), vec![why]));
-        self.f.blocks[x as usize].replay = Some(self.istart);
+        self.replay_guard(hit, pc, vec![why]);
     }
     /// A `CALL` of `fs[0]`, or with `tv` a `BRANCHIND` on `tv` to a `CALL` of each of `fs`
     /// (every target when the jump is resolved from the code), returning to `ret`.
@@ -884,14 +876,7 @@ impl<'a> Em<'a, '_> {
     fn range_guard(&mut self, addr: Vn, iv: Iv, pc: u16, r: Iv) {
         let off = self.op(Opc::IntSub, 2, addr, k(r.lo, 2));
         let hit = self.op(Opc::IntLess, 1, off, k(r.hi - r.lo + 1, 2));
-        self.n.stack_guards += 1;
-        let why = Why {
-            ok: complement(vec![(r.lo, r.hi)], 0xffff),
-            addr: Some(iv),
-            ..Why::new(Kind::Stack, pc)
-        };
-        let x = self.side_exit(hit, true, |em| em.deopt(k(pc as u32, 2), vec![why]));
-        self.f.blocks[x as usize].replay = Some(self.istart);
+        self.stack_guard(hit, iv, pc, complement(vec![(r.lo, r.hi)], 0xffff));
     }
     /// Whether an access in `iv` may reach a volatile address in the current configuration.
     fn reaches(&self, iv: Iv) -> bool {
@@ -990,6 +975,22 @@ impl<'a> Em<'a, '_> {
         let why = self.exit(whys);
         self.emit(Opc::CallOther, NONE, pc, NONE, other::DEOPT);
         self.f.blocks[self.cur].ops.last_mut().unwrap().why = why;
+    }
+    /// `x | c` (one byte), `c` alone when `x` is [`NONE`].
+    fn or(&mut self, x: Vn, c: Vn) -> Vn {
+        match x.is_none() {
+            true => c,
+            false => self.op(Opc::IntOr, 1, x, c),
+        }
+    }
+    /// Deopt to `pc`, the exit standing for `whys`, when `cond` holds (a soft exit).
+    fn guard(&mut self, cond: Vn, pc: u16, whys: Vec<Why>) -> u32 {
+        self.side_exit(cond, true, |em| em.deopt(k(pc as u32, 2), whys))
+    }
+    /// [`Self::guard`] whose exit replays the current instruction.
+    fn replay_guard(&mut self, cond: Vn, pc: u16, whys: Vec<Why>) {
+        let x = self.guard(cond, pc, whys);
+        self.f.blocks[x as usize].replay = Some(self.istart);
     }
     /// Leave through a new block when `cond` holds (the block sees the pending cycles), and
     /// continue in a fresh block. A `soft` exit's deopt state is what the continuation would
@@ -1222,11 +1223,7 @@ impl<'a> Em<'a, '_> {
             }
             let off = self.op(Opc::IntSub, 2, p, k(zl.wrapping_sub(t) & 0xffff, 2));
             let c = self.op(Opc::IntLess, 1, off, k(zh - zl + t, 2));
-            bad = if bad.is_none() {
-                c
-            } else {
-                self.op(Opc::IntOr, 1, bad, c)
-            };
+            bad = self.or(bad, c);
         }
         let why = Why {
             pair: Some(q),
@@ -1317,11 +1314,7 @@ impl<'a> Em<'a, '_> {
                 let mut hit = NONE;
                 for (i, _) in ms.iter().enumerate().filter(|(_, p)| p.is_some()) {
                     let e = self.op(Opc::IntEqual, 1, r1(KREG), k(i as u32, 1));
-                    hit = if hit.is_none() {
-                        e
-                    } else {
-                        self.op(Opc::IntOr, 1, hit, e)
-                    };
+                    hit = self.or(hit, e);
                 }
                 let run = self.new_block(pc);
                 self.emit(Opc::CBranch, NONE, hit, NONE, run);
@@ -1459,17 +1452,12 @@ impl<'a> Em<'a, '_> {
                         addr: Some(ac.addr),
                         ..Why::new(Kind::Zone, pc)
                     });
-                    zone = if zone.is_none() {
-                        c
-                    } else {
-                        self.op(Opc::IntOr, 1, zone, c)
-                    };
+                    zone = self.or(zone, c);
                     let later = (ai + 1..acc.len()).any(|j| checked(&acc[j], j));
                     if !later {
                         self.n.zone_guards += 1;
                         let whys = std::mem::take(&mut zwhy);
-                        let x = self.side_exit(zone, true, |em| em.deopt(k(pc as u32, 2), whys));
-                        self.f.blocks[x as usize].replay = Some(self.istart);
+                        self.replay_guard(zone, pc, whys);
                     }
                 }
                 if op.opc == Opc::Load && op.out.is_none() {
@@ -1668,8 +1656,7 @@ impl<'a> Em<'a, '_> {
                 seen: self.seen(pc, r as usize),
                 ..Why::new(Kind::Index, pc)
             };
-            let x = self.side_exit(out, true, |em| em.deopt(k(pc as u32, 2), vec![why]));
-            self.f.blocks[x as usize].replay = Some(self.istart);
+            self.replay_guard(out, pc, vec![why]);
         }
         let next = pc.wrapping_add(t.len as u16);
         // A data operand of bytes the host's init holds is read as a cell's is; a control
@@ -1731,13 +1718,9 @@ impl<'a> Em<'a, '_> {
                 };
                 let (b, why) = self.obj_bad(at, iv, c, "load");
                 whys.push(why);
-                bad = match bad.is_none() {
-                    true => b,
-                    false => self.op(Opc::IntOr, 1, bad, b),
-                };
+                bad = self.or(bad, b);
             }
-            let x = self.side_exit(bad, true, |em| em.deopt(k(pc as u32, 2), whys));
-            self.f.blocks[x as usize].replay = Some(self.istart);
+            self.replay_guard(bad, pc, whys);
         }
         let mut memo: FxHashMap<(Slot, u8), Vn> = FxHashMap::default();
         let mut slot = move |em: &mut Self, s: Slot, size: u8| -> Vn {
@@ -1775,8 +1758,7 @@ impl<'a> Em<'a, '_> {
                 reg: Some(R::X as u8),
                 ..Why::new(Kind::Txs, pc)
             };
-            let x = self.side_exit(bad, true, |em| em.deopt(k(pc as u32, 2), vec![why]));
-            self.f.blocks[x as usize].replay = Some(self.istart);
+            self.replay_guard(bad, pc, vec![why]);
         }
         let mut umap = FxHashMap::default();
         let stack = is_stack_op(*op);
@@ -1921,12 +1903,8 @@ impl<'a> Em<'a, '_> {
                 let (lo_a, hi_a, iv) = match bytes {
                     [Some(a), Some(b)] => {
                         let w = u16::from_le_bytes([a, b]);
-                        let h = (w & 0xff00) | (w.wrapping_add(1) & 0xff);
-                        let iv = Iv {
-                            lo: w.min(h) as u32,
-                            hi: w.max(h) as u32,
-                        };
-                        (k(w as u32, 2), k(h as u32, 2), iv)
+                        let h = di_pcode::ind_hi(w);
+                        (k(w as u32, 2), k(h as u32, 2), crate::dispatch::ind_iv(w))
                     }
                     _ => {
                         let w = slot(self, Slot::Word, 2);

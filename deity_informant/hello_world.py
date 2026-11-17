@@ -61,14 +61,6 @@ def screen_text(codes) -> str:
     return "".join(out)
 
 
-def build_prg() -> bytes:
-    """Return the program with a 2-byte little-endian PRG load-address header.
-
-    For a real C64: ``LOAD"HELLO",8,1`` then ``SYS 4096`` ($1000).
-    """
-    return bytes([ORG & 0xFF, (ORG >> 8) & 0xFF]) + PROGRAM
-
-
 def _run_vm():
     """Lay PROGRAM at ORG, execute to the RTS; return (vm, cache)."""
     mem = bytearray(0x10000)
@@ -77,12 +69,6 @@ def _run_vm():
     cache = {}
     run_sub(vm, ORG, cache, lift)
     return vm, cache
-
-
-def run() -> bytes:
-    """Execute the program in the VM; return the 13 screen codes at $0400.."""
-    vm, _ = _run_vm()
-    return bytes(vm.mem[0x0400 : 0x0400 + len(EXPECTED)])
 
 
 def main(argv=None) -> int:

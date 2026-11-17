@@ -145,15 +145,18 @@ def lift_many(jobs, progress=True, optimize=True, cycles=False):
 def reference_call(mem, pc, **kw):
     """``run_to_rts`` on the reference interpreter with ``Program.call``'s bus; ``bank`` sees
     memory through a bank map; ``reads`` replays its volatile reads as ``Program.call``."""
-    if "volatile" in kw:
-        kw["volatile"] = _ranges(kw["volatile"])
-    return _native_or_raise().reference_call(mem, pc, **kw)
+    return _reference("reference_call", mem, pc, **kw)
 
 
 def reference_calls(mem, pc, n, **kw):
     """``n`` :func:`reference_call` s of ``pc`` with A 0, each from the registers the last
     left (the first from ``reg``), ``port`` (when given) stored to $01 before each:
     ``(calls, cycles, halt)``, stopping after the first that does not return."""
+    return _reference("reference_calls", mem, pc, n, **kw)
+
+
+def _reference(name, *args, **kw):
+    """The native reference interpreter's ``name`` of ``args``, ``volatile`` normalised."""
     if "volatile" in kw:
         kw["volatile"] = _ranges(kw["volatile"])
-    return _native_or_raise().reference_calls(mem, pc, n, **kw)
+    return getattr(_native_or_raise(), name)(*args, **kw)

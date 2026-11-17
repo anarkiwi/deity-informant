@@ -804,8 +804,7 @@ impl<'a> Cx<'a> {
             CtrlKind::JmpInd => match at(w) {
                 Some(p) => {
                     let lo = self.read(o, cf, p, (0, 0), ch, &mut used)?;
-                    let h = (p & 0xff00) | (p.wrapping_add(1) & 0xff);
-                    let hi = self.read(o, cf, h, (0, 0), ch, &mut used)?;
+                    let hi = self.read(o, cf, di_pcode::ind_hi(p), (0, 0), ch, &mut used)?;
                     match lo.top() || hi.top() {
                         false => Some(vec![(lo.lo | hi.lo << 8) as u16]),
                         true => self.flow(pc, op),

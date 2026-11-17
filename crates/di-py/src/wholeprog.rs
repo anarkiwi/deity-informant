@@ -1,9 +1,10 @@
 //! Whole-program lifting (`di_lift`) for Python: `lift_program`, `lift_many`, `Program`
 //! and the reference `reference_call` with the same bus.
 
+use crate::vn;
 use di_lift::ir::{mem, other, Program as LProgram};
-use di_lift::{Back, Backend, BankMap, Banked, Entry, Exec, Facts, Job, Opts, Outcome, Runner};
-use di_pcode::{reg as R, Bus, Cpu, Halt, Lead, Opc, Space, Vn, RETURN};
+use di_lift::{Back, Backend, BankMap, Entry, Exec, Facts, Job, Opts, Outcome, Runner};
+use di_pcode::{reg as R, Bus, Cpu, Halt, Lead, Opc, RETURN};
 use indicatif::{ProgressBar, ProgressStyle};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -258,36 +259,6 @@ impl Bus for PyBus<'_> {
     }
 }
 
-/// A bus that ignores cycles.
-struct Unclocked<'a, 'b>(&'a mut PyBus<'b>);
-
-impl Bus for Unclocked<'_, '_> {
-    fn read(&mut self, a: u16) -> u8 {
-        self.0.read(a)
-    }
-    fn write(&mut self, a: u16, v: u8) {
-        self.0.write(a, v)
-    }
-    fn fetch(&mut self, a: u16) -> u8 {
-        self.0.fetch(a)
-    }
-    fn lead(&mut self, pc: u16) -> Lead {
-        self.0.lead(pc)
-    }
-    fn boundary(&mut self, cpu: &mut Cpu) -> Option<Halt> {
-        self.0.boundary(cpu)
-    }
-    fn ram_read(&mut self, a: u16) -> u8 {
-        self.0.ram_read(a)
-    }
-    fn ram_write(&mut self, a: u16, v: u8) {
-        self.0.ram_write(a, v)
-    }
-    fn flat(&mut self) -> Option<(*mut u8, *mut u8)> {
-        self.0.flat()
-    }
-}
-
 /// Volatile reads to replay: their values (bytes), or ``(address, value)`` pairs, whose
 /// addresses let the interpreter place an opcode fetch among the machine's throw-away reads.
 struct Replay {
@@ -465,15 +436,8 @@ fn hulls(r: &[di_lift::ir::Reach]) -> HashMap<u16, (u32, u32, u32, u32)> {
 }
 
 /// The inclusive runs of the values of a 256-bit set.
-fn values(b: &di_lift::why::Bits) -> Vec<(u32, u32)> {
-    let mut out: Vec<(u32, u32)> = Vec::new();
-    for v in (0..256u32).filter(|&v| b[v as usize >> 6] >> (v & 63) & 1 == 1) {
-        match out.last_mut() {
-            Some(r) if r.1 + 1 == v => r.1 = v,
-            _ => out.push((v, v)),
-        }
-    }
-    out
+fn values(b: &di_lift::vsa::Bits) -> Vec<(u32, u32)> {
+    di_lift::inclusive_runs(b.values())
 }
 
 /// The name of register `r` (`a`, `x`, `y`, `sp`, a flag `c`, `z`, `i`, `d`, `b`, `v`, `n`).
@@ -524,27 +488,6 @@ fn why<'py>(py: Python<'py>, w: &di_lift::why::Why) -> PyResult<Bound<'py, PyDic
 
 fn entries(e: Vec<PyEntry>) -> Vec<Entry> {
     e.into_iter().map(|(pc, regs)| Entry { pc, regs }).collect()
-}
-
-fn vn<'py>(py: Python<'py>, v: Vn) -> PyResult<Bound<'py, PyAny>> {
-    if v.is_none() {
-        return Ok(py.None().into_bound(py));
-    }
-    let sp = match v.space() {
-        Space::Const => "c",
-        Space::Reg => "r",
-        Space::Unique => "u",
-        Space::Ram => "m",
-    };
-    Ok(PyList::new(
-        py,
-        [
-            sp.into_pyobject(py)?.into_any(),
-            v.off().into_pyobject(py)?.into_any(),
-            v.size().into_pyobject(py)?.into_any(),
-        ],
-    )?
-    .into_any())
 }
 
 /// A lifted program. ``functions`` lists each function's blocks of P-Code ops as
@@ -954,10 +897,8 @@ impl Program {
     #[getter]
     fn regs(&self) -> HashMap<u16, [Vec<u8>; 3]> {
         let vals = |b: &[u64; 4]| -> Vec<u8> {
-            (0..256u32)
-                .filter(|&v| b[(v >> 6) as usize] >> (v & 63) & 1 == 1)
-                .map(|v| v as u8)
-                .collect()
+            let b = di_lift::vsa::Bits::from_words(*b);
+            b.values().map(|v| v as u8).collect()
         };
         self.prog
             .regs
@@ -1479,14 +1420,7 @@ fn reference_run(
     cpu.pc = pc;
     let end = cpu.cycles.saturating_add(max_cycles).saturating_add(1);
     let above = start as i32 - 1;
-    match (bank, clocked) {
-        (Some(b), true) => cpu.run_clocked(&mut Banked::new(b, bus), above, end, ret),
-        (Some(b), false) => {
-            cpu.run_clocked(&mut Banked::new(b, &mut Unclocked(bus)), above, end, ret)
-        }
-        (None, true) => cpu.run_clocked(bus, above, end, ret),
-        (None, false) => cpu.run_clocked(&mut Unclocked(bus), above, end, ret),
-    }
+    di_lift::exec::reference(cpu, bus, bank, clocked, above, end, ret)
 }
 
 /// ``n`` :func:`reference_call` s of ``pc`` (A 0) on ``mem``, each from the registers the last

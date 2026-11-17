@@ -12,6 +12,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..lifter import MODE_LEN, OPS
+from .. import masks
 
 #: Widest address interval treated as bounded; wider accesses are of unknown address.
 BOUNDED = 0x200
@@ -53,7 +54,7 @@ def edge(image, p, q):
                 return [p, q]
             hit = [s for s in ss if through(image, s) == q]
             if hit:
-                return [_last_jump(image, hit[0]), q]
+                return [_chain(image, hit[0])[-2], q]
             below = [s for s in ss if s <= q]
             return [p, max(below) if below else ss[0]]
         if ss[0] == q:
@@ -62,22 +63,20 @@ def edge(image, p, q):
     return [p, q]
 
 
-def _last_jump(image, pc):
-    """The last ``JMP abs`` of the chain from ``pc``."""
-    seen = set()
-    while (n := successors(image, pc)[0]) not in seen and OPS.get(image[n]) == ("JMP", "abs"):
+def _chain(image, pc):
+    """``[pc, ...]``: the chain of ``JMP abs`` from ``pc`` and where it ends (in a cycle, the
+    ``JMP`` it reaches again)."""
+    out, seen = [pc], set()
+    while OPS.get(image[pc]) == ("JMP", "abs") and pc not in seen:
         seen.add(pc)
-        pc = n
-    return pc
+        pc = successors(image, pc)[0]
+        out.append(pc)
+    return out
 
 
 def through(image, pc):
     """Where a chain of ``JMP abs`` from ``pc`` ends."""
-    seen = set()
-    while OPS.get(image[pc]) == ("JMP", "abs") and pc not in seen:
-        seen.add(pc)
-        pc = successors(image, pc)[0]
-    return pc
+    return _chain(image, pc)[-1]
 
 
 def pointer_pairs(image, starts):
@@ -102,12 +101,6 @@ def pointer_pairs(image, starts):
     return pairs
 
 
-def runs(mask):
-    """``[(start, length)]`` of the runs of True in ``mask``."""
-    edges = np.flatnonzero(np.diff(np.concatenate(([0], mask.view(np.int8), [0]))))
-    return [(int(a), int(b - a)) for a, b in zip(edges[::2], edges[1::2])]
-
-
 class Memory:  # pylint: disable=too-many-instance-attributes
     """Regions of ``image`` for the accesses of a program (see the module docstring):
     ``code_span`` names the constant bytes (``CODE_ORG``); ``held`` are the spans of those a
@@ -125,9 +118,7 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         self.pairs_to = {}
         for lo, hi in self.pairs.items():
             self.pairs_to.setdefault(hi, []).append(lo)
-        self.vol = np.zeros(0x10000, dtype=bool)
-        for lo, hi in volatile:
-            self.vol[lo:hi] = True
+        self.vol = masks.mask(volatile)
         self.volatile = [tuple(r) for r in volatile]
         self.loaded, self.sensitive = loaded, sorted(sensitive)
         self.regions, self.owner, self.unknown = [], np.full(0x10000, -1, dtype=np.int32), False
@@ -195,17 +186,11 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         the others, so the ``.c`` names the same regions whatever songs init runs for."""
         for a in stores:
             self.code[a] = False
-        touched = np.zeros(0x10000, dtype=bool)
-        for r in accesses:
-            if r is None or r[1] - r[0] >= BOUNDED:
-                self.unknown = True
-            else:
-                touched[r[0] : r[1] + 1] = True
+        bounded = [r for r in accesses if r is not None and r[1] - r[0] < BOUNDED]
+        self.unknown |= len(bounded) < len(accesses)
+        touched = masks.mask(bounded, True)
         if writes is not None:
-            kept = np.zeros(0x10000, dtype=bool)
-            kept[: self.loaded[1]] = True
-            for lo, hi in [(lo, hi - 1) for lo, hi in self.written] + list(writes):
-                kept[lo : hi + 1] = True
+            kept = masks.mask(writes, True, out=masks.mask([(0, self.loaded[1]), *self.written]))
             # The copies of an instance index one array: the bytes between theirs are no read.
             for lo, hi in joined:
                 kept[lo : hi + 1] |= kept[lo] and kept[hi]
@@ -214,18 +199,16 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         need = constant.copy() if unknown_store else touched & self.code | self.tables
         if self.unknown:
             touched[self.loaded[0] : self.loaded[1]] = True
-        for lo, hi in wide:
-            touched[lo : hi + 1] = True
+        masks.mask(wide, True, out=touched)
         played = touched & ~constant & ~self.vol
         for lo, hi in self.written:
             touched[lo:hi] |= True if state is None else ~state[lo:hi]
         touched &= ~constant & ~self.vol
         for lo, hi in joined:
             need[lo : hi + 1] |= constant[lo : hi + 1] | touched[lo : hi + 1]
-        for lo, hi in sources:
-            touched[lo : hi + 1] = True
+        masks.mask(sources, True, out=touched)
         touched &= ~constant & ~self.vol
-        found = runs(touched)
+        found = masks.runs(touched)
         self.regions = sorted(found, key=lambda r: not played[r[0] : r[0] + r[1]].any())
         for k, (org, n) in enumerate(self.regions):
             self.owner[org : org + n] = k
@@ -250,7 +233,7 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         each widened over the regions it overlaps: any other byte of a gap would be held as data
         the program never reads."""
         spans = []
-        for org, n in runs(need):
+        for org, n in masks.runs(need):
             if spans and (self.owner[spans[-1][1] : org] >= 0).all():
                 spans[-1][1] = org + n
             else:
@@ -271,11 +254,19 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         held = data if store else data | self.constant[lo : hi + 1]
         if hi - lo >= BOUNDED and not wide or not held.all():
             return None
+        return self.holding(lo, hi)
+
+    def holding(self, lo, hi):
+        """The index of the held span ``[lo, hi]`` lies in, else None."""
         return next((j for j, (a, b) in enumerate(self.held) if a <= lo and hi < b), None)
 
-    def span_of(self, org, n):
-        """The index of the held span a region ``(org, n)`` lies in, else None."""
-        return next((j for j, (a, b) in enumerate(self.held) if a <= org and org + n <= b), None)
+    def spans_at(self, idx):
+        """Per address of ``idx``, the index of the held span holding it, else -1."""
+        if not self.held:
+            return np.full(len(idx), -1)
+        a, b = np.array(self.held).T
+        j = np.searchsorted(a, idx, "right") - 1
+        return np.where((j >= 0) & (idx < b[j]), j, -1)
 
     def region(self, lo, hi, wide=False):
         """The region holding all of ``[lo, hi]`` (narrower than ``BOUNDED`` unless ``wide``),
@@ -291,9 +282,7 @@ class Memory:  # pylint: disable=too-many-instance-attributes
             return None
         idx = np.arange(lo, hi + 1)
         own = self.owner[lo : hi + 1]
-        span = np.full(len(idx), -1)
-        for j, (a, b) in enumerate(self.held):
-            span[(idx >= a) & (idx < b) & (self.constant[lo : hi + 1] | (own >= 0))] = j
+        span = np.where(self.constant[lo : hi + 1] | (own >= 0), self.spans_at(idx), -1)
         inside = (idx >= self.loaded[0]) & (idx < self.loaded[1])
         sel = inside | ~inside.any()
         ks, js = np.unique(own[sel & (own >= 0) & (span < 0)]), np.unique(span[sel & (span >= 0)])

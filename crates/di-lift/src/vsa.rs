@@ -176,14 +176,23 @@ pub(crate) const NOREG: u8 = u8::MAX;
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Bits([u64; 4]);
 
+impl FromIterator<u32> for Bits {
+    fn from_iter<I: IntoIterator<Item = u32>>(vs: I) -> Bits {
+        let mut b = Bits::default();
+        vs.into_iter().for_each(|v| b.add(v));
+        b
+    }
+}
+
 impl Bits {
+    pub const ALL: Bits = Bits([!0; 4]);
     /// The set of a 32-byte bitmap: bit `v & 7` of byte `v >> 3` for `v`.
     pub fn from_bitmap(b: &[u8; 32]) -> Bits {
         Bits(std::array::from_fn(|i| {
             u64::from_le_bytes(b[i * 8..i * 8 + 8].try_into().unwrap())
         }))
     }
-    pub(crate) fn from_words(w: [u64; 4]) -> Bits {
+    pub fn from_words(w: [u64; 4]) -> Bits {
         Bits(w)
     }
     pub(crate) fn add(&mut self, v: u32) {
@@ -195,10 +204,13 @@ impl Bits {
     pub(crate) fn or(self, o: Bits) -> Bits {
         Bits(std::array::from_fn(|i| self.0[i] | o.0[i]))
     }
-    fn and(self, o: Bits) -> Bits {
+    pub(crate) fn and(self, o: Bits) -> Bits {
         Bits(std::array::from_fn(|i| self.0[i] & o.0[i]))
     }
-    pub(crate) fn values(self) -> impl Iterator<Item = u32> {
+    pub(crate) fn subset(self, o: Bits) -> bool {
+        self.and(o) == self
+    }
+    pub fn values(self) -> impl Iterator<Item = u32> {
         (0..4u32).flat_map(move |i| {
             let mut w = self.0[i as usize];
             std::iter::from_fn(move || {
@@ -209,7 +221,7 @@ impl Bits {
         })
     }
     /// The values of `iv` (inside a byte).
-    fn range(iv: Iv) -> Bits {
+    pub(crate) fn range(iv: Iv) -> Bits {
         Bits(std::array::from_fn(|i| {
             let (lo, hi) = (iv.lo.max(i as u32 * 64), iv.hi.min(i as u32 * 64 + 63));
             match lo <= hi {
@@ -220,9 +232,7 @@ impl Bits {
     }
     /// The values `v + k` (mod 256).
     fn shifted(self, k: u8) -> Bits {
-        let mut out = Bits::default();
-        self.values().for_each(|v| out.add((v + k as u32) & 0xff));
-        out
+        self.values().map(|v| (v + k as u32) & 0xff).collect()
     }
     /// The set while it holds at most [`CAP`] values, else none (its interval).
     fn capped(self) -> Option<Bits> {
@@ -241,9 +251,7 @@ impl Bits {
         Some(Iv { lo, hi })
     }
     fn filter(self, f: impl Fn(u32) -> bool) -> Bits {
-        let mut out = Bits::default();
-        self.values().filter(|&v| f(v)).for_each(|v| out.add(v));
-        out
+        self.values().filter(|&v| f(v)).collect()
     }
 }
 
@@ -546,12 +554,7 @@ impl St {
     }
     /// The value set of data register `r` where kept: its set, else its one value.
     fn held(&self, r: usize) -> Option<Bits> {
-        self.set[r].or_else(|| {
-            let v = self.env[r].value()?;
-            let mut b = Bits::default();
-            b.add(v);
-            Some(b)
-        })
+        self.set[r].or_else(|| self.env[r].value().map(|v| Bits::from_iter([v])))
     }
     pub(crate) fn vals(&self, r: usize) -> Bits {
         self.set[r].unwrap_or_else(|| {
@@ -559,9 +562,7 @@ impl St {
             if self.kb[r].u & 0xff == 0xff {
                 return Bits::range(iv);
             }
-            let mut b = Bits::default();
-            self.kb[r].values(iv).for_each(|v| b.add(v));
-            b
+            self.kb[r].values(iv).collect()
         })
     }
     /// What data register `r` holds as a tag: its table byte, else its constant.
@@ -1466,8 +1467,7 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
             }
         }
         (op, Flow::Next(_))
-            if stack_delta(op).is_none()
-                || acc.iter().any(|a| a.store && a.addr.meets(0x100, 0x200)) =>
+            if stack_delta(op).is_none() || acc.iter().any(|a| a.store && a.addr.page1()) =>
         {
             (s.push, s.pv, s.above, s.xsp) = ([None; 3], [None; 3], [None; 2], None)
         }
@@ -1812,11 +1812,7 @@ fn eval_sets(ops: &[Op], b: [Option<u8>; 2], st: &St, written: u32) -> [Option<B
 /// The address the one store of template `t` (operand bytes `b`) writes with its index
 /// registers zero, when that fixes it.
 fn store_base(t: &Template, b: [Option<u8>; 2]) -> Option<u16> {
-    let mut env = TOP_ENV;
-    env[di_pcode::reg::X] = Iv::exact(0);
-    env[di_pcode::reg::Y] = Iv::exact(0);
-    let mut acc = Vec::new();
-    crate::analysis::absint(t.ops(), b, &mut env, &mut acc);
+    let acc = crate::dispatch::indexed(t, b, None);
     let [a] = acc
         .iter()
         .filter(|a| a.store && !a.dummy)
@@ -2787,6 +2783,12 @@ impl Pass<'_> {
 /// Address hulls of loads and of their bases by `(pc, opcode, access index)` ([`reach`]).
 pub type Hulls = FxHashMap<(u16, u8, usize), (Iv, Iv)>;
 
+/// Narrows `h`'s hulls of `key` by `(a, b)` (each taken alone where they do not meet).
+pub(crate) fn prove(h: &mut Hulls, key: (u16, u8, usize), (a, b): (Iv, Iv)) {
+    let e = h.entry(key).or_insert((a, b));
+    *e = (meet(e.0, a).unwrap_or(a), meet(e.1, b).unwrap_or(b));
+}
+
 /// Per instruction start the value sets of `A`, `X` and `Y`, bit `v` for `v`.
 pub type Regs = FxHashMap<u16, [[u64; 4]; DATA]>;
 
@@ -2840,14 +2842,7 @@ pub(crate) fn data_runs(given: &Given, insn: &FixedBitSet) -> Vec<(u32, u32)> {
         data.insert_range(hi as usize..top.max(hi as usize));
     }
     data.difference_with(insn);
-    let mut runs: Vec<(u32, u32)> = Vec::new();
-    for a in data.ones().map(|a| a as u32) {
-        match runs.last_mut() {
-            Some(r) if r.1 == a => r.1 += 1,
-            _ => runs.push((a, a + 1)),
-        }
-    }
-    runs
+    crate::runs(data.ones().map(|a| a as u32))
 }
 
 /// Address hulls of the loads through pointers and cell operands and of their bases (the
@@ -3403,7 +3398,7 @@ fn ram(given: &Given) -> Vec<(u32, u32)> {
     let mut out = Vec::new();
     if let Some((mut lo, hi)) = given.loaded {
         let mut vol = given.volatile.to_vec();
-        vol.push((0x100, 0x200));
+        vol.push(crate::ptr::PAGE1);
         vol.sort_unstable();
         for (a, b) in vol.into_iter().chain([(hi, hi)]) {
             if a.min(hi) > lo {

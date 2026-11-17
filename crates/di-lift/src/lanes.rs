@@ -6,7 +6,7 @@
 //! packs only the bits its consumers keep. The slot keeps its packed definition for what reads
 //! it as the stack byte: deopts and the memory image.
 
-use crate::ir::{k, mask, reg, tmp, Function, LOp, NREG};
+use crate::ir::{k, key, mask, reg, tmp, Function, LOp, NREG};
 use di_pcode::{Opc, Space, Vn};
 use fixedbitset::FixedBitSet;
 use rustc_hash::FxHashMap;
@@ -36,8 +36,7 @@ struct Uses {
 
 /// Whether register `r` of `f` holds 0 or 1: a flag or a lane.
 fn one_bit(f: &Function, r: u32) -> bool {
-    let lanes = f.lane0();
-    (8..15).contains(&r) || (lanes..lanes + f.nlanes).contains(&r)
+    (8..15).contains(&r) || f.lanes().contains(&r)
 }
 
 /// The bits of `v` in a block where `dec` decomposes temporaries and `ver` counts register
@@ -137,7 +136,6 @@ fn open_temps(f: &Function) -> FixedBitSet {
 fn demand(f: &Function, b: usize, o: usize, s: u32, open: &FixedBitSet) -> u32 {
     let ops = &f.blocks[b].ops;
     let mut dm: FxHashMap<u32, u32> = FxHashMap::default();
-    let key = |v: Vn| (v.space() as u32) << 16 | v.off();
     let out = |v: Vn| match v.space() {
         Space::Unique if !open.contains(v.off() as usize) => 0,
         _ => mask(v.size()),
@@ -210,14 +208,7 @@ fn webs(f: &Function, u: &Uses) -> Vec<Option<(Vec<usize>, Vec<usize>)>> {
             }
         }
     }
-    let mut up: Vec<usize> = (0..=entry).collect();
-    fn root(up: &mut [usize], mut x: usize) -> usize {
-        while up[x] != x {
-            up[x] = up[up[x]];
-            x = up[x];
-        }
-        x
-    }
+    let mut up = crate::Uf::new(entry + 1);
     let reach: Vec<Vec<usize>> = u
         .reads
         .iter()
@@ -228,18 +219,17 @@ fn webs(f: &Function, u: &Uses) -> Vec<Option<(Vec<usize>, Vec<usize>)>> {
         .collect();
     for r in &reach {
         for w in r.windows(2) {
-            let (x, y) = (root(&mut up, w[0]), root(&mut up, w[1]));
-            up[x] = y;
+            up.union(w[0], w[1]);
         }
     }
     let mut by: FxHashMap<usize, (Vec<usize>, Vec<usize>)> = FxHashMap::default();
     for (j, r) in reach.iter().enumerate() {
         if let Some(&d) = r.first() {
-            by.entry(root(&mut up, d)).or_default().1.push(j);
+            by.entry(up.find(d)).or_default().1.push(j);
         }
     }
     for i in 0..=entry {
-        let x = root(&mut up, i);
+        let x = up.find(i);
         if let Some(w) = by.get_mut(&x) {
             w.0.push(i);
         }

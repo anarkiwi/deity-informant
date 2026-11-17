@@ -165,12 +165,7 @@ fn ind_ptr(img: &[u8; 0x10000], g: &analysis::Graph, pc: u16) -> (Iv, bool) {
         img[pc.wrapping_add(1) as usize],
         img[pc.wrapping_add(2) as usize],
     ]);
-    let h = (w & 0xff00) | (w.wrapping_add(1) & 0xff);
-    let iv = Iv {
-        lo: w.min(h) as u32,
-        hi: w.max(h) as u32,
-    };
-    (iv, false)
+    (dispatch::ind_iv(w), false)
 }
 
 /// Marks the accesses a static lift keeps out of the zones (page 1 and the volatile pages):
@@ -224,7 +219,8 @@ fn zone_checks(g: &mut analysis::Graph, free: &FxHashMap<u16, Vec<u8>>) {
                     && !a.windowed(win)
                     && zones.iter().any(|&(lo, hi)| a.addr.meets(lo, hi))
             };
-            let step = index_reads(v.op);
+            // An indexed access may cross a page.
+            let step = u32::from(ptr::index_regs(v.op) != 0);
             let clear = |p: u32| (p..=p + step).all(|q| !in_zone(q & 0xff));
             // An address set no page of which, nor the page before (its throw-away read's),
             // is a zone's.
@@ -284,37 +280,45 @@ fn byte_bounds(g: &analysis::Graph, free: &FxHashMap<u16, Vec<u8>>) -> Vec<Optio
         if ac.addr.value().is_none() || ac.val.hi - ac.val.lo >= 0xff {
             held[ac.addr.lo as usize..=ac.addr.hi.min(0xffff) as usize].fill(None);
         } else if let Some(h) = held[ac.addr.lo as usize].as_mut() {
-            *h = Iv {
-                lo: h.lo.min(ac.val.lo),
-                hi: h.hi.max(ac.val.hi),
-            };
+            *h = vsa::hull(*h, ac.val);
         }
     }
     held
 }
 
-/// 1 when opcode `op`'s template reads `X` or `Y` (an indexed access may cross a page).
-fn index_reads(op: u8) -> u32 {
-    let ops = di_pcode::Template::of(op).ops();
-    u32::from(ops.iter().flat_map(|o| o.ins).any(|v| {
-        v.space() == di_pcode::Space::Reg
-            && matches!(v.off() as usize, di_pcode::reg::X | di_pcode::reg::Y)
-    }))
-}
-
 /// Whether variant `v` at `pc` has an access other than a push or pull that may reach page 1
 /// and cannot be checked at its instruction boundary, or jumps through a fixed page-1 pointer.
 fn unchecked(img: &[u8; 0x10000], g: &analysis::Graph, pc: u16, v: &analysis::Var) -> bool {
-    let acc = !is_stack_op(v.op)
-        && v.acc
-            .iter()
-            .enumerate()
-            .any(|(i, a)| !a.dummy && a.page1(&g.prot.win) && page1_check(v.op, i) == Check::No);
-    let ind = matches!(v.flow, Flow::JmpInd(_)) && {
-        let (iv, cell) = ind_ptr(img, g, pc);
-        !cell && iv.meets(0x100, 0x200)
-    };
-    acc || ind
+    let mut acc = v.acc.iter().enumerate();
+    acc.any(|(i, a)| page1_access(g, v, i, a, false)) || page1_ind(img, g, pc, v, false).is_some()
+}
+
+/// Whether access `i` (`a`) of variant `v`, not a push or pull, may reach page 1 and is
+/// `seen` there or cannot be checked at its instruction boundary.
+fn page1_access(
+    g: &analysis::Graph,
+    v: &analysis::Var,
+    i: usize,
+    a: &analysis::Access,
+    seen: bool,
+) -> bool {
+    !is_stack_op(v.op)
+        && !a.dummy
+        && a.page1(&g.prot.win)
+        && (seen || page1_check(v.op, i) == Check::No)
+}
+
+/// The pointer interval of variant `v` at `pc` when it jumps through a pointer that may be in
+/// page 1, fixed or (when `seen` there) in cells.
+fn page1_ind(
+    img: &[u8; 0x10000],
+    g: &analysis::Graph,
+    pc: u16,
+    v: &analysis::Var,
+    seen: bool,
+) -> Option<Iv> {
+    let (iv, cell) = matches!(v.flow, Flow::JmpInd(_)).then(|| ind_ptr(img, g, pc))?;
+    (iv.page1() && (!cell || seen)).then_some(iv)
 }
 
 /// Per access of plan `p` other than a push or pull that may reach page 1 and reached it in
@@ -328,17 +332,11 @@ fn unguarded<'a>(
 ) -> impl Iterator<Item = (Iv, H)> + 'a {
     p.nodes.iter().flat_map(move |(&(pc, h, _), node)| {
         g.vars[&pc].iter().zip(&node.arms).flat_map(move |(v, a)| {
-            let acc = a.acc.iter().enumerate().filter(move |&(i, ac)| {
-                !is_stack_op(v.op)
-                    && !ac.dummy
-                    && ac.page1(&g.prot.win)
-                    && (seen.contains_key(&pc) || page1_check(v.op, i) == Check::No)
-            });
-            let ind = matches!(v.flow, Flow::JmpInd(_))
-                .then(|| ind_ptr(img, g, pc))
-                .filter(|&(iv, cell)| iv.meets(0x100, 0x200) && (!cell || seen.contains_key(&pc)));
+            let hit = seen.contains_key(&pc);
+            let acc =
+                (a.acc.iter().enumerate()).filter(move |&(i, ac)| page1_access(g, v, i, ac, hit));
             acc.map(move |(i, ac)| p.narrowed(seen, pc, v.op, i, ac.addr).unwrap_or(ac.addr))
-                .chain(ind.map(|x| x.0))
+                .chain(page1_ind(img, g, pc, v, hit))
                 .map(move |iv| (iv, h))
         })
     })
@@ -594,16 +592,43 @@ fn aliases(g: &analysis::Graph, alias: &[(u16, u16, u16)]) -> FxHashMap<u16, (u1
         .collect()
 }
 
-/// Runs `[lo, hi)` of the bytes of `b`.
-fn runs(b: &FixedBitSet) -> Vec<(u32, u32)> {
+/// Union-find with path halving: [`Uf::union`] roots `a`'s class at `b`'s root.
+pub(crate) struct Uf(Vec<usize>);
+
+impl Uf {
+    pub(crate) fn new(n: usize) -> Self {
+        Uf((0..n).collect())
+    }
+    pub(crate) fn find(&mut self, mut x: usize) -> usize {
+        while self.0[x] != x {
+            self.0[x] = self.0[self.0[x]];
+            x = self.0[x];
+        }
+        x
+    }
+    pub(crate) fn union(&mut self, a: usize, b: usize) {
+        let (x, y) = (self.find(a), self.find(b));
+        self.0[x] = y;
+    }
+}
+
+/// Runs `[lo, hi)` of the strictly ascending values `vs`.
+pub fn runs(vs: impl IntoIterator<Item = u32>) -> Vec<(u32, u32)> {
     let mut runs: Vec<(u32, u32)> = Vec::new();
-    for a in b.ones().map(|a| a as u32) {
+    for a in vs {
         match runs.last_mut() {
             Some(r) if r.1 == a => r.1 = a + 1,
             _ => runs.push((a, a + 1)),
         }
     }
     runs
+}
+
+/// Inclusive runs `[lo, hi]` of the strictly ascending values `vs`.
+pub fn inclusive_runs(vs: impl IntoIterator<Item = u32>) -> Vec<(u32, u32)> {
+    let mut v = runs(vs);
+    v.iter_mut().for_each(|r| r.1 -= 1);
+    v
 }
 
 /// Pointer-load hulls by `(pc, opcode, access index)` as sorted [`ir::Reach`]es.
@@ -633,7 +658,7 @@ fn reach_bounds(
     let Some((lo, end)) = held else {
         return reach::Bounds::default();
     };
-    let inside = |h: Iv| lo <= h.lo && h.hi < end && !volatile.iter().any(|&(a, b)| h.meets(a, b));
+    let inside = |h: Iv| objects::serves((lo, end), volatile, h);
     let mut targets = FxHashSet::default();
     for (&pc, vs) in &g.vars {
         for v in vs.iter().filter(|v| !is_stack_op(v.op)) {
@@ -683,11 +708,7 @@ fn reach_bounds(
             false => Iv { lo: h[0], hi: h[1] },
         };
         let b = Iv { lo: h[2], hi: h[3] };
-        let e = g.proven.entry(key).or_insert((a, b));
-        *e = (
-            vsa::meet(e.0, a).unwrap_or(a),
-            vsa::meet(e.1, b).unwrap_or(b),
-        );
+        vsa::prove(&mut g.proven, key, (a, b));
     }
     out
 }
@@ -753,12 +774,8 @@ pub fn lift_banked(
             &seeds,
             &free,
         );
-        for (key, (a, b)) in proven {
-            let h = g.proven.entry(key).or_insert((a, b));
-            *h = (
-                vsa::meet(h.0, a).unwrap_or(a),
-                vsa::meet(h.1, b).unwrap_or(b),
-            );
+        for (key, h) in proven {
+            vsa::prove(&mut g.proven, key, h);
         }
         g.objs = objs;
         g.prot = ptr::protect(&g, facts, volatile, &zones, &roots, bank);
@@ -835,7 +852,6 @@ pub fn lift_banked(
         let mut constcode = g.code.clone();
         constcode.difference_with(&g.cells);
         constcode.difference_with(&g.rom_code);
-        let page1 = |iv: Iv| iv.meets(0x100, 0x200);
         // Per function whether a load or store other than a push or pull may reach page 1.
         let touches: Vec<(bool, bool)> = plans
             .iter()
@@ -848,7 +864,7 @@ pub fn lift_banked(
                                 *(if a.store { &mut store } else { &mut load }) = true;
                             }
                         }
-                        load |= matches!(v.flow, Flow::JmpInd(_)) && page1(ind_ptr(img, &g, pc).0);
+                        load |= matches!(v.flow, Flow::JmpInd(_)) && ind_ptr(img, &g, pc).0.page1();
                     }
                 }
                 (load, store)
@@ -923,19 +939,17 @@ pub fn lift_banked(
     // restore those of returned frames, so pushes also store where a load, whatever the
     // facts saw and the pointer windows assume, may reach page 1: a read of them is then
     // exact. A static lift (declared entry SP) relies on its windows and zone checks.
-    let page1 = |iv: Iv| iv.meets(0x100, 0x200);
     let reads_page1 = |a: &analysis::Access| match opts.entry_sp {
         Some(_) => a.page1(&g.prot.win),
-        None => page1(a.addr),
+        None => a.addr.page1(),
     };
-    let page1 = |iv: Iv| iv.meets(0x100, 0x200);
     let shadow = private
         && plans.iter().any(|p| {
             p.pcs().any(|pc| {
                 g.vars[&pc].iter().any(|v| {
                     !is_stack_op(v.op)
                         && (v.acc.iter().any(|a| !a.dummy && !a.store && reads_page1(a))
-                            || matches!(v.flow, Flow::JmpInd(_)) && page1(ind_ptr(img, &g, pc).0))
+                            || matches!(v.flow, Flow::JmpInd(_)) && ind_ptr(img, &g, pc).0.page1())
                 })
             })
         });
@@ -1141,8 +1155,8 @@ pub fn lift_banked(
             c.ones().map(|a| (a as u16, img[a])).collect()
         },
         volatile: volatile.to_vec(),
-        written: runs(&g.written),
-        stored: runs(&analysis::stored(&g)),
+        written: runs(g.written.ones().map(|a| a as u32)),
+        stored: runs(analysis::stored(&g).ones().map(|a| a as u32)),
         stores: {
             let mut v: Vec<(u16, u32, u32)> = (g.vars.iter())
                 .filter(|(pc, _)| planned.contains(**pc as usize))
@@ -1190,16 +1204,7 @@ pub fn lift_banked(
             let mut v: Vec<ir::AddrSet> = g
                 .addr_sets
                 .iter()
-                .map(|(&(pc, st), a)| {
-                    let mut runs: Vec<(u32, u32)> = Vec::new();
-                    for &x in a {
-                        match runs.last_mut() {
-                            Some(r) if r.1 == x as u32 => r.1 += 1,
-                            _ => runs.push((x as u32, x as u32 + 1)),
-                        }
-                    }
-                    (pc, st, runs)
-                })
+                .map(|(&(pc, st), a)| (pc, st, runs(a.iter().map(|&x| x as u32))))
                 .collect();
             v.sort_unstable();
             v

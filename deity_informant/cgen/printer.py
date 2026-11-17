@@ -16,9 +16,10 @@ from dataclasses import dataclass, field, replace
 import networkx as nx
 import numpy as np
 
+from .. import masks
 from ..lifter import MODE_LEN, OPS
 from .mlir import Op
-from .csyntax import declare, drop_unread, ends_in_jump, names_in, render, walk
+from .csyntax import declare, drop_unread, ends_in_jump, hexes, names_in, render, walk
 from . import regions
 from .state import INDEXED, INIT, POINTER, UNKNOWN, State, classify
 from .structure import Conds, Graph, Structurer, new_ids
@@ -243,6 +244,11 @@ def _resolve(sub, v):
     while v in sub:
         v = sub[v]
     return v
+
+
+def is_write(o):
+    """Whether ``o`` writes memory: a store or an ``io_write`` call."""
+    return o.name == "memref.store" or o.prop("callee") == "@io_write"
 
 
 def _add16(name, pc, x, y):
@@ -1964,10 +1970,6 @@ def _read_only(st, found, seen):
     )
 
 
-def _hex(data):
-    return ", ".join(f"0x{b:02X}" for b in data)
-
-
 def _types(text):
     """The types of a result list ``(i8, i16)`` or ``i8``."""
     text = text.strip()
@@ -2225,29 +2227,19 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         text = f"{sym} + {lit(off, 16).text}" if off else sym
         return E(text, 12 if off else 16, "+" if off else "", c, c, True)
 
-    def split(self, a):
-        """``(constant, rest)`` of an address value: ``rest`` is None or a value."""
-        return self.f.split(a)
-
     def indexed(self, o):
         """``(base, index)`` texts of the address of access ``o`` when it is a 16-bit value
         plus a zero-extended byte, else None."""
-        bi = self.base_index(o)
+        bi = self.f.base_index(o)
         return None if bi is None else (self.addr(bi[0]).text, self.ex(bi[1]).text)
-
-    def base_index(self, o):
-        """``(base, index)`` values of the address of access ``o`` when it is a 16-bit value
-        plus a zero-extended byte, else None."""
-        return self.f.base_index(o)
 
     def base_tests(self, o, how):
         """Per choice of a pointer access ``o`` over regions and spans (``how``), a test of its
         base alone, when the base determines the choice: the bases that reach each choice's
         part of the address set (its addresses less the index's interval) are disjoint
         intervals, so the test holds for every index the base is used with."""
-        bi = self.base_index(o)
-        store = o.name == "memref.store" or o.prop("callee") == "@io_write"
-        runs = self.mod.fx(self.f.name).addr_sets.get((o.pc, store))
+        bi = self.f.base_index(o)
+        runs = self.mod.addr_set(self.f.name, o)
         if bi is None or not runs:
             return None
         ylo, yhi = self.f.iv(bi[1])
@@ -2276,7 +2268,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
 
     def addr(self, a):
         """The address value ``a`` with its constant relocated (a zero-page one as is)."""
-        c, rest = self.split(a)
+        c, rest = self.f.split(a)
         if self.f.width(a) < 16 and rest is not None:
             r = self.ex(rest) if c == 0 else binary("+", 12, lit(c, 8), self.ex(rest), 8)
             return clean(r, 8)
@@ -2314,8 +2306,8 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             return ("io",)
         if mem.is_code(lo, hi):
             return ("code",)
-        store = o.name == "memref.store" or o.prop("callee") == "@io_write"
-        found = self.mod.owners(self.mod.fx(self.f.name).addr_sets.get((o.pc, store)), not store)
+        store = is_write(o)
+        found = self.mod.owners(self.mod.addr_set(self.f.name, o), not store)
         if found:
             regs, spans = found
             if len(regs) + len(spans) == 1:
@@ -2351,7 +2343,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
     def pointer(self, o):
         """Whether access ``o``'s address is a constant plus a value no byte extends: a
         pointer, not an indexed constant base."""
-        rest = self.split(self.f.address(o))[1]
+        rest = self.f.split(self.f.address(o))[1]
         d = self.f.defs.get(rest)
         byte = d is not None and d.name == "arith.extui" and self.f.width(d.args[0]) == 8
         return rest is not None and self.f.width(rest) == 16 and not byte
@@ -2377,7 +2369,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         that access ``o`` addresses: the address modulo its width (16 bits, or 8 for a
         zero-page one), as the 6502 wraps it, less the origin."""
         name = f"C{k}" if held else f"R{k}"
-        c, rest = self.split(self.f.address(o))
+        c, rest = self.f.split(self.f.address(o))
         if rest in self.f.kptrs:
             p = self.ex(rest)
             return E(f"{p.text}[{lit(c, 8).text}]", 16, "", 0, 255, False, True, p.refs)
@@ -2399,7 +2391,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         org, n = mem.held[k] if held else mem.regions[k]
         n = n - org if held else n
         sym = E(f"{name}_ORG", lo=org, hi=org, uns=True)
-        c, rest = self.split(a)
+        c, rest = self.f.split(a)
         top = (1 << f.width(a)) - 1
         c &= top
         deep, parts = self.terms(a) if top == 0xFFFF else (c, [])
@@ -2466,7 +2458,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             return self.checked(o, how[2], a)
         if how[0] == "bounded":
             # A constant base plus a byte inside one held span: its bounds-checked reader.
-            if not how[1] and self.base_index(o) is not None:
+            if not how[1] and self.f.base_index(o) is not None:
                 return self.checked(o, how[2][0], a)
             ((test, el),) = self.mod.choices(how[1], how[2], a.text, self.indexed(o))
             self.mod.helpers.add("oob_rd")
@@ -2506,8 +2498,8 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             self.mod.var_spans.add(j)
         if not sure:
             self.mod.checked.add(j)
-        bi = self.base_index(o)
-        c, rest = self.split(self.f.address(o))
+        bi = self.f.base_index(o)
+        c, rest = self.f.split(self.f.address(o))
         if bi is not None:
             at, idx = bi[0], self.ex(bi[1])
         elif rest is not None and self.f.width(rest) == 16 and 0 < c < 0x100:
@@ -2720,7 +2712,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         """The value of a constant store ``o`` that, with a constant store to the other byte
         of a pointer pair in its block, writes an address: relative to its region."""
         f = self.f
-        c, a = f.const_of(o.args[0]), self.split(f.address(o))
+        c, a = f.const_of(o.args[0]), self.f.split(f.address(o))
         if c is not None and a[1] is not None:
             return self.stack_halves(o, c)
         if c is None or a[1] is not None:
@@ -2732,7 +2724,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         cells = {}
         for j, x in enumerate(blk.ops):
             if x.name == "memref.store" and x.args[-2] in f.globals:
-                xa = self.split(f.address(x))
+                xa = self.f.split(f.address(x))
                 if xa[1] is None:
                     cells.setdefault(xa[0], []).append((j, f.const_of(x.args[0])))
         found = []
@@ -3293,6 +3285,17 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 self.funcs.append(Func(o, self))
         self.by_name = {f.name: f for f in self.funcs}
 
+    def copies_of(self, name, pc):
+        """The instruction PCs of every copy of instruction ``pc`` of function ``name``."""
+        return [q for q in self.copy_pcs.get(name, {}).get(pc, [pc]) if q is not None]
+
+    def addr_set(self, name, o, calls=True):
+        """The address set of access ``o`` of function ``name`` (a load's, else a write's,
+        :func:`is_write`; None for an I/O call unless ``calls``)."""
+        if not calls and o.name == "func.call":
+            return None
+        return self.fx(name).addr_sets.get((o.pc, is_write(o)))
+
     def fx(self, name):
         """The facts of the lift function ``name`` comes from: ``sets``, ``regs``, ``reach``,
         ``proven``, ``bounded`` and ``addr_sets``."""
@@ -3305,15 +3308,12 @@ class Module:  # pylint: disable=too-many-instance-attributes
         sources of init's copies. What they hold is never observed: a return address a callee
         pulls into a pointer whose reads are forwarded, a vector the lift resolved its
         transfers through, the operand cells of a computed jump that switches on its index."""
-        read = np.zeros(0x10000, dtype=bool)
-        for lo, hi in self.held_runs:
-            read[lo : hi + 1] = True
+        read = masks.mask(self.held_runs, True)
         stores = []
         for f in self.funcs:
             for o, (lo, hi), per in f.accesses():
                 if o.name == "memref.load":
-                    for x, y in per or [(lo, hi)]:
-                        read[x : y + 1] = True
+                    masks.mask(per or [(lo, hi)], True, out=read)
                 elif o.name == "memref.store":
                     stores.append((f, o, per or [(lo, hi)]))
         lo, hi = self.mem.code_span
@@ -3437,7 +3437,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         (every copy's, constant code) loads it into a register (``LDA``, ``LDX``, ``LDY``,
         ``LAX``): that register's values at the next instruction start (:meth:`reg_iv`), else
         None."""
-        pcs = [q for q in self.copy_pcs.get(f.name, {}).get(o.pc, [o.pc]) if q is not None]
+        pcs = self.copies_of(f.name, o.pc)
         ops = {OPS.get(self.mem.image[q], ("", "imm")) for q in pcs}
         if len(ops) != 1 or not all(self.fixed[q] for q in pcs):
             return None
@@ -3466,7 +3466,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.results_ivs[key] = None
         out = []
         for o in (o for o in f.walk() if o.name == "func.return"):
-            pcs = [q for q in self.copy_pcs.get(name, {}).get(o.pc, [o.pc]) if q is not None]
+            pcs = self.copies_of(name, o.pc)
             rts = pcs and all(self.fixed[q] and self.mem.image[q] in (0x40, 0x60) for q in pcs)
             r = self.reg_iv(name, pcs, j) if rts else None
             d = f.defs.get(o.args[j])
@@ -3480,7 +3480,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
     def run_of(self, f, o):
         """The run ``(lo, hi)`` (inclusive) of data bytes store ``o`` of function ``f`` writes
         when the lift bounds it to the array holding its base (every copy's), else None."""
-        pcs = [q for q in self.copy_pcs.get(f.name, {}).get(o.pc, [o.pc]) if q is not None]
+        pcs = self.copies_of(f.name, o.pc)
         runs = [self.fx(f.name).bounded.get(q) for q in pcs]
         if o.name != "memref.store" or not runs or None in runs:
             return None
@@ -3507,8 +3507,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
             return per, INDEXED
         if hi - lo < regions.BOUNDED:
             return [(lo, hi)], INDEXED
-        store = o.name == "memref.store" or o.prop("callee") == "@io_write"
-        aset = self.fx(f.name).addr_sets.get((o.pc, store))
+        aset = self.addr_set(f.name, o)
         if aset:
             return [(a, b - 1) for a, b in aset], POINTER
         hull = self.reach_of(f, o) if o.name == "memref.load" else None
@@ -3522,7 +3521,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         hull = (
             kind == POINTER
             and o.name == "memref.load"
-            and not self.fx(f.name).addr_sets.get((o.pc, False))
+            and not self.addr_set(f.name, o)
             and self.reach_of(f, o) is not None
         )
         if o.name == "func.call" or not (hull or kind == UNKNOWN):
@@ -3563,8 +3562,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 if self.mapped(f, o, runs, kind):
                     f.aware.add(id(o))
                     if o.name == "memref.load":
-                        for x, y in runs:
-                            seen[x : y + 1] = True
+                        masks.mask(runs, True, out=seen)
                     continue
                 for x, y in runs:
                     sel = why[x : y + 1]
@@ -3661,7 +3659,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         out = [f"#define {self.var_name(a)}_INIT 0x{img[a]:02X}" for a in self.state.scalars]
         for s, (bases, fields) in enumerate(self.state.structs):
             out += [
-                f"#define V{s}_f{d:02X}_INIT {_hex(img[(int(b) + d) & 0xFFFF] for b in bases)}"
+                f"#define V{s}_f{d:02X}_INIT {hexes(img[(int(b) + d) & 0xFFFF] for b in bases)}"
                 for d in fields
             ]
         return out
@@ -3690,9 +3688,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 # it, through one span holding them, as the image holds the bytes between; a
                 # run of the set as wide as an access of unknown address touches its bytes.
                 store = o.name == "memref.store"
-                aset = (
-                    self.fx(f.name).addr_sets.get((o.pc, store)) if o.name != "func.call" else None
-                )
+                aset = self.addr_set(f.name, o, calls=False)
                 a0, a1 = self.mem.loaded
                 inside = all(a0 <= a < b <= a1 for a, b in aset or ())
                 if not store and not inside and not any(self.mem.code[a:b].any() for a, b in aset):
@@ -3719,7 +3715,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
                     stores.add(lo)
                 if per and len(set(per)) > 1 and hi - lo < regions.BOUNDED:
                     joined.append((lo, hi))
-                write = o.name == "memref.store" or o.prop("callee") == "@io_write"
+                write = is_write(o)
                 unknown |= write and hi - lo >= regions.BOUNDED
                 if write and hi - lo < regions.BOUNDED:
                     writes.append((lo, hi))
@@ -3755,12 +3751,9 @@ class Module:  # pylint: disable=too-many-instance-attributes
         idx = np.concatenate([np.arange(lo, hi) for lo, hi in runs]) & 0xFFFF
         reg = mem.owner[idx]
         whole = held or bool((reg >= 0).all())
-        for j, (a, b) in enumerate(mem.held if whole else ()):
-            if a <= idx.min() and idx.max() < b:
-                return (), (j,)
-        span = np.full(len(idx), -1)
-        for j, (a, b) in enumerate(mem.held if held else ()):
-            span[(idx >= a) & (idx < b) & mem.constant[idx]] = j
+        if whole and (j := mem.holding(idx.min(), idx.max())) is not None:
+            return (), (j,)
+        span = np.where(held & mem.constant[idx], mem.spans_at(idx), -1)
         if ((reg < 0) & (span < 0)).any():
             return None
         return tuple(int(k) for k in np.unique(reg[reg >= 0])), tuple(
@@ -3810,9 +3803,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         may = self.stored()
         if may is not None:
             may |= self.mem.vol | self.init_stored
-            may[0x100:0x200] = True
-            for lo, hi in self.mem.written:
-                may[lo:hi] = True
+            masks.mask([(0x100, 0x200), *self.mem.written], out=may)
         self.free = None if may is None else ~may
         return self.free
 
@@ -3823,13 +3814,10 @@ class Module:  # pylint: disable=too-many-instance-attributes
         may = np.zeros(0x10000, dtype=bool)
         for f in self.funcs:
             for o, iv, per in f.accesses():
-                if o.name != "memref.store" and o.prop("callee") != "@io_write":
+                if not is_write(o):
                     continue
-                aset = (
-                    self.fx(f.name).addr_sets.get((o.pc, True)) if o.name != "func.call" else None
-                )
-                for lo, hi in aset or ():
-                    may[lo:hi] = True
+                aset = self.addr_set(f.name, o, calls=False)
+                masks.mask(aset or (), out=may)
                 if aset:
                     continue
                 run = self.run_of(f, o)

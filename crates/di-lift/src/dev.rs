@@ -86,10 +86,9 @@ impl Devices {
         }
         let w = if r.latch != 0 { val(c) } else { None };
         let w = w.unwrap_or(full);
-        let mut bases = Bits::default();
-        for v in w.lo..=w.hi.min(0xff) {
-            bases.add(v & r.latch as u32);
-        }
+        let bases: Bits = (w.lo..=w.hi.min(0xff))
+            .map(|v| v & r.latch as u32)
+            .collect();
         for b in bases.values() {
             for x in subs(r.live) {
                 out.add(b | r.ones as u32 | x as u32);
@@ -104,9 +103,7 @@ mod tests {
     use super::*;
 
     fn bits(vs: impl IntoIterator<Item = u32>) -> Bits {
-        let mut b = Bits::default();
-        vs.into_iter().for_each(|v| b.add(v));
-        b
+        vs.into_iter().collect()
     }
 
     #[test]

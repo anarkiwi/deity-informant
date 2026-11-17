@@ -254,7 +254,7 @@ impl Plan {
     /// memory: in a callee any page-1 byte; in an outermost plan one of `slots` above SP, or
     /// anywhere below the entry once SP may be set (a later pull may read it).
     pub fn kept(&self, slots: &FixedBitSet, h: H, addr: Iv) -> bool {
-        if !addr.meets(0x100, 0x200) {
+        if !addr.page1() {
             return false;
         }
         let (true, H::Known(h)) = (self.top, h) else {
@@ -396,10 +396,7 @@ impl Plan {
                     let new = match env[j] {
                         None => x,
                         Some(o) => std::array::from_fn(|r| {
-                            let m = Iv {
-                                lo: o[r].lo.min(x[r].lo),
-                                hi: o[r].hi.max(x[r].hi),
-                            };
+                            let m = crate::vsa::hull(o[r], x[r]);
                             if m != o[r] && done[j] {
                                 TOP_ENV[r]
                             } else {
@@ -1169,14 +1166,8 @@ fn plan_inst(g: &Graph, ci: u32, c: &Arc<Class>) -> Plan {
         let mut acc = v.acc.clone();
         for q in n.pcs.iter().flatten() {
             for (a, b) in acc.iter_mut().zip(&g.vars[q][0].acc) {
-                a.addr = Iv {
-                    lo: a.addr.lo.min(b.addr.lo),
-                    hi: a.addr.hi.max(b.addr.hi),
-                };
-                a.val = Iv {
-                    lo: a.val.lo.min(b.val.lo),
-                    hi: a.val.hi.max(b.val.hi),
-                };
+                a.addr = crate::vsa::hull(a.addr, b.addr);
+                a.val = crate::vsa::hull(a.val, b.val);
                 a.back &= b.back;
                 a.defd &= b.defd;
                 a.above &= b.above;

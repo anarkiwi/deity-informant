@@ -16,7 +16,7 @@ from jennings.devices.mpu6502 import NativeMPU
 from jennings.memory import NativeMemory
 from jennings.opcodes import OPCODES
 
-from . import devices, polling, wholeprog
+from . import devices, masks, polling, wholeprog
 
 __all__ = [
     "Init",
@@ -73,9 +73,7 @@ class Init:
     @property
     def mask(self):
         """The free bytes, as a boolean array."""
-        m = np.zeros(0x10000, dtype=bool)
-        m[self.free] = True
-        return m
+        return masks.mask(at=self.free)
 
     def values(self):
         """``{addr: [values]}``: the value each free byte holds on each song, in order."""
@@ -137,7 +135,7 @@ class Init:
         over doubling then halving lengths), else a ``bytes`` literal."""
         free = self.mask
         ok = np.asarray(source, dtype=bool) & ~free
-        segs = [(a, base[a : a + n].tobytes()) for a, n in _runs(ok) if n > ENTRY]
+        segs = [(a, base[a : a + n].tobytes()) for a, n in masks.runs(ok) if n > ENTRY]
         found = {}
 
         def longest(t):
@@ -155,7 +153,7 @@ class Init:
         out = []
         for st in self.states:
             ops, same = [], st == base
-            for a, n in _runs(free):
+            for a, n in masks.runs(free):
                 t, i, lit = st[a : a + n].tobytes(), 0, None
                 while i < n:
                     if same[a + i] and lit is None:
@@ -184,12 +182,6 @@ def cost(plan):
     return sum(ENTRY + (n if isinstance(s, bytes) else 0) for ops in plan for _, s, n in ops)
 
 
-def _runs(mask):
-    """``[(start, length)]`` of the runs of True in ``mask``."""
-    edges = np.flatnonzero(np.diff(np.concatenate(([0], np.asarray(mask, np.int8), [0]))))
-    return [(int(a), int(b - a)) for a, b in zip(edges[::2], edges[1::2])]
-
-
 def _find(segs, t, memo):
     """The address of the first occurrence of ``t`` in the segments ``[(addr, bytes)]``."""
     if t not in memo:
@@ -202,10 +194,7 @@ def run(image, pc, songs, volatile, machine=None, skip=False):
     on ``machine`` (default :func:`reference` over ``volatile``); with ``skip``, of each
     value it returns with (the others left out of ``songs``)."""
     machine = machine or reference(volatile)
-    vol = np.zeros(0x10000, dtype=bool)
-    vol[0x100:0x200] = True
-    for lo, hi in volatile:
-        vol[lo:hi] = True
+    vol = masks.mask([(0x100, 0x200), *volatile])
     states, writes, kept, each = [], [], [], []
     stored = np.zeros(0x10000, dtype=bool)
     for a in tqdm(songs, desc="init runs", unit="run", leave=False, disable=None):
@@ -347,7 +336,7 @@ class Run:  # pylint: disable=too-many-instance-attributes
         """The tag of the byte at ``a`` (key ``key``) as a load reads it."""
         if a in self.tags:
             return self.tags[a]
-        if key is None or any(lo <= a < hi for lo, hi in self.volatile):
+        if key is None or self._vol(a):
             return X
         self.vals.setdefault(key, self.mem[a])
         return ("L", key)
@@ -586,13 +575,13 @@ def pointers(r):
     return out
 
 
-def groups(runs, pairs):
-    """``{lo: (g, delta)}``: each pair of ``pairs`` every run of ``runs`` left as a pointer on
-    the same word as pair ``g``, holding ``g``'s value plus ``delta``; ``g`` the least pair of
-    the group's most common value, so most of its pairs read it as it stands."""
+def groups(runs, pairs=None):
+    """``{lo: (g, delta)}``: each pair of ``pairs`` (default all) every run of ``runs`` left as
+    a pointer on the same word as pair ``g``, holding ``g``'s value plus ``delta``; ``g`` the
+    least pair of the group's most common value, so most of its pairs read it as it stands."""
     ps = [pointers(r) for r in runs]
     keys = {}
-    for lo in sorted(pairs):
+    for lo in sorted(set().union(*ps) if pairs is None else pairs):
         if all(lo in p for p in ps):
             keys.setdefault(tuple(p[lo][0] for p in ps), []).append(lo)
     out = {}
