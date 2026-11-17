@@ -8,6 +8,7 @@ with ``tools/cplay.c`` and plays it from ``A = X = Y = 0``, ``SP = $FD`` per cal
 import argparse
 import ctypes
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -20,8 +21,19 @@ from deity_informant import wholeprog
 HARNESS = Path(__file__).with_name("cplay.c")
 
 
+def fresh(out):
+    """A new file named after ``out`` in its directory: the dynamic loader hands back the
+    library it already loaded from a path, whatever the file there holds now."""
+    out = Path(out)
+    fd, path = tempfile.mkstemp(prefix=f"{out.stem}-", suffix=out.suffix, dir=out.parent)
+    os.close(fd)
+    return Path(path)
+
+
 def build(src, out):
-    """Compile ``src`` with the harness to the shared library ``out``; the loaded library."""
+    """Compile ``src`` with the harness to a new shared library named after ``out``
+    (:func:`fresh`); the loaded library."""
+    out = fresh(out)
     cmd = [
         "gcc",
         "-std=c11",

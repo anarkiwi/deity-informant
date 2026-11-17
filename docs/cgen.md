@@ -788,7 +788,8 @@ values inside `ok` on every run (`proven`), so neither has a trap. `opcode`, `co
 ## Validation
 
 `tests/test_cgen.py` compiles each output with gcc (`-std=c99 -Wall -Wextra -Werror`) against
-`tools/cgenplay.c` and compares the volatile writes (and sensitive reads) of many consecutive
+`tools/cgenplay.c` (each build a library of its own path, as the loader hands back one already
+loaded from a path) and compares the volatile writes (and sensitive reads) of many consecutive
 calls, memory persisting, with `wholeprog.reference_call`; it checks relocation and data
 invariance, the gotos (a non-series-parallel join's edges, a two-entry loop's second entry, a
 computed branch entering one run at three points), pointer reads from split tables an

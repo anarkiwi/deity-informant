@@ -15,6 +15,7 @@ from pathlib import Path
 from tqdm import tqdm
 
 import cmetrics
+from cplay import fresh
 from deity_informant import cgen, wholeprog
 
 HARNESS = Path(__file__).with_name("cgenplay.c")
@@ -22,7 +23,9 @@ CFLAGS = ("-std=c99", "-DCGEN_OOB_EXACT", "-O2", "-Wall", "-Wextra", "-Werror", 
 
 
 def build(src, out, flags=CFLAGS):
-    """Compile the generated ``src`` with the harness to the shared library ``out``."""
+    """Compile the generated ``src`` with the harness to a new shared library named after
+    ``out`` (:func:`cplay.fresh`); the loaded library."""
+    out = fresh(out)
     subprocess.run(["gcc", *flags, "-o", str(out), str(src), str(HARNESS)], check=True)
     return ctypes.CDLL(str(out))
 

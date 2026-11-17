@@ -881,7 +881,7 @@ op:     LDA $FFFF,X
         STA $FD
         LDA ptrs+1,X
         STA $FE
-        LDA ($FD),Y
+deref:  LDA ($FD),Y
         JSR emit
         RTS
 emit:   CLC
@@ -3785,15 +3785,32 @@ def test_untaken_path_and_data_invariance(prefix, tmp_path):
 
 
 def test_relocation_invariance(prefix, tmp_path):
+    """The ``.c`` is the same at either origin, the ``.h`` not; an even ``A`` replays exactly,
+    an odd one makes a pointer of two words' halves (invalid input) and traps at the memory
+    map's check of the read through it."""
     outs = []
     for org in (0x1000, 0x2345):
         img, labels, loaded = assemble(RELOC, org)
-        c, h, _ = translate(prefix, img, labels, loaded)
-        # An odd ``A`` makes a pointer of two words' halves: invalid input.
+        c, h, info = translate(prefix, img, labels, loaded)
+        k = machine_guard(info, labels["deref"])
+        assert k is not None
         play(tmp_path, c, h, img, labels, entry_calls([0, 2, 2, 0], 2))
+        for a in (1, 3):
+            play(tmp_path, c, h, img, labels, entry_calls([0, 2, a]), trap=(2, k))
         outs.append((c, h))
     assert outs[0][0] == outs[1][0] and outs[0][1] != outs[1][1]
     assert not re.search(r"0x1[0-9A-F]{3}\b|0x23[0-9A-F]{2}\b", outs[0][0])
+
+
+def test_replays_load_the_library_just_built(prefix, tmp_path):
+    """Each replay runs the C just compiled, not a library loaded before from the same path:
+    with ``A`` doubled the reads through the pointer table reach its words, which differ
+    between origins, so a library of the other origin's ``.h`` writes the other's bytes."""
+    src = RELOC.replace("entry:  AND #$03\n", "entry:  AND #$03\n        ASL A\n")
+    for org in (0x1000, 0x2345):
+        img, labels, loaded = assemble(src, org)
+        c, h, _ = translate(prefix, img, labels, loaded)
+        play(tmp_path, c, h, img, labels, entry_calls(range(4), 2))
 
 
 def test_sensitive_reads_are_kept(prefix, tmp_path):
