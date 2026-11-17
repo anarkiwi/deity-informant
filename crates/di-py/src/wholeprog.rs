@@ -648,6 +648,7 @@ impl Program {
                 }
                 let d = PyDict::new(py);
                 d.set_item("pc", b.pc)?;
+                d.set_item("nodes", b.ops.iter().map(|o| o.node).collect::<Vec<_>>())?;
                 d.set_item("ops", ops)?;
                 blocks.append(d)?;
             }

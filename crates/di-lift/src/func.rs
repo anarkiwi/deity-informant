@@ -1072,9 +1072,7 @@ fn shared_tails(plans: &[Plan]) -> BTreeSet<u16> {
     let mut count: FxHashMap<(u16, H), usize> = FxHashMap::default();
     let plans: Vec<&Plan> = plans.iter().filter(|p| p.inst.is_none()).collect();
     for p in &plans {
-        let at: BTreeSet<(u16, H)> = p
-            .nodes
-            .keys()
+        let at: BTreeSet<(u16, H)> = (p.nodes.keys().chain(p.insts.keys()))
             .filter(|k| k.0 != p.pc)
             .map(|k| (k.0, k.1))
             .collect();
@@ -1086,15 +1084,51 @@ fn shared_tails(plans: &[Plan]) -> BTreeSet<u16> {
     plans
         .iter()
         .flat_map(|p| {
-            p.nodes.iter().flat_map(move |(k, n)| {
-                n.arms
-                    .iter()
-                    .flat_map(|a| &a.succ)
-                    .filter(move |s| s.1 == H::Known(0) && shared(s) && (!shared(k) || k.0 == p.pc))
-                    .map(|s| s.0)
-            })
+            edges(p)
+                .filter(move |(k, s)| {
+                    s.1 == H::Known(0) && shared(s) && (!shared(k) || k.0 == p.pc)
+                })
+                .map(|(_, s)| s.0)
         })
         .collect()
+}
+
+/// The edges of plan `p`: its arms' and its instance calls' to their exits.
+fn edges(p: &Plan) -> impl Iterator<Item = (Key, Key)> + '_ {
+    let arms = (p.nodes.iter())
+        .flat_map(|(k, n)| n.arms.iter().map(move |a| (*k, a)))
+        .flat_map(|(k, a)| a.succ.iter().map(move |s| (k, *s)));
+    let insts = (p.insts.iter()).flat_map(|(k, c)| c.exits.iter().map(move |x| (*k, *x)));
+    arms.chain(insts)
+}
+
+/// The instruction starts some plan reaches from its entry along edges none of which is a
+/// computed jump's: code a procedure enters by its own jumps and fall-through, not as an arm
+/// of a dispatch.
+fn direct_reach(plans: &[Plan]) -> FxHashSet<u16> {
+    let computed = |c: &Ctl| match c {
+        Ctl::JmpInd(_) | Ctl::JmpOp(_) => true,
+        Ctl::Jmp(t) | Ctl::Br { t, .. } => matches!(t, Tg::Calc(_)),
+        _ => false,
+    };
+    let mut out = FxHashSet::default();
+    for p in plans.iter().filter(|p| p.inst.is_none()) {
+        let mut seen: BTreeSet<Key> = BTreeSet::new();
+        let keys = p.nodes.keys().chain(p.insts.keys());
+        let mut work: Vec<Key> = keys.filter(|k| k.0 == p.pc).copied().collect();
+        while let Some(k) = work.pop() {
+            if !seen.insert(k) {
+                continue;
+            }
+            out.insert(k.0);
+            let arms = p.nodes.get(&k).map_or(&[][..], |n| &n.arms[..]);
+            for a in arms.iter().filter(|a| !computed(&a.ctl)) {
+                work.extend(&a.succ);
+            }
+            work.extend(p.insts.get(&k).into_iter().flat_map(|c| &c.exits));
+        }
+    }
+    out
 }
 
 /// The plan of instance function `ci` merging the copies of `c`: a callee whose nodes are the
@@ -1350,10 +1384,12 @@ pub fn plan_all(g: &Graph, entries: &[(u16, Vec<u8>)], seen: &Seen, fold: bool) 
             }
             i += 1;
         }
+        let direct = direct_reach(&plans);
         let heads: Vec<u16> = shared_tails(&plans)
             .into_iter()
             .filter(|t| g.dispatch.get(t).is_none_or(|d| d.0 != *t))
-            .filter(|t| jsrs.contains(t) && !calls.contains(t) && tried.insert(*t))
+            .filter(|t| jsrs.contains(t) || direct.contains(t))
+            .filter(|t| !calls.contains(t) && tried.insert(*t))
             .collect();
         if heads.is_empty() || seen.bank.is_some() {
             break (plans, idx);

@@ -280,9 +280,12 @@ Each function's blocks become a graph whose nodes hold statements. An edge carry
 arguments gets a node of copies (the arguments are C variables assigned on the edge, a
 parallel assignment); an edge to a block that only returns is a `return`.
 
-A shared tail is a function only where the machine code makes it a procedure: a `JSR` target
-(a computed `JSR`'s arm included), which a jump or fall-through into it at the entry height
-reaches by a tail call. Code procedures enter only by jumps and fall-through is code of each
+A shared tail is a function only where the machine code makes it one: a `JSR` target (a
+computed `JSR`'s arm included), or code that several functions reach at the entry height by
+their own jumps, fall-through and instance calls' exits (no computed jump's arm), which a jump
+or fall-through into it at the entry height reaches by a tail call; an instance call stands
+for no instruction of its caller, its copy's instructions printed once in the instance
+function. Code procedures enter only by jumps and fall-through is code of each
 procedure reaching it, held once per procedure (its lift holds each instruction once per stack
 height); a dispatch's handlers and the tails they share are arms of its function's switch.
 

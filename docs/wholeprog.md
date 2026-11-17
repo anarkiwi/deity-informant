@@ -908,6 +908,16 @@ the facts, so a proof holds on every execution that stays in lifted code.
   range of each check reaching it is plain; the others keep their own checks. A pair whose
   value at an entry reaches a read (one play stored on an earlier call, not init's) is
   checked so at every definition of the entries, the invariant carried across calls.
+  A check left is left out where a dominating check of the same address *form* covers it
+  (`cover.rs`): the values of the pair's bytes or of an absolute operand the program writes
+  or init leaves (each named per location by the instruction or merge last defining it,
+  along the flow with each call stepping over its callee) and of the index's base, plus a
+  constant offset. Two accesses of one form, one dominating the other, differ by their
+  offsets alone, so the dominating check tests the hull of the offsets of its form every
+  path from it reads before a value of the form is redefined or the routine returns (the
+  block's slack test, as above), and every access it dominates in that hull is plain. An
+  absolute operand of the code is a constant offset; one init stores is a value, so song data
+  reaches no check of the `.c`.
   Otherwise,
   an address the program's bytes form, whatever they hold, stays in its block on
   every valid run: a load's the run of data bytes holding every table its high byte is

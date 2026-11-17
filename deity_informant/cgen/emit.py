@@ -55,6 +55,7 @@ class Body:  # pylint: disable=too-many-instance-attributes
         self.fn, self.name, self.ctx = fn, name, ctx
         self.fi = ctx.names.index(name)
         self.lines, self.n, self.env, self.block_id, self.pc = [], 0, {}, 0, 0
+        self.node = 0
         self.cells = {("r", r): s for r, s in ctx.regfile}
         for b in fn["blocks"]:
             defined = set()
@@ -75,8 +76,8 @@ class Body:  # pylint: disable=too-many-instance-attributes
 
     def put(self, text):
         """Append an operation line, located at the instruction it is emitted for and the
-        lift node holding it (function and block index)."""
-        loc = f' loc("{self.pc:#06x}"("{self.fi}:{self.block_id}"))' if self.pc else ""
+        lift node holding it (function and plan node)."""
+        loc = f' loc("{self.pc:#06x}"("{self.fi}:{self.node}"))' if self.pc else ""
         self.lines.append(f"    {text}{loc}")
 
     def op(self, text):
@@ -249,7 +250,8 @@ class Body:  # pylint: disable=too-many-instance-attributes
         """Emit block ``i``; a mid-block ``CBRANCH`` continues in a new block."""
         self.env, part, self.block_id = {}, 0, i
         self.lines.append(f"  ^b{i}:")
-        for op in self.fn["blocks"][i]["ops"]:
+        blk = self.fn["blocks"][i]
+        for op, self.node in zip(blk["ops"], blk.get("nodes") or [i] * len(blk["ops"])):
             name, self.pc = op[0], op[4] if len(op) > 4 else 0
             if name == "CBRANCH":
                 cond = self.truth(self.read(op[2][0]), op[2][0][2])
@@ -291,8 +293,13 @@ class Body:  # pylint: disable=too-many-instance-attributes
         res = self.new()
         name = self.ctx.names[callee]
         keep = self.ctx.sites[callee] > 1 and not self.ctx.funcs[callee].get("continuation")
-        attr = " {no_inline}" if keep else ""
+        # An instance call is no instruction's: its site (its copy's entry) is an attribute.
+        site = self.pc if self.ctx.funcs[callee].get("copies") else None
+        attrs = ["no_inline"] * keep + [f"site = {site} : i32"] * bool(site)
+        attr = f" {{{', '.join(attrs)}}}" if attrs else ""
+        pc, self.pc = self.pc, 0 if site else self.pc
         self.put(f"{res}:{len(args)} = func.call @{name}({', '.join(args)}){attr} : ({t}) -> ({t})")
+        self.pc = pc
         for j, (r, s) in enumerate(self.ctx.regfile):
             self.write(["r", r, s], f"{res}#{j}")
 

@@ -124,21 +124,26 @@ def copies(recs, order, pcs_of):
             continue
         _, fn, block, visit, ops = rec
         for o in (o for o in ops if o.pc):
+            group = _group(o)
             for pc in pcs_of(fn, o.pc):
-                seen[(pc, _group(o), id(o), block)].add(visit)
+                seen[(pc, group, id(o), block)].add(visit)
     most = defaultdict(int)
     for (pc, group, _, _), visits in seen.items():
         most[(pc, group)] = max(most[(pc, group)], len(visits))
+    located = {pc for pc, group in most if group[0] is not None}
     out = defaultdict(int)
-    for (pc, _), n in most.items():
-        out[pc] += n
+    for (pc, group), n in most.items():
+        if group[0] is not None or pc not in located:
+            out[pc] += n
     return dict(sorted(out.items()))
 
 
 def _group(o):
-    """The lift node and call sites of operation ``o``'s location; one the printer made takes
-    that of an operation of its instruction in its block."""
+    """The lift node and call sites of operation ``o``'s location; one the printer or the
+    optimizer made takes that of an operation of its instruction in its block, else none: an
+    operation the optimizer merged out of an instruction's emissions, counted only where the
+    instruction has no located one (:func:`copies`)."""
     loc = o.loc
     if not loc and o.parent is not None:
         loc = next((x.loc for x in o.parent.ops if x.loc and x.pc == o.pc), ())
-    return (loc[0][1], loc[1:]) if loc else (None, id(o.parent))
+    return (loc[0][1], loc[1:]) if loc else (None, o.pc)

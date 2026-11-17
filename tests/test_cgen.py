@@ -4192,12 +4192,15 @@ def entries_of(info):
     return {f["entry"] for f in info["provenance"]["functions"].values()}
 
 
-def test_shared_tail_entered_by_jumps_is_each_procedures_code(prefix, tmp_path):
-    """A tail two procedures enter by `JMP` and by falling through, which no `JSR` targets,
-    is code of each, also past a push and a pull returning to the entry height."""
+def test_shared_tail_entered_by_jumps_is_a_function(prefix, tmp_path):
+    """A tail two procedures enter by `JMP` and by falling through at their entry height,
+    which no `JSR` targets, is one function both tail-call; code past a push and a pull
+    returning to the entry height inside it is its own."""
     _, labels, _ = assemble(SHARED)
     _, _, info = check(prefix, tmp_path, SHARED, entry_calls(range(4), 2))
-    assert not entries_of(info) & {labels["shared"], labels["join"], labels["join"] - 3}
+    funcs = entries_of(info)
+    assert labels["shared"] in funcs
+    assert not funcs & {labels["join"], labels["join"] - 3}
 
 
 def test_dispatch_arms_sharing_a_tail_stay_in_the_dispatching_function(prefix, tmp_path):

@@ -30,7 +30,9 @@ PIPELINE = (
     "--mlir-print-debuginfo",
     "--mlir-print-local-scope",
 )
-_CALLEE = re.compile(r"callee = @(\w+)(, no_inline)?\}")
+#: An operation's discardable attributes, past its properties.
+_ATTRS = re.compile(r"\s*\{([^{}]*)\}")
+_CALLEE = re.compile(r"callee = @(\w+)(, no_inline)?(?=[,}])")
 
 
 def have_docker_image():
@@ -76,7 +78,7 @@ def optimize(text, prefix):
         if not single:
             return out
         out = _CALLEE.sub(
-            lambda m: f"callee = @{m.group(1)}}}" if m.group(1) in single else m.group(0), out
+            lambda m: f"callee = @{m.group(1)}" if m.group(1) in single else m.group(0), out
         )
         out = run(prefix, ["mlir-opt", *PIPELINE], out)
 
@@ -259,11 +261,12 @@ def parse(text):
         m = _HEAD.match(s)
         assert m, s
         res, count, name, args, succ, props, rest = m.groups()
+        attrs = _ATTRS.match(rest)
         op = Op(
             name,
             _results(res, count),
             [a.strip() for a in args.split(",") if a.strip()],
-            (props or "<{}>")[2:-2],
+            ", ".join(filter(None, [(props or "<{}>")[2:-2], attrs and attrs.group(1)])),
             [],
             succs=[x.strip()[1:] for x in (succ or "").split(",") if x.strip()],
             pc=pc,

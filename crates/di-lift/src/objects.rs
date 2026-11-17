@@ -76,6 +76,8 @@ pub struct Objs {
     /// Per such object, the block it checks `P + lo` in with `k` bytes past it: `(block, lo,
     /// k)`, its own bounds the block's runs less `[lo, lo + k]`.
     pub slack: FxHashMap<u16, (u16, u16, u16)>,
+    /// The accesses a dominating check keeps in the bytes given ([`crate::cover`]).
+    pub covered: FxHashMap<StoreKey, Iv>,
 }
 
 /// A load through a pair: its instruction, access, the values of `Y` it adds and its base
@@ -239,6 +241,7 @@ pub fn objects(
     held: Option<(u32, u32)>,
     seeds: &Seeds,
     free: &FxHashMap<u16, Vec<u8>>,
+    init: &FixedBitSet,
     machine: Option<bool>,
     unread: Unread,
 ) -> (Objs, Proven) {
@@ -411,6 +414,7 @@ pub fn objects(
         cfg: &cfg,
         roots,
         held: &held,
+        init,
         end,
         bytes: Bytes::new(g, free),
         stored: crate::analysis::stored(g),
@@ -712,6 +716,8 @@ struct Walked<'a, H: Fn(Iv) -> bool> {
     cfg: &'a Cfg<'a>,
     roots: &'a [u16],
     held: &'a H,
+    /// Bytes the host's init stored that the entries read as its data.
+    init: &'a FixedBitSet,
     end: u32,
     bytes: Bytes<'a>,
     stored: FixedBitSet,
@@ -1756,6 +1762,7 @@ fn machine_pass<H: Fn(Iv) -> bool>(
         }
     }
     hoist(g, &mut src, out);
+    crate::cover::cover(g, cx.init, out);
     src.asked
 }
 
@@ -2002,7 +2009,7 @@ fn hoist<H: Fn(Iv) -> bool>(g: &Graph, src: &mut Sources<'_, H>, out: &mut Objs)
 
 /// The object of the runs `rs` `[lo, hi)` (one interval, or a block of several), made where
 /// new.
-fn block_id(out: &mut Objs, rs: &[(u32, u32)]) -> u16 {
+pub(crate) fn block_id(out: &mut Objs, rs: &[(u32, u32)]) -> u16 {
     let (lo, hi) = (rs[0].0 as u16, (rs[rs.len() - 1].1 - 1) as u16);
     if rs.len() == 1 {
         return object_id(out, lo, hi, std::iter::empty());
