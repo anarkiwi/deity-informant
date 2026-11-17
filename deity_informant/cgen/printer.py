@@ -165,6 +165,8 @@ def compare(sym, a, b):
 
 def negated(e):
     """The logical negation of truth value ``e``."""
+    if e.lo == e.hi and not e.mem and not e.refs:
+        return lit(int(not e.lo), 1)
     if e.op in FLIP:
         return compare(FLIP[e.op], e.parts[1], e.parts[2])
     if e.op == "!":
@@ -2013,6 +2015,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         self.body, self.head_text, self.labels = None, "", {}
         self.prov = {"gotos": [], "loops": [], "conditions": [], "switches": []}
         self.edges = {}
+        self._fused = None
 
     def structure(self):
         """Structure the graph into statements."""
@@ -2504,6 +2507,11 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             return E(f"({text})", 16, "", 0, 255, False, True, a.refs)
         if how[0] == "block":
             name = self.mod.block_fn("rd", how[1], how[2])
+            fused = self.fusion().get(id(o))
+            if fused is not None:
+                self.mod.traps.add(fused[1])
+                name = self.mod.checked_fn(name, fused[0])
+                return E(f"{name}({a.text}, {fused[1]})", 16, "", 0, 255, False, True, a.refs)
             return E(f"{name}({a.text})", 16, "", 0, 255, False, True, a.refs)
         fn = "oob_rd" if how[0] == "code" else "rd"
         self.mod.helpers.add(fn)
@@ -2511,9 +2519,58 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             self.mod.helpers.add("cgen_var")
         return E(f"{fn}({a.text})", 16, "", 0, 255, False, True, a.refs)
 
+    def fusion(self):
+        """``{id(op): ...}`` of the object checks a load through the data block's reader
+        makes itself: the check's (the load) and the load's (``(j, k)``: the object, and the
+        trap the check leaves by). A check of the address a load in the block it guards
+        reads, its other edge a trap, is the load's own (:meth:`Module.checked_fn`)."""
+        if self._fused is not None:
+            return self._fused
+        f, out = self.f, {}
+        for b in f.blocks:
+            term = b.ops[-1] if b.ops else None
+            if term is None or term.name != "cf.cond_br":
+                continue
+            succ = [f.block_of.get(x) for x in term.succs[:2]]
+            traps = [
+                x is not None
+                and bool(x.ops)
+                and x.ops[0].name == "func.call"
+                and x.ops[0].prop("callee") == "@trap"
+                for x in succ
+            ]
+            if traps.count(True) != 1 or None in succ:
+                continue
+            k = f.const_of(succ[traps.index(True)].ops[0].args[0])
+            cont = succ[traps.index(False)]
+            # The checks the condition is computed from through arithmetic.
+            parts, todo = [], [term.args[0]]
+            while todo:
+                d = f.defs.get(todo.pop())
+                if d is not None and d.name.startswith("arith."):
+                    todo += d.args
+                elif d is not None:
+                    parts.append(d)
+            for c in parts:
+                if c is None or c.name != "func.call" or c.prop("callee") != "@objchk":
+                    continue
+                j = f.defs[c.args[1]].int_prop("value")
+                if j in self.mod.ptr_slack or k is None:
+                    continue
+                for x in cont.ops:
+                    if x.name == "memref.load" and f.address(x) == c.args[0]:
+                        if self.target(x)[0] == "block" and id(x) not in out:
+                            out[id(c)], out[id(x)] = x, (j, k)
+                        break
+        self._fused = out
+        return out
+
     def objchk(self, o):
         """The test ``objchk(p, j)`` of call ``o``: whether pointer ``p`` lies outside object
-        ``j``, whose bounds the ``.h`` names."""
+        ``j``, whose bounds the ``.h`` names; none where the load it guards makes it
+        (:meth:`fusion`)."""
+        if id(o) in self.fusion():
+            return lit(0, 1)
         p, j = self.ex(o.args[0]), self.f.defs[o.args[1]].int_prop("value")
         # A check after a pointer's definition: the pointer plus ``lo`` in the block ``j``
         # with ``k`` bytes past it.
@@ -3165,6 +3222,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             then, els, f = els, then, ~f
         fx = self.g.effects.get(x)
         c, n = self.cond(f, it[2], fx), self.cond(~f, it[2], fx)
+        if c.lo == c.hi and not fx:
+            # A condition of one value (a check its load makes, :meth:`fusion`): its branch.
+            return [*(then if c.lo else els), *tail]
         if not then and not els:
             return [("s", f"(void)({c.text});", c.refs), *tail]
         if els and ends_in_jump(then):
@@ -3382,6 +3442,8 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.ptr_objects, self.objs_used, self.ptr_parts = [], set(), {}
         #: Per object of a pointer's check after its definition, ``(block, lo, k)``.
         self.ptr_slack = {}
+        #: The block readers checking their address into an object (:meth:`checked_fn`).
+        self.checked_fns = set()
         #: The held spans whose bounds-checked readers find promoted cells' variables.
         self.var_spans, self.var_at = set(), []
         self.offsets, self.insn = {}, np.zeros(0x10000, dtype=bool)
@@ -3944,6 +4006,13 @@ class Module:  # pylint: disable=too-many-instance-attributes
             self.block_fns[key] = f"{kind}B{sum(k[0] == kind for k in self.block_fns)}"
         return self.block_fns[key]
 
+    def checked_fn(self, name, j):
+        """The name of block reader ``name``'s variant checking its address into object ``j``
+        first, leaving by the trap its caller passes."""
+        self.checked_fns.add((name, j))
+        self.objs_used.add(j)
+        return f"{name}c{j}"
+
     def block_c(self):
         """The definitions of the data blocks' readers and writers (:meth:`block_fn`) and of
         the tests of a pointer outside an object of several runs (the ``.h``'s
@@ -3989,6 +4058,20 @@ class Module:  # pylint: disable=too-many-instance-attributes
             else:
                 sig = f"static __attribute__((noinline)) void {name}(uint16_t a, uint8_t v) {{"
                 out += [sig, *find, f"{el} = v;", "}"]
+        for name, j in sorted(self.checked_fns):
+            test = (
+                f"cgen_out{j}(a, 0)"
+                if j in self.ptr_parts
+                else f"(uint16_t)(a - CGEN_OBJ{j}_ORG) > CGEN_OBJ{j}_LIM"
+            )
+            out += [
+                f"static __attribute__((noinline)) uint8_t {name}c{j}(uint16_t a, uint16_t k) {{",
+                f"if ({test}) {{",
+                "trap(k);",
+                "}",
+                f"return {name}(a);",
+                "}",
+            ]
         return out
 
     def choices(self, regs, spans, addr, indexed=None, tests=None):
