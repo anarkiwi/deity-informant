@@ -1242,7 +1242,6 @@ impl<'a> Em<'a, '_> {
         def: &'static str,
     ) -> (Vn, Why) {
         use crate::objects::Of;
-        self.n.obj_guards += 1;
         let lo = self.load(
             at,
             Iv {
@@ -1270,11 +1269,17 @@ impl<'a> Em<'a, '_> {
             let y = self.zext(r1(R::Y), 2);
             p = self.op(Opc::IntAdd, 2, p, y);
         }
-        let bad = self.op(Opc::CallOther, 1, p, k(c.obj as u32, 2));
+        self.obj_test(p, c.obj, Some(c.q), def)
+    }
+    /// Whether address `p` lies outside object `obj`, the check of pair `pair`.
+    fn obj_test(&mut self, p: Vn, obj: u16, pair: Option<u8>, def: &'static str) -> (Vn, Why) {
+        self.n.obj_guards += 1;
+        let p = if p.size() == 2 { p } else { self.zext(p, 2) };
+        let bad = self.op(Opc::CallOther, 1, p, k(obj as u32, 2));
         self.f.blocks[self.cur].ops.last_mut().unwrap().aux = other::OBJCHK;
         let why = Why {
-            pair: Some(c.q),
-            obj: Some(c.obj as u32),
+            pair,
+            obj: Some(obj as u32),
             def: Some(def),
             ..Why::new(Kind::Obj, self.ipc)
         };
@@ -1375,6 +1380,8 @@ impl<'a> Em<'a, '_> {
         let mut ai = 0;
         let mut zone = NONE;
         let mut zwhy = Vec::new();
+        // The addresses the memory map's checks of the instruction test.
+        let mut machined: Vec<Vn> = Vec::new();
         for op in ops {
             let mut map = |em: &mut Self, v: Vn| -> Vn {
                 match v.space() {
@@ -1429,6 +1436,18 @@ impl<'a> Em<'a, '_> {
                     zone: false,
                     zfree: false,
                 });
+                // An access the memory map bounds deopts before it leaves the bytes it may.
+                let mapped = self.sh.g.objs.machine.get(&(pc, opc, ai));
+                if let Some(&(obj, run)) = mapped.filter(|_| !machined.contains(&a)) {
+                    machined.push(a);
+                    let (bad, why) = self.obj_test(a, obj, None, "machine");
+                    let why = Why {
+                        addr: Some(ac.addr),
+                        ok: vec![(run.lo, run.hi)],
+                        ..why
+                    };
+                    self.replay_guard(bad, pc, vec![why]);
+                }
                 // A zone-checked store deopts before it may reach a zone; a load reads memory
                 // (a pointer read leaving the data is the program's error, reading the
                 // translation's memory model).

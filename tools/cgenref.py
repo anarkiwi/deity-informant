@@ -91,6 +91,12 @@ def _gi_tools(gi):
         sys.path.insert(0, str(gi / "tools"))
 
 
+def acme():
+    """The ``jennings-acme`` of the running interpreter's environment, else PATH's."""
+    own = pathlib.Path(sys.executable).with_name("jennings-acme")
+    return str(own) if own.exists() else "jennings-acme"
+
+
 def psid_of(case, gi, fixtures, tmp):
     """PSID bytes of a tune or a ``fuzz:style:seed`` player."""
     tmp = pathlib.Path(tmp)
@@ -105,7 +111,7 @@ def psid_of(case, gi, fixtures, tmp):
         src = fixtures / TUNES[case]
     else:
         return (fixtures / TUNES[case]).read_bytes()
-    subprocess.run(["jennings-acme", "-o", tmp / "p.sid", src], check=True, capture_output=True)
+    subprocess.run([acme(), "-o", tmp / "p.sid", src], check=True, capture_output=True)
     return (tmp / "p.sid").read_bytes()
 
 

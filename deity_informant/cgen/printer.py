@@ -1480,10 +1480,12 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         return d.args[0] if d is not None and d.name == "arith.index_castui" else idx
 
     def proven_iv(self, o):
-        """The interval of load ``o``'s address met with the hull the lift proves of its
-        instruction (every copy's, the bounds of the bytes its index comes from), or None."""
+        """The interval of load or store ``o``'s address met with the hull the lift proves of
+        its instruction (every copy's: the bounds of the bytes its index comes from, or the
+        bytes the memory map checks it into), or None."""
         lo, hi = self.addr_iv(o)
-        h = self.mod.reach_of(self, o, "proven") if o.name == "memref.load" else None
+        direct = o.name in ("memref.load", "memref.store")
+        h = self.mod.reach_of(self, o, "proven") if direct else None
         if h is None or hi - lo >= regions.BOUNDED or h[0] > hi or lo > h[1]:
             return None
         return max(lo, h[0]), min(hi, h[1])
@@ -2295,6 +2297,12 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             j = mem.held_span(*run, wide=True)
             if j is not None:
                 return ("checked", "held", j)
+        # An access the lift proves inside one region or held span reaches it unchecked.
+        sure = self.f.proven_iv(o)
+        if sure is not None and (k := mem.region(*sure)) is not None:
+            return ("region", k)
+        if sure is not None and not is_write(o) and (j := mem.held_span(*sure)) is not None:
+            return ("held", j)
         bound = self.bound_region(o, lo, hi)
         if bound is not None:
             return bound
@@ -2314,12 +2322,6 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
                 return ("region", regs[0]) if regs else ("held", spans[0])
             if self.pointer(o):
                 return ("set", regs, spans)
-        # A load the lift proves inside one region or held span reads it unchecked.
-        sure = None if store else self.f.proven_iv(o)
-        if sure is not None and (k := mem.region(*sure)) is not None:
-            return ("region", k)
-        if sure is not None and (j := mem.held_span(*sure)) is not None:
-            return ("held", j)
         found = None if store else mem.bounded(lo, hi)
         return ("any",) if found is None else ("bounded", *found)
 
@@ -3502,7 +3504,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         run = self.run_of(f, o)
         if run is not None:
             return [(max(lo, run[0]), min(hi, run[1]))], INDEXED
-        lo, hi = (f.proven_iv(o) if o.name == "memref.load" else None) or (lo, hi)
+        lo, hi = f.proven_iv(o) or (lo, hi)
         if per and all(y - x < regions.BOUNDED for x, y in per):
             return per, INDEXED
         if hi - lo < regions.BOUNDED:
@@ -3681,8 +3683,8 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 run = self.run_of(f, o)
                 if run is not None:
                     lo, hi = max(lo, run[0]), min(hi, run[1])
-                # A load the lift proves inside a hull reads that hull alone.
-                lo, hi = (f.proven_iv(o) if o.name == "memref.load" else None) or (lo, hi)
+                # An access the lift proves inside a hull touches that hull alone.
+                lo, hi = f.proven_iv(o) or (lo, hi)
                 # An access with an address set reaches its addresses (a load's where they lie
                 # in the loaded program or reach code, which no pointer run holds): inside
                 # it, through one span holding them, as the image holds the bytes between; a

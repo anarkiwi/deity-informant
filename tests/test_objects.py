@@ -116,7 +116,7 @@ def loads(img, labels):
     return [a for a in range(labels["play"], labels["stop"]) if img[a] == 0xB1]
 
 
-@pytest.mark.timeout(120)
+@pytest.mark.timeout(120)  # replays every song through each executor
 def test_records_read_inside_their_object():
     """One check, before the first load of each call, keeps the pointer in the streams: every
     load of a field reads proven inside them, and the lift replays every stream."""
@@ -281,10 +281,11 @@ def test_walk_to_a_marker_reads_its_runs():
 
 @pytest.mark.parametrize("src", [WRITTEN, UNTESTED], ids=["written", "untested"])
 def test_walk_unproven_keeps_its_check(src):
-    """A walk over bytes a store may write, or past a byte it did not test, holds no bound:
-    its load keeps its check, and every run replays."""
+    """A walk over bytes a store may write, or past a byte it did not test, holds no bound of
+    its own: the memory map alone checks its load, against the run of data the tables its
+    pointer is copied from lie in, and every run replays."""
     img, labels, prog = walk_lift(src)
-    assert not served(prog, labels["loop"])
+    assert [o[:2] for o in served(prog, labels["loop"])] == [(labels["tlo"], labels["play"] - 1)]
     for song in range(4):
         differential(img, prog, [labels["init"], labels["play"]], plan(song, 30))
 
@@ -436,11 +437,6 @@ POKED = cursor_src(
     "        LDY #0\n        LDA $C006\n        STA ($F0),Y\n        RTS\n"
 )
 
-# Play writes the last record's marker and the segments from I/O: no marker may hold.
-REWRITTEN = cursor_src(
-    step="INC cur,X\n        LDA $C004\n        STA r3+9\n        LDY $C005\n        STA flat,Y"
-)
-
 #: A model answering the record cursor's step.
 STEP = devices.Model({0xC003: devices.derived(lambda st, at: [0, 1])})
 
@@ -465,53 +461,22 @@ def cursor_lift(src, entries=("play",), model=None):
     return image, labels, init, prog
 
 
-@pytest.mark.timeout(120)
 @pytest.mark.parametrize(
     "src,model",
     [(CURSOR, None), (COUNTED, None), (POLLED, STEP)],
     ids=["plain", "counted", "polled"],
 )
-def test_cursors_read_inside_the_states_play_reaches(src, model):
+def test_cursors_read_inside_the_program(src, model):
     """Cursors kept between calls, reset at their data's markers, read proven inside the
-    data: the states play reaches from each of init's runs bound them (a
-    counter deciding a turn taken both ways, an I/O step its modelled values); every run
-    replays past many resets."""
+    program: the bases lie in it, so the memory map holds every valid run's reads there,
+    each checked before it (a counter deciding a turn taken both ways, an I/O step its
+    modelled values); every run replays past many resets."""
     img, labels, init, prog = cursor_lift(src, model=model)
     proven = dict(prog.proven)
-    # Each hull reaches out to the run of data bytes after play's code holding the records.
     for pc in (labels["rd"], labels["seg"]):
         lo, hi = proven[pc][:2]
-        assert labels["tlo"] <= lo and hi < labels["end"]
-    assert not prog.stats["obj_guards"]
-    assert prog.stats["reach_loads"] >= 2 and prog.stats["reach_slices"] == 3
+        assert 0x1000 <= lo and hi < labels["end"]
+    assert prog.stats["obj_guards"]
     for song in range(4):
         mem = bytearray(init.states[song].tobytes())
         differential(img, prog, [labels["play"]], [(0, 0)] * 200, synth=False, mem=mem)
-
-
-@pytest.mark.timeout(600)
-@pytest.mark.parametrize(
-    "src,entries,model",
-    [(POKED, ("play", "poke"), None), (REWRITTEN, ("play",), None), (POLLED, ("play",), None)],
-    ids=["poked", "rewritten", "unmodelled"],
-)
-def test_cursors_no_state_bounds_keep_their_hulls(src, entries, model):
-    """A cursor a store of unknown address may write, records play rewrites from I/O, or a
-    step I/O answers with any byte bound no load: the record loads keep the hulls past the
-    records."""
-    _, labels, _, prog = cursor_lift(src, entries, model)
-    h = dict(prog.proven).get(labels["rd"])
-    assert h is None or h[1] >= labels["end"]
-
-
-def cursor_states_lift(src, entries):
-    """The proven hull of the record load of ``src``'s ``entries`` lifted."""
-    _, labels, _, prog = cursor_lift(src, entries)
-    return dict(prog.proven).get(labels["rd"])
-
-
-@pytest.mark.parametrize("src,entries", [(CURSOR, ("play",)), (POKED, ("play", "poke"))])
-def test_cursor_states_end(src, entries):
-    """The states of the cursors' slices are found, or their caps reached, within the limit."""
-    with ProcessPool(max_workers=1) as pool:
-        pool.schedule(cursor_states_lift, (src, entries), timeout=LIMIT).result()

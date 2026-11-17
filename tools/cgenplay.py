@@ -34,9 +34,12 @@ def entry_regs(a):
     return reg
 
 
-def replay(lib, image, pcs, calls, volatile, sensitive=(), progress=False):
+def replay(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+    lib, image, pcs, calls, volatile, sensitive=(), progress=False, trap=None
+):
     """Play ``calls`` ``[(name, a)]`` of the library on its own memory and the reference at
-    ``pcs[name]`` from ``image``; AssertionError at the first call whose log differs."""
+    ``pcs[name]`` from ``image``; AssertionError at the first call whose log differs. With
+    ``trap`` ``(n, k)`` call ``n`` traps with ``k`` and the replay ends there."""
     ctypes.memmove(ctypes.addressof(ctypes.c_uint8.in_dll(lib, "IO")), bytes(image), 0x10000)
     logn = ctypes.c_uint32.in_dll(lib, "logn")
     loga = (ctypes.c_uint16 * (1 << 20)).in_dll(lib, "loga")
@@ -53,6 +56,9 @@ def replay(lib, image, pcs, calls, volatile, sensitive=(), progress=False):
     for n, (name, a) in enumerate(tqdm(calls, disable=not progress, desc="calls", unit="call")):
         logn.value = 0
         k = lib.call(fns[name], a)
+        if trap is not None and n == trap[0]:
+            assert k == trap[1], (n, name, "trap", k, "want", trap[1])
+            return n
         got = [(loga[i], logv[i], logw[i]) for i in range(logn.value)]
         r = wholeprog.reference_call(
             ref, pcs[name], a=a, reg=entry_regs(a), volatile=volatile, log=True

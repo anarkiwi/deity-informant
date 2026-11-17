@@ -568,6 +568,10 @@ class Program:  # pylint: disable=too-many-instance-attributes
     objects: list = ()
     reach: dict | None = None
     proven: dict | None = None
+    #: Per access of no one address its hull and its base's (``Program.bases``).
+    bases: dict | None = None
+    #: The instruction starts whose accesses the memory map checks (``Program.machine``).
+    machine: frozenset = frozenset()
     regs: dict | None = None
     bounded: dict | None = None
     init: tuple | None = None
@@ -655,7 +659,7 @@ def _renumber(funcs, origin, base):
 
 
 #: The facts a lift gives the layout, as :class:`Program` holds them.
-_FACTS = ("sets", "bounds", "regs", "reach", "proven", "bounded", "addr_sets")
+_FACTS = ("sets", "bounds", "regs", "reach", "proven", "bounded", "addr_sets", "bases")
 
 
 def _raw(src):
@@ -856,6 +860,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     vars(p).update(_raw(prog))
     p.ptr_sets = {pc: set(w) for pc, w in prog.ptr_sets.items()}
     p.objects = list(prog.objects)
+    p.machine = frozenset(prog.machine)
     p.stores = {"play": trapinfo.stores(prog)}
     if init is not None:
         p.stores["init"] = trapinfo.stores(lone if lone is not None else bare)

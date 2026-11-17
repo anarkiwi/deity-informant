@@ -82,3 +82,12 @@ def test_plugin_is_inert_without_a_dump(monkeypatch):
     inner = cgen.translate
     cgenref.pytest_configure(None)
     assert cgen.translate is inner
+
+
+def test_acme_is_the_interpreters_own(tmp_path, monkeypatch):
+    """The assembler is the running environment's, whatever PATH holds; else PATH's."""
+    (tmp_path / "python").touch()
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "python"))
+    assert cgenref.acme() == "jennings-acme"
+    (tmp_path / "jennings-acme").touch()
+    assert cgenref.acme() == str(tmp_path / "jennings-acme")

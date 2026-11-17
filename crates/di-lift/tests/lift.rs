@@ -2,7 +2,6 @@ mod common;
 #[allow(dead_code)]
 mod progs;
 use common::*;
-use di_lift::reach::Caps;
 use di_lift::{lift, lift_many, lift_with, Entry, Facts, Job, Opts, Program};
 
 const IO: (u16, u16) = (0xc000, 0xc100);
@@ -1691,65 +1690,30 @@ const CURSOR: [u8; 161] = [
     0x01, 0x00, 0x00, 0x00, 0x00, 0x09, 0x03, 0x00, 0x01, 0x01, 0x01,
 ];
 
-/// The states the entry reaches bound the cursors' loads inside the data after the code
-/// (`$106D` up), and both engines match the reference past many resets; caps the search
-/// passes bound neither.
+/// The cursors' loads read inside the run of data after the code (`$106D` up) that holds
+/// their bases, checked before each: the memory map is fixed, so a valid run reads there; both
+/// engines match the reference past many resets.
 #[test]
-fn cursor_states_bound_their_loads() {
+fn cursor_loads_read_their_bases_run() {
     let img = image(&[(0x1022, &CURSOR)]);
-    let lift = |reach| {
-        let opts = Opts {
-            entry_sp: Some(0xfd),
-            loaded: Some((0x1022, 0x10c3)),
-            reach,
-            ..Opts::default()
-        };
-        lift_with(
-            &img,
-            &entries(&[0x1022]),
-            &[(0xc000, 0xc100)],
-            &Facts::default(),
-            opts,
-        )
+    let opts = Opts {
+        entry_sp: Some(0xfd),
+        loaded: Some((0x1022, 0x10c3)),
+        ..Opts::default()
     };
-    let within = |p: &Program, pc: u16, lo: u32, hi: u32| {
-        (p.proven.iter()).any(|r| r.0 == pc && r.1 >= lo && r.2 < hi)
-    };
-    let p = lift(Caps::default());
-    assert!(within(&p, 0x104e, 0x106d, 0x10c3) && within(&p, 0x1027, 0x106d, 0x10c3));
+    let p = lift_with(
+        &img,
+        &entries(&[0x1022]),
+        &[(0xc000, 0xc100)],
+        &Facts::default(),
+        opts,
+    );
+    let within = |pc: u16| (p.proven.iter()).any(|r| r.0 == pc && r.1 >= 0x106d && r.2 < 0x10c3);
+    assert!(within(0x104e) && within(0x1027));
     assert_eq!(
         diff_at(&img, &p, &calls(300, |_| 0), IO, 1_000_000, 0xff),
         0
     );
-    for caps in [
-        Caps {
-            states: 4,
-            ..Caps::default()
-        },
-        Caps {
-            steps: 64,
-            ..Caps::default()
-        },
-        Caps {
-            cells: 1,
-            ..Caps::default()
-        },
-        Caps {
-            rounds: 0,
-            ..Caps::default()
-        },
-        Caps {
-            configs: 1,
-            ..Caps::default()
-        },
-        Caps {
-            total: 64,
-            ..Caps::default()
-        },
-    ] {
-        let q = lift(caps);
-        assert!(!within(&q, 0x104e, 0x106d, 0x10c3), "{caps:?}");
-    }
 }
 
 /// A pulled status sets the flags the code after the pull runs with: a `BRK` handler that

@@ -554,6 +554,9 @@ pub struct Graph {
     /// The hulls of `reach` that hold on every run (no table load taken to stay inside its
     /// extent).
     pub proven: crate::vsa::Hulls,
+    /// Every access of no one address: its hull and its base's, the index registers zero
+    /// (the pointers' words as their provenance gives them).
+    pub bases: crate::vsa::Hulls,
     /// Per instruction start the values `A`, `X` and `Y` hold on every run.
     pub regs: crate::vsa::Regs,
     /// Bytes `(addr, lo, hi)` a load may read whose bound on every run proves an index guard
@@ -1049,6 +1052,7 @@ impl Fixpoint<'_> {
             &given,
         );
         (g.reach, g.proven, g.regs, g.runs) = (an.reach, an.proven, an.regs, an.runs);
+        g.bases = an.bases;
         g.nocode.extend(an.bounded.keys().copied());
         g.bounded = an.bounded;
         guarded(g);
@@ -1371,6 +1375,7 @@ impl Fixpoint<'_> {
                 let mut extents: FxHashMap<u16, Vec<crate::why::Extent>> = FxHashMap::default();
                 let g = Graph {
                     reach: FxHashMap::default(),
+                    bases: FxHashMap::default(),
                     proven: FxHashMap::default(),
                     runs: Vec::new(),
                     regs: FxHashMap::default(),

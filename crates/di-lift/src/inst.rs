@@ -79,6 +79,8 @@ struct Shape {
     pre: Vec<u16>,
     /// The checks after the instruction ([`crate::objects::Objs::post`]).
     post: Vec<crate::objects::ObjChk>,
+    /// Per access the object the memory map checks it against ([`crate::objects::Objs::machine`]).
+    machine: Vec<Option<u16>>,
     call: Option<u16>,
     stores: Vec<(bool, bool, Vec<ObjSig>)>,
 }
@@ -154,6 +156,9 @@ impl Cx<'_> {
                 .map(|c| c.obj)
                 .collect(),
             post: self.g.objs.post.get(&pc).cloned().unwrap_or_default(),
+            machine: (0..v.acc.len())
+                .map(|i| self.g.objs.machine.get(&(pc, v.op, i)).map(|m| m.0))
+                .collect(),
             call,
             stores,
         })

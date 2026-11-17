@@ -62,6 +62,9 @@ pub struct Objs {
     pub pre: FxHashMap<u16, Vec<ObjChk>>,
     /// Per instruction start, the checks after it of the walks it anchors ([`crate::walks`]).
     pub post: FxHashMap<u16, Vec<ObjChk>>,
+    /// Per access the memory map bounds ([`machine`]), the object its address is checked to
+    /// lie in before it, and the object's bytes.
+    pub machine: FxHashMap<StoreKey, (u16, Iv)>,
 }
 
 /// A load through a pair: its instruction, access, the values of `Y` it adds and its base
@@ -213,7 +216,10 @@ pub fn held(
 /// load is served where its proven hull lies in the bytes `held` ([`held`]) and meets no
 /// volatile range. A pair of `seeds` needs no check: its loads read its words plus `Y`; the
 /// loads of others an object leaves are served by walks ([`walked`]), whose data bytes are
-/// those of the image, or of each of init's runs for the variables `free` it leaves.
+/// those of the image, or of each of init's runs for the variables `free` it leaves. With
+/// `machine` (a closed program over a fixed memory map) the accesses whose bases lie in the
+/// held bytes stay in them ([`machine`]).
+#[allow(clippy::too_many_arguments)]
 pub fn objects(
     g: &Graph,
     roots: &[u16],
@@ -222,6 +228,7 @@ pub fn objects(
     held: Option<(u32, u32)>,
     seeds: &Seeds,
     free: &FxHashMap<u16, Vec<u8>>,
+    machine: bool,
 ) -> (Objs, Proven) {
     let mut out = Objs::default();
     let mut proven = Vec::new();
@@ -238,9 +245,6 @@ pub fn objects(
         if held(h) {
             proven.push((key, (h, h)));
         }
-    }
-    if loads.is_empty() {
-        return (out, proven);
     }
     let stores = zp_stores(g);
     let index: FxHashMap<StoreKey, usize> =
@@ -399,12 +403,19 @@ pub fn objects(
         bytes: Bytes::new(g, free),
         stored: crate::analysis::stored(g),
     };
-    for q in pairs {
+    for &q in &pairs {
         let kill = (stores.iter())
             .filter(|s| s.addr.meets(q as u32, q as u32 + 2))
             .map(|s| s.key.0)
             .collect();
         cx.walked(q, &loads[&q], seeds.get(&q), &kill, &mut out, &mut proven);
+    }
+    if machine {
+        let run = Iv {
+            lo: lo0,
+            hi: end - 1,
+        };
+        self::machine(g, &cx, run, &mut out, &mut proven);
     }
     (out, proven)
 }
@@ -943,6 +954,474 @@ impl<H: Fn(Iv) -> bool> Walked<'_, H> {
         };
         for (s, h) in steps.iter().zip(r.hulls) {
             proven.push((s.l.key, (h, b)));
+        }
+    }
+}
+
+/// Where a value comes from ([`Sources`]): the program's bytes (a table the code indexes in the
+/// held run, by its base; or its held bytes or init's runs at the entries), a constant (of the code, or
+/// of the machine's state outside the program at the entries), a register at an entry, or
+/// anything else.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Src {
+    Prog(Option<u16>),
+    Imm(u8),
+    Entry,
+    Other,
+}
+
+/// The value of register `r` (`Reg`) or of byte `x` (`Mem`) before an instruction start.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Val {
+    Reg(usize, u16),
+    Mem(u32, u16),
+}
+
+/// The sources of the values the program's registers and bytes hold, from its code alone:
+/// along the definitions reaching each use, through copies (and, for an index, arithmetic),
+/// to code constants, the program's bytes and the rest. Song data never decides a source.
+struct Sources<'a, H: Fn(Iv) -> bool> {
+    cx: &'a Walked<'a, H>,
+    run: Iv,
+    /// Per target (a byte; `0x10000 + r` for register `r`), its definitions (the entries,
+    /// else the instruction start defining it) and those reaching each start.
+    defs: FxHashMap<u32, Reaching>,
+    /// Per access the sources of its address's high and low bytes (None: in progress, or a
+    /// byte the code does not form).
+    addr: FxHashMap<StoreKey, Option<AddrSrc>>,
+}
+
+/// A target's definitions and those reaching each instruction start ([`Sources::defs`]).
+type Reaching = (Vec<Option<u16>>, FxHashMap<u16, FixedBitSet>);
+
+/// The sources of an address's high and low bytes.
+type AddrSrc = (FxHashSet<Src>, FxHashSet<Src>);
+
+/// Where a register's value after an instruction writing it comes from: its immediate, what
+/// it reads, another register, itself and what it reads, itself alone, or anything else.
+enum RegSrc {
+    Imm,
+    Load,
+    Copy(usize),
+    Alu,
+    Same,
+    Other,
+}
+
+/// The source kind of a register an instruction of opcode `op` writes.
+fn reg_src(op: u8) -> RegSrc {
+    use di_pcode::reg::{A, X, Y};
+    match op {
+        0xa9 | 0xa2 | 0xa0 => RegSrc::Imm,
+        0xaa | 0xa8 => RegSrc::Copy(A),
+        0x8a => RegSrc::Copy(X),
+        0x98 => RegSrc::Copy(Y),
+        0xe8 | 0xca | 0xc8 | 0x88 | 0x0a | 0x2a | 0x4a | 0x6a => RegSrc::Same,
+        0xa1 | 0xa5 | 0xad | 0xb1 | 0xb5 | 0xb9 | 0xbd => RegSrc::Load,
+        0xa6 | 0xae | 0xb6 | 0xbe | 0xa4 | 0xac | 0xb4 | 0xbc => RegSrc::Load,
+        _ if op & 3 == 1 && matches!(op >> 5, 0 | 1 | 2 | 3 | 7) => RegSrc::Alu,
+        _ => RegSrc::Other,
+    }
+}
+
+/// The register a store of opcode `op` writes, `Some(None)` for a read-modify-write of its
+/// byte, None for another write.
+fn mem_src(op: u8) -> Option<Option<usize>> {
+    use di_pcode::reg::{A, X, Y};
+    match op {
+        0x81 | 0x85 | 0x8d | 0x91 | 0x95 | 0x99 | 0x9d => Some(Some(A)),
+        0x86 | 0x8e | 0x96 => Some(Some(X)),
+        0x84 | 0x8c | 0x94 => Some(Some(Y)),
+        _ if op & 3 == 2
+            && matches!(op >> 5, 0 | 1 | 2 | 3 | 6 | 7)
+            && matches!((op >> 2) & 7, 1 | 3 | 5 | 7) =>
+        {
+            Some(None)
+        }
+        _ => None,
+    }
+}
+
+impl<'a, H: Fn(Iv) -> bool> Sources<'a, H> {
+    /// The definitions of target `t` reaching `pc`.
+    fn reaching(&mut self, t: u32, pc: u16) -> Vec<Option<u16>> {
+        let (g, cx) = (self.cx.g, self.cx);
+        let (ds, ins) = self.defs.entry(t).or_insert_with(|| {
+            let mut defs = vec![Def::Entry];
+            let mut pcs = vec![None];
+            let mut at: FxHashMap<u16, Vec<usize>> = FxHashMap::default();
+            for (&pc, vs) in &g.vars {
+                let hit = |v: &Var| match t {
+                    0x10000.. => writes(v.op, (t - 0x10000) as usize),
+                    x => (v.acc.iter()).any(|a| a.store && !a.dummy && a.addr.meets(x, x + 1)),
+                };
+                if !vs.iter().any(hit) {
+                    continue;
+                }
+                let kill = match t {
+                    0x10000.. => vs.iter().all(hit),
+                    x => {
+                        vs.len() == 1
+                            && (vs[0].acc.iter()).any(|a| a.store && a.addr.value() == Some(x))
+                    }
+                };
+                at.entry(pc).or_default().push(defs.len());
+                defs.push(Def::Store {
+                    s: 0,
+                    kill,
+                    flag: None,
+                });
+                pcs.push(Some(pc));
+            }
+            (pcs, cx.cfg.reaching(cx.roots, &defs, &at))
+        });
+        ins.get(&pc)
+            .map_or(Vec::new(), |i| i.ones().map(|d| ds[d]).collect())
+    }
+
+    /// The sources of the values `work` holds; with `derive`, also through arithmetic on them
+    /// (an index's induction), else such a value is none of a word's ([`Src::Other`]).
+    fn leaves(&mut self, mut work: Vec<Val>, derive: bool) -> FxHashSet<Src> {
+        let g = self.cx.g;
+        let mut out = FxHashSet::default();
+        let mut seen: FxHashSet<Val> = FxHashSet::default();
+        while let Some(val) = work.pop() {
+            if !seen.insert(val) {
+                continue;
+            }
+            let (t, pc) = match val {
+                Val::Reg(r, pc) => (0x10000 + r as u32, pc),
+                Val::Mem(x, pc) => (x, pc),
+            };
+            // At an entry a byte holds what any store left, or else init's value, the program's
+            // (song data), or the machine's state outside both, a constant of the entry.
+            let mut ds = self.reaching(t, pc);
+            if matches!(val, Val::Mem(..)) && ds.contains(&None) {
+                ds.extend(self.defs[&t].0.iter().flatten().map(|&s| Some(s)));
+            }
+            for d in ds {
+                let Some(s) = d else {
+                    match val {
+                        Val::Reg(..) => {
+                            out.insert(Src::Entry);
+                        }
+                        Val::Mem(x, _) if (self.cx.held)(Iv::exact(x)) => {
+                            out.insert(Src::Prog(None));
+                        }
+                        Val::Mem(x, _)
+                            if self
+                                .cx
+                                .bytes
+                                .free
+                                .get(&(x as u16))
+                                .is_some_and(|v| !v.is_empty()) =>
+                        {
+                            out.insert(Src::Prog(None));
+                        }
+                        Val::Mem(x, _) => {
+                            out.insert(Src::Imm(g.img[x as usize]));
+                        }
+                    }
+                    continue;
+                };
+                for v in g.vars.get(&s).into_iter().flatten() {
+                    let cell = |i: u16| {
+                        let a = s.wrapping_add(i);
+                        g.cells
+                            .contains(a as usize)
+                            .then_some(Val::Mem(a as u32, s))
+                    };
+                    match val {
+                        Val::Reg(r, _) if writes(v.op, r) => match reg_src(v.op) {
+                            RegSrc::Imm => match cell(1) {
+                                Some(c) => work.push(c),
+                                None => {
+                                    out.insert(Src::Imm(g.img[s.wrapping_add(1) as usize]));
+                                }
+                            },
+                            RegSrc::Copy(q) => work.push(Val::Reg(q, s)),
+                            RegSrc::Same | RegSrc::Alu if !derive => {
+                                out.insert(Src::Other);
+                            }
+                            RegSrc::Same => work.push(Val::Reg(r, s)),
+                            RegSrc::Load => self.read(s, v, &mut work, &mut out),
+                            RegSrc::Alu => {
+                                work.push(Val::Reg(r, s));
+                                work.extend(cell(1).filter(|_| (v.op >> 2) & 7 == 2));
+                                self.read(s, v, &mut work, &mut out);
+                            }
+                            RegSrc::Other => {
+                                out.insert(Src::Other);
+                            }
+                        },
+                        Val::Mem(x, _) => {
+                            let w = |a: &crate::analysis::Access| {
+                                a.store && !a.dummy && a.addr.meets(x, x + 1)
+                            };
+                            if !v.acc.iter().any(w) {
+                                continue;
+                            }
+                            match mem_src(v.op) {
+                                Some(Some(r)) => work.push(Val::Reg(r, s)),
+                                Some(None) if derive => work.push(Val::Mem(x, s)),
+                                Some(None) => {
+                                    out.insert(Src::Other);
+                                }
+                                None => {
+                                    out.insert(Src::Other);
+                                }
+                            }
+                        }
+                        Val::Reg(..) => {}
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The sources of what variant `v` at `pc` reads: of a byte of one address, its value; of
+    /// several, the program's bytes where the code selects the held run for the access.
+    fn read(&mut self, pc: u16, v: &Var, work: &mut Vec<Val>, out: &mut FxHashSet<Src>) {
+        for (ai, a) in v.acc.iter().enumerate() {
+            if a.store || a.dummy {
+                continue;
+            }
+            match a.addr.value() {
+                Some(x) => work.push(Val::Mem(x, pc)),
+                None => {
+                    let run = self.run;
+                    let ok = (self.access(pc, v, ai)).is_some_and(|(h, l)| {
+                        Self::selects(&h, &l, run, &self.cx.g.cells).is_some()
+                    });
+                    let t = di_pcode::Template::of(v.op);
+                    let b =
+                        crate::analysis::operand_bytes(&self.cx.g.img, &self.cx.g.cells, pc, t.len);
+                    let table = match (a.ptr, b) {
+                        (None, [Some(l), Some(h)]) if t.len == 3 => {
+                            Some(u16::from_le_bytes([l, h]))
+                        }
+                        _ => None,
+                    };
+                    out.insert(if ok { Src::Prog(table) } else { Src::Other });
+                }
+            }
+        }
+    }
+
+    /// The sources of the high and low bytes of the address access `ai` of variant `v` at
+    /// `pc` is formed from: its pointer pairs', or its operand's.
+    fn access(&mut self, pc: u16, v: &Var, ai: usize) -> Option<AddrSrc> {
+        let key = (pc, v.op, ai);
+        if let Some(r) = self.addr.get(&key) {
+            return r.clone();
+        }
+        self.addr.insert(key, None);
+        let g = self.cx.g;
+        let t = di_pcode::Template::of(v.op);
+        let byte = |i: u16| {
+            let a = pc.wrapping_add(i);
+            match (i < t.len as u16, g.cells.contains(a as usize)) {
+                (false, _) => Ok(0),
+                (true, true) => Err(Val::Mem(a as u32, pc)),
+                (true, false) => Ok(g.img[a as usize]),
+            }
+        };
+        let (mut his, mut los) = (FxHashSet::default(), FxHashSet::default());
+        let (mut hv, mut lv) = (Vec::new(), Vec::new());
+        match v.acc[ai].ptr {
+            Some(p) => {
+                let l = p.lo?;
+                for q in l.lo..=l.hi.min(0xff) {
+                    lv.push(Val::Mem(q, pc));
+                    hv.push(Val::Mem((q + 1) & 0xff, pc));
+                }
+            }
+            None => {
+                for (i, (vs, ss)) in [(&mut lv, &mut los), (&mut hv, &mut his)]
+                    .into_iter()
+                    .enumerate()
+                {
+                    match byte(i as u16 + 1) {
+                        Ok(b) => {
+                            ss.insert(Src::Imm(b));
+                        }
+                        Err(c) => vs.push(c),
+                    }
+                }
+            }
+        }
+        if !hv.is_empty() {
+            his.extend(self.leaves(hv, false));
+        }
+        if !lv.is_empty() {
+            los.extend(self.leaves(lv, false));
+        }
+        let r = (!his.is_empty() && !los.is_empty()).then_some((his, los));
+        self.addr.insert(key, r.clone());
+        r
+    }
+
+    /// Whether the code alone selects `block` for an address of high and low bytes from `hi`
+    /// and `lo`: from the program's bytes, or constants making words in `block` (a high byte
+    /// with the program's: its page, holding none of the `cells` the program writes); and
+    /// whether the code's constants alone form it.
+    fn selects(
+        hi: &FxHashSet<Src>,
+        lo: &FxHashSet<Src>,
+        block: Iv,
+        cells: &FixedBitSet,
+    ) -> Option<bool> {
+        let bad = |s: &FxHashSet<Src>| s.contains(&Src::Other) || s.contains(&Src::Entry);
+        if bad(hi) || bad(lo) {
+            return None;
+        }
+        let imm = |s: &FxHashSet<Src>| -> Vec<u32> {
+            (s.iter())
+                .filter_map(|s| match s {
+                    Src::Imm(b) => Some(*b as u32),
+                    _ => None,
+                })
+                .collect()
+        };
+        let prog = |s: &FxHashSet<Src>| s.iter().any(|s| matches!(s, Src::Prog(_)));
+        let code = !prog(hi) && !prog(lo);
+        let ok = match code {
+            true => (imm(hi).iter()).all(|h| {
+                imm(lo)
+                    .iter()
+                    .all(|l| block.meets(h << 8 | l, (h << 8 | l) + 1))
+            }),
+            false => imm(hi).iter().all(|h| {
+                let p = (h << 8) as usize;
+                block.meets(h << 8, (h << 8) + 0x100) && cells.count_ones(p..p + 0x100) == 0
+            }),
+        };
+        ok.then_some(code)
+    }
+}
+
+/// The machine model: the memory map is fixed (the program, other RAM, the I/O pages, the
+/// ROMs), so an access whose every base lies in the bytes `run` the host holds of the program
+/// (its image and the bytes past it it writes) stays in them on every valid run of a closed
+/// program: outside them it would take I/O, ROM or RAM the program never held for its own,
+/// and the program, which works, would not behave as it does. Over every access of no one
+/// address ([`Graph::bases`]), the code alone ([`Sources`]) selects the block it stays in:
+/// where its address's bytes are copies of the program's bytes, whatever they hold, `run` (where
+/// cells lie in it, the run between them holding the tables its high byte is copied from);
+/// where constants of the code form them, making bases in `run`, `run` (a store the lift
+/// bounds to a run of data bytes, that run). Such an access is checked before it against the
+/// block (`Objs::machine`) and proven there, with no check only where the code's constants
+/// form its base and its index (or any index its guard passes) keeps it in the block. Song
+/// data decides neither. Other accesses are left as they were.
+fn machine<H: Fn(Iv) -> bool>(
+    g: &Graph,
+    cx: &Walked<'_, H>,
+    run: Iv,
+    out: &mut Objs,
+    proven: &mut Proven,
+) {
+    let done: FxHashSet<StoreKey> = (proven.iter().map(|p| p.0))
+        .chain(g.proven.iter().filter(|e| (cx.held)(e.1 .0)).map(|e| *e.0))
+        .collect();
+    let mut src = Sources {
+        cx,
+        run,
+        defs: FxHashMap::default(),
+        addr: FxHashMap::default(),
+    };
+    let mut keys: Vec<&StoreKey> = g.bases.keys().collect();
+    keys.sort_unstable();
+    for &key in keys {
+        let (pc, op, ai) = key;
+        let base = g.bases[&key].1;
+        let Some(v) = g
+            .vars
+            .get(&pc)
+            .and_then(|vs| vs.iter().find(|v| v.op == op))
+        else {
+            continue;
+        };
+        let a = v.acc[ai];
+        if is_stack_op(op) || a.dummy || a.addr.value().is_some() || done.contains(&key) {
+            continue;
+        }
+        // A store the lift bounds to the run of data bytes holding its base, taking it to
+        // change no constant code ([`Graph::bounded`]), stays in that run; any other store's
+        // code checks keep the code it may write.
+        let bounded = (g.bounded.get(&key)).filter(|_| a.store);
+        let mut block = bounded.map_or(run, |r| Iv {
+            lo: r.0,
+            hi: r.1 - 1,
+        });
+        let Some((hi, lo)) = src.access(pc, v, ai) else {
+            continue;
+        };
+        let Some(code) = Sources::<H>::selects(&hi, &lo, block, &g.cells) else {
+            continue;
+        };
+        // A load from an address the program's bytes form, whatever they hold, reads the run
+        // of data bytes holding every table its high byte is copied from; one copied from no
+        // table, the held bytes where no cell (a scalar in the C) lies in them. A store so
+        // formed is bounded by `run` alone, its stores' checks keeping the code it may write.
+        if !code {
+            block = run;
+        }
+        if !code && !a.store {
+            let ts: Option<Vec<u32>> = (hi.iter())
+                .filter_map(|s| match s {
+                    Src::Prog(t) => Some(t.map(u32::from)),
+                    _ => None,
+                })
+                .collect();
+            let celled = g.cells.count_ones(run.lo as usize..run.hi as usize + 1) > 0;
+            let of = |t: u32| g.runs.iter().find(|r| r.0 <= t && t < r.1);
+            let one = ts.as_ref().and_then(|ts| {
+                let r = of(*ts.first()?)?;
+                ts.iter().all(|&t| of(t) == Some(r)).then_some(Iv {
+                    lo: r.0,
+                    hi: r.1 - 1,
+                })
+            });
+            match one {
+                Some(r) if Sources::<H>::selects(&hi, &lo, r, &g.cells).is_some() => block = r,
+                None if ts.as_ref().is_none_or(Vec::is_empty) && !celled => {}
+                _ => continue,
+            }
+        }
+        if code {
+            // A store bounded so is taken to stay in its run, which a run past it does not but
+            // where an index guard keeps its base plus the index there.
+            let kept = |&(_, ok): &(u8, Iv)| base.hi + ok.hi <= block.hi;
+            let sure = bounded.is_none() || g.guards.get(&pc).is_some_and(kept);
+            let ix = crate::dispatch::index_reg(di_pcode::Template::of(op));
+            // An index whose values come from the program's bytes takes any value its index
+            // guard, if any, lets pass.
+            let fixed = ix.is_none_or(|r| {
+                let s = src.leaves(vec![Val::Reg(r, pc)], true);
+                s.iter().all(|s| matches!(s, Src::Imm(_) | Src::Entry))
+            });
+            let ok = g.guards.get(&pc).map_or(Iv { lo: 0, hi: 0xff }, |e| e.1);
+            let addr = match fixed {
+                true => a.addr,
+                false => Iv {
+                    lo: base.lo + ok.lo,
+                    hi: base.hi + ok.hi,
+                },
+            };
+            if sure && block.lo <= addr.lo && addr.hi <= block.hi {
+                proven.push((key, (addr, base)));
+                continue;
+            }
+        }
+        let obj = object_id(out, block.lo as u16, block.hi as u16, [pc].into_iter());
+        out.machine.insert(key, (obj, block));
+        // The block bounds a load from an address the program's bytes form, none of their
+        // values; a store so formed is left its stores' checks.
+        match (code, a.store) {
+            (true, _) => proven.extend(crate::vsa::meet(a.addr, block).map(|m| (key, (m, base)))),
+            (false, false) => proven.push((key, (block, block))),
+            (false, true) => {}
         }
     }
 }

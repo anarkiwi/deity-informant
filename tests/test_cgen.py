@@ -1414,7 +1414,8 @@ save:   .byte 0
 end:
 """
 SHORT = """
-entry:  TAX
+entry:  AND #$03
+        TAX
         LDA flags,X
         AND #$01
         BEQ skip
@@ -2087,13 +2088,17 @@ def translate(  # pylint: disable=too-many-arguments,too-many-positional-argumen
     return out
 
 
-def play(tmp_path, c, h, img, labels, calls, sensitive=()):
-    """Compile ``c``/``h`` and replay ``calls`` ``[(name, a)]`` against the reference."""
+def play(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    tmp_path, c, h, img, labels, calls, sensitive=(), trap=None
+):
+    """Compile ``c``/``h`` and replay ``calls`` ``[(name, a)]`` against the reference; with
+    ``trap`` ``(n, k)`` exactly up to call ``n``, which traps with ``k``."""
     (tmp_path / "t.c").write_text(c)
     (tmp_path / "t.h").write_text(h)
     lib = cgenplay.build(tmp_path / "t.c", tmp_path / "t.so")
     names = {n for n, _ in calls}
-    return cgenplay.replay(lib, img, {n: labels[n] for n in names}, calls, [W.IO], sensitive)
+    pcs = {n: labels[n] for n in names}
+    return cgenplay.replay(lib, img, pcs, calls, [W.IO], sensitive, trap=trap)
 
 
 def plain(c):
@@ -2166,14 +2171,15 @@ PTRS_WRITTEN = PTRS.replace(
 
 def test_pointer_reads_go_through_regions(prefix, tmp_path):
     # The pointer's bases are the words of its table: its walks to their zero markers read
-    # the span holding the strings unchecked; strings the entry writes are read by a
-    # bounds-checked read of the span, no dispatch over every region.
+    # the span holding the strings unchecked; strings the entry writes are read plain, the
+    # memory map checking the pointer plus the index, no dispatch over every region.
     c, h, info = check(prefix, tmp_path, PTRS, entry_calls([0, 1, 1, 0]))
     assert not info["unknown_access"] and "rdC" not in c and "CGEN_IX(" in c
     assert all(f"R{k}_ORG" in h for k in range(len(info["regions"])))
     (tmp_path / "w").mkdir()
     c, h, info = check(prefix, tmp_path / "w", PTRS_WRITTEN, entry_calls([0, 1, 1, 0]))
-    assert not info["unknown_access"] and not re.search(r"\brd\(", c) and "rdC0(" in c
+    assert not info["unknown_access"] and not re.search(r"\b(?:rd|rdC\d+)\(", c)
+    assert any(g["def"] == "machine" for t in info["trap_info"].values() for g in t["guards"])
 
 
 def test_pointer_reads_are_kept_off_the_stack_and_io(prefix, tmp_path):
@@ -2187,10 +2193,12 @@ def test_pointer_reads_are_kept_off_the_stack_and_io(prefix, tmp_path):
 
 def test_pointer_from_split_tables_reads_one_span(prefix, tmp_path):
     # A data byte indexes the pointer's split tables (the index unbounded: they are read inside
-    # their extent) and the offset grows by each record's length: every read is a bounds-checked
-    # read of the span holding the records, with no dispatch over the regions.
+    # their extent) and the offset grows by each record's length: every read is a plain read
+    # of the span holding the records, checked by the memory map, with no dispatch over the
+    # regions.
     c, _, info = check(prefix, tmp_path, SONGPTR, entry_calls([0, 1, 2, 1, 0]))
-    assert not re.search(r"\brd\(", c) and "rdC0(" in c and not info["unknown_access"]
+    assert not re.search(r"\b(?:rd|rdC\d+)\(", c) and not info["unknown_access"]
+    assert "CGEN_IX(C0," in c
     labels = assemble(SONGPTR)[1]
     [(lo, hi)] = info["code_held"]
     assert lo <= labels["p0"] and labels["end"] <= hi
@@ -2221,15 +2229,26 @@ def test_pointer_advanced_by_record_lengths(prefix, tmp_path, src):
     assert lo <= labels["p0"] and labels["end"] <= hi and not info["unknown_access"]
 
 
-@pytest.mark.parametrize("src,unchecked", [(ORDER, True), (ORDERBAD, False)], ids=["ok", "bad"])
-def test_end_marker_tested_before_its_pointer(prefix, tmp_path, src, unchecked):
-    # The pointer's high byte comes from a table whose zero marks the end of the order: the
-    # branch on it leaves only indices of nonzero bytes, and the restart index the marker's
-    # entry gives names a nonzero byte, so at the order positions play reaches the pointer
-    # never names zero page and its read is plain. When a restart play reaches names another
-    # marker, it does: the span's reader reads zero page through ``oob_rd``.
-    c, _, _ = songs(prefix, tmp_path, src, (0,))
-    assert not re.search(r"\brd\(", c) and ("rdC0(" in c) != unchecked
+def test_end_marker_tested_before_its_pointer(prefix, tmp_path):
+    """The pointer's high byte comes from a table whose zero marks the end of the order: the
+    branch on it leaves only indices of nonzero bytes, and the restart index the marker's
+    entry gives names a nonzero byte, so at the order positions play reaches the pointer
+    never names zero page and its read is plain, checked by the memory map."""
+    c, _, _ = songs(prefix, tmp_path, ORDER, (0,))
+    assert not re.search(r"\brd\(", c) and "rdC0(" not in c
+
+
+def test_end_marker_restart_past_the_order(prefix, tmp_path):
+    """When a restart play reaches names another marker, the pointer the order's tables make
+    names zero page, outside the program: invalid input, whatever the tables hold. The calls
+    replay exactly until that read, which traps at the memory map's check of it, as does the
+    order position run on past the order's tables."""
+    img, labels, loaded = assemble(ORDERBAD)
+    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=[0])
+    assert not re.search(r"\brd\(", c) and machine_guard(info, labels["play"] + 3) is not None
+    k = machine_guard(info, labels["ok"] + 13)
+    calls = [("init", 0)] + [("play", k) for k in range(4)] * 2
+    play(tmp_path, c, h, img, labels, calls, trap=(3, k))
 
 
 PUSH = """
@@ -2247,15 +2266,16 @@ end:
 
 
 def test_store_past_its_array_is_out_of_bounds(prefix, tmp_path):
-    # The push index grows without bound: the store is bounds-checked against the array its
-    # base lies in and goes to oob_wr past it, not into the code after it.
+    # The push index grows without bound: the store writes the array its base lies in,
+    # checked by the memory map against it, never into the code after it.
     img, labels, loaded = assemble(PUSH)
     c, h, info = translate(prefix, img, labels, loaded)
     play(tmp_path, c, h, img, labels, entry_calls([5, 6, 7]))
     body = c.split("void entry")[1]
-    assert "oob_wr(" in body and not re.search(r"\b(?:wr|codechk)\(", body)
+    assert not re.search(r"\b(?:oob_wr|wr|codechk)\(", body)
+    assert machine_guard(info, labels["entry"] + 3) is not None
     [k] = [k for k, (org, n) in enumerate(info["regions"]) if org == labels["stack"]]
-    assert info["regions"][k][1] == 3 and re.search(rf"if \(.*R{k}_LEN\)", body)
+    assert info["regions"][k][1] == 3 and re.search(rf"\bR{k}\[v\d+\] = a;", body)
     assert cgen.lift(img, [(labels["entry"], "entry")], [W.IO], loaded=loaded)[0].bounded == {
         labels["entry"] + 3: (labels["stack"], labels["entry"])
     }
@@ -2279,12 +2299,13 @@ end:
 
 
 def test_checked_store_in_a_condition_is_a_statement(prefix, tmp_path):
-    # A bounds-checked store is an if/else statement, no expression: the branch holding it is
-    # not composed into the test before it as a comma expression.
+    # A store the memory map checks is an if/else statement, no expression: the branch holding
+    # it is not composed into the test before it as a comma expression.
     img, labels, loaded = assemble(PUSHIF)
-    c, h, _ = translate(prefix, img, labels, loaded)
+    c, h, info = translate(prefix, img, labels, loaded)
     play(tmp_path, c, h, img, labels, entry_calls([3, 0xFF, 0xFF, 2, 0xFF, 0]))
-    assert "oob_wr(" in c and not re.search(r", +if \(", c)
+    assert machine_guard(info, labels["entry"] + 6) is not None
+    assert "oob_wr(" not in c and not re.search(r", +if \(", c)
 
 
 CALLRET = """
@@ -2357,14 +2378,16 @@ IOJUMP = CALLRET.replace(
 @pytest.mark.parametrize("src,bounded", [(CALLRET, True), (IOJUMP, False)], ids=["song", "io"])
 def test_pointer_loaded_from_song_data_and_its_stack(prefix, tmp_path, src, bounded):
     # A jump loads the song pointer from two song bytes, a call pushes it (advanced past the
-    # command) on a stack whose depth nothing bounds and a return pops it: the pointer points
-    # into the song on every path, so its reads are one span's, plain where the states play
-    # reaches bound them, and the push is bounds-checked against the stack. Loaded from I/O
-    # instead, it may point anywhere: the span's reader reads ``oob_rd`` outside the program.
+    # command) on a stack whose depth nothing bounds and a return pops it: the pointer's
+    # words, popped past the stack's bytes as the depth runs on, are no provenance's, so its
+    # reads keep the span's reader; the push is checked by the memory map against the
+    # stack's bytes. Loaded from I/O instead, it may point anywhere: the span's reader reads
+    # ``oob_rd`` outside the program.
     img, labels, loaded = assemble(src)
     c, h, info = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
-    assert not re.search(r"\brd\(", c) and ("rdC0(" in c) != bounded
-    assert "oob_wr(" in c and not re.search(r"\bwr\(", plain(c))
+    assert not re.search(r"\brd\(", c) and "rdC0(" in c
+    assert machine_guard(info, labels["call"] + 8) is not None
+    assert not re.search(r"\b(?:oob_wr|wr)\(", plain(c))
     if bounded:
         [(lo, hi)] = info["code_held"]
         assert lo <= labels["song"] and labels["end"] <= hi
@@ -2443,15 +2466,15 @@ def test_pointer_init_leaves_bounds_its_reads(at):
     # The pair init leaves is a variable: pointing into the records' run of data bytes, play's
     # reads through it are bounded to that run in the pass that bounds pointers into the
     # program's data; pointing at an instruction, it is taken not to be read through, and the
-    # reads are bounded by what play stores. The hulls that hold on every run take nothing of
-    # the value.
+    # reads are bounded by what play stores. Either value lies in the program, so the reads
+    # hold to it on every valid run, the memory map checking them.
     src = LEFT.replace("lo(read)", f"lo({at})").replace("hi(read)", f"hi({at})")
     img, labels, loaded = assemble(src)
     ents = [(labels["init"], "init"), (labels["play"], "play")]
     p, _ = cgen.lift(img, ents, [W.IO], loaded=loaded, init=0)
     read = labels["read"] + 2
     assert p.reach[read][0] == labels["plo" if at == "p1" else "p0"]
-    assert p.proven[read][:2] == (0, 0xFFFF)
+    assert p.proven[read][:2] == (loaded[0], loaded[1] - 1)
 
 
 def test_zero_page_cleared_then_a_pointer_set_through_an_index(prefix, tmp_path):
@@ -2485,7 +2508,14 @@ def test_constant_table_bounds_an_index(prefix, tmp_path):
 
 
 def test_read_off_a_table_into_code(prefix, tmp_path):
-    c, _, info = check(prefix, tmp_path, OOB, entry_calls([0], 64))
+    """An index run off its table reads the code after it, held; past the program's end it
+    would read RAM the program never held, invalid input: the read traps at the memory map's
+    check there, every call before it exact."""
+    img, labels, loaded = assemble(OOB)
+    c, h, info = translate(prefix, img, labels, loaded)
+    k = machine_guard(info, labels["entry"] + 3)
+    n = labels["end"] - labels["tab"]
+    play(tmp_path, c, h, img, labels, entry_calls([0], 64), trap=(n, k))
     assert "C0[" in c
     assert info["code_span"][0] == W.assemble(OOB)[1]["entry"]
     [(lo, hi)] = info["code_held"]
@@ -2669,7 +2699,13 @@ def test_table_region_past_the_code_span(prefix, tmp_path):
 def test_pointer_stores_from_a_terminated_table_make_cells(prefix, tmp_path):
     c, _, info = check(prefix, tmp_path, RELOCATOR, entry_calls([0, 1, 1, 0, 1]))
     st = info["stats"]
-    assert pointer_checks_only(info, RELOCATOR) and "codechk" not in c
+    # The stores through the pointers the table makes are checked by the memory map, whatever
+    # words the table holds.
+    rloop = assemble(RELOCATOR)[1]["rloop"]
+    machine = {machine_guard(info, rloop + 16), machine_guard(info, rloop + 21)}
+    assert None not in machine and "codechk" not in c
+    rest = {k: t for k, t in info["traps"].items() if k not in machine}
+    assert pointer_checks_only({**info, "traps": rest}, RELOCATOR)
     assert (st["code_guards"], st["cells"]) == (0, 4)
 
 
@@ -2869,12 +2905,13 @@ def regions_of(h):
 
 def test_unbounded_table_store_ends_with_the_program(prefix, tmp_path):
     """A split table at the end of the program stored at a song byte the code does not bound:
-    its arrays end with the program, and a store past it traps."""
+    its arrays end with the program, and a store past it traps (the loads at the byte are
+    checked by the memory map)."""
     img, labels, loaded = assemble(SONGTAB)
     c, h, info = translate(prefix, img, labels, loaded)
     assert arrays_end(h) == labels["end"]
-    [(k, key)] = info["traps"].items()
-    assert key == ("deopt", labels["entry"] + 19) and f"trap({k})" in c
+    [k] = [k for k, key in info["traps"].items() if info["trap_info"][k]["kind"] == "index"]
+    assert info["traps"][k] == ("deopt", labels["entry"] + 19) and f"trap({k})" in c
     play(tmp_path, c, h, img, labels, entry_calls([0], 4))
     (tmp_path / "past").mkdir()
     with pytest.raises(AssertionError, match="trap"):
@@ -2925,33 +2962,35 @@ end:
 
 
 def test_guarded_store_and_the_loads_it_dominates_are_plain(prefix, tmp_path):
-    """A store into a table ending the program past an index guard, and a load of the same
-    index after it, address the region with no run test; the load of the index plus one keeps
-    its test, and an index past the table traps."""
+    """A store into a table ending the program past an index guard, and loads of the same
+    index and of the index plus one after it, address the region with no run test (the loads
+    checked by the memory map), and an index past the table traps."""
     img, labels, loaded = assemble(GUARDLD)
     c, h, info = translate(prefix, img, labels, loaded)
     body = body_of(c, "entry")
-    [(t, key)] = info["traps"].items()
-    assert key == ("deopt", labels["entry"] + 7) and f"trap({t})" in body
+    [t] = [k for k, key in info["traps"].items() if info["trap_info"][k]["kind"] == "index"]
+    assert info["traps"][t] == ("deopt", labels["entry"] + 7) and f"trap({t})" in body
     assert "oob_wr(" not in body and re.search(r"\bR0\[5 \+ (v\d+)\] = \1;", body)
     assert re.search(r"io_write\(0xC000, R0\[1 \+ v\d+\]\)", body)
-    assert body.count("oob_rd(") == body.count("R0_LEN") == 1
-    play(tmp_path, c, h, img, labels, entry_calls([0], 4))
-    (tmp_path / "past").mkdir()
-    with pytest.raises(AssertionError, match="trap"):
-        play(tmp_path / "past", c, h, img, labels, entry_calls([0], 5))
+    assert "oob_rd(" not in body and "R0_LEN" not in body
+    # The fourth call's load of the index plus one would read past the program.
+    k = machine_guard(info, labels["entry"] + 17)
+    play(tmp_path, c, h, img, labels, entry_calls([0], 5), trap=(3, k))
 
 
 def test_load_the_guard_does_not_dominate_keeps_its_test(prefix, tmp_path):
-    """A load of the guarded index reached past the guarded store or around it is tested."""
+    """A load of the guarded index reached past the guarded store or around it is checked, by
+    the memory map, plain."""
     src = GUARDLD.replace("        TYA\n", "        LSR A\n        BCC skip\n        TYA\n")
     src = src.replace("        LDA tlo,Y\n", "skip:   LDA tlo,Y\n")
     img, labels, loaded = assemble(src)
     c, h, info = translate(prefix, img, labels, loaded)
     body = body_of(c, "entry")
-    assert len(info["traps"]) == 1 and "oob_wr(" not in body
-    assert body.count("oob_rd(") == 2
-    play(tmp_path, c, h, img, labels, [("entry", a) for a in (0, 1, 2, 3)])
+    kinds = sorted(info["trap_info"][k]["kind"] for k in info["traps"])
+    assert kinds == ["index", "objchk", "objchk"] and "oob_wr(" not in body
+    assert "oob_rd(" not in body
+    k = machine_guard(info, labels["entry"] + 20)
+    play(tmp_path, c, h, img, labels, [("entry", a) for a in (0, 1, 2, 3)], trap=(3, k))
 
 
 def meta_keyed(info):
@@ -3038,8 +3077,8 @@ def test_index_trap_names_its_table(prefix, src, at, ok, spec, writers):
     """An index past its table's extent traps with the table it guards: what the table holds,
     where its column starts and what ends it, and for a code cell the store writing it."""
     labels, info = trap_meta(prefix, src)
-    _, t = min(info["trap_info"].items())
     pc = labels[at[0]] + at[1]
+    [t] = [t for t in info["trap_info"].values() if t["kind"] == "index"]
     [g] = t["guards"]
     assert (t["kind"], t["pc"], t["fn"], t["copies"]) == ("index", pc, None, [])
     assert (g["kind"], g["at"], g["reg"], as_runs(g["ok"])) == ("index", pc, "y", [(0, ok)])
@@ -3347,8 +3386,8 @@ def test_init_entry_trap_names_the_songs(prefix):
 
 def test_code_traps_name_their_writers(prefix):
     """Opcode cells of the routine init's copy may overwrite trap on bytes other than their
-    own opcodes, naming the stores that may write them; a store that may write anything also
-    checks the code and the stack."""
+    own opcodes, naming the stores that may write them; a store that may write any of the
+    program's bytes also checks the code."""
     labels, info = trap_meta(prefix, TABLECOPY, ("init", "play"))
     pre, copy = labels["pre"], labels["copy"]
     writers = [
@@ -3366,12 +3405,13 @@ def test_code_traps_name_their_writers(prefix):
     ]
     assert all(g["writers"] == writers for g in ops["opcode"])
     assert all(tuple(g["addr"]) == (g["at"],) * 2 for g in ops["opcode"])
+    # The store's address is formed from the bytes the copy writes, the program's whatever
+    # they hold: the memory map keeps it in the bytes the host holds, so it checks the code
+    # there, and no stack.
     [code] = ops["codechk"]
-    assert (code["at"], tuple(code["addr"])) == (pre + 2, (0, 0xFFFF))
-    assert code["writers"] == [writers[1]]
-    [stack] = ops["stack"]
-    assert (stack["at"], tuple(stack["addr"])) == (pre + 2, (0, 0xFFFF))
-    assert as_runs(stack["ok"]) == [(0, 0x1FB), (0x200, 0xFFFF)]
+    [held] = [g for g in ops["objchk"] if g["at"] == pre + 2]
+    assert (code["at"], code["addr"]) == (pre + 2, held["addr"]) and held["addr"][0] == 0x1000
+    assert code["writers"] == [writers[1]] and "stack" not in ops
 
 
 def test_code_check_names_its_store(prefix):
@@ -3399,10 +3439,12 @@ def test_zone_trap_names_the_pages_a_pointer_store_may_not_reach(prefix):
 
 def test_window_trap_names_its_pair(prefix):
     """The pair defined from a table traps after its high byte's store when its word lies
-    within a window of the stack or the I/O page."""
-    labels, info = trap_meta(prefix, PG.TABLE + "end:\n")
+    within a window of the stack or the I/O page. Its high byte is computed from the table's,
+    no copy of it, so the memory map does not bound it."""
+    src = PG.TABLE.replace("        LDA hitab,X\n", "        LDA hitab,X\n        ORA #$00\n")
+    labels, info = trap_meta(prefix, src + "end:\n")
     k, t, g = only_guard(info)
-    store = labels["entry"] + 12
+    store = labels["entry"] + 14
     assert info["traps"][k] == ("deopt", store + 2) and t["kind"] == "window"
     assert (g["at"], g["pair"], tuple(g["addr"])) == (store, PG.PTR, (PG.PTR + 1,) * 2)
     assert as_runs(g["ok"]) == [(0x200, 0xBEFF), (0xC100, 0xFFFF)]
@@ -3661,9 +3703,10 @@ end:
 
 def test_loop_exits_through_copies_break_to_their_follow(prefix, tmp_path):
     """A loop's two exits to one follow, each copying another value of a register into it,
-    are its copies then ``break``: no goto."""
+    join at the follow, which runs once: no goto. (The memory map's check of the table read,
+    whose index the entry's argument starts, is the loop's third exit.)"""
     c, _, info = check(prefix, tmp_path, TWOEXITS, entry_calls([0, 2, 4, 1]))
-    assert info["structure"]["gotos"] == 0 and c.count("break;") == 2
+    assert info["structure"]["gotos"] == 0 and c.count("io_write(0xC000,") == 1
 
 
 @pytest.mark.parametrize("gap_data", [False, True])
@@ -3746,7 +3789,8 @@ def test_relocation_invariance(prefix, tmp_path):
     for org in (0x1000, 0x2345):
         img, labels, loaded = assemble(RELOC, org)
         c, h, _ = translate(prefix, img, labels, loaded)
-        play(tmp_path, c, h, img, labels, entry_calls(range(4), 2))
+        # An odd ``A`` makes a pointer of two words' halves: invalid input.
+        play(tmp_path, c, h, img, labels, entry_calls([0, 2, 2, 0], 2))
         outs.append((c, h))
     assert outs[0][0] == outs[1][0] and outs[0][1] != outs[1][1]
     assert not re.search(r"0x1[0-9A-F]{3}\b|0x23[0-9A-F]{2}\b", outs[0][0])
@@ -4468,7 +4512,6 @@ def _shuffled(parse, seed):
     return run
 
 
-@pytest.mark.timeout(120)
 @pytest.mark.parametrize("name", ["EXITS", "IRRED", "TAIL3", "SUBS", "VOICES"])
 def test_deterministic(prefix, monkeypatch, name):
     img, labels, loaded = assemble(globals()[name])
@@ -4938,27 +4981,29 @@ def test_bytes_init_leaves_constant_are_held_where_read(prefix, tmp_path, indexe
 def test_init_relocating_by_the_song_leaves_pointer_cells(prefix, tmp_path):
     """Init computing an operand from ``A`` writes both its bytes: the low byte's value
     differs between values of ``A``, so the operand is a variable the other entry reads
-    through as a pointer, its high byte too though init leaves it one value, plain inside the
-    table ``A`` indexes on every state play reaches; the flag init leaves one value for every
-    ``A`` is a constant."""
+    through as a pointer, its high byte too though init leaves it one value. Its words are
+    init's, and no table of the code's lies between the program's cells (scalars in the C) to
+    bound them: its read keeps the data span's bounds-checked reader, no check of the memory
+    map's; the flag init leaves one value for every ``A`` is a constant."""
     c, info, labels = songs(prefix, tmp_path, INITA, range(4))
     assert {labels["o0"] + 1, labels["o0"] + 2} <= set(info["provenance"]["cells"])
     assert info["fixed"] == [labels["flag"]]
     body = body_of(c, "play")
-    ix = r"CGEN_IX\(C0, \(S_\w+ \| \(\(uint16_t\)S_\w+ << 8\)\) - C0_ORG, a & 3\)"
-    assert re.search(ix, body) and "rdC" not in body
+    assert re.search(r"rdC\d+\(S_\w+ \| \(\(uint16_t\)S_\w+ << 8\), ", body)
+    assert machine_guard(info, labels["o0"]) is None
     assert "K_I" in body
 
 
-@pytest.mark.timeout(120)
 def test_song_range_is_checked_not_assumed(prefix, tmp_path):
     """The songs the host calls init with are checked at init, and assumed nowhere: the
     pointer each song init takes leaves, which play never stores, seeds the pair, songs
-    pointing at I/O among them, so its reads keep their checks for every count of songs, the
-    ``.c`` the same, the header holding each song's values; a song outside the range traps."""
-    c, _, labels = songs(prefix, tmp_path, SONGINIT, (0, 1), declared=range(2))
+    pointing at I/O among them, so the memory map checks its reads for every count of songs,
+    the ``.c`` the same, the header holding each song's values; a song outside the range
+    traps."""
+    c, info, labels = songs(prefix, tmp_path, SONGINIT, (0, 1), declared=range(2))
     guard = r"if \(\(uint8_t\)\(a - CGEN_SONG0\) >= CGEN_SONGS\) \{\s*trap\("
-    assert "rdC0(" in body_of(c, "play") and re.search(guard, c)
+    machine = [g for t in info["trap_info"].values() for g in t["guards"] if g["def"] == "machine"]
+    assert machine and re.search(guard, c)
     img, labels, loaded = assemble(SONGINIT)
     one = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=range(1))
     assert one[0] == c and "#define CGEN_SONGS 1" in one[1]
@@ -4977,7 +5022,6 @@ def test_song_values_are_a_range(prefix):
     assert "#define CGEN_SONG0 0x01" in h and "#define CGEN_SONGS 2" in h
 
 
-@pytest.mark.timeout(120)
 @pytest.mark.parametrize(
     "order",
     [[1, 2, 3, 4, 5, 6, 7, 8], [0x81, 2, 0x90, 0xA0, 5, 6, 7, 8], [0x81] * 7 + [3]],
@@ -5016,7 +5060,6 @@ def test_init_io_writes_song_data_decides_are_replayed(prefix, tmp_path):
     assert len(texts) == 1
 
 
-@pytest.mark.timeout(120)
 def test_init_io_writes_are_replayed_in_order(prefix, tmp_path):
     """A replayed init's I/O writes are replayed in their order (a clearing loop's one by
     one), and the bytes it stores, which the other entry never writes, are constants it
@@ -5116,7 +5159,6 @@ end:
 """
 
 
-@pytest.mark.timeout(120)
 def test_init_probe_of_a_derived_register_is_a_run_time_choice(prefix, tmp_path):
     """Init probing a register its own writes derive (voice 3's oscillator) and patching
     play's opcode by what it reads is translated: the C reads the device once and patches
@@ -5442,14 +5484,17 @@ def test_index_bound_through_a_call_keeps_a_read_inside(prefix, tmp_path, bounde
     """A song byte stored as a pattern number only below $80 (the branch on the flags the
     callee's load left) indexes a table whose first 128 bytes lie in the image: the read is
     proved inside and reads it unchecked. Stored whatever its sign, the index may reach past
-    the image: the read goes through the span's bounds-checked reader."""
+    the image: the read is plain, checked by the memory map, and the pattern $FF, past the
+    program, traps there, every call before it exact."""
     src = PATNUM if bounded else PATNUM.replace("        BMI keep\n", "")
     img, labels, loaded = assemble(src)
-    c, h, _ = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=[0])
-    play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", k) for k in range(8)])
+    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=[0])
     body = body_of(c, "play")
-    assert (not re.search(r"\b(?:oob_rd|rdC\d+)\(", body)) == bounded
-    assert ("rdC0(" in body) != bounded
+    assert not re.search(r"\b(?:oob_rd|rdC\d+)\(", body)
+    k = machine_guard(info, labels["keep"] + 3)
+    assert (k is None) == bounded
+    trap = None if bounded else (1 + 7, k)
+    play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", k) for k in range(8)], trap=trap)
 
 
 SIGNIDX = (
@@ -5493,18 +5538,22 @@ def test_flag_narrows_every_register_holding_its_value(prefix, tmp_path, test):
 
 def test_regions_stop_at_the_loaded_image(prefix, tmp_path):
     """A table read with any index reaches past the image: its region ends with the image,
-    and a read past it is out of bounds. A byte past the image a store writes is held, and
-    ``oob_rd`` reads it as stored."""
+    and a read past it is invalid input, the memory map's check trapping it. A byte past the
+    image a store writes is held, and ``oob_rd`` reads it as stored; the byte past it is
+    again invalid input."""
     img, labels, loaded = assemble(PAST)
-    c, h, _ = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=[0])
+    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=[0])
     play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", a) for a in range(4)])
-    assert "oob_rd(" in body_of(c, "play")
+    assert "oob_rd(" not in body_of(c, "play") and machine_guard(info, labels["play"] + 1)
     assert re.search(r"#define R\d+_LEN 4\b", h)
     src = PAST.replace("init:   RTS", "init:   LDA #$07\n        STA end+2\n        RTS")
     img, labels, loaded = assemble(src)
-    c, h, _ = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=[0])
+    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=[0])
     (tmp_path / "w").mkdir()
-    play(tmp_path / "w", c, h, img, labels, [("init", 0)] + [("play", a) for a in (0, 6, 7)])
+    calls = [("init", 0)] + [("play", a) for a in (0, 6, 7)]
+    play(
+        tmp_path / "w", c, h, img, labels, calls, trap=(3, machine_guard(info, labels["play"] + 1))
+    )
     assert "oob_rd(" in body_of(c, "play") and re.search(r"#define R\d+_LEN 1\b", h)
 
 
@@ -5603,7 +5652,7 @@ def test_short_circuit_conditions(prefix, tmp_path):
     load between them runs before the test, as it has no effect."""
     c, _, info = check(prefix, tmp_path, SHORT, entry_calls(range(4), 3))
     _, labels, _ = assemble(SHORT)
-    first = labels["entry"] + 6
+    first = labels["entry"] + 8
     assert info["provenance"]["conditions"] == [
         [first, first + 5],
         [labels["skip"] + 2, labels["skip"] + 6],
@@ -5722,7 +5771,6 @@ def fixture_blocks(prefix, tmp_path_factory):
     return check(prefix, tmp_path_factory.mktemp("blocks"), BLOCKS, calls)
 
 
-@pytest.mark.timeout(180)
 def test_block_copy_stores_have_per_block_addresses(blocks):
     """A block copy through a pointer a page loop advances (a rotated loop over pages, then the
     remainder) whose destination, source and length are table bytes of one block number: its
@@ -5734,7 +5782,6 @@ def test_block_copy_stores_have_per_block_addresses(blocks):
     assert 0x5000 in spans and 0x6000 in spans and spans[0x6000] <= 0x200
 
 
-@pytest.mark.timeout(300)
 def test_block_copy_indexes_the_blocks_directly(blocks):
     """The copy's stores have address sets in the data regions: they index the regions they
     span directly, testing only those, with no wr dispatch; the bases reaching each region
@@ -5755,7 +5802,7 @@ def test_block_copy_indexes_the_blocks_directly(blocks):
     [
         "TABLES",
         "PTRS",
-        pytest.param("BLOCKS", marks=pytest.mark.timeout(180)),
+        "BLOCKS",
         "VOICES",
         "RELOCATOR",
     ],
@@ -6213,7 +6260,9 @@ def test_size_attribution(prefix, tmp_path):
     per = csize.attribute(tmp_path / "t.c", so, info, image, loaded[0], tmp_path / "t.h")
     entry = per["entry"]
     assert entry["text"] == sum(entry.get(o, 0) for o in csize.ORIGINS) > 0
-    assert 0 < entry["original"] <= labels["ptrs"] - labels["entry"] and entry["dispatch"] > 0
+    # The read of the strings the entry writes is plain, the memory map's check its trap path.
+    assert 0 < entry["original"] <= labels["ptrs"] - labels["entry"] and entry.get("trap", 0) > 0
+    assert not entry.get("dispatch", 0)
     table = csize.report(per)
     assert table.splitlines()[-1].startswith("| total |")
     args = [str(tmp_path / "t.c"), str(so), "--info", str(tmp_path / "info.json")]
@@ -6661,12 +6710,15 @@ def test_strided_records_aliased_by_an_interval_stay_memory(prefix, tmp_path):
 
 def test_record_walk_store_is_c_state(prefix, tmp_path):
     """The store patched from a record walk's selectors writes its three words: its operand
-    is C state, with no check against code and no dispatch."""
+    is C state, with no check against code and no dispatch, the memory map checking it."""
     c, _, info = check(prefix, tmp_path, VS.WALK, entry_calls(range(4), 2))
     body = body_of(c, "entry")
     assert "codechk" not in c and "rd(" not in body and "wr(" not in body
-    assert "trap(" not in body
     img, labels, _ = assemble(VS.WALK)
+    # The words the walk's selectors copy, whatever they hold, the memory map bounds alone.
+    guards = [g for t in info["trap_info"].values() for g in t["guards"]]
+    assert machine_guard(info, labels["dst"]) is not None
+    assert all(g["def"] == "machine" for g in guards)
     assert info["ptr_sets"][labels["loop"]] == sorted([labels["r0"], labels["r1"]])
     assert img[labels["dst"]] == 0x8D
 
@@ -6732,7 +6784,6 @@ def test_seeded_walks_c_is_the_same_across_runs(prefix, tmp_path):
     assert out[0][0] == out[1][0] and out[0][1] != out[1][1]
 
 
-@pytest.mark.timeout(120)
 @pytest.mark.parametrize("src", [TO.CURSOR, TO.COUNTED], ids=["plain", "counted"])
 def test_cursors_read_plain(prefix, tmp_path, src):
     """Cursors play keeps between calls, reset at their data's markers, read the records and
@@ -6744,10 +6795,9 @@ def test_cursors_read_plain(prefix, tmp_path, src):
         play(tmp_path, c, h, img, labels, [("init", song)] + [("play", 0)] * 150)
 
 
-@pytest.mark.timeout(600)
 def test_cursor_stepped_by_a_modelled_read_reads_plain(prefix, tmp_path):
     """A cursor stepped by an I/O read the model answers with 0 or 1 reads plain; the same
-    read answering any byte keeps the bounds-checked reader."""
+    read answering any byte reads plain too, the memory map checking it."""
     img, labels, loaded = assemble(TO.POLLED)
     img[0xC003] = 1
     ents = [(labels[n], n) for n in ("init", "play")]
@@ -6756,21 +6806,22 @@ def test_cursor_stepped_by_a_modelled_read_reads_plain(prefix, tmp_path):
     assert "rdC" not in c
     for song in range(4):
         play(tmp_path, c, h, img, labels, [("init", song)] + [("play", 0)] * 150)
-    assert "rdC" in cgen.translate(img, ents, [W.IO], devices=None, **kw)[0]
+    assert "rdC" not in cgen.translate(img, ents, [W.IO], devices=None, **kw)[0]
 
 
 def test_cursor_a_store_may_write_keeps_its_check(prefix, tmp_path):
-    """A cursor another entry's store of unknown address may write bounds nothing: its record
-    load keeps the bounds-checked reader, and the program replays."""
+    """A cursor another entry's store of unknown address may write bounds nothing, but the
+    record pointer's words, which play stores just before its load, lie in the program: the
+    load reads plain, the memory map checking the pointer plus the cursor, and the program
+    replays."""
     img, labels, loaded = assemble(TO.POKED)
     c, h, _ = translate(
         prefix, img, labels, loaded, entries=("init", "play", "poke"), init=0, songs=range(4)
     )
-    assert "rdC" in body_of(c, "play")
+    assert "rdC" not in body_of(c, "play") and "CGEN_OBJ" in body_of(c, "play")
     play(tmp_path, c, h, img, labels, [("init", 1)] + [("play", 0), ("poke", 0)] * 40)
 
 
-@pytest.mark.timeout(120)
 def test_cursor_bounds_are_the_headers(prefix):
     """The bounds the reachable states give the cursors' loads are the ``.h``'s: the spans they
     read are named there, and no record or segment address is a literal of the ``.c``."""
@@ -6919,17 +6970,13 @@ def test_unknown_write_of_unheld_byte_reads_back(prefix, tmp_path):
 
 
 def test_store_past_its_array_into_the_program_traps(prefix, tmp_path):
-    """A bounds-checked store past its array into a byte of the program the translation
-    holds no copy of traps (``OOB_TRAP``) where the 6502 would change the program: every
-    byte a store may write is in an array, so none is held besides (``CGEN_RAM``)."""
+    """A store past its array into the program traps where the 6502 would change the
+    program: the memory map holds the store to the array its base lies in, so the store
+    past it is invalid input, trapped at its check."""
     img, labels, loaded = assemble(PUSH)
-    c, h, _ = translate(prefix, img, labels, loaded)
-    assert "#define CGEN_RAM_N 0\n" in h
-    play(tmp_path, c, h, img, labels, entry_calls([5, 6, 7]))
-    lib = cgenplay.build(tmp_path / "t.c", tmp_path / "t2.so")
-    lib.call.argtypes = [ctypes.c_void_p, ctypes.c_uint8]
-    fn = ctypes.cast(lib.entry, ctypes.c_void_p)
-    assert [lib.call(fn, a) for a in (5, 6, 7, 8)] == [-1, -1, -1, cgen.OOB_TRAP]
+    c, h, info = translate(prefix, img, labels, loaded)
+    k = machine_guard(info, labels["entry"] + 3)
+    play(tmp_path, c, h, img, labels, entry_calls([5, 6, 7, 8]), trap=(3, k))
 
 
 @pytest.mark.parametrize("src", ["PUSH", "UNHELD_RMW", "ZPPTR", "STRAY", "CALLRET"])
@@ -7145,3 +7192,233 @@ def test_c_holds_for_any_count_of_declared_songs(prefix, tmp_path):
         [t] = [t for t in info["trap_info"].values() if t["pc"] == store]
         assert t["kind"] == "index" and t["implied_by"] == [traps.ENTRY]
         assert as_runs(t["guards"][0]["ok"]) == [(0, 31)]
+
+
+#: A record cursor into patterns a table of pointers names, stepped a byte a call and reset
+#: at a pattern's 0 terminator to the next pattern; ``{set}`` forms the read ``rd`` of the
+#: pattern's byte at the cursor from ``Y`` the pattern number, ``{p2}`` the last pattern's
+#: bytes (the program's last).
+MACHINE = """
+init:   LDA #$00
+        STA pat
+        STA pos
+        RTS
+play:   LDY pat
+{set}
+        BEQ wrap
+        STA $C000
+        INC pos
+        RTS
+wrap:   STA pos
+        LDY pat
+        LDA nxt,Y
+        STA pat
+        RTS
+pat:    .byte 0
+pos:    .byte 0
+plo:    .byte lo(p0), lo(p1), {lo2}
+phi:    .byte hi(p0), hi(p1), {hi2}
+nxt:    .byte 1, 2, 0
+p0:     .byte 1, 2, 3, 0
+p1:     .byte 4, 5, 0
+p2:     .byte {p2}
+end:
+"""
+#: The read of each addressing mode, ``rd`` its instruction.
+MODES = {
+    "zpy": """        LDA plo,Y
+        STA $FB
+        LDA {hi},Y
+        STA $FC
+        LDY pos
+rd:     LDA ($FB),Y""",
+    "smc": """        LDA plo,Y
+        STA rd+1
+        LDA {hi},Y
+        STA rd+2
+        LDY pos
+rd:     LDA $FFFF,Y""",
+}
+
+
+#: A stream of record pointers ended by a 0 high byte, each record's byte read through
+#: ``(zp,X)``; ``{t}`` the terminators.
+ZPX = """
+init:   LDA #$00
+        STA pos
+        RTS
+play:   LDY pos
+        LDA rlo,Y
+        STA $FB
+        LDA rhi,Y
+        BEQ wrap
+        STA $FC
+        LDX #$00
+rd:     LDA ($FB,X)
+        STA $C000
+        INC pos
+        RTS
+wrap:   STA pos
+        RTS
+pos:    .byte 0
+rlo:    .byte lo(d0), lo(d1), lo(d2), lo(d1){t}
+rhi:    .byte hi(d0), hi(d1), hi(d2), hi(d1){t}
+d0:     .byte 1
+d1:     .byte 2
+d2:     .byte 3
+end:
+"""
+
+
+def machine_src(mode, p2="6, 7, 8, 9, 0", hi2="hi(p2)", lo2="lo(p2)", hi="phi"):
+    """:data:`MACHINE` reading through ``mode`` (:data:`MODES`, or ``zpx``: :data:`ZPX`)."""
+    if mode == "zpx":
+        return ZPX.format(t=", 0" if p2.endswith("0") else "")
+    return MACHINE.format(set=MODES[mode].format(hi=hi), p2=p2, lo2=lo2, hi2=hi2)
+
+
+def machine_guard(info, pc):
+    """The trap of the memory map's check of the access at ``pc``, or None."""
+    ks = [
+        int(k)
+        for k, t in info["trap_info"].items()
+        for g in t["guards"]
+        if g["kind"] == "objchk" and g["def"] == "machine" and g["at"] == pc
+    ]
+    assert len(ks) <= 1
+    return ks[0] if ks else None
+
+
+@pytest.mark.parametrize("mode", [*MODES, "zpx"])
+def test_machine_model_bounds_every_mode(prefix, tmp_path, mode):
+    """A read whose bases (a pointer table's words, through a zero-page pair with ``Y``, a pair
+    read ``(zp,X)``, or self-modified operand cells) lie in the program reads it with
+    no bounds-checked reader, its address checked first (``objchk``, ``def`` "machine"):
+    leaving the program would read I/O, ROM or RAM it never held. Every pattern replays;
+    without the last pattern's terminator the cursor runs off the program and the C traps at
+    that check, the calls before it exact."""
+    img, labels, loaded = assemble(machine_src(mode))
+    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+    body = body_of(c, "play")
+    assert not re.search(r"\b(?:rd|oob_rd|rdC\d+)\(", body) and "CGEN_OBJ" in body
+    k = machine_guard(info, labels["rd"])
+    assert k is not None and info["trap_info"][k]["implied_by"] is None
+    calls = [("init", 0)] + [("play", 0)] * 40
+    play(tmp_path, c, h, img, labels, calls)
+    img, labels, loaded = assemble(machine_src(mode, p2="6, 7, 8, 9"))
+    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+    (tmp_path / "bad").mkdir()
+    k = machine_guard(info, labels["rd"])
+    # ``(zp,X)``: past its records the stream's next high byte is a record's byte, naming a
+    # page outside the program.
+    n = 1 + 4 if mode == "zpx" else 1 + 4 + 3 + 4
+    play(tmp_path / "bad", c, h, img, labels, calls, trap=(n, k))
+
+
+@pytest.mark.parametrize("mode", list(MODES))
+def test_machine_model_is_independent_of_the_data(prefix, tmp_path, mode):
+    """Song data reaches only the .h: whatever words the pointer table holds, the read through
+    the pointer they make is checked by the memory map, the .c the same. A word naming bytes
+    outside the program (RAM it never loaded) is invalid input: the calls
+    replay exactly up to the read through it, which traps at that check."""
+    img, labels, loaded = assemble(machine_src(mode))
+    c, _, _ = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+    img, labels, loaded = assemble(machine_src(mode, lo2="$00", hi2="$40"))
+    c2, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+    k = machine_guard(info, labels["rd"])
+    assert c2 == c and k is not None
+    calls = [("init", 0)] + [("play", 0)] * 20
+    play(tmp_path, c2, h, img, labels, calls, trap=(1 + 4 + 3, k))
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        machine_src("zpy", hi="$C011").replace("LDA $C011,Y", "LDA $C011"),
+        machine_src("zpy").replace("LDA phi,Y", "LDA #$C0"),
+    ],
+    ids=["unknown", "constant"],
+)
+def test_machine_model_leaves_bases_outside_the_program_checked(prefix, tmp_path, src):
+    """A pointer whose high byte is unknown (read from I/O) or a constant of the code naming
+    an I/O page keeps its bounds-checked or device read, no check of the memory map's; the
+    program replays."""
+    img, labels, loaded = assemble(src)
+    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+    assert machine_guard(info, labels["rd"]) is None
+    assert re.search(r"\b(?:rd|rdC\d+|io_read)\(", body_of(c, "play"))
+    play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", 0)] * 20)
+
+
+JUMPS = """
+init:   LDA #$00
+        STA pos
+        RTS
+play:   LDY pos
+        LDA cmds,Y
+        TAY
+        LDA jlo,Y
+        STA vec
+        LDA jhi,Y
+        STA vec+1
+        INC pos
+        JMP (vec)
+h0:     LDA #$00
+        STA pos
+        RTS
+h1:     STA $C000
+        RTS
+h2:     STA $C001
+        RTS
+vec:    .byte 0, 0
+pos:    .byte 0
+jlo:    .byte lo(h0), lo(h1), lo(h2)
+jhi:    .byte hi(h0), hi(h1), hi(h2)
+cmds:   .byte {cmds}
+end:
+"""
+
+
+def test_machine_model_bounds_a_jump_tables_command_stream(prefix, tmp_path):
+    """A ``JMP (ind)`` through a vector stored from a table a command stream indexes: the
+    stream's read, its cursor unbounded, reads the program checked by the memory map; the
+    table's index guard keeps the jump inside its table. Without its 0 terminator the
+    stream runs off the program and the C traps at the stream read's check."""
+    img, labels, loaded = assemble(JUMPS.format(cmds="1, 2, 1, 1, 2, 0"))
+    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+    rd = labels["play"] + 3
+    assert machine_guard(info, rd) is not None
+    assert not re.search(r"\b(?:rd|oob_rd|rdC\d+)\(", body_of(c, "play"))
+    calls = [("init", 0)] + [("play", 0)] * 24
+    play(tmp_path, c, h, img, labels, calls)
+    img, labels, loaded = assemble(JUMPS.format(cmds="1, 2, 1, 1, 2"))
+    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+    (tmp_path / "bad").mkdir()
+    play(tmp_path / "bad", c, h, img, labels, calls, trap=(1 + 5, machine_guard(info, rd)))
+
+
+ZPWRAP = """
+init:   LDA #$00
+        STA pos
+        RTS
+play:   LDX pos
+        LDA $F8,X
+        STA $C000
+        INC pos
+        RTS
+pos:    .byte 0
+end:
+"""
+
+
+def test_zero_page_index_wraps_inside_zero_page(prefix, tmp_path):
+    """``zp,X`` wraps inside zero page for every ``X``: its base is no byte of the program, its
+    address never leaves zero page, so the memory map adds no check and the read is plain
+    past many wraps."""
+    img, labels, loaded = assemble(ZPWRAP)
+    for a in range(0x100):
+        img[a] = a ^ 0x5A
+    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+    assert machine_guard(info, labels["play"] + 2) is None
+    assert not re.search(r"\b(?:rd|oob_rd|rdC\d+)\(", body_of(c, "play"))
+    play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", 0)] * 600)
