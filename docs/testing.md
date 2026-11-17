@@ -24,6 +24,15 @@ the tests), so no test spends its timeout provisioning one.
 
 ## Inner loop
 
+Build the native extension with the `dev-release` profile (`Cargo.toml`): optimized like
+`release` but without LTO, in many codegen units and incrementally, so a rebuild after an edit
+compiles only what changed, across cores. `release` (fat LTO, one codegen unit) is for the
+published wheels.
+
+```bash
+maturin develop --profile dev-release
+```
+
 Run the one test being worked on, under a wall-clock bound:
 
 ```bash

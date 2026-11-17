@@ -12,3 +12,10 @@ repository = "https://github.com/anarkiwi/deity-informant"
 [profile.release]
 lto = "fat"
 codegen-units = 1
+
+# Local edit/build/test cycle: `maturin build --profile dev-release`.
+[profile.dev-release]
+inherits = "release"
+lto = "off"
+codegen-units = 256
+incremental = true

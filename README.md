@@ -55,7 +55,7 @@ verified by replaying its I/O writes against the reference interpreter. See
 ```bash
 pip install deity-informant         # from PyPI; the SLEIGH sources ship as package data
 pip install -e ".[dev]"             # from a checkout: + test/lint tooling, py65, pypcode
-maturin develop --release           # + the native extension (Rust toolchain required)
+maturin develop --profile dev-release  # + the native extension (Rust toolchain required; `--release` for a published build)
 ```
 
 ## CLI
@@ -94,7 +94,7 @@ Resolves the stock `6502.slaspec` + SLEIGH compiler from `$GHIDRA_INSTALL_DIR` o
 black --check deity_informant/ tests/ tools/ && pylint deity_informant/
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
 deity-informant emit-sleigh
-maturin develop --release   # the coverage gate measures the native build
+maturin develop --profile dev-release   # the coverage gate measures the native build
 pytest tests/ -n auto --cov=deity_informant --cov-fail-under=85
 ```
 
