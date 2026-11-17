@@ -2308,6 +2308,8 @@ struct Work<'a> {
     mods: FxHashMap<u16, Vec<(u32, u32)>>,
     /// The driver head ([`Code::drive`]): the tracked bytes at every call of an entry.
     drv: Option<St>,
+    /// The tracked bytes the entries' returns leave since the head last called them.
+    rets: Option<St>,
     /// The entries and their declared registers.
     envs: Vec<(u16, Env)>,
 }
@@ -2388,12 +2390,13 @@ fn apply(ret: &St, call: &St, linked: bool, kept: Option<&[(u32, u32)]>) -> St {
 }
 
 impl Work<'_> {
-    /// The driver head ([`Code::drive`]) joins, widened as a loop head, the tracked bytes the
-    /// return at `st` in context `cx` leaves: those of an entry's own return, none of a return
-    /// at a height not known there (it may return to the host), nothing of a callee's. Each
-    /// entry is called again with what the head holds.
+    /// The tracked bytes the return at `st` in context `cx` gives the driver head
+    /// ([`Code::drive`]): those of an entry's own return, none of a return at a height not
+    /// known there (it may return to the host), nothing of a callee's.
     fn back(&mut self, cx: u32, st: &St) {
-        let Some(old) = &self.drv else { return };
+        if self.drv.is_none() {
+            return;
+        }
         let (mem, mset) = match (cx, st.depth) {
             (NONE, Some(0)) => (
                 (st.mem.iter())
@@ -2410,9 +2413,20 @@ impl Work<'_> {
             mset,
             ..St::new(TOP_ENV)
         };
+        self.rets = Some(match &self.rets {
+            Some(r) => join(self.code, r, &back, None),
+            None => back,
+        });
+    }
+    /// The driver head joins, widened as a loop head, what the entries' returns left, and calls
+    /// each entry again with what it holds; whether that changed it.
+    fn drive(&mut self) -> bool {
+        let (Some(old), Some(back)) = (&self.drv, self.rets.take()) else {
+            return false;
+        };
         let new = join(self.code, old, &back, Some(self.thr));
         if &new == old {
-            return;
+            return false;
         }
         for (i, &(pc, env)) in self.envs.clone().iter().enumerate() {
             let st = St {
@@ -2424,6 +2438,7 @@ impl Work<'_> {
             self.flow((pc, NONE), st);
         }
         self.drv = Some(new);
+        true
     }
     /// Merge `st` into the state at `key` (widening at loop heads), queueing it if it grew.
     fn flow(&mut self, key: Key, st: St) {
@@ -2700,6 +2715,7 @@ fn fixpoint(
         ret: FxHashMap::default(),
         mods: code.mods.clone(),
         drv: None,
+        rets: None,
         envs: entries.iter().map(|e| (e.pc, e.env())).collect(),
     };
     let init = match &code.drive {
@@ -2728,7 +2744,10 @@ fn fixpoint(
         );
     }
     let mut acc = Vec::new();
-    while let Some(key @ (pc, cx)) = w.queue.pop_front() {
+    while let Some(key @ (pc, cx)) = w.queue.pop_front().or_else(|| {
+        w.drive();
+        w.queue.pop_front()
+    }) {
         w.queued.remove(&key);
         let st = w.state[&key].clone();
         for v in &vars[&pc] {
