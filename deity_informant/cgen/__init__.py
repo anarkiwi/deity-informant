@@ -73,13 +73,18 @@ def _header(mem, used, traps, konsts, store):
     out, slices = ["#ifndef CGEN_DATA_H", "#define CGEN_DATA_H"], _slices(mem, used)
     for k, (org, n) in enumerate(mem.regions):
         out += [f"#define R{k}_ORG 0x{org:04X}", f"#define R{k}_LEN {n}"]
-        if slices[k] is None:
+        if slices[k] is None and _block(mem, org, org + n) is None:
             out.append(f"#define R{k}_INIT {hexes(mem.init[org : org + n])}")
+    for b in sorted(mem.blocks_used):
+        lo, hi = mem.blocks[b]
+        out += [f"#define B{b}_ORG 0x{lo:04X}", f"#define B{b}_LEN {hi - lo}"]
+        out.append(f"#define B{b}_INIT {hexes(mem.block_init(b, 'CODE' in used))}")
     if "CODE" in used or "CODE_ORG" in used:
         out.append(f"#define CODE_ORG 0x{mem.code_span[0]:04X}")
     for j, (lo, hi) in enumerate(mem.held if "CODE" in used else ()):
         out += [f"#define C{j}_ORG 0x{lo:04X}", f"#define C{j}_LEN {hi - lo}"]
-        out.append(f"#define C{j}_INIT {hexes(mem.init[lo:hi])}")
+        if _block(mem, lo, hi) is None:
+            out.append(f"#define C{j}_INIT {hexes(mem.init[lo:hi])}")
         if j in slices:
             # Past the span's last constant byte every byte is data: the bits stop there.
             top = lo + int(np.flatnonzero(mem.constant[lo:hi]).max(initial=-1)) + 1
@@ -310,18 +315,34 @@ def _wr(vol, var=False):
     return out + tail + ["}"]
 
 
+def _block(mem, lo, hi):
+    """The block array the ``.c`` uses holding ``[lo, hi)``, else None."""
+    b = mem.block_of(lo, hi - 1)
+    return b if b in mem.blocks_used else None
+
+
 def _storage(mem, used, helpers, regions):
     """The ``.h``'s arrays, laid out by where the song puts its data: ``CGEN_STORAGE`` (the
     ``.c`` defines them by it) holds the held spans, the ``regions`` not inside one and the
     spans' data bits; a region inside a span is its slice; ``rd`` and ``wr`` find them by
     the ``CGEN_ARRAYS`` and ``CGEN_REGIONS`` lists."""
     spans = range(len(mem.held)) if "CODE" in used else range(0)
-    defs = [f"uint8_t C{j}[C{j}_LEN] = {{C{j}_INIT}};" for j in spans]
+    blocks = sorted(mem.blocks_used)
+    defs = [f"uint8_t B{b}[B{b}_LEN] = {{B{b}_INIT}};" for b in blocks]
     out, slices = [], _slices(mem, used)
+    for j in spans:
+        b = _block(mem, *mem.held[j])
+        if b is None:
+            defs.append(f"uint8_t C{j}[C{j}_LEN] = {{C{j}_INIT}};")
+        else:
+            out.append(f"#define C{j} (B{b} + (C{j}_ORG - B{b}_ORG))")
     for k in regions:
-        j = slices[k]
+        j, (org, n) = slices[k], mem.regions[k]
+        b = _block(mem, org, org + n)
         if j is not None:
             out.append(f"#define R{k} (C{j} + (R{k}_ORG - C{j}_ORG))")
+        elif b is not None:
+            out.append(f"#define R{k} (B{b} + (R{k}_ORG - B{b}_ORG))")
         else:
             defs.append(f"uint8_t R{k}[R{k}_LEN] = {{R{k}_INIT}};")
     for j in spans if "codechk" in helpers else ():
@@ -1077,6 +1098,17 @@ def render(p, header="cgen.h", prefix=None):  # pylint: disable=too-many-locals
         "regions": mem.regions,
         "code_span": mem.code_span,
         "code_held": mem.held,
+        "blocks": {
+            b: {
+                "org": mem.blocks[b][0],
+                "len": mem.blocks[b][1] - mem.blocks[b][0],
+                "padding": [
+                    (mem.blocks[b][0] + int(lo), mem.blocks[b][0] + int(lo) + int(n) - 1)
+                    for lo, n in masks.runs(mem.padding(b, "CODE" in used))
+                ],
+            }
+            for b in sorted(mem.blocks_used)
+        },
         "traps": {k: key for key, k in traps.items() if k in mod.traps},
         "trap_info": trapinfo.trap_info(
             funcs,

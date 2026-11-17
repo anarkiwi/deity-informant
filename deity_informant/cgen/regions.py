@@ -124,7 +124,9 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         self.regions, self.owner, self.unknown = [], np.full(0x10000, -1, dtype=np.int32), False
         self.constant = self.code | self.tables
         self.code_span = self._span(self.constant)
-        self.held = []
+        self.held, self.blocks = [], []
+        #: The block arrays the ``.c`` indexes.
+        self.blocks_used = set()
 
     def _span(self, mask):
         """The span of ``mask``, widened over the regions it overlaps."""
@@ -170,6 +172,7 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         state=None,
         sources=(),
         blocks=(),
+        hulls=(),
     ):
         """Regions for ``accesses`` (``(lo, hi)`` inclusive, None when unknown), given the
         ``stores`` at constant addresses (code bytes they hit are data). Constant bytes are
@@ -185,7 +188,11 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         the ``accesses`` touches them. The regions only stores with address sets (``written``:
         init's among them) or ``sources`` (init's copies, a run each) touch are numbered after
         the others, so the ``.c`` names the same regions whatever songs init runs for. The
-        ``blocks`` runs (a data block's, ``hi`` exclusive) are regions, tables or not."""
+        ``blocks`` runs (a data block's, ``hi`` exclusive) are regions, tables or not. Each of
+        the ``hulls`` (a data block of several runs', ``hi`` exclusive) is one array (``Bj``,
+        ``blocks``) the regions and held spans in it are slices of, indexed by address: its
+        other bytes are padding (:meth:`padding`), zero, which no valid run reads (the block's
+        check traps first)."""
         for a in stores:
             self.code[a] = False
         bounded = [r for r in accesses if r is not None and r[1] - r[0] < BOUNDED]
@@ -217,6 +224,44 @@ class Memory:  # pylint: disable=too-many-instance-attributes
             self.owner[org : org + n] = k
         self.code_span = self._span(constant)
         self.held = self._spans(need)
+        self.blocks = self._blocks(hulls)
+
+    def _blocks(self, hulls):
+        """The arrays holding the ``hulls``: each widened over the held spans and regions it
+        overlaps, and merged with the others it meets."""
+        out = []
+        for a, b in sorted(hulls):
+            grown = True
+            while grown:
+                grown = False
+                for lo, hi in [*self.held, *((o, o + n) for o, n in self.regions)]:
+                    if lo < b and hi > a and (lo < a or hi > b):
+                        a, b, grown = min(a, lo), max(b, hi), True
+            if out and out[-1][1] >= a:
+                out[-1] = (out[-1][0], max(out[-1][1], b))
+            else:
+                out.append((a, b))
+        return out
+
+    def block_of(self, lo, hi):
+        """The index of the block array holding ``[lo, hi]``, else None."""
+        return next((j for j, (a, b) in enumerate(self.blocks) if a <= lo and hi < b), None)
+
+    def padding(self, j, held=True):
+        """The bytes of block array ``j`` neither a region's nor (``held``) a held span's: its
+        padding, zero."""
+        lo, hi = self.blocks[j]
+        pad = self.owner[lo:hi] < 0
+        for a, b in self.held if held else ():
+            pad[max(a, lo) - lo : max(min(b, hi) - lo, 0)] = False
+        return pad
+
+    def block_init(self, j, held=True):
+        """The initial bytes of block array ``j``: its padding zero."""
+        lo, hi = self.blocks[j]
+        b = np.frombuffer(self.init, np.uint8)[lo:hi].copy()
+        b[self.padding(j, held)] = 0
+        return bytes(b)
 
     def moves(self, addr, origin=False):
         """Whether ``addr`` moves with the loaded image when it is relocated: a byte of it, or

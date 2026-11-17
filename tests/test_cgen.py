@@ -5252,7 +5252,7 @@ def test_init_relocating_by_the_song_leaves_pointer_cells(prefix, tmp_path):
     assert {labels["o0"] + 1, labels["o0"] + 2} <= set(info["provenance"]["cells"])
     assert info["fixed"] == [labels["flag"]]
     body = body_of(c, "play")
-    assert re.search(r"\(S_\w+ \| \(\(uint16_t\)S_\w+ << 8\)\)", body)
+    assert re.search(r"S_\w+ \| \(\(uint16_t\)S_\w+ << 8\)", body)
     assert "rdC" not in body and machine_guard(info, labels["o0"]) is not None
     assert "K_I" in body
 

@@ -315,6 +315,8 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         self.users, self.dropped, self.globals = {}, set(), set()
         self.ivs = self.ivs0 = {}
         self.unread = set()
+        #: The loads printed as their base and index (a block's checked read).
+        self.split_reads = set()
         self.addr_edges, self.arg_src, self.arg_block, self.dead = set(), {}, {}, set()
         self.flags = set()
         self.kparam, self.kvals, self.ktabs, self.kmemo, self.kiv = None, None, {}, {}, {}
@@ -1948,7 +1950,8 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 e = self.promoted[id(o)][-1]
                 out.extend([e] if isinstance(e, str) else [])
                 continue
-            if i == addr and id(o) in self.wide and self.base_index(o) is not None:
+            split = id(o) in self.wide or id(o) in self.split_reads
+            if i == addr and split and self.base_index(o) is not None:
                 out.extend(self.base_index(o))
                 continue
             if i == addr:
@@ -2056,18 +2059,24 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             if self.uses[v] == 1:
                 work.append(v)
 
+        fused = self.fusion()
         for v, adj in self.item_refs(self.body, ()):
             use(v, ("adj" if adj else "far",))
         for b in self.f.blocks:
             if b.name not in self.owned:
                 continue
             for o in b.ops[:-1]:
+                if id(o) in fused and o.name == "func.call":
+                    continue
                 if id(o) not in self.f.dropped and self.f.printed(o) and not self.f.pure(o):
                     for a in self.f.reads(o):
                         use(a, o)
         while work:
             d = self.f.defs.get(work.pop())
             if d is None or id(d) in seen or not self.f.pure(d) or id(d) in self.f.dropped:
+                continue
+            # A check its load makes reads nothing of its own (:meth:`fusion`).
+            if id(d) in fused and d.name == "func.call":
                 continue
             if self.f.where[id(d)][0].name not in self.owned:
                 continue
@@ -2320,6 +2329,11 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         if o.name == "func.call" and mem.is_volatile(lo, hi):
             return ("io",)
         blk = self.mod.block(self.f, o)
+        if blk and len(blk) > 1:
+            # An access of a data block of several runs indexes the array holding its hull.
+            b = mem.block_of(blk[0][0], blk[-1][1] - 1)
+            if b is not None:
+                return ("barray", b)
         found = blk and self.mod.owners(blk, not is_write(o), False)
         if found and len(found[0]) + len(found[1]) == 1:
             return ("set", *found)
@@ -2417,6 +2431,12 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             self.mod.regions_used.add(k)
         return E(f"{name}[{sub.text}]", 16, "", 0, 255, False, True, sub.refs)
 
+    def block_ref(self, o, b):
+        """The element ``Bb[...]`` of block array ``b`` access ``o`` addresses."""
+        self.mod.mem.blocks_used.add(b)
+        a = self.addr(self.f.address(o))
+        return E(f"B{b}[(uint16_t)({a.text} - B{b}_ORG)]", 16, "", 0, 255, False, True, a.refs)
+
     def sub(self, o, a, k, held):
         """The offset of address value ``a`` of access ``o`` into region ``k`` (or held span
         ``k``): a constant inside it, wherever the additions place it, relative to its origin
@@ -2488,6 +2508,21 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             how = ("any",)
         if how[0] in ("region", "held"):
             return self.mem_ref(o, how[-1], how[0] == "held")
+        if how[0] == "barray":
+            fused = self.fusion().get(id(o))
+            if fused is None:
+                return self.block_ref(o, how[1])
+            self.mod.traps.add(fused[1])
+            self.mod.mem.blocks_used.add(how[1])
+            name = self.mod.checked_fn(f"B{how[1]}", fused[0])
+            bi = self.f.base_index(o)
+            if bi is not None:
+                at, idx = bi[0], self.ex(bi[1])
+            else:
+                at, idx = self.f.address(o), lit(0, 8)
+            p = self.addr(at)
+            text = f"{name}({p.text}, {idx.text}, {fused[1]})"
+            return E(text, 16, "", 0, 255, False, True, p.refs | idx.refs)
         a = self.addr(self.f.address(o))
         if how[0] == "checked":
             return self.checked(o, how[2], a)
@@ -2552,18 +2587,29 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
                 elif d is not None:
                     parts.append(d)
             for c in parts:
-                if c is None or c.name != "func.call" or c.prop("callee") != "@objchk":
-                    continue
-                j = f.defs[c.args[1]].int_prop("value")
-                if j in self.mod.ptr_slack or k is None:
-                    continue
-                for x in cont.ops:
-                    if x.name == "memref.load" and f.address(x) == c.args[0]:
-                        if self.target(x)[0] == "block" and id(x) not in out:
-                            out[id(c)], out[id(x)] = x, (j, k)
-                        break
+                x = self.fused_load(c, cont) if k is not None else None
+                if x is not None and id(x) not in out:
+                    out[id(c)], out[id(x)] = x, (f.defs[c.args[1]].int_prop("value"), k)
         self._fused = out
         return out
+
+    def fused_load(self, c, cont):
+        """The load of block ``cont`` through a data block's reader or array whose address
+        object check ``c`` tests (not a check after a pointer's definition), else None."""
+        f = self.f
+        if c.name != "func.call" or c.prop("callee") != "@objchk":
+            return None
+        if f.defs[c.args[1]].int_prop("value") in self.mod.ptr_slack:
+            return None
+        x = next(
+            (x for x in cont.ops if x.name == "memref.load" and f.address(x) == c.args[0]), None
+        )
+        how = None if x is None else self.target(x)[0]
+        if how not in ("block", "barray"):
+            return None
+        if how == "barray":
+            f.split_reads.add(id(x))
+        return x
 
     def objchk(self, o):
         """The test ``objchk(p, j)`` of call ``o``: whether pointer ``p`` lies outside object
@@ -2933,8 +2979,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             v = (self.state_value(val, names) if names else None) or v
             out.append(("s", f"{ref.text} = {v.text};", ref.refs | v.refs))
             return
-        if how[0] in ("region", "held"):
-            ref = self.mem_ref(o, how[1], how[0] == "held")
+        if how[0] in ("region", "held", "barray"):
+            ref = self.block_ref(o, how[1]) if how[0] == "barray" else None
+            ref = ref or self.mem_ref(o, how[1], how[0] == "held")
             out.append(("s", f"{ref.text} = {v.text};", ref.refs | v.refs))
             return
         if how[0] == "block":
@@ -3968,7 +4015,19 @@ class Module:  # pylint: disable=too-many-instance-attributes
             self.state.mask(),
             self.held_runs,
             sorted({r for f in self.funcs for r in self.blocks(f)}),
+            sorted({h for f in self.funcs for h in self.block_hulls(f)}),
         )
+
+    def block_hulls(self, f):
+        """The hulls ``(lo, hi)`` (``hi`` exclusive) of the data blocks of several runs the
+        loads of function ``f`` lie in: each held as one array (:meth:`regions.Memory.partition`).
+        """
+        out = set()
+        for o, _, _ in f.accesses():
+            runs = self.block(f, o) if o.name == "memref.load" else None
+            if runs and len(runs) > 1:
+                out.add((runs[0][0], runs[-1][1]))
+        return out
 
     def blocks(self, f):
         """The runs of the data blocks the accesses of function ``f`` lie in."""
@@ -4007,8 +4066,8 @@ class Module:  # pylint: disable=too-many-instance-attributes
         return self.block_fns[key]
 
     def checked_fn(self, name, j):
-        """The name of block reader ``name``'s variant checking its address into object ``j``
-        first, leaving by the trap its caller passes."""
+        """The name of block reader ``name``'s (or block array's) variant checking its address
+        into object ``j`` first, leaving by the trap its caller passes."""
         self.checked_fns.add((name, j))
         self.objs_used.add(j)
         return f"{name}c{j}"
@@ -4058,20 +4117,26 @@ class Module:  # pylint: disable=too-many-instance-attributes
             else:
                 sig = f"static __attribute__((noinline)) void {name}(uint16_t a, uint8_t v) {{"
                 out += [sig, *find, f"{el} = v;", "}"]
+        kt = "uint8_t" if max(self.traps, default=0) < 0x100 else "uint16_t"
         for name, j in sorted(self.checked_fns):
+            sig = f"static __attribute__((noinline)) uint8_t {name}c{j}(uint16_t a, {kt} k) {{"
+            if name[0] == "B":
+                args = f"uint16_t p, uint8_t y, {kt} k"
+                sig = f"static __attribute__((noinline)) uint8_t {name}c{j}({args}) {{"
+                test = (
+                    f"cgen_out{j}(a, 0)"
+                    if j in self.ptr_parts
+                    else f"(uint16_t)(a - CGEN_OBJ{j}_ORG) > CGEN_OBJ{j}_LIM"
+                )
+                out += [sig, "uint16_t a = p + y;", f"if ({test}) {{", "trap(k);", "}"]
+                out += [f"return {name}[(uint16_t)(a - {name}_ORG)];", "}"]
+                continue
             test = (
                 f"cgen_out{j}(a, 0)"
                 if j in self.ptr_parts
                 else f"(uint16_t)(a - CGEN_OBJ{j}_ORG) > CGEN_OBJ{j}_LIM"
             )
-            out += [
-                f"static __attribute__((noinline)) uint8_t {name}c{j}(uint16_t a, uint16_t k) {{",
-                f"if ({test}) {{",
-                "trap(k);",
-                "}",
-                f"return {name}(a);",
-                "}",
-            ]
+            out += [sig, f"if ({test}) {{", "trap(k);", "}", f"return {name}(a);", "}"]
         return out
 
     def choices(self, regs, spans, addr, indexed=None, tests=None):
