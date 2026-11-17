@@ -61,31 +61,26 @@ def jump_facts(facts, image):
     return Facts(edges=sorted(set(edges)))
 
 
-def _slice(mem, used, k):
-    """The held span region ``k`` is a slice of, or None."""
-    return mem.holding(mem.regions[k][0], sum(mem.regions[k]) - 1) if "CODE" in used else None
-
-
-def _sliced(mem, used, j):
-    """Whether some region is a slice of held span ``j``."""
-    return any(_slice(mem, used, k) == j for k in range(len(mem.regions)))
+def _slices(mem, used):
+    """Per region, the held span it is a slice of (none unless ``used`` holds the code)."""
+    return [mem.holding(org, org + n - 1) if "CODE" in used else None for org, n in mem.regions]
 
 
 def _header(mem, used, traps, konsts, store):
     """The ``.h``: origins, lengths and initial bytes of the regions (those inside a held span
     are its slices) and of the held spans when ``used``, the constant bytes ``konsts``
     (``{name: byte}``) the ``.c`` reads by name and the arrays' definitions ``store``."""
-    out = ["#ifndef CGEN_DATA_H", "#define CGEN_DATA_H"]
+    out, slices = ["#ifndef CGEN_DATA_H", "#define CGEN_DATA_H"], _slices(mem, used)
     for k, (org, n) in enumerate(mem.regions):
         out += [f"#define R{k}_ORG 0x{org:04X}", f"#define R{k}_LEN {n}"]
-        if _slice(mem, used, k) is None:
+        if slices[k] is None:
             out.append(f"#define R{k}_INIT {hexes(mem.init[org : org + n])}")
     if "CODE" in used or "CODE_ORG" in used:
         out.append(f"#define CODE_ORG 0x{mem.code_span[0]:04X}")
     for j, (lo, hi) in enumerate(mem.held if "CODE" in used else ()):
         out += [f"#define C{j}_ORG 0x{lo:04X}", f"#define C{j}_LEN {hi - lo}"]
         out.append(f"#define C{j}_INIT {hexes(mem.init[lo:hi])}")
-        if _sliced(mem, used, j):
+        if j in slices:
             # Past the span's last constant byte every byte is data: the bits stop there.
             top = lo + int(np.flatnonzero(mem.constant[lo:hi]).max(initial=-1)) + 1
             bits = np.packbits(mem.owner[lo : max(top, lo + 1)] >= 0, bitorder="little")
@@ -309,18 +304,18 @@ def _storage(mem, used, helpers, regions):
     the ``CGEN_ARRAYS`` and ``CGEN_REGIONS`` lists."""
     spans = range(len(mem.held)) if "CODE" in used else range(0)
     defs = [f"uint8_t C{j}[C{j}_LEN] = {{C{j}_INIT}};" for j in spans]
-    out = []
+    out, slices = [], _slices(mem, used)
     for k in regions:
-        j = _slice(mem, used, k)
+        j = slices[k]
         if j is not None:
             out.append(f"#define R{k} (C{j} + (R{k}_ORG - C{j}_ORG))")
         else:
             defs.append(f"uint8_t R{k}[R{k}_LEN] = {{R{k}_INIT}};")
     for j in spans if "codechk" in helpers else ():
-        if _sliced(mem, used, j):
+        if j in slices:
             defs.append(f"static const uint8_t C{j}_DATA[] = {{C{j}_DATA_INIT}};")
     out.append(f"#define CGEN_STORAGE {' '.join(defs)}")
-    whole = [f"R{k}" for k in regions if _slice(mem, used, k) is None]
+    whole = [f"R{k}" for k in regions if slices[k] is None]
     for name, arrays in (
         ("ARRAYS", [*whole, *(f"C{j}" for j in spans)]),
         ("REGIONS", [f"R{k}" for k in regions]),
@@ -361,8 +356,9 @@ def _dispatch(
         for lo, hi in mem.volatile
     )
     spans = range(len(mem.held)) if "CODE" in used else range(0)
-    sliced = [j for j in spans if _sliced(mem, used, j)]
-    regions = [f"R{k}" for k in range(len(mem.regions)) if _slice(mem, used, k) is None]
+    slices = _slices(mem, used)
+    sliced = [j for j in spans if j in slices]
+    regions = [f"R{k}" for k, j in enumerate(slices) if j is None]
     writes = bool(helpers & {"wr", "oob_wr"})
     exact = NOOB + " && defined(CGEN_OOB_EXACT)"
     rd = ["1"] if "rd" in helpers else [exact] if "oob_rd" in helpers else []
