@@ -862,8 +862,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     if state is not None:
         p.init, p.fixed = (entries[init], state), np.array(sorted(fixed), dtype=np.int64)
         p.entailed, p.init_stored = entailed, decided.mask
-    if len(lifts) > 1:
-        lone = lifts[1]
+    if lone is not None:
         p.entries = [*played, entries[init]]
         p.origin, p.start = origin, start
         p.lifted = (frozenset(lone.code), set(lone.starts), _facts(lone))
