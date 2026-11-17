@@ -113,6 +113,8 @@ pub struct LOp {
     pub aux: u32,
     pub pc: u16,
     pub why: u32,
+    /// The plan node emitting the op, numbered in its function's emission order (0: none).
+    pub node: u32,
 }
 
 impl PartialEq for LOp {
@@ -132,6 +134,7 @@ impl LOp {
             aux,
             pc: 0,
             why: 0,
+            node: 0,
         }
     }
     /// Number of used inputs: the opcode's, plus a throw-away read's predicate.
@@ -199,6 +202,7 @@ pub struct Block {
     /// The address of the instruction the block starts at (the deopt PC of a cycle-budget
     /// check).
     pub pc: u16,
+
     /// Upper bound on the cycles the block accounts.
     pub maxcyc: u32,
     /// Starts with a cycle-budget and stack-depth check (after an instruction that sets SP).

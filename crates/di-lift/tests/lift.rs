@@ -245,9 +245,12 @@ fn brk_chain_on_untaken_path() {
         &[0, 1, 2],
         &[0x40, 0x80],
     );
-    // `JSR sub` and, in each of `entry` and `sub` (the `BRK` tail both branch to is code of
-    // each), a call per `BRK` of the handler at `$0000` (a `BRK` too) it reaches.
-    assert_eq!(p.stats.calls, 5);
+    // The `BRK` tail both `entry` and `sub` branch to at their entry heights is a shared tail:
+    // `JSR sub`, a tail call into it from each, its call of the handler at `$0000` (a `BRK`
+    // too) and the handler's own.
+    let pcs: Vec<u16> = p.functions.iter().map(|f| f.pc).collect();
+    assert_eq!(pcs, [0x1000, 0x100b, 0x1010, 0x0000]);
+    assert_eq!(p.stats.calls, 6);
 }
 
 #[test]

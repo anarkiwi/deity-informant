@@ -9,6 +9,7 @@
 pub mod analysis;
 pub mod bank;
 pub mod carry;
+pub mod cover;
 pub mod dev;
 pub mod dispatch;
 pub mod emit;
@@ -775,6 +776,7 @@ pub fn lift_banked(
             objects::held(opts.loaded, &g.written, &opts.holds, volatile),
             &seeds,
             &free,
+            &held,
             (opts.entry_sp.is_some() && !opts.once && bank.is_none()).then_some(opts.player),
             &unread,
         );
@@ -782,7 +784,8 @@ pub fn lift_banked(
             vsa::prove(&mut g.proven, key, h);
         }
         // An access checked into its run touches it alone.
-        for (&(pc, op, ai), &(_, run)) in &objs.machine {
+        let kept = (objs.machine.iter()).map(|(k, m)| (k, &m.1));
+        for (&(pc, op, ai), &run) in kept.chain(&objs.covered) {
             for v in g
                 .vars
                 .get_mut(&pc)

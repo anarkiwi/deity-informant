@@ -130,6 +130,8 @@ struct Em<'a, 'b> {
     istart: u32,
     /// The address of the instruction being emitted.
     ipc: u16,
+    /// The plan node being emitted ([`LOp::node`]).
+    inode: u32,
     /// The decimal flag may be set at the current instruction.
     dec: bool,
     /// The current instruction's checks include a code check: the code a deopt resumes may
@@ -202,6 +204,7 @@ pub fn emit(
         n: Counts::default(),
         istart: 0,
         ipc: 0,
+        inode: 0,
         dec: false,
         coded: false,
         mem: None,
@@ -358,9 +361,12 @@ impl<'a> Em<'a, '_> {
             self.tail_call(key);
             self.cur = save;
         } else if let Some(c) = self.plan.insts.get(&key) {
+            // The instance function holds the copy's instructions; the call only its site.
             let save = std::mem::replace(&mut self.cur, b as usize);
-            self.inst_call(c);
-            self.cur = save;
+            let ipc = std::mem::replace(&mut self.ipc, 0);
+            let inode = std::mem::replace(&mut self.inode, b + 1);
+            self.inst_call(c, pc);
+            (self.cur, self.ipc, self.inode) = (save, ipc, inode);
         } else if let Some(&j) = self.plan.inst.as_ref().and_then(|x| x.exits.get(&key)) {
             let save = std::mem::replace(&mut self.cur, b as usize);
             if self.plan.inst.as_ref().unwrap().exits.len() > 1 {
@@ -411,6 +417,7 @@ impl<'a> Em<'a, '_> {
         let op = LOp {
             pc: self.ipc,
             why,
+            node: self.inode,
             ..LOp::new(opc, out, a, b, aux)
         };
         self.f.blocks[self.cur].ops.push(op);
@@ -801,12 +808,15 @@ impl<'a> Em<'a, '_> {
     }
     /// A call of an instance function for copy `c.k` at the caller's SP (no return address),
     /// then the node of the exit it left by.
-    fn inst_call(&mut self, c: &crate::func::Icall) {
+    /// The call of copy `c` entered at `pc`, the call alone naming `pc` as its site.
+    fn inst_call(&mut self, c: &crate::func::Icall, pc: u16) {
         let fi = self.sh.ifidx[c.class as usize];
         self.flush();
         self.emit(Opc::Copy, r1(KREG), k(c.k as u32, 1), NONE, 0);
         let rb = self.new_block(c.exits[0].0);
+        let ipc = std::mem::replace(&mut self.ipc, pc);
         self.emit(Opc::Call, NONE, k(0, 2), k(1, 1), fi);
+        self.ipc = ipc;
         self.emit(Opc::Branch, NONE, NONE, NONE, rb);
         self.cur = rb as usize;
         let (last, rest) = c.exits.split_last().unwrap();
@@ -1308,6 +1318,7 @@ impl<'a> Em<'a, '_> {
         let (plan, sh) = (self.plan, self.sh);
         let pc = key.0;
         self.ipc = pc;
+        self.inode = self.blk[&key] + 1;
         let arms = &plan.nodes[&key].arms;
         let vars = &sh.g.vars[&pc];
         (self.nh, self.nc) = (key.1, key.2);
