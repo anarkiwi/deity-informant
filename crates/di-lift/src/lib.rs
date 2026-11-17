@@ -91,6 +91,10 @@ pub struct Opts {
     /// and the values of the init's stores that may write it, each of known addresses and
     /// values.
     pub known: Vec<(u16, Vec<u8>)>,
+    /// The host calls the entries in a loop after its init, which leaves these values in
+    /// these bytes whatever the data (`Program::exit` of its lift): each entry starts from the
+    /// driver head ([`vsa`]).
+    pub driven: Option<Vec<(u16, Vec<u8>)>>,
 }
 
 impl Default for Opts {
@@ -110,6 +114,7 @@ impl Default for Opts {
             holds: Vec::new(),
             checked: false,
             known: Vec::new(),
+            driven: None,
         }
     }
 }
@@ -257,16 +262,24 @@ fn zone_checks(g: &mut analysis::Graph, free: &FxHashMap<u16, Vec<u8>>) {
 
 /// Per byte, the values it may hold when every store that may write it has an exact address
 /// and a value interval narrower than a byte: its entry byte (for a code cell the host's init
-/// leaves, its values over init's runs) and the stored values (`None`: unbounded, as for page 1
-/// where pushes land and the other variables init leaves, whose words the reach pass takes).
+/// leaves, its values over init's runs; for another variable init leaves, the driver head's)
+/// and the stored values (`None`: unbounded, as for page 1 where pushes land and the other
+/// variables init leaves, whose words the reach pass takes).
 fn byte_bounds(g: &analysis::Graph, free: &FxHashMap<u16, Vec<u8>>) -> Vec<Option<Iv>> {
+    let hull = |vs: &[u8]| {
+        Some(Iv {
+            lo: *vs.iter().min()? as u32,
+            hi: *vs.iter().max()? as u32,
+        })
+    };
+    let head = |a: u16| {
+        let i = g.head.binary_search_by_key(&a, |e| e.0).ok()?;
+        hull(&g.head[i].1)
+    };
     let mut held: Vec<Option<Iv>> = (0..0x10000)
         .map(|a| match free.get(&(a as u16)) {
-            Some(vs) if g.cells.contains(a) => Some(Iv {
-                lo: *vs.iter().min()? as u32,
-                hi: *vs.iter().max()? as u32,
-            }),
-            Some(_) => None,
+            Some(vs) if g.cells.contains(a) => hull(vs),
+            Some(_) => head(a as u16),
             None => Some(Iv::exact(g.img[a] as u32)),
         })
         .collect();
@@ -654,11 +667,6 @@ pub fn lift_banked(
         .collect();
     let mut held = FixedBitSet::with_capacity(0x10000);
     held.extend(opts.held.iter().map(|&a| a as usize));
-    let mut init = held.clone();
-    for &(lo, hi) in &opts.holds {
-        init.insert_range(lo as usize..(hi as usize).min(0x10000));
-    }
-    init.extend(opts.free.iter().map(|e| e.0 as usize));
     let mut matched = true;
     let (g, plans, fidx, callees, recursive, slots, constcode, touches, seen, sites, private) = loop {
         let mut g = discover(
@@ -672,7 +680,7 @@ pub fn lift_banked(
             &opts.devices,
             opts.entry_sp.map(|_| vsa::Wanted {
                 held: &held,
-                init: &init,
+                driven: opts.driven.as_deref(),
             }),
             &free,
             &known,
@@ -1010,6 +1018,7 @@ pub fn lift_banked(
             volatile,
             cycles: opts.cycles,
             sums: None,
+            steady: &g.steady,
         };
         let run = |fs: &mut Vec<Function>, cx: &opt::Ctx| {
             fs.iter_mut()
@@ -1170,6 +1179,8 @@ pub fn lift_banked(
             v
         },
         kept: g.kept.clone(),
+        exit: g.exit.clone(),
+        head: g.head.clone(),
         sets: {
             let mut s: Vec<(u16, Vec<u8>)> = g
                 .closed

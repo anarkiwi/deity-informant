@@ -567,6 +567,13 @@ pub struct Graph {
     /// Stores whose index the code does not bound and the run `[lo, hi)` of data bytes each
     /// writes, by `(pc, opcode, access index)`: past it a write is out of bounds.
     pub bounded: FxHashMap<(u16, u8, usize), (u32, u32)>,
+    /// What every return of a once-run entry to the host leaves whatever the data
+    /// ([`crate::vsa::Analysis::exit`]).
+    pub exit: Vec<(u16, Vec<u8>)>,
+    /// The driver head of the entries ([`crate::vsa::Analysis::head`]).
+    pub head: Vec<(u16, Vec<u8>)>,
+    /// Per byte, its hull wherever the entries run ([`crate::vsa::Analysis::steady`]).
+    pub steady: Vec<(u16, Iv)>,
     /// The `RTS`/`RTI`s that jump through the address their code pushed.
     pub disp: FxHashSet<u16>,
     /// Per instruction start the entries (bit `i % 64` for entry `i`) it is reached from.
@@ -1041,7 +1048,8 @@ impl Fixpoint<'_> {
             aimed: &g.aimed,
             devices: self.devices,
             ran: &self.ran,
-            drive: (!self.once).then_some(r.init),
+            drive: r.driven.filter(|_| !self.once),
+            exit: self.once,
         };
         let an = crate::vsa::analyze(
             &g.img,
@@ -1053,6 +1061,8 @@ impl Fixpoint<'_> {
             &given,
         );
         (g.reach, g.proven, g.regs, g.runs) = (an.reach, an.proven, an.regs, an.runs);
+        g.exit = an.exit.unwrap_or_default();
+        (g.head, g.steady) = (an.head, an.steady);
         g.bases = an.bases;
         g.nocode.extend(an.bounded.keys().copied());
         g.bounded = an.bounded;
@@ -1177,7 +1187,8 @@ impl Fixpoint<'_> {
                 aimed: &aimed,
                 devices: self.devices,
                 ran: &self.ran,
-                drive: self.reach.filter(|_| !self.once).map(|r| r.init),
+                drive: None,
+                exit: false,
             };
             let an = crate::vsa::analyze(
                 &cimg,
@@ -1383,6 +1394,9 @@ impl Fixpoint<'_> {
                     regs: FxHashMap::default(),
                     kept: Vec::new(),
                     bounded: FxHashMap::default(),
+                    exit: Vec::new(),
+                    head: Vec::new(),
+                    steady: Vec::new(),
                     disp,
                     vars,
                     cells,

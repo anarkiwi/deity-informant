@@ -21,6 +21,8 @@ pub struct Ctx<'a> {
     pub cycles: bool,
     /// Register summaries per function (`None`: a `CALL` uses and may define everything).
     pub sums: Option<&'a [Summary]>,
+    /// Bytes and the hull of what each holds wherever the code runs, ascending.
+    pub steady: &'a [(u16, Iv)],
 }
 
 /// Registers (bits below [`NREG`]) a function reads before writing them, writes on every
@@ -1194,7 +1196,14 @@ fn number_block(lv: &mut Lvn, blk: &mut Block, tables: &[Vec<(u16, u32)>], st: &
                 if let Some((_, v)) = hit {
                     result = Some((v, false));
                 } else {
-                    let s = lv.leaf(w as u8, Iv::full(w));
+                    let held = match a {
+                        Val::K(x) if byte && op.aux & mem::VOLATILE == 0 => {
+                            let i = cx.steady.binary_search_by_key(&x, |e| e.0 as u32);
+                            i.ok().map(|i| cx.steady[i].1)
+                        }
+                        _ => None,
+                    };
+                    let s = lv.leaf(w as u8, held.unwrap_or(Iv::full(w)));
                     if byte {
                         st.remember((mk, Val::S(s)));
                     }

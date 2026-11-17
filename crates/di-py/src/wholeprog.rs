@@ -810,6 +810,20 @@ impl Program {
         self.prog.values.iter().cloned().collect()
     }
 
+    /// Per byte every return of a once-run entry to the host leaves known whatever the data:
+    /// ``{address: [value, ...]}``, of immediates and device answers, never a table's.
+    #[getter]
+    fn exit(&self) -> HashMap<u16, Vec<u8>> {
+        self.prog.exit.iter().cloned().collect()
+    }
+
+    /// Per byte the driver head knows, what every call of an entry starts with
+    /// (``driven``): ``{address: [value, ...]}``.
+    #[getter]
+    fn head(&self) -> HashMap<u16, Vec<u8>> {
+        self.prog.head.iter().cloned().collect()
+    }
+
     /// The instruction starts the functions plan, ascending.
     #[getter]
     fn starts(&self) -> Vec<u16> {
@@ -1496,12 +1510,14 @@ pub fn reference_calls(
 /// ``[(lo, hi)]`` runs past the program the host holds as data besides those the lift's stores
 /// write; ``checked=True`` that the host checks the entries' declared ``A``, ``X`` and ``Y``
 /// values before each call (no entry guard); ``known`` ``[(addr, values)]`` the values each
-/// of ``free`` may hold that the host's init's lift bounds it to.
+/// of ``free`` may hold that the host's init's lift bounds it to; ``driven``
+/// ``[(addr, values)]``, where the host calls the entries in a loop after its init, what init
+/// leaves whatever the data (``Program.exit`` of its lift).
 /// ``bank`` is a bank map: ``dir``/``data`` port
 /// cells, ``mask`` and ``pull`` bits, ``lut`` (configuration per effective port value),
 /// ``configs`` (per configuration 256 page kinds: 0 RAM, 1 ROM, 2 I/O) and ``rom``.
 #[pyfunction]
-#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None, fold=false, sensitive=None, free=vec![], alias=vec![], once=false, held=vec![], devices=None, holds=vec![], checked=false, known=vec![]))]
+#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None, fold=false, sensitive=None, free=vec![], alias=vec![], once=false, held=vec![], devices=None, holds=vec![], checked=false, known=vec![], driven=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn lift_program(
     py: Python<'_>,
@@ -1524,6 +1540,7 @@ pub fn lift_program(
     holds: Vec<(u32, u32)>,
     checked: bool,
     known: Vec<(u16, Vec<u8>)>,
+    driven: Option<Vec<(u16, Vec<u8>)>>,
 ) -> PyResult<Program> {
     let img = self::image(image)?;
     let es = self::entries(entries);
@@ -1544,6 +1561,7 @@ pub fn lift_program(
         holds,
         checked,
         known,
+        driven,
     };
     Ok(Program::new(py.detach(|| {
         di_lift::lift_banked(&img, &es, &volatile, &f, opts, bank.as_ref())

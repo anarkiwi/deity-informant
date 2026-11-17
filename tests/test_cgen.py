@@ -260,6 +260,30 @@ end:
 ORDERBAD = ORDER.replace(
     "phi:    .byte hi(p0),hi(p1),hi(p0),0", "phi:    .byte hi(p0),hi(p1),0,0"
 ).replace("back:   .byte 0,0,0,1", "back:   .byte 0,0,3,2")
+CURSOR = """
+init:   LDA #$00
+        STA cur
+        LDA tab
+        STA spd
+        RTS
+play:   LDX cur
+        CPX #$05
+        BNE ok
+        LDA spd
+        STA $C011
+ok:     LDA tab,X
+        STA $C010
+        INX
+        CPX #$03
+        BNE s
+        LDX #$00
+s:      STX cur
+        RTS
+cur:    .byte 0
+spd:    .byte 0
+tab:    .byte 1,2,3
+end:
+"""
 ZPCLEAR = """
 entry:  LDX #$00
         TXA
@@ -2249,6 +2273,22 @@ def test_end_marker_restart_past_the_order(prefix, tmp_path):
     k = machine_guard(info, labels["ok"] + 13)
     calls = [("init", 0)] + [("play", k) for k in range(4)] * 2
     play(tmp_path, c, h, img, labels, calls, trap=(3, k))
+
+
+def test_init_exit_holds_its_constants_only():
+    """Init's exit whatever the data: the cursor it zeroes from an immediate, not the byte it
+    copies from the song's table."""
+    img, labels, loaded = assemble(CURSOR)
+    p = wholeprog.lift(img, [labels["init"]], [W.IO], once=True, entry_sp=0xFD, loaded=loaded)
+    assert p.exit == {labels["cur"]: b"\x00"}
+
+
+def test_cursor_bounded_across_calls(prefix, tmp_path):
+    """Play steps a cursor init zeroes and wraps it at 3: the driver head holds it in 0-2 at
+    every call, so its table read is plain and the branch on it reaching 5 is folded."""
+    calls = [("init", 0)] + [("play", 0)] * 8
+    c, _, info = check(prefix, tmp_path, CURSOR, calls, entries=("init", "play"), init=0, songs=[0])
+    assert "0xC011" not in body_of(c, "play") and len(info["traps"]) == 1
 
 
 PUSH = """

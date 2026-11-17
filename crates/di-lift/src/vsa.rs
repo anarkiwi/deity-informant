@@ -448,6 +448,17 @@ impl St {
         let v = self.mem.iter().find(|e| e.0 == a)?.2.value()?;
         Some(Bits::from_iter([v]))
     }
+    /// Per tracked byte known, its values.
+    fn mem_values(&self) -> Vec<(u16, Vec<u8>)> {
+        (self.mem.iter())
+            .filter(|e| e.2 != Iv::full(1))
+            .map(|e| {
+                let vs = self.mvals(e.0);
+                let vs = vs.unwrap_or_else(|| (e.2.lo..=e.2.hi.min(0xff)).collect());
+                (e.0, vs.values().map(|v| v as u8).collect())
+            })
+            .collect()
+    }
     /// Keep only the sets of the tracked bytes `keep` holds.
     fn mset_keep(&mut self, keep: impl Fn(u16) -> bool) {
         self.mset.retain(|e| keep(e.0));
@@ -1052,10 +1063,11 @@ pub(crate) struct Code<'a> {
     pub(crate) meets: std::cell::RefCell<Vec<(u32, u32)>>,
     /// The operands of the one run no input decides ([`crate::once`]).
     pub(crate) ran: &'a crate::once::Ran,
-    /// Where the host calls the entries again and again after its init, the bytes init may
-    /// store: each entry starts from the tracked bytes init leaves joined with
-    /// those every entry's return leaves ([`fixpoint`]).
-    pub(crate) drive: Option<FixedBitSet>,
+    /// What every entry starts with of the tracked bytes: the driver head ([`head`]).
+    pub(crate) seed: Option<St>,
+    /// Iterate the driver head: each entry is called again with what the returns to the host
+    /// leave joined into its start ([`Work::drive`]).
+    pub(crate) drive: bool,
 }
 
 /// Per store `(pc, opcode, access index)` the addresses it writes: a store with a set
@@ -1150,6 +1162,11 @@ impl Code<'_> {
         let (lo, hi) = (base as u32 + i.lo, base as u32 + i.hi + 1);
         (self.ram.iter().any(|&(a, b)| a <= lo && hi <= b)).then_some((base, reg))
     }
+    /// Whether no loaded byte is read as constant (no table, no bound): a register's value set
+    /// is then of immediates and device answers alone, which a store keeps in the byte.
+    fn blind(&self) -> bool {
+        self.constant.is_empty() && self.bound.is_empty()
+    }
     /// Whether this is [`reach`]'s pass (byte bounds, pointer pairs).
     fn reach_pass(&self) -> bool {
         !self.bound.is_empty()
@@ -1169,35 +1186,6 @@ impl Code<'_> {
         } else {
             self.bound.get(x as usize).copied().flatten()
         }
-    }
-    /// The tracked bytes the host's init leaves known: a byte of the code or the loaded program
-    /// init does not store holds its image byte, a variable of init the hull of the values
-    /// init's lift bounds it to; any other byte init may store (`init`) is not known, as init's
-    /// translation may store another value (one read from a device).
-    fn init_mem(&self, init: &FixedBitSet) -> Vec<(u16, Option<Tab>, Iv)> {
-        let loaded = |x: u32| self.ram.iter().any(|&(lo, hi)| (lo..hi).contains(&x));
-        let of = |a: u16| {
-            let i = a as usize;
-            if !(self.cells.contains(i) || loaded(a as u32)) || self.dev.contains(i) {
-                return None;
-            }
-            match (self.free.contains(i), self.observed.contains(i)) {
-                (true, _) => {
-                    let v = self.known.get(&a)?;
-                    Some(Iv {
-                        lo: *v.iter().min()? as u32,
-                        hi: *v.iter().max()? as u32,
-                    })
-                }
-                (false, true) => None,
-                _ if init.contains(i) => None,
-                (false, false) => Some(Iv::exact(self.img[i] as u32)),
-            }
-        };
-        (self.vecs.iter())
-            .filter_map(|&a| Some((a, of(a)?)))
-            .map(|(a, iv)| (a, iv.value().map(|x| Tab::K(x as u8)), iv))
-            .collect()
     }
     /// The operand of the table load of opcode `op` at `pc` indexed by register `r`, and
     /// whether it indexes zero page.
@@ -1595,7 +1583,8 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
         let (_, _, held) = symbolic_in(ops, b, (None, None, [None; DATA]), Some(m));
         let (t, iv, vals) = match held {
             Some(Some(Sym::Lin(r, 0))) if (r as usize) < DATA => {
-                (st.val(r as usize), st.env[r as usize], st.held(r as usize))
+                let vals = st.held(r as usize).filter(|_| code.blind());
+                (st.val(r as usize), st.env[r as usize], vals)
             }
             Some(Some(Sym::K(k))) => (Some(Tab::K(k)), Iv::exact(k as u32), None),
             Some(Some(Sym::Lin(MEM, k))) => (
@@ -2308,7 +2297,7 @@ struct Work<'a> {
     mods: FxHashMap<u16, Vec<(u32, u32)>>,
     /// The driver head ([`Code::drive`]): the tracked bytes at every call of an entry.
     drv: Option<St>,
-    /// The tracked bytes the entries' returns leave since the head last called them.
+    /// The tracked bytes every return that may go to the host leaves, joined.
     rets: Option<St>,
     /// The entries and their declared registers.
     envs: Vec<(u16, Env)>,
@@ -2390,27 +2379,24 @@ fn apply(ret: &St, call: &St, linked: bool, kept: Option<&[(u32, u32)]>) -> St {
 }
 
 impl Work<'_> {
-    /// The tracked bytes the return at `st` in context `cx` gives the driver head
-    /// ([`Code::drive`]): those of an entry's own return, none of a return at a height not
-    /// known there (it may return to the host), nothing of a callee's.
-    fn back(&mut self, cx: u32, st: &St) {
-        if self.drv.is_none() {
+    /// Join into [`Work::rets`] the tracked bytes of the return at `st` in context `cx` when
+    /// it may go to the host: all but a callee's return at its entry height to its call's site
+    /// (`home`) and a return at a known height above an entry's, through what it pushed.
+    fn back(&mut self, cx: u32, st: &St, home: bool) {
+        let inside = match (cx, st.depth) {
+            (NONE, Some(d)) => d > 0,
+            (ANY, _) | (NONE, None) => false,
+            (_, d) => home && d == Some(0),
+        };
+        if inside {
             return;
         }
-        let (mem, mset) = match (cx, st.depth) {
-            (NONE, Some(0)) => (
-                (st.mem.iter())
-                    .map(|&(a, t, i)| (a, t.filter(|t| matches!(t, Tab::K(_))), i))
-                    .filter(|e| e.1.is_some() || e.2 != Iv::full(1))
-                    .collect(),
-                st.mset.clone(),
-            ),
-            (NONE | ANY, None) => Default::default(),
-            _ => return,
-        };
         let back = St {
-            mem,
-            mset,
+            mem: (st.mem.iter())
+                .map(|&(a, t, i)| (a, t.filter(|t| matches!(t, Tab::K(_))), i))
+                .filter(|e| e.1.is_some() || e.2 != Iv::full(1))
+                .collect(),
+            mset: st.mset.clone(),
             ..St::new(TOP_ENV)
         };
         self.rets = Some(match &self.rets {
@@ -2418,13 +2404,13 @@ impl Work<'_> {
             None => back,
         });
     }
-    /// The driver head joins, widened as a loop head, what the entries' returns left, and calls
-    /// each entry again with what it holds; whether that changed it.
+    /// The driver head joins, widened as a loop head, what the returns to the host left, and
+    /// calls each entry again with what it holds; whether that changed it.
     fn drive(&mut self) -> bool {
-        let (Some(old), Some(back)) = (&self.drv, self.rets.take()) else {
+        let (Some(old), Some(back)) = (&self.drv, &self.rets) else {
             return false;
         };
-        let new = join(self.code, old, &back, Some(self.thr));
+        let new = join(self.code, old, back, Some(self.thr));
         if &new == old {
             return false;
         }
@@ -2535,6 +2521,14 @@ impl Work<'_> {
 
 /// What [`analyze`] finds.
 pub struct Analysis {
+    /// Per byte every return to the host may leave known whatever the data ([`Given::exit`]),
+    /// its values: the immediates and device answers that reach it, never a table's.
+    pub exit: Option<Vec<(u16, Vec<u8>)>>,
+    /// The driver head ([`Given::drive`]): per tracked byte it knows, its values.
+    pub head: Vec<(u16, Vec<u8>)>,
+    /// Per byte the driver head knows, the hull of what it holds wherever the entries run,
+    /// whatever the data.
+    pub steady: Vec<(u16, Iv)>,
     /// The entries (as in `St::from`) that reach each start.
     pub from: FxHashMap<u16, u64>,
     /// The starts reached whatever the data (no table taken as constant).
@@ -2704,6 +2698,70 @@ fn fixpoint(
     disp: &FxHashSet<u16>,
     thr: &Thresholds,
 ) -> (FxHashMap<Key, St>, FxHashMap<u16, Site>) {
+    let w = solve(code, vars, entries, sh, disp, thr, false);
+    (w.state, w.ret)
+}
+
+/// The driver loop `for (;;) entry()` after the host's init (`init`: the tracked bytes it
+/// leaves): the least fixpoint of the head, what every call of an entry starts with, joined
+/// from `init` and what every return to the host leaves, widened at the head; and per byte it
+/// knows, the hull of what the byte holds at every start the entries reach.
+fn head(
+    code: &Code,
+    vars: &FxHashMap<u16, Vec<Var>>,
+    entries: &[Entry],
+    sh: &Shape,
+    disp: &FxHashSet<u16>,
+    thr: &Thresholds,
+    init: St,
+) -> (St, Vec<(u16, Iv)>) {
+    let c = Code {
+        seed: Some(init),
+        drive: true,
+        ..code.clone()
+    };
+    let w = solve(&c, vars, entries, sh, disp, thr, true);
+    let head = w.drv.expect("driven");
+    let mut steady: Vec<(u16, Option<Iv>)> = (head.mem.iter())
+        .filter(|e| !(0x100..0x200).contains(&e.0) && !code.dev.contains(e.0 as usize))
+        .map(|e| (e.0, Some(e.2)))
+        .collect();
+    for st in w.state.values() {
+        for (a, iv) in &mut steady {
+            *iv = iv
+                .zip(st.mem.iter().find(|e| e.0 == *a))
+                .map(|(i, e)| hull(i, e.2));
+        }
+    }
+    let steady = (steady.into_iter())
+        .filter_map(|(a, iv)| Some((a, iv.filter(|&i| i != Iv::full(1))?)))
+        .collect();
+    (head, steady)
+}
+
+/// The tracked bytes every return of `entries` to the host leaves, joined, from no tracked
+/// byte known: a host's init's exit.
+fn exit(
+    code: &Code,
+    vars: &FxHashMap<u16, Vec<Var>>,
+    entries: &[Entry],
+    sh: &Shape,
+    disp: &FxHashSet<u16>,
+    thr: &Thresholds,
+) -> Option<St> {
+    solve(code, vars, entries, sh, disp, thr, true).rets
+}
+
+/// The fixpoint's work, with [`Work::rets`] where `collect`.
+fn solve<'a>(
+    code: &'a Code<'a>,
+    vars: &FxHashMap<u16, Vec<Var>>,
+    entries: &[Entry],
+    sh: &'a Shape,
+    disp: &FxHashSet<u16>,
+    thr: &'a Thresholds,
+    collect: bool,
+) -> Work<'a> {
     let (rets, heads, brk_rets) = (&sh.rets, &sh.heads, &sh.brk_rets);
     let mut w = Work {
         code,
@@ -2718,19 +2776,8 @@ fn fixpoint(
         rets: None,
         envs: entries.iter().map(|e| (e.pc, e.env())).collect(),
     };
-    let init = match &code.drive {
-        Some(held) => code.init_mem(held),
-        None => Vec::new(),
-    };
-    let mut seed = St {
-        mem: init,
-        ..St::new(TOP_ENV)
-    };
-    for &(a, _, iv) in &seed.mem.clone() {
-        let vs = code.known.get(&a).filter(|_| iv.value().is_none());
-        seed.mset_put(a, vs.map(|v| v.iter().map(|&x| x as u32).collect()));
-    }
-    w.drv = code.drive.as_ref().map(|_| seed.clone());
+    let seed = code.seed.clone().unwrap_or_else(|| St::new(TOP_ENV));
+    w.drv = code.drive.then(|| seed.clone());
     for (i, e) in entries.iter().enumerate() {
         let env = e.env();
         w.flow(
@@ -2751,8 +2798,8 @@ fn fixpoint(
         w.queued.remove(&key);
         let st = w.state[&key].clone();
         for v in &vars[&pc] {
-            if matches!(v.flow, Flow::Rts(_) | Flow::Rti(_)) {
-                w.back(cx, &st);
+            if collect && matches!(v.flow, Flow::Rts(_) | Flow::Rti(_)) {
+                w.back(cx, &st, !rets.wild.contains(&pc));
             }
             acc.clear();
             let out = step(code, pc, v, &st, &mut acc);
@@ -2855,7 +2902,7 @@ fn fixpoint(
             }
         }
     }
-    (w.state, w.ret)
+    w
 }
 
 /// The [`Arm`] of the computed transfer `f` at `pc` to its `k`th target, where its target
@@ -3098,6 +3145,9 @@ fn reach(
     for a in code.observed.ones() {
         entry[a] = None;
     }
+    for &(a, _, iv) in code.seed.iter().flat_map(|s| &s.mem) {
+        entry[a as usize] = Some(iv);
+    }
     let top = vec![None; 0x10000];
     let runs = match proof {
         true => Vec::new(),
@@ -3182,7 +3232,8 @@ fn reach(
         classes: code.classes.clone(),
         meets: Default::default(),
         ran: code.ran,
-        drive: code.drive.clone(),
+        seed: code.seed.clone(),
+        drive: false,
     };
     let mut sh = p.sh;
     c.mods = mods(&c, p.vars, &FxHashMap::default(), &sh.live);
@@ -3567,8 +3618,9 @@ fn bounded_stores(
 #[derive(Clone, Copy)]
 pub struct Wanted<'a> {
     pub held: &'a FixedBitSet,
-    /// The bytes the host's init stores on some run, its translation's stores included.
-    pub init: &'a FixedBitSet,
+    /// Where the host calls the entries in a loop after its init, what init leaves
+    /// ([`Given::drive`]).
+    pub driven: Option<&'a [(u16, Vec<u8>)]>,
 }
 
 /// What the analysis takes beyond the program: the `[lo, hi)` the program was loaded to, the
@@ -3599,9 +3651,12 @@ pub struct Given<'a> {
     pub devices: &'a crate::dev::Devices,
     /// The operands of the one run no input decides ([`crate::once`]).
     pub ran: &'a crate::once::Ran,
-    /// Where the host calls the entries in a loop after its init, the bytes init may store
-    /// ([`Code::drive`]).
-    pub drive: Option<&'a FixedBitSet>,
+    /// Where the host calls the entries in a loop after its init: the values init leaves in
+    /// the bytes it leaves known whatever the data ([`Analysis::exit`] of its lift), from
+    /// which the driver head starts ([`head`]).
+    pub drive: Option<&'a [(u16, Vec<u8>)]>,
+    /// Find [`Analysis::exit`].
+    pub exit: bool,
 }
 
 /// The runs of the loaded program outside page 1 and the volatile ranges ([`Code::ram`]).
@@ -3669,13 +3724,52 @@ pub fn analyze(
         classes: FxHashMap::default(),
         meets: Default::default(),
         ran: given.ran,
-        drive: given.drive.cloned(),
+        seed: None,
+        drive: false,
     };
     let thr = Thresholds::new(vars, &code);
+    // Init's exit and the driver head are taken whatever the data: no table as constant.
+    let exit = given.exit.then(|| {
+        let mut vecs = code.vecs.clone();
+        vecs.extend(vars.values().flatten().flat_map(|v| {
+            (v.acc.iter())
+                .filter(|a| a.store && !a.dummy)
+                .filter_map(|a| a.addr.value())
+                .filter(|&a| !(0x100..0x200).contains(&a) && !code.dev.contains(a as usize))
+                .map(|a| a as u16)
+        }));
+        vecs.sort_unstable();
+        vecs.dedup();
+        let c = Code {
+            constant: FixedBitSet::new(),
+            vecs,
+            ..code.clone()
+        };
+        exit(&c, vars, entries, &full, disp, &thr).map_or_else(Vec::new, |s| s.mem_values())
+    });
+    let mut code = code;
+    let mut steady = Vec::new();
+    if let Some(init) = given.drive {
+        let mut st = St::new(TOP_ENV);
+        for (a, vs) in init
+            .iter()
+            .filter(|e| code.vecs.binary_search(&e.0).is_ok())
+        {
+            let b: Bits = vs.iter().map(|&v| v as u32).collect();
+            let Some(iv) = b.hull() else { continue };
+            st.mem.push((*a, iv.value().map(|x| Tab::K(x as u8)), iv));
+            st.mset_put(*a, Some(b));
+        }
+        let blind = Code {
+            constant: FixedBitSet::new(),
+            ..code.clone()
+        };
+        let (h, s) = head(&blind, vars, entries, &full, disp, &thr, st);
+        (code.seed, steady) = (Some(h), s);
+    }
     // The starts reached whatever the data: no table taken as constant.
     let blind = Code {
         constant: FixedBitSet::new(),
-        drive: None,
         ..code.clone()
     };
     let reached = |sh: &Shape| {
@@ -4026,6 +4120,9 @@ pub fn analyze(
         let (jumps, sels) =
             crate::dispatch::jumps(&code, vars, &state, &sets, &objs, &stores, &cellvals);
         return Analysis {
+            exit,
+            head: code.seed.as_ref().map_or_else(Vec::new, St::mem_values),
+            steady,
             ptrs,
             runs: match given.reach {
                 true => data_runs(given, &bytes),
