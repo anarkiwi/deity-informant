@@ -336,7 +336,7 @@ class Run:  # pylint: disable=too-many-instance-attributes
         """The tag of the byte at ``a`` (key ``key``) as a load reads it."""
         if a in self.tags:
             return self.tags[a]
-        if key is None or any(lo <= a < hi for lo, hi in self.volatile):
+        if key is None or self._vol(a):
             return X
         self.vals.setdefault(key, self.mem[a])
         return ("L", key)
