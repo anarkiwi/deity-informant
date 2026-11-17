@@ -796,15 +796,15 @@ def _domain(lift_, image, every, songs):
 def _aliases(runs, states):
     """``[(lo, g, delta)]`` of :func:`postinit.groups` of ``runs`` (init's runs of one argument
     value) holding on each of ``states``: pair ``lo``'s word is pair ``g``'s plus ``delta``."""
-    st = states.astype(np.int64)
 
     def word(lo):
-        return st[:, lo] | st[:, (lo + 1) & 0xFFFF] << 8
+        """Pair ``lo``'s word on each state: 16 bits, its differences wrapping as the 6502's."""
+        return states[:, lo].astype(np.uint16) | states[:, (lo + 1) & 0xFFFF].astype(np.uint16) << 8
 
     return [
         (lo, g, d)
         for lo, (g, d) in sorted(postinit.groups(runs).items())
-        if ((word(lo) - word(g)) & 0xFFFF == d).all()
+        if (word(lo) - word(g) == d).all()
     ]
 
 

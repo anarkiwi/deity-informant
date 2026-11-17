@@ -5032,10 +5032,11 @@ def test_operands_init_relocates_by_a_constant_base_are_constant(prefix, tmp_pat
 def test_carry_chain_identity():
     """``lo = a + b``, ``hi = d + e + (lo < a)`` are the bytes of ``(d:a) + (e:b)``, for every
     ``a``, ``b`` and every value of ``d + e``."""
-    a, b, de = np.meshgrid(*(np.arange(256),) * 3, indexing="ij")
+    v = np.arange(256, dtype=np.uint16)
+    a, b, de = v[:, None, None], v[None, :, None], v[None, None, :]
     lo = (a + b) & 0xFF
     hi = (de + (lo < a)) & 0xFF
-    w = ((de << 8) + a + b) & 0xFFFF
+    w = (de << 8) + a + b
     assert (lo == (w & 0xFF)).all() and (hi == (w >> 8)).all()
 
 
