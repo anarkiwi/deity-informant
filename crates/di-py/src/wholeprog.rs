@@ -875,6 +875,37 @@ impl Program {
         self.prog.objects.clone()
     }
 
+    /// The pointer definitions (``deity_informant.wholeprog`` *Pointer definitions*), by id:
+    /// ``[(loc, at, byte, by)]``, ``loc`` ``"w"`` the word at ``at`` and the byte past it,
+    /// ``"x"`` or ``"y"`` a register indexing the run of data bytes starting at ``at``;
+    /// ``byte`` 0 the low byte (or the register), 1 the high; ``by`` the instruction writing
+    /// it, ``None`` the value an entry starts with.
+    #[getter]
+    fn pdefs(&self) -> Vec<(&'static str, u32, u8, Option<u16>)> {
+        use di_lift::pdefs::Loc;
+        (self.prog.pdefs.defs.iter())
+            .map(|&(l, byte, by)| match l {
+                Loc::Word(q) => ("w", q as u32, byte, by),
+                Loc::Reg(r, run) if r as usize == di_pcode::reg::X => ("x", run, byte, by),
+                Loc::Reg(_, run) => ("y", run, byte, by),
+            })
+            .collect()
+    }
+
+    /// Per instruction start of an access, the ids of the definitions reaching it of the
+    /// locations its addresses are formed from: ``{pc: [id, ...]}``.
+    #[getter]
+    fn pdefs_at(&self) -> HashMap<u16, Vec<u32>> {
+        self.prog.pdefs.at.iter().cloned().collect()
+    }
+
+    /// Per instruction start writing a word, and per anchor of a walk's check, the ids of the
+    /// word's definitions reaching past it: ``{pc: [id, ...]}``.
+    #[getter]
+    fn pdefs_past(&self) -> HashMap<u16, Vec<u32>> {
+        self.prog.pdefs.past.iter().cloned().collect()
+    }
+
     /// The runs of each object of several (a data block): ``{j: [(lo, hi), ...]}``, ``hi``
     /// exclusive; a pointer lies in one of them.
     #[getter]

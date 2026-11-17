@@ -46,6 +46,31 @@ def line_rows(elf, source):
     return sorted(out)
 
 
+def owners(elf_path, unit):
+    """``{(file, line): bytes}`` of compilation unit ``unit`` (its source's name) of an ELF
+    built with ``-g``: the bytes the line table gives each line of each file, as the ``#line``
+    markers of a translation name them (docs/cgen.md, *Translation cost*); a row of line 0
+    takes the line before it."""
+    out = Counter()
+    with open(elf_path, "rb") as f:
+        dwarf = ELFFile(f).get_dwarf_info()
+        for cu in dwarf.iter_CUs():
+            name = cu.get_top_DIE().attributes.get("DW_AT_name")
+            if name is None or Path(name.value.decode()).name != Path(unit).name:
+                continue
+            prog = dwarf.line_program_for_CU(cu)
+            files = [Path(e.name.decode()).name for e in prog["file_entry"]]
+            at, key = None, ("", 0)
+            for e in (e for e in prog.get_entries() if e.state is not None):
+                st = e.state
+                if at is not None:
+                    out[key] += st.address - at
+                idx = st.file if prog.header.version >= 5 else st.file - 1
+                key = (files[idx], st.line) if st.line else key
+                at = None if st.end_sequence else st.address
+    return out
+
+
 def line_origins(text, cells, origins):
     """``({line: origin}, {line: C function})`` of C ``text`` (1-based lines); ``cells`` the
     code cells' addresses, ``origins`` the arrays' origins by name."""

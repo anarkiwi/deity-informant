@@ -22,6 +22,7 @@ pub mod lanes;
 pub mod objects;
 pub mod once;
 pub mod opt;
+pub mod pdefs;
 pub mod ptr;
 pub mod scev;
 pub mod vsa;
@@ -1210,6 +1211,7 @@ pub fn lift_banked(
             v
         },
         objects: g.objs.objects.clone(),
+        pdefs: pdefs::defs(&g, &pcs),
         parts: {
             let mut v: Vec<(u16, Vec<(u32, u32)>)> = (g.objs.parts.iter())
                 .map(|(&j, r)| (j, r.clone()))

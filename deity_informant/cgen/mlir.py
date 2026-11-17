@@ -103,6 +103,9 @@ class Op:  # pylint: disable=too-many-instance-attributes
     parent: Block | None = None
     succs: list = field(default_factory=list)
     pc: int | None = None
+    #: ``((pc, node), ...)`` of the location: the instruction and lift node first, then each
+    #: call site it was inlined through, innermost first.
+    loc: tuple = ()
 
     def prop(self, key):
         """The text of property ``key`` (quotes stripped), or None."""
@@ -180,12 +183,28 @@ def _results(name, count):
 
 
 _PC = re.compile(r'"(0x[0-9a-f]+)"')
+_NAMED = re.compile(r'"(0x[0-9a-f]+)"\("([^"]*)"\)')
+
+
+def _chain(loc):
+    """``((pc, node), ...)`` of location text ``loc``: a name location's instruction and lift
+    node, then for a call site location the caller's, a fused location by its first part."""
+    if loc.startswith("callsite("):
+        depth = 0
+        for i, ch in enumerate(loc):
+            depth += (ch in "([") - (ch in ")]")
+            if depth == 1 and loc.startswith(" at ", i):
+                return _chain(loc[9:i]) + _chain(loc[i + 4 : -1])
+        return ()
+    m = _NAMED.search(loc)
+    return ((int(m.group(1), 16), m.group(2)),) if m else ()
 
 
 def _strip_locs(s):
     """``(s without its ``loc(...)`` locations, the instruction address of the last one or
-    None)``: an inlined operation's location names its own instruction first."""
-    out, pc, at = [], None, 0
+    None, its :func:`_chain`)``: an inlined operation's location names its own instruction
+    first."""
+    out, pc, at, chain = [], None, 0, ()
     while (i := s.find(" loc(", at)) >= 0:
         out.append(s[at:i])
         depth, j = 0, i + 4
@@ -196,9 +215,10 @@ def _strip_locs(s):
                 break
         m = _PC.search(s, i, j)
         pc = int(m.group(1), 16) if m else None
+        chain = _chain(s[i + 5 : j - 1])
         at = j
     out.append(s[at:])
-    return "".join(out), pc
+    return "".join(out), pc, chain
 
 
 def _close(op, rest):
@@ -211,7 +231,7 @@ def parse(text):
     """The top-level :class:`Op` of generic-form MLIR ``text``."""
     stack, top = [], None
     for line in text.splitlines():
-        s, pc = _strip_locs(line.strip())
+        s, pc, chain = _strip_locs(line.strip())
         if not s or s.startswith("//") or s.startswith("#"):
             continue
         if s.startswith("^"):
@@ -247,6 +267,7 @@ def parse(text):
             [],
             succs=[x.strip()[1:] for x in (succ or "").split(",") if x.strip()],
             pc=pc,
+            loc=chain,
         )
         if stack:
             block = stack[-1].regions[-1][-1]
