@@ -348,7 +348,7 @@ def exits(fn, op):
 class Context:  # pylint: disable=too-few-public-methods
     """What the functions of one program share: the register file, names and traps."""
 
-    def __init__(self, funcs, keep_dummy, symbols=0):
+    def __init__(self, funcs, keep_dummy, symbols):
         sizes = {r: {2 if r == 16 else 1} for r in (0, *ENTRY_REGS)}
         for fn in funcs:
             for op in ops(fn):
