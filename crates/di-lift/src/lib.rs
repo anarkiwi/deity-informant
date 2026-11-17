@@ -262,24 +262,18 @@ fn zone_checks(g: &mut analysis::Graph, free: &FxHashMap<u16, Vec<u8>>) {
 
 /// Per byte, the values it may hold when every store that may write it has an exact address
 /// and a value interval narrower than a byte: its entry byte (for a code cell the host's init
-/// leaves, its values over init's runs; for another variable init leaves, the driver head's)
-/// and the stored values (`None`: unbounded, as for page 1 where pushes land and the other
-/// variables init leaves, whose words the reach pass takes).
+/// leaves, its values over init's runs) and the stored values (`None`: unbounded, as for page 1
+/// where pushes land and the other variables init leaves, whose words the reach pass takes);
+/// for another variable init leaves that the driver head knows, its hull wherever the entries
+/// run ([`analysis::Graph::steady`]).
 fn byte_bounds(g: &analysis::Graph, free: &FxHashMap<u16, Vec<u8>>) -> Vec<Option<Iv>> {
-    let hull = |vs: &[u8]| {
-        Some(Iv {
-            lo: *vs.iter().min()? as u32,
-            hi: *vs.iter().max()? as u32,
-        })
-    };
-    let head = |a: u16| {
-        let i = g.head.binary_search_by_key(&a, |e| e.0).ok()?;
-        hull(&g.head[i].1)
-    };
     let mut held: Vec<Option<Iv>> = (0..0x10000)
         .map(|a| match free.get(&(a as u16)) {
-            Some(vs) if g.cells.contains(a) => hull(vs),
-            Some(_) => head(a as u16),
+            Some(vs) if g.cells.contains(a) => Some(Iv {
+                lo: *vs.iter().min()? as u32,
+                hi: *vs.iter().max()? as u32,
+            }),
+            Some(_) => None,
             None => Some(Iv::exact(g.img[a] as u32)),
         })
         .collect();
@@ -290,6 +284,11 @@ fn byte_bounds(g: &analysis::Graph, free: &FxHashMap<u16, Vec<u8>>) -> Vec<Optio
             held[ac.addr.lo as usize..=ac.addr.hi.min(0xffff) as usize].fill(None);
         } else if let Some(h) = held[ac.addr.lo as usize].as_mut() {
             *h = vsa::hull(*h, ac.val);
+        }
+    }
+    for &(a, iv) in &g.steady {
+        if free.contains_key(&a) && !g.cells.contains(a as usize) {
+            held[a as usize] = Some(iv);
         }
     }
     held

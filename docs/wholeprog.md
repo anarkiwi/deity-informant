@@ -428,7 +428,9 @@ the hull of what it holds at every start the entries reach (still with no table 
 constant) bounds each plain load of its address in the optimizer's value numbering, so a
 branch on a cursor init zeroes and play wraps folds where its bound decides it. A store
 keeps a register's value set in a tracked byte only where no table is taken as constant:
-a set read from the song's tables never crosses a store.
+a set read from the song's tables never crosses a store. A tracked byte with a value set has
+the set's hull as its interval, so widening never loses it; a flag an instruction sets from
+a tracked byte it reads (`DEC speed`) narrows the byte's set on each branch on it.
 
 ## Guards
 

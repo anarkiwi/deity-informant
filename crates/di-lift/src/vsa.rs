@@ -75,10 +75,12 @@ impl Rel {
 }
 
 /// The flag is `rel((x + off) mod 256, k)` for a value `x` bounded by `pre` that each data
-/// register `r` with a `shift[r]` holds as `x + shift[r]` (at least one does).
+/// register `r` with a `shift[r]` holds as `x + shift[r]`, and the tracked byte `mem.0` as
+/// `x + mem.1` (at least one does).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Pred {
     shift: [Option<u8>; DATA],
+    mem: Option<(u16, u8)>,
     off: u8,
     rel: Rel,
     k: u8,
@@ -951,6 +953,18 @@ pub(crate) fn refine(code: &Code, st: &St, flag: usize, want: bool) -> Option<St
             meet(x, shift(st.env[r], d.wrapping_neg()))
         })?;
         let p = Pred { pre, ..p };
+        if let Some((m, d)) = p.mem {
+            if let Some(i) = s.mem.iter().position(|e| e.0 == m) {
+                let e = s.mem[i];
+                let vals = s
+                    .mvals(m)
+                    .unwrap_or_else(|| (e.2.lo..=e.2.hi.min(0xff)).collect());
+                let keep = vals.filter(|v| sat(&p, d, want, v));
+                let iv = keep.hull()?;
+                s.mem[i] = (m, iv.value().map(|x| Tab::K(x as u8)).or(e.1), iv);
+                s.mset_put(m, Some(keep));
+            }
+        }
         for (r, d) in regs() {
             s.env[r] = restrict(&p, d, want).and_then(|iv| meet(iv, s.env[r]))?;
             s.kb[r] = s.kb[r].meet(Kb::of(s.env[r]));
@@ -1428,27 +1442,80 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
         });
         d.iter().any(Option::is_some).then_some(d)
     };
+    // The tracked byte the instruction reads at an exact address, alone of its reads, and
+    // what it holds after as that read plus a constant (`None`: not so).
+    let mut reads = acc.iter().filter(|a| !a.store && !a.dummy);
+    let tracked = match (reads.next(), reads.next()) {
+        (Some(a), None) => a
+            .addr
+            .value()
+            .filter(|&m| st.mem.iter().any(|e| e.0 as u32 == m)),
+        _ => None,
+    };
+    let hits = |m: u32| {
+        acc.iter()
+            .any(|a| a.store && a.addr.lo <= m && m <= a.addr.hi)
+    };
+    let msym = tracked.map(|m| {
+        let (sy, _, held) = symbolic_in(ops, b, (None, None, [None; DATA]), Some(m));
+        let d = match held {
+            None if !hits(m) => Some(0),
+            Some(Some(Sym::Lin(MEM, k))) => Some(k),
+            _ => None,
+        };
+        (m as u16, sy, d)
+    });
     let mut pred = [None; 3];
     for (i, &f) in FLAGS.iter().enumerate() {
         pred[i] = if written >> f & 1 == 0 {
             st.pred[i].and_then(|p| {
-                let shift = holds(&|b| p.shift.get(b as usize).copied().flatten())?;
-                Some(Pred { shift, ..p })
-            })
-        } else if let Some(Sym::Cond(base, off, rel, k)) = sym[f] {
-            holds(&|b| (b == base).then_some(0)).map(|shift| Pred {
-                shift,
-                off,
-                rel,
-                k,
-                pre: if (base as usize) < DATA {
-                    st.env[base as usize]
-                } else {
-                    Iv::full(1)
-                },
+                let mem = p.mem.filter(|&(m, _)| !hits(m as u32));
+                let shift = holds(&|b| p.shift.get(b as usize).copied().flatten());
+                if shift.is_none() && mem.is_none() {
+                    return None;
+                }
+                Some(Pred {
+                    shift: shift.unwrap_or([None; DATA]),
+                    mem,
+                    ..p
+                })
             })
         } else {
-            None
+            let by_reg = match sym[f] {
+                Some(Sym::Cond(base, off, rel, k)) => {
+                    holds(&|b| (b == base).then_some(0)).map(|shift| Pred {
+                        shift,
+                        mem: None,
+                        off,
+                        rel,
+                        k,
+                        pre: if (base as usize) < DATA {
+                            st.env[base as usize]
+                        } else {
+                            Iv::full(1)
+                        },
+                    })
+                }
+                _ => None,
+            };
+            by_reg.or_else(|| match msym? {
+                (m, sy, Some(d)) => match sy[f] {
+                    Some(Sym::Cond(MEM, off, rel, k)) => Some(Pred {
+                        shift: [None; DATA],
+                        mem: Some((m, d)),
+                        off,
+                        rel,
+                        k,
+                        pre: st
+                            .mem
+                            .iter()
+                            .find(|e| e.0 == m)
+                            .map_or(Iv::full(1), |e| e.2),
+                    }),
+                    _ => None,
+                },
+                _ => None,
+            })
         };
     }
     let rel = std::array::from_fn(|r| match sym[r] {
@@ -1587,11 +1654,15 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
                 (st.val(r as usize), st.env[r as usize], vals)
             }
             Some(Some(Sym::K(k))) => (Some(Tab::K(k)), Iv::exact(k as u32), None),
-            Some(Some(Sym::Lin(MEM, k))) => (
-                None,
-                old.map_or(Iv::full(1), |e| shift(e.2, k)),
-                old.and_then(|e| st.mvals(e.0)).map(|b| b.shifted(k)),
-            ),
+            Some(Some(Sym::Lin(MEM, k))) => {
+                let vals = old.and_then(|e| st.mvals(e.0)).map(|b| b.shifted(k));
+                let iv = vals.and_then(Bits::hull);
+                (
+                    None,
+                    iv.or(old.map(|e| shift(e.2, k))).unwrap_or(Iv::full(1)),
+                    vals,
+                )
+            }
             _ => (a.val.value().map(|x| Tab::K(x as u8)), a.val, None),
         };
         if t.is_some() || iv != Iv::full(1) {
@@ -2003,8 +2074,10 @@ fn join(code: &Code, a: &St, b: &St, widen: Option<&Thresholds>) -> St {
             (Some(x), Some(y)) if (x.off, x.rel, x.k) == (y.off, y.rel, y.k) => {
                 let shift =
                     std::array::from_fn(|r| x.shift[r].filter(|_| x.shift[r] == y.shift[r]));
-                shift.iter().any(Option::is_some).then_some(Pred {
+                let mem = x.mem.filter(|_| x.mem == y.mem);
+                (shift.iter().any(Option::is_some) || mem.is_some()).then_some(Pred {
                     shift,
+                    mem,
                     pre: w(x.pre, hull(x.pre, y.pre)),
                     ..*x
                 })
@@ -2077,7 +2150,11 @@ fn join(code: &Code, a: &St, b: &St, widen: Option<&Thresholds>) -> St {
             .filter_map(|&(m, x, i)| {
                 let (_, y, j) = *b.mem.iter().find(|e| e.0 == m)?;
                 let t = x.zip(y).and_then(|(x, y)| jt(x, y));
-                let iv = w(i, hull(i, j));
+                let set = a
+                    .mvals(m)
+                    .zip(b.mvals(m))
+                    .and_then(|(p, q)| p.or(q).capped());
+                let iv = set.and_then(Bits::hull).unwrap_or_else(|| w(i, hull(i, j)));
                 (t.is_some() || iv != Iv::full(1)).then_some((m, t, iv))
             })
             .collect(),

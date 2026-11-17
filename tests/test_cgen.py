@@ -284,6 +284,35 @@ spd:    .byte 0
 tab:    .byte 1,2,3
 end:
 """
+COUNTDOWN = """
+init:   LDA #0
+        STA pos
+        LDA #3
+        STA speed
+        RTS
+play:   DEC speed
+        BNE wait
+        LDA #3
+        STA speed
+        LDY pos
+        LDA data,Y
+        STA $C000
+        INY
+        CPY #16
+        BCC keep
+        LDY #0
+keep:   STY pos
+wait:   LDA speed
+        CMP #$80
+        BCC done
+        LDA #$FF
+        STA $C018
+done:   RTS
+pos:    .byte 0
+speed:  .byte 0
+data:   .byte 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16
+end:
+"""
 ZPCLEAR = """
 entry:  LDX #$00
         TXA
@@ -2289,6 +2318,16 @@ def test_cursor_bounded_across_calls(prefix, tmp_path):
     calls = [("init", 0)] + [("play", 0)] * 8
     c, _, info = check(prefix, tmp_path, CURSOR, calls, entries=("init", "play"), init=0, songs=[0])
     assert "0xC011" not in body_of(c, "play") and len(info["traps"]) == 1
+
+
+def test_countdown_reloaded_across_calls(prefix, tmp_path):
+    """A speed counter play decrements and reloads with 3 at zero holds 1-3 at every call: the
+    branch on its sign folds. The position it steps on each reload stays in its table."""
+    calls = [("init", 0)] + [("play", 0)] * 40
+    c, _, info = check(
+        prefix, tmp_path, COUNTDOWN, calls, entries=("init", "play"), init=0, songs=[0]
+    )
+    assert "0xC018" not in body_of(c, "play") and len(info["traps"]) == 1
 
 
 PUSH = """
