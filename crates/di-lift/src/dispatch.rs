@@ -491,6 +491,20 @@ pub(crate) fn stored_reg(t: &Template, i: usize) -> Option<usize> {
     None
 }
 
+/// `base` with each register of `idx` at its digit of `k` in the mixed radix of their
+/// value lists: the `k`th of every combination of their values.
+fn index_env(
+    mut env: crate::analysis::Env,
+    idx: &[(usize, Vec<u8>)],
+    mut k: usize,
+) -> crate::analysis::Env {
+    for (r, xs) in idx {
+        env[*r] = Iv::exact(xs[k % xs.len()] as u32);
+        k /= xs.len();
+    }
+    env
+}
+
 /// Whether template `t` reads register `r` before it writes it.
 fn reads(t: &Template, r: usize) -> bool {
     let is = |v: &Vn| v.space() == Space::Reg && v.off() as usize == r;
@@ -672,12 +686,7 @@ fn var_stores(
         };
         let n: usize = idx.iter().map(|e| e.1.len()).product();
         for k in 0..n {
-            let mut env = base;
-            let mut q = k;
-            for (r, xs) in &idx {
-                env[*r] = Iv::exact(xs[q % xs.len()] as u32);
-                q /= xs.len();
-            }
+            let mut env = index_env(base, &idx, k);
             acc.clear();
             absint(t.ops(), b, &mut env, &mut acc);
             for (i, a) in acc.iter().enumerate().filter(|a| a.1.store) {
@@ -754,12 +763,7 @@ pub(crate) fn indexed_loads(
             let mut found: FxHashMap<usize, BTreeSet<u16>> = FxHashMap::default();
             let n: usize = idx.iter().map(|e| e.1.len()).product();
             for k in 0..n {
-                let mut env = base;
-                let mut q = k;
-                for (r, xs) in &idx {
-                    env[*r] = Iv::exact(xs[q % xs.len()] as u32);
-                    q /= xs.len();
-                }
+                let mut env = index_env(base, &idx, k);
                 acc.clear();
                 absint(t.ops(), b, &mut env, &mut acc);
                 for (i, a) in acc.iter().enumerate().filter(|a| loads(a.1)) {
