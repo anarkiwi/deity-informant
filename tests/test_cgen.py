@@ -5058,7 +5058,7 @@ def test_patched_compare_immediate_bounds_a_loop(prefix, tmp_path):
     """A compare immediate an earlier call patches is a scalar the loop it bounds tests as
     any variable: a structured loop, no goto."""
     c, _, info = check(prefix, tmp_path, BOUND, entry_calls([5, 0, 7, 1, 6, 2, 4, 3], 2))
-    assert info["provenance"]["loops"] and re.search(r"S_15 > \(uint8_t\)\(v\d+ \+ 1\)", c)
+    assert info["provenance"]["loops"] and re.search(r"S_15 (>|<=) \(uint8_t\)\(v\d+ \+ 1\)", c)
     assert "S_15 = (a & 3) + 1;" in c
 
 

@@ -331,6 +331,33 @@ def guarded(items):
     return items
 
 
+CONTINUE = ("j", "continue;", frozenset())
+
+
+def flattened(items):
+    """``items`` with each ``if`` whose ``else`` ends in a jump and whose ``then`` does not
+    tested the other way, its ``else`` the jumping arm and its ``then`` after it, and each
+    loop body's last ``if`` with no ``else`` a guard continuing the loop: the same
+    statements, the larger arm one nesting level up, no ``else``."""
+    out = []
+    for st in items:
+        if st[0] == "if":
+            st = (*st[:3], flattened(st[3]), flattened(st[4]), *st[5:])
+            if st[4] and ends_in_jump(st[4]) and not ends_in_jump(st[3]):
+                out += [("if", st[5], st[2], st[4], [], st[1]), *st[3]]
+                continue
+        elif st[0] == "loop":
+            body = flattened(st[4])
+            while body and body[-1][0] == "if" and not body[-1][4] and body[-1][3]:
+                last = body[-1]
+                body = [*body[:-1], ("if", last[5], last[2], [CONTINUE], [], last[1]), *last[3]]
+            st = (*st[:4], body)
+        elif st[0] == "switch":
+            st = (*st[:3], [(lab, flattened(b)) for lab, b in st[3]])
+        out.append(st)
+    return out
+
+
 def walk(items):
     """Every statement of ``items``, nested ones included, in order."""
     for st in items:

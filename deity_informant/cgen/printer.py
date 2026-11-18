@@ -24,6 +24,7 @@ from .csyntax import (
     declare,
     drop_unread,
     ends_in_jump,
+    flattened,
     guarded,
     hexes,
     names_in,
@@ -3612,7 +3613,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         void = not self.f.private or self.mod.ret_type(self.f) == "void"
         parts = sections(body, set(self.types)) if void else [(None, body)]
         parts = [returning(items, lab) if lab else items for lab, items in parts]
-        parts = [guarded(items) if void else items for items in parts]
+        parts = [guarded(flattened(items)) if void else flattened(items) for items in parts]
         self.prov["gotos"] = [
             e
             for items in parts
