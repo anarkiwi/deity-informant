@@ -2603,8 +2603,6 @@ pub struct Analysis {
     /// Per byte every return to the host may leave known whatever the data ([`Given::exit`]),
     /// its values: the immediates and device answers that reach it, never a table's.
     pub exit: Option<Vec<(u16, Vec<u8>)>>,
-    /// The driver head ([`Given::drive`]): per tracked byte it knows, its values.
-    pub head: Vec<(u16, Vec<u8>)>,
     /// Per byte the driver head knows, the hull of what it holds wherever the entries run,
     /// whatever the data.
     pub steady: Vec<(u16, Iv)>,
@@ -4291,7 +4289,6 @@ pub fn analyze(
             crate::dispatch::jumps(&code, vars, &state, &sets, &objs, &stores, &cellvals);
         return Analysis {
             exit,
-            head: code.seed.as_ref().map_or_else(Vec::new, St::mem_values),
             steady,
             ptrs,
             runs: match given.reach {

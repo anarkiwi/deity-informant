@@ -570,8 +570,6 @@ pub struct Graph {
     /// What every return of a once-run entry to the host leaves whatever the data
     /// ([`crate::vsa::Analysis::exit`]).
     pub exit: Vec<(u16, Vec<u8>)>,
-    /// The driver head of the entries ([`crate::vsa::Analysis::head`]).
-    pub head: Vec<(u16, Vec<u8>)>,
     /// Per byte, its hull wherever the entries run ([`crate::vsa::Analysis::steady`]).
     pub steady: Vec<(u16, Iv)>,
     /// The `RTS`/`RTI`s that jump through the address their code pushed.
@@ -1072,7 +1070,7 @@ impl Fixpoint<'_> {
         );
         (g.reach, g.proven, g.regs, g.runs) = (an.reach, an.proven, an.regs, an.runs);
         g.exit = an.exit.unwrap_or_default();
-        (g.head, g.steady) = (an.head, an.steady);
+        g.steady = an.steady;
         g.bases = an.bases;
         g.nocode.extend(an.bounded.keys().copied());
         g.bounded = an.bounded;
@@ -1405,7 +1403,6 @@ impl Fixpoint<'_> {
                     kept: Vec::new(),
                     bounded: FxHashMap::default(),
                     exit: Vec::new(),
-                    head: Vec::new(),
                     steady: Vec::new(),
                     disp,
                     vars,

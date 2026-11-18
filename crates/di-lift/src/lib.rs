@@ -1289,7 +1289,6 @@ pub fn lift_banked(
         },
         kept: g.kept.clone(),
         exit: g.exit.clone(),
-        head: g.head.clone(),
         sets: {
             let mut s: Vec<(u16, Vec<u8>)> = g
                 .closed

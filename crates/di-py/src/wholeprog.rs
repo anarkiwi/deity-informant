@@ -822,13 +822,6 @@ impl Program {
         self.prog.exit.iter().cloned().collect()
     }
 
-    /// Per byte the driver head knows, what every call of an entry starts with
-    /// (``driven``): ``{address: [value, ...]}``.
-    #[getter]
-    fn head(&self) -> HashMap<u16, Vec<u8>> {
-        self.prog.head.iter().cloned().collect()
-    }
-
     /// The instruction starts the functions plan, ascending.
     #[getter]
     fn starts(&self) -> Vec<u16> {
