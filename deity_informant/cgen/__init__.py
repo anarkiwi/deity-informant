@@ -18,7 +18,7 @@ import numpy as np
 
 from .. import c64devices, masks, polling, postinit, wholeprog
 from ..trace import Facts
-from . import cost, emit, marks, mlir, printer, traps as trapinfo
+from . import cost, emit, llvmopt, marks, mlir, printer, traps as trapinfo
 from .csyntax import hexes
 from ..lifter import MODE_LEN, OPS
 from .regions import Memory, background, code_bytes, pointer_pairs
@@ -959,7 +959,7 @@ def render(p, header="cgen.h", prefix=None, lines=False):  # pylint: disable=too
     run = mlir.runner(build=True) if prefix is None else prefix
     if run is None:
         raise RuntimeError("needs mlir-opt on PATH or Docker")
-    top = mlir.parse(mlir.optimize(text, run))
+    top = mlir.parse(llvmopt.combined(mlir.optimize(text, run), run))
     times["mlir"] = time.perf_counter() - t0
     t1 = time.perf_counter()
     insn = code_bytes(p.image, p.starts)

@@ -83,6 +83,29 @@ caller's return address. `tools/cgenplay.c` is a host harness.
    `cf.switch` with block arguments). The inliner honours `no_inline`, so a callee with one
    call site is inlined and the others stay functions; when optimization leaves a `no_inline`
    callee with one call site the pipeline runs again with that call inlinable.
+   Operator simplification is LLVM's InstCombine (`llvmopt.py`), a round trip in one
+   `mlir-opt | mlir-translate | opt | mlir-translate` pipeline. Lowering makes each `memref`
+   access a call of an external `@__ld.G`/`@__st.G` (memory stays opaque, so every cell access
+   comes back where it was), numbers every location `loc("o":N:1)` (carried through LLVM IR
+   as debug lines) and keeps each location's text, operation and discardable attributes in a
+   table. `opt -passes=instcombine` runs on the LLVM IR (fixpoint unverified, as in the
+   standard pipelines) and `mlir-translate --import-llvm` brings it back. Recovery rebuilds
+   `func`/`cf`/`arith`/`memref`/`ub`: struct returns are multi-result `func.return`s and
+   `func.call`s again (struct values, block arguments and selects split into fields), `i64`
+   is `index`, compares keep their predicate numbers, flags (`nuw`, `nsw`, `exact`, `nneg`,
+   `samesign`) are dropped, an `or disjoint` where the lift had an add (or xor) is that
+   operation, a `cond_br` InstCombine swapped (a negated or non-canonical condition) gets its
+   original successor order back, identified by the terminators' numbers, a commutative
+   operation whose operands InstCombine reordered gets the original order back, by the
+   numbers of the operands' definitions, and intrinsics
+   become `arith` (`smax`/`smin`/`umax`/`umin` as `maxsi`/`minsi`/`maxui`/`minui`; `abs`,
+   `fshl`/`fshr`, the saturating and overflow arithmetic, `ctpop`, `ctlz`, `cttz`, `bswap`,
+   `bitreverse`, `ucmp`/`scmp` expanded). Every operation takes its number's location and
+   attributes; one with no number (a merged location) takes the nearest numbered operation's
+   in its def-use graph, users first. `mlir-opt --canonicalize --cse` verifies and tidies the
+   result. The printer reads the new forms at their meaning: signed compares on `intN_t`
+   casts, `min`/`max` as a compare and select of operands it names when not cheap, a
+   truncation below a byte as a mask.
 4. **Liveness** (`printer.Module.prune`). An optimistic liveness over the whole module: a
    store some load may read back (outside the code span, a byte no load of any entry may read
    by its address interval, nor init's copies, is never observed: such a store is dropped, as

@@ -1,4 +1,4 @@
-# MLIR tools (apt.llvm.org) for tools/structure.py: mlir-opt and mlir-translate.
+# MLIR and LLVM tools (apt.llvm.org): mlir-opt, mlir-translate and opt.
 # The install layer is isolated so source edits do not rebuild it.
 ARG LLVM_VERSION=22
 
@@ -10,9 +10,10 @@ RUN apt-get update \
     && . /etc/os-release \
     && echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/${VERSION_CODENAME}/ llvm-toolchain-${VERSION_CODENAME}-${LLVM_VERSION} main" > /etc/apt/sources.list.d/llvm.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends mlir-${LLVM_VERSION}-tools \
+    && apt-get install -y --no-install-recommends mlir-${LLVM_VERSION}-tools llvm-${LLVM_VERSION} \
     && ln -s /usr/lib/llvm-${LLVM_VERSION}/bin/mlir-opt /usr/local/bin/mlir-opt \
     && ln -s /usr/lib/llvm-${LLVM_VERSION}/bin/mlir-translate /usr/local/bin/mlir-translate \
+    && ln -s /usr/lib/llvm-${LLVM_VERSION}/bin/opt /usr/local/bin/opt \
     && rm -rf /var/lib/apt/lists/*
 
 FROM mlir AS run
