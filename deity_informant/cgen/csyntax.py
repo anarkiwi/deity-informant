@@ -324,6 +324,34 @@ def tails(items, local, call):
         items = before
 
 
+def reduced(body, name, params, local, void):
+    """``([(function name, extra parameters, items)], sections)`` of the statements ``body``
+    of C function ``name`` (``params`` its parameters, ``local`` its other variables,
+    ``void`` whether it returns nothing), each rewrite lowering cognitive complexity: a
+    function returning nothing cut into sections (:func:`sections`, ``NAME_K``, called in
+    turn) and each section's tails (:func:`tails`, ``SECTION_LABEL``), every piece then
+    flattened (:func:`flattened`) and, returning nothing, ended (:func:`guarded`)."""
+    parts = sections(body, local) if void else [(None, body)]
+    pieces = []
+    for k, (lab, items) in enumerate(parts, 1):
+        items = returning(items, lab) if lab else items
+        sec = name if len(parts) == 1 else f"{name}_{k}"
+
+        def call(t, ps, sec=sec):
+            return ("s", f"{sec}_{t}({', '.join(params + ps)});", frozenset(params + ps))
+
+        first, chain = tails(items, local, call) if void else (items, [])
+        calls = {t: call(t, ps) for t, _, ps in chain}
+        seq = [(sec, [], first), *((f"{sec}_{t}", ps, b) for t, b, ps in chain)]
+        for j, (fn, ps, items) in enumerate(seq):
+            items = calling(items, calls)
+            if j < len(chain) and not ends_in_jump(items):
+                items = [*items, calls[chain[j][0]]]
+            items = guarded(flattened(items)) if void else flattened(items)
+            pieces.append((fn, ps, items))
+    return pieces, len(parts)
+
+
 def _splice(items, f):
     """``items`` with each statement, nested ones included, replaced by the list ``f``
     gives for it."""

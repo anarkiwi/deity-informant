@@ -20,21 +20,7 @@ import numpy as np
 from .. import masks
 from ..lifter import MODE_LEN, OPS
 from .mlir import Op
-from .csyntax import (
-    declare,
-    drop_unread,
-    calling,
-    ends_in_jump,
-    flattened,
-    guarded,
-    hexes,
-    names_in,
-    render,
-    returning,
-    sections,
-    tails,
-    walk,
-)
+from .csyntax import declare, drop_unread, ends_in_jump, hexes, names_in, reduced, render, walk
 from . import marks, regions
 from .marks import bare
 from .state import INDEXED, INIT, POINTER, UNKNOWN, State, classify
@@ -3613,26 +3599,8 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             body, lambda st, read: st[1] not in read and self.copies.get(id(st)) is st
         )
         void = not self.f.private or self.mod.ret_type(self.f) == "void"
-        local = set(self.types)
-        parts = sections(body, local) if void else [(None, body)]
+        pieces, nsec = reduced(body, self.name, params, set(self.types), void)
         decl = head[head.index("(") + 1 : -1]
-        pieces = []
-        for k, (lab, items) in enumerate(parts, 1):
-            items = returning(items, lab) if lab else items
-            sec = self.name if len(parts) == 1 else f"{self.name}_{k}"
-
-            def call(t, ps, sec=sec):
-                return ("s", f"{sec}_{t}({', '.join(params + ps)});", frozenset(params + ps))
-
-            first, chain = tails(items, local, call) if void else (items, [])
-            calls = {t: call(t, ps) for t, _, ps in chain}
-            seq = [(sec, [], first), *((f"{sec}_{t}", ps, b) for t, b, ps in chain)]
-            for j, (name, ps, items) in enumerate(seq):
-                items = calling(items, calls)
-                if j < len(chain) and not ends_in_jump(items):
-                    items = [*items, calls[chain[j][0]]]
-                items = guarded(flattened(items)) if void else flattened(items)
-                pieces.append((name, ps, items))
         self.prov["gotos"] = [
             e
             for _, _, items in pieces
@@ -3651,10 +3619,10 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             extra = "".join(f", {self.types[v]} {v}" for v in ps)
             sig = f"static void {name}({decl}{extra})".replace("(void, ", "(")
             out.append(self.define_text(sig, params + ps, items, False))
-        if len(parts) > 1:
+        if nsec > 1:
             frame = self.mod.marks.put(("tag", "frame"))
             guards = [] if self.f.private else self.mod.guards.get(self.name, [])
-            calls = [f"{self.name}_{k}({', '.join(params)});" for k in range(1, len(parts) + 1)]
+            calls = [f"{self.name}_{k}({', '.join(params)});" for k in range(1, nsec + 1)]
             out.append(
                 "\n".join(
                     [
