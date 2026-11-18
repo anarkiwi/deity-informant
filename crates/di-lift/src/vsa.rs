@@ -1121,7 +1121,46 @@ pub type Aimed = FxHashMap<(u16, u8, usize), Vec<u16>>;
 /// [`Code::seeds`].
 pub(crate) type Seeds = FxHashMap<(u16, u8), (u8, Vec<u16>)>;
 
-impl Code<'_> {
+impl<'a> Code<'a> {
+    /// The code of `img` with cells `cells`, nothing else known of it.
+    pub(crate) fn new(
+        img: &'a [u8; 0x10000],
+        cells: &'a FixedBitSet,
+        known: &'a FxHashMap<u16, Vec<u8>>,
+        devices: &'a crate::dev::Devices,
+        ran: &'a crate::once::Ran,
+    ) -> Self {
+        Code {
+            img,
+            cells,
+            pull_clear: false,
+            vecs: Vec::new(),
+            observed: FixedBitSet::new(),
+            free: FixedBitSet::new(),
+            known,
+            constant: FixedBitSet::new(),
+            clip: FxHashMap::default(),
+            bound: Vec::new(),
+            stored: Vec::new(),
+            floor: FxHashMap::default(),
+            inits: FxHashMap::default(),
+            runs: Vec::new(),
+            words: FxHashMap::default(),
+            mods: FxHashMap::default(),
+            pinned: FixedBitSet::new(),
+            aimed: FxHashMap::default(),
+            seeds: FxHashMap::default(),
+            ram: Vec::new(),
+            dev: FixedBitSet::new(),
+            devices,
+            classes: FxHashMap::default(),
+            meets: Default::default(),
+            ran,
+            seed: None,
+            drive: false,
+            kill: Vec::new(),
+        }
+    }
     /// The carry group of the instruction at `pc` writing register `r`: its class's least.
     pub(crate) fn grp(&self, pc: u16, r: usize) -> u32 {
         let g = (pc as u32) << 2 | r as u32;
@@ -3313,14 +3352,10 @@ fn reach(
         })
         .collect();
     let mut c = Code {
-        img: code.img,
-        cells: code.cells,
         pull_clear: code.pull_clear,
         vecs: code.vecs.clone(),
         observed: code.observed.clone(),
         free: code.free.clone(),
-        known: code.known,
-        constant: FixedBitSet::new(),
         clip: clips(code.img, &idx, &top),
         bound: top,
         stored: vec![Some(Iv::full(1)); 0x100],
@@ -3329,20 +3364,12 @@ fn reach(
             .filter_map(|&q| Some((q, words(q)?)))
             .collect(),
         runs,
-        words: FxHashMap::default(),
-        mods: FxHashMap::default(),
-        pinned: FixedBitSet::new(),
         aimed: code.aimed.clone(),
-        seeds: Seeds::default(),
         ram: code.ram.clone(),
         dev: code.dev.clone(),
-        devices: code.devices,
         classes: code.classes.clone(),
-        meets: Default::default(),
-        ran: code.ran,
         seed: code.seed.clone(),
-        drive: false,
-        kill: Vec::new(),
+        ..Code::new(code.img, code.cells, code.known, code.devices, code.ran)
     };
     let mut sh = p.sh;
     c.mods = mods(&c, p.vars, &FxHashMap::default(), &sh.live);
@@ -3799,34 +3826,15 @@ fn code_of<'a>(
     }
     let vecs = crate::dispatch::vectors(img, cells, vars, &dev, given.devices);
     Code {
-        img,
-        cells,
         pull_clear: pull_clear(vars, entries),
         vecs,
         observed: given.observed.clone(),
         free: given.free.clone(),
-        known: given.known,
         constant: given.constant.clone(),
-        clip: FxHashMap::default(),
-        bound: Vec::new(),
-        stored: Vec::new(),
-        floor: FxHashMap::default(),
-        inits: FxHashMap::default(),
-        runs: Vec::new(),
-        words: FxHashMap::default(),
-        mods: FxHashMap::default(),
-        pinned: FixedBitSet::new(),
         aimed: given.aimed.clone(),
-        seeds: Seeds::default(),
         ram: ram(given),
         dev,
-        devices: given.devices,
-        classes: FxHashMap::default(),
-        meets: Default::default(),
-        ran: given.ran,
-        seed: None,
-        drive: false,
-        kill: Vec::new(),
+        ..Code::new(img, cells, given.known, given.devices, given.ran)
     }
 }
 

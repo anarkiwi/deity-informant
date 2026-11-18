@@ -573,36 +573,7 @@ pub(crate) fn vectors(
     let none = crate::dev::Devices::default();
     let ran = crate::once::Ran::default();
     let known = FxHashMap::default();
-    let code = Code {
-        img,
-        cells,
-        pull_clear: false,
-        vecs: Vec::new(),
-        observed: FixedBitSet::new(),
-        free: FixedBitSet::new(),
-        known: &known,
-        constant: FixedBitSet::new(),
-        clip: FxHashMap::default(),
-        bound: Vec::new(),
-        stored: Vec::new(),
-        floor: FxHashMap::default(),
-        inits: FxHashMap::default(),
-        runs: Vec::new(),
-        words: FxHashMap::default(),
-        mods: FxHashMap::default(),
-        pinned: FixedBitSet::new(),
-        aimed: FxHashMap::default(),
-        seeds: FxHashMap::default(),
-        ram: Vec::new(),
-        dev: FixedBitSet::new(),
-        devices: &none,
-        classes: FxHashMap::default(),
-        meets: Default::default(),
-        ran: &ran,
-        seed: None,
-        drive: false,
-        kill: Vec::new(),
-    };
+    let code = Code::new(img, cells, &known, &none, &ran);
     let mut v: Vec<u16> = vars
         .iter()
         .filter(|(_, vs)| vs.iter().any(|v| matches!(v.flow, Flow::JmpInd(_))))
