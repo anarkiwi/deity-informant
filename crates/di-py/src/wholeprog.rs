@@ -450,7 +450,7 @@ fn reg_name(r: u8) -> String {
     ];
     NAMES
         .get(r as usize)
-        .map_or_else(|| format!("r{r}"), |n| n.to_string())
+        .map_or_else(|| format!("r{r}"), std::string::ToString::to_string)
 }
 
 /// A [`di_lift::why::Why`] as a dict.

@@ -610,7 +610,9 @@ pub(crate) fn vectors(
             );
             absint(t.ops(), b, &mut env, &mut acc);
             for p in acc.iter().filter_map(|a| a.ptr) {
-                if let (Some(q), Some(h)) = (p.lo.and_then(|l| l.value()), p.hi.value()) {
+                if let (Some(q), Some(h)) =
+                    (p.lo.and_then(super::analysis::Iv::value), p.hi.value())
+                {
                     v.extend([q as u16, h as u16]);
                 }
             }
@@ -1577,7 +1579,7 @@ fn pointer_set(
     pc: u16,
     p: crate::analysis::Ptr,
 ) -> Option<(Vec<u16>, BTreeSet<u16>, Vec<Guard>)> {
-    let (q, h) = (p.lo.and_then(|l| l.value())?, p.hi.value()?);
+    let (q, h) = (p.lo.and_then(super::analysis::Iv::value)?, p.hi.value()?);
     let ys = g
         .sets
         .of(pc, reg::Y)
@@ -1924,7 +1926,7 @@ fn advanced_at(
     let through = |a: &crate::analysis::Access| {
         a.store
             && a.ptr.is_some_and(|p| {
-                p.lo.and_then(|l| l.value()) == Some(ptr[0] as u32)
+                p.lo.and_then(super::analysis::Iv::value) == Some(ptr[0] as u32)
                     && p.hi.value() == Some(ptr[1] as u32)
             })
     };

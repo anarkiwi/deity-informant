@@ -276,7 +276,7 @@ impl Ptr {
     /// the address is `p + i` (`i <= m`) for a pointer `p` outside `[$100 - m, $1FF]`.
     pub fn need(&self) -> (impl Iterator<Item = u8>, u32) {
         let pair = matches!(
-            (self.lo.and_then(|l| l.value()), self.hi.value()),
+            (self.lo.and_then(Iv::value), self.hi.value()),
             (Some(l), Some(h)) if (l + 1) & 0xff == h
         );
         let m = match self.idx {

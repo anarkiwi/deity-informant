@@ -1830,7 +1830,11 @@ fn hoist<H: Fn(Iv) -> bool>(g: &Graph, src: &mut Sources<'_, H>, out: &mut Objs)
         use di_pcode::reg::{X, Y};
         let cells = (1..3).all(|i| g.cells.contains(pc.wrapping_add(i) as usize));
         let (q, ix) = match (op & 0x1f, op) {
-            (0x11, _) => match v.acc[ai].ptr.and_then(|p| p.lo).and_then(|l| l.value()) {
+            (0x11, _) => match v.acc[ai]
+                .ptr
+                .and_then(|p| p.lo)
+                .and_then(super::analysis::Iv::value)
+            {
                 Some(q) if q < 0xff => (q, Some(Y)),
                 _ => continue,
             },

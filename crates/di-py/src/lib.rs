@@ -110,7 +110,7 @@ fn record<'py>(py: Python<'py>, insn: &Insn, ops: &[Op]) -> PyResult<Bound<'py, 
     d.set_item("pen", pen)?;
     d.set_item("ctrl", ctrl)?;
     d.set_item("prov", p)?;
-    d.set_item("stk", t.stk().map(|k| k.name()))?;
+    d.set_item("stk", t.stk().map(di_pcode::CtrlKind::name))?;
     Ok(d)
 }
 

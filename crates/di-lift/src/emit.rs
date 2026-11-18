@@ -1305,7 +1305,7 @@ impl<'a> Em<'a, '_> {
         if let Some(x) = &plan.inst {
             let ms = x.c.nodes[x.node[&pc] as usize].pcs.clone();
             let len = Template::of(vars[0].op).len as u16;
-            if ms.iter().any(|p| p.is_none()) {
+            if ms.iter().any(std::option::Option::is_none) {
                 // Run only by the copies holding it: the others go on to its successor.
                 let mut hit = NONE;
                 for (i, _) in ms.iter().enumerate().filter(|(_, p)| p.is_some()) {
