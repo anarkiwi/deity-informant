@@ -396,12 +396,8 @@ fn extent(
         }
         for (&(_, h, _), n) in &p.nodes {
             for a in &n.arms {
-                let fs: Vec<(u16, u8)> = match &a.ctl {
-                    func::Ctl::Call { f, c, .. } => vec![(*f, *c)],
-                    func::Ctl::CallInd { fs, c, .. } => fs.iter().map(|&f| (f, *c)).collect(),
-                    func::Ctl::CallOp { f, c, .. } => vec![(*f, *c)],
-                    func::Ctl::BrkCall { f, .. } => vec![(*f, g.cfg[f])],
-                    _ => continue,
+                let Some(fs) = a.ctl.called(|f| g.cfg[&f]) else {
+                    continue;
                 };
                 // A `BRK` call pushes three bytes.
                 let n = if matches!(a.ctl, func::Ctl::BrkCall { .. }) {
@@ -457,12 +453,8 @@ fn continuations(
             p.nodes
                 .values()
                 .flat_map(|n| &n.arms)
-                .flat_map(|a| match &a.ctl {
-                    func::Ctl::CallInd { fs, c, .. } => fs.iter().map(|&f| (f, *c)).collect(),
-                    func::Ctl::CallOp { f, c, .. } => vec![(*f, *c)],
-                    func::Ctl::BrkCall { f, .. } => vec![(*f, p.entry[0])],
-                    _ => Vec::new(),
-                }),
+                .filter(|a| !matches!(a.ctl, func::Ctl::Call { .. }))
+                .flat_map(|a| a.ctl.called(|_| p.entry[0]).unwrap_or_default()),
         );
         for k in other.collect::<Vec<_>>() {
             if let Some(&i) = fidx.get(&k) {
