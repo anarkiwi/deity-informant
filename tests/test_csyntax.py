@@ -1,6 +1,6 @@
 """Statement-tree rewrites of the printed C (csyntax): sections, returns and guards."""
 
-from deity_informant.cgen.csyntax import RETURN, guarded, returning, sections
+from deity_informant.cgen.csyntax import CONTINUE, RETURN, flattened, guarded, returning, sections
 
 
 def a(name, *reads):
@@ -70,3 +70,30 @@ def test_a_last_if_with_no_else_is_a_guard():
     ]
     kept = [iff("p", [s("x();")], [s("y();")])]
     assert guarded(kept) == kept
+
+
+def test_an_else_ending_in_a_jump_is_tested_first():
+    """An ``if`` whose ``else`` ends in a jump and whose ``then`` does not tests the other
+    way, the jump first and the ``then`` after it, nested ones included; one whose ``then``
+    jumps stays."""
+    got = flattened(
+        [iff("p", [s("x();"), iff("q", [s("y();")], [RETURN], neg="!q")], [RETURN], neg="!p")]
+    )
+    assert got == [
+        ("if", "!p", frozenset(), [RETURN], [], "p"),
+        s("x();"),
+        ("if", "!q", frozenset(), [RETURN], [], "q"),
+        s("y();"),
+    ]
+    kept = [iff("p", [RETURN], [RETURN])]
+    assert flattened(kept) == kept
+
+
+def test_a_loop_body_ending_in_an_if_continues():
+    """A loop body's last ``if`` with no ``else`` continues the loop when its condition
+    fails, its statements after it."""
+    loop = ("loop", "for", "", frozenset(), [s("x();"), iff("p", [s("y();")], neg="!p")])
+    body = flattened([loop])[0][4]
+    assert body == [s("x();"), ("if", "!p", frozenset(), [CONTINUE], [], "p"), s("y();")]
+    switch = ("switch", "k", frozenset(), [((1,), [iff("p", [s("y();")], [RETURN], neg="!p")])])
+    assert flattened([switch])[0][3][0][1][0][3] == [RETURN]
