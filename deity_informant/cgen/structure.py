@@ -204,28 +204,6 @@ def _ret_key(g, t):
     return t
 
 
-def prune(g):
-    """Drop the edges no execution takes: an edge whose condition contradicts every path to
-    its branch (a test an earlier test of the same values decides), the path conditions taken
-    over forward edges from the entry and from each loop head, where they restart."""
-    _, post, back = g.dfs()
-    heads = {t for _, t in back}
-    conds, path = g.conds, {}
-    for n in reversed(post):
-        p = conds.bdd.true if n == g.entry or n in heads else path.get(n, conds.bdd.false)
-        keep = []
-        for t, c in g.succ[n]:
-            e = p & g.cond(c)
-            if (n, t) in back or (e & conds.care) != conds.bdd.false:
-                keep.append([t, c])
-                if (n, t) not in back:
-                    path[t] = path.get(t, conds.bdd.false) | e
-        if len(keep) == 1:
-            keep[0][1] = None
-        g.succ[n] = keep
-    g.remove(set(g.items) - set(g.dfs()[0]))
-
-
 def short_circuit(g, hoistable, exprable=lambda items: False):
     """Compose each conditional branch ``b`` entered only from ``a`` that shares a target with
     ``a``'s other edges into ``a`` (``a && b``, ``a || b``), to a fixpoint: ``b``'s operations
@@ -484,7 +462,6 @@ class Structurer:
         ``goto`` then leaving it, and the graph is placed again, until no ``goto`` goes to
         either."""
         self.g = g
-        prune(g)
         short_circuit(g, self.hoistable, self.exprable)
         split_tails(g, self.tail)
         select_entries(g, self.place)
