@@ -110,6 +110,8 @@ class Op:  # pylint: disable=too-many-instance-attributes
     loc: tuple = ()
     #: The text of the location, as printed.
     where: str = ""
+    #: The discardable attributes, as printed (``props`` holds them too, after its own).
+    attrs: str = ""
 
     def prop(self, key):
         """The text of property ``key`` (quotes stripped), or None."""
@@ -233,6 +235,40 @@ def _close(op, rest):
     op.types = (_types(m.group(1)), _types(m.group(2)))
 
 
+def generic(op):
+    """The generic-form text of :class:`Op` ``op`` and what it holds, as :func:`parse` reads."""
+    return "\n".join(_lines(op)) + "\n"
+
+
+def _lines(op):
+    """The lines of :func:`generic`."""
+    own = op.props
+    if op.attrs and own.endswith(op.attrs):
+        own = own[: -len(op.attrs)].rstrip(", ")
+    head = f"{op.res[0]} = " if op.res else ""
+    if len(op.res) > 1 or op.res and "#" in op.res[0]:
+        head = f"{op.res[0].split('#')[0]}:{len(op.res)} = "
+    succs = f"[{', '.join('^' + s for s in op.succs)}]" if op.succs else ""
+    props = f" <{{{own}}}>" if own else ""
+    attrs = f" {{{op.attrs}}}" if op.attrs else ""
+    ins, outs = op.types
+    out_t = outs[0] if len(outs) == 1 else f"({', '.join(outs)})"
+    tail = f"{attrs} : ({', '.join(ins)}) -> {out_t} loc({op.where or 'unknown'})"
+    call = f'{head}"{op.name}"({", ".join(op.args)}){succs}{props}'
+    if not op.regions:
+        return [call + tail]
+    out = [call + " ({"]
+    for k, region in enumerate(op.regions):
+        out += ["}, {"] if k else []
+        for b in region:
+            args = ", ".join(f"{n}: {t}" for n, t in b.args)
+            if b.name or args:
+                out.append(f"^{b.name or 'bb0'}({args}):" if args else f"^{b.name}:")
+            for o in b.ops:
+                out += _lines(o)
+    return out + ["})" + tail]
+
+
 def parse(text):
     """The top-level :class:`Op` of generic-form MLIR ``text``."""
     stack, top = [], None
@@ -276,6 +312,7 @@ def parse(text):
             pc=pc,
             loc=chain,
             where=where,
+            attrs=attrs.group(1) if attrs else "",
         )
         if stack:
             block = stack[-1].regions[-1][-1]

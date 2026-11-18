@@ -1,8 +1,9 @@
-"""LLVM InstCombine over the optimized MLIR of a lift, and back.
+"""LLVM's scalar passes over the optimized MLIR of a lift, and back.
 
-:func:`lower` makes memory accesses opaque calls and numbers every location, LLVM's tools
-lower, combine and import the module, and :func:`recover` rebuilds the dialects
-:func:`mlir.parse` reads with the original locations and attributes.
+:func:`lower` makes memory accesses opaque calls, numbers every location and states the
+intervals of loads as LLVM ``range`` attributes, LLVM's tools lower, optimize and import the
+module, and :func:`recover` rebuilds the dialects :func:`mlir.parse` reads with the original
+locations and attributes.
 """
 
 from __future__ import annotations
@@ -16,8 +17,8 @@ from . import mlir
 
 #: Generic printing with locations, as :func:`mlir.parse` reads.
 PRINT = ("--mlir-print-op-generic", "--mlir-print-debuginfo", "--mlir-print-local-scope")
-#: LLVM's passes: InstCombine (its fixpoint unverified, as in the standard pipelines), then
-#: the facts of dominating conditions and value ranges (EarlyCSE, CVP, constraint elimination
+#: LLVM's passes: InstCombine (its fixpoint unverified, as in the standard pipelines), then the
+#: facts of dominating conditions and value ranges (EarlyCSE, CVP, constraint elimination
 #: after sinking each value to its one use) and InstCombine over what they leave. None of them
 #: duplicates, merges or reorders blocks.
 PASSES = ",".join(
@@ -86,6 +87,14 @@ _SYM = re.compile(r'sym_name = "([\w.$-]+)"')
 _FTYPE = re.compile(r"function_type = \((.*?)\) -> (\(.*?\)|[^,}]+)")
 
 
+def _range(t, r):
+    """The ``llvm.range`` of interval ``r`` of type ``t`` (None: every value)."""
+    top = (1 << int(t[1:])) - 1
+    if r is None or r == (0, top):
+        return None
+    return f"llvm.range = #llvm.constant_range<{t}, {r[0]}, {(r[1] + 1) & top}>"
+
+
 @dataclass
 class Table:  # pylint: disable=too-many-instance-attributes
     """What :func:`lower` leaves out: by location number ``N`` (from 1) the location's text,
@@ -114,21 +123,35 @@ class Table:  # pylint: disable=too-many-instance-attributes
         return len(self.locs)
 
 
-def _mem_call(kind, args, types, res, gets):
-    """The ``func.call`` text replacing a ``memref.load`` or ``memref.store``."""
+def _mem_call(kind, args, types, res, gets, r=None):  # pylint: disable=too-many-arguments
+    """The ``func.call`` text replacing a ``memref.load`` (of interval ``r``, called as
+    ``@__ld.G.rLO_HI``) or ``memref.store``."""
     args, types = [a.strip() for a in args.split(",")], mlir._types(types)
     if kind == "load":
-        return f'"func.call"({args[1]}) <{{callee = @__ld.{gets[args[0]]}}}> : (index) -> {res}'
+        g = gets[args[0]] + (f".r{r[0]}_{r[1]}" if _range(res, r) else "")
+        return f'"func.call"({args[1]}) <{{callee = @__ld.{g}}}> : (index) -> {res}'
     g = gets[args[1]]
     return f'"func.call"({args[0]}, {args[2]}) <{{callee = @__st.{g}}}> : ({types[0]}, index) -> ()'
 
 
-def lower(text):
+def _declare(name, ins, out, res_attrs=""):
+    """A private ``func.func`` declaration."""
+    attrs = f"res_attrs = [{{{res_attrs}}}], " if res_attrs else ""
+    return (
+        f'"func.func"() <{{function_type = ({ins}) -> {out}, {attrs}sym_name = "{name}", '
+        'sym_visibility = "private"}> ({\n}) : () -> ()'
+    )
+
+
+def lower(text, ranges=None):  # pylint: disable=too-many-locals
     """``(text, table)``: generic-form ``text`` with each ``memref`` access a call of
     ``@__ld.G`` or ``@__st.G``, each location ``loc("o":N:1)`` and the discardable attributes
-    kept in the :class:`Table`."""
+    kept in the :class:`Table`; ``ranges``: per
+    function name the intervals ``(lo, hi)`` (or None) of its loads in order, each the
+    ``llvm.range`` of its call's result."""
     table, out, stack, gets = Table(), [], [], {}
     label, terms, conds, made = "", {}, [], {}
+    ranges, ranged, mine, nload = ranges or {}, set(), (), 0
     for raw in text.splitlines():
         s, _, _, where = mlir._strip_locs(raw.strip())
         if s.startswith("^"):
@@ -144,6 +167,7 @@ def lower(text):
                 table.funcs[head][1] = raw.strip()
                 table.branches.update((n, tuple(terms.get(x) for x in xs)) for n, xs in conds)
                 label, terms, conds, made = "", {}, [], {}
+                mine = ()
             out.append(f'{s} loc("o":{table.number(where)}:1)')
             continue
         if m := _GLOBAL.search(s):
@@ -160,12 +184,19 @@ def lower(text):
         if a := mlir._ATTRS.match(rest):
             attrs, s = a.group(0).strip(), s[: m.start(7)] + rest[a.end() :].lstrip()
         if mm := _MEM.search(s):
-            s = s[: mm.start()] + _mem_call(*mm.groups(), gets)
+            r = None
+            if mm.group(1) == "load":
+                r = mine[nload] if nload < len(mine) else None
+                nload += 1
+                if _range(mm.group(4), r):
+                    ranged.add((gets[mm.group(2).split(",")[0].strip()], mm.group(4), r))
+            s = s[: mm.start()] + _mem_call(*mm.groups(), gets, r)
         if s.endswith("({"):
             sym = _SYM.search(s) if name == "func.func" else None
             stack.append(sym and sym.group(1))
             if sym:
                 table.funcs[sym.group(1)] = [raw.strip(), None]
+                mine, nload = ranges.get(sym.group(1), ()), 0
             out.append(s)
             continue
         n = table.number(where, name, props, attrs)
@@ -177,10 +208,12 @@ def lower(text):
             conds.append((n, [x.strip()[1:] for x in m.group(5).split(",")]))
         out.append(f'{s} loc("o":{n}:1)')
     decls = [
-        f'"func.func"() <{{function_type = {t}, sym_name = "__{k}.{g}", '
-        'sym_visibility = "private"}> ({\n}) : () -> ()'
+        x
         for g, (_, _, e) in table.globals.items()
-        for k, t in (("ld", f"(index) -> {e}"), ("st", f"({e}, index) -> ()"))
+        for x in (_declare(f"__ld.{g}", "index", e), _declare(f"__st.{g}", f"{e}, index", "()"))
+    ]
+    decls += [
+        _declare(f"__ld.{g}.r{r[0]}_{r[1]}", "index", t, _range(t, r)) for g, t, r in sorted(ranged)
     ]
     return "\n".join(out[:1] + decls + out[1:]) + "\n", table
 
@@ -444,6 +477,7 @@ class _Func:  # pylint: disable=too-many-instance-attributes
         the callee's results."""
         callee = o.prop("callee")[1:]
         mem, _, g = callee.partition(".")
+        g = g.partition(".")[0]
         if mem in ("__ld", "__st") and g in self.table.globals:
             _, t, _ = self.table.globals[g]
             m = self.prelude_op(
@@ -589,10 +623,11 @@ def recover(text, table):
     return "\n".join(out) + "\n"
 
 
-def combined(text, prefix):
-    """Generic-form MLIR ``text`` after LLVM ``instcombine``, in the same dialects with the
-    same locations and attributes; the tools run under ``prefix`` (:func:`mlir.runner`)."""
-    low, table = lower(text)
+def combined(text, prefix, ranges=None):
+    """Generic-form MLIR ``text`` after LLVM's :data:`PASSES` given the loads' ``ranges``
+    (:func:`lower`), in the same dialects with the same locations and attributes; the tools
+    run under ``prefix`` (:func:`mlir.runner`)."""
+    low, table = lower(text, ranges)
     script = " | ".join(shlex.join(s) for s in STAGES)
     imported = mlir.run(prefix, ["bash", "-o", "pipefail", "-c", script], low)
     return mlir.run(prefix, list(TIDY), recover(imported, table))

@@ -20,6 +20,7 @@ from wayward_eagle import STATUS, Function, ends_in_jump, names_in, reduced, wal
 
 from .. import masks
 from ..lifter import MODE_LEN, OPS
+from . import llvmopt, mlir
 from .mlir import Op
 from .csyntax import declare, drop_unread, hexes, lead, render
 from . import marks, regions
@@ -927,43 +928,6 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 self.uses[a] = self.uses.get(a, 0) + 1
                 self.users.setdefault(a, []).append(o)
 
-    def offset(self, v):
-        """``(base, c)`` of a value ``base + c`` (an ``addi``/``subi`` of a constant), else
-        ``(v, 0)``."""
-        d = self.defs.get(v)
-        c = self.const_of(d.args[1]) if d is not None and d.name in OFFSETS else None
-        if c is None or d.name == "arith.xori":
-            return v, 0
-        return d.args[0], c if d.name == "arith.addi" else -c
-
-    def fold_offsets(self):
-        """Fold a constant offset from a constant offset from a value into one, as
-        ``canonicalize`` does, where forwarding made such pairs."""
-        new, sub = {}, {}
-        for o in self.walk():
-            used = len(o.res) == 1 and self.uses.get(o.res[0])
-            base, c = self.offset(o.res[0]) if used else (None, 0)
-            inner, c0 = self.offset(base) if base is not None else (None, 0)
-            if inner == base:
-                continue
-            t = self.types[o.res[0]]
-            v = (c + c0) & (1 << WIDTH[t]) - 1
-            if not v:
-                sub[o.res[0]] = inner
-                continue
-            if (t, v) not in new:
-                props, name = f"value = {v} : {t}", f"%o{len(self.defs)}.{len(new)}"
-                new[t, v] = Op("arith.constant", [name], [], props, [], ((), (t,)))
-            o.name, o.args = "arith.addi", [inner, new[t, v].res[0]]
-        for o in self.walk():
-            o.args = [_resolve(sub, a) for a in o.args]
-        self.blocks[0].ops[0:0] = new.values()
-        for o in new.values():
-            o.parent = self.blocks[0]
-        if new or sub:
-            self.reindex()
-            self.fold_offsets()
-
     def param_of(self, v, through, seen):
         """The index of the parameter value ``v`` always equals, or None: the parameter, a
         block argument every edge gives one, or a call's result its callee returns from the
@@ -1084,6 +1048,13 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             if hi - lo != r[1] - r[0]:
                 return
             v, r = d.args[j], (lo, hi)
+
+    def code_iv(self, o):
+        """The interval of load ``o`` of an opcode cell (:attr:`Module.opcodes`): the hull of
+        the opcodes the code stores in it; else None. The lift's other value sets are of the
+        program's data, which the ``.c`` does not depend on."""
+        vals = self.mod.opcodes.get(self.const_of(self.address(o)))
+        return (vals[0], vals[-1]) if vals else None
 
     def iv_at(self, v, blk):
         """The interval of value ``v`` wherever block ``blk`` runs (:meth:`context`)."""
@@ -3903,10 +3874,27 @@ class Module:  # pylint: disable=too-many-instance-attributes
         #: ``[(pc, value)]``: the constants of the tests of the instructions at ``pc`` the
         #: ``.h`` names, from bytes init leaves constant (``@G``'s elements).
         self.symbols = []
-        for o in top.regions[0][0].ops:
-            if o.name == "func.func" and o.regions[0] and o.regions[0][0].ops:
-                self.funcs.append(Func(o, self))
+        self.load(top)
+
+    def load(self, top):
+        """Take the functions of module ``top``."""
+        self.top = top
+        self.funcs = [
+            Func(o, self)
+            for o in top.regions[0][0].ops
+            if o.name == "func.func" and o.regions[0] and o.regions[0][0].ops
+        ]
         self.by_name = {f.name: f for f in self.funcs}
+
+    def combine(self, prefix):
+        """Take the functions after LLVM's passes (:func:`llvmopt.combined`, its tools under
+        ``prefix``), the results they forward read as the arguments first (:meth:`forward`),
+        the intervals of loads of opcode cells (:meth:`Func.code_iv`) stated."""
+        self.forward()
+        ranges = {
+            f.name: [f.code_iv(o) for o in f.walk() if o.name == "memref.load"] for f in self.funcs
+        }
+        self.load(mlir.parse(llvmopt.combined(mlir.generic(self.top), prefix, ranges)))
 
     def copies_of(self, name, pc):
         """The instruction PCs of every copy of instruction ``pc`` of function ``name``."""
@@ -3974,7 +3962,6 @@ class Module:  # pylint: disable=too-many-instance-attributes
             if self.lifted.get(f.name, (0, ()))[1]:
                 f.instance(self.kpos)
                 f.kfold()
-        self.forward()
         for f in self.funcs:
             f.carry16()
             f.fold_known_addresses()
@@ -4054,8 +4041,6 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 continue
             for o in f.walk():
                 o.args = [_resolve(sub, a) for a in o.args]
-            f.reindex()
-            f.fold_offsets()
 
     def reg_iv(self, name, pcs, j):
         """The hull of the values register-file position ``j`` (``A``, ``X`` or ``Y``) holds at

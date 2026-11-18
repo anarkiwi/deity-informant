@@ -402,3 +402,47 @@ def test_shift_chain_folds_end_to_end(prefix):
     call = ops(main)[0]
     assert call.res == ["%0#0", "%0#1"] and "no_inline" in call.props
     assert body[-1].name == "func.return" and len(body[-1].args) == 2
+
+
+RANGED = SHIFTS.replace(
+    '"func.return"(%4, %5) : (i8, i8) -> () loc("0x100a"("1:8"))',
+    """%ten = "arith.constant"() <{value = 10 : i8}> : () -> i8 loc(unknown)
+    %6 = "arith.cmpi"(%4, %ten) <{predicate = 6 : i64}> : (i8, i8) -> i1 loc("0x1009"("1:9"))
+    %7 = "arith.extui"(%6) : (i1) -> i8 loc("0x1009"("1:9"))
+    "func.return"(%7, %5) : (i8, i8) -> () loc("0x100a"("1:8"))""",
+)
+
+
+def test_load_ranges_fold_end_to_end(prefix):
+    """A load's interval is its call's ``range``: a compare it decides folds, and the call
+    comes back as the load of its global, dead once nothing reads it."""
+    low, _ = llvmopt.lower(RANGED, {"f": [(0, 9), None]})
+    assert "@__ld.M.r0_9" in low and "#llvm.constant_range<i8, 0, 10>" in low
+    assert llvmopt.lower(RANGED, {"f": [(0, 0xFF), None]})[0].count("constant_range") == 0
+    f = mlir.parse(llvmopt.combined(RANGED, prefix, {"f": [(0, 9), None]})).regions[0][0].ops[1]
+    body = ops(f)
+    assert not [o for o in body if o.name == "arith.cmpi"]
+    ret = body[-1]
+    one = next(o for o in body if o.res == [ret.args[0]])
+    assert one.name == "arith.constant" and one.int_prop("value") == 1
+    loads = [o for o in body if o.name == "memref.load"]
+    assert [o.pc for o in loads] == [0x1008]
+    unfolded = ops(mlir.parse(llvmopt.combined(RANGED, prefix)).regions[0][0].ops[1])
+    assert [o for o in unfolded if o.name == "arith.cmpi"]
+    assert [o.pc for o in unfolded if o.name == "memref.load"] == [0x1004, 0x1008]
+
+
+def test_generic_text_round_trips():
+    """:func:`mlir.generic` prints what :func:`mlir.parse` read, discardable attributes after
+    the properties, multi-result names and block labels as they were."""
+    src = SHIFTS.replace(
+        '"func.return"(%0#1) : (i8) -> ()', '"func.return"(%0#1) {tag = 1 : i8} : (i8) -> ()'
+    )
+    top = mlir.parse(src)
+    text = mlir.generic(top)
+    assert mlir.generic(mlir.parse(text)) == text
+    assert '%0:2 = "func.call"(%a) <{callee = @f, no_inline}>' in text
+    assert '"func.return"(%0#1) {tag = 1 : i8} : (i8) -> ()' in text
+    assert "^bb0(%a: i8):" in text
+    ret = mlir.parse(text).regions[0][0].ops[2].regions[0][0].ops[-1]
+    assert ret.attrs == "tag = 1 : i8" and ret.prop("tag") == "1 : i8"
