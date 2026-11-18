@@ -239,8 +239,6 @@ OFFSETS = {
 }
 #: The pure operations whose intervals :meth:`Func.iv` derives from their operands'.
 DERIVED = CASTS | set(BINOP) | set(SIGNED) | set(MINMAX) | {"arith.select", "arith.extsi"}
-#: Operations whose second operand zero leaves the first.
-IDENTITY = {"arith.addi", "arith.subi", "arith.ori", "arith.xori", "arith.shli", "arith.shrui"}
 #: Most combinations of inputs a flag is evaluated over (:meth:`Func.flag_value`).
 FLAG_INPUTS = 1 << 16
 #: A ``cmpi`` predicate with its operands swapped, and negated.
@@ -494,9 +492,8 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
 
     def fold_flags(self):
         """Read each truth value (:meth:`is_flag`) an arithmetic operation consumes as the
-        constant it is (:meth:`flag_value`). The constants fold forward; a flag left unused
-        dies."""
-        new, changed, memo = {}, {}, {}
+        constant it is (:meth:`flag_value`), for LLVM's passes to fold forward."""
+        new, memo = {}, {}
         for o in list(self.walk()):
             if not o.name.startswith("arith.") or o.name == "arith.constant":
                 continue
@@ -506,11 +503,9 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                         memo[c] = self.flag_value(c)
                     if memo[c] is not None:
                         o.args[i] = self.constant(new, self.types[c], memo[c], o.pc, "%fc")
-                        changed[id(o)] = o
-        if changed:
+        if new:
             self.prepend(new)
             self.reindex()
-            self.fold_from(list(changed.values()))
 
     def flag_value(self, c):
         """The one value truth value ``c`` (:meth:`is_flag`) takes, or None: its values over
@@ -585,35 +580,6 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         k = self.kop(new, "arith.constant", [], t, pc, f"value = {v} : {t}", prefix=prefix)
         self.defs[k] = next(x for x in new.values() if x.res[0] == k)
         return k
-
-    def fold_from(self, ops):
-        """Fold forward from operations ``ops``: one of constants becomes its value, one adding,
-        subtracting, or-ing or xor-ing a zero its other operand."""
-        sub, new, work = {}, {}, list(ops)
-        while work:
-            o = work.pop()
-            if len(o.res) != 1 or not o.name.startswith("arith.") or o.res[0] in sub:
-                continue
-            o.args = [_resolve(sub, a) for a in o.args]
-            r, k = o.res[0], [self.const_of(a) for a in o.args]
-            if o.name in IDENTITY and k[1] == 0:
-                sub[r] = o.args[0]
-            elif o.name in ("arith.addi", "arith.ori", "arith.xori") and k[0] == 0:
-                sub[r] = o.args[1]
-            elif o.name != "arith.constant" and k and None not in k:
-                try:
-                    v = int(self.evaluate(r, {}, {}))
-                except Unknown:
-                    continue
-                sub[r] = self.constant(new, self.types[r], v, o.pc, "%ff")
-            else:
-                continue
-            work += self.users.get(r, [])
-        if new:
-            self.prepend(new)
-        for o in self.walk():
-            o.args = [_resolve(sub, a) for a in o.args]
-        self.reindex()
 
     def after(self, a, b):
         """Whether operation ``b`` runs after ``a`` on every path: later in its block, or in a
@@ -3886,11 +3852,27 @@ class Module:  # pylint: disable=too-many-instance-attributes
         ]
         self.by_name = {f.name: f for f in self.funcs}
 
+    def calls(self):
+        """Find each lifted function's call sites (:attr:`sites`) and a copy's instance index
+        (:meth:`Func.instance`)."""
+        self.sites = {f.name: [] for f in self.funcs}
+        for f in self.funcs:
+            for o in f.walk():
+                if o.name == "func.call" and o.prop("callee")[1:] in self.sites:
+                    self.sites[o.prop("callee")[1:]].append((f, o))
+        for f in self.funcs if self.kpos is not None else ():
+            if self.lifted.get(f.name, (0, ()))[1]:
+                f.instance(self.kpos)
+
     def combine(self, prefix):
         """Take the functions after LLVM's passes (:func:`llvmopt.combined`, its tools under
-        ``prefix``), the results they forward read as the arguments first (:meth:`forward`),
-        the intervals of loads of opcode cells (:meth:`Func.code_iv`) stated."""
+        ``prefix``), the results they forward read as the arguments first (:meth:`forward`)
+        and the truth values constant (:meth:`Func.fold_flags`), the intervals of loads of
+        opcode cells (:meth:`Func.code_iv`) stated."""
         self.forward()
+        self.calls()
+        for f in self.funcs:
+            f.fold_flags()
         ranges = {
             f.name: [f.code_iv(o) for o in f.walk() if o.name == "memref.load"] for f in self.funcs
         }
@@ -3952,20 +3934,12 @@ class Module:  # pylint: disable=too-many-instance-attributes
         parameters used, functions return only the results used, the rest is dropped. The
         bytes no store writes (:meth:`unwritten`) are found first."""
         self.unwritten()
-        sites = {f.name: [] for f in self.funcs}
+        self.calls()
+        sites = self.sites
         for f in self.funcs:
-            for o in f.walk():
-                if o.name == "func.call" and o.prop("callee")[1:] in sites:
-                    sites[o.prop("callee")[1:]].append((f, o))
-        self.sites = sites
-        for f in self.funcs if self.kpos is not None else ():
-            if self.lifted.get(f.name, (0, ()))[1]:
-                f.instance(self.kpos)
-                f.kfold()
-        for f in self.funcs:
+            f.kfold()
             f.carry16()
             f.fold_known_addresses()
-            f.fold_flags()
         self.unread_stores()
         live, work = {f.name: set() for f in self.funcs}, []
 
@@ -4041,6 +4015,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 continue
             for o in f.walk():
                 o.args = [_resolve(sub, a) for a in o.args]
+            f.reindex()
 
     def reg_iv(self, name, pcs, j):
         """The hull of the values register-file position ``j`` (``A``, ``X`` or ``Y``) holds at
