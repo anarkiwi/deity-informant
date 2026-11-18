@@ -369,7 +369,10 @@ fn shape(g: &Graph, init: &FixedBitSet, key: StoreKey) -> Option<Shape> {
     };
     match (op & 0x1f, op) {
         (0x11, _) => {
-            let q = v.acc[ai].ptr.and_then(|p| p.lo).and_then(|l| l.value())?;
+            let q = v.acc[ai]
+                .ptr
+                .and_then(|p| p.lo)
+                .and_then(super::analysis::Iv::value)?;
             (q < 0xff).then_some((Some(q), Y, 0))
         }
         (0x19, _) | (_, 0xbe) if cells => Some((Some(pc as u32 + 1), Y, 0)),

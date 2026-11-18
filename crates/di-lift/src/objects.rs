@@ -602,24 +602,15 @@ pub fn seat(g: &mut Graph, seeds: &Seeds) {
             }
         }
     }
-    for (key, set, (pc, op, ai), h) in sets {
-        for v in g
-            .vars
-            .get_mut(&pc)
-            .into_iter()
-            .flatten()
-            .filter(|v| v.op == op)
-        {
-            let a = &mut v.acc[ai];
-            a.addr = crate::vsa::meet(a.addr, h).unwrap_or(a.addr);
-        }
+    for (key, set, acc, h) in sets {
+        crate::vsa::narrow_access(&mut g.vars, acc, h);
         let Some(set) = set else {
             continue;
         };
         if key.1 {
             g.written.extend(set.iter().map(|&x| x as usize));
             if !set.iter().any(|&x| g.code.contains(x as usize)) {
-                g.nocode.insert((pc, op, ai));
+                g.nocode.insert(acc);
             }
         }
         g.addr_sets.entry(key).or_insert(set);
@@ -999,6 +990,14 @@ enum Val {
     Mem(u32, u16),
 }
 
+/// The byte `i` past `s` as a value at `s`, where it is a cell.
+fn cell_at(g: &Graph, s: u16, i: u16) -> Option<Val> {
+    let a = s.wrapping_add(i);
+    g.cells
+        .contains(a as usize)
+        .then_some(Val::Mem(a as u32, s))
+}
+
 /// The sources of the values the program's registers and bytes hold, from its code alone:
 /// along the definitions reaching each use, through copies (and, for an index, arithmetic),
 /// to code constants, the program's bytes and the rest. Song data never decides a source.
@@ -1164,8 +1163,8 @@ impl<'a, H: Fn(Iv) -> bool> Sources<'a, H> {
         r
     }
 
-    fn song_defs(&mut self, val: Val, imm: bool) -> bool {
-        let g = self.cx.g;
+    /// The definitions reaching `val`: of a byte an entry may read, also every store of it.
+    fn val_defs(&mut self, val: Val) -> Vec<Option<u16>> {
         let (t, pc) = match val {
             Val::Reg(r, pc) => (0x10000 + r as u32, pc),
             Val::Mem(x, pc) => (x, pc),
@@ -1174,7 +1173,13 @@ impl<'a, H: Fn(Iv) -> bool> Sources<'a, H> {
         if matches!(val, Val::Mem(..)) && ds.contains(&None) {
             ds.extend(self.defs[&t].0.iter().flatten().map(|&s| Some(s)));
         }
-        for d in ds {
+        ds
+    }
+
+    fn song_defs(&mut self, val: Val, imm: bool) -> bool {
+        let g = self.cx.g;
+        let (Val::Reg(_, pc) | Val::Mem(_, pc)) = val;
+        for d in self.val_defs(val) {
             let Some(s) = d else {
                 let ok = match val {
                     Val::Reg(..) => false,
@@ -1191,12 +1196,7 @@ impl<'a, H: Fn(Iv) -> bool> Sources<'a, H> {
                 continue;
             };
             for v in g.vars.get(&s).into_iter().flatten() {
-                let cell = |i: u16| {
-                    let a = s.wrapping_add(i);
-                    g.cells
-                        .contains(a as usize)
-                        .then_some(Val::Mem(a as u32, s))
-                };
+                let cell = |i: u16| cell_at(g, s, i);
                 let ok = match val {
                     Val::Reg(r, _) if writes(v.op, r) => match reg_src(v.op) {
                         RegSrc::Imm => cell(1).map_or(imm, |c| self.song(c, imm)),
@@ -1303,17 +1303,9 @@ impl<'a, H: Fn(Iv) -> bool> Sources<'a, H> {
             if !seen.insert(val) {
                 continue;
             }
-            let (t, pc) = match val {
-                Val::Reg(r, pc) => (0x10000 + r as u32, pc),
-                Val::Mem(x, pc) => (x, pc),
-            };
             // At an entry a byte holds what any store left, or else init's value, the program's
             // (song data), or the machine's state outside both, a constant of the entry.
-            let mut ds = self.reaching(t, pc);
-            if matches!(val, Val::Mem(..)) && ds.contains(&None) {
-                ds.extend(self.defs[&t].0.iter().flatten().map(|&s| Some(s)));
-            }
-            for d in ds {
+            for d in self.val_defs(val) {
                 let Some(s) = d else {
                     match val {
                         Val::Reg(..) => {
@@ -1322,17 +1314,9 @@ impl<'a, H: Fn(Iv) -> bool> Sources<'a, H> {
                         Val::Mem(x, _)
                             if (self.cx.held)(Iv::exact(x))
                                 && (g.cells.contains(x as usize)
-                                    || g.runs.iter().any(|r| r.0 <= x && x < r.1)) =>
-                        {
-                            out.insert(Src::Prog(None));
-                        }
-                        Val::Mem(x, _)
-                            if self
-                                .cx
-                                .bytes
-                                .free
-                                .get(&(x as u16))
-                                .is_some_and(|v| !v.is_empty()) =>
+                                    || g.runs.iter().any(|r| r.0 <= x && x < r.1))
+                                || (self.cx.bytes.free.get(&(x as u16)))
+                                    .is_some_and(|v| !v.is_empty()) =>
                         {
                             out.insert(Src::Prog(None));
                         }
@@ -1343,12 +1327,7 @@ impl<'a, H: Fn(Iv) -> bool> Sources<'a, H> {
                     continue;
                 };
                 for v in g.vars.get(&s).into_iter().flatten() {
-                    let cell = |i: u16| {
-                        let a = s.wrapping_add(i);
-                        g.cells
-                            .contains(a as usize)
-                            .then_some(Val::Mem(a as u32, s))
-                    };
+                    let cell = |i: u16| cell_at(g, s, i);
                     match val {
                         Val::Reg(r, _) if writes(v.op, r) => match reg_src(v.op) {
                             RegSrc::Imm => match cell(1) {
@@ -1382,10 +1361,7 @@ impl<'a, H: Fn(Iv) -> bool> Sources<'a, H> {
                             match mem_src(v.op) {
                                 Some(Some(r)) => work.push(Val::Reg(r, s)),
                                 Some(None) if derive => work.push(Val::Mem(x, s)),
-                                Some(None) => {
-                                    out.insert(Src::Other);
-                                }
-                                None => {
+                                Some(None) | None => {
                                     out.insert(Src::Other);
                                 }
                             }
@@ -1854,7 +1830,11 @@ fn hoist<H: Fn(Iv) -> bool>(g: &Graph, src: &mut Sources<'_, H>, out: &mut Objs)
         use di_pcode::reg::{X, Y};
         let cells = (1..3).all(|i| g.cells.contains(pc.wrapping_add(i) as usize));
         let (q, ix) = match (op & 0x1f, op) {
-            (0x11, _) => match v.acc[ai].ptr.and_then(|p| p.lo).and_then(|l| l.value()) {
+            (0x11, _) => match v.acc[ai]
+                .ptr
+                .and_then(|p| p.lo)
+                .and_then(super::analysis::Iv::value)
+            {
                 Some(q) if q < 0xff => (q, Some(Y)),
                 _ => continue,
             },

@@ -36,7 +36,6 @@ __all__ = [
     "CALLS",
     "core",
     "MachineOracle",
-    "run_machine",
     "SENTINEL",
     "SMC_NATIVE",
     "native_cells",
@@ -549,8 +548,3 @@ class MachineOracle:
         count, sample = rec.unclassified()
         done = not m.jammed and (self.irq_driven or not (self.queue or self.timeout))
         return Run(cells, bad + sample, done, first, count + len(bad))
-
-
-def run_machine(image, calls, init=(), **kw):
-    """One :class:`MachineOracle` run of ``calls`` over ``image``; the :class:`Run`."""
-    return MachineOracle(image).run(calls, init, **kw)

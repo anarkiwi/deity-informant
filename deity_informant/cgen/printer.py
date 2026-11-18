@@ -20,7 +20,7 @@ from wayward_eagle import STATUS, Function, ends_in_jump, names_in, reduced, wal
 
 from .. import masks
 from ..lifter import MODE_LEN, OPS
-from .mlir import Op
+from .mlir import Op, _types
 from .csyntax import declare, drop_unread, hexes, lead, render
 from . import marks, regions
 from .marks import bare
@@ -520,12 +520,14 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
     def path_conds(self, blk):
         """``[(condition, holds)]`` of the ``cf.cond_br`` branches every path to block ``blk``
         takes: into each block of its dominator chain entered by that edge alone."""
-        if self.preds is None:
-            self.preds = Counter(s for b in self.blocks for s in b.ops[-1].succs)
         out, b = [], blk
         while (d := self.idom.get(b, b)) != b:
             term = self.block_of[d].ops[-1]
-            if self.preds[b] == 1 and term.name == "cf.cond_br" and len(set(term.succs)) == 2:
+            if (
+                self.pred_counts()[b] == 1
+                and term.name == "cf.cond_br"
+                and len(set(term.succs)) == 2
+            ):
                 out.append((term.args[0], term.succs[0] == b))
             b = d
         return out
@@ -607,8 +609,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             work += self.users.get(r, [])
         if new:
             self.prepend(new)
-        for o in self.walk():
-            o.args = [_resolve(sub, a) for a in o.args]
+        self.substitute(sub)
         self.reindex()
 
     def after(self, a, b):
@@ -667,10 +668,8 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 if vec is None or (vec == self.kvals).all() or self.const_of(a) is not None:
                     continue
                 o.args[i] = self.kdefine(t, vec, new, o.pc, (id(o), i) in self.addr_edges)
-        self.blocks[0].ops[0:0] = new.values()
-        for o in new.values():
-            o.parent = self.blocks[0]
         if new:
+            self.prepend(new)
             self.reindex()
 
     def kedges(self, blk):
@@ -814,11 +813,8 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 o.parent = blk
         if not sub:
             return
-        self.blocks[0].ops[0:0] = entry.values()
-        for o in entry.values():
-            o.parent = self.blocks[0]
-        for o in self.walk():
-            o.args = [_resolve(sub, a) for a in o.args]
+        self.prepend(entry)
+        self.substitute(sub)
         self.reindex()
 
     def kdefine(self, t, vec, out, pc, address):
@@ -911,14 +907,29 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 self.uses[a] = self.uses.get(a, 0) + 1
         self.prepend(new)
 
+    def substitute(self, sub):
+        """Replace every operand ``a`` in ``sub`` by what it resolves to."""
+        for o in self.walk():
+            o.args = [_resolve(sub, a) for a in o.args]
+
+    def pred_counts(self):
+        """Each block's number of predecessor edges, kept until the next :meth:`index`."""
+        if self.preds is None:
+            self.preds = Counter(s for b in self.blocks for s in b.ops[-1].succs)
+        return self.preds
+
     def prepend(self, new):
         """Put the new operations ``new`` (``{key: op}``) first in the entry block."""
-        entry = self.blocks[0]
-        entry.ops[0:0] = new.values()
-        for i, o in enumerate(entry.ops):
-            self.where[id(o)] = (entry, i)
-        for o in new.values():
-            o.parent = entry
+        self.insert_first(self.blocks[0], list(new.values()))
+
+    def insert_first(self, blk, ops):
+        """Put the new single-result operations ``ops`` first in block ``blk``, recording
+        their definitions, uses and the block's positions."""
+        blk.ops[0:0] = ops
+        for i, o in enumerate(blk.ops):
+            self.where[id(o)] = (blk, i)
+        for o in ops:
+            o.parent = blk
             self.defs[o.res[0]] = o
             for a in o.args:
                 self.uses[a] = self.uses.get(a, 0) + 1
@@ -952,11 +963,9 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 props, name = f"value = {v} : {t}", f"%o{len(self.defs)}.{len(new)}"
                 new[t, v] = Op("arith.constant", [name], [], props, [], ((), (t,)))
             o.name, o.args = "arith.addi", [inner, new[t, v].res[0]]
-        for o in self.walk():
-            o.args = [_resolve(sub, a) for a in o.args]
-        self.blocks[0].ops[0:0] = new.values()
-        for o in new.values():
-            o.parent = self.blocks[0]
+        self.substitute(sub)
+        if new:
+            self.prepend(new)
         if new or sub:
             self.reindex()
             self.fold_offsets()
@@ -1002,9 +1011,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 return self.context(blk)
             finally:
                 self.ivs = saved
-        if self.preds is None:
-            self.preds = Counter(s for b in self.blocks for s in b.ops[-1].succs)
-        preds, facts, b = self.preds, {}, blk
+        preds, facts, b = self.pred_counts(), {}, blk
         while (d := self.idom.get(b, b)) != b:
             term = self.block_of[d].ops[-1]
             if preds[b] == 1 and term.name in ("cf.cond_br", "cf.switch"):
@@ -1342,17 +1349,10 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 c = e
             self.pass_arg(o, case, c)
         self.prepend(new)
-        blk.ops[0:0] = made
+        self.insert_first(blk, made)
         blk.args.append((e, "i8"))
         self.types[e], self.arg_block[e] = "i8", blk
-        for x in made:
-            x.parent = blk
-            self.defs[x.res[0]], self.types[x.res[0]] = x, "i8"
-            for a in x.args:
-                self.uses[a] = self.uses.get(a, 0) + 1
-                self.users.setdefault(a, []).append(x)
-        for k, x in enumerate(blk.ops):
-            self.where[id(x)] = (blk, k)
+        self.types.update((x.res[0], "i8") for x in made)
         self.arg_src[e] = [
             (o, idx[-1], case)
             for o in {id(o): o for o, _, _ in self.arg_src[v]}.values()
@@ -1377,14 +1377,8 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         )
         self.prepend(new)
         res = f"%ep{len(self.defs)}"
-        x = Op("arith.addi", [res], [e, c], "", [], (("i8", "i8"), ("i8",)), parent=blk)
-        blk.ops.insert(0, x)
-        self.defs[res], self.types[res] = x, "i8"
-        for a in (e, c):
-            self.uses[a] = self.uses.get(a, 0) + 1
-            self.users.setdefault(a, []).append(x)
-        for j, y in enumerate(blk.ops):
-            self.where[id(y)] = (blk, j)
+        self.insert_first(blk, [Op("arith.addi", [res], [e, c], "", [], (("i8", "i8"), ("i8",)))])
+        self.types[res] = "i8"
         return res
 
     def pass_arg(self, o, case, val):
@@ -1409,15 +1403,22 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         self.uses[val] = self.uses.get(val, 0) + 1
         self.users.setdefault(val, []).append(o)
 
-    def stepped_access(self, o):
-        """``(addresses, v, offset)`` of access ``o`` at a constant plus a byte ``v + offset``,
-        ``v`` a block argument taking an arithmetic progression (:meth:`stepped`): its
-        addresses for each of ``v``'s values, else None."""
+    def byte_index(self, o):
+        """``(c, w)`` of access ``o`` at a constant ``c`` plus the zero-extended byte ``w``,
+        else None."""
         c, rest = self.split(self.address(o))
         d = self.defs.get(rest)
         if rest is None or d is None or d.name != "arith.extui" or self.width(d.args[0]) != 8:
             return None
-        w, off = d.args[0], 0
+        return c, d.args[0]
+
+    def stepped_access(self, o):
+        """``(addresses, v, offset)`` of access ``o`` at a constant plus a byte ``v + offset``,
+        ``v`` a block argument taking an arithmetic progression (:meth:`stepped`): its
+        addresses for each of ``v``'s values, else None."""
+        if (cw := self.byte_index(o)) is None:
+            return None
+        (c, w), off = cw, 0
         dw = self.defs.get(w)
         if dw is not None and dw.name == "arith.addi" and self.const_of(dw.args[1]) is not None:
             w, off = dw.args[0], self.const_of(dw.args[1])
@@ -1441,14 +1442,13 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         steps = set(np.diff(addrs).tolist())
         if len(addrs) < 2 or len(steps) != 1 or min(steps) < 2:
             return None
-        c, rest = self.split(self.address(o))
-        d = self.defs.get(rest)
-        if rest is None or d is None or d.name != "arith.extui" or self.width(d.args[0]) != 8:
+        if (cw := self.byte_index(o)) is None:
             return None
+        c, w = cw
         base, top = addrs[0] - c, (1 << self.width(self.address(o))) - 1
         if not 0 <= base <= addrs[-1] - c <= 0xFF or addrs[-1] > top:
             return None
-        return addrs, d.args[0], base, min(steps)
+        return addrs, w, base, min(steps)
 
     def divided(self, o, w, base, k, first):
         """The element number ``first + (w - base) / k`` (:meth:`strided_access`), computed
@@ -2156,14 +2156,6 @@ def _read_only(st, found, seen):
     return State(
         [a for a in st.scalars if a in read], [x for x in structs if x[1]], st.why, sorted(gone)
     )
-
-
-def _types(text):
-    """The types of a result list ``(i8, i16)`` or ``i8``."""
-    text = text.strip()
-    if text.startswith("(") and text.endswith(")"):
-        text = text[1:-1]
-    return [t.strip() for t in text.split(",") if t.strip()]
 
 
 class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-methods
@@ -3248,7 +3240,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             out.append(("s", f"{mark}trap({self.ex(o.args[0]).text});", frozenset()))
             return
         if callee not in ("io_read", "io_write"):
-            target = self.mod.cfunc_of(callee)
+            target = self.mod.mains[callee]
             args = [self.ex(a, (o, i)) for i, a in enumerate(o.args) if (id(o), i) not in f.dead]
             text = f"{self.mod.name_of(target, self)}({', '.join(a.text for a in args)})"
             refs = frozenset().union(*(a.refs for a in args))
@@ -3990,8 +3982,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
                     sub[o.res[j]] = o.args[p]
             if not sub:
                 continue
-            for o in f.walk():
-                o.args = [_resolve(sub, a) for a in o.args]
+            f.substitute(sub)
             f.reindex()
             f.fold_offsets()
 
@@ -4665,10 +4656,6 @@ class Module:  # pylint: disable=too-many-instance-attributes
         file) is left in when ``f`` returns several, as the 6502 leaves its registers."""
         self.structs[j] = WIDTH[f.results()[j]]
         return f"rv{j}"
-
-    def cfunc_of(self, name):
-        """The C function of lifted function ``name``."""
-        return self.mains[name]
 
     def name_of(self, target, caller):
         """The name of C function ``target``, named on its first call."""

@@ -137,7 +137,7 @@ pub fn reads(g: &Graph, pc: u16) -> BTreeSet<Loc> {
         for (ai, a) in accs.filter(|(_, a)| !a.dummy && a.addr.value().is_none()) {
             let run = run_of(g, (pc, v.op, ai), a.addr.lo);
             match a.ptr {
-                Some(p) => match (p.lo.and_then(|l| l.value()), p.hi.value()) {
+                Some(p) => match (p.lo.and_then(super::analysis::Iv::value), p.hi.value()) {
                     (Some(l), Some(h)) if h == l + 1 => out.insert(Loc::Word(l as u16)),
                     _ => out.insert(Loc::Reg(di_pcode::reg::X as u8, run)),
                 },

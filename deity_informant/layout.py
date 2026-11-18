@@ -255,7 +255,7 @@ def _span(r):
     return r["extent"] if "extent" in r else [r["base"], r["base"] + r.get("size", 1) - 1]
 
 
-def _arrays(pats, widths, words, io):
+def _arrays(pats, widths, io):
     """Aggregates of indexed accesses as ``(regions by root, parallel groups, conflicts, node
     info)``. Per index sequence ``(register, Strided)`` (memory and devices apart) bases closer
     than its span join one ``(base, stride)`` aggregate, farther ones are parallel; aggregates
@@ -443,7 +443,7 @@ def build(prog, facts, image, volatile=()):
     def io(a):
         return any(lo <= a < hi for lo, hi in volatile)
 
-    regs, par, bad, info = _arrays(pats, widths, words, io)
+    regs, par, bad, info = _arrays(pats, widths, io)
     pairs = {tuple(sorted(t)) for t in tables}
     regions += _tables(tables, regs, info, image, set(facts.writes))
     for g in par:
