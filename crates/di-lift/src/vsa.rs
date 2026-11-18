@@ -864,6 +864,47 @@ pub(crate) fn meet(a: Iv, b: Iv) -> Option<Iv> {
     (lo <= hi).then_some(Iv { lo, hi })
 }
 
+/// Whether store `a` may write `m`: one with an address set `aimed` only those, a pointer
+/// store reaching `reach` there or where it wraps to, else where its address meets `m`.
+pub(crate) fn store_hits(a: &Access, aimed: Option<&[u16]>, reach: Option<Iv>, m: u16) -> bool {
+    match (aimed, reach) {
+        (Some(s), _) => s.binary_search(&m).is_ok() && a.addr.meets(m as u32, m as u32 + 1),
+        (None, Some(r)) => {
+            let m = m as u32;
+            (r.lo..=r.hi).contains(&m) || (r.lo..=r.hi).contains(&(m + 0x10000))
+        }
+        (None, None) => a.addr.meets(m as u32, m as u32 + 1),
+    }
+}
+
+/// The variants of opcode `op` at `pc`.
+pub(crate) fn variants_mut(
+    vars: &mut FxHashMap<u16, Vec<Var>>,
+    pc: u16,
+    op: u8,
+) -> impl Iterator<Item = &mut Var> {
+    vars.get_mut(&pc)
+        .into_iter()
+        .flatten()
+        .filter(move |v| v.op == op)
+}
+
+/// Narrows access `ai` of every variant of opcode `op` at `pc` to `iv` where they meet;
+/// whether any of them stores.
+pub(crate) fn narrow_access(
+    vars: &mut FxHashMap<u16, Vec<Var>>,
+    (pc, op, ai): (u16, u8, usize),
+    iv: Iv,
+) -> bool {
+    let mut store = false;
+    for v in variants_mut(vars, pc, op) {
+        let a = &mut v.acc[ai];
+        a.addr = meet(a.addr, iv).unwrap_or(a.addr);
+        store |= a.store;
+    }
+    store
+}
+
 pub(crate) fn hull(a: Iv, b: Iv) -> Iv {
     Iv {
         lo: a.lo.min(b.lo),
@@ -1093,7 +1134,46 @@ pub type Aimed = FxHashMap<(u16, u8, usize), Vec<u16>>;
 /// [`Code::seeds`].
 pub(crate) type Seeds = FxHashMap<(u16, u8), (u8, Vec<u16>)>;
 
-impl Code<'_> {
+impl<'a> Code<'a> {
+    /// The code of `img` with cells `cells`, nothing else known of it.
+    pub(crate) fn new(
+        img: &'a [u8; 0x10000],
+        cells: &'a FixedBitSet,
+        known: &'a FxHashMap<u16, Vec<u8>>,
+        devices: &'a crate::dev::Devices,
+        ran: &'a crate::once::Ran,
+    ) -> Self {
+        Code {
+            img,
+            cells,
+            pull_clear: false,
+            vecs: Vec::new(),
+            observed: FixedBitSet::new(),
+            free: FixedBitSet::new(),
+            known,
+            constant: FixedBitSet::new(),
+            clip: FxHashMap::default(),
+            bound: Vec::new(),
+            stored: Vec::new(),
+            floor: FxHashMap::default(),
+            inits: FxHashMap::default(),
+            runs: Vec::new(),
+            words: FxHashMap::default(),
+            mods: FxHashMap::default(),
+            pinned: FixedBitSet::new(),
+            aimed: FxHashMap::default(),
+            seeds: FxHashMap::default(),
+            ram: Vec::new(),
+            dev: FixedBitSet::new(),
+            devices,
+            classes: FxHashMap::default(),
+            meets: Default::default(),
+            ran,
+            seed: None,
+            drive: false,
+            kill: Vec::new(),
+        }
+    }
     /// The carry group of the instruction at `pc` writing register `r`: its class's least.
     pub(crate) fn grp(&self, pc: u16, r: usize) -> u32 {
         let g = (pc as u32) << 2 | r as u32;
@@ -1606,14 +1686,7 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
         // an address set, only those.
         let reach = a.ptr.and_then(|p| st.reach(p));
         let aimed = code.aimed.get(&(pc, v.op, ai));
-        let hit = |m: u16| match (aimed, reach) {
-            (Some(s), _) => s.binary_search(&m).is_ok() && a.addr.meets(m as u32, m as u32 + 1),
-            (None, Some(r)) => {
-                let m = m as u32;
-                (r.lo..=r.hi).contains(&m) || (r.lo..=r.hi).contains(&(m + 0x10000))
-            }
-            (None, None) => a.addr.meets(m as u32, m as u32 + 1),
-        };
+        let hit = |m: u16| store_hits(a, aimed.map(Vec::as_slice), reach, m);
         let tracked = |m: u16| match aimed {
             Some(s) => s.binary_search(&m).is_ok() && a.addr.meets(m as u32, m as u32 + 1),
             None => a.addr.meets(m as u32, m as u32 + 1),
@@ -2603,8 +2676,6 @@ pub struct Analysis {
     /// Per byte every return to the host may leave known whatever the data ([`Given::exit`]),
     /// its values: the immediates and device answers that reach it, never a table's.
     pub exit: Option<Vec<(u16, Vec<u8>)>>,
-    /// The driver head ([`Given::drive`]): per tracked byte it knows, its values.
-    pub head: Vec<(u16, Vec<u8>)>,
     /// Per byte the driver head knows, the hull of what it holds wherever the entries run,
     /// whatever the data.
     pub steady: Vec<(u16, Iv)>,
@@ -3287,14 +3358,10 @@ fn reach(
         })
         .collect();
     let mut c = Code {
-        img: code.img,
-        cells: code.cells,
         pull_clear: code.pull_clear,
         vecs: code.vecs.clone(),
         observed: code.observed.clone(),
         free: code.free.clone(),
-        known: code.known,
-        constant: FixedBitSet::new(),
         clip: clips(code.img, &idx, &top),
         bound: top,
         stored: vec![Some(Iv::full(1)); 0x100],
@@ -3303,20 +3370,12 @@ fn reach(
             .filter_map(|&q| Some((q, words(q)?)))
             .collect(),
         runs,
-        words: FxHashMap::default(),
-        mods: FxHashMap::default(),
-        pinned: FixedBitSet::new(),
         aimed: code.aimed.clone(),
-        seeds: Seeds::default(),
         ram: code.ram.clone(),
         dev: code.dev.clone(),
-        devices: code.devices,
         classes: code.classes.clone(),
-        meets: Default::default(),
-        ran: code.ran,
         seed: code.seed.clone(),
-        drive: false,
-        kill: Vec::new(),
+        ..Code::new(code.img, code.cells, code.known, code.devices, code.ran)
     };
     let mut sh = p.sh;
     c.mods = mods(&c, p.vars, &FxHashMap::default(), &sh.live);
@@ -3773,34 +3832,15 @@ fn code_of<'a>(
     }
     let vecs = crate::dispatch::vectors(img, cells, vars, &dev, given.devices);
     Code {
-        img,
-        cells,
         pull_clear: pull_clear(vars, entries),
         vecs,
         observed: given.observed.clone(),
         free: given.free.clone(),
-        known: given.known,
         constant: given.constant.clone(),
-        clip: FxHashMap::default(),
-        bound: Vec::new(),
-        stored: Vec::new(),
-        floor: FxHashMap::default(),
-        inits: FxHashMap::default(),
-        runs: Vec::new(),
-        words: FxHashMap::default(),
-        mods: FxHashMap::default(),
-        pinned: FixedBitSet::new(),
         aimed: given.aimed.clone(),
-        seeds: Seeds::default(),
         ram: ram(given),
         dev,
-        devices: given.devices,
-        classes: FxHashMap::default(),
-        meets: Default::default(),
-        ran: given.ran,
-        seed: None,
-        drive: false,
-        kill: Vec::new(),
+        ..Code::new(img, cells, given.known, given.devices, given.ran)
     }
 }
 
@@ -4127,16 +4167,8 @@ pub fn analyze(
         };
         let mut bounded = bounded_stores(&code, vars, &regs, &bytes, loaded);
         bounded.extend(runs);
-        for (&(pc, op, ai), &(lo, hi)) in &bounded {
-            for v in vars
-                .get_mut(&pc)
-                .into_iter()
-                .flatten()
-                .filter(|v| v.op == op)
-            {
-                let a = &mut v.acc[ai];
-                a.addr = meet(a.addr, Iv { lo, hi: hi - 1 }).unwrap_or(a.addr);
-            }
+        for (&key, &(lo, hi)) in &bounded {
+            narrow_access(vars, key, Iv { lo, hi: hi - 1 });
         }
         let mut guards = Vec::new();
         let mut reads: std::collections::BTreeSet<u16> = kreads.into_iter().collect();
@@ -4224,12 +4256,7 @@ pub fn analyze(
                 lo: lo.saturating_sub(0xff) & 0xff00,
                 hi: hi | 0xff,
             };
-            for v in vars
-                .get_mut(&st.pc)
-                .into_iter()
-                .flatten()
-                .filter(|v| v.op == st.op)
-            {
+            for v in variants_mut(vars, st.pc, st.op) {
                 v.acc[st.ai].addr = Iv { lo, hi };
                 for a in v.acc.iter_mut().filter(|a| a.dummy && !a.store) {
                     a.addr = meet(a.addr, page).unwrap_or(page);
@@ -4245,12 +4272,7 @@ pub fn analyze(
         // A load through a pointer with an address set reaches the hull of its set.
         for (&(pc, op, ai), a) in &loads {
             let (lo, hi) = (a[0] as u32, a[a.len() - 1] as u32);
-            for v in vars
-                .get_mut(&pc)
-                .into_iter()
-                .flatten()
-                .filter(|v| v.op == op)
-            {
+            for v in variants_mut(vars, pc, op) {
                 v.acc[ai].addr = Iv { lo, hi };
             }
         }
@@ -4291,7 +4313,6 @@ pub fn analyze(
             crate::dispatch::jumps(&code, vars, &state, &sets, &objs, &stores, &cellvals);
         return Analysis {
             exit,
-            head: code.seed.as_ref().map_or_else(Vec::new, St::mem_values),
             steady,
             ptrs,
             runs: match given.reach {

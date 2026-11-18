@@ -597,15 +597,6 @@ def edge_env(fn, p, b, env):
     return env
 
 
-def worth(e, uses):
-    """Whether expression ``e`` of a variable read ``uses`` times is propagated into its readers:
-    small ones, and any whose single reader would otherwise need its own statement; memory reads
-    only into one reader."""
-    if has_load(e) and uses != 1:
-        return False
-    return nodes(e) <= (BOOL_LIMIT if is_bool(e) else SIZE_LIMIT) or uses == 1
-
-
 def forget(env, names):
     """Drop the entries of ``env`` that are, or read, one of ``names``."""
     for k in [k for k, e in env.items() if k in names or evars(e) & names]:
