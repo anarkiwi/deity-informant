@@ -4289,6 +4289,25 @@ def test_register_a_callee_never_writes_keeps_the_callers_value(prefix, tmp_path
     assert "io_write(0xC000, a)" in body and not re.search(r"uint8_t v\d+;", body), body
 
 
+GUARD = """
+entry:  AND #$03
+        BEQ done
+        STA $C000
+        STA $C001
+done:   RTS
+end:
+"""
+
+
+def test_a_last_if_is_an_early_return(prefix, tmp_path):
+    """A function's last conditional block is a guard returning when its condition fails,
+    the block's statements after it at the function's own level."""
+    c, _, _ = check(prefix, tmp_path, GUARD, entry_calls(range(4)))
+    body = body_of(c, "entry")
+    assert re.search(r"^  if \(.*\) \{?\n?\s*return;", body, re.M), body
+    assert re.search(r"^  io_write\(0xC001, ", body, re.M), body
+
+
 def test_shared_tail_entered_by_jumps_is_a_function(prefix, tmp_path):
     """A tail two procedures enter by `JMP` and by falling through at their entry height,
     which no `JSR` targets, is one function both tail-call; code past a push and a pull
@@ -6021,7 +6040,7 @@ def test_short_circuit_conditions(prefix, tmp_path):
         [first, first + 5],
         [labels["skip"] + 2, labels["skip"] + 6],
     ]
-    assert "&&" in c and "||" in c
+    assert len(re.findall(r"&&|\|\|", body_of(c, "entry"))) >= 2
 
 
 def test_non_series_parallel_joins_are_gotos(prefix, tmp_path):
@@ -6078,7 +6097,7 @@ def test_short_circuit_with_effects(prefix, tmp_path):
     machine code runs them."""
     c, _, info = check(prefix, tmp_path, EFFECT, entry_calls(range(4), 3))
     _, labels, _ = assemble(EFFECT)
-    assert re.search(r"\|\| \(R\d+\[[^]]*\] = [^,]*, ", c), c
+    assert re.search(r"(\|\||&&) \(R\d+\[[^]]*\] = [^,]*, ", c), c
     assert info["provenance"]["conditions"] == [[labels["do"] - 7, labels["do"] - 2]]
 
 

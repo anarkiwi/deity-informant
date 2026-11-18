@@ -20,7 +20,18 @@ import numpy as np
 from .. import masks
 from ..lifter import MODE_LEN, OPS
 from .mlir import Op
-from .csyntax import declare, drop_unread, ends_in_jump, hexes, names_in, render, walk
+from .csyntax import (
+    declare,
+    drop_unread,
+    ends_in_jump,
+    guarded,
+    hexes,
+    names_in,
+    render,
+    returning,
+    sections,
+    walk,
+)
 from . import marks, regions
 from .marks import bare
 from .state import INDEXED, INIT, POINTER, UNKNOWN, State, classify
@@ -3598,18 +3609,39 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         body = drop_unread(
             body, lambda st, read: st[1] not in read and self.copies.get(id(st)) is st
         )
+        void = not self.f.private or self.mod.ret_type(self.f) == "void"
+        parts = sections(body, set(self.types)) if void else [(None, body)]
+        parts = [returning(items, lab) if lab else items for lab, items in parts]
+        parts = [guarded(items) if void else items for items in parts]
         self.prov["gotos"] = [
             e
-            for st in walk(body)
+            for items in parts
+            for st in walk(items)
             if self.edges.get(id(st), (None,))[0] is st
             for e in self.edges[id(st)][1]
         ]
+        self.head_text = head
+        if len(parts) == 1:
+            return self.define_text(head, params, parts[0], True)
+        decl = head[head.index("(") + 1 : -1]
+        out, calls = [], []
+        for k, items in enumerate(parts, 1):
+            name = f"{self.name}_{k}"
+            out.append(self.define_text(f"static void {name}({decl})", params, items, False))
+            calls.append((f"{name}({', '.join(params)});"))
+        frame = self.mod.marks.put(("tag", "frame"))
+        guards = [] if self.f.private else self.mod.guards.get(self.name, [])
+        main = [f"{frame}{head} {{", *guards, *calls, f"{self.mod.marks.put(('tag', 'frame'))}}}"]
+        return "\n".join([*out, "\n".join(main)])
+
+    def define_text(self, head, params, body, top):
+        """The C definition ``head`` of statements ``body`` (``top``: the function's own,
+        its entry guards first)."""
         declare(body, self.types)
         read = names_in(body)
         lines = [f"(void){n};" for n in params if n not in read] + render(body)
-        if not self.f.private:
+        if top and not self.f.private:
             lines = self.mod.guards.get(self.name, []) + lines
-        self.head_text = head
         frame = self.mod.marks.put(("tag", "frame"))
         return "\n".join([f"{frame}{head} {{", *lines, f"{self.mod.marks.put(('tag', 'frame'))}}}"])
 

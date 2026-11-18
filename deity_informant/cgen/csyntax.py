@@ -267,6 +267,70 @@ def _breaks(items):
     return False
 
 
+RETURN = ("j", "return;", frozenset())
+
+
+def _targets(items):
+    """The labels the gotos of ``items`` jump to, nested ones included."""
+    return {st[1][5:-1] for st in walk(items) if st[0] == "j" and st[1].startswith("goto ")}
+
+
+def _labels(items):
+    """The labels of ``items``, nested ones included."""
+    return {st[1][:-2] for st in walk(items) if st[0] == "l"}
+
+
+def sections(items, local):
+    """``[(label, items)]`` of a function body cut at each top-level label no variable of
+    ``local`` is used across and no goto crosses but into it from before: what follows
+    the label runs the same whatever ran before it, so each section is a function of its
+    own (the label ending the section before it, none after the last)."""
+    out, start = [], 0
+    for i, st in enumerate(items):
+        if st[0] != "l":
+            continue
+        before, after, lab = items[start:i], items[i + 1 :], st[1][:-2]
+        shared = names_in(before) & names_in(after) & local
+        if shared or _targets(before) & (_labels(after) - {lab}):
+            continue
+        if _targets(after) & (_labels(before) | {lab}):
+            continue
+        out.append((lab, before))
+        start = i + 1
+    return out + [(None, items[start:])]
+
+
+def _map(items, f):
+    """``items`` with each statement, nested ones included, replaced by ``f`` of it."""
+    out = []
+    for st in items:
+        st = f(st)
+        if st[0] == "if":
+            st = (*st[:3], _map(st[3], f), _map(st[4], f), *st[5:])
+        elif st[0] == "loop":
+            st = (*st[:4], _map(st[4], f))
+        elif st[0] == "switch":
+            st = (*st[:3], [(lab, _map(b, f)) for lab, b in st[3]])
+        out.append(st)
+    return out
+
+
+def returning(items, label):
+    """``items`` of a section, each goto to the ``label`` ending it a return."""
+    jump = ("j", f"goto {label};")
+    return _map(items, lambda st: RETURN if st[:2] == jump else st)
+
+
+def guarded(items):
+    """``items`` ending a function that returns nothing, a last ``if`` with no ``else`` a
+    guard returning when its condition fails and the statements it held after it, to a
+    fixpoint: the same statements, each one nesting level up."""
+    while items and items[-1][0] == "if" and not items[-1][4] and items[-1][3]:
+        st = items[-1]
+        items = [*items[:-1], ("if", st[5], st[2], [RETURN], [], st[1]), *st[3]]
+    return items
+
+
 def walk(items):
     """Every statement of ``items``, nested ones included, in order."""
     for st in items:
