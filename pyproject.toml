@@ -20,7 +20,7 @@ classifiers = [
     "Topic :: Software Development :: Disassemblers",
     "Topic :: System :: Emulators",
 ]
-dependencies = ["jennings>=0.9.0", "numpy", "networkx", "tqdm", "dd==0.6.0", "wayward-eagle @ git+https://github.com/anarkiwi/wayward-eagle@fba569342ca8f57a5aa148884720e9a9714c1d06"]
+dependencies = ["jennings>=0.9.0", "numpy", "networkx", "tqdm", "dd==0.6.0", "wayward-eagle>=0.2.0"]
 
 [project.optional-dependencies]
 ghidra = ["pypcode"]
