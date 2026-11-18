@@ -2967,20 +2967,6 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             return self.member(st[0], st[1], st[2] != 0)
         if name == "arith.cmpi":
             pred, w0 = o.int_prop("predicate"), self.f.width(o.args[0])
-            d = self.f.defs.get(o.args[0])
-            if (
-                pred in (0, 1)
-                and self.f.const_of(o.args[1]) == 0
-                and o.args[0] in self.inline
-                and (d.name in ("arith.subi", "arith.addi"))
-            ):
-                x, y = (self.ex(a, (d, i)) for i, a in enumerate(d.args))
-                if d.name == "arith.addi":
-                    k = self.f.const_of(d.args[1])
-                    if k is None:
-                        return self.cmpi(pred, *args, w0)
-                    y = lit(-k, w0)
-                return self.cmpi(pred, x, y, w0)
             return self.cmpi(pred, *args, w0)
         if name in MINMAX:
             c, (a, b) = self.cmpi(MINMAX[name], *args, w), args
