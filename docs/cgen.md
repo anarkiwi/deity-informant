@@ -39,7 +39,8 @@ python tools/cgenplay.py tune.sid --psid --volatile 0xD400-0xD41D -o out/   # tr
 `info` holds the stage times (`lift`, `mlir`, `layout`, `structure`, `print`), the regions
 `[(origin, length)]`, the code span, the traps in the `.c` (`{k: ("deopt", pc)}` or `("ind", pc,
 ...)` for a computed jump with no target) and what each stands for (`trap_info`, *Trap
-metadata*), the computed jumps resolved from the code (`jumps`),
+metadata*), the traps the runtime's access helpers may take (`runtime_traps`: `{OOB_TRAP:
+"unheld"}`, a byte no array holds that would not keep its value), the computed jumps resolved from the code (`jumps`),
 per `(zp),Y` access the words its pointer may hold where the lift finds a set of them
 (`ptr_sets`, `{pc: [word]}`, every lift's), the fact edges used, the lift's `stats`, whether
 some access has an unknown address and the
