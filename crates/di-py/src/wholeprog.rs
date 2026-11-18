@@ -134,9 +134,7 @@ impl<'a> PyBus<'a> {
         self.retired.pop();
         if let Some(nest) = self.nest.as_mut() {
             nest.invalid |= run.invalid;
-            for (k, v) in run.deopts {
-                *nest.deopts.entry(k).or_default() += v;
-            }
+            add_deopts(&mut nest.deopts, run.deopts);
             nest.bad = nest.bad.or((o.halt != Halt::Sp).then_some(o.halt));
         }
         cpu.pc = at.pc;
@@ -155,9 +153,14 @@ impl<'a> PyBus<'a> {
 /// Whether the registers of `cpu` (the flags bar B) differ from the register file `reg`.
 fn differs(cpu: &Cpu, reg: &[u8; 16]) -> bool {
     let mine = cpu.reg();
-    [0, 1, 2, 3, 8, 9, 10, 11, 13, 14]
-        .iter()
-        .any(|&i| mine[i] != reg[i])
+    REGS.iter().any(|&i| mine[i] != reg[i])
+}
+
+/// Adds the deopt counts `from` into `into`.
+fn add_deopts(into: &mut HashMap<u16, u64>, from: impl IntoIterator<Item = (u16, u64)>) {
+    for (k, v) in from {
+        *into.entry(k).or_default() += v;
+    }
 }
 
 impl Bus for PyBus<'_> {
@@ -574,7 +577,7 @@ fn start_reg(r: &[u8]) -> [u8; 16] {
     c.reg()
 }
 
-fn cpu_of(reg: Option<[u8; 16]>, cycles: u64) -> Cpu {
+pub(crate) fn cpu_of(reg: Option<[u8; 16]>, cycles: u64) -> Cpu {
     let mut c = Cpu::new();
     if let Some(r) = reg {
         c.set_reg(r);
@@ -583,7 +586,7 @@ fn cpu_of(reg: Option<[u8; 16]>, cycles: u64) -> Cpu {
     c
 }
 
-fn with_mem<R>(
+pub(crate) fn with_mem<R>(
     mem: &Bound<'_, PyByteArray>,
     f: impl FnOnce(&mut [u8; 0x10000]) -> R,
 ) -> PyResult<R> {
@@ -1339,14 +1342,10 @@ impl Program {
         }
         let mut st = self.state.lock().unwrap();
         st.0 = run.invalid;
-        for (k, v) in run.deopts {
-            *st.1.entry(k).or_default() += v;
-        }
+        add_deopts(&mut st.1, run.deopts);
         if let Some(nest) = bus.nest.take() {
             st.0 |= nest.invalid;
-            for (k, v) in nest.deopts {
-                *st.1.entry(k).or_default() += v;
-            }
+            add_deopts(&mut st.1, nest.deopts);
             if let (Some(h), Halt::Sp) = (nest.bad, o.halt) {
                 o.halt = h;
             }
@@ -1778,18 +1777,10 @@ impl RecView<'_> {
     }
     /// The ``Program.call`` register file of record ``k``.
     fn reg(&self, k: usize) -> [u8; 16] {
-        let m = &self.meta[7 * k..7 * k + 7];
-        let mut r = [0; 16];
-        r[..4].copy_from_slice(&m[2..6]);
-        for (i, bit) in FLAGS {
-            r[i] = m[6] >> bit & 1;
-        }
-        r
+        start_reg(&self.meta[7 * k + 2..7 * k + 7])
     }
 }
 
-/// ``(register index, P bit)`` of the flags ``Program.call`` keeps one per register.
-const FLAGS: [(usize, u8); 6] = [(8, 0), (9, 1), (10, 2), (11, 3), (13, 6), (14, 7)];
 /// The register-file indices ``c64.mismatch`` compares: A X Y SP and C Z I D V N.
 const REGS: [usize; 10] = [0, 1, 2, 3, 8, 9, 10, 11, 13, 14];
 const HALTS: [&str; 3] = ["return", "cycles", "jam"];
