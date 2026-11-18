@@ -58,7 +58,8 @@ def test_gotos_to_the_label_ending_a_section_return():
 
 def test_a_last_if_with_no_else_is_a_guard():
     """A function's last ``if`` with no ``else`` returns when its condition fails and holds
-    its statements after it, to a fixpoint; one with an ``else`` stays."""
+    its statements after it, to a fixpoint; of one with an ``else``, the arm with more nested
+    control is after it, the other returning first."""
     inner = iff("q", [s("y();")], neg="!q")
     got = guarded([s("x();"), iff("p", [s("z();"), inner], neg="!p")])
     assert got == [
@@ -68,8 +69,12 @@ def test_a_last_if_with_no_else_is_a_guard():
         ("if", "!q", frozenset(), [RETURN], [], "q"),
         s("y();"),
     ]
-    kept = [iff("p", [s("x();")], [s("y();")])]
-    assert guarded(kept) == kept
+    both = [iff("p", [s("x();")], [iff("q", [s("y();")], neg="!q")], neg="!p")]
+    assert guarded(both) == [
+        ("if", "p", frozenset(), [s("x();"), RETURN], [], "!p"),
+        ("if", "!q", frozenset(), [RETURN], [], "q"),
+        s("y();"),
+    ]
 
 
 def test_an_else_ending_in_a_jump_is_tested_first():

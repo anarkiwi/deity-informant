@@ -321,14 +321,40 @@ def returning(items, label):
     return _map(items, lambda st: RETURN if st[:2] == jump else st)
 
 
-def guarded(items):
-    """``items`` ending a function that returns nothing, a last ``if`` with no ``else`` a
-    guard returning when its condition fails and the statements it held after it, to a
-    fixpoint: the same statements, each one nesting level up."""
-    while items and items[-1][0] == "if" and not items[-1][4] and items[-1][3]:
+def weight(items, depth=0):
+    """The cognitive complexity ``items`` add at nesting ``depth``: one plus the depth for
+    each ``if``, loop and ``switch``, one for each ``else``."""
+    out = 0
+    for st in items:
+        if st[0] in ("if", "loop", "switch"):
+            out += 1 + depth + bool(st[0] == "if" and st[4])
+        out += sum(weight(sub, depth + 1) for sub in children(st))
+    return out
+
+
+def ending(items, jump):
+    """``items`` ending a function or loop body (``jump`` its ``return`` or ``continue``),
+    a last ``if`` one arm of which leaves by ``jump`` first and the other after it at this
+    level, to a fixpoint: the arm with more nested control (:func:`weight`) one level up, the
+    other ending in ``jump``, no ``else``."""
+    while items and items[-1][0] == "if" and (items[-1][3] or items[-1][4]):
         st = items[-1]
-        items = [*items[:-1], ("if", st[5], st[2], [RETURN], [], st[1]), *st[3]]
+        then, els = st[3], st[4]
+        if weight(then) >= weight(els):
+            first, rest, cond = els, then, st[5]
+        else:
+            first, rest, cond = then, els, st[1]
+        if not ends_in_jump(first):
+            first = [*first, jump]
+        neg = st[1] if cond is st[5] else st[5]
+        items = [*items[:-1], ("if", cond, st[2], first, [], neg), *rest]
     return items
+
+
+def guarded(items):
+    """``items`` ending a function that returns nothing, its last ``if`` a guard
+    (:func:`ending` with ``return``)."""
+    return ending(items, RETURN)
 
 
 CONTINUE = ("j", "continue;", frozenset())
@@ -347,11 +373,7 @@ def flattened(items):
                 out += [("if", st[5], st[2], st[4], [], st[1]), *st[3]]
                 continue
         elif st[0] == "loop":
-            body = flattened(st[4])
-            while body and body[-1][0] == "if" and not body[-1][4] and body[-1][3]:
-                last = body[-1]
-                body = [*body[:-1], ("if", last[5], last[2], [CONTINUE], [], last[1]), *last[3]]
-            st = (*st[:4], body)
+            st = (*st[:4], ending(flattened(st[4]), CONTINUE))
         elif st[0] == "switch":
             st = (*st[:3], [(lab, flattened(b)) for lab, b in st[3]])
         out.append(st)
