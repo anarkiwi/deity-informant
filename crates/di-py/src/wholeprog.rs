@@ -9,7 +9,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyBytes, PyDict, PyList};
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -1663,61 +1663,6 @@ fn devices_of(d: Option<Lowered>) -> PyResult<di_lift::dev::Devices> {
         out.regs.insert(c, reg);
     }
     out.canon.extend(addrs);
-    Ok(out)
-}
-
-/// The function plans the lift starts from: ``[{"pc", "top", "balanced", "heights"}]`` with
-/// ``heights`` mapping each instruction start to the stack heights it is planned at relative
-/// to the function entry (pushes negative), ``None`` where unknown.
-#[pyfunction]
-#[pyo3(signature = (image, entries, facts=None, bank=None))]
-pub fn plan_program<'py>(
-    py: Python<'py>,
-    image: &[u8],
-    entries: Vec<PyEntry>,
-    facts: Option<&Bound<'py, PyDict>>,
-    bank: Option<&Bound<'py, PyDict>>,
-) -> PyResult<Bound<'py, PyList>> {
-    let img = self::image(image)?;
-    let es = self::entries(entries);
-    let f = self::facts(facts)?;
-    let bank = bank_of(bank)?;
-    let g = di_lift::analysis::discover(
-        &img,
-        &es,
-        &f,
-        bank.as_ref(),
-        true,
-        None,
-        &[],
-        &Default::default(),
-        None,
-        &Default::default(),
-        &Default::default(),
-        false,
-        None,
-    );
-    let pcs: Vec<u16> = es.iter().map(|e| e.pc).collect();
-    let out = PyList::empty(py);
-    for p in di_lift::plan(&g.img, &g, &pcs, &f, bank.as_ref(), &[], false) {
-        let d = PyDict::new(py);
-        d.set_item("pc", p.pc)?;
-        d.set_item("top", p.top)?;
-        d.set_item("balanced", p.balanced)?;
-        let mut hs: BTreeMap<u16, Vec<Option<i32>>> = BTreeMap::new();
-        for &(pc, h, _) in p.nodes.keys() {
-            hs.entry(pc).or_default().push(match h {
-                di_lift::func::H::Known(x) => Some(x),
-                di_lift::func::H::Unknown => None,
-            });
-        }
-        let h = PyDict::new(py);
-        for (pc, v) in hs {
-            h.set_item(pc, v)?;
-        }
-        d.set_item("heights", h)?;
-        out.append(d)?;
-    }
     Ok(out)
 }
 
