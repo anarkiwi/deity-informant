@@ -1110,10 +1110,18 @@ pub fn lift_banked(
         };
         run(&mut functions, &cx);
         // Callee summaries matter only where deopts may leave registers dead: no cycles.
+        let maydef = |fs: &mut Vec<Function>, cx: &opt::Ctx| {
+            for (i, s) in opt::summarize(fs, cx).into_iter().enumerate() {
+                fs[i].maydef = Some(s.maydef);
+            }
+        };
         if !opts.cycles && functions.len() > 1 {
             let sums = opt::summarize(&functions, &cx);
             cx.sums = Some(&sums);
             run(&mut functions, &cx);
+            maydef(&mut functions, &cx);
+        } else {
+            maydef(&mut functions, &cx);
         }
     }
     let ops = || {

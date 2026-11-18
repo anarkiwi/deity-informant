@@ -3092,8 +3092,12 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
     # Statements.
 
     def define(self, v, e, out):
-        """Assign the variable of value ``v`` as ``e``."""
+        """Assign the variable of value ``v`` as ``e``: an assignment of a pure value
+        (:meth:`Func.pure`) nothing printed reads is dropped, as an unread copy is."""
         out.append(("a", self.var_of(v, self.f.width(v)), e.text, e.refs))
+        d = self.f.defs.get(v)
+        if d is not None and self.f.pure(d):
+            self.copies[id(out[-1])] = out[-1]
 
     def stmt(self, o, out):
         """Append the statements of operation ``o``."""

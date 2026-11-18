@@ -658,6 +658,10 @@ impl Program {
             d.set_item("recursive", f.recursive)?;
             d.set_item("continuation", f.cont.is_some())?;
             d.set_item("copies", f.copies.clone())?;
+            let maydef = f
+                .maydef
+                .map(|m| (0..32u8).filter(|r| m >> r & 1 != 0).collect::<Vec<_>>());
+            d.set_item("maydef", maydef)?;
             d.set_item("copy_pcs", f.copy_pcs.clone())?;
             d.set_item("blocks", blocks)?;
             d.set_item("tables", f.tables.clone())?;

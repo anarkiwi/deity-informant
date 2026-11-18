@@ -271,6 +271,9 @@ pub struct Function {
     pub whys: Vec<crate::why::Why>,
     /// Per tag ([`LOp::why`] less one), the indices into `whys` of what it stands for.
     pub exits: Vec<Vec<u32>>,
+    /// The registers (bits below [`NREG`]) a call of it may write, through its own calls
+    /// ([`crate::opt::summarize`]); None: every one.
+    pub maydef: Option<u32>,
 }
 
 impl Function {

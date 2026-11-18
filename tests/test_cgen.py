@@ -4267,6 +4267,28 @@ def test_carry_left_for_another_value_is_its_own_variable(prefix, tmp_path):
     assert re.search(r"io_write\(0xC001, " + name + r" \+ 0x1F\)", body), body
 
 
+CALL_KEEPS = """
+entry:  TAX
+        CPX #$06
+        BCS skip
+        JSR sub
+skip:   STX $C000
+        RTS
+sub:    LDA #$01
+        STA $C001
+        RTS
+end:
+"""
+
+
+def test_register_a_callee_never_writes_keeps_the_callers_value(prefix, tmp_path):
+    """``X``, which the callee never writes, is the caller's own value past the call: no
+    variable merges it where the paths around the call join."""
+    c, _, _ = check(prefix, tmp_path, CALL_KEEPS, entry_calls(range(0, 256, 3)))
+    body = body_of(c, "entry")
+    assert "io_write(0xC000, a)" in body and not re.search(r"uint8_t v\d+;", body), body
+
+
 def test_shared_tail_entered_by_jumps_is_a_function(prefix, tmp_path):
     """A tail two procedures enter by `JMP` and by falling through at their entry height,
     which no `JSR` targets, is one function both tail-call; code past a push and a pull

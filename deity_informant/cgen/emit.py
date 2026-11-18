@@ -288,7 +288,8 @@ class Body:  # pylint: disable=too-many-instance-attributes
         return self.ret()
 
     def call(self, callee):
-        """A ``CALL``: the register file through the callee."""
+        """A ``CALL``: the register file through the callee, which leaves each register it
+        may not write (its ``maydef``) the caller's own value."""
         args, t = self.regs(), self.ctx.types
         res = self.new()
         name = self.ctx.names[callee]
@@ -300,8 +301,10 @@ class Body:  # pylint: disable=too-many-instance-attributes
         pc, self.pc = self.pc, 0 if site else self.pc
         self.put(f"{res}:{len(args)} = func.call @{name}({', '.join(args)}){attr} : ({t}) -> ({t})")
         self.pc = pc
+        maydef = self.ctx.funcs[callee].get("maydef")
         for j, (r, s) in enumerate(self.ctx.regfile):
-            self.write(["r", r, s], f"{res}#{j}")
+            if maydef is None or r in maydef or r >= NREG:
+                self.write(["r", r, s], f"{res}#{j}")
 
     def switch(self, op, i):
         """A ``BRANCHIND`` dispatching on its table; a trap otherwise, unless the table is
