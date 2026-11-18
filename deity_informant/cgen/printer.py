@@ -2150,7 +2150,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         self.names, self.nvar, self.inline, self.memf, self.types = {}, 0, set(), {}, {}
         self.uses, self.user, self.covers, self.copies = {}, {}, {}, {}
         self.body, self.head_text, self.labels = None, "", {}
-        self.prov = {"gotos": [], "loops": [], "conditions": [], "switches": []}
+        self.prov = {"gotos": [], "reduced": [], "loops": [], "conditions": [], "switches": []}
         self.edges = {}
         self._fused = None
         #: The operations the statement being printed prints, and the block visit it is in.
@@ -3561,6 +3561,16 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         decl = ", ".join(f"{self.types.pop(n)} {n}" for n in names) or "void"
         return f"static {self.mod.ret_type(f)} {self.name}({decl})", names
 
+    def goto_edges(self, bodies):
+        """The machine-code edges of the gotos in statement lists ``bodies``."""
+        return [
+            e
+            for items in bodies
+            for st in walk(items)
+            if self.edges.get(id(st), (None,))[0] is st
+            for e in self.edges[id(st)][1]
+        ]
+
     def text(self):
         """The C definition of the function."""
         self.count()
@@ -3575,6 +3585,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         )
         void = not self.f.private or self.mod.ret_type(self.f) == "void"
         fn = Function(params, set(self.types), void, _traps)
+        structured = self.goto_edges([body])
         pieces, nsec, temps = reduced(body, self.name, fn)
         self.types.update(dict.fromkeys(temps, "uint8_t"))
         decl = head[head.index("(") + 1 : -1]
@@ -3584,13 +3595,14 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             None: "void",
             STATUS: "uint8_t",
         }
-        self.prov["gotos"] = [
-            e
-            for x in pieces
-            for st in walk(x.items)
-            if self.edges.get(id(st), (None,))[0] is st
-            for e in self.edges[id(st)][1]
-        ]
+        self.prov["pieces"] = [x.name for x in pieces if x.name != self.name]
+        self.prov["gotos"] = self.goto_edges([x.items for x in pieces])
+        left = Counter(map(tuple, self.prov["gotos"]))
+        for e in structured:
+            if left[tuple(e)]:
+                left[tuple(e)] -= 1
+            else:
+                self.prov["reduced"].append(e)
         self.head_text = head
         if len(pieces) == 1:
             return self.define_text(head, params, pieces[0].items, True)
@@ -4734,7 +4746,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         functions by their final names, each with the sites calling it (one kept for several
         identical ones lists theirs as copies)."""
         funcs, sites = {}, {}
-        prov = {"gotos": [], "loops": [], "conditions": [], "switches": []}
+        prov = {"gotos": [], "reduced": [], "loops": [], "conditions": [], "switches": []}
         for c in cfuncs:
             for b in c.f.blocks:
                 for o in b.ops if b.name in c.owned else ():
@@ -4763,6 +4775,9 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 funcs[name]["copies"] += [pc, *copies]
                 funcs[name]["calls"] += calls
                 funcs[name]["pcs"] = sorted(set(funcs[name]["pcs"]) | pcs)
+                funcs[name]["pieces"] = sorted(
+                    set(funcs[name]["pieces"]) | set(c.prov.get("pieces", ()))
+                )
                 continue
             funcs[name] = {
                 "entry": pc,
@@ -4770,6 +4785,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 "calls": calls,
                 "copies": list(copies),
                 "pcs": sorted(pcs),
+                "pieces": list(c.prov.get("pieces", ())),
             }
             for k, v in prov.items():
                 v += _copies(c.prov[k], self.copy_pcs.get(c.f.name, {}))

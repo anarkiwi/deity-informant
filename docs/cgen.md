@@ -420,8 +420,9 @@ steps in order, each deciding on the graph the earlier ones leave:
 
 | Key | Value |
 |---|---|
-| `functions` | `{C name: {"entry", "index", "calls", "copies", "pcs"}}`: the entry pc, whether it takes an instance index, `[site, target]` of each call and tail call of it (a tail call printed in place names the instruction taking the edge), the entries of the copies folded into it, the instructions (every copy's) its operations were emitted for |
+| `functions` | `{C name: {"entry", "index", "calls", "copies", "pcs", "pieces"}}`: the entry pc, whether it takes an instance index, `[site, target]` of each call and tail call of it (a tail call printed in place names the instruction taking the edge), the entries of the copies folded into it, the instructions (every copy's) its operations were emitted for, and the C functions the cognitive-complexity reduction split it into (sections, tails, extracted blocks) |
 | `gotos` | `[from, to]` per printed `goto`: the instruction taking the edge (a branch, or the `JMP` the lift threaded into it; each branch of a short-circuit condition with an edge to the target) and its target |
+| `reduced` | `[from, to]` per `goto` the structuring placed and the cognitive-complexity reduction (wayward-eagle) expressed without one: a call of a tail, or a return |
 | `loops` | the head of each printed loop |
 | `conditions` | the branch addresses composed into each short-circuit condition |
 | `switches` | the dispatch, or the first compare of the chain, of each printed `switch` |
