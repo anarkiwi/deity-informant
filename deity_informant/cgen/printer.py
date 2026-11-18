@@ -240,7 +240,7 @@ OFFSETS = {
 DERIVED = CASTS | set(BINOP) | set(SIGNED) | set(MINMAX) | {"arith.select", "arith.extsi"}
 #: Operations whose second operand zero leaves the first.
 IDENTITY = {"arith.addi", "arith.subi", "arith.ori", "arith.xori", "arith.shli", "arith.shrui"}
-#: Most combinations of inputs a flag is evaluated over (:meth:`Func.flag_at`).
+#: Most combinations of inputs a flag is evaluated over (:meth:`Func.flag_value`).
 FLAG_INPUTS = 1 << 16
 #: A ``cmpi`` predicate with its operands swapped, and negated.
 SWAPPED = {0: 0, 1: 1, 2: 4, 3: 5, 4: 2, 5: 3, 6: 8, 7: 9, 8: 6, 9: 7}
@@ -493,72 +493,45 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
 
     def fold_flags(self):
         """Read each truth value (:meth:`is_flag`) an arithmetic operation consumes as the
-        constant it is wherever that operation runs: its interval there (the branches every
-        path to it takes, :meth:`iv_at`), else every combination of the values it is computed
-        from there (:meth:`flag_at`). The constants fold forward; a flag left unused dies."""
-        new, changed = {}, {}
+        constant it is (:meth:`flag_value`). The constants fold forward; a flag left unused
+        dies."""
+        new, changed, memo = {}, {}, {}
         for o in list(self.walk()):
             if not o.name.startswith("arith.") or o.name == "arith.constant":
                 continue
-            blk = self.where[id(o)][0].name
             for i, c in enumerate(o.args):
                 if (c in self.defs or c in self.arg_block) and self.types.get(c) in WIDTH:
-                    k = self.flag_at(c, blk)
-                    if k is not None:
-                        o.args[i] = self.constant(new, self.types[c], k, o.pc, "%fc")
+                    if c not in memo:
+                        memo[c] = self.flag_value(c)
+                    if memo[c] is not None:
+                        o.args[i] = self.constant(new, self.types[c], memo[c], o.pc, "%fc")
                         changed[id(o)] = o
         if changed:
             self.prepend(new)
             self.reindex()
             self.fold_from(list(changed.values()))
 
-    def flag_at(self, c, blk):
-        """The one value truth value ``c`` (:meth:`is_flag`) takes wherever block ``blk`` runs, or
-        None: its values over every combination (at most :data:`FLAG_INPUTS`) of the values it
-        and the branch conditions every path to ``blk`` takes (:meth:`path_conds`) are computed
-        from, each over every value of its type (an instance index over its copies), that meets
-        those conditions. No interval, so
-        no byte of memory, decides it: the data does not shape the C."""
+    def flag_value(self, c):
+        """The one value truth value ``c`` (:meth:`is_flag`) takes, or None: its values over
+        every combination (at most :data:`FLAG_INPUTS`) of the values it is computed from,
+        each over every value of its type (an instance index over its copies). No interval,
+        so no byte of memory, decides it: the data does not shape the C."""
         if self.iv(c) != (0, 1) or not self.is_flag(c, set()):
             return None
-        used = self.free_values(c, set())
-        conds = []
-        for x, holds in self.path_conds(blk):
-            free = self.free_values(x, set())
-            if free & used:
-                conds.append((x, holds))
-                used |= free
-        used = sorted(used)
+        used = sorted(self.free_values(c, set()))
         doms = [
             np.asarray(self.kvals) if x == self.kparam else np.arange(1 << self.width(x))
             for x in used
         ]
-        n = math.prod(len(d) for d in doms)
-        if n > FLAG_INPUTS:
+        if math.prod(len(d) for d in doms) > FLAG_INPUTS:
             return None
         grid = np.meshgrid(*doms, indexing="ij")
-        env, memo = {x: g.ravel() for x, g in zip(used, grid)}, {}
+        env = {x: g.ravel() for x, g in zip(used, grid)}
         try:
-            ok = np.ones(n, dtype=bool)
-            for x, holds in conds:
-                ok &= np.broadcast_to(self.evaluate(x, env, memo) != 0, ok.shape) == holds
-            vals = np.unique(np.broadcast_to(self.evaluate(c, env, memo), ok.shape)[ok])
+            vals = np.unique(self.evaluate(c, env, {}))
         except (Unknown, IndexError):
             return None
         return int(vals[0]) if len(vals) == 1 else None
-
-    def path_conds(self, blk):
-        """``[(condition, holds)]`` of the ``cf.cond_br`` branches every path to block ``blk``
-        takes: into each block of its dominator chain entered by that edge alone."""
-        if self.preds is None:
-            self.preds = Counter(s for b in self.blocks for s in b.ops[-1].succs)
-        out, b = [], blk
-        while (d := self.idom.get(b, b)) != b:
-            term = self.block_of[d].ops[-1]
-            if self.preds[b] == 1 and term.name == "cf.cond_br" and len(set(term.succs)) == 2:
-                out.append((term.args[0], term.succs[0] == b))
-            b = d
-        return out
 
     def is_flag(self, v, seen):
         """Whether value ``v`` is a truth value: an ``i1``, its zero extension, or a block
