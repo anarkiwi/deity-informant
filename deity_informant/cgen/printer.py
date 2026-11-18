@@ -520,12 +520,14 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
     def path_conds(self, blk):
         """``[(condition, holds)]`` of the ``cf.cond_br`` branches every path to block ``blk``
         takes: into each block of its dominator chain entered by that edge alone."""
-        if self.preds is None:
-            self.preds = Counter(s for b in self.blocks for s in b.ops[-1].succs)
         out, b = [], blk
         while (d := self.idom.get(b, b)) != b:
             term = self.block_of[d].ops[-1]
-            if self.preds[b] == 1 and term.name == "cf.cond_br" and len(set(term.succs)) == 2:
+            if (
+                self.pred_counts()[b] == 1
+                and term.name == "cf.cond_br"
+                and len(set(term.succs)) == 2
+            ):
                 out.append((term.args[0], term.succs[0] == b))
             b = d
         return out
@@ -607,8 +609,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             work += self.users.get(r, [])
         if new:
             self.prepend(new)
-        for o in self.walk():
-            o.args = [_resolve(sub, a) for a in o.args]
+        self.substitute(sub)
         self.reindex()
 
     def after(self, a, b):
@@ -667,10 +668,8 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 if vec is None or (vec == self.kvals).all() or self.const_of(a) is not None:
                     continue
                 o.args[i] = self.kdefine(t, vec, new, o.pc, (id(o), i) in self.addr_edges)
-        self.blocks[0].ops[0:0] = new.values()
-        for o in new.values():
-            o.parent = self.blocks[0]
         if new:
+            self.prepend(new)
             self.reindex()
 
     def kedges(self, blk):
@@ -814,11 +813,8 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 o.parent = blk
         if not sub:
             return
-        self.blocks[0].ops[0:0] = entry.values()
-        for o in entry.values():
-            o.parent = self.blocks[0]
-        for o in self.walk():
-            o.args = [_resolve(sub, a) for a in o.args]
+        self.prepend(entry)
+        self.substitute(sub)
         self.reindex()
 
     def kdefine(self, t, vec, out, pc, address):
@@ -911,14 +907,29 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 self.uses[a] = self.uses.get(a, 0) + 1
         self.prepend(new)
 
+    def substitute(self, sub):
+        """Replace every operand ``a`` in ``sub`` by what it resolves to."""
+        for o in self.walk():
+            o.args = [_resolve(sub, a) for a in o.args]
+
+    def pred_counts(self):
+        """Each block's number of predecessor edges, kept until the next :meth:`index`."""
+        if self.preds is None:
+            self.preds = Counter(s for b in self.blocks for s in b.ops[-1].succs)
+        return self.preds
+
     def prepend(self, new):
         """Put the new operations ``new`` (``{key: op}``) first in the entry block."""
-        entry = self.blocks[0]
-        entry.ops[0:0] = new.values()
-        for i, o in enumerate(entry.ops):
-            self.where[id(o)] = (entry, i)
-        for o in new.values():
-            o.parent = entry
+        self.insert_first(self.blocks[0], list(new.values()))
+
+    def insert_first(self, blk, ops):
+        """Put the new single-result operations ``ops`` first in block ``blk``, recording
+        their definitions, uses and the block's positions."""
+        blk.ops[0:0] = ops
+        for i, o in enumerate(blk.ops):
+            self.where[id(o)] = (blk, i)
+        for o in ops:
+            o.parent = blk
             self.defs[o.res[0]] = o
             for a in o.args:
                 self.uses[a] = self.uses.get(a, 0) + 1
@@ -952,11 +963,9 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 props, name = f"value = {v} : {t}", f"%o{len(self.defs)}.{len(new)}"
                 new[t, v] = Op("arith.constant", [name], [], props, [], ((), (t,)))
             o.name, o.args = "arith.addi", [inner, new[t, v].res[0]]
-        for o in self.walk():
-            o.args = [_resolve(sub, a) for a in o.args]
-        self.blocks[0].ops[0:0] = new.values()
-        for o in new.values():
-            o.parent = self.blocks[0]
+        self.substitute(sub)
+        if new:
+            self.prepend(new)
         if new or sub:
             self.reindex()
             self.fold_offsets()
@@ -1002,9 +1011,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 return self.context(blk)
             finally:
                 self.ivs = saved
-        if self.preds is None:
-            self.preds = Counter(s for b in self.blocks for s in b.ops[-1].succs)
-        preds, facts, b = self.preds, {}, blk
+        preds, facts, b = self.pred_counts(), {}, blk
         while (d := self.idom.get(b, b)) != b:
             term = self.block_of[d].ops[-1]
             if preds[b] == 1 and term.name in ("cf.cond_br", "cf.switch"):
@@ -1342,17 +1349,10 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 c = e
             self.pass_arg(o, case, c)
         self.prepend(new)
-        blk.ops[0:0] = made
+        self.insert_first(blk, made)
         blk.args.append((e, "i8"))
         self.types[e], self.arg_block[e] = "i8", blk
-        for x in made:
-            x.parent = blk
-            self.defs[x.res[0]], self.types[x.res[0]] = x, "i8"
-            for a in x.args:
-                self.uses[a] = self.uses.get(a, 0) + 1
-                self.users.setdefault(a, []).append(x)
-        for k, x in enumerate(blk.ops):
-            self.where[id(x)] = (blk, k)
+        self.types.update((x.res[0], "i8") for x in made)
         self.arg_src[e] = [
             (o, idx[-1], case)
             for o in {id(o): o for o, _, _ in self.arg_src[v]}.values()
@@ -1377,14 +1377,8 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         )
         self.prepend(new)
         res = f"%ep{len(self.defs)}"
-        x = Op("arith.addi", [res], [e, c], "", [], (("i8", "i8"), ("i8",)), parent=blk)
-        blk.ops.insert(0, x)
-        self.defs[res], self.types[res] = x, "i8"
-        for a in (e, c):
-            self.uses[a] = self.uses.get(a, 0) + 1
-            self.users.setdefault(a, []).append(x)
-        for j, y in enumerate(blk.ops):
-            self.where[id(y)] = (blk, j)
+        self.insert_first(blk, [Op("arith.addi", [res], [e, c], "", [], (("i8", "i8"), ("i8",)))])
+        self.types[res] = "i8"
         return res
 
     def pass_arg(self, o, case, val):
@@ -3248,7 +3242,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             out.append(("s", f"{mark}trap({self.ex(o.args[0]).text});", frozenset()))
             return
         if callee not in ("io_read", "io_write"):
-            target = self.mod.cfunc_of(callee)
+            target = self.mod.mains[callee]
             args = [self.ex(a, (o, i)) for i, a in enumerate(o.args) if (id(o), i) not in f.dead]
             text = f"{self.mod.name_of(target, self)}({', '.join(a.text for a in args)})"
             refs = frozenset().union(*(a.refs for a in args))
@@ -3987,8 +3981,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
                     sub[o.res[j]] = o.args[p]
             if not sub:
                 continue
-            for o in f.walk():
-                o.args = [_resolve(sub, a) for a in o.args]
+            f.substitute(sub)
             f.reindex()
             f.fold_offsets()
 
@@ -4662,10 +4655,6 @@ class Module:  # pylint: disable=too-many-instance-attributes
         file) is left in when ``f`` returns several, as the 6502 leaves its registers."""
         self.structs[j] = WIDTH[f.results()[j]]
         return f"rv{j}"
-
-    def cfunc_of(self, name):
-        """The C function of lifted function ``name``."""
-        return self.mains[name]
 
     def name_of(self, target, caller):
         """The name of C function ``target``, named on its first call."""
