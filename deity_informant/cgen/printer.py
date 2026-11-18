@@ -20,7 +20,7 @@ from wayward_eagle import Function, ends_in_jump, names_in, reduced, walk
 
 from .. import masks
 from ..lifter import MODE_LEN, OPS
-from .mlir import Op
+from .mlir import Op, _types
 from .csyntax import declare, drop_unread, hexes, lead, render
 from . import marks, regions
 from .marks import bare
@@ -1403,15 +1403,22 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         self.uses[val] = self.uses.get(val, 0) + 1
         self.users.setdefault(val, []).append(o)
 
-    def stepped_access(self, o):
-        """``(addresses, v, offset)`` of access ``o`` at a constant plus a byte ``v + offset``,
-        ``v`` a block argument taking an arithmetic progression (:meth:`stepped`): its
-        addresses for each of ``v``'s values, else None."""
+    def byte_index(self, o):
+        """``(c, w)`` of access ``o`` at a constant ``c`` plus the zero-extended byte ``w``,
+        else None."""
         c, rest = self.split(self.address(o))
         d = self.defs.get(rest)
         if rest is None or d is None or d.name != "arith.extui" or self.width(d.args[0]) != 8:
             return None
-        w, off = d.args[0], 0
+        return c, d.args[0]
+
+    def stepped_access(self, o):
+        """``(addresses, v, offset)`` of access ``o`` at a constant plus a byte ``v + offset``,
+        ``v`` a block argument taking an arithmetic progression (:meth:`stepped`): its
+        addresses for each of ``v``'s values, else None."""
+        if (cw := self.byte_index(o)) is None:
+            return None
+        (c, w), off = cw, 0
         dw = self.defs.get(w)
         if dw is not None and dw.name == "arith.addi" and self.const_of(dw.args[1]) is not None:
             w, off = dw.args[0], self.const_of(dw.args[1])
@@ -1435,14 +1442,13 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         steps = set(np.diff(addrs).tolist())
         if len(addrs) < 2 or len(steps) != 1 or min(steps) < 2:
             return None
-        c, rest = self.split(self.address(o))
-        d = self.defs.get(rest)
-        if rest is None or d is None or d.name != "arith.extui" or self.width(d.args[0]) != 8:
+        if (cw := self.byte_index(o)) is None:
             return None
+        c, w = cw
         base, top = addrs[0] - c, (1 << self.width(self.address(o))) - 1
         if not 0 <= base <= addrs[-1] - c <= 0xFF or addrs[-1] > top:
             return None
-        return addrs, d.args[0], base, min(steps)
+        return addrs, w, base, min(steps)
 
     def divided(self, o, w, base, k, first):
         """The element number ``first + (w - base) / k`` (:meth:`strided_access`), computed
@@ -2150,14 +2156,6 @@ def _read_only(st, found, seen):
     return State(
         [a for a in st.scalars if a in read], [x for x in structs if x[1]], st.why, sorted(gone)
     )
-
-
-def _types(text):
-    """The types of a result list ``(i8, i16)`` or ``i8``."""
-    text = text.strip()
-    if text.startswith("(") and text.endswith(")"):
-        text = text[1:-1]
-    return [t.strip() for t in text.split(",") if t.strip()]
 
 
 class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-methods
