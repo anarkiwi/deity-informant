@@ -238,6 +238,8 @@ def short_circuit(g, hoistable, exprable=lambda items: False):
         for a in sorted(g.items):
             if a not in g.items:
                 continue
+            if len(g.succ[a]) != 2:
+                continue
             others = {_ret_key(g, t) for t, _ in g.succ[a]}
             for b, cab in g.succ[a]:
                 if (
