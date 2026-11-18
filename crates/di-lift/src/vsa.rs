@@ -864,6 +864,19 @@ pub(crate) fn meet(a: Iv, b: Iv) -> Option<Iv> {
     (lo <= hi).then_some(Iv { lo, hi })
 }
 
+/// Whether store `a` may write `m`: one with an address set `aimed` only those, a pointer
+/// store reaching `reach` there or where it wraps to, else where its address meets `m`.
+pub(crate) fn store_hits(a: &Access, aimed: Option<&[u16]>, reach: Option<Iv>, m: u16) -> bool {
+    match (aimed, reach) {
+        (Some(s), _) => s.binary_search(&m).is_ok() && a.addr.meets(m as u32, m as u32 + 1),
+        (None, Some(r)) => {
+            let m = m as u32;
+            (r.lo..=r.hi).contains(&m) || (r.lo..=r.hi).contains(&(m + 0x10000))
+        }
+        (None, None) => a.addr.meets(m as u32, m as u32 + 1),
+    }
+}
+
 /// The variants of opcode `op` at `pc`.
 pub(crate) fn variants_mut(
     vars: &mut FxHashMap<u16, Vec<Var>>,
@@ -1673,14 +1686,7 @@ pub(crate) fn step(code: &Code, pc: u16, v: &Var, st: &St, acc: &mut Vec<Access>
         // an address set, only those.
         let reach = a.ptr.and_then(|p| st.reach(p));
         let aimed = code.aimed.get(&(pc, v.op, ai));
-        let hit = |m: u16| match (aimed, reach) {
-            (Some(s), _) => s.binary_search(&m).is_ok() && a.addr.meets(m as u32, m as u32 + 1),
-            (None, Some(r)) => {
-                let m = m as u32;
-                (r.lo..=r.hi).contains(&m) || (r.lo..=r.hi).contains(&(m + 0x10000))
-            }
-            (None, None) => a.addr.meets(m as u32, m as u32 + 1),
-        };
+        let hit = |m: u16| store_hits(a, aimed.map(Vec::as_slice), reach, m);
         let tracked = |m: u16| match aimed {
             Some(s) => s.binary_search(&m).is_ok() && a.addr.meets(m as u32, m as u32 + 1),
             None => a.addr.meets(m as u32, m as u32 + 1),

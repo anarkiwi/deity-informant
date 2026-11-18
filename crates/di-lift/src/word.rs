@@ -740,16 +740,7 @@ pub(crate) fn step(
                 // A pointer store whose sum may wrap reaches the low addresses it wraps to; one
                 // with an address set, those.
                 let reach = a.ptr.and_then(|p| st.reach(p));
-                let hit = |x: u16| match (aimed, reach) {
-                    (Some(set), _) => {
-                        set.binary_search(&x).is_ok() && a.addr.meets(x as u32, x as u32 + 1)
-                    }
-                    (None, Some(r)) => {
-                        let m = x as u32;
-                        (r.lo..=r.hi).contains(&m) || (r.lo..=r.hi).contains(&(m + 0x10000))
-                    }
-                    (None, None) => a.addr.meets(x as u32, x as u32 + 1),
-                };
+                let hit = |x: u16| crate::vsa::store_hits(a, aimed, reach, x);
                 let mut qs: Vec<u16> = code
                     .floor
                     .keys()
