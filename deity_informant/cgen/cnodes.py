@@ -224,6 +224,21 @@ def rename(nodes, names):
             n.declname = names[n.declname]
 
 
+def substitute(node, names):
+    """A copy of expression ``node`` with each identifier named in ``names`` renamed."""
+    if isinstance(node, c_ast.ID):
+        return ident(names.get(node.name, node.name))
+    out = type(node).__new__(type(node))
+    for k in node.__slots__[:-1]:
+        v = getattr(node, k)
+        if isinstance(v, c_ast.Node):
+            v = substitute(v, names)
+        elif isinstance(v, list):
+            v = [substitute(x, names) if isinstance(x, c_ast.Node) else x for x in v]
+        setattr(out, k, v)
+    return out
+
+
 def _lead(st):
     """The expression a statement's line starts with: an ``if``'s, ``while``'s or
     ``switch``'s condition, an assignment's value, an initializer, a returned value."""

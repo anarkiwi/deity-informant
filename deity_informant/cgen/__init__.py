@@ -71,7 +71,9 @@ def _header(mem, used, traps, konsts, store):
     """The ``.h``: origins, lengths and initial bytes of the regions (those inside a held span
     are its slices) and of the held spans when ``used``, the constant bytes ``konsts``
     (``{name: byte}``) the ``.c`` reads by name and the arrays' definitions ``store``."""
-    out, slices = ["#ifndef CGEN_DATA_H", "#define CGEN_DATA_H"], _slices(mem, used)
+    out, slices = ["#ifndef CGEN_DATA_H", "#define CGEN_DATA_H", "#include <stdint.h>"], _slices(
+        mem, used
+    )
     for k, (org, n) in enumerate(mem.regions):
         out += [f"#define R{k}_ORG 0x{org:04X}", f"#define R{k}_LEN {n}"]
         if slices[k] is None and _block(mem, org, org + n) is None:

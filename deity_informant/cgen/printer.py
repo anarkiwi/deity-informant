@@ -25,7 +25,7 @@ from .. import masks
 from ..lifter import MODE_LEN, OPS
 from . import llvmopt, mlir
 from .mlir import Op, _types
-from . import cnodes as cn, marks, regions, ssa
+from . import cnodes as cn, marks, recompute, regions, ssa
 from .state import INDEXED, INIT, POINTER, UNKNOWN, State, classify
 from .structure import Conds, Graph, Structurer, new_ids
 
@@ -2319,8 +2319,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         return self.covers[(f, ctx)]
 
     def plan(self):
-        """Choose the values printed inline: constants, values used once and casts of or
-        constant offsets from variables (the root of a shared one is made a variable)."""
+        """Choose the values printed inline: constants, values used once, casts of or
+        constant offsets from variables (the root of a shared one is made a variable) and
+        loads of a cell no write reaches before a use (:mod:`.recompute`)."""
         f, forced = self.f, set()
         ops = [o for b in f.blocks if b.name in self.owned for o in b.ops[:-1]]
         for o in ops:
@@ -2352,6 +2353,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             if mem and not self.adjacent(o, self.user[v]):
                 continue
             self.inline.add(v)
+        self.inline |= recompute.Recompute(self).loads()
 
     def adjacent(self, d, who):
         """Whether the single use ``who`` of ``d``'s value sees memory as ``d`` does."""
@@ -3277,19 +3279,28 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             out.append((e or self.load(o)).node)
 
     def assign(self, pairs, out):
-        """The parallel assignment of block arguments ``[(arg, value, edge)]``."""
+        """The parallel assignment of block arguments ``[(arg, value, edge)]``, sequenced:
+        each copy once no other pending copy reads its destination, a cycle broken by saving
+        one destination in a temporary the copies reading it read instead."""
         pend = []
         for a, v, edge in pairs:
             name, e = self.var_of(a, self.f.width(a)), self.ex(v, edge)
             if not (isinstance(e.node, c_ast.ID) and e.node.name == name):
                 pend.append((name, self.f.width(a), stored(e, self.f.width(a))))
-        names = {n for n, _, _ in pend}
-        for i, (n, w, e) in enumerate(pend):
-            if e.refs & (names - {n}):
-                t = self.fresh(w)
-                out.append(cn.assign(t, e.node, True))
-                pend[i] = (n, w, var(t, w))
-        out += [cn.assign(n, e.node, True) for n, _, e in pend]
+        while pend:
+            read = [frozenset().union(*(e.refs for m, _, e in pend if m != n)) for n, _, _ in pend]
+            free = [i for i, (n, _, _) in enumerate(pend) if n not in read[i]]
+            if free:
+                n, _, e = pend.pop(free[0])
+                out.append(cn.assign(n, e.node, True))
+                continue
+            n, w, _ = pend[0]
+            t = self.fresh(w)
+            out.append(cn.assign(t, cn.ident(n), True))
+            pend = [pend[0]] + [
+                (m, x, replace(e, node=cn.substitute(e.node, {n: t}), refs=(e.refs - {n}) | {t}))
+                for m, x, e in pend[1:]
+            ]
 
     def jump(self, vals):
         """The statements returning ``[(value, edge)]``."""
