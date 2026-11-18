@@ -16,7 +16,21 @@ from . import mlir
 
 #: Generic printing with locations, as :func:`mlir.parse` reads.
 PRINT = ("--mlir-print-op-generic", "--mlir-print-debuginfo", "--mlir-print-local-scope")
-#: To LLVM IR, ``instcombine`` (its fixpoint unverified, as in the standard pipelines), back.
+#: LLVM's passes: InstCombine (its fixpoint unverified, as in the standard pipelines), then
+#: the facts of dominating conditions and value ranges (EarlyCSE, CVP, constraint elimination
+#: after sinking each value to its one use) and InstCombine over what they leave. None of them
+#: duplicates, merges or reorders blocks.
+PASSES = ",".join(
+    (
+        "instcombine<no-verify-fixpoint>",
+        "early-cse",
+        "correlated-propagation",
+        "sink",
+        "constraint-elimination",
+        "instcombine<no-verify-fixpoint>",
+    )
+)
+#: To LLVM IR, :data:`PASSES`, back.
 STAGES = (
     (
         "mlir-opt",
@@ -29,7 +43,7 @@ STAGES = (
         "--mlir-print-debuginfo",
     ),
     ("mlir-translate", "--mlir-to-llvmir"),
-    ("opt", "-passes=instcombine<no-verify-fixpoint>", "-S"),
+    ("opt", f"-passes={PASSES}", "-S"),
     ("mlir-translate", "--import-llvm", *PRINT),
 )
 TIDY = ("mlir-opt", "--canonicalize", "--cse", *PRINT)
