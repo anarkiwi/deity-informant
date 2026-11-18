@@ -23,6 +23,7 @@ from .mlir import Op
 from .csyntax import (
     declare,
     drop_unread,
+    calling,
     ends_in_jump,
     flattened,
     guarded,
@@ -31,6 +32,7 @@ from .csyntax import (
     render,
     returning,
     sections,
+    tails,
     walk,
 )
 from . import marks, regions
@@ -3611,34 +3613,64 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             body, lambda st, read: st[1] not in read and self.copies.get(id(st)) is st
         )
         void = not self.f.private or self.mod.ret_type(self.f) == "void"
-        parts = sections(body, set(self.types)) if void else [(None, body)]
-        parts = [returning(items, lab) if lab else items for lab, items in parts]
-        parts = [guarded(flattened(items)) if void else flattened(items) for items in parts]
+        local = set(self.types)
+        parts = sections(body, local) if void else [(None, body)]
+        decl = head[head.index("(") + 1 : -1]
+        pieces = []
+        for k, (lab, items) in enumerate(parts, 1):
+            items = returning(items, lab) if lab else items
+            sec = self.name if len(parts) == 1 else f"{self.name}_{k}"
+
+            def call(t, ps, sec=sec):
+                return ("s", f"{sec}_{t}({', '.join(params + ps)});", frozenset(params + ps))
+
+            first, chain = tails(items, local, call) if void else (items, [])
+            calls = {t: call(t, ps) for t, _, ps in chain}
+            seq = [(sec, [], first), *((f"{sec}_{t}", ps, b) for t, b, ps in chain)]
+            for j, (name, ps, items) in enumerate(seq):
+                items = calling(items, calls)
+                if j < len(chain) and not ends_in_jump(items):
+                    items = [*items, calls[chain[j][0]]]
+                items = guarded(flattened(items)) if void else flattened(items)
+                pieces.append((name, ps, items))
         self.prov["gotos"] = [
             e
-            for items in parts
+            for _, _, items in pieces
             for st in walk(items)
             if self.edges.get(id(st), (None,))[0] is st
             for e in self.edges[id(st)][1]
         ]
         self.head_text = head
-        if len(parts) == 1:
-            return self.define_text(head, params, parts[0], True)
-        decl = head[head.index("(") + 1 : -1]
-        out, calls = [], []
-        for k, items in enumerate(parts, 1):
-            name = f"{self.name}_{k}"
-            out.append(self.define_text(f"static void {name}({decl})", params, items, False))
-            calls.append((f"{name}({', '.join(params)});"))
-        frame = self.mod.marks.put(("tag", "frame"))
-        guards = [] if self.f.private else self.mod.guards.get(self.name, [])
-        main = [f"{frame}{head} {{", *guards, *calls, f"{self.mod.marks.put(('tag', 'frame'))}}}"]
-        return "\n".join([*out, "\n".join(main)])
+        if len(pieces) == 1:
+            return self.define_text(head, params, pieces[0][2], True)
+        out = []
+        for name, ps, items in reversed(pieces):
+            if name == self.name:
+                out.append(self.define_text(head, params, items, True))
+                continue
+            extra = "".join(f", {self.types[v]} {v}" for v in ps)
+            sig = f"static void {name}({decl}{extra})".replace("(void, ", "(")
+            out.append(self.define_text(sig, params + ps, items, False))
+        if len(parts) > 1:
+            frame = self.mod.marks.put(("tag", "frame"))
+            guards = [] if self.f.private else self.mod.guards.get(self.name, [])
+            calls = [f"{self.name}_{k}({', '.join(params)});" for k in range(1, len(parts) + 1)]
+            out.append(
+                "\n".join(
+                    [
+                        f"{frame}{head} {{",
+                        *guards,
+                        *calls,
+                        f"{self.mod.marks.put(('tag', 'frame'))}}}",
+                    ]
+                )
+            )
+        return "\n".join(out)
 
     def define_text(self, head, params, body, top):
         """The C definition ``head`` of statements ``body`` (``top``: the function's own,
         its entry guards first)."""
-        declare(body, self.types)
+        declare(body, {v: t for v, t in self.types.items() if v not in params})
         read = names_in(body)
         lines = [f"(void){n};" for n in params if n not in read] + render(body)
         if top and not self.f.private:

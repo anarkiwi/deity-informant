@@ -4342,9 +4342,10 @@ def test_dispatch_arms_sharing_a_tail_stay_in_the_dispatching_function(prefix, t
 
 def test_tails_one_procedure_holds_follow_the_goto_rule(prefix, tmp_path):
     """The same handlers reached from one procedure: its switch's two tails are joins, the
-    one placed after the switch reached by ``break``, the other by a goto from each arm."""
+    one placed after the switch reached by ``break``, the other, which the rest of the
+    function follows, a function of its own each arm calls (no goto)."""
     src = FXSHARE.replace("        JSR fx2\n", "")
-    c, _, info = check(prefix, tmp_path, src, entry_calls(range(4), 2), gotos=2)
+    c, _, info = check(prefix, tmp_path, src, entry_calls(range(4), 2))
     assert len(entries_of(info)) == 2 and c.count("io_write(0xC004, ") == 1
 
 

@@ -8,6 +8,7 @@ from deity_informant.cgen.csyntax import (
     guarded,
     returning,
     sections,
+    tails,
 )
 
 
@@ -123,3 +124,27 @@ def test_a_loop_body_ending_in_an_if_continues():
     assert body == [s("x();"), ("if", "!p", frozenset(), [CONTINUE], [], "p"), s("y();"), inner]
     switch = ("switch", "k", frozenset(), [((1,), [iff("p", [inner], [RETURN], neg="!p")])])
     assert flattened([switch])[0][3][0][1][0][3] == [RETURN]
+
+
+def test_a_label_the_rest_of_a_function_follows_is_a_tail():
+    """From the last top-level label back, each label nothing after it jumps back before
+    starts a tail; its parameters are the variables it reads before setting them, the next
+    tail's included, and a variable it sets first is none."""
+
+    def call(t, ps):
+        return ("s", f"t_{t}({', '.join(ps)});", frozenset(ps))
+
+    body = [
+        a("v1", "p"),
+        a("v2", "p"),
+        iff("p", [goto("L2")]),
+        label("L1"),
+        a("v2", "v1"),
+        label("L2"),
+        s("w(v2);", "v2"),
+    ]
+    head, chain = tails(body, {"v1", "v2"}, call)
+    assert head == body[:3]
+    assert chain == [("L1", [body[4]], ["v1"]), ("L2", [body[6]], ["v2"])]
+    back = [label("L1"), s("x();"), iff("p", [goto("L1")])]
+    assert tails(back, set(), call) == (back, [])

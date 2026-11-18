@@ -300,6 +300,57 @@ def sections(items, local):
     return out + [(None, items[start:])]
 
 
+def tails(items, local, call):
+    """``(head, [(label, items, params)])`` of a function body: from its last top-level
+    label back, each label nothing after it jumps back before is the start of a tail, the
+    statements after it to the next one, ``params`` the variables of ``local`` the tail
+    reads before it sets them (:func:`assigned_first`), the gotos to later tails and the
+    fall into the next read as those tails' calls (``call(label, params)``)."""
+    out, refs = [], {}
+    while True:
+        i = next((i for i in range(len(items) - 1, -1, -1) if items[i][0] == "l"), None)
+        if i is None:
+            return items, out
+        before, after, lab = items[:i], items[i + 1 :], items[i][1][:-2]
+        if _targets(after) & (_labels(before) | {lab}) or _targets(before) & _labels(after):
+            return items, out
+        body = calling(after, {t: call(t, ps) for t, ps in refs.items()})
+        if out:
+            body = [*body, call(out[0][0], refs[out[0][0]])]
+        live = names_in(body) & names_in(before) & local
+        params = sorted((v for v in live if not assigned_first(body, v)), key=_order)
+        refs[lab] = params
+        out.insert(0, (lab, after, params))
+        items = before
+
+
+def _splice(items, f):
+    """``items`` with each statement, nested ones included, replaced by the list ``f``
+    gives for it."""
+    out = []
+    for st in items:
+        if st[0] == "if":
+            st = (*st[:3], _splice(st[3], f), _splice(st[4], f), *st[5:])
+        elif st[0] == "loop":
+            st = (*st[:4], _splice(st[4], f))
+        elif st[0] == "switch":
+            st = (*st[:3], [(lab, _splice(b, f)) for lab, b in st[3]])
+        out += f(st)
+    return out
+
+
+def calling(items, calls):
+    """``items`` with each goto to a label of ``calls`` (``{label: call statement}``) the
+    call and a return."""
+
+    def f(st):
+        if st[0] == "j" and st[1].startswith("goto ") and st[1][5:-1] in calls:
+            return [calls[st[1][5:-1]], RETURN]
+        return [st]
+
+    return _splice(items, f)
+
+
 def _map(items, f):
     """``items`` with each statement, nested ones included, replaced by ``f`` of it."""
     out = []
