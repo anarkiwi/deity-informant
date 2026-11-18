@@ -20,6 +20,7 @@ from wayward_eagle import STATUS, Function, ends_in_jump, names_in, reduced, wal
 
 from .. import masks
 from ..lifter import MODE_LEN, OPS
+from . import llvmopt, mlir
 from .mlir import Op, _types
 from .csyntax import declare, drop_unread, hexes, lead, render
 from . import marks, regions
@@ -36,12 +37,17 @@ BINOP = {
     "arith.subi": ("-", 12),
     "arith.muli": ("*", 13),
     "arith.divui": ("/", 13),
+    "arith.remui": ("%", 13),
     "arith.andi": ("&", 8),
     "arith.ori": ("|", 6),
     "arith.xori": ("^", 7),
     "arith.shli": ("<<", 11),
     "arith.shrui": (">>", 11),
 }
+#: Operations on signed operands, printed on ``intN_t`` casts.
+SIGNED = {"arith.shrsi": (">>", 11), "arith.divsi": ("/", 13), "arith.remsi": ("%", 13)}
+#: ``min``/``max``: the predicate under which each picks its first operand.
+MINMAX = {"arith.maxui": 8, "arith.minui": 6, "arith.maxsi": 4, "arith.minsi": 2}
 NOISY = {"<<", ">>", "&", "|", "^", "&&", "||"}
 INT16 = (-0x8000, 0x7FFF)
 #: The lift's checks: calls computing a value with no effect.
@@ -118,9 +124,12 @@ def cast(e, ctype, width, signed=False):
 
 
 def clean(e, width):
-    """``e`` reduced to ``width`` bits by a cast when its range exceeds them."""
+    """``e`` reduced to ``width`` bits, by a cast (a mask below a byte) when its range exceeds
+    them."""
     if 0 <= e.lo and e.hi < (1 << width):
         return e
+    if width < 8:
+        return binary("&", 8, e, lit((1 << width) - 1, width), 8)
     return cast(e, CTYPE[width], width)
 
 
@@ -138,6 +147,8 @@ def _range(sym, a, b):
         return min(ps), max(ps)
     if sym == "&":
         return 0, min(a.hi, b.hi)
+    if sym == "%":
+        return 0, max(0, min(a.hi, b.hi - 1))
     top = min((1 << max(a.hi, b.hi).bit_length()) - 1, a.hi + b.hi)
     return (max(a.lo, b.lo) if sym == "|" else 0), top
 
@@ -191,6 +202,7 @@ NUMPY = {
     "arith.subi": operator.sub,
     "arith.muli": operator.mul,
     "arith.divui": operator.floordiv,
+    "arith.remui": operator.mod,
     "arith.andi": operator.and_,
     "arith.ori": operator.or_,
     "arith.xori": operator.xor,
@@ -208,6 +220,8 @@ NUMPY_CMP = {
     9: operator.ge,
 }
 LOOP_STEPS = 256
+#: Most values :meth:`Func.points` follows.
+POINTS = 16
 
 
 class Unknown(Exception):
@@ -224,14 +238,29 @@ OFFSETS = {
     "arith.xori": lambda k, c: k ^ c,
 }
 #: The pure operations whose intervals :meth:`Func.iv` derives from their operands'.
-DERIVED = CASTS | set(BINOP) | {"arith.select"}
-#: Operations whose second operand zero leaves the first.
-IDENTITY = {"arith.addi", "arith.subi", "arith.ori", "arith.xori", "arith.shli", "arith.shrui"}
-#: Most combinations of inputs a flag is evaluated over (:meth:`Func.flag_at`).
+DERIVED = CASTS | set(BINOP) | set(SIGNED) | set(MINMAX) | {"arith.select", "arith.extsi"}
+#: Most combinations of inputs a flag is evaluated over (:meth:`Func.flag_value`).
 FLAG_INPUTS = 1 << 16
-#: An unsigned or equality ``cmpi`` predicate with its operands swapped, and negated.
-SWAPPED = {0: 0, 1: 1, 6: 8, 7: 9, 8: 6, 9: 7}
-NEGATED = {0: 1, 1: 0, 6: 9, 7: 8, 8: 7, 9: 6}
+#: A ``cmpi`` predicate with its operands swapped, and negated.
+SWAPPED = {0: 0, 1: 1, 2: 4, 3: 5, 4: 2, 5: 3, 6: 8, 7: 9, 8: 6, 9: 7}
+NEGATED = {0: 1, 1: 0, 2: 5, 3: 4, 4: 3, 5: 2, 6: 9, 7: 8, 8: 7, 9: 6}
+
+
+def twos(v, width):
+    """``v`` of ``width`` bits read as two's complement."""
+    half = 1 << (width - 1)
+    return (v ^ half) - half
+
+
+def solution(pred, n, width):
+    """The interval ``(lo, hi)`` of the ``width``-bit ``x`` for which ``x pred n`` holds, or
+    None where it is no interval (``!=``, or a signed range across the sign bit)."""
+    top, half = (1 << width) - 1, 1 << (width - 1)
+    if pred in (2, 3, 4, 5):
+        k = twos(n, width)
+        lo, hi = {2: (-half, k - 1), 3: (-half, k), 4: (k + 1, half - 1), 5: (k, half - 1)}[pred]
+        return (lo & top, hi & top) if lo <= hi and (lo < 0) == (hi < 0) else None
+    return {0: (n, n), 6: (0, n - 1), 7: (0, n), 8: (n + 1, top), 9: (n, top)}.get(pred)
 
 
 def line(pts, m):
@@ -463,74 +492,42 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
 
     def fold_flags(self):
         """Read each truth value (:meth:`is_flag`) an arithmetic operation consumes as the
-        constant it is wherever that operation runs: its interval there (the branches every
-        path to it takes, :meth:`iv_at`), else every combination of the values it is computed
-        from there (:meth:`flag_at`). The constants fold forward; a flag left unused dies."""
-        new, changed = {}, {}
+        constant it is (:meth:`flag_value`), for LLVM's passes to fold forward."""
+        new, memo = {}, {}
         for o in list(self.walk()):
             if not o.name.startswith("arith.") or o.name == "arith.constant":
                 continue
-            blk = self.where[id(o)][0].name
             for i, c in enumerate(o.args):
                 if (c in self.defs or c in self.arg_block) and self.types.get(c) in WIDTH:
-                    k = self.flag_at(c, blk)
-                    if k is not None:
-                        o.args[i] = self.constant(new, self.types[c], k, o.pc, "%fc")
-                        changed[id(o)] = o
-        if changed:
+                    if c not in memo:
+                        memo[c] = self.flag_value(c)
+                    if memo[c] is not None:
+                        o.args[i] = self.constant(new, self.types[c], memo[c], o.pc, "%fc")
+        if new:
             self.prepend(new)
             self.reindex()
-            self.fold_from(list(changed.values()))
 
-    def flag_at(self, c, blk):
-        """The one value truth value ``c`` (:meth:`is_flag`) takes wherever block ``blk`` runs, or
-        None: its values over every combination (at most :data:`FLAG_INPUTS`) of the values it
-        and the branch conditions every path to ``blk`` takes (:meth:`path_conds`) are computed
-        from, each over every value of its type (an instance index over its copies), that meets
-        those conditions. No interval, so
-        no byte of memory, decides it: the data does not shape the C."""
+    def flag_value(self, c):
+        """The one value truth value ``c`` (:meth:`is_flag`) takes, or None: its values over
+        every combination (at most :data:`FLAG_INPUTS`) of the values it is computed from,
+        each over every value of its type (an instance index over its copies). No interval,
+        so no byte of memory, decides it: the data does not shape the C."""
         if self.iv(c) != (0, 1) or not self.is_flag(c, set()):
             return None
-        used = self.free_values(c, set())
-        conds = []
-        for x, holds in self.path_conds(blk):
-            free = self.free_values(x, set())
-            if free & used:
-                conds.append((x, holds))
-                used |= free
-        used = sorted(used)
+        used = sorted(self.free_values(c, set()))
         doms = [
             np.asarray(self.kvals) if x == self.kparam else np.arange(1 << self.width(x))
             for x in used
         ]
-        n = math.prod(len(d) for d in doms)
-        if n > FLAG_INPUTS:
+        if math.prod(len(d) for d in doms) > FLAG_INPUTS:
             return None
         grid = np.meshgrid(*doms, indexing="ij")
-        env, memo = {x: g.ravel() for x, g in zip(used, grid)}, {}
+        env = {x: g.ravel() for x, g in zip(used, grid)}
         try:
-            ok = np.ones(n, dtype=bool)
-            for x, holds in conds:
-                ok &= np.broadcast_to(self.evaluate(x, env, memo) != 0, ok.shape) == holds
-            vals = np.unique(np.broadcast_to(self.evaluate(c, env, memo), ok.shape)[ok])
+            vals = np.unique(self.evaluate(c, env, {}))
         except (Unknown, IndexError):
             return None
         return int(vals[0]) if len(vals) == 1 else None
-
-    def path_conds(self, blk):
-        """``[(condition, holds)]`` of the ``cf.cond_br`` branches every path to block ``blk``
-        takes: into each block of its dominator chain entered by that edge alone."""
-        out, b = [], blk
-        while (d := self.idom.get(b, b)) != b:
-            term = self.block_of[d].ops[-1]
-            if (
-                self.pred_counts()[b] == 1
-                and term.name == "cf.cond_br"
-                and len(set(term.succs)) == 2
-            ):
-                out.append((term.args[0], term.succs[0] == b))
-            b = d
-        return out
 
     def is_flag(self, v, seen):
         """Whether value ``v`` is a truth value: an ``i1``, its zero extension, or a block
@@ -583,34 +580,6 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         k = self.kop(new, "arith.constant", [], t, pc, f"value = {v} : {t}", prefix=prefix)
         self.defs[k] = next(x for x in new.values() if x.res[0] == k)
         return k
-
-    def fold_from(self, ops):
-        """Fold forward from operations ``ops``: one of constants becomes its value, one adding,
-        subtracting, or-ing or xor-ing a zero its other operand."""
-        sub, new, work = {}, {}, list(ops)
-        while work:
-            o = work.pop()
-            if len(o.res) != 1 or not o.name.startswith("arith.") or o.res[0] in sub:
-                continue
-            o.args = [_resolve(sub, a) for a in o.args]
-            r, k = o.res[0], [self.const_of(a) for a in o.args]
-            if o.name in IDENTITY and k[1] == 0:
-                sub[r] = o.args[0]
-            elif o.name in ("arith.addi", "arith.ori", "arith.xori") and k[0] == 0:
-                sub[r] = o.args[1]
-            elif o.name != "arith.constant" and k and None not in k:
-                try:
-                    v = int(self.evaluate(r, {}, {}))
-                except Unknown:
-                    continue
-                sub[r] = self.constant(new, self.types[r], v, o.pc, "%ff")
-            else:
-                continue
-            work += self.users.get(r, [])
-        if new:
-            self.prepend(new)
-        self.substitute(sub)
-        self.reindex()
 
     def after(self, a, b):
         """Whether operation ``b`` runs after ``a`` on every path: later in its block, or in a
@@ -935,41 +904,6 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 self.uses[a] = self.uses.get(a, 0) + 1
                 self.users.setdefault(a, []).append(o)
 
-    def offset(self, v):
-        """``(base, c)`` of a value ``base + c`` (an ``addi``/``subi`` of a constant), else
-        ``(v, 0)``."""
-        d = self.defs.get(v)
-        c = self.const_of(d.args[1]) if d is not None and d.name in OFFSETS else None
-        if c is None or d.name == "arith.xori":
-            return v, 0
-        return d.args[0], c if d.name == "arith.addi" else -c
-
-    def fold_offsets(self):
-        """Fold a constant offset from a constant offset from a value into one, as
-        ``canonicalize`` does, where forwarding made such pairs."""
-        new, sub = {}, {}
-        for o in self.walk():
-            used = len(o.res) == 1 and self.uses.get(o.res[0])
-            base, c = self.offset(o.res[0]) if used else (None, 0)
-            inner, c0 = self.offset(base) if base is not None else (None, 0)
-            if inner == base:
-                continue
-            t = self.types[o.res[0]]
-            v = (c + c0) & (1 << WIDTH[t]) - 1
-            if not v:
-                sub[o.res[0]] = inner
-                continue
-            if (t, v) not in new:
-                props, name = f"value = {v} : {t}", f"%o{len(self.defs)}.{len(new)}"
-                new[t, v] = Op("arith.constant", [name], [], props, [], ((), (t,)))
-            o.name, o.args = "arith.addi", [inner, new[t, v].res[0]]
-        self.substitute(sub)
-        if new:
-            self.prepend(new)
-        if new or sub:
-            self.reindex()
-            self.fold_offsets()
-
     def param_of(self, v, through, seen):
         """The index of the parameter value ``v`` always equals, or None: the parameter, a
         block argument every edge gives one, or a call's result its callee returns from the
@@ -1038,8 +972,8 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
 
     def implied(self, c, holds, facts):
         """Meet into ``facts`` the intervals truth value ``c`` being ``holds`` implies: of the
-        operand of an unsigned or equality compare with a constant, through its negation and
-        the operands of an ``||`` false or an ``&&`` true."""
+        operand of a compare with a constant, through its negation and the operands of an
+        ``||`` false or an ``&&`` true."""
         d = self.defs.get(c)
         if d is None:
             return
@@ -1055,7 +989,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             pred = pred if holds else NEGATED.get(pred)
             top = (1 << self.width(x)) - 1
             n = next(v for v in k if v is not None) & top
-            r = {0: (n, n), 6: (0, n - 1), 7: (0, n), 8: (n + 1, top), 9: (n, top)}.get(pred)
+            r = solution(pred, n, self.width(x))
             if pred == 1:
                 lo, hi = self.iv(x)
                 r = (lo + 1, hi) if n == lo else (lo, hi - 1) if n == hi else None
@@ -1088,6 +1022,13 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             if hi - lo != r[1] - r[0]:
                 return
             v, r = d.args[j], (lo, hi)
+
+    def code_iv(self, o):
+        """The interval of load ``o`` of an opcode cell (:attr:`Module.opcodes`): the hull of
+        the opcodes the code stores in it; else None. The lift's other value sets are of the
+        program's data, which the ``.c`` does not depend on."""
+        vals = self.mod.opcodes.get(self.const_of(self.address(o)))
+        return (vals[0], vals[-1]) if vals else None
 
     def iv_at(self, v, blk):
         """The interval of value ``v`` wherever block ``blk`` runs (:meth:`context`)."""
@@ -1135,9 +1076,11 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         elif o.name == "memref.load" and (k := self.named(o)) is not None and self.exact(o):
             r = (k, k)
         elif o.name == "memref.load" and w == 8:
-            r = self.mod.fx(self.name).sets.get(
-                self.const_of(self.address(o))
-            ) or self.mod.mem.hull(*self.iv(self.address(o)))
+            a = self.address(o)
+            pts = self.points(a)
+            r = self.mod.fx(self.name).sets.get(self.const_of(a)) or (
+                self.mod.mem.hull(*self.iv(a)) if pts is None else self.mod.mem.hull_at(pts)
+            )
             r = meet(r, self.mod.loaded_iv(self, o) or r)
         elif o.name == "func.call":
             r = self.mod.result_iv(o.prop("callee")[1:], o.res.index(v)) or full
@@ -1156,9 +1099,21 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         elif o.name in CASTS:
             r = self.iv(o.args[0])
             r = r if r[1] <= top else full
-        elif o.name == "arith.select":
-            a, b = self.iv(o.args[1]), self.iv(o.args[2])
+        elif o.name == "arith.select" or o.name in MINMAX:
+            a, b = self.iv(o.args[-2]), self.iv(o.args[-1])
             r = (min(a[0], b[0]), max(a[1], b[1]))
+            if o.name in ("arith.maxui", "arith.minui"):
+                pick = max if o.name == "arith.maxui" else min
+                r = (pick(a[0], b[0]), pick(a[1], b[1]))
+        elif o.name == "arith.extsi":
+            r, w0 = self.iv(o.args[0]), self.width(o.args[0])
+            if r[0] >> (w0 - 1) == r[1] >> (w0 - 1):
+                r = (twos(r[0], w0) & top, twos(r[1], w0) & top)
+            else:
+                r = full
+        elif o.name == "arith.shrsi" and self.iv(o.args[0])[1] < (top + 1) // 2:
+            a, b = self.iv(o.args[0]), self.iv(o.args[1])
+            r = (a[0] >> b[1], a[1] >> b[0])
         elif o.name in ("arith.addi", "arith.subi"):
             a, b = self.iv(o.args[0]), self.iv(o.args[1])
             lo, hi = (
@@ -1174,6 +1129,10 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             m = a[0]
             if a[0] == a[1] and not m & (m + 1) and b[0] & ~m == b[1] & ~m:
                 r = (b[0] & m, b[1] & m)
+            elif a[0] == a[1]:
+                p = (b[0] ^ b[1]).bit_length()
+                kept = (b[0] >> p << p) & m
+                r = meet((kept, kept | m & ((1 << p) - 1)), (0, min(a[1], b[1])))
             else:
                 r = (0, min(a[1], b[1]))
         elif o.name == "arith.muli":
@@ -1182,6 +1141,9 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         elif o.name == "arith.divui":
             a, b = self.iv(o.args[0]), self.iv(o.args[1])
             r = (a[0] // b[1], a[1] // b[0]) if b[0] else full
+        elif o.name == "arith.remui":
+            a, b = self.iv(o.args[0]), self.iv(o.args[1])
+            r = (0, min(a[1], b[1] - 1)) if b[0] else full
         elif o.name in ("arith.ori", "arith.xori"):
             a, b = sorted((self.iv(o.args[0]), self.iv(o.args[1])), key=lambda x: x[0] != x[1])
             c = a[0]
@@ -1204,6 +1166,31 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             r = full
         self.ivs[v] = r
         return r
+
+    def points(self, v):
+        """The values ``v`` takes, ascending, when they are at most :data:`POINTS` that its
+        constants decide (a constant, a select or a cast of such, an operation of two such),
+        else None: what an access at such an address reads is the bytes at them, not their
+        hull."""
+        d, top = self.defs.get(v), (1 << self.width(v)) - 1
+        if d is None:
+            return None
+        if d.name == "arith.constant":
+            return np.array([d.int_prop("value") & top])
+        if d.name in CASTS:
+            x = self.points(d.args[0])
+            return None if x is None else np.unique(x & top)
+        if d.name == "arith.select" or d.name in NUMPY:
+            xs = [self.points(a) for a in d.args[-2:]]
+            if any(x is None for x in xs):
+                return None
+            vals = (
+                np.union1d(*xs)
+                if d.name == "arith.select"
+                else np.unique(NUMPY[d.name](xs[0][:, None], xs[1][None, :]) & top)
+            )
+            return vals if len(vals) <= POINTS else None
+        return None
 
     def iv_joined(self, v):
         """The interval of a block argument: the hull of what flows into it, where a value
@@ -1513,6 +1500,19 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 r = self.ktabs[v][args[0]]
             elif name in CASTS:
                 r = args[0] & top
+            elif name == "arith.extsi":
+                r = twos(args[0], self.width(d.args[0])) & top
+            elif name in MINMAX or name in SIGNED:
+                a, b, w = *args, self.width(d.args[0])
+                if name in MINMAX:
+                    a, b = (twos(a, w), twos(b, w)) if MINMAX[name] in (2, 4) else (a, b)
+                    r = np.where(NUMPY_CMP[MINMAX[name]](a, b), a, b) & top
+                elif name == "arith.shrsi":
+                    r = np.where(b < w, twos(a, w) >> np.minimum(b, 63), -(a >> (w - 1))) & top
+                else:
+                    a, b = twos(a, w), twos(b, w)
+                    q = np.trunc(a / np.where(b == 0, 1, b)).astype(np.int64)
+                    r = (q if name == "arith.divsi" else a - q * b) & top
             elif name in NUMPY:
                 r = NUMPY[name](args[0], args[1]) & top
             elif name in ("arith.shli", "arith.shrui"):
@@ -1582,24 +1582,6 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 changed = True
         if changed:
             self.reindex()
-            self.drop_dead()
-        return changed
-
-    def drop_dead(self):
-        """Remove the pure operations (arithmetic, loads of memory) no operation uses."""
-        while True:
-            dead = {
-                id(o)
-                for o in self.walk()
-                if o.res
-                and (o.name.startswith("arith.") or o.name == "memref.load")
-                and not any(self.uses.get(r) for r in o.res)
-            }
-            if not dead:
-                return
-            for blk in self.blocks:
-                blk.ops = [o for o in blk.ops if id(o) not in dead]
-            self.reindex()
 
     def index_values(self, v, a):
         """The values byte ``v`` takes where address ``a`` is computed from it: the instance
@@ -1651,7 +1633,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             Op("arith.index_castui", [n + "i"], [n + "a"], "", [], (("i16",), ("index",))),
         ]
         for x in ops:
-            x.parent, x.pc = blk, o.pc
+            x.parent, x.pc, x.loc, x.where = blk, o.pc, o.loc, o.where
             self.defs[x.res[0]] = x
         blk.ops[i:i] = ops
         o.args[-1] = n + "i"
@@ -2168,7 +2150,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         self.names, self.nvar, self.inline, self.memf, self.types = {}, 0, set(), {}, {}
         self.uses, self.user, self.covers, self.copies = {}, {}, {}, {}
         self.body, self.head_text, self.labels = None, "", {}
-        self.prov = {"gotos": [], "loops": [], "conditions": [], "switches": []}
+        self.prov = {"gotos": [], "reduced": [], "loops": [], "conditions": [], "switches": []}
         self.edges = {}
         self._fused = None
         #: The operations the statement being printed prints, and the block visit it is in.
@@ -2237,7 +2219,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             if self.f.where[id(d)][0].name not in self.owned:
                 continue
             seen.add(id(d))
-            for a in self.f.reads(d):
+            for a in self.f.reads(d) * (1 + (d.name in MINMAX)):
                 use(a, d)
 
     def item_refs(self, items, after):
@@ -2897,25 +2879,25 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             return self.member(st[0], st[1], st[2] != 0)
         if name == "arith.cmpi":
             pred, w0 = o.int_prop("predicate"), self.f.width(o.args[0])
-            d = self.f.defs.get(o.args[0])
-            if (
-                pred in (0, 1)
-                and self.f.const_of(o.args[1]) == 0
-                and o.args[0] in self.inline
-                and (d.name in ("arith.subi", "arith.addi"))
-            ):
-                x, y = (self.ex(a, (d, i)) for i, a in enumerate(d.args))
-                if d.name == "arith.addi":
-                    k = self.f.const_of(d.args[1])
-                    if k is None:
-                        return self.cmpi(pred, *args, w0)
-                    y = lit(-k, w0)
-                return self.cmpi(pred, x, y, w0)
             return self.cmpi(pred, *args, w0)
+        if name in MINMAX:
+            c, (a, b) = self.cmpi(MINMAX[name], *args, w), args
+            text = f"{par(c, 4)} ? {par(a, 4)} : {par(b, 3)}"
+            return E(text, 3, "?:", min(a.lo, b.lo), max(a.hi, b.hi), a.uns or b.uns, **join(a, b))
+        if name in SIGNED:
+            sym, prec = SIGNED[name]
+            a, b = (cast(clean(x, w), f"int{w}_t", w, True) for x in args)
+            e = E(f"{par(a, prec, sym)} {sym} {par(b, prec + 1, sym)}", prec, sym, **join(a, b))
+            return cast(e, CTYPE[w], w)
+        if name == "arith.extsi":
+            w0 = self.f.width(o.args[0])
+            if w0 == 1:
+                return cast(E(f"-{par(args[0], 15)}", 15, "-", -1, 0, **join(args[0])), CTYPE[w], w)
+            return cast(cast(clean(args[0], w0), f"int{w0}_t", w0, True), CTYPE[w], w)
         if name in ("arith.extui", "arith.index_castui", "arith.index_cast"):
             return clean(args[0], self.f.width(o.args[0]))
         if name == "arith.trunci":
-            return args[0]
+            return clean(args[0], w)
         if name == "arith.select":
             c, a, b = args
             text = f"{par(truth(c), 4)} ? {par(a, 4)} : {par(b, 3)}"
@@ -2950,14 +2932,14 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         a, b = clean(a, width), clean(b, width)
         sym = CMP[pred]
         if pred in (2, 3, 4, 5):
-            half = 1 << (width - 1)
-            top, k = (1 << width) - 1, b.lo if b.lo == b.hi else None
-            neg = (pred == 2 and k == 0) or (pred == 3 and k == top)
-            pos = (pred == 5 and k == 0) or (pred == 4 and k == top)
-            if neg or pos:
-                return compare(">=" if neg else "<", a, lit(half, width))
+            k = b.lo if b.lo == b.hi else None
             st = f"int{width}_t"
-            a, b = cast(a, st, width, True), cast(b, st, width, True)
+            a = cast(a, st, width, True)
+            if k is None:
+                b = cast(b, st, width, True)
+            else:
+                k = twos(k, width)
+                b = E(str(k), 16 if k >= 0 else 15, lo=k, hi=k)
         if b.lo == b.hi and b.lo in (0, 1) and 0 <= a.lo and a.hi <= 1 and sym in ("==", "!="):
             return truth(a) if (sym == "==") == (b.lo == 1) else negated(truth(a))
         return compare(sym, a, b)
@@ -3579,6 +3561,16 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         decl = ", ".join(f"{self.types.pop(n)} {n}" for n in names) or "void"
         return f"static {self.mod.ret_type(f)} {self.name}({decl})", names
 
+    def goto_edges(self, bodies):
+        """The machine-code edges of the gotos in statement lists ``bodies``."""
+        return [
+            e
+            for items in bodies
+            for st in walk(items)
+            if self.edges.get(id(st), (None,))[0] is st
+            for e in self.edges[id(st)][1]
+        ]
+
     def text(self):
         """The C definition of the function."""
         self.count()
@@ -3593,6 +3585,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         )
         void = not self.f.private or self.mod.ret_type(self.f) == "void"
         fn = Function(params, set(self.types), void, _traps)
+        structured = self.goto_edges([body])
         pieces, nsec, temps = reduced(body, self.name, fn)
         self.types.update(dict.fromkeys(temps, "uint8_t"))
         decl = head[head.index("(") + 1 : -1]
@@ -3602,13 +3595,14 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             None: "void",
             STATUS: "uint8_t",
         }
-        self.prov["gotos"] = [
-            e
-            for x in pieces
-            for st in walk(x.items)
-            if self.edges.get(id(st), (None,))[0] is st
-            for e in self.edges[id(st)][1]
-        ]
+        self.prov["pieces"] = [x.name for x in pieces if x.name != self.name]
+        self.prov["gotos"] = self.goto_edges([x.items for x in pieces])
+        left = Counter(map(tuple, self.prov["gotos"]))
+        for e in structured:
+            if left[tuple(e)]:
+                left[tuple(e)] -= 1
+            else:
+                self.prov["reduced"].append(e)
         self.head_text = head
         if len(pieces) == 1:
             return self.define_text(head, params, pieces[0].items, True)
@@ -3833,10 +3827,44 @@ class Module:  # pylint: disable=too-many-instance-attributes
         #: ``[(pc, value)]``: the constants of the tests of the instructions at ``pc`` the
         #: ``.h`` names, from bytes init leaves constant (``@G``'s elements).
         self.symbols = []
-        for o in top.regions[0][0].ops:
-            if o.name == "func.func" and o.regions[0] and o.regions[0][0].ops:
-                self.funcs.append(Func(o, self))
+        self.load(top)
+
+    def load(self, top):
+        """Take the functions of module ``top``."""
+        self.top = top
+        self.funcs = [
+            Func(o, self)
+            for o in top.regions[0][0].ops
+            if o.name == "func.func" and o.regions[0] and o.regions[0][0].ops
+        ]
         self.by_name = {f.name: f for f in self.funcs}
+
+    def calls(self):
+        """Find each lifted function's call sites (:attr:`sites`) and a copy's instance index
+        (:meth:`Func.instance`)."""
+        self.sites = {f.name: [] for f in self.funcs}
+        for f in self.funcs:
+            for o in f.walk():
+                if o.name == "func.call" and o.prop("callee")[1:] in self.sites:
+                    self.sites[o.prop("callee")[1:]].append((f, o))
+        for f in self.funcs if self.kpos is not None else ():
+            if self.lifted.get(f.name, (0, ()))[1]:
+                f.instance(self.kpos)
+
+    def combine(self, prefix):
+        """Take the functions after LLVM's passes (:func:`llvmopt.combined`, its tools under
+        ``prefix``), the results they forward read as the arguments first (:meth:`forward`)
+        and the truth values constant (:meth:`Func.fold_flags`), the intervals of loads of
+        opcode cells (:meth:`Func.code_iv`) stated."""
+        self.forward()
+        self.calls()
+        for f in self.funcs:
+            f.fold_flags()
+            f.fold_known_addresses()
+        ranges = {
+            f.name: [f.code_iv(o) for o in f.walk() if o.name == "memref.load"] for f in self.funcs
+        }
+        self.load(mlir.parse(llvmopt.combined(mlir.generic(self.top), prefix, ranges)))
 
     def copies_of(self, name, pc):
         """The instruction PCs of every copy of instruction ``pc`` of function ``name``."""
@@ -3894,21 +3922,11 @@ class Module:  # pylint: disable=too-many-instance-attributes
         parameters used, functions return only the results used, the rest is dropped. The
         bytes no store writes (:meth:`unwritten`) are found first."""
         self.unwritten()
-        sites = {f.name: [] for f in self.funcs}
+        self.calls()
+        sites = self.sites
         for f in self.funcs:
-            for o in f.walk():
-                if o.name == "func.call" and o.prop("callee")[1:] in sites:
-                    sites[o.prop("callee")[1:]].append((f, o))
-        self.sites = sites
-        for f in self.funcs if self.kpos is not None else ():
-            if self.lifted.get(f.name, (0, ()))[1]:
-                f.instance(self.kpos)
-                f.kfold()
-        self.forward()
-        for f in self.funcs:
+            f.kfold()
             f.carry16()
-            f.fold_known_addresses()
-            f.fold_flags()
         self.unread_stores()
         live, work = {f.name: set() for f in self.funcs}, []
 
@@ -3984,7 +4002,6 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 continue
             f.substitute(sub)
             f.reindex()
-            f.fold_offsets()
 
     def reg_iv(self, name, pcs, j):
         """The hull of the values register-file position ``j`` (``A``, ``X`` or ``Y``) holds at
@@ -4729,7 +4746,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         functions by their final names, each with the sites calling it (one kept for several
         identical ones lists theirs as copies)."""
         funcs, sites = {}, {}
-        prov = {"gotos": [], "loops": [], "conditions": [], "switches": []}
+        prov = {"gotos": [], "reduced": [], "loops": [], "conditions": [], "switches": []}
         for c in cfuncs:
             for b in c.f.blocks:
                 for o in b.ops if b.name in c.owned else ():
@@ -4758,6 +4775,9 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 funcs[name]["copies"] += [pc, *copies]
                 funcs[name]["calls"] += calls
                 funcs[name]["pcs"] = sorted(set(funcs[name]["pcs"]) | pcs)
+                funcs[name]["pieces"] = sorted(
+                    set(funcs[name]["pieces"]) | set(c.prov.get("pieces", ()))
+                )
                 continue
             funcs[name] = {
                 "entry": pc,
@@ -4765,6 +4785,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 "calls": calls,
                 "copies": list(copies),
                 "pcs": sorted(pcs),
+                "pieces": list(c.prov.get("pieces", ())),
             }
             for k, v in prov.items():
                 v += _copies(c.prov[k], self.copy_pcs.get(c.f.name, {}))

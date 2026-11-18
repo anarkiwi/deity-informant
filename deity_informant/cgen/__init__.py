@@ -1056,6 +1056,7 @@ def render(p, header="cgen.h", prefix=None, lines=False):  # pylint: disable=too
         mod.held_runs = sorted(
             {(s, s + n - 1) for ops in plan for _, s, n in ops if isinstance(s, int)}
         )
+    mod.combine(run)
     mod.prune()
     mod.partition()
     times["layout"] = time.perf_counter() - t1

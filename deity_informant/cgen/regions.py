@@ -281,6 +281,15 @@ class Memory:  # pylint: disable=too-many-instance-attributes
             return int(b.min()), int(b.max())
         return 0, 255
 
+    def hull_at(self, at):
+        """The hull of the bytes at addresses ``at`` when every one is constant, else the full
+        byte range."""
+        at = np.asarray(at) & 0xFFFF
+        if self.constant[at].all():
+            b = np.frombuffer(self.image, np.uint8)[at]
+            return int(b.min()), int(b.max())
+        return 0, 255
+
     def _spans(self, need):
         """The runs of ``need`` merged across gaps of data region bytes (slices, held once),
         each widened over the regions it overlaps: any other byte of a gap would be held as data

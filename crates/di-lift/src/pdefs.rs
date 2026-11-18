@@ -191,7 +191,7 @@ fn writer(g: &Graph, pc: u16, loc: Loc) -> [Option<bool>; 2] {
 }
 
 /// The definitions of one location: their bytes, and per instruction start writing it the
-/// definition it makes and whether it replaces the byte.
+/// definition it makes and whether it writes the whole byte.
 struct Local {
     defs: Vec<Def>,
     bytes: [FixedBitSet; 2],
