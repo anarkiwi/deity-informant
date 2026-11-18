@@ -481,10 +481,6 @@ impl Insn {
     pub fn ops<'a>(&self, arena: &'a [Op]) -> &'a [Op] {
         &arena[self.start as usize..self.start as usize + self.template().n as usize]
     }
-    #[inline(always)]
-    pub fn operands(&self) -> Operands {
-        Operands::new(self.b1, self.b2)
-    }
     /// Length in bytes.
     pub fn length(&self) -> u8 {
         self.template().len

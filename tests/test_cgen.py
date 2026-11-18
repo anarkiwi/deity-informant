@@ -4192,6 +4192,125 @@ def entries_of(info):
     return {f["entry"] for f in info["provenance"]["functions"].values()}
 
 
+FLAG_CMP = """
+entry:  AND #$03
+        CMP #$02
+        BCC low
+        SBC #$01
+        STA $C000
+        RTS
+low:    STA $C001
+        RTS
+end:
+"""
+FLAG_ADC = """
+entry:  AND #$0F
+        CLC
+        ADC #$10
+        STA $C000
+        LDA #$20
+        ADC #$00
+        STA $C001
+        RTS
+end:
+"""
+FLAG_ASL = """
+entry:  TAX
+        BPL done
+        ASL A
+        STA $C000
+        TXA
+        SBC #$01
+        STA $C001
+done:   RTS
+end:
+"""
+
+
+@pytest.mark.parametrize(
+    "src,values,want",
+    [
+        (FLAG_CMP, range(4), r"io_write\(0xC000, \w+ - 1\)"),
+        (FLAG_ADC, range(4), r"io_write\(0xC001, 0x20\)"),
+        (FLAG_ASL, (0, 0x7F, 0x80, 0xC3, 0xFF), r"io_write\(0xC001, a - 1\)"),
+    ],
+    ids=["cmp-bcc-sbc", "adc-leftover", "asl-sbc"],
+)
+def test_carry_known_where_consumed(prefix, tmp_path, src, values, want):
+    """A carry the code leaves for an ADC or SBC without CLC or SEC is the constant it is
+    there: set by a compare the branch on it decides, by a shift of a bit the branch tests,
+    never by an add of register values that cannot carry; no flag of it is left."""
+    c, _, _ = check(prefix, tmp_path, src, entry_calls(values))
+    assert re.search(want, c), c
+    assert not re.search(r"\(\w+ [<>]=? \w+[^)]*\) \+|- \(\d+ -", c), c
+
+
+FLAG_LEFT = """
+entry:  AND #$0F
+        CLC
+        ADC #$F8
+        STA $C000
+        LDA #$20
+        SBC #$00
+        STA $C001
+        RTS
+end:
+"""
+
+
+def test_carry_left_for_another_value_is_its_own_variable(prefix, tmp_path):
+    """A carry one add leaves that varies and a later SBC reads is a variable of its own,
+    set where the add makes it; the subtract reads it, not the add's operands."""
+    c, _, _ = check(prefix, tmp_path, FLAG_LEFT, entry_calls(range(16)))
+    body = body_of(c, "entry")
+    name = re.search(r"uint8_t (c\d+) = ", body).group(1)
+    assert re.search(r"io_write\(0xC001, " + name + r" \+ 0x1F\)", body), body
+
+
+CALL_KEEPS = """
+entry:  TAX
+        CPX #$06
+        BCS skip
+        JSR sub
+skip:   STX $C000
+        RTS
+sub:    LDA #$01
+        STA $C001
+        RTS
+end:
+"""
+
+
+def test_register_a_callee_never_writes_keeps_the_callers_value(prefix, tmp_path):
+    """``X``, which the callee never writes, is the caller's own value past the call: no
+    variable merges it where the paths around the call join."""
+    c, _, _ = check(prefix, tmp_path, CALL_KEEPS, entry_calls(range(0, 256, 3)))
+    body = body_of(c, "entry")
+    assert "io_write(0xC000, a)" in body and not re.search(r"uint8_t v\d+;", body), body
+
+
+GUARD = """
+entry:  AND #$03
+        BEQ done
+        STA $C000
+        CMP #$02
+        BNE skip
+        STA $C001
+skip:   STA $C002
+done:   RTS
+end:
+"""
+
+
+def test_a_condition_ending_a_function_is_an_early_return(prefix, tmp_path):
+    """A condition holding nested control to the end of a function returns first, its
+    statements after it at the function's own level."""
+    c, _, _ = check(prefix, tmp_path, GUARD, entry_calls(range(4)))
+    body = body_of(c, "entry")
+    assert body.count("return;") == 1, body
+    assert re.search(r"^  io_write\(0xC002, ", body, re.M), body
+
+
 def test_shared_tail_entered_by_jumps_is_a_function(prefix, tmp_path):
     """A tail two procedures enter by `JMP` and by falling through at their entry height,
     which no `JSR` targets, is one function both tail-call; code past a push and a pull
@@ -4223,9 +4342,10 @@ def test_dispatch_arms_sharing_a_tail_stay_in_the_dispatching_function(prefix, t
 
 def test_tails_one_procedure_holds_follow_the_goto_rule(prefix, tmp_path):
     """The same handlers reached from one procedure: its switch's two tails are joins, the
-    one placed after the switch reached by ``break``, the other by a goto from each arm."""
+    one placed after the switch reached by ``break``, the other, which the rest of the
+    function follows, a function of its own each arm calls (no goto)."""
     src = FXSHARE.replace("        JSR fx2\n", "")
-    c, _, info = check(prefix, tmp_path, src, entry_calls(range(4), 2), gotos=2)
+    c, _, info = check(prefix, tmp_path, src, entry_calls(range(4), 2))
     assert len(entries_of(info)) == 2 and c.count("io_write(0xC004, ") == 1
 
 
@@ -4942,7 +5062,7 @@ def test_patched_compare_immediate_bounds_a_loop(prefix, tmp_path):
     """A compare immediate an earlier call patches is a scalar the loop it bounds tests as
     any variable: a structured loop, no goto."""
     c, _, info = check(prefix, tmp_path, BOUND, entry_calls([5, 0, 7, 1, 6, 2, 4, 3], 2))
-    assert info["provenance"]["loops"] and re.search(r"S_15 > \(uint8_t\)\(v\d+ \+ 1\)", c)
+    assert info["provenance"]["loops"] and re.search(r"S_15 (>|<=) \(uint8_t\)\(v\d+ \+ 1\)", c)
     assert "S_15 = (a & 3) + 1;" in c
 
 
@@ -5924,7 +6044,7 @@ def test_short_circuit_conditions(prefix, tmp_path):
         [first, first + 5],
         [labels["skip"] + 2, labels["skip"] + 6],
     ]
-    assert "&&" in c and "||" in c
+    assert len(re.findall(r"&&|\|\|", body_of(c, "entry"))) >= 2
 
 
 def test_non_series_parallel_joins_are_gotos(prefix, tmp_path):
@@ -5981,7 +6101,7 @@ def test_short_circuit_with_effects(prefix, tmp_path):
     machine code runs them."""
     c, _, info = check(prefix, tmp_path, EFFECT, entry_calls(range(4), 3))
     _, labels, _ = assemble(EFFECT)
-    assert re.search(r"\|\| \(R\d+\[[^]]*\] = [^,]*, ", c), c
+    assert re.search(r"(\|\||&&) \(R\d+\[[^]]*\] = [^,]*, ", c), c
     assert info["provenance"]["conditions"] == [[labels["do"] - 7, labels["do"] - 2]]
 
 

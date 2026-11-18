@@ -3,7 +3,7 @@
 mod wholeprog;
 
 use di_pcode::{instantiate_bytes, Ctrl, Insn, Op, Pen, Slot, Space, Vn};
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyDict, PyList, PyString, PyTuple};
@@ -110,7 +110,7 @@ fn record<'py>(py: Python<'py>, insn: &Insn, ops: &[Op]) -> PyResult<Bound<'py, 
     d.set_item("pen", pen)?;
     d.set_item("ctrl", ctrl)?;
     d.set_item("prov", p)?;
-    d.set_item("stk", t.stk().map(|k| k.name()))?;
+    d.set_item("stk", t.stk().map(di_pcode::CtrlKind::name))?;
     Ok(d)
 }
 
@@ -129,18 +129,6 @@ fn lift<'py>(py: Python<'py>, mem: &Bound<'py, PyAny>, pc: u16) -> PyResult<Boun
     record(py, &insn, &arena)
 }
 
-fn with_image<R>(
-    mem: &Bound<'_, PyByteArray>,
-    f: impl FnOnce(&mut [u8; 0x10000]) -> R,
-) -> PyResult<R> {
-    // SAFETY: the GIL is held and `f` runs no Python code while the slice is borrowed.
-    let bytes = unsafe { mem.as_bytes_mut() };
-    let img = bytes
-        .try_into()
-        .map_err(|_| PyValueError::new_err("memory must be a 65536-byte bytearray"))?;
-    Ok(f(img))
-}
-
 /// The reference interpreter's state: ``reg`` (the ``lift()`` register file), ``pc`` and
 /// ``cycles``; ``step``/``run`` execute over a ``bytearray`` of the whole address space.
 #[pyclass(module = "deity_informant._native")]
@@ -151,12 +139,8 @@ impl Cpu {
     #[new]
     #[pyo3(signature = (reg=None, pc=0, cycles=0))]
     fn new(reg: Option<[u8; 16]>, pc: u16, cycles: u64) -> Self {
-        let mut c = di_pcode::Cpu::new();
-        if let Some(r) = reg {
-            c.set_reg(r);
-        }
+        let mut c = wholeprog::cpu_of(reg, cycles);
         c.pc = pc;
-        c.cycles = cycles;
         Cpu(c)
     }
 
@@ -193,7 +177,7 @@ impl Cpu {
     /// Execute one instruction; the new PC. A JAM raises ``RuntimeError`` (PC unchanged).
     fn step(&mut self, mem: &Bound<'_, PyByteArray>) -> PyResult<u16> {
         let cpu = &mut self.0;
-        with_image(mem, |m| cpu.step(m))?
+        wholeprog::with_mem(mem, |m| cpu.step(m))?
             .map_err(|j| PyRuntimeError::new_err(format!("JAM at {:04X}", j.pc)))?;
         Ok(self.0.pc)
     }
@@ -202,7 +186,7 @@ impl Cpu {
     /// with PC on it.
     fn run(&mut self, mem: &Bound<'_, PyByteArray>, max_steps: u64) -> PyResult<(u64, bool)> {
         let cpu = &mut self.0;
-        let (n, jam) = with_image(mem, |m| cpu.run(m, max_steps))?;
+        let (n, jam) = wholeprog::with_mem(mem, |m| cpu.run(m, max_steps))?;
         Ok((n, jam.is_some()))
     }
 
@@ -224,7 +208,6 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<wholeprog::Session>()?;
     m.add_function(wrap_pyfunction!(wholeprog::lift_program, m)?)?;
     m.add_function(wrap_pyfunction!(wholeprog::lift_many, m)?)?;
-    m.add_function(wrap_pyfunction!(wholeprog::plan_program, m)?)?;
     m.add_function(wrap_pyfunction!(wholeprog::reference_call, m)?)?;
     m.add_function(wrap_pyfunction!(wholeprog::reference_calls, m)?)?;
     m.add("UNIQUE_SIZE", di_pcode::UNIQUE_SIZE)?;

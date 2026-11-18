@@ -101,6 +101,19 @@ pub enum Ctl {
     Jam,
 }
 
+impl Ctl {
+    /// The functions a call enters with their entry configurations, a `BRK` call's `f` in
+    /// `brk(f)`; None for other control.
+    pub fn called(&self, brk: impl FnOnce(u16) -> u8) -> Option<Vec<(u16, u8)>> {
+        Some(match self {
+            Ctl::Call { f, c, .. } | Ctl::CallOp { f, c, .. } => vec![(*f, *c)],
+            Ctl::CallInd { fs, c, .. } => fs.iter().map(|&f| (f, *c)).collect(),
+            Ctl::BrkCall { f, .. } => vec![(*f, brk(*f))],
+            _ => return None,
+        })
+    }
+}
+
 /// A plan node: instruction start, stack height and bank configuration.
 pub type Key = (u16, H, u8);
 
@@ -425,13 +438,7 @@ impl Plan {
         self.nodes
             .values()
             .flat_map(|n| &n.arms)
-            .flat_map(|a| match &a.ctl {
-                Ctl::Call { f, c, .. } => vec![(*f, *c)],
-                Ctl::CallInd { fs, c, .. } => fs.iter().map(|&f| (f, *c)).collect(),
-                Ctl::CallOp { f, c, .. } => vec![(*f, *c)],
-                Ctl::BrkCall { f, .. } => vec![(*f, self.entry[0])],
-                _ => Vec::new(),
-            })
+            .flat_map(|a| a.ctl.called(|_| self.entry[0]).unwrap_or_default())
             .chain(self.tails.iter().map(|k| (k.0, k.2)))
     }
 }
@@ -1420,12 +1427,8 @@ pub fn plan_all(g: &Graph, entries: &[(u16, Vec<u8>)], seen: &Seen, fold: bool) 
         for p in &mut plans {
             for (k, n) in p.nodes.iter_mut() {
                 for (v, a) in g.vars[&k.0].iter().zip(&mut n.arms) {
-                    let fs: Vec<(u16, u8)> = match &a.ctl {
-                        Ctl::Call { f, c, .. } => vec![(*f, *c)],
-                        Ctl::CallInd { fs, c, .. } => fs.iter().map(|&f| (f, *c)).collect(),
-                        Ctl::CallOp { f, c, .. } => vec![(*f, *c)],
-                        Ctl::BrkCall { f, .. } => vec![(*f, g.cfg[f])],
-                        _ => continue,
+                    let Some(fs) = a.ctl.called(|f| g.cfg[&f]) else {
+                        continue;
                     };
                     if let Some(&(_, c)) = fs.first() {
                         if fs.iter().all(|k| !porty[idx[k]]) && !writes_port(v, seen.bank) {

@@ -16,9 +16,7 @@ from .space import Cell
 
 IO = (0xC000, 0xC100)
 
-__all__ = ["classify", "OUTCOMES"]
-
-OUTCOMES = ("exact_nodeopt", "exact_deopt", "inexact", "not_runnable")
+__all__ = ["classify"]
 
 
 def _facts(prog):

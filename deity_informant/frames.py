@@ -33,9 +33,8 @@ class FrameHost(c64._Host):  # pylint: disable=protected-access,too-many-instanc
         super().__init__(*args, sentinel=c64.SENTINEL, **kw)
         self.fr, self.image, self.dirty, self.foreign, self.stop = None, None, False, set(), None
         self.budget, self.ninner = None, 0
-        self.entry_log, self.nested_log = c64.Spill(kw.get("spill", c64.SPILL)), c64.Spill(
-            kw.get("spill", c64.SPILL)
-        )
+        spill = kw.get("spill", c64.SPILL)
+        self.entry_log, self.nested_log = c64.Spill(spill), c64.Spill(spill)
 
     def drive_frames(self, boot, frames, max_cycles=2_000_000):
         """Run ``boot`` (:class:`~deity_informant.c64.Boot`), then ``frames`` video frames.
@@ -55,12 +54,7 @@ class FrameHost(c64._Host):  # pylint: disable=protected-access,too-many-instanc
         self.image, self.dirty, self.stop = self.fr.image, self.fr.dirty, c64.STOPS[self.fr.outcome]
         kinds = (*c64.SOURCES, "brk")
         self.foreign = {k for i, k in enumerate(kinds) if self.fr.foreign >> i & 1}
-        self.records = self.stream
-        sp, port = self.fr.entries()
-        for pc, v in sp:
-            self.entry_sp[pc].add(v)
-        for pc, d, v in port:
-            self.entry_port[pc].add((d, v))
+        self.take_entries(*self.fr.entries())
         return self
 
     def _frames_phase(self, index_frames):
@@ -147,11 +141,6 @@ def lift(host, roms, facts=None, **kw):
     )
 
 
-def window_events(events, n):
-    """Per frame of a window of ``n``, its slice bounds in ``events`` (``record`` from 0)."""
-    return np.searchsorted(events["record"].copy(), np.arange(n + 1)).tolist()
-
-
 def nested(prog, events):
     """The ``Program.call`` interrupts of one frame's ``events``: ``(icount, pos, entry, a, reg,
     depth)``. ``prog`` None gives entry addresses, as ``wholeprog.reference_call`` takes them.
@@ -224,7 +213,8 @@ def timed(prog, host, bank, max_cycles=2_000_000):
     _, first, ents, events = next(host.chunks())
     recs = [c64.read_entries(r) for r in first]
     n = len(recs)
-    bounds, regfiles = window_events(events, n), reg_rows(ents)
+    bounds = np.searchsorted(events["record"].copy(), np.arange(n + 1)).tolist()
+    regfiles = reg_rows(ents)
     at, ret = {pc: i for i, pc in enumerate(prog.entries)}, host.sentinel - 1
     kw = {"max_cycles": max_cycles, "ret": ret, "irq": True}
     entry, acc = ents["at"].tolist(), ents["a"].tolist()

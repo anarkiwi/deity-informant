@@ -90,7 +90,7 @@ fn instantiate_binds_operand_slots() {
         .iter()
         .flat_map(|op| op.inputs().to_vec())
         .filter(|v| v.slot() == Slot::Word)
-        .map(|v| v.off())
+        .map(di_pcode::Vn::off)
         .collect();
     assert_eq!(words, [0x12f0, 0x12f0]);
     assert_eq!(lda.pen(), Pen::Ax(0x12f0));

@@ -83,13 +83,13 @@ impl Iv {
     }
 }
 
-/// Interval of `opc(a, b)` with an `out`-sized result and `a` of `size0` bytes.
 /// The least all-ones value at or above `x`: an or or exclusive or of values at most `x`
 /// stays below it.
 fn ones(x: u32) -> u32 {
     u32::MAX.checked_shr(x.leading_zeros()).unwrap_or(0)
 }
 
+/// Interval of `opc(a, b)` with an `out`-sized result and `a` of `size0` bytes.
 pub fn iv_op(opc: Opc, a: Iv, b: Iv, out: u32, size0: u32) -> Iv {
     let m = mask(out);
     // A copy to fewer bytes truncates.
@@ -276,7 +276,7 @@ impl Ptr {
     /// the address is `p + i` (`i <= m`) for a pointer `p` outside `[$100 - m, $1FF]`.
     pub fn need(&self) -> (impl Iterator<Item = u8>, u32) {
         let pair = matches!(
-            (self.lo.and_then(|l| l.value()), self.hi.value()),
+            (self.lo.and_then(Iv::value), self.hi.value()),
             (Some(l), Some(h)) if (l + 1) & 0xff == h
         );
         let m = match self.idx {
@@ -570,8 +570,6 @@ pub struct Graph {
     /// What every return of a once-run entry to the host leaves whatever the data
     /// ([`crate::vsa::Analysis::exit`]).
     pub exit: Vec<(u16, Vec<u8>)>,
-    /// The driver head of the entries ([`crate::vsa::Analysis::head`]).
-    pub head: Vec<(u16, Vec<u8>)>,
     /// Per byte, its hull wherever the entries run ([`crate::vsa::Analysis::steady`]).
     pub steady: Vec<(u16, Iv)>,
     /// The `RTS`/`RTI`s that jump through the address their code pushed.
@@ -1072,7 +1070,7 @@ impl Fixpoint<'_> {
         );
         (g.reach, g.proven, g.regs, g.runs) = (an.reach, an.proven, an.regs, an.runs);
         g.exit = an.exit.unwrap_or_default();
-        (g.head, g.steady) = (an.head, an.steady);
+        g.steady = an.steady;
         g.bases = an.bases;
         g.nocode.extend(an.bounded.keys().copied());
         g.bounded = an.bounded;
@@ -1405,7 +1403,6 @@ impl Fixpoint<'_> {
                     kept: Vec::new(),
                     bounded: FxHashMap::default(),
                     exit: Vec::new(),
-                    head: Vec::new(),
                     steady: Vec::new(),
                     disp,
                     vars,

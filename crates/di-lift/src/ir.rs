@@ -271,6 +271,9 @@ pub struct Function {
     pub whys: Vec<crate::why::Why>,
     /// Per tag ([`LOp::why`] less one), the indices into `whys` of what it stands for.
     pub exits: Vec<Vec<u32>>,
+    /// The registers (bits below [`NREG`]) a call of it may write, through its own calls
+    /// ([`crate::opt::summarize`]); None: every one.
+    pub maydef: Option<u32>,
 }
 
 impl Function {
@@ -387,9 +390,6 @@ pub struct Program {
     /// Per byte a once-run entry's every return to the host leaves known whatever the data, its
     /// values (*Init*).
     pub exit: Vec<(u16, Vec<u8>)>,
-    /// Per byte the driver head knows, its values: what every call of an entry starts with
-    /// (*Driver loop*).
-    pub head: Vec<(u16, Vec<u8>)>,
     /// Bytes `(addr, lo, hi)` whose bound on every run (the hull of their entry byte and the
     /// values stores write) proves an index guard the lift leaves out: each holds a value in
     /// it whenever the lifted code runs.

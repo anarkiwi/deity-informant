@@ -259,7 +259,7 @@ impl Exec {
                     check,
                     depth,
                     budget: spend.contains(bi),
-                    exit: b.ops.last().is_some_and(|o| o.is_deopt()),
+                    exit: b.ops.last().is_some_and(super::ir::LOp::is_deopt),
                 });
                 for op in &b.ops {
                     let aux = match op.opc {

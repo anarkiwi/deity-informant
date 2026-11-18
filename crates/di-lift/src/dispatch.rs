@@ -491,7 +491,20 @@ pub(crate) fn stored_reg(t: &Template, i: usize) -> Option<usize> {
     None
 }
 
-/// Whether template `t` reads register `r`.
+/// `base` with each register of `idx` at its digit of `k` in the mixed radix of their
+/// value lists: the `k`th of every combination of their values.
+fn index_env(
+    mut env: crate::analysis::Env,
+    idx: &[(usize, Vec<u8>)],
+    mut k: usize,
+) -> crate::analysis::Env {
+    for (r, xs) in idx {
+        env[*r] = Iv::exact(xs[k % xs.len()] as u32);
+        k /= xs.len();
+    }
+    env
+}
+
 /// Whether template `t` reads register `r` before it writes it.
 fn reads(t: &Template, r: usize) -> bool {
     let is = |v: &Vn| v.space() == Space::Reg && v.off() as usize == r;
@@ -573,36 +586,7 @@ pub(crate) fn vectors(
     let none = crate::dev::Devices::default();
     let ran = crate::once::Ran::default();
     let known = FxHashMap::default();
-    let code = Code {
-        img,
-        cells,
-        pull_clear: false,
-        vecs: Vec::new(),
-        observed: FixedBitSet::new(),
-        free: FixedBitSet::new(),
-        known: &known,
-        constant: FixedBitSet::new(),
-        clip: FxHashMap::default(),
-        bound: Vec::new(),
-        stored: Vec::new(),
-        floor: FxHashMap::default(),
-        inits: FxHashMap::default(),
-        runs: Vec::new(),
-        words: FxHashMap::default(),
-        mods: FxHashMap::default(),
-        pinned: FixedBitSet::new(),
-        aimed: FxHashMap::default(),
-        seeds: FxHashMap::default(),
-        ram: Vec::new(),
-        dev: FixedBitSet::new(),
-        devices: &none,
-        classes: FxHashMap::default(),
-        meets: Default::default(),
-        ran: &ran,
-        seed: None,
-        drive: false,
-        kill: Vec::new(),
-    };
+    let code = Code::new(img, cells, &known, &none, &ran);
     let mut v: Vec<u16> = vars
         .iter()
         .filter(|(_, vs)| vs.iter().any(|v| matches!(v.flow, Flow::JmpInd(_))))
@@ -626,7 +610,9 @@ pub(crate) fn vectors(
             );
             absint(t.ops(), b, &mut env, &mut acc);
             for p in acc.iter().filter_map(|a| a.ptr) {
-                if let (Some(q), Some(h)) = (p.lo.and_then(|l| l.value()), p.hi.value()) {
+                if let (Some(q), Some(h)) =
+                    (p.lo.and_then(super::analysis::Iv::value), p.hi.value())
+                {
                     v.extend([q as u16, h as u16]);
                 }
             }
@@ -702,12 +688,7 @@ fn var_stores(
         };
         let n: usize = idx.iter().map(|e| e.1.len()).product();
         for k in 0..n {
-            let mut env = base;
-            let mut q = k;
-            for (r, xs) in &idx {
-                env[*r] = Iv::exact(xs[q % xs.len()] as u32);
-                q /= xs.len();
-            }
+            let mut env = index_env(base, &idx, k);
             acc.clear();
             absint(t.ops(), b, &mut env, &mut acc);
             for (i, a) in acc.iter().enumerate().filter(|a| a.1.store) {
@@ -784,12 +765,7 @@ pub(crate) fn indexed_loads(
             let mut found: FxHashMap<usize, BTreeSet<u16>> = FxHashMap::default();
             let n: usize = idx.iter().map(|e| e.1.len()).product();
             for k in 0..n {
-                let mut env = base;
-                let mut q = k;
-                for (r, xs) in &idx {
-                    env[*r] = Iv::exact(xs[q % xs.len()] as u32);
-                    q /= xs.len();
-                }
+                let mut env = index_env(base, &idx, k);
                 acc.clear();
                 absint(t.ops(), b, &mut env, &mut acc);
                 for (i, a) in acc.iter().enumerate().filter(|a| loads(a.1)) {
@@ -1603,19 +1579,19 @@ fn pointer_set(
     pc: u16,
     p: crate::analysis::Ptr,
 ) -> Option<(Vec<u16>, BTreeSet<u16>, Vec<Guard>)> {
-    let (q, h) = (p.lo.and_then(|l| l.value())?, p.hi.value()?);
+    let (q, h) = (p.lo.and_then(super::analysis::Iv::value)?, p.hi.value()?);
     let ys = g
         .sets
         .of(pc, reg::Y)
         .unwrap_or_else(|| g.sets.any(pc, reg::Y));
-    tagged_set(g, w, pc, (q, h), &ys).or_else(|| {
+    tagged_in(g, w, pc, (q, h), [None; 2], &ys).or_else(|| {
         advanced(g, pc, [q as u16, h as u16], &ys).map(|(a, r, g)| (a.into_iter().collect(), r, g))
     })
 }
 
 /// The address set of the store of opcode `op` at `pc` through its cell operand bytes, where
 /// they hold tagged table bytes (a byte that is not a cell, its constant) on every path into
-/// it ([`tagged_set`]), plus each value of its index register.
+/// it ([`tagged_in`]), plus each value of its index register.
 fn operand_set(
     g: &Loop,
     w: &FixedBitSet,
@@ -1640,19 +1616,9 @@ fn read_only(code: &Code, bytes: &BTreeSet<u16>) -> bool {
     (bytes.iter()).all(|&a| code.constant.contains(a as usize) && !code.cells.contains(a as usize))
 }
 
-/// The words of the bytes `q, h` where they hold tagged table bytes on every path into `pc`,
-/// plus each of `ys`; the table bytes read and the guards they need.
-fn tagged_set(
-    g: &Loop,
-    w: &FixedBitSet,
-    pc: u16,
-    qh: (u32, u32),
-    ys: &[u8],
-) -> Option<(Vec<u16>, BTreeSet<u16>, Vec<Guard>)> {
-    tagged_in(g, w, pc, qh, [None; 2], ys)
-}
-
-/// [`tagged_set`] with the bytes `fixed` gives constant.
+/// The words of the bytes `q, h` where they hold tagged table bytes on every path into `pc`
+/// (the bytes `fixed` gives constant), plus each of `ys`; the table bytes read and the guards
+/// they need.
 fn tagged_in(
     g: &Loop,
     w: &FixedBitSet,
@@ -1960,7 +1926,7 @@ fn advanced_at(
     let through = |a: &crate::analysis::Access| {
         a.store
             && a.ptr.is_some_and(|p| {
-                p.lo.and_then(|l| l.value()) == Some(ptr[0] as u32)
+                p.lo.and_then(super::analysis::Iv::value) == Some(ptr[0] as u32)
                     && p.hi.value() == Some(ptr[1] as u32)
             })
     };

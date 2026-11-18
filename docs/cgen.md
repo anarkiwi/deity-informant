@@ -100,6 +100,15 @@ caller's return address. `tools/cgenplay.c` is a host harness.
    An 8-bit add whose carry only feeds the add of the byte above it (`lo = a + b`,
    `hi = d + e + (lo < a)`, an `ADC` chain) becomes one 16-bit add of `(d:a) + (e:b)`, whose
    bytes replace `hi` and the uses of `lo` after it.
+   A truth value (an `i1`, its zero extension, or a block argument every edge gives one) an
+   operation reads as data, a carry or borrow the code leaves for an `ADC` or `SBC` without
+   `CLC` or `SEC`, is the constant it is wherever that operation runs when it is one: its
+   interval there, from the branches every path to it takes (a `CMP` the `BCC` before the
+   `SBC` decides), or its values over every combination of the values it is computed from,
+   each in its interval there and a load of memory that holds no one value over every byte
+   (an add that never carries). The constants fold forward and a compare left unused dies.
+   A carry left varying is a variable of its own (`cN`), set where its producer makes it,
+   so the value reading it does not share the producer's operands.
 5. **Layout** (`state.py`, `regions.py`): the cells held as C variables (*State*), then the
    memory partition of the other bytes (*Memory*).
 6. **Structure** (`structure.py`): the dominator-tree translation below, each function whole.

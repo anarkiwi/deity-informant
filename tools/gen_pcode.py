@@ -159,7 +159,7 @@ class Opcode:
             vm = PcodeVM(mem)
             vm.volatile = False
             vm.reg[2] = IY_INDEX
-            vm._exec(rec, PC)
+            vm._exec(rec)
             sizes = {out[1]: out[2] for _mn, out, _ins in rec["ops"] if out and out[0] == "u"}
             hits = {off for off, v in vm.uniq.items() if v == p1 | p2 << 8 and sizes[off] == 2}
             common = hits if common is None else common & hits

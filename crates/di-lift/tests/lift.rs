@@ -450,13 +450,7 @@ fn finite_loop_under_a_budget() {
             cycles,
             ..Opts::default()
         };
-        let p = lift_with(
-            &img,
-            &entries(&[pc]),
-            &[(0xc000, 0xc100)],
-            &Facts::default(),
-            opts,
-        );
+        let p = bare(&img, &[pc], opts);
         assert!(diff_at(&img, &p, &calls(1, |_| 0), IO, cpu.cycles, 0xff) > 0);
     }
 }
@@ -621,13 +615,7 @@ fn untaken_edges_leave_calls_balanced() {
         loaded: Some((0x1000, 0x1143)),
         ..Opts::default()
     };
-    let p = lift_with(
-        &img,
-        &entries(&[0x1000]),
-        &[(0xc000, 0xc100)],
-        &Facts::default(),
-        opts,
-    );
+    let p = bare(&img, &[0x1000], opts);
     assert!(!p.starts.contains(&0x1029));
     let x = p.regs.iter().find(|r| r.0 == 0x1022).map(|r| r.1[1]);
     assert_eq!(x, Some([7, 0, 0, 0]));
@@ -672,13 +660,7 @@ fn computed_jumps_resolve_without_facts() {
                 cycles,
                 ..Opts::default()
             };
-            let p = lift_with(
-                &img,
-                &entries(&[pc]),
-                &[(0xc000, 0xc100)],
-                &Facts::default(),
-                opts,
-            );
+            let p = bare(&img, &[pc], opts);
             assert_eq!(p.jumps.len(), 1);
             assert_eq!(p.jumps[0].1.len(), n);
             let runs = acc_calls(&[0, 1, 2, 3, 3, 2, 1, 0]);
@@ -715,13 +697,7 @@ fn unbounded_index_reads_inside_the_extent() {
         loaded: Some((0x1000, 0x1000 + unbounded.len() as u32)),
         ..Opts::default()
     };
-    let p = lift_with(
-        &img,
-        &entries(&[0x1000]),
-        &[(0xc000, 0xc100)],
-        &Facts::default(),
-        opts,
-    );
+    let p = bare(&img, &[0x1000], opts);
     assert_eq!(p.jumps, [(0x1010, vec![0x1013, 0x1017, 0x101b, 0x1022])]);
     assert_eq!(diff(&img, &p, &acc_calls(&[0, 1, 2, 3, 2, 0]), IO), 0);
     assert!(diff(&img, &p, &acc_calls(&[4]), IO) > 0);
@@ -741,13 +717,7 @@ fn jump_table_ends_at_its_target() {
         loaded: Some((0x1000, 0x1000 + prog.len() as u32)),
         ..Opts::default()
     };
-    let p = lift_with(
-        &img,
-        &entries(&[0x1000]),
-        &[(0xc000, 0xc100)],
-        &Facts::default(),
-        opts,
-    );
+    let p = bare(&img, &[0x1000], opts);
     assert_eq!(p.jumps, [(0x1007, vec![0x100d, 0x1011, 0x1015])]);
     assert_eq!(diff(&img, &p, &acc_calls(&[0, 1, 2, 1, 0]), IO), 0);
     assert!(diff(&img, &p, &acc_calls(&[3]), IO) > 0);
@@ -769,13 +739,7 @@ fn unbounded_stores_stay_inside_the_program() {
             loaded: Some((0x1000, 0x1000 + bytes.len() as u32)),
             ..Opts::default()
         };
-        let p = lift_with(
-            &img,
-            &entries(&[0x1000]),
-            &[(0xc000, 0xc100)],
-            &Facts::default(),
-            opts,
-        );
+        let p = bare(&img, &[0x1000], opts);
         assert_eq!(diff(&img, &p, &acc_calls(&[0, 3, 1, 2, 3, 0]), IO), 0);
         assert_eq!(diff(&img, &p, &acc_calls(&[4, 5]), IO) > 0, past);
     }
@@ -798,13 +762,7 @@ fn reload_forwarded_past_a_guarded_store() {
         loaded: Some((0x1000, 0x1000 + prog.len() as u32)),
         ..Opts::default()
     };
-    let p = lift_with(
-        &img,
-        &entries(&[0x1000]),
-        &[(0xc000, 0xc100)],
-        &Facts::default(),
-        opts,
-    );
+    let p = bare(&img, &[0x1000], opts);
     let loads = (p.functions.iter().flat_map(|f| &f.blocks))
         .flat_map(|b| &b.ops)
         .filter(|o| o.opc == di_pcode::Opc::Load && o.ins[0] == di_lift::ir::k(cell as u32, 2))
@@ -825,13 +783,7 @@ fn indexed_store_keeps_tables_data() {
         loaded: Some((0x1000, 0x1200)),
         ..Opts::default()
     };
-    let p = lift_with(
-        &img,
-        &entries(&[0x1000, 0x1010]),
-        &[(0xc000, 0xc100)],
-        &Facts::default(),
-        opts,
-    );
+    let p = bare(&img, &[0x1000, 0x1010], opts);
     assert!(p.code.iter().all(|e| e.0 < 0x1100));
     let calls = [(1, 0), (0, 0x80), (1, 0), (0, 0x10), (1, 0)];
     assert_eq!(diff(&img, &p, &calls, IO), 0);
@@ -1014,13 +966,7 @@ fn store_over_its_own_operand_ends() {
     let (tx, rx) = std::sync::mpsc::channel();
     let job = img.clone();
     std::thread::spawn(move || {
-        let p = lift_with(
-            &job,
-            &entries(&[0x1000]),
-            &[(0xc000, 0xc100)],
-            &Facts::default(),
-            opts,
-        );
+        let p = bare(&job, &[0x1000], opts);
         tx.send(p).unwrap();
     });
     let p = rx
@@ -1081,13 +1027,7 @@ fn held_operands_are_loaded() {
             held,
             ..Opts::default()
         };
-        lift_with(
-            &img,
-            &entries(&[0x1000]),
-            &[(0xc000, 0xc100)],
-            &Facts::default(),
-            opts,
-        )
+        bare(&img, &[0x1000], opts)
     };
     let (plain, held) = (run(vec![]), run(vec![0x1002, 0x1003, 0x1008]));
     let (bare, text) = (plain.to_string(), held.to_string());
@@ -1390,13 +1330,7 @@ fn device_reads_take_the_models_sets() {
             devices,
             ..Opts::default()
         };
-        lift_with(
-            &img,
-            &entries(&[0x1000]),
-            &[(0xc000, 0xc100)],
-            &Facts::default(),
-            opts,
-        )
+        bare(&img, &[0x1000], opts)
     };
     let p = lift(devices());
     assert_eq!(held(&p, 0x1009, 1), vec![0xf5]);
@@ -1428,13 +1362,7 @@ fn device_writes_through_mirrors_and_callees() {
         devices: devices(),
         ..Opts::default()
     };
-    let p = lift_with(
-        &img,
-        &entries(&[0x1000]),
-        &[(0xc000, 0xc100)],
-        &Facts::default(),
-        opts,
-    );
+    let p = bare(&img, &[0x1000], opts);
     assert_eq!(held(&p, 0x100c, 1), vec![0xf7]);
     assert_eq!(held(&p, 0x1016, 1), (0xf0..0x100).collect::<Vec<_>>());
     assert_eq!(diff(&img, &p, &calls(2, |_| 0), IO), 0);
@@ -1455,7 +1383,7 @@ fn inline_arguments_are_continuations() {
         0xb1, 0xf2, 0xaa, 0x88, 0xb1, 0xf2, 0xa8, 0xa5, 0xf2, 0x18, 0x69, 0x02, 0x85, 0xf2,
         0xa5, 0xf3, 0x69, 0x00, 0x48, 0xa5, 0xf2, 0x48, 0x98, 0x60,
     ];
-    let p = static_lift(prog);
+    let p = static_lift(prog, false);
     assert_eq!(p.functions.iter().filter(|f| f.cont.is_some()).count(), 2);
     assert_eq!(diff(&static_image(prog), &p, &calls(3, |_| 0), IO), 0);
 }
@@ -1472,7 +1400,7 @@ fn continuation_deopt_writes_the_address_it_holds() {
         0x18, 0x69, 0x01, 0xa8, 0xa5, 0xf1, 0x69, 0x00, 0x48, 0x98, 0x48, 0xac, 0x10, 0xc0,
         0x99, 0x2f, 0x10, 0x8a, 0x60, 0x01, 0x02,
     ];
-    let p = static_lift(prog);
+    let p = static_lift(prog, false);
     assert_eq!(p.functions.iter().filter(|f| f.cont.is_some()).count(), 1);
     let calls: Vec<(usize, u8)> = (0..8).map(|_| (0, 0)).collect();
     assert!(diff(&static_image(prog), &p, &calls, IO) > 0);
@@ -1482,17 +1410,23 @@ fn static_image(prog: &[u8]) -> Box<[u8; 0x10000]> {
     image(&[(0x1000, prog)])
 }
 
-/// The static lift (entry SP `$FD`) of `prog` at `$1000`.
-fn static_lift(prog: &[u8]) -> Program {
+/// The static lift (entry SP `$FD`) of `prog` at `$1000`, run `once` if so.
+fn static_lift(prog: &[u8], once: bool) -> Program {
     let opts = Opts {
         loaded: Some((0x1000, 0x1000 + prog.len() as u32)),
         entry_sp: Some(0xfd),
         fold: true,
+        once,
         ..Opts::default()
     };
+    bare(&static_image(prog), &[0x1000], opts)
+}
+
+/// The lift of `pcs` in `img` without facts, volatile `$C000-$C0FF`.
+fn bare(img: &[u8; 0x10000], pcs: &[u16], opts: Opts) -> Program {
     lift_with(
-        &static_image(prog),
-        &entries(&[0x1000]),
+        img,
+        &entries(pcs),
         &[(0xc000, 0xc100)],
         &Facts::default(),
         opts,
@@ -1535,13 +1469,7 @@ fn pointer_objects_check_their_definitions() {
             loaded: Some((0x1150, 0x1203)),
             ..Opts::default()
         };
-        let p = lift_with(
-            &img,
-            &entries(&[0x1150, 0x1200]),
-            &[(0xc000, 0xc100)],
-            &Facts::default(),
-            opts,
-        );
+        let p = bare(&img, &[0x1150, 0x1200], opts);
         assert_eq!(p.objects.len(), 1, "{count:x?}");
         assert_eq!((p.objects[0].0, p.objects[0].1), (0x1180, 0x1200));
         assert_eq!(p.objects[0].2.len(), 3);
@@ -1575,13 +1503,7 @@ fn walks_read_to_their_marker() {
         loaded: Some((0x1150, 0x11a8)),
         ..Opts::default()
     };
-    let p = lift_with(
-        &img,
-        &entries(&[0x1150]),
-        &[(0xc000, 0xc100)],
-        &Facts::default(),
-        opts,
-    );
+    let p = bare(&img, &[0x1150], opts);
     let h = p.proven.iter().find(|r| r.0 == 0x1162).unwrap();
     assert!(h.1 >= 0x1188 && h.2 < 0x11a8, "{h:x?}");
     assert_eq!(p.stats.obj_guards, 0);
@@ -1606,7 +1528,7 @@ fn addr_walk(d1: u16) -> Vec<u8> {
 #[test]
 fn table_of_addresses_resolves_its_stores() {
     let prog = addr_walk(0x1026);
-    let p = static_lift(&prog);
+    let p = static_lift(&prog, false);
     let set = p.addr_sets.iter().find(|s| (s.0, s.1) == (0x1015, true));
     let runs = vec![(0x1025, 0x1026), (0x1027, 0x1028), (0x1029, 0x102a)];
     assert_eq!(set.map(|s| &s.2), Some(&runs));
@@ -1620,7 +1542,7 @@ fn table_of_addresses_resolves_its_stores() {
 #[test]
 fn table_entry_naming_the_table_leaves_its_store_checked() {
     let prog = addr_walk(0x101f);
-    let p = static_lift(&prog);
+    let p = static_lift(&prog, false);
     assert!(!p.addr_sets.iter().any(|s| (s.0, s.1) == (0x1015, true)));
     assert!(diff(&static_image(&prog), &p, &calls(4, |_| 0), IO) > 0);
 }
@@ -1636,30 +1558,12 @@ fn patched_store(head: [u8; 3]) -> Vec<u8> {
     prog
 }
 
-/// The static lift of `prog` at `$1000` run once.
-fn once_lift(prog: &[u8]) -> Program {
-    let opts = Opts {
-        loaded: Some((0x1000, 0x1000 + prog.len() as u32)),
-        entry_sp: Some(0xfd),
-        fold: true,
-        once: true,
-        ..Opts::default()
-    };
-    lift_with(
-        &static_image(prog),
-        &entries(&[0x1000]),
-        &[(0xc000, 0xc100)],
-        &Facts::default(),
-        opts,
-    )
-}
-
 /// Run once, an init no input decides makes one run: the store through the operand it
 /// patches writes the address the run patched in.
 #[test]
 fn once_run_gives_a_patched_operand_its_address() {
     let prog = patched_store([0xad, 0x12, 0x10]);
-    let p = once_lift(&prog);
+    let p = static_lift(&prog, true);
     let set = p.addr_sets.iter().find(|s| (s.0, s.1) == (0x100e, true));
     assert_eq!(set.map(|s| &s.2), Some(&vec![(0x1014, 0x1015)]));
     assert_eq!(diff(&static_image(&prog), &p, &calls(1, |_| 0), IO), 0);
@@ -1669,7 +1573,7 @@ fn once_run_gives_a_patched_operand_its_address() {
 #[test]
 fn once_run_an_input_decides_gives_no_address() {
     let prog = patched_store([0xea, 0xea, 0xea]);
-    let p = once_lift(&prog);
+    let p = static_lift(&prog, true);
     assert!(!p.addr_sets.iter().any(|s| (s.0, s.1) == (0x100e, true)));
     diff(&static_image(&prog), &p, &calls(1, |_| 0x14), IO);
 }
@@ -1704,13 +1608,7 @@ fn cursor_loads_read_their_bases_run() {
         loaded: Some((0x1022, 0x10c3)),
         ..Opts::default()
     };
-    let p = lift_with(
-        &img,
-        &entries(&[0x1022]),
-        &[(0xc000, 0xc100)],
-        &Facts::default(),
-        opts,
-    );
+    let p = bare(&img, &[0x1022], opts);
     let within = |pc: u16| (p.proven.iter()).any(|r| r.0 == pc && r.1 >= 0x106d && r.2 < 0x10c3);
     assert!(within(0x104e) && within(0x1027));
     assert_eq!(

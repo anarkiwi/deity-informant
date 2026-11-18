@@ -159,7 +159,7 @@ pub fn sp_effect(b: &Block, mut depth: impl FnMut(u32) -> u32) -> (i32, i32) {
         if op.opc == Opc::Call {
             low = low.min(net - depth(op.aux) as i32);
         }
-        net = sp_step(op, net);
+        net = sp_rel(op, net).unwrap_or(0);
         low = low.min(net);
     }
     (net, low)
@@ -182,11 +182,6 @@ fn sp_rel(op: &LOp, h: i32) -> Option<i32> {
         Opc::IntSub => Some(h - c),
         _ => None,
     }
-}
-
-/// [`sp_rel`] where an SP-setting op restarts at 0.
-fn sp_step(op: &LOp, h: i32) -> i32 {
-    sp_rel(op, h).unwrap_or(0)
 }
 
 /// SP offset after `op` relative to the function entry, `None` while unknown: an SP-setting
@@ -1633,7 +1628,6 @@ fn sink(f: &mut Function, cx: &Ctx, fi: usize) -> bool {
     }
 }
 
-/// Remove ops whose results are never used, by liveness.
 /// Per `(b, ops)`, the ops `dce` would keep of block `b` of `f` holding `ops` instead, by the
 /// liveness of `f` (which `ops` can only shrink, so each count is an upper bound).
 fn block_costs(f: &Function, cx: &Ctx, fi: usize, cands: &[(usize, Vec<LOp>)]) -> Vec<usize> {
@@ -1649,6 +1643,7 @@ fn block_costs(f: &Function, cx: &Ctx, fi: usize, cands: &[(usize, Vec<LOp>)]) -
         .collect()
 }
 
+/// Remove ops whose results are never used, by liveness.
 fn dce(f: &mut Function, cx: &Ctx, fi: usize) {
     let keeps: Vec<Vec<bool>> = {
         let lv = live(f, cx, fi);

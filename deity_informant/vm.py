@@ -128,11 +128,7 @@ class PcodeVM:
         f = rec[key] = ns["_f"]
         return f
 
-    def run_record(self, rec, pc):
-        self._exec(rec, pc)
-        return self._resolve(rec)
-
-    def _exec(self, rec, pc):
+    def _exec(self, rec):
         (rec.get("_f" if self.dummies else "_d") or self.compile_record(rec))(
             self.reg, self.uniq, self._rd, self._wr
         )
@@ -187,7 +183,8 @@ class PcodeVM:
             cache[k] = rec
         if self.dummies and rec["len"] == 1 and rec["ctrl"][0] != "jam":
             self._rd((pc + 1) & 0xFFFF, 1)
-        ctrl, nxt = self.run_record(rec, pc)
+        self._exec(rec)
+        ctrl, nxt = self._resolve(rec)
         t = ctrl[0]
         reg = self.reg
         if t == "next":
@@ -203,35 +200,23 @@ class PcodeVM:
             return lo | (hi << 8)
         if t == "jsr":
             ret = (pc + rec["len"] - 1) & 0xFFFF
-            mem[0x100 + reg[3]] = ret >> 8
-            reg[3] = (reg[3] - 1) & 0xFF
-            mem[0x100 + reg[3]] = ret & 0xFF
-            reg[3] = (reg[3] - 1) & 0xFF
+            self._push(ret >> 8)
+            self._push(ret)
             return ctrl[1]
         if t == "rts":
-            reg[3] = (reg[3] + 1) & 0xFF
-            lo = mem[0x100 + reg[3]]
-            reg[3] = (reg[3] + 1) & 0xFF
-            hi = mem[0x100 + reg[3]]
+            lo, hi = self._pull(), self._pull()
             if self.dummies:
                 self._rd((hi << 8) | lo, 1)
             return ((hi << 8) | lo) + 1 & 0xFFFF
         if t == "rti":
-            reg[3] = (reg[3] + 1) & 0xFF
-            self._set_flags(mem[0x100 + reg[3]])
-            reg[3] = (reg[3] + 1) & 0xFF
-            lo = mem[0x100 + reg[3]]
-            reg[3] = (reg[3] + 1) & 0xFF
-            hi = mem[0x100 + reg[3]]
+            self._set_flags(self._pull())
+            lo, hi = self._pull(), self._pull()
             return (hi << 8) | lo
         if t == "brk":
             ret = (pc + 2) & 0xFFFF
-            mem[0x100 + reg[3]] = ret >> 8
-            reg[3] = (reg[3] - 1) & 0xFF
-            mem[0x100 + reg[3]] = ret & 0xFF
-            reg[3] = (reg[3] - 1) & 0xFF
-            mem[0x100 + reg[3]] = self._status(brk=1)
-            reg[3] = (reg[3] - 1) & 0xFF
+            self._push(ret >> 8)
+            self._push(ret)
+            self._push(self._status(brk=1))
             reg[10] = 1
             return mem[0xFFFE] | (mem[0xFFFF] << 8)
         raise RuntimeError("JAM at %04X" % pc)
@@ -250,6 +235,10 @@ class PcodeVM:
         self.mem[0x100 + self.reg[3]] = val & 0xFF
         self.reg[3] = (self.reg[3] - 1) & 0xFF
 
+    def _pull(self):
+        self.reg[3] = (self.reg[3] + 1) & 0xFF
+        return self.mem[0x100 + self.reg[3]]
+
     def _push_status(self):
         self._push(self._status())
 
@@ -260,16 +249,21 @@ _GUARD = 8_000_000
 
 def run_sub(vm, pc, cache, lifter):
     """Run a subroutine to its balancing RTS (dummy-return convention)."""
-    reg = vm.reg
-    start = reg[3]
+    start = vm.reg[3]
     vm._push(0x00)
     vm._push(0x01)
+    return _run_out(vm, pc, start, cache, lifter, "subroutine")
+
+
+def _run_out(vm, pc, start, cache, lifter, what):
+    """Step from ``pc`` until the stack climbs back to ``start``; the PC there."""
+    reg = vm.reg
     n = 0
     while reg[3] < start:
         pc = vm.step(pc, cache, lifter)
         n += 1
         if n > _GUARD:
-            raise RuntimeError("runaway subroutine at %04X" % pc)
+            raise RuntimeError("runaway %s at %04X" % (what, pc))
     return pc
 
 
@@ -300,14 +294,7 @@ def run_irq(vm, handler, cache, lifter):
     vm._push(0x00)  # sentinel return lo
     vm._push_status()
     reg[10] = 1  # I set on IRQ entry
-    pc = _handler(vm, handler)
-    n = 0
-    while reg[3] < start:
-        pc = vm.step(pc, cache, lifter)
-        n += 1
-        if n > _GUARD:
-            raise RuntimeError("runaway IRQ at %04X" % pc)
-    return pc
+    return _run_out(vm, _handler(vm, handler), start, cache, lifter, "IRQ")
 
 
 def _take_irq(vm, handler, ret_pc, enter):

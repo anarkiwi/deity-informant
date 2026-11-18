@@ -396,12 +396,8 @@ fn extent(
         }
         for (&(_, h, _), n) in &p.nodes {
             for a in &n.arms {
-                let fs: Vec<(u16, u8)> = match &a.ctl {
-                    func::Ctl::Call { f, c, .. } => vec![(*f, *c)],
-                    func::Ctl::CallInd { fs, c, .. } => fs.iter().map(|&f| (f, *c)).collect(),
-                    func::Ctl::CallOp { f, c, .. } => vec![(*f, *c)],
-                    func::Ctl::BrkCall { f, .. } => vec![(*f, g.cfg[f])],
-                    _ => continue,
+                let Some(fs) = a.ctl.called(|f| g.cfg[&f]) else {
+                    continue;
                 };
                 // A `BRK` call pushes three bytes.
                 let n = if matches!(a.ctl, func::Ctl::BrkCall { .. }) {
@@ -457,12 +453,8 @@ fn continuations(
             p.nodes
                 .values()
                 .flat_map(|n| &n.arms)
-                .flat_map(|a| match &a.ctl {
-                    func::Ctl::CallInd { fs, c, .. } => fs.iter().map(|&f| (f, *c)).collect(),
-                    func::Ctl::CallOp { f, c, .. } => vec![(*f, *c)],
-                    func::Ctl::BrkCall { f, .. } => vec![(*f, p.entry[0])],
-                    _ => Vec::new(),
-                }),
+                .filter(|a| !matches!(a.ctl, func::Ctl::Call { .. }))
+                .flat_map(|a| a.ctl.called(|_| p.entry[0]).unwrap_or_default()),
         );
         for k in other.collect::<Vec<_>>() {
             if let Some(&i) = fidx.get(&k) {
@@ -785,32 +777,17 @@ pub fn lift_banked(
         }
         // An access checked into its run touches it alone.
         let kept = (objs.machine.iter()).map(|(k, m)| (k, &m.1));
-        for (&(pc, op, ai), &run) in kept.chain(&objs.covered) {
-            for v in g
-                .vars
-                .get_mut(&pc)
-                .into_iter()
-                .flatten()
-                .filter(|v| v.op == op)
-            {
-                let a = &mut v.acc[ai];
-                a.addr = vsa::meet(a.addr, run).unwrap_or(a.addr);
-            }
+        for (&key, &run) in kept.chain(&objs.covered) {
+            vsa::narrow_access(&mut g.vars, key, run);
         }
         // An access into the data block touches its runs alone; a store there writes no code.
-        for (&(pc, op, ai), rs) in &objs.data {
+        for (&key, rs) in &objs.data {
             let hull = Iv {
                 lo: rs[0].0,
                 hi: rs[rs.len() - 1].1 - 1,
             };
-            let mut store = false;
-            for v in (g.vars.get_mut(&pc).into_iter().flatten()).filter(|v| v.op == op) {
-                let a = &mut v.acc[ai];
-                a.addr = vsa::meet(a.addr, hull).unwrap_or(a.addr);
-                store |= a.store;
-            }
-            if store {
-                g.nocode.insert((pc, op, ai));
+            if vsa::narrow_access(&mut g.vars, key, hull) {
+                g.nocode.insert(key);
             }
         }
         g.objs = objs;
@@ -1110,10 +1087,18 @@ pub fn lift_banked(
         };
         run(&mut functions, &cx);
         // Callee summaries matter only where deopts may leave registers dead: no cycles.
+        let maydef = |fs: &mut Vec<Function>, cx: &opt::Ctx| {
+            for (i, s) in opt::summarize(fs, cx).into_iter().enumerate() {
+                fs[i].maydef = Some(s.maydef);
+            }
+        };
         if !opts.cycles && functions.len() > 1 {
             let sums = opt::summarize(&functions, &cx);
             cx.sums = Some(&sums);
             run(&mut functions, &cx);
+            maydef(&mut functions, &cx);
+        } else {
+            maydef(&mut functions, &cx);
         }
     }
     let ops = || {
@@ -1167,6 +1152,7 @@ pub fn lift_banked(
             }
         }
     }
+    let data = data_accesses(&g);
     Program {
         functions,
         entries: pcs
@@ -1183,20 +1169,16 @@ pub fn lift_banked(
         volatile: volatile.to_vec(),
         written: runs(g.written.ones().map(|a| a as u32)),
         stored: runs(analysis::stored(&g).ones().map(|a| a as u32)),
-        stores: {
-            let mut v: Vec<(u16, u32, u32)> = (g.vars.iter())
+        stores: sorted_set(
+            (g.vars.iter())
                 .filter(|(pc, _)| planned.contains(**pc as usize))
                 .flat_map(|(&pc, vs)| {
                     vs.iter()
                         .flat_map(move |v| v.acc.iter().map(move |a| (pc, a)))
                 })
                 .filter(|(_, a)| a.store && !a.dummy)
-                .map(|(pc, a)| (pc, a.addr.lo, a.addr.hi.min(0xffff)))
-                .collect();
-            v.sort_unstable();
-            v.dedup();
-            v
-        },
+                .map(|(pc, a)| (pc, a.addr.lo, a.addr.hi.min(0xffff))),
+        ),
         starts,
         elide_ret: private,
         bank: bank.cloned(),
@@ -1207,81 +1189,39 @@ pub fn lift_banked(
         reach: reaches(&g.reach),
         proven: reaches(&g.proven),
         bases: reaches(&g.bases),
-        machine: {
-            let mut v: Vec<u16> = g.objs.machine.keys().map(|k| k.0).collect();
-            v.sort_unstable();
-            v.dedup();
-            v
-        },
+        machine: sorted_set(g.objs.machine.keys().map(|k| k.0)),
         objects: g.objs.objects.clone(),
         pdefs: pdefs::defs(&g, &pcs),
-        parts: {
-            let mut v: Vec<(u16, Vec<(u32, u32)>)> = (g.objs.parts.iter())
-                .map(|(&j, r)| (j, r.clone()))
-                .collect();
-            v.sort_unstable();
-            v
-        },
-        slack: {
-            let mut v: Vec<(u16, (u16, u16, u16))> =
-                g.objs.slack.iter().map(|(&j, &e)| (j, e)).collect();
-            v.sort_unstable();
-            v
-        },
-        data: data_accesses(&g),
-        bounded: {
-            let mut v: Vec<(u16, u32, u32)> =
-                g.bounded.iter().map(|(k, r)| (k.0, r.0, r.1)).collect();
-            v.sort_unstable();
-            v.dedup();
-            v
-        },
-        regs: {
-            let mut v: Vec<(u16, [[u64; 4]; 3])> = g.regs.iter().map(|(&pc, r)| (pc, *r)).collect();
-            v.sort_unstable();
-            v
-        },
-        ptr_sets: {
-            let mut v: Vec<(u16, Vec<u16>)> = (g.ptr_sets.iter())
-                .map(|(&pc, w)| (pc, w.iter().copied().collect()))
-                .collect();
-            v.sort_unstable();
-            v
-        },
-        addr_sets: {
-            let data = data_accesses(&g);
-            let mut v: Vec<ir::AddrSet> = g
-                .addr_sets
+        parts: sorted(g.objs.parts.iter().map(|(&j, r)| (j, r.clone()))),
+        slack: sorted(g.objs.slack.iter().map(|(&j, &e)| (j, e))),
+        bounded: sorted_set(g.bounded.iter().map(|(k, r)| (k.0, r.0, r.1))),
+        regs: sorted(g.regs.iter().map(|(&pc, r)| (pc, *r))),
+        ptr_sets: sorted(
+            (g.ptr_sets.iter()).map(|(&pc, w)| (pc, w.iter().copied().collect::<Vec<u16>>())),
+        ),
+        addr_sets: sorted(
+            g.addr_sets
                 .iter()
                 .map(|(&(pc, st), a)| (pc, st, runs(a.iter().map(|&x| x as u32))))
                 .filter(|s| !data.iter().any(|d| (d.0, d.1) == (s.0, s.1)))
-                .chain(data.iter().cloned())
-                .collect();
-            v.sort_unstable();
-            v
-        },
+                .chain(data.iter().cloned()),
+        ),
+        data,
         bounds: {
             let held = byte_bounds(&g, &free);
             let stores = g.vars.values().flatten().flat_map(|v| &v.acc);
-            let mut b: Vec<(u16, u8, u8)> = stores
-                .filter(|a| a.store)
-                .filter_map(|a| a.addr.value())
-                .filter_map(|a| held[a as usize].map(|h| (a as u16, h.lo as u8, h.hi as u8)))
-                .collect();
-            b.sort_unstable();
-            b.dedup();
-            b
+            sorted_set(
+                stores
+                    .filter(|a| a.store)
+                    .filter_map(|a| a.addr.value())
+                    .filter_map(|a| held[a as usize].map(|h| (a as u16, h.lo as u8, h.hi as u8))),
+            )
         },
-        values: {
-            let mut v: Vec<(u16, Vec<u8>)> = (g.known.iter())
-                .map(|(&a, vs)| (a, vs.iter().copied().collect()))
-                .collect();
-            v.sort_unstable();
-            v
-        },
+        values: sorted(
+            (g.known.iter()).map(|(&a, vs)| (a, vs.iter().copied().collect::<Vec<u8>>())),
+        ),
         kept: g.kept.clone(),
         exit: g.exit.clone(),
-        head: g.head.clone(),
         sets: {
             let mut s: Vec<(u16, Vec<u8>)> = g
                 .closed
@@ -1306,13 +1246,22 @@ pub fn lift_banked(
             s.sort_unstable();
             s
         },
-        jumps: {
-            let mut j: Vec<(u16, Vec<u16>)> =
-                g.stat.iter().map(|(&pc, t)| (pc, t.clone())).collect();
-            j.sort_unstable();
-            j
-        },
+        jumps: sorted(g.stat.iter().map(|(&pc, t)| (pc, t.clone()))),
     }
+}
+
+/// The items of `it`, sorted.
+fn sorted<T: Ord>(it: impl IntoIterator<Item = T>) -> Vec<T> {
+    let mut v: Vec<T> = it.into_iter().collect();
+    v.sort_unstable();
+    v
+}
+
+/// The distinct items of `it`, sorted.
+fn sorted_set<T: Ord>(it: impl IntoIterator<Item = T>) -> Vec<T> {
+    let mut v = sorted(it);
+    v.dedup();
+    v
 }
 
 /// One lift request.

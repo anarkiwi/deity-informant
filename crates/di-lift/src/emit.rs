@@ -501,6 +501,14 @@ impl<'a> Em<'a, '_> {
             && !port)
             .then_some(b)
     }
+    /// Add jump table `t`, closed or not; its index.
+    fn push_table(&mut self, t: Vec<(u16, u32)>, closed: bool) -> u32 {
+        self.f.tables.push(t);
+        let i = self.f.tables.len() - 1;
+        self.f.closed.grow(i + 1);
+        self.f.closed.set(i, closed);
+        i as u32
+    }
     /// Store flags for interval `iv` in the current configuration.
     fn store_flags(&mut self, iv: Iv) -> u32 {
         match self.sh.bank {
@@ -633,11 +641,10 @@ impl<'a> Em<'a, '_> {
                 let pc = self.f.blocks[self.cur].pc;
                 let t: Vec<(u16, u32)> = fs.iter().map(|&f| (f, self.new_block(pc))).collect();
                 let (tv, i) = self.selected_call(self.ipc, &t).unwrap_or_else(|| {
-                    self.f.tables.push(t.clone());
-                    let i = self.f.tables.len() - 1;
-                    self.f.closed.grow(i + 1);
-                    self.f.closed.set(i, self.sh.g.stat.contains_key(&pc));
-                    (tv, i as u32)
+                    (
+                        tv,
+                        self.push_table(t.clone(), self.sh.g.stat.contains_key(&pc)),
+                    )
                 });
                 self.emit(Opc::BranchInd, NONE, tv, NONE, i);
                 for ((_, b), &fi) in t.iter().zip(&fis) {
@@ -660,16 +667,11 @@ impl<'a> Em<'a, '_> {
             em.word(lo, hi)
         };
         // A continuation function hands back the address its return pulled.
-        if cont {
-            let w = self.word(r1(OPLO), r1(OPHI));
-            self.touch_ret(w, Iv::full(2));
-            let t = self.op(Opc::IntAdd, 2, w, k(1, 2));
-            let tb = self.table(&[to], false);
-            self.emit(Opc::BranchInd, NONE, t, NONE, tb);
-            return;
-        }
-        if to != ret && !port {
-            let w = pulled(self);
+        if cont || to != ret && !port {
+            let w = match cont {
+                true => self.word(r1(OPLO), r1(OPHI)),
+                false => pulled(self),
+            };
             self.touch_ret(w, Iv::full(2));
             let t = self.op(Opc::IntAdd, 2, w, k(1, 2));
             let tb = self.table(&[to], false);
@@ -806,9 +808,9 @@ impl<'a> Em<'a, '_> {
         }
         (self.nh, self.nc, self.h) = (nh, nc, h);
     }
-    /// A call of an instance function for copy `c.k` at the caller's SP (no return address),
-    /// then the node of the exit it left by.
-    /// The call of copy `c` entered at `pc`, the call alone naming `pc` as its site.
+    /// A call of an instance function for copy `c.k` entered at `pc`, at the caller's SP (no
+    /// return address) and the call alone naming `pc` as its site, then the node of the exit
+    /// it left by.
     fn inst_call(&mut self, c: &crate::func::Icall, pc: u16) {
         let fi = self.sh.ifidx[c.class as usize];
         self.flush();
@@ -903,13 +905,7 @@ impl<'a> Em<'a, '_> {
         if !self.reaches(iv) || self.sh.sensitive.is_some_and(|s| !felt(s)) {
             return;
         }
-        let f = match self.sh.bank {
-            None => self.vflag(iv),
-            Some(m) => {
-                let b = self.backing(m, iv);
-                self.bflags(b, iv)
-            }
-        };
+        let f = self.store_flags(iv);
         self.emit(Opc::Load, NONE, addr, pred, f);
     }
     /// The entry's return address is still the host's (`Program.call`'s `$0001`, never
@@ -1031,11 +1027,7 @@ impl<'a> Em<'a, '_> {
             let mut t: Vec<(u16, u32)> =
                 calc.iter().map(|&(a, key)| (a, self.block(key))).collect();
             t.sort_unstable();
-            self.f.tables.push(t);
-            let i = self.f.tables.len() - 1;
-            self.f.closed.grow(i + 1);
-            self.f.closed.set(i, all);
-            return i as u32;
+            return self.push_table(t, all);
         }
         let keys: Vec<Key> = ts
             .iter()
@@ -1045,11 +1037,7 @@ impl<'a> Em<'a, '_> {
         let closed = all && keys.len() == ts.len();
         let mut t: Vec<(u16, u32)> = keys.into_iter().map(|k| (k.0, self.block(k))).collect();
         t.sort_unstable();
-        self.f.tables.push(t);
-        let i = self.f.tables.len() - 1;
-        self.f.closed.grow(i + 1);
-        self.f.closed.set(i, closed);
-        i as u32
+        self.push_table(t, closed)
     }
     /// The index register and the table of a computed jump at `pc` that selects its
     /// target by it ([`crate::dispatch::Selector`]): each index value to the block of its
@@ -1075,11 +1063,7 @@ impl<'a> Em<'a, '_> {
         }
         let v = self.index_vn(at, xs.0)?;
         let t: Vec<(u16, u32)> = xs.1.into_iter().map(|(x, k)| (x, self.block(k))).collect();
-        self.f.tables.push(t);
-        let i = self.f.tables.len() - 1;
-        self.f.closed.grow(i + 1);
-        self.f.closed.set(i, true);
-        Some((v, i as u32))
+        Some((v, self.push_table(t, true)))
     }
     /// The table of a computed `JSR` at `pc` to functions `fs` (their call blocks `t`) that
     /// selects its target by an index ([`Self::selected`]).
@@ -1093,11 +1077,7 @@ impl<'a> Em<'a, '_> {
             .map(|&(x, f)| Some((x as u16, *to.get(&f)?)))
             .collect::<Option<Vec<_>>>()?;
         let v = self.index_vn(pc, ix)?;
-        self.f.tables.push(tb);
-        let i = self.f.tables.len() - 1;
-        self.f.closed.grow(i + 1);
-        self.f.closed.set(i, true);
-        Some((v, i as u32))
+        Some((v, self.push_table(tb, true)))
     }
     /// Before the instruction at `pc`, the copy of each index register it writes whose value
     /// a transfer switches on into that carry's register.
@@ -1325,7 +1305,7 @@ impl<'a> Em<'a, '_> {
         if let Some(x) = &plan.inst {
             let ms = x.c.nodes[x.node[&pc] as usize].pcs.clone();
             let len = Template::of(vars[0].op).len as u16;
-            if ms.iter().any(|p| p.is_none()) {
+            if ms.iter().any(std::option::Option::is_none) {
                 // Run only by the copies holding it: the others go on to its successor.
                 let mut hit = NONE;
                 for (i, _) in ms.iter().enumerate().filter(|(_, p)| p.is_some()) {

@@ -87,15 +87,9 @@ def _value(role, orig):
     return 0x60 if role == "opcode" else (0x2A if orig != 0x2A else 0x2B)
 
 
-def _code_witness(channel, role, timing):
-    rd = _RD_ZP if channel in _ZP_CHANNELS else _RD_ABS
-    reader, tgt, orig = _reader_at(rd, role)
-    if channel in _ZP_CHANNELS and tgt > 0xFF:
-        return None
-    value = _value(role, orig)
-    writer = []
-    if not _write(channel, tgt, value, writer):
-        return None
+def _timed(writer, reader, timing):
+    """The program that runs ``writer`` before ``reader`` at ``timing``: source, entries,
+    calls and init."""
     if timing == "same_call_earlier":
         src = ["entry:"] + writer + ["        JMP rd"] + reader
         return "\n".join(src), ["entry"], [(0, 0), (0, 0)], ()
@@ -111,6 +105,18 @@ def _code_witness(channel, role, timing):
         src = ["entry:  JMP rd", "ini:"] + writer + ["        RTS"] + reader
         return "\n".join(src), ["entry", "ini"], [(0, 0)], [("ini", 0)]
     return None
+
+
+def _code_witness(channel, role, timing):
+    rd = _RD_ZP if channel in _ZP_CHANNELS else _RD_ABS
+    reader, tgt, orig = _reader_at(rd, role)
+    if channel in _ZP_CHANNELS and tgt > 0xFF:
+        return None
+    value = _value(role, orig)
+    writer = []
+    if not _write(channel, tgt, value, writer):
+        return None
+    return _timed(writer, reader, timing)
 
 
 def _same_insn(channel, role):
@@ -167,21 +173,7 @@ def _ptr_witness(channel, timing):
     writer = []
     if not _write(channel, ptr, value, writer):
         return None
-    if timing == "same_call_earlier":
-        src = ["entry:"] + writer + ["        JMP rd"] + reader
-        return "\n".join(src), ["entry"], [(0, 0), (0, 0)], ()
-    if timing == "earlier_call":
-        src = (
-            ["entry:  CMP #$00", "        BEQ w", "        JMP rd", "w:"]
-            + writer
-            + ["        RTS"]
-            + reader
-        )
-        return "\n".join(src), ["entry"], [(0, 0), (0, 1)], ()
-    if timing == "pre_lift":
-        src = ["entry:  JMP rd", "ini:"] + writer + ["        RTS"] + reader
-        return "\n".join(src), ["entry", "ini"], [(0, 0)], [("ini", 0)]
-    return None
+    return _timed(writer, reader, timing)
 
 
 # The return address of entry's JSR sits at $01FC/$01FD under run_sub's deterministic SP.
