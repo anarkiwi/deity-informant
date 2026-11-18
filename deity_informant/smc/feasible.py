@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-__all__ = ["Verdict", "decide", "feasible_cells", "refuted_cells", "ROLE_REGION"]
+__all__ = ["Verdict", "decide", "refuted_cells", "ROLE_REGION"]
 
 _ANY = (0x0000, 0xFFFF)
 _ZP = (0x0000, 0x00FF)
@@ -109,11 +109,6 @@ def decide(cell):
     """The :class:`Verdict` for ``cell``: feasible, or refuted with its violated rule."""
     rule = _place(cell) or _time(cell)
     return Verdict(not rule, rule)
-
-
-def feasible_cells(cells):
-    """The cells :func:`decide` accepts."""
-    return [c for c in cells if decide(c).feasible]
 
 
 def refuted_cells(cells):
