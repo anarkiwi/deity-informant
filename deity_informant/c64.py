@@ -700,6 +700,15 @@ class _Host(MachineOracle):
         if self.calls is not None:
             self.stream.add(self.calls.take())
 
+    def take_entries(self, sp, port):
+        """The run's records are its call stream; its native entry SPs and CPU ports are
+        added to :attr:`entry_sp` and :attr:`entry_port`."""
+        self.records = self.stream
+        for pc, v in sp:
+            self.entry_sp[pc].add(v)
+        for pc, d, v in port:
+            self.entry_port[pc].add((d, v))
+
     def drive(self, calls, init=(), max_cycles=2_000_000, ports=None):
         """Run ``init`` then ``calls``; a call that does not return ends the run. The run's
         SMC labelling is kept as :attr:`result`."""
@@ -708,12 +717,7 @@ class _Host(MachineOracle):
         if self.calls is not None:
             self.calls.close()
             self.stream.add(self.calls.take())
-            self.records = self.stream
-            sp, port = self.calls.entries()
-            for pc, v in sp:
-                self.entry_sp[pc].add(v)
-            for pc, d, v in port:
-                self.entry_port[pc].add((d, v))
+            self.take_entries(*self.calls.entries())
             return self
         if self.last is not None:
             self._effects(*self.last)
