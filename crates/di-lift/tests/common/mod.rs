@@ -117,11 +117,7 @@ pub fn ref_call_in(
     bank: Option<&BankMap>,
 ) -> Halt {
     let start = cpu.r(R::SP);
-    for v in [0u8, 1] {
-        let sp = cpu.r(R::SP);
-        bus.ram_write(0x100 | sp as u16, v);
-        cpu.set_r(R::SP, sp.wrapping_sub(1));
-    }
+    cpu.push_frame(bus, di_pcode::RETURN, false);
     cpu.set_r(R::A, acc);
     cpu.pc = pc;
     let end = cpu.cycles + max + 1;
@@ -170,11 +166,7 @@ pub fn facts_in(
             let r = (bus.mem[m.dir as usize], bus.mem[m.data as usize]);
             entry_port.entry(pc).or_default().insert(r);
         }
-        for v in [0u8, 1] {
-            let sp = cpu.r(R::SP);
-            bus.ram_write(0x100 | sp as u16, v);
-            cpu.set_r(R::SP, sp.wrapping_sub(1));
-        }
+        cpu.push_frame(&mut bus, di_pcode::RETURN, false);
         cpu.set_r(R::A, acc);
         cpu.pc = pc;
         let end = cpu.cycles + max;
@@ -209,29 +201,20 @@ pub fn facts_in(
     Facts {
         starts: starts.into_iter().collect(),
         edges: edges.into_iter().collect(),
-        writes: bus
-            .writes
-            .into_iter()
-            .map(|(a, v)| (a, v.into_iter().collect()))
-            .collect(),
+        writes: vecs(bus.writes),
         page1: page1.into_iter().map(|(p, (lo, hi))| (p, lo, hi)).collect(),
-        heights: heights
-            .into_iter()
-            .map(|(p, h)| (p, h.into_iter().collect()))
-            .collect(),
-        entry_sp: entry_sp
-            .into_iter()
-            .map(|(p, s)| (p, s.into_iter().collect()))
-            .collect(),
-        banks: banks
-            .into_iter()
-            .map(|(p, s)| (p, s.into_iter().collect()))
-            .collect(),
-        entry_port: entry_port
-            .into_iter()
-            .map(|(p, s)| (p, s.into_iter().collect()))
-            .collect(),
+        heights: vecs(heights),
+        entry_sp: vecs(entry_sp),
+        banks: vecs(banks),
+        entry_port: vecs(entry_port),
     }
+}
+
+/// `m`'s sets as sorted vectors.
+fn vecs<K, V: Ord>(m: BTreeMap<K, BTreeSet<V>>) -> Vec<(K, Vec<V>)> {
+    m.into_iter()
+        .map(|(k, s)| (k, s.into_iter().collect()))
+        .collect()
 }
 
 /// Run `calls` on both and compare everything observable; the total deopts. Without cycles a
