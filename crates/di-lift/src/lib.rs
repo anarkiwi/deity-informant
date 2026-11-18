@@ -785,32 +785,17 @@ pub fn lift_banked(
         }
         // An access checked into its run touches it alone.
         let kept = (objs.machine.iter()).map(|(k, m)| (k, &m.1));
-        for (&(pc, op, ai), &run) in kept.chain(&objs.covered) {
-            for v in g
-                .vars
-                .get_mut(&pc)
-                .into_iter()
-                .flatten()
-                .filter(|v| v.op == op)
-            {
-                let a = &mut v.acc[ai];
-                a.addr = vsa::meet(a.addr, run).unwrap_or(a.addr);
-            }
+        for (&key, &run) in kept.chain(&objs.covered) {
+            vsa::narrow_access(&mut g.vars, key, run);
         }
         // An access into the data block touches its runs alone; a store there writes no code.
-        for (&(pc, op, ai), rs) in &objs.data {
+        for (&key, rs) in &objs.data {
             let hull = Iv {
                 lo: rs[0].0,
                 hi: rs[rs.len() - 1].1 - 1,
             };
-            let mut store = false;
-            for v in (g.vars.get_mut(&pc).into_iter().flatten()).filter(|v| v.op == op) {
-                let a = &mut v.acc[ai];
-                a.addr = vsa::meet(a.addr, hull).unwrap_or(a.addr);
-                store |= a.store;
-            }
-            if store {
-                g.nocode.insert((pc, op, ai));
+            if vsa::narrow_access(&mut g.vars, key, hull) {
+                g.nocode.insert(key);
             }
         }
         g.objs = objs;

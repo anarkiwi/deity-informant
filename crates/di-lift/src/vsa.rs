@@ -864,6 +864,34 @@ pub(crate) fn meet(a: Iv, b: Iv) -> Option<Iv> {
     (lo <= hi).then_some(Iv { lo, hi })
 }
 
+/// The variants of opcode `op` at `pc`.
+pub(crate) fn variants_mut(
+    vars: &mut FxHashMap<u16, Vec<Var>>,
+    pc: u16,
+    op: u8,
+) -> impl Iterator<Item = &mut Var> {
+    vars.get_mut(&pc)
+        .into_iter()
+        .flatten()
+        .filter(move |v| v.op == op)
+}
+
+/// Narrows access `ai` of every variant of opcode `op` at `pc` to `iv` where they meet;
+/// whether any of them stores.
+pub(crate) fn narrow_access(
+    vars: &mut FxHashMap<u16, Vec<Var>>,
+    (pc, op, ai): (u16, u8, usize),
+    iv: Iv,
+) -> bool {
+    let mut store = false;
+    for v in variants_mut(vars, pc, op) {
+        let a = &mut v.acc[ai];
+        a.addr = meet(a.addr, iv).unwrap_or(a.addr);
+        store |= a.store;
+    }
+    store
+}
+
 pub(crate) fn hull(a: Iv, b: Iv) -> Iv {
     Iv {
         lo: a.lo.min(b.lo),
@@ -4125,16 +4153,8 @@ pub fn analyze(
         };
         let mut bounded = bounded_stores(&code, vars, &regs, &bytes, loaded);
         bounded.extend(runs);
-        for (&(pc, op, ai), &(lo, hi)) in &bounded {
-            for v in vars
-                .get_mut(&pc)
-                .into_iter()
-                .flatten()
-                .filter(|v| v.op == op)
-            {
-                let a = &mut v.acc[ai];
-                a.addr = meet(a.addr, Iv { lo, hi: hi - 1 }).unwrap_or(a.addr);
-            }
+        for (&key, &(lo, hi)) in &bounded {
+            narrow_access(vars, key, Iv { lo, hi: hi - 1 });
         }
         let mut guards = Vec::new();
         let mut reads: std::collections::BTreeSet<u16> = kreads.into_iter().collect();
@@ -4222,12 +4242,7 @@ pub fn analyze(
                 lo: lo.saturating_sub(0xff) & 0xff00,
                 hi: hi | 0xff,
             };
-            for v in vars
-                .get_mut(&st.pc)
-                .into_iter()
-                .flatten()
-                .filter(|v| v.op == st.op)
-            {
+            for v in variants_mut(vars, st.pc, st.op) {
                 v.acc[st.ai].addr = Iv { lo, hi };
                 for a in v.acc.iter_mut().filter(|a| a.dummy && !a.store) {
                     a.addr = meet(a.addr, page).unwrap_or(page);
@@ -4243,12 +4258,7 @@ pub fn analyze(
         // A load through a pointer with an address set reaches the hull of its set.
         for (&(pc, op, ai), a) in &loads {
             let (lo, hi) = (a[0] as u32, a[a.len() - 1] as u32);
-            for v in vars
-                .get_mut(&pc)
-                .into_iter()
-                .flatten()
-                .filter(|v| v.op == op)
-            {
+            for v in variants_mut(vars, pc, op) {
                 v.acc[ai].addr = Iv { lo, hi };
             }
         }

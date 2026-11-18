@@ -602,24 +602,15 @@ pub fn seat(g: &mut Graph, seeds: &Seeds) {
             }
         }
     }
-    for (key, set, (pc, op, ai), h) in sets {
-        for v in g
-            .vars
-            .get_mut(&pc)
-            .into_iter()
-            .flatten()
-            .filter(|v| v.op == op)
-        {
-            let a = &mut v.acc[ai];
-            a.addr = crate::vsa::meet(a.addr, h).unwrap_or(a.addr);
-        }
+    for (key, set, acc, h) in sets {
+        crate::vsa::narrow_access(&mut g.vars, acc, h);
         let Some(set) = set else {
             continue;
         };
         if key.1 {
             g.written.extend(set.iter().map(|&x| x as usize));
             if !set.iter().any(|&x| g.code.contains(x as usize)) {
-                g.nocode.insert((pc, op, ai));
+                g.nocode.insert(acc);
             }
         }
         g.addr_sets.entry(key).or_insert(set);
