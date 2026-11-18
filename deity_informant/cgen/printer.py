@@ -16,7 +16,7 @@ from dataclasses import dataclass, field, replace
 
 import networkx as nx
 import numpy as np
-from wayward_eagle import Function, ends_in_jump, names_in, reduced, walk
+from wayward_eagle import STATUS, Function, ends_in_jump, names_in, reduced, walk
 
 from .. import masks
 from ..lifter import MODE_LEN, OPS
@@ -3600,33 +3600,36 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             body, lambda st, read: st[1] not in read and self.copies.get(id(st)) is st
         )
         void = not self.f.private or self.mod.ret_type(self.f) == "void"
-        pieces, nsec = reduced(body, self.name, Function(params, set(self.types), void, _traps))
+        fn = Function(params, set(self.types), void, _traps)
+        pieces, nsec, temps = reduced(body, self.name, fn)
+        self.types.update(dict.fromkeys(temps, "uint8_t"))
         decl = head[head.index("(") + 1 : -1]
         types = {
             **dict(reversed(x.rsplit(" ", 1)) for x in decl.split(", ") if " " in x),
             **self.types,
+            None: "void",
+            STATUS: "uint8_t",
         }
         self.prov["gotos"] = [
             e
-            for _, _, items in pieces
-            for st in walk(items)
+            for x in pieces
+            for st in walk(x.items)
             if self.edges.get(id(st), (None,))[0] is st
             for e in self.edges[id(st)][1]
         ]
         self.head_text = head
         if len(pieces) == 1:
-            return self.define_text(head, params, pieces[0][2], True)
+            return self.define_text(head, params, pieces[0].items, True)
         sigs = {
-            name: f"static void {name}({', '.join(f'{types[v]} {v}' for v in args) or 'void'})"
-            for name, args, _ in pieces
-            if name != self.name
+            x.name: f"static {types[x.ret]} {x.name}"
+            f"({', '.join(f'{types[v]} {v}' for v in x.args) or 'void'})"
+            for x in pieces
+            if x.name != self.name
         }
         out = [f"{sig};" for sig in sigs.values()]
-        for name, args, items in pieces:
-            if name == self.name:
-                out.append(self.define_text(head, params, items, True))
-            else:
-                out.append(self.define_text(sigs[name], args, items, False))
+        for x in pieces:
+            top = x.name == self.name
+            out.append(self.define_text(head if top else sigs[x.name], x.args, x.items, top))
         if nsec > 1:
             frame = self.mod.marks.put(("tag", "frame"))
             guards = [] if self.f.private else self.mod.guards.get(self.name, [])
