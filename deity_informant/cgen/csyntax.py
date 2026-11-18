@@ -371,16 +371,16 @@ def ending(items, jump, depth=0):
     arm leaving first. Each rewrite lowers the cost and recurs only into the statements of
     one ``if``, so the rewrites end."""
     while True:
-        best, now = None, cost(items, depth)
+        low, best = cost(items, depth), None
         for i in range(len(items) - 1, -1, -1):
             for head, rest in _exits(items, i, jump) if items[i][0] == "if" else ():
                 got = [*head, *ending(rest, jump, depth)]
                 c = cost(got, depth)
-                if c < now and (best is None or c < best[0]):
-                    best = (c, got)
+                if c < low:
+                    low, best = c, got
         if best is None:
             return items
-        items = best[1]
+        items = best
 
 
 def guarded(items):
