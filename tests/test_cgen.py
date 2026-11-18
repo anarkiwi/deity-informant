@@ -20,7 +20,7 @@ from vagrant_moses.c64 import poweron_ram
 
 import wholeprog_progs as W
 from deity_informant import NATIVE, cgen, postinit, trace, wholeprog
-from deity_informant.cgen import csyntax, mlir, printer, regions, structure, traps
+from deity_informant.cgen import mlir, printer, regions, structure, traps
 from deity_informant.lifter import OPS as OPCODES
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
@@ -4420,11 +4420,11 @@ def test_multi_exit_loop_breaks_to_its_follow(prefix, tmp_path):
 def test_jump_from_nested_loops_to_a_latch_is_a_goto_to_its_label(prefix, tmp_path):
     """NESTED_LATCH: the do/while's latch (`sub`, inlined, returning to `latch`) is entered
     from inside two nested counted loops, where ``continue`` is the inner loop's: `BPL done`
-    is a goto to the label ending the do body, before its condition."""
+    is a goto to the label ending the loop body, before its exit test."""
     c, _, info = check(prefix, tmp_path, NESTED_LATCH, entry_calls(range(2), 4), gotos=1)
     _, labels, _ = assemble(NESTED_LATCH)
     assert [e[0] for e in info["provenance"]["gotos"]] == [labels["done"] - 4]
-    assert re.search(r"goto (L\d+);(?s:.*)\n\s*\1:;\n\s*\} while \(", c)
+    assert re.search(r"goto (L\d+);(?s:.*)\n\s*\1:;\n\s*(\} while \(|if \()", c)
 
 
 def test_unlabeled_gotos_are_found_per_function(tmp_path):
@@ -4964,23 +4964,13 @@ def test_deterministic(prefix, monkeypatch, name):
     assert len(texts) == 1
 
 
-def test_conditions_cover_and_definite_assignment():
+def test_conditions_cover():
     conds = structure.Conds()
     a, b = conds.var(("c", "%a")), conds.var(("c", "%b"))
     assert conds.cover((a & b) | (a & ~b), conds.bdd.true) == [[(("c", "%a"), True)]]
     one, two = conds.var(("e", "%x", 1)), conds.var(("e", "%x", 2))
     assert conds.cover(~one & two, conds.care) == [[(("e", "%x", 2), True)]]
     conds.close()
-    assign = ("a", "x", "1", frozenset())
-    read = ("s", "f(x);", frozenset({"x"}))
-    assert csyntax.assigned_first([("if", "c", frozenset(), [assign], [assign]), read], "x")
-    assert not csyntax.assigned_first([("if", "c", frozenset(), [assign], []), read], "x")
-    jump = ("j", "return;", frozenset())
-    assert csyntax.assigned_first([("if", "c", frozenset(), [assign], [jump]), read], "x")
-    label = ("l", "L1:;", frozenset())
-    assert not csyntax.assigned_first([assign, ("j", "goto L1;", frozenset()), label, read], "x")
-    body = [("if", "c", frozenset(), [assign], []), read]
-    assert csyntax.render(csyntax.declare(body, {"x": "uint8_t"}))[0] == "uint8_t x = 0;"
 
 
 def test_condition_literals_keep_their_evaluation_order():
@@ -6231,7 +6221,7 @@ def test_block_copy_indexes_the_blocks_directly(blocks):
     assert any(store for _, store in p.addr_sets)
     assert " wr(" not in c and "CGEN_IX(" in c
     tests = re.findall(
-        r"if \(\(uint16_t\)\(([^;]*?)\) <\s*0x[0-9A-F]+\)\s*CGEN_IX\(R\d+, [^,]*, (v\d+)\)", c
+        r"if \(\(uint16_t\)\(([^;]*?)\) <\s*0x[0-9A-F]+\)\s*\{?\s*CGEN_IX\(R\d+, [^,]*, (v\d+)\)", c
     )
     assert tests and all(not re.search(rf"\b{v}\b", t) for t, v in tests)
 
@@ -8055,3 +8045,48 @@ def test_pointer_from_song_data_stays_in_the_data_block(prefix, tmp_path, aim):
     assert ok == [(labels["init"], labels["play"] - 1), (labels["cur"], labels["end"] - 1)]
     calls = [("init", 0)] + [("play", 0)] * 200
     play(tmp_path, c, h, img, labels, calls, trap=(1, k) if aim else None)
+
+
+CARRIED = """
+entry:  LDY #$01
+        LDX #$04
+loop:   TYA
+        ASL A
+        TAY
+        STY $C000
+        STY $C001
+        DEX
+        BNE loop
+        RTS
+end:
+"""
+
+
+def test_block_arguments_share_their_incoming_values_variable(prefix, tmp_path, monkeypatch):
+    """A loop counter's block argument and the value its back edge passes are one variable
+    (out of SSA by coalescing): no copy between them, fewer variables than one per value."""
+    c, _, _ = check(prefix, tmp_path, CARRIED, entry_calls([0]))
+    body = body_of(c, "entry")
+    assert not re.search(r"\b(v\d+) = (v\d+);", body)
+    monkeypatch.setattr(printer.ssa.Coalescer, "classes", lambda self: {})
+    plain = body_of(check(prefix, tmp_path, CARRIED, entry_calls([0]))[0], "entry")
+    count = lambda text: len(set(re.findall(r"\bv\d+\b", text)))
+    assert count(body) < count(plain)
+
+
+@pytest.mark.parametrize("late", [False, True])
+def test_loads_of_a_cell_recompute_where_no_write_reaches(prefix, tmp_path, late):
+    """A cell's load used several times prints at each use while no store to the cell lies
+    between; a use after the store keeps the value in a variable."""
+    tail = "INC cell\n        STA $C001" if late else "STA $C001\n        INC cell"
+    src = f"""
+entry:  LDA cell
+        STA $C000
+        {tail}
+        RTS
+cell:   .byte 5
+end:
+"""
+    c, _, _ = check(prefix, tmp_path, src, entry_calls([0, 1]))
+    body = body_of(c, "entry")
+    assert bool(re.search(r"\bv\d+\b", body)) == late

@@ -8,23 +8,24 @@ is made unsigned only where 16-bit ``int`` arithmetic could overflow.
 from __future__ import annotations
 
 import bisect
+import copy
+import re
 import math
 import operator
-import re
 from collections import Counter
 from dataclasses import dataclass, field, replace
 
 import networkx as nx
 import numpy as np
-from wayward_eagle import STATUS, Function, ends_in_jump, names_in, reduced, walk
+from pycparser import c_ast
+from wayward_eagle.c import prototypes, reduce_function
+from wayward_eagle.c import stmt as cs
 
 from .. import masks
 from ..lifter import MODE_LEN, OPS
 from . import llvmopt, mlir
 from .mlir import Op, _types
-from .csyntax import declare, drop_unread, hexes, lead, render
-from . import marks, regions
-from .marks import bare
+from . import cnodes as cn, marks, recompute, regions, ssa
 from .state import INDEXED, INIT, POINTER, UNKNOWN, State, classify
 from .structure import Conds, Graph, Structurer, new_ids
 
@@ -33,22 +34,21 @@ CTYPE = {1: "uint8_t", 8: "uint8_t", 16: "uint16_t"}
 CMP = {0: "==", 1: "!=", 2: "<", 3: "<=", 4: ">", 5: ">=", 6: "<", 7: "<=", 8: ">", 9: ">="}
 FLIP = {"==": "!=", "!=": "==", "<": ">=", ">=": "<", "<=": ">", ">": "<="}
 BINOP = {
-    "arith.addi": ("+", 12),
-    "arith.subi": ("-", 12),
-    "arith.muli": ("*", 13),
-    "arith.divui": ("/", 13),
-    "arith.remui": ("%", 13),
-    "arith.andi": ("&", 8),
-    "arith.ori": ("|", 6),
-    "arith.xori": ("^", 7),
-    "arith.shli": ("<<", 11),
-    "arith.shrui": (">>", 11),
+    "arith.addi": "+",
+    "arith.subi": "-",
+    "arith.muli": "*",
+    "arith.divui": "/",
+    "arith.remui": "%",
+    "arith.andi": "&",
+    "arith.ori": "|",
+    "arith.xori": "^",
+    "arith.shli": "<<",
+    "arith.shrui": ">>",
 }
 #: Operations on signed operands, printed on ``intN_t`` casts.
-SIGNED = {"arith.shrsi": (">>", 11), "arith.divsi": ("/", 13), "arith.remsi": ("%", 13)}
+SIGNED = {"arith.shrsi": ">>", "arith.divsi": "/", "arith.remsi": "%"}
 #: ``min``/``max``: the predicate under which each picks its first operand.
 MINMAX = {"arith.maxui": 8, "arith.minui": 6, "arith.maxsi": 4, "arith.minsi": 2}
-NOISY = {"<<", ">>", "&", "|", "^", "&&", "||"}
 INT16 = (-0x8000, 0x7FFF)
 #: The lift's checks: calls computing a value with no effect.
 CHECKS = ("@codechk", "@objchk")
@@ -56,19 +56,27 @@ CHECKS = ("@codechk", "@objchk")
 
 @dataclass(frozen=True)
 class E:  # pylint: disable=too-many-instance-attributes
-    """A C expression: text, precedence, top operator, exact range, whether it is unsigned
-    where ``int`` has 16 bits, whether it reads memory, the variables it reads and its
-    operands ``(operator, left, right)`` when it is a comparison or negation."""
+    """A C expression: its ``c_ast`` node, exact range, whether it is unsigned where ``int``
+    has 16 bits, whether it reads memory, the variables it reads and its operands
+    ``(operator, left, right)`` when it is a comparison or negation."""
 
-    text: str
-    prec: int = 16
-    op: str = ""
+    node: c_ast.Node
     lo: int = 0
     hi: int = 0
     uns: bool = False
     mem: bool = False
     refs: frozenset = field(default_factory=frozenset)
     parts: tuple | None = None
+
+    @property
+    def op(self):
+        """The top operator: a binary or unary operator, ``"cast"``, ``"?:"`` or none."""
+        n = self.node
+        if isinstance(n, (c_ast.BinaryOp, c_ast.UnaryOp)):
+            return n.op
+        return (
+            "cast" if isinstance(n, c_ast.Cast) else "?:" if isinstance(n, c_ast.TernaryOp) else ""
+        )
 
 
 #: The register each load mnemonic sets to the byte it reads (``LAX`` sets ``A`` too).
@@ -82,17 +90,24 @@ def meet(a, b):
 
 
 def lit(v, width):
-    """A literal of ``width`` bits: decimal below 10, else hex."""
+    """A literal of ``width`` bits: decimal below 10, else hex, unsigned near ``INT16_MAX``."""
     v &= (1 << width) - 1
-    text = str(v) if v < 10 else f"0x{v:X}"
-    if 0x7F00 <= v <= 0x7FFF:
-        text += "u"
-    return E(text, lo=v, hi=v, uns=v > 0x7EFF)
+    return E(cn.const(v, 0x7F00 <= v <= 0x7FFF), lo=v, hi=v, uns=v > 0x7EFF)
+
+
+def is_lit(e, v=None):
+    """Whether ``e`` is an integer literal (of value ``v``)."""
+    return isinstance(e.node, c_ast.Constant) and (v is None or e.lo == e.hi == v)
 
 
 def var(name, width):
     """A variable of ``width`` bits."""
-    return E(name, lo=0, hi=(1 << width) - 1, uns=width == 16, refs=frozenset([name]))
+    return E(cn.ident(name), lo=0, hi=(1 << width) - 1, uns=width == 16, refs=frozenset([name]))
+
+
+def named(name, lo=0, hi=255, uns=False, mem=False, refs=frozenset()):
+    """The expression named ``name`` (a macro, enumerator, array element or register)."""
+    return E(cn.ident(name), lo, hi, uns, mem, refs)
 
 
 def join(*es):
@@ -104,23 +119,19 @@ def plus(*es):
     """The 16-bit sum of expressions ``es``, left to right."""
     out = es[0]
     for e in es[1:]:
-        out = binary("+", 12, out, e, 16)
+        out = binary("+", out, e, 16)
     return out
 
 
-def par(e, prec, op=""):
-    """``e`` as an operand of operator ``op`` of precedence ``prec``: parenthesized where
-    precedence requires or where a compiler asks for clarity."""
-    noisy = op in NOISY and e.prec < 15 and e.op != op
-    noisy |= op in FLIP and (e.op == "!" or e.op in FLIP)
-    return f"({e.text})" if e.prec < prec or noisy else e.text
-
-
 def cast(e, ctype, width, signed=False):
-    """``e`` converted to ``ctype``."""
+    """``e`` converted to ``ctype``: a conversion to an integer type at least as wide that
+    it applies first is subsumed, as the outer one reduces modulo its width."""
     half = 1 << (width - 1)
     lo, hi = (-half, half - 1) if signed else (0, (1 << width) - 1)
-    return E(f"({ctype}){par(e, 15)}", 15, "cast", lo, hi, width == 16 and not signed, **join(e))
+    inner = e.node
+    while (t := cn.cast_type(inner)) is not None and cn.BITS[t] >= width:
+        inner = inner.expr
+    return E(cn.cast(ctype, inner), lo, hi, width == 16 and not signed, **join(e))
 
 
 def clean(e, width):
@@ -129,8 +140,18 @@ def clean(e, width):
     if 0 <= e.lo and e.hi < (1 << width):
         return e
     if width < 8:
-        return binary("&", 8, e, lit((1 << width) - 1, width), 8)
+        return binary("&", e, lit((1 << width) - 1, width), 8)
     return cast(e, CTYPE[width], width)
+
+
+def stored(e, width):
+    """``e`` as the value of an assignment to a ``width``-bit unsigned object, which reduces
+    it modulo its width: an outer integer cast at least as wide is subsumed, but on a
+    constant, whose truncation it states."""
+    t = cn.cast_type(e.node)
+    if t is not None and t[0] == "u" and cn.BITS[t] >= max(width, 8) and (e.refs or e.mem):
+        return replace(e, node=e.node.expr)
+    return e
 
 
 def _range(sym, a, b):
@@ -153,7 +174,7 @@ def _range(sym, a, b):
     return (max(a.lo, b.lo) if sym == "|" else 0), top
 
 
-def binary(sym, prec, a, b, width):
+def binary(sym, a, b, width):
     """``a sym b`` with its exact range; an operand becomes unsigned where the result would
     overflow a 16-bit ``int``."""
     if sym == ">>" or (sym in ("&", "|", "^") and min(a.lo, b.lo) < 0):
@@ -161,40 +182,44 @@ def binary(sym, prec, a, b, width):
     rng = _range(sym, a, b)
     uns = a.uns or (b.uns and sym not in ("<<", ">>"))
     if not uns and (rng[0] < INT16[0] or rng[1] > INT16[1]):
-        if a.text[0].isdigit():
-            a = replace(a, text=a.text.rstrip("u") + "u", uns=True)
+        if is_lit(a):
+            a = replace(a, node=cn.const(a.lo, True), uns=True)
         else:
             a = cast(a, "uint16_t", 16)
         uns = True
-    text = f"{par(a, prec, sym)} {sym} {par(b, prec + 1, sym)}"
-    return E(text, prec, sym, rng[0], rng[1], uns, **join(a, b))
+    return E(cn.binop(sym, a.node, b.node), rng[0], rng[1], uns, **join(a, b))
 
 
 def compare(sym, a, b):
     """``a sym b``."""
-    prec = 9 if sym in ("==", "!=") else 10
-    text = f"{par(a, prec, sym)} {sym} {par(b, prec + 1, sym)}"
-    return E(text, prec, sym, 0, 1, parts=(sym, a, b), **join(a, b))
+    return E(cn.binop(sym, a.node, b.node), 0, 1, parts=(sym, a, b), **join(a, b))
 
 
 def negated(e):
     """The logical negation of truth value ``e``."""
     if e.lo == e.hi and not e.mem and not e.refs:
         return lit(int(not e.lo), 1)
-    if e.op in FLIP:
-        return compare(FLIP[e.op], e.parts[1], e.parts[2])
-    if e.op == "!":
+    if e.parts and e.parts[0] in FLIP:
+        return compare(FLIP[e.parts[0]], e.parts[1], e.parts[2])
+    if e.parts and e.parts[0] == "!":
         return e.parts[1]
-    return E(f"!{par(e, 15)}", 15, "!", 0, 1, parts=("!", e), **join(e))
+    return E(c_ast.UnaryOp("!", e.node), 0, 1, parts=("!", e), **join(e))
 
 
 def truth(e):
     """``e`` as a condition: ``x != 0`` as ``x``, ``x == 0`` as ``!x``."""
-    if e.op in ("==", "!=") and e.parts[2].text == "0" and e.parts[1].lo >= 0:
+    if e.parts and e.parts[0] in ("==", "!=") and is_lit(e.parts[2], 0) and e.parts[1].lo >= 0:
         x = e.parts[1]
         x = truth(x) if x.hi == 1 else x
-        return x if e.op == "!=" else negated(x)
+        return x if e.parts[0] == "!=" else negated(x)
     return e
+
+
+def ternary(c, a, b, **kw):
+    """``c ? a : b``."""
+    rng = {"lo": min(a.lo, b.lo), "hi": max(a.hi, b.hi), "uns": a.uns or b.uns}
+    rng.update(kw)
+    return E(c_ast.TernaryOp(c.node, a.node, b.node), **rng, **join(c, a, b))
 
 
 NUMPY = {
@@ -309,7 +334,7 @@ def _add16(name, pc, x, y):
 
 def enum_lit(names, v):
     """Enumerator ``names[v]`` as a constant expression."""
-    return E(names[int(v)], lo=int(v), hi=int(v))
+    return named(names[int(v)], int(v), int(v))
 
 
 def logic(sym, es):
@@ -318,9 +343,10 @@ def logic(sym, es):
         return lit(int(sym == "&&"), 1)
     if len(es) == 1:
         return es[0]
-    prec = 5 if sym == "&&" else 4
-    text = f" {sym} ".join(par(e, prec + 1, sym) for e in es)
-    return E(text, prec, sym, 0, 1, **join(*es))
+    node = es[0].node
+    for e in es[1:]:
+        node = cn.binop(sym, node, e.node)
+    return E(node, 0, 1, **join(*es))
 
 
 def enum_names(cell, vals):
@@ -2148,6 +2174,10 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         self.name = None
         self.owned = {it[1].name for its in graph.items.values() for it in its if it[0] == "ops"}
         self.names, self.nvar, self.inline, self.memf, self.types = {}, 0, set(), {}, {}
+        #: Each SSA value's congruence class representative (:class:`ssa.Coalescer`).
+        self.classes = {}
+        #: The C declaration of the function, once printed.
+        self.head_decl = None
         self.uses, self.user, self.covers, self.copies = {}, {}, {}, {}
         self.body, self.head_text, self.labels = None, "", {}
         self.prov = {"gotos": [], "reduced": [], "loops": [], "conditions": [], "switches": []}
@@ -2289,8 +2319,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         return self.covers[(f, ctx)]
 
     def plan(self):
-        """Choose the values printed inline: constants, values used once and casts of or
-        constant offsets from variables (the root of a shared one is made a variable)."""
+        """Choose the values printed inline: constants, values used once, casts of or
+        constant offsets from variables (the root of a shared one is made a variable) and
+        loads of a cell no write reaches before a use (:mod:`.recompute`)."""
         f, forced = self.f, set()
         ops = [o for b in f.blocks if b.name in self.owned for o in b.ops[:-1]]
         for o in ops:
@@ -2322,6 +2353,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             if mem and not self.adjacent(o, self.user[v]):
                 continue
             self.inline.add(v)
+        self.inline |= recompute.Recompute(self).loads()
 
     def adjacent(self, d, who):
         """Whether the single use ``who`` of ``d``'s value sees memory as ``d`` does."""
@@ -2363,7 +2395,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
     # Expressions.
 
     def var_of(self, v, width=8):
-        """The C variable of value ``v`` (or structuring variable), named on first use."""
+        """The C variable of value ``v`` (or structuring variable), named on first use: one
+        per congruence class (:mod:`.ssa`)."""
+        v = self.classes.get(v, v)
         if v not in self.names:
             self.nvar += 1
             self.names[v] = f"{'c' if self.f.carry(v) else 'v'}{self.nvar}"
@@ -2390,8 +2424,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             return self.build(f.defs[v])
         lo, hi = f.iv(v)
         name = self.var_of(v, w)
-        base = name.split(".")[0]
-        return E(name, lo=lo, hi=hi, uns=w == 16, refs=frozenset([base]))
+        return E(cn.ident(name), lo=lo, hi=hi, uns=w == 16, refs=frozenset([name]))
 
     def reloc(self, c):
         """The constant address ``c`` relative to the region holding it."""
@@ -2399,14 +2432,14 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         if sym is None:
             return lit(c, 16)
         self.mod.used.add(sym)
-        text = f"{sym} + {lit(off, 16).text}" if off else sym
-        return E(text, 12 if off else 16, "+" if off else "", c, c, True)
+        node = cn.binop("+", cn.ident(sym), lit(off, 16).node) if off else cn.ident(sym)
+        return E(node, c, c, True)
 
     def indexed(self, o):
-        """``(base, index)`` texts of the address of access ``o`` when it is a 16-bit value
-        plus a zero-extended byte, else None."""
+        """``(base, index)`` expressions of the address of access ``o`` when it is a 16-bit
+        value plus a zero-extended byte, else None."""
         bi = self.f.base_index(o)
-        return None if bi is None else (self.addr(bi[0]).text, self.ex(bi[1]).text)
+        return None if bi is None else (self.addr(bi[0]).node, self.ex(bi[1]).node)
 
     def base_tests(self, o, how):
         """Per choice of a pointer access ``o`` over regions and spans (``how``), a test of its
@@ -2433,20 +2466,21 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         order = sorted(spans)
         if any(x[1] >= y[0] for x, y in zip(order, order[1:])):
             return None
-        base = self.addr(bi[0]).text
+        base = self.addr(bi[0]).node
         tests = []
         for lo, hi, n, org in spans:
-            d = lo - org
-            ref = f"{n}_ORG + {lit(d, 16).text}" if d > 0 else f"{n}_ORG - {lit(-d, 16).text}"
-            ref = n + "_ORG" if d == 0 else ref
-            tests.append(f"(uint16_t)(({base}) - ({ref})) < {lit(hi - lo + 1, 16).text}")
+            d, ref = lo - org, cn.ident(n + "_ORG")
+            if d:
+                ref = cn.binop("+" if d > 0 else "-", ref, lit(abs(d), 16).node)
+            off = cn.cast("uint16_t", cn.binop("-", base, ref))
+            tests.append(cn.binop("<", off, lit(hi - lo + 1, 16).node))
         return tests
 
     def addr(self, a):
         """The address value ``a`` with its constant relocated (a zero-page one as is)."""
         c, rest = self.f.split(a)
         if self.f.width(a) < 16 and rest is not None:
-            r = self.ex(rest) if c == 0 else binary("+", 12, lit(c, 8), self.ex(rest), 8)
+            r = self.ex(rest) if c == 0 else binary("+", lit(c, 8), self.ex(rest), 8)
             return clean(r, 8)
         if self.f.width(a) < 16:
             return lit(c, 8)
@@ -2454,7 +2488,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             return self.reloc(c)
         if not c:
             return self.ex(rest)
-        return binary("+", 12, self.reloc(c), self.ex(rest), 16)
+        return binary("+", self.reloc(c), self.ex(rest), 16)
 
     def target(self, o):
         """How access ``o`` reaches memory: ``("region", k)``, ``("held", j)``, ``("io",)``,
@@ -2561,7 +2595,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         c, rest = self.f.split(self.f.address(o))
         if rest in self.f.kptrs:
             p = self.ex(rest)
-            return E(f"{p.text}[{lit(c, 8).text}]", 16, "", 0, 255, False, True, p.refs)
+            return E(cn.index(p.node, lit(c, 8).node), 0, 255, False, True, p.refs)
         sub = self.sub(o, self.f.address(o), k, held)
         sub = clean(sub, 16) if sub.lo < 0 else sub
         if held:
@@ -2569,13 +2603,14 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             self.mod.spans_used.add(k)
         else:
             self.mod.regions_used.add(k)
-        return E(f"{name}[{sub.text}]", 16, "", 0, 255, False, True, sub.refs)
+        return E(cn.index(name, sub.node), 0, 255, False, True, sub.refs)
 
     def block_ref(self, o, b):
         """The element ``Bb[...]`` of block array ``b`` access ``o`` addresses."""
         self.mod.mem.blocks_used.add(b)
         a = self.addr(self.f.address(o))
-        return E(f"B{b}[(uint16_t)({a.text} - B{b}_ORG)]", 16, "", 0, 255, False, True, a.refs)
+        off = cn.cast("uint16_t", cn.binop("-", a.node, cn.ident(f"B{b}_ORG")))
+        return E(cn.index(f"B{b}", off), 0, 255, False, True, a.refs)
 
     def sub(self, o, a, k, held):
         """The offset of address value ``a`` of access ``o`` into region ``k`` (or held span
@@ -2585,7 +2620,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         mem, f = self.mod.mem, self.f
         org, n = mem.held[k] if held else mem.regions[k]
         n = n - org if held else n
-        sym = E(f"{name}_ORG", lo=org, hi=org, uns=True)
+        sym = named(f"{name}_ORG", org, org, True)
         c, rest = self.f.split(a)
         top = (1 << f.width(a)) - 1
         c &= top
@@ -2599,11 +2634,11 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         # A fixed address in a region the image's relocation moves is offset by its origin.
         moved = not held and mem.moves(org, True) != mem.moves(c)
         if rest is None and moved:
-            sub = binary("-", 12, lit(c, 16), sym, 16)
+            sub = binary("-", lit(c, 16), sym, 16)
         elif rest is None:
             sub = self.mod.offset(name, o.pc, c, org) if held else lit(c - org, 16)
         elif c == 0 and org:
-            sub = binary("-", 12, self.ex(rest), sym, 16)
+            sub = binary("-", self.ex(rest), sym, 16)
         else:
             if lo + c <= top < hi + c:
                 rs, c = [clean(plus(lit(c, 16), *rs), f.width(a))], 0
@@ -2615,11 +2650,11 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             elif off < -0x100 or moved:
                 # A constant that is no address near the region (a pointer plus one): its
                 # origin stays symbolic, as relocation moves it.
-                sub = binary("-", 12, plus(*([lit(c, 16)] if c else []), *rs), sym, 16)
+                sub = binary("-", plus(*([lit(c, 16)] if c else []), *rs), sym, 16)
             elif off > 0:
                 sub = plus(lit(off, 16), *rs)
             elif off < 0:
-                sub = binary("-", 12, plus(*rs), lit(-off, 16), 16)
+                sub = binary("-", plus(*rs), lit(-off, 16), 16)
             else:
                 sub = plus(*rs)
         return sub
@@ -2629,18 +2664,18 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         struct's field of the element its copy index chooses."""
         p = self.f.promoted[id(o)]
         if p[0] == "s":
-            return E(self.mod.var_name(p[1]), 16, "", 0, 255, False, True)
+            return named(self.mod.var_name(p[1]), mem=True)
         _, s, d, e = p
         el = lit(e, 8) if isinstance(e, int) else self.ex(e)
-        return E(f"V{s}_f{d:02X}[{el.text}]", 16, "", 0, 255, False, True, el.refs)
+        return E(cn.index(f"V{s}_f{d:02X}", el.node), 0, 255, False, True, el.refs)
 
     def load(self, o):
         """The C expression of a memory load ``o``: of a constant byte at a fixed address, its
         name in the ``.h`` (:meth:`Module.konst`)."""
         if o.args[0] == self.f.symbols:
-            return E(self.mod.symbol(self.f.const_of(o.args[1])), 16, "", 0, 255)
+            return named(self.mod.symbol(self.f.const_of(o.args[1])))
         if self.f.named(o) is not None:
-            return E(self.mod.konst(self.f.iv(self.f.address(o))[0]), 16, "", 0, 255)
+            return named(self.mod.konst(self.f.iv(self.f.address(o))[0]))
         if id(o) in self.f.promoted:
             return self.var(o)
         how = self.target(o)
@@ -2662,11 +2697,11 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             refs = p.refs | idx.refs
             if fused is None:
                 self.mod.block_readers.add(how[1])
-                return E(f"B{how[1]}r({p.text}, {idx.text})", 16, "", 0, 255, False, True, refs)
+                return E(cn.call(f"B{how[1]}r", p.node, idx.node), 0, 255, False, True, refs)
             self.mod.traps.add(fused[1])
             name = self.mod.checked_fn(f"B{how[1]}", fused[0])
-            text = self.check("objchk", o, f"{name}({p.text}, {idx.text}, {fused[1]})", fused[1])
-            return E(text, 16, "", 0, 255, False, True, refs)
+            node = cn.call(name, p.node, idx.node, cn.const(fused[1]))
+            return E(self.check("objchk", o, node, fused[1]), 0, 255, False, True, refs)
         a = self.addr(self.f.address(o))
         if how[0] == "checked":
             return self.checked(o, how[2], a)
@@ -2674,33 +2709,34 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             # A constant base plus a byte inside one held span: its bounds-checked reader.
             if not how[1] and self.f.base_index(o) is not None:
                 return self.checked(o, how[2][0], a)
-            ((test, el),) = self.mod.choices(how[1], how[2], a.text, self.indexed(o))
+            ((test, el),) = self.mod.choices(how[1], how[2], a.node, self.indexed(o))
             self.mod.helpers.add("oob_rd")
             test = self.check("bounded", o, test)
-            text = f"({test} ? {el} : {self.arm(f'oob_rd({a.text})')})"
-            return E(text, 16, "", 0, 255, False, True, a.refs)
+            node = c_ast.TernaryOp(test, el, self.arm(cn.call("oob_rd", a.node)))
+            return E(node, 0, 255, False, True, a.refs)
         if how[0] == "set":
             choices = self.mod.choices(
-                how[1], how[2], a.text, self.indexed(o), self.base_tests(o, how)
+                how[1], how[2], a.node, self.indexed(o), self.base_tests(o, how)
             )
-            *tests, last = choices
-            text = "".join(f"{t} ? {r} : " for t, r in tests) + last[1]
-            return E(f"({text})", 16, "", 0, 255, False, True, a.refs)
+            node = choices[-1][1]
+            for t, r in reversed(choices[:-1]):
+                node = c_ast.TernaryOp(t, r, node)
+            return E(node, 0, 255, False, True, a.refs)
         if how[0] == "block":
             name = self.mod.block_fn("rd", how[1], how[2])
             fused = self.fusion().get(id(o))
             if fused is not None:
                 self.mod.traps.add(fused[1])
                 name = self.mod.checked_fn(name, fused[0])
-                text = self.check("objchk", o, f"{name}({a.text}, {fused[1]})", fused[1])
-                return E(text, 16, "", 0, 255, False, True, a.refs)
-            return E(f"{name}({a.text})", 16, "", 0, 255, False, True, a.refs)
+                node = self.check("objchk", o, cn.call(name, a.node, cn.const(fused[1])), fused[1])
+                return E(node, 0, 255, False, True, a.refs)
+            return E(cn.call(name, a.node), 0, 255, False, True, a.refs)
         fn = "oob_rd" if how[0] == "code" else "rd"
         self.mod.helpers.add(fn)
         if id(o) in self.f.aware and self.mod.var_at:
             self.mod.helpers.add("cgen_var")
-        text = self.check("oob" if how[0] == "code" else "rd", o, f"{fn}({a.text})")
-        return E(text, 16, "", 0, 255, False, True, a.refs)
+        node = self.check("oob" if how[0] == "code" else "rd", o, cn.call(fn, a.node))
+        return E(node, 0, 255, False, True, a.refs)
 
     def fusion(self):
         """``{id(op): ...}`` of the object checks a load through the data block's reader
@@ -2772,31 +2808,31 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         if id(o) in self.fusion():
             return lit(0, 1)
         p, j = self.ex(o.args[0]), self.f.defs[o.args[1]].int_prop("value")
-        text = self.mod.outside(j, p)
-        return E(self.check("objchk", o, text, self.trap_after(o)), 16, "", 0, 1, **join(p))
+        node = self.check("objchk", o, self.mod.outside(j, p), self.trap_after(o))
+        return E(node, 0, 1, **join(p))
 
-    def check(self, kind, o, text, trap=None):
-        """``text`` marked as a check of access (or guard) ``o`` (*Translation cost*), ``trap``
-        the ``k`` its failure takes."""
-        return self.mod.marks.wrap(("check", kind, o, self.f.name, trap), text)
+    def check(self, kind, o, node, trap=None):
+        """Expression ``node`` marked as a check of access (or guard) ``o`` (*Translation
+        cost*), ``trap`` the ``k`` its failure takes."""
+        return cn.marked(node, self.mod.marks.add(("check", kind, o, self.f.name, trap)))
 
-    def arm(self, text):
-        """``text`` marked as the failure arm of the check last marked."""
-        return self.mod.marks.wrap(("arm", len(self.mod.marks.recs) - 1), text)
+    def arm(self, node):
+        """Expression ``node`` marked as the failure arm of the check last marked."""
+        return cn.marked(node, self.mod.marks.add(("arm", len(self.mod.marks.recs) - 1)))
 
     def trap_after(self, o):
         """The ``k`` of the ``trap(k)`` a branch on the value of call ``o`` leads to directly,
         through pure operations on it; None for no such branch or no result."""
         f = self.f
         work, seen = list(o.res), set()
-        named = {b.name: b for b in f.blocks}
+        by_name = {b.name: b for b in f.blocks}
         while work:
             v = work.pop()
             for x in (x for b in f.blocks for x in b.ops if v in x.args):
                 if x.name == "cf.cond_br":
                     traps = [
                         t
-                        for b in (named[s] for s in x.succs if s in named)
+                        for b in (by_name[s] for s in x.succs if s in by_name)
                         for t in b.ops
                         if t.name == "func.call" and t.prop("callee") == "@trap"
                     ]
@@ -2832,12 +2868,12 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         if sure:
             self.mod.used.add("CGEN_IX")
             off = self.sub(o, at, j, True)
-            text = f"CGEN_IX(C{j}, {off.text}, {clean(idx, 8).text})"
-            return E(text, 16, "", 0, 255, False, True, join(off, idx)["refs"])
+            node = cn.call("CGEN_IX", cn.ident(f"C{j}"), off.node, clean(idx, 8).node)
+            return E(node, 0, 255, False, True, join(off, idx)["refs"])
         base = self.addr(at) if bi is not None else a if at == self.f.address(o) else self.ex(at)
         refs = join(base, idx)["refs"]
-        text = self.check("rdC", o, f"rdC{j}({base.text}, {idx.text})")
-        return E(text, 16, "", 0, 255, False, True, refs)
+        node = self.check("rdC", o, cn.call(f"rdC{j}", base.node, idx.node))
+        return E(node, 0, 255, False, True, refs)
 
     def build(self, o):  # pylint: disable=too-many-return-statements
         """The C expression of the single-result pure operation ``o``."""
@@ -2857,53 +2893,45 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         if name == "func.call":
             a, v = self.addr(o.args[0]), self.ex(o.args[1])
             self.mod.helpers.add("codechk")
-            text = self.check("codechk", o, f"codechk({a.text}, {v.text})", self.trap_after(o))
-            return E(text, 16, "", 0, 1, **join(a, v))
+            node = self.check("codechk", o, cn.call("codechk", a.node, v.node), self.trap_after(o))
+            return E(node, 0, 1, **join(a, v))
         args = [self.ex(a, (o, i)) for i, a in enumerate(o.args)]
         if name in BINOP:
-            sym, prec = BINOP[name]
+            sym = BINOP[name]
             a, b = args
             if sym == "+" and b.lo == b.hi and (1 << w) - b.lo < min(0x100, (1 << w) // 2):
-                return binary("-", 12, a, lit((1 << w) - b.lo, w), w)
+                return binary("-", a, lit((1 << w) - b.lo, w), w)
             if sym in ("&", "|", "^") and w == 1:
-                if sym == "^" and b.text == "1":
+                if sym == "^" and is_lit(b, 1):
                     return negated(truth(a))
-                sym, prec = {"&": ("&&", 5), "|": ("||", 4)}.get(sym, (sym, prec))
-                return (
-                    binary(sym, prec, truth(a), truth(b), 1)
-                    if sym != "^"
-                    else binary(sym, prec, a, b, 1)
-                )
-            return binary(sym, prec, a, b, w)
+                if sym == "^":
+                    return binary(sym, a, b, 1)
+                return binary({"&": "&&", "|": "||"}[sym], truth(a), truth(b), 1)
+            return binary(sym, a, b, w)
         if name == "arith.cmpi" and (st := self.over_state(o.res[0])) is not None:
             return self.member(st[0], st[1], st[2] != 0)
         if name == "arith.cmpi":
             pred, w0 = o.int_prop("predicate"), self.f.width(o.args[0])
             return self.cmpi(pred, *args, w0)
         if name in MINMAX:
-            c, (a, b) = self.cmpi(MINMAX[name], *args, w), args
-            text = f"{par(c, 4)} ? {par(a, 4)} : {par(b, 3)}"
-            return E(text, 3, "?:", min(a.lo, b.lo), max(a.hi, b.hi), a.uns or b.uns, **join(a, b))
+            return ternary(self.cmpi(MINMAX[name], *args, w), *args)
         if name in SIGNED:
-            sym, prec = SIGNED[name]
-            a, b = (cast(clean(x, w), f"int{w}_t", w, True) for x in args)
-            e = E(f"{par(a, prec, sym)} {sym} {par(b, prec + 1, sym)}", prec, sym, **join(a, b))
-            return cast(e, CTYPE[w], w)
+            sym = SIGNED[name]
+            a, b = (cast(x, f"int{w}_t", w, True) for x in args)
+            return cast(E(cn.binop(sym, a.node, b.node), **join(a, b)), CTYPE[w], w)
         if name == "arith.extsi":
             w0 = self.f.width(o.args[0])
             if w0 == 1:
-                return cast(E(f"-{par(args[0], 15)}", 15, "-", -1, 0, **join(args[0])), CTYPE[w], w)
-            return cast(cast(clean(args[0], w0), f"int{w0}_t", w0, True), CTYPE[w], w)
+                neg = E(c_ast.UnaryOp("-", args[0].node), -1, 0, **join(args[0]))
+                return cast(neg, CTYPE[w], w)
+            return cast(cast(args[0], f"int{w0}_t", w0, True), CTYPE[w], w)
         if name in ("arith.extui", "arith.index_castui", "arith.index_cast"):
             return clean(args[0], self.f.width(o.args[0]))
         if name == "arith.trunci":
             return clean(args[0], w)
         if name == "arith.select":
             c, a, b = args
-            text = f"{par(truth(c), 4)} ? {par(a, 4)} : {par(b, 3)}"
-            return E(
-                text, 3, "?:", min(a.lo, b.lo), max(a.hi, b.hi), a.uns or b.uns, **join(c, a, b)
-            )
+            return ternary(truth(c), a, b)
         raise NotImplementedError(name)
 
     def kfam(self, o):
@@ -2914,22 +2942,22 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         tab, k = f.ktabs[o.res[0]], self.ex(o.args[0])
         if o.res[0] in f.kptrs:
             name = self.mod.pointers(f.kptrs[o.res[0]], tab[f.kvals])
-            return E(f"{name}[{k.text}]", 16, "", 0, 0xFFFF, True, False, k.refs)
+            return E(cn.index(name, k.node), 0, 0xFFFF, True, False, k.refs)
         m = (1 << w) - 1
         fit = line([(int(x), int(tab[x])) for x in f.kvals], m)
         if fit is None or fit[1] not in (1, m):
             name = self.mod.table(w, tab)
             lo, hi = int(tab[f.kvals].min()), int(tab[f.kvals].max())
-            return E(f"{name}[{k.text}]", 16, "", lo, hi, w == 16, False, k.refs)
+            return E(cn.index(name, k.node), lo, hi, w == 16, False, k.refs)
         a, st = fit
         if st == m:
-            return binary("-", 12, lit(a, w), k, w)
-        return binary("+", 12, lit(a, w), k, w) if a else k
+            return binary("-", lit(a, w), k, w)
+        return binary("+", lit(a, w), k, w) if a else k
 
     @staticmethod
     def cmpi(pred, a, b, width):
-        """An ``arith.cmpi`` of ``width``-bit operands."""
-        a, b = clean(a, width), clean(b, width)
+        """An ``arith.cmpi`` of ``width``-bit operands: a signed one on ``intN_t`` casts, which
+        reduce modulo ``N`` themselves."""
         sym = CMP[pred]
         if pred in (2, 3, 4, 5):
             k = b.lo if b.lo == b.hi else None
@@ -2939,7 +2967,10 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
                 b = cast(b, st, width, True)
             else:
                 k = twos(k, width)
-                b = E(str(k), 16 if k >= 0 else 15, lo=k, hi=k)
+                node = cn.const(k) if k >= 0 else c_ast.UnaryOp("-", cn.const(-k))
+                b = E(node, lo=k, hi=k)
+        else:
+            a, b = clean(a, width), clean(b, width)
         if b.lo == b.hi and b.lo in (0, 1) and 0 <= a.lo and a.hi <= 1 and sym in ("==", "!="):
             return truth(a) if (sym == "==") == (b.lo == 1) else negated(truth(a))
         return compare(sym, a, b)
@@ -3000,9 +3031,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         outs = sorted(set(r.tolist()), key=lambda y: (-(r == y).sum(), y))
         e = enum_lit(names, outs[0])
         for y in outs[1:]:
-            c = self.member(u, vals, r == y)
-            text = f"{par(c, 4)} ? {names[y]} : {par(e, 3)}"
-            e = E(text, 3, "?:", 0, 255, **join(c))
+            e = ternary(self.member(u, vals, r == y), enum_lit(names, y), e, lo=0, hi=255)
         return e
 
     def literal(self, key, pol):
@@ -3037,16 +3066,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             e = self.literal(k, p)
             if k not in effects:
                 return e
-            parts, refs = [], set(e.refs)
-            for st in self.convert(effects[k]):
-                if st[0] == "a":
-                    parts.append(f"{st[1]} = {st[2]}")
-                    refs |= st[3] | {st[1]}
-                else:
-                    assert st[0] == "s", st
-                    parts.append(st[1].rstrip(";"))
-                    refs |= st[2]
-            return E(f"({', '.join([*parts, e.text])})", lo=e.lo, hi=e.hi, refs=frozenset(refs))
+            parts = _expressions(self.convert(effects[k]))
+            refs = e.refs | frozenset().union(*(cs.names_in([x]) for x in parts))
+            return E(c_ast.ExprList([*parts, e.node]), e.lo, e.hi, refs=refs)
 
         saved, self.printing, visit, term = self.printing, [], self.visit, self.term
         e = logic("||", [logic("&&", [lit_of(k, p) for k, p in c]) for c in cubes])
@@ -3057,7 +3079,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         got = [o for o in (term,) if o is not None] + got
         if not any(o.pc for o in got):
             return e
-        return replace(e, text=self.mod.marks.put(("pc", self.f.name, *self.visit, got)) + e.text)
+        return replace(
+            e, node=cn.marked(e.node, self.mod.marks.add(("pc", self.f.name, *self.visit, got)))
+        )
 
     def branch_of(self, n):
         """The last operation of graph node ``n``: the branch its condition prints."""
@@ -3069,10 +3093,11 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
     def define(self, v, e, out):
         """Assign the variable of value ``v`` as ``e``: an assignment of a pure value
         (:meth:`Func.pure`) nothing printed reads is dropped, as an unread copy is."""
-        out.append(("a", self.var_of(v, self.f.width(v)), e.text, e.refs))
+        w = self.f.width(v)
         d = self.f.defs.get(v)
-        if d is not None and self.f.pure(d):
-            self.copies[id(out[-1])] = out[-1]
+        out.append(
+            cn.assign(self.var_of(v, w), stored(e, w).node, d is not None and self.f.pure(d))
+        )
 
     def stmt(self, o, out):
         """Append the statements of operation ``o``."""
@@ -3117,11 +3142,15 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
                 continue
             if self.mod.mem.base(word)[0] is None:
                 return None
-            e = self.reloc(word)
-            if hi:
-                return E(f"({e.text}) >> 8", 11, ">>", 0, 255)
-            return E(f"(uint8_t)({e.text})", 15, "cast", 0, 255)
+            return self.half(self.reloc(word), hi)
         return None
+
+    @staticmethod
+    def half(e, hi):
+        """The high (``hi``) or low byte of address ``e``, as a byte store writes it."""
+        if hi:
+            return E(cn.binop(">>", e.node, cn.const(8)), 0, 255)
+        return E(cn.cast("uint8_t", e.node), 0, 255)
 
     def halves(self, o):
         """The value of a constant store ``o`` that, with a constant store to the other byte
@@ -3159,57 +3188,50 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         sym, _ = self.mod.mem.base(word)
         if sym is None:
             return None
-        e = self.reloc(word)
-        if a == lo:
-            return E(f"(uint8_t)({e.text})", 15, "cast", 0, 255)
-        return E(f"({e.text}) >> 8", 11, ">>", 0, 255)
+        return self.half(self.reloc(word), a != lo)
 
     def store(self, o, out):
         """A memory store (or an ``io_write`` that cannot reach I/O)."""
         val = o.args[1] if o.name == "func.call" else o.args[0]
         how, v = self.target(o), (o.name != "func.call" and self.halves(o)) or self.ex(val)
+        v = stored(v, 8).node
         if id(o) in self.f.aware and self.mod.var_at:
             how = ("any",)
             self.mod.helpers.add("cgen_var")
         if how[0] == "var":
             ref, p = self.var(o), self.f.promoted[id(o)]
             names = self.mod.enum_of(p[1]) if p[0] == "s" else None
-            v = (self.state_value(val, names) if names else None) or v
-            out.append(("s", f"{ref.text} = {v.text};", ref.refs | v.refs))
+            got = self.state_value(val, names) if names else None
+            out.append(cn.assign(ref.node, got.node if got else v))
             return
         if how[0] in ("region", "held", "barray"):
             ref = self.block_ref(o, how[1]) if how[0] == "barray" else None
             ref = ref or self.mem_ref(o, how[1], how[0] == "held")
-            out.append(("s", f"{ref.text} = {v.text};", ref.refs | v.refs))
+            out.append(cn.assign(ref.node, v))
             return
+        a = self.addr(self.f.address(o))
         if how[0] == "block":
-            a = self.addr(self.f.address(o))
-            name = self.mod.block_fn("wr", how[1], how[2])
-            out.append(("s", f"{name}({a.text}, {v.text});", a.refs | v.refs))
+            out.append(cn.call(self.mod.block_fn("wr", how[1], how[2]), a.node, v))
             return
         if how[0] == "set":
-            a = self.addr(self.f.address(o))
             choices = self.mod.choices(
-                how[1], how[2], a.text, self.indexed(o), self.base_tests(o, how)
+                how[1], how[2], a.node, self.indexed(o), self.base_tests(o, how)
             )
-            *tests, last = choices
-            text = "".join(f"if ({t}) {r} = {v.text}; else " for t, r in tests)
-            out.append(("s", f"{text}{last[1]} = {v.text};", a.refs | v.refs))
+            st = cn.assign(choices[-1][1], v)
+            for t, r in reversed(choices[:-1]):
+                st = c_ast.If(t, cn.assign(r, v), st)
+            out.append(st)
             return
         if how[0] == "bound":
             # A store inside the array holding its base, out of bounds past it.
-            a = self.addr(self.f.address(o))
-            ((test, el),) = self.mod.choices((how[1],), (), a.text, self.indexed(o))
+            ((test, el),) = self.mod.choices((how[1],), (), a.node, self.indexed(o))
             self.mod.helpers.add("oob_wr")
             test = self.check("bounded", o, test)
-            text = f"if ({test}) {el} = {v.text}; else {self.arm(f'oob_wr({a.text}, {v.text})')};"
-            out.append(("s", text, a.refs | v.refs))
+            out.append(c_ast.If(test, cn.assign(el, v), self.arm(cn.call("oob_wr", a.node, v))))
             return
         fn = "oob_wr" if how[0] == "code" else "wr"
         self.mod.helpers.add(fn)
-        a = self.addr(self.f.address(o))
-        text = self.check("oob" if how[0] == "code" else "wr", o, f"{fn}({a.text}, {v.text})")
-        out.append(("s", f"{text};", a.refs | v.refs))
+        out.append(self.check("oob" if how[0] == "code" else "wr", o, cn.call(fn, a.node, v)))
 
     def call(self, o, out):
         """A call of an external or lifted function."""
@@ -3218,74 +3240,82 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         if callee == "trap":
             k = f.const_of(o.args[0])
             self.mod.traps.add(k)
-            mark = self.mod.marks.put(("trap", k, f.name))
-            out.append(("s", f"{mark}trap({self.ex(o.args[0]).text});", frozenset()))
+            st = cn.call("trap", self.ex(o.args[0]).node)
+            cn.prov(st).rec = self.mod.marks.add(("trap", k, f.name))
+            out.append(st)
             return
         if callee not in ("io_read", "io_write"):
             target = self.mod.mains[callee]
             args = [self.ex(a, (o, i)) for i, a in enumerate(o.args) if (id(o), i) not in f.dead]
-            text = f"{self.mod.name_of(target, self)}({', '.join(a.text for a in args)})"
-            refs = frozenset().union(*(a.refs for a in args))
+            node = cn.call(self.mod.name_of(target, self), *(a.node for a in args))
             res = [o.res[j] for j in target.f.live_res]
             used = [r for r in res if self.uses.get(r)]
             if len(res) == 1 and used:
-                out.append(("a", self.var_of(res[0], f.width(res[0])), text, refs))
+                out.append(cn.assign(self.var_of(res[0], f.width(res[0])), node))
             elif len(res) > 1 and used:
-                out.append(("s", f"{text};", refs))
+                out.append(node)
                 for j, r in zip(target.f.live_res, res):
                     if self.uses.get(r):
                         rv = self.mod.reg_var(target.f, j)
-                        self.define(r, E(rv, hi=(1 << f.width(r)) - 1), out)
+                        self.define(r, named(rv, hi=(1 << f.width(r)) - 1), out)
             else:
-                out.append(("s", f"{text};", refs))
+                out.append(node)
             return
         how = self.target(o)
         if callee == "io_write":
             if how[0] == "io":
                 a, v = self.addr(o.args[0]), self.ex(o.args[1])
-                out.append(("s", f"io_write({a.text}, {v.text});", a.refs | v.refs))
+                out.append(cn.call("io_write", a.node, stored(v, 8).node))
             else:
                 self.store(o, out)
             return
         e = None
         if how[0] == "io":
             a = self.addr(o.args[0])
-            e = E(f"io_read({a.text})", hi=255, refs=a.refs)
+            e = E(cn.call("io_read", a.node), hi=255, refs=a.refs)
         if self.uses.get(o.res[0]):
             self.define(o.res[0], e or self.load(o), out)
         elif how[0] in ("io", "any"):
-            e = e or self.load(o)
-            out.append(("s", f"{e.text};", e.refs))
+            out.append((e or self.load(o)).node)
 
     def assign(self, pairs, out):
-        """The parallel assignment of block arguments ``[(arg, value, edge)]``."""
+        """The parallel assignment of block arguments ``[(arg, value, edge)]``, sequenced:
+        each copy once no other pending copy reads its destination, a cycle broken by saving
+        one destination in a temporary the copies reading it read instead."""
         pend = []
         for a, v, edge in pairs:
             name, e = self.var_of(a, self.f.width(a)), self.ex(v, edge)
-            if e.text != name:
-                pend.append((name, self.f.width(a), e))
-        names = {n for n, _, _ in pend}
-        for i, (n, w, e) in enumerate(pend):
-            if e.refs & (names - {n}):
-                t = self.fresh(w)
-                out.append(("a", t, e.text, e.refs))
-                self.copies[id(out[-1])] = out[-1]
-                pend[i] = (n, w, var(t, w))
-        sts = [("a", n, e.text, e.refs) for n, _, e in pend]
-        self.copies.update((id(st), st) for st in sts)
-        out += sts
+            if not (isinstance(e.node, c_ast.ID) and e.node.name == name):
+                pend.append((name, self.f.width(a), stored(e, self.f.width(a))))
+        while pend:
+            read = [frozenset().union(*(e.refs for m, _, e in pend if m != n)) for n, _, _ in pend]
+            free = [i for i, (n, _, _) in enumerate(pend) if n not in read[i]]
+            if free:
+                n, _, e = pend.pop(free[0])
+                out.append(cn.assign(n, e.node, True))
+                continue
+            n, w, _ = pend[0]
+            t = self.fresh(w)
+            out.append(cn.assign(t, cn.ident(n), True))
+            pend = [pend[0]] + [
+                (m, x, replace(e, node=cn.substitute(e.node, {n: t}), refs=(e.refs - {n}) | {t}))
+                for m, x, e in pend[1:]
+            ]
 
     def jump(self, vals):
         """The statements returning ``[(value, edge)]``."""
         if not vals:
-            return [("j", "return;", frozenset())]
+            return [cn.ret()]
         es = [self.ex(v, edge) for v, edge in vals]
-        refs = frozenset().union(*(e.refs for e in es))
         if len(es) == 1:
-            return [("j", f"return {es[0].text};", refs)]
+            return [cn.ret(stored(es[0], self.f.width(vals[0][0])).node)]
         regs = [self.mod.reg_var(self.f, j) for j in self.f.live_res]
-        sets = [("s", f"{r} = {e.text};", e.refs) for r, e in zip(regs, es) if r != e.text]
-        return sets + [("j", "return;", frozenset())]
+        sets = [
+            cn.assign(r, e.node)
+            for r, e in zip(regs, es)
+            if not (isinstance(e.node, c_ast.ID) and e.node.name == r)
+        ]
+        return sets + [cn.ret()]
 
     def convert(self, items):  # pylint: disable=too-many-branches
         """The C statements of structured ``items``."""
@@ -3303,25 +3333,24 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             elif kind == "set":
                 f, bdd = it[2], self.f.conds.bdd
                 e = self.cond(f, self.f.conds.care) if f not in (bdd.true, bdd.false) else None
-                text = e.text if e else str(int(f == bdd.true))
-                out.append(("a", self.selector(it[1]), text, e.refs if e else frozenset()))
-                out[-1] = self.mark(out[-1], [], "copy")
+                st = cn.assign(self.selector(it[1]), e.node if e else cn.const(int(f == bdd.true)))
+                out.append(self.mark(st, [], "copy"))
             elif kind == "halt":
                 out.append(self.halt())
             elif kind == "site":
                 self.tail_site(it[1], it[2])
             elif kind == "fall":
-                out.append(("j", "__attribute__((fallthrough));", frozenset()))
+                out.append(cn.fallthrough())
             elif kind in ("break", "continue"):
-                out.append(("j", f"{kind};", frozenset()))
+                out.append(c_ast.Break() if kind == "break" else c_ast.Continue())
             elif kind == "goto":
-                out.append(("j", f"goto {self.goto_label(it[1])};", frozenset()))
                 q, img = self.first_pc(it[1]), self.mod.mem.image
-                self.edges[id(out[-1])] = out[-1], [
+                out.append(c_ast.Goto(self.goto_label(it[1])))
+                cn.prov(out[-1]).edges = [
                     regions.edge(img, p, q) if p else [p, q] for p in self.source_pcs(it[2], it[1])
                 ]
             elif kind == "label":
-                out.append(("l", f"{self.goto_label(it[1])}:;", frozenset()))
+                out.append(c_ast.Label(self.goto_label(it[1]), c_ast.EmptyStatement()))
             elif kind == "if":
                 out += self.convert_if(it)
             elif kind == "switch":
@@ -3348,21 +3377,17 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         """Statement ``st`` marked as printing ``ops`` in the current visit, or as ``file``
         when it prints no instruction's; a jump, a statement already marked and one of
         neither as it is."""
-        at = {"a": 2, "s": 1, "j": 1}.get(st[0])
-        if at is None or self.mod.marks.leading(st[at], "trap"):
-            return st
-        if st[0] == "j" and not st[1].startswith("return "):
+        jump = isinstance(st, JUMPS) and not (isinstance(st, c_ast.Return) and st.expr)
+        if cn.rec_of(st) is not None or jump:
             return st
         if any(o.pc for o in ops):
             rec = ("pc", self.f.name, *self.visit, ops)
-        elif file and st[0] != "j":
+        elif file and not isinstance(st, c_ast.Return):
             rec = ("tag", file)
         else:
             return st
-        new = (*st[:at], self.mod.marks.put(rec) + st[at], *st[at + 1 :])
-        if self.copies.pop(id(st), None) is not None:
-            self.copies[id(new)] = new
-        return new
+        cn.prov(st).rec = self.mod.marks.add(rec)
+        return st
 
     def latch_edge(self, u, h):
         """``(condition, copy items)`` of latch ``u``'s back edge to loop head ``h``."""
@@ -3378,22 +3403,16 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         statements, its back edge's test and copies as one expression."""
         body = _strip_continue(self.convert(it[1]))
         f, copies = self.latch_edge(it[3], it[2])
-        refs, pre, post = set(), [], []
-        for out, items in (
-            (pre, [i for i in self.g.items[it[3]] if i[0] == "ops"]),
-            (post, copies),
-        ):
-            for st in self.convert(items):
-                assert st[0] == "a", st
-                out.append(f"{st[1]} = {st[2]}")
-                refs |= st[3] | {st[1]}
+        pre = _expressions(self.convert([i for i in self.g.items[it[3]] if i[0] == "ops"]))
+        post = _expressions(self.convert(copies))
         self.term = self.branch_of(it[3])
-        c = self.cond(f, self.f.conds.care)
+        c = self.cond(f, self.f.conds.care).node
         self.term = None
-        text = f"({', '.join([*pre, c.text])})" if pre else c.text
+        if pre:
+            c = c_ast.ExprList([*pre, c])
         if post:
-            text = f"{par(E(text, c.prec, c.op), 5, '&&')} && ({', '.join([*post, '1'])})"
-        return ("loop", "do", text, frozenset(refs | c.refs), body)
+            c = cn.binop("&&", c, c_ast.ExprList([*post, cn.const(1)]))
+        return c_ast.DoWhile(c, cs.braced(body))
 
     def selector(self, head):
         """The C variable choosing the entry of the cycle selector ``head`` enters."""
@@ -3404,9 +3423,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
     def halt(self):
         """The return after a ``trap``, which does not return: zero results."""
         rt = self.mod.ret_type(self.f) if self.f.private else "void"
-        if rt == "void":
-            return ("j", "return;", frozenset())
-        return ("j", "return 0;", frozenset())
+        return cn.ret() if rt == "void" else cn.ret(cn.const(0))
 
     def tail_site(self, p, t):
         """Record the tail call graph node ``p`` makes into node ``t``: the instruction taking
@@ -3512,148 +3529,185 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             # A condition of one value (a check its load makes, :meth:`fusion`): its branch.
             return [*(then if c.lo else els), *tail]
         if not then and not els:
-            return [("s", f"(void)({c.text});", c.refs), *tail]
-        if els and ends_in_jump(then):
-            return [("if", c.text, c.refs, then, [], n.text), *els, *tail]
-        return [("if", c.text, c.refs, then, els, n.text), *tail]
+            return [cn.void(c.node), *tail]
+        if els and cs.ends_in_jump(then):
+            return [_if(c.node, then, [], n.node), *els, *tail]
+        return [_if(c.node, then, els, n.node), *tail]
 
     def convert_switch(self, it):
-        """A ``switch`` over a selector family."""
+        """A ``switch`` over a selector family, each arm leaving it by its own jump."""
         fam = it[1]
         saved, self.printing = self.printing, []
-        sel = clean(self.ex(fam), self.f.width(fam))
+        sel = clean(self.ex(fam), self.f.width(fam)).node
         got, self.printing = self.printing, saved
         got = [o for o in (self.branch_of(it[3]),) if o is not None] + got
         if any(o.pc for o in got):
-            sel = replace(
-                sel, text=self.mod.marks.put(("pc", self.f.name, *self.visit, got)) + sel.text
-            )
-        labels = [[None if k is None else self.label(fam, k).text for k in ks] for ks, _ in it[2]]
+            sel = cn.marked(sel, self.mod.marks.add(("pc", self.f.name, *self.visit, got)))
+        labels = [[None if k is None else self.label(fam, k).node for k in ks] for ks, _ in it[2]]
         bodies, tail = [self.convert(b) for _, b in it[2]], []
         if any(None in ks for ks in labels):
             bodies, tail = _shared_jump(bodies)
-        return [("switch", sel.text, sel.refs, list(zip(labels, bodies))), *tail]
+        cases = []
+        for ks, body in zip(labels, bodies):
+            body = body if cs.ends_in_jump(body) else [*body, c_ast.Break()]
+            *first, last = ks
+            cases += [c_ast.Case(k, []) if k is not None else c_ast.Default([]) for k in first]
+            arm = [cs.braced(body)]
+            cases.append(c_ast.Case(last, arm) if last is not None else c_ast.Default(arm))
+        return [c_ast.Switch(sel, cs.braced(cases)), *tail]
 
     @staticmethod
     def convert_loop(body):
         """A loop as ``while`` (an exit test first), ``do``/``while`` (an exit test last and
         no other ``continue``) or ``for (;;)``."""
         body = _strip_continue(body)
-        brk, cont = [("j", "break;", frozenset())], [("j", "continue;", frozenset())]
-        if body and body[0][0] == "if" and body[0][3] == brk and not body[0][4]:
-            return ("loop", "while", body[0][5], body[0][2], body[1:])
-        if body and body[-1][0] == "if" and body[-1][3] == brk and not body[-1][4]:
-            if not _continues(body[:-1]):
-                return ("loop", "do", body[-1][5], body[-1][2], body[:-1])
-        if len(body) > 1 and body[-1] == brk and body[-2][0] == "if" and body[-2][3] == cont:
-            if not body[-2][4] and not _continues(body[:-2]):
-                return ("loop", "do", body[-2][1], body[-2][2], body[:-2])
-        return ("loop", "for", "", frozenset(), body)
+
+        def exits(st, jump):
+            if not isinstance(st, c_ast.If) or cs.block(st.iffalse):
+                return False
+            then = cs.block(st.iftrue)
+            return len(then) == 1 and isinstance(then[0], jump)
+
+        if body and exits(body[0], c_ast.Break):
+            return c_ast.While(_negation(body[0]), cs.braced(body[1:]))
+        if body and exits(body[-1], c_ast.Break) and not _continues(body[:-1]):
+            return c_ast.DoWhile(_negation(body[-1]), cs.braced(body[:-1]))
+        if len(body) > 1 and isinstance(body[-1], c_ast.Break) and exits(body[-2], c_ast.Continue):
+            if not _continues(body[:-2]):
+                return c_ast.DoWhile(body[-2].cond, cs.braced(body[:-2]))
+        return c_ast.For(None, None, None, cs.braced(body))
 
     def head(self):
-        """The C declarator, naming the parameters."""
+        """The C declaration of the function and its parameters' names."""
         f = self.f
         if not f.private:
-            self.names[f.blocks[0].args[0][0]] = "a"
-            return f"void {self.name}(uint8_t a)", ["a"]
+            arg = f.blocks[0].args[0][0]
+            self.names[self.classes.get(arg, arg)] = "a"
+            return cn.function(self.name, "void", [("a", "uint8_t")]), ["a"]
         params = [f.blocks[0].args[i][0] for i in f.live_args]
         names = [self.var_of(p, f.width(p)) for p in params]
-        decl = ", ".join(f"{self.types.pop(n)} {n}" for n in names) or "void"
-        return f"static {self.mod.ret_type(f)} {self.name}({decl})", names
+        ps = [(n, self.types.pop(n)) for n in names]
+        return cn.function(self.name, self.mod.ret_type(f), ps, ("static",)), names
 
-    def goto_edges(self, bodies):
-        """The machine-code edges of the gotos in statement lists ``bodies``."""
-        return [
-            e
-            for items in bodies
-            for st in walk(items)
-            if self.edges.get(id(st), (None,))[0] is st
-            for e in self.edges[id(st)][1]
-        ]
-
-    def text(self):
-        """The C definition of the function."""
+    def definition(self):
+        """The C definitions of the function: wayward-eagle's pieces of it, their
+        prototypes first."""
         self.count()
         self.plan()
-        head, params = self.head()
+        self.classes = ssa.Coalescer(self).classes()
+        head, _ = self.head()
         body = self.convert(self.body)
         if len(self.f.live_res) != 1 or not self.f.private:
-            while body and body[-1] == ("j", "return;", frozenset()):
+            while body and isinstance(body[-1], c_ast.Return) and body[-1].expr is None:
                 body.pop()
-        body = drop_unread(
-            body, lambda st, read: st[1] not in read and self.copies.get(id(st)) is st
-        )
-        void = not self.f.private or self.mod.ret_type(self.f) == "void"
-        fn = Function(params, set(self.types), void, _traps)
-        structured = self.goto_edges([body])
-        pieces, nsec, temps = reduced(body, self.name, fn)
-        self.types.update(dict.fromkeys(temps, "uint8_t"))
-        decl = head[head.index("(") + 1 : -1]
-        types = {
-            **dict(reversed(x.rsplit(" ", 1)) for x in decl.split(", ") if " " in x),
-            **self.types,
-            None: "void",
-            STATUS: "uint8_t",
-        }
-        self.prov["pieces"] = [x.name for x in pieces if x.name != self.name]
-        self.prov["gotos"] = self.goto_edges([x.items for x in pieces])
+        body = _drop_unread(body)
+        structured = _goto_edges(body)
+        locals_ = [cn.decl(v, self.types[v]) for v in sorted(self.types, key=cs.order)]
+        self.head_decl = head
+        got = reduce_function(cn.define(head, [*locals_, *body]), NORETURN, cn.type_decl("uint8_t"))
+        self.prov["pieces"] = [x.decl.name for x in got if x.decl.name != self.name]
+        self.prov["gotos"] = _goto_edges(got)
         left = Counter(map(tuple, self.prov["gotos"]))
         for e in structured:
             if left[tuple(e)]:
                 left[tuple(e)] -= 1
             else:
                 self.prov["reduced"].append(e)
-        self.head_text = head
-        if len(pieces) == 1:
-            return self.define_text(head, params, pieces[0].items, True)
-        sigs = {
-            x.name: f"static {types[x.ret]} {x.name}"
-            f"({', '.join(f'{types[v]} {v}' for v in x.args) or 'void'})"
-            for x in pieces
-            if x.name != self.name
-        }
-        out = [f"{sig};" for sig in sigs.values()]
-        for x in pieces:
-            top = x.name == self.name
-            out.append(self.define_text(head if top else sigs[x.name], x.args, x.items, top))
-        if nsec > 1:
-            frame = self.mod.marks.put(("tag", "frame"))
-            guards = [] if self.f.private else self.mod.guards.get(self.name, [])
-            calls = [f"{self.name}_{k}({', '.join(params)});" for k in range(1, nsec + 1)]
-            out.append(
-                "\n".join(
-                    [
-                        f"{frame}{head} {{",
-                        *guards,
-                        *calls,
-                        f"{self.mod.marks.put(('tag', 'frame'))}}}",
-                    ]
-                )
-            )
-        return "\n".join(out)
-
-    def define_text(self, head, params, body, top):
-        """The C definition ``head`` of statements ``body`` (``top``: the function's own,
-        its entry guards first)."""
-        declare(body, {v: t for v, t in self.types.items() if v not in params})
-        read = names_in(body)
-        lines = [f"(void){n};" for n in params if n not in read] + render(body)
-        if top and not self.f.private:
-            lines = self.mod.guards.get(self.name, []) + lines
-        frame = self.mod.marks.put(("tag", "frame"))
-        return "\n".join([f"{frame}{head} {{", *lines, f"{self.mod.marks.put(('tag', 'frame'))}}}"])
+        for fd in got:
+            _zeroed(fd.body.block_items)
+        if not self.f.private:
+            got[-1].body.block_items[:0] = self.mod.guards.get(self.name, [])
+        tag = self.mod.marks.add
+        for fd in got:
+            cn.prov(fd).rec, cn.prov(fd.body).rec = tag(("tag", "frame")), tag(("tag", "frame"))
+        return [*prototypes(got), *got]
 
 
-def _traps(st):
-    """Whether statement ``st`` is a ``trap`` call, which never returns."""
-    return st[0] == "s" and lead(st[1])[1].startswith("trap(")
+#: The jumps a statement list may end with.
+JUMPS = (c_ast.Return, c_ast.Break, c_ast.Continue, c_ast.Goto, c_ast.AttributedStatement)
+#: The functions that never return.
+NORETURN = frozenset({"trap"})
+
+
+def _if(cond, then, els, neg):
+    """``if (cond) { then } else { els }``, ``neg`` its condition negated."""
+    st = cs.iff(cond, then, els)
+    cn.prov(st).neg = neg
+    return st
+
+
+def _negation(st):
+    """The negation of ``if`` statement ``st``'s condition."""
+    neg = st.coord.neg if isinstance(st.coord, cn.Prov) else None
+    return neg if neg is not None else cs.negate(st.cond)
+
+
+def _expressions(items):
+    """Statements ``items`` (assignments and calls) as the expressions of a comma list."""
+    for st in items:
+        assert isinstance(st, (c_ast.Assignment, c_ast.FuncCall)), st
+    return list(items)
+
+
+def _zeroed(items):
+    """Initialize to zero, in place, each declaration of statement list ``items`` and those
+    nested in it without an initializer whose variable may be read before it is set."""
+    for i, st in enumerate(items):
+        if (
+            isinstance(st, c_ast.Decl)
+            and st.init is None
+            and not cs.assigned_first(items[i + 1 :], st.name)
+        ):
+            st.init = cn.const(0)
+        for sub in cs.children(st):
+            _zeroed(sub)
+
+
+def _goto_edges(nodes):
+    """The machine-code edges of the ``goto`` statements of ``nodes``."""
+    tops = nodes if isinstance(nodes, list) else [nodes]
+    return [
+        e
+        for top in tops
+        for n in cn.walk(top)
+        if isinstance(n, c_ast.Goto) and isinstance(n.coord, cn.Prov) and n.coord.edges
+        for e in n.coord.edges
+    ]
+
+
+def _drop_unread(items):
+    """``items`` without the pure assignments (:class:`cnodes.Prov`) to variables nothing
+    reads, nor ``if`` statements left empty, until none is left."""
+    while True:
+        read = cs.reads_in(items)
+        out = _drop(items, read)
+        if cn.key(out) == cn.key(items):
+            return out
+        items = out
+
+
+def _drop(items, read):
+    out = []
+    for st in items:
+        if isinstance(st, c_ast.Assignment) and isinstance(st.coord, cn.Prov) and st.coord.pure:
+            if st.lvalue.name not in read:
+                continue
+        if isinstance(st, c_ast.If):
+            then, els = _drop(cs.block(st.iftrue), read), _drop(cs.block(st.iffalse), read)
+            if not then and not els:
+                continue
+            st = cs.rebuild(st, [then, els])
+        elif cs.children(st):
+            st = cs.rebuild(st, [_drop(sub, read) for sub in cs.children(st)])
+        out.append(st)
+    return out
 
 
 def _shared_jump(arms):
     """``(arms, [jump])`` without the jump every arm of a statement ends with, which then
     follows the statement once; else ``(arms, [])``."""
     last = arms[0][-1] if arms[0] else None
-    if last is None or last[0] != "j" or any(not a or bare(a[-1]) != bare(last) for a in arms):
+    if not isinstance(last, JUMPS) or any(not a or cn.key(a[-1]) != cn.key(last) for a in arms):
         return arms, []
     return [a[:-1] for a in arms], [last]
 
@@ -3664,10 +3718,12 @@ def _merge_tails(items):
     out = []
     for st in reversed(items):
         n = len(out)
-        if st[0] == "if" and not st[4] and n and bare(st[3][-n:]) == bare(out[::-1]):
-            if len(st[3]) == n:
-                continue
-            st = (*st[:3], st[3][:-n], *st[4:])
+        if isinstance(st, c_ast.If) and not cs.block(st.iffalse) and n:
+            then = cs.block(st.iftrue)
+            if cn.key(then[-n:]) == cn.key(out[::-1]):
+                if len(then) == n:
+                    continue
+                st = cs.rebuild(st, [then[:-n], []])
         out.append(st)
     return out[::-1]
 
@@ -3677,64 +3733,80 @@ def _strip_continue(body):
     if not body:
         return body
     last = body[-1]
-    if last == ("j", "continue;", frozenset()):
+    if isinstance(last, c_ast.Continue):
         return _strip_continue(body[:-1])
-    if last[0] == "if":
-        return body[:-1] + [
-            (*last[:3], _strip_continue(last[3]), _strip_continue(last[4]), *last[5:])
-        ]
+    if isinstance(last, c_ast.If):
+        arms = [_strip_continue(cs.block(last.iftrue)), _strip_continue(cs.block(last.iffalse))]
+        return body[:-1] + [cs.rebuild(last, arms)]
     return body
 
 
 def _continues(items):
     """Whether ``items`` hold a ``continue`` of the enclosing loop."""
     for st in items:
-        if st[0] == "j" and st[1] == "continue;":
+        if isinstance(st, c_ast.Continue):
             return True
-        if st[0] == "if" and (_continues(st[3]) or _continues(st[4])):
-            return True
-        if st[0] == "switch" and any(_continues(b) for _, b in st[3]):
+        if isinstance(st, (c_ast.If, c_ast.Switch)) and any(map(_continues, cs.children(st))):
             return True
     return False
 
 
-FUNC = re.compile(r"\bf(\d+)\b")
-GOTO = re.compile(r"\bgoto\b")
-
-
-def fold(defs, protos):
-    """``(protos, definitions, {name: final name})`` with each set of functions whose
-    definitions are the same up to their own name and the functions they call (merged so far)
-    kept once, until none is left, then renumbered ``f1, f2, ...`` in their order; ``defs``
-    ``[(name, text)]``."""
-    text = dict(defs)
-    rep = {n: n for n in text}
-
-    def canon(n):
-        return FUNC.sub(
-            lambda m: "f0" if m.group(0) == n else rep.get(m.group(0), m.group(0)),
-            marks.strip(text[n]),
-        )
-
+def fold(defs):
+    """``([[node]], {name: final name})``: ``defs`` ``[(name, [node])]`` with each set of
+    functions whose definitions are the same up to their own name and the functions they call
+    (merged so far) kept once, until none is left, then renumbered ``f1, f2, ...``."""
+    nodes = dict(defs)
+    rep = {n: n for n in nodes}
     while True:
         groups = {}
         for n in (n for n, _ in defs if rep[n] == n):
-            groups.setdefault(canon(n), []).append(n)
+            names = {m: rep[m] for m in rep if _numbered(m)}
+            names.update({n: "f0"} if _numbered(n) else {})
+            groups.setdefault(cn.key(nodes[n], names), []).append(n)
         merged = [(v[0], x) for v in groups.values() for x in v[1:]]
         for keep, x in merged:
             rep[x] = keep
         if not merged:
             break
-    kept = sorted((n for n in text if rep[n] == n and FUNC.fullmatch(n)), key=lambda n: int(n[1:]))
+    kept = sorted((n for n in nodes if rep[n] == n and _numbered(n)), key=lambda n: int(n[1:]))
     name = {n: f"f{i}" for i, n in enumerate(kept, 1)}
-    name.update({n: name.get(rep[n], rep[n]) for n in text})
+    name.update({n: name.get(rep[n], rep[n]) for n in nodes})
+    keep = [xs for n, xs in defs if rep[n] == n]
+    cn.rename([x for xs in keep for x in xs], name)
+    return keep, name
 
-    def sub(t):
-        return FUNC.sub(lambda m: name.get(m.group(0), m.group(0)), t)
 
-    keep = [sub(t) for n, t in defs if rep[n] == n]
-    heads = [sub(p) for p in protos]
-    return [h for i, h in enumerate(heads) if h not in heads[:i]], keep, name
+def _outside(j, off, k):
+    """Whether offset ``off`` into object ``j`` lies outside it, or ``k`` bytes past it do."""
+    lim = cn.ident(f"CGEN_OBJ{j}_LIM")
+    past = cn.binop(">", off, lim)
+    if isinstance(k, int) and not k:
+        return past
+    k = cn.const(k) if isinstance(k, int) else k
+    return cn.binop("||", past, cn.binop("<", cn.binop("-", lim, off), k))
+
+
+def _count(array, ctype, body):
+    """``for (ctype i = 0; i < sizeof array / sizeof *array; ++i) { body }``."""
+    n = cn.binop(
+        "/",
+        c_ast.UnaryOp("sizeof", cn.ident(array)),
+        c_ast.UnaryOp("sizeof", c_ast.UnaryOp("*", cn.ident(array))),
+    )
+    init = c_ast.DeclList([cn.decl("i", ctype, cn.const(0))])
+    return c_ast.For(
+        init, cn.binop("<", cn.ident("i"), n), c_ast.UnaryOp("++", cn.ident("i")), cs.braced(body)
+    )
+
+
+def _element(name, a):
+    """``name[(uint16_t)(a - name_ORG)]``."""
+    return cn.index(name, cn.cast("uint16_t", cn.binop("-", a, cn.ident(name + "_ORG"))))
+
+
+def _numbered(n):
+    """Whether ``n`` is a lifted function's name, ``f`` and its number."""
+    return n[:1] == "f" and n[1:].isdigit()
 
 
 def _copies(items, pcs):
@@ -4238,17 +4310,34 @@ class Module:  # pylint: disable=too-many-instance-attributes
     def state_c(self):
         """The ``.c``'s definitions of the promoted state, initialized from the ``.h``: each
         field of a struct is an array over its copies; an opcode cell's states are named."""
-        out = [
-            "enum { " + ", ".join(f"{n} = 0x{v:02X}" for v, n in names.items()) + " };"
-            for names in map(self.enum_of, self.state.scalars)
-            if names
-        ]
+        out = []
+        for names in filter(None, map(self.enum_of, self.state.scalars)):
+            vals = [c_ast.Enumerator(n, cn.const(v)) for v, n in names.items()]
+            out.append(
+                c_ast.Decl(
+                    None,
+                    [],
+                    None,
+                    [],
+                    [],
+                    c_ast.Enum(None, c_ast.EnumeratorList(vals), None),
+                    None,
+                    None,
+                )
+            )
         out += [
-            f"uint8_t {self.var_name(a)} = {self.var_name(a)}_INIT;" for a in self.state.scalars
+            cn.decl(n, "uint8_t", cn.ident(n + "_INIT"))
+            for n in map(self.var_name, self.state.scalars)
         ]
         for s, (bases, fields) in enumerate(self.state.structs):
             out += [
-                f"uint8_t V{s}_f{d:02X}[{len(bases)}] = {{V{s}_f{d:02X}_INIT}};" for d in fields
+                cn.decl(
+                    f"V{s}_f{d:02X}",
+                    "uint8_t",
+                    cn.inits(f"V{s}_f{d:02X}_INIT"),
+                    dim=cn.const(len(bases)),
+                )
+                for d in fields
             ]
         return out
 
@@ -4258,7 +4347,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         out = [f"#define {self.var_name(a)}_INIT 0x{img[a]:02X}" for a in self.state.scalars]
         for s, (bases, fields) in enumerate(self.state.structs):
             out += [
-                f"#define V{s}_f{d:02X}_INIT {hexes(img[(int(b) + d) & 0xFFFF] for b in bases)}"
+                f"#define V{s}_f{d:02X}_INIT {cn.hexes(img[(int(b) + d) & 0xFFFF] for b in bases)}"
                 for d in fields
             ]
         return out
@@ -4404,13 +4493,10 @@ class Module:  # pylint: disable=too-many-instance-attributes
         object (``ptr_slack``), of ``p`` plus ``lo`` outside its block with ``k`` bytes past it."""
         j, lo, k = self.ptr_slack.get(j, (j, 0, 0))
         self.objs_used.add(j)
-        at = f"(uint16_t)({par(p, 12, '+')} + {lo})" if lo else par(p, 12, "-")
+        at = cn.cast("uint16_t", cn.binop("+", p.node, cn.const(lo))) if lo else p.node
         if j in self.ptr_parts:
-            return f"cgen_out{j}({at if lo else p.text}, {k})"
-        off = f"(uint16_t)({at} - CGEN_OBJ{j}_ORG)"
-        if k:
-            return f"({off} > CGEN_OBJ{j}_LIM || CGEN_OBJ{j}_LIM - {off} < {k})"
-        return f"({off} > CGEN_OBJ{j}_LIM)"
+            return cn.call(f"cgen_out{j}", at, cn.const(k))
+        return _outside(j, cn.cast("uint16_t", cn.binop("-", at, cn.ident(f"CGEN_OBJ{j}_ORG"))), k)
 
     def checked_fn(self, name, j):
         """The name of block reader ``name``'s (or block array's) variant checking its address
@@ -4419,57 +4505,88 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.objs_used.add(self.ptr_slack.get(j, (j,))[0])
         return f"{name}c{j}"
 
-    def block_c(self):
+    def block_c(self):  # pylint: disable=too-many-locals
         """The definitions of the data blocks' readers and writers (:meth:`block_fn`) and of
         the tests of a pointer outside an object of several runs (the ``.h``'s
         ``CGEN_OBJj_OUT``)."""
-        out = []
+        out, noinline = [], ("noinline",)
         for j in sorted(self.objs_used & set(self.ptr_parts)):
             lo, lim = f"cgen_lo{j}", f"cgen_lim{j}"
             out += [
-                f"static const uint16_t {lo}[] = {{CGEN_OBJ{j}_LO}};",
-                f"static const uint16_t {lim}[] = {{CGEN_OBJ{j}_LIM}};",
-                f"static __attribute__((noinline)) uint8_t cgen_out{j}(uint16_t p, uint8_t k) {{",
-                f"for (uint16_t i = 0; i < sizeof {lo} / sizeof *{lo}; ++i) {{",
-                f"uint16_t d = p - {lo}[i];",
-                f"if (d <= {lim}[i] && k <= (uint16_t)({lim}[i] - d)) {{",
-                "return 0;",
-                "}",
-                "}",
-                "return 1;",
-                "}",
+                cn.decl(lo, "const uint16_t", cn.inits(f"CGEN_OBJ{j}_LO"), ("static",), dim=True),
+                cn.decl(lim, "const uint16_t", cn.inits(f"CGEN_OBJ{j}_LIM"), ("static",), dim=True),
             ]
+            el = cn.index(lim, cn.ident("i"))
+            hit = cn.binop(
+                "&&",
+                cn.binop("<=", cn.ident("d"), el),
+                cn.binop(
+                    "<=", cn.ident("k"), cn.cast("uint16_t", cn.binop("-", el, cn.ident("d")))
+                ),
+            )
+            body = [
+                cn.decl("d", "uint16_t", cn.binop("-", cn.ident("p"), cn.index(lo, cn.ident("i")))),
+                cn.when(hit, [cn.ret(cn.const(0))]),
+            ]
+            head = cn.function(
+                f"cgen_out{j}",
+                "uint8_t",
+                [("p", "uint16_t"), ("k", "uint8_t")],
+                ("static",),
+                noinline,
+            )
+            out.append(cn.define(head, [_count(lo, "uint16_t", body), cn.ret(cn.const(1))]))
         for (kind, regs, spans), name in sorted(self.block_fns.items(), key=lambda kv: kv[1]):
             names = [f"R{k}" for k in regs] + [f"C{j}" for j in spans]
-            self.choices(regs, spans, "a")
+            self.choices(regs, spans, cn.ident("a"))
             ptr = "const uint8_t *const" if kind == "rd" else "uint8_t *const"
-            n = len(names)
-            # Its runs' origins, lengths and arrays, the address's run found by a search: the
-            # last needs no test.
             out += [
-                f"static const uint16_t {name}_org[] = {{{', '.join(f'{x}_ORG' for x in names)}}};",
-                f"static const uint16_t {name}_len[] = {{{', '.join(f'{x}_LEN' for x in names)}}};",
-                f"static {ptr} {name}_at[] = {{{', '.join(names)}}};",
+                cn.decl(
+                    f"{name}_org",
+                    "const uint16_t",
+                    cn.inits(*(x + "_ORG" for x in names)),
+                    ("static",),
+                    dim=True,
+                ),
+                cn.decl(
+                    f"{name}_len",
+                    "const uint16_t",
+                    cn.inits(*(x + "_LEN" for x in names)),
+                    ("static",),
+                    dim=True,
+                ),
+                cn.decl(f"{name}_at", ptr, cn.inits(*names), ("static",), dim=True),
             ]
+            off = cn.cast(
+                "uint16_t", cn.binop("-", cn.ident("a"), cn.index(f"{name}_org", cn.ident("i")))
+            )
+            more = cn.binop(
+                "&&",
+                cn.binop("<", cn.ident("i"), cn.const(len(names) - 1)),
+                cn.binop(">=", off, cn.index(f"{name}_len", cn.ident("i"))),
+            )
             find = [
-                "uint16_t i = 0;",
-                f"while (i < {n - 1} && (uint16_t)(a - {name}_org[i]) >= {name}_len[i]) {{",
-                "++i;",
-                "}",
+                cn.decl("i", "uint16_t", cn.const(0)),
+                c_ast.While(more, cs.braced([c_ast.UnaryOp("++", cn.ident("i"))])),
             ]
-            el = f"{name}_at[i][(uint16_t)(a - {name}_org[i])]"
+            el = cn.index(cn.index(f"{name}_at", cn.ident("i")), off)
             if kind == "rd":
-                sig = f"static __attribute__((noinline)) uint8_t {name}(uint16_t a) {{"
-                out += [sig, *find, f"return {el};", "}"]
+                head = cn.function(name, "uint8_t", [("a", "uint16_t")], ("static",), noinline)
+                out.append(cn.define(head, [*find, cn.ret(el)]))
             else:
-                sig = f"static __attribute__((noinline)) void {name}(uint16_t a, uint8_t v) {{"
-                out += [sig, *find, f"{el} = v;", "}"]
+                head = cn.function(
+                    name, "void", [("a", "uint16_t"), ("v", "uint8_t")], ("static",), noinline
+                )
+                out.append(cn.define(head, [*find, cn.assign(el, cn.ident("v"))]))
         for b in sorted(self.block_readers):
-            out += [
-                f"static __attribute__((noinline)) uint8_t B{b}r(uint16_t p, uint8_t y) {{",
-                f"return B{b}[(uint16_t)(p + y - B{b}_ORG)];",
-                "}",
-            ]
+            head = cn.function(
+                f"B{b}r", "uint8_t", [("p", "uint16_t"), ("y", "uint8_t")], ("static",), noinline
+            )
+            off = cn.cast(
+                "uint16_t",
+                cn.binop("-", cn.binop("+", cn.ident("p"), cn.ident("y")), cn.ident(f"B{b}_ORG")),
+            )
+            out.append(cn.define(head, [cn.ret(cn.index(f"B{b}", off))]))
         kt = "uint8_t" if max(self.traps, default=0) < 0x100 else "uint16_t"
         # A block array's readers checking a window (slack objects) and the others of their
         # object: each its window, from the address plus ``lo`` to ``k`` bytes past it,
@@ -4479,66 +4596,87 @@ class Module:  # pylint: disable=too-many-instance-attributes
             for name, j in self.checked_fns
             if name[0] == "B" and j in self.ptr_slack
         }
+        pyk = [("p", "uint16_t"), ("y", "uint8_t")]
         for name, b in sorted(win):
-            args = f"uint16_t p, uint8_t y, {kt} t, uint16_t lo, uint8_t k"
-            out += [
-                f"static __attribute__((noinline)) uint8_t {name}w{b}({args}) {{",
-                "uint16_t a = p + y;",
-                f"uint16_t e = a + lo{'' if b in self.ptr_parts else f' - CGEN_OBJ{b}_ORG'};",
-                (
-                    f"if (cgen_out{b}(e, k)) {{"
-                    if b in self.ptr_parts
-                    else f"if (e > CGEN_OBJ{b}_LIM || CGEN_OBJ{b}_LIM - e < k) {{"
-                ),
-                "trap(t);",
-                "}",
-                f"return {name}[(uint16_t)(a - {name}_ORG)];",
-                "}",
+            args = [*pyk, ("t", kt), ("lo", "uint16_t"), ("k", "uint8_t")]
+            e = cn.binop("+", cn.ident("a"), cn.ident("lo"))
+            if b in self.ptr_parts:
+                test = cn.call(f"cgen_out{b}", cn.ident("e"), cn.ident("k"))
+            else:
+                e = cn.binop("-", e, cn.ident(f"CGEN_OBJ{b}_ORG"))
+                test = _outside(b, cn.ident("e"), cn.ident("k"))
+            body = [
+                cn.decl("a", "uint16_t", cn.binop("+", cn.ident("p"), cn.ident("y"))),
+                cn.decl("e", "uint16_t", e),
+                cn.when(test, [cn.call("trap", cn.ident("t"))]),
+                cn.ret(_element(name, cn.ident("a"))),
             ]
+            out.append(
+                cn.define(cn.function(f"{name}w{b}", "uint8_t", args, ("static",), noinline), body)
+            )
         for name, j in sorted(self.checked_fns):
-            sig = f"static __attribute__((noinline)) uint8_t {name}c{j}(uint16_t a, {kt} k) {{"
             b, lo, k = self.ptr_slack.get(j, (j, 0, 0))
             if (name, b) in win:
-                args = f"uint16_t p, uint8_t y, {kt} t"
-                out += [
-                    f"static __attribute__((noinline)) uint8_t {name}c{j}({args}) {{",
-                    f"return {name}w{b}(p, y, t, {lit(lo, 16).text}, {k});",
-                    "}",
-                ]
+                head = cn.function(
+                    f"{name}c{j}", "uint8_t", [*pyk, ("t", kt)], ("static",), noinline
+                )
+                fwd = cn.call(
+                    f"{name}w{b}",
+                    cn.ident("p"),
+                    cn.ident("y"),
+                    cn.ident("t"),
+                    lit(lo, 16).node,
+                    cn.const(k),
+                )
+                out.append(cn.define(head, [cn.ret(fwd)]))
                 continue
+            trap = cn.call("trap", cn.ident("k"))
             if name[0] == "B":
-                args = f"uint16_t p, uint8_t y, {kt} k"
-                sig = f"static __attribute__((noinline)) uint8_t {name}c{j}({args}) {{"
-                test = self.outside(j, E("a", 16, "", 0, 0xFFFF))
-                out += [sig, "uint16_t a = p + y;", f"if ({test}) {{", "trap(k);", "}"]
-                out += [f"return {name}[(uint16_t)(a - {name}_ORG)];", "}"]
+                head = cn.function(
+                    f"{name}c{j}", "uint8_t", [*pyk, ("k", kt)], ("static",), noinline
+                )
+                test = self.outside(j, E(cn.ident("a"), 0, 0xFFFF))
+                body = [
+                    cn.decl("a", "uint16_t", cn.binop("+", cn.ident("p"), cn.ident("y"))),
+                    cn.when(test, [trap]),
+                ]
+                out.append(cn.define(head, [*body, cn.ret(_element(name, cn.ident("a")))]))
                 continue
-            test = (
-                f"cgen_out{j}(a, 0)"
-                if j in self.ptr_parts
-                else f"(uint16_t)(a - CGEN_OBJ{j}_ORG) > CGEN_OBJ{j}_LIM"
+            head = cn.function(
+                f"{name}c{j}", "uint8_t", [("a", "uint16_t"), ("k", kt)], ("static",), noinline
             )
-            out += [sig, f"if ({test}) {{", "trap(k);", "}", f"return {name}(a);", "}"]
+            if j in self.ptr_parts:
+                test = cn.call(f"cgen_out{j}", cn.ident("a"), cn.const(0))
+            else:
+                off = cn.cast(
+                    "uint16_t", cn.binop("-", cn.ident("a"), cn.ident(f"CGEN_OBJ{j}_ORG"))
+                )
+                test = cn.binop(">", off, cn.ident(f"CGEN_OBJ{j}_LIM"))
+            out.append(
+                cn.define(head, [cn.when(test, [trap]), cn.ret(cn.call(name, cn.ident("a")))])
+            )
         return out
 
     def choices(self, regs, spans, addr, indexed=None, tests=None):
-        """``[(test, element)]`` of address ``addr`` in each of the regions ``regs`` and held
-        ``spans`` its address set lies in: the last needs no test. With ``indexed`` (``(base,
-        index)``, the address a 16-bit base plus an 8-bit index) the element is the base's
-        place indexed, as the 6502's ``(zp),Y`` is; ``tests`` replace the address's tests."""
+        """``[(test, element)]`` of address ``addr`` (an expression) in each of the regions
+        ``regs`` and held ``spans`` its address set lies in: the last needs no test. With
+        ``indexed`` (``(base, index)``, the address a 16-bit base plus an 8-bit index) the
+        element is the base's place indexed, as the 6502's ``(zp),Y`` is; ``tests`` replace
+        the address's tests."""
         names = [f"R{k}" for k in regs] + [f"C{j}" for j in spans]
         self.regions_used.update(regs)
         if spans:
             self.used.add("CODE")
         out = []
         for n in names:
-            off = f"(uint16_t)(({addr}) - {n}_ORG)"
+            org = cn.ident(n + "_ORG")
+            off = cn.cast("uint16_t", cn.binop("-", addr, org))
             if indexed:
-                el = f"CGEN_IX({n}, ({indexed[0]}) - {n}_ORG, {indexed[1]})"
+                el = cn.call("CGEN_IX", cn.ident(n), cn.binop("-", indexed[0], org), indexed[1])
                 self.used.add("CGEN_IX")
             else:
-                el = f"{n}[{off}]"
-            out.append((f"{off} < {n}_LEN", el))
+                el = cn.index(n, off)
+            out.append((cn.binop("<", off, cn.ident(n + "_LEN")), el))
         return out if tests is None else [(t, e) for t, (_, e) in zip(tests, out)]
 
     def known(self, name, a):
@@ -4638,8 +4776,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
             n = sum(v.split("_")[:2] == stem.split("_") for v in self.offsets.values())
             self.offsets[span, addr] = stem + (f"_{n}" if n else "")
             self.konsts[self.offsets[span, addr]] = addr - org
-        name = self.offsets[span, addr]
-        return E(name, 16, "", addr - org, addr - org, True)
+        return named(self.offsets[span, addr], addr - org, addr - org, True)
 
     def table(self, width, vals):
         """The name of the constant table of ``vals`` (``width`` bits), named on first use."""
@@ -4660,7 +4797,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
             self.regions_used.add(j)
             name, org = f"R{j}", self.mem.regions[j][0]
         offs = [int(a) - org for a in addrs]
-        return self.table("ptr", [f"{name} + {lit(d, 16).text}" if d else name for d in offs])
+        return self.table("ptr", [(name, d) for d in offs])
 
     def ret_type(self, f):
         """The C return type of function ``f``'s live results: none, its one result, or with
@@ -4702,10 +4839,10 @@ class Module:  # pylint: disable=too-many-instance-attributes
         for c in self.entries:
             c.name = c.f.name
         self.order = list(self.entries)
-        texts, k = {}, 0
+        defs, k = {}, 0
         while k < len(self.order):
             c = self.order[k]
-            texts[id(c)] = c.text()
+            defs[id(c)] = c.definition()
             k += 1
         post, state, protos = [], {}, []
 
@@ -4726,20 +4863,31 @@ class Module:  # pylint: disable=too-many-instance-attributes
             c.body, c.covers, c.g = None, {}, None
         for f in self.funcs:
             f.conds.close()
-        out = [f"static {CTYPE[w]} rv{j};" for j, w in sorted(self.structs.items())]
+        out = [
+            cn.decl(f"rv{j}", CTYPE[w], storage=("static",))
+            for j, w in sorted(self.structs.items())
+        ]
         for (w, vals), n in self.tables.items():
             if w == "ptr":
-                out.append(f"static uint8_t *const {n}[] = {{{', '.join(vals)}}};")
+                items = [
+                    cn.binop("+", cn.ident(a), lit(d, 16).node) if d else cn.ident(a)
+                    for a, d in vals
+                ]
+                out.append(
+                    cn.decl(n, "uint8_t *const", c_ast.InitList(items), ("static",), dim=True)
+                )
             else:
-                items = ", ".join(lit(x, w).text for x in vals)
-                out.append(f"static const {CTYPE[w]} {n}[] = {{{items}}};")
-        protos, kept, names = fold(
-            [(c.name, texts[id(c)]) for c in post], [f"{c.head_text};" for c in protos]
-        )
+                items = c_ast.InitList([lit(x, w).node for x in vals])
+                out.append(cn.decl(n, f"const {CTYPE[w]}", items, ("static",), dim=True))
+        heads = [copy.deepcopy(c.head_decl) for c in protos]
+        kept, names = fold([(c.name, defs[id(c)]) for c in post])
+        cn.rename(heads, names)
+        heads = [h for i, h in enumerate(heads) if cn.key(h) not in map(cn.key, heads[:i])]
+        nodes = [x for xs in kept for x in xs]
         self.made["functions"], self.made["folded"] = len(kept), len(post) - len(kept)
-        self.made["gotos"] = sum(len(GOTO.findall(t)) for t in kept)
+        self.made["gotos"] = sum(isinstance(n, c_ast.Goto) for x in nodes for n in cn.walk(x))
         self.provenance(post, names)
-        return out + protos + kept
+        return out + heads + nodes
 
     def provenance(self, cfuncs, names):
         """:attr:`prov`: where each printed construct comes from in the machine code, the C

@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from deity_informant.cgen import llvmopt, mlir, printer
+from wayward_eagle.c import text
 
 ORIG = """"builtin.module"() ({
   "memref.global"() <{sym_name = "M", sym_visibility = "private", type = memref<65536xi8>}> : () -> () loc("<stdin>":2:3)
@@ -343,9 +344,9 @@ def test_printer_reads_signed_and_min_max_forms():
 )
 def test_signed_compares_print_signed(pred, k, want):
     e = printer.CFunc.cmpi(pred, printer.var("v", 8), printer.lit(k, 8), 8)
-    assert e.text == want
+    assert text(e.node) == want
     two = printer.CFunc.cmpi(3, printer.var("v", 8), printer.var("w", 8), 8)
-    assert two.text == "(int8_t)v <= (int8_t)w"
+    assert text(two.node) == "(int8_t)v <= (int8_t)w"
 
 
 def test_signed_intervals_bound_branches():

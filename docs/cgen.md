@@ -150,10 +150,28 @@ caller's return address. `tools/cgenplay.c` is a host harness.
 5. **Layout** (`state.py`, `regions.py`): the cells held as C variables (*State*), then the
    memory partition of the other bytes (*Memory*).
 6. **Structure** (`structure.py`): the dominator-tree translation below, each function whole.
-7. **Print** (`printer.py`, `csyntax.py`). The generic text is parsed for the operations the
-   pipeline leaves (`func`, `cf`, `arith`, `memref`, `ub.poison`; anything else raises), the
-   structured statements are printed with each variable declared at the innermost scope
-   holding its uses, and the C is run through `clang-format --style=LLVM`.
+7. **Print** (`printer.py`, `cnodes.py`, `ssa.py`, `recompute.py`, `units.py`). The generic
+   text is parsed for the operations the pipeline leaves (`func`, `cf`, `arith`, `memref`,
+   `ub.poison`; anything else raises). The structured statements are built as pycparser
+   `c_ast` nodes, each expression with its exact range so a cast is printed only where C's
+   conversions with a 16-bit `int` need it (a conversion another reduces modulo its width
+   subsumes, an assignment's to a byte object too but on a constant). Each function goes to
+   wayward-eagle's `reduce_function`, which declares each variable at the innermost scope
+   holding its uses; wayward-eagle's generator and its pinned clang-format print the C.
+   - *Out of SSA*: the variables are congruence classes of SSA values (Boissinot et al., CGO
+     2009): a block argument shares the variable of a value its edges pass where their live
+     ranges (liveness over the blocks, uses through the values printed inline) do not
+     intersect or they hold one value, back edges first; only values a copy connects merge.
+     The copies left are a parallel assignment, sequenced through a temporary where a
+     destination is read by another's source.
+   - *Recomputation*: a load of one fixed, non-volatile cell used more than once prints at
+     each use when no operation that may write the cell (a store whose address interval
+     holds it, a call) lies on a path from the load to a use.
+   - *Units*: with `split`, the `.c` is several translation units by reachability in the call
+     graph (`units.py`): `<stem>_state.c` the state's definitions (`CGEN_STORAGE`), one unit
+     per entry (`cgen_` dropped from its name) holding it and the functions only it reaches,
+     `static`, and `<stem>_shared.c` those several reach, external, their prototypes and the
+     state's `extern` declarations (`CGEN_EXTERN`) in the `.h`.
 
 The printer reads `mlir-opt --mlir-print-op-generic` output: the image the tools come from
 (`docker/mlir.Dockerfile`, apt.llvm.org LLVM 22) has no Python bindings, the bindings are not
@@ -421,7 +439,7 @@ steps in order, each deciding on the graph the earlier ones leave:
 
 | Key | Value |
 |---|---|
-| `functions` | `{C name: {"entry", "index", "calls", "copies", "pcs", "pieces"}}`: the entry pc, whether it takes an instance index, `[site, target]` of each call and tail call of it (a tail call printed in place names the instruction taking the edge), the entries of the copies folded into it, the instructions (every copy's) its operations were emitted for, and the C functions the cognitive-complexity reduction split it into (sections, tails, extracted blocks) |
+| `functions` | `{C name: {"entry", "index", "calls", "copies", "pcs", "pieces", "file"}}`: the entry pc, whether it takes an instance index, `[site, target]` of each call and tail call of it (a tail call printed in place names the instruction taking the edge), the entries of the copies folded into it, the instructions (every copy's) its operations were emitted for, the C functions the cognitive-complexity reduction split it into (sections, tails, extracted blocks), and the unit defining it with `split` (else `None`) |
 | `gotos` | `[from, to]` per printed `goto`: the instruction taking the edge (a branch, or the `JMP` the lift threaded into it; each branch of a short-circuit condition with an edge to the target) and its target |
 | `reduced` | `[from, to]` per `goto` the structuring placed and the cognitive-complexity reduction (wayward-eagle) expressed without one: a call of a tail, or a return |
 | `loops` | the head of each printed loop |
@@ -873,9 +891,10 @@ values inside `ok` on every run (`proven`), so neither has a trap. `opcode`, `co
 
 ## Translation cost
 
-Every printed statement and check carries a marker of what it comes from (`marks.py`); what
-survives printing (folded functions, unread statements dropped) is read back in text order,
-so `info["emission"]` counts what the `.c` holds (`cost.py`):
+Every printed statement and check carries a marker record of what it comes from
+(`marks.py`) on its `c_ast` node (`cnodes.Prov`); what survives printing (folded functions,
+unread statements dropped) is read back by the printer in text order, so
+`info["emission"]` counts what the `.c` holds (`cost.py`):
 
 | key | value |
 |---|---|
@@ -906,8 +925,9 @@ already checks (`cost.redundant`: their indices), and for each printed `trap(k)`
 needs one check (one per definition is the least the code can need, the minimum
 `unproven` counts), covering every access through it, `p + y` with `y` a byte.
 
-With `lines`, each line holding code is preceded by `#line N "file"` naming the marker
-standing before it, and a marker inside a line breaks it there (`# line N "file"`):
+With `lines`, the printer puts `#line N "file"` before each line it prints, naming the record
+in force, and around each check, the enclosing record resuming after it; the lines are laid
+out with no column limit, so each line keeps its directive:
 
 | file | line | code |
 |---|---|---|
@@ -919,9 +939,8 @@ standing before it, and a marker inside a line breaks it there (`# line N "file"
 | `frame` | 1 | function heads and closing braces |
 | `runtime` | 1 | the prologue, init's replay and whatever follows the `.c` (the host's) |
 
-`marks.strip_lines` removes the directives, leaving the `.c` translated without `lines`
-byte for byte. `tools/csize.py`'s `owners` gives the bytes of each `(file, line)` of a build
-with `-g` from its DWARF line table.
+`tools/csize.py`'s `owners` gives the bytes of each `(file, line)` of a build with `-g` from
+its DWARF line table.
 
 ## Validation
 

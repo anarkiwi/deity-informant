@@ -138,10 +138,10 @@ end:
 
 def test_lines_own_every_byte(prefix, tmp_path):
     """With ``lines`` every compiled byte of the ``.c`` is an original instruction's or an
-    artifact's, named by its ``#line`` file; without the markers the ``.c`` is the same."""
+    artifact's, named by its ``#line`` file; without them the ``.c`` has none."""
     c, h, info, labels = lift(prefix, CURSOR, ("init", "play"), True, init=0, songs=range(2))
     plain = lift(prefix, CURSOR, ("init", "play"), init=0, songs=range(2))[0]
-    assert marks.strip_lines(c) == plain and "\n# line " in c
+    assert "#line" in c and "#line" not in plain
     (tmp_path / "t.c").write_text(c)
     (tmp_path / "t.h").write_text(h)
     so = tmp_path / "t.so"
@@ -164,17 +164,3 @@ def test_lines_own_every_byte(prefix, tmp_path):
     assert {n - 1 for f, n in own if f == "trap"} <= set(e["traps"])
     assert sum(b for (f, _), b in own.items() if f == "check") > 0
     assert labels["play"] in starts
-
-
-def test_directives_break_lines_and_strip():
-    """A marker starting a line is a ``#line`` before it, one inside a line breaks it; the
-    last marker at an offset wins and stripping restores the text."""
-    m = marks.Marks()
-    a, b = m.put(("tag", "frame")), ("tag", "check")
-    raw = f"{a}int f(void) {{\n  return {m.wrap(b, 'g()')} + 1;\n}}\n"
-    text, places, order = m.finish(raw)
-    assert text == "int f(void) {\n  return g() + 1;\n}\n" and order == [0, 1]
-    out = marks.directives(text, places, lambda j: (j + 1, m.recs[j][1]))
-    assert out.startswith('#line 1 "frame"\nint f(void) {\n#line 1 "frame"\n  return ')
-    assert '\n# line 2 "check"\ng() \n# line 1 "frame"\n+ 1;\n#line 1 "frame"\n}' in out
-    assert marks.strip_lines(out) == text
