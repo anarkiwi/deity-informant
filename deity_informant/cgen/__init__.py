@@ -35,6 +35,8 @@ __attribute__((noreturn, leaf)) void trap(uint16_t k);
 OOB = {"oob_rd": "uint8_t oob_rd(uint16_t a);", "oob_wr": "void oob_wr(uint16_t a, uint8_t v);"}
 #: Trap code of a read outside every array the program holds (not a ``CGEN_TRAPS`` index).
 OOB_TRAP = 0xFFFF
+#: The access helpers whose runtime traps ``OOB_TRAP`` on a byte it cannot keep exact.
+OOB_HELPERS = frozenset({"rd", "oob_rd", "wr", "oob_wr"})
 OOB_RD_TRAP = f"static uint8_t oob_rd(uint16_t a) {{ (void)a; trap(0x{OOB_TRAP:04X}); }}"
 
 #: The element of array ``a`` at a 16-bit offset ``b`` plus a byte index ``y``, modulo 2^16 as
@@ -1142,6 +1144,7 @@ def render(p, header="cgen.h", prefix=None, lines=False):  # pylint: disable=too
         },
         "traps": {k: key for key, k in traps.items() if k in mod.traps},
         "trap_info": trap_info,
+        "runtime_traps": {OOB_TRAP: "unheld"} if helpers & OOB_HELPERS else {},
         "emission": emission,
         "unknown_access": mem.unknown,
         "jumps": p.jumps or {},

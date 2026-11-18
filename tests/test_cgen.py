@@ -3883,7 +3883,8 @@ def test_read_outside_the_program_traps_by_default(prefix, tmp_path):
     """Without ``CGEN_OOB_EXACT`` the span reader's read outside the program traps with
     ``OOB_TRAP``; reads inside it run as before."""
     img, labels, loaded = assemble(ZPPTR)
-    c, h, _ = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
+    c, h, info = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
+    assert info["runtime_traps"] == {cgen.OOB_TRAP: "unheld"}
     (tmp_path / "t.c").write_text(c)
     (tmp_path / "t.h").write_text(h)
     flags = [f for f in cgenplay.CFLAGS if f != "-DCGEN_OOB_EXACT"]
@@ -3892,6 +3893,13 @@ def test_read_outside_the_program_traps_by_default(prefix, tmp_path):
     fn = {n: ctypes.cast(getattr(lib, n), ctypes.c_void_p) for n in ("init", "play")}
     got = [lib.call(fn[n], a) for n, a in [("init", 0), ("play", 0), ("play", 1)]]
     assert got[:2] == [-1, -1] and got[2] == cgen.OOB_TRAP
+
+
+def test_no_access_helper_no_runtime_trap(prefix):
+    """A translation with no access helper lists no runtime trap."""
+    img, labels, loaded = assemble("init:   STA $D418\n        RTS\nplay:   RTS\nend:\n")
+    _, _, info = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
+    assert info["runtime_traps"] == {}
 
 
 ANYPTR = """
