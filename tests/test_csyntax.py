@@ -1,6 +1,14 @@
 """Statement-tree rewrites of the printed C (csyntax): sections, returns and guards."""
 
-from deity_informant.cgen.csyntax import CONTINUE, RETURN, flattened, guarded, returning, sections
+from deity_informant.cgen.csyntax import (
+    CONTINUE,
+    RETURN,
+    cost,
+    flattened,
+    guarded,
+    returning,
+    sections,
+)
 
 
 def a(name, *reads):
@@ -56,25 +64,37 @@ def test_gotos_to_the_label_ending_a_section_return():
     assert got[0][3] == [RETURN] and got[0][4] == [goto("L9")]
 
 
-def test_a_last_if_with_no_else_is_a_guard():
-    """A function's last ``if`` with no ``else`` returns when its condition fails and holds
-    its statements after it, to a fixpoint; of one with an ``else``, the arm with more nested
-    control is after it, the other returning first."""
+def test_a_last_if_is_a_guard_where_that_costs_less():
+    """A function's last ``if`` returns first and holds its statements after it where that
+    lowers the cognitive complexity (it holds nested control); of one with an ``else``, the
+    arm with more nested control is after it; a last ``if`` holding none stays."""
     inner = iff("q", [s("y();")], neg="!q")
     got = guarded([s("x();"), iff("p", [s("z();"), inner], neg="!p")])
-    assert got == [
-        s("x();"),
-        ("if", "!p", frozenset(), [RETURN], [], "p"),
-        s("z();"),
-        ("if", "!q", frozenset(), [RETURN], [], "q"),
-        s("y();"),
-    ]
-    both = [iff("p", [s("x();")], [iff("q", [s("y();")], neg="!q")], neg="!p")]
+    assert got == [s("x();"), ("if", "!p", frozenset(), [RETURN], [], "p"), s("z();"), inner]
+    both = [iff("p", [s("x();")], [iff("q", [s("y();"), inner], neg="!q")], neg="!p")]
     assert guarded(both) == [
         ("if", "p", frozenset(), [s("x();"), RETURN], [], "!p"),
         ("if", "!q", frozenset(), [RETURN], [], "q"),
         s("y();"),
+        inner,
     ]
+    flat = [iff("p", [s("x();")], neg="!p")]
+    assert guarded(flat) == flat
+
+
+def test_an_arm_leaving_first_is_the_lighter():
+    """An ``if`` whose arm returns before the rest of a function holds more nested control
+    than the rest leaves first by the rest, the arm after it."""
+    heavy = [s("x();"), iff("q", [s("y();")], neg="!q"), RETURN]
+    got = guarded([iff("p", heavy, neg="!p"), s("z();")])
+    assert got == [("if", "!p", frozenset(), [s("z();"), RETURN], [], "p"), *heavy]
+
+
+def test_costs_follow_the_cognitive_complexity_rules():
+    """An ``if`` costs one plus its depth, an ``else if`` and an ``else`` one, a ``goto`` one."""
+    chain = iff("p", [goto("L1")], [iff("q", [s("x();")], [s("y();")])])
+    assert cost([chain]) == 1 + 1 + 1 + 1
+    assert cost([iff("p", [iff("q", [])])], 2) == (1 + 2) + (1 + 3)
 
 
 def test_an_else_ending_in_a_jump_is_tested_first():
@@ -95,10 +115,11 @@ def test_an_else_ending_in_a_jump_is_tested_first():
 
 
 def test_a_loop_body_ending_in_an_if_continues():
-    """A loop body's last ``if`` with no ``else`` continues the loop when its condition
-    fails, its statements after it."""
-    loop = ("loop", "for", "", frozenset(), [s("x();"), iff("p", [s("y();")], neg="!p")])
+    """A loop body's last ``if`` holding nested control continues the loop when its
+    condition fails, its statements after it."""
+    inner = iff("q", [s("w();")], neg="!q")
+    loop = ("loop", "for", "", frozenset(), [s("x();"), iff("p", [s("y();"), inner], neg="!p")])
     body = flattened([loop])[0][4]
-    assert body == [s("x();"), ("if", "!p", frozenset(), [CONTINUE], [], "p"), s("y();")]
-    switch = ("switch", "k", frozenset(), [((1,), [iff("p", [s("y();")], [RETURN], neg="!p")])])
+    assert body == [s("x();"), ("if", "!p", frozenset(), [CONTINUE], [], "p"), s("y();"), inner]
+    switch = ("switch", "k", frozenset(), [((1,), [iff("p", [inner], [RETURN], neg="!p")])])
     assert flattened([switch])[0][3][0][1][0][3] == [RETURN]

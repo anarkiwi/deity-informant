@@ -4293,19 +4293,22 @@ GUARD = """
 entry:  AND #$03
         BEQ done
         STA $C000
+        CMP #$02
+        BNE skip
         STA $C001
+skip:   STA $C002
 done:   RTS
 end:
 """
 
 
-def test_a_last_if_is_an_early_return(prefix, tmp_path):
-    """A function's last conditional block is a guard returning when its condition fails,
-    the block's statements after it at the function's own level."""
+def test_a_condition_ending_a_function_is_an_early_return(prefix, tmp_path):
+    """A condition holding nested control to the end of a function returns first, its
+    statements after it at the function's own level."""
     c, _, _ = check(prefix, tmp_path, GUARD, entry_calls(range(4)))
     body = body_of(c, "entry")
-    assert re.search(r"^  if \(.*\) \{?\n?\s*return;", body, re.M), body
-    assert re.search(r"^  io_write\(0xC001, ", body, re.M), body
+    assert body.count("return;") == 1, body
+    assert re.search(r"^  io_write\(0xC002, ", body, re.M), body
 
 
 def test_shared_tail_entered_by_jumps_is_a_function(prefix, tmp_path):

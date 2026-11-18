@@ -321,61 +321,94 @@ def returning(items, label):
     return _map(items, lambda st: RETURN if st[:2] == jump else st)
 
 
-def weight(items, depth=0):
-    """The cognitive complexity ``items`` add at nesting ``depth``: one plus the depth for
-    each ``if``, loop and ``switch``, one for each ``else``."""
+def cost(items, depth=0):
+    """The cognitive complexity of ``items`` at nesting ``depth`` (SonarSource's rules on
+    the statements, clang-tidy's ``readability-function-cognitive-complexity``): an ``if``,
+    loop or ``switch`` one plus its depth, an ``else if`` and an ``else`` one, a ``goto``
+    one; a statement's arms one level deeper. Conditions count the same either way."""
     out = 0
     for st in items:
-        if st[0] in ("if", "loop", "switch"):
-            out += 1 + depth + bool(st[0] == "if" and st[4])
-        out += sum(weight(sub, depth + 1) for sub in children(st))
+        if st[0] == "j" and st[1].startswith("goto "):
+            out += 1
+        elif st[0] == "if":
+            out += 1 + depth + _arms(st, depth + 1)
+        elif st[0] in ("loop", "switch"):
+            out += 1 + depth + sum(cost(sub, depth + 1) for sub in children(st))
     return out
 
 
-def ending(items, jump):
-    """``items`` ending a function or loop body (``jump`` its ``return`` or ``continue``),
-    a last ``if`` one arm of which leaves by ``jump`` first and the other after it at this
-    level, to a fixpoint: the arm with more nested control (:func:`weight`) one level up, the
-    other ending in ``jump``, no ``else``."""
-    while items and items[-1][0] == "if" and (items[-1][3] or items[-1][4]):
-        st = items[-1]
-        then, els = st[3], st[4]
-        if weight(then) >= weight(els):
-            first, rest, cond = els, then, st[5]
-        else:
-            first, rest, cond = then, els, st[1]
-        if not ends_in_jump(first):
-            first = [*first, jump]
-        neg = st[1] if cond is st[5] else st[5]
-        items = [*items[:-1], ("if", cond, st[2], first, [], neg), *rest]
-    return items
+def _arms(st, depth):
+    """The cost of an ``if``'s arms, an ``else`` holding one ``if`` an ``else if``."""
+    out, els = cost(st[3], depth), st[4]
+    while len(els) == 1 and els[0][0] == "if":
+        out += 1 + cost(els[0][3], depth)
+        els = els[0][4]
+    return out + (1 + cost(els, depth) if els else 0)
+
+
+def _exits(items, i, jump):
+    """The rewrites of ``if`` statement ``i`` of ``items`` that leave by ``jump`` first."""
+    st, last = items[i], i == len(items) - 1
+    if last:
+        pairs = [(st[4], st[3], st[5], st[1]), (st[3], st[4], st[1], st[5])]
+    elif not st[4] and ends_in_jump(st[3]):
+        pairs = [(items[i + 1 :], st[3], st[5], st[1])]
+    else:
+        return []
+    out = []
+    for first, rest, cond, neg in pairs:
+        first = first if ends_in_jump(first) else [*first, jump]
+        out.append(([*items[:i], ("if", cond, st[2], first, [], neg)], rest))
+    return out
+
+
+def ending(items, jump, depth=0):
+    """``items`` ending a function or loop body at nesting ``depth`` (``jump`` its ``return``
+    or ``continue``), each ``if`` that ends this level either way leaving first by one arm,
+    ending in ``jump``, and the other after it at this level, wherever that lowers the
+    cognitive complexity (:func:`cost`) once the statements moved up end the level in turn: a
+    last ``if`` either way round, one whose arm leaves before the rest with the rest as the
+    arm leaving first. Each rewrite lowers the cost and recurs only into the statements of
+    one ``if``, so the rewrites end."""
+    while True:
+        best, now = None, cost(items, depth)
+        for i in range(len(items) - 1, -1, -1):
+            for head, rest in _exits(items, i, jump) if items[i][0] == "if" else ():
+                got = [*head, *ending(rest, jump, depth)]
+                c = cost(got, depth)
+                if c < now and (best is None or c < best[0]):
+                    best = (c, got)
+        if best is None:
+            return items
+        items = best[1]
 
 
 def guarded(items):
-    """``items`` ending a function that returns nothing, its last ``if`` a guard
-    (:func:`ending` with ``return``)."""
+    """``items`` ending a function that returns nothing (:func:`ending` with ``return``)."""
     return ending(items, RETURN)
 
 
 CONTINUE = ("j", "continue;", frozenset())
 
 
-def flattened(items):
-    """``items`` with each ``if`` whose ``else`` ends in a jump and whose ``then`` does not
-    tested the other way, its ``else`` the jumping arm and its ``then`` after it, and each
-    loop body's last ``if`` with no ``else`` a guard continuing the loop: the same
-    statements, the larger arm one nesting level up, no ``else``."""
+def flattened(items, depth=0):
+    """``items`` at nesting ``depth`` with each ``if`` whose ``else`` ends in a jump and whose
+    ``then`` does not tested the other way, its ``else`` the jumping arm and its ``then``
+    after it, wherever that lowers the cognitive complexity (:func:`cost`), and each loop
+    body ending in an ``if`` rewritten to continue first (:func:`ending`)."""
     out = []
     for st in items:
         if st[0] == "if":
-            st = (*st[:3], flattened(st[3]), flattened(st[4]), *st[5:])
+            st = (*st[:3], flattened(st[3], depth + 1), flattened(st[4], depth + 1), *st[5:])
             if st[4] and ends_in_jump(st[4]) and not ends_in_jump(st[3]):
-                out += [("if", st[5], st[2], st[4], [], st[1]), *st[3]]
-                continue
+                alt = [("if", st[5], st[2], st[4], [], st[1]), *st[3]]
+                if cost(alt, depth) < cost([st], depth):
+                    out += alt
+                    continue
         elif st[0] == "loop":
-            st = (*st[:4], ending(flattened(st[4]), CONTINUE))
+            st = (*st[:4], ending(flattened(st[4], depth + 1), CONTINUE, depth + 1))
         elif st[0] == "switch":
-            st = (*st[:3], [(lab, flattened(b)) for lab, b in st[3]])
+            st = (*st[:3], [(lab, flattened(b, depth + 1)) for lab, b in st[3]])
         out.append(st)
     return out
 
