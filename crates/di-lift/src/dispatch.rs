@@ -491,7 +491,6 @@ pub(crate) fn stored_reg(t: &Template, i: usize) -> Option<usize> {
     None
 }
 
-/// Whether template `t` reads register `r`.
 /// Whether template `t` reads register `r` before it writes it.
 fn reads(t: &Template, r: usize) -> bool {
     let is = |v: &Vn| v.space() == Space::Reg && v.off() as usize == r;
@@ -1579,14 +1578,14 @@ fn pointer_set(
         .sets
         .of(pc, reg::Y)
         .unwrap_or_else(|| g.sets.any(pc, reg::Y));
-    tagged_set(g, w, pc, (q, h), &ys).or_else(|| {
+    tagged_in(g, w, pc, (q, h), [None; 2], &ys).or_else(|| {
         advanced(g, pc, [q as u16, h as u16], &ys).map(|(a, r, g)| (a.into_iter().collect(), r, g))
     })
 }
 
 /// The address set of the store of opcode `op` at `pc` through its cell operand bytes, where
 /// they hold tagged table bytes (a byte that is not a cell, its constant) on every path into
-/// it ([`tagged_set`]), plus each value of its index register.
+/// it ([`tagged_in`]), plus each value of its index register.
 fn operand_set(
     g: &Loop,
     w: &FixedBitSet,
@@ -1611,19 +1610,9 @@ fn read_only(code: &Code, bytes: &BTreeSet<u16>) -> bool {
     (bytes.iter()).all(|&a| code.constant.contains(a as usize) && !code.cells.contains(a as usize))
 }
 
-/// The words of the bytes `q, h` where they hold tagged table bytes on every path into `pc`,
-/// plus each of `ys`; the table bytes read and the guards they need.
-fn tagged_set(
-    g: &Loop,
-    w: &FixedBitSet,
-    pc: u16,
-    qh: (u32, u32),
-    ys: &[u8],
-) -> Option<(Vec<u16>, BTreeSet<u16>, Vec<Guard>)> {
-    tagged_in(g, w, pc, qh, [None; 2], ys)
-}
-
-/// [`tagged_set`] with the bytes `fixed` gives constant.
+/// The words of the bytes `q, h` where they hold tagged table bytes on every path into `pc`
+/// (the bytes `fixed` gives constant), plus each of `ys`; the table bytes read and the guards
+/// they need.
 fn tagged_in(
     g: &Loop,
     w: &FixedBitSet,

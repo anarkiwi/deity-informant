@@ -83,13 +83,13 @@ impl Iv {
     }
 }
 
-/// Interval of `opc(a, b)` with an `out`-sized result and `a` of `size0` bytes.
 /// The least all-ones value at or above `x`: an or or exclusive or of values at most `x`
 /// stays below it.
 fn ones(x: u32) -> u32 {
     u32::MAX.checked_shr(x.leading_zeros()).unwrap_or(0)
 }
 
+/// Interval of `opc(a, b)` with an `out`-sized result and `a` of `size0` bytes.
 pub fn iv_op(opc: Opc, a: Iv, b: Iv, out: u32, size0: u32) -> Iv {
     let m = mask(out);
     // A copy to fewer bytes truncates.
