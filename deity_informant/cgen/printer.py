@@ -16,11 +16,12 @@ from dataclasses import dataclass, field, replace
 
 import networkx as nx
 import numpy as np
+from wayward_eagle import Function, ends_in_jump, names_in, reduced, walk
 
 from .. import masks
 from ..lifter import MODE_LEN, OPS
 from .mlir import Op
-from .csyntax import declare, drop_unread, ends_in_jump, hexes, names_in, reduced, render, walk
+from .csyntax import declare, drop_unread, hexes, lead, render
 from . import marks, regions
 from .marks import bare
 from .state import INDEXED, INIT, POINTER, UNKNOWN, State, classify
@@ -3599,7 +3600,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             body, lambda st, read: st[1] not in read and self.copies.get(id(st)) is st
         )
         void = not self.f.private or self.mod.ret_type(self.f) == "void"
-        pieces, nsec = reduced(body, self.name, params, set(self.types), void)
+        pieces, nsec = reduced(body, self.name, Function(params, set(self.types), void, _traps))
         decl = head[head.index("(") + 1 : -1]
         types = {
             **dict(reversed(x.rsplit(" ", 1)) for x in decl.split(", ") if " " in x),
@@ -3652,6 +3653,11 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             lines = self.mod.guards.get(self.name, []) + lines
         frame = self.mod.marks.put(("tag", "frame"))
         return "\n".join([f"{frame}{head} {{", *lines, f"{self.mod.marks.put(('tag', 'frame'))}}}"])
+
+
+def _traps(st):
+    """Whether statement ``st`` is a ``trap`` call, which never returns."""
+    return st[0] == "s" and lead(st[1])[1].startswith("trap(")
 
 
 def _shared_jump(arms):
