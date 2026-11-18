@@ -4412,11 +4412,11 @@ def test_multi_exit_loop_breaks_to_its_follow(prefix, tmp_path):
 def test_jump_from_nested_loops_to_a_latch_is_a_goto_to_its_label(prefix, tmp_path):
     """NESTED_LATCH: the do/while's latch (`sub`, inlined, returning to `latch`) is entered
     from inside two nested counted loops, where ``continue`` is the inner loop's: `BPL done`
-    is a goto to the label ending the do body, before its condition."""
+    is a goto to the label ending the loop body, before its exit test."""
     c, _, info = check(prefix, tmp_path, NESTED_LATCH, entry_calls(range(2), 4), gotos=1)
     _, labels, _ = assemble(NESTED_LATCH)
     assert [e[0] for e in info["provenance"]["gotos"]] == [labels["done"] - 4]
-    assert re.search(r"goto (L\d+);(?s:.*)\n\s*\1:;\n\s*\} while \(", c)
+    assert re.search(r"goto (L\d+);(?s:.*)\n\s*\1:;\n\s*(\} while \(|if \()", c)
 
 
 def test_unlabeled_gotos_are_found_per_function(tmp_path):
@@ -8039,7 +8039,7 @@ def test_pointer_from_song_data_stays_in_the_data_block(prefix, tmp_path, aim):
     play(tmp_path, c, h, img, labels, calls, trap=(1, k) if aim else None)
 
 
-COUNTDOWN = """
+CARRIED = """
 entry:  LDY #$01
         LDX #$04
 loop:   TYA
@@ -8057,11 +8057,11 @@ end:
 def test_block_arguments_share_their_incoming_values_variable(prefix, tmp_path, monkeypatch):
     """A loop counter's block argument and the value its back edge passes are one variable
     (out of SSA by coalescing): no copy between them, fewer variables than one per value."""
-    c, _, _ = check(prefix, tmp_path, COUNTDOWN, entry_calls([0]))
+    c, _, _ = check(prefix, tmp_path, CARRIED, entry_calls([0]))
     body = body_of(c, "entry")
     assert not re.search(r"\b(v\d+) = (v\d+);", body)
     monkeypatch.setattr(printer.ssa.Coalescer, "classes", lambda self: {})
-    plain = body_of(check(prefix, tmp_path, COUNTDOWN, entry_calls([0]))[0], "entry")
+    plain = body_of(check(prefix, tmp_path, CARRIED, entry_calls([0]))[0], "entry")
     count = lambda text: len(set(re.findall(r"\bv\d+\b", text)))
     assert count(body) < count(plain)
 
