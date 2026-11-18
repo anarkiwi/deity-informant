@@ -13,9 +13,9 @@ def s(text, *reads):
     return ("s", text, frozenset(reads))
 
 
-def goto(label):
-    """A jump to ``label``."""
-    return ("j", f"goto {label};", frozenset())
+def goto(name):
+    """A jump to label ``name``."""
+    return ("j", f"goto {name};", frozenset())
 
 
 def label(name):
