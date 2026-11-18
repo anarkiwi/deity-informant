@@ -4035,6 +4035,43 @@ def test_relocation_invariance(prefix, tmp_path):
     assert not re.search(r"0x1[0-9A-F]{3}\b|0x23[0-9A-F]{2}\b", outs[0][0])
 
 
+SELECTED = """"builtin.module"() ({
+  "memref.global"() <{sym_name = "M", sym_visibility = "private", type = memref<65536xi8>}> : () -> ()
+  "func.func"() <{function_type = (i8) -> i8, sym_name = "f"}> ({
+  ^bb0(%a: i8):
+    %g = "memref.get_global"() <{name = @M}> : () -> memref<65536xi8>
+    %z = "arith.constant"() <{value = 0 : i8}> : () -> i8
+    %two = "arith.constant"() <{value = 2 : i8}> : () -> i8
+    %base = "arith.constant"() <{value = 4352 : i16}> : () -> i16
+    %c = "arith.cmpi"(%a, %z) <{predicate = 0 : i64}> : (i8, i8) -> i1
+    %s = "arith.select"(%c, %z, %two) : (i1, i8, i8) -> i8
+    %x = "arith.extui"(%s) : (i8) -> i16
+    %p = "arith.addi"(%x, %base) : (i16, i16) -> i16
+    %i = "arith.index_castui"(%p) : (i16) -> index
+    %v = "memref.load"(%g, %i) : (memref<65536xi8>, index) -> i8
+    "func.return"(%v) : (i8) -> ()
+  }) : () -> ()
+}) : () -> ()
+"""
+
+
+def test_load_at_a_few_addresses_reads_their_bytes():
+    """A byte loaded at an address of a few values (a table indexed by a select of its
+    constants, as InstCombine leaves a phi of them) has the hull of the bytes at those
+    addresses, not of every byte between: a pointer's halves are not mixed, so what the
+    printer decides from it does not depend on where the program is."""
+    img = bytearray(0x10000)
+    img[0x1100:0x1103] = bytes([1, 200, 3])
+    code = np.zeros(0x10000, dtype=bool)
+    code[0x1100:0x1103] = True
+    mod = printer.Module(mlir.parse(SELECTED), regions.Memory(img, code, [], (0x1100, 0x1103)))
+    [f] = mod.funcs
+    load = next(o for o in f.walk() if o.name == "memref.load")
+    assert f.points(f.address(load)).tolist() == [0x1100, 0x1102]
+    assert f.iv(load.res[0]) == (1, 3)
+    assert f.points(load.res[0]) is None
+
+
 def test_replays_load_the_library_just_built(prefix, tmp_path):
     """Each replay runs the C just compiled, not a library loaded before from the same path:
     with ``A`` doubled the reads through the pointer table reach its words, which differ

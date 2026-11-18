@@ -219,6 +219,8 @@ NUMPY_CMP = {
     9: operator.ge,
 }
 LOOP_STEPS = 256
+#: Most values :meth:`Func.points` follows.
+POINTS = 16
 
 
 class Unknown(Exception):
@@ -1156,9 +1158,11 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         elif o.name == "memref.load" and (k := self.named(o)) is not None and self.exact(o):
             r = (k, k)
         elif o.name == "memref.load" and w == 8:
-            r = self.mod.fx(self.name).sets.get(
-                self.const_of(self.address(o))
-            ) or self.mod.mem.hull(*self.iv(self.address(o)))
+            a = self.address(o)
+            pts = self.points(a)
+            r = self.mod.fx(self.name).sets.get(self.const_of(a)) or (
+                self.mod.mem.hull(*self.iv(a)) if pts is None else self.mod.mem.hull_at(pts)
+            )
             r = meet(r, self.mod.loaded_iv(self, o) or r)
         elif o.name == "func.call":
             r = self.mod.result_iv(o.prop("callee")[1:], o.res.index(v)) or full
@@ -1244,6 +1248,31 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             r = full
         self.ivs[v] = r
         return r
+
+    def points(self, v):
+        """The values ``v`` takes, ascending, when they are at most :data:`POINTS` that its
+        constants decide (a constant, a select or a cast of such, an operation of two such),
+        else None: what an access at such an address reads is the bytes at them, not their
+        hull."""
+        d, top = self.defs.get(v), (1 << self.width(v)) - 1
+        if d is None:
+            return None
+        if d.name == "arith.constant":
+            return np.array([d.int_prop("value") & top])
+        if d.name in CASTS:
+            x = self.points(d.args[0])
+            return None if x is None else np.unique(x & top)
+        if d.name == "arith.select" or d.name in NUMPY:
+            xs = [self.points(a) for a in d.args[-2:]]
+            if any(x is None for x in xs):
+                return None
+            vals = (
+                np.union1d(*xs)
+                if d.name == "arith.select"
+                else np.unique(NUMPY[d.name](xs[0][:, None], xs[1][None, :]) & top)
+            )
+            return vals if len(vals) <= POINTS else None
+        return None
 
     def iv_joined(self, v):
         """The interval of a block argument: the hull of what flows into it, where a value
