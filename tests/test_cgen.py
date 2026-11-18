@@ -20,7 +20,7 @@ from vagrant_moses.c64 import poweron_ram
 
 import wholeprog_progs as W
 from deity_informant import NATIVE, cgen, postinit, trace, wholeprog
-from deity_informant.cgen import csyntax, mlir, printer, regions, structure, traps
+from deity_informant.cgen import mlir, printer, regions, structure, traps
 from deity_informant.lifter import OPS as OPCODES
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
@@ -4956,23 +4956,13 @@ def test_deterministic(prefix, monkeypatch, name):
     assert len(texts) == 1
 
 
-def test_conditions_cover_and_definite_assignment():
+def test_conditions_cover():
     conds = structure.Conds()
     a, b = conds.var(("c", "%a")), conds.var(("c", "%b"))
     assert conds.cover((a & b) | (a & ~b), conds.bdd.true) == [[(("c", "%a"), True)]]
     one, two = conds.var(("e", "%x", 1)), conds.var(("e", "%x", 2))
     assert conds.cover(~one & two, conds.care) == [[(("e", "%x", 2), True)]]
     conds.close()
-    assign = ("a", "x", "1", frozenset())
-    read = ("s", "f(x);", frozenset({"x"}))
-    assert csyntax.assigned_first([("if", "c", frozenset(), [assign], [assign]), read], "x")
-    assert not csyntax.assigned_first([("if", "c", frozenset(), [assign], []), read], "x")
-    jump = ("j", "return;", frozenset())
-    assert csyntax.assigned_first([("if", "c", frozenset(), [assign], [jump]), read], "x")
-    label = ("l", "L1:;", frozenset())
-    assert not csyntax.assigned_first([assign, ("j", "goto L1;", frozenset()), label, read], "x")
-    body = [("if", "c", frozenset(), [assign], []), read]
-    assert csyntax.render(csyntax.declare(body, {"x": "uint8_t"}))[0] == "uint8_t x = 0;"
 
 
 def test_condition_literals_keep_their_evaluation_order():
@@ -6223,7 +6213,7 @@ def test_block_copy_indexes_the_blocks_directly(blocks):
     assert any(store for _, store in p.addr_sets)
     assert " wr(" not in c and "CGEN_IX(" in c
     tests = re.findall(
-        r"if \(\(uint16_t\)\(([^;]*?)\) <\s*0x[0-9A-F]+\)\s*CGEN_IX\(R\d+, [^,]*, (v\d+)\)", c
+        r"if \(\(uint16_t\)\(([^;]*?)\) <\s*0x[0-9A-F]+\)\s*\{?\s*CGEN_IX\(R\d+, [^,]*, (v\d+)\)", c
     )
     assert tests and all(not re.search(rf"\b{v}\b", t) for t, v in tests)
 

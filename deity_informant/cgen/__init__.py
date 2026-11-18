@@ -8,18 +8,19 @@ from __future__ import annotations
 
 import copy
 import itertools
-import shutil
-import subprocess
 import time
 from dataclasses import dataclass
 from types import SimpleNamespace
 
 import numpy as np
+from pycparser import c_ast
+from wayward_eagle.c import format_c
 
 from .. import c64devices, masks, polling, postinit, wholeprog
 from ..trace import Facts
-from . import cost, emit, marks, mlir, printer, traps as trapinfo
-from .csyntax import hexes
+
+from . import cnodes as cn, cost, emit, mlir, printer, traps as trapinfo, units
+from .cnodes import hexes
 from ..lifter import MODE_LEN, OPS
 from .regions import Memory, background, code_bytes, pointer_pairs
 
@@ -35,7 +36,7 @@ __attribute__((noreturn, leaf)) void trap(uint16_t k);
 OOB = {"oob_rd": "uint8_t oob_rd(uint16_t a);", "oob_wr": "void oob_wr(uint16_t a, uint8_t v);"}
 #: Trap code of a read outside every array the program holds (not a ``CGEN_TRAPS`` index).
 OOB_TRAP = 0xFFFF
-OOB_RD_TRAP = f"static uint8_t oob_rd(uint16_t a) {{ (void)a; trap(0x{OOB_TRAP:04X}); }}"
+OOB_RD_TRAP = "uint8_t oob_rd(uint16_t a) {{ (void)a; trap(0x{:04X}); }}".format(OOB_TRAP)
 
 #: The element of array ``a`` at a 16-bit offset ``b`` plus a byte index ``y``, modulo 2^16 as
 #: the 6502's ``(zp),Y`` wraps: with 16-bit pointers the array's place at ``b`` indexed by
@@ -119,7 +120,7 @@ def _data(j):
     return f"({off} >= C{j}_BITS || C{j}_DATA[{off} >> 3] >> ({off} & 7) & 1)"
 
 
-def _var(cases):
+def _var(cases, ext=False):
     """``cgen_var``: the promoted cell at ``a``, by the ``cases`` (``[(offset, lvalue)]``, the
     offset from ``CODE_ORG``), else a null pointer; ``cgen_var_at`` tests their range first."""
     lo, hi = cases[0][0], cases[-1][0]
@@ -130,7 +131,7 @@ def _var(cases):
         "}",
         "return 0;",
         "}",
-        "static inline uint8_t *cgen_var_at(uint16_t a) {",
+        f"{'' if ext else 'static inline '}uint8_t *cgen_var_at(uint16_t a) {{",
         f"return (uint16_t)(a - (CODE_ORG + 0x{lo:X})) <= 0x{hi - lo:X} ? cgen_var(a) : 0;",
         "}",
     ]
@@ -291,7 +292,7 @@ def _unheld_h(mem, used, cases, program, ram=None):
     return out + [f"#define CGEN_BG_INIT {hexes(pool)}"]
 
 
-def _wr(vol, var=False):
+def _wr(vol, var=False, ext=False):
     """``wr``: a write dispatcher over the promoted cells (with ``var``), the regions
     (``CGEN_REGIONS``, slices of held spans included: those are the spans' data bytes) and the
     volatile condition ``vol``, then the host's ``oob_wr`` (``CGEN_OOB``) or
@@ -299,7 +300,9 @@ def _wr(vol, var=False):
     out = ["static uint8_t *const WR_AT[] = {CGEN_REGIONS};"] + [
         f"static const uint16_t WR_{k}[] = {{CGEN_REGIONS_{k}}};" for k in ("ORG", "LEN")
     ]
-    out += ["static __attribute__((noinline)) void wr(uint16_t a, uint8_t v) {"]
+    out += [
+        f"{'' if ext else 'static '}__attribute__((noinline)) void wr(uint16_t a, uint8_t v) {{"
+    ]
     out += VAR_WR if var else []
     out += [
         "for (uint8_t i = 0; i < sizeof WR_ORG / sizeof *WR_ORG; ++i) {",
@@ -325,15 +328,15 @@ def _storage(mem, used, helpers, regions):
     """The ``.h``'s arrays, laid out by where the song puts its data: ``CGEN_STORAGE`` (the
     ``.c`` defines them by it) holds the held spans, the ``regions`` not inside one and the
     spans' data bits; a region inside a span is its slice; ``rd`` and ``wr`` find them by
-    the ``CGEN_ARRAYS`` and ``CGEN_REGIONS`` lists."""
+    the ``CGEN_ARRAYS`` and ``CGEN_REGIONS`` lists; ``CGEN_EXTERN`` declares them."""
     spans = range(len(mem.held)) if "CODE" in used else range(0)
     blocks = sorted(mem.blocks_used)
-    defs = [f"uint8_t B{b}[B{b}_LEN] = {{B{b}_INIT}};" for b in blocks]
+    defs = [("uint8_t", f"B{b}", f"B{b}_LEN", f"B{b}_INIT") for b in blocks]
     out, slices = [], _slices(mem, used)
     for j in spans:
         b = _block(mem, *mem.held[j])
         if b is None:
-            defs.append(f"uint8_t C{j}[C{j}_LEN] = {{C{j}_INIT}};")
+            defs.append(("uint8_t", f"C{j}", f"C{j}_LEN", f"C{j}_INIT"))
         else:
             out.append(f"#define C{j} (B{b} + (C{j}_ORG - B{b}_ORG))")
     for k in regions:
@@ -344,11 +347,14 @@ def _storage(mem, used, helpers, regions):
         elif b is not None:
             out.append(f"#define R{k} (B{b} + (R{k}_ORG - B{b}_ORG))")
         else:
-            defs.append(f"uint8_t R{k}[R{k}_LEN] = {{R{k}_INIT}};")
+            defs.append(("uint8_t", f"R{k}", f"R{k}_LEN", f"R{k}_INIT"))
     for j in spans if "codechk" in helpers else ():
         if j in slices:
-            defs.append(f"static const uint8_t C{j}_DATA[] = {{C{j}_DATA_INIT}};")
-    out.append(f"#define CGEN_STORAGE {' '.join(defs)}")
+            defs.append(("const uint8_t", f"C{j}_DATA", "", f"C{j}_DATA_INIT"))
+    out.append(
+        f"#define CGEN_STORAGE {' '.join(f'{t} {n}[{d}] = {{{i}}};' for t, n, d, i in defs)}"
+    )
+    out.append(f"#define CGEN_EXTERN {' '.join(f'extern {t} {n}[{d}];' for t, n, d, _ in defs)}")
     whole = [f"R{k}" for k in regions if slices[k] is None]
     for name, arrays in (
         ("ARRAYS", [*whole, *(f"C{j}" for j in spans)]),
@@ -374,7 +380,7 @@ def _guarded(lines, conds):
 
 
 def _dispatch(
-    mem, helpers, used, cases, program, ram
+    mem, helpers, used, cases, program, ram, ext=False
 ):  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     """``(c lines, h lines)``: ``oob_rd`` (unless the host's) and ``wr`` over the regions
     outside the held spans, the volatile ranges and the held spans (whose data bytes ``Cj_DATA``
@@ -383,8 +389,9 @@ def _dispatch(
     places nowhere; and ``codechk``: whether a held constant byte would change. ``cgen_rd``
     and ``oob_wr`` find the promoted cells ``cases`` (``cgen_var``) first, as ``wr`` does
     where an access needs it, and the bytes in no array by :func:`_unheld_h` (``program``
-    init's stores, ``ram`` the bytes a store may write, every one when True)."""
-    out, h = [], []
+    init's stores, ``ram`` the bytes a store may write, every one when True); ``ext``: the
+    helpers other units call external."""
+    out, h, link = [], [], "" if ext else "static "
     vol = " || ".join(
         f"(a >= 0x{lo:04X} && a < 0x{hi:04X})" if hi < 0x10000 else f"a >= 0x{lo:04X}"
         for lo, hi in mem.volatile
@@ -401,7 +408,7 @@ def _dispatch(
     var = var if cases else []
     if var:
         used.add("CODE_ORG")
-        out += _guarded(_var(cases), var)
+        out += _guarded(_var(cases, ext), var)
     if unheld:
         program = np.zeros(0x10000, dtype=bool) if program is None else program
         h = _unheld_h(mem, used, cases if var else (), program, ram if writes else None)
@@ -409,23 +416,25 @@ def _dispatch(
         out += _guarded(UNHELD + _guarded(RAM, inner) + _unheld(inner), unheld)
     out += _guarded(_rd(regions, vol, spans, bool(var)), rd)
     if "rd" in helpers:
-        out.append("static inline uint8_t rd(uint16_t a) { return cgen_rd(a); }")
+        out.append(
+            f"{'' if ext else 'static inline '}uint8_t rd(uint16_t a) {{ return cgen_rd(a); }}"
+        )
     oob = sorted(helpers & set(OOB) | ({"oob_wr"} if writes else set()))
     if oob:
         out += ["#ifdef CGEN_OOB", *(OOB[h] for h in oob)]
         if "oob_rd" in oob:
             out += ["#else", "#ifdef CGEN_OOB_EXACT"]
-            out += ["static uint8_t oob_rd(uint16_t a) { return cgen_rd(a); }", "#else"]
-            out += [OOB_RD_TRAP, "#endif"]
+            out += [link + "uint8_t oob_rd(uint16_t a) { return cgen_rd(a); }", "#else"]
+            out += [link + OOB_RD_TRAP, "#endif"]
         out.append("#endif")
     if writes:
         out += _guarded(_unheld_wr(spans), [NOOB])
-        out += _guarded(_wr(vol, "cgen_var" in helpers), ["1" if "wr" in helpers else NOOB])
+        out += _guarded(_wr(vol, "cgen_var" in helpers, ext), ["1" if "wr" in helpers else NOOB])
         own = VAR_WR if var and "cgen_var" not in helpers else []
-        oob_wr = ["static void oob_wr(uint16_t a, uint8_t v) {", *own, "wr(a, v);", "}"]
+        oob_wr = [link + "void oob_wr(uint16_t a, uint8_t v) {", *own, "wr(a, v);", "}"]
         out += _guarded(oob_wr, [NOOB] if "oob_wr" in helpers else [])
     if "codechk" in helpers:
-        out += ["static __attribute__((noinline)) uint8_t codechk(uint16_t a, uint8_t v) {"]
+        out += [link + "__attribute__((noinline)) uint8_t codechk(uint16_t a, uint8_t v) {"]
         for j in spans:
             nd = f" && !{_data(j)}" if j in sliced else ""
             out += [f"if ({_inside(f'C{j}')}) return C{j}[a - C{j}_ORG] != v{nd};"]
@@ -440,6 +449,45 @@ SONG = "(uint8_t)(a - CGEN_SONG0)"
 def _song_trap(k):
     """The init entry's trap ``k`` on a song outside the ``.h``'s range."""
     return [f"if ({SONG} >= CGEN_SONGS) {{", f"trap({k});", "}"]
+
+
+def _song_check(k):
+    """The init entry's trap ``k`` on a song outside the ``.h``'s range, as a statement."""
+    song = cn.cast("uint8_t", cn.binop("-", cn.ident("a"), cn.ident("CGEN_SONG0")))
+    test = cn.binop(">=", song, cn.ident("CGEN_SONGS"))
+    return cn.when(test, [cn.call("trap", cn.const(k))])
+
+
+def _checked_reader(j, var):
+    """``rdCj``: held span ``j``'s bounds-checked reader of a base plus a byte, the promoted
+    cells first with ``var``."""
+    p, y, a, o = (cn.ident(x) for x in "pyao")
+    org, n = cn.ident(f"C{j}_ORG"), cn.ident(f"C{j}_LEN")
+    body = []
+    if var:
+        cell = cn.ident("c")
+        body += [
+            cn.decl("a", "uint16_t", cn.binop("+", p, y)),
+            cn.decl("c", "uint8_t *", cn.call("cgen_var_at", a)),
+            cn.when(cell, [cn.ret(c_ast.UnaryOp("*", cell))]),
+        ]
+    body += [
+        cn.decl("o", "uint16_t", cn.binop("+", cn.binop("-", p, org), y)),
+        cn.ret(
+            c_ast.TernaryOp(
+                cn.binop("<", o, n), cn.index(f"C{j}", o), cn.call("oob_rd", cn.binop("+", p, y))
+            )
+        ),
+    ]
+    params = [("p", "uint16_t"), ("y", "uint8_t")]
+    head = cn.function(f"rdC{j}", "uint8_t", params, ("static",), ("noinline",))
+    return cn.define(head, body)
+
+
+def _tagged(node, rec):
+    """``node`` printing marker record ``rec``."""
+    cn.prov(node).rec = rec
+    return node
 
 
 def _songs_h(state):
@@ -562,21 +610,6 @@ def _copies_h(mem, plan, var):
             f"#define CGEN_CP_FROM {', '.join(map(str, ends))}",
         ]
     return out, used
-
-
-def clang_format(text):
-    """``text`` formatted by ``clang-format --style=LLVM``."""
-    exe = shutil.which("clang-format")
-    if not exe:
-        raise RuntimeError("needs clang-format on PATH")
-    done = subprocess.run(
-        [exe, "--style=LLVM", "--assume-filename=x.c"],
-        input=text,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return done.stdout
 
 
 @dataclass
@@ -946,9 +979,12 @@ def _song_guard(p):
     return {("deopt", pc): guard}
 
 
-def render(p, header="cgen.h", prefix=None, lines=False):  # pylint: disable=too-many-locals
-    """``(c_text, h_text, info)`` of :class:`Program` ``p``: MLIR, structured and printed;
-    ``lines``: with ``#line`` markers (*Translation cost*)."""
+def render(  # pylint: disable=too-many-locals,too-many-arguments,too-many-positional-arguments
+    p, header="cgen.h", prefix=None, lines=False, split=False
+):
+    """``(c, h_text, info)`` of :class:`Program` ``p``: MLIR, structured and printed;
+    ``lines``: with ``#line`` markers (*Translation cost*); ``split``: ``c`` the translation
+    units ``{file: text}`` (:mod:`.units`), else one text."""
     times, t0 = {}, time.perf_counter()
     symbols, funcs = [], p.funcs
     if p.fixed is not None and p.fixed.size:
@@ -1050,7 +1086,7 @@ def render(p, header="cgen.h", prefix=None, lines=False):  # pylint: disable=too
         mod.after = frozenset(names | {name for _, name in p.entries[:-1]})
         k = song["k"] = traps.setdefault(("deopt", pc), len(traps))
         mod.traps.add(k)
-        mod.guards[name] = _song_trap(k)
+        mod.guards[name] = [_song_check(k)]
     elif p.init is not None:
         mod.traps.add(traps.setdefault(("deopt", p.init[0][0]), len(traps)))
         mod.held_runs = sorted(
@@ -1073,39 +1109,58 @@ def render(p, header="cgen.h", prefix=None, lines=False):  # pylint: disable=too
         mod.regions_used
         | (set(range(len(mem.regions))) if helpers & {"oob_rd", "rd", "wr", "oob_wr"} else set())
     )
-    tag = mod.marks.put
-    c = [tag(("tag", "runtime")) + PROLOGUE.format(header=header)]
+    runtime, access = (mod.marks.add(("tag", f)) for f in ("runtime", "access"))
+    c = [units.Part((runtime, PROLOGUE.format(header=header)), units.EVERY)]
     if "CGEN_IX" in used:
-        c.append(IX)
-    c.append("CGEN_STORAGE")
-    c += mod.state_c()
+        c.append(units.Part((runtime, IX), units.EVERY))
+    c.append(units.Part((runtime, "CGEN_STORAGE"), units.STATE))
+    for x in mod.state_c():
+        c.append(units.Part(_tagged(x, runtime), units.STATE if x.name else units.HEADER))
     ram = mod.stored()
     ram = True if ram is None else ram
     dispatch, unheld = _dispatch(mem, helpers, used, mod.var_at, mod.init_stored, ram)
-    c += [tag(("tag", "access")) + x for x in dispatch + mod.block_c()]
-    for j in sorted(mod.checked):
-        var = ["uint16_t a = p + y;", *VAR_RD] if j in mod.var_spans else []
-        c += [
-            tag(("tag", "access"))
-            + f"static __attribute__((noinline)) uint8_t rdC{j}(uint16_t p, uint8_t y) {{",
-            *var,
-            f"uint16_t o = p - C{j}_ORG + y;",
-            f"return o < C{j}_LEN ? C{j}[o] : oob_rd(p + y);",
-            "}",
-        ]
+    if dispatch:
+        given = frozenset(HELPERS) & (
+            helpers | {"oob_rd", "oob_wr"} | ({"cgen_var_at"} if mod.var_at else set())
+        )
+
+        def runtime_c(ext):
+            return "\n".join(
+                _dispatch(mem, helpers, set(used), mod.var_at, mod.init_stored, ram, ext)[0]
+            )
+
+        protos = tuple(HELPERS[n]() for n in sorted(given))
+        c.append(units.Part((access, runtime_c), units.CODE, given, frozenset(), protos))
+    c += [units.part(_tagged(x, access)) for x in mod.block_c()]
+    c += [
+        units.part(_tagged(_checked_reader(j, j in mod.var_spans), access))
+        for j in sorted(mod.checked)
+    ]
     sets = [] if p.init is None else _songs_h(p.init[1])
     if p.init is not None and p.lifted is None:
         (pc, name), state = p.init
         copies, named = _copies_h(mem, plan, mod.var_ref)
         regions = sorted(set(regions) | named)
         sets += [*_io_h(state), *copies]
-        c += [tag(("tag", "runtime")) + x for x in _init_c(name, traps[("deopt", pc)])]
-    c += [*fns, tag(("tag", "runtime"))]
-    plain, places, order = mod.marks.finish("\n".join(c) + "\n")
-    c_text = clang_format(plain)
+        init_c = "\n".join(_init_c(name, traps[("deopt", pc)]))
+        c.append(
+            units.Part((mod.marks.add(("tag", "runtime")), init_c), units.CODE, frozenset({name}))
+        )
+    c += [
+        units.part(
+            x,
+            (
+                units.STATE
+                if isinstance(x, c_ast.Decl) and not isinstance(x.type, c_ast.FuncDecl)
+                else units.CODE
+            ),
+        )
+        for x in fns
+    ]
+    c_text, order = cn.render(units.single(c), mod.marks.recs)
     store = _storage(mem, used, helpers, regions) + mod.state_h() + sets + unheld
     objs = [_obj_h(j, mod.ptr_objects[j], mod.ptr_parts.get(j)) for j in sorted(mod.objs_used)]
-    h_text = clang_format(_header(mem, used, [key[1] for key in traps], mod.konsts, objs + store))
+    h_store = objs + store
     times["print"] = time.perf_counter() - t1
     trap_info = trapinfo.trap_info(
         funcs,
@@ -1122,8 +1177,23 @@ def render(p, header="cgen.h", prefix=None, lines=False):  # pylint: disable=too
         },
     )
     emission, line = cost.emission(p, mod, order, trap_info)
-    if lines:
-        c_text = marks.directives(c_text, places, line)
+    line = line if lines else None
+    entries = [name for _, name in p.entries]
+    stem = header.rsplit(".", 1)[0]
+
+    def unit_of(e):
+        if e is units.STATE:
+            return f"{stem}_state.c"
+        return f"{stem}_{'shared' if e is None else e.removeprefix('cgen_')}.c"
+
+    files = None
+    if split:
+        parts, head = units.split(c, entries, unit_of)
+        files = {u: cn.render(xs, mod.marks.recs, line)[0] for u, xs in sorted(parts.items())}
+        h_store += ["CGEN_EXTERN", *(cn.Printer(mod.marks.recs).visit(d) + ";" for d in head)]
+    elif lines:
+        c_text = cn.render(units.single(c), mod.marks.recs, line)[0]
+    h_text = format_c(_header(mem, used, [key[1] for key in traps], mod.konsts, h_store))
     info = {
         "times": times,
         "regions": mem.regions,
@@ -1147,7 +1217,11 @@ def render(p, header="cgen.h", prefix=None, lines=False):  # pylint: disable=too
         "jumps": p.jumps or {},
         "ptr_sets": {pc: sorted(w) for pc, w in sorted((p.ptr_sets or {}).items())},
         "structure": dict(mod.made),
-        "provenance": {**mod.prov, "cells": [int(a) for a in np.flatnonzero(cells)]},
+        "provenance": {
+            **mod.prov,
+            "functions": _files(mod.prov.get("functions", {}), c, entries, unit_of, split),
+            "cells": [int(a) for a in np.flatnonzero(cells)],
+        },
         "fixed": [] if p.fixed is None else p.fixed.tolist(),
         "state": {
             "cells": mod.state.counts(cells),
@@ -1163,7 +1237,30 @@ def render(p, header="cgen.h", prefix=None, lines=False):  # pylint: disable=too
             },
         },
     }
-    return c_text, h_text, info
+    return (files if split else c_text), h_text, info
+
+
+def _files(funcs, parts, entries, unit_of, split):
+    """Provenance ``funcs`` (``{name: record}``), each with the ``file`` defining it: its
+    unit when ``split``, else the one ``.c`` (None)."""
+    reach = units.owners(parts, entries)
+    out = {}
+    for name, rec in funcs.items():
+        who = reach.get(name, frozenset())
+        unit = unit_of(next(iter(who))) if len(who) == 1 else unit_of(None)
+        out[name] = {**rec, "file": unit if split else None}
+    return out
+
+
+#: The runtime's helpers lifted code calls: their prototypes.
+HELPERS = {
+    "rd": lambda: cn.function("rd", "uint8_t", [("a", "uint16_t")]),
+    "wr": lambda: cn.function("wr", "void", [("a", "uint16_t"), ("v", "uint8_t")]),
+    "oob_rd": lambda: cn.function("oob_rd", "uint8_t", [("a", "uint16_t")]),
+    "oob_wr": lambda: cn.function("oob_wr", "void", [("a", "uint16_t"), ("v", "uint8_t")]),
+    "codechk": lambda: cn.function("codechk", "uint8_t", [("a", "uint16_t"), ("v", "uint8_t")]),
+    "cgen_var_at": lambda: cn.function("cgen_var_at", "uint8_t *", [("a", "uint16_t")]),
+}
 
 
 def translate(  # pylint: disable=too-many-arguments
@@ -1181,6 +1278,7 @@ def translate(  # pylint: disable=too-many-arguments
     machine=None,
     devices=c64devices.MODEL,
     lines=False,
+    split=False,
 ):
     """``(c_text, h_text, info)`` of the program in ``image`` (the whole address space) called
     at ``entries`` (``(pc, name)``, ``A`` the argument) with ``volatile`` ``[(lo, hi)]`` I/O
@@ -1189,7 +1287,8 @@ def translate(  # pylint: disable=too-many-arguments
     ``entries[init]`` is called once, before any other entry (``None``: entries are called in
     any order), with ``A`` each of the range ``songs`` (default ``[0]``), run on ``machine``
     (:func:`deity_informant.postinit.run`): the other entries are lifted from what it leaves;
-    ``lines`` marks the ``.c`` with ``#line`` directives (*Translation cost*)."""
+    ``lines`` marks the ``.c`` with ``#line`` directives (*Translation cost*); ``split`` gives
+    it as translation units ``{file: text}`` (:mod:`.units`)."""
     t0 = time.perf_counter()
     jf = jump_facts(facts, image) if facts is not None else None
     if devices is not None:
@@ -1199,7 +1298,7 @@ def translate(  # pylint: disable=too-many-arguments
     )
     p.sensitive, p.loaded = tuple(sensitive_reads), loaded
     lift_time = time.perf_counter() - t0
-    c, h, info = render(p, header, prefix, lines)
+    c, h, info = render(p, header, prefix, lines, split)
     info["times"] = {"lift": lift_time, **info["times"]}
     info["facts_edges"] = list(jf.edges) if jf is not None else []
     info["stats"] = stats
