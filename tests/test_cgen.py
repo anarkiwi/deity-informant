@@ -3774,7 +3774,7 @@ def cmp(pred, a, b):
         (cmp(6, "%k3", "%a"), "%a", "bb1", (4, 255)),
         (cmp(0, "%a", "%k3"), "%a", "bb1", (3, 3)),
         (cmp(1, "%a", "%k3"), "%a", "bb1", (0, 255)),
-        (cmp(4, "%a", "%k3"), "%a", "bb1", (0, 255)),
+        (cmp(4, "%a", "%k3"), "%a", "bb1", (4, 127)),
         (cmp(8, "%s", "%k5"), "%a", "bb2", (3, 8)),
         (cmp(8, "%u", "%k5"), "%a", "bb2", (0, 255)),
         (cmp(8, "%u", "%k5"), "%u", "bb2", (0, 5)),
@@ -4259,12 +4259,12 @@ end:
 
 
 def test_carry_left_for_another_value_is_its_own_variable(prefix, tmp_path):
-    """A carry one add leaves that varies and a later SBC reads is a variable of its own,
-    set where the add makes it; the subtract reads it, not the add's operands."""
+    """A carry one add leaves that varies and a later SBC reads is the add's: the subtract
+    reads the carry's condition on the added value, not the add's operands."""
     c, _, _ = check(prefix, tmp_path, FLAG_LEFT, entry_calls(range(16)))
     body = body_of(c, "entry")
-    name = re.search(r"uint8_t (c\d+) = ", body).group(1)
-    assert re.search(r"io_write\(0xC001, " + name + r" \+ 0x1F\)", body), body
+    name = re.search(r"io_write\(0xC000, (v\d+) - 8\)", body).group(1)
+    assert re.search(r"io_write\(0xC001, " + name + r" > 7 \? 0x20 : 0x1F\)", body), body
 
 
 CALL_KEEPS = """
@@ -4852,10 +4852,10 @@ def test_carried_index_recursive_or_rerun_switches_on_addresses(prefix, tmp_path
 
 def test_target_by_arithmetic_switches_on_the_address(prefix, tmp_path):
     """A branch offset computed from the index rather than read from a table switches on the
-    target address."""
+    value the target is computed from."""
     c, _, info = check(prefix, tmp_path, BRCALC, entry_calls(range(4), 2))
     [targets] = info["jumps"].values()
-    assert len(targets) == 4 and c.count("case CODE_ORG + ") == 3
+    assert len(targets) == 4 and c.count("case ") == 3 and "switch (" in c
 
 
 def test_callee_called_twice_keeps_its_used_parameters(prefix, tmp_path):
@@ -5356,7 +5356,8 @@ def test_bytes_init_leaves_constant_are_held_where_read(prefix, tmp_path, indexe
     """A byte a replayed init leaves constant that the other entry reads only by its
     address is a name the ``.h`` defines and no array holds it; read also by an access not
     at its address (an index over the instruction holding it), it is held."""
-    w = "        AND #$01\n        TAY\n        LDA n,Y\n        STA $C002\n" if indexed else ""
+    w = "        LDA $C003\n        AND #$01\n        TAY\n        LDA n,Y\n        STA $C002\n"
+    w = w if indexed else ""
     img, labels, loaded = assemble(probed(COUNT.format(w=w)))
     c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
     play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", a) for a in range(4)])
@@ -6357,7 +6358,7 @@ def test_status_saved_through_the_stack_is_its_flags(prefix, tmp_path, byte):
 
 
 @pytest.mark.parametrize(
-    "mask,bits", [(0x08, ["<< 3"]), (0xC3, ["<< 1", "<< 7"])], ids=["d", "czn"]
+    "mask,bits", [(0x08, ["& 8"]), (0xC3, ["& 0x80", "2 : 0"])], ids=["d", "czn"]
 )
 def test_status_read_as_a_byte_packs_the_flags_read(prefix, tmp_path, mask, bits):
     """A status pulled as data (``PHP; PLA; AND #mask``) packs only the flags the mask keeps:
@@ -6374,7 +6375,8 @@ def test_status_set_from_a_byte_unpacks_the_flags_read(prefix, tmp_path):
     decimal flag the pull is checked for) are taken from it."""
     calls = entry_calls([a for a in range(0, 256, 3) if not a & 8])
     c, _, _ = check(prefix, tmp_path, STATUS_FROM_BYTE, calls)
-    assert re.findall(r">> (\d)", body_of(c, "entry")) == ["3"]
+    body = body_of(c, "entry")
+    assert "(a & 8) != 0" in body and not re.search(r">> \d|& 0x[48]0|& [14]\b", body)
 
 
 def test_pulled_decimal_flag_feeds_arithmetic(prefix, tmp_path):

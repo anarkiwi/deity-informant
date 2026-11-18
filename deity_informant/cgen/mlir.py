@@ -108,6 +108,8 @@ class Op:  # pylint: disable=too-many-instance-attributes
     #: ``((pc, node), ...)`` of the location: the instruction and lift node first, then each
     #: call site it was inlined through, innermost first.
     loc: tuple = ()
+    #: The text of the location, as printed.
+    where: str = ""
 
     def prop(self, key):
         """The text of property ``key`` (quotes stripped), or None."""
@@ -125,7 +127,8 @@ class Op:  # pylint: disable=too-many-instance-attributes
         """The integers of an ``array<i32: ...>`` or ``dense<...>`` property ``key``."""
         inner = (self.prop(key) or "<>").split("<", 1)[1].split(">")[0]
         body = inner.split(":", 1)[1] if inner.startswith("i") else inner
-        return [int(x) for x in body.strip(" []").split(",") if x.strip()]
+        bits = {"true": "1", "false": "0"}
+        return [int(bits.get(x.strip(), x)) for x in body.strip(" []").split(",") if x.strip()]
 
     def edges(self):
         """``[(successor label, [operand index], case)]`` of a ``cf`` terminator: ``case`` is
@@ -204,9 +207,9 @@ def _chain(loc):
 
 def _strip_locs(s):
     """``(s without its ``loc(...)`` locations, the instruction address of the last one or
-    None, its :func:`_chain`)``: an inlined operation's location names its own instruction
-    first."""
-    out, pc, at, chain = [], None, 0, ()
+    None, its :func:`_chain`, its text)``: an inlined operation's location names its own
+    instruction first."""
+    out, pc, at, chain, where = [], None, 0, (), ""
     while (i := s.find(" loc(", at)) >= 0:
         out.append(s[at:i])
         depth, j = 0, i + 4
@@ -217,10 +220,11 @@ def _strip_locs(s):
                 break
         m = _PC.search(s, i, j)
         pc = int(m.group(1), 16) if m else None
-        chain = _chain(s[i + 5 : j - 1])
+        where = s[i + 5 : j - 1]
+        chain = _chain(where)
         at = j
     out.append(s[at:])
-    return "".join(out), pc, chain
+    return "".join(out), pc, chain, where
 
 
 def _close(op, rest):
@@ -233,14 +237,14 @@ def parse(text):
     """The top-level :class:`Op` of generic-form MLIR ``text``."""
     stack, top = [], None
     for line in text.splitlines():
-        s, pc, chain = _strip_locs(line.strip())
+        s, pc, chain, where = _strip_locs(line.strip())
         if not s or s.startswith("//") or s.startswith("#"):
             continue
         if s.startswith("^"):
             m = _BLOCK.match(s)
             assert m, s
             args = []
-            for a in filter(None, (x.strip() for x in (m.group(2) or "").split(","))):
+            for a in _types(m.group(2) or ""):
                 n, t = a.split(":", 1)
                 args.append((n.strip(), t.strip()))
             region = stack[-1].regions[-1]
@@ -271,6 +275,7 @@ def parse(text):
             succs=[x.strip()[1:] for x in (succ or "").split(",") if x.strip()],
             pc=pc,
             loc=chain,
+            where=where,
         )
         if stack:
             block = stack[-1].regions[-1][-1]

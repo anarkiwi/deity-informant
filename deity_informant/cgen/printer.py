@@ -36,12 +36,17 @@ BINOP = {
     "arith.subi": ("-", 12),
     "arith.muli": ("*", 13),
     "arith.divui": ("/", 13),
+    "arith.remui": ("%", 13),
     "arith.andi": ("&", 8),
     "arith.ori": ("|", 6),
     "arith.xori": ("^", 7),
     "arith.shli": ("<<", 11),
     "arith.shrui": (">>", 11),
 }
+#: Operations on signed operands, printed on ``intN_t`` casts.
+SIGNED = {"arith.shrsi": (">>", 11), "arith.divsi": ("/", 13), "arith.remsi": ("%", 13)}
+#: ``min``/``max``: the predicate under which each picks its first operand.
+MINMAX = {"arith.maxui": 8, "arith.minui": 6, "arith.maxsi": 4, "arith.minsi": 2}
 NOISY = {"<<", ">>", "&", "|", "^", "&&", "||"}
 INT16 = (-0x8000, 0x7FFF)
 #: The lift's checks: calls computing a value with no effect.
@@ -118,9 +123,12 @@ def cast(e, ctype, width, signed=False):
 
 
 def clean(e, width):
-    """``e`` reduced to ``width`` bits by a cast when its range exceeds them."""
+    """``e`` reduced to ``width`` bits, by a cast (a mask below a byte) when its range exceeds
+    them."""
     if 0 <= e.lo and e.hi < (1 << width):
         return e
+    if width < 8:
+        return binary("&", 8, e, lit((1 << width) - 1, width), 8)
     return cast(e, CTYPE[width], width)
 
 
@@ -138,6 +146,8 @@ def _range(sym, a, b):
         return min(ps), max(ps)
     if sym == "&":
         return 0, min(a.hi, b.hi)
+    if sym == "%":
+        return 0, max(0, min(a.hi, b.hi - 1))
     top = min((1 << max(a.hi, b.hi).bit_length()) - 1, a.hi + b.hi)
     return (max(a.lo, b.lo) if sym == "|" else 0), top
 
@@ -191,6 +201,7 @@ NUMPY = {
     "arith.subi": operator.sub,
     "arith.muli": operator.mul,
     "arith.divui": operator.floordiv,
+    "arith.remui": operator.mod,
     "arith.andi": operator.and_,
     "arith.ori": operator.or_,
     "arith.xori": operator.xor,
@@ -224,14 +235,31 @@ OFFSETS = {
     "arith.xori": lambda k, c: k ^ c,
 }
 #: The pure operations whose intervals :meth:`Func.iv` derives from their operands'.
-DERIVED = CASTS | set(BINOP) | {"arith.select"}
+DERIVED = CASTS | set(BINOP) | set(SIGNED) | set(MINMAX) | {"arith.select", "arith.extsi"}
 #: Operations whose second operand zero leaves the first.
 IDENTITY = {"arith.addi", "arith.subi", "arith.ori", "arith.xori", "arith.shli", "arith.shrui"}
 #: Most combinations of inputs a flag is evaluated over (:meth:`Func.flag_at`).
 FLAG_INPUTS = 1 << 16
-#: An unsigned or equality ``cmpi`` predicate with its operands swapped, and negated.
-SWAPPED = {0: 0, 1: 1, 6: 8, 7: 9, 8: 6, 9: 7}
-NEGATED = {0: 1, 1: 0, 6: 9, 7: 8, 8: 7, 9: 6}
+#: A ``cmpi`` predicate with its operands swapped, and negated.
+SWAPPED = {0: 0, 1: 1, 2: 4, 3: 5, 4: 2, 5: 3, 6: 8, 7: 9, 8: 6, 9: 7}
+NEGATED = {0: 1, 1: 0, 2: 5, 3: 4, 4: 3, 5: 2, 6: 9, 7: 8, 8: 7, 9: 6}
+
+
+def twos(v, width):
+    """``v`` of ``width`` bits read as two's complement."""
+    half = 1 << (width - 1)
+    return (v ^ half) - half
+
+
+def solution(pred, n, width):
+    """The interval ``(lo, hi)`` of the ``width``-bit ``x`` for which ``x pred n`` holds, or
+    None where it is no interval (``!=``, or a signed range across the sign bit)."""
+    top, half = (1 << width) - 1, 1 << (width - 1)
+    if pred in (2, 3, 4, 5):
+        k = twos(n, width)
+        lo, hi = {2: (-half, k - 1), 3: (-half, k), 4: (k + 1, half - 1), 5: (k, half - 1)}[pred]
+        return (lo & top, hi & top) if lo <= hi and (lo < 0) == (hi < 0) else None
+    return {0: (n, n), 6: (0, n - 1), 7: (0, n), 8: (n + 1, top), 9: (n, top)}.get(pred)
 
 
 def line(pts, m):
@@ -1031,8 +1059,8 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
 
     def implied(self, c, holds, facts):
         """Meet into ``facts`` the intervals truth value ``c`` being ``holds`` implies: of the
-        operand of an unsigned or equality compare with a constant, through its negation and
-        the operands of an ``||`` false or an ``&&`` true."""
+        operand of a compare with a constant, through its negation and the operands of an
+        ``||`` false or an ``&&`` true."""
         d = self.defs.get(c)
         if d is None:
             return
@@ -1048,7 +1076,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             pred = pred if holds else NEGATED.get(pred)
             top = (1 << self.width(x)) - 1
             n = next(v for v in k if v is not None) & top
-            r = {0: (n, n), 6: (0, n - 1), 7: (0, n), 8: (n + 1, top), 9: (n, top)}.get(pred)
+            r = solution(pred, n, self.width(x))
             if pred == 1:
                 lo, hi = self.iv(x)
                 r = (lo + 1, hi) if n == lo else (lo, hi - 1) if n == hi else None
@@ -1149,9 +1177,21 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         elif o.name in CASTS:
             r = self.iv(o.args[0])
             r = r if r[1] <= top else full
-        elif o.name == "arith.select":
-            a, b = self.iv(o.args[1]), self.iv(o.args[2])
+        elif o.name == "arith.select" or o.name in MINMAX:
+            a, b = self.iv(o.args[-2]), self.iv(o.args[-1])
             r = (min(a[0], b[0]), max(a[1], b[1]))
+            if o.name in ("arith.maxui", "arith.minui"):
+                pick = max if o.name == "arith.maxui" else min
+                r = (pick(a[0], b[0]), pick(a[1], b[1]))
+        elif o.name == "arith.extsi":
+            r, w0 = self.iv(o.args[0]), self.width(o.args[0])
+            if r[0] >> (w0 - 1) == r[1] >> (w0 - 1):
+                r = (twos(r[0], w0) & top, twos(r[1], w0) & top)
+            else:
+                r = full
+        elif o.name == "arith.shrsi" and self.iv(o.args[0])[1] < (top + 1) // 2:
+            a, b = self.iv(o.args[0]), self.iv(o.args[1])
+            r = (a[0] >> b[1], a[1] >> b[0])
         elif o.name in ("arith.addi", "arith.subi"):
             a, b = self.iv(o.args[0]), self.iv(o.args[1])
             lo, hi = (
@@ -1167,6 +1207,10 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             m = a[0]
             if a[0] == a[1] and not m & (m + 1) and b[0] & ~m == b[1] & ~m:
                 r = (b[0] & m, b[1] & m)
+            elif a[0] == a[1]:
+                p = (b[0] ^ b[1]).bit_length()
+                kept = (b[0] >> p << p) & m
+                r = meet((kept, kept | m & ((1 << p) - 1)), (0, min(a[1], b[1])))
             else:
                 r = (0, min(a[1], b[1]))
         elif o.name == "arith.muli":
@@ -1175,6 +1219,9 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         elif o.name == "arith.divui":
             a, b = self.iv(o.args[0]), self.iv(o.args[1])
             r = (a[0] // b[1], a[1] // b[0]) if b[0] else full
+        elif o.name == "arith.remui":
+            a, b = self.iv(o.args[0]), self.iv(o.args[1])
+            r = (0, min(a[1], b[1] - 1)) if b[0] else full
         elif o.name in ("arith.ori", "arith.xori"):
             a, b = sorted((self.iv(o.args[0]), self.iv(o.args[1])), key=lambda x: x[0] != x[1])
             c = a[0]
@@ -1513,6 +1560,19 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 r = self.ktabs[v][args[0]]
             elif name in CASTS:
                 r = args[0] & top
+            elif name == "arith.extsi":
+                r = twos(args[0], self.width(d.args[0])) & top
+            elif name in MINMAX or name in SIGNED:
+                a, b, w = *args, self.width(d.args[0])
+                if name in MINMAX:
+                    a, b = (twos(a, w), twos(b, w)) if MINMAX[name] in (2, 4) else (a, b)
+                    r = np.where(NUMPY_CMP[MINMAX[name]](a, b), a, b) & top
+                elif name == "arith.shrsi":
+                    r = np.where(b < w, twos(a, w) >> np.minimum(b, 63), -(a >> (w - 1))) & top
+                else:
+                    a, b = twos(a, w), twos(b, w)
+                    q = np.trunc(a / np.where(b == 0, 1, b)).astype(np.int64)
+                    r = (q if name == "arith.divsi" else a - q * b) & top
             elif name in NUMPY:
                 r = NUMPY[name](args[0], args[1]) & top
             elif name in ("arith.shli", "arith.shrui"):
@@ -2245,7 +2305,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             if self.f.where[id(d)][0].name not in self.owned:
                 continue
             seen.add(id(d))
-            for a in self.f.reads(d):
+            for a in self.f.reads(d) * (1 + (d.name in MINMAX)):
                 use(a, d)
 
     def item_refs(self, items, after):
@@ -2920,10 +2980,24 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
                     y = lit(-k, w0)
                 return self.cmpi(pred, x, y, w0)
             return self.cmpi(pred, *args, w0)
+        if name in MINMAX:
+            c, (a, b) = self.cmpi(MINMAX[name], *args, w), args
+            text = f"{par(c, 4)} ? {par(a, 4)} : {par(b, 3)}"
+            return E(text, 3, "?:", min(a.lo, b.lo), max(a.hi, b.hi), a.uns or b.uns, **join(a, b))
+        if name in SIGNED:
+            sym, prec = SIGNED[name]
+            a, b = (cast(clean(x, w), f"int{w}_t", w, True) for x in args)
+            e = E(f"{par(a, prec, sym)} {sym} {par(b, prec + 1, sym)}", prec, sym, **join(a, b))
+            return cast(e, CTYPE[w], w)
+        if name == "arith.extsi":
+            w0 = self.f.width(o.args[0])
+            if w0 == 1:
+                return cast(E(f"-{par(args[0], 15)}", 15, "-", -1, 0, **join(args[0])), CTYPE[w], w)
+            return cast(cast(clean(args[0], w0), f"int{w0}_t", w0, True), CTYPE[w], w)
         if name in ("arith.extui", "arith.index_castui", "arith.index_cast"):
             return clean(args[0], self.f.width(o.args[0]))
         if name == "arith.trunci":
-            return args[0]
+            return clean(args[0], w)
         if name == "arith.select":
             c, a, b = args
             text = f"{par(truth(c), 4)} ? {par(a, 4)} : {par(b, 3)}"
@@ -2958,14 +3032,14 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         a, b = clean(a, width), clean(b, width)
         sym = CMP[pred]
         if pred in (2, 3, 4, 5):
-            half = 1 << (width - 1)
-            top, k = (1 << width) - 1, b.lo if b.lo == b.hi else None
-            neg = (pred == 2 and k == 0) or (pred == 3 and k == top)
-            pos = (pred == 5 and k == 0) or (pred == 4 and k == top)
-            if neg or pos:
-                return compare(">=" if neg else "<", a, lit(half, width))
+            k = b.lo if b.lo == b.hi else None
             st = f"int{width}_t"
-            a, b = cast(a, st, width, True), cast(b, st, width, True)
+            a = cast(a, st, width, True)
+            if k is None:
+                b = cast(b, st, width, True)
+            else:
+                k = twos(k, width)
+                b = E(str(k), 16 if k >= 0 else 15, lo=k, hi=k)
         if b.lo == b.hi and b.lo in (0, 1) and 0 <= a.lo and a.hi <= 1 and sym in ("==", "!="):
             return truth(a) if (sym == "==") == (b.lo == 1) else negated(truth(a))
         return compare(sym, a, b)
