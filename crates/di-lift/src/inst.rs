@@ -100,18 +100,6 @@ struct Cx<'a> {
     lead: FxHashSet<u16>,
 }
 
-/// The successors of every flow, `JSR` return sites included.
-fn targets(f: &Flow) -> Vec<u16> {
-    match f {
-        Flow::Next(n) => vec![*n],
-        Flow::Br { t, f } => t.all().iter().copied().chain([*f]).collect(),
-        Flow::Jmp(t) => t.all().to_vec(),
-        Flow::Jsr { t, ret } => t.all().iter().copied().chain([*ret]).collect(),
-        Flow::JmpInd(ts) | Flow::Rts(ts) | Flow::Rti(ts) | Flow::Brk(ts) => ts.clone(),
-        Flow::Jam => Vec::new(),
-    }
-}
-
 impl Cx<'_> {
     fn var(&self, pc: u16) -> Option<&crate::analysis::Var> {
         let vs = self.g.vars.get(&pc)?;
@@ -462,7 +450,7 @@ impl Cx<'_> {
                 Flow::Next(_) => stack_delta(v.op)?,
                 _ => 0,
             };
-            if d != 0 && node.pcs.iter().any(|p| p.is_none()) {
+            if d != 0 && node.pcs.iter().any(std::option::Option::is_none) {
                 return None;
             }
             let hs = h[i]? + d;
@@ -502,12 +490,13 @@ impl Cx<'_> {
             let data = matches!(v.flow, Flow::Next(_)) || matches!(v.flow, Flow::Jmp(Tg::Calc(_)));
             let value = len == 2 && v.acc.is_empty();
             data && ps.len() > 1
-                && (b
-                    .iter()
-                    .any(|x| x[..len as usize - 1].iter().any(|y| y.is_none()))
-                    || !value
-                        && b.iter()
-                            .any(|x| x[..len as usize - 1] != b[0][..len as usize - 1])
+                && (b.iter().any(|x| {
+                    x[..len as usize - 1]
+                        .iter()
+                        .any(std::option::Option::is_none)
+                }) || !value
+                    && b.iter()
+                        .any(|x| x[..len as usize - 1] != b[0][..len as usize - 1])
                     || matches!(v.flow, Flow::Jmp(Tg::Calc(_))))
         })
     }
@@ -560,7 +549,7 @@ impl Cx<'_> {
                     work.extend(match &v.flow {
                         Flow::Jsr { ret, .. } => vec![*ret],
                         Flow::Rts(_) | Flow::Rti(_) | Flow::Brk(_) => Vec::new(),
-                        f => targets(f),
+                        f => crate::analysis::flow_succs(f),
                     });
                 }
             }
@@ -636,7 +625,7 @@ pub fn find(g: &Graph, roots: &[u16], calls: &FxHashSet<u16>) -> Vec<Class> {
     pcs.sort_unstable();
     for &pc in &pcs {
         for v in &g.vars[&pc] {
-            for t in targets(&v.flow) {
+            for t in crate::analysis::flow_succs(&v.flow) {
                 preds.entry(t).or_default().push(pc);
                 if !matches!(v.flow, Flow::Next(_)) {
                     lead.insert(t);
@@ -687,7 +676,7 @@ pub fn find(g: &Graph, roots: &[u16], calls: &FxHashSet<u16>) -> Vec<Class> {
             // Two copies fit any line: only a third witnesses an indexed family.
             if let Some(c) = cx.class(&ms) {
                 let gain = c.saving();
-                if gain > 0 && (set.len() < 2 || gain > best.as_ref().map_or(0, |c| c.saving())) {
+                if gain > 0 && (set.len() < 2 || gain > best.as_ref().map_or(0, Class::saving)) {
                     if ms.len() >= MIN_COPIES {
                         best = Some(c);
                     }

@@ -558,7 +558,6 @@ class _Host(MachineOracle):
         sentinel=None,
     ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self.window = window
-        self.ctor = (image, window, roms, ntsc, backend, model)
         backend = backend or ("native" if TRACE_NATIVE else "python")
         if backend == "native" and not TRACE_NATIVE:
             raise ValueError("backend 'native' is not available")
@@ -588,11 +587,8 @@ class _Host(MachineOracle):
         self.folded = (np.zeros(0, np.int64), np.zeros(0, np.int64))
         self.pending, self.npending = [], 0
         self.snaps = []
-        self.events = []
-        self.driven = None
         self.records = None
         self.stream = CallStream(spill)
-        self.keep = True
         self.writes = defaultdict(set)
         self.page1 = {}
         self.entry_sp = defaultdict(set)
@@ -637,7 +633,6 @@ class _Host(MachineOracle):
                 self.writes[addr].add(_STORED[mn](a, x, y))
 
     def _decode(self, mc):
-        self.events += [n for _, n in mc.events]
         if self.last is not None:
             self._effects(*self.last)
             self.last = None
@@ -682,10 +677,8 @@ class _Host(MachineOracle):
             log, idx, vals = self.tr.snap()
             self.tr.phase(Tracer.NONE)
             ram = self._ram((np.frombuffer(idx, "<u2"), np.frombuffer(vals, np.uint8)))
-        if not self.keep:
-            self.snaps.clear()
         self.snaps.append((self.cur, halt, _reg(self.m.mpu), log, ram))
-        self.cur, self.log, self.events = None, [], []
+        self.cur, self.log = None, []
 
     def _trap(self, mc):
         self._snap("return")
@@ -702,30 +695,29 @@ class _Host(MachineOracle):
             self.entry_port[mc.mpu.pc].add((mc.port_dir, mc.port_data))
         return ok
 
-    def _native_run(self):
-        self.events += [n for _, n in self.m.events]
-        return super()._native_run()
-
     def _window(self):
         self.chip.flush()
         if self.calls is not None:
             self.stream.add(self.calls.take())
 
+    def take_entries(self, sp, port):
+        """The run's records are its call stream; its native entry SPs and CPU ports are
+        added to :attr:`entry_sp` and :attr:`entry_port`."""
+        self.records = self.stream
+        for pc, v in sp:
+            self.entry_sp[pc].add(v)
+        for pc, d, v in port:
+            self.entry_port[pc].add((d, v))
+
     def drive(self, calls, init=(), max_cycles=2_000_000, ports=None):
         """Run ``init`` then ``calls``; a call that does not return ends the run. The run's
         SMC labelling is kept as :attr:`result`."""
         calls = calls if isinstance(calls, Queue) else Queue(calls)
-        self.driven = (calls, init, max_cycles, ports)
         self.result = super().run(calls, init, call_cycles=max_cycles, ports=ports)
         if self.calls is not None:
             self.calls.close()
             self.stream.add(self.calls.take())
-            self.records = self.stream
-            sp, port = self.calls.entries()
-            for pc, v in sp:
-                self.entry_sp[pc].add(v)
-            for pc, d, v in port:
-                self.entry_port[pc].add((d, v))
+            self.take_entries(*self.calls.entries())
             return self
         if self.last is not None:
             self._effects(*self.last)

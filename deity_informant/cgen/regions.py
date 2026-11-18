@@ -101,6 +101,14 @@ def pointer_pairs(image, starts):
     return pairs
 
 
+def _join(out, a, b):
+    """Append ``[a, b)`` to the sorted disjoint spans ``out``, merged with the last it meets."""
+    if out and out[-1][1] >= a:
+        out[-1] = (out[-1][0], max(out[-1][1], b))
+    else:
+        out.append((a, b))
+
+
 class Memory:  # pylint: disable=too-many-instance-attributes
     """Regions of ``image`` for the accesses of a program (see the module docstring):
     ``code_span`` names the constant bytes (``CODE_ORG``); ``held`` are the spans of those a
@@ -237,10 +245,7 @@ class Memory:  # pylint: disable=too-many-instance-attributes
                 for lo, hi in [*self.held, *((o, o + n) for o, n in self.regions)]:
                     if lo < b and hi > a and (lo < a or hi > b):
                         a, b, grown = min(a, lo), max(b, hi), True
-            if out and out[-1][1] >= a:
-                out[-1] = (out[-1][0], max(out[-1][1], b))
-            else:
-                out.append((a, b))
+            _join(out, a, b)
         return out
 
     def block_of(self, lo, hi):
@@ -297,10 +302,7 @@ class Memory:  # pylint: disable=too-many-instance-attributes
                 spans.append([org, org + n])
         out = []
         for a, b in (self._widen(a, b, True) for a, b in spans):
-            if out and out[-1][1] >= a:
-                out[-1] = (out[-1][0], max(out[-1][1], b))
-            else:
-                out.append((a, b))
+            _join(out, a, b)
         return out
 
     def held_span(self, lo, hi, store=False, wide=False):

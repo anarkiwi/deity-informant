@@ -137,7 +137,7 @@ pub fn reads(g: &Graph, pc: u16) -> BTreeSet<Loc> {
         for (ai, a) in accs.filter(|(_, a)| !a.dummy && a.addr.value().is_none()) {
             let run = run_of(g, (pc, v.op, ai), a.addr.lo);
             match a.ptr {
-                Some(p) => match (p.lo.and_then(|l| l.value()), p.hi.value()) {
+                Some(p) => match (p.lo.and_then(super::analysis::Iv::value), p.hi.value()) {
                     (Some(l), Some(h)) if h == l + 1 => out.insert(Loc::Word(l as u16)),
                     _ => out.insert(Loc::Reg(di_pcode::reg::X as u8, run)),
                 },
@@ -191,7 +191,7 @@ fn writer(g: &Graph, pc: u16, loc: Loc) -> [Option<bool>; 2] {
 }
 
 /// The definitions of one location: their bytes, and per instruction start writing it the
-/// definition it makes and whether it replaces the byte.
+/// definition it makes and whether it writes the whole byte.
 struct Local {
     defs: Vec<Def>,
     bytes: [FixedBitSet; 2],
