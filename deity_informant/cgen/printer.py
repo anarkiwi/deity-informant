@@ -1581,24 +1581,6 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 changed = True
         if changed:
             self.reindex()
-            self.drop_dead()
-        return changed
-
-    def drop_dead(self):
-        """Remove the pure operations (arithmetic, loads of memory) no operation uses."""
-        while True:
-            dead = {
-                id(o)
-                for o in self.walk()
-                if o.res
-                and (o.name.startswith("arith.") or o.name == "memref.load")
-                and not any(self.uses.get(r) for r in o.res)
-            }
-            if not dead:
-                return
-            for blk in self.blocks:
-                blk.ops = [o for o in blk.ops if id(o) not in dead]
-            self.reindex()
 
     def index_values(self, v, a):
         """The values byte ``v`` takes where address ``a`` is computed from it: the instance
@@ -1650,7 +1632,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             Op("arith.index_castui", [n + "i"], [n + "a"], "", [], (("i16",), ("index",))),
         ]
         for x in ops:
-            x.parent, x.pc = blk, o.pc
+            x.parent, x.pc, x.loc, x.where = blk, o.pc, o.loc, o.where
             self.defs[x.res[0]] = x
         blk.ops[i:i] = ops
         o.args[-1] = n + "i"
@@ -3873,6 +3855,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.calls()
         for f in self.funcs:
             f.fold_flags()
+            f.fold_known_addresses()
         ranges = {
             f.name: [f.code_iv(o) for o in f.walk() if o.name == "memref.load"] for f in self.funcs
         }
@@ -3939,7 +3922,6 @@ class Module:  # pylint: disable=too-many-instance-attributes
         for f in self.funcs:
             f.kfold()
             f.carry16()
-            f.fold_known_addresses()
         self.unread_stores()
         live, work = {f.name: set() for f in self.funcs}, []
 
