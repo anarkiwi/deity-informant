@@ -83,13 +83,25 @@ caller's return address. `tools/cgenplay.c` is a host harness.
    `cf.switch` with block arguments). The inliner honours `no_inline`, so a callee with one
    call site is inlined and the others stay functions; when optimization leaves a `no_inline`
    callee with one call site the pipeline runs again with that call inlinable.
-   Operator simplification is LLVM's InstCombine (`llvmopt.py`), a round trip in one
-   `mlir-opt | mlir-translate | opt | mlir-translate` pipeline. Lowering makes each `memref`
+   Scalar optimization is LLVM's (`llvmopt.py`), a round trip in one
+   `mlir-opt | mlir-translate | opt | mlir-translate` pipeline the printer's module runs
+   (`printer.Module.combine`) on its functions printed back to generic form (`mlir.generic`),
+   once it has read each result a lifted function returns unchanged from a parameter as the
+   argument its call passes and each truth value constant over all its inputs as the constant
+   (step 4). Lowering makes each `memref`
    access a call of an external `@__ld.G`/`@__st.G` (memory stays opaque, so every cell access
    comes back where it was), numbers every location `loc("o":N:1)` (carried through LLVM IR
    as debug lines) and keeps each location's text, operation and discardable attributes in a
-   table. `opt -passes=instcombine` runs on the LLVM IR (fixpoint unverified, as in the
-   standard pipelines) and `mlir-translate --import-llvm` brings it back. Recovery rebuilds
+   table. A load of an opcode cell calls `@__ld.G.rLO_HI`, whose result's `range` is the hull
+   of the opcodes the code stores in the cell; the lift's other value sets (registers, cells,
+   tables) are of the program's data, which the `.c` does not depend on, so no pass is given
+   them. `opt` runs InstCombine (fixpoint unverified, as in the standard pipelines), EarlyCSE,
+   CVP (`correlated-propagation`), `sink`, constraint elimination and InstCombine again: the
+   facts of dominating conditions fold the carries and compares they decide (a value sunk to
+   its one use there). None of the passes duplicates, merges or reorders blocks, so the CFG
+   keeps the machine code's layout the structuring reads. `ipsccp` is not run: the ranges it
+   gives parameters turn compares into ones against odd constants (`(int8_t)x > -2`).
+   `mlir-translate --import-llvm` brings the module back. Recovery rebuilds
    `func`/`cf`/`arith`/`memref`/`ub`: struct returns are multi-result `func.return`s and
    `func.call`s again (struct values, block arguments and selects split into fields), `i64`
    is `index`, compares keep their predicate numbers, flags (`nuw`, `nsw`, `exact`, `nneg`,
@@ -113,23 +125,25 @@ caller's return address. `tools/cgenplay.c` is a host harness.
    need their operands; a used result of a function needs the values its returns give; a used
    parameter needs its call sites' arguments. A result a function returns unchanged from a
    parameter (on every return, through block arguments and calls forwarding theirs) is read as
-   the argument its call passes, as a register the callee leaves alone, and a function left
+   the argument its call passes, as a register the callee leaves alone (before the round trip,
+   which folds the offsets that leaves), and a function left
    with no effect and no loop is not called. Calls pass only used parameters and functions
    return only used results (none: `void`, one: its type; more: `void`, each result left in
    the static variable `rvJ` of its register-file position `J`, read into locals right after
    the call, as the 6502 leaves its registers across `RTS`). Upstream `--remove-dead-values` would do this, but in LLVM 22 it rewrites a
    `cf.cond_br` passing one value to both successors into an invalid branch, so it is not
-   used.
+   used; LLVM's `deadargelim` and `function-attrs` see neither the address sets that make a
+   store unread nor the register-file positions the parameters are named by.
    An 8-bit add whose carry only feeds the add of the byte above it (`lo = a + b`,
    `hi = d + e + (lo < a)`, an `ADC` chain) becomes one 16-bit add of `(d:a) + (e:b)`, whose
    bytes replace `hi` and the uses of `lo` after it.
    A truth value (an `i1`, its zero extension, or a block argument every edge gives one) an
    operation reads as data, a carry or borrow the code leaves for an `ADC` or `SBC` without
-   `CLC` or `SEC`, is the constant it is wherever that operation runs when it is one: its
-   interval there, from the branches every path to it takes (a `CMP` the `BCC` before the
-   `SBC` decides), or its values over every combination of the values it is computed from,
-   each in its interval there and a load of memory that holds no one value over every byte
-   (an add that never carries). The constants fold forward and a compare left unused dies.
+   `CLC` or `SEC`, is the constant it is when its values over every combination of the values
+   it is computed from (each over every value of its type) are one (an add that never
+   carries, a fact of modular arithmetic no LLVM pass proves); this runs before the round
+   trip, whose passes fold the constant forward and the carries a dominating branch decides
+   (a `CMP` the `BCC` before the `SBC` decides).
    A carry left varying is a variable of its own (`cN`), set where its producer makes it,
    so the value reading it does not share the producer's operands.
 5. **Layout** (`state.py`, `regions.py`): the cells held as C variables (*State*), then the
@@ -331,10 +345,11 @@ block calling `trap`, which does not return, ends its path. Each function goes t
 steps in order, each deciding on the graph the earlier ones leave:
 
 1. *Decided edges.* An edge whose condition contradicts every path to its branch (a `BCS`
-   after a `BCC` on the same carry) is dropped; path conditions run over the forward edges
-   from the entry and restart at each loop head.
-2. *Short-circuit conditions.* A conditional branch entered only from another branch that shares
-   one of its targets is composed into it: its edges become the first branch's under both
+   after a `BCC` on the same carry) is no edge: the round trip's passes (EarlyCSE, CVP,
+   constraint elimination) decide the branch and `canonicalize` makes it a `cf.br`.
+2. *Short-circuit conditions.* A conditional branch entered only from another two-way branch
+   that shares one of its targets is composed into it (a multiway branch keeps its edges'
+   conditions as its selector's atoms, which a `switch` is rebuilt from): its edges become the first branch's under both
    tests, joined with the first branch's edge to the same target (two edges to returns of the
    same values, or to copies of the same values into one block, are one target), to a
    fixpoint. Its operations either have no effect and read only data regions or code (so they
