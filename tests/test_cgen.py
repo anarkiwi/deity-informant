@@ -8037,3 +8037,48 @@ def test_pointer_from_song_data_stays_in_the_data_block(prefix, tmp_path, aim):
     assert ok == [(labels["init"], labels["play"] - 1), (labels["cur"], labels["end"] - 1)]
     calls = [("init", 0)] + [("play", 0)] * 200
     play(tmp_path, c, h, img, labels, calls, trap=(1, k) if aim else None)
+
+
+COUNTDOWN = """
+entry:  LDY #$01
+        LDX #$04
+loop:   TYA
+        ASL A
+        TAY
+        STY $C000
+        STY $C001
+        DEX
+        BNE loop
+        RTS
+end:
+"""
+
+
+def test_block_arguments_share_their_incoming_values_variable(prefix, tmp_path, monkeypatch):
+    """A loop counter's block argument and the value its back edge passes are one variable
+    (out of SSA by coalescing): no copy between them, fewer variables than one per value."""
+    c, _, _ = check(prefix, tmp_path, COUNTDOWN, entry_calls([0]))
+    body = body_of(c, "entry")
+    assert not re.search(r"\b(v\d+) = (v\d+);", body)
+    monkeypatch.setattr(printer.ssa.Coalescer, "classes", lambda self: {})
+    plain = body_of(check(prefix, tmp_path, COUNTDOWN, entry_calls([0]))[0], "entry")
+    count = lambda text: len(set(re.findall(r"\bv\d+\b", text)))
+    assert count(body) < count(plain)
+
+
+@pytest.mark.parametrize("late", [False, True])
+def test_loads_of_a_cell_recompute_where_no_write_reaches(prefix, tmp_path, late):
+    """A cell's load used several times prints at each use while no store to the cell lies
+    between; a use after the store keeps the value in a variable."""
+    tail = "INC cell\n        STA $C001" if late else "STA $C001\n        INC cell"
+    src = f"""
+entry:  LDA cell
+        STA $C000
+        {tail}
+        RTS
+cell:   .byte 5
+end:
+"""
+    c, _, _ = check(prefix, tmp_path, src, entry_calls([0, 1]))
+    body = body_of(c, "entry")
+    assert bool(re.search(r"\bv\d+\b", body)) == late
