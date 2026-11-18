@@ -3,12 +3,15 @@
 from deity_informant.cgen.csyntax import (
     CONTINUE,
     RETURN,
+    THRESHOLD,
     cost,
+    extracted,
     flattened,
     guarded,
     returning,
     sections,
     tails,
+    walk,
 )
 
 
@@ -148,3 +151,43 @@ def test_a_label_the_rest_of_a_function_follows_is_a_tail():
     assert chain == [("L1", [body[4]], ["v1"]), ("L2", [body[6]], ["v2"])]
     back = [label("L1"), s("x();"), iff("p", [goto("L1")])]
     assert tails(back, set(), call) == (back, [])
+
+
+def deep(n, *body):
+    """``n`` nested ``if`` statements around ``body``."""
+    out = list(body)
+    for k in range(n):
+        out = [iff(f"c{k}", out)]
+    return out
+
+
+def test_a_function_above_the_threshold_has_its_deepest_saving_block_extracted():
+    """Above :data:`THRESHOLD`, the nested block that saves the most moves to a function of
+    the variables it reads that are used outside it; under it nothing moves."""
+    items = [a("v1", "p"), iff("p", deep(6, s("w(v1);", "v1")))]
+    got = extracted("f", ["p"], items, {"v1", "p"})
+    assert cost(items) > THRESHOLD >= cost(got[0][2]) and got[0][1] == ["p"]
+    assert sum(cost(x) for _, _, x in got) < cost(items)
+    assert [(n, args) for n, args, _ in got[1:]] == [("f_x1", ["v1"])]
+    assert ("s", "f_x1(v1);", frozenset({"v1"})) in walk(got[0][2])
+    small = [iff("p", deep(2, s("x();")))]
+    assert extracted("g", [], small, set()) == [("g", [], small)]
+
+
+def test_a_block_control_leaves_early_or_a_goto_enters_stays():
+    """A block a return (but one after a call that never returns), a ``break`` of an
+    enclosing loop or a fall into the next case leaves, or a goto from outside enters, or
+    that sets a variable used outside it, is not extracted."""
+    for leave in (
+        RETURN,
+        ("j", "break;", frozenset()),
+        ("j", "__attribute__((fallthrough));", frozenset()),
+    ):
+        items = [iff("p", deep(6, s("x();"), leave))]
+        assert len(extracted("f", [], items, set())) == 1
+    trapped = [iff("p", deep(6, s("trap(1);"), RETURN))]
+    assert len(extracted("f", [], trapped, set())) == 2
+    entered = [iff("p", deep(6, label("L1"), s("x();"))), goto("L1")]
+    assert len(extracted("f", [], entered, set())) == 1
+    sets = [iff("p", deep(6, a("v1", "p"))), s("w(v1);", "v1")]
+    assert len(extracted("f", [], sets, {"v1"})) == 1

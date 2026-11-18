@@ -3601,6 +3601,10 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         void = not self.f.private or self.mod.ret_type(self.f) == "void"
         pieces, nsec = reduced(body, self.name, params, set(self.types), void)
         decl = head[head.index("(") + 1 : -1]
+        types = {
+            **dict(reversed(x.rsplit(" ", 1)) for x in decl.split(", ") if " " in x),
+            **self.types,
+        }
         self.prov["gotos"] = [
             e
             for _, _, items in pieces
@@ -3611,14 +3615,17 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         self.head_text = head
         if len(pieces) == 1:
             return self.define_text(head, params, pieces[0][2], True)
-        out = []
-        for name, ps, items in reversed(pieces):
+        sigs = {
+            name: f"static void {name}({', '.join(f'{types[v]} {v}' for v in args) or 'void'})"
+            for name, args, _ in pieces
+            if name != self.name
+        }
+        out = [f"{sig};" for sig in sigs.values()]
+        for name, args, items in pieces:
             if name == self.name:
                 out.append(self.define_text(head, params, items, True))
-                continue
-            extra = "".join(f", {self.types[v]} {v}" for v in ps)
-            sig = f"static void {name}({decl}{extra})".replace("(void, ", "(")
-            out.append(self.define_text(sig, params + ps, items, False))
+            else:
+                out.append(self.define_text(sigs[name], args, items, False))
         if nsec > 1:
             frame = self.mod.marks.put(("tag", "frame"))
             guards = [] if self.f.private else self.mod.guards.get(self.name, [])

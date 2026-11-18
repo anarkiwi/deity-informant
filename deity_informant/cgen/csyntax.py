@@ -324,13 +324,19 @@ def tails(items, local, call):
         items = before
 
 
+#: The cognitive complexity a function is left at (SonarQube's default for C): above it,
+#: nested blocks are extracted (:func:`extracted`).
+THRESHOLD = 25
+
+
 def reduced(body, name, params, local, void):
-    """``([(function name, extra parameters, items)], sections)`` of the statements ``body``
-    of C function ``name`` (``params`` its parameters, ``local`` its other variables,
-    ``void`` whether it returns nothing), each rewrite lowering cognitive complexity: a
-    function returning nothing cut into sections (:func:`sections`, ``NAME_K``, called in
-    turn) and each section's tails (:func:`tails`, ``SECTION_LABEL``), every piece then
-    flattened (:func:`flattened`) and, returning nothing, ended (:func:`guarded`)."""
+    """``([(function name, parameters, items)], sections)`` of the statements ``body`` of C
+    function ``name`` (``params`` its parameters, ``local`` its other variables, ``void``
+    whether it returns nothing), each rewrite lowering cognitive complexity: a function
+    returning nothing cut into sections (:func:`sections`, ``NAME_K``, called in turn) and
+    each section's tails (:func:`tails`, ``SECTION_LABEL``), every piece flattened
+    (:func:`flattened`), ended (:func:`guarded`) when it returns nothing, and its nested
+    blocks extracted while above :data:`THRESHOLD` (:func:`extracted`, ``PIECE_xK``)."""
     parts = sections(body, local) if void else [(None, body)]
     pieces = []
     for k, (lab, items) in enumerate(parts, 1):
@@ -342,14 +348,114 @@ def reduced(body, name, params, local, void):
 
         first, chain = tails(items, local, call) if void else (items, [])
         calls = {t: call(t, ps) for t, _, ps in chain}
-        seq = [(sec, [], first), *((f"{sec}_{t}", ps, b) for t, b, ps in chain)]
-        for j, (fn, ps, items) in enumerate(seq):
+        seq = [(sec, params, first), *((f"{sec}_{t}", params + ps, b) for t, b, ps in chain)]
+        for j, (fn, args, items) in enumerate(seq):
             items = calling(items, calls)
             if j < len(chain) and not ends_in_jump(items):
                 items = [*items, calls[chain[j][0]]]
             items = guarded(flattened(items)) if void else flattened(items)
-            pieces.append((fn, ps, items))
+            pieces += extracted(fn, args, items, local | set(params))
     return pieces, len(parts)
+
+
+#: Functions that never return: a ``return`` right after a call of one is never reached.
+NORETURN = ("trap",)
+
+
+def _noreturn(st):
+    """Whether statement ``st`` is a call of a function of :data:`NORETURN`."""
+    return st[0] == "s" and _lead(st[1])[1].split("(")[0] in NORETURN
+
+
+def _escapes(items, loops=0, switches=0, labels=frozenset()):
+    """Whether control may leave ``items`` but by falling off their end: a return (not
+    after a call of :data:`NORETURN`), a fall into the next case, a
+    ``break`` or ``continue`` of no loop or ``switch`` within them, a goto to a label
+    outside them."""
+    labels = labels or frozenset(_labels(items))
+    for k, st in enumerate(items):
+        if st[0] == "j" and "fallthrough" in st[1]:
+            return True
+        if st[0] == "j":
+            text = st[1]
+            if text.startswith("return") and not (k and _noreturn(items[k - 1])):
+                return True
+            if text.startswith("goto ") and text[5:-1] not in labels:
+                return True
+            if text == "break;" and not loops + switches or text == "continue;" and not loops:
+                return True
+        elif st[0] == "loop" and _escapes(st[4], loops + 1, switches, labels):
+            return True
+        elif st[0] == "switch" and any(_escapes(b, loops, switches + 1, labels) for _, b in st[3]):
+            return True
+        elif st[0] == "if" and (
+            _escapes(st[3], loops, switches, labels) or _escapes(st[4], loops, switches, labels)
+        ):
+            return True
+    return False
+
+
+def _blocks(items, depth=0):
+    """``(block, depth)`` of each statement list nested in ``items``: arms, loop and case
+    bodies, at the nesting of their statements."""
+    for st in items:
+        for sub in children(st):
+            yield sub, depth + 1
+            yield from _blocks(sub, depth + 1)
+
+
+def _swap(items, block, new):
+    """``items`` with the nested statement list ``block`` (by identity) replaced by ``new``."""
+
+    def f(st):
+        if st[0] == "if":
+            return (
+                *st[:3],
+                new if st[3] is block else _swap(st[3], block, new),
+                new if st[4] is block else _swap(st[4], block, new),
+                *st[5:],
+            )
+        if st[0] == "loop":
+            return (*st[:4], new if st[4] is block else _swap(st[4], block, new))
+        if st[0] == "switch":
+            return (
+                *st[:3],
+                [(lab, new if b is block else _swap(b, block, new)) for lab, b in st[3]],
+            )
+        return st
+
+    return [f(st) for st in items]
+
+
+def extracted(name, args, items, local):
+    """``[(function name, parameters, items)]`` of function ``name`` (``args`` its
+    parameters) and the functions extracted from it: while its cognitive complexity is above
+    :data:`THRESHOLD`, the nested block whose statements save the most nesting moved to
+    depth 0 that control leaves only by its end (:func:`_escapes`), no goto outside it
+    enters, and sets no variable used outside it becomes ``NAME_xK`` of the variables it
+    reads that are used outside it, and its call; each extracted function in turn."""
+    out, k = [], 0
+    while cost(items) > THRESHOLD:
+        best, gain = None, 0
+        for block, depth in _blocks(items):
+            g = cost(block, depth) - cost(block)
+            if g <= gain or _escapes(block):
+                continue
+            rest = _swap(items, block, [])
+            if _labels(block) & _targets(rest):
+                continue
+            if {st[1] for st in walk(block) if st[0] == "a"} & names_in(rest) & local:
+                continue
+            best, gain = block, g
+        if best is None:
+            break
+        k += 1
+        xname, inputs = f"{name}_x{k}", sorted(
+            names_in(best) & names_in(_swap(items, best, [])) & local, key=_order
+        )
+        items = _swap(items, best, [("s", f"{xname}({', '.join(inputs)});", frozenset(inputs))])
+        out += extracted(xname, inputs, guarded(best), local)
+    return [(name, args, items), *out]
 
 
 def _splice(items, f):
