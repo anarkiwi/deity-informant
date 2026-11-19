@@ -1080,6 +1080,20 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         """The interval of access ``o``'s address where it runs."""
         return self.iv_at(self.address(o), self.where[id(o)][0].name)
 
+    def addr_runs(self, o):
+        """``(runs, kept)`` of access ``o`` (or I/O call): the runs ``[(lo, hi)]`` (``hi``
+        exclusive) its address lies in where it runs and whether one may reach a volatile byte
+        or a pointer pair's (whose constants print relative to their region); ``(None,
+        False)`` for a load of the ``.h``'s constants."""
+        if o.name != "func.call" and o.args[-2] not in self.globals:
+            return None, False
+        lo, hi = self.addr_iv(o)
+        runs = [(lo, min(hi, 0xFFFF) + 1)]
+        mem = self.mod.mem
+        pairs = {*mem.pairs, *mem.pairs.values()}
+        kept = any(mem.vol[a:b].any() or any(a <= x < b for x in pairs) for a, b in runs)
+        return runs, kept
+
     def dominates(self, a, b):
         """Whether block ``a`` dominates block ``b`` (names)."""
         while True:
@@ -3954,7 +3968,21 @@ class Module:  # pylint: disable=too-many-instance-attributes
         ranges = {
             f.name: [f.code_iv(o) for o in f.walk() if o.name == "memref.load"] for f in self.funcs
         }
-        self.load(mlir.parse(llvmopt.combined(mlir.generic(self.top), prefix, ranges)))
+        sets = {
+            f.name: [f.addr_runs(o) for o in f.walk() if o.name in ("memref.load", "memref.store")]
+            for f in self.funcs
+        }
+        io = ("@io_read", "@io_write")
+        devices = {
+            f.name: [
+                self.mem.is_volatile(*f.addr_iv(o))
+                for o in f.walk()
+                if o.name == "func.call" and o.prop("callee") in io
+            ]
+            for f in self.funcs
+        }
+        text = llvmopt.combined(mlir.generic(self.top), prefix, ranges, sets, devices)
+        self.load(mlir.parse(text))
 
     def copies_of(self, name, pc):
         """The instruction PCs of every copy of instruction ``pc`` of function ``name``."""

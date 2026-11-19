@@ -6555,11 +6555,12 @@ def test_return_past_an_unknown_amount_traps(prefix, tmp_path):
 
 
 def test_written_inline_argument_is_a_variable(prefix, tmp_path):
-    """An inline argument a store writes is a variable of the code span, which the callee's
-    read of it at each call reads: not a constant, and no code address a value."""
+    """An inline argument a store writes before the call is what the callee's read of it
+    reads, the stored value: not a constant, and no code address a value."""
     c, _, _ = check(prefix, tmp_path, W.ARG_WRITTEN, entry_calls(range(3), 2))
     at = W.assemble(W.ARG_WRITTEN)[1]["a1"] - 0x1000
-    assert f"S_{at:X} = v1;" in c and f"CODE_K{at:X}" not in c and "CODE_ORG" not in c
+    assert "v1 = io_read(0xC011);" in c and "io_write(0xC000, v1);" in c
+    assert f"CODE_K{at:X}" not in c and "CODE_ORG" not in c
 
 
 def test_pushed_constant_return_is_a_branch(prefix, tmp_path):
@@ -7063,7 +7064,7 @@ def test_bounded_store_leaves_cells_to_promotion(prefix, tmp_path):
         if probe:
             assert cells["scalars"] >= 2
         else:
-            assert cells["bytes"]["pointer"] >= 2 and not DISPATCH.search(plain(c))
+            assert sum(cells["bytes"].values()) >= 2 and not DISPATCH.search(plain(c))
             assert "cgen_var" not in plain(c)
 
 
@@ -8153,3 +8154,23 @@ end:
     c, _, _ = check(prefix, tmp_path, src, entry_calls([0, 1]))
     body = body_of(c, "entry")
     assert bool(re.search(r"\bv\d+\b", body)) == late
+
+
+@pytest.mark.parametrize("hit", [False, True])
+def test_indexed_load_prints_at_its_use_past_a_disjoint_store(prefix, tmp_path, hit):
+    """A table byte read through an index and used once after a store prints at its use when
+    the store's address lies outside the table's address set; a store into it keeps the
+    value in a variable."""
+    dest = "tab+1" if hit else "$C001"
+    src = f"""
+entry:  TAX
+        LDA tab,X
+        STY {dest}
+        STA $C000
+        RTS
+tab:    .byte 1, 2, 3, 4
+end:
+"""
+    c, _, _ = check(prefix, tmp_path, src, entry_calls([0, 1, 2, 3]))
+    body = body_of(c, "entry")
+    assert bool(re.search(r"\buint8_t v\d+ = ", body)) == hit

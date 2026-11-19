@@ -1,7 +1,8 @@
-"""LLVM's scalar passes over the optimized MLIR of a lift, and back.
+"""LLVM's scalar and memory passes over the optimized MLIR of a lift, and back.
 
-:func:`lower` makes memory accesses opaque calls, numbers every location and states the
-intervals of loads as LLVM ``range`` attributes, LLVM's tools lower, optimize and import the
+:func:`lower` makes each memory access a call of an inlinable accessor loading or storing its
+global, scoped by its address set (:func:`scopes`), numbers every location and states the
+intervals of loads as LLVM ``range`` attributes; LLVM's tools lower, optimize and import the
 module, and :func:`recover` rebuilds the dialects :func:`mlir.parse` reads with the original
 locations and attributes.
 """
@@ -13,23 +14,22 @@ import shlex
 from collections import deque
 from dataclasses import dataclass, field, replace
 
+import numpy as np
+
 from . import mlir
 
 #: Generic printing with locations, as :func:`mlir.parse` reads.
 PRINT = ("--mlir-print-op-generic", "--mlir-print-debuginfo", "--mlir-print-local-scope")
 #: LLVM's passes: InstCombine (its fixpoint unverified, as in the standard pipelines), then the
 #: facts of dominating conditions and value ranges (EarlyCSE, CVP, constraint elimination
-#: after sinking each value to its one use) and InstCombine over what they leave. None of them
-#: duplicates, merges or reorders blocks.
-PASSES = ",".join(
-    (
-        "instcombine<no-verify-fixpoint>",
-        "early-cse",
-        "correlated-propagation",
-        "sink",
-        "constraint-elimination",
-        "instcombine<no-verify-fixpoint>",
-    )
+#: after sinking each value to its one use) and InstCombine over what they leave, each access
+#: an opaque call; then the accesses inlined, loads and stores redundant on dominating paths
+#: (EarlyCSE over MemorySSA) and dead stores removed. None of them duplicates, merges or
+#: reorders blocks, nor moves an access to another block.
+PASSES = (
+    "function(instcombine<no-verify-fixpoint>,early-cse,correlated-propagation,sink,"
+    "constraint-elimination,instcombine<no-verify-fixpoint>),always-inline,"
+    "function(early-cse<memssa>,dse)"
 )
 #: To LLVM IR, :data:`PASSES`, back.
 STAGES = (
@@ -50,6 +50,11 @@ STAGES = (
 TIDY = ("mlir-opt", "--canonicalize", "--cse", *PRINT)
 #: The lowering of ``index``: the lift has no 64-bit integers of its own.
 INDEX = "i64"
+#: A pointer, recovered as its offset from the module's one memory global, an address.
+PTR = "!llvm.ptr"
+ADDR, MASK = "i16", 0xFFFF
+#: The operations reduction modulo a width commutes with.
+NARROW = {"add", "sub", "mul", "and", "or", "xor"}
 BINARY = {
     "add": "addi",
     "sub": "subi",
@@ -82,7 +87,7 @@ _LOC = re.compile(r'"o":(\d+):\d+')
 _FUSED = re.compile(r"fused<#llvm\.di_subprogram<.*?>>\[(.*?)\]")
 _MEM = re.compile(r'"memref\.(load|store)"\(([^)]*)\) : \(([^)]*)\) -> (\S+)')
 _GET = re.compile(r'^(%[\w$.-]+) = "memref\.get_global"\(\) <\{name = @(\w+)\}>')
-_GLOBAL = re.compile(r'"memref\.global"\(\) <\{sym_name = "(\w+)".*type = (memref<\d+x(\w+)>)')
+_GLOBAL = re.compile(r'"memref\.global"\(\) <\{sym_name = "(\w+)".*type = (memref<(\d+)x(\w+)>)')
 _SYM = re.compile(r'sym_name = "([\w.$-]+)"')
 _FTYPE = re.compile(r"function_type = \((.*?)\) -> (\(.*?\)|[^,}]+)")
 
@@ -123,35 +128,115 @@ class Table:  # pylint: disable=too-many-instance-attributes
         return len(self.locs)
 
 
-def _mem_call(kind, args, types, res, gets, r=None):  # pylint: disable=too-many-arguments
-    """The ``func.call`` text replacing a ``memref.load`` (of interval ``r``, called as
-    ``@__ld.G.rLO_HI``) or ``memref.store``."""
-    args, types = [a.strip() for a in args.split(",")], mlir._types(types)
-    if kind == "load":
-        g = gets[args[0]] + (f".r{r[0]}_{r[1]}" if _range(res, r) else "")
-        return f'"func.call"({args[1]}) <{{callee = @__ld.{g}}}> : (index) -> {res}'
-    g = gets[args[1]]
-    return f'"func.call"({args[0]}, {args[2]}) <{{callee = @__st.{g}}}> : ({types[0]}, index) -> ()'
-
-
-def _declare(name, ins, out, res_attrs=""):
-    """A private ``func.func`` declaration."""
-    attrs = f"res_attrs = [{{{res_attrs}}}], " if res_attrs else ""
+def _effects(other, inaccessible):
+    """An ``llvm.memory_effects``: ``other`` for the program's memory, ``inaccessible`` for
+    memory it does not address."""
     return (
-        f'"func.func"() <{{function_type = ({ins}) -> {out}, {attrs}sym_name = "{name}", '
-        'sym_visibility = "private"}> ({\n}) : () -> ()'
+        f"#llvm.memory_effects<other = {other}, argMem = {other}, inaccessibleMem = "
+        f"{inaccessible}, errnoMem = none, targetMem0 = none, targetMem1 = none>"
     )
 
 
-def lower(text, ranges=None):  # pylint: disable=too-many-locals
-    """``(text, table)``: generic-form ``text`` with each ``memref`` access a call of
-    ``@__ld.G`` or ``@__st.G``, each location ``loc("o":N:1)`` and the discardable attributes
-    kept in the :class:`Table`; ``ranges``: per
-    function name the intervals ``(lo, hi)`` (or None) of its loads in order, each the
-    ``llvm.range`` of its call's result."""
+#: Touching no byte of the program's memory.
+ELSEWHERE = f"memory_effects = {_effects('none', 'readwrite')}, no_unwind, will_return"
+#: The externals' LLVM attributes: the checks leave the program's memory, traps end.
+EXTERNALS = {
+    "codechk": ELSEWHERE,
+    "objchk": ELSEWHERE,
+    "trap": 'no_unwind, passthrough = ["noreturn"]',
+}
+#: The I/O calls, each also declared ``.dev`` (:data:`ELSEWHERE`) for a call reaching only
+#: volatile bytes.
+DEVICES = ("io_read", "io_write")
+#: A dynamic index in ``llvm.getelementptr``'s ``rawConstantIndices``.
+DYNAMIC = -(1 << 31)
+
+
+def scopes(sets, fn, first=0):
+    """``(props, aliases)``: each access's ``alias_scopes``/``noalias_scopes`` for address
+    sets ``sets`` (runs ``[(lo, hi)]``, ``hi`` exclusive; None: any) of function ``fn``, one
+    scope per class of the coarsest partition making each set a union of classes, and the
+    scopes' attribute aliases (``distinct`` ids from ``first``)."""
+    known = [i for i, runs in enumerate(sets) if runs]
+    out = [""] * len(sets)
+    if not known:
+        return out, []
+    cuts = np.unique([x for i in known for r in sets[i] for x in r])
+    member = np.zeros((len(known), len(cuts) - 1), dtype=bool)
+    for row, i in enumerate(known):
+        for lo, hi in sets[i]:
+            member[row, np.searchsorted(cuts, lo) : np.searchsorted(cuts, hi)] = True
+    member = member[:, member.any(axis=0)]
+    cls = np.unique(member.T, axis=0, return_inverse=True)[1].ravel()
+    every = np.arange(cls.max() + 1)
+    for row, i in enumerate(known):
+        mine = np.unique(cls[member[row]])
+        other = np.setdiff1d(every, mine, assume_unique=True)
+        if other.size:
+            names = [", ".join(f"#s{fn}_{c}" for c in x) for x in (mine, other)]
+            out[i] = f"alias_scopes = [{names[0]}], noalias_scopes = [{names[1]}]"
+    defs = [f"#d{fn} = #llvm.alias_scope_domain<id = distinct[{first}]<>>"]
+    defs += [
+        f"#s{fn}_{c} = #llvm.alias_scope<id = distinct[{first + 1 + c}]<>, domain = #d{fn}>"
+        for c in every
+    ]
+    return out, defs
+
+
+def _accessor(name, kind, t, g, elem, vol, r=None):  # pylint: disable=too-many-arguments
+    """The ``always_inline`` ``llvm.func`` ``name``: ``memref`` access ``kind`` (volatile when
+    ``vol``) of a ``t`` of global ``g`` of ``elem`` at its ``i64`` argument as an ``llvm`` load
+    (its result of interval ``r``) or store."""
+    ftype = f"{t} (i64)" if kind == "load" else f"void ({t}, i64)"
+    res = f"res_attrs = [{{{_range(t, r)}}}], " if r is not None and _range(t, r) else ""
+    props = "volatile_, ordering = 0 : i64" if vol else "ordering = 0 : i64"
+    access = (
+        f'%v = "llvm.load"(%p) <{{{props}}}> : (!llvm.ptr) -> {t}\n"llvm.return"(%v) : '
+        f"({t}) -> ()"
+        if kind == "load"
+        else f'"llvm.store"(%x, %p) <{{{props}}}> : ({t}, !llvm.ptr) -> ()\n"llvm.return"() : '
+        "() -> ()"
+    )
+    return (
+        f'"llvm.func"() <{{CConv = #llvm.cconv<ccc>, always_inline, function_type = '
+        f'!llvm.func<{ftype}>, linkage = #llvm.linkage<internal>, {res}sym_name = "{name}", '
+        f"visibility_ = 0 : i64}}> ({{\n"
+        f"^bb0({'%i: i64' if kind == 'load' else f'%x: {t}, %i: i64'}):\n"
+        f'%m = "llvm.mlir.addressof"() <{{global_name = @{g}}}> : () -> !llvm.ptr\n'
+        f'%p = "llvm.getelementptr"(%m, %i) <{{elem_type = {elem}, noWrapFlags = 3 : i32, '
+        f"rawConstantIndices = array<i32: {DYNAMIC}>}}> : (!llvm.ptr, i64) -> !llvm.ptr\n"
+        f"{access}\n}}) : () -> ()"
+    )
+
+
+#: The properties of an accessor's ``llvm.call`` but its callee and scopes.
+CALL = (
+    "CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, fastmathFlags = "
+    "#llvm.fastmath<none>, op_bundle_sizes = array<i32>"
+)
+
+
+def _global(name, size, elem):
+    """The ``llvm.mlir.global`` of memory global ``name``: external, its contents unknown."""
+    return (
+        f'"llvm.mlir.global"() <{{addr_space = 0 : i32, global_type = !llvm.array<{size} x '
+        f'{elem}>, linkage = #llvm.linkage<external>, sym_name = "{name}", visibility_ = 0 : '
+        "i64}> ({\n}) : () -> ()"
+    )
+
+
+def lower(  # pylint: disable=too-many-locals,too-many-statements,too-many-branches
+    text, ranges=None, sets=None, devices=None
+):
+    """``(text, table)``: ``text`` with its accesses calls of accessors (:func:`_accessor`),
+    locations ``loc("o":N:1)`` (the :class:`Table` keeps the rest); per function ``ranges``
+    its loads' intervals, ``sets`` its accesses' ``(runs, volatile)`` (:func:`scopes`; without
+    one volatile), ``devices`` whether each I/O call reaches only volatile bytes."""
     table, out, stack, gets = Table(), [], [], {}
     label, terms, conds, made = "", {}, [], {}
-    ranges, ranged, mine, nload = ranges or {}, set(), (), 0
+    ranges, decls, defs, mine, nload = ranges or {}, {}, [], (), 0
+    sets, aliases, props, access, nmem = sets or {}, [], [], (), 0
+    devices, dev = devices or {}, iter(())
     for raw in text.splitlines():
         s, _, _, where = mlir._strip_locs(raw.strip())
         if s.startswith("^"):
@@ -165,13 +250,22 @@ def lower(text, ranges=None):  # pylint: disable=too-many-locals
                 table.close = raw.strip()
             else:
                 table.funcs[head][1] = raw.strip()
+                assert nmem == len(access) or not access, (head, nmem, len(access))
                 table.branches.update((n, tuple(terms.get(x) for x in xs)) for n, xs in conds)
                 label, terms, conds, made = "", {}, [], {}
                 mine = ()
+                if head in EXTERNALS and out[-1].endswith("({"):
+                    s = f"}}) {{{EXTERNALS[head]}}}{s[2:]}"
+                if head in DEVICES and out[-1].endswith("({"):
+                    defs += [
+                        out[-1].replace(f'"{head}"', f'"{head}.dev"'),
+                        f"}}) {{{ELSEWHERE}}}{s[2:]}",
+                    ]
             out.append(f'{s} loc("o":{table.number(where)}:1)')
             continue
         if m := _GLOBAL.search(s):
-            table.globals[m.group(1)] = (raw.strip(), m.group(2), m.group(3))
+            table.globals[m.group(1)] = (raw.strip(), m.group(2), m.group(4))
+            out.append(_global(m.group(1), m.group(3), m.group(4)))
             continue
         if m := _GET.match(s):
             gets[m.group(1)] = m.group(2)
@@ -179,48 +273,63 @@ def lower(text, ranges=None):  # pylint: disable=too-many-locals
             continue
         m = mlir._HEAD.match(s)
         assert m, s
-        name, props, rest = m.group(3), (m.group(6) or "<{}>")[2:-2], m.group(7)
+        name, prop, rest = m.group(3), (m.group(6) or "<{}>")[2:-2], m.group(7)
         attrs = ""
         if a := mlir._ATTRS.match(rest):
             attrs, s = a.group(0).strip(), s[: m.start(7)] + rest[a.end() :].lstrip()
+        callee = prop.split(",")[0][len("callee = @") :] if name == "func.call" else ""
+        if callee in DEVICES and next(dev, False):
+            s = s.replace(f"callee = @{callee}", f"callee = @{callee}.dev", 1)
+        lines = [s]
         if mm := _MEM.search(s):
+            vol = access[nmem][1] if nmem < len(access) else True
+            args = [x.strip() for x in mm.group(2).split(",")]
+            ins = mlir._types(mm.group(3))
+            g, t = gets[args[-2]], mm.group(4) if mm.group(1) == "load" else ins[0]
             r = None
             if mm.group(1) == "load":
                 r = mine[nload] if nload < len(mine) else None
                 nload += 1
-                if _range(mm.group(4), r):
-                    ranged.add((gets[mm.group(2).split(",")[0].strip()], mm.group(4), r))
-            s = s[: mm.start()] + _mem_call(*mm.groups(), gets, r)
+            key = (mm.group(1), t, gets[args[-2]], vol, r if r and _range(t, r) else None)
+            if key not in decls:
+                decls[key] = f"__a{len(decls)}"
+                defs.append(_accessor(decls[key], *key[:2], g, table.globals[g][2], *key[3:]))
+            k = f"%__{len(out)}"
+            args[-2:] = [k]
+            p = ", ".join(x for x in (props[nmem] if nmem < len(props) else "", CALL) if x)
+            lines = [
+                f'{k} = "arith.index_cast"({mm.group(2).split(",")[-1].strip()}) : (index) -> i64',
+                f'{s[: mm.start()]}"llvm.call"({", ".join(args)}) <{{{p}, callee = @{decls[key]}, '
+                f"operandSegmentSizes = array<i32: {len(args)}, 0>}}> : "
+                f"({', '.join(ins[:-2] + ['i64'])}) -> {mm.group(4)}",
+            ]
+            nmem += 1
         if s.endswith("({"):
             sym = _SYM.search(s) if name == "func.func" else None
             stack.append(sym and sym.group(1))
             if sym:
                 table.funcs[sym.group(1)] = [raw.strip(), None]
                 mine, nload = ranges.get(sym.group(1), ()), 0
+                access, nmem = sets.get(sym.group(1), ()), 0
+                dev = iter(devices.get(sym.group(1), ()))
+                props, more = scopes([x[0] for x in access], len(table.funcs), len(aliases))
+                aliases += more
             out.append(s)
             continue
-        n = table.number(where, name, props, attrs)
+        n = table.number(where, name, prop, attrs)
         made.update(dict.fromkeys(mlir._results(m.group(1), m.group(2)), n))
         table.operands[n] = tuple(made.get(a.strip(), 0) for a in m.group(4).split(","))
         if name in TERMINATORS:
             terms[label] = n
         if name == "cf.cond_br":
             conds.append((n, [x.strip()[1:] for x in m.group(5).split(",")]))
-        out.append(f'{s} loc("o":{n}:1)')
-    decls = [
-        x
-        for g, (_, _, e) in table.globals.items()
-        for x in (_declare(f"__ld.{g}", "index", e), _declare(f"__st.{g}", f"{e}, index", "()"))
-    ]
-    decls += [
-        _declare(f"__ld.{g}.r{r[0]}_{r[1]}", "index", t, _range(t, r)) for g, t, r in sorted(ranged)
-    ]
-    return "\n".join(out[:1] + decls + out[1:]) + "\n", table
+        out += [f'{x} loc("o":{n}:1)' for x in lines]
+    return "\n".join(aliases + out[:1] + defs + out[1:]) + "\n", table
 
 
 def _ty(t):
     """The ``arith`` type of LLVM type ``t``."""
-    return "index" if t == INDEX else t
+    return {INDEX: "index", PTR: ADDR}.get(t, t)
 
 
 def _width(t):
@@ -274,7 +383,9 @@ class _Func:  # pylint: disable=too-many-instance-attributes
                 for a in o.args:
                     self.users.setdefault(a, []).append(o)
         self.fields_of, self.prelude, self.lines, self.fresh = {}, {}, [], 0
+        self.same, self.narrowed = {}, {}
         self.terms = {b.name: _number(b.ops[-1]) for b in fn.regions[0] if b.ops}
+        self.indices, self.base = self.addresses(), self.bases()
 
     def new(self):
         """A fresh value name."""
@@ -284,6 +395,8 @@ class _Func:  # pylint: disable=too-many-instance-attributes
     def val(self, v):
         """The scalar value ``v`` names: an extracted field as the field, a frozen value as
         itself."""
+        if v in self.same:
+            return self.same[v]
         d = self.defs.get(v)
         if d is not None and d.name == "llvm.extractvalue":
             return self.fields(d.args[0])[d.ints("position")[0]]
@@ -407,8 +520,12 @@ class _Func:  # pylint: disable=too-many-instance-attributes
             for n, t in b.args:
                 kinds = _struct(t) or [self.types[n]]
                 args += [f"{x}: {y}" for x, y in zip(self.flat(n), kinds)]
+            for v in (n for n, _ in b.args if n in self.indices):
+                self.narrow(v)
             for o in b.ops:
                 self.convert(o)
+                for v in (r for r in o.res if r in self.indices):
+                    self.narrow(v)
             label = f"^{b.name or 'bb0'}"
             body.append((f"{label}({', '.join(args)}):" if args else f"{label}:", self.lines))
         out = [head]
@@ -458,6 +575,10 @@ class _Func:  # pylint: disable=too-many-instance-attributes
             return self.select(*args, o, res)
         if kind == "call":
             return self.call(o, args)
+        if kind in ("mlir.addressof", "getelementptr"):
+            return self.offset(o, args)
+        if kind in ("load", "store"):
+            return self.access(o, args)
         if kind in ("br", "cond_br", "switch"):
             return self.branch(o)
         if kind in ("return", "unreachable"):
@@ -472,25 +593,124 @@ class _Func:  # pylint: disable=too-many-instance-attributes
             return self.intrinsic(kind[5:], o, args)
         raise ValueError(f"unrecoverable operation {o.name}")
 
-    def call(self, o, args):
-        """A call: of ``@__ld.G``/``@__st.G`` the memory access, else a ``func.call`` with
-        the callee's results."""
-        callee = o.prop("callee")[1:]
-        mem, _, g = callee.partition(".")
-        g = g.partition(".")[0]
-        if mem in ("__ld", "__st") and g in self.table.globals:
-            _, t, _ = self.table.globals[g]
-            m = self.prelude_op(
-                "memref.get_global",
-                f"name = @{g}",
-                t,
-                self.table.gets.get(self.name, {}).get(g, "unknown"),
+    def bases(self):
+        """The global each pointer of the function points into (a fixpoint over
+        ``addressof``, ``getelementptr``, ``select`` and the edges' block arguments)."""
+        out, blocks = {}, {b.name: b for b in self.fn.regions[0]}
+        changed = True
+        while changed:
+            changed = False
+            for o in (o for b in self.fn.regions[0] for o in b.ops):
+                if o.name == "llvm.mlir.addressof":
+                    new = [(o.res[0], o.prop("global_name")[1:])]
+                elif o.name in ("llvm.getelementptr", "llvm.select"):
+                    new = [(o.res[0], out.get(o.args[0]) or out.get(o.args[-1]))]
+                elif o.succs:
+                    edges = replace(o, name="cf." + o.name[5:]).edges()
+                    new = [
+                        (a, out.get(o.args[i]))
+                        for s, ix, _ in edges
+                        for (a, _), i in zip(blocks[s].args, ix)
+                    ]
+                else:
+                    new = []
+                for k, g in new:
+                    if g and k not in out:
+                        out[k], changed = g, True
+        return out
+
+    def memory(self, g):
+        """The function's ``memref.get_global`` of global ``g``."""
+        where = self.table.gets.get(self.name, {}).get(g, "unknown")
+        return self.prelude_op("memref.get_global", f"name = @{g}", self.table.globals[g][1], where)
+
+    def offset(self, o, args):
+        """Pointer ``o`` as its :data:`ADDR` offset from the memory global: an ``addressof``
+        0, a ``getelementptr`` its base's plus its indices scaled (bytes or byte arrays)."""
+        if o.name == "llvm.mlir.addressof":
+            self.same[o.res[0]] = self.prelude_op("arith.constant", f"value = 0 : {ADDR}", ADDR)
+            return None
+        elem, dyn = o.prop("elem_type"), iter(o.args[1:])
+        scales = [int(elem[len("!llvm.array<") :].split()[0]), 1] if "array" in elem else [1]
+        zero = self.prelude_op("arith.constant", f"value = 0 : {ADDR}", ADDR)
+        acc = None if args[0] == zero else args[0]
+        for k, scale in zip(o.ints("rawConstantIndices"), scales):
+            if k == DYNAMIC:
+                x = self.narrow(next(dyn))
+                if scale & MASK != 1:
+                    x = self.op("arith.muli", [x, self.const(scale & MASK, ADDR, o)], ADDR, src=o)
+            elif k * scale & MASK:
+                x = self.const(k * scale & MASK, ADDR, o)
+            else:
+                continue
+            acc = x if acc is None else self.op("arith.addi", [acc, x], ADDR, src=o)
+        acc = zero if acc is None else acc
+        self.same[o.res[0]] = acc
+        return None
+
+    def const_of(self, v):
+        """The value of ``llvm.mlir.constant`` ``v``, or -1."""
+        d = self.defs.get(v)
+        return int(d.prop("value").split(":")[0]) if d and d.name == "llvm.mlir.constant" else -1
+
+    def addresses(self):
+        """The values the indices of the function's ``getelementptr`` s are computed from,
+        :meth:`narrow` at their definitions."""
+        geps = [o for b in self.fn.regions[0] for o in b.ops if o.name == "llvm.getelementptr"]
+        todo = [a for o in geps for a in o.args[1:]]
+        seen = set()
+        while todo:
+            v = todo.pop()
+            if v in seen:
+                continue
+            seen.add(v)
+            d = self.defs.get(v)
+            if d is not None and (d.name in TRANSPARENT or d.name[5:] in NARROW | {"shl"}):
+                todo += d.args
+        return seen
+
+    def narrow(self, v):
+        """Index ``v`` modulo the :data:`ADDR` width: its operations where reduction modulo
+        the width commutes with them (an address lies below it), else ``v`` truncated."""
+        if v in self.narrowed:
+            return self.narrowed[v]
+        d, kind = self.defs.get(v), ""
+        if d is not None and d.name in TRANSPARENT:
+            out = self.narrow(d.args[0])
+        elif d is not None:
+            kind = d.name.removeprefix("llvm.")
+        if kind == "mlir.constant":
+            k = int(d.prop("value").split(":")[0]) & MASK
+            out = self.const(k - (k >> 15 << 16), ADDR, d)
+        elif kind in ("zext", "sext") and _width(self.types[d.args[0]]) <= _width(ADDR):
+            x = self.val(d.args[0])
+            name = "arith.extui" if kind == "zext" else "arith.extsi"
+            out = x if self.types[x] == ADDR else self.op(name, [x], ADDR, src=d)
+        elif kind in NARROW:
+            xs = [self.narrow(a) for a in d.args]
+            out = self.op(f"arith.{BINARY[kind]}", xs, ADDR, src=d)
+        elif kind == "shl" and 0 <= (k := self.const_of(d.args[1])) < _width(ADDR):
+            out = self.op(
+                "arith.shli", [self.narrow(d.args[0]), self.const(k, ADDR, d)], ADDR, src=d
             )
-            if mem == "__ld":
-                return self.emit(
-                    o.res[0], "memref.load", [m, args[0]], [self.types[o.res[0]]], src=o
-                )
-            return self.emit(None, "memref.store", [args[0], m, args[1]], [], src=o)
+        else:
+            x = self.val(v)
+            name = "arith.index_cast" if self.types[x] == "index" else "arith.trunci"
+            out = self.op(name, [x], ADDR, src=d)
+        self.narrowed[v] = out
+        return out
+
+    def access(self, o, args):
+        """``llvm.load``/``llvm.store`` ``o`` as the ``memref`` access of its offset."""
+        p = self.op("arith.index_castui", [args[-1]], "index", src=o)
+        m = self.memory(self.base[o.args[-1]])
+        if o.name == "llvm.load":
+            return self.emit(o.res[0], "memref.load", [m, p], [self.types[o.res[0]]], src=o)
+        return self.emit(None, "memref.store", [args[0], m, p], [], src=o)
+
+    def call(self, o, args):
+        """A ``func.call`` with the callee's results."""
+        callee = o.prop("callee")[1:].removesuffix(".dev")
         outs = _results(self.table.funcs[callee][0])
         res = (o.res[0] if o.res else self.new()) if outs else None
         res = f"{res}:{len(outs)}" if len(outs) > 1 else res
@@ -623,11 +843,11 @@ def recover(text, table):
     return "\n".join(out) + "\n"
 
 
-def combined(text, prefix, ranges=None):
+def combined(text, prefix, ranges=None, sets=None, devices=None):
     """Generic-form MLIR ``text`` after LLVM's :data:`PASSES` given the loads' ``ranges``
     (:func:`lower`), in the same dialects with the same locations and attributes; the tools
     run under ``prefix`` (:func:`mlir.runner`)."""
-    low, table = lower(text, ranges)
+    low, table = lower(text, ranges, sets, devices)
     script = " | ".join(shlex.join(s) for s in STAGES)
     imported = mlir.run(prefix, ["bash", "-o", "pipefail", "-c", script], low)
     return mlir.run(prefix, list(TIDY), recover(imported, table))

@@ -63,10 +63,14 @@ def test_fused_location_chain_is_its_first_part():
 def test_lowering_makes_memory_calls_and_numbers_locations(lowered):
     text, table = lowered
     assert "memref" not in text.replace("memref.global", "")
-    assert '"func.call"(%1) <{callee = @__ld.M}> : (index) -> i8' in text
-    assert '"func.call"(%4#0, %1) <{callee = @__st.M}> : (i8, index) -> ()' in text
-    assert 'sym_name = "__ld.M"' in text and 'sym_name = "__st.M"' in text
-    assert "{site" not in text and re.findall(r"loc\((.*?)\)", text) == [
+    assert re.search(r'%2 = "llvm.call"\(%__\d+\) <\{.*callee = @__a0.*\(i64\) -> i8', text)
+    assert re.search(r'"llvm.call"\(%4#0, %__\d+\) <\{.*callee = @__a1.*\(i8, i64\) -> \(\)', text)
+    assert text.count('"arith.index_cast"(%1) : (index) -> i64') == 2
+    assert '"llvm.load"(%p) <{volatile_, ordering = 0 : i64}> : (!llvm.ptr) -> i8' in text
+    assert '"llvm.store"(%x, %p) <{volatile_, ordering = 0 : i64}>' in text
+    assert text.count("always_inline") == 2 and "alias_scopes" not in text
+    assert 'sym_name = "trap", sym_visibility = "private"}> ({\n}) {no_unwind' in text
+    assert "{site" not in text and list(dict.fromkeys(re.findall(r"loc\((.*?)\)", text))) == [
         f'"o":{n}:1' for n in range(1, len(table.locs) + 1)
     ]
     call = number(table, 'callsite("0x1006"("1:4") at "0x2000"("2:1"))')
@@ -114,12 +118,14 @@ def test_recovery_restores_dialects_locations_and_attributes(lowered):
     body = """
     %c = "llvm.mlir.constant"() <{value = 4096 : i64}> : () -> i64
     %t = "llvm.mlir.constant"() <{value = true}> : () -> i1
-    %0 = "llvm.call"(%c) <{callee = @__ld.M}> : (i64) -> i8 {N:"0x1002"("1:2")}
+    %m = "llvm.mlir.addressof"() <{global_name = @M}> : () -> !llvm.ptr
+    %p = "llvm.getelementptr"(%m, %c) <{elem_type = i8, noWrapFlags = 3 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr {N:"0x1002"("1:2")}
+    %0 = "llvm.load"(%p) <{ordering = 0 : i64}> : (!llvm.ptr) -> i8 {N:"0x1002"("1:2")}
     %1 = "llvm.or"(%0, %a) <{isDisjoint}> : (i8, i8) -> i8 {N:"0x1004"("1:3")}
     %2 = "llvm.call"(%1, %b) <{callee = @g}> : (i8, i8) -> !llvm.struct<(i8, i16)> {N:callsite("0x1006"("1:4") at "0x2000"("2:1"))}
     %3 = "llvm.extractvalue"(%2) <{position = array<i64: 0>}> : (!llvm.struct<(i8, i16)>) -> i8
     %f = "llvm.freeze"(%3) : (i8) -> i8
-    "llvm.call"(%f, %c) <{callee = @__st.M}> : (i8, i64) -> () {N:"0x1008"("1:5")}
+    "llvm.store"(%f, %p) <{ordering = 0 : i64}> : (i8, !llvm.ptr) -> () {N:"0x1008"("1:5")}
     %4 = "llvm.icmp"(%1, %a) <{predicate = 9 : i64}> : (i8, i8) -> i1 {N:"0x100a"("1:6")}
     %5 = "llvm.xor"(%4, %t) : (i1, i1) -> i1 loc("o":0:0)
     %6 = "llvm.zext"(%1) <{nonNeg}> : (i8) -> i64 loc(unknown)
@@ -132,19 +138,25 @@ def test_recovery_restores_dialects_locations_and_attributes(lowered):
     "llvm.return"(%a) : (i8) -> () {N:"0x1010"("1:9")}"""
     fn, out = recovered(table, body)
     by = {o.name: o for o in ops(fn)}
-    assert by["memref.load"].loc == ((0x1002, "1:2"),) and by["memref.load"].args[1] == "%c"
+    assert by["memref.load"].loc == ((0x1002, "1:2"),)
+    cast = next(o for o in ops(fn) if o.res == [by["memref.load"].args[1]])
+    k = next(o for o in ops(fn) if o.res == [cast.args[0]])
+    assert cast.name == "arith.index_castui" and (k.int_prop("value"), k.types[1]) == (
+        4096,
+        ["i16"],
+    )
     assert by["memref.get_global"].where == '"<stdin>":9:9'
     assert by["arith.addi"].loc == ((0x1004, "1:3"),)
     call = by["func.call"]
     assert call.res == ["%2#0", "%2#1"] and call.loc == ((0x1006, "1:4"), (0x2000, "2:1"))
     assert "no_inline" in call.props and call.int_prop("site") == 5
     store = by["memref.store"]
-    assert store.args[::2] == ["%2#0", "%c"] and store.args[1] == by["memref.get_global"].res[0]
+    assert store.args[0] == "%2#0" and store.args[1] == by["memref.get_global"].res[0]
     assert by["arith.cmpi"].int_prop("predicate") == 9
     assert by["arith.xori"].loc == ((0x100A, "1:6"),)
     assert by["arith.extsi"].loc == ((0x100C, "1:7"),)
     casts = [o.types for o in ops(fn) if o.name == "arith.index_castui"]
-    assert casts == [(["i8"], ["index"]), (["index"], ["i16"])]
+    assert casts.count((["i16"], ["index"])) == 2 and (["i8"], ["index"]) in casts
     assert by["arith.constant"].types[1] in (["index"], ["i1"])
     assert '"func.func"() <{function_type = (i8, i8) -> i8, sym_name = "f"}>' in out
     assert "__ld" not in out and "memref.global" in out and "llvm." not in out
@@ -427,22 +439,71 @@ RANGED = SHIFTS.replace(
 
 
 def test_load_ranges_fold_end_to_end(prefix):
-    """A load's interval is its call's ``range``: a compare it decides folds, and the call
-    comes back as the load of its global, dead once nothing reads it."""
-    low, _ = llvmopt.lower(RANGED, {"f": [(0, 9), None]})
-    assert "@__ld.M.r0_9" in low and "#llvm.constant_range<i8, 0, 10>" in low
+    """A load's interval is its accessor's ``range``: a compare it decides folds; with its
+    address set the load is dead once nothing reads it, and the load after the store reads
+    the stored value, while without one both stay (volatile)."""
+    cell = {"f": [([(0xD000, 0xD001)], False)] * 3}
+    low, _ = llvmopt.lower(RANGED, {"f": [(0, 9), None]}, cell)
+    assert low.count("llvm.range = #llvm.constant_range<i8, 0, 10>") == 1
     assert llvmopt.lower(RANGED, {"f": [(0, 0xFF), None]})[0].count("constant_range") == 0
-    f = mlir.parse(llvmopt.combined(RANGED, prefix, {"f": [(0, 9), None]})).regions[0][0].ops[1]
-    body = ops(f)
+    out = llvmopt.combined(RANGED, prefix, {"f": [(0, 9), None]}, cell)
+    body = ops(mlir.parse(out).regions[0][0].ops[1])
     assert not [o for o in body if o.name == "arith.cmpi"]
     ret = body[-1]
     one = next(o for o in body if o.res == [ret.args[0]])
     assert one.name == "arith.constant" and one.int_prop("value") == 1
-    loads = [o for o in body if o.name == "memref.load"]
-    assert [o.pc for o in loads] == [0x1008]
+    assert not [o for o in body if o.name == "memref.load"]
+    [store] = [o for o in body if o.name == "memref.store"]
+    assert ret.args[1] == store.args[0] and store.pc == 0x1006
     unfolded = ops(mlir.parse(llvmopt.combined(RANGED, prefix)).regions[0][0].ops[1])
     assert [o for o in unfolded if o.name == "arith.cmpi"]
     assert [o.pc for o in unfolded if o.name == "memref.load"] == [0x1004, 0x1008]
+
+
+ALIASED = """"builtin.module"() ({
+  "memref.global"() <{sym_name = "M", sym_visibility = "private", type = memref<65536xi8>}> : () -> () loc("<stdin>":2:3)
+  "func.func"() <{function_type = (i16, i8) -> (), sym_name = "io_write", sym_visibility = "private"}> ({
+  }) : () -> () loc("<stdin>":3:3)
+  "func.func"() <{function_type = (i8, i8) -> i8, sym_name = "f"}> ({
+  ^bb0(%a: i8, %b: i8):
+    %g = "memref.get_global"() <{name = @M}> : () -> memref<65536xi8> loc("<stdin>":4:1)
+    %c = "arith.constant"() <{value = 4096 : index}> : () -> index loc(unknown)
+    %d = "arith.constant"() <{value = 54272 : i16}> : () -> i16 loc(unknown)
+    %five = "arith.constant"() <{value = 5 : i16}> : () -> i16 loc(unknown)
+    %0 = "arith.extui"(%a) : (i8) -> i16 loc("0x1000"("1:1"))
+    %1 = "arith.shli"(%0, %five) : (i16, i16) -> i16 loc("0x1000"("1:1"))
+    %2 = "arith.index_castui"(%1) : (i16) -> index loc("0x1000"("1:1"))
+    "memref.store"(%a, %g, %c) : (i8, memref<65536xi8>, index) -> () loc("0x1002"("1:2"))
+    "memref.store"(%b, %g, %c) : (i8, memref<65536xi8>, index) -> () loc("0x1004"("1:3"))
+    "memref.store"(%a, %g, %2) : (i8, memref<65536xi8>, index) -> () loc("0x1006"("1:4"))
+    "func.call"(%d, %a) <{callee = @io_write}> : (i16, i8) -> () loc("0x1008"("1:5"))
+    %3 = "memref.load"(%g, %c) : (memref<65536xi8>, index) -> i8 loc("0x100a"("1:6"))
+    %4 = "memref.load"(%g, %2) : (memref<65536xi8>, index) -> i8 loc("0x100c"("1:7"))
+    %5 = "arith.addi"(%3, %4) : (i8, i8) -> i8 loc("0x100e"("1:8"))
+    "func.return"(%5) : (i8) -> () loc("0x1010"("1:9"))
+  }) : () -> () loc("<stdin>":5:3)
+}) : () -> () loc("<stdin>":1:1)
+"""
+
+
+@pytest.mark.parametrize("hi", [0x1000, 0x2000])
+def test_memory_facts_forward_and_remove_end_to_end(prefix, hi):
+    """With the address sets: a store overwritten before any read is dead, a load reads the
+    store before it across a store of a disjoint set and device I/O (an I/O call of
+    volatile bytes only), the indexed store's
+    address comes back as 16-bit arithmetic; a set that may reach the cell keeps its load."""
+    cell, run = [(0x1000, 0x1001)], [(0, hi)]
+    sets = {"f": [(cell, False)] * 2 + [(run, False), (cell, False), (run, False)]}
+    body = ops(mlir.parse(llvmopt.combined(ALIASED, prefix, sets=sets, devices={"f": [True]})).regions[0][0].ops[2])
+    stores = [o.pc for o in body if o.name == "memref.store"]
+    assert stores == [0x1004, 0x1006]
+    loads = [o.pc for o in body if o.name == "memref.load"]
+    assert loads == ([] if hi == 0x1000 else [0x100A])
+    idx = [o for o in body if o.name == "memref.store"][1].args[2]
+    cast = next(o for o in body if o.res == [idx])
+    add = next(o for o in body if o.res == [cast.args[0]])
+    assert cast.name == "arith.index_castui" and add.name == "arith.shli"
+    assert add.types[1] == ["i16"]
 
 
 def test_generic_text_round_trips():

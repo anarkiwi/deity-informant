@@ -90,18 +90,34 @@ caller's return address. `tools/cgenplay.c` is a host harness.
    once it has read each result a lifted function returns unchanged from a parameter as the
    argument its call passes and each truth value constant over all its inputs as the constant
    (step 4). Lowering makes each `memref`
-   access a call of an external `@__ld.G`/`@__st.G` (memory stays opaque, so every cell access
-   comes back where it was), numbers every location `loc("o":N:1)` (carried through LLVM IR
-   as debug lines) and keeps each location's text, operation and discardable attributes in a
-   table. A load of an opcode cell calls `@__ld.G.rLO_HI`, whose result's `range` is the hull
-   of the opcodes the code stores in the cell; the lift's other value sets (registers, cells,
-   tables) are of the program's data, which the `.c` does not depend on, so no pass is given
-   them. `opt` runs InstCombine (fixpoint unverified, as in the standard pipelines), EarlyCSE,
-   CVP (`correlated-propagation`), `sink`, constraint elimination and InstCombine again: the
-   facts of dominating conditions fold the carries and compares they decide (a value sunk to
-   its one use there). None of the passes duplicates, merges or reorders blocks, so the CFG
-   keeps the machine code's layout the structuring reads. `ipsccp` is not run: the ranges it
-   gives parameters turn compares into ones against odd constants (`(int8_t)x > -2`).
+   access an `llvm.call` of an `always_inline` accessor whose body loads or stores the
+   global (an external `llvm.mlir.global`, its contents unknown) through an `inbounds`
+   `getelementptr`, numbers every location `loc("o":N:1)` (carried through LLVM IR as debug
+   lines) and keeps each location's text, operation and discardable attributes in a table.
+   The printer gives each access its address set: its address interval where it runs
+   (`Func.addr_runs`), met with the lift's set for its instruction over every copy
+   (`Program.addr_sets`). The sets of a function's accesses partition the bytes they cover
+   into classes, each set a union of classes (the coarsest such partition); each class is an
+   alias scope, and each call carries its set's scopes and, as `noalias`, the others, which
+   the inliner puts on the access, so accesses of disjoint sets do not alias. An access whose
+   set may reach a volatile byte is volatile. `io_read`, `io_write`, `codechk` and `objchk`
+   are declared `memory(inaccessiblemem: readwrite)` `nounwind willreturn` (they touch no
+   byte of the program's memory), `trap` `noreturn`. A load of an opcode cell has the
+   `range` of the hull of the opcodes the code stores in it on its accessor's result; the
+   lift's other value sets (registers, cells, tables) are of the program's data, which the
+   `.c` does not depend on, so no pass is given them. `opt` runs InstCombine (fixpoint
+   unverified, as in the standard pipelines), EarlyCSE, CVP (`correlated-propagation`),
+   `sink`, constraint elimination and InstCombine again, each access still a call: the facts
+   of dominating conditions fold the carries and compares they decide (a value sunk to its
+   one use there), and InstCombine moves no access (it would sink stores into a join and
+   loads into a phi of addresses). Then `always-inline` makes the accesses loads and stores,
+   EarlyCSE over MemorySSA removes those redundant on a dominating path (a load of what a
+   store or load before it read or wrote, no store between that may write the bytes) and
+   DSE stores overwritten before any read; neither moves an access or adds a phi. None of
+   the passes duplicates, merges or reorders blocks, so the CFG keeps the machine code's
+   layout the structuring reads. `ipsccp` is not run: the ranges it gives parameters turn
+   compares into ones against odd constants (`(int8_t)x > -2`); GVN is not run: its
+   forwarding across joins builds phis the structuring turns into variables and branches.
    `mlir-translate --import-llvm` brings the module back. Recovery rebuilds
    `func`/`cf`/`arith`/`memref`/`ub`: struct returns are multi-result `func.return`s and
    `func.call`s again (struct values, block arguments and selects split into fields), `i64`
@@ -113,7 +129,10 @@ caller's return address. `tools/cgenplay.c` is a host harness.
    numbers of the operands' definitions, and intrinsics
    become `arith` (`smax`/`smin`/`umax`/`umin` as `maxsi`/`minsi`/`maxui`/`minui`; `abs`,
    `fshl`/`fshr`, the saturating and overflow arithmetic, `ctpop`, `ctlz`, `cttz`, `bswap`,
-   `bitreverse`, `ucmp`/`scmp` expanded). Every operation takes its number's location and
+   `bitreverse`, `ucmp`/`scmp` expanded). A load or store is the `memref` access of its pointer's offset
+   from the global, rebuilt in 16-bit arithmetic (an address lies below 64K, so its reduction
+   modulo 2^16 commutes with the adds, multiplies, shifts by constants, bitwise operations and
+   extensions LLVM computed it with) and cast to `index`. Every operation takes its number's location and
    attributes; one with no number (a merged location) takes the nearest numbered operation's
    in its def-use graph, users first. `mlir-opt --canonicalize --cse` verifies and tidies the
    result. The printer reads the new forms at their meaning: signed compares on `intN_t`
@@ -165,9 +184,11 @@ caller's return address. `tools/cgenplay.c` is a host harness.
      intersect or they hold one value, back edges first; only values a copy connects merge.
      The copies left are a parallel assignment, sequenced through a temporary where a
      destination is read by another's source.
-   - *Recomputation*: a load of one fixed, non-volatile cell used more than once prints at
-     each use when no operation that may write the cell (a store whose address interval
-     holds it, a call) lies on a path from the load to a use.
+   - *Recomputation*: a non-volatile load of a region or held span prints at its uses
+     instead of in a variable when no operation that may write a byte of its address set (a
+     store whose set meets it, a call) lies on a path from the load to a use: a fixed cell, a
+     promoted variable or a struct field at each use, an indexed byte (its set the address
+     interval met with the lift's set) at its one use, its address reading no other such load.
    - *Units*: with `split`, the `.c` is several translation units by reachability in the call
      graph (`units.py`): `<stem>_state.c` the state's definitions (`CGEN_STORAGE`), one unit
      per entry (`cgen_` dropped from its name) holding it and the functions only it reaches,
