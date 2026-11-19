@@ -198,7 +198,8 @@ def _word_bases(f):
 def _region_accesses(mod):
     """``([(cfunc, op, region, based)], words, kinds)``: the accesses printed as an element of
     one region (:meth:`CFunc.based`), the bases of byte pairs read as 16-bit values and the
-    other accesses' ``{how: [op]}`` (:meth:`CFunc.target`; ``cell`` a promoted cell's)."""
+    other accesses' ``{how: [op]}`` (:meth:`CFunc.target`; ``cell`` a promoted cell's,
+    ``unbounded`` one whose index may leave its region or wrap)."""
     out, words, kinds = [], set(), defaultdict(list)
     for c in mod.mains.values():
         f = c.f
@@ -213,7 +214,7 @@ def _region_accesses(mod):
             if got is not None:
                 out.append((c, o, how[1], got))
             else:
-                kinds[how[0]].append(o)
+                kinds["unbounded" if how[0] == "region" else how[0]].append(o)
     return out, words, kinds
 
 

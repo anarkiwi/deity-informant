@@ -823,7 +823,11 @@ identical functions are folded. A SID register's address prints by its name
 
 `info["names"]` holds the atoms the `.c` names (`{name: {"region", "org", "offsets", "kind",
 "const", "label"}}`), per region the address sets that straddle atoms (`[[first, last]]`) and
-the SID registers named (`{name: address}`); `info["state"]["vars"]` names the promoted cells.
+the SID registers named (`{name: address}`), the accesses by how they print (`atom`,
+`straddling`, `cell` a promoted cell's, `unbounded` one whose index may leave its region, else
+`Module.target`'s kind: `set`, `barray`, `held`, ...) and the variables by how they are named
+(`labelled`, `role`, `numbered` left `vN`, `carry`); `info["state"]["vars"]` names the promoted
+cells.
 The names depend on the code alone, so the `.c` stays the same wherever the song's data lies.
 
 ## Traps and computed jumps
