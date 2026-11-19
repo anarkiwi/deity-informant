@@ -494,7 +494,11 @@ def test_memory_facts_forward_and_remove_end_to_end(prefix, hi):
     address comes back as 16-bit arithmetic; a set that may reach the cell keeps its load."""
     cell, run = [(0x1000, 0x1001)], [(0, hi)]
     sets = {"f": [(cell, False)] * 2 + [(run, False), (cell, False), (run, False)]}
-    body = ops(mlir.parse(llvmopt.combined(ALIASED, prefix, sets=sets, devices={"f": [True]})).regions[0][0].ops[2])
+    body = ops(
+        mlir.parse(llvmopt.combined(ALIASED, prefix, sets=sets, devices={"f": [True]}))
+        .regions[0][0]
+        .ops[2]
+    )
     stores = [o.pc for o in body if o.name == "memref.store"]
     assert stores == [0x1004, 0x1006]
     loads = [o.pc for o in body if o.name == "memref.load"]
