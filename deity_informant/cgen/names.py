@@ -7,11 +7,11 @@ from __future__ import annotations
 
 import keyword
 from collections import defaultdict
+from dataclasses import dataclass
 
 from pycparser import c_ast
 
 from .state import structs
-from dataclasses import dataclass, field
 
 #: The SID's origin and its voices' stride.
 SID, VOICE = 0xD400, 7
@@ -164,18 +164,9 @@ class Flow:
 
 
 def unique(wanted, taken):
-    """``{key: name}`` of ``wanted`` (``[(key, base)]``, in order of preference): each name new
-    to ``taken`` (updated) and no C keyword, a base's second ``base_2`` and so on."""
-    out, count = {}, defaultdict(int)
-    for key, base in wanted:
-        while True:
-            count[base] += 1
-            name = base if count[base] == 1 else f"{base}_{count[base]}"
-            if name not in taken and not keyword.iskeyword(name) and name not in C_WORDS:
-                break
-        taken.add(name)
-        out[key] = name
-    return out
+    """``{key: name}`` of ``wanted`` (``[(key, base)]``, in order of preference), each name
+    :func:`scoped` in ``taken`` (updated)."""
+    return {key: scoped(base, [taken]) for key, base in wanted}
 
 
 def _word_bases(f):
@@ -310,21 +301,27 @@ def _index_seeds(flow, labels, recs, mod):
     register's offset (its terms past its base, an instance's copy index), and each index
     label on the indices of every access of an atom some access indexes by that label."""
     seeds = defaultdict(set)
-    for c, o, _, (_, _, parts) in recs:
-        if o.name == "memref.load" and _label(labels, c, o.res[0]) == VOICE_REG:
-            seeds[VOICE_INDEX] |= {("v", c.f.name, t) for t in parts}
+    for c in mod.mains.values():
+        f = c.f
+        for o in f.walk():
+            if o.name == "arith.kfam" and _label(labels, c, o.res[0]) == VOICE_REG:
+                seeds[VOICE_INDEX].add(("v", f.name, o.args[0]))
+            elif o.name == "memref.load" and _label(labels, c, o.res[0]) == VOICE_REG:
+                rest = f.split(f.address(o))[1] if o.args[-2] in f.globals else None
+                seeds[VOICE_INDEX] |= {("v", f.name, rest)} if rest is not None else set()
+    indexed = [(c, id(mod.atom_of.get(id(o))), parts) for c, o, _, (_, _, parts) in recs]
     for c in mod.mains.values():
         for o in c.f.walk():
-            if o.name == "arith.kfam" and _label(labels, c, o.res[0]) == VOICE_REG:
-                seeds[VOICE_INDEX].add(("v", c.f.name, o.args[0]))
+            p = c.f.promoted.get(id(o))
+            if p is not None and p[0] == "v" and isinstance(p[3], str):
+                indexed.append((c, ("cell", p[1], p[2]), [p[3]]))
     by = defaultdict(set)
-    for c, o, _, (_, _, parts) in recs:
-        atom = mod.atom_of.get(id(o))
-        for t in parts if atom is not None else ():
-            lab = _label(labels, c, t)
-            by[id(atom)] |= {lab} & set(INDICES) | {i for i in INDICES if ("v", c.f.name, t) in seeds[i]}
-    for c, o, _, (_, _, parts) in recs:
-        for lab in by.get(id(mod.atom_of.get(id(o))), ()):
+    for c, key, parts in indexed:
+        for t in parts:
+            n = ("v", c.f.name, t)
+            by[key] |= {_label(labels, c, t)} & set(INDICES) | {i for i in INDICES if n in seeds[i]}
+    for c, key, parts in indexed:
+        for lab in by.get(key, ()):
             seeds[lab] |= {("v", c.f.name, t) for t in parts}
     for lab, nodes in seeds.items():
         for n in nodes:
@@ -334,8 +331,9 @@ def _index_seeds(flow, labels, recs, mod):
 
 def name_module(mod):
     """Split every region of ``mod`` into atoms (:func:`atomize`, ``mod.atoms``) and label the
-    module's data flow (``mod.labels``); name each atom by its label (``g_`` and the label,
-    ``_tab`` for a constant array) or its region and offset."""
+    module's data flow (``mod.labels``); name each atom and promoted cell by its label (``g_``
+    and the label, ``_tab`` for a constant array), else an atom ``M_`` and its offset as
+    :meth:`Module.var_name` gives it."""
     recs, words = _region_accesses(mod)
     per = defaultdict(list)
     for _, _, k, (base, addrs, _) in recs:
@@ -355,17 +353,30 @@ def name_module(mod):
         labels = flow.labels()
     mod.labels = labels
     wanted = []
-    for k, atoms in mod.atoms.items():
-        org = mod.mem.regions[k][0]
+    for atoms in mod.atoms.values():
         for x in atoms:
-            d, x.label = labels.get(("m", k, x.org), (None, None))
+            d, x.label = labels.get(("m", x.region, x.org), (None, None))
             tab = "_tab" if x.const and x.kind == "array" else ""
             role = x.label or (POINTER if x.kind == "pair" else None)
-            base = f"{GLOBAL}{role}{tab}" if role else f"R{k}_{x.org - org:X}"
+            base = f"{GLOBAL}{role}{tab}" if role else "M" + mod.var_name(x.org)[1:]
             wanted.append(((d is None, d or 0, rank(x.label) if x.label else (), x.org), x, base))
-    names = unique([(id(x), b) for _, x, b in sorted(wanted, key=lambda w: w[0])], set())
+    cells = [("cell", a) for a in mod.state.scalars]
+    cells += [("cell", s, d) for s, (_, fields) in enumerate(mod.state.structs) for d in fields]
+    for key in cells:
+        d, lab = labels.get(key, (None, None))
+        if lab:
+            wanted.append(((False, d, rank(lab), -1), key, f"{GLOBAL}{lab}"))
+    names = unique([(_key(x), b) for _, x, b in sorted(wanted, key=lambda w: w[0])], set())
     for _, x, _ in wanted:
-        x.name = names[id(x)]
+        if isinstance(x, Atom):
+            x.name = names[_key(x)]
+        else:
+            mod.cell_names[x] = names[x]
+
+
+def _key(x):
+    """The key of atom or cell ``x`` among the names."""
+    return ("atom", x.region, x.org) if isinstance(x, Atom) else x
 
 
 def _counter(c, v):
@@ -438,7 +449,11 @@ def scoped(base, scopes):
     k = 1
     while True:
         name = base if k == 1 else f"{base}_{k}"
-        if not any(name in t for t in scopes) and not keyword.iskeyword(name) and name not in C_WORDS:
+        if (
+            not any(name in t for t in scopes)
+            and not keyword.iskeyword(name)
+            and name not in C_WORDS
+        ):
             break
         k += 1
     for t in scopes:
@@ -448,7 +463,7 @@ def scoped(base, scopes):
 
 def _pointer(f, v, seen):
     """Whether 16-bit value ``v`` of function ``f`` is a memory address or added into one."""
-    if f.width(v) != 16 or v in seen:
+    if v not in f.types or f.width(v) != 16 or v in seen:
         return False
     seen.add(v)
     for u in f.users.get(v, ()):

@@ -2756,10 +2756,10 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         struct's field of the element its copy index chooses."""
         p = self.f.promoted[id(o)]
         if p[0] == "s":
-            return named(self.mod.var_name(p[1]), mem=True)
+            return named(self.mod.cell_name(p[1]), mem=True)
         _, s, d, e = p
         el = lit(e, 8) if isinstance(e, int) else self.ex(e)
-        return E(cn.index(f"V{s}_f{d:02X}", el.node), 0, 255, False, True, el.refs)
+        return E(cn.index(self.mod.field_name(s, d), el.node), 0, 255, False, True, el.refs)
 
     def load(self, o):
         """The C expression of a memory load ``o``: of a constant byte at a fixed address, its
@@ -3995,7 +3995,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         #: Per region its atoms (:func:`.names.atomize`; None until named), those printed, the
         #: labels of the data flow's nodes and the SID registers printed by name.
         self.atoms, self.atoms_used, self.labels, self.sids_used = None, set(), {}, set()
-        self.atom_of, self.atom_bytes, self.straddling = {}, {}, {}
+        self.atom_of, self.atom_bytes, self.straddling, self.cell_names = {}, {}, {}, {}
         self.load(top)
 
     def load(self, top):
@@ -4438,14 +4438,24 @@ class Module:  # pylint: disable=too-many-instance-attributes
         if a not in self.state.at:
             return None
         p = self.state.at[a]
-        return self.var_name(a) if p is None else f"V{p[0]}_f{p[2]:02X}[{p[1]}]"
+        return self.cell_name(a) if p is None else f"{self.field_name(p[0], p[2])}[{p[1]}]"
+
+    def cell_name(self, a):
+        """The C name of promoted scalar ``a``: its data flow's (:mod:`.names`), else
+        :meth:`var_name`'s."""
+        return self.cell_names.get(("cell", a)) or self.var_name(a)
+
+    def field_name(self, s, d):
+        """The C name of field ``d`` of promoted struct ``s``: its data flow's, else
+        ``V<s>_f<d>``."""
+        return self.cell_names.get(("cell", s, d)) or f"V{s}_f{d:02X}"
 
     def enum_of(self, a):
         """``{value: name}`` (:func:`enum_names`) of opcode cell ``a`` when promoted to a
         scalar and the lift bounds its values (:attr:`opcodes`), else None."""
         if a is None or a not in self.opcodes or self.state.at.get(a, 0) is not None:
             return None
-        return enum_names(self.var_name(a), self.opcodes[a])
+        return enum_names(self.cell_name(a), self.opcodes[a])
 
     def state_c(self):
         """The ``.c``'s definitions of the promoted state, initialized from the ``.h``: each
@@ -4467,14 +4477,14 @@ class Module:  # pylint: disable=too-many-instance-attributes
             )
         out += [
             cn.decl(n, "uint8_t", cn.ident(n + "_INIT"))
-            for n in map(self.var_name, self.state.scalars)
+            for n in map(self.cell_name, self.state.scalars)
         ]
         for s, (bases, fields) in enumerate(self.state.structs):
             out += [
                 cn.decl(
-                    f"V{s}_f{d:02X}",
+                    self.field_name(s, d),
                     "uint8_t",
-                    cn.inits(f"V{s}_f{d:02X}_INIT"),
+                    cn.inits(f"{self.field_name(s, d)}_INIT"),
                     dim=cn.const(len(bases)),
                 )
                 for d in fields
@@ -4484,10 +4494,11 @@ class Module:  # pylint: disable=too-many-instance-attributes
     def state_h(self):
         """The ``.h``'s initial values of the promoted state."""
         img = self.mem.init
-        out = [f"#define {self.var_name(a)}_INIT 0x{img[a]:02X}" for a in self.state.scalars]
+        out = [f"#define {self.cell_name(a)}_INIT 0x{img[a]:02X}" for a in self.state.scalars]
         for s, (bases, fields) in enumerate(self.state.structs):
             out += [
-                f"#define V{s}_f{d:02X}_INIT {cn.hexes(img[(int(b) + d) & 0xFFFF] for b in bases)}"
+                f"#define {self.field_name(s, d)}_INIT "
+                f"{cn.hexes(img[(int(b) + d) & 0xFFFF] for b in bases)}"
                 for d in fields
             ]
         return out
