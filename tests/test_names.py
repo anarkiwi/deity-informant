@@ -6,7 +6,7 @@ import pytest
 import wholeprog_progs as W
 from deity_informant import cgen
 from deity_informant.cgen import names
-from test_cgen import assemble, body_of, cgenplay
+from test_cgen import VARPTR, assemble, body_of, cgenplay
 from test_cgen import fixture_prefix  # noqa: F401  pylint: disable=unused-import
 
 SID = (0xD400, 0xD420)
@@ -269,6 +269,16 @@ def test_an_access_straddling_atoms_stays_the_regions(prefix, tmp_path):
     assert info["names"]["accesses"] == {"atom": 3, "straddling": 1}
     assert "R0[i_2] = 0;" in c and "io_write(SID_V1_FREQ_LO, freq_lo1);" in c
     assert "io_write(SID_V1_FREQ_HI, g_freq_hi1[i]);" in c and "#define g_freq_hi1 (R0 + 0x3)" in h
+
+
+def test_a_named_cell_is_found_by_address(prefix, tmp_path):
+    """A promoted cell the data flow names is the variable ``cgen_var_at`` finds by address
+    for an access through a pointer the lift does not bound."""
+    src = VARPTR.replace("STA $C001", "STA $D400")
+    c, h, info, img, labels = translate(prefix, src)
+    replay(tmp_path, c, h, img, labels, [labels["lv"] + 1 >> 8] * 4)
+    assert info["state"]["vars"] == {"g_freq_lo1": labels["lv"] + 1}
+    assert "return &g_freq_lo1;" in c and "uint8_t g_freq_lo1 = g_freq_lo1_INIT;" in c
 
 
 @pytest.mark.parametrize("src", [VOICES, RECORDS, POINTER, STRADDLE])

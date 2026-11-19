@@ -378,6 +378,8 @@ def name_module(mod):
             x.name = names[_key(x)]
         else:
             mod.cell_names[x] = names[x]
+    if mod.var_at:
+        mod.var_at = mod.var_cases()
 
 
 def _key(x):
