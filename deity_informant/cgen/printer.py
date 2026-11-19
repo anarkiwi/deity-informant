@@ -3996,6 +3996,8 @@ class Module:  # pylint: disable=too-many-instance-attributes
         #: labels of the data flow's nodes and the SID registers printed by name.
         self.atoms, self.atoms_used, self.labels, self.sids_used = None, set(), {}, set()
         self.atom_of, self.atom_bytes, self.straddling, self.cell_names = {}, {}, {}, {}
+        #: The accesses by how they print (:func:`.names.name_module`), the variables by name.
+        self.accesses_by, self.variables = {}, Counter()
         self.load(top)
 
     def load(self, top):
@@ -4379,8 +4381,8 @@ class Module:  # pylint: disable=too-many-instance-attributes
 
     def names_info(self):
         """``info["names"]``: the atoms (``{name: {region, org, offsets, kind, const,
-        label}}``) the ``.c`` names, the address sets left to their region and the SID
-        registers the ``.c`` names."""
+        label}}``) the ``.c`` names, the address sets left to their region, the SID registers
+        the ``.c`` names, the accesses by how they print and the variables by how named."""
         atoms = {
             x.name: {
                 "region": k,
@@ -4395,7 +4397,13 @@ class Module:  # pylint: disable=too-many-instance-attributes
             if (k, x.org) in self.atoms_used
         }
         regs = {nm.sid_symbol(a): a for a in sorted(self.sids_used)}
-        return {"atoms": atoms, "straddling": self.straddling, "registers": regs}
+        return {
+            "atoms": atoms,
+            "straddling": self.straddling,
+            "registers": regs,
+            "accesses": self.accesses_by,
+            "variables": dict(sorted(self.variables.items())),
+        }
 
     def objects(self):
         """The promotion candidates: the code cells and the other variable bytes of the code
@@ -5036,6 +5044,8 @@ class Module:  # pylint: disable=too-many-instance-attributes
         for c in post:
             if any(defs[id(c)] is xs for xs in kept):
                 local = nm.local_names(c, self.labels, defs[id(c)])
+                self.variables.update(nm.variable_kinds(c, local))
+                local = {k: v for k, (v, _) in local.items()}
                 cn.rename(defs[id(c)], local)
                 cn.rename([h for p, h in zip(protos, heads) if p is c], local)
         cn.rename(heads, names)

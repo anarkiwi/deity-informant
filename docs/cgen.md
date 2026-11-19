@@ -47,8 +47,9 @@ some access has an unknown address and the
 `structure` counts: C `functions` (and the identical ones `folded` into them) and the
 `gotos` printed, the `provenance` of the printed constructs in the machine code (below), the instruction
 starts translated (`starts`), the cells held as C variables (`state`, *State*) and, with
-`init`, whether init is `"translated"` or `"replayed"` (`init`), and what the `.c` prints per
-original instruction and per check (`emission`, *Translation cost*).
+`init`, whether init is `"translated"` or `"replayed"` (`init`), what the `.c` prints per
+original instruction and per check (`emission`, *Translation cost*) and the names of memory
+(`names`, *Names*).
 
 The host supplies `uint8_t io_read(uint16_t)`, `void io_write(uint16_t, uint8_t)` and
 `void trap(uint16_t k)`, which must not return (`longjmp`, or abort the call). Each entry
@@ -148,8 +149,9 @@ caller's return address. `tools/cgenplay.c` is a host harness.
    (a `CMP` the `BCC` before the `SBC` decides).
    A carry left varying is a variable of its own (`cN`), set where its producer makes it,
    so the value reading it does not share the producer's operands.
-5. **Layout** (`state.py`, `regions.py`): the cells held as C variables (*State*), then the
-   memory partition of the other bytes (*Memory*).
+5. **Layout** (`state.py`, `regions.py`, `names.py`): the cells held as C variables (*State*),
+   then the memory partition of the other bytes (*Memory*), each region's atoms and the names
+   of atoms, cells and values (*Names*).
 6. **Structure** (`structure.py`): the dominator-tree translation below, each function whole.
 7. **Print** (`printer.py`, `cnodes.py`, `ssa.py`, `recompute.py`, `units.py`). The generic
    text is parsed for the operations the pipeline leaves (`func`, `cf`, `arith`, `memref`,
@@ -455,12 +457,12 @@ In an instance function each construct names every copy's instruction (`Program.
 Each lifted op carries the instruction it was emitted for ([wholeprog](wholeprog.md#python));
 the MLIR carries it as the op's location (`--mlir-print-debuginfo`), which the printer reads.
 
-Names come from structure alone: C functions are `f1, f2, ...` in the order they are first
-called when printing (entries first), variables `v1, v2, ...` in order of first use. Callees
-are defined before callers; only recursive functions need prototypes. Functions whose
-definitions are the same up to their names and the functions they call (those merged so
-far) are kept once, until none is left (`info["structure"]["folded"]`), as a player's
-per-voice routines often are; the rest are renumbered in order.
+C functions are named by structure: `f1, f2, ...` in the order they are first called when
+printing (entries first), variables `v1, v2, ...` in order of first use until the data flow
+names them (*Names*). Callees are defined before callers; only recursive functions need
+prototypes. Functions whose definitions are the same up to their names and the functions they
+call (those merged so far) are kept once, until none is left (`info["structure"]["folded"]`),
+as a player's per-voice routines often are; the rest are renumbered in order.
 
 ## State
 
@@ -509,7 +511,8 @@ A promoted byte no load reads is dropped with its stores (`unread`), and a store
 left bytes no load may read is dead too (`Module.unread_stores`: only the constant bytes of the
 code span count as read, a store there being a code check): a computed jump switching on its
 index reads its operand cells no more, so their stores go and no array holds them. The `.c` defines the
-variables (`uint8_t S_23 = S_23_INIT;`, `uint8_t V0_f0A[3] = {V0_f0A_INIT};`) and the `.h`
+variables (`uint8_t S_23 = S_23_INIT;`, `uint8_t V0_f0A[3] = {V0_f0A_INIT};`, or the name the
+data flow gives them, `g_ctrl`, *Names*) and the `.h`
 their initial values from the state it holds (init's copies write them by address, `&S_23`),
 so the `.c` is the same for every song and placement. Promoted bytes are in no region unless
 another access's interval spans them; `oob_rd` under `CGEN_OOB_EXACT` (`cgen_rd`) finds the
@@ -771,6 +774,57 @@ CODE_ORG`); a pointer the program stores (the pair stores above), whose bytes ho
 address its reads take apart; the address argument of `rd`, `wr`, `oob_*`, `rdCj`, `io_*` and
 `codechk`, which find the byte by it; and `cgen_var`'s switch over the promoted bytes'
 addresses.
+
+## Names
+
+Each region is split into **atoms** by aggregate structure identification (Ramalingam, Field
+and Tip, POPL 1999) over the accesses that print as one of its elements (a constant base inside
+it plus terms that do not wrap it; `names.atomize`). An access reaches the addresses of its
+interval, or the lift's exact set where it has one: an address set at a stride
+(`Func.strided_access`), a counted loop's progression, each copy's in an instance. Sets of
+several bytes alike up to a translation, the narrowest and sparsest first, are the fields of
+records (`state.structs`, the families of *State*): consecutive bytes are an **array**, one
+byte per record at a stride a **field** (the voices' state a player keeps at the SID's stride
+of 7, indexed by the voice's register offset). A set meeting another's atoms other than as one
+of them straddles them and is listed in `straddling`; its access stays the region's element, as
+an index the code does not bound (a note number into a frequency table) or a loop clearing
+several arrays at once. The constant bytes outside them are **scalars**, two of them a 16-bit
+value reads as low and high byte (`lo | hi << 8`) one **pair**, a zero-page pointer's. An atom
+no store may write (`Module.stored`) is constant.
+
+Atoms are views of their region, not storage of their own: the `.h` defines each the `.c`
+names (`#define g_ctrl (R1 + 0x102)`, a scalar `#define M_127 (R1[0x127])`, a constant one
+`((const uint8_t *)R1 + 0x134)`), so the region keeps the layout the 6502 code relies on for
+the accesses that are no atom's (pointers, `rd`/`wr`, straddling indices, init's copies). An
+access lying in one atom prints as the atom indexed by its byte offset from the atom's origin
+(`g_ctrl[voice]`, a field `g_freq_hi[voice_reg]`), a scalar by its name.
+
+Names come from the **data flow** of the module (`names.Flow`): through arithmetic (not into a
+truth value, `[0, 1]`, from wider operands: a flag or a bit tested is no copy of its byte),
+block arguments, call arguments and results, and from a store of an atom or a promoted cell
+to its loads; addresses are no data. Its seeds are the SID's registers, named as the llvm-mos
+SDK's `struct __sid` (16-bit fields as `_lo`/`_hi` bytes): a value an `io_write` writes to
+`$D401` is `freq_hi1`, to `$D401` plus an index `freq_hi`, an `io_read` result its register's;
+the index added to a voice register is `voice_reg`; the index of a table load whose value is
+`voice_reg`, or of an instance's table of offsets, is `voice`; and an index of an atom some
+access indexes by `voice` or `voice_reg` takes that name too. Each node takes the label of the
+seeds nearest it backwards along the flow (one breadth-first search from all of them; among
+seeds as near, both bytes of one 16-bit register give its name, `freq`, else the first by
+register address and voice, then `voice`, then `voice_reg`). An atom or promoted cell with a
+label is `g_<label>` (`_tab` for a constant array), numbered from its second (`g_ctrl_2`), the
+nearest first; else a pair is `g_ptr`, another atom `M_` and its offset as a promoted scalar's
+(`M_127`, `M_I40`, `M_A00F0`, *State*), a cell keeps its `S_`/`V` name. A variable `vN`
+holding a labelled value (its congruence class's member nearest a seed) is named by the label;
+else a loop counter (a block argument each edge passes a constant or itself plus a constant)
+is `i` and a 16-bit value used as an address `ptr`; each unique within every function
+wayward-eagle's reduction prints (the nearest first, then the one most of them share), after
+identical functions are folded. A SID register's address prints by its name
+(`io_write(SID_V1_CTRL + voice_reg, v)`), defined in the `.h` (`#define SID_V1_CTRL 0xD404`).
+
+`info["names"]` holds the atoms the `.c` names (`{name: {"region", "org", "offsets", "kind",
+"const", "label"}}`), per region the address sets that straddle atoms (`[[first, last]]`) and
+the SID registers named (`{name: address}`); `info["state"]["vars"]` names the promoted cells.
+The names depend on the code alone, so the `.c` stays the same wherever the song's data lies.
 
 ## Traps and computed jumps
 

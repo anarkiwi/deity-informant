@@ -196,22 +196,25 @@ def _word_bases(f):
 
 
 def _region_accesses(mod):
-    """``([(cfunc, op, region, based)], words)``: the accesses printed as an element of one
-    region (:meth:`CFunc.based`) and the bases of byte pairs read as 16-bit values."""
-    out, words = [], set()
+    """``([(cfunc, op, region, based)], words, kinds)``: the accesses printed as an element of
+    one region (:meth:`CFunc.based`), the bases of byte pairs read as 16-bit values and the
+    other accesses' ``{how: [op]}`` (:meth:`CFunc.target`; ``cell`` a promoted cell's)."""
+    out, words, kinds = [], set(), defaultdict(list)
     for c in mod.mains.values():
         f = c.f
         words |= _word_bases(f)
         for o, _, _ in f.accesses():
-            if id(o) in f.dropped or id(o) in f.promoted or o.name == "func.call":
+            if id(o) in f.dropped or o.name == "func.call":
                 continue
-            how = c.target(o)
-            if how[0] != "region" or (id(o) in f.aware and mod.var_at):
-                continue
-            got = c.based(o, how[1])
+            how = ("cell",) if id(o) in f.promoted else c.target(o)
+            if id(o) in f.aware and mod.var_at:
+                how = ("any",)
+            got = c.based(o, how[1]) if how[0] == "region" else None
             if got is not None:
                 out.append((c, o, how[1], got))
-    return out, words
+            else:
+                kinds[how[0]].append(o)
+    return out, words, kinds
 
 
 def _function_flow(flow, c, mod):
@@ -334,7 +337,7 @@ def name_module(mod):
     module's data flow (``mod.labels``); name each atom and promoted cell by its label (``g_``
     and the label, ``_tab`` for a constant array), else an atom ``M_`` and its offset as
     :meth:`Module.var_name` gives it."""
-    recs, words = _region_accesses(mod)
+    recs, words, kinds = _region_accesses(mod)
     per = defaultdict(list)
     for _, _, k, (base, addrs, _) in recs:
         per[k].append((base, addrs))
@@ -348,6 +351,9 @@ def name_module(mod):
     for c in mod.mains.values():
         _function_flow(flow, c, mod)
     mod.atom_of = _memory_flow(flow, recs, mod)
+    kinds["atom"] = [o for _, o, _, _ in recs if id(o) in mod.atom_of]
+    kinds["straddling"] = [o for _, o, _, _ in recs if id(o) not in mod.atom_of]
+    mod.accesses_by = {k: len(v) for k, v in sorted(kinds.items())}
     labels = flow.labels()
     if _index_seeds(flow, labels, recs, mod):
         labels = flow.labels()
@@ -413,7 +419,7 @@ def _identifiers(nodes):
 
 
 def local_names(c, labels, nodes):
-    """``{variable: new name}`` of C function ``c`` printed as ``nodes``: each ``vN`` holding
+    """``{variable: (name, kind)}`` of C function ``c`` printed as ``nodes``: each ``vN`` holding
     a labelled value (its class's member nearest a seed) named by its label, else a loop
     counter ``i`` and an address's 16-bit base ``ptr``; unique in each function of ``nodes``,
     the nearest first, then the one in most of them."""
@@ -439,7 +445,7 @@ def local_names(c, labels, nodes):
     out = {}
     for n in order:
         mine = [t for t, ids in zip(taken, scopes) if n in ids]
-        out[n] = scoped(best[n][2], mine)
+        out[n] = (scoped(best[n][2], mine), "role" if best[n][0] == _LOOP else "labelled")
     return out
 
 
@@ -472,3 +478,16 @@ def _pointer(f, v, seen):
         if u.name == "arith.addi" and _pointer(f, u.res[0], seen):
             return True
     return False
+
+
+def variable_kinds(c, local):
+    """``{kind: n}`` of the variables of C function ``c`` named by ``local``
+    (:func:`local_names`): ``labelled``, ``role``, and those left ``numbered`` (``vN``) or
+    ``carry`` (``cN``)."""
+    out = defaultdict(int)
+    for name in c.names.values():
+        if name in local:
+            out[local[name][1]] += 1
+        elif name[:1] in "vc" and name[1:].isdigit():
+            out["numbered" if name[0] == "v" else "carry"] += 1
+    return out

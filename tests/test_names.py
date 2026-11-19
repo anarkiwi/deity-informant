@@ -225,6 +225,8 @@ def test_voice_loop_names_registers_cells_and_its_index(prefix, tmp_path):
         "SID_AMP": 0xD418,
     }
     assert "#define SID_V1_CTRL 0xD404" in h and "#define g_amp (R0[0x0])" in h
+    assert info["names"]["accesses"] == {"atom": 2, "cell": 2, "held": 2, "straddling": 0}
+    assert info["names"]["variables"] == {"labelled": 3, "role": 1}
     assert translate(prefix, VOICES, 0x2345)[0] == c
 
 
@@ -264,6 +266,7 @@ def test_an_access_straddling_atoms_stays_the_regions(prefix, tmp_path):
     replay(tmp_path, c, h, img, labels, [1, 0, 0, 1, 0])
     lo = labels["lo"]
     assert info["names"]["straddling"] == {0: [[lo, lo + 5]]}
+    assert info["names"]["accesses"] == {"atom": 3, "straddling": 1}
     assert "R0[i_2] = 0;" in c and "io_write(SID_V1_FREQ_LO, freq_lo1);" in c
     assert "io_write(SID_V1_FREQ_HI, g_freq_hi1[i]);" in c and "#define g_freq_hi1 (R0 + 0x3)" in h
 
