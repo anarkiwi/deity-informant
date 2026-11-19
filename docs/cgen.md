@@ -797,8 +797,10 @@ names (`#define g_ctrl (R1 + 0x102)`, a scalar `#define g_amp R1[0x127]`, a cons
 `((const uint8_t *)R1 + 0x134)`), so the region keeps the layout the 6502 code relies on for
 the accesses that are no atom's (pointers, `rd`/`wr`, straddling indices, init's copies). An
 access lying in one atom prints as the atom indexed by its byte offset from the atom's origin
-(`g_ctrl[voice]`, a field `g_freq_hi[vreg]`), a scalar by its name; an atom with no name
-stays its region's bytes (`R1[0xF9 + voice]`).
+(`g_ctrl[voice]`, a field `g_freq_hi[vreg]`), a scalar by its name; an indexed access of an
+atom with no name is its view spelled in place (`(R1 + 0xF9)[voice]`), so every indexed access
+of an atom computes its address alike, and a constant one stays its region's byte
+(`R1[0x127]`).
 
 Names come from the **data flow** of the module (`names.Flow`): through arithmetic (not into a
 truth value, `[0, 1]`, from wider operands: a flag or a bit tested is no copy of its byte),
@@ -813,8 +815,8 @@ seeds nearest it backwards along the flow (one breadth-first search from all of 
 seeds as near, both bytes of one 16-bit register give its name, `freq`, else the first by
 register address and voice, then `voice`, then `vreg`). Each label names one atom or promoted
 cell, the nearest its seeds (then by register and address): `g_<label>` (`_tab` for a constant
-array), a pair no label reaches `g_ptr`; the others keep no name (an atom stays its region's
-bytes, a cell its `S_`/`V` name), as a name told apart from another only by a number says no
+array), a pair no label reaches `g_ptr`; the others keep no name (an atom is its view into the
+region, a cell keeps its `S_`/`V` name), as a name told apart from another only by a number says no
 more than an offset. A variable `vN` holding a labelled value (its congruence class's member
 nearest a seed) is named by the label, else a loop counter (a block argument each edge passes
 a constant or itself plus a constant) is `i` and a 16-bit value used as an address `ptr`, in

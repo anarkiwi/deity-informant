@@ -2739,23 +2739,34 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
 
     def atom_ref(self, o, k):
         """The element of the atom (:mod:`.names`) access ``o`` into region ``k`` lies inside:
-        the atom's name, indexed unless it is a scalar; None where no atom holds it."""
+        the atom's name, indexed unless it is a scalar; one with no name indexed as its view
+        into the region (``(R1 + 0xF9)[voice]``) where the access has an index, as every
+        indexed access of an atom then is; None where no atom holds it, or for a constant
+        access of an atom with no name."""
         got = self.based(o, k)
         atom = got and self.mod.atom_for(got[1])
-        if atom is None or not atom.name or atom.org > got[0]:
+        if atom is None or atom.org > got[0] or not (atom.name or got[2]):
             return None
-        if self.mod.mem.moves(got[0]) != self.mod.mem.moves(atom.org):
+        mem = self.mod.mem
+        org = mem.regions[k][0]
+        if mem.moves(got[0]) != mem.moves(atom.org) or mem.moves(org, True) != mem.moves(got[0]):
             return None
-        self.mod.atoms_used.add((atom.region, atom.org))
         self.mod.regions_used.add(k)
         c, _, parts = got
-        if atom.kind == "scalar":
-            return named(atom.name, mem=True)
+        if atom.name:
+            self.mod.atoms_used.add((atom.region, atom.org))
+            if atom.kind == "scalar":
+                return named(atom.name, mem=True)
+            base = cn.ident(atom.name)
+        else:
+            base = cn.ident(f"R{k}")
+            if atom.org != org:
+                base = cn.binop("+", base, lit(atom.org - org, 16).node)
         f = self.f
         rs = [clean(self.ex(t), f.width(t)) if len(parts) == 1 else self.ex(t) for t in parts]
         off = c - atom.org
         sub = plus(lit(off, 16), *rs) if off or not rs else plus(*rs)
-        return E(cn.index(atom.name, sub.node), 0, 255, False, True, sub.refs)
+        return E(cn.index(base, sub.node), 0, 255, False, True, sub.refs)
 
     def var(self, o):
         """The promoted cell access ``o`` reaches (:meth:`Module.promote`): a scalar, or a
