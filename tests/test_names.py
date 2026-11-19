@@ -124,8 +124,10 @@ def test_sid_registers_by_name():
     assert names.sid_register(0xD40B) == ("ctrl", 2)
     assert names.sid_register(0xD418) == ("amp", None)
     assert names.sid_register(0xD41D) is None and names.sid_register(0xD3FF) is None
-    assert names.sid_symbol(0xD412) == ("SID_CTRL", 0xD404, 2)
-    assert names.sid_symbol(0xD415) == ("SID_FLT_FREQ_LO", 0xD415, 0)
+    assert (
+        names.sid_symbol(0xD412) == "SID_V3_CTRL" and names.sid_symbol(0xD404, True) == "SID_CTRL"
+    )
+    assert names.sid_symbol(0xD415) == names.sid_symbol(0xD415, True) == "SID_FLT_FREQ_LO"
     assert names.sid_symbol(0xC000) is None and names.sid_label(0xC000, False) is None
     assert (
         names.sid_label(0xD407, False) == "freq_lo2" and names.sid_label(0xD407, True) == "freq_lo"
@@ -199,8 +201,7 @@ def test_voice_loop_names_registers_cells_and_its_index(prefix, tmp_path):
     assert info["state"]["vars"] == {f"g_freq_lo[{k}]": labels["freq"] + k for k in range(3)}
     assert "io_write(SID_FREQ_LO + vreg, " in body and "uint8_t voice = 2;" in body
     assert "vreg = C0[C0_AT2 + voice];" in body and "io_write(SID_AMP, g_amp);" in body
-    assert "io_write(SID_CTRL + SID_VOICE, 0);" in body
-    assert "io_write(SID_CTRL + 2 * SID_VOICE, 0);" in body
+    assert "io_write(SID_V2_CTRL, 0);" in body and "io_write(SID_V3_CTRL, 0);" in body
     assert info["names"]["atoms"]["g_amp"] == {
         "region": 0,
         "org": labels["vol"],
@@ -212,11 +213,12 @@ def test_voice_loop_names_registers_cells_and_its_index(prefix, tmp_path):
     assert info["names"]["registers"] == {
         "SID_FREQ_LO": 0xD400,
         "SID_CTRL": 0xD404,
+        "SID_V2_CTRL": 0xD40B,
+        "SID_V3_CTRL": 0xD412,
         "SID_AMP": 0xD418,
-        "SID_VOICE": 7,
     }
     assert "#define SID_CTRL 0xD404" in h and "#define g_amp R0[0x0]" in h
-    assert "#define SID_VOICE 0x0007" in h
+    assert "#define SID_V3_CTRL 0xD412" in h
     assert info["names"]["accesses"] == {"atom": 2, "cell": 2, "held": 2, "straddling": 0}
     assert info["names"]["variables"] == {"labelled": 3, "role": 1}
     assert translate(prefix, VOICES, 0x2345)[0] == c
@@ -248,7 +250,7 @@ def test_pointer_pair_is_one_atom(prefix, tmp_path):
     assert info["names"]["atoms"]["g_ptr"]["kind"] == "pair"
     assert info["names"]["atoms"]["g_ptr"]["org"] == 0xFB
     assert "g_ptr[0] | ((uint16_t)g_ptr[1] << 8)" in c and "#define g_ptr (R0 + 0x0)" in h
-    assert "io_write(SID_AD, " in c
+    assert "io_write(SID_V1_AD, " in c
 
 
 def test_an_access_straddling_atoms_stays_the_regions(prefix, tmp_path):
@@ -259,8 +261,8 @@ def test_an_access_straddling_atoms_stays_the_regions(prefix, tmp_path):
     lo = labels["lo"]
     assert info["names"]["straddling"] == {0: [[lo, lo + 5]]}
     assert info["names"]["accesses"] == {"atom": 3, "straddling": 1}
-    assert "R0[v3] = 0;" in c and "io_write(SID_FREQ_LO, freq_lo1);" in c
-    assert "io_write(SID_FREQ_HI, g_freq_hi1[i]);" in c and "#define g_freq_hi1 (R0 + 0x3)" in h
+    assert "R0[i_2] = 0;" in c and "io_write(SID_V1_FREQ_LO, freq_lo1);" in c
+    assert "io_write(SID_V1_FREQ_HI, g_freq_hi1[i]);" in c and "#define g_freq_hi1 (R0 + 0x3)" in h
 
 
 def test_a_named_cell_is_found_by_address(prefix, tmp_path):

@@ -813,23 +813,22 @@ table load whose value is `vreg`, or of an instance's table of offsets, is `voic
 index of an atom some access indexes by `voice` or `vreg` takes that name too. Each node takes the label of the
 seeds nearest it backwards along the flow (one breadth-first search from all of them; among
 seeds as near, both bytes of one 16-bit register give its name, `freq`, else the first by
-register address and voice, then `voice`, then `vreg`). Each label names one atom or promoted
-cell, the nearest its seeds (then by register and address): `g_<label>` (`_tab` for a constant
-array), a pair no label reaches `g_ptr`; the others keep no name (an atom is its view into the
-region, a cell keeps its `S_`/`V` name), as a name told apart from another only by a number says no
-more than an offset. A variable `vN` holding a labelled value (its congruence class's member
-nearest a seed) is named by the label, else a loop counter (a block argument each edge passes
-a constant or itself plus a constant) is `i` and a 16-bit value used as an address `ptr`, in
-each function wayward-eagle's reduction prints after identical functions are folded, the
-nearest first, then the one most of those functions share; one whose name a variable has whose
-scope holds or is held by its own stays `vN`. A SID register's address prints as its first
-voice's register's name plus the voice's offset (`io_write(SID_CTRL + 2 * SID_VOICE, v)`,
-`io_write(SID_FREQ_LO + vreg, v)`), defined in the `.h` (`#define SID_CTRL 0xD404`,
-`#define SID_VOICE 0x0007`).
+register address and voice, then `voice`, then `vreg`). An atom or promoted cell with a label
+is `g_<label>` (`_tab` for a constant array), numbered from its second (`g_freq_lo_2`), the
+nearest its seeds first (then by register and address); a pair no label reaches is `g_ptr`;
+a cell with none keeps its `S_`/`V` name. A variable `vN` holding a labelled value (its
+congruence class's member nearest a seed) is named by the label, else a loop counter (a block
+argument each edge passes a constant or itself plus a constant) is `i` and a 16-bit value used
+as an address `ptr`, in each function wayward-eagle's reduction prints after identical
+functions are folded, the nearest first, then the one most of those functions share; one is
+numbered (`freq_lo_2`) where a variable whose scope holds or is held by its own has its name.
+A SID register's address prints by its name (`io_write(SID_V3_CTRL, v)`), a voice register a
+base an index is added to by the register's alone, the first voice's address
+(`io_write(SID_FREQ_LO + vreg, v)`); the `.h` defines them (`#define SID_V3_CTRL 0xD412`).
 
 `info["names"]` holds the atoms the `.c` names (`{name: {"region", "org", "offsets", "kind",
 "const", "label"}}`), per region the address sets that straddle atoms (`[[first, last]]`) and
-the SID registers named (`{name: address}`, `SID_VOICE` the stride), the accesses by how they print (`atom`,
+the SID registers named (`{name: address}`), the accesses by how they print (`atom`,
 `straddling`, `cell` a promoted cell's, `unbounded` one whose index may leave its region, else
 `Module.target`'s kind: `set`, `barray`, `held`, ...) and the variables by how they are named
 (`labelled`, `role`, `numbered` left `vN`, `carry`); `info["state"]["vars"]` names the promoted

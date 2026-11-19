@@ -46,20 +46,15 @@ def sid_register(a):
     return None
 
 
-#: The ``.h`` name of the voices' stride.
-SID_VOICE = "SID_VOICE"
-
-
-def sid_symbol(a):
-    """``(name, base, k)`` of SID register address ``a``: the ``.h`` name of its first voice's
-    register (``SID_CTRL``, ``SID_AMP``), that register's address and the voice's index
-    (0 to 2, 0 for the others), so ``a`` is ``base + k * VOICE``; else None."""
+def sid_symbol(a, indexed=False):
+    """The ``.h`` name of SID register address ``a``: with its voice (``SID_V3_CTRL``), or for
+    a base an index is added to (``indexed``) the register's name alone (``SID_CTRL``, the
+    first voice's address); the others' names (``SID_AMP``); else None."""
     reg = sid_register(a)
     if reg is None:
         return None
     name, voice = reg
-    k = 0 if voice is None else voice - 1
-    return f"SID_{name.upper()}", a - k * VOICE, k
+    return f"SID_{'' if voice is None or indexed else f'V{voice}_'}{name.upper()}"
 
 
 def sid_label(a, indexed):
@@ -336,9 +331,9 @@ def _index_seeds(flow, labels, recs, mod):
 
 def name_module(mod):
     """Split every region of ``mod`` into atoms (:func:`atomize`, ``mod.atoms``) and label the
-    module's data flow (``mod.labels``); the atom or promoted cell nearest the seeds of each
-    label is named by it (``g_`` and the label, ``_tab`` for a constant array; a pair with
-    none ``g_ptr``); an atom with no name stays its region's bytes, a cell its own name."""
+    module's data flow (``mod.labels``); each atom and promoted cell with a label is named by
+    it (``g_`` and the label, ``_tab`` for a constant array; a pair with none ``g_ptr``),
+    numbered from the second (``g_ctrl_2``), the nearest the seeds first."""
     recs, words, kinds = _region_accesses(mod)
     per = defaultdict(list)
     for _, _, k, (base, addrs, _) in recs:
@@ -375,14 +370,14 @@ def name_module(mod):
         d, lab = labels.get(key, (None, None))
         if lab:
             wanted.append(((False, d, rank(lab), -1), key, f"{GLOBAL}{lab}"))
-    owner = {}
+    count = defaultdict(int)
     for _, x, base in sorted(wanted, key=lambda w: w[0]):
-        owner.setdefault(base, x)
-    for base, x in owner.items():
+        count[base] += 1
+        name = base if count[base] == 1 else f"{base}_{count[base]}"
         if isinstance(x, Atom):
-            x.name = base
+            x.name = name
         else:
-            mod.cell_names[x] = base
+            mod.cell_names[x] = name
     if mod.var_at:
         mod.var_at = mod.var_cases()
 
@@ -429,8 +424,8 @@ def local_names(c, labels, nodes):
     """``{variable: (name, kind)}`` of C function ``c`` printed as ``nodes``: each ``vN`` holding
     a labelled value (its class's member nearest a seed) named by its label, else a loop
     counter ``i`` and an address's 16-bit base ``ptr``: the nearest first, then the one in
-    most functions of ``nodes``, each name given only where no variable whose scope holds or
-    is held by its scope has it (the others stay ``vN``)."""
+    most functions of ``nodes``, numbered from the second (``freq_lo_2``) a variable whose
+    scope holds or is held by its scope has."""
     f, best = c.f, {}
     members = defaultdict(set)
     for v, rep in c.classes.items():
@@ -453,11 +448,13 @@ def local_names(c, labels, nodes):
     out = {}
     for n in order:
         mine = [(ids, blocks, g) for (ids, blocks), g in zip(pieces, given) if n in blocks]
-        name = best[n][2]
-        if keyword.iskeyword(name) or name in C_WORDS:
-            continue
-        if any(_clash(name, n, ids, blocks, g) for ids, blocks, g in mine):
-            continue
+        k = 1
+        while True:
+            name = best[n][2] if k == 1 else f"{best[n][2]}_{k}"
+            free = not keyword.iskeyword(name) and name not in C_WORDS
+            if free and not any(_clash(name, n, ids, blocks, g) for ids, blocks, g in mine):
+                break
+            k += 1
         for _, _, g in mine:
             g.setdefault(name, []).append(n)
         out[n] = (name, "role" if best[n][0] == _LOOP else "labelled")
