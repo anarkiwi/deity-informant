@@ -224,7 +224,7 @@ def test_voice_loop_names_registers_cells_and_its_index(prefix, tmp_path):
         "SID_V1_CTRL": 0xD404,
         "SID_AMP": 0xD418,
     }
-    assert "#define SID_V1_CTRL 0xD404" in h and "#define g_amp (R0[0x0])" in h
+    assert "#define SID_V1_CTRL 0xD404" in h and "#define g_amp R0[0x0]" in h
     assert info["names"]["accesses"] == {"atom": 2, "cell": 2, "held": 2, "straddling": 0}
     assert info["names"]["variables"] == {"labelled": 3, "role": 1}
     assert translate(prefix, VOICES, 0x2345)[0] == c

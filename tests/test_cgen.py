@@ -3161,7 +3161,7 @@ def test_reload_forwarded_past_a_guarded_store(prefix, tmp_path):
     c, h, info = translate(prefix, img, labels, loaded)
     [k] = [k for k, a in regions_of(h).items() if a == labels["cell"]]
     [name] = [n for n, x in info["names"]["atoms"].items() if x["org"] == labels["cell"]]
-    assert f"#define {name} ({k}[0x0])" in h
+    assert f"#define {name} {k}[0x0]" in h
     assert len(re.findall(rf"\b{name}\b", body_of(c, "entry"))) == 2
     [(t, key)] = info["traps"].items()
     assert key == ("deopt", labels["entry"] + 11) and f"trap({t})" in c
@@ -6604,7 +6604,7 @@ def test_unread_stores_are_dropped(prefix, tmp_path):
     img, labels, loaded = assemble(src)
     assert "R0" not in translate(prefix, img, labels, loaded)[0]
     c, h, _ = translate(prefix, img, labels, loaded, entries=("entry", "probe"))
-    assert "M_A00F0 = a;" in c and "#define M_A00F0 (R0[0x0])" in h
+    assert "M_A00F0 = a;" in c and "#define M_A00F0 R0[0x0]" in h
 
 
 def test_txs_to_a_saved_stack_pointer_unwinds(prefix, tmp_path):

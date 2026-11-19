@@ -4371,7 +4371,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
                     continue
                 off = x.org - self.mem.regions[k][0]
                 if x.kind == "scalar":
-                    out.append(f"#define {x.name} (R{k}[0x{off:X}])")
+                    out.append(f"#define {x.name} R{k}[0x{off:X}]")
                 elif x.const:
                     out.append(f"#define {x.name} ((const uint8_t *)R{k} + 0x{off:X})")
                 else:

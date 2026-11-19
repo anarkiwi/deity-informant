@@ -793,7 +793,7 @@ value reads as low and high byte (`lo | hi << 8`) one **pair**, a zero-page poin
 no store may write (`Module.stored`) is constant.
 
 Atoms are views of their region, not storage of their own: the `.h` defines each the `.c`
-names (`#define g_ctrl (R1 + 0x102)`, a scalar `#define M_127 (R1[0x127])`, a constant one
+names (`#define g_ctrl (R1 + 0x102)`, a scalar `#define M_127 R1[0x127]`, a constant one
 `((const uint8_t *)R1 + 0x134)`), so the region keeps the layout the 6502 code relies on for
 the accesses that are no atom's (pointers, `rd`/`wr`, straddling indices, init's copies). An
 access lying in one atom prints as the atom indexed by its byte offset from the atom's origin
