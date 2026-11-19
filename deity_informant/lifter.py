@@ -52,6 +52,17 @@ FN = ["r", 14, 1]
 
 # P (status) register NV-BDIZC as (reg-file index, bit); shared by VM/recorder/lifter.
 STATUS_BITS = ((8, 0), (9, 1), (10, 2), (11, 3), (13, 6), (14, 7))
+#: The flag each conditional branch tests and the value it branches on.
+BRANCHES = {
+    "BPL": (FN, 0),
+    "BMI": (FN, 1),
+    "BVC": (FV, 0),
+    "BVS": (FV, 1),
+    "BCC": (FC, 0),
+    "BCS": (FC, 1),
+    "BNE": (FZ, 0),
+    "BEQ": (FZ, 1),
+}
 
 
 class Emit:
@@ -934,17 +945,8 @@ def lift(mem, pc):
             for idx, sh in STATUS_BITS:
                 src = val if sh == 0 else e.op("INT_RIGHT", e.tmp(), val, C(sh))
                 e.op("INT_AND", ["r", idx, 1], src, C(1))
-    elif mn in ("BPL", "BMI", "BVC", "BVS", "BCC", "BCS", "BNE", "BEQ"):
-        flag, pol = {
-            "BPL": (FN, 0),
-            "BMI": (FN, 1),
-            "BVC": (FV, 0),
-            "BVS": (FV, 1),
-            "BCC": (FC, 0),
-            "BCS": (FC, 1),
-            "BNE": (FZ, 0),
-            "BEQ": (FZ, 1),
-        }[mn]
+    elif mn in BRANCHES:
+        flag, pol = BRANCHES[mn]
         tgt = (pc + 2 + (imm - 256 if imm & 0x80 else imm)) & 0xFFFF
         ctrl = ("br", flag, pol, tgt, (pc + 2) & 0xFFFF)
     elif mn == "JMP":

@@ -261,6 +261,9 @@ class Printer(Generator):
     def __init__(self, recs, line=None):
         super().__init__()
         self.recs, self.line, self.order, self.active, self.open = recs, line, [], None, []
+        #: Each function definition's ``(start, end)`` in :attr:`order`, and each call
+        #: ``(caller, position in order, callee)``.
+        self.spans, self.calls, self.fn = {}, [], None
 
     def directive(self, rec):
         """The ``#line`` directive of record ``rec`` on its own line, or nothing."""
@@ -312,6 +315,52 @@ class Printer(Generator):
         self.enter(rec, inline=False)
         return super()._generate_stmt(n, add_indent)
 
+    def visit_FuncDef(self, n):  # pylint: disable=invalid-name
+        """A function definition, its span of :attr:`order` recorded."""
+        self.fn, start = n.decl.name, len(self.order)
+        text = super().visit_FuncDef(n)
+        self.spans[n.decl.name], self.fn = (start, len(self.order)), None
+        return text
+
+    def visit_FuncCall(self, n):  # pylint: disable=invalid-name
+        """A call, recorded where :attr:`order` stands as it is printed."""
+        if self.fn is not None and isinstance(n.name, c_ast.ID):
+            self.calls.append((self.fn, len(self.order), n.name.name))
+        return super().visit_FuncCall(n)
+
+    def flow(self, pieces):
+        """:attr:`order` with the records of each function of ``pieces`` (cut from another)
+        moved to where its first call is printed, as the function cut from runs them."""
+        at = {}
+        for fn, pos, callee in self.calls:
+            if callee in pieces and callee in self.spans:
+                at.setdefault((fn, pos), []).append(callee)
+        placed, out = set(), []
+
+        def run(fn):
+            lo, hi = self.spans[fn]
+            for i in range(lo, hi + 1):
+                for c in at.get((fn, i), ()):
+                    if c not in placed:
+                        placed.add(c)
+                        run(c)
+                out.extend(self.order[i : i + 1] if i < hi else ())
+
+        starts = {lo: fn for fn, (lo, hi) in self.spans.items() if hi > lo}
+        i = 0
+        while i < len(self.order):
+            fn = starts.get(i)
+            if fn is None:
+                out.append(self.order[i])
+                i += 1
+                continue
+            if fn not in pieces:
+                run(fn)
+            i = self.spans[fn][1]
+        for fn in sorted(pieces & set(starts.values()) - placed, key=self.spans.get):
+            run(fn)
+        return out
+
     def visit_Compound(self, n):  # pylint: disable=invalid-name
         """``{ ... }``, the closing brace printing the block's own record."""
         s = self._make_indent() + "{\n"
@@ -330,10 +379,11 @@ class Printer(Generator):
         )
 
 
-def render(parts, recs, line=None):
+def render(parts, recs, line=None, pieces=None):
     """``(text, order)``: the formatted C of ``parts`` (``c_ast`` declarations and
     definitions, or ``(record, text)`` verbatim C printing ``record``) and the marker records
-    in text order; ``line``: with ``#line`` directives."""
+    in text order, or with ``pieces`` in the order the functions cut run them
+    (:meth:`Printer.flow`); ``line``: with ``#line`` directives."""
     gen, out = Printer(recs, line), []
     for p in parts:
         if isinstance(p, tuple):
@@ -341,4 +391,5 @@ def render(parts, recs, line=None):
             out.append(gen.enter(p[0]).lstrip("\n") + p[1])
         else:
             out.append(gen.visit(p).lstrip("\n") + ("" if isinstance(p, c_ast.FuncDef) else ";"))
-    return format_c("\n".join(out) + "\n", STYLE if line is None else LINES_STYLE), gen.order
+    order = gen.order if pieces is None else gen.flow(frozenset(pieces))
+    return format_c("\n".join(out) + "\n", STYLE if line is None else LINES_STYLE), order

@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from vagrant_moses.c64 import poweron_ram
+from wayward_eagle.c import text
 
 import wholeprog_progs as W
 from deity_informant import NATIVE, cgen, postinit, trace, wholeprog
@@ -6133,6 +6134,68 @@ def test_instruction_edges():
     assert structure_edges(img, a, a + 2) == [a, a + 2]
 
 
+RETURNING = """"builtin.module"() ({
+  "func.func"() <{function_type = (i8, i8) -> (i8, i8), sym_name = "f", sym_visibility = "private"}> ({
+  ^bb0(%a: i8, %s: i8):
+    %k = "arith.constant"() <{value = 2 : i8}> : () -> i8
+    %z = "arith.constant"() <{value = 0 : i8}> : () -> i8
+    %c = "arith.cmpi"(%a, %z) <{predicate = 0 : i64}> : (i8, i8) -> i1
+    "cf.cond_br"(%c)[^bb1, ^bb2] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+  ^bb1:
+    %t = "arith.addi"(%s, %k) <{overflowFlags = #arith.overflow<none>}> : (i8, i8) -> i8
+    "func.return"(%a, %t) : (i8, i8) -> ()
+  ^bb2:
+    "func.return"(%z, %s) : (i8, i8) -> ()
+  }) : () -> ()
+}) : () -> ()
+"""
+
+
+def test_a_block_computing_only_dropped_results_returns_in_place():
+    """A block whose operations but its return are dropped (a result no caller reads) only
+    returns: each edge into it is a return of its own, and the function owns the block."""
+    f = printer.Func(mlir.parse(RETURNING).regions[0][0].ops[0], None)
+    added, plain = f.blocks[1], f.blocks[2]
+    assert f.returns_only(plain) and not f.returns_only(added)
+    f.dropped.add(id(added.ops[0]))
+    f.live_res = [0]
+    g = f.graph(structure.new_ids())
+    assert sorted(it[0][0] for it in g.items.values()) == ["ops", "return", "return"]
+    assert printer.CFunc(f, g).owned == {"bb0", "bb1", "bb2"}
+
+
+def test_a_select_of_a_literal_or_zero_is_a_product():
+    """``c ? k : 0`` of a truth value ``c`` is ``c * k`` and ``c ? 0 : k`` is ``!c * k``,
+    deciding nothing; one of another value or arm is a conditional."""
+    v, k, zero = printer.var("v", 8), printer.lit(0x60, 8), printer.lit(0, 8)
+    c = printer.compare(">", v, printer.lit(3, 8))
+    assert text(printer.scaled(c, k, zero).node) == "(v > 3) * 0x60"
+    assert text(printer.scaled(c, zero, k).node) == "(v <= 3) * 0x60"
+    assert text(printer.scaled(c, printer.lit(1, 8), zero).node) == "v > 3"
+    assert printer.scaled(v, k, zero) is None and printer.scaled(c, k, v) is None
+
+
+def test_decided_branch_edges():
+    """A branch on the flag the edge into it decides goes one way: the edge to where it goes
+    is that branch's, and a branch on another flag decides nothing."""
+    src = "a: BCC b\nc: BCS d\nn: BNE d\nb: NOP\nd: RTS\n"
+    img, labels = W.assemble(src, 0x1000)
+    a, c, n, b, d = (labels[k] for k in "acnbd")
+    assert structure_edges(img, a, d) == [c, d]
+    assert regions.decided(img, a, b) == {8: 0} and regions.decided(img, a, c) == {8: 1}
+    assert regions.decided(img, b, d) == {}
+    assert structure_edges(img, c, b) == [c, n]
+
+
+def test_edges_land_before_folded_instructions():
+    """A target block whose first instructions translate to nothing is entered where the
+    transfer lands, the instructions up to its first translated one falling through."""
+    img, labels = W.assemble("a: BCC b\nc: BCS d\nb: NOP\nd: CLC\ne: NOP\nRTS\n", 0x1000)
+    a, c, d, e = (labels[k] for k in "acde")
+    assert structure_edges(img, a, e) == [c, d]
+    assert structure_edges(img, c, e + 1) == [c, d]
+
+
 def structure_edges(img, p, q):
     return regions.edge(img, p, q)
 
@@ -6399,7 +6462,7 @@ def test_status_saved_through_the_stack_is_its_flags(prefix, tmp_path, byte):
 
 
 @pytest.mark.parametrize(
-    "mask,bits", [(0x08, ["& 8"]), (0xC3, ["& 0x80", "2 : 0"])], ids=["d", "czn"]
+    "mask,bits", [(0x08, ["& 8"]), (0xC3, ["& 0x80", "== 0) * 2"])], ids=["d", "czn"]
 )
 def test_status_read_as_a_byte_packs_the_flags_read(prefix, tmp_path, mask, bits):
     """A status pulled as data (``PHP; PLA; AND #mask``) packs only the flags the mask keeps:

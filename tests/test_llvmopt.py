@@ -48,6 +48,18 @@ def number(table, where):
     return table.locs.index(where) + 1
 
 
+def test_fused_location_chain_is_its_first_part():
+    """A location LLVM fused from several reads as its first part's chain, the call sites an
+    inlined operation came through included."""
+    inlined = 'callsite("0x19a1"("15:54") at "0x142b"("5:30"))'
+    other = 'callsite("0x199e"("15:51") at "0x142b"("5:30"))'
+    chain = ((0x19A1, "15:54"), (0x142B, "5:30"))
+    assert mlir._chain(f"fused[{inlined}, {other}]") == chain
+    assert mlir._chain(f"fused[{inlined}]") == chain
+    assert mlir._chain('fused["0x1000"("1:1"), "0x1002"("1:2")]') == ((0x1000, "1:1"),)
+    assert mlir._chain("fused[]") == ()
+
+
 def test_lowering_makes_memory_calls_and_numbers_locations(lowered):
     text, table = lowered
     assert "memref" not in text.replace("memref.global", "")

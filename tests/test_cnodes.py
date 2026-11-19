@@ -32,6 +32,26 @@ def test_records_in_text_order_and_directives_around_wrapped_ones():
     assert lines.rstrip().endswith('#line 4 "frame"\n}')
 
 
+def _stmt(name, rec):
+    return cn.marked(cn.call(name, cn.const(0)), rec)
+
+
+def test_pieces_records_run_where_they_are_called():
+    """With the pieces a function was cut into, the records of each are read where its first
+    call is printed, as the function cut runs them; an uncalled piece's come last."""
+    recs = [("pc",)] * 6
+    piece = cn.define(cn.function("f_x1", "void", []), [_stmt("io", 0)])
+    spare = cn.define(cn.function("f_x2", "void", []), [_stmt("io", 5)])
+    top = cn.define(
+        cn.function("f", "void", []),
+        [_stmt("io", 1), cn.call("f_x1"), _stmt("io", 2), cn.call("f_x1"), _stmt("io", 3)],
+    )
+    tail = cn.define(cn.function("g", "void", []), [_stmt("io", 4)])
+    parts = [piece, spare, top, tail]
+    assert cn.render(parts, recs)[1] == [0, 5, 1, 2, 3, 4]
+    assert cn.render(parts, recs, pieces={"f_x1", "f_x2"})[1] == [1, 0, 2, 3, 4, 5]
+
+
 def test_a_record_on_a_marked_node_wraps_it():
     """Marking a node already marked keeps both: the outer first, then the inner."""
     inner = cn.marked(cn.ident("v"), 1)

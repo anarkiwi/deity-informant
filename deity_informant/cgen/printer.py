@@ -215,6 +215,15 @@ def truth(e):
     return e
 
 
+def scaled(c, a, b):
+    """``c ? a : b`` with one arm zero and the other a literal ``k`` as a product, ``c * k``
+    (``!c * k``), which decides nothing; else None."""
+    for t, k, z in ((c, a, b), (negated(c), b, a)):
+        if is_lit(z, 0) and is_lit(k) and 0 <= t.lo <= t.hi <= 1:
+            return t if k.lo == 1 else binary("*", t, k, 16)
+    return None
+
+
 def ternary(c, a, b, **kw):
     """``c ? a : b``."""
     rng = {"lo": min(a.lo, b.lo), "hi": max(a.hi, b.hi), "uns": a.uns or b.uns}
@@ -1871,8 +1880,9 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         return d is not None and d.name in REMAT
 
     def returns_only(self, b):
-        """Whether block ``b`` holds nothing but a ``func.return``."""
-        return len(b.ops) == 1 and b.ops[0].name == "func.return"
+        """Whether block ``b`` does nothing but a ``func.return``: its other operations are
+        dropped."""
+        return b.ops[-1].name == "func.return" and all(id(o) in self.dropped for o in b.ops[:-1])
 
     def ret_vals(self, ret, sub):
         """The live values ``[(value, edge)]`` returned by ``ret``, its block's arguments
@@ -2172,7 +2182,14 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
     def __init__(self, func, graph):
         self.f, self.g, self.mod = func, graph, func.mod
         self.name = None
+        #: The blocks the graph holds, and those only returning that it returns in place of.
         self.owned = {it[1].name for its in graph.items.values() for it in its if it[0] == "ops"}
+        self.owned |= {
+            s
+            for b in list(self.owned)
+            for s in func.block_of[b].ops[-1].succs
+            if func.returns_only(func.block_of[s])
+        }
         self.names, self.nvar, self.inline, self.memf, self.types = {}, 0, set(), {}, {}
         #: Each SSA value's congruence class representative (:class:`ssa.Coalescer`).
         self.classes = {}
@@ -2930,8 +2947,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         if name == "arith.trunci":
             return clean(args[0], w)
         if name == "arith.select":
-            c, a, b = args
-            return ternary(truth(c), a, b)
+            return scaled(*args) or ternary(truth(args[0]), args[1], args[2])
         raise NotImplementedError(name)
 
     def kfam(self, o):
@@ -3862,6 +3878,8 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.sites, self.made, self.lifted, self.prov = {}, Counter(), {}, {}
         self.copy_pcs, self.sets, self.kpos, self.tables = {}, {}, None, {}
         self.shared = set()
+        #: The functions the cognitive-complexity reduction cut from the printed ones.
+        self.pieces = set()
         #: The bytes init stores (``postinit.Init.mask``), and those no store may write
         #: (:meth:`unwritten`, None until found or when a store of unknown address may).
         self.init_stored, self.free = np.zeros(0x10000, dtype=bool), None
@@ -4886,6 +4904,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         nodes = [x for xs in kept for x in xs]
         self.made["functions"], self.made["folded"] = len(kept), len(post) - len(kept)
         self.made["gotos"] = sum(isinstance(n, c_ast.Goto) for x in nodes for n in cn.walk(x))
+        self.pieces = {x for c in post for x in c.prov.get("pieces", ())}
         self.provenance(post, names)
         return out + heads + nodes
 
