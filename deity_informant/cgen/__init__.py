@@ -1161,7 +1161,7 @@ def render(  # pylint: disable=too-many-locals,too-many-arguments,too-many-posit
         )
         for x in fns
     ]
-    c_text, order = cn.render(units.single(c), mod.marks.recs)
+    c_text, order = cn.render(units.single(c), mod.marks.recs, pieces=mod.pieces)
     store = _storage(mem, used, helpers, regions) + mod.state_h() + sets + unheld
     objs = [_obj_h(j, mod.ptr_objects[j], mod.ptr_parts.get(j)) for j in sorted(mod.objs_used)]
     h_store = objs + store

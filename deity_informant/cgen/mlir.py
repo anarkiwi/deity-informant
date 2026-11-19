@@ -203,6 +203,13 @@ def _chain(loc):
             if depth == 1 and loc.startswith(" at ", i):
                 return _chain(loc[9:i]) + _chain(loc[i + 4 : -1])
         return ()
+    if loc.startswith("fused"):
+        depth, start = 0, loc.find("[") + 1
+        for i in range(start, len(loc)):
+            depth += (loc[i] in "([") - (loc[i] in ")]")
+            if depth < 0 or not depth and loc[i] == ",":
+                return _chain(loc[start:i])
+        return ()
     m = _NAMED.search(loc)
     return ((int(m.group(1), 16), m.group(2)),) if m else ()
 

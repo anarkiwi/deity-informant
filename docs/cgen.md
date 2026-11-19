@@ -118,6 +118,7 @@ caller's return address. `tools/cgenplay.c` is a host harness.
    in its def-use graph, users first. `mlir-opt --canonicalize --cse` verifies and tidies the
    result. The printer reads the new forms at their meaning: signed compares on `intN_t`
    casts, `min`/`max` as a compare and select of operands it names when not cheap, a
+   select of a literal and zero as the product of its condition and the literal, a
    truncation below a byte as a mask.
 4. **Liveness** (`printer.Module.prune`). An optimistic liveness over the whole module: a
    store some load may read back (outside the code span, a byte no load of any entry may read
@@ -343,7 +344,8 @@ reads; only the `.h` differs. The host calls init once, first, on the image.
 
 Each function's blocks become a graph whose nodes hold statements. An edge carrying block
 arguments gets a node of copies (the arguments are C variables assigned on the edge, a
-parallel assignment); an edge to a block that only returns is a `return`.
+parallel assignment); an edge to a block that only returns (its other operations dropped,
+as a result no caller reads) is a `return`, and the function owns that block.
 
 A shared tail is a function only where the machine code makes it one: a `JSR` target (a
 computed `JSR`'s arm included), or code that several functions reach at the entry height by
@@ -440,7 +442,7 @@ steps in order, each deciding on the graph the earlier ones leave:
 | Key | Value |
 |---|---|
 | `functions` | `{C name: {"entry", "index", "calls", "copies", "pcs", "pieces", "file"}}`: the entry pc, whether it takes an instance index, `[site, target]` of each call and tail call of it (a tail call printed in place names the instruction taking the edge), the entries of the copies folded into it, the instructions (every copy's) its operations were emitted for, the C functions the cognitive-complexity reduction split it into (sections, tails, extracted blocks), and the unit defining it with `split` (else `None`) |
-| `gotos` | `[from, to]` per printed `goto`: the instruction taking the edge (a branch, or the `JMP` the lift threaded into it; each branch of a short-circuit condition with an edge to the target) and its target |
+| `gotos` | `[from, to]` per printed `goto`: the instruction taking the edge (a branch, or the `JMP` the lift threaded into it, or a branch the flag the edge into it decides; each branch of a short-circuit condition with an edge to the target) and where it lands (before instructions the target block translates to nothing) |
 | `reduced` | `[from, to]` per `goto` the structuring placed and the cognitive-complexity reduction (wayward-eagle) expressed without one: a call of a tail, or a return |
 | `loops` | the head of each printed loop |
 | `conditions` | the branch addresses composed into each short-circuit condition |
@@ -893,13 +895,14 @@ values inside `ok` on every run (`proven`), so neither has a trap. `opcode`, `co
 
 Every printed statement and check carries a marker record of what it comes from
 (`marks.py`) on its `c_ast` node (`cnodes.Prov`); what survives printing (folded functions,
-unread statements dropped) is read back by the printer in text order, so
-`info["emission"]` counts what the `.c` holds (`cost.py`):
+unread statements dropped) is read back by the printer in text order, the functions the
+cognitive-complexity reduction cut from one (`pieces`) read where each is first called, as
+the function cut runs them, so `info["emission"]` counts what the `.c` holds (`cost.py`):
 
 | key | value |
 |---|---|
 | `copies` | `{pc: n}`: the times each original instruction is printed, `n` at least 1 (below) |
-| `checks` | one per printed check, in text order: `kind`, `at` (the access or guard's instruction), `defs` (the ids of the pointer definitions it checks) and `trap` (the `k` its failure takes, else `None`) |
+| `checks` | one per printed check, in that order: `kind`, `at` (the access or guard's instruction), `defs` (the ids of the pointer definitions it checks) and `trap` (the `k` its failure takes, else `None`) |
 | `traps` | `{k: n}`: the printed `trap(k)` calls |
 | `defs` | the pointer definitions by id: `[loc, at, byte, by, lift]` ([wholeprog](wholeprog.md#static-proofs), *Pointer definitions*; `lift` 0 the entries', 1 init's) |
 | `unproven` | `{entry: [id]}`: the definitions of the checks the entry's code reaches |
@@ -908,7 +911,8 @@ An operation is printed once per visit of the blocks printing it: a block the st
 prints in two places (a shared tail, a tail call printed in place) prints its operations
 twice, a value printed at several uses of one visit once. An instruction's operations that one
 lift node holds and the inliner places through one chain of call sites (its MLIR location,
-`loc("pc"("function:block"))` and the `callsite` locations inlining adds) are one emission;
+`loc("pc"("function:block"))` and the `callsite` locations inlining adds; a location LLVM fused
+is its first part's) are one emission;
 `copies[pc]` sums, over its lift nodes and call chains, the most visits printing one of them.
 An instance function's operation is printed for each copy's instruction.
 
@@ -920,7 +924,7 @@ walk anchor, else those reaching the guarded instruction (of its pair where it n
 `index` guard's of its register; any other check's those its access's instruction reads.
 
 `cost.sites(emission)` lists the cost sites: `E1` for each printed copy of an instruction past
-its first, `E2` for each check (in text order) all of whose definitions an earlier check
+its first, `E2` for each check (in that order) all of whose definitions an earlier check
 already checks (`cost.redundant`: their indices), and for each printed `trap(k)` past the checks leading to it. A definition
 needs one check (one per definition is the least the code can need, the minimum
 `unproven` counts), covering every access through it, `p + y` with `y` a byte.

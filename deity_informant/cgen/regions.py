@@ -9,9 +9,11 @@ every byte of the loaded image), outside volatile ranges.
 
 from __future__ import annotations
 
+import functools
+
 import numpy as np
 
-from ..lifter import MODE_LEN, OPS
+from ..lifter import BRANCHES, MODE_LEN, OPS, lift
 from .. import masks
 
 #: Widest address interval treated as bounded; wider accesses are of unknown address.
@@ -40,21 +42,21 @@ def successors(image, pc):
 
 
 def edge(image, p, q):
-    """``[from, to]``: the instruction edge from the instruction at ``p`` toward ``q`` (an
-    instruction where the target block's code starts): past the instructions with one
-    successor (``JMP``s the lift threads included), a branch's edge to ``q``, the last
-    ``JMP`` of a chain from one of its successors to ``q``, else its successor at or
+    """``[from, to]``: the instruction edge from the instruction at ``p`` toward ``q`` (the
+    first instruction the target block translates): past the instructions with one successor
+    (``JMP``s the lift threads included), the edge of the transfer landing nearest before
+    ``q`` on a chain from one of its successors (``JMP``s, and branches the flag the edge into
+    them decides) whose instructions up to ``q`` only fall through, else its successor at or
     before ``q``."""
     seen = set()
     while p not in seen:
         seen.add(p)
         ss = successors(image, p)
         if len(ss) > 1:
-            if q in ss:
-                return [p, q]
-            hit = [s for s in ss if through(image, s) == q]
+            chains = [[p] + _chain(image, s, decided(image, p, s)) for s in ss]
+            hit = [(n, c) for c in chains if (n := _falls(image, c[-1], q)) is not None]
             if hit:
-                return [_chain(image, hit[0])[-2], q]
+                return min(hit, key=lambda h: (h[0], len(h[1])))[1][-2:]
             below = [s for s in ss if s <= q]
             return [p, max(below) if below else ss[0]]
         if ss[0] == q:
@@ -63,13 +65,50 @@ def edge(image, p, q):
     return [p, q]
 
 
-def _chain(image, pc):
-    """``[pc, ...]``: the chain of ``JMP abs`` from ``pc`` and where it ends (in a cycle, the
-    ``JMP`` it reaches again)."""
-    out, seen = [pc], set()
-    while OPS.get(image[pc]) == ("JMP", "abs") and pc not in seen:
+@functools.cache
+def _straight(op):
+    """Whether opcode ``op`` always continues with the next instruction."""
+    if op not in OPS:
+        return False
+    return lift(bytes([op]) + bytes(0xFFFF), 0)["ctrl"][0] == "next"
+
+
+def _falls(image, pc, q):
+    """The number of instructions from ``pc`` that fall through, one into the next, to
+    ``q``, or None."""
+    n = 0
+    while pc != q:
+        if pc > q or not _straight(image[pc]):
+            return None
+        pc, n = successors(image, pc)[0], n + 1
+    return n
+
+
+def decided(image, p, s):
+    """``{flag: value}`` the edge from the instruction at ``p`` to ``s`` decides: a
+    conditional branch's flag, set as it branches when ``s`` is its target, else clear."""
+    op = OPS.get(image[p], ("", ""))
+    nxt, *tgt = successors(image, p)
+    if op[0] not in BRANCHES or tgt == [nxt]:
+        return {}
+    flag, pol = BRANCHES[op[0]]
+    return {flag[1]: pol if [s] == tgt else 1 - pol}
+
+
+def _chain(image, pc, known=None):
+    """``[pc, ...]``: the chain of ``JMP abs`` from ``pc``, and of branches on a flag
+    ``known`` gives, and where it ends (in a cycle, the transfer it reaches again)."""
+    out, seen, known = [pc], set(), known or {}
+    while pc not in seen:
         seen.add(pc)
-        pc = successors(image, pc)[0]
+        op = OPS.get(image[pc], ("", ""))
+        flag, pol = BRANCHES.get(op[0], ((), 0))
+        if op == ("JMP", "abs"):
+            pc = successors(image, pc)[0]
+        elif flag and flag[1] in known:
+            pc = successors(image, pc)[known[flag[1]] == pol]
+        else:
+            break
         out.append(pc)
     return out
 
