@@ -2508,14 +2508,20 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         return binary("+", self.reloc(c), self.ex(rest), 16)
 
     def io_addr(self, a):
-        """The address value ``a`` of an I/O access: a SID register by its ``.h`` name plus
-        what is added to it, else :meth:`addr`'s."""
+        """The address value ``a`` of an I/O access: a SID register by the ``.h`` name of its
+        first voice's plus its voice's offset (``SID_CTRL + 2 * SID_VOICE``) and what is added
+        to it, else :meth:`addr`'s."""
         c, rest = self.f.split(a)
         sym = nm.sid_symbol(c) if self.f.width(a) == 16 and self.mod.atoms is not None else None
         if sym is None:
             return self.addr(a)
-        self.mod.sids_used.add(c)
-        e = named(sym, c, c, True)
+        name, base, k = sym
+        self.mod.sids_used.add(base)
+        e = named(name, base, base, True)
+        if k:
+            self.mod.sids_used.add(nm.VOICE)
+            step = named(nm.SID_VOICE, nm.VOICE, nm.VOICE, True)
+            e = binary("+", e, step if k == 1 else binary("*", lit(k, 16), step, 16), 16)
         return e if rest is None else binary("+", e, self.ex(rest), 16)
 
     def target(self, o):
@@ -2736,7 +2742,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         the atom's name, indexed unless it is a scalar; None where no atom holds it."""
         got = self.based(o, k)
         atom = got and self.mod.atom_for(got[1])
-        if atom is None or atom.org > got[0]:
+        if atom is None or not atom.name or atom.org > got[0]:
             return None
         if self.mod.mem.moves(got[0]) != self.mod.mem.moves(atom.org):
             return None
@@ -4376,8 +4382,13 @@ class Module:  # pylint: disable=too-many-instance-attributes
                     out.append(f"#define {x.name} ((const uint8_t *)R{k} + 0x{off:X})")
                 else:
                     out.append(f"#define {x.name} (R{k} + 0x{off:X})")
-        out += [f"#define {nm.sid_symbol(a)} 0x{a:04X}" for a in sorted(self.sids_used)]
+        out += [f"#define {n} 0x{a:04X}" for n, a in self.registers().items()]
         return out
+
+    def registers(self):
+        """``{name: value}`` of the SID registers the ``.c`` names and the voices' stride."""
+        out = {nm.sid_symbol(a)[0]: a for a in sorted(self.sids_used) if a != nm.VOICE}
+        return out | ({nm.SID_VOICE: nm.VOICE} if nm.VOICE in self.sids_used else {})
 
     def names_info(self):
         """``info["names"]``: the atoms (``{name: {region, org, offsets, kind, const,
@@ -4396,7 +4407,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
             for x in xs
             if (k, x.org) in self.atoms_used
         }
-        regs = {nm.sid_symbol(a): a for a in sorted(self.sids_used)}
+        regs = self.registers()
         return {
             "atoms": atoms,
             "straddling": self.straddling,

@@ -21,7 +21,7 @@ OTHER_REGS = ("flt_freq_lo", "flt_freq_hi", "flt_ctrl", "amp", "ad1", "ad2", "no
 #: A 16-bit register's name, for a value reaching both its bytes.
 PAIRS = {"freq": "freq_lo", "pw": "pw_lo", "flt_freq": "flt_freq_lo"}
 #: The label of a value added to a SID voice register's address, and of an index choosing it.
-VOICE_REG, VOICE_INDEX = "voice_reg", "voice"
+VOICE_REG, VOICE_INDEX = "vreg", "voice"
 INDICES = (VOICE_INDEX, VOICE_REG)
 #: The prefix of an atom's name, which no value's name has.
 GLOBAL = "g_"
@@ -46,13 +46,20 @@ def sid_register(a):
     return None
 
 
+#: The ``.h`` name of the voices' stride.
+SID_VOICE = "SID_VOICE"
+
+
 def sid_symbol(a):
-    """The ``.h`` name of SID register address ``a`` (``SID_V2_CTRL``, ``SID_AMP``), or None."""
+    """``(name, base, k)`` of SID register address ``a``: the ``.h`` name of its first voice's
+    register (``SID_CTRL``, ``SID_AMP``), that register's address and the voice's index
+    (0 to 2, 0 for the others), so ``a`` is ``base + k * VOICE``; else None."""
     reg = sid_register(a)
     if reg is None:
         return None
     name, voice = reg
-    return f"SID_{'' if voice is None else f'V{voice}_'}{name.upper()}"
+    k = 0 if voice is None else voice - 1
+    return f"SID_{name.upper()}", a - k * VOICE, k
 
 
 def sid_label(a, indexed):
@@ -161,12 +168,6 @@ class Flow:
             near.update({p: (dist, ls) for p, ls in reach.items()})
             frontier = list(reach)
         return {n: (d, label_of(ls)) for n, (d, ls) in near.items()}
-
-
-def unique(wanted, taken):
-    """``{key: name}`` of ``wanted`` (``[(key, base)]``, in order of preference), each name
-    :func:`scoped` in ``taken`` (updated)."""
-    return {key: scoped(base, [taken]) for key, base in wanted}
 
 
 def _word_bases(f):
@@ -335,9 +336,9 @@ def _index_seeds(flow, labels, recs, mod):
 
 def name_module(mod):
     """Split every region of ``mod`` into atoms (:func:`atomize`, ``mod.atoms``) and label the
-    module's data flow (``mod.labels``); name each atom and promoted cell by its label (``g_``
-    and the label, ``_tab`` for a constant array), else an atom ``M_`` and its offset as
-    :meth:`Module.var_name` gives it."""
+    module's data flow (``mod.labels``); the atom or promoted cell nearest the seeds of each
+    label is named by it (``g_`` and the label, ``_tab`` for a constant array; a pair with
+    none ``g_ptr``); an atom with no name stays its region's bytes, a cell its own name."""
     recs, words, kinds = _region_accesses(mod)
     per = defaultdict(list)
     for _, _, k, (base, addrs, _) in recs:
@@ -365,20 +366,23 @@ def name_module(mod):
             d, x.label = labels.get(("m", x.region, x.org), (None, None))
             tab = "_tab" if x.const and x.kind == "array" else ""
             role = x.label or (POINTER if x.kind == "pair" else None)
-            base = f"{GLOBAL}{role}{tab}" if role else "M" + mod.var_name(x.org)[1:]
-            wanted.append(((d is None, d or 0, rank(x.label) if x.label else (), x.org), x, base))
+            if role:
+                key = (d is None, d or 0, rank(x.label) if x.label else (), x.org)
+                wanted.append((key, x, f"{GLOBAL}{role}{tab}"))
     cells = [("cell", a) for a in mod.state.scalars]
     cells += [("cell", s, d) for s, (_, fields) in enumerate(mod.state.structs) for d in fields]
     for key in cells:
         d, lab = labels.get(key, (None, None))
         if lab:
             wanted.append(((False, d, rank(lab), -1), key, f"{GLOBAL}{lab}"))
-    names = unique([(_key(x), b) for _, x, b in sorted(wanted, key=lambda w: w[0])], set())
-    for _, x, _ in wanted:
+    owner = {}
+    for _, x, base in sorted(wanted, key=lambda w: w[0]):
+        owner.setdefault(base, x)
+    for base, x in owner.items():
         if isinstance(x, Atom):
-            x.name = names[_key(x)]
+            x.name = base
         else:
-            mod.cell_names[x] = names[x]
+            mod.cell_names[x] = base
     if mod.var_at:
         mod.var_at = mod.var_cases()
 
@@ -424,8 +428,9 @@ def _identifiers(nodes):
 def local_names(c, labels, nodes):
     """``{variable: (name, kind)}`` of C function ``c`` printed as ``nodes``: each ``vN`` holding
     a labelled value (its class's member nearest a seed) named by its label, else a loop
-    counter ``i`` and an address's 16-bit base ``ptr``; unique in each function of ``nodes``,
-    the nearest first, then the one in most of them."""
+    counter ``i`` and an address's 16-bit base ``ptr``: the nearest first, then the one in
+    most functions of ``nodes``, each name given only where no variable whose scope holds or
+    is held by its scope has it (the others stay ``vN``)."""
     f, best = c.f, {}
     members = defaultdict(set)
     for v, rep in c.classes.items():
@@ -441,33 +446,57 @@ def local_names(c, labels, nodes):
             best[name] = (_LOOP, (), "i")
         elif any(_pointer(f, v, set()) for v in members[rep] | {rep}):
             best[name] = (_LOOP, (), POINTER)
-    scopes = [_identifiers([x]) for x in nodes if isinstance(x, c_ast.FuncDef)]
-    wide = {n: -sum(n in ids for ids in scopes) for n in best}
+    pieces = [_scopes(x) for x in nodes if isinstance(x, c_ast.FuncDef)]
+    wide = {n: -sum(n in blocks for _, blocks in pieces) for n in best}
     order = sorted(best, key=lambda n: (best[n][:2], wide[n], int(n[1:])))
-    taken = [ids - set(best) for ids in scopes]
+    given = [{} for _ in pieces]
     out = {}
     for n in order:
-        mine = [t for t, ids in zip(taken, scopes) if n in ids]
-        out[n] = (scoped(best[n][2], mine), "role" if best[n][0] == _LOOP else "labelled")
+        mine = [(ids, blocks, g) for (ids, blocks), g in zip(pieces, given) if n in blocks]
+        name = best[n][2]
+        if keyword.iskeyword(name) or name in C_WORDS:
+            continue
+        if any(_clash(name, n, ids, blocks, g) for ids, blocks, g in mine):
+            continue
+        for _, _, g in mine:
+            g.setdefault(name, []).append(n)
+        out[n] = (name, "role" if best[n][0] == _LOOP else "labelled")
     return out
 
 
-def scoped(base, scopes):
-    """The first of ``base``, ``base_2``, ... no C keyword and in none of the name sets
-    ``scopes``, added to each."""
-    k = 1
-    while True:
-        name = base if k == 1 else f"{base}_{k}"
-        if (
-            not any(name in t for t in scopes)
-            and not keyword.iskeyword(name)
-            and name not in C_WORDS
-        ):
-            break
-        k += 1
-    for t in scopes:
-        t.add(name)
-    return name
+def _scopes(fd):
+    """``(identifiers, {variable: block path})`` of function definition ``fd``: the names it
+    holds, and per local variable or parameter the chain of blocks enclosing its declaration
+    (its scope, the body's for a parameter)."""
+    blocks, stack = {}, [(fd, ())]
+    while stack:
+        n, path = stack.pop()
+        if isinstance(n, (c_ast.Compound, c_ast.For)):
+            path = (*path, id(n))
+        if isinstance(n, c_ast.Decl) and isinstance(n.name, str) and n is not fd.decl:
+            blocks.setdefault(n.name, path)
+        if isinstance(n, c_ast.ParamList):
+            for p in n.params:
+                if isinstance(p, c_ast.Decl):
+                    blocks[p.name] = (id(fd.body),)
+            continue
+        stack.extend((child, path) for _, child in n.children())
+    return _identifiers([fd]), blocks
+
+
+def _clash(name, n, ids, blocks, given):
+    """Whether variable ``n`` (its scope in ``blocks``) may not be named ``name`` in a
+    function holding identifiers ``ids`` and the names ``given`` so far: another identifier
+    there is ``name``, or a variable named so is declared where one scope holds the other."""
+    if name in ids and name not in given and name != n:
+        return True
+    mine = blocks[n]
+    for m in given.get(name, ()):
+        theirs = blocks[m]
+        short, long_ = sorted((mine, theirs), key=len)
+        if long_[: len(short)] == short:
+            return True
+    return False
 
 
 def _pointer(f, v, seen):

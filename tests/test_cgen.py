@@ -2715,9 +2715,8 @@ def test_table_inside_code_a_store_writes_is_data(prefix, tmp_path):
     """A table between instructions that a store writes is a region's bytes, its accesses
     the region's elements, with no code check and no held span."""
     src = INCODE.replace("        JMP next", "        INC tab,X\n        JMP next")
-    c, h, info = check(prefix, tmp_path, src, entry_calls(range(8), 2))
-    tab = re.search(r"\b(M_\w+)\[v1\] = v\d+ \+ 1;", c)
-    assert tab and f"{tab[1]}[v1 ^ 7]" in c and f"#define {tab[1]} (R0 + 0x0)" in h
+    c, _, info = check(prefix, tmp_path, src, entry_calls(range(8), 2))
+    assert re.search(r"R0\[v1\] = v\d+ \+ 1;", c) and "R0[v1 ^ 7]" in c
     assert "codechk" not in c and not re.search(r"\bC\d+\[", c) and not info["traps"]
 
 
@@ -3160,9 +3159,7 @@ def test_reload_forwarded_past_a_guarded_store(prefix, tmp_path):
     img, labels, loaded = assemble(GUARDFWD)
     c, h, info = translate(prefix, img, labels, loaded)
     [k] = [k for k, a in regions_of(h).items() if a == labels["cell"]]
-    [name] = [n for n, x in info["names"]["atoms"].items() if x["org"] == labels["cell"]]
-    assert f"#define {name} {k}[0x0]" in h
-    assert len(re.findall(rf"\b{name}\b", body_of(c, "entry"))) == 2
+    assert body_of(c, "entry").count(f"{k}[0]") == 2
     [(t, key)] = info["traps"].items()
     assert key == ("deopt", labels["entry"] + 11) and f"trap({t})" in c
     play(tmp_path, c, h, img, labels, entry_calls(range(4), 2))
@@ -6603,8 +6600,7 @@ def test_unread_stores_are_dropped(prefix, tmp_path):
     )
     img, labels, loaded = assemble(src)
     assert "R0" not in translate(prefix, img, labels, loaded)[0]
-    c, h, _ = translate(prefix, img, labels, loaded, entries=("entry", "probe"))
-    assert "M_A00F0 = a;" in c and "#define M_A00F0 R0[0x0]" in h
+    assert "R0[0] = a;" in translate(prefix, img, labels, loaded, entries=("entry", "probe"))[0]
 
 
 def test_txs_to_a_saved_stack_pointer_unwinds(prefix, tmp_path):

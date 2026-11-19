@@ -793,11 +793,12 @@ value reads as low and high byte (`lo | hi << 8`) one **pair**, a zero-page poin
 no store may write (`Module.stored`) is constant.
 
 Atoms are views of their region, not storage of their own: the `.h` defines each the `.c`
-names (`#define g_ctrl (R1 + 0x102)`, a scalar `#define M_127 R1[0x127]`, a constant one
+names (`#define g_ctrl (R1 + 0x102)`, a scalar `#define g_amp R1[0x127]`, a constant one
 `((const uint8_t *)R1 + 0x134)`), so the region keeps the layout the 6502 code relies on for
 the accesses that are no atom's (pointers, `rd`/`wr`, straddling indices, init's copies). An
 access lying in one atom prints as the atom indexed by its byte offset from the atom's origin
-(`g_ctrl[voice]`, a field `g_freq_hi[voice_reg]`), a scalar by its name.
+(`g_ctrl[voice]`, a field `g_freq_hi[vreg]`), a scalar by its name; an atom with no name
+stays its region's bytes (`R1[0xF9 + voice]`).
 
 Names come from the **data flow** of the module (`names.Flow`): through arithmetic (not into a
 truth value, `[0, 1]`, from wider operands: a flag or a bit tested is no copy of its byte),
@@ -805,25 +806,28 @@ block arguments, call arguments and results, and from a store of an atom or a pr
 to its loads; addresses are no data. Its seeds are the SID's registers, named as the llvm-mos
 SDK's `struct __sid` (16-bit fields as `_lo`/`_hi` bytes): a value an `io_write` writes to
 `$D401` is `freq_hi1`, to `$D401` plus an index `freq_hi`, an `io_read` result its register's;
-the index added to a voice register is `voice_reg`; the index of a table load whose value is
-`voice_reg`, or of an instance's table of offsets, is `voice`; and an index of an atom some
-access indexes by `voice` or `voice_reg` takes that name too. Each node takes the label of the
+the index added to a voice register is `vreg` (the voice's register offset); the index of a
+table load whose value is `vreg`, or of an instance's table of offsets, is `voice`; and an
+index of an atom some access indexes by `voice` or `vreg` takes that name too. Each node takes the label of the
 seeds nearest it backwards along the flow (one breadth-first search from all of them; among
 seeds as near, both bytes of one 16-bit register give its name, `freq`, else the first by
-register address and voice, then `voice`, then `voice_reg`). An atom or promoted cell with a
-label is `g_<label>` (`_tab` for a constant array), numbered from its second (`g_ctrl_2`), the
-nearest first; else a pair is `g_ptr`, another atom `M_` and its offset as a promoted scalar's
-(`M_127`, `M_I40`, `M_A00F0`, *State*), a cell keeps its `S_`/`V` name. A variable `vN`
-holding a labelled value (its congruence class's member nearest a seed) is named by the label;
-else a loop counter (a block argument each edge passes a constant or itself plus a constant)
-is `i` and a 16-bit value used as an address `ptr`; each unique within every function
-wayward-eagle's reduction prints (the nearest first, then the one most of them share), after
-identical functions are folded. A SID register's address prints by its name
-(`io_write(SID_V1_CTRL + voice_reg, v)`), defined in the `.h` (`#define SID_V1_CTRL 0xD404`).
+register address and voice, then `voice`, then `vreg`). Each label names one atom or promoted
+cell, the nearest its seeds (then by register and address): `g_<label>` (`_tab` for a constant
+array), a pair no label reaches `g_ptr`; the others keep no name (an atom stays its region's
+bytes, a cell its `S_`/`V` name), as a name told apart from another only by a number says no
+more than an offset. A variable `vN` holding a labelled value (its congruence class's member
+nearest a seed) is named by the label, else a loop counter (a block argument each edge passes
+a constant or itself plus a constant) is `i` and a 16-bit value used as an address `ptr`, in
+each function wayward-eagle's reduction prints after identical functions are folded, the
+nearest first, then the one most of those functions share; one whose name a variable has whose
+scope holds or is held by its own stays `vN`. A SID register's address prints as its first
+voice's register's name plus the voice's offset (`io_write(SID_CTRL + 2 * SID_VOICE, v)`,
+`io_write(SID_FREQ_LO + vreg, v)`), defined in the `.h` (`#define SID_CTRL 0xD404`,
+`#define SID_VOICE 0x0007`).
 
 `info["names"]` holds the atoms the `.c` names (`{name: {"region", "org", "offsets", "kind",
 "const", "label"}}`), per region the address sets that straddle atoms (`[[first, last]]`) and
-the SID registers named (`{name: address}`), the accesses by how they print (`atom`,
+the SID registers named (`{name: address}`, `SID_VOICE` the stride), the accesses by how they print (`atom`,
 `straddling`, `cell` a promoted cell's, `unbounded` one whose index may leave its region, else
 `Module.target`'s kind: `set`, `barray`, `held`, ...) and the variables by how they are named
 (`labelled`, `role`, `numbered` left `vN`, `carry`); `info["state"]["vars"]` names the promoted
