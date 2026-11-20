@@ -120,6 +120,20 @@ caller's return address. `tools/cgenplay.c` is a host harness.
    casts, `min`/`max` as a compare and select of operands it names when not cheap, a
    select of a literal and zero as the product of its condition and the literal, a
    truncation below a byte as a mask.
+   *Joins* (`joins.py`, after the round trip): a block argument that every edge into its
+   block gives as one expression of the block's other arguments, of values defined in blocks
+   dominating it, of constants and of memory cells is that expression computed at the block's
+   start, where that leaves a predecessor only branching (no operation of it computing what a
+   live argument needs, liveness as in step 4). A cell is read again where each edge's value
+   is a non-volatile load of it or the value last stored to it and nothing that may write it
+   follows on the path of single-predecessor blocks to the edge: a store whose address
+   interval holds a byte of it, a call of a lifted function whose stores (or its callees') may,
+   any other call but I/O, the checks and `trap`. `mlir-opt --canonicalize --cse` then drops
+   the argument and forwards the emptied block, so its edges reach one label. The new load
+   keeps its instruction where every edge's access is a load the lift states the same of
+   (address sets, data runs, hulls, the loaded register's interval), else it has none. An edge
+   jumping past a load of what it already holds, or a value carried where the cell it was
+   stored to holds it, so reads the memory where the paths meet.
 4. **Liveness** (`printer.Module.prune`). An optimistic liveness over the whole module: a
    store some load may read back (outside the code span, a byte no load of any entry may read
    by its address interval, nor init's copies, is never observed: such a store is dropped, as
