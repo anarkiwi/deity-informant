@@ -2926,6 +2926,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             node = c_ast.TernaryOp(test, el, self.arm(cn.call("oob_rd", a.node)))
             return E(node, 0, 255, False, True, a.refs)
         if how[0] == "set":
+            fused = self.fusion().get(id(o))
+            if fused is not None and len(how[1]) + len(how[2]) == 1:
+                return self.guarded_set(o, how, fused)
             choices = self.mod.choices(
                 how[1], how[2], a.node, self.indexed(o), self.base_tests(o, how)
             )
@@ -2967,10 +2970,47 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         f = self.f
         a = f.address(x)
         c, rest = f.split(a)
-        mapped = id(x) in f.aware and bool(self.mod.var_at)
-        before = cont.ops[: next(i for i, y in enumerate(cont.ops) if y is x)]
         plain = c == 0 and rest is not None and f.width(a) == 16 and rest not in f.kptrs
-        return plain and not mapped and not any(f.effect(y) for y in before)
+        return plain and self.unmapped(x, cont)
+
+    def unmapped(self, x, cont):
+        """Whether load ``x`` of block ``cont`` is not of a mapped cell, not the one value a
+        branch tests (a call that may trap is not printed in a condition) and follows nothing in its
+        block that has an effect."""
+        f = self.f
+        tested = any(
+            u.name in ("arith.cmpi", "cf.switch")
+            and id(u) not in f.dropped
+            and (u.name == "cf.switch" or f.uses.get(u.res[0]))
+            for u in f.users.get(x.res[0], ())
+        )
+        if tested and f.uses.get(x.res[0]) == 1:
+            return False
+        before = cont.ops[: next(i for i, y in enumerate(cont.ops) if y is x)]
+        mapped = id(x) in f.aware and bool(self.mod.var_at)
+        return not mapped and not any(f.effect(y) for y in before)
+
+    def plain_set(self, x, cont):
+        """Whether load ``x`` of block ``cont`` is of one region or span whose address set
+        the lift gives (:meth:`target`) and reads it by its address or a base and an index
+        (:meth:`guarded_set`)."""
+        how = self.target(x)
+        return how[0] == "set" and len(how[1]) + len(how[2]) == 1 and self.unmapped(x, cont)
+
+    def guarded_set(self, o, how, fused):
+        """The load ``o`` of the one region or span ``how`` names through the reader that
+        checks its address into object ``fused[0]`` first and leaves by trap ``fused[1]``:
+        ``<array>c<object>(address, k)``, or ``<array>x<object>(base, index, k)`` where the
+        address is a base plus a byte, as ``(zp),Y`` forms it."""
+        a = self.addr(self.f.address(o))
+        indexed = self.indexed(o)
+        j, trap = fused
+        self.mod.traps.add(trap)
+        ((_, el),) = self.mod.choices(how[1], how[2], a.node, indexed)
+        name = f"R{how[1][0]}" if how[1] else f"C{how[2][0]}"
+        args = [*indexed, cn.const(trap)] if indexed else [a.node, cn.const(trap)]
+        node = cn.call(self.mod.set_fn(name, j, bool(indexed)), *args)
+        return E(self.check("objchk", o, node, trap), 0, 255, False, True, a.refs)
 
     def fusion(self):
         """``{id(op): ...}`` of the object checks a load through the data block's reader
@@ -3071,7 +3111,12 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             (x for x in cont.ops if x.name == "memref.load" and f.address(x) == c.args[0]), None
         )
         how = None if x is None else self.target(x)[0]
-        if how not in ("block", "barray") and not (how == "region" and self.plain_region(x, cont)):
+        plain = (
+            (how == "region" and self.plain_region(x, cont))
+            or (how == "set" and self.plain_set(x, cont))
+            or (how == "checked" and id(x) in f.sure and self.unmapped(x, cont))
+        )
+        if how not in ("block", "barray") and not plain:
             return None
         if how == "barray":
             f.split_reads.add(id(x))
@@ -3144,6 +3189,13 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         if sure:
             self.mod.used.add("CGEN_IX")
             off = self.sub(o, at, j, True)
+            fused = self.fusion().get(id(o))
+            if fused is not None:
+                self.mod.traps.add(fused[1])
+                name = self.mod.set_fn(f"C{j}", fused[0], "g")
+                node = cn.call(name, off.node, clean(idx, 8).node, cn.const(fused[1]))
+                node = self.check("objchk", o, node, fused[1])
+                return E(node, 0, 255, False, True, join(off, idx)["refs"])
             node = cn.call("CGEN_IX", cn.ident(f"C{j}"), off.node, clean(idx, 8).node)
             return E(node, 0, 255, False, True, join(off, idx)["refs"])
         base = self.addr(at) if bi is not None else a if at == self.f.address(o) else self.ex(at)
@@ -4153,6 +4205,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.checked_fns = set()
         #: The ``(region, object)`` pairs of the region readers checking their address first.
         self.guarded, self.writes, self.words = set(), {}, set()
+        self.setfns = set()
         #: The block arrays read through their unchecked reader ``Bbr(base, index)``.
         self.block_readers = set()
         #: The held spans whose bounds-checked readers find promoted cells' variables.
@@ -4830,13 +4883,24 @@ class Module:  # pylint: disable=too-many-instance-attributes
         """The name of the reader of region ``k`` that checks its address into object ``j``
         first, leaving by the trap its caller passes."""
         self.guarded.add((k, j))
+        self.objs_used.add(self.ptr_slack.get(j, (j,))[0])
         return f"R{k}c{j}"
+
+    def set_fn(self, name, j, indexed):
+        """The name of the reader of array ``name`` that checks its address into object ``j``
+        first (``indexed`` True: given a base and a byte, not the address; ``"g"``: given the
+        offset into the span the address is and a byte, the span's ``CGEN_IX`` read)."""
+        mode = {True: "x", False: "c"}.get(indexed, indexed)
+        self.setfns.add((name, j, mode))
+        self.objs_used.add(self.ptr_slack.get(j, (j,))[0])
+        return f"{name}{mode}{j}"
 
     def word_fn(self, k, j):
         """The name of the reader of a 16-bit table split into low and high bytes in region
         ``k``, each read checked into object ``j`` (:meth:`guarded_fn`)."""
         self.guarded.add((k, j))
         self.words.add((k, j))
+        self.objs_used.add(self.ptr_slack.get(j, (j,))[0])
         return f"W{k}c{j}"
 
     def block_c(self):  # pylint: disable=too-many-locals
@@ -4996,6 +5060,30 @@ class Module:  # pylint: disable=too-many-instance-attributes
             out.append(
                 cn.define(head, [cn.when(test, [cn.call("trap", cn.ident("k"))]), cn.ret(elem)])
             )
+        for name, j, mode in sorted(self.setfns):
+            org, k = cn.ident(f"{name}_ORG"), cn.ident("k")
+            at = a = cn.ident("a")
+            if mode == "c":
+                params = [("a", "uint16_t"), ("k", kt)]
+                decls = []
+                el = cn.index(name, cn.cast("uint16_t", cn.binop("-", a, org)))
+            else:
+                p = cn.ident("p")
+                params = [("p", "uint16_t"), ("y", "uint8_t"), ("k", kt)]
+                if mode == "x":
+                    decls = [cn.decl("a", "uint16_t", cn.binop("+", p, cn.ident("y")))]
+                    el = cn.call("CGEN_IX", cn.ident(name), cn.binop("-", p, org), cn.ident("y"))
+                else:
+                    decls = [
+                        cn.decl(
+                            "a", "uint16_t", cn.binop("+", cn.binop("+", p, org), cn.ident("y"))
+                        )
+                    ]
+                    el = cn.call("CGEN_IX", cn.ident(name), p, cn.ident("y"))
+            head = cn.function(f"{name}{mode}{j}", "uint8_t", params, ("static",))
+            test = self.outside(j, E(at, 0, 0xFFFF))
+            body = [*decls, cn.when(test, [cn.call("trap", k)]), cn.ret(el)]
+            out.append(cn.define(head, body))
         for k, j in sorted(self.words):
             params = [("lo", "uint16_t"), ("hi", "uint16_t"), ("i", "uint8_t")]
             head = cn.function(

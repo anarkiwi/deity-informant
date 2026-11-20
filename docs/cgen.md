@@ -183,7 +183,7 @@ caller's return address. `tools/cgenplay.c` is a host harness.
      two such reads of one region and object at one index from two base words (a table split
      into its low and high bytes), no other operation reading either byte and no effect
      between them, is one call of `W<region>c<object>(lo, hi, i, klo, khi)`: the low read, then
-     the high one, each checked as the machine's checks are in order. A single-use load moves
+     the high one, each checked as the machine's checks are in order. A load of one region or span through an address set the lift gives, or of a span through a bounded pointer (`CGEN_IX`), is likewise one call (`R<k>c<j>`/`R<k>x<j>(base, index, k)`, `C<s>g<j>(offset, index, k)`) when no effect lies between the branch to the trap and the load and a branch does not test its one value. A single-use load moves
      past blocks that only check for a `trap` (`Func.between`).
    - *Tails*: a label no jump back crosses, at the top level of the function, starts a function
      of its own taking the variables live into it (wayward-eagle's `reduce_function`); the

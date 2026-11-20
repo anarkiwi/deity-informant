@@ -5339,6 +5339,28 @@ def test_a_pair_that_is_not_adjacent_is_not_one_value(prefix, tmp_path):
     assert "(uint16_t)R0[1] << 8" in body and "R1[0] = " in body
 
 
+def test_a_checked_read_of_a_span_is_one_call_unless_an_effect_lies_between(prefix, tmp_path):
+    """The first read through a pointer the lift bounds to a span is a call of the reader that
+    tests the pointer against its object and traps with the code passed; the reads the check
+    dominates stay plain. A read with an effect between its check and itself, here a load
+    after a store in its block, is not made one with the check."""
+    img, labels, loaded = assemble(TO.STREAM)
+    c, h, _ = translate(
+        prefix, img, labels, loaded, entries=("init", "play"), init=0, songs=range(4)
+    )
+    body = body_of(c, "play")
+    assert re.search(r"= C0g0\(\w+ - C0_ORG, 0, 2\);", body) and "trap(" not in body
+    assert body.count("CGEN_IX(") == 3 and "CGEN_OBJ0_ORG" not in body
+    for song in range(4):
+        play(tmp_path, c, h, img, labels, [("init", song)] + [("play", 0)] * 40)
+    f, _ = word_func(between='%u = "memref.load"(%g, %c2) : (memref<65536xi8>, index) -> i8')
+    checked = printer.CFunc.__new__(printer.CFunc)
+    checked.f, checked.mod = f, SimpleNamespace(var_at=[])
+    block = f.block_of["bb2"]
+    assert checked.unmapped(f.defs["%u"], block)
+    assert not checked.unmapped(f.defs["%l2"], block)
+
+
 CHECKED_TAILS = """
 init:   LDX #$00
 r:      LDA ptrs,X
@@ -7073,7 +7095,10 @@ def test_size_attribution(prefix, tmp_path):
     entry = per["entry"]
     assert entry["text"] == sum(entry.get(o, 0) for o in csize.ORIGINS) > 0
     # The read of the strings the entry writes is plain, the memory map's check its trap path.
-    assert 0 < entry["original"] <= labels["ptrs"] - labels["entry"] and entry.get("trap", 0) > 0
+    assert (
+        0 < entry["original"] <= labels["ptrs"] - labels["entry"]
+        and sum(r.get("trap", 0) for r in per.values()) > 0
+    )
     assert not entry.get("dispatch", 0)
     table = csize.report(per)
     assert table.splitlines()[-1].startswith("| total |")
@@ -7545,9 +7570,9 @@ def test_records_read_their_object_unchecked(prefix, tmp_path):
         prefix, img, labels, loaded, entries=("init", "play"), init=0, songs=range(4)
     )
     body = body_of(c, "play")
-    assert "rdC" not in c and body.count("CGEN_IX(") == 4
+    assert "rdC" not in c and body.count("CGEN_IX(") + body.count("C0g0(") == 4
     assert not re.search(r"_LEN\b|\boob_", body)
-    assert body.count("CGEN_OBJ0_ORG") == 1 and "#define CGEN_OBJ0_ORG" in h
+    assert "CGEN_OBJ0_ORG" in c and "#define CGEN_OBJ0_ORG" in h
     words = {labels[f"s{i}"] for i in range(4)} | {labels["play"]}
     assert not {int(x, 16) for x in re.findall(r"0x([0-9A-F]{3,4})\b", c)} & words
     for song in range(4):
@@ -7603,7 +7628,7 @@ def test_cursors_read_plain(prefix, tmp_path, src):
     segments with no bounds-checked reader: the states play reaches from each of init's runs
     bound them; every argument replays past many resets."""
     c, h, img, labels = walk_c(prefix, src)
-    assert "rdC" not in c and "CGEN_IX(" in body_of(c, "play")
+    assert "rdC" not in c and "CGEN_IX(" in c
     for song in range(4):
         play(tmp_path, c, h, img, labels, [("init", song)] + [("play", 0)] * 150)
 
