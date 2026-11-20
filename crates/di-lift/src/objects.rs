@@ -66,6 +66,8 @@ pub struct Objs {
     /// Per access the memory map bounds ([`machine`]), the object its address is checked to
     /// lie in before it, and the object's bytes.
     pub machine: FxHashMap<StoreKey, (u16, Iv)>,
+    /// Per access of `machine`, the addresses it may take on any run ([`taken`]).
+    pub taken: FxHashMap<StoreKey, Iv>,
     /// Per object of several runs, its runs `[lo, hi)`: a pointer lies in one of them.
     pub parts: FxHashMap<u16, Vec<(u32, u32)>>,
     /// The accesses through pointers from the program's data, each checked into its part of
@@ -231,7 +233,8 @@ pub fn held(
 /// loads of others an object leaves are served by walks ([`walked`]), whose data bytes are
 /// those of the image, or of each of init's runs for the variables `free` it leaves. With
 /// `machine` (a closed program over a fixed memory map) the accesses whose bases lie in the
-/// held bytes stay in them ([`machine`]).
+/// held bytes stay in them ([`machine`]); with `zero` each keeps its own check ([`hoist`] and
+/// [`crate::cover`] stand for none: [`crate::Opts::overrun_zero`]).
 #[allow(clippy::too_many_arguments)]
 pub fn objects(
     g: &Graph,
@@ -244,6 +247,7 @@ pub fn objects(
     init: &FixedBitSet,
     machine: Option<bool>,
     unread: Unread,
+    zero: bool,
 ) -> (Objs, Proven) {
     let mut out = Objs::default();
     let mut proven = Vec::new();
@@ -431,7 +435,7 @@ pub fn objects(
             lo: lo0,
             hi: end - 1,
         };
-        self::machine(g, &cx, run, player, unread, &mut out, &mut proven);
+        self::machine(g, &cx, run, player, unread, zero, &mut out, &mut proven);
         for o in &mut out.objects {
             o.2.sort_unstable();
             o.2.dedup();
@@ -1520,19 +1524,21 @@ impl<'a, H: Fn(Iv) -> bool> Sources<'a, H> {
 /// A byte's value at an entry is what init left it only where a path from init's exit
 /// reaches the access with no store into it since (`unread`, per byte the starts it may hold
 /// init's value at, [`crate::vsa::unread`]); elsewhere it is what the entries stored.
+#[allow(clippy::too_many_arguments)]
 fn machine<H: Fn(Iv) -> bool>(
     g: &Graph,
     cx: &Walked<'_, H>,
     run: Iv,
     player: bool,
     unread: Unread,
+    zero: bool,
     out: &mut Objs,
     proven: &mut Proven,
 ) {
     let mut fresh = FxHashMap::default();
     loop {
         let (mut o, mut p) = (out.clone(), proven.clone());
-        let asked = machine_pass(g, cx, run, player, &fresh, &mut o, &mut p);
+        let asked = machine_pass(g, cx, run, player, zero, &fresh, &mut o, &mut p);
         if asked.is_empty() {
             (*out, *proven) = (o, p);
             return;
@@ -1547,11 +1553,13 @@ fn machine<H: Fn(Iv) -> bool>(
 pub type Unread<'a> = &'a dyn Fn(&[u16]) -> FxHashMap<u16, FixedBitSet>;
 
 /// One pass of [`machine`] with what `fresh` holds; the bytes it asked of it that it lacks.
+#[allow(clippy::too_many_arguments)]
 fn machine_pass<H: Fn(Iv) -> bool>(
     g: &Graph,
     cx: &Walked<'_, H>,
     run: Iv,
     player: bool,
+    zero: bool,
     fresh: &FxHashMap<u16, FixedBitSet>,
     out: &mut Objs,
     proven: &mut Proven,
@@ -1694,6 +1702,7 @@ fn machine_pass<H: Fn(Iv) -> bool>(
             let obj = block_id(out, &rs);
             out.objects[obj as usize].2.push(pc);
             out.machine.insert(key, (obj, hull));
+            out.taken.insert(key, taken(g, key, a.addr));
             out.data.insert(key, rs.clone());
             proven.push((key, (hull, hull)));
             continue;
@@ -1729,6 +1738,7 @@ fn machine_pass<H: Fn(Iv) -> bool>(
         }
         let obj = object_id(out, block.lo as u16, block.hi as u16, [pc].into_iter());
         out.machine.insert(key, (obj, block));
+        out.taken.insert(key, taken(g, key, a.addr));
         // The block bounds a load from an address the program's bytes form, none of their
         // values; a store so formed is left its stores' checks.
         match (code, a.store) {
@@ -1737,9 +1747,32 @@ fn machine_pass<H: Fn(Iv) -> bool>(
             (false, true) => {}
         }
     }
-    hoist(g, &mut src, out);
-    crate::cover::cover(g, cx.init, out);
+    if !zero {
+        hoist(g, &mut src, out);
+        crate::cover::cover(g, cx.init, out);
+    }
     src.asked
+}
+
+/// The addresses access `key` of interval `addr` may take on any run: `addr`, or for a store
+/// the lift bounds to its run ([`Graph::bounded`]) its operand plus every value its index
+/// registers hold there.
+fn taken(g: &Graph, key: StoreKey, addr: Iv) -> Iv {
+    let (pc, op, ai) = key;
+    if !g.bounded.contains_key(&key) {
+        return addr;
+    }
+    let t = di_pcode::Template::of(op);
+    let mut env = crate::analysis::TOP_ENV;
+    for r in [di_pcode::reg::X, di_pcode::reg::Y] {
+        if let Some(h) = g.regs.get(&pc).and_then(|x| Bits::from_words(x[r]).hull()) {
+            env[r] = h;
+        }
+    }
+    let mut acc = Vec::new();
+    let b = crate::analysis::operand_bytes(&g.img, &g.cells, pc, t.len);
+    crate::analysis::absint(t.ops(), b, &mut env, &mut acc);
+    acc.get(ai).map_or(Iv { lo: 0, hi: 0xffff }, |a| a.addr)
 }
 
 /// A routine's pointer summary: the memory map's check of the accesses through a zero-page

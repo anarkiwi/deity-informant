@@ -35,6 +35,12 @@ def main(argv=None):
     ap.add_argument("-o", "--out", required=True, help="the .c")
     ap.add_argument("--header", help="the .h (default: the .c's name with .h)")
     ap.add_argument("--lines", action="store_true", help="#line markers (translation cost)")
+    ap.add_argument(
+        "--overrun",
+        choices=("trap", "zero"),
+        default="trap",
+        help="a memory-map access outside its object traps, or reads 0 and stores nothing",
+    )
     args = ap.parse_args(argv)
     data = Path(args.image).read_bytes()
     image = bytearray(0x10000)
@@ -52,6 +58,7 @@ def main(argv=None):
         header=header.name,
         init=[n for _, n in entries].index(args.init) if args.init else None,
         lines=args.lines,
+        overrun=args.overrun,
     )
     Path(args.out).write_text(c, encoding="utf-8")
     header.write_text(h, encoding="utf-8")

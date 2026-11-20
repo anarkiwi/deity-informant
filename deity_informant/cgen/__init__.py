@@ -650,6 +650,9 @@ class Program:  # pylint: disable=too-many-instance-attributes
     bases: dict | None = None
     #: The instruction starts whose accesses the memory map checks (``Program.machine``).
     machine: frozenset = frozenset()
+    #: Per instruction start of the memory map's accesses, ascending: ``{"pc", "ok", "addr"}``,
+    #: the inclusive runs of their objects and the hull of their addresses (*Memory*).
+    overruns: list = ()
     regs: dict | None = None
     bounded: dict | None = None
     init: tuple | None = None
@@ -859,6 +862,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     songs=None,
     machine=None,
     devices=c64devices.MODEL,
+    overrun="trap",
 ):
     """The static lift of ``entries`` as a :class:`Program` and its ``stats``; ``facts``
     give computed-jump targets only, ``loaded`` the ``(lo, hi)`` the program was loaded to,
@@ -867,7 +871,8 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     none) is called once, first, with ``A`` each of the range ``songs`` (default ``[0]``): it
     runs on ``machine`` (:func:`deity_informant.postinit.run`), the other entries are lifted
     from what it leaves, every byte it stores a variable but those it leaves constant
-    (:func:`_fixed`), and init from ``image`` where its lift reproduces every run (*Init*)."""
+    (:func:`_fixed`), and init from ``image`` where its lift reproduces every run (*Init*);
+    ``overrun`` is ``"trap"`` or ``"zero"`` (*Memory*)."""
     image, entries = bytes(image), list(entries)
     played, state, alias, start, lone, fixed = entries, None, [], image, None, frozenset()
     bare = None
@@ -929,6 +934,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
             player=lone is not None,
             known=known,
             driven=None if bare is None else bare.exit,
+            overrun=overrun,
             **kw,
         )
 
@@ -945,6 +951,9 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     p.ptr_sets = {pc: set(w) for pc, w in prog.ptr_sets.items()}
     p.objects, p.parts, p.slack = list(prog.objects), dict(prog.parts), dict(prog.slack)
     p.machine = frozenset(prog.machine)
+    p.overruns = [
+        {"pc": pc, "ok": [list(r) for r in ok], "addr": list(a)} for pc, ok, a in prog.overruns
+    ]
     p.pdefs = [_pdefs(x) for x in (prog, lone) if x is not None]
     p.stores = {"play": trapinfo.stores(prog)}
     if init is not None:
@@ -1140,6 +1149,7 @@ def render(  # pylint: disable=too-many-locals,too-many-arguments,too-many-posit
         units.part(_tagged(_checked_reader(j, j in mod.var_spans), access))
         for j in sorted(mod.checked)
     ]
+    c += [units.part(_tagged(x, access)) for x in mod.zero_c()]
     sets = [] if p.init is None else _songs_h(p.init[1])
     if p.init is not None and p.lifted is None:
         (pc, name), state = p.init
@@ -1216,6 +1226,7 @@ def render(  # pylint: disable=too-many-locals,too-many-arguments,too-many-posit
         },
         "traps": {k: key for key, k in traps.items() if k in mod.traps},
         "trap_info": trap_info,
+        "overruns": list(p.overruns),
         "runtime_traps": {OOB_TRAP: "unheld"} if helpers & OOB_HELPERS else {},
         "emission": emission,
         "unknown_access": mem.unknown,
@@ -1284,6 +1295,7 @@ def translate(  # pylint: disable=too-many-arguments
     devices=c64devices.MODEL,
     lines=False,
     split=False,
+    overrun="trap",
 ):
     """``(c_text, h_text, info)`` of the program in ``image`` (the whole address space) called
     at ``entries`` (``(pc, name)``, ``A`` the argument) with ``volatile`` ``[(lo, hi)]`` I/O
@@ -1293,13 +1305,25 @@ def translate(  # pylint: disable=too-many-arguments
     any order), with ``A`` each of the range ``songs`` (default ``[0]``), run on ``machine``
     (:func:`deity_informant.postinit.run`): the other entries are lifted from what it leaves;
     ``lines`` marks the ``.c`` with ``#line`` directives (*Translation cost*); ``split`` gives
-    it as translation units ``{file: text}`` (:mod:`.units`)."""
+    it as translation units ``{file: text}`` (:mod:`.units`); ``overrun="zero"`` makes an
+    access the memory map bounds read 0 or store nothing outside its object instead of
+    trapping (*Memory*)."""
     t0 = time.perf_counter()
     jf = jump_facts(facts, image) if facts is not None else None
     if devices is not None:
         sensitive_reads = sorted(set(sensitive_reads) | set(devices.sensitive(volatile)))
     p, stats = lift(
-        image, entries, volatile, jf, loaded, sensitive_reads, init, songs, machine, devices
+        image,
+        entries,
+        volatile,
+        jf,
+        loaded,
+        sensitive_reads,
+        init,
+        songs,
+        machine,
+        devices,
+        overrun,
     )
     p.sensitive, p.loaded = tuple(sensitive_reads), loaded
     lift_time = time.perf_counter() - t0

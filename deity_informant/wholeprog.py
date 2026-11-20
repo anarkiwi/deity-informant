@@ -68,6 +68,7 @@ def lift(
     known=None,
     driven=None,
     player=False,
+    overrun="trap",
 ):  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     """Lift ``entries`` of the program in ``image`` (the memory each entry starts from);
     ``cycles=True`` counts cycles and stamps volatile accesses with them; ``bank`` is a bank
@@ -96,7 +97,9 @@ def lift(
     the init leaves whatever the data (``Program.exit`` of its lift): every entry starts
     from the driver head (*Driver loop*); ``player=True`` that the entries are a player's,
     lifted apart from the init that selects the song: its pointers from the song's data stay
-    in the song's data block (*Machine model*)."""
+    in the song's data block (*Machine model*); ``overrun="zero"`` that an access the memory
+    map bounds reads 0 (a load) or does nothing (a store) where its address leaves its object,
+    instead of trapping (``"trap"``)."""
     n = _native_or_raise()
     prog = n.lift_program(
         bytes(image),
@@ -124,6 +127,7 @@ def lift(
             else sorted((int(a), sorted(int(x) for x in v)) for a, v in driven.items())
         ),
         player=player,
+        overrun=overrun,
     )
     prog.backend = backend or BACKEND
     return prog

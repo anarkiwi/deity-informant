@@ -100,6 +100,10 @@ pub struct Opts {
     /// The entries are a player's, lifted apart from the init that selects the song: its
     /// pointers from the song's data stay in the song's data block ([`objects`]).
     pub player: bool,
+    /// An access the memory map bounds ([`objects::Objs::machine`]) whose address lies outside
+    /// its object reads 0 (a load) or does nothing (a store) instead of deopting: each keeps
+    /// its own check, and no check at a pointer's definition stands for it (*Machine model*).
+    pub overrun_zero: bool,
 }
 
 impl Default for Opts {
@@ -121,6 +125,7 @@ impl Default for Opts {
             known: Vec::new(),
             driven: None,
             player: false,
+            overrun_zero: false,
         }
     }
 }
@@ -669,6 +674,40 @@ pub fn inclusive_runs(vs: impl IntoIterator<Item = u32>) -> Vec<(u32, u32)> {
     v
 }
 
+/// The memory map's accesses of `g` at the planned `starts` (ascending) per instruction start
+/// ([`ir::Program::overruns`]).
+fn overruns(g: &analysis::Graph, starts: &[u16]) -> Vec<ir::Overrun> {
+    let mut by: std::collections::BTreeMap<u16, (Vec<(u32, u32)>, Iv)> = Default::default();
+    for (key, &(obj, run)) in
+        (g.objs.machine.iter()).filter(|e| starts.binary_search(&e.0 .0).is_ok())
+    {
+        let rs = g
+            .objs
+            .parts
+            .get(&obj)
+            .cloned()
+            .unwrap_or(vec![(run.lo, run.hi + 1)]);
+        let full = Iv { lo: 0, hi: 0xffff };
+        let t = g
+            .objs
+            .taken
+            .get(key)
+            .copied()
+            .filter(|t| t.hi <= 0xffff)
+            .unwrap_or(full);
+        let e = by.entry(key.0).or_insert((Vec::new(), t));
+        e.0.extend(rs);
+        e.1 = vsa::hull(e.1, t);
+    }
+    (by.into_iter())
+        .map(|(pc, (mut rs, t))| {
+            rs.sort_unstable();
+            let ok = merged(rs).into_iter().map(|r| (r.0, r.1 - 1)).collect();
+            (pc, ok, (t.lo, t.hi))
+        })
+        .collect()
+}
+
 /// Pointer-load hulls by `(pc, opcode, access index)` as sorted [`ir::Reach`]es.
 fn reaches(r: &vsa::Hulls) -> Vec<ir::Reach> {
     let mut v: Vec<ir::Reach> = (r.iter())
@@ -697,6 +736,8 @@ pub fn lift_banked(
     let mut held = FixedBitSet::with_capacity(0x10000);
     held.extend(opts.held.iter().map(|&a| a as usize));
     let mut matched = true;
+    // Overrun-zero: the loads of the memory map's accesses, which may read 0 in place of a byte.
+    let mut zeroed = FixedBitSet::with_capacity(0x10000);
     let (g, plans, fidx, callees, recursive, slots, constcode, touches, seen, sites, private) = loop {
         let mut g = discover(
             img,
@@ -715,6 +756,7 @@ pub fn lift_banked(
             &known,
             opts.once,
             opts.entry_sp,
+            &zeroed,
         );
         let roots: Vec<u16> = entries.iter().map(|e| e.pc).collect();
         // Declared entry SP: the windows also keep pointers out of the volatile pages.
@@ -755,6 +797,7 @@ pub fn lift_banked(
                 ran: &once::Ran::default(),
                 drive: opts.driven.as_deref(),
                 exit: false,
+                zeroed: &zeroed,
             };
             vsa::unread(
                 &g.img, &g.cells, &g.vars, entries, matched, &g.disp, &given, xs,
@@ -771,7 +814,21 @@ pub fn lift_banked(
             &held,
             (opts.entry_sp.is_some() && !opts.once && bank.is_none()).then_some(opts.player),
             &unread,
+            opts.overrun_zero,
         );
+        // The analysis takes the loads the memory map bounds to read 0 outside their objects.
+        let more: Vec<usize> = (objs.machine.keys())
+            .filter(|k| !zeroed.contains(k.0 as usize))
+            .filter(|k| {
+                let vs = g.vars.get(&k.0).into_iter().flatten();
+                vs.filter(|v| v.op == k.1).any(|v| !v.acc[k.2].store)
+            })
+            .map(|k| k.0 as usize)
+            .collect();
+        if opts.overrun_zero && !more.is_empty() {
+            zeroed.extend(more);
+            continue;
+        }
         for (key, h) in proven {
             vsa::prove(&mut g.proven, key, h);
         }
@@ -965,6 +1022,7 @@ pub fn lift_banked(
     let cont = continuations(&plans, &fidx, &promote, bank.is_some());
     let carries = carry::alloc(&g, &plans, &callees, &recursive);
     let sh = emit::Shared {
+        zero: opts.overrun_zero,
         stack,
         img,
         g: &g,
@@ -1153,7 +1211,9 @@ pub fn lift_banked(
         }
     }
     let data = data_accesses(&g);
+    let overruns = overruns(&g, &starts);
     Program {
+        overruns,
         functions,
         entries: pcs
             .iter()

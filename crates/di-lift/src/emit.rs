@@ -16,7 +16,7 @@ use crate::vsa::NOREG;
 use crate::why::{complement, Kind, Why};
 use di_pcode::{reg as R, CtrlKind, Op, Opc, PenKind, Slot, Space, Template, Vn};
 use fixedbitset::FixedBitSet;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::VecDeque;
 
 const NONE: Vn = Vn::NONE;
@@ -69,6 +69,9 @@ pub struct Shared<'a> {
     /// The bytes data operands are read from memory at: the cells and the bytes the host's
     /// init holds ([`crate::Opts::held`]), whose values are data the program has, not code.
     pub read: FixedBitSet,
+    /// The memory map's accesses read 0 or store nothing outside their objects
+    /// ([`crate::Opts::overrun_zero`]).
+    pub zero: bool,
 }
 
 impl Shared<'_> {
@@ -141,6 +144,11 @@ struct Em<'a, 'b> {
     /// copy's start (`None`: a copy that does not run it).
     mem: Option<(u16, u16, Vec<Option<u16>>)>,
     carries: &'a crate::carry::Carries,
+    /// Whether the current access lies outside the object the memory map keeps it in, when
+    /// that skips it ([`Shared::zero`]): its own checks hold only where it is made.
+    skip: Vn,
+    /// The sizes of the spill registers ([`SPILL`]).
+    spills: Vec<u8>,
 }
 
 /// What emitting a function produced.
@@ -209,6 +217,8 @@ pub fn emit(
         coded: false,
         mem: None,
         carries: &sh.carries[fi],
+        skip: NONE,
+        spills: Vec::new(),
     };
     em.new_block(plan.pc);
     if em.cont {
@@ -313,7 +323,57 @@ pub fn emit(
             to,
         );
     }
+    em.f.nspills = em.spills.len() as u32;
+    if em.f.nspills > 0 {
+        let to = NREG as u32 + em.f.nslots + em.f.ncarries;
+        remap(
+            &mut em.f.blocks,
+            SPILL as u32..SPILL as u32 + em.f.nspills,
+            to,
+        );
+    }
     (em.f, em.n)
+}
+
+/// The offset of temporary `v`, if it is one.
+fn uoff(v: Vn) -> Option<u32> {
+    (v.space() == Space::Unique).then(|| v.off())
+}
+
+/// A check after an object's pointer is defined: its pair's address, bytes, check and whether
+/// its access is skipped ([`Em::skip`]).
+type After = (Vn, Iv, crate::objects::ObjChk, Vn);
+
+/// Appends to `keep` the values an instruction's checks so far hold: the zone test `zone`,
+/// the checks `chk` and the pointer checks `after`.
+fn held(keep: &mut Vec<Vn>, zone: Vn, chk: &[(Vn, Why)], after: &[After]) {
+    keep.push(zone);
+    keep.extend(chk.iter().map(|c| c.0));
+    keep.extend(after.iter().flat_map(|o| [o.0, o.3]));
+}
+
+/// The values of [`held`] at `keep[at..]` and the temporaries `live` at `keep[..]` read back
+/// after a join ([`Em::unless`]).
+fn rebind(
+    keep: &[Vn],
+    at: usize,
+    live: &[u32],
+    umap: &mut FxHashMap<u32, Vn>,
+    zone: &mut Vn,
+    chk: &mut [(Vn, Why)],
+    after: &mut [After],
+) {
+    for (u, &v) in live.iter().zip(keep) {
+        umap.insert(*u, v);
+    }
+    *zone = keep[at];
+    for (c, &v) in chk.iter_mut().zip(&keep[at + 1..]) {
+        c.0 = v;
+    }
+    let rest = &keep[at + 1 + chk.len()..];
+    for (o, v) in after.iter_mut().zip(rest.chunks(2)) {
+        (o.0, o.3) = (v[0], v[1]);
+    }
 }
 
 /// Renumbers the registers `from` of `blocks`' ops to start at `to`.
@@ -336,6 +396,9 @@ const ABOVE: u16 = NREG as u16 + 0x100;
 /// The register a function's first carry ([`crate::carry`]) is emitted in, numbered past its
 /// stack slots once they are known.
 const CARRY: u16 = NREG as u16 + 0x200;
+/// The register a function's first spill ([`Function::nspills`]) is emitted in, numbered past
+/// its carries once they are known.
+const SPILL: u16 = NREG as u16 + 0x300;
 
 impl<'a> Em<'a, '_> {
     fn new_block(&mut self, pc: u16) -> u32 {
@@ -575,6 +638,7 @@ impl<'a> Em<'a, '_> {
     /// address in `iv`, a stack guard letting the addresses `ok` pass.
     fn stack_guard(&mut self, hit: Vn, iv: Iv, pc: u16, ok: Vec<(u32, u32)>) {
         self.n.stack_guards += 1;
+        let hit = self.made(hit);
         let why = Why {
             ok,
             addr: Some(iv),
@@ -982,6 +1046,97 @@ impl<'a> Em<'a, '_> {
         self.emit(Opc::CallOther, NONE, pc, NONE, other::DEOPT);
         self.f.blocks[self.cur].ops.last_mut().unwrap().why = why;
     }
+    /// Check `c` of the current access, holding only where the access is made ([`Em::skip`]).
+    fn made(&mut self, c: Vn) -> Vn {
+        if self.skip.is_none() {
+            return c;
+        }
+        let ok = self.op(Opc::IntXor, 1, self.skip, k(1, 1));
+        self.op(Opc::IntAnd, 1, c, ok)
+    }
+    /// `body` where `skip` is clear, then on in a block both paths join, given `out` (the
+    /// register `body` writes, which holds 0 where it is skipped) and the values `keep`. A
+    /// temporary lives in its extended basic block alone, so each crosses the join in a spill
+    /// register and is replaced by the fresh temporary it is read back into.
+    fn unless(
+        &mut self,
+        skip: Vn,
+        out: Vn,
+        keep: &mut [Vn],
+        body: impl FnOnce(&mut Self, Vn),
+    ) -> Vn {
+        let mut taken = 0u32;
+        let mut spill = |em: &mut Self, size: u8| {
+            let j = match (em.spills.iter().enumerate())
+                .position(|(j, &s)| s == size && taken >> j & 1 == 0)
+            {
+                Some(j) => j,
+                None => {
+                    em.spills.push(size);
+                    em.spills.len() - 1
+                }
+            };
+            taken |= 1 << j;
+            reg(SPILL + j as u16, size)
+        };
+        let held: Vec<(usize, Vn)> = (keep.iter().enumerate())
+            .filter(|(_, v)| v.space() == Space::Unique)
+            .map(|(i, &v)| (i, v))
+            .collect();
+        let mut regs = Vec::with_capacity(held.len());
+        for &(_, v) in &held {
+            let s = spill(self, v.size() as u8);
+            self.emit(Opc::Copy, s, v, NONE, 0);
+            regs.push(s);
+        }
+        let to = match out.space() {
+            Space::Unique => spill(self, out.size() as u8),
+            _ => out,
+        };
+        if !out.is_none() {
+            self.emit(Opc::Copy, to, k(0, out.size() as u8), NONE, 0);
+        }
+        let pc = self.f.blocks[self.cur].pc;
+        let (then, join) = (self.new_block(pc), self.new_block(pc));
+        self.emit(Opc::CBranch, NONE, skip, NONE, join);
+        self.emit(Opc::Branch, NONE, NONE, NONE, then);
+        self.cur = then as usize;
+        body(self, to);
+        self.emit(Opc::Branch, NONE, NONE, NONE, join);
+        self.cur = join as usize;
+        for ((i, v), s) in held.into_iter().zip(regs) {
+            keep[i] = self.op(Opc::Copy, v.size() as u8, s, NONE);
+        }
+        match out.space() {
+            Space::Unique => self.op(Opc::Copy, out.size() as u8, to, NONE),
+            _ => out,
+        }
+    }
+    /// The temporaries of template `ops` live after op `i`, as `umap` names them, and the
+    /// values the instruction's checks so far keep: what an access skipped at `i` keeps.
+    fn live_after(
+        ops: &[Op],
+        i: usize,
+        umap: &FxHashMap<u32, Vn>,
+        extra: impl IntoIterator<Item = Vn>,
+    ) -> (Vec<u32>, Vec<Vn>) {
+        let mut defs = FxHashSet::default();
+        let mut live = Vec::new();
+        for op in &ops[i + 1..] {
+            for v in op.ins.iter().filter(|v| v.space() == Space::Unique) {
+                if !defs.contains(&v.off()) && umap.contains_key(&v.off()) {
+                    live.push(v.off());
+                }
+            }
+            if op.out.space() == Space::Unique {
+                defs.insert(op.out.off());
+            }
+        }
+        live.sort_unstable();
+        live.dedup();
+        let vs = live.iter().map(|u| umap[u]).chain(extra).collect();
+        (live, vs)
+    }
     /// `x | c` (one byte), `c` alone when `x` is [`NONE`].
     fn or(&mut self, x: Vn, c: Vn) -> Vn {
         match x.is_none() {
@@ -1367,13 +1522,13 @@ impl<'a> Em<'a, '_> {
     ) -> Vec<(Vn, Why)> {
         let mut chk = Vec::new();
         // Object checks read the pair and the flags once the instruction is done.
-        let mut objs_after = Vec::new();
+        let mut objs_after: Vec<After> = Vec::new();
         let mut ai = 0;
         let mut zone = NONE;
         let mut zwhy = Vec::new();
         // The addresses the memory map's checks of the instruction test.
         let mut machined: Vec<Vn> = Vec::new();
-        for op in ops {
+        for (i, op) in ops.iter().enumerate() {
             let mut map = |em: &mut Self, v: Vn| -> Vn {
                 match v.space() {
                     _ if v.is_none() => NONE,
@@ -1427,21 +1582,29 @@ impl<'a> Em<'a, '_> {
                     zone: false,
                     zfree: false,
                 });
-                // An access the memory map bounds deopts before it leaves the bytes it may.
+                // An access the memory map bounds deopts before it leaves the bytes it may; in
+                // overrun-zero, outside them a load reads 0 and a store does nothing.
                 let mapped = self.sh.g.objs.machine.get(&(pc, opc, ai));
-                if let Some(&(obj, run)) = mapped.filter(|_| !machined.contains(&a)) {
-                    machined.push(a);
-                    let (bad, why) = self.obj_test(a, obj, None, "machine");
-                    let ok = match self.sh.g.objs.parts.get(&obj) {
-                        Some(rs) => rs.iter().map(|r| (r.0, r.1 - 1)).collect(),
-                        None => vec![(run.lo, run.hi)],
-                    };
-                    let why = Why {
-                        addr: Some(ac.addr),
-                        ok,
-                        ..why
-                    };
-                    self.replay_guard(bad, pc, vec![why]);
+                self.skip = NONE;
+                match (mapped, machined.contains(&a)) {
+                    (Some(&(obj, _)), _) if self.sh.zero => {
+                        self.skip = self.obj_test(a, obj, None, "machine").0;
+                    }
+                    (Some(&(obj, run)), false) => {
+                        machined.push(a);
+                        let (bad, why) = self.obj_test(a, obj, None, "machine");
+                        let ok = match self.sh.g.objs.parts.get(&obj) {
+                            Some(rs) => rs.iter().map(|r| (r.0, r.1 - 1)).collect(),
+                            None => vec![(run.lo, run.hi)],
+                        };
+                        let why = Why {
+                            addr: Some(ac.addr),
+                            ok,
+                            ..why
+                        };
+                        self.replay_guard(bad, pc, vec![why]);
+                    }
+                    _ => {}
                 }
                 // A zone-checked store deopts before it may reach a zone; a load reads memory
                 // (a pointer read leaving the data is the program's error, reading the
@@ -1452,6 +1615,7 @@ impl<'a> Em<'a, '_> {
                 if checked(&ac, ai) && !stack {
                     // One exit before the last checked access covers the instruction's.
                     let c = self.in_zone(a);
+                    let c = self.made(c);
                     let ok = complement(
                         self.sh
                             .g
@@ -1513,19 +1677,45 @@ impl<'a> Em<'a, '_> {
                         continue;
                     }
                     (true, _) => self.store_flags(ac.addr) | mem::STACK,
-                    (false, Opc::Load) if quiet => {
-                        self.emit(Opc::Load, out, a, NONE, 0);
-                        continue;
-                    }
                     (false, Opc::Load) => {
-                        self.load_into(out, a, ac.addr, 0);
+                        let load = move |em: &mut Self, to: Vn| match quiet {
+                            true => em.emit(Opc::Load, to, a, NONE, 0),
+                            false => em.load_into(to, a, ac.addr, 0),
+                        };
+                        if self.skip.is_none() {
+                            load(self, out);
+                            continue;
+                        }
+                        let (mut live, mut keep) = Self::live_after(ops, i, umap, []);
+                        if let Some(j) = live.iter().position(|&u| Some(u) == uoff(op.out)) {
+                            live.remove(j);
+                            keep.remove(j);
+                        }
+                        let at = keep.len();
+                        held(&mut keep, zone, &chk, &objs_after);
+                        let got = self.unless(self.skip, out, &mut keep, load);
+                        rebind(&keep, at, &live, umap, &mut zone, &mut chk, &mut objs_after);
+                        if let Some(u) = uoff(op.out) {
+                            umap.insert(u, got);
+                        }
                         continue;
                     }
                     _ if quiet => 0,
                     _ => self.store_flags(ac.addr),
                 };
-                if op.opc == Opc::Store {
+                let (mut a, mut b) = (a, b);
+                if op.opc == Opc::Store && self.skip.is_none() {
                     self.emit(Opc::Store, out, a, b, aux);
+                } else if op.opc == Opc::Store {
+                    let (live, mut keep) = Self::live_after(ops, i, umap, [a, b, self.skip]);
+                    let at = keep.len();
+                    held(&mut keep, zone, &chk, &objs_after);
+                    let store = |em: &mut Self, _| em.emit(Opc::Store, out, a, b, aux);
+                    self.unless(self.skip, NONE, &mut keep, store);
+                    (a, b, self.skip) = (keep[at - 3], keep[at - 2], keep[at - 1]);
+                    rebind(&keep, at, &live, umap, &mut zone, &mut chk, &mut objs_after);
+                }
+                if op.opc == Opc::Store {
                     let pairs = self.sh.g.prot.chk.get(&(pc, opc, ai - 1));
                     for &q in pairs.into_iter().flatten().filter(|_| !stack) {
                         let (mut bad, why) = self.window(q);
@@ -1536,6 +1726,7 @@ impl<'a> Em<'a, '_> {
                             let hit = self.op(Opc::IntLess, 1, off, k(3, 2));
                             bad = self.op(Opc::IntAnd, 1, bad, hit);
                         }
+                        let bad = self.made(bad);
                         chk.push((
                             bad,
                             Why {
@@ -1570,7 +1761,7 @@ impl<'a> Em<'a, '_> {
                             ),
                             None => (k(q, 2), Iv { lo: q, hi: q + 1 }),
                         };
-                        objs_after.push((at, iv, c));
+                        objs_after.push((at, iv, c, self.skip));
                     }
                     if self.sh.hits_code(ac.addr) && !self.sh.g.nocode.contains(&(pc, opc, ai - 1))
                     {
@@ -1579,8 +1770,9 @@ impl<'a> Em<'a, '_> {
                             addr: Some(ac.addr),
                             ..Why::new(Kind::Code, pc)
                         };
-                        chk.push((self.op(Opc::CallOther, 1, a, b), why));
+                        let c = self.op(Opc::CallOther, 1, a, b);
                         self.f.blocks[self.cur].ops.last_mut().unwrap().aux = other::CODECHK;
+                        chk.push((self.made(c), why));
                         self.coded = true;
                     }
                     continue;
@@ -1589,7 +1781,8 @@ impl<'a> Em<'a, '_> {
             let aux = if self.dec { crate::ir::DECIMAL } else { aux };
             self.emit(op.opc, out, a, b, aux);
         }
-        for (at, iv, c) in objs_after {
+        for (at, iv, c, skip) in objs_after {
+            self.skip = skip;
             // The memory map check of a pointer after its definition (`objects::Objs::defined`).
             if self.sh.g.objs.defined.contains(&c.obj) {
                 let (bad, why) = self.obj_bad(at, iv, c, "machine");
@@ -1598,11 +1791,14 @@ impl<'a> Em<'a, '_> {
                     Some(rs) => rs.iter().map(|r| (r.0, r.1 - 1)).collect(),
                     None => vec![(o.0 as u32, o.1 as u32)],
                 };
+                let bad = self.made(bad);
                 chk.push((bad, Why { ok, ..why }));
             } else {
-                chk.push(self.obj_bad(at, iv, c, "store"));
+                let (bad, why) = self.obj_bad(at, iv, c, "store");
+                chk.push((self.made(bad), why));
             }
         }
+        self.skip = NONE;
         chk
     }
 

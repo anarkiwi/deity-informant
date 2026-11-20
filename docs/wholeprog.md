@@ -932,6 +932,13 @@ the facts, so a proof holds on every execution that stays in lifted code.
   source, a constant base outside the held bytes (a device, RAM never loaded) or one of a
   page holding a cell, leaves the access as it was. Zero-page indexing wraps inside zero
   page: its base is no byte of the program and it needs none.
+  With `overrun="zero"` (`Opts::overrun_zero`) leaving the block is defined instead: the
+  access reads 0 or stores nothing there. Its check is a branch around the access, its
+  checks after it hold only where it is made, and no hoisted or covering check stands for
+  it; the interval analysis is run again taking each such load's values as its bytes' and 0,
+  none a table's byte (`vsa::Code::zeroed`), until every one is so taken
+  (`Program.overruns`: per instruction start its object's runs and the hull of its
+  addresses).
 - **Pointer definitions** (`pdefs.rs`). What each access's address is formed from, from
   the code alone: a *location*, the word at a `(zp),Y` access's pair (its index lies in
   `[0, 255]`) or at an instruction's stored operand bytes, else an index register added to a
