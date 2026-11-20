@@ -959,6 +959,14 @@ impl Program {
         self.prog.machine.clone()
     }
 
+    /// Per planned instruction start of the memory map's accesses (every copy's of an instance
+    /// function), ascending: ``[(pc, [(lo, hi)], (lo, hi))]``, the inclusive runs of the objects
+    /// they are checked against and the hull of the addresses they may take.
+    #[getter]
+    fn overruns(&self) -> Vec<di_lift::ir::Overrun> {
+        self.prog.overruns.clone()
+    }
+
     /// Stores from a constant base plus an index the code does not bound: ``{pc: (lo, hi)}``,
     /// the run of data bytes holding the base (``hi`` exclusive) each writes, past which a
     /// write is out of bounds.
@@ -1563,12 +1571,14 @@ pub fn reference_calls(
 /// values before each call (no entry guard); ``known`` ``[(addr, values)]`` the values each
 /// of ``free`` may hold that the host's init's lift bounds it to; ``driven``
 /// ``[(addr, values)]``, where the host calls the entries in a loop after its init, what init
-/// leaves whatever the data (``Program.exit`` of its lift).
+/// leaves whatever the data (``Program.exit`` of its lift); ``player=True`` that the entries are
+/// a player's; ``overrun="zero"`` that an access the memory map bounds reads 0 or stores nothing
+/// outside its object instead of deopting (``"trap"``).
 /// ``bank`` is a bank map: ``dir``/``data`` port
 /// cells, ``mask`` and ``pull`` bits, ``lut`` (configuration per effective port value),
 /// ``configs`` (per configuration 256 page kinds: 0 RAM, 1 ROM, 2 I/O) and ``rom``.
 #[pyfunction]
-#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None, fold=false, sensitive=None, free=vec![], alias=vec![], once=false, held=vec![], devices=None, holds=vec![], checked=false, known=vec![], driven=None, player=false))]
+#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None, fold=false, sensitive=None, free=vec![], alias=vec![], once=false, held=vec![], devices=None, holds=vec![], checked=false, known=vec![], driven=None, player=false, overrun="trap"))]
 #[allow(clippy::too_many_arguments)]
 pub fn lift_program(
     py: Python<'_>,
@@ -1593,7 +1603,17 @@ pub fn lift_program(
     known: Vec<(u16, Vec<u8>)>,
     driven: Option<Vec<(u16, Vec<u8>)>>,
     player: bool,
+    overrun: &str,
 ) -> PyResult<Program> {
+    let overrun_zero = match overrun {
+        "trap" => false,
+        "zero" => true,
+        _ => {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "overrun is \"trap\" or \"zero\"",
+            ))
+        }
+    };
     let img = self::image(image)?;
     let es = self::entries(entries);
     let f = self::facts(facts)?;
@@ -1615,6 +1635,7 @@ pub fn lift_program(
         known,
         driven,
         player,
+        overrun_zero,
     };
     Ok(Program::new(py.detach(|| {
         di_lift::lift_banked(&img, &es, &volatile, &f, opts, bank.as_ref())

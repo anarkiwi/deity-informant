@@ -99,6 +99,10 @@ pub mod mem {
     }
 }
 
+/// An instruction start of the memory map's accesses, its objects' runs `[lo, hi]` and the
+/// hull `(lo, hi)` of its addresses ([`Program::overruns`]).
+pub type Overrun = (u16, Vec<(u32, u32)>, (u32, u32));
+
 /// One lifted op: `out = opc(ins[0], ins[1])`; `aux` is the target block (`BRANCH`,
 /// `CBRANCH`), target table (`BRANCHIND`), function (`CALL`), operation (`CALLOTHER`) or
 /// access flags (`LOAD`, `STORE`); `pc` is the instruction it was emitted for (0 for one the
@@ -248,7 +252,11 @@ pub struct Function {
     /// Carry registers (`NREG + nslots..`): the indices its computed transfers switch on past
     /// the write of their register ([`crate::carry`]); never machine state.
     pub ncarries: u32,
-    /// Lane registers (after the carry registers): one bit each of a stack slot that packs
+    /// Spill registers (after the carry registers): the values an instruction keeps across the
+    /// join of an access the memory map skips outside its object ([`crate::Opts::overrun_zero`]);
+    /// never machine state.
+    pub nspills: u32,
+    /// Lane registers (after the spill registers): one bit each of a stack slot that packs
     /// single-bit values ([`crate::lanes`]); never stack bytes.
     pub nlanes: u32,
     /// The slot indices whose stack bytes the function keeps in slot registers (the bytes of
@@ -279,11 +287,11 @@ pub struct Function {
 impl Function {
     /// Registers including promoted stack slots, carries and lanes.
     pub fn nregs(&self) -> usize {
-        NREG + (self.nslots + self.ncarries + self.nlanes) as usize
+        NREG + (self.nslots + self.ncarries + self.nspills + self.nlanes) as usize
     }
     /// The first lane register.
     pub fn lane0(&self) -> u32 {
-        NREG as u32 + self.nslots + self.ncarries
+        NREG as u32 + self.nslots + self.ncarries + self.nspills
     }
     /// The lane registers.
     pub fn lanes(&self) -> std::ops::Range<u32> {
@@ -422,6 +430,10 @@ pub struct Program {
     pub bases: Vec<Reach>,
     /// The instruction starts of the accesses the memory map checks before them.
     pub machine: Vec<u16>,
+    /// Per planned instruction start of the memory map's accesses (every copy's of an instance
+    /// function), ascending: the runs `[lo, hi]` of the objects they are checked against and
+    /// the hull `(lo, hi)` of the addresses they may take ([`crate::Opts::overrun_zero`]).
+    pub overruns: Vec<Overrun>,
     /// Per instruction start the values `A`, `X` and `Y` hold on every run (bit `v` for
     /// `v`), ascending by start.
     pub regs: Vec<(u16, [[u64; 4]; 3])>,

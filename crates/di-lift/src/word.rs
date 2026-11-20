@@ -683,7 +683,7 @@ pub(crate) fn step(
                     ) => h,
                     _ => load_half(st, m),
                 })
-                .or_else(|| data(code, st, pc, op, b, acc)),
+                .or_else(|| data(code, st, pc, op, b, acc).filter(|_| !code.zeroed(pc))),
             _ => None,
         };
     }

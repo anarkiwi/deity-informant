@@ -826,6 +826,7 @@ pub fn discover(
     known: &FxHashMap<u16, Vec<u8>>,
     once: bool,
     entry_sp: Option<u8>,
+    zeroed: &FixedBitSet,
 ) -> Graph {
     let mut edges: FxHashMap<u16, Vec<u16>> = FxHashMap::default();
     for &(p, q) in &facts.edges {
@@ -869,6 +870,7 @@ pub fn discover(
         free,
         known,
         once,
+        zeroed,
         constant: {
             let mut c = FixedBitSet::with_capacity(0x10000);
             if let Some((lo, hi)) = loaded {
@@ -998,6 +1000,8 @@ struct Fixpoint<'a> {
     known: &'a FxHashMap<u16, Vec<u8>>,
     /// Each entry runs once ([`discover`]).
     once: bool,
+    /// Instruction starts whose loads may read 0 in place of a byte ([`crate::vsa::Given::zeroed`]).
+    zeroed: &'a FixedBitSet,
     /// The operands of the one run no input decides ([`crate::once`]).
     ran: crate::once::Ran,
 }
@@ -1058,6 +1062,7 @@ impl Fixpoint<'_> {
             ran: &self.ran,
             drive: r.driven.filter(|_| !self.once),
             exit: self.once,
+            zeroed: self.zeroed,
         };
         let an = crate::vsa::analyze(
             &g.img,
@@ -1197,6 +1202,7 @@ impl Fixpoint<'_> {
                 ran: &self.ran,
                 drive: None,
                 exit: false,
+                zeroed: self.zeroed,
             };
             let an = crate::vsa::analyze(
                 &cimg,

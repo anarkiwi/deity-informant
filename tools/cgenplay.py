@@ -1,8 +1,10 @@
 """Translate a program with ``deity_informant.cgen`` and play the C against the reference.
 
 ``python tools/cgenplay.py FILE (--psid | --org ORG --entry PC:NAME ...) --volatile LO-HI
-[--calls NAME:A*N,...] [-o DIR]`` compiles the ``.c`` with ``tools/cgenplay.c`` and checks
-each call's volatile writes (and reads of ``--sensitive`` addresses) against the reference.
+[--calls NAME:A*N,...] [--overrun zero] [-o DIR]`` compiles the ``.c`` with
+``tools/cgenplay.c`` and checks each call's volatile writes (and reads of ``--sensitive``
+addresses) against the reference; with ``--overrun zero`` the reference plays the translation's
+rule (:class:`Overruns`).
 """
 
 import argparse
@@ -17,6 +19,8 @@ from tqdm import tqdm
 import cmetrics
 from cplay import fresh
 from deity_informant import cgen, wholeprog
+from deity_informant.lifter import lift
+from deity_informant.vm import PcodeVM, run_sub
 
 HARNESS = Path(__file__).with_name("cgenplay.c")
 CFLAGS = ("-std=c99", "-DCGEN_OOB_EXACT", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC")
@@ -37,12 +41,68 @@ def entry_regs(a):
     return reg
 
 
+class Overruns(PcodeVM):
+    """The reference with the overrun-zero rule of ``overruns`` (``info["overruns"]``): a
+    data access by one of their instructions (not the pointer fetch of ``(zp),Y`` or
+    ``(zp,X)``) at an address of its ``addr`` hull outside its ``ok`` runs reads 0 or writes
+    nothing. Each access of the ``volatile`` ranges is logged as ``(addr, value, written)``."""
+
+    __slots__ = ("at", "rules", "io", "log", "fetch")
+
+    def __init__(self, image, overruns, volatile):
+        super().__init__(image)
+        self.volatile, self.at, self.log, self.fetch = False, None, [], 0
+        self.rules = {o["pc"]: (o["addr"], o["ok"]) for o in overruns}
+        self.io = volatile
+
+    def skipped(self, a):
+        """Whether the current instruction's access of ``a`` is skipped."""
+        rule = self.rules.get(self.at)
+        if self.fetch:
+            self.fetch -= 1
+            return False
+        if rule is None or not rule[0][0] <= a <= rule[0][1]:
+            return False
+        return not any(lo <= a <= hi for lo, hi in rule[1])
+
+    def _rd(self, addr, sz):
+        val = 0
+        for i in range(sz):
+            a = (addr + i) & 0xFFFF
+            b = 0 if self.skipped(a) else self.mem[a]
+            if any(lo <= a < hi for lo, hi in self.io):
+                self.log.append((a, b, 0))
+            val |= b << (8 * i)
+        return val
+
+    def _wr(self, addr, val, sz):
+        for i in range(sz):
+            a, b = (addr + i) & 0xFFFF, (val >> (8 * i)) & 0xFF
+            if not self.skipped(a):
+                self.mem[a] = b
+            if any(lo <= a < hi for lo, hi in self.io):
+                self.log.append((a, b, 1))
+
+    def step(self, pc, cache, lifter):
+        self.at = pc
+        self.fetch = 2 if self.mem[pc] & 0x0D == 0x01 else 0
+        return super().step(pc, cache, lifter)
+
+    def call(self, pc, a):
+        """The log of a call of ``pc`` with ``A`` = ``a`` and ``SP`` $FF."""
+        self.reg = entry_regs(a)
+        self.log = []
+        run_sub(self, pc, {}, lift)
+        return self.log
+
+
 def replay(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
-    lib, image, pcs, calls, volatile, sensitive=(), progress=False, trap=None
+    lib, image, pcs, calls, volatile, sensitive=(), progress=False, trap=None, overruns=None
 ):
     """Play ``calls`` ``[(name, a)]`` of the library on its own memory and the reference at
     ``pcs[name]`` from ``image``; AssertionError at the first call whose log differs. With
-    ``trap`` ``(n, k)`` call ``n`` traps with ``k`` and the replay ends there."""
+    ``trap`` ``(n, k)`` call ``n`` traps with ``k`` and the replay ends there; with
+    ``overruns`` (``info["overruns"]``) the reference is :class:`Overruns`."""
     ctypes.memmove(ctypes.addressof(ctypes.c_uint8.in_dll(lib, "IO")), bytes(image), 0x10000)
     logn = ctypes.c_uint32.in_dll(lib, "logn")
     loga = (ctypes.c_uint16 * (1 << 20)).in_dll(lib, "loga")
@@ -55,6 +115,7 @@ def replay(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
     lib.call.argtypes = [ctypes.c_void_p, ctypes.c_uint8]
     fns = {name: ctypes.cast(getattr(lib, name), ctypes.c_void_p) for name in pcs}
     ref = bytearray(image)
+    zero = None if overruns is None else Overruns(image, overruns, volatile)
     keep = set(sensitive)
     for n, (name, a) in enumerate(tqdm(calls, disable=not progress, desc="calls", unit="call")):
         logn.value = 0
@@ -63,10 +124,14 @@ def replay(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
             assert k == trap[1], (n, name, "trap", k, "want", trap[1])
             return n
         got = [(loga[i], logv[i], logw[i]) for i in range(logn.value)]
-        r = wholeprog.reference_call(
-            ref, pcs[name], a=a, reg=entry_regs(a), volatile=volatile, log=True
-        )
-        want = [(addr, v, int(w)) for addr, v, _c, w in r["log"] if w or addr in keep]
+        if zero is None:
+            r = wholeprog.reference_call(
+                ref, pcs[name], a=a, reg=entry_regs(a), volatile=volatile, log=True
+            )
+            log = [(addr, v, w) for addr, v, _c, w in r["log"]]
+        else:
+            log = zero.call(pcs[name], a)
+        want = [(addr, v, int(w)) for addr, v, w in log if w or addr in keep]
         assert k < 0, (n, name, "trap", k)
         i = next((i for i, (g, w) in enumerate(zip(got, want)) if g != w), None)
         i = min(len(got), len(want)) if i is None and got != want else i
@@ -112,6 +177,7 @@ def main(argv=None):  # pylint: disable=too-many-locals
     ap.add_argument("--init", help="NAME of the entry called once, first (--psid: init)")
     ap.add_argument("-n", type=int, default=3000, help="play calls after init with --psid")
     ap.add_argument("-o", "--out", default=".", help="directory for the .c, .h and library")
+    ap.add_argument("--overrun", choices=("trap", "zero"), default="trap", help="cgen overrun")
     args = ap.parse_args(argv)
     data = Path(args.file).read_bytes()
     if args.psid:
@@ -141,6 +207,7 @@ def main(argv=None):  # pylint: disable=too-many-locals
         loaded=loaded,
         header=stem.with_suffix(".h").name,
         init=[n for _, n in entries].index(args.init) if args.init else None,
+        overrun=args.overrun,
     )
     wall = time.perf_counter() - t
     stem.with_suffix(".c").write_text(c, encoding="utf-8")
@@ -155,7 +222,8 @@ def main(argv=None):  # pylint: disable=too-many-locals
     print(f"translate {wall:.3f} s ({stages})", flush=True)
     lib = build(stem.with_suffix(".c"), stem.with_suffix(".so"))
     pcs = {name: pc for pc, name in entries}
-    n = replay(lib, image, pcs, parse_calls(calls, pcs), vol, args.sensitive, progress=True)
+    zero = info["overruns"] if args.overrun == "zero" else None
+    n = replay(lib, image, pcs, parse_calls(calls, pcs), vol, args.sensitive, True, overruns=zero)
     print(f"{n} calls identical to the reference")
     return 0
 

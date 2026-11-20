@@ -35,12 +35,14 @@ python tools/cgenplay.py tune.sid --psid --volatile 0xD400-0xD41D -o out/   # tr
 | `machine` | runs init (`postinit.run`; default the reference interpreter over `volatile`, whose device bytes hold what was written) |
 | `devices` | what the volatile addresses answer (*Devices*; default the C64's, `c64devices.MODEL`; `None`: any byte) |
 | `lines` | mark the `.c` with `#line` directives naming what each line's code comes from (*Translation cost*; CLI `--lines`) |
+| `overrun` | `"trap"` (the default) or `"zero"`: an access the memory map bounds outside its object traps, or reads 0 and stores nothing (*Memory*; CLI `--overrun`) |
 
 `info` holds the stage times (`lift`, `mlir`, `layout`, `structure`, `print`), the regions
 `[(origin, length)]`, the code span, the traps in the `.c` (`{k: ("deopt", pc)}` or `("ind", pc,
 ...)` for a computed jump with no target) and what each stands for (`trap_info`, *Trap
 metadata*), the traps the runtime's access helpers may take (`runtime_traps`: `{OOB_TRAP:
-"unheld"}`, a byte no array holds that would not keep its value), the computed jumps resolved from the code (`jumps`),
+"unheld"}`, a byte no array holds that would not keep its value), the memory map's accesses
+(`overruns`, *Memory*), the computed jumps resolved from the code (`jumps`),
 per `(zp),Y` access the words its pointer may hold where the lift finds a set of them
 (`ptr_sets`, `{pc: [word]}`, every lift's), the fact edges used, the lift's `stats`, whether
 some access has an unknown address and the
@@ -751,6 +753,22 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   that works, so a valid run stays inside and the trap stops invalid input. Bases unknown,
   or reaching I/O (a device read through a pointer) or unloaded RAM, keep the bounds-checked
   reader.
+- With `overrun="zero"` such an access never traps: where its address lies outside the runs
+  of its object it reads 0 (a load) or does nothing (a store), per byte, and the other
+  checks of the access (zone, stack, window, code) test it only where it is made. Each access
+  keeps its own check: none at a pointer's definition or over a window stands for it. The
+  lift makes it a branch around the access, the value 0 on the other path, before
+  optimization (`Opts::overrun_zero`), and its analysis takes such a load's values as its
+  bytes' and 0, none a table's byte (`vsa::Code::zeroed`), so nothing past the access
+  assumes its address inside the object.
+  The C calls one `noinline` helper per array and object (`R3z0(a)`, `C0z1(a)`, a data
+  block's `rdB2z0(a)`, `rdz0(a)` where the access may reach a promoted cell's variable; the
+  writers `R3zw0(a, v)`), whose test is the object's `.h` bounds (`CGEN_OBJj_ORG`/`_LIM`,
+  `cgen_outj`), with no branch or trap in the caller. `info["overruns"]` lists, by
+  instruction start ascending (every copy's in an instance function), `{"pc", "ok", "addr"}`:
+  the inclusive runs of the object its accesses are checked against and the hull of the
+  addresses they may take (an access's pointer fetch, the zero-page pair of `(zp),Y` or
+  `(zp,X)`, is no data access and is never skipped); in trap mode the same sites trap.
 
 Address constants print relative to the region holding them, or to the code span or loaded image when the program holds them (any other, a device's or a vector's, prints as it is)
 (`R2_ORG + 0x10`, `CODE_ORG + 0x21`, `IMG_ORG + ...`): a constant reaching an access address
@@ -828,7 +846,9 @@ past the cell end at another byte than the cell's other values (`LDA #imm` and `
 leaves the cell's values unknown. Other traps: a deopt the lift keeps (an index past
 its table's extent or a store's past `loaded`, an opcode cell some store writes with unknown values holding a value
 outside its set, a store whose address is unknown into constant code or a table that
-changes it, a store that may hit the stack, a guard it could not prove).
+changes it, a store that may hit the stack, a guard it could not prove). With
+`overrun="zero"` an access the memory map bounds traps nowhere (*Memory*); every other guard
+traps as before.
 
 The stack is the calling convention's: every entry starts at `SP = $FD`, so the stack bytes
 the program can hold are known (*Stack extent*). A pointer access is not checked against
@@ -871,7 +891,7 @@ cell, the pointer or the address), and as the kind has them:
 | `index` | an index past its table's extent: `tables`, each `{of, base, end, by, store}`, `of` `"jump"` (a transfer's target words), `"branch"` (branch offsets), `"cell"` (values a store at `store` writes into a code cell), `"data"` (a pointer's seed words or other values) or `"store"` (a store's run inside `loaded`), the column at `base` ending at `end` (exclusive) at `by` `"object"` (the next object the code accesses), `"code"` (an instruction byte), `"loaded"` (the end of `loaded`), `"target"` (a target of the transfer), `"column"` (a byte another column reads) or `"wrap"` |
 | `opcode` | an opcode cell holding a value outside its variants (`ok`) |
 | `codechk` | a store (`addr` its interval) changing constant code |
-| `window`, `objchk` | a pointer pair's (`pair`) word in a zone's window; outside object `obj`, checked at an entry, a defining load, after a defining store or after a walk, or before a load the memory map bounds (`def`: `entry`, `load`, `store`, `walk`, `machine`) |
+| `window`, `objchk` | a pointer pair's (`pair`) word in a zone's window; outside object `obj`, checked at an entry, a defining load, after a defining store or after a walk, or before a load the memory map bounds (`def`: `entry`, `load`, `store`, `walk`, `machine`; none of `machine` with `overrun="zero"`, *Memory*) |
 | `stack`, `zone` | an access (`addr`) reaching page 1 outside the bytes it may, or a pointer store reaching a zone |
 | `return`, `txs`, `decimal`, `sp`, `bank` | a callee returning elsewhere than its call pushed; a `TXS` off the saved height; a pulled status setting `D`; SP or the bank configuration at no planned node |
 | `transfer`, `ind` | a computed transfer to an address its table lacks; an unresolved transfer's switch default (`targets` the table's, `resolved` whether the code resolves it) |
@@ -916,7 +936,8 @@ is its first part's) are one emission;
 `copies[pc]` sums, over its lift nodes and call chains, the most visits printing one of them.
 An instance function's operation is printed for each copy's instruction.
 
-The checks are the `objchk` tests (`cgen_outj` too, a checked read `Bbcj` one check), `codechk`, the bounds-checked readers'
+The checks are the `objchk` tests (`cgen_outj` too, a checked read `Bbcj` one check), the
+overrun-zero helpers' calls (`overrun`), `codechk`, the bounds-checked readers'
 calls (`rdCj`), the tests of a bounded access before its `oob_*` arm, `rd`/`wr` and `oob_*`
 calls, and the `index`, `window`, `zone` and `stack` guards a deopt tests with no call (one per
 printed `trap(k)`). A check's definitions: an `objchk` guard's after its defining store or

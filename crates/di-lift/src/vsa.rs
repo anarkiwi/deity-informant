@@ -1125,6 +1125,9 @@ pub(crate) struct Code<'a> {
     pub(crate) drive: bool,
     /// The variants, `(pc, op)` sorted, after which a path ends ([`unread`]).
     pub(crate) kill: Vec<(u16, u8)>,
+    /// Instruction starts whose loads may read 0 in place of a byte ([`Given::zeroed`]): their
+    /// values are their bytes' and 0, and none is the byte of a table.
+    pub(crate) zeroed: FixedBitSet,
 }
 
 /// Per store `(pc, opcode, access index)` the addresses it writes: a store with a set
@@ -1172,7 +1175,20 @@ impl<'a> Code<'a> {
             seed: None,
             drive: false,
             kill: Vec::new(),
+            zeroed: FixedBitSet::new(),
         }
+    }
+    /// Whether the loads at `pc` may read 0 in place of a byte ([`Code::zeroed`]).
+    pub(crate) fn zeroed(&self, pc: u16) -> bool {
+        self.zeroed.contains(pc as usize)
+    }
+    /// The values a load at `pc` reads besides its bytes': 0 where it is [`Code::zeroed`].
+    fn zero_set(&self, pc: u16) -> Bits {
+        let mut out = Bits::default();
+        if self.zeroed(pc) {
+            out.add(0);
+        }
+        out
     }
     /// The carry group of the instruction at `pc` writing register `r`: its class's least.
     pub(crate) fn grp(&self, pc: u16, r: usize) -> u32 {
@@ -1244,6 +1260,9 @@ impl<'a> Code<'a> {
     /// index register (absolute or unindexed), where every address it may name lies in one
     /// run of [`Code::ram`].
     fn src(&self, pc: u16, op: u8, st: &St) -> Option<(u16, u8)> {
+        if self.zeroed(pc) {
+            return None;
+        }
         let Some(Tab::T { reg, .. }) = table(self, pc, op) else {
             return None;
         };
@@ -1302,7 +1321,7 @@ impl<'a> Code<'a> {
     /// constant bytes and described device registers from its operand plus its index
     /// register's values.
     fn load_set(&self, pc: u16, op: u8, st: &St) -> Option<Bits> {
-        let mut out = Bits::default();
+        let mut out = self.zero_set(pc);
         for a in self.set_addrs(pc, op, st)? {
             match self.dev.contains(a as usize) {
                 true => out = out.or(self.dev_set(a as u16, st)?),
@@ -1373,7 +1392,7 @@ impl<'a> Code<'a> {
     /// The values the `(zp),Y` load of opcode `op` at `pc` reads in state `st` when every
     /// byte it reaches ([`Code::ptr_addrs`]) is constant.
     fn ptr_set(&self, pc: u16, op: u8, st: &St) -> Option<Bits> {
-        let mut out = Bits::default();
+        let mut out = self.zero_set(pc);
         for a in self.ptr_addrs(pc, op, st)? {
             out.add(self.byte(a as u32, st)?.value()?);
         }
@@ -1391,8 +1410,16 @@ impl<'a> Code<'a> {
     /// bytes: the hull of constant bytes ([`Code::konst`]), else of the bytes' bounds
     /// ([`Code::byte`]); where `clip` lists the bytes an indexed load at `pc` reads, the hull
     /// of those in `a`; from a constant base plus an index register, of the bytes its values
-    /// address.
+    /// address; with 0 at a [`Code::zeroed`] start.
     pub(crate) fn load(&self, pc: u16, op: u8, a: Iv, st: &St) -> Option<Iv> {
+        let r = self.load_bytes(pc, op, a, st)?;
+        Some(match self.zeroed(pc) {
+            true => hull(r, Iv::exact(0)),
+            false => r,
+        })
+    }
+    /// [`Code::load`] of the bytes alone.
+    fn load_bytes(&self, pc: u16, op: u8, a: Iv, st: &St) -> Option<Iv> {
         let byte = |x: u32| self.byte(x, st);
         let r = crate::dispatch::index_reg(Template::of(op));
         if let Some((r, base)) = r.and_then(|r| Some((r, self.base(pc, op, r)?))) {
@@ -2040,6 +2067,9 @@ fn store_base(t: &Template, b: [Option<u8>; 2]) -> Option<u16> {
 /// The tag of the byte the instruction `op` at `pc` loads when its address is its operand
 /// plus at most one index register (no memory pointer, no cell operand).
 pub(crate) fn table(code: &Code, pc: u16, op: u8) -> Option<Tab> {
+    if code.zeroed(pc) {
+        return None;
+    }
     let reg = crate::dispatch::index_reg(Template::of(op)).map_or(NOREG, |r| r as u8);
     crate::dispatch::load_addr(code, pc, op, reg, 0)?;
     Some(Tab::T {
@@ -3375,6 +3405,7 @@ fn reach(
         dev: code.dev.clone(),
         classes: code.classes.clone(),
         seed: code.seed.clone(),
+        zeroed: code.zeroed.clone(),
         ..Code::new(code.img, code.cells, code.known, code.devices, code.ran)
     };
     let mut sh = p.sh;
@@ -3799,6 +3830,9 @@ pub struct Given<'a> {
     pub drive: Option<&'a [(u16, Vec<u8>)]>,
     /// Find [`Analysis::exit`].
     pub exit: bool,
+    /// Instruction starts whose loads may read 0 in place of a byte (the memory map's
+    /// accesses outside their objects, [`crate::Opts::overrun_zero`]).
+    pub zeroed: &'a FixedBitSet,
 }
 
 /// The runs of the loaded program outside page 1 and the volatile ranges ([`Code::ram`]).
@@ -3840,6 +3874,7 @@ fn code_of<'a>(
         aimed: given.aimed.clone(),
         ram: ram(given),
         dev,
+        zeroed: given.zeroed.clone(),
         ..Code::new(img, cells, given.known, given.devices, given.ran)
     }
 }
