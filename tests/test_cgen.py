@@ -5211,6 +5211,325 @@ def test_carry_chain_is_one_16_bit_add(prefix, tmp_path):
     assert "<< 8" in c and not re.search(r"\(v\d+ < v\d+\)", c)
 
 
+SPLIT = """
+init:   LDX #$00
+r:      LDA ptrs,X
+        STA $FB
+        LDA ptrs+1,X
+        STA $FC
+        LDY #$01
+        LDA rel,X
+        CLC
+        ADC #lo(base)
+        STA ($FB),Y
+        INY
+        LDA rel+1,X
+        ADC #hi(base)
+        STA ($FB),Y
+        INX
+        INX
+        CPX #$04
+        BNE r
+        LDA #lo(base)
+        STA i0+1
+        LDA #hi(base)
+        STA i1+1
+        RTS
+play:   LDY cursor
+o0:     LDA tlo,Y
+        CLC
+i0:     ADC #$00
+        STA $20
+{second}o1:     LDA thi,{index}
+i1:     ADC #$00
+        STA $21
+{between}        LDY #$00
+        LDA ($20),Y
+        STA $C000
+        INY
+        LDA ($20),Y
+        STA $C001
+        INC cursor
+        INC other
+        RTS
+ptrs:   .byte lo(o0), hi(o0), lo(o1), hi(o1)
+rel:    .byte lo(tlo-base), hi(tlo-base), lo(thi-base), hi(thi-base)
+base:
+tlo:    .byte lo(d0-base), lo(d1-base), lo(d2-base), lo(d3-base)
+thi:    .byte hi(d0-base), hi(d1-base), hi(d2-base), hi(d3-base)
+d0:     .byte 1,2,3
+d1:     .byte 4,5,6
+d2:     .byte 7,8,9
+d3:     .byte 10,11,12
+cursor: .byte 0
+other:  .byte 0
+end:
+"""
+
+
+def split_src(second="", index="Y", between=""):
+    """``SPLIT``: ``play`` reads a pointer's low and high bytes from two tables at one index
+    (``Y``, or ``index`` loaded by ``second``) plus an offset init patches, stores them to the
+    pair ``$20``, ``$21`` and reads through it, ``between`` being code before the reads."""
+    return SPLIT.format(second=second, index=index, between=between)
+
+
+def split_play(prefix, tmp_path, src):
+    """``(play's text, c)`` of ``src`` translated, replayed over each table entry."""
+    img, labels, loaded = assemble(src)
+    c, h, _ = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
+    play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", 0)] * 4)
+    return body_of(c, "play"), c
+
+
+def word_of_call(body):
+    """The variable the word the split-table reader returns is assigned to."""
+    return re.search(r"uint16_t (v\d+) = W\d+c\d+\(", body).group(1)
+
+
+def test_a_split_table_word_is_read_once_and_used_as_one_value(prefix, tmp_path):
+    """A 16-bit pointer read from a table split into low and high bytes at one index, plus an
+    offset, stored to a zero-page pair and read through it, is one variable: one call of the
+    reader of the split table (each read checked into its object first, in order, the trap
+    codes passed), the pair stored from the word and the reads through it using the word."""
+    body, c = split_play(prefix, tmp_path, split_src())
+    v = word_of_call(body)
+    assert len(re.findall(r"\bW\d+c0\(", body)) == 1 and ", 2, 3)" in body
+    assert f"R0[0] = {v};" in body and f"R0[1] = {v} >> 8;" in body
+    assert re.search(rf"B0c\d+\({v}, ", body) and "R0[0] |" not in body and body.count("trap") == 0
+    assert re.search(r"static uint8_t R\d+c0\(uint16_t a, uint8_t k\) \{\n  if \(", c)
+    assert len(re.findall(r"\bstatic uint16_t W\d+c0\(", c)) == 1 and c.count("trap(k)") >= 1
+
+
+def test_tables_read_at_different_indices_are_not_one_word(prefix, tmp_path):
+    """Tables read at two index values (two reads of one cell no store separates are two
+    values here: the pair is stored between them) keep their own reads: each checked, none
+    the split-table reader."""
+    body, _ = split_play(prefix, tmp_path, split_src(second="        LDX other\n", index="X"))
+    assert not re.search(r"\bW\d+c0\(", body) and len(re.findall(r"\bR\d+c0\(", body)) == 2
+
+
+@pytest.mark.parametrize(
+    "between",
+    [
+        "        INC $20\n",
+        "        INC $21\n        DEC $21\n        INC $20\n",
+    ],
+    ids=["low byte incremented", "high byte incremented and restored"],
+)
+def test_a_pair_written_before_its_reads_is_read_again(prefix, tmp_path, between):
+    """A write the pair may meet between its stores and the reads through it leaves the
+    reads of the pair as they were: the word is not what they use."""
+    body, _ = split_play(prefix, tmp_path, split_src(between=between))
+    v = word_of_call(body)
+    assert not re.search(rf"\b(?:rd|B0c\d+)\((?:1 \+ )?{v}\b", body)
+
+
+def test_a_pair_that_is_not_adjacent_is_not_one_value(prefix, tmp_path):
+    """The high byte stored to ``$30``, not ``$21``, which init sets: the reads through
+    ``$20``, ``$21`` read the byte init left."""
+    src = (
+        split_src()
+        .replace("        STA $21", "        STA $30")
+        .replace(
+            "        RTS\nplay:", "        LDA #hi(d0)\n        STA $21\n        RTS\nplay:", 1
+        )
+    )
+    body, _ = split_play(prefix, tmp_path, src)
+    assert "(uint16_t)R0[1] << 8" in body and "R1[0] = " in body
+
+
+TAILS = """
+init:   LDX #$00
+r:      LDA ptrs,X
+        STA $FB
+        LDA ptrs+1,X
+        STA $FC
+        LDY #$01
+        LDA rel,X
+        CLC
+        ADC #lo(base)
+        STA ($FB),Y
+        INY
+        LDA rel+1,X
+        ADC #hi(base)
+        STA ($FB),Y
+        INX
+        INX
+        CPX #$02
+        BNE r
+        RTS
+play:   LDY cursor
+o0:     LDA tab,Y
+        BEQ l1
+        STA $C000
+        LDX other
+        BEQ l2
+        INC other
+l1:     LDX cursor
+        STX $C001
+        INC other
+        LDA other
+        AND #$01
+        BNE l3
+l2:     LDX other
+        STX $C002
+l3:     INC cursor
+        RTS
+ptrs:   .byte lo(o0), hi(o0)
+rel:    .byte lo(tab-base), hi(tab-base)
+base:
+tab:    .byte 3,0,9,4
+cursor: .byte 0
+other:  .byte 0
+end:
+"""
+
+
+def test_a_read_checked_into_its_object_is_a_call_and_the_code_after_it_stays_flat(
+    prefix, tmp_path
+):
+    """The read of a table at a relocated operand is a call of the reader of its region that
+    checks the address into the program's data first, the trap code passed: the check is not
+    an ``if`` nesting what follows it, so the code after the read that jumps into a tail
+    stays at the level of the function, each tail its own function and no ``goto`` left."""
+    img, labels, loaded = assemble(TAILS)
+    c, h, info = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
+    play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", 0)] * 4)
+    assert re.search(r"= R\d+c0\(\(K_\w+ \| \(\(uint16_t\)K_\w+ << 8\)\) \+ R\d+\[\w+\], 2\);", c)
+    assert len(re.findall(r"static uint8_t R\d+c0\(uint16_t a, uint8_t k\) \{", c)) == 1
+    assert c.count("CGEN_OBJ0_LIM") == 1 and "goto" not in c and info["structure"]["gotos"] == 0
+    assert re.search(r"static void play_\d+_L\d+\(void\)", c)
+
+
+WORD_MLIR = """"builtin.module"() ({
+  "func.func"() <{function_type = (i8, i8, i8, i8) -> i16, sym_name = "f", sym_visibility = "private"}> ({
+  ^bb0(%a: i8, %b: i8, %d: i8, %e: i8):
+    %g = "memref.get_global"() <{name = @M}> : () -> memref<65536xi8>
+    %c2 = "arith.constant"() <{value = 2 : index}> : () -> index
+    %c3 = "arith.constant"() <{value = 3 : index}> : () -> index
+    %k = "arith.constant"() <{value = 7 : i16}> : () -> i16
+    %s8 = "arith.constant"() <{value = 8 : i16}> : () -> i16
+    %lo = "arith.addi"(%a, %b) <{overflowFlags = #arith.overflow<none>}> : (i8, i8) -> i8
+    "memref.store"(%lo, %g, %c2) : (i8, memref<65536xi8>, index) -> ()
+    %bad = "arith.cmpi"(%d, %e) <{predicate = 0 : i64}> : (i8, i8) -> i1
+    "cf.cond_br"(%bad)[^bb1, ^bb2] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+  ^bb1:
+    "func.call"(%k) <{callee = @trap}> : (i16) -> ()
+    %z0 = "arith.constant"() <{value = 0 : i16}> : () -> i16
+    "func.return"(%z0) : (i16) -> ()
+  ^bb2:
+    {between}
+    %carry = "arith.cmpi"(%lo, %a) <{predicate = 6 : i64}> : (i8, i8) -> i1
+    %z = "arith.extui"(%carry) : (i1) -> i8
+    %x = "arith.addi"(%d, %e) <{overflowFlags = #arith.overflow<none>}> : (i8, i8) -> i8
+    %hi = "arith.addi"(%x, %z) <{overflowFlags = #arith.overflow<none>}> : (i8, i8) -> i8
+    %cx = "arith.cmpi"(%x, %d) <{predicate = 6 : i64}> : (i8, i8) -> i1
+    "memref.store"(%hi, %g, %c3) : (i8, memref<65536xi8>, index) -> ()
+    {after}
+    %l2 = "memref.load"(%g, %c2) : (memref<65536xi8>, index) -> i8
+    %l3 = "memref.load"(%g, %c3) : (memref<65536xi8>, index) -> i8
+    %e2 = "arith.extui"(%l2) : (i8) -> i16
+    %e3 = "arith.extui"(%l3) : (i8) -> i16
+    %sh = "arith.shli"(%e3, %s8) <{overflowFlags = #arith.overflow<none>}> : (i16, i16) -> i16
+    %w = "arith.ori"(%e2, %sh) : (i16, i16) -> i16
+    "func.return"(%w) : (i16) -> ()
+  }) : () -> ()
+}) : () -> ()
+"""
+#: A module stand-in: no function is inert, a call may write any byte, no byte is a constant.
+STUB = SimpleNamespace(
+    inert=set(), written=lambda name: [(0, 0xFFFF)], known=lambda *_: None, forget=lambda: None
+)
+IO_WRITE = '"func.call"(%k, %a) <{callee = @io_write}> : (i16, i8) -> ()'
+STORE_B = '"memref.store"(%b, %g, %c2) : (i8, memref<65536xi8>, index) -> ()'
+
+
+def word_func(between="", after="", dead=("%cx",)):
+    """``(func, live values)`` of ``WORD_MLIR``: a low byte stored, a check leaving by a trap,
+    then the carry chain of its high byte, stored, and both bytes read again; ``dead`` values
+    nothing needs."""
+    text = WORD_MLIR.replace("{between}", between).replace("{after}", after)
+    f = printer.Func(mlir.parse(text).regions[0][0].ops[0], STUB)
+    live = {r for b in f.blocks for o in b.ops for r in o.res} - set(dead)
+    return f, live
+
+
+def stores(f):
+    """The blocks holding the stores of ``f``, in order, with the byte each writes."""
+    return [
+        (b.name, f.const_of(f.address(o)))
+        for b in f.blocks
+        for o in b.ops
+        if o.name == "memref.store"
+    ]
+
+
+def test_a_carry_chain_with_dead_flags_is_a_16_bit_add_and_its_low_store_follows_the_check():
+    """The carry of the low add feeding the high add makes both one 16-bit add even where the
+    high add's own carry is computed and unused; the store of the low byte, before a check
+    leaving by a trap, is made after it, where the word is."""
+    f, live = word_func()
+    assert stores(f) == [("bb0", 2), ("bb2", 3)]
+    assert f.carry16(live, {})
+    assert stores(f) == [("bb2", 2), ("bb2", 3)]
+    names = [o.name for o in f.block_of["bb2"].ops]
+    assert names.index("arith.trunci") < names.index("memref.store")
+    assert "arith.shrui" in names
+
+
+def test_a_carry_chain_whose_high_carry_is_needed_is_not_a_16_bit_add():
+    """A high carry something needs is a use of the high add's operand besides the add: the
+    chain stays as it was."""
+    f, live = word_func(dead=())
+    assert not f.carry16(live, {}) and stores(f) == [("bb0", 2), ("bb2", 3)]
+
+
+@pytest.mark.parametrize(
+    "between,moved",
+    [
+        ("", True),
+        ('"memref.store"(%b, %g, %c3) : (i8, memref<65536xi8>, index) -> ()', True),
+        ('%u = "memref.load"(%g, %c2) : (memref<65536xi8>, index) -> i8', False),
+        (IO_WRITE, False),
+    ],
+    ids=["nothing", "store of another byte", "load of the byte", "a call"],
+)
+def test_a_store_moves_past_a_check_only_where_nothing_between_meets_it(between, moved):
+    """The store of the low byte moves to the high add past a block that only checks for a
+    trap, and past what neither reads nor writes its byte; not past a read of it or a call."""
+    f, live = word_func(between)
+    f.carry16(live | {"%u"}, {})
+    assert (("bb0", 2) not in stores(f)) == moved
+
+
+def test_a_value_is_next_to_its_use_past_a_check_that_leaves_by_a_trap_and_no_effect():
+    """A use in the block a check leaving by a trap continues to follows the value with no
+    effect between; an effect before the use, or a use before the value, is not adjacent."""
+    f, _ = word_func()
+    bad, carry = f.defs["%bad"], f.defs["%carry"]
+    assert f.adjacent(bad, carry) and f.between(bad, carry) is not None
+    assert f.between(carry, bad) is None and not f.adjacent(carry, bad)
+    f, _ = word_func(between=IO_WRITE)
+    assert not f.adjacent(f.defs["%bad"], f.defs["%carry"])
+
+
+@pytest.mark.parametrize(
+    "after,joined",
+    [("", True), (STORE_B, False), (IO_WRITE, False)],
+    ids=["nothing", "a store of the byte", "a call"],
+)
+def test_the_halves_of_a_word_stored_and_read_again_are_the_word(after, joined):
+    """``(high << 8) | low`` of the two bytes a 16-bit value was stored as, read again, is the
+    value where nothing may write either byte between; a store of one of them or a call that
+    may write it leaves the loads."""
+    f, live = word_func(after=after)
+    f.carry16(live, {})
+    assert f.pairs() == joined
+    word = f.defs[f.block_of["bb2"].ops[-1].args[0]]
+    assert (word.name == "arith.addi") == joined
+
+
 def probed(src):
     """``src`` with init first storing a volatile byte it reads: its run depends on the
     device, so it is replayed, not translated."""

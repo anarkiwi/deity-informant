@@ -393,6 +393,8 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         self.kparam, self.kvals, self.ktabs, self.kmemo, self.kiv = None, None, {}, {}, {}
         self.kptrs, self.wide, self.promoted, self.aware = {}, {}, {}, set()
         self.steps, self.elements, self.knowns, self.symbols = {}, {}, {}, None
+        #: The 16-bit values printed as one read of a split table (:meth:`CFunc.word_reads`).
+        self.wordreads = {}
         self.index()
         self.idom = self.dominators()
         self.live_args = list(range(len(self.blocks[0].args)))
@@ -494,20 +496,22 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             self.ivs = saved
         return out
 
-    def carry16(self):
+    def carry16(self, live, funcs):
         """Rewrite each 8-bit add whose carry only feeds the add of the byte above it as one
         16-bit add: ``lo = a + b`` and ``hi = d + e + (lo < a)`` become the bytes of
-        ``(d:a) + (e:b)``, the 6502's own carry chain. The new operations go before the high
-        add; ``lo``'s uses after it read the new low byte."""
+        ``(d:a) + (e:b)``, the 6502's own carry chain, read where something needs it
+        (:meth:`live_users`). The new operations go before the high add; ``lo``'s uses after
+        it read the new low byte, and the stores of ``lo`` before it move to it
+        (:meth:`sunk`). Whether any chain was found."""
         found, used = [], set()
         for o in self.walk():
-            pat = self.carry_chain(o)
+            pat = self.carry_chain(o, live, funcs)
             if pat is not None and not {pat[0].res[0], pat[5]} & used:
                 found.append(pat)
                 used |= {pat[0].res[0], pat[5]}
         if not found:
-            return
-        hi_of, lo_of = {}, {}
+            return False
+        hi_of, lo_of, moves = {}, {}, []
         for k, (top, a, b, hd, he, lo) in enumerate(found):
             ops, low, high = _add16(f"%w{k}", top.pc, (hd, a), (he, b))
             lo_of[lo] = (top, low)
@@ -517,6 +521,11 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             for x in ops:
                 x.parent = blk
             self.reindex()
+            moves += [(u, top, low) for u in self.live_users(lo, live, funcs)]
+        for u, top, low in moves:
+            if u.name == "memref.store" and u.args[0] in lo_of and not self.after(top, u):
+                if self.sink(u, top, low):
+                    self.reindex()
         for o in self.walk():
             for i, x in enumerate(o.args):
                 if x in hi_of:
@@ -524,6 +533,175 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 elif x in lo_of and self.after(lo_of[x][0], o):
                     o.args[i] = lo_of[x][1]
         self.reindex()
+        return True
+
+    def sink(self, st, top, low):
+        """Move store ``st`` to just before ``top`` (writing ``low``) when nothing between
+        reads or writes what it writes and the way is a run of blocks each entered only from
+        the one before, left otherwise by a ``trap``, which does not return (:meth:`sunk`)."""
+        if self.sunk(st, top) is None:
+            return False
+        blk, i = self.where[id(st)]
+        del blk.ops[i]
+        end = self.where[id(top)][0]
+        end.ops.insert(next(j for j, x in enumerate(end.ops) if x is top), st)
+        st.parent, st.args[0] = end, low
+        return True
+
+    def between(self, a, b):
+        """The operations between operation ``a`` and the later ``b`` when ``a`` runs only
+        before ``b`` along one run of blocks, each entered only from the one before and left
+        for the next or a ``trap``, which does not return; else None."""
+        blk, i = self.where[id(a)]
+        end, at = self.where[id(b)]
+        if blk is end:
+            return blk.ops[i + 1 : at] if i < at else None
+        out, seen = blk.ops[i + 1 : -1], {blk.name}
+        while blk is not end:
+            term = blk.ops[-1]
+            nxt = [s for s in term.succs if not self.traps(self.block_of[s])]
+            if term.name not in ("cf.br", "cf.cond_br") or len(nxt) != 1:
+                return None
+            blk = self.block_of[nxt[0]]
+            if self.pred_counts()[blk.name] != 1 or blk.name in seen:
+                return None
+            seen.add(blk.name)
+            out = out + (blk.ops[:at] if blk is end else blk.ops[:-1])
+        return out
+
+    def sunk(self, st, top):
+        """The blocks from the one holding store ``st`` to the one holding ``top`` when ``st``
+        may move to ``top``: no operation between (:meth:`between`) reads or writes the bytes
+        ``st`` writes, or calls out; else None."""
+        ops = self.between(st, top)
+        if ops is None:
+            return None
+        lo, hi = self.addr_iv(st)
+        for x in ops:
+            if x.name in ("memref.store", "memref.load") and x.args[-2] in self.globals:
+                a, b = self.addr_iv(x)
+                if a <= hi and lo <= b:
+                    return None
+            elif self.effect(x):
+                return None
+        return ops
+
+    def word_of(self, v):
+        """``(w, 0)`` or ``(w, 8)`` when byte ``v`` is the low or high byte of the 16-bit
+        value ``w`` (``trunci w``, ``trunci (w >> 8)``), else None."""
+        d = self.defs.get(v)
+        if d is None or d.name != "arith.trunci" or self.width(d.args[0]) != 16:
+            return None
+        e = self.defs.get(d.args[0])
+        if e is not None and e.name == "arith.shrui" and self.const_of(e.args[1]) == 8:
+            return e.args[0], 8
+        return d.args[0], 0
+
+    def joined(self, o):
+        """``(high, low, chain)`` when ``o`` is ``(high << 8) | low`` of two byte values, the
+        operations of ``chain`` the shift and the two zero extensions."""
+        if o.name != "arith.ori" or self.width(o.res[0]) != 16:
+            return None
+        for a, b in (o.args, o.args[::-1]):
+            hi, lo = self.defs.get(a), self.defs.get(b)
+            if (
+                hi is None
+                or lo is None
+                or hi.name != "arith.shli"
+                or self.const_of(hi.args[1]) != 8
+            ):
+                continue
+            up = self.defs.get(hi.args[0])
+            if up is not None and (up.name, lo.name) == ("arith.extui", "arith.extui"):
+                if self.width(up.args[0]) == self.width(lo.args[0]) == 8:
+                    return up.args[0], lo.args[0], (hi, up, lo)
+        return None
+
+    def reaching(self, k):
+        """``{id(load): store}`` of the loads of byte ``k`` (a constant address) that one store
+        of ``k`` reaches along every path, with no operation that may write ``k`` after it
+        (a store whose address interval holds it, a call out)."""
+        mem = self.globals
+        preds = {b.name: [] for b in self.blocks}
+        for b in self.blocks:
+            for s in b.ops[-1].succs:
+                preds[s].append(b.name)
+
+        def exact(x):
+            return x.name == "memref.store" and self.const_of(self.address(x)) == k
+
+        def writes(x):
+            if id(x) in self.dropped:
+                return False
+            if x.name == "memref.store" and x.args[-2] in mem:
+                lo, hi = self.addr_iv(x)
+                return lo <= k <= hi
+            if x.name != "func.call":
+                return False
+            return any(a <= k <= b for a, b in self.mod.written(x.prop("callee")[1:]))
+
+        def run(b, state, found=None):
+            for x in b.ops:
+                if found is not None and x.name == "memref.load" and x.args[-2] in mem:
+                    if self.const_of(self.address(x)) == k:
+                        found[id(x)] = state
+                elif writes(x):
+                    state = x if exact(x) else ""
+            return state
+
+        out, work = {}, list(self.blocks)
+        while work:
+            b = work.pop(0)
+            ins = [out[p] for p in preds[b.name] if p in out]
+            state = "" if b is self.blocks[0] else None
+            for x in ins:
+                state = x if state is None or state is x else ""
+            if state is None:
+                continue
+            new = run(b, state)
+            if out.get(b.name, 0) is not new:
+                out[b.name] = new
+                work += [self.block_of[s] for s in b.ops[-1].succs]
+        found = {}
+        for b in self.blocks:
+            ins = [out[p] for p in preds[b.name] if p in out]
+            state = "" if b is self.blocks[0] else None
+            for x in ins:
+                state = x if state is None or state is x else ""
+            if state is not None:
+                run(b, state, found)
+        return {i: st for i, st in found.items() if st}
+
+    def source(self, v, reach):
+        """``(w, 0|8)`` of byte ``v`` (:meth:`word_of`), or of the byte a load of a constant
+        address reads where one store reaches it (``reach``, a cache of :meth:`reaching`)."""
+        d = self.defs.get(v)
+        if d is None or d.name != "memref.load" or d.args[-2] not in self.globals:
+            return self.word_of(v)
+        k = self.const_of(self.address(d))
+        if k is None or self.named(d) is not None:
+            return None
+        if k not in reach:
+            reach[k] = self.reaching(k)
+        st = reach[k].get(id(d))
+        return None if st is None else self.word_of(st.args[0])
+
+    def pairs(self):
+        """Replace each ``(high << 8) | low`` whose bytes are the halves of one 16-bit value
+        ``w`` (:meth:`source`: its ``trunci`` halves, or loads of the two bytes ``w`` was stored
+        to) by ``w``. Whether any was."""
+        sub, reach = {}, {}
+        for o in self.walk():
+            hl = None if id(o) in self.dropped else self.joined(o)
+            if hl is None:
+                continue
+            hi, lo = (self.source(x, reach) for x in hl[:2])
+            if hi is not None and lo is not None and hi == (lo[0], 8) and lo[1] == 0:
+                sub[o.res[0]] = lo[0]
+        if sub:
+            self.substitute(sub)
+            self.reindex()
+        return bool(sub)
 
     def fold_flags(self):
         """Read each truth value (:meth:`is_flag`) an arithmetic operation consumes as the
@@ -622,9 +800,10 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         (ba, ia), (bb, ib) = self.where[id(a)], self.where[id(b)]
         return ib > ia if ba is bb else self.dominates(ba.name, bb.name)
 
-    def carry_chain(self, o):
+    def carry_chain(self, o, live, funcs):
         """``(high add, a, b, d, e, lo)`` when ``o`` is ``lo < a`` (unsigned, ``lo = a + b`` in 8
-        bits) and its value only feeds, zero-extended, ``hi = (d + e) + carry``."""
+        bits) and its value only feeds, zero-extended, ``hi = (d + e) + carry``, no other
+        operation needing a value of the chain but ``lo``."""
         if o.name != "arith.cmpi" or o.int_prop("predicate") != 6:
             return None
         lo, a = o.args
@@ -632,17 +811,17 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         if d is None or d.name != "arith.addi" or a not in d.args or self.types[lo] != "i8":
             return None
         b = d.args[1] if d.args[0] == a else d.args[0]
-        users = self.users.get(o.res[0], [])
+        users = self.live_users(o.res[0], live, funcs)
         if len(users) != 1 or users[0].name != "arith.extui":
             return None
         z = users[0].res[0]
-        zu = self.users.get(z, [])
+        zu = self.live_users(z, live, funcs)
         if len(zu) != 1 or zu[0].name != "arith.addi" or self.types[z] != "i8":
             return None
         top = zu[0]
         x = top.args[1] if top.args[0] == z else top.args[0]
         dx = self.defs.get(x)
-        if dx is None or dx.name != "arith.addi" or len(self.users.get(x, [])) != 1:
+        if dx is None or dx.name != "arith.addi" or len(self.live_users(x, live, funcs)) != 1:
             return None
         return (top, a, b, dx.args[0], dx.args[1], lo)
 
@@ -1763,34 +1942,44 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             return True
         return callee == "@io_read" and self.mod.mem.sensitive_in(*self.iv(o.args[0]))
 
+    def kept(self, o, live, funcs):
+        """The indices of the operands of ``o`` that something reads, given the values
+        ``live`` and the functions ``funcs`` by name, or None when nothing needs ``o``."""
+        callee = o.prop("callee")[1:] if o.name == "func.call" else None
+        if callee in self.mod.inert and not any(r in live for r in o.res) or id(o) in self.unread:
+            return None
+        if callee in funcs:
+            return set(funcs[callee].live_args)
+        if o.name == "func.return":
+            return set(self.live_res)
+        if o.name.startswith("cf."):
+            return {
+                i
+                for s, idx, _ in o.edges()
+                for (a, _), i in zip(self.block_of[s].args, idx)
+                if a in live
+            } | ({0} if o.name != "cf.br" else set())
+        if not o.res or any(r in live for r in o.res) or self.root(o):
+            return set(range(len(o.args)))
+        return None
+
+    def live_users(self, v, live, funcs):
+        """The operations that read value ``v`` where something needs them (:meth:`kept`)."""
+        out = []
+        for u in self.users.get(v, ()):
+            keep = self.kept(u, live, funcs)
+            if keep is not None and any(a == v and i in keep for i, a in enumerate(u.args)):
+                out.append(u)
+        return out
+
     def settle(self, live, funcs):
         """Drop what ``live`` does not hold: pure operations and reads, the arguments of
         unused parameters, unused returned values and the edges into unused block
         arguments; count the uses left."""
         self.uses = {}
         for o in self.walk():
-            callee = o.prop("callee")[1:] if o.name == "func.call" else None
-            if (
-                callee in self.mod.inert
-                and not any(r in live for r in o.res)
-                or id(o) in self.unread
-            ):
-                self.dropped.add(id(o))
-                continue
-            if callee in funcs:
-                keep = set(funcs[callee].live_args)
-            elif o.name == "func.return":
-                keep = set(self.live_res)
-            elif o.name.startswith("cf."):
-                keep = {
-                    i
-                    for s, idx, _ in o.edges()
-                    for (a, _), i in zip(self.block_of[s].args, idx)
-                    if a in live
-                } | ({0} if o.name != "cf.br" else set())
-            elif callee in funcs or not o.res or any(r in live for r in o.res) or self.root(o):
-                keep = set(range(len(o.args)))
-            else:
+            keep = self.kept(o, live, funcs)
+            if keep is None:
                 self.dropped.add(id(o))
                 continue
             for i, a in enumerate(o.args):
@@ -1864,10 +2053,10 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         return []
 
     def adjacent(self, d, u):
-        """Whether use ``u`` of ``d``'s value is in ``d``'s block with no effect between."""
-        blk, i = self.where[id(d)]
-        ublk, j = self.where[id(u)]
-        return ublk is blk and not any(self.effect(x) for x in blk.ops[i + 1 : j])
+        """Whether use ``u`` of ``d``'s value follows ``d`` with no effect between: in its block,
+        or past blocks that only check for a ``trap`` (:meth:`between`)."""
+        ops = self.between(d, u)
+        return ops is not None and not any(self.effect(x) for x in ops)
 
     def const_of(self, v):
         """The value of constant ``v``, or None."""
@@ -2115,6 +2304,8 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
     def reads(self, o):
         """The values printing operation ``o`` reads: an access reads its address through
         :meth:`address` less a constant offset, not the ``index`` value."""
+        if id(o) in self.wordreads:
+            return list(self.wordreads[id(o)][2:5])
         addr = None
         if o.name in ("memref.load", "memref.store") and o.args[-2] in self.globals:
             addr = len(o.args) - 1
@@ -2699,6 +2890,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         if id(o) in self.f.aware and self.mod.var_at and how[0] != "checked":
             how = ("any",)
         if how[0] in ("region", "held"):
+            fused = self.fusion().get(id(o)) if how[0] == "region" else None
+            if fused is not None:
+                return self.guarded_read(o, how[1], fused)
             return self.mem_ref(o, how[-1], how[0] == "held")
         if how[0] == "barray":
             # The block's reader, checking the address first where a check guarding the load
@@ -2755,6 +2949,29 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         node = self.check("oob" if how[0] == "code" else "rd", o, cn.call(fn, a.node))
         return E(node, 0, 255, False, True, a.refs)
 
+    def guarded_read(self, o, k, fused):
+        """The load ``o`` of region ``k`` through the reader that checks its address into
+        object ``fused[0]`` first and leaves by trap ``fused[1]`` (:meth:`Module.guarded_fn`)."""
+        a = self.addr(self.f.address(o))
+        j, trap = fused
+        self.mod.traps.add(trap)
+        self.mod.regions_used.add(k)
+        node = cn.call(self.mod.guarded_fn(k, j), a.node, cn.const(trap))
+        return E(self.check("objchk", o, node, trap), 0, 255, False, True, a.refs)
+
+    def plain_region(self, x, cont):
+        """Whether region load ``x`` of block ``cont`` addresses its region by a 16-bit value
+        with no constant offset, as its guarded reader (:meth:`guarded_read`) does, after
+        nothing in the block that has an effect: the check the reader makes comes where the
+        branch to the trap was."""
+        f = self.f
+        a = f.address(x)
+        c, rest = f.split(a)
+        mapped = id(x) in f.aware and bool(self.mod.var_at)
+        before = cont.ops[: next(i for i, y in enumerate(cont.ops) if y is x)]
+        plain = c == 0 and rest is not None and f.width(a) == 16 and rest not in f.kptrs
+        return plain and not mapped and not any(f.effect(y) for y in before)
+
     def fusion(self):
         """``{id(op): ...}`` of the object checks a load through the data block's reader
         makes itself: the check's (the load) and the load's (``(j, k)``: the object, and the
@@ -2800,7 +3017,49 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
                 f.split_reads.add(id(x))
 
         self._fused = out
+        self.word_reads(out)
         return out
+
+    def word_reads(self, fused):
+        """Record in ``f.wordreads`` each 16-bit value ``(high << 8) | low`` of two guarded
+        reads of one region through the same object at one index from two bases (a table split
+        into its low and high bytes), nothing else reading the bytes, the high read directly
+        after the low and no effect between them or before the value: a call of one reader
+        (:meth:`word_read`) checks the low read, reads it, then the high one."""
+        f = self.f
+        for blk in f.blocks:
+            for o in blk.ops if blk.name in self.owned else ():
+                got = None if id(o) in f.dropped else f.joined(o)
+                if got is None:
+                    continue
+                hi, lo = (f.defs.get(v) for v in got[:2])
+                if not all(x is not None and isinstance(fused.get(id(x)), tuple) for x in (hi, lo)):
+                    continue
+                if any(f.uses.get(r) != 1 for r in (hi.res[0], lo.res[0])):
+                    continue
+                if any(f.uses.get(x.res[0]) != 1 for x in got[2]):
+                    continue
+                (bh, ih), (bl, il) = f.base_index(hi), f.base_index(lo)
+                same = fused[id(hi)][0] == fused[id(lo)][0] and ih == il
+                mid = f.between(lo, hi)
+                if not same or mid is None or any(f.effect(x) for x in mid):
+                    continue
+                if self.target(hi)[:2] != self.target(lo)[:2] or not f.adjacent(hi, o):
+                    continue
+                f.wordreads[id(o)] = (lo, hi, bl, bh, ih)
+
+    def word_read(self, o):
+        """The call of the reader of the table split into bytes that the 16-bit value of
+        operation ``o`` is (:meth:`word_reads`)."""
+        lo, hi, bl, bh, idx = self.f.wordreads[id(o)]
+        fused = self.fusion()
+        (j, klo), (_, khi) = fused[id(lo)], fused[id(hi)]
+        a, b, i = self.addr(bl), self.addr(bh), self.ex(idx)
+        k = self.target(lo)[1]
+        self.mod.traps.update((klo, khi))
+        self.mod.regions_used.add(k)
+        node = cn.call(self.mod.word_fn(k, j), a.node, b.node, i.node, cn.const(klo), cn.const(khi))
+        return E(self.check("objchk", lo, node, klo), 0, 0xFFFF, True, True, join(a, b, i)["refs"])
 
     def fused_load(self, c, cont):
         """The load of block ``cont`` through a data block's reader or array whose address
@@ -2812,7 +3071,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             (x for x in cont.ops if x.name == "memref.load" and f.address(x) == c.args[0]), None
         )
         how = None if x is None else self.target(x)[0]
-        if how not in ("block", "barray"):
+        if how not in ("block", "barray") and not (how == "region" and self.plain_region(x, cont)):
             return None
         if how == "barray":
             f.split_reads.add(id(x))
@@ -2903,6 +3162,8 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             return lit(0, w)
         if name == "memref.load":
             return self.load(o)
+        if id(o) in self.f.wordreads:
+            return self.word_read(o)
         if name == "arith.kfam":
             return self.kfam(o)
         if name == "func.call" and o.prop("callee") == "@objchk":
@@ -3890,6 +4151,8 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.ptr_slack = {}
         #: The block readers checking their address into an object (:meth:`checked_fn`).
         self.checked_fns = set()
+        #: The ``(region, object)`` pairs of the region readers checking their address first.
+        self.guarded, self.writes, self.words = set(), {}, set()
         #: The block arrays read through their unchecked reader ``Bbr(base, index)``.
         self.block_readers = set()
         #: The held spans whose bounds-checked readers find promoted cells' variables.
@@ -4005,22 +4268,15 @@ class Module:  # pylint: disable=too-many-instance-attributes
             if not any(read[x : y + 1].any() for x, y in ivs):
                 f.unread.add(id(o))
 
-    def prune(self):
-        """Keep the values something observable needs, over the whole module: a store, an
-        I/O access, a trap or a branch needs its operands, a used result of a lifted function
-        its returned operands, a used parameter its call sites' arguments. Calls pass only the
-        parameters used, functions return only the results used, the rest is dropped. The
-        bytes no store writes (:meth:`unwritten`) are found first."""
-        self.unwritten()
-        self.calls()
+    def mark(self):
+        """``{function name: values something needs}``: the roots' operands, and what each
+        needed value is computed from through block arguments, parameters (the call sites'
+        arguments) and results (the callee's returned operands); sets each function's used
+        parameters and results."""
         sites = self.sites
-        for f in self.funcs:
-            f.kfold()
-            f.carry16()
-        self.unread_stores()
         live, work = {f.name: set() for f in self.funcs}, []
 
-        def mark(f, v):
+        def need(f, v):
             if v not in live[f.name]:
                 live[f.name].add(v)
                 work.append((f, v))
@@ -4030,30 +4286,77 @@ class Module:  # pylint: disable=too-many-instance-attributes
             for o in f.walk():
                 if o.name in ("cf.cond_br", "cf.switch") or f.root(o):
                     for a in o.args[:1] if o.name.startswith("cf.") else o.args:
-                        mark(f, a)
+                        need(f, a)
         while work:
             f, v = work.pop()
             d = f.defs.get(v)
             if d is None and v in f.arg_src:
                 for o, i, _ in f.arg_src[v]:
-                    mark(f, o.args[i])
+                    need(f, o.args[i])
             elif d is None:
                 i = [a for a, _ in f.blocks[0].args].index(v)
                 f.live_args.append(i)
                 for g, o in sites.get(f.name, ()):
-                    mark(g, o.args[i])
+                    need(g, o.args[i])
             elif d.name == "func.call" and d.prop("callee")[1:] in sites:
                 h, j = self.by_name[d.prop("callee")[1:]], d.res.index(v)
                 if j not in h.live_res:
                     h.live_res.append(j)
                     for ret in (o for o in h.walk() if o.name == "func.return"):
-                        mark(h, ret.args[j])
+                        need(h, ret.args[j])
             else:
                 for a in d.args:
-                    mark(f, a)
+                    need(f, a)
         for f in self.funcs:
             f.live_args.sort()
             f.live_res = sorted(f.live_res) if f.private else []
+        return live
+
+    def prune(self):
+        """Keep the values something observable needs, over the whole module: a store, an
+        I/O access, a trap or a branch needs its operands, a used result of a lifted function
+        its returned operands, a used parameter its call sites' arguments. Calls pass only the
+        parameters used, functions return only the results used, the rest is dropped. The
+        bytes no store writes (:meth:`unwritten`) are found first."""
+        self.unwritten()
+        self.calls()
+        for f in self.funcs:
+            f.kfold()
+        self.unread_stores()
+        live = self.mark()
+        carried = [f.carry16(live[f.name], self.by_name) for f in self.funcs]
+        if any(carried):
+            live = self.mark()
+        self.settle(live)
+        self.writes = {}
+        paired = [f.pairs() for f in self.funcs]
+        if any(paired):
+            self.settle(self.mark())
+
+    def written(self, name):
+        """``[(lo, hi)]``: the addresses the stores of function ``name`` and of what it calls
+        may write; none for a function that is not one of the module's."""
+        if name in self.writes:
+            return self.writes[name]
+        seen, work, out = set(), [name], []
+        while work:
+            f = self.by_name.get(work.pop())
+            if f is None or f.name in seen:
+                continue
+            seen.add(f.name)
+            for o in f.walk():
+                if id(o) in f.dropped:
+                    continue
+                if o.name == "memref.store" and o.args[-2] in f.globals:
+                    out.append(f.addr_iv(o))
+                elif o.name == "func.call":
+                    work.append(o.prop("callee")[1:])
+        self.writes[name] = out
+        return out
+
+    def settle(self, live):
+        """Drop what ``live`` does not hold in every function (:meth:`Func.settle`), again
+        while that leaves another function with no effect."""
         while True:
             for f in self.funcs:
                 f.settle(live[f.name], self.by_name)
@@ -4523,6 +4826,19 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.objs_used.add(self.ptr_slack.get(j, (j,))[0])
         return f"{name}c{j}"
 
+    def guarded_fn(self, k, j):
+        """The name of the reader of region ``k`` that checks its address into object ``j``
+        first, leaving by the trap its caller passes."""
+        self.guarded.add((k, j))
+        return f"R{k}c{j}"
+
+    def word_fn(self, k, j):
+        """The name of the reader of a 16-bit table split into low and high bytes in region
+        ``k``, each read checked into object ``j`` (:meth:`guarded_fn`)."""
+        self.guarded.add((k, j))
+        self.words.add((k, j))
+        return f"W{k}c{j}"
+
     def block_c(self):  # pylint: disable=too-many-locals
         """The definitions of the data blocks' readers and writers (:meth:`block_fn`) and of
         the tests of a pointer outside an object of several runs (the ``.h``'s
@@ -4673,6 +4989,29 @@ class Module:  # pylint: disable=too-many-instance-attributes
             out.append(
                 cn.define(head, [cn.when(test, [trap]), cn.ret(cn.call(name, cn.ident("a")))])
             )
+        for k, j in sorted(self.guarded):
+            head = cn.function(f"R{k}c{j}", "uint8_t", [("a", "uint16_t"), ("k", kt)], ("static",))
+            test = self.outside(j, E(cn.ident("a"), 0, 0xFFFF))
+            elem = cn.index(f"R{k}", cn.binop("-", cn.ident("a"), cn.ident(f"R{k}_ORG")))
+            out.append(
+                cn.define(head, [cn.when(test, [cn.call("trap", cn.ident("k"))]), cn.ret(elem)])
+            )
+        for k, j in sorted(self.words):
+            params = [("lo", "uint16_t"), ("hi", "uint16_t"), ("i", "uint8_t")]
+            head = cn.function(
+                f"W{k}c{j}", "uint16_t", [*params, ("klo", kt), ("khi", kt)], ("static",)
+            )
+            read = f"R{k}c{j}"
+            low = cn.decl(
+                "l",
+                "uint8_t",
+                cn.call(read, cn.binop("+", cn.ident("lo"), cn.ident("i")), cn.ident("klo")),
+            )
+            high = cn.call(read, cn.binop("+", cn.ident("hi"), cn.ident("i")), cn.ident("khi"))
+            word = cn.binop(
+                "|", cn.binop("<<", cn.cast("uint16_t", high), cn.const(8)), cn.ident("l")
+            )
+            out.append(cn.define(head, [low, cn.ret(word)]))
         return out
 
     def choices(self, regs, spans, addr, indexed=None, tests=None):

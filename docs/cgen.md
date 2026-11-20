@@ -138,7 +138,17 @@ caller's return address. `tools/cgenplay.c` is a host harness.
    store unread nor the register-file positions the parameters are named by.
    An 8-bit add whose carry only feeds the add of the byte above it (`lo = a + b`,
    `hi = d + e + (lo < a)`, an `ADC` chain) becomes one 16-bit add of `(d:a) + (e:b)`, whose
-   bytes replace `hi` and the uses of `lo` after it.
+   bytes replace `hi` and the uses of `lo` after it: the carry of the low add is the carry out
+   of `a + b`, so the high byte of the sum is `d + e + (lo < a)` for every `a`, `b`, `d` and `e`.
+   Only the uses something needs count (an unused carry out of the high add does not keep the
+   chain apart). A store of `lo` before the high add moves to it, past the blocks that only
+   check for a `trap` (each entered only from the one before) and the operations that neither
+   read nor write its byte, so the word's two stores are one pair: the bytes of a word stored
+   so are written after the check of the read of its high byte, which differs from the machine
+   only if `trap` returns. Once the functions with no effect are known, `(high << 8) | low` of
+   two bytes that are the halves of one 16-bit value, or loads of the two bytes it was stored
+   to that no write (a store whose address interval holds the byte, a call whose callees may
+   write it) follows, is that value.
    A truth value (an `i1`, its zero extension, or a block argument every edge gives one) an
    operation reads as data, a carry or borrow the code leaves for an `ADC` or `SBC` without
    `CLC` or `SEC`, is the constant it is when its values over every combination of the values
@@ -165,6 +175,20 @@ caller's return address. `tools/cgenplay.c` is a host harness.
      intersect or they hold one value, back edges first; only values a copy connects merge.
      The copies left are a parallel assignment, sequenced through a temporary where a
      destination is read by another's source.
+   - *Checked reads*: a load of a region through an address no interval bounds, whose check
+     against a pointer object leaves by a `trap` before the load with no effect between, is a
+     call of `R<region>c<object>(a, k)`, one function per region and object that tests the
+     address and traps with `k` (passed) before it reads; the check is not a statement of its
+     own, so the code after the read is not nested in it. A 16-bit value `(high << 8) | low` of
+     two such reads of one region and object at one index from two base words (a table split
+     into its low and high bytes), no other operation reading either byte and no effect
+     between them, is one call of `W<region>c<object>(lo, hi, i, klo, khi)`: the low read, then
+     the high one, each checked as the machine's checks are in order. A single-use load moves
+     past blocks that only check for a `trap` (`Func.between`).
+   - *Tails*: a label no jump back crosses, at the top level of the function, starts a function
+     of its own taking the variables live into it (wayward-eagle's `reduce_function`); the
+     checked reads leave the labels at the top level, which an `if` nesting the code after a
+     check does not.
    - *Recomputation*: a load of one fixed, non-volatile cell used more than once prints at
      each use when no operation that may write the cell (a store whose address interval
      holds it, a call) lies on a path from the load to a use.
