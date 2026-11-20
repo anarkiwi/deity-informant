@@ -5339,7 +5339,7 @@ def test_a_pair_that_is_not_adjacent_is_not_one_value(prefix, tmp_path):
     assert "(uint16_t)R0[1] << 8" in body and "R1[0] = " in body
 
 
-TAILS = """
+CHECKED_TAILS = """
 init:   LDX #$00
 r:      LDA ptrs,X
         STA $FB
@@ -5393,7 +5393,7 @@ def test_a_read_checked_into_its_object_is_a_call_and_the_code_after_it_stays_fl
     checks the address into the program's data first, the trap code passed: the check is not
     an ``if`` nesting what follows it, so the code after the read that jumps into a tail
     stays at the level of the function, each tail its own function and no ``goto`` left."""
-    img, labels, loaded = assemble(TAILS)
+    img, labels, loaded = assemble(CHECKED_TAILS)
     c, h, info = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
     play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", 0)] * 4)
     assert re.search(r"= R\d+c0\(\(K_\w+ \| \(\(uint16_t\)K_\w+ << 8\)\) \+ R\d+\[\w+\], 2\);", c)

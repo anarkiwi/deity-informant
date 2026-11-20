@@ -521,9 +521,9 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
             for x in ops:
                 x.parent = blk
             self.reindex()
-            moves += [(u, top, low) for u in self.live_users(lo, live, funcs)]
-        for u, top, low in moves:
-            if u.name == "memref.store" and u.args[0] in lo_of and not self.after(top, u):
+            moves += [(u, top, low, lo) for u in self.live_users(lo, live, funcs)]
+        for u, top, low, lo in moves:
+            if u.name == "memref.store" and u.args[0] == lo and not self.after(top, u):
                 if self.sink(u, top, low):
                     self.reindex()
         for o in self.walk():
