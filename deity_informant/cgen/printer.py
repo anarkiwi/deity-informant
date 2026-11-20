@@ -25,7 +25,7 @@ from .. import masks
 from ..lifter import MODE_LEN, OPS
 from . import llvmopt, mlir
 from .mlir import Op, _types
-from . import cnodes as cn, marks, recompute, regions, ssa
+from . import cnodes as cn, joins, marks, recompute, regions, ssa
 from .state import INDEXED, INIT, POINTER, UNKNOWN, State, classify
 from .structure import Conds, Graph, Structurer, new_ids
 
@@ -3006,7 +3006,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         indexed = self.indexed(o)
         j, trap = fused
         self.mod.traps.add(trap)
-        ((_, el),) = self.mod.choices(how[1], how[2], a.node, indexed)
+        ((_, _),) = self.mod.choices(how[1], how[2], a.node, indexed)
         name = f"R{how[1][0]}" if how[1] else f"C{how[2][0]}"
         args = [*indexed, cn.const(trap)] if indexed else [a.node, cn.const(trap)]
         node = cn.call(self.mod.set_fn(name, j, bool(indexed)), *args)
@@ -4261,7 +4261,8 @@ class Module:  # pylint: disable=too-many-instance-attributes
         """Take the functions after LLVM's passes (:func:`llvmopt.combined`, its tools under
         ``prefix``), the results they forward read as the arguments first (:meth:`forward`)
         and the truth values constant (:meth:`Func.fold_flags`), the intervals of loads of
-        opcode cells (:meth:`Func.code_iv`) stated."""
+        opcode cells (:meth:`Func.code_iv`) stated; then the block arguments their blocks
+        compute again (:func:`joins.rematerialise`)."""
         self.forward()
         self.calls()
         for f in self.funcs:
@@ -4271,6 +4272,13 @@ class Module:  # pylint: disable=too-many-instance-attributes
             f.name: [f.code_iv(o) for o in f.walk() if o.name == "memref.load"] for f in self.funcs
         }
         self.load(mlir.parse(llvmopt.combined(mlir.generic(self.top), prefix, ranges)))
+        self.writes = {}
+        self.calls()
+        live = self.mark()
+        done = [joins.rematerialise(f, live[f.name]) for f in self.funcs]
+        if any(done):
+            self.load(mlir.parse(mlir.run(prefix, list(llvmopt.TIDY), mlir.generic(self.top))))
+        self.writes = {}
 
     def copies_of(self, name, pc):
         """The instruction PCs of every copy of instruction ``pc`` of function ``name``."""
