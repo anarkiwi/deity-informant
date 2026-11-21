@@ -1,6 +1,6 @@
 ARG PYTHON_VERSION=3.12
 
-FROM rust:1.99-slim-trixie AS rust
+FROM rust:1.100-slim-trixie AS rust
 
 FROM python:${PYTHON_VERSION}-slim-trixie AS pydeps
 WORKDIR /src
