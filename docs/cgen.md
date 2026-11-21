@@ -769,6 +769,9 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   the inclusive runs of the object its accesses are checked against and the hull of the
   addresses they may take (an access's pointer fetch, the zero-page pair of `(zp),Y` or
   `(zp,X)`, is no data access and is never skipped); in trap mode the same sites trap.
+  `info["unbounded"]` lists `[pc, why, object]` for each pointer or memory-map access no address
+  set bounds (`Program.unbounded`): `"checked"` where the memory map checks it, else `"no set"`,
+  with the index of the object serving it or None.
 
 Address constants print relative to the region holding them, or to the code span or loaded image when the program holds them (any other, a device's or a vector's, prints as it is)
 (`R2_ORG + 0x10`, `CODE_ORG + 0x21`, `IMG_ORG + ...`): a constant reaching an access address

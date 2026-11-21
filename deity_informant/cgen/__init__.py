@@ -678,6 +678,18 @@ class Program:  # pylint: disable=too-many-instance-attributes
     #: ``A``, ``X`` and ``Y`` as values reaching it (``Program.pdefs_values``).
     pvalues: dict | None = None
 
+    def unbounded(self):
+        """``[(pc, why)]`` of the pointer accesses (``reach``) and memory-map accesses
+        (``machine``) no address set bounds: ``"checked"`` or ``"no set"``, with the index
+        of the object serving it or None."""
+        sets = {pc for pc, _ in self.addr_sets or {}} | {pc for pc, _ in self.data or {}}
+        served = {pc: j for j, o in enumerate(self.objects) for pc in o[2]}
+        out = []
+        for pc in sorted(set(self.reach or {}) | set(self.machine)):
+            if pc in self.machine or pc not in sets:
+                out.append((pc, "checked" if pc in self.machine else "no set", served.get(pc)))
+        return out
+
 
 def _ranked(progs):
     """The functions of the lifts ``progs`` sorted by entry PC, their ``CALL`` s renumbered,
@@ -1232,6 +1244,7 @@ def render(  # pylint: disable=too-many-locals,too-many-arguments,too-many-posit
         "traps": {k: key for key, k in traps.items() if k in mod.traps},
         "trap_info": trap_info,
         "overruns": list(p.overruns),
+        "unbounded": p.unbounded(),
         "runtime_traps": {OOB_TRAP: "unheld"} if helpers & OOB_HELPERS else {},
         "emission": emission,
         "unknown_access": mem.unknown,
