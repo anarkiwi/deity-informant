@@ -25,7 +25,7 @@ from .. import masks
 from ..lifter import MODE_LEN, OPS
 from . import llvmopt, mlir
 from .mlir import Op, _types
-from . import cnodes as cn, marks, recompute, regions, ssa
+from . import cnodes as cn, marks, names as nm, recompute, regions, ssa
 from .state import INDEXED, INIT, POINTER, UNKNOWN, State, classify
 from .structure import Conds, Graph, Structurer, new_ids
 
@@ -2565,6 +2565,20 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             return self.ex(rest)
         return binary("+", self.reloc(c), self.ex(rest), 16)
 
+    def io_addr(self, a):
+        """The address value ``a`` of an I/O access: a SID register by its ``.h`` name
+        (``SID_V3_CTRL``; a base an index is added to by the register's alone,
+        ``SID_CTRL + vreg``), else :meth:`addr`'s."""
+        c, rest = self.f.split(a)
+        sym = None
+        if self.f.width(a) == 16 and self.mod.atoms is not None:
+            sym = nm.sid_symbol(c, rest is not None)
+        if sym is None:
+            return self.addr(a)
+        self.mod.sids_used.add((sym, c))
+        e = named(sym, c, c, True)
+        return e if rest is None else binary("+", e, self.ex(rest), 16)
+
     def target(self, o):
         """How access ``o`` reaches memory: ``("region", k)``, ``("held", j)``, ``("io",)``,
         ``("code",)``, ``("set", regions, spans)`` (a pointer access with an address set over
@@ -2671,6 +2685,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         if rest in self.f.kptrs:
             p = self.ex(rest)
             return E(cn.index(p.node, lit(c, 8).node), 0, 255, False, True, p.refs)
+        atom = None if held or self.mod.atoms is None else self.atom_ref(o, k)
+        if atom is not None:
+            return atom
         sub = self.sub(o, self.f.address(o), k, held)
         sub = clean(sub, 16) if sub.lo < 0 else sub
         if held:
@@ -2696,16 +2713,11 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         org, n = mem.held[k] if held else mem.regions[k]
         n = n - org if held else n
         sym = named(f"{name}_ORG", org, org, True)
-        c, rest = self.f.split(a)
         top = (1 << f.width(a)) - 1
-        c &= top
-        deep, parts = self.terms(a) if top == 0xFFFF else (c, [])
-        rs, lo, hi = [], 0, 0
-        if deep != c and 0 <= deep - org < n and parts:
-            c, rs = deep, [self.ex(t) for t in parts]
-            lo, hi = (sum(x) for x in zip(*(f.iv(t) for t in parts)))
-        elif rest is not None:
-            rs, (lo, hi) = [clean(self.ex(rest), f.width(rest))], f.iv(rest)
+        c, rest, parts, lo, hi = self.addend(a, org, n)
+        rs = [self.ex(t) for t in parts] if parts else []
+        if rest is not None and not parts:
+            rs = [clean(self.ex(rest), f.width(rest))]
         # A fixed address in a region the image's relocation moves is offset by its origin.
         moved = not held and mem.moves(org, True) != mem.moves(c)
         if rest is None and moved:
@@ -2734,15 +2746,92 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
                 sub = plus(*rs)
         return sub
 
+    def addend(self, a, org, n):
+        """``(constant, rest, parts, lo, hi)`` of address value ``a`` into the array of ``n``
+        bytes at ``org``: the constant wherever the additions place it when it lies inside
+        (``parts`` the other terms), else ``a``'s own (``rest`` the other operand), and the
+        interval of what is added to it."""
+        f = self.f
+        c, rest = f.split(a)
+        top = (1 << f.width(a)) - 1
+        c &= top
+        deep, parts = self.terms(a) if top == 0xFFFF else (c, [])
+        if deep != c and 0 <= deep - org < n and parts:
+            lo, hi = (sum(x) for x in zip(*(f.iv(t) for t in parts)))
+            return deep, rest, parts, lo, hi
+        if rest is not None:
+            return c, rest, [], *f.iv(rest)
+        return c, None, [], 0, 0
+
+    def based(self, o, k):
+        """``(base, addresses, parts)`` of access ``o`` into region ``k`` when its address is a
+        constant inside the region plus terms (``parts``, none for a constant) that do not
+        wrap it: the addresses it may reach (:meth:`reached`), else None."""
+        f, (org, n) = self.f, self.mod.mem.regions[k]
+        a = f.address(o)
+        c, rest, parts, lo, hi = self.addend(a, org, n)
+        if rest in f.kptrs or lo < 0 or c + hi > (1 << f.width(a)) - 1:
+            return None
+        if not org <= c + lo <= c + hi < org + n or c < org:
+            return None
+        return c, self.reached(o, c + lo, c + hi), parts or ([] if rest is None else [rest])
+
+    def reached(self, o, lo, hi):
+        """The addresses access ``o`` with address interval ``[lo, hi]`` may reach, ascending:
+        the lift's address set at a stride, a loop index's progression or each copy's in an
+        instance where they lie inside it, else every address of it."""
+        f = self.f
+        if lo == hi:
+            return (lo,)
+        for got in (f.strided_access(o), f.stepped_access(o)):
+            addrs = sorted(set(got[0])) if got else ()
+            if addrs and lo <= addrs[0] and addrs[-1] <= hi:
+                return tuple(addrs)
+        per = f.kivs(f.address(o))
+        if per and all(lo <= x <= y <= hi for x, y in per):
+            return tuple(sorted({a for x, y in per for a in range(x, y + 1)}))
+        return tuple(range(lo, hi + 1))
+
+    def atom_ref(self, o, k):
+        """The element of the atom (:mod:`.names`) access ``o`` into region ``k`` lies inside:
+        the atom's name, indexed unless it is a scalar; one with no name indexed as its view
+        into the region (``(R1 + 0xF9)[voice]``) where the access has an index, as every
+        indexed access of an atom then is; None where no atom holds it, or for a constant
+        access of an atom with no name."""
+        got = self.based(o, k)
+        atom = got and self.mod.atom_for(got[1])
+        if atom is None or atom.org > got[0] or not (atom.name or got[2]):
+            return None
+        mem = self.mod.mem
+        org = mem.regions[k][0]
+        if mem.moves(got[0]) != mem.moves(atom.org) or mem.moves(org, True) != mem.moves(got[0]):
+            return None
+        self.mod.regions_used.add(k)
+        c, _, parts = got
+        if atom.name:
+            self.mod.atoms_used.add((atom.region, atom.org))
+            if atom.kind == "scalar":
+                return named(atom.name, mem=True)
+            base = cn.ident(atom.name)
+        else:
+            base = cn.ident(f"R{k}")
+            if atom.org != org:
+                base = cn.binop("+", base, lit(atom.org - org, 16).node)
+        f = self.f
+        rs = [clean(self.ex(t), f.width(t)) if len(parts) == 1 else self.ex(t) for t in parts]
+        off = c - atom.org
+        sub = plus(lit(off, 16), *rs) if off or not rs else plus(*rs)
+        return E(cn.index(base, sub.node), 0, 255, False, True, sub.refs)
+
     def var(self, o):
         """The promoted cell access ``o`` reaches (:meth:`Module.promote`): a scalar, or a
         struct's field of the element its copy index chooses."""
         p = self.f.promoted[id(o)]
         if p[0] == "s":
-            return named(self.mod.var_name(p[1]), mem=True)
+            return named(self.mod.cell_name(p[1]), mem=True)
         _, s, d, e = p
         el = lit(e, 8) if isinstance(e, int) else self.ex(e)
-        return E(cn.index(f"V{s}_f{d:02X}", el.node), 0, 255, False, True, el.refs)
+        return E(cn.index(self.mod.field_name(s, d), el.node), 0, 255, False, True, el.refs)
 
     def load(self, o):
         """The C expression of a memory load ``o``: of a constant byte at a fixed address, its
@@ -3350,14 +3439,14 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         how = self.target(o)
         if callee == "io_write":
             if how[0] == "io":
-                a, v = self.addr(o.args[0]), self.ex(o.args[1])
+                a, v = self.io_addr(o.args[0]), self.ex(o.args[1])
                 out.append(cn.call("io_write", a.node, stored(v, 8).node))
             else:
                 self.store(o, out)
             return
         e = None
         if how[0] == "io":
-            a = self.addr(o.args[0])
+            a = self.io_addr(o.args[0])
             e = E(cn.call("io_read", a.node), hi=255, refs=a.refs)
         if self.uses.get(o.res[0]):
             self.define(o.res[0], e or self.load(o), out)
@@ -3990,6 +4079,12 @@ class Module:  # pylint: disable=too-many-instance-attributes
         #: ``[(pc, value)]``: the constants of the tests of the instructions at ``pc`` the
         #: ``.h`` names, from bytes init leaves constant (``@G``'s elements).
         self.symbols = []
+        #: Per region its atoms (:func:`.names.atomize`; None until named), those printed, the
+        #: labels of the data flow's nodes and the SID registers printed by name.
+        self.atoms, self.atoms_used, self.labels, self.sids_used = None, set(), {}, set()
+        self.atom_of, self.atom_bytes, self.straddling, self.cell_names = {}, {}, {}, {}
+        #: The accesses by how they print (:func:`.names.name_module`), the variables by name.
+        self.accesses_by, self.variables = {}, Counter()
         self.load(top)
 
     def load(self, top):
@@ -4350,6 +4445,59 @@ class Module:  # pylint: disable=too-many-instance-attributes
             made[key] = e
             f.promoted[id(o)] = ("v", s, d, e)
 
+    def atom_for(self, addrs):
+        """The atom holding every one of addresses ``addrs``, or None."""
+        found = {id(self.atom_bytes.get(a)): self.atom_bytes.get(a) for a in addrs}
+        return next(iter(found.values())) if len(found) == 1 else None
+
+    def atoms_h(self):
+        """The ``.h``'s views of the atoms the ``.c`` names, each into its region, and the SID
+        registers it names."""
+        out = []
+        for k, atoms in sorted((self.atoms or {}).items()):
+            for x in atoms:
+                if (k, x.org) not in self.atoms_used:
+                    continue
+                off = x.org - self.mem.regions[k][0]
+                if x.kind == "scalar":
+                    out.append(f"#define {x.name} R{k}[0x{off:X}]")
+                elif x.const:
+                    out.append(f"#define {x.name} ((const uint8_t *)R{k} + 0x{off:X})")
+                else:
+                    out.append(f"#define {x.name} (R{k} + 0x{off:X})")
+        out += [f"#define {n} 0x{a:04X}" for n, a in self.registers().items()]
+        return out
+
+    def registers(self):
+        """``{name: address}`` of the SID registers the ``.c`` names."""
+        return dict(sorted(self.sids_used, key=lambda x: (x[1], x[0])))
+
+    def names_info(self):
+        """``info["names"]``: the atoms (``{name: {region, org, offsets, kind, const,
+        label}}``) the ``.c`` names, the address sets left to their region, the SID registers
+        the ``.c`` names, the accesses by how they print and the variables by how named."""
+        atoms = {
+            x.name: {
+                "region": k,
+                "org": x.org,
+                "offsets": list(x.offsets),
+                "kind": x.kind,
+                "const": x.const,
+                "label": x.label,
+            }
+            for k, xs in sorted((self.atoms or {}).items())
+            for x in xs
+            if (k, x.org) in self.atoms_used
+        }
+        regs = self.registers()
+        return {
+            "atoms": atoms,
+            "straddling": self.straddling,
+            "registers": regs,
+            "accesses": self.accesses_by,
+            "variables": dict(sorted(self.variables.items())),
+        }
+
     def objects(self):
         """The promotion candidates: the code cells and the other variable bytes of the code
         span (:attr:`cells`), and the data bytes outside it (not volatile, the stack page or a
@@ -4391,14 +4539,24 @@ class Module:  # pylint: disable=too-many-instance-attributes
         if a not in self.state.at:
             return None
         p = self.state.at[a]
-        return self.var_name(a) if p is None else f"V{p[0]}_f{p[2]:02X}[{p[1]}]"
+        return self.cell_name(a) if p is None else f"{self.field_name(p[0], p[2])}[{p[1]}]"
+
+    def cell_name(self, a):
+        """The C name of promoted scalar ``a``: its data flow's (:mod:`.names`), else
+        :meth:`var_name`'s."""
+        return self.cell_names.get(("cell", a)) or self.var_name(a)
+
+    def field_name(self, s, d):
+        """The C name of field ``d`` of promoted struct ``s``: its data flow's, else
+        ``V<s>_f<d>``."""
+        return self.cell_names.get(("cell", s, d)) or f"V{s}_f{d:02X}"
 
     def enum_of(self, a):
         """``{value: name}`` (:func:`enum_names`) of opcode cell ``a`` when promoted to a
         scalar and the lift bounds its values (:attr:`opcodes`), else None."""
         if a is None or a not in self.opcodes or self.state.at.get(a, 0) is not None:
             return None
-        return enum_names(self.var_name(a), self.opcodes[a])
+        return enum_names(self.cell_name(a), self.opcodes[a])
 
     def state_c(self):
         """The ``.c``'s definitions of the promoted state, initialized from the ``.h``: each
@@ -4420,14 +4578,14 @@ class Module:  # pylint: disable=too-many-instance-attributes
             )
         out += [
             cn.decl(n, "uint8_t", cn.ident(n + "_INIT"))
-            for n in map(self.var_name, self.state.scalars)
+            for n in map(self.cell_name, self.state.scalars)
         ]
         for s, (bases, fields) in enumerate(self.state.structs):
             out += [
                 cn.decl(
-                    f"V{s}_f{d:02X}",
+                    self.field_name(s, d),
                     "uint8_t",
-                    cn.inits(f"V{s}_f{d:02X}_INIT"),
+                    cn.inits(f"{self.field_name(s, d)}_INIT"),
                     dim=cn.const(len(bases)),
                 )
                 for d in fields
@@ -4437,10 +4595,11 @@ class Module:  # pylint: disable=too-many-instance-attributes
     def state_h(self):
         """The ``.h``'s initial values of the promoted state."""
         img = self.mem.init
-        out = [f"#define {self.var_name(a)}_INIT 0x{img[a]:02X}" for a in self.state.scalars]
+        out = [f"#define {self.cell_name(a)}_INIT 0x{img[a]:02X}" for a in self.state.scalars]
         for s, (bases, fields) in enumerate(self.state.structs):
             out += [
-                f"#define V{s}_f{d:02X}_INIT {cn.hexes(img[(int(b) + d) & 0xFFFF] for b in bases)}"
+                f"#define {self.field_name(s, d)}_INIT "
+                f"{cn.hexes(img[(int(b) + d) & 0xFFFF] for b in bases)}"
                 for d in fields
             ]
         return out
@@ -4982,6 +5141,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         for c in self.entries:
             c.name = c.f.name
         self.order = list(self.entries)
+        nm.name_module(self)
         defs, k = {}, 0
         while k < len(self.order):
             c = self.order[k]
@@ -5024,6 +5184,13 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 out.append(cn.decl(n, f"const {CTYPE[w]}", items, ("static",), dim=True))
         heads = [copy.deepcopy(c.head_decl) for c in protos]
         kept, names = fold([(c.name, defs[id(c)]) for c in post])
+        for c in post:
+            if any(defs[id(c)] is xs for xs in kept):
+                local = nm.local_names(c, self.labels, defs[id(c)])
+                self.variables.update(nm.variable_kinds(c, local))
+                local = {k: v for k, (v, _) in local.items()}
+                cn.rename(defs[id(c)], local)
+                cn.rename([h for p, h in zip(protos, heads) if p is c], local)
         cn.rename(heads, names)
         heads = [h for i, h in enumerate(heads) if cn.key(h) not in map(cn.key, heads[:i])]
         nodes = [x for xs in kept for x in xs]

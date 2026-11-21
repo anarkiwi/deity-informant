@@ -69,13 +69,14 @@ def _norm(addrs):
     return tuple(int(a - addrs[0]) for a in addrs)
 
 
-def _structs(fams):
-    """``(structs, at, bad)`` of the families ``fams`` (sorted address tuples), largest first:
-    one whose bytes are some of one field's is that field; one alike up to a translation with a
-    struct's first family, less than its least gap between copies past its origin, adds a
-    field; any other starts a struct; one meeting another struct's bytes is ``bad``."""
-    structs, at, bad = [], {}, []
-    for fam in sorted(fams, key=lambda a: (-len(a), _norm(a), a[0])):
+def structs(fams, key=None):
+    """``(structs, at, bad)`` of the families ``fams`` (sorted address tuples), largest first
+    (or in the order of ``key``): one whose bytes are some of one field's is that field; one
+    alike up to a translation with a struct's first family, less than its least gap between
+    copies past its origin, adds a field; any other starts a struct; one meeting another
+    struct's bytes is ``bad``."""
+    structs_, at, bad = [], {}, []
+    for fam in sorted(fams, key=key or (lambda a: (-len(a), _norm(a), a[0]))):
         places = {at.get(a) for a in fam}
         if len(places) == 1 and None not in places:
             continue
@@ -86,18 +87,18 @@ def _structs(fams):
         s = next(
             (
                 s
-                for s, (m, base, _) in enumerate(structs)
+                for s, (m, base, _) in enumerate(structs_)
                 if m == n and 0 <= fam[0] - base < min(np.diff(n))
             ),
             None,
         )
         if s is None:
-            s = len(structs)
-            structs.append((n, fam[0], set()))
-        d = fam[0] - structs[s][1]
-        structs[s][2].add(d)
+            s = len(structs_)
+            structs_.append((n, fam[0], set()))
+        d = fam[0] - structs_[s][1]
+        structs_[s][2].add(d)
         at.update({a: (s, d) for a in fam})
-    return structs, at, bad
+    return structs_, at, bad
 
 
 def classify(cells, sets, why, stepped=()):
@@ -112,12 +113,12 @@ def classify(cells, sets, why, stepped=()):
         ok = cells & (why == 0)
         bad = [a for a in fams if not ok[list(a)].all()]
         fams = [a for a in fams if ok[list(a)].all()]
-        structs, at, clash = _structs(fams)
+        found, at, clash = structs(fams)
         bad += clash
         for a, order in steps:
             if a in fams and a not in clash:
                 s, d = at[a[0]]
-                n, base = np.array(structs[s][0]), structs[s][1]
+                n, base = np.array(found[s][0]), found[s][1]
                 els = np.searchsorted(n, order - d - base)
                 bad += [a] if (np.diff(els) != 1).any() else []
         if not bad:
@@ -128,6 +129,6 @@ def classify(cells, sets, why, stepped=()):
     owner = masks.mask(at=at)
     const = masks.mask(at=[int(s[0]) for s in sets if len(set(s)) == 1])
     scalars = np.flatnonzero(cells & (why == 0) & const & ~owner).tolist()
-    out = [(base + np.array(n), sorted(f)) for n, base, f in structs]
+    out = [(base + np.array(n), sorted(f)) for n, base, f in found]
     out.sort(key=lambda x: x[0][0])
     return State(scalars, out, why)

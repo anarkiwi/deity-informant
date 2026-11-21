@@ -1172,7 +1172,7 @@ def render(  # pylint: disable=too-many-locals,too-many-arguments,too-many-posit
         for x in fns
     ]
     c_text, order = cn.render(units.single(c), mod.marks.recs, pieces=mod.pieces)
-    store = _storage(mem, used, helpers, regions) + mod.state_h() + sets + unheld
+    store = _storage(mem, used, helpers, regions) + mod.state_h() + mod.atoms_h() + sets + unheld
     objs = [_obj_h(j, mod.ptr_objects[j], mod.ptr_parts.get(j)) for j in sorted(mod.objs_used)]
     h_store = objs + store
     times["print"] = time.perf_counter() - t1
@@ -1238,6 +1238,7 @@ def render(  # pylint: disable=too-many-locals,too-many-arguments,too-many-posit
             "functions": _files(mod.prov.get("functions", {}), c, entries, unit_of, split),
             "cells": [int(a) for a in np.flatnonzero(cells)],
         },
+        "names": mod.names_info(),
         "fixed": [] if p.fixed is None else p.fixed.tolist(),
         "state": {
             "cells": mod.state.counts(cells),

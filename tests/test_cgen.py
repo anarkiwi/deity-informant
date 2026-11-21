@@ -3834,7 +3834,7 @@ def test_indexed_stores_clear_operand_cells(prefix, tmp_path):
     # The cells are one field of three copies: the loop's stores index it by the element
     # number stepped beside the index, with no region tests and no write accessor.
     body = c[c.index("void entry") :]
-    assert re.search(r"\bV0_f00\[v\d+\] = 0;", body) and "_LEN" not in body and "wr(" not in c
+    assert re.search(r"\bV0_f00\[\w+\] = 0;", body) and "_LEN" not in body and "wr(" not in c
     assert "uint8_t V0_f00[3] = {V0_f00_INIT};" in c
 
 
@@ -5104,7 +5104,7 @@ def test_patched_compare_immediate_bounds_a_loop(prefix, tmp_path):
     """A compare immediate an earlier call patches is a scalar the loop it bounds tests as
     any variable: a structured loop, no goto."""
     c, _, info = check(prefix, tmp_path, BOUND, entry_calls([5, 0, 7, 1, 6, 2, 4, 3], 2))
-    assert info["provenance"]["loops"] and re.search(r"S_15 (>|<=) \(uint8_t\)\(v\d+ \+ 1\)", c)
+    assert info["provenance"]["loops"] and re.search(r"S_15 (>|<=) \(uint8_t\)\(\w+ \+ 1\)", c)
     assert "S_15 = (a & 3) + 1;" in c
 
 
@@ -5112,9 +5112,7 @@ def test_copies_indexed_by_a_counted_loop_step_an_element(prefix, tmp_path):
     """Operand cells at a stride a counted loop indexes are one field over the copies: the
     loop steps the element number beside its index, and each copy reads its own element."""
     c, h, info = check(prefix, tmp_path, STEP, entry_calls([0], 4))
-    loop = re.search(
-        r"uint8_t (v\d+) = 2;\n *for \(;;\) \{\n *V0_f00\[\1\] = V0_f00\[\1\] \+ 1;", c
-    )
+    loop = re.search(r"uint8_t (\w+) = 2;\n *for \(;;\) \{\n *V0_f00\[\1\] = V0_f00\[\1\] \+ 1;", c)
     assert loop and f"{loop.group(1)} = {loop.group(1)} - 1;" in c
     assert "#define V0_f00_INIT 0x01, 0x02, 0x03" in h and "V0_f00[v1]" in c
     assert info["state"]["cells"]["fields"] == 3
@@ -5127,7 +5125,7 @@ def test_loop_over_some_copies_offsets_its_element(prefix, tmp_path):
         "entry:  LDX", "entry:  DEC c0+1\n        LDX"
     )
     c, _, info = check(prefix, tmp_path, src, entry_calls([0], 4))
-    assert re.search(r"V0_f00\[(v\d+) \+ 1\] = V0_f00\[\1 \+ 1\] \+ 1;", c)
+    assert re.search(r"V0_f00\[(\w+) \+ 1\] = V0_f00\[\1 \+ 1\] \+ 1;", c)
     assert "V0_f00[0] = V0_f00[0] - 1;" in c and info["state"]["cells"]["fields"] == 3
 
 
@@ -5173,7 +5171,7 @@ def test_registers_a_callee_leaves_are_its_arguments(prefix, tmp_path):
 OPERAND_PTR = r"rdC\d+\(S_\w+ \| \(\(uint16_t\)S_\w+ << 8\), "
 #: A direct access of the span at an operand init leaves constant, named by the ``.h``.
 #: A byte variable: a cell init sets, promoted or in its region.
-BYTE = r"S_\w+|R\d+\[\w+\]"
+BYTE = r"S_\w+|\w+\[\w+\]"
 OPERAND_K = r"\b[CR]\d+\[\(uint16_t\)\(\(K_\w+ \| \(\(uint16_t\)K_\w+ << 8\)\) \+ "
 
 
@@ -5601,7 +5599,7 @@ def test_init_probe_of_a_derived_register_is_a_run_time_choice(prefix, tmp_path)
     c, h, info = cgen.translate(
         img, ents, volatile, loaded=(0x1000, labels["end"]), header="t.h", prefix=prefix, init=0
     )
-    assert info["init"] == "translated" and body_of(c, "init").count("io_read(0xD41B)") == 1
+    assert info["init"] == "translated" and body_of(c, "init").count("io_read(SID_NOISE)") == 1
     assert labels["patch"] in info["provenance"]["cells"]
     (tmp_path / "t.c").write_text(c)
     (tmp_path / "t.h").write_text(h)
@@ -6206,7 +6204,7 @@ def test_short_circuit_with_effects(prefix, tmp_path):
     machine code runs them."""
     c, _, info = check(prefix, tmp_path, EFFECT, entry_calls(range(4), 3))
     _, labels, _ = assemble(EFFECT)
-    assert re.search(r"(\|\||&&) \(R\d+\[[^]]*\] = [^,]*, ", c), c
+    assert re.search(r"(\|\||&&) \((?:R\d+|M_\w+)\[[^]]*\] = [^,]*, ", c), c
     assert info["provenance"]["conditions"] == [[labels["do"] - 7, labels["do"] - 2]]
 
 
@@ -6284,7 +6282,7 @@ def test_block_copy_indexes_the_blocks_directly(blocks):
     assert any(store for _, store in p.addr_sets)
     assert " wr(" not in c and "CGEN_IX(" in c
     tests = re.findall(
-        r"if \(\(uint16_t\)\(([^;]*?)\) <\s*0x[0-9A-F]+\)\s*\{?\s*CGEN_IX\(R\d+, [^,]*, (v\d+)\)", c
+        r"if \(\(uint16_t\)\(([^;]*?)\) <\s*0x[0-9A-F]+\)\s*\{?\s*CGEN_IX\(R\d+, [^,]*, (\w+)\)", c
     )
     assert tests and all(not re.search(rf"\b{v}\b", t) for t, v in tests)
 
@@ -6692,7 +6690,7 @@ def test_copies_at_a_wide_stride_index_per_copy_pointers(prefix, tmp_path, inner
     tabs = re.findall(r"static uint8_t \*const (K\d+)\[\] = \{([CR])(\d+)[^,]*, \2\3 \+ ", c)
     assert sorted(t[1] for t in tabs) == ["R"]
     for tab, _, _ in tabs:
-        [ptr] = re.findall(rf"uint8_t \*(v\d+) = {tab}\[v1\];", c)
+        [ptr] = re.findall(rf"uint8_t \*(\w+) = {tab}\[v1\];", c)
         assert re.search(rf"\b{ptr}\[(?:0|0x[0-9A-F]{{1,2}})\]", c)
     img, labels = W.assemble(src, 0x2345)
     assert translate(prefix, img, labels, (0x2345, labels["end"]))[0] == c
@@ -6844,7 +6842,7 @@ def test_operands_set_from_one_word_are_one_pointer(prefix, tmp_path):
         assert ops <= set(info["provenance"]["cells"])
         body = body_of(c, "play")
         pairs = set(re.findall(rf"({BYTE}) \| \(\(uint16_t\)({BYTE}) << 8\)", body))
-        assert len(pairs) == 2 and "1 + v" in body
+        assert len(pairs) == 2 and re.search(r"\b1 \+ ptr\b", body)
         texts.add(c)
     assert len(texts) == 1
 
@@ -7199,7 +7197,7 @@ def test_strided_records_aliased_by_an_interval_stay_memory(prefix, tmp_path):
     c, _, info = check(prefix, tmp_path, STRIDED_ALIASED, entry_calls(range(16), 3))
     held = info["state"]["vars"].values()
     assert not [a for a in held if 0x3000 <= a < 0x3010] and 0x3147 in held
-    assert "R0[" in body_of(c, "entry")
+    assert "CGEN_IX(R0, " in body_of(c, "entry")
 
 
 def test_record_walk_store_is_c_state(prefix, tmp_path):
@@ -7583,7 +7581,7 @@ def test_zero_page_pairs_init_leaves_index_their_records(prefix, tmp_path, src):
         ]
         lifted = c[c.index("CGEN_STORAGE") : c.index("void init(")]
         assert not re.search(r"_ORG\)?\]", lifted)
-        assert re.search(r"\b(?:R\d+|V\d+_f00)\[v\d+\] = ", lifted)
+        assert re.search(r"\b(?:R\d+|V\d+_f00|M_\w+)\[\w+\] = ", lifted)
         (tmp_path / str(org)).mkdir()
         play(tmp_path / str(org), c, h, img, labels, [("init", 0)] + [("play", 0)] * 8)
         outs.append(c)
