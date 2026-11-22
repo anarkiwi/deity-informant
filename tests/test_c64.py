@@ -12,7 +12,7 @@ pytest.importorskip("vagrant_moses")
 # pylint: disable=wrong-import-position
 from vagrant_moses import machine as vm  # noqa: E402
 from vagrant_moses.bus import port_read  # noqa: E402
-from vagrant_moses.c64 import poweron_ram  # noqa: E402
+from vagrant_moses.c64 import poweron_ram, psid_iomap  # noqa: E402
 from vagrant_moses.roms import ROMS, rom_less  # noqa: E402
 
 from deity_informant import NATIVE, c64, trace, wholeprog  # noqa: E402
@@ -380,7 +380,7 @@ def test_boot_matches_the_driver_cycle_for_cycle(request, kind, ntsc, cia):
     img[0x1000 : 0x1000 + len(bytes.fromhex(PROBE))] = bytes.fromhex(PROBE)
     img[0x1040 : 0x1040 + len(bytes.fromhex(HANDLER))] = bytes.fromhex(HANDLER)
     boot = c64.boot(img, 0x1000, 0x1060, 0x1000, 2, ntsc, kind, cia, roms)
-    iomap = 0 if kind == "RSID" else c64.iomap(0x1000)
+    iomap = 0 if kind == "RSID" else psid_iomap(0x1000)
     src = DRIVER.format(
         song=1, speed=cia, iomap=iomap, video=int(not ntsc), flags=4 * (kind == "PSID")
     )

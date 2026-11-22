@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from pysidtracker.registers import sid_model_for_flags
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -58,11 +59,14 @@ def main(argv=None):
     ap.add_argument("--max-cycles", type=int, default=2_000_000)
     args = ap.parse_args(argv)
     root = Path(args.root)
-    wpcorpus._worker(str(root / "DOCUMENTS" / "Songlengths.md5"))  # pylint: disable=W0212
+    wpcorpus._worker(str(root))  # pylint: disable=W0212
     row = wpcorpus.plan(str(root / args.path), args.path, 180.0, args.max_cycles)[args.song - 1]
     boot = wpcorpus.irq_boot(row, (root / args.path).read_bytes())
     host = frames.FrameHost(
-        boot.image, roms=boot.roms, ntsc=row["clock"] == "NTSC", model=wpcorpus.sid_model(row)
+        boot.image,
+        roms=boot.roms,
+        ntsc=row["clock"] == "NTSC",
+        model=sid_model_for_flags(row["flags"]),
     )
     host.drive_frames(boot, args.frames, args.max_cycles)
     prog = frames.lift(host, boot.roms, optimize=not args.raw)

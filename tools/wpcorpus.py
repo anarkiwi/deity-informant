@@ -14,7 +14,6 @@ import argparse  # noqa: E402
 import hashlib  # noqa: E402
 import json  # noqa: E402
 import random  # noqa: E402
-import struct  # noqa: E402
 import sys  # noqa: E402
 import time  # noqa: E402
 from collections import Counter  # noqa: E402
@@ -27,9 +26,15 @@ import numpy as np  # noqa: E402
 import zstandard  # noqa: E402
 from jennings.opcodes import MEM_MODES, OPCODES  # noqa: E402
 from pebble import ProcessPool  # noqa: E402
+from pysidtracker.errors import SidError  # noqa: E402
+from pysidtracker.header import parse_sid_header  # noqa: E402
+from pysidtracker.loader import psid_image  # noqa: E402
+from pysidtracker.registers import sid_model_for_flags  # noqa: E402
+from pysidtracker.survey import songlengths  # noqa: E402
 from tqdm import tqdm  # noqa: E402
 from vagrant_moses import memmap as mm  # noqa: E402
 from vagrant_moses.bus import banking  # noqa: E402
+from vagrant_moses.c64 import psid_iomap  # noqa: E402
 
 try:
     from vagrant_moses.smc import Scan
@@ -39,7 +44,8 @@ except ImportError:  # a vagrant-moses without the scan
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from deity_informant import c64, frames, trace, wholeprog  # noqa: E402
+from deity_informant import c64, frames, masks, trace, wholeprog  # noqa: E402
+from deity_informant.lifter import pack_status  # noqa: E402
 from deity_informant.smc.classify import (  # noqa: E402
     expected_reads,
     expected_writes,
@@ -49,7 +55,7 @@ from deity_informant.smc.classify import (  # noqa: E402
 from deity_informant.smc.expect import lift_reason  # noqa: E402
 from deity_informant.smc.machine import _ENTRY, MachineOracle, Queue, _Mem, _frames  # noqa: E402
 from deity_informant.smc.oracle import writer_of  # noqa: E402
-from smclabel import iomap, sidfile  # noqa: E402 pylint: disable=wrong-import-order
+from smclabel import sidfile  # noqa: E402 pylint: disable=wrong-import-order
 
 CLOCKS = ("unknown", "PAL", "NTSC", "PAL/NTSC")
 #: Init accesses logged to read the CPU port and CIA 1 timer A latch writes.
@@ -57,38 +63,26 @@ PROBE = [(0x00, 0x02), (mm.CIA1_TIMER_A_LO, mm.CIA1_TIMER_A_HI + 1)]
 _LENGTHS = {}
 
 
-def songlengths(path):
-    """``{md5: [seconds per song]}`` of an HVSC ``Songlengths.md5``."""
-    out = {}
-    for line in Path(path).read_text(encoding="latin-1").splitlines():
-        key, eq, val = line.partition("=")
-        if eq and not line.startswith(";"):
-            out[key.strip()] = [
-                int(m) * 60 + float(s) for m, _, s in (t.partition(":") for t in val.split())
-            ]
-    return out
-
-
 def header(data):
     """The PSID/RSID header fields, or None."""
-    if data[:4] not in (b"PSID", b"RSID") or len(data) < 0x76:
+    try:
+        h = parse_sid_header(data)
+    except SidError:
         return None
-    ver, _, load, init, play, songs, start, speed = struct.unpack(">HHHHHHHI", data[4:0x16])
-    flags = int.from_bytes(data[0x76:0x78], "big") if ver >= 2 else 0
-    extra = [data[0x7A] if ver >= 3 else 0, data[0x7B] if ver >= 4 else 0]
+    extra = [h.second_sid if h.version >= 3 else 0, h.third_sid if h.version >= 4 else 0]
     return {
-        "kind": data[:4].decode(),
-        "version": ver,
-        "load": load,
-        "init": init,
-        "play": play,
-        "songs": max(songs, 1),
-        "start": start,
-        "flags": flags,
-        "clock": CLOCKS[(flags >> 2) & 3],
-        "sid_models": [(flags >> s) & 3 for s in (4, 6, 8)],
+        "kind": h.magic.decode(),
+        "version": h.version,
+        "load": h.load_address,
+        "init": h.init_address,
+        "play": h.play_address,
+        "songs": max(h.songs, 1),
+        "start": h.start_song,
+        "flags": h.flags,
+        "clock": CLOCKS[(h.flags >> 2) & 3],
+        "sid_models": [(h.flags >> s) & 3 for s in (4, 6, 8)],
         "extra_sids": [0xD000 | b << 4 for b in extra if b],
-        "speed_word": speed,
+        "speed_word": h.speed,
     }
 
 
@@ -102,11 +96,6 @@ def latch_of(log, ntsc):
         if w and mm.CIA1_TIMER_A_LO <= addr <= mm.CIA1_TIMER_A_HI:
             lohi[addr - mm.CIA1_TIMER_A_LO], wrote = v, True
     return lohi[0] | lohi[1] << 8, wrote
-
-
-def sid_model(row):
-    """The SID model a song's header asks for: ``8580`` when only it, else ``6581``."""
-    return "8580" if row.get("sid_models", [0])[0] == 2 else "6581"
 
 
 def volatile_of(row):
@@ -157,9 +146,7 @@ def plan(path, rel, default, mc):
 def _diff(base, ram):
     """``[[addr, hex], ...]`` runs where ``ram`` differs from ``base``."""
     a, b = np.frombuffer(bytes(base), np.uint8), np.frombuffer(bytes(ram), np.uint8)
-    d = np.flatnonzero(a != b)
-    runs = np.split(d, np.flatnonzero(np.diff(d) > 1) + 1) if d.size else []
-    return [[int(g[0]), b[g[0] : g[-1] + 1].tobytes().hex()] for g in runs]
+    return [[lo, b[lo : lo + n].tobytes().hex()] for lo, n in masks.runs(a != b)]
 
 
 def bank_evidence(phases):
@@ -223,7 +210,7 @@ def _regs(s, reg):
     """Jennings session ``s`` from the ``Program.call`` register file ``reg``."""
     m = s.mpu
     m.a, m.x, m.y, m.sp = reg[:4]
-    m.p = sum(reg[i] << bit for i, bit in c64._FLAGS) | 0x30  # pylint: disable=protected-access
+    m.p = pack_status(reg, 0x30)
     return s
 
 
@@ -316,16 +303,16 @@ def psid_song(row, img, mc, cap, defer=False):
     song unlifted (``deferred``) so a later resumed run lifts it."""
     init, play, a = row["init"], row["play"], row["song"] - 1
     _, r = flat_init(img, row, mc)
-    phases = [(img, trace.collect(img, lambda s: s.call(init, a), mc), iomap(init))]
+    phases = [(img, trace.collect(img, lambda s: s.call(init, a), mc), psid_iomap(init))]
     row |= {"init_halt": r["halt"], "init_cycles": r["cycles"]}
     ev = bank_evidence(phases) if r["halt"] != "return" else None
     if ev == []:
         return row | {"mode": "flat", "bank_evidence": ev, "skip": "init " + r["halt"]}, None
     if ev and defer:
         return row | {"deferred": True}, None
-    ports = {"init": iomap(init), "call": iomap(play)}
+    ports = {"init": psid_iomap(init), "call": psid_iomap(play)}
     t = time.perf_counter()
-    host = c64._Host(img, ntsc=row["clock"] == "NTSC", model=sid_model(row))
+    host = c64._Host(img, ntsc=row["clock"] == "NTSC", model=sid_model_for_flags(row["flags"]))
     host.drive(Queue(runs=[((play, 0), row["calls"])]), [(init, a)], mc, ports)
     inits, records, n = host.split()
     last = inits[-1]
@@ -390,7 +377,7 @@ def label(oracle, img, row, n, mc, boot=None):
     o = MachineOracle(img if boot is None else boot.image, ntsc=row["clock"] == "NTSC",
                       roms=None if boot is None else boot.roms)  # fmt: skip
     if oracle == "calls":
-        ports = {"init": iomap(row["init"]), "call": iomap(row["play"])}
+        ports = {"init": psid_iomap(row["init"]), "call": psid_iomap(row["play"])}
         run = o.run([(row["play"], 0)] * n, init=[(row["init"], row["song"] - 1)],
                     call_cycles=mc, ports=ports)  # fmt: skip
     else:
@@ -500,10 +487,11 @@ class _IrqScan(MachineOracle):
         mem = _Mem(pc, fetched, ram)
         w = writer_of(fetched[0])
         store = w is not None and w[0] == "cpu"
-        writes = expected_writes(mem, pc, r.x, r.y, r.sp) if store else set()
+        writes = expected_writes(mem, pc, r.x, r.y, r.sp, r.a) if store else set()
         self.main["insns"] += 1
         busy = any(not 0x100 <= a < 0x200 for a in writes) or any(
-            view(bits, a) == "io" for a in writes | expected_reads(mem, pc, r.x, r.y, r.sp, store)
+            view(bits, a) == "io"
+            for a in writes | expected_reads(mem, pc, r.x, r.y, r.sp, store, r.a)
         )
         if busy:
             self.main["first_busy_frame"] = (mc.cycle - self.t0) // self.cpf
@@ -528,14 +516,6 @@ class _IrqScan(MachineOracle):
         }
 
 
-def load_span(data):
-    """``(load, end)``: the C64 address range a PSID/RSID file's data loads to."""
-    off, load = struct.unpack(">HH", data[6:10])
-    if load == 0:
-        load, off = data[off] | data[off + 1] << 8, off + 2
-    return load, load + len(data) - off
-
-
 _real_roms = lru_cache(maxsize=1)(c64.real_roms)
 
 
@@ -544,7 +524,7 @@ def irq_boot(row, data):
     real ROMs, or a PSID without a play address)."""
     kind = "BASIC" if row["kind"] == "RSID" and row["flags"] & 2 else row["kind"]
     roms = _real_roms() if row["kind"] == "RSID" else None
-    return c64.boot(sidfile(data)[1], *load_span(data), row["init"], row["song"],
+    return c64.boot(sidfile(data)[1], *psid_image(data), row["init"], row["song"],
                     row["clock"] == "NTSC", kind, bool(row["speed"]), roms)  # fmt: skip
 
 
@@ -571,7 +551,7 @@ def frame_song(row, boot, mc):
     """
     t = time.perf_counter()
     host = frames.FrameHost(boot.image, roms=boot.roms, ntsc=row["clock"] == "NTSC",
-                            model=sid_model(row))  # fmt: skip
+                            model=sid_model_for_flags(row["flags"]))  # fmt: skip
     host.drive_frames(boot, row["calls"], mc)
     n = len(host.stream)
     row |= {"facts_ms": 1e3 * (time.perf_counter() - t), "calls_run": n, "budget": host.stop}
@@ -643,10 +623,10 @@ def run_song(path, row, mc, cap=0, defer=()):
     return row, zstandard.ZstdCompressor().compress((json.dumps(rec) + "\n").encode())
 
 
-def _worker(lengths_path, backend="jit"):
+def _worker(root, backend="jit"):
     wholeprog.BACKEND = backend
-    if Path(lengths_path).exists():
-        _LENGTHS.update(songlengths(lengths_path))
+    if (Path(root) / "DOCUMENTS" / "Songlengths.md5").exists():
+        _LENGTHS.update(songlengths(root))
 
 
 def _read_rows(path):
@@ -879,7 +859,6 @@ def main(argv=None):  # pylint: disable=too-many-locals
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("root")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--songlengths", help="default: ROOT/DOCUMENTS/Songlengths.md5")
     ap.add_argument("--default-length", type=float, default=180.0, help="seconds, if unlisted")
     ap.add_argument("--max-cycles", type=int, default=2_000_000, help="per init or call")
     ap.add_argument("--timeout", type=float, default=60, help="seconds per song, plus")
@@ -909,7 +888,6 @@ def main(argv=None):  # pylint: disable=too-many-locals
     root, out = Path(args.root), Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     rows_path, facts_path = out / "rows.jsonl", out / "facts.jsonl.zst"
-    lengths = args.songlengths or root / "DOCUMENTS" / "Songlengths.md5"
     if args.paths:
         lines = Path(args.paths).read_text(encoding="utf-8").split()
         paths = sorted({root / p for p in lines})
@@ -935,7 +913,7 @@ def main(argv=None):  # pylint: disable=too-many-locals
         plans.extend((a[0], r) for r in res)
 
     with ProcessPool(
-        max_workers=args.jobs, initializer=_worker, initargs=(str(lengths), args.backend)
+        max_workers=args.jobs, initializer=_worker, initargs=(str(root), args.backend)
     ) as pool:
         jobs = [(str(p), str(p.relative_to(root)), args.default_length, args.max_cycles)
                 for p in paths]  # fmt: skip

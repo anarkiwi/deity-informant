@@ -11,9 +11,10 @@ from dataclasses import dataclass
 from functools import lru_cache
 from itertools import product
 
+from jennings.opcodes import OPCODES as OPS
 from vagrant_moses.machine import SOURCES, opcode_layout
 
-from ..lifter import OPS, lift
+from ..lifter import lift
 
 __all__ = [
     "CHANNELS",

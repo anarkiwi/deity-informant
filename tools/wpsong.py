@@ -25,9 +25,7 @@ def main(argv=None):
     ap.add_argument("--out", help="write the full row as JSON here")
     args = ap.parse_args(argv)
     root = Path(args.root)
-    wpcorpus._worker(
-        str(root / "DOCUMENTS" / "Songlengths.md5")
-    )  # pylint: disable=protected-access
+    wpcorpus._worker(str(root))  # pylint: disable=protected-access
     row = wpcorpus.plan(str(root / args.path), args.path, 180.0, args.max_cycles)[args.song - 1]
     if args.calls:
         row["calls"] = min(row["calls"], args.calls)

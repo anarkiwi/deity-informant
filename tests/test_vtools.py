@@ -1,13 +1,13 @@
 """tools/vtools.py, sidid.py, sidreloc.py, gtruth.py: parsing and derivation without Docker."""
 
-import io
 import json
-import struct
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from pysidtracker.errors import SidFormatError
+from pysidtracker.header import write_psid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 
@@ -73,16 +73,13 @@ def _listing():
 
 
 def _psid(body, load=BASE, embed=False):
-    head = bytearray(0x7C)
-    head[:4] = b"PSID"
-    struct.pack_into(">HHHHHHH", head, 4, 2, 0x7C, 0 if embed else load, load, load + 3, 1, 1)
-    return bytes(head) + (struct.pack("<H", load) if embed else b"") + body
+    return write_psid(load=load, init=load, play=load + 3, image=body, embed_load=embed)
 
 
 def test_sid_body_header_and_embedded_load():
     assert vtools.sid_body(_psid(b"\x01\x02")) == (BASE, 0x7C, b"\x01\x02")
     assert vtools.sid_body(_psid(b"\x01\x02", 0x2000, embed=True)) == (0x2000, 0x7E, b"\x01\x02")
-    with pytest.raises(ValueError):
+    with pytest.raises(SidFormatError):
         vtools.sid_body(b"PRG" + bytes(200))
 
 
@@ -209,71 +206,32 @@ def test_pack_and_produce(monkeypatch, tmp_path):
         gtruth.pack("/x/other.sng", tmp_path)
 
 
-SIDID_OUT = """Using configfile /usr/local/share/sidid/sidid.cfg
-
-000000.sid                                               GoatTracker_V2.x
-000001.sid                                               JCH_NewPlayer
-                                                         (JCH_NewPlayer_V17)
-000002.sid                                               *Unidentified*
-
-Detected players:
-GoatTracker_V2.x         1
-
-Statistics:
-Identified               2
+SIDID_CFG = """Goat
+A9 ?? 8D 00 D4 END
+(Goat_V2)
+A9 ?? 8D AND 60 END
+JCH
+EE 20 D0 END
 """
 
 
-def test_sidid_parse():
-    assert sidid.parse(SIDID_OUT.splitlines()) == {
-        0: ["GoatTracker_V2.x"],
-        1: ["JCH_NewPlayer", "(JCH_NewPlayer_V17)"],
-        2: [],
-    }
-
-
-def test_sidid_identify(monkeypatch, tmp_path):
+def test_sidid_identify(tmp_path, capsys):
     files = [tmp_path / "a" / f"{n}.sid" for n in "xyz"] + [tmp_path / "b" / "w.sid"]
-    for f in files:
+    bodies = ["a9018d00d460", "ee20d0", "ea", "a9058d01d4ea60"]
+    for f, body in zip(files, bodies):
         f.parent.mkdir(exist_ok=True)
-        f.write_bytes(b"")
-    seen = {}
-
-    class Proc:
-        def __init__(self, cmd, **_kw):
-            seen["cmd"] = cmd
-            self.stdin = io.StringIO()
-            self.stdout = io.StringIO(SIDID_OUT)
-            self.returncode = 0
-            seen["stdin"] = self.stdin
-            self.stdin.close = lambda: seen.setdefault("text", self.stdin.getvalue())
-
-        def wait(self, timeout):
-            return self.returncode
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_):
-            return False
-
-    monkeypatch.setattr(sidid.subprocess, "Popen", Proc)
-    got = sidid.identify(sidid.expand([tmp_path / "a", files[3]]), progress=False)
-    assert seen["text"].splitlines() == ["a/x.sid", "a/y.sid", "a/z.sid", "b/w.sid"]
-    assert f"{tmp_path.resolve()}:/in:ro" in seen["cmd"]
-    assert list(got.values()) == [
-        ["GoatTracker_V2.x"],
-        ["JCH_NewPlayer", "(JCH_NewPlayer_V17)"],
-        [],
-        [],
-    ]
-    assert sidid.identify([]) == {}
+        f.write_bytes(bytes.fromhex(body))
+    cfg = tmp_path / "sidid.cfg"
+    cfg.write_text(SIDID_CFG)
+    paths = sidid.expand([tmp_path / "a", files[3]])
+    assert paths == [f.resolve() for f in files]
+    got = sidid.identify(paths, cfg, jobs=2, progress=False)
+    assert list(got.values()) == [["Goat", "(Goat_V2)"], ["JCH"], [], ["(Goat_V2)"]]
+    assert sidid.identify([], cfg) == {}
     out = tmp_path / "r.json"
-    assert sidid.main([str(files[0]), "--json", str(out)]) == 0
-    assert json.loads(out.read_text()) == {str(files[0].resolve()): ["GoatTracker_V2.x"]}
-    Proc.wait = lambda self, timeout: 3
-    with pytest.raises(RuntimeError):
-        sidid.identify(files[:1], progress=False)
+    assert sidid.main([str(files[0]), "--cfg", str(cfg), "--jobs", "1", "--json", str(out)]) == 0
+    assert json.loads(out.read_text()) == {str(files[0].resolve()): ["Goat", "(Goat_V2)"]}
+    assert capsys.readouterr().out == f"{files[0].resolve()}\tGoat,(Goat_V2)\n"
 
 
 RELOC_ERR = """Relocating from $1000-$13ff to $1100-$14ff

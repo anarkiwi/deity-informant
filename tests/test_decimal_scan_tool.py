@@ -1,11 +1,11 @@
 """tools/decimal_scan.py: songs that run arithmetic with the decimal flag set."""
 
 import json
-import struct
 import sys
 from pathlib import Path
 
 import pytest
+from pysidtracker.header import write_psid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import decimal_scan  # noqa: E402 pylint: disable=wrong-import-position,import-error
@@ -19,8 +19,7 @@ REG = [0, 0, 0, 0xFF] + [0] * 12
 
 
 def psid(code):
-    header = b"PSID" + struct.pack(">HHHHHHHI", 2, 0x7C, 0, LOAD, PLAY, 1, 1, 0) + bytes(0x7C - 22)
-    return header + struct.pack("<H", LOAD) + code
+    return write_psid(load=LOAD, init=LOAD, play=PLAY, image=code, embed_load=True)
 
 
 def job(code, starts):

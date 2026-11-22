@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from pysidtracker.registers import sid_model_for_flags
+from vagrant_moses.c64 import psid_iomap
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import wpcorpus  # noqa: E402 pylint: disable=wrong-import-position
@@ -29,12 +31,12 @@ def main(argv=None):
     ap.add_argument("--max-cycles", type=int, default=2_000_000)
     args = ap.parse_args(argv)
     root, mc = Path(args.root), args.max_cycles
-    wpcorpus._worker(str(root / "DOCUMENTS" / "Songlengths.md5"))  # pylint: disable=W0212
+    wpcorpus._worker(str(root))  # pylint: disable=W0212
     row = wpcorpus.plan(str(root / args.path), args.path, 180.0, mc)[args.song - 1]
     img = wpcorpus.sidfile((root / args.path).read_bytes())[1]
     init, play, a = row["init"], row["play"], row["song"] - 1
-    ports = {"init": wpcorpus.iomap(init), "call": wpcorpus.iomap(play)}
-    host = c64._Host(img, ntsc=row["clock"] == "NTSC", model=wpcorpus.sid_model(row))
+    ports = {"init": psid_iomap(init), "call": psid_iomap(play)}
+    host = c64._Host(img, ntsc=row["clock"] == "NTSC", model=sid_model_for_flags(row["flags"]))
     host.drive(Queue(runs=[((play, 0), args.calls)]), [(init, a)], mc, ports)
     inits, records, n = host.split()
     last, records = inits[-1], list(records)

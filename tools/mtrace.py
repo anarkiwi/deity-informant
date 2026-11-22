@@ -11,8 +11,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from py65.devices.mpu6502 import MPU
-from py65.disassembler import Disassembler
+from jennings.devices.mpu6502 import MPU
+from jennings.disassembler import Disassembler
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 # pylint: disable=wrong-import-position
@@ -93,9 +93,7 @@ def main(argv=None):
         print("no departure within the machine's steps")
         return 0
     lo, steps, ref, mem = d
-    m = MPU()
-    m.memory[:] = list(mem)
-    dis = Disassembler(m)
+    dis = Disassembler(MPU(memory=bytearray(mem)))
     for i in range(max(0, lo - 4), min(len(steps), lo + 2)):
         st, o = steps[i], ref(i)
         print(

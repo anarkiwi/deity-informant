@@ -12,7 +12,9 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from pysidtracker.registers import sid_model_for_flags
 from tqdm import tqdm
+from vagrant_moses.c64 import psid_iomap
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 # pylint: disable=wrong-import-position
@@ -30,8 +32,8 @@ def session(data, song, calls, host=None):
     "prog", "host"}``."""
     _, img, init, play, _ = wpcorpus.sidfile(data)
     hdr = wpcorpus.header(data)
-    ports = {"init": wpcorpus.iomap(init), "call": wpcorpus.iomap(play)}
-    model = wpcorpus.sid_model({"sid_models": [(hdr["flags"] >> 4) & 3]})
+    ports = {"init": psid_iomap(init), "call": psid_iomap(play)}
+    model = sid_model_for_flags(hdr["flags"])
     h = (host or c64._Host)(  # pylint: disable=protected-access
         img, ntsc=hdr["clock"] == "NTSC", model=model
     )

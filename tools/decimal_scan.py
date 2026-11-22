@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from jennings.devices.mpu6502 import NativeMPU
 from jennings.memory import NativeMemory
 from jennings.opcodes import OPCODES
+from deity_informant.lifter import pack_status
 from smclabel import sidfile
 from wpcorpus import _facts_lines
 
@@ -54,7 +55,7 @@ def traced_hits(img, reg, play, calls, mc):
     mem = NativeMemory(bytes(img))
     mpu = NativeMPU(memory=mem)
     mpu.a, mpu.x, mpu.y, mpu.sp = reg[:4]
-    mpu.p = sum(reg[i] << b for i, b in ((8, 0), (9, 1), (10, 2), (11, 3), (13, 6), (14, 7)))
+    mpu.p = pack_status(reg)
     ram = np.frombuffer(memoryview(mem), np.uint8)
     t0 = time.perf_counter()
     for n in range(calls):

@@ -289,8 +289,9 @@ class MachineOracle:
     def _attribute(self, events, sp):
         """Attribute the previous instruction's writes, entry pushes and DMA by address form."""
         ram, shadow = self.ram, self.shadow
-        pc, fetched, x, y, psp, bits = self.prev
-        writes = {a: None for a in expected_writes(_Mem(pc, fetched, shadow), pc, x, y, psp)}
+        pc, fetched, x, y, psp, bits, acc = self.prev
+        mem = _Mem(pc, fetched, shadow)
+        writes = {a: None for a in expected_writes(mem, pc, x, y, psp, acc)}
         for kind, fsp in _frames(events, sp):
             writes.update({0x100 | ((fsp + k) & 0xFF): _PUSH[kind] for k in (1, 2, 3)})
         for lo, hi in self.dma:
@@ -355,7 +356,7 @@ class MachineOracle:
                 "opcode", "operand") else self._read(bits, addr)  # fmt: skip
             cls.fetch(addr, v, role, pc, fv, from_rom)
         cls.bank(bits, pc)
-        self.prev = (pc, fetched, x, y, sp, bits)
+        self.prev = (pc, fetched, x, y, sp, bits, r.a)
         if self.call_cycles and mc.cycle - self.call_start > self.call_cycles:
             self.timeout = True
             mc.stop = True

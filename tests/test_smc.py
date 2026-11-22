@@ -9,7 +9,7 @@ import pytest
 from jennings.memory import NATIVE as JENNINGS_NATIVE
 
 from deity_informant import NATIVE
-from deity_informant.lifter import OPS
+from jennings.opcodes import OPCODES as OPS
 from deity_informant.smc import feasible, generate, machine, space, synthm
 from deity_informant.smc.expect import (
     GAP_REASONS,

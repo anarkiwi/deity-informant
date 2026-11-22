@@ -1,11 +1,11 @@
 """deity_informant.frames: interrupt frames recorded on the machine, lifted and checked."""
 
-import struct
 import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
+from pysidtracker.header import write_psid
 
 from deity_informant import NATIVE, c64, frames, wholeprog
 from deity_informant.smc.machine import core
@@ -48,9 +48,8 @@ RACE += bytes.fromhex("48 ad0ddd ad0003 8d18d4 68 40")
 
 
 def boot_of(code):
-    hdr = b"PSID" + struct.pack(">HHHHHHHI", 2, 0x7C, 0x1000, 0x1000, 0, 1, 1, 1)
-    hdr += bytes(0x60) + struct.pack(">HBBBB", 0x14, 0, 0, 0, 0)
-    img = wpcorpus.sidfile(hdr + code)[1]
+    sid = write_psid(load=0x1000, init=0x1000, play=0, image=code, speed=1, flags=0x14)
+    img = wpcorpus.sidfile(sid)[1]
     return c64.boot(img, 0x1000, 0x1000 + len(code), 0x1000, 1, kind="PSID")
 
 

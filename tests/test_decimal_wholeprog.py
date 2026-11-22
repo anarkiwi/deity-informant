@@ -6,7 +6,7 @@ import random
 
 import pytest
 
-import decimal_ref as ref
+from jennings import testing as ref
 from test_wholeprog import differential, facts_for
 from wholeprog_progs import IO, assemble
 from deity_informant import NATIVE, wholeprog

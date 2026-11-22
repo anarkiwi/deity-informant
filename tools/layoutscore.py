@@ -22,6 +22,8 @@ from concurrent.futures import TimeoutError as FutureTimeout  # noqa: E402
 from difflib import SequenceMatcher  # noqa: E402
 from pathlib import Path  # noqa: E402
 
+import numpy as np  # noqa: E402
+from jennings.coverage.cfg import instruction_bytes  # noqa: E402
 from jennings.opcodes import MEM_MODES, MODE_LEN, OPCODES  # noqa: E402
 from pebble import ProcessPool  # noqa: E402
 from tqdm import tqdm  # noqa: E402
@@ -370,8 +372,12 @@ def consistency(groups, cache, calls, workers):
 
 
 def code_bytes(img, starts):
-    """Addresses of the executed instructions' bytes."""
-    return {a for pc in starts for a in range(pc, pc + MODE_LEN[_mode(img, pc)])}
+    """Addresses of the executed instructions' bytes, wrapping at ``$FFFF``."""
+    load, body = img
+    mem, at = np.zeros(0x10000, np.uint8), np.zeros(0x10000, bool)
+    mem[load : load + len(body)] = np.frombuffer(bytes(body), np.uint8)[: 0x10000 - load]
+    at[list(starts)] = True
+    return set(np.flatnonzero(instruction_bytes(mem, at)).tolist())
 
 
 def agree(m, img, rep):

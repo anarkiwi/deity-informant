@@ -14,7 +14,7 @@ import networkx as nx
 from jennings.devices.mpu6502 import NativeMPU
 from jennings.memory import NativeMemory
 
-from .lifter import STATUS_BITS, bus_only, lift
+from .lifter import STATUS_BITS, bus_only, lift, pack_status, unpack_status
 
 __all__ = ["REGS", "Loop", "flow", "loops", "registers", "settle"]
 
@@ -118,9 +118,7 @@ def _live(scc, facts):
 
 def registers(mpu):
     """``{index: value}`` of :data:`REGS` on ``mpu``."""
-    regs = {0: mpu.a, 1: mpu.x, 2: mpu.y, 3: mpu.sp}
-    regs.update({i: mpu.p >> b & 1 for i, b in STATUS_BITS})
-    return regs
+    return unpack_status(mpu.p, {0: mpu.a, 1: mpu.x, 2: mpu.y, 3: mpu.sp})
 
 
 def settle(loop, mem, regs, pc, dev=None):
@@ -135,7 +133,7 @@ def settle(loop, mem, regs, pc, dev=None):
     for v in range(256) if held is None else sorted(held):
         scratch[loop.addr] = v
         mpu.a, mpu.x, mpu.y, mpu.sp, mpu.pc = regs[0], regs[1], regs[2], regs[3], pc
-        mpu.p = 0x30 | sum(regs[i] << b for i, b in STATUS_BITS)
+        mpu.p = pack_status(regs, 0x30)
         for _ in loop.pcs:
             mpu.step()
             if mpu.pc == pc or mpu.pc not in loop.pcs:

@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from jennings.opcodes import MEM_MODES, MODE_LEN, OPCODES
+from jennings.isa import addresses, length, pointer_bytes
+from jennings.opcodes import MEM_MODES, OPCODES
 from vagrant_moses.bus import banking
 
 from .space import Cell
@@ -19,6 +20,7 @@ __all__ = ["Classifier", "view", "insn_reads", "expected_writes", "expected_read
 IO_WINDOW = (0xD000, 0xDFFF)
 _KVEC = range(0x0314, 0x031A)
 _PUSHERS = ("irq_push", "nmi_push")
+_PUSHERS_MN = frozenset(("PHA", "PHP", "JSR", "BRK"))
 
 
 def view(bits, addr):
@@ -43,54 +45,31 @@ def _page_view(bits, page):
 
 def insn_reads(mem, pc, x, sp):
     """``(addr, role)`` of every byte an instruction at ``pc`` fetches or reads as control."""
-    mn, mode = OPCODES[mem[pc]]
-    out = [(pc, "opcode")] + [((pc + k) & 0xFFFF, "operand") for k in range(1, MODE_LEN[mode])]
-    b1 = mem[(pc + 1) & 0xFFFF]
-    if mode == "ind":
-        w = b1 | mem[(pc + 2) & 0xFFFF] << 8
-        out += [(w, "ptr_indirect"), ((w & 0xFF00) | ((w + 1) & 0xFF), "ptr_indirect")]
-    elif mode == "indy":
-        out += [(b1, "ptr_indirect"), ((b1 + 1) & 0xFF, "ptr_indirect")]
-    elif mode == "indx":
-        p = (b1 + x) & 0xFF
-        out += [(p, "ptr_indirect"), ((p + 1) & 0xFF, "ptr_indirect")]
-    if mn in ("RTS", "RTI"):
-        k = 1 if mn == "RTS" else 2
-        out += [(0x100 | ((sp + k + i) & 0xFF), "ret_addr") for i in (0, 1)]
+    op = mem[pc]
+    out = [(pc, "opcode")] + [((pc + k) & 0xFFFF, "operand") for k in range(1, length(op))]
+    out += [(a, "ptr_indirect") for a in pointer_bytes(mem, pc, x) or ()]
+    if OPCODES[op][0] in ("RTS", "RTI"):
+        out += [(a, "ret_addr") for a in addresses(mem, pc, x, 0, sp)["stack"][-2:]]
     return out
 
 
-def expected_writes(mem, pc, x, y, sp):
-    """The addresses an instruction at ``pc`` may store to, by its addressing form."""
+def expected_writes(mem, pc, x, y, sp, a=None):
+    """The addresses an instruction at ``pc`` may store to: its stack pushes, else its data
+    address by its addressing form (``a`` needed by a ``SHA``/``TAS`` crossing a page)."""
     mn, mode = OPCODES[mem[pc]]
-    b1, b2 = mem[(pc + 1) & 0xFFFF], mem[(pc + 2) & 0xFFFF]
-    w = b1 | b2 << 8
-    if mn in ("PHA", "PHP", "JSR", "BRK"):
-        return {0x100 | ((sp - k) & 0xFF) for k in range(3)}
-    if mode == "zp":
-        return {b1}
-    if mode in ("zpx", "zpy"):
-        return {(b1 + (x if mode == "zpx" else y)) & 0xFF}
-    if mode == "abs":
-        return {w}
-    if mode in ("absx", "absy"):
-        return {(w + (x if mode == "absx" else y)) & 0xFFFF}
-    if mode == "indx":
-        p = (b1 + x) & 0xFF
-        return {mem[p] | mem[(p + 1) & 0xFF] << 8}
-    if mode == "indy":
-        return {((mem[b1] | mem[(b1 + 1) & 0xFF] << 8) + y) & 0xFFFF}
-    return set()
+    if mn in _PUSHERS_MN:
+        return set(addresses(mem, pc, x, y, sp)["stack"])
+    return set(addresses(mem, pc, x, y, sp, a)["data"]) if mode in MEM_MODES else set()
 
 
-def expected_reads(mem, pc, x, y, sp, store=False):
+def expected_reads(mem, pc, x, y, sp, store=False, a=None):
     """The data addresses an instruction at ``pc`` reads (pointer bytes, operand), by its
     addressing form; ``store`` marks a store that does not read its operand. Stack pulls and
     return-address reads are not data reads."""
     mn, mode = OPCODES[mem[pc]]
-    out = {a for a, role in insn_reads(mem, pc, x, sp) if role == "ptr_indirect"}
+    out = set(pointer_bytes(mem, pc, x) or ())
     if mode in MEM_MODES and mn not in ("JSR", "JMP") and not store:
-        out |= expected_writes(mem, pc, x, y, sp)
+        out |= expected_writes(mem, pc, x, y, sp, a)
     return out
 
 

@@ -10,11 +10,12 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
-import struct
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+from pysidtracker.header import parse_sid_header
 
 ROOT = Path(__file__).resolve().parent.parent
 IMAGE = "di-vtools"
@@ -64,12 +65,8 @@ def run(args, mounts=(), env=None, image=IMAGE, stdin=None, timeout=600):
 def sid_body(data):
     """``(load, offset, body)`` of a PSID/RSID file: the C64 load address, the file offset of
     the first loaded byte, and the loaded bytes."""
-    if data[:4] not in (b"PSID", b"RSID") or len(data) < 0x76:
-        raise ValueError("not a PSID/RSID file")
-    off, load = struct.unpack(">HH", data[6:10])
-    if load == 0:
-        return data[off] | data[off + 1] << 8, off + 2, data[off + 2 :]
-    return load, off, data[off:]
+    h = parse_sid_header(data)
+    return h.real_load_address, h.data_start, data[h.data_start :]
 
 
 def workdir(name):

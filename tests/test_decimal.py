@@ -1,14 +1,14 @@
 """ADC, SBC, ARR, RRA and ISC in binary and decimal mode, exhaustively, on every engine.
 
-The reference is :mod:`decimal_ref` (Bruce Clark's tutorial): every accumulator, operand and
+The reference is :mod:`jennings.testing` (Bruce Clark's tutorial): every accumulator, operand and
 carry with the decimal flag set (invalid BCD included), and the binary forms with it clear.
 """
 
 import pytest
 
-from deity_informant import PcodeVM, lift
+from jennings import testing as ref
 
-import decimal_ref as ref
+from deity_informant import PcodeVM, lift
 
 native = pytest.importorskip("deity_informant._native")
 

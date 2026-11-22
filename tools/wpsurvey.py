@@ -11,7 +11,6 @@ import argparse
 import json
 import os
 import random
-import struct
 import sys
 from collections import Counter
 from concurrent.futures import TimeoutError as FutureTimeout
@@ -19,6 +18,8 @@ from concurrent.futures import as_completed
 from pathlib import Path
 
 from pebble import ProcessPool
+from pysidtracker.errors import SidError
+from pysidtracker.image import SidImage
 from tqdm import tqdm
 
 from deity_informant import trace, wholeprog
@@ -32,17 +33,14 @@ STACK_OPS = {0x08: "PHP", 0x28: "PLP", 0x48: "PHA", 0x68: "PLA", 0x9A: "TXS", 0x
 
 def psid(data):
     """``(image, init, play, songs, start)`` of a PSID file, or None when not PSID-callable."""
-    if data[:4] != b"PSID" or len(data) < 0x76:
+    try:
+        tune = SidImage.from_sid(data)
+    except SidError:
         return None
-    off, load, init, play, songs, start = struct.unpack(">HHHHHH", data[6:18])
-    body = data[off:]
-    if load == 0:
-        load, body = body[0] | body[1] << 8, body[2:]
-    if play == 0 or load + len(body) > 0x10000:
+    h = tune.header
+    if not h.is_psid or not h.play_address:
         return None
-    img = bytearray(0x10000)
-    img[load : load + len(body)] = body
-    return img, init or load, play, songs, start
+    return tune.mem, h.init_address or tune.load, h.play_address, h.songs, h.start_song
 
 
 def survey(path, calls, max_cycles=1_000_000, check=0):

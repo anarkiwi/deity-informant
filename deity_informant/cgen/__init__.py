@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 
 import numpy as np
+from jennings.coverage import cfg
+from jennings.opcodes import MODE_LEN, OPCODES
 from pycparser import c_ast
 from wayward_eagle.c import format_c
 
@@ -21,7 +23,6 @@ from ..trace import Facts
 
 from . import cnodes as cn, cost, emit, mlir, printer, traps as trapinfo, units
 from .cnodes import hexes
-from ..lifter import MODE_LEN, OPS
 from .regions import Memory, background, code_bytes, pointer_pairs
 
 __all__ = ["Program", "jump_facts", "lift", "render", "translate"]
@@ -51,17 +52,18 @@ IX = """#if UINTPTR_MAX == 0xFFFF
 
 
 def jump_facts(facts, image):
-    """The computed-jump edges of ``facts``: those leaving ``JMP (ind)``, ``RTS`` and ``RTI``
-    and those of ``JMP``/``JSR`` going elsewhere than their operand, as ``Facts``."""
+    """The computed-jump edges of ``facts``: those leaving an exit (``JMP (ind)``, ``RTS``,
+    ``RTI``, ``BRK``) and those of ``JMP``/``JSR`` going elsewhere than their operand, as
+    ``Facts``."""
     f = facts if isinstance(facts, Facts) else Facts.from_dict(facts)
-    edges = []
-    for src, dst in f.edges:
-        op = image[src]
-        if op in (0x6C, 0x60, 0x40):
-            edges.append((src, dst))
-        elif op in (0x4C, 0x20) and dst != image[src + 1] | image[(src + 2) & 0xFFFF] << 8:
-            edges.append((src, dst))
-    return Facts(edges=sorted(set(edges)))
+    edges = {
+        (src, dst)
+        for src, dst in f.edges
+        if image[src] in cfg.EXIT
+        or image[src] in (cfg.JMP, cfg.JSR)
+        and dst != image[(src + 1) & 0xFFFF] | image[(src + 2) & 0xFFFF] << 8
+    }
+    return Facts(edges=sorted(edges))
 
 
 def _slices(mem, used):
@@ -696,7 +698,7 @@ def _reads_fixed(image, starts, fixed):
     fixed = masks.mask(at=fixed)
     out = set()
     for pc in starts:
-        mn, mode = OPS.get(image[pc], ("", "impl"))
+        mn, mode = OPCODES[image[pc]]
         n = MODE_LEN[mode]
         if (
             mode != "rel"

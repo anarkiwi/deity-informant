@@ -1,11 +1,11 @@
 """Layout map validation: matching rules, ground-truth scores, consistency, sidreloc agreement."""
 
 import json
-import struct
 import sys
 from pathlib import Path
 
 import pytest
+from pysidtracker.header import write_psid
 
 from wholeprog_progs import assemble
 
@@ -47,8 +47,7 @@ d2: .byte 3
 
 
 def _psid(code, load, play):
-    hdr = b"PSID" + struct.pack(">HHHHHHHI", 2, 0x7C, load, load, play, 1, 1, 0)
-    return hdr + b"\0" * 0x60 + struct.pack(">HBBBB", 0x14, 0, 0, 0, 0) + code
+    return write_psid(load=load, init=load, play=play, image=code, flags=0x14)
 
 
 def _truth(lab, load, size):

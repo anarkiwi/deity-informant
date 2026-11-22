@@ -13,40 +13,41 @@ import contextlib
 import json
 import os
 import random
-import struct
 import sys
 from collections import Counter
 from pathlib import Path
 
 from pebble import ProcessPool
 from tqdm import tqdm
-from vagrant_moses.c64 import poweron_ram
+from pysidtracker.errors import SidError
+from pysidtracker.header import parse_sid_header
+from pysidtracker.image import SidImage
+from pysidtracker.oracle import PAL_FLAG
+from pysidtracker.poweron import ram_pattern
+from vagrant_moses.c64 import psid_iomap
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # pylint: disable=wrong-import-position
-from deity_informant.c64 import iomap  # noqa: E402
 from deity_informant.smc.expect import lift_reason  # noqa: E402
 from deity_informant.smc.machine import MachineOracle, core  # noqa: E402
 from deity_informant.smc.space import Cell  # noqa: E402
 
 
 def sidfile(data):
-    """``(kind, image, init, play, songs)`` for a PSID/RSID file, or ``None``; ``$02A6`` is the
-    video flag of its clock (SID_file_format.txt) before the data loads, NTSC only for an
-    NTSC-only header."""
-    if data[:4] not in (b"PSID", b"RSID") or len(data) < 0x7C:
+    """``(kind, image, init, play, songs)`` for a PSID/RSID file, or ``None``: the tune over the
+    power-on RAM, ``$02A6`` the video flag of its clock (NTSC only for an NTSC-only header)."""
+    try:
+        tune = SidImage.from_sid(data)
+    except SidError:
         return None
-    off, load, init, play, songs = struct.unpack(">HHHHH", data[6:16])
-    body = data[off:]
-    if load == 0:
-        load, body = body[0] | body[1] << 8, body[2:]
-    if load + len(body) > 0x10000 or load == 0:
+    h = tune.header
+    if not tune.load:
         return None
-    img = bytearray(poweron_ram())
-    img[0x02A6] = int(data[5] < 2 or (data[0x77] >> 2) & 3 != 2)
-    img[load : load + len(body)] = body
-    return data[:4].decode(), img, init or load, play, max(songs, 1)
+    img = ram_pattern()
+    img[PAL_FLAG] = int(not h.is_ntsc)
+    img[tune.load : tune.end] = tune.image
+    return h.magic.decode(), img, h.init_address or tune.load, h.play_address, max(h.songs, 1)
 
 
 def _parse(sid):
@@ -57,17 +58,18 @@ def _parse(sid):
 
 def label_tune(path, frames, max_cycles):
     """The feature-cell sids a tune exercises on the machine oracle."""
-    tune = sidfile(Path(path).read_bytes())
+    data = Path(path).read_bytes()
+    tune = sidfile(data)
     if tune is None:
         return {"path": str(path), "skip": "not sid-callable"}
     kind, img, init, play, _ = tune
-    if kind == "RSID" and int.from_bytes(Path(path).read_bytes()[0x76:0x78], "big") & 0x02:
+    if kind == "RSID" and parse_sid_header(data).flags & 0x02:
         return {"path": str(path), "skip": "needs the C64 BASIC ROM"}
     oracle = MachineOracle(img)
     song = 0
     try:
         if kind == "PSID" and play:
-            ports = {"init": iomap(init), "call": iomap(play)}
+            ports = {"init": psid_iomap(init), "call": psid_iomap(play)}
             run = oracle.run(
                 [(play, song)] * frames, init=[(init, song)], call_cycles=max_cycles, ports=ports
             )

@@ -24,7 +24,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from . import ILLEGAL_OPCODES, OPS, PcodeVM, lift, run_sub
+from jennings.opcodes import ILLEGAL_OPCODES, OPCODES as OPS
+
+from . import PcodeVM, lift, run_sub
 
 ORG = 0x1000
 

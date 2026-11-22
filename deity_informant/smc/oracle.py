@@ -62,7 +62,7 @@ def _call(mpu, mem, shadow, cls, writes, pc, a, max_cycles):
     mpu.sp, mpu.pc, mpu.a = (sp0 - 2) & 0xFF, pc, a
     writes.clear()
     s0 = mpu.steps
-    x, y, sp = mpu.x, mpu.y, mpu.sp
+    a, x, y, sp = mpu.a, mpu.x, mpu.y, mpu.sp
     reason, tr = mpu.run_until(max_cycles=max_cycles, sp_above=(sp0 - 2) & 0xFF, regs=True)
     wi = 0
     for i in range(len(tr)):
@@ -79,13 +79,13 @@ def _call(mpu, mem, shadow, cls, writes, pc, a, max_cycles):
             wi += 1
             w = writer_of(shadow[pc_i])
             if expect is None:
-                expect = expected_writes(shadow, pc_i, x, y, sp)
+                expect = expected_writes(shadow, pc_i, x, y, sp, a)
             if w is None or addr not in expect:
                 cls.unclassified.append(("write-form", shadow[pc_i], addr, pc_i))
             else:
                 cls.write(addr, *w, pc_i)
             shadow[addr] = v
-        x, y, sp = tr.x[i], tr.y[i], tr.sp[i]
+        a, x, y, sp = tr.a[i], tr.x[i], tr.y[i], tr.sp[i]
     return reason == "sp"
 
 

@@ -38,14 +38,6 @@ def _trace(path, writes):
     path.write_bytes(zstandard.ZstdCompressor().compress(text.getvalue().encode("ascii")))
 
 
-def test_changes_keeps_register_changes():
-    assert sidcmp.changes([(1, 0, 0), (2, 0, 5), (3, 0, 5), (4, 1, 5), (5, 0, 0)]) == [
-        (2, 0, 5),
-        (4, 1, 5),
-        (5, 0, 0),
-    ]
-
-
 def test_compare_against_a_cached_trace(tmp_path, monkeypatch, capsys):
     tune = tmp_path / "count.sid"
     tune.write_bytes(sid(COUNT, 0, speed=1))

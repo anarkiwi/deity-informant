@@ -1,4 +1,4 @@
-"""CYCLETIME/EXTRACYCLES pinned by family rule, and by what the VM charges.
+"""jennings.opcodes.CYCLES/EXTRA pinned by family rule, and by what the VM charges.
 
 On the NMOS 6502 cost is a function of (class, addressing mode) alone, with no
 per-opcode exceptions, so a per-family table pins all 256 entries -- and catches
@@ -6,6 +6,8 @@ a single-entry typo.
 """
 
 import pytest
+
+from jennings import opcodes as O
 
 import deity_informant as P
 
@@ -48,8 +50,8 @@ WRITE_MN = {"STA", "STX", "STY", "SAX", "SHA", "SHX", "SHY", "TAS"}
 # implied/accumulator forms cost 2 apart from these; a JAM never completes.
 FIXED = {"BRK": 7, "JSR": 6, "RTI": 6, "RTS": 6, "PHA": 3, "PHP": 3, "PLA": 4, "PLP": 4, "JAM": 0}
 
-BRANCHES = {op for op, (_mn, md) in P.OPS.items() if md == "rel"}
-JAMS = {op for op, (mn, _md) in P.OPS.items() if mn == "JAM"}
+BRANCHES = {op for op, (_mn, md) in O.OPCODES.items() if md == "rel"}
+JAMS = {op for op, (mn, _md) in O.OPCODES.items() if mn == "JAM"}
 
 
 def expect(mn, mode):
@@ -70,24 +72,24 @@ def expect(mn, mode):
 
 
 def test_tables_are_complete():
-    assert len(P.CYCLETIME) == len(P.EXTRACYCLES) == 256
-    assert len(P.OPS) == 256
+    assert len(O.CYCLES) == len(O.EXTRA) == 256
+    assert len(O.OPCODES) == 256
 
 
 def test_tables_follow_family_rules():
     bad = {
-        "$%02X %s %s" % (op, mn, md): ((P.CYCLETIME[op], P.EXTRACYCLES[op]), expect(mn, md))
-        for op, (mn, md) in sorted(P.OPS.items())
-        if (P.CYCLETIME[op], P.EXTRACYCLES[op]) != expect(mn, md)
+        "$%02X %s %s" % (op, mn, md): ((O.CYCLES[op], O.EXTRA[op]), expect(mn, md))
+        for op, (mn, md) in sorted(O.OPCODES.items())
+        if (O.CYCLES[op], O.EXTRA[op]) != expect(mn, md)
     }
     assert not bad, bad
 
 
 def test_rmw_indexed_absolute_is_a_fixed_seven():
     """RMW abs,X / abs,Y always writes, so it pays the dummy read unconditionally."""
-    idx = [op for op, (mn, md) in P.OPS.items() if mn in RMW_MN and md in ("absx", "absy")]
+    idx = [op for op, (mn, md) in O.OPCODES.items() if mn in RMW_MN and md in ("absx", "absy")]
     assert len(idx) == 18
-    assert all((P.CYCLETIME[op], P.EXTRACYCLES[op]) == (7, 0) for op in idx)
+    assert all((O.CYCLES[op], O.EXTRA[op]) == (7, 0) for op in idx)
 
 
 def _cycles(prog, a=0, x=0, y=0, sp=0xFF, p=0x20):
@@ -101,15 +103,15 @@ def _cycles(prog, a=0, x=0, y=0, sp=0xFF, p=0x20):
 
 def _operand(mode):
     """Operand bytes naming $1234 (zero page $34), so no indexed form crosses."""
-    return {1: [], 2: [0x34], 3: [0x34, 0x12]}[P.MODE_LEN[mode]]
+    return {1: [], 2: [0x34], 3: [0x34, 0x12]}[O.MODE_LEN[mode]]
 
 
 def test_vm_charges_the_table():
     """The table being right and the VM charging it are two different claims."""
     bad = {
-        "$%02X %s %s" % (op, mn, md): (_cycles([op] + _operand(md)), P.CYCLETIME[op])
-        for op, (mn, md) in sorted(P.OPS.items())
-        if op not in BRANCHES | JAMS and _cycles([op] + _operand(md)) != P.CYCLETIME[op]
+        "$%02X %s %s" % (op, mn, md): (_cycles([op] + _operand(md)), O.CYCLES[op])
+        for op, (mn, md) in sorted(O.OPCODES.items())
+        if op not in BRANCHES | JAMS and _cycles([op] + _operand(md)) != O.CYCLES[op]
     }
     assert not bad, bad
 

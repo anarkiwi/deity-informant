@@ -12,6 +12,7 @@ from functools import cached_property
 import numpy as np
 
 from . import c64, wholeprog
+from .lifter import unpack_status
 from .smc.machine import MachineOracle
 
 __all__ = ["ENTRY", "FrameHost", "check", "lift", "regs"]
@@ -119,9 +120,7 @@ def reg_rows(rows):
     reg = np.zeros((len(rows), 16), np.int64)
     for i, r in enumerate(("a", "x", "y", "sp")):
         reg[:, i] = rows[r]
-    for i, bit in c64._FLAGS:  # pylint: disable=protected-access
-        reg[:, i] = rows["p"] >> bit & 1
-    return reg.tolist()
+    return unpack_status(rows["p"], reg.T).T.tolist()
 
 
 def regs(entry):

@@ -10,7 +10,9 @@ import argparse
 import sys
 from pathlib import Path
 
-from deity_informant.lifter import OPS, template
+from jennings.opcodes import OPCODES as OPS
+
+from deity_informant.lifter import template
 
 OUT = Path(__file__).resolve().parent.parent / "crates/di-pcode/src/templates_gen.rs"
 SLOTS = {

@@ -8,16 +8,17 @@ an RSID); traces are cached in ``--work`` (default ``out/sidcmp``, bind-mountabl
 from __future__ import annotations
 
 import argparse
-import csv
-import io
 import json
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-import numpy as np
-import zstandard
+import vagrant_moses as vm
+from pysidtracker.gridcmp import change_offsets
+from pysidtracker.loader import psid_image
+from pysidtracker.oracle import read_sidtrace, register_changes
+from pysidtracker.registers import sid_model_for_flags
 from tqdm import tqdm
 from vagrant_moses import memmap as mm
 
@@ -34,36 +35,12 @@ IMAGE = "anarkiwi/sidtrace"
 ROM_FILES = {"kernal": mm.KERNAL_BASE, "basic": mm.BASIC_BASE, "chargen": mm.CHARGEN_BASE}
 
 
-class _Log:
-    """A SID at ``$D400`` keeping its writes; reads give the last value written."""
-
-    def __init__(self):
-        self.regs, self.writes = bytearray(32), []
-
-    def read(self, _cycle, reg):
-        return self.regs[reg]
-
-    def write(self, cycle, reg, value):
-        self.regs[reg] = value
-        self.writes.append((cycle, reg, value))
-
-
-def changes(writes):
-    """The ``(cycle, reg, value)`` writes that change their register (from 0)."""
-    regs, out = {}, []
-    for cycle, reg, value in writes:
-        if regs.get(reg, 0) != value:
-            regs[reg] = value
-            out.append((cycle, reg, value))
-    return out
-
-
 def song_row(data, song):
     """The row fields :func:`wpcorpus.irq_boot` takes for ``song`` (0: the start song)."""
     h = wpcorpus.header(data)
     song = song or h["start"] or 1
     speed = (h["speed_word"] >> min(song - 1, 31)) & 1 if h["kind"] == "PSID" else 0
-    return h | {"song": song, "speed": speed, "init": h["init"] or wpcorpus.load_span(data)[0]}
+    return h | {"song": song, "speed": speed, "init": h["init"] or psid_image(data)[0]}
 
 
 def machine_changes(data, song, cycles):
@@ -71,11 +48,11 @@ def machine_changes(data, song, cycles):
     row = song_row(data, song)
     boot = wpcorpus.irq_boot(row, data)
     ntsc = row["clock"] == "NTSC"
-    log = _Log()
-    o = MachineOracle(boot.image, ntsc=ntsc, devices={mm.SID_BASE: log}, roms=boot.roms)
+    sid = vm.NativeSid(sid_model_for_flags(row["flags"]), lambda _cycle, _reg: 0)
+    o = MachineOracle(boot.image, ntsc=ntsc, devices={mm.SID_BASE: sid}, roms=boot.roms)
     frames = -(-cycles // mm.video(ntsc).cycles_per_frame)
     o.run([], frames=frames, **boot.run_kw())
-    return [w for w in changes(log.writes) if w[0] < cycles]
+    return [w for w in sid.drain_rows() if w[0] < cycles]
 
 
 def _roms(work):
@@ -99,11 +76,7 @@ def sidtrace_changes(path, song, seconds, work, roms=True):
         cmd = ["docker", "run", "--rm", "-v", f"{work.resolve()}:/work", *mount, IMAGE,
                out.name, tune.name, f"-o{song}", f"-t{seconds}"]  # fmt: skip
         subprocess.run(cmd, check=True, capture_output=True, timeout=600)
-    with zstandard.ZstdDecompressor().stream_reader(out.open("rb")) as f:
-        rows = csv.DictReader(io.TextIOWrapper(f, "ascii"))
-        return changes(
-            (int(r["cycle"]), int(r["reg"]), int(r["value"])) for r in rows if r["chip"] == "0"
-        )
+    return register_changes(read_sidtrace(out))
 
 
 def compare(path, song=0, seconds=10, work=ROOT / "out" / "sidcmp"):
@@ -114,11 +87,7 @@ def compare(path, song=0, seconds=10, work=ROOT / "out" / "sidcmp"):
     row = song_row(data, song)
     ref = sidtrace_changes(path, row["song"], seconds, work, row["kind"] == "RSID")
     got = machine_changes(data, row["song"], ref[-1][0] + 1 if ref else 0)
-    n = next(
-        (i for i, (a, b) in enumerate(zip(got, ref)) if a[1:] != b[1:]), min(len(got), len(ref))
-    )
-    dt = np.array([a[0] - b[0] for a, b in zip(got[:n], ref[:n])], dtype=np.int64)
-    vals, counts = np.unique(dt, return_counts=True)
+    n, offsets = change_offsets(got, ref)
     return {
         "path": str(path),
         "song": row["song"],
@@ -127,7 +96,7 @@ def compare(path, song=0, seconds=10, work=ROOT / "out" / "sidcmp"):
         "machine_changes": len(got),
         "matched": n,
         "same": n == len(ref) == len(got),
-        "offsets": {int(v): int(c) for v, c in zip(vals, counts)},
+        "offsets": offsets,
     }
 
 

@@ -12,8 +12,11 @@ from __future__ import annotations
 import functools
 
 import numpy as np
+from jennings.coverage import cfg
+from jennings.isa import pointer_bytes
+from jennings.opcodes import OPCODES
 
-from ..lifter import BRANCHES, MODE_LEN, OPS, lift
+from ..lifter import BRANCHES, lift
 from .. import masks
 
 #: Widest address interval treated as bounded; wider accesses are of unknown address.
@@ -22,23 +25,16 @@ BOUNDED = 0x200
 
 def code_bytes(image, starts):
     """The instruction bytes of the instructions at ``starts``, as a boolean array."""
-    mask = np.zeros(0x10000, dtype=bool)
-    for pc in starts:
-        n = MODE_LEN[OPS[image[pc]][1]] if image[pc] in OPS else 1
-        mask[(pc + np.arange(n)) & 0xFFFF] = True
-    return mask
+    at = np.zeros(0x10000, dtype=bool)
+    at[list(starts)] = True
+    return cfg.instruction_bytes(image, at)
 
 
 def successors(image, pc):
     """Where the instruction at ``pc`` may go: a branch's next instruction and target, a
-    ``JMP abs``'s target, else the next instruction."""
-    op = OPS.get(image[pc], ("", "impl"))
-    nxt = (pc + MODE_LEN[op[1]]) & 0xFFFF
-    if op[1] == "rel":
-        return [nxt, (nxt + (image[(pc + 1) & 0xFFFF] ^ 0x80) - 0x80) & 0xFFFF]
-    if op == ("JMP", "abs"):
-        return [image[(pc + 1) & 0xFFFF] | image[(pc + 2) & 0xFFFF] << 8]
-    return [nxt]
+    ``JMP abs``'s target, else (an exit too) the next instruction."""
+    flows = cfg.successors(image, pc)[0]
+    return [t for _, t in flows] or [(pc + int(cfg.LEN[image[pc]])) & 0xFFFF]
 
 
 def edge(image, p, q):
@@ -68,8 +64,6 @@ def edge(image, p, q):
 @functools.cache
 def _straight(op):
     """Whether opcode ``op`` always continues with the next instruction."""
-    if op not in OPS:
-        return False
     return lift(bytes([op]) + bytes(0xFFFF), 0)["ctrl"][0] == "next"
 
 
@@ -87,7 +81,7 @@ def _falls(image, pc, q):
 def decided(image, p, s):
     """``{flag: value}`` the edge from the instruction at ``p`` to ``s`` decides: a
     conditional branch's flag, set as it branches when ``s`` is its target, else clear."""
-    op = OPS.get(image[p], ("", ""))
+    op = OPCODES[image[p]]
     nxt, *tgt = successors(image, p)
     if op[0] not in BRANCHES or tgt == [nxt]:
         return {}
@@ -101,7 +95,7 @@ def _chain(image, pc, known=None):
     out, seen, known = [pc], set(), known or {}
     while pc not in seen:
         seen.add(pc)
-        op = OPS.get(image[pc], ("", ""))
+        op = OPCODES[image[pc]]
         flag, pol = BRANCHES.get(op[0], ((), 0))
         if op == ("JMP", "abs"):
             pc = successors(image, pc)[0]
@@ -126,17 +120,11 @@ def pointer_pairs(image, starts):
     for pc in starts:
         if image[pc] == 0x00:
             pairs[0xFFFE] = 0xFFFF
-        if image[pc] not in OPS:
-            continue
-        mode = OPS[image[pc]][1]
-        if mode in ("indx", "indy"):
-            p = image[(pc + 1) & 0xFFFF]
-            pairs[p] = (p + 1) & 0xFF
-        elif MODE_LEN[mode] == 3:
+        if cfg.LEN[image[pc]] == 3:
             pairs[(pc + 1) & 0xFFFF] = (pc + 2) & 0xFFFF
-            if mode == "ind":
-                p = image[(pc + 1) & 0xFFFF] | image[(pc + 2) & 0xFFFF] << 8
-                pairs[p] = (p & 0xFF00) | ((p + 1) & 0xFF)
+        ptr = pointer_bytes(image, pc)
+        if ptr is not None:
+            pairs[ptr[0]] = ptr[1]
     return pairs
 
 
