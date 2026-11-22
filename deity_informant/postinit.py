@@ -15,6 +15,7 @@ from tqdm import tqdm
 from jennings.devices.mpu6502 import NativeMPU
 from jennings.memory import NativeMemory
 from jennings.isa import length, pointer_bytes
+from jennings.opcodes import MEM_MODES as _MEM
 from jennings.opcodes import OPCODES
 
 from . import devices, masks, polling, wholeprog
@@ -275,7 +276,6 @@ _REG_ALU = {"INX": "x", "DEX": "x", "INY": "y", "DEY": "y", "SBX": "x"}
 _ACC_ALU = {"AND", "ORA", "EOR", "ANE", "LXA", "ALR", "ARR", "ANC"}
 _RMW = {"ASL", "LSR", "ROL", "ROR", "INC", "DEC", "SLO", "RLA", "SRE", "RRA", "ISC", "DCP"}
 _SHIFT = {"ASL", "LSR", "ROL", "ROR", "SLO", "RLA", "SRE", "RRA", "ALR", "ARR"}
-_MEM = {"abs", "absx", "absy", "zp", "zpx", "zpy", "indx", "indy"}
 
 
 def _next(key):

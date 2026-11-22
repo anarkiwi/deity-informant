@@ -32,7 +32,7 @@ from .structure import Conds, Graph, Structurer, new_ids
 WIDTH = {"i1": 1, "i8": 8, "i16": 16, "i32": 8, "i64": 16, "index": 16}
 CTYPE = {1: "uint8_t", 8: "uint8_t", 16: "uint16_t"}
 CMP = {0: "==", 1: "!=", 2: "<", 3: "<=", 4: ">", 5: ">=", 6: "<", 7: "<=", 8: ">", 9: ">="}
-FLIP = {"==": "!=", "!=": "==", "<": ">=", ">=": "<", "<=": ">", ">": "<="}
+FLIP = cs.COMPARISONS
 BINOP = {
     "arith.addi": "+",
     "arith.subi": "-",

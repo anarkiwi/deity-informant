@@ -24,7 +24,7 @@ dependencies = ["jennings>=0.17.0", "numpy", "networkx", "tqdm", "dd==0.6.0", "w
 
 [project.optional-dependencies]
 ghidra = ["pypcode"]
-dev = ["pytest", "pytest-xdist", "pytest-cov", "pytest-timeout", "build", "black", "pylint", "py65", "pypcode", "maturin", "pebble", "vagrant-moses[cpu]>=0.20.0", "pysidtracker>=0.65.0", "pylibresidfp>=0.6.1", "zstandard", "pyelftools"]
+dev = ["pytest", "pytest-xdist", "pytest-cov", "pytest-timeout", "build", "black", "pylint", "py65", "pypcode", "maturin", "pebble", "vagrant-moses[cpu]>=0.20.0", "pysidtracker>=0.65.0", "pylibresidfp>=0.6.1", "zstandard", "pyelftools", "pysayme>=0.1.0"]
 
 [project.urls]
 Homepage = "https://github.com/anarkiwi/deity-informant"
@@ -95,3 +95,18 @@ disable = [
     "exec-used",
     "duplicate-code",
 ]
+
+# Code here must not duplicate code its dependencies already export (pysayme). A key in
+# `allow` is a deliberate duplicate; its value says why.
+[tool.pysayme]
+roots = ["deity_informant", "tests", "tools"]
+ignore-dists = ["pytest", "pytest-xdist", "pytest-cov", "pytest-timeout", "build", "black", "pylint", "maturin", "pysayme"]
+
+[tool.pysayme.allow]
+"deity_informant/c64devices.py:SID -> pysidtracker.playspec.outorder:SID" = "the C64 register map; pysidtracker is a downstream dev extra"
+"deity_informant/c64devices.py:TEST -> vagrant_moses.sidorder:TEST" = "the SID control bits; vagrant-moses is a downstream dev extra"
+"deity_informant/c64devices.py:SAW -> vagrant_moses.sidorder:SAW" = "the SID control bits; vagrant-moses is a downstream dev extra"
+"deity_informant/vm.py:vector.resolve -> vagrant_moses:read_vector" = "the VM core runs without vagrant-moses, a downstream dev extra"
+"deity_informant/cgen/structure.py:loop_nodes -> wayward_eagle.c.listflow:Graph.reachable" = "worklist walk over a cgen Graph, not a listflow Graph method"
+"tools/pcodec.py:Structurer.natural -> wayward_eagle.c.listflow:Graph.reachable" = "natural loop over P-Code block predecessors, not a listflow Graph method"
+"tools/cgenplay.py:psid -> pysidtracker:load_psid" = "needs the start song and the unplaced body, which load_psid does not return"
