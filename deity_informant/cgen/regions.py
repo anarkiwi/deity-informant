@@ -443,12 +443,13 @@ def _table(values, care, p):
     an entry), any other periodic (``mask`` ``p - 1``, ``pool[offset + (a & mask)]``, units
     shared)."""
     cuts = _cuts(values, care, p)
-    ends = cuts[1:] + [0x10000]
+    idx = np.flatnonzero(care)
+    run = np.searchsorted(cuts, idx, "right") - 1
+    first = np.flatnonzero(np.diff(run, prepend=-1))
+    last = np.append(first[1:], len(idx))
     pool, units, parts = bytearray(), {}, []
-    for s, e in zip(cuts, ends):
-        at = np.flatnonzero(care[s:e]) + s
-        if not at.size:
-            continue
+    for k, i, j in zip(run[first].tolist(), first.tolist(), last.tolist()):
+        s, at = cuts[k], idx[i:j]
         lo, hi = int(at[0]), int(at[-1])
         if hi - lo < p:
             if parts and parts[-1][1] == "lit" and lo - parts[-1][3] <= ENTRY:
