@@ -14,6 +14,9 @@ dependency) and were cross-checked against the NMS reference chart.
 
 from __future__ import annotations
 
+from functools import lru_cache
+from typing import NamedTuple
+
 from jennings.opcodes import OPCODES as OPS, MODE_LEN, MEM_MODES, ILLEGAL_OPCODES
 
 __all__ = [
@@ -25,6 +28,9 @@ __all__ = [
     "CYCLETIME",
     "EXTRACYCLES",
     "lift",
+    "bus_only",
+    "Template",
+    "template",
 ]
 
 # Magic constant for the unstable "magic constant" group (ANE $8B, LXA $AB).
@@ -1144,3 +1150,150 @@ def _provenance(ops, pmap, ctrl, op):
     elif kind == "br":
         ctrlp = ([1], "rel", ctrl[3])
     return {"op0": op, "ops": opmap, "ctrl": ctrlp}
+
+
+class Template(NamedTuple):
+    """One opcode's P-Code with every operand-derived constant bound to its instruction bytes.
+
+    ``ops`` are ``lift()``'s ops; a constant input at ``(i, j)`` in ``prov`` holds a sentinel and
+    is bound by ``prov[(i, j)] = (srcs, fn)`` over the instruction bytes ``b1``, ``b2``:
+    ``((1,), "id")`` is ``b1``, ``((1, 2), "word")`` is ``b1 | b2 << 8``, ``((s,), "hi1")`` is
+    ``(bs + 1) & $FF``; every other constant is the same for every operand. ``len`` is the
+    instruction length and ``cyc`` its base cycles (``CYCLETIME``). ``ctrl`` is the control
+    transfer: ``("br", flag, pol)`` (taken when register ``flag`` is ``pol``, to the
+    ``b1``-relative target), ``("jmp",)``, ``("jsr",)`` and ``("jmpind",)`` (to or through the
+    operand word), or ``("next",)``, ``("rts",)``, ``("rti",)``, ``("brk",)``, ``("jam",)``.
+    ``pen`` is the page-cross penalty (``EXTRACYCLES``): ``None``, ``("branch",)`` (taken +1,
+    +1 more when the target's page differs from the fall-through's), ``("ax",)`` / ``("ay",)``
+    (+1 when the operand word plus X / Y crosses a page) or ``("iy", u)`` (+1 when the
+    ``(zp)`` pointer, held in the 2-byte unique at offset ``u``, plus Y crosses a page).
+
+    SHA/SHX/SHY/TAS store ``reg & (H + 1)`` with H the high byte of the base before indexing:
+    ``b2`` for ``abs,X``/``abs,Y`` (``prov`` ``((2,), "hi1")``), and for SHA ``(zp),Y`` the
+    pointer high byte loaded from ``(b1 + 1) & $FF`` (``prov`` ``((1,), "hi1")`` on that load's
+    address, the ``+ 1`` an op). On a page cross the address's high byte is the stored value.
+    """
+
+    ops: list
+    prov: dict
+    len: int
+    cyc: int
+    ctrl: tuple
+    pen: tuple | None
+
+
+_TPC = 0x1234
+# (b1, b2, mem[b1], mem[(b1 + 1) & $FF]) per lift; every byte differs between sets.
+_SENTINELS = ((0x5A, 0xC3, 0x71, 0x9E), (0xA7, 0x3C, 0x18, 0x2B))
+_BOUND = {
+    ((1,), "id"): lambda b1, b2: b1,
+    ((1, 2), "word"): lambda b1, b2: b1 | b2 << 8,
+    ((1,), "hi1"): lambda b1, b2: (b1 + 1) & 0xFF,
+    ((2,), "hi1"): lambda b1, b2: (b2 + 1) & 0xFF,
+}
+
+
+def _sentinel_lift(op, b1, b2, p1, p2):
+    mem = bytearray(0x10000)
+    mem[_TPC], mem[_TPC + 1], mem[_TPC + 2] = op, b1, b2
+    mem[b1], mem[(b1 + 1) & 0xFF] = p1, p2
+    return lift(mem, _TPC)
+
+
+def _kind(v):
+    return (v or (None,))[0]
+
+
+def _bind(op, lifts):
+    """``prov`` of ``lifts[0]``, checked to reproduce every lift's constants."""
+    rec, prov = lifts[0], {}
+    for other in lifts[1:]:
+        assert [k for k, _o, _i in other["ops"]] == [k for k, _o, _i in rec["ops"]], hex(op)
+    for i, (_mn, out, ins) in enumerate(rec["ops"]):
+        for other in lifts[1:]:
+            oout, oins = other["ops"][i][1:]
+            assert oout == out and len(oins) == len(ins), (hex(op), i)
+            for a, b in zip(ins, oins):
+                assert a[0] == b[0] and a[2] == b[2] and (a[0] == "c" or a[1] == b[1])
+        for j, vn in enumerate(ins):
+            if vn[0] != "c":
+                continue
+            vals = [r["ops"][i][2][j][1] for r in lifts]
+            src = rec["prov"]["ops"].get((i, j))
+            if src is None:
+                if len(set(vals)) > 1:
+                    raise NotImplementedError(
+                        "operand-dependent constant without provenance: %02X op %d input %d"
+                        % (op, i, j)
+                    )
+                continue
+            key = (tuple(src[0]), src[1])
+            mask = (1 << (8 * vn[2])) - 1
+            got = [_BOUND[key](b1, b2) & mask for b1, b2, _p1, _p2 in _SENTINELS]
+            assert got == vals, (hex(op), i, j, got, vals)
+            prov[(i, j)] = key
+    return prov
+
+
+def _ctrl(rec, lifts):
+    """``rec``'s control class, its targets checked against the operands of every lift."""
+    length, ctrl = rec["len"], rec["ctrl"]
+    for (b1, b2, _p1, _p2), r in zip(_SENTINELS, lifts):
+        c = r["ctrl"]
+        assert c[0] == ctrl[0]
+        if c[0] == "br":
+            fall = (_TPC + length) & 0xFFFF
+            assert c[1][0] == "r" and c[2] in (0, 1) and c[1:3] == ctrl[1:3]
+            assert c[3:] == ((fall + (b1 - 256 if b1 & 0x80 else b1)) & 0xFFFF, fall)
+        elif c[0] in ("jmp", "jsr", "jmpind"):
+            assert c[1] == b1 | b2 << 8 and length == 3
+        else:
+            assert len(c) == 1, c
+    return ("br", ctrl[1][1], ctrl[2]) if ctrl[0] == "br" else (ctrl[0],)
+
+
+def _iy_base(ops):
+    """The unique holding the ``(zp)`` pointer: the ``INT_OR`` word ``ZEXT(Y)`` is added to."""
+    defs = {out[1]: (mn, ins) for mn, out, ins in ops if out is not None and out[0] == "u"}
+    hits = {
+        ins[0][1]
+        for mn, _out, ins in ops
+        if mn == "INT_ADD"
+        and all(v[0] == "u" for v in ins)
+        and defs[ins[1][1]] == ("INT_ZEXT", [Y])
+        and defs[ins[0][1]][0] == "INT_OR"
+        and ins[0][2] == 2
+    }
+    assert len(hits) == 1, hits
+    return hits.pop()
+
+
+def _pen(rec, lifts):
+    """``rec``'s penalty class, its bases checked against the operands of every lift."""
+    kind = _kind(rec["pen"])
+    for (b1, b2, _p1, _p2), r in zip(_SENTINELS, lifts):
+        assert _kind(r["pen"]) == kind
+        if kind is not None:
+            want = {"branch": (), "ax": (b1 | b2 << 8,), "ay": (b1 | b2 << 8,), "iy": (b1,)}
+            assert tuple(r["pen"][1:]) == want[kind], r["pen"]
+    if kind is None:
+        return None
+    return ("iy", _iy_base(rec["ops"])) if kind == "iy" else (kind,)
+
+
+@lru_cache(maxsize=256)
+def template(op):
+    """``op``'s :class:`Template`, from ``lift()`` under two sentinel operand sets in which the
+    operand bytes and the zero-page pointer they name all differ; the lifts must agree except
+    for constants ``prov`` reproduces, else ``NotImplementedError`` (an unbound constant)."""
+    lifts = [_sentinel_lift(op, *s) for s in _SENTINELS]
+    rec = lifts[0]
+    for other in lifts[1:]:
+        for k in ("len", "cyc", "stk"):
+            assert other[k] == rec[k], (hex(op), k)
+    assert rec["stk"] == (
+        rec["ctrl"][0] if rec["ctrl"][0] in ("jsr", "brk", "rts", "rti") else None
+    )
+    return Template(
+        rec["ops"], _bind(op, lifts), rec["len"], rec["cyc"], _ctrl(rec, lifts), _pen(rec, lifts)
+    )
