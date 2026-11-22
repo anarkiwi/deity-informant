@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 import zstandard
+from pysidtracker import oracle
 
 pytest.importorskip("vagrant_moses")
 
@@ -38,6 +39,11 @@ def _trace(path, writes):
     path.write_bytes(zstandard.ZstdCompressor().compress(text.getvalue().encode("ascii")))
 
 
+def _rendered(cmd):
+    """Where the docker command line ``cmd`` of ``run_sidtrace`` writes its trace."""
+    return Path(next(c for c in cmd if c.endswith(":/work")).rsplit(":", 1)[0]) / cmd[-4]
+
+
 def test_compare_against_a_cached_trace(tmp_path, monkeypatch, capsys):
     tune = tmp_path / "count.sid"
     tune.write_bytes(sid(COUNT, 0, speed=1))
@@ -52,9 +58,9 @@ def test_compare_against_a_cached_trace(tmp_path, monkeypatch, capsys):
 
     def docker(cmd, **_kw):
         calls.append(cmd)
-        _trace(work / cmd[-4], got[:-1] + [(got[-1][0] + 3, *got[-1][1:])])
+        _trace(_rendered(cmd), got[:-1] + [(got[-1][0] + 3, *got[-1][1:])])
 
-    monkeypatch.setattr(sidcmp.subprocess, "run", docker)
+    monkeypatch.setattr(oracle.subprocess, "run", docker)
     r = sidcmp.compare(tune, 0, 1, work)
     assert r["same"] and r["matched"] == len(got) and r["offsets"] == {0: len(got) - 1, -3: 1}
     assert len(calls) == 1 and not any("sidplayfp" in c for c in calls[0]), "PSIDs run ROM-less"
@@ -70,9 +76,9 @@ def test_rsid_trace_runs_on_the_real_roms(tmp_path, monkeypatch, real):
 
     def docker(cmd, **_kw):
         calls.append(cmd)
-        _trace(work / cmd[-4], sidcmp.machine_changes(tune.read_bytes(), 1, 500_000))
+        _trace(_rendered(cmd), sidcmp.machine_changes(tune.read_bytes(), 1, 500_000))
 
-    monkeypatch.setattr(sidcmp.subprocess, "run", docker)
+    monkeypatch.setattr(oracle.subprocess, "run", docker)
     assert sidcmp.compare(tune, 1, 1, work)["same"]
     mount = next(c for c in calls[0] if c.endswith("sidplayfp:ro")).split(":")[0]
     assert (Path(mount) / "kernal").read_bytes() == real[0xE000]

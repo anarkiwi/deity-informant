@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deity-informant"
-version = "0.40.21"
+version = "0.40.22"
 description = "NMOS 6510 illegal-opcode toolkit: a standalone 6510 -> raw-P-Code lifter + pure-Python P-Code VM, and a 6510 Ghidra/pypcode SLEIGH processor module."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -24,7 +24,7 @@ dependencies = ["jennings>=0.17.0", "numpy", "networkx", "tqdm", "dd==0.6.0", "w
 
 [project.optional-dependencies]
 ghidra = ["pypcode"]
-dev = ["pytest", "pytest-xdist", "pytest-cov", "pytest-timeout", "build", "black", "pylint", "py65", "pypcode", "maturin", "pebble", "vagrant-moses[cpu]>=0.20.0", "pysidtracker>=0.64.0", "pylibresidfp>=0.6.1", "zstandard", "pyelftools"]
+dev = ["pytest", "pytest-xdist", "pytest-cov", "pytest-timeout", "build", "black", "pylint", "py65", "pypcode", "maturin", "pebble", "vagrant-moses[cpu]>=0.20.0", "pysidtracker>=0.65.0", "pylibresidfp>=0.6.1", "zstandard", "pyelftools"]
 
 [project.urls]
 Homepage = "https://github.com/anarkiwi/deity-informant"
