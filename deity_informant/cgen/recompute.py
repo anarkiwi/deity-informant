@@ -11,8 +11,7 @@ class Recompute:
     """The loads of printed function ``c`` (:class:`printer.CFunc`) to print at their uses."""
 
     def __init__(self, c):
-        self.c, self.f = c, c.f
-        self.blocks = [b for b in self.f.blocks if b.name in c.owned]
+        self.c, self.f, self.blocks = c, c.f, c.owned_blocks()
         self.points = self._points()
 
     def _inline(self, v):

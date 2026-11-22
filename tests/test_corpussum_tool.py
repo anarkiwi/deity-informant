@@ -1,6 +1,5 @@
 """tools/corpussum.py: corpus rows summary."""
 
-import json
 import sys
 from pathlib import Path
 
@@ -8,6 +7,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import corpussum  # noqa: E402 pylint: disable=wrong-import-position,import-error
+
+import _common as H  # noqa: E402 pylint: disable=wrong-import-position,wrong-import-order
 
 
 def lifted(path, mode, ref, low, jen=None, **kw):
@@ -51,11 +52,6 @@ ROWS = [
 ]
 
 
-def write(path, rows):
-    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
-    return str(path)
-
-
 def test_pcts_and_ratios():
     assert corpussum.pcts([None, np.nan, 1.0, 3.0, 2.0]) == (3, 1.2, 2.0, 2.8)
     assert corpussum.pcts([None]) is None
@@ -71,7 +67,7 @@ def test_stats_cover():
 
 
 def test_summary(tmp_path, capsys):
-    rows = write(
+    rows = H.write_rows(
         tmp_path / "r", ROWS + [ROWS[0] | {"song": 2, "exact": False, "outcome": "halted"}]
     )
     paths = tmp_path / "p"
@@ -87,8 +83,8 @@ def test_summary(tmp_path, capsys):
 
 
 def test_filter_and_diff(tmp_path, capsys):
-    before = write(tmp_path / "b", ROWS)
-    after = write(
+    before = H.write_rows(tmp_path / "b", ROWS)
+    after = H.write_rows(
         tmp_path / "a",
         [ROWS[0], {k: v for k, v in ROWS[4].items() if k != "skip"} | {"exact": True}],
     )

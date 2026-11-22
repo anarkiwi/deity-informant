@@ -228,7 +228,7 @@ def build(funcs, entry):
             return nid[0] - 1
 
         for i, b in enumerate(f["blocks"]):
-            cur = first[i] = new()
+            cur = first["P", i] = new()
             for op in b["ops"]:
                 if fn.blocks[cur]["t"] is not None:
                     break
@@ -238,23 +238,20 @@ def build(funcs, entry):
                     last = i + 1 < len(f["blocks"])
                     fn.blocks[cur]["t"] = ("br", ("P", i + 1)) if last else ("ret",)
         for blk in fn.blocks.values():
-            blk["t"] = relabel(blk["t"], first)
+            blk["t"] = remap(blk["t"], first)
         out.append(fn)
     return out
 
 
-def relabel(t, first):
-    """Terminator ``t`` with block references ``("P", i)`` resolved through ``first``."""
-
-    def fix(x):
-        return first[x[1]] if isinstance(x, tuple) else x
-
+def remap(t, m):
+    """Terminator ``t`` with each successor ``x`` replaced by ``m.get(x, x)``: a block id, or
+    ``("P", i)`` the first block of lifted block ``i``."""
     if t[0] == "br":
-        return ("br", fix(t[1]))
+        return ("br", m.get(t[1], t[1]))
     if t[0] == "cbr":
-        return ("cbr", t[1], fix(t[2]), t[3])
+        return ("cbr", t[1], m.get(t[2], t[2]), m.get(t[3], t[3]))
     if t[0] == "sw":
-        return ("sw", t[1], [(pc, fix(x)) for pc, x in t[2]])
+        return ("sw", t[1], [(pc, m.get(x, x)) for pc, x in t[2]])
     return t
 
 
@@ -367,25 +364,10 @@ def clean(fn):
                 break
             if not fn.blocks[b]["s"] and b != 0:
                 for p in preds[b]:
-                    fn.blocks[p]["t"] = retarget(fn.blocks[p]["t"], b, s)
+                    fn.blocks[p]["t"] = remap(fn.blocks[p]["t"], {b: s})
                 changed = True
                 break
     return fn
-
-
-def retarget(t, old, new):
-    """Terminator ``t`` with successor ``old`` replaced by ``new``."""
-
-    def sw(x):
-        return new if x == old else x
-
-    if t[0] == "br":
-        return ("br", sw(t[1]))
-    if t[0] == "cbr":
-        return ("cbr", t[1], sw(t[2]), sw(t[3]))
-    if t[0] == "sw":
-        return ("sw", t[1], [(pc, sw(x)) for pc, x in t[2]])
-    return t
 
 
 def uses_defs(s, sumry):
@@ -500,19 +482,25 @@ def liveness(fns, sm, later, entry_idx):
     return ret
 
 
-def block_live(blk, out, sm, hook=None):
-    """Live-in of ``blk`` given live-out ``out``; ``hook(callee, live)`` sees each call's live-out."""
+def block_live(blk, out, sm, hook=None, keep=None):
+    """Live-in of ``blk`` given live-out ``out``; ``hook(callee, live)`` sees each call's live-out.
+    ``keep`` collects, last first, the statements a later read reaches, a ``vld`` whose value
+    none does losing its output."""
     live = set(out) | term_uses(blk["t"])
     for s in reversed(blk["s"]):
         if s[0] == "call":
             if hook:
                 hook(s[1], live)
             live = sm["livein"][s[1]] | (live - sm["mustdef"][s[1]])
+        elif s[0] == "set" and s[1] not in live:
             continue
-        u, _, killed = uses_defs(s, sm)
-        if s[0] == "set" and s[1] not in live:
-            continue
-        live = (live - killed) | u
+        else:
+            if s[0] == "vld" and s[1] and s[1] not in live:
+                s = ("vld", None, s[2], s[3])
+            u, _, killed = uses_defs(s, sm)
+            live = (live - killed) | u
+        if keep is not None:
+            keep.append(s)
     return live
 
 
@@ -522,23 +510,11 @@ def dce(fns, sm, ret):
     for i, fn in enumerate(fns):
         _, live_out = solve(fn, sm, ret[i])
         for b, blk in fn.blocks.items():
-            live = set(live_out[b]) | term_uses(blk["t"])
             keep = []
-            for s in reversed(blk["s"]):
-                if s[0] == "call":
-                    live = sm["livein"][s[1]] | (live - sm["mustdef"][s[1]])
-                    keep.append(s)
-                    continue
-                if s[0] == "set" and s[1] not in live:
-                    changed = True
-                    continue
-                if s[0] == "vld" and s[1] and s[1] not in live:
-                    s = ("vld", None, s[2], s[3])
-                    changed = True
-                u, _, killed = uses_defs(s, sm)
-                live = (live - killed) | u
-                keep.append(s)
-            blk["s"] = keep[::-1]
+            block_live(blk, live_out[b], sm, keep=keep)
+            keep.reverse()
+            changed |= keep != blk["s"]
+            blk["s"] = keep
     return changed
 
 

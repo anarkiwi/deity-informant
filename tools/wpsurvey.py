@@ -7,25 +7,20 @@ walks ``ROOT`` for ``*.sid``, runs each tune's init on the reference, collects f
 A tune taking longer than ``S`` seconds is killed and reported in ``timeouts``.
 """
 
-import argparse
 import json
-import os
-import random
 import sys
 from collections import Counter
-from concurrent.futures import TimeoutError as FutureTimeout
-from concurrent.futures import as_completed
 from pathlib import Path
 
-from pebble import ProcessPool
 from pysidtracker.errors import SidError
 from pysidtracker.image import SidImage
-from tqdm import tqdm
 
 from deity_informant import trace, wholeprog
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import wplift  # noqa: E402 pylint: disable=wrong-import-position
+# pylint: disable=wrong-import-position,wrong-import-order
+import wplift  # noqa: E402
+from smclabel import failed_path, pool_rows, sweep_parser, tunes  # noqa: E402
 
 SID = (0xD400, 0xD800)
 STACK_OPS = {0x08: "PHP", 0x28: "PLP", 0x48: "PHA", 0x68: "PLA", 0x9A: "TXS", 0xBA: "TSX"}
@@ -104,39 +99,15 @@ def summary(rows):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("root")
-    ap.add_argument("--sample", type=int, default=0, help="random tunes (0: all)")
-    ap.add_argument("--seed", type=int, default=0)
+    ap = sweep_parser(__doc__, 60)
+    ap.add_argument("--out", help="the rows as JSON lines")
     ap.add_argument("--calls", type=int, default=500)
     ap.add_argument("--max-cycles", type=int, default=1_000_000, help="per call")
     ap.add_argument("--check", type=int, default=0, help="calls checked against the reference")
-    ap.add_argument("--timeout", type=float, default=60, help="seconds per tune")
-    ap.add_argument("--jobs", type=int, default=os.cpu_count())
-    ap.add_argument("--out")
     args = ap.parse_args(argv)
-    paths = sorted(Path(args.root).rglob("*.sid"))
-    if args.sample:
-        paths = random.Random(args.seed).sample(paths, min(args.sample, len(paths)))
-    out = open(args.out, "w", encoding="utf-8") if args.out else None  # noqa: SIM115
-    rows = []
-    with ProcessPool(max_workers=args.jobs) as pool:
-        futs = {
-            pool.schedule(
-                _job, args=((p, args.calls, args.max_cycles, args.check),), timeout=args.timeout
-            ): p
-            for p in paths
-        }
-        for f in tqdm(as_completed(futs), total=len(paths), desc="survey", unit="tune"):
-            try:
-                r = f.result()
-            except FutureTimeout:
-                r = {"path": str(futs[f]), "error": "timeout"}
-            rows.append(r)
-            if out:
-                out.write(json.dumps(r) + "\n")
-    if out:
-        out.close()
+    paths = tunes(args.root, args.sample, args.seed)
+    jobs = [(p, args.calls, args.max_cycles, args.check) for p in paths]
+    rows = pool_rows(_job, jobs, args.jobs, args.timeout, "survey", failed_path, args.out)
     print(json.dumps(summary(rows), indent=1))
     return 0
 

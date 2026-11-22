@@ -30,32 +30,19 @@ def test_pcode_dump(tmp_path, capsys):
     assert "SRE" in out and "STORE" in out and "ctrl=('next',)" in out
 
 
-def test_run_grid(tmp_path, capsys):
-    rc = cli.main(["run", _prg(tmp_path), "--org", "0x1000", "--init", "0x1000"])
-    out = capsys.readouterr().out
-    assert rc == 0
-    assert "D418" not in out  # grid is $D400..$D418 bytes, printed as hex values
-    assert "0F" in out  # $D418 volume nibble set by the routine
-
-
-def test_run_frames(tmp_path, capsys):
-    rc = cli.main(
-        [
-            "run",
-            _prg(tmp_path),
-            "--org",
-            "0x1000",
-            "--init",
-            "0x1000",
-            "--play",
-            "0x1000",
-            "--frames",
-            "3",
-        ]
-    )
-    out = capsys.readouterr().out
-    assert rc == 0
-    assert out.count("frame") == 3
+@pytest.mark.parametrize(
+    "extra,check",
+    [
+        ([], lambda out: "D418" not in out and "0F" in out),
+        (["--play", "0x1000", "--frames", "3"], lambda out: out.count("frame") == 3),
+    ],
+    ids=["grid", "frames"],
+)
+def test_run(tmp_path, capsys, extra, check):
+    """``run`` prints the SID grid after init as hex values ($D418's volume nibble ``0F``, no
+    register names), or one block per frame of play with ``--frames``."""
+    rc = cli.main(["run", _prg(tmp_path), "--org", "0x1000", "--init", "0x1000", *extra])
+    assert rc == 0 and check(capsys.readouterr().out)
 
 
 def test_emit_sleigh_installs_the_module(tmp_path):

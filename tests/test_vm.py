@@ -111,18 +111,18 @@ def _chain_vm():
     return vm
 
 
-def test_run_irq_driven_follows_rewritten_vector():
+@pytest.mark.parametrize(
+    "handler,counts",
+    [(vector(0xFFFE), (3, 2)), (0x3000, (5, 0))],
+    ids=["follows-rewritten-vector", "fixed-handler-ignores-vector"],
+)
+def test_run_irq_driven(handler, counts):
+    """A vector handler follows the chain's rewrites of $FFFE, alternating the two handlers;
+    a fixed handler address runs the first handler every time."""
     vm = _chain_vm()
     sources = [{"period": 20000, "next": 100, "enter": lambda m: None}]
-    run_irq_driven(vm, vector(0xFFFE), 100_000, sources, {}, lift)
-    assert (vm.mem[0x0400], vm.mem[0x0401]) == (3, 2)
-
-
-def test_run_irq_driven_fixed_handler_ignores_vector():
-    vm = _chain_vm()
-    sources = [{"period": 20000, "next": 100, "enter": lambda m: None}]
-    run_irq_driven(vm, 0x3000, 100_000, sources, {}, lift)
-    assert (vm.mem[0x0400], vm.mem[0x0401]) == (5, 0)
+    run_irq_driven(vm, handler, 100_000, sources, {}, lift)
+    assert (vm.mem[0x0400], vm.mem[0x0401]) == counts
 
 
 def test_run_irq_resolves_vector_at_entry():
@@ -134,12 +134,8 @@ def test_run_irq_resolves_vector_at_entry():
 
 
 # ---- remaining illegal semantics (lifter branch coverage) --------------------
-def _run1(prog, a=0, x=0, y=0, sp=0xFF, p=0x20, org=0x1000):
-    vm = _vm(prog, org)
-    vm.volatile = False
-    H.load_regs(vm, a, x, y, sp, p)
-    vm.step(org, {}, lift)
-    return vm
+def _run1(prog, org=0x1000, **regs):
+    return H.step(H.image(prog, org), org, **regs)
 
 
 def test_arr_ror_after_and():
@@ -167,17 +163,20 @@ def test_sha_abs_y_and_indirect_y():
     assert vm2.mem[0x6204] == (0xFF & 0xFF & ((0x62 + 1) & 0xFF))
 
 
-def test_shy_abs_x():
-    base, x, y = 0x7000, 0x03, 0xFF
-    vm = _run1(bytes([0x9C, base & 0xFF, base >> 8]), x=x, y=y)
-    assert vm.mem[base + x] == (y & (((base >> 8) + 1) & 0xFF))
-
-
-def test_tas_sets_sp_and_stores():
-    base, y, a, x = 0x8000, 0x02, 0xF0, 0x3C
-    vm = _run1(bytes([0x9B, base & 0xFF, base >> 8]), a=a, x=x, y=y)
-    assert vm.reg[3] == (a & x)  # SP = A & X
-    assert vm.mem[base + y] == ((a & x) & (((base >> 8) + 1) & 0xFF))
+@pytest.mark.parametrize(
+    "op,base,regs,at,value,sp",
+    [
+        (0x9C, 0x7000, {"x": 0x03, "y": 0xFF}, 0x03, 0xFF, None),
+        (0x9B, 0x8000, {"a": 0xF0, "x": 0x3C, "y": 0x02}, 0x02, 0xF0 & 0x3C, 0xF0 & 0x3C),
+    ],
+    ids=["shy-abs-x", "tas-sets-sp-and-stores"],
+)
+def test_store_and_high_plus_one(op, base, regs, at, value, sp):
+    """SHY abs,X stores ``Y & (high(base)+1)`` at ``base+X``; TAS abs,Y sets ``SP = A & X``
+    and stores ``A & X & (high(base)+1)`` at ``base+Y``."""
+    vm = _run1(bytes([op, base & 0xFF, base >> 8]), **regs)
+    assert sp is None or vm.reg[3] == sp
+    assert vm.mem[base + at] == (value & (((base >> 8) + 1) & 0xFF))
 
 
 def test_every_opcode_lifts():

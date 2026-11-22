@@ -2,9 +2,8 @@
 
 import pytest
 
-from test_wholeprog import differential, facts_for
-from wholeprog_progs import IO, assemble
-from deity_informant import NATIVE, wholeprog
+from test_wholeprog import differential, exact, lift_entry
+from deity_informant import NATIVE
 
 pytestmark = pytest.mark.skipif(not NATIVE, reason="needs the native extension")
 
@@ -40,9 +39,7 @@ free:   INX
 
 
 def test_loops_have_their_induction_variables():
-    img, labels = assemble(LOOPS)
-    pcs = [labels["entry"]]
-    prog = wholeprog.lift(img, pcs, [IO], facts_for(img, pcs, [(0, 0)]))
+    img, pcs, prog, labels = lift_entry(LOOPS, [(0, 0)])
     got = {(i["head"], i["reg"] or i["addr"]): i for i in prog.induction}
     want = {
         ("copy", "x"): (8, 8, -1, 8),
@@ -80,12 +77,9 @@ loop:   LDA ($FB),Y
 
 
 def test_a_trip_bound_tightens_the_pointer_window():
-    img, labels = assemble(COUNTED)
-    pcs = [labels["entry"]]
-    calls = [(0, 0x10), (0, 0xF0)]
-    prog = wholeprog.lift(img, pcs, [IO], facts_for(img, pcs, calls))
+    seen = [(0, 0x10), (0, 0xF0)]
+    prog, labels = exact(COUNTED, seen + [(0, 0xF8), (0, 0xF9), (0, 0x10)], seen)
     trips = {(i["head"], i["reg"]): i["trips"] for i in prog.induction}
     assert trips[(labels["loop"], "y")] == 8
     assert prog.stats["stack_private"] and prog.stats["stack_guards"] == 0
-    differential(img, prog, pcs, calls + [(0, 0xF8), (0, 0xF9), (0, 0x10)])
     assert sum(prog.deopts.values()) == 1

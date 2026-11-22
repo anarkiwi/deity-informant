@@ -504,15 +504,17 @@ class Structurer:
         self.kids = g.dominators(pre)
         idom = {k: n for n, ks in self.kids.items() for k in ks}
         self.back = g.back = back
-        fwd, latches = dict.fromkeys(pre, 0), {}
+        fwd, latches, dg = dict.fromkeys(pre, 0), {}, nx.DiGraph()
+        dg.add_nodes_from(pre)
         for n in pre:
             for t, _ in g.succ[n]:
+                dg.add_edge(n, t)
                 if (n, t) in back:
                     latches.setdefault(t, []).append(n)
                 else:
                     fwd[t] += 1
         self.loops = {
-            h: loop_nodes(g, h, us)
+            h: loop_nodes(dg, h, us)
             for h, us in latches.items()
             if all(_dominated(idom, u, h) for u in us)
         }
@@ -854,17 +856,30 @@ def _ends(items):
     return last[0] == "if" and _ends(last[3]) and _ends(last[4])
 
 
-def _arm_breaks(items, follow):
-    """A switch arm's ``items`` with each ``goto`` to a label of ``follow`` (what runs after
-    the switch), outside loops nested in the arm, as ``break``."""
+def _rewrite(items, fn, deep=True):
+    """``items`` with each statement ``s`` as ``fn(s)``, dropped where that is None, through
+    ``if`` arms and (``deep``) loop bodies and switch arms."""
     out = []
     for it in items:
-        if it[0] == "goto" and it[1] in follow:
-            it = ("break",)
-        elif it[0] == "if":
-            it = (*it[:3], _arm_breaks(it[3], follow), _arm_breaks(it[4], follow), it[5])
+        it = fn(it)
+        if it is None:
+            continue
+        if it[0] == "if":
+            it = (*it[:3], _rewrite(it[3], fn, deep), _rewrite(it[4], fn, deep), it[5])
+        elif deep and it[0] == "loop":
+            it = ("loop", _rewrite(it[1], fn), *it[2:])
+        elif deep and it[0] == "switch":
+            it = ("switch", it[1], [(c, _rewrite(b, fn)) for c, b in it[2]], it[3])
         out.append(it)
     return out
+
+
+def _arm_breaks(items, follow):
+    """A switch arm's ``items`` with each ``goto`` to a label of ``follow`` (what runs after
+    the switch), outside loops and switches nested in the arm, as ``break``."""
+    return _rewrite(
+        items, lambda it: ("break",) if it[0] == "goto" and it[1] in follow else it, False
+    )
 
 
 def _breaks(items):
@@ -898,18 +913,7 @@ def _walk(items, fn):
 
 def _unlabel(items, used):
     """``items`` without the labels not in ``used``."""
-    out = []
-    for it in items:
-        if it[0] == "label" and it[1] not in used:
-            continue
-        if it[0] == "if":
-            it = (*it[:3], _unlabel(it[3], used), _unlabel(it[4], used), it[5])
-        elif it[0] == "loop":
-            it = ("loop", _unlabel(it[1], used), *it[2:])
-        elif it[0] == "switch":
-            it = ("switch", it[1], [(c, _unlabel(b, used)) for c, b in it[2]], it[3])
-        out.append(it)
-    return out
+    return _rewrite(items, lambda it: None if it[0] == "label" and it[1] not in used else it)
 
 
 def _labels(rest, nxt):
@@ -953,23 +957,11 @@ def _dominated(idom, n, h):
     return n == h
 
 
-def loop_nodes(g, h, latches):
-    """The loop of ``h``: the nodes reachable from ``h`` that reach a latch without ``h``."""
-    fwd, work = {h}, [h]
-    while work:
-        for t, _ in g.succ[work.pop()]:
-            if t not in fwd:
-                fwd.add(t)
-                work.append(t)
-    preds = g.preds()
-    loop, work = {h}, [u for u in latches if u != h]
-    loop.update(work)
-    while work:
-        for p in preds[work.pop()]:
-            if p not in loop and p in fwd:
-                loop.add(p)
-                work.append(p)
-    return loop
+def loop_nodes(dg, h, latches):
+    """The loop of ``h`` in ``networkx`` graph ``dg``: the nodes reachable from ``h`` that
+    reach a latch without ``h``."""
+    body = dg.subgraph(nx.descendants(dg, h) - {h})
+    return {h}.union(latches, *(nx.ancestors(body, u) for u in latches if u != h))
 
 
 def new_ids():

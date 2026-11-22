@@ -24,7 +24,7 @@ dependencies = ["jennings>=0.17.0", "numpy", "networkx", "tqdm", "dd==0.6.0", "w
 
 [project.optional-dependencies]
 ghidra = ["pypcode"]
-dev = ["pytest", "pytest-xdist", "pytest-cov", "pytest-timeout", "build", "black", "pylint", "py65", "pypcode", "maturin", "pebble", "vagrant-moses[cpu]>=0.20.0", "pysidtracker>=0.65.0", "pylibresidfp>=0.6.1", "zstandard", "pyelftools", "pysayme>=0.1.0"]
+dev = ["pytest", "pytest-xdist", "pytest-cov", "pytest-timeout", "build", "black", "pylint", "py65", "pypcode", "maturin", "pebble", "vagrant-moses[cpu]>=0.20.0", "pysidtracker>=0.65.0", "pylibresidfp>=0.6.1", "zstandard", "pyelftools", "pysayme>=0.2.0"]
 
 [project.urls]
 Homepage = "https://github.com/anarkiwi/deity-informant"
@@ -107,6 +107,20 @@ ignore-dists = ["pytest", "pytest-xdist", "pytest-cov", "pytest-timeout", "build
 "deity_informant/c64devices.py:TEST -> vagrant_moses.sidorder:TEST" = "the SID control bits; vagrant-moses is a downstream dev extra"
 "deity_informant/c64devices.py:SAW -> vagrant_moses.sidorder:SAW" = "the SID control bits; vagrant-moses is a downstream dev extra"
 "deity_informant/vm.py:vector.resolve -> vagrant_moses:read_vector" = "the VM core runs without vagrant-moses, a downstream dev extra"
-"deity_informant/cgen/structure.py:loop_nodes -> wayward_eagle.c.listflow:Graph.reachable" = "worklist walk over a cgen Graph, not a listflow Graph method"
 "tools/pcodec.py:Structurer.natural -> wayward_eagle.c.listflow:Graph.reachable" = "natural loop over P-Code block predecessors, not a listflow Graph method"
 "tools/cgenplay.py:psid -> pysidtracker:load_psid" = "needs the start song and the unplaced body, which load_psid does not return"
+"deity_informant/lifter.py:_adc_decimal -> deity_informant/lifter.py:_sbc_decimal" = "different NMOS BCD algorithms: ADC adds nibbles with a >9 adjust and derives carry/N/V from the intermediate; SBC subtracts with two borrow masks and returns only the accumulator"
+"deity_informant/lifter.py:_adc -> deity_informant/lifter.py:_sbc" = "different p-code: ADC's carry is the OR of two INT_CARRYs and overflow uses ~(A^v); SBC's carry is a 16-bit compare and overflow uses (A^v); ADC also takes carry and N/V from the decimal path"
+"deity_informant/vm.py:_run_out -> deity_informant/vm.py:run_irq_driven" = "run_irq_driven's step loop takes nested interrupts between instructions while I is clear; delegating to _run_out would lose that or add a per-instruction callback on the hot path"
+"deity_informant/strided.py:meet -> deity_informant/cgen/printer.py:Func.iv" = "Func.iv is the per-op interval transfer function; its (lo & top, hi & top) if lo <= hi is a wrap-around check, not an intersection, and it already calls printer.meet where it intersects"
+"deity_informant/hello_world.py:_run_vm -> tools/cgenplay.py:main" = "only the 64K image placement idiom is shared: _run_vm runs the hello-world program in PcodeVM, cgenplay.main translates a program with cgen, compiles and replays it"
+"deity_informant/lifter.py:C -> tools/pcodeopt.py:C" = "lifter varnodes are mutable lists with a default size; pcodeopt expressions are hashable tuples used as dict/set keys"
+"tools/pcode2c.py:Fn.var -> tools/pcodeopt.py:vname" = "registers already share slot_name; temporaries differ: pcode2c names them as function-local C identifiers, pcodeopt suffixes @PC so they are unique program-wide"
+"tools/pcodeopt.py:candidate_cells.walk -> tools/pcodeopt.py:evars" = "different visitors over the same expression-tree recursion: walk reports each load's address to visit(), evars collects variable names; a generic walker would slow evars on the optimizer's hot path"
+"tools/wpcorpus.py:_scan_table -> deity_informant/c64.py:trace_table" = "different native tables: Tracer's encodes the stored register, push count and any writer, excluding RMW from plain stores; Scan's marks only CPU stores"
+"tests/test_cgen.py:trap_meta -> tests/test_wholeprog.py:exact" = "trap_meta translates to C and checks trap_info keys and kinds; exact lifts and replays calls against the reference interpreter; only the assemble/act/check shape is shared"
+"tests/test_guard_proofs.py:test_a_store_the_first_call_does_not_make_deopts -> tests/test_wholeprog.py:test_soft_deopt_resumes_with_folded_register" = "two-line uses of the shared exact() replay helper over different programs: stores the first call's facts never saw vs CODEHIT's code guard resuming with a folded register"
+"tests/test_status_fuzz.py:test_random_status_programs_are_exact -> tests/test_carry_fuzz.py:test_random_carry_programs_are_exact" = "different generators and per-call state: status_fuzz replays each call from its status byte's flags, carry_fuzz lifts a data-patched image, checks fused chains and replays each call with its own memory words and decimal flag"
+"tests/test_cgen.py:test_init_probe_of_a_derived_register_is_a_run_time_choice -> tests/test_cgen.py:test_timer_flag_wait_and_acknowledges_are_kept" = "different device models: a derived SID register's init fallback replayed against two values vs a CIA timer-flag machine model with its acknowledge reads replayed as sensitive"
+"tests/test_cgen.py:test_operand_patched_from_constants_is_a_known_store -> tests/test_cgen.py:test_table_inside_code_a_store_writes_is_data" = "different programs and claims: an operand patched from constants gives a direct store with no wr(), a table inside code written by a store becomes region elements whose indexed expressions are pinned"
+"tests/test_cgen.py:test_known_opcodes_are_cells_without_code_checks -> tests/test_cgen.py:test_indexed_stores_clear_operand_cells" = "different stats and claims: opcode cells of restored or indexed opcode stores vs operand cells of a clearing loop, whose field array and indexed zero stores are pinned"

@@ -4,8 +4,8 @@ and replay against the reference interpreter (``docs/wholeprog.md``, *Terminatio
 import pytest
 
 import wholeprog_progs as W
-from test_wholeprog import differential
-from deity_informant import NATIVE, wholeprog
+from test_valuesets import lift_and_replay
+from deity_informant import NATIVE
 
 ProcessPool = pytest.importorskip("pebble").ProcessPool
 
@@ -109,16 +109,6 @@ spin:   BPL spin
         RTS
 end:
 """
-
-
-def lift_and_replay(src, calls):
-    """The deopts of ``calls`` replayed on the static lift of ``src`` (entry ``entry``)."""
-    img, labels = W.assemble(src)
-    pc = labels["entry"]
-    loaded = (0x1000, labels["end"])
-    prog = wholeprog.lift(img, [pc], [W.IO], entry_sp=0xFD, loaded=loaded, fold=True)
-    differential(img, prog, [pc], calls)
-    return dict(prog.deopts)
 
 
 @pytest.mark.parametrize(

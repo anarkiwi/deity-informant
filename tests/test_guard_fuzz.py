@@ -10,9 +10,8 @@ import random
 
 import pytest
 
-from test_wholeprog import differential, facts_for
-from wholeprog_progs import IO, assemble
-from deity_informant import NATIVE, wholeprog
+from test_wholeprog import exact
+from deity_informant import NATIVE
 
 pytestmark = pytest.mark.skipif(not NATIVE, reason="needs the native extension")
 
@@ -118,7 +117,4 @@ def program(seed):
 @pytest.mark.parametrize("seed", [*range(60), 4813, 4875, 5978])
 def test_random_programs_are_exact(seed, cycles):
     src, calls = program(seed)
-    img, labels = assemble(src)
-    pcs = [labels["entry"]]
-    prog = wholeprog.lift(img, pcs, [IO], facts_for(img, pcs, calls[:1]), cycles=cycles)
-    differential(img, prog, pcs, calls)
+    exact(src, calls, calls[:1], cycles=cycles)

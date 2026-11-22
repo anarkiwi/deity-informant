@@ -15,6 +15,7 @@ from pathlib import Path
 
 import numpy as np
 import zstandard
+from rowsdiff import rows
 
 
 def untimed(row):
@@ -23,12 +24,6 @@ def untimed(row):
     if isinstance(out.get("timing"), dict):
         out["timing"] = {k: v for k, v in out["timing"].items() if not k.endswith("_s")}
     return out
-
-
-def rows(path):
-    """``{(path, song): row}`` of a rows file (the last row of a song wins)."""
-    with open(path, encoding="utf-8") as f:
-        return {(r["path"], r["song"]): r for r in map(json.loads, f)}
 
 
 def facts(path):

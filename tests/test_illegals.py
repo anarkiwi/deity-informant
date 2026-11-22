@@ -22,10 +22,7 @@ ZP = 0x50  # a zero-page cell clear of I/O
 
 
 def _run_vm(mem, a, x, y, sp, p):
-    vm = P.PcodeVM(mem)
-    vm.volatile = False
-    H.load_regs(vm, a, x, y, sp, p)
-    vm.step(PC, {}, P.lift)
+    vm = H.step(mem, PC, a=a, x=x, y=y, sp=sp, p=p)
     return H.arch_state(vm), bytes(vm.mem)
 
 
@@ -89,32 +86,22 @@ def test_rmw_matches_legal_decomposition(ill, legal):
         )
 
 
-def test_alr_matches_and_then_lsr():
-    rng = np.random.default_rng(0xA18)
+@pytest.mark.parametrize(
+    "ill,legal,seed",
+    [(0x4B, (0x29, 0x4A), 0xA18), (0xEB, (0xE9,), 0x5BC)],
+    ids=["alr-is-and-then-lsr", "illegal-sbc-is-legal-sbc"],
+)
+def test_immediate_matches_legal_sequence(ill, legal, seed):
+    """``ill #imm`` matches the legal ``legal[0] #imm`` followed by the implied ``legal[1:]``
+    (ALR == AND #imm; LSR A, and $EB == SBC #imm)."""
+    rng = np.random.default_rng(seed)
     for _ in range(300):
         imm = int(rng.integers(0, 256))
         a, x, y, sp = (int(v) for v in rng.integers(0, 256, 4))
         p = H.mk_p(rng)
-        mem = bytearray(0x10000)
-        mem[PC] = 0x4B
-        mem[PC + 1] = imm  # ALR #imm
-        vst, _ = _run_vm(bytes(mem), a, x, y, sp, p)
-        rst, _ = _run_py65(_img(bytes([0x29, imm, 0x4A])), a, x, y, sp, p, 2)
-        assert vst == rst, "ALR #%02X: vm=%s py65=%s" % (imm, vst, rst)
-
-
-def test_illegal_sbc_matches_legal_sbc():
-    rng = np.random.default_rng(0x5BC)
-    for _ in range(300):
-        imm = int(rng.integers(0, 256))
-        a, x, y, sp = (int(v) for v in rng.integers(0, 256, 4))
-        p = H.mk_p(rng)
-        mem = bytearray(0x10000)
-        mem[PC] = 0xEB
-        mem[PC + 1] = imm  # illegal SBC #imm
-        vst, _ = _run_vm(bytes(mem), a, x, y, sp, p)
-        rst, _ = _run_py65(_img(bytes([0xE9, imm])), a, x, y, sp, p, 1)  # legal SBC #imm
-        assert vst == rst, "SBC(illegal) #%02X: vm=%s py65=%s" % (imm, vst, rst)
+        vst, _ = _run_vm(bytes(_img(bytes([ill, imm]))), a, x, y, sp, p)
+        rst, _ = _run_py65(_img(bytes([legal[0], imm, *legal[1:]])), a, x, y, sp, p, len(legal))
+        assert vst == rst, "%02X #%02X: vm=%s py65=%s" % (ill, imm, vst, rst)
 
 
 def test_anc_and_carry_from_bit7():

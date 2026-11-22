@@ -5,7 +5,6 @@ EmitC conversions) and ``mlir-translate``, from ``PATH`` or else the ``di-mlir``
 (``docker/mlir.Dockerfile``, built when absent).
 """
 
-import argparse
 import re
 import shutil
 import sys
@@ -13,6 +12,7 @@ from pathlib import Path
 
 from deity_informant.cgen import mlir as cgen_mlir
 from deity_informant.cgen.mlir import run
+from pcode2c import text_cli  # pylint: disable=wrong-import-order
 
 LIFT = ["--canonicalize", "--cse", "--mem2reg", "--lift-cf-to-scf", "--canonicalize", "--cse"]
 LOWER = ["--canonicalize", "--cse", "--convert-to-emitc", "--reconcile-unrealized-casts"]
@@ -45,19 +45,14 @@ def structure(mlir, prefix):
 
 def main(argv=None):
     """Command line: structure an MLIR file into C."""
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("mlir")
-    ap.add_argument("-o", "--out")
-    args = ap.parse_args(argv)
+    return text_cli(__doc__, "mlir", _render, argv)
+
+
+def _render(args):
     prefix = runner(build=True)
     if prefix is None:
         sys.exit("needs mlir-opt and mlir-translate on PATH, or docker")
-    text = structure(Path(args.mlir).read_text(encoding="utf-8"), prefix)
-    if args.out:
-        Path(args.out).write_text(text, encoding="utf-8")
-    else:
-        sys.stdout.write(text)
-    return 0
+    return structure(Path(args.mlir).read_text(encoding="utf-8"), prefix)
 
 
 if __name__ == "__main__":

@@ -21,8 +21,6 @@ import sys  # noqa: E402
 import time  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-from pebble import ProcessPool  # noqa: E402
-from tqdm import tqdm  # noqa: E402
 from vagrant_moses.c64 import psid_iomap  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -31,7 +29,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from deity_informant import c64, wholeprog  # noqa: E402
 import wpcorpus  # noqa: E402 pylint: disable=wrong-import-order
-from smclabel import sidfile  # noqa: E402 pylint: disable=wrong-import-order
+from smclabel import pool_rows, sidfile  # noqa: E402 pylint: disable=wrong-import-order
 
 BACKENDS = ("python", "native")
 
@@ -125,6 +123,10 @@ def summary(rows):
     return out
 
 
+def _failed(job, error):
+    return {"path": job[1]["path"], "song": job[1]["song"], "error": error}
+
+
 def _banked(r):
     return r.get("mode") == "banked" and r.get("init_halt") == "return" and "error" not in r
 
@@ -161,17 +163,9 @@ def main(argv=None):
     ap.add_argument("--out")
     args = ap.parse_args(argv)
     songs = sample_rows(args.rows, args.sample, args.seed, _irq if args.irq else _banked)
-    rows = []
-    with ProcessPool(max_workers=args.jobs) as pool:
-        jobs = [(args.hvsc, s, args.max_cycles, args.irq) for s in songs]
-        it = pool.map(_job, jobs, timeout=args.timeout).result()
-        for s in tqdm(songs, desc="irq" if args.irq else "banked", unit="song"):
-            try:
-                rows.append(next(it))
-            except Exception as exc:  # pylint: disable=broad-exception-caught
-                rows.append({"path": s["path"], "song": s["song"], "error": repr(exc)[:200]})
-    if args.out:
-        Path(args.out).write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    jobs = [(args.hvsc, s, args.max_cycles, args.irq) for s in songs]
+    desc = "irq" if args.irq else "banked"
+    rows = pool_rows(_job, jobs, args.jobs, args.timeout, desc, _failed, args.out)
     print(json.dumps(summary(rows), indent=1))
     return 0 if all(r.get("equal") for r in rows) else 1
 

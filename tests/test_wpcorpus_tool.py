@@ -1,11 +1,9 @@
 """tools/wpcorpus.py: planning, flat/banked/IRQ rows, resumption and the summary."""
 
-import gc
 import hashlib
 import json
 import sys
 import time
-from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -270,20 +268,15 @@ def test_flat_play_from_machine_init(tmp_path):
 _LIVE = {"_Host", "_Chip", "_IrqScan", "Machine", "NativeSid", "Memory", "Session", "NativeMemory"}
 
 
-def _live():
-    gc.collect()
-    return Counter(t for o in gc.get_objects() if (t := type(o).__name__) in _LIVE)
-
-
 def test_songs_in_one_worker_leave_no_machine_behind(tmp_path):
     root = tree(tmp_path / "hvsc")
     wpcorpus._worker(str(root))  # pylint: disable=W0212
     songs = [(n, r) for n in ("flat.sid", "banked.sid", "irq.sid")
              for r in wpcorpus.plan(str(root / n), n, 0.5, 20_000)]  # fmt: skip
-    before, rows = _live(), []
+    before, rows = H.live(_LIVE), []
     for _ in range(3):
         rows.append([wpcorpus.run_song(str(root / n), r, 20_000, 10)[0] for n, r in songs])
-    assert _live() == before
+    assert H.live(_LIVE) == before
     assert all("error" not in r for r in rows[0]) and {r.get("mode") for r in rows[0]} >= {
         "flat",
         "banked",

@@ -2,6 +2,7 @@
 
 import pytest
 
+import _common as H
 from deity_informant import NATIVE, wholeprog
 
 pytestmark = pytest.mark.skipif(not NATIVE, reason="needs the native extension")
@@ -16,10 +17,7 @@ RET = 0x4FFF
 
 
 def image(handler=SEEN):
-    img = bytearray(0x10000)
-    img[MAIN : MAIN + len(CODE)] = CODE
-    img[HANDLER : HANDLER + len(handler)] = handler
-    return img
+    return H.image(CODE, MAIN, dict(enumerate(handler, HANDLER)))
 
 
 def regs(a, sp=0xFD):
@@ -65,12 +63,15 @@ def test_registers_the_machine_did_not_have_are_a_boundary_mismatch():
     assert reference(image(), [event(2, 9)])[0]["boundary"] == 0
 
 
-def test_a_device_access_count_the_machine_did_not_have_is_a_boundary_mismatch():
-    assert lifted(image(), [event(2, 1, pos=1)])[0]["boundary"] == 0
-
-
-def test_an_interrupt_after_the_last_instruction_never_comes():
-    assert lifted(image(), [event(99, 2)])[0]["boundary"] == 0
+@pytest.mark.parametrize(
+    "ev",
+    [event(2, 1, pos=1), event(99, 2)],
+    ids=["device-access-count-the-machine-did-not-have", "after-the-last-instruction"],
+)
+def test_an_event_the_run_never_reaches_is_a_boundary_mismatch(ev):
+    """A device access count the machine did not have, or an interrupt after the last
+    instruction (which never comes), is a mismatch at the first event."""
+    assert lifted(image(), [ev])[0]["boundary"] == 0
 
 
 def test_a_handler_interrupted_in_turn_counts_its_own_instructions():

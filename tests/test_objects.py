@@ -33,13 +33,18 @@ def streams(n=4, length=24):
     return out
 
 
+def byte_rows(prefix, data):
+    """Assembly ``.byte`` rows of ``data``, the ``i``-th labelled ``{prefix}{i}``."""
+    return "".join(f"{prefix}{i}:     .byte {', '.join(map(str, d))}\n" for i, d in enumerate(data))
+
+
 def stream_src(advance="LDA #3", tail=""):
     """The pair ``$FB`` set by ``init`` to one of the streams by ``A`` and read by ``play``
     one record per call, its fields at constant offsets, then advanced past the record by
     ``CLC; ADC; STA; BCC; INC``. ``advance`` loads the record's length for a record of
     three bytes, the data follow init and precede play, and ``tail`` follows play."""
     data = streams()
-    rows = "".join(f"s{i}:     .byte {', '.join(map(str, d))}\n" for i, d in enumerate(data))
+    rows = byte_rows("s", data)
     return f"""
 init:   AND #$03
         TAX
@@ -111,6 +116,12 @@ def plan(song, n):
     return [(0, song)] + [(1, 0)] * n
 
 
+def replay(img, prog, labels, songs, n):
+    """``init`` then ``n`` calls of ``play`` replayed for each of ``songs``."""
+    for song in songs:
+        differential(img, prog, [labels["init"], labels["play"]], plan(song, n))
+
+
 def loads(img, labels):
     """The ``LDA ($FB),Y`` starts of ``play``."""
     return [a for a in range(labels["play"], labels["stop"]) if img[a] == 0xB1]
@@ -128,8 +139,7 @@ def test_records_read_inside_their_object():
     proven = dict(prog.proven)
     for pc in pcs:
         assert proven[pc][0] >= lo and proven[pc][1] <= hi + 2
-    for song in range(4):
-        differential(img, prog, [labels["init"], labels["play"]], plan(song, 400))
+    replay(img, prog, labels, range(4), 400)
     assert not dict(prog.deopts)
 
 
@@ -166,8 +176,7 @@ def test_pointer_into_code_keeps_its_checks(src):
     """A pointer whose words may name code holds no object: its loads keep their hulls."""
     img, labels, prog = lift(src)
     assert not prog.objects and not prog.stats["obj_guards"]
-    for song in range(4):
-        differential(img, prog, [labels["init"], labels["play"]], plan(song, 50))
+    replay(img, prog, labels, range(4), 50)
 
 
 def lift_and_replay(src, calls):
@@ -204,7 +213,7 @@ def walk_src(data, test="BMI done", step="", tail="", setter=None):
     """Pair ``$FB`` set to one of the runs ``data`` by ``A`` (by ``init``, or by ``setter``
     run at ``play``'s start), read by ``play`` from its start until ``test`` finds a marker,
     ``step`` before each ``INY``; ``tail`` follows play."""
-    rows = "".join(f"r{i}:     .byte {', '.join(map(str, d))}\n" for i, d in enumerate(data))
+    rows = byte_rows("r", data)
     n = len(data)
     sets = """        AND #$03
         TAX
@@ -274,8 +283,7 @@ def test_walk_to_a_marker_reads_its_runs():
     assert lo == labels["r0"] and hi < labels["play"] and pcs == [labels["loop"]]
     a, b = dict(prog.proven)[labels["loop"]][:2]
     assert labels["r0"] <= a and b < labels["play"]
-    for song in range(4):
-        differential(img, prog, [labels["init"], labels["play"]], plan(song, 30))
+    replay(img, prog, labels, range(4), 30)
     assert not dict(prog.deopts)
 
 
@@ -286,8 +294,7 @@ def test_walk_unproven_keeps_its_check(src):
     pointer is copied from lie in, and every run replays."""
     img, labels, prog = walk_lift(src)
     assert [o[:2] for o in served(prog, labels["loop"])] == [(labels["tlo"], labels["play"] - 1)]
-    for song in range(4):
-        differential(img, prog, [labels["init"], labels["play"]], plan(song, 30))
+    replay(img, prog, labels, range(4), 30)
 
 
 def test_walk_with_no_marker_deopts_when_run_off():
@@ -296,10 +303,9 @@ def test_walk_with_no_marker_deopts_when_run_off():
     img, labels, prog = walk_lift(OPEN)
     [(lo, hi, _)] = served(prog, labels["loop"])
     assert lo == labels["r0"] and hi < labels["r3"]
-    for song in range(3):
-        differential(img, prog, [labels["init"], labels["play"]], plan(song, 30))
+    replay(img, prog, labels, range(3), 30)
     assert not dict(prog.deopts)
-    differential(img, prog, [labels["init"], labels["play"]], plan(3, 30))
+    replay(img, prog, labels, [3], 30)
     assert dict(prog.deopts)
 
 
@@ -358,7 +364,7 @@ def cursor_src(gate="", step="INC cur,X", tail=""):
     its selector's segment. Init sets the selectors from ``A``; ``gate`` starts each object's
     turn and ``tail`` follows play."""
     recs = [[(5 * i + j) % 0x70 + 1 for j in range(3 + 2 * i)] + [0x80] for i in range(4)]
-    rows = "".join(f"r{i}:     .byte {', '.join(map(str, d))}\n" for i, d in enumerate(recs))
+    rows = byte_rows("r", recs)
     segs = [[(7 * i + j) % 0x70 + 1 for j in range(2 + 3 * i)] + [0x80] for i in range(4)]
     starts = [sum(len(s) for s in segs[:i]) for i in range(4)]
     flat = ", ".join(str(b) for s in segs for b in s)

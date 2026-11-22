@@ -17,7 +17,8 @@ def _int(text):
     return int(text, 0)
 
 
-def _range(text):
+def addr_range(text):
+    """``LO-HI`` as ``(lo, hi)``."""
     lo, hi = (int(x, 0) for x in text.split("-"))
     return lo, hi
 
@@ -28,7 +29,9 @@ def main(argv=None):
     ap.add_argument("image", help="raw program bytes")
     ap.add_argument("--org", type=_int, required=True, help="load address")
     ap.add_argument("--entry", action="append", required=True, help="PC:NAME, A the argument")
-    ap.add_argument("--volatile", action="append", type=_range, default=[], help="LO-HI, HI excl.")
+    ap.add_argument(
+        "--volatile", action="append", type=addr_range, default=[], help="LO-HI, HI excl."
+    )
     ap.add_argument("--sensitive", action="append", type=_int, default=[], help="kept I/O read")
     ap.add_argument("--facts", help="trace.Facts JSON for computed-jump targets")
     ap.add_argument("--init", help="NAME of the entry called once, before any other")

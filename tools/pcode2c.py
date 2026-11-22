@@ -13,6 +13,8 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+from deity_informant.cgen.cnodes import spell
+
 REG = {0: "A", 1: "X", 2: "Y", 3: "SP", 8: "C", 9: "Z", 10: "I", 11: "D", 13: "V", 14: "N"}
 BIN = {
     "INT_ADD": "+",
@@ -114,7 +116,7 @@ class Fn:
     def vn(self, v, env):
         """A varnode as an expression, taking a folded temporary out of ``env``."""
         if v[0] == "c":
-            return str(v[1]) if v[1] < 10 else f"0x{v[1]:X}"
+            return spell(v[1])
         return env.pop(self.var(v), None) or self.var(v)
 
     def addr(self, v, env):
@@ -283,30 +285,55 @@ def emit(funcs, entry, regions=(), trace=False):
     return "\n".join(head + [f"void {label}(void);" for label in labels] + [""] + bodies)
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("funcs")
-    ap.add_argument("--entry", type=lambda s: int(s, 0), required=True)
-    ap.add_argument("--layout")
+def text_cli(doc, arg, render, argv=None, options=None):
+    """The command line ``ARG [-o OUT]`` of a printer, and what ``options(parser)`` adds:
+    writes ``render(args)`` to ``OUT`` or stdout."""
+    ap = argparse.ArgumentParser(description=doc.splitlines()[0])
+    ap.add_argument(arg)
     ap.add_argument("-o", "--out")
+    if options:
+        options(ap)
+    args = ap.parse_args(argv)
+    text = render(args)
+    if args.out:
+        Path(args.out).write_text(text, encoding="utf-8")
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
+def entry_option(ap):
+    """Add a lift printer's ``--entry PC``."""
+    ap.add_argument("--entry", type=lambda s: int(s, 0), required=True)
+
+
+def lift_of(args):
+    """The pickled lift ``args.funcs``."""
+    return pickle.loads(Path(args.funcs).read_bytes())
+
+
+def _options(ap):
+    entry_option(ap)
+    ap.add_argument("--layout")
     ap.add_argument("--trace", action="store_true", help="call trace(pc) at every block")
     ap.add_argument("--compact", action="store_true", help="optimized, structured C (pcodec.py)")
-    args = ap.parse_args(argv)
-    funcs = pickle.loads(Path(args.funcs).read_bytes())
+
+
+def _render(args):
+    funcs = lift_of(args)
     regions = (
         json.loads(Path(args.layout).read_text(encoding="utf-8"))["regions"] if args.layout else ()
     )
     if args.compact:
         from pcodec import compact_c  # pylint: disable=import-outside-toplevel
 
-        text = compact_c(funcs, args.entry, regions)[0]
-    else:
-        text = emit(funcs, args.entry, regions, args.trace) + "\n"
-    if args.out:
-        Path(args.out).write_text(text, encoding="utf-8")
-    else:
-        sys.stdout.write(text)
-    return 0
+        return compact_c(funcs, args.entry, regions)[0]
+    return emit(funcs, args.entry, regions, args.trace) + "\n"
+
+
+def main(argv=None):
+    """Command line: print the C of a pickled lift."""
+    return text_cli(__doc__, "funcs", _render, argv, _options)
 
 
 if __name__ == "__main__":

@@ -9,8 +9,7 @@ import random
 
 import pytest
 
-from test_wholeprog import differential, facts_for
-from wholeprog_progs import IO, assemble
+from test_wholeprog import differential, exact, lift_entry
 from deity_informant import NATIVE, wholeprog
 
 pytestmark = pytest.mark.skipif(not NATIVE, reason="needs the native extension")
@@ -107,9 +106,7 @@ def _reg(a, status):
 @pytest.mark.parametrize("seed", range(120))
 def test_random_status_programs_are_exact(seed, cycles):
     src, calls = program(seed)
-    img, labels = assemble(src)
-    pcs = [labels["entry"]]
-    prog = wholeprog.lift(img, pcs, [IO], facts_for(img, pcs, [(0, calls[0][0])]), cycles=cycles)
+    img, pcs, prog, _ = lift_entry(src, [(0, calls[0][0])], cycles=cycles)
     for a, status in calls:
         differential(img, prog, pcs, [(0, a)], reg=_reg(a, status))
 
@@ -160,17 +157,11 @@ def _src(body):
 @pytest.mark.parametrize("name", CASES)
 def test_status_and_data_share_a_slot(name, cycles, backend, monkeypatch):
     monkeypatch.setattr(wholeprog, "BACKEND", backend)
-    img, labels = assemble(_src(CASES[name]) + SUBS)
-    pcs = [labels["entry"]]
-    calls = [(0, a) for a in (0x00, 0x40, 0x41, 0x80, 0xC3)]
-    prog = wholeprog.lift(img, pcs, [IO], facts_for(img, pcs, calls), cycles=cycles)
-    differential(img, prog, pcs, calls)
+    exact(_src(CASES[name]) + SUBS, [(0, a) for a in (0x00, 0x40, 0x41, 0x80, 0xC3)], cycles=cycles)
 
 
 def test_status_read_as_data_keeps_every_bit():
-    img, labels = assemble(_src(MIXED))
-    pcs = [labels["entry"]]
-    prog = wholeprog.lift(img, pcs, [IO], facts_for(img, pcs, [(0, 0)]))
+    img, _, prog, _ = lift_entry(_src(MIXED), [(0, 0)])
     out = prog.call(bytearray(img), 0, a=0, log=True)
     assert [tuple(e[:2]) for e in out["log"]] == [(0xC003, 0x31)]
 
@@ -194,10 +185,6 @@ def test_pulled_status_sets_decimal_mode(name, cycles, backend, monkeypatch):
     body, irq = HANDLED[name]
     src = _src(body + "; STA $C003; PHP; PLA; STA $C004").replace("        skip: ", "skip:   ")
     irq = "".join("        %s\n" % s.strip() for s in irq.split(";") if s.strip())
-    img, labels = assemble(
-        src + "\nirq:\n" + irq + "        RTI\n        .org $FFFE\n        .byte lo(irq), hi(irq)\n"
-    )
-    pcs = [labels["entry"]]
+    vec = "        RTI\n        .org $FFFE\n        .byte lo(irq), hi(irq)\n"
     calls = [(0, a) for a in (0x00, 0x08, 0x41, 0x49, 0xC3, 0xCB)]
-    prog = wholeprog.lift(img, pcs, [IO], facts_for(img, pcs, calls), cycles=cycles)
-    differential(img, prog, pcs, calls)
+    exact(src + "\nirq:\n" + irq + vec, calls, cycles=cycles)

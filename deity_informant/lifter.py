@@ -27,6 +27,7 @@ __all__ = [
     "CYCLETIME",
     "EXTRACYCLES",
     "lift",
+    "sentinel_lift",
     "bus_only",
     "pack_status",
     "unpack_status",
@@ -691,7 +692,10 @@ _BOUND = {
 }
 
 
-def _sentinel_lift(op, b1, b2, p1, p2):
+def sentinel_lift(op, k=0):
+    """``lift()`` of ``op`` at a fixed PC under sentinel operand set ``k``: operand bytes
+    ``b1, b2`` and the zero-page pointer ``b1`` names holding ``p1, p2``."""
+    b1, b2, p1, p2 = _SENTINELS[k]
     mem = bytearray(0x10000)
     mem[_TPC], mem[_TPC + 1], mem[_TPC + 2] = op, b1, b2
     mem[b1], mem[(b1 + 1) & 0xFF] = p1, p2
@@ -784,7 +788,7 @@ def template(op):
     """``op``'s :class:`Template`, from ``lift()`` under two sentinel operand sets in which the
     operand bytes and the zero-page pointer they name all differ; the lifts must agree except
     for constants ``prov`` reproduces, else ``NotImplementedError`` (an unbound constant)."""
-    lifts = [_sentinel_lift(op, *s) for s in _SENTINELS]
+    lifts = [sentinel_lift(op, k) for k in range(len(_SENTINELS))]
     rec = lifts[0]
     for other in lifts[1:]:
         for k in ("len", "cyc", "stk"):

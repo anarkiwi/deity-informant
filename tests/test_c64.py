@@ -1,8 +1,6 @@
 """deity_informant.c64: the bank map, and facts and records from the native C64 machine."""
 
-import gc
 import hashlib
-from collections import Counter
 
 import numpy as np
 import pytest
@@ -534,18 +532,13 @@ def test_queue_holds_runs_of_equal_calls():
 _LIVE = {"_Host", "_Chip", "Machine", "NativeSid", "Memory", "Session", "NativeMemory"}
 
 
-def _live():
-    gc.collect()
-    return Counter(t for o in gc.get_objects() if (t := type(o).__name__) in _LIVE)
-
-
 @pytest.mark.skipif(not (NATIVE and CALLS), reason="needs the native extension and call queue")
 def test_runs_leave_no_machine_behind():
     """Machines, their chips and jennings sessions are freed once their runs are done."""
-    before = _live()
+    before = H.live(_LIVE)
     for _ in range(3):
         _, _, _, _, h = _osc3_run()
         trace.collect(image(), lambda s: s.call(0x1850), 100_000)
         oracle.run_cpu(image(), [0x1810], [(0, 0)] * 3, [(0x1850, 0)])
         del h
-    assert _live() == before
+    assert H.live(_LIVE) == before

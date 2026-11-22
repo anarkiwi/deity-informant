@@ -72,30 +72,19 @@ def check(name, runner, a, c, d):
         assert regs[11] == d and regs[10] == 0 and regs[12] == 0
 
 
+@pytest.mark.parametrize("engine", ("python", "native"))
 @pytest.mark.parametrize("d", (0, 1))
 @pytest.mark.parametrize("name", MODES)
 @pytest.mark.parametrize("half", range(8))
-def test_python_vm_matches_the_reference(name, half, d):
+def test_engine_matches_the_reference(name, half, d, engine):
+    """The Python VM and the native interpreter each match the reference on every input."""
     op, _, zero_page = MODES[name]
     mem, cache = image(op, zero_page), {}
 
     def runner(_name, a, c, dd, ms):
+        if engine == "native":
+            return native_run(a, c, dd, ms, mem)
         return python_run(name, a, c, dd, ms, mem, cache)
-
-    for a in range(half * 32, half * 32 + 32):
-        for c in (0, 1):
-            check(name, runner, a, c, d)
-
-
-@pytest.mark.parametrize("d", (0, 1))
-@pytest.mark.parametrize("name", MODES)
-@pytest.mark.parametrize("half", range(8))
-def test_native_interpreter_matches_the_reference(name, half, d):
-    op, _, zero_page = MODES[name]
-    mem = image(op, zero_page)
-
-    def runner(_name, a, c, dd, ms):
-        return native_run(a, c, dd, ms, mem)
 
     for a in range(half * 32, half * 32 + 32):
         for c in (0, 1):

@@ -3,7 +3,7 @@
 import pytest
 
 from test_cgen import VOICEBYTE
-from test_wholeprog import differential, facts_for
+from test_wholeprog import differential, exact
 from wholeprog_progs import IO, assemble
 from deity_informant import NATIVE, wholeprog
 
@@ -63,30 +63,11 @@ entry:  TAX
 """ + SUB
 
 
-def lift(src, cycles, calls):
-    img, labels = assemble(src)
-    pcs = [labels["entry"]]
-    prog = wholeprog.lift(img, pcs, [IO], facts_for(img, pcs, calls[:1]), cycles=cycles)
-    return img, pcs, prog
-
-
 @pytest.mark.parametrize("cycles", [False, True])
 @pytest.mark.parametrize("src", [COUNT_UP, COUNT_DOWN, VOICES])
 def test_bounded_indexed_stores_need_no_code_guard(src, cycles):
-    calls = [(0, 0)] * 3
-    img, pcs, prog = lift(src, cycles, calls)
-    assert prog.stats["code_guards"] == 0
-    differential(img, prog, pcs, calls)
-    assert not prog.deopts
-
-
-@pytest.mark.parametrize("cycles", [False, True])
-def test_input_dependent_index_keeps_its_guard(cycles):
-    calls = [(0, 0), (0, 0x41), (0, 0)]
-    img, pcs, prog = lift(INPUT_INDEX, cycles, calls)
-    assert prog.stats["code_guards"] == 1
-    differential(img, prog, pcs, calls)
-    assert sum(prog.deopts.values()) > 0
+    prog, _ = exact(src, [(0, 0)] * 3, [(0, 0)], cycles=cycles)
+    assert prog.stats["code_guards"] == 0 and not prog.deopts
 
 
 DEVICE_JUMP = (
@@ -108,10 +89,17 @@ tgt:    STA $C000
 
 
 @pytest.mark.parametrize("cycles", [False, True])
-def test_code_rewritten_to_jump_into_a_device_deopts(cycles):
-    calls = [(0, 0), (0, 1), (0, 0)]
-    img, pcs, prog = lift(DEVICE_JUMP, cycles, calls)
-    differential(img, prog, pcs, calls)
+@pytest.mark.parametrize(
+    "src,a,guards",
+    [(INPUT_INDEX, 0x41, 1), (DEVICE_JUMP, 1, None)],
+    ids=["input-dependent-index-keeps-its-guard", "code-rewritten-to-jump-into-a-device"],
+)
+def test_a_store_the_first_call_does_not_make_deopts(src, a, guards, cycles):
+    """A call with ``A = a``, unlike the first call the facts see, stores outside what was
+    proven: an index from the input keeps its code guard, and code rewritten into a jump to a
+    device leaves the lift; both deopt."""
+    prog, _ = exact(src, [(0, 0), (0, a), (0, 0)], [(0, 0)], cycles=cycles)
+    assert guards is None or prog.stats["code_guards"] == guards
     assert sum(prog.deopts.values()) > 0
 
 

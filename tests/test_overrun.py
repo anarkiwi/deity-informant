@@ -54,19 +54,9 @@ def zero(prefix, img, labels, loaded, entries=("entry",), **kw):
     )
 
 
-def replay(tmp_path, c, h, img, labels, calls, overruns=None):
-    """:func:`cgenplay.replay` of ``calls`` on a fresh build of ``c``/``h``."""
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    (tmp_path / "t.c").write_text(c)
-    (tmp_path / "t.h").write_text(h)
-    lib = cgenplay.build(tmp_path / "t.c", tmp_path / "t.so")
-    pcs = {n: labels[n] for n, _ in calls}
-    return cgenplay.replay(lib, img, pcs, calls, [T.W.IO], overruns=overruns)
-
-
 def sites(info):
     """``{pc: (ok runs, addr hull)}`` of ``info["overruns"]``."""
-    return {o["pc"]: ([tuple(r) for r in o["ok"]], tuple(o["addr"])) for o in info["overruns"]}
+    return {o["pc"]: (T.as_runs(o["ok"]), tuple(o["addr"])) for o in info["overruns"]}
 
 
 def test_store_and_read_outside_their_objects(prefix, tmp_path):
@@ -77,9 +67,10 @@ def test_store_and_read_outside_their_objects(prefix, tmp_path):
     c, h, info = zero(prefix, img, labels, loaded)
     body = T.body_of(c, "entry")
     calls = [("entry", a) for a in ARGS]
-    assert replay(tmp_path / "zero", c, h, img, labels, calls, info["overruns"]) == len(calls)
+    n = T.play(tmp_path / "zero", c, h, img, labels, calls, overruns=info["overruns"])
+    assert n == len(calls)
     with pytest.raises(AssertionError):
-        replay(tmp_path / "plain", c, h, img, labels, calls)
+        T.play(tmp_path / "plain", c, h, img, labels, calls)
     assert re.search(r"\bR\d+zw\d+\(R\d+_ORG \+ R\d+\[0\], a\);", body)
     assert re.search(r"= \w+z\d+\(R\d+_ORG \+ 1 \+ a\);", body)
     assert "CGEN_OBJ" not in body and "?" not in body
@@ -102,12 +93,7 @@ def test_trap_mode_keeps_its_guards(prefix):
     c2, _, info2 = cgen.translate(img, ents, [T.W.IO], (), overrun="trap", **kw)
     assert c == c2 and info["overruns"] == info2["overruns"]
     assert c != zero(prefix, img, labels, loaded)[0]
-    guards = {
-        g["at"]: [tuple(r) for r in g["ok"]]
-        for t in info["trap_info"].values()
-        for g in t["guards"]
-        if g["kind"] == "objchk" and g["def"] == "machine"
-    }
+    guards = {g["at"]: T.as_runs(g["ok"]) for _, g in T.trap_guards(info, "objchk", "machine")}
     assert guards == {pc: ok for pc, (ok, _) in sites(info).items()}
     with pytest.raises(ValueError):
         cgen.translate(img, ents, [T.W.IO], (), overrun="wrap", **kw)
@@ -123,7 +109,7 @@ def test_pointer_from_song_data_reads_zero_past_the_program(prefix, tmp_path, mo
     c, h, info = zero(prefix, img, labels, loaded, ("init", "play"), init=0)
     assert not T.machine_guards(info) and "CGEN_OBJ" not in T.body_of(c, "play")
     calls = [("init", 0)] + [("play", 0)] * 40
-    assert replay(tmp_path, c, h, img, labels, calls, info["overruns"]) == len(calls)
+    assert T.play(tmp_path, c, h, img, labels, calls, overruns=info["overruns"]) == len(calls)
     ok, (lo, hi) = sites(info)[labels["rd"]]
     assert all(b < labels["end"] for _, b in ok) and lo < labels["end"] <= hi
 

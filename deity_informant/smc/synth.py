@@ -107,16 +107,19 @@ def _timed(writer, reader, timing):
     return None
 
 
+def _patched(channel, addr, value, reader, timing):
+    """:func:`_timed` of ``reader`` after a write of ``value`` to ``addr`` via ``channel``,
+    else None when ``channel`` cannot write there."""
+    writer = []
+    return _timed(writer, reader, timing) if _write(channel, addr, value, writer) else None
+
+
 def _code_witness(channel, role, timing):
     rd = _RD_ZP if channel in _ZP_CHANNELS else _RD_ABS
     reader, tgt, orig = _reader_at(rd, role)
     if channel in _ZP_CHANNELS and tgt > 0xFF:
         return None
-    value = _value(role, orig)
-    writer = []
-    if not _write(channel, tgt, value, writer):
-        return None
-    return _timed(writer, reader, timing)
+    return _patched(channel, tgt, _value(role, orig), reader, timing)
 
 
 def _same_insn(channel, role):
@@ -170,10 +173,7 @@ def _ptr_witness(channel, timing):
     if channel == "unstable_high":
         return None
     reader, ptr, value = _ptr_reader(channel)
-    writer = []
-    if not _write(channel, ptr, value, writer):
-        return None
-    return _timed(writer, reader, timing)
+    return _patched(channel, ptr, value, reader, timing)
 
 
 # The return address of entry's JSR sits at $01FC/$01FD under run_sub's deterministic SP.

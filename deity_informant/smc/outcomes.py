@@ -32,7 +32,7 @@ def _facts(prog):
 
 
 def _machine_outcome(prog, max_cycles):
-    reasons = {lift_reason(Cell(*_parse(sid))) for sid in prog.sids}
+    reasons = {lift_reason(parse_cell(sid)) for sid in prog.sids}
     reasons.discard(None)
     if reasons:
         return next(r for r in ("lift-no-dma", "lift-no-interrupts") if r in reasons), 0
@@ -48,10 +48,11 @@ def _machine_outcome(prog, max_cycles):
     return ("exact_deopt" if deopts else "exact_nodeopt"), deopts
 
 
-def _parse(sid):
+def parse_cell(sid):
+    """The :class:`Cell` whose ``sid`` is ``sid``."""
     writer, channel, role, timing, mapping = sid.split(".")
     rmw = channel.endswith("_rmw")
-    return writer, channel[:-4] if rmw else channel, rmw, role, timing, mapping
+    return Cell(writer, channel[:-4] if rmw else channel, rmw, role, timing, mapping)
 
 
 def classify(prog, max_cycles=2_000_000):

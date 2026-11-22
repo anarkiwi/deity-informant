@@ -5,13 +5,14 @@
 analysis needs are dropped again and the ``_slice_N`` renames undone.
 """
 
-import argparse
 import io
 import re
 import subprocess
 import sys
 import tarfile
 from pathlib import Path
+
+from pcode2c import text_cli
 
 IMAGE = "framac/frama-c:29.0"
 STUB = """#include <stdint.h>
@@ -71,16 +72,9 @@ def slice_c(src):
 
 def main(argv=None):
     """Command line: slice a C file."""
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("src")
-    ap.add_argument("-o", "--out")
-    args = ap.parse_args(argv)
-    text = slice_c(Path(args.src).read_text(encoding="utf-8"))
-    if args.out:
-        Path(args.out).write_text(text, encoding="utf-8")
-    else:
-        sys.stdout.write(text)
-    return 0
+    return text_cli(
+        __doc__, "src", lambda a: slice_c(Path(a.src).read_text(encoding="utf-8")), argv
+    )
 
 
 if __name__ == "__main__":

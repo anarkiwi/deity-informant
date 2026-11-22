@@ -99,12 +99,12 @@ def line_origins(text, cells, origins):
 
 def original_bytes(image, org, pcs):
     """Instruction bytes of the instructions at ``pcs`` in ``image`` loaded at ``org``."""
-    mem, at = _placed(org, image), np.zeros(0x10000, bool)
+    mem, at = placed(org, image), np.zeros(0x10000, bool)
     at[[pc for pc in pcs if 0 <= pc - org < len(image)]] = True
     return int(instruction_bytes(mem, at).sum())
 
 
-def _placed(org, body):
+def placed(org, body):
     """The address space, zeros but ``body`` at ``org``."""
     mem = np.zeros(0x10000, np.uint8)
     mem[org : org + len(body)] = np.frombuffer(bytes(body), np.uint8)[: 0x10000 - org]

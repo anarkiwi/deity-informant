@@ -1,9 +1,14 @@
-"""Shared test helpers: image builders, register load, and P-register unpack.
+"""Shared test helpers: image builders, register load, P-register unpack and one-step runs.
 
 Not collected by pytest (no ``test_`` prefix); imported as ``import _common as H``
 (``tests/`` is on ``sys.path`` via the conftest path insert).
 """
 
+import gc
+import json
+from collections import Counter
+
+from deity_informant import PcodeVM, lift
 from deity_informant.lifter import STATUS_BITS, pack_status, unpack_status
 
 PC = 0x0800  # a code address clear of zero page / I/O for single-step fuzzing
@@ -36,6 +41,15 @@ def load_regs(vm, a=0, x=0, y=0, sp=0xFF, p=0x20):
     unpack_status(p, r)
 
 
+def step(mem, pc, **regs):
+    """A non-volatile ``PcodeVM`` over ``mem`` after one instruction at ``pc`` from ``regs``."""
+    vm = PcodeVM(mem)
+    vm.volatile = False
+    load_regs(vm, **regs)
+    vm.step(pc, {}, lift)
+    return vm
+
+
 def arch_state(vm):
     """Architectural state ``(A, X, Y, SP, C, Z, I, D, V, N)`` from ``vm``."""
     r = vm.reg
@@ -53,3 +67,15 @@ def basic_program(*lines, org=0x0801):
 
 # 10 POKE 4096,PEEK(780)+1: POKE 54296,15 / 20 GOTO 20: tokens POKE $97, PEEK $C2, + $AA, GOTO $89
 SONG_POKE = basic_program((10, b"\x974096,\xc2(780)\xaa1:\x9754296,15"), (20, b"\x8920"))
+
+
+def live(names):
+    """Counts of the live objects whose type is named in ``names``, after a collection."""
+    gc.collect()
+    return Counter(t for o in gc.get_objects() if (t := type(o).__name__) in names)
+
+
+def write_rows(path, rows):
+    """``rows`` written to ``path`` as JSON lines; the path as a string."""
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return str(path)

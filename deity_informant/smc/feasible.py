@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..strided import meet
+
 __all__ = ["Verdict", "decide", "refuted_cells", "ROLE_REGION"]
 
 _ANY = (0x0000, 0xFFFF)
@@ -49,15 +51,10 @@ class Verdict:
     rule: str = ""
 
 
-def _meet(a, b):
-    lo, hi = max(a[0], b[0]), min(a[1], b[1])
-    return (lo, hi) if lo <= hi else None
-
-
 def _region(cell):
     """The role's fetch region inside the mapping's windows (``None`` if they miss)."""
     for w in WINDOWS[cell.mapping]:
-        r = _meet(ROLE_REGION[cell.role], w)
+        r = meet(ROLE_REGION[cell.role], w)
         if r is not None:
             return r
     return None
@@ -86,7 +83,7 @@ def _place(cell):
         return "bank-reg-port-writer"
     if cell.writer in _PUSHERS and cell.role != "ret_addr":
         return "push-targets-return"
-    return "" if _meet(_reach(cell), region) else "disjoint-address"
+    return "" if meet(_reach(cell), region) else "disjoint-address"
 
 
 def _time(cell):

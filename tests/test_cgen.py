@@ -4,6 +4,7 @@ reference interpreter; relocation and data invariance of the ``.c``; llvm-mos bu
 import contextlib
 import ctypes
 import fcntl
+import itertools
 import json
 import os
 import random
@@ -29,7 +30,7 @@ import cclones  # noqa: E402  pylint: disable=wrong-import-position
 import cgenplay  # noqa: E402  pylint: disable=wrong-import-position
 import cmetrics  # noqa: E402  pylint: disable=wrong-import-position
 from testimages import MOS  # noqa: E402  pylint: disable=wrong-import-position
-from test_pcode2mlir import OPS, UNARY, VALUES, op_function, unary_function  # noqa: E402
+from test_pcode2mlir import OPS, UNARY, VALUES, op_function  # noqa: E402
 import test_polling as P  # noqa: E402  pylint: disable=wrong-import-position
 import test_valuesets as VS  # noqa: E402  pylint: disable=wrong-import-position
 import test_objects as TO  # noqa: E402  pylint: disable=wrong-import-position
@@ -2143,16 +2144,65 @@ def translate(  # pylint: disable=too-many-arguments,too-many-positional-argumen
 
 
 def play(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    tmp_path, c, h, img, labels, calls, sensitive=(), trap=None
+    tmp_path, c, h, img, labels, calls, sensitive=(), trap=None, overruns=None
 ):
-    """Compile ``c``/``h`` and replay ``calls`` ``[(name, a)]`` against the reference; with
-    ``trap`` ``(n, k)`` exactly up to call ``n``, which traps with ``k``."""
-    (tmp_path / "t.c").write_text(c)
-    (tmp_path / "t.h").write_text(h)
-    lib = cgenplay.build(tmp_path / "t.c", tmp_path / "t.so")
-    names = {n for n, _ in calls}
-    pcs = {n: labels[n] for n in names}
-    return cgenplay.replay(lib, img, pcs, calls, [W.IO], sensitive, trap=trap)
+    """Compile ``c``/``h`` in ``tmp_path`` (made if missing) and replay ``calls``
+    ``[(name, a)]`` against the reference; with ``trap`` ``(n, k)`` exactly up to call ``n``,
+    which traps with ``k``; with ``overruns`` against the overrun-zero reference."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    lib = compiled(tmp_path, c, h)
+    pcs = {n: labels[n] for n, _ in calls}
+    return cgenplay.replay(lib, img, pcs, calls, [W.IO], sensitive, trap=trap, overruns=overruns)
+
+
+#: Keywords of :func:`translate` for an ``init`` run with ``A`` 0 and a ``play``.
+PLAYER = {"entries": ("init", "play"), "init": 0}
+
+
+def placed(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    prefix, tmp_path, calls, srcs, orgs=(0x1000,), gotos=None, **kw
+):
+    """``[(labels, c, h, info)]`` of each of ``srcs`` at each of ``orgs``, translated and
+    played with ``calls``, each replay on the library just built at ``tmp_path``; the ``.c``
+    is the same for all and, unless ``gotos`` is None, has ``gotos`` gotos."""
+    runs = []
+    for src, org in itertools.product(srcs, orgs):
+        img, labels, loaded = assemble(src, org)
+        c, h, info = translate(prefix, img, labels, loaded, **kw)
+        if gotos is not None:
+            assert cmetrics.metrics(c)["goto"] == gotos == info["structure"]["gotos"]
+            assert {"flags", "exits", "entries"}.isdisjoint(info["structure"])
+            assert len(info["provenance"]["gotos"]) == gotos
+        play(tmp_path, c, h, img, labels, calls, kw.get("sensitive", ()))
+        runs.append((labels, c, h, info))
+    assert len({c for _, c, _, _ in runs}) == 1
+    return runs
+
+
+def trapped(prefix, tmp_path, src, calls, n, at, **kw):
+    """``(c, info, labels)`` of ``src`` translated and played with ``calls`` exactly up to
+    call ``n``, which traps at the memory map's check of the access at ``at``
+    ``(label, offset)``."""
+    img, labels, loaded = assemble(src)
+    c, h, info = translate(prefix, img, labels, loaded, **kw)
+    k = machine_guard(info, labels[at[0]] + at[1])
+    assert k is not None
+    play(tmp_path, c, h, img, labels, calls, trap=(n, k))
+    return c, info, labels
+
+
+def played(prefix, tmp_path, src, plays):
+    """``(c, info, labels)`` of ``src``'s ``init`` and ``play`` translated (init with ``A`` 0)
+    and replayed for init and ``plays`` plays."""
+    img, labels, loaded = assemble(src)
+    c, h, info = translate(prefix, img, labels, loaded, **PLAYER)
+    play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", 0)] * plays)
+    return c, info, labels
+
+
+def padded(src):
+    """``src`` as is and with the bytes after its ``pad`` label moved three on."""
+    return [src.replace("pad:\n", f"pad:\n{p}") for p in ("", "        .byte 0,0,0\n")]
 
 
 def plain(c):
@@ -2177,13 +2227,7 @@ def body_of(c, name):
 
 def check(prefix, tmp_path, src, calls, gotos=0, **kw):
     """Translate, play and return ``(c, h, info)``; the ``.c`` has ``gotos`` gotos."""
-    img, labels, loaded = assemble(src)
-    c, h, info = translate(prefix, img, labels, loaded, **kw)
-    assert cmetrics.metrics(c)["goto"] == gotos == info["structure"]["gotos"]
-    assert {"flags", "exits", "entries"}.isdisjoint(info["structure"])
-    assert len(info["provenance"]["gotos"]) == gotos
-    play(tmp_path, c, h, img, labels, calls, kw.get("sensitive", ()))
-    return c, h, info
+    return placed(prefix, tmp_path, calls, [src], gotos=gotos, **kw)[0][1:]
 
 
 def pointer_checks_only(info, src, org=0x1000):
@@ -2353,12 +2397,8 @@ def test_countdown_reloaded_with_zero_wraps(prefix, tmp_path):
 def test_cursor_past_its_table_keeps_its_guard(prefix, tmp_path):
     """Reset at 17 over a 16-byte table, the position reaches the byte past it: the read keeps
     its check, which traps on the reload reaching it."""
-    img, labels, loaded = assemble(COUNTPAST)
-    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0, songs=[0])
-    k = machine_guard(info, labels["play"] + 13)
-    assert k is not None
     calls = [("init", 0)] + [("play", 0)] * 60
-    play(tmp_path, c, h, img, labels, calls, trap=(1 + 3 * 17 - 1, k))
+    trapped(prefix, tmp_path, COUNTPAST, calls, 1 + 3 * 17 - 1, ("play", 13), songs=[0], **PLAYER)
 
 
 def test_countdown_reloaded_across_calls(prefix, tmp_path):
@@ -2698,16 +2738,12 @@ def test_tables_inside_code_index_a_named_offset(prefix, tmp_path, src, instance
     """A constant table between instructions, read by index, is its span's element at an
     offset the ``.h`` names (each copy's table its copy's offset beside it): no code address
     is a value, and the ``.c`` is the same at every origin."""
-    outs = []
-    for org in (0x1000, 0x2345):
-        img, labels, loaded = assemble(src, org)
-        c, h, info = translate(prefix, img, labels, loaded)
-        (tmp_path / str(org)).mkdir()
-        play(tmp_path / str(org), c, h, img, labels, entry_calls(range(8), 2))
-        outs.append(c)
-    assert outs[0] == outs[1] and info["stats"]["instances"] == instances
-    assert "CODE_ORG" not in outs[0] and "IMG_ORG" not in outs[0]
-    named = re.findall(r"\bC\d+\[(C\d+_AT[0-9A-F]+)\b", outs[0])
+    *_, (_, c, h, info) = placed(
+        prefix, tmp_path, entry_calls(range(8), 2), [src], (0x1000, 0x2345)
+    )
+    assert info["stats"]["instances"] == instances
+    assert "CODE_ORG" not in c and "IMG_ORG" not in c
+    named = re.findall(r"\bC\d+\[(C\d+_AT[0-9A-F]+)\b", c)
     assert named and all(f"#define {n} " in h for n in named)
 
 
@@ -2796,8 +2832,7 @@ def test_opcode_cells_are_states(prefix, tmp_path):
     ``RTS`` by ``EOR``, ``dir`` turned between ``ADC #imm`` and ``SBC #imm``) are states named
     by their instructions: play tests and assigns the names, the toggle maps state to state,
     the ``RTS`` state returns, and it replays exactly."""
-    img, labels, loaded = assemble(OPFLAGS)
-    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+    c, info, labels = played(prefix, tmp_path, OPFLAGS, 200)
     body = body_of(c, "play")
     assert not re.search(r"\b0x(?:60|A9|69|E9)\b", body) and "trap(" not in body
     ops = info["state"]["opcodes"]
@@ -2808,7 +2843,6 @@ def test_opcode_cells_are_states(prefix, tmp_path):
     assert re.search(rf"{g} = (v\d+) == {g}_RTS \? {g}_LDA : {g}_RTS;", body)
     assert f"{d} = {d}_SBC;" in body and f"{d} == {d}_ADC" in body
     assert f"enum {{ {g}_RTS = 0x60, {g}_LDA = 0xA9 }};" in c
-    play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", 0)] * 200)
 
 
 def test_opcode_state_names():
@@ -2960,64 +2994,64 @@ def test_identical_functions_fold(prefix, tmp_path):
     assert info["structure"]["folded"] == 1 and names == list(range(1, len(names) + 1))
 
 
+#: ``entry``'s calls reaching each target of a table of operands.
+OPCALLS = [("entry", a) for a in (1, 4, 4, 3, 5, 0, 6, 2, 7)]
+
+
 def test_computed_jsr_is_one_dispatch_function(prefix, tmp_path):
     """`JSR`s through operands written from one table call one function: a switch over the
     targets, its arms the handlers (one jumping into another's tail), handed the operand's low
     byte so its high byte relocates inside it."""
-    calls = [("entry", a) for a in (1, 4, 4, 3, 5, 0, 6, 2, 7)]
-    outs = []
-    for org in (0x1000, 0x2300):
-        img, labels, loaded = assemble(OPDISPATCH, org)
-        c, h, info = translate(prefix, img, labels, loaded)
+    for labels, _, _, info in placed(prefix, tmp_path, OPCALLS, [OPDISPATCH], (0x1000, 0x2300)):
         prov = info["provenance"]
         entries = {f["entry"] for f in prov["functions"].values()}
         assert labels["s1"] in entries and labels["s1"] in prov["switches"]
         assert not entries & ({labels[f"h{i}"] for i in range(4)} | {labels["tail"]})
-        (tmp_path / str(org)).mkdir()
-        play(tmp_path / str(org), c, h, img, labels, calls)
-        outs.append(c)
-    assert outs[0] == outs[1]
 
 
 def test_call_through_an_operand_written_earlier(prefix, tmp_path):
-    calls = [("entry", a) for a in (1, 4, 4, 3, 5, 0, 6, 2, 7)]
-    outs = []
-    for org in (0x1000, 0x2300):
-        img, labels, loaded = assemble(OPCALL, org)
-        c, h, info = translate(prefix, img, labels, loaded)
+    """A call through an operand an earlier store writes from a table goes to the table's
+    targets, the only checks those of the zero-page pointer it reads through; the ``.c`` is
+    the same at another origin."""
+    runs = placed(prefix, tmp_path, OPCALLS, [OPCALL], (0x1000, 0x2300))
+    for (labels, _, _, info), org in zip(runs, (0x1000, 0x2300)):
         assert info["jumps"] == {labels["site"]: [labels[f"j{i}"] for i in range(4)]}
         assert pointer_checks_only(info, OPCALL, org)
-        (tmp_path / str(org)).mkdir()
-        play(tmp_path / str(org), c, h, img, labels, calls)
-        outs.append(c)
-    assert outs[0] == outs[1] and "rd(MEM_K00FB | ((uint16_t)MEM_K00FC << 8))" in outs[0]
+    assert "rd(MEM_K00FB | ((uint16_t)MEM_K00FC << 8))" in runs[0][1]
 
 
 def test_effect_index_copied_by_its_command_handler(prefix, tmp_path):
     """A per-channel command picks a `JSR` handler from a table; only the handler of
     commands 0 and 1 copies the command into the effect byte, which picks a `JMP` from a
     table whose later entries are no handlers: the effect jump goes to the two."""
-    outs = []
-    for org in (0x1000, 0x2300):
-        img, labels, loaded = assemble(CMDFX, org)
-        c, h, info = translate(prefix, img, labels, loaded)
+    for labels, _, _, info in placed(
+        prefix, tmp_path, entry_calls(range(4), 2), [CMDFX], (0x1000, 0x2300)
+    ):
         t0 = sorted(labels[n] for n in ("t0a", "t0b"))
         assert info["jumps"] == {labels["t0"]: t0, labels["fx"]: [labels["fxa"], labels["fxb"]]}
-        (tmp_path / str(org)).mkdir()
-        play(tmp_path / str(org), c, h, img, labels, entry_calls(range(4), 2))
-        outs.append(c)
-    assert outs[0] == outs[1]
+
+
+def warmed(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    prefix, tmp_path, monkeypatch, src, name, warm
+):
+    """``(c, info)`` of ``src`` translated with ``printer.Module``'s ``name`` replaced by
+    ``warm(mod, original)``: the ``.c`` is the one translated without, and plays."""
+    img, labels, loaded = assemble(src)
+    cold = translate(prefix, img, labels, loaded)[0]
+    original = getattr(printer.Module, name)
+    monkeypatch.setattr(printer.Module, name, lambda mod: warm(mod, original))
+    c, h, info = translate(prefix, img, labels, loaded)
+    assert c == cold
+    play(tmp_path, c, h, img, labels, entry_calls(range(4), 2))
+    return c, info
 
 
 def test_intervals_found_before_the_rewrites_are_found_again(prefix, tmp_path, monkeypatch):
     """Every interval found before ``prune`` rewrites the operations (the instance index
     folded, carries joined) is found again after: the checks printed are the rewritten
     module's whatever was asked of it before."""
-    img, labels, loaded = assemble(CMDFX)
-    cold = translate(prefix, img, labels, loaded)[0]
-    unwritten = printer.Module.unwritten
 
-    def warm(mod):
+    def warm(mod, unwritten):
         free = unwritten(mod)
         for f in mod.funcs:
             for o in f.walk():
@@ -3028,10 +3062,7 @@ def test_intervals_found_before_the_rewrites_are_found_again(prefix, tmp_path, m
         assert mod.results_ivs
         return free
 
-    monkeypatch.setattr(printer.Module, "unwritten", warm)
-    c, h, _ = translate(prefix, img, labels, loaded)
-    assert c == cold and "oob_rd" not in c
-    play(tmp_path, c, h, img, labels, entry_calls(range(4), 2))
+    assert "oob_rd" not in warmed(prefix, tmp_path, monkeypatch, CMDFX, "unwritten", warm)[0]
 
 
 #: Three copies, each storing at its own base plus a byte its own constant table entry holds.
@@ -3071,11 +3102,8 @@ def test_intervals_asked_in_an_instances_context_are_its_own(prefix, tmp_path, m
     first for each copy (every interval forgotten before), a load of the copy's own constant
     is still a load of the copy's table entry, not one copy's constant for every copy, and
     the checks printed are those found in no context."""
-    img, labels, loaded = assemble(PERCOPY)
-    cold = translate(prefix, img, labels, loaded)[0]
-    structure = printer.Module.structure
 
-    def warm(mod):
+    def warm(mod, structure):
         mod.forget()
         for f in (f for f in mod.funcs if f.kparam is not None):
             for o in f.walk():
@@ -3083,10 +3111,8 @@ def test_intervals_asked_in_an_instances_context_are_its_own(prefix, tmp_path, m
                     assert f.kivs(f.address(o))
         return structure(mod)
 
-    monkeypatch.setattr(printer.Module, "structure", warm)
-    c, h, info = translate(prefix, img, labels, loaded)
-    assert info["stats"]["instances"] == 1 and c == cold and "CODE_K" not in c
-    play(tmp_path, c, h, img, labels, entry_calls(range(4), 2))
+    c, info = warmed(prefix, tmp_path, monkeypatch, PERCOPY, "structure", warm)
+    assert info["stats"]["instances"] == 1 and "CODE_K" not in c
 
 
 @pytest.mark.parametrize(
@@ -3106,10 +3132,19 @@ def test_effect_index_not_the_dispatched_byte(edit):
     assert labels["stray"] in p.jumps[labels["fx"]]
 
 
-def test_opcode_restored_through_the_stack(prefix, tmp_path):
-    _, _, info = check(prefix, tmp_path, STACKOP, entry_calls([0, 1, 2]))
-    assert not info["traps"]
-    assert (info["stats"]["opcode_cells"], info["stats"]["code_guards"]) == (1, 0)
+@pytest.mark.parametrize(
+    "src,values,cells",
+    [
+        pytest.param(STACKOP, [0, 1, 2], 1, id="restored-through-the-stack"),
+        pytest.param(FLIP, [2, 1, 2, 0, 2, 3, 1, 2], 2, id="indexed-store-of-known-opcodes"),
+    ],
+)
+def test_known_opcodes_are_cells_without_code_checks(prefix, tmp_path, src, values, cells):
+    """Opcodes restored through the stack, or stored by index from known values, are
+    ``cells`` opcode cells: no code check, no code guard and no trap."""
+    c, _, info = check(prefix, tmp_path, src, entry_calls(values))
+    assert "codechk" not in c and not info["traps"]
+    assert (info["stats"]["opcode_cells"], info["stats"]["code_guards"]) == (cells, 0)
 
 
 def test_split_table_index_past_its_extent_traps(prefix, tmp_path):
@@ -3199,17 +3234,14 @@ def test_guarded_store_and_the_loads_it_dominates_are_plain(prefix, tmp_path):
     """A store into a table ending the program past an index guard, and loads of the same
     index and of the index plus one after it, address the region with no run test (the loads
     checked by the memory map), and an index past the table traps."""
-    img, labels, loaded = assemble(GUARDLD)
-    c, h, info = translate(prefix, img, labels, loaded)
+    # The fourth call's load of the index plus one would read past the program.
+    c, info, labels = trapped(prefix, tmp_path, GUARDLD, entry_calls([0], 5), 3, ("entry", 17))
     body = body_of(c, "entry")
     [t] = [k for k, key in info["traps"].items() if info["trap_info"][k]["kind"] == "index"]
     assert info["traps"][t] == ("deopt", labels["entry"] + 7) and f"trap({t})" in body
     assert "oob_wr(" not in body and re.search(r"\bR0\[5 \+ (v\d+)\] = \1;", body)
     assert re.search(r"io_write\(0xC000, R0\[1 \+ v\d+\]\)", body)
     assert "oob_rd(" not in body and "R0_LEN" not in body
-    # The fourth call's load of the index plus one would read past the program.
-    k = machine_guard(info, labels["entry"] + 17)
-    play(tmp_path, c, h, img, labels, entry_calls([0], 5), trap=(3, k))
 
 
 def test_load_the_guard_does_not_dominate_keeps_its_test(prefix, tmp_path):
@@ -3417,10 +3449,20 @@ end:
 )
 
 
-def index_traps(info):
-    """The instructions the index guards of ``info``'s traps guard."""
-    guards = (g for t in info["trap_info"].values() for g in t["guards"])
-    return sorted(g["at"] for g in guards if g["kind"] == "index")
+def trap_guards(info, kind, define=None):
+    """``[(trap, guard)]`` of the guards of ``info``'s traps of ``kind`` (and ``def``
+    ``define``)."""
+    return [
+        (int(k), g)
+        for k, t in info["trap_info"].items()
+        for g in t["guards"]
+        if g["kind"] == kind and (define is None or g["def"] == define)
+    ]
+
+
+def guarded(info, kind="index"):
+    """The instructions the guards of ``kind`` of ``info``'s traps guard, ascending."""
+    return sorted(g["at"] for _, g in trap_guards(info, kind))
 
 
 @pytest.mark.parametrize("edit", [None, ("STA $C018", "STA $0100,Y")], ids=["songs", "stack"])
@@ -3433,7 +3475,7 @@ def test_init_song_carried_through_the_stack_bounds_its_index(prefix, tmp_path, 
     meta_keyed(info)
     assert info["init"] == "translated"
     load = labels["far"] + 11
-    assert index_traps(info) == ([] if edit is None else [load])
+    assert guarded(info) == ([] if edit is None else [load])
 
 
 #: Per-voice bytes stored masked to a nibble (a voice's data byte where it is not zero), each
@@ -3493,7 +3535,7 @@ def test_byte_bound_through_an_address_set_frees_its_index(prefix, tmp_path, wil
     img, labels, loaded = assemble(src)
     c, h, info = translate(prefix, img, labels, loaded)
     meta_keyed(info)
-    assert (labels["keep"] + 3 in index_traps(info)) == wild
+    assert (labels["keep"] + 3 in guarded(info)) == wild
     if not wild:
         play(tmp_path, c, h, img, labels, [("entry", 0)] * 4)
 
@@ -3561,7 +3603,7 @@ def test_switch_arm_stores_its_case_value(prefix, tmp_path, arms):
     img, labels, loaded = assemble(src)
     c, h, info = translate(prefix, img, labels, loaded)
     meta_keyed(info)
-    assert (labels["call"] + 6 in index_traps(info)) == (arms == 6)
+    assert (labels["call"] + 6 in guarded(info)) == (arms == 6)
     if arms == 5:
         play(tmp_path, c, h, img, labels, [("entry", 0)] * 4)
 
@@ -3597,8 +3639,7 @@ def test_init_alone_writing_a_cell_closes_it(prefix, tmp_path, wild):
         _, info, labels = songs(prefix, tmp_path, INITCELL, (0, 1))
         meta_keyed(info)
     assert info["init"] == "translated"
-    guards = (g for t in info["trap_info"].values() for g in t["guards"])
-    assert [g["at"] for g in guards if g["kind"] == "opcode"] == ([labels["op"]] if wild else [])
+    assert guarded(info, "opcode") == ([labels["op"]] if wild else [])
 
 
 def test_init_entry_trap_names_the_songs(prefix):
@@ -4010,12 +4051,6 @@ def test_pointer_span_meeting_a_volatile_range_in_the_program():
     assert mem.pointer_run((0, 0xBFFF)) == (0xBF00, 0xBFFF) and mem.pointer_run((0, 0xFFFF)) is None
 
 
-def test_indexed_store_of_known_opcodes(prefix, tmp_path):
-    c, _, info = check(prefix, tmp_path, FLIP, entry_calls([2, 1, 2, 0, 2, 3, 1, 2]))
-    assert "codechk" not in c and not info["traps"]
-    assert (info["stats"]["opcode_cells"], info["stats"]["code_guards"]) == (2, 0)
-
-
 def test_untaken_path_and_data_invariance(prefix, tmp_path):
     img_a, labels, loaded = assemble(UNTAKEN)
     img_b, _, _ = assemble(UNTAKEN, patch={"tab": [1, 0x80, 3, 0xFF]})
@@ -4086,10 +4121,7 @@ def test_replays_load_the_library_just_built(prefix, tmp_path):
     with ``A`` doubled the reads through the pointer table reach its words, which differ
     between origins, so a library of the other origin's ``.h`` writes the other's bytes."""
     src = RELOC.replace("entry:  AND #$03\n", "entry:  AND #$03\n        ASL A\n")
-    for org in (0x1000, 0x2345):
-        img, labels, loaded = assemble(src, org)
-        c, h, _ = translate(prefix, img, labels, loaded)
-        play(tmp_path, c, h, img, labels, entry_calls(range(4), 2))
+    placed(prefix, tmp_path, entry_calls(range(4), 2), [src], (0x1000, 0x2345))
 
 
 def test_sensitive_reads_are_kept(prefix, tmp_path):
@@ -4161,7 +4193,7 @@ def test_op_semantics(prefix, tmp_path, name):
         fn = op_function(name.removesuffix("16"), sizes, out)
     else:
         size, out, extra, unary = UNARY[name]
-        sizes, fn = (size, 1), unary_function(name, size, out, extra)
+        sizes, fn = (size, 1), op_function(name, (size,), out, extra)
         meaning = lambda a, b, s, f=unary: f(a)  # noqa: E731
     # Another entry reads the result back: a store no load reads is not kept.
     probe = {**fn, "pc": 0x1100, "blocks": [{"pc": 0x1100, "ops": READBACK}]}
@@ -4373,17 +4405,11 @@ def test_dispatch_arms_sharing_a_tail_stay_in_the_dispatching_function(prefix, t
     fall-through: each procedure holds the handlers as its switch's arms, each tail printed in
     the arms entering it (code two functions hold, ending the procedure), with no goto and no
     function of its own; the `.c` is the same at another origin."""
-    outs = []
-    for org in (0x1000, 0x2300):
-        img, labels, loaded = assemble(FXSHARE, org)
-        c, h, info = translate(prefix, img, labels, loaded)
+    runs = placed(prefix, tmp_path, entry_calls(range(4), 2), [FXSHARE], (0x1000, 0x2300))
+    for labels, c, _, info in runs:
         assert entries_of(info) == {labels[n] for n in ("entry", "fx1", "fx2")}
         assert info["structure"]["gotos"] == 0 and c.count("switch (") == 2
         assert c.count("io_write(0xC004, ") == c.count("io_write(0xC005, ") == 2
-        (tmp_path / str(org)).mkdir()
-        play(tmp_path / str(org), c, h, img, labels, entry_calls(range(4), 2))
-        outs.append(c)
-    assert outs[0] == outs[1]
 
 
 def test_tails_one_procedure_holds_follow_the_goto_rule(prefix, tmp_path):
@@ -4506,16 +4532,11 @@ tlo:""",
 def test_switch_arm_running_into_another_is_followed_by_it(prefix, tmp_path):
     """The arms print in the order of their targets in the machine code, the case labels the
     index's values: the handler of index 0 runs into the default's after it, no ``goto``."""
-    outs = []
-    for org in (0x1000, 0x2300):
-        img, labels, loaded = assemble(LOHIFALL, org)
-        c, h, info = translate(prefix, img, labels, loaded)
+    for _, c, _, info in placed(
+        prefix, tmp_path, entry_calls(range(4), 2), [LOHIFALL], (0x1000, 0x2300)
+    ):
         assert info["structure"]["gotos"] == 0 and "fallthrough" in c
         assert re.findall(r"(case \w+|default):", c) == ["case 0", "default", "case 1", "case 2"]
-        (tmp_path / str(org)).mkdir()
-        play(tmp_path / str(org), c, h, img, labels, entry_calls(range(4), 2))
-        outs.append(c)
-    assert outs[0] == outs[1]
 
 
 @pytest.mark.parametrize(
@@ -4751,11 +4772,18 @@ def test_transfers_each_switch_on_their_carried_index(prefix, tmp_path, regs):
     assert [int(k) for k in re.findall(r"case (\w+):", outs[0])] == [0, 1, 2] * len(regs)
 
 
+def instanced(prefix, tmp_path, src, calls, orgs=(0x1000,)):
+    """``(c, info)`` of :func:`check` of ``src`` at each of ``orgs``, its three copies merged
+    into one instance function."""
+    *_, (_, c, _, info) = placed(prefix, tmp_path, calls, [src], orgs, gotos=0)
+    assert (info["stats"]["instances"], info["stats"]["instance_copies"]) == (1, 3)
+    return c, info
+
+
 def test_copies_switch_on_their_carried_index(prefix, tmp_path):
     """Copies merged into an instance function, each carrying its index past its register's
     write: the instance function switches on the index."""
-    c, _, info = check(prefix, tmp_path, carried_copies(3), entry_calls(range(16), 2))
-    assert (info["stats"]["instances"], info["stats"]["instance_copies"]) == (1, 3)
+    c, info = instanced(prefix, tmp_path, carried_copies(3), entry_calls(range(16), 2))
     assert not info["traps"] and "CODE_ORG" not in c
     assert [int(k) for k in re.findall(r"case (\w+):", c)] == [0, 1, 2]
 
@@ -4910,12 +4938,23 @@ def test_target_by_arithmetic_switches_on_the_address(prefix, tmp_path):
     assert len(targets) == 4 and c.count("case ") == 3 and "switch (" in c
 
 
-def test_callee_called_twice_keeps_its_used_parameters(prefix, tmp_path):
-    c, _, _ = check(prefix, tmp_path, SUBS, entry_calls(range(8)))
+@pytest.mark.parametrize(
+    "src,calls,uses,voiced",
+    [
+        pytest.param(SUBS, entry_calls(range(8)), 5, False, id="called-twice"),
+        pytest.param(FALLTHRU, entry_calls(range(4), 4), 4, True, id="fall-through"),
+    ],
+)
+def test_callee_keeps_its_used_parameters(  # pylint: disable=too-many-arguments
+    prefix, tmp_path, src, calls, uses, voiced
+):
+    """A routine called more than once, or fallen through into (a tail call), is one function
+    of the byte it uses: ``uses`` counts its definition, its `JSR`s and the tail call into it
+    (``twice``, with one call site, is inlined), and the fall-through's voice writes stay
+    the function's, none to a constant voice register."""
+    c, _, _ = check(prefix, tmp_path, src, calls)
     [name] = re.findall(r"static \w+ (f\d+)\(uint8_t v1\)", c)
-    # Its definition, the two `JSR`s and the tail call `twice` falls through to; `twice`, with
-    # one call site, is inlined.
-    assert c.count(f"{name}(") == 5
+    assert c.count(f"{name}(") == uses and not (voiced and _voice_writes(c))
 
 
 def test_indexed_addresses_wrap(prefix, tmp_path):
@@ -5005,16 +5044,8 @@ def _voice_writes(c):
 
 
 def test_unrolled_copies_fold_into_one_function(prefix, tmp_path):
-    outs = []
-    for org in (0x1000, 0x2345):
-        img, labels, loaded = assemble(VOICES, org)
-        c, h, info = translate(prefix, img, labels, loaded)
-        (tmp_path / str(org)).mkdir()
-        play(tmp_path / str(org), c, h, img, labels, entry_calls(range(4), 6))
-        outs.append(c)
-    c = outs[0]
-    assert outs[0] == outs[1] and not re.search(r"0x1[0-9A-F]{3}\b|0x23[0-9A-F]{2}\b", c)
-    assert (info["stats"]["instances"], info["stats"]["instance_copies"]) == (1, 3)
+    c, _ = instanced(prefix, tmp_path, VOICES, entry_calls(range(4), 6), (0x1000, 0x2345))
+    assert not re.search(r"0x1[0-9A-F]{3}\b|0x23[0-9A-F]{2}\b", c)
     assert not _voice_writes(c) and c.count("io_write(0xC000") == 1
     [(name, param)] = re.findall(r"static \w+ (f\d+)\(uint8_t (v\d+)\)", c)
     [tab] = re.findall(rf"io_write\(0xC000 \+ (K\d+)\[{param}\],", c)
@@ -5143,8 +5174,7 @@ def test_copies_at_uneven_distances_index_a_table(prefix, tmp_path):
     """Copies whose cells are not at one stride are the elements of one field array all the
     same, the same at another origin."""
     src = VOICES.replace("JMP v1\n", "JMP v1\n        .byte 0, 0, 0\n")
-    c, _, info = check(prefix, tmp_path, src, entry_calls(range(4), 6))
-    assert (info["stats"]["instances"], info["stats"]["instance_copies"]) == (1, 3)
+    c, _ = instanced(prefix, tmp_path, src, entry_calls(range(4), 6))
     assert len(re.findall(r"\bV0_f00\[v1\]", c)) == 3 and "0x1B" not in c
     assert not re.search(r"\b(?:rd|wr)\(|==", c)
     img, labels = W.assemble(src, 0x2345)
@@ -5603,9 +5633,7 @@ def test_init_probe_of_a_derived_register_is_a_run_time_choice(prefix, tmp_path)
     )
     assert info["init"] == "translated" and body_of(c, "init").count("io_read(0xD41B)") == 1
     assert labels["patch"] in info["provenance"]["cells"]
-    (tmp_path / "t.c").write_text(c)
-    (tmp_path / "t.h").write_text(h)
-    lib = cgenplay.build(tmp_path / "t.c", tmp_path / "t.so")
+    lib = compiled(tmp_path, c, h)
     calls = [("init", 0)] + [("play", k) for k in range(4)]
     for v in (2, 3):
         img[0xD41B] = v
@@ -5655,9 +5683,7 @@ def test_timer_flag_wait_and_acknowledges_are_kept(prefix, tmp_path):
     assert info["init"] == "translated" and "io_read(0xDC0D)" in body_of(c, "init")
     assert body_of(c, "play").count("io_read(0xDC0D)") == 2
     img[0xDC0D] = 0x01
-    (tmp_path / "t.c").write_text(c)
-    (tmp_path / "t.h").write_text(h)
-    lib = cgenplay.build(tmp_path / "t.c", tmp_path / "t.so")
+    lib = compiled(tmp_path, c, h)
     calls = [("init", 0)] + [("play", k) for k in range(4)]
     cgenplay.replay(lib, img, {n: labels[n] for n, _ in calls}, calls, volatile, (0xDC0D,))
 
@@ -6059,12 +6085,6 @@ def test_cli_runs_the_named_init(prefix, tmp_path):
     assert "void init(uint8_t a)" in c and "CGEN_SONGS" in c
 
 
-def test_fall_through_into_a_routine_is_a_tail_call(prefix, tmp_path):
-    c, _, _ = check(prefix, tmp_path, FALLTHRU, entry_calls(range(4), 4))
-    [name] = re.findall(r"static \w+ (f\d+)\(uint8_t v1\)", c)
-    assert c.count(f"{name}(") == 4 and not _voice_writes(c)
-
-
 def test_copies_share_their_trap(prefix, tmp_path):
     img, labels, loaded = assemble(GUARDED)
     c, h, info = translate(prefix, img, labels, loaded)
@@ -6124,14 +6144,31 @@ def test_provenance_of_calls_and_copies(prefix):
     assert [t for _, t in f["calls"]] == [copies[0]] * 3
 
 
-def test_instruction_edges():
-    """An edge is named by the instruction taking it: a branch, or a JMP the lift threaded."""
-    img, labels = W.assemble("a: BEQ b\n   NOP\nj: JMP c\nb: NOP\nc: RTS\n", 0x1000)
-    a, j, b, c = (labels[k] for k in "ajbc")
-    assert structure_edges(img, a, b) == [a, b]
-    assert structure_edges(img, a, c) == [a, b]
-    assert structure_edges(img, a + 2, c) == [j, c]
-    assert structure_edges(img, a, a + 2) == [a, a + 2]
+@pytest.mark.parametrize(
+    "src,edges",
+    [
+        pytest.param(
+            "a: BEQ b\n   NOP\nj: JMP c\nb: NOP\nc: RTS\n",
+            ["a b a b", "a c a b", "a+2 c j c", "a a+2 a a+2"],
+            id="named-by-its-taker",
+        ),
+        pytest.param(
+            "a: BCC b\nc: BCS d\nb: NOP\nd: CLC\ne: NOP\nRTS\n",
+            ["a e c d", "c e+1 c d"],
+            id="landing-before-folded-instructions",
+        ),
+    ],
+)
+def test_instruction_edges(src, edges):
+    """An edge ``p q`` is named by the instruction taking it: a branch, or a JMP the lift
+    threaded. A target block whose first instructions translate to nothing is entered where
+    the transfer lands, the instructions up to its first translated one falling through."""
+    img, labels = W.assemble(src, 0x1000)
+    for edge in edges:
+        p, q, *want = (
+            labels[n] + int(k or 0) for n, _, k in (t.partition("+") for t in edge.split())
+        )
+        assert structure_edges(img, p, q) == want
 
 
 RETURNING = """"builtin.module"() ({
@@ -6185,15 +6222,6 @@ def test_decided_branch_edges():
     assert regions.decided(img, a, b) == {8: 0} and regions.decided(img, a, c) == {8: 1}
     assert regions.decided(img, b, d) == {}
     assert structure_edges(img, c, b) == [c, n]
-
-
-def test_edges_land_before_folded_instructions():
-    """A target block whose first instructions translate to nothing is entered where the
-    transfer lands, the instructions up to its first translated one falling through."""
-    img, labels = W.assemble("a: BCC b\nc: BCS d\nb: NOP\nd: CLC\ne: NOP\nRTS\n", 0x1000)
-    a, c, d, e = (labels[k] for k in "acde")
-    assert structure_edges(img, a, e) == [c, d]
-    assert structure_edges(img, c, e + 1) == [c, d]
 
 
 def structure_edges(img, p, q):
@@ -6483,18 +6511,20 @@ def test_status_set_from_a_byte_unpacks_the_flags_read(prefix, tmp_path):
     assert "(a & 8) != 0" in body and not re.search(r">> \d|& 0x[48]0|& [14]\b", body)
 
 
-def test_pulled_decimal_flag_feeds_arithmetic(prefix, tmp_path):
+@pytest.mark.parametrize(
+    "src,step,packed",
+    [
+        pytest.param(STATUS_DECIMAL, 3, False, id="pulled-decimal-feeds-arithmetic"),
+        pytest.param(STATUS_READ, 5, True, id="read-through-the-stack-page"),
+    ],
+)
+def test_status_through_the_stack(prefix, tmp_path, src, step, packed):
     """A decimal flag saved by ``PHP`` and restored by ``PLP`` before an ``ADC`` keeps its
-    value: binary and decimal sums both match the reference, with no packed byte."""
-    c, _, _ = check(prefix, tmp_path, STATUS_DECIMAL, entry_calls(range(0, 256, 3)))
-    assert "0x30" not in body_of(c, "entry")
-
-
-def test_status_read_through_the_stack_page_stays_packed(prefix, tmp_path):
-    """A status a load reads from the stack page (``TSX; LDA $0101,X``) is stored packed and
-    read exactly; the ``PLP`` still restores the flags it saved."""
-    c, _, _ = check(prefix, tmp_path, STATUS_READ, entry_calls(range(0, 256, 5)))
-    assert "0x30" in body_of(c, "entry")
+    value: binary and decimal sums both match the reference, with no packed byte. A status a
+    load reads from the stack page (``TSX; LDA $0101,X``) is stored packed and read exactly;
+    the ``PLP`` still restores the flags it saved."""
+    c, _, _ = check(prefix, tmp_path, src, entry_calls(range(0, 256, step)))
+    assert ("0x30" in body_of(c, "entry")) == packed
 
 
 @pytest.mark.parametrize("reads", [False, True])
@@ -6615,8 +6645,7 @@ def test_txs_to_a_saved_stack_pointer_unwinds(prefix, tmp_path):
 def test_per_copy_immediates_are_constants(prefix, tmp_path):
     """Unrolled copies whose state is per copy and whose immediates differ (not affine in the
     copy) are one function; the immediates are its per-copy constants."""
-    c, _, info = check(prefix, tmp_path, CONSTS, entry_calls(range(4), 4))
-    assert (info["stats"]["instances"], info["stats"]["instance_copies"]) == (1, 3)
+    c, _ = instanced(prefix, tmp_path, CONSTS, entry_calls(range(4), 4))
     assert not _voice_writes(c)
 
 
@@ -6649,8 +6678,7 @@ def test_a_loops_index_holds_through_a_brk_or_a_stack_switch(prefix, tmp_path, s
 def test_per_copy_conditions_index_a_table(prefix, tmp_path):
     """A branch on a per-copy immediate tests the copy's value from a constant table, not a
     sum of comparisons with the index."""
-    c, _, info = check(prefix, tmp_path, TESTED, entry_calls(range(4), 3))
-    assert (info["stats"]["instances"], info["stats"]["instance_copies"]) == (1, 3)
+    c, _ = instanced(prefix, tmp_path, TESTED, entry_calls(range(4), 3))
     assert "==" not in c and re.search(r"if \(K\d+\[v1\] != 0\)", c)
 
 
@@ -6684,8 +6712,7 @@ def test_copies_at_a_wide_stride_index_per_copy_pointers(prefix, tmp_path, inner
     constant table of pointers into the region and index it by a byte, as ``(zp),Y`` does: no
     16-bit index, no ``rd``/``wr``."""
     src = _wide(inner, 0x70)
-    c, _, info = check(prefix, tmp_path, src, entry_calls(range(4), 6))
-    assert (info["stats"]["instances"], info["stats"]["instance_copies"]) == (1, 3)
+    c, _ = instanced(prefix, tmp_path, src, entry_calls(range(4), 6))
     assert not re.search(r"\b(?:rd|wr)\(|uint16_t K\d|static const uint16_t", c)
     fields = set(re.findall(r"\b(V0_f[0-9A-F]+)\[v1\]", c))
     assert len(fields) == 2 and (max(int(f[4:], 16) for f in fields) > 0xFF) == (windows == 2)
@@ -6708,8 +6735,7 @@ def test_a_compare_some_copies_lack_is_one_per_copy_compare(prefix, tmp_path, on
     tests the loaded value against zero) compares the value with the copy's immediate, the
     index itself or a constant table of them, not a choice of comparisons on the index."""
     src = COMPARED.replace("${one}", f"${one}").replace("${two}", f"${two}")
-    c, _, info = check(prefix, tmp_path, src, entry_calls(range(4), 3))
-    assert (info["stats"]["instances"], info["stats"]["instance_copies"]) == (1, 3)
+    c, _ = instanced(prefix, tmp_path, src, entry_calls(range(4), 3))
     assert re.search(form, c) and not re.search(r"v1 == \d", c)
     m = re.search(form, c)
     if m.groups():
@@ -6720,9 +6746,8 @@ def test_copies_entered_at_a_branch_after_unlike_loads_are_one_class(prefix, tmp
     """Copies entered at a branch on the flags of a load the copies differ in (``LDY`` before
     the first, ``LDA`` before the others), each arm a block of its own, are one class entered
     at the branch: its arms are not two classes."""
-    _, _, info = check(prefix, tmp_path, ARMS, entry_calls([0, 1, 0x80, 0x81], 3))
+    _, info = instanced(prefix, tmp_path, ARMS, entry_calls([0, 1, 0x80, 0x81], 3))
     _, labels, _ = assemble(ARMS)
-    assert (info["stats"]["instances"], info["stats"]["instance_copies"]) == (1, 3)
     [fn] = [f for f in info["provenance"]["functions"].values() if f["index"]]
     assert fn["copies"] == [labels[f"v{k}"] for k in range(3)]
 
@@ -6812,41 +6837,25 @@ def test_operands_set_from_one_constant_word_are_constants(prefix, tmp_path):
     """Operands init sets from header words, the same for every ``A``, are constants: the
     other entry's accesses through them direct, the ``.c`` the same wherever its tables
     lie."""
-    texts = set()
-    for pad in ("", "        .byte 0,0,0\n"):
-        img, labels, loaded = assemble(WORDREL.replace("pad:\n", f"pad:\n{pad}"))
-        c, h, info = translate(
-            prefix, img, labels, loaded, entries=("init", "play"), init=0, songs=range(2)
-        )
-        (tmp_path / str(len(pad))).mkdir()
-        play(tmp_path / str(len(pad)), c, h, img, labels, [("init", 1)] + [("play", 3)] * 2)
+    calls = [("init", 1)] + [("play", 3)] * 2
+    kw = {"entries": ("init", "play"), "init": 0, "songs": range(2)}
+    for labels, c, _, info in placed(prefix, tmp_path, calls, padded(WORDREL), **kw):
         ops = {labels[o] + k for o in ("o0", "o1", "o2") for k in (1, 2)}
-        body = body_of(c, "play")
-        assert ops <= set(info["fixed"]) and not re.search(r"rdC|\bS_", body)
-        texts.add(c)
-    assert len(texts) == 1
+        assert ops <= set(info["fixed"]) and not re.search(r"rdC|\bS_", body_of(c, "play"))
 
 
 def test_operands_set_from_one_word_are_one_pointer(prefix, tmp_path):
     """Play is lifted from what init's run leaves: operand pairs init sets from one song word
     (the header row ``A`` chooses) are one pointer variable, the others read as it plus their
     constant offset, and the ``.c`` is the same wherever the tables lie."""
-    texts = set()
-    for pad in ("", "        .byte 0,0,0\n"):
-        img, labels, loaded = assemble(WORDROW.replace("pad:\n", f"pad:\n{pad}"))
-        c, h, info = translate(
-            prefix, img, labels, loaded, entries=("init", "play"), init=0, songs=range(1)
-        )
-        (tmp_path / str(len(pad))).mkdir()
-        calls = [("init", 0)] + [("play", a) for a in range(4)] * 2
-        play(tmp_path / str(len(pad)), c, h, img, labels, calls)
+    calls = [("init", 0)] + [("play", a) for a in range(4)] * 2
+    kw = {"entries": ("init", "play"), "init": 0, "songs": range(1)}
+    for labels, c, _, info in placed(prefix, tmp_path, calls, padded(WORDROW), **kw):
         ops = {labels[o] + k for o in ("o0", "o1", "o2") for k in (1, 2)}
         assert ops <= set(info["provenance"]["cells"])
         body = body_of(c, "play")
         pairs = set(re.findall(rf"({BYTE}) \| \(\(uint16_t\)({BYTE}) << 8\)", body))
         assert len(pairs) == 2 and "1 + v" in body
-        texts.add(c)
-    assert len(texts) == 1
 
 
 def test_song_table_offsets_are_named_in_the_header(prefix, tmp_path):
@@ -6886,10 +6895,8 @@ end:
 def test_play_stores_an_opcode_into_a_cell_init_sets(prefix, tmp_path):
     """Init sets an opcode cell, so its entry byte is the host's; the opcode play stores
     there is still lifted as a variant: after it play returns at the cell."""
-    img, labels, loaded = assemble(STOPPER)
-    c, h, info = translate(prefix, img, labels, loaded, entries=("init", "play"), init=0)
+    _, info, labels = played(prefix, tmp_path, STOPPER, 6)
     assert labels["op"] in info["provenance"]["cells"]
-    play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", 0)] * 6)
 
 
 FIXED = """
@@ -7467,10 +7474,7 @@ def test_store_past_its_array_into_the_program_traps(prefix, tmp_path):
     """A store past its array into the program traps where the 6502 would change the
     program: the memory map holds the store to the array its base lies in, so the store
     past it is invalid input, trapped at its check."""
-    img, labels, loaded = assemble(PUSH)
-    c, h, info = translate(prefix, img, labels, loaded)
-    k = machine_guard(info, labels["entry"] + 3)
-    play(tmp_path, c, h, img, labels, entry_calls([5, 6, 7, 8]), trap=(3, k))
+    trapped(prefix, tmp_path, PUSH, entry_calls([5, 6, 7, 8]), 3, ("entry", 3))
 
 
 @pytest.mark.parametrize("src", ["PUSH", "UNHELD_RMW", "ZPPTR", "STRAY", "CALLRET"])
@@ -7773,24 +7777,12 @@ def machine_src(mode, p2="6, 7, 8, 9, 0", hi2="hi(p2)", lo2="lo(p2)", hi="phi"):
 
 def machine_guards(info):
     """The traps of the memory map's checks, ascending."""
-    return sorted(
-        {
-            int(k)
-            for k, t in info["trap_info"].items()
-            for g in t["guards"]
-            if g["kind"] == "objchk" and g["def"] == "machine"
-        }
-    )
+    return sorted({k for k, _ in trap_guards(info, "objchk", "machine")})
 
 
 def machine_guard(info, pc):
     """The trap of the memory map's check of the access at ``pc``, or None."""
-    ks = [
-        int(k)
-        for k, t in info["trap_info"].items()
-        for g in t["guards"]
-        if g["kind"] == "objchk" and g["def"] == "machine" and g["at"] == pc
-    ]
+    ks = [k for k, g in trap_guards(info, "objchk", "machine") if g["at"] == pc]
     assert len(ks) <= 1
     return ks[0] if ks else None
 
@@ -7803,22 +7795,17 @@ def test_machine_model_bounds_every_mode(prefix, tmp_path, mode):
     leaving the program would read I/O, ROM or RAM it never held. Every pattern replays;
     without the last pattern's terminator the cursor runs off the program and the C traps at
     that check, the calls before it exact."""
-    img, labels, loaded = assemble(machine_src(mode))
-    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+    c, info, labels = played(prefix, tmp_path, machine_src(mode), 40)
     body = body_of(c, "play")
     assert not re.search(r"\b(?:rd|oob_rd|rdC\d+)\(", body) and "CGEN_OBJ" in body
     k = machine_guard(info, labels["rd"])
     assert k is not None and info["trap_info"][k]["implied_by"] is None
     calls = [("init", 0)] + [("play", 0)] * 40
-    play(tmp_path, c, h, img, labels, calls)
-    img, labels, loaded = assemble(machine_src(mode, p2="6, 7, 8, 9"))
-    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
-    (tmp_path / "bad").mkdir()
-    k = machine_guard(info, labels["rd"])
     # ``(zp,X)``: past its records the stream's next high byte is a record's byte, naming a
     # page outside the program.
     n = 1 + 4 if mode == "zpx" else 1 + 4 + 3 + 4
-    play(tmp_path / "bad", c, h, img, labels, calls, trap=(n, k))
+    src = machine_src(mode, p2="6, 7, 8, 9")
+    trapped(prefix, tmp_path, src, calls, n, ("rd", 0), **PLAYER)
 
 
 @pytest.mark.parametrize("mode", list(MODES))
@@ -7828,13 +7815,10 @@ def test_machine_model_is_independent_of_the_data(prefix, tmp_path, mode):
     outside the program (RAM it never loaded) is invalid input: the calls
     replay exactly up to the read through it, which traps at that check."""
     img, labels, loaded = assemble(machine_src(mode))
-    c, _, _ = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
-    img, labels, loaded = assemble(machine_src(mode, lo2="$00", hi2="$40"))
-    c2, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
-    k = machine_guard(info, labels["rd"])
-    assert c2 == c and k is not None
+    c = translate(prefix, img, labels, loaded, ("init", "play"), init=0)[0]
+    src = machine_src(mode, lo2="$00", hi2="$40")
     calls = [("init", 0)] + [("play", 0)] * 20
-    play(tmp_path, c2, h, img, labels, calls, trap=(1 + 4 + 3, k))
+    assert trapped(prefix, tmp_path, src, calls, 1 + 4 + 3, ("rd", 0), **PLAYER)[0] == c
 
 
 @pytest.mark.parametrize(
@@ -7849,11 +7833,9 @@ def test_machine_model_leaves_bases_outside_the_program_checked(prefix, tmp_path
     """A pointer whose high byte is unknown (read from I/O) or a constant of the code naming
     an I/O page keeps its bounds-checked or device read, no check of the memory map's; the
     program replays."""
-    img, labels, loaded = assemble(src)
-    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+    c, info, labels = played(prefix, tmp_path, src, 20)
     assert machine_guard(info, labels["rd"]) is None
     assert re.search(r"\b(?:rd|rdC\d+|io_read)\(", body_of(c, "play"))
-    play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", 0)] * 20)
 
 
 CELLHEAD = """
@@ -7964,12 +7946,10 @@ def test_operand_cell_pointer_checked_at_its_definition(prefix, tmp_path):
     """A song pointer play stores into an access's operand cells is checked once, after the
     store completing it, with the ``Y`` the access adds (``objchk``, ``def`` "machine"): the
     read through it is plain."""
-    img, labels, loaded = assemble(CELLSUM)
-    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
+    c, info, labels = played(prefix, tmp_path, CELLSUM, 8)
     assert not re.search(r"\b(?:rd|oob_rd|rdC\d+|cgen_var)\(", body_of(c, "play"))
     assert machine_guard(info, labels["rd"]) is None
     assert machine_guard(info, labels["rd"] - 5) is not None
-    play(tmp_path, c, h, img, labels, [("init", 0)] + [("play", 0)] * 8)
 
 
 JUMPS = """
@@ -8006,17 +7986,13 @@ def test_machine_model_bounds_a_jump_tables_command_stream(prefix, tmp_path):
     stream's read, its cursor unbounded, reads the program checked by the memory map; the
     table's index guard keeps the jump inside its table. Without its 0 terminator the
     stream runs off the program and the C traps at the stream read's check."""
-    img, labels, loaded = assemble(JUMPS.format(cmds="1, 2, 1, 1, 2, 0"))
-    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
-    rd = labels["play"] + 3
-    assert machine_guard(info, rd) is not None
+    c, info, labels = played(prefix, tmp_path, JUMPS.format(cmds="1, 2, 1, 1, 2, 0"), 24)
+    assert machine_guard(info, labels["play"] + 3) is not None
     assert not re.search(r"\b(?:rd|oob_rd|rdC\d+)\(", body_of(c, "play"))
     calls = [("init", 0)] + [("play", 0)] * 24
-    play(tmp_path, c, h, img, labels, calls)
-    img, labels, loaded = assemble(JUMPS.format(cmds="1, 2, 1, 1, 2"))
-    c, h, info = translate(prefix, img, labels, loaded, ("init", "play"), init=0)
-    (tmp_path / "bad").mkdir()
-    play(tmp_path / "bad", c, h, img, labels, calls, trap=(1 + 5, machine_guard(info, rd)))
+    trapped(
+        prefix, tmp_path, JUMPS.format(cmds="1, 2, 1, 1, 2"), calls, 1 + 5, ("play", 3), **PLAYER
+    )
 
 
 ZPWRAP = """

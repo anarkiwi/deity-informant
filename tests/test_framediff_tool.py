@@ -37,35 +37,37 @@ def tree(root, code):
     return root
 
 
-def test_interrupts_inside_frames_are_exact(tmp_path, capsys):
-    root = tree(tmp_path / "hvsc", INIT + IRQ + NMI)
-    assert framediff.main([str(root), "x.sid", "--frames", "30"]) == 0
-    assert "check: None" in capsys.readouterr().out
+def run(tmp_path, capsys, *args, code=INIT + IRQ + NMI):
+    """``framediff``'s exit status and output on a tree holding ``code`` as ``x.sid``."""
+    rc = framediff.main([str(tree(tmp_path / "hvsc", code)), "x.sid", *args])
+    return rc, capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "code,args,want",
+    [
+        (INIT + IRQ + NMI, ["--frames", "30"], "check: None"),
+        (INIT + bytes.fromhex("ad0ddc 8d00d4 40"), ["--frames", "10", "--raw"], "check: None"),
+        (INIT + IRQ + NMI, ["--frames", "30", "--bisect"], "every frame's memory is the machine's"),
+    ],
+    ids=["interrupts-inside-frames", "raw-summary-only", "bisect-finds-no-frame"],
+)
+def test_exact_songs_report_no_difference(tmp_path, capsys, code, args, want):
+    """Interrupts inside frames are exact, an exact song with ``--raw`` prints only the
+    summary, and ``--bisect`` finds no frame the reference differs in."""
+    rc, out = run(tmp_path, capsys, *args, code=code)
+    assert rc == 0 and want in out
 
 
 def test_reports_where_a_frame_differs(tmp_path, capsys, monkeypatch):
-    root = tree(tmp_path / "hvsc", INIT + IRQ + NMI)
     monkeypatch.setattr(framediff.frames, "check", lambda *a, **k: [2, "log", 1])
-    assert framediff.main([str(root), "x.sid", "--frames", "30"]) == 1
-    out = capsys.readouterr().out
+    rc, out = run(tmp_path, capsys, "--frames", "30")
+    assert rc == 1
     assert "check: [2, 'log', 1]" in out and "reference vs machine: first log difference" in out
     assert "entry (" in out and "boundary lift" in out
 
 
-def test_exact_song_prints_only_the_summary(tmp_path, capsys):
-    root = tree(tmp_path / "hvsc", INIT + bytes.fromhex("ad0ddc 8d00d4 40"))
-    assert framediff.main([str(root), "x.sid", "--frames", "10", "--raw"]) == 0
-    assert "check: None" in capsys.readouterr().out
-
-
-def test_bisect_finds_no_frame_the_reference_differs_in(tmp_path, capsys):
-    root = tree(tmp_path / "hvsc", INIT + IRQ + NMI)
-    assert framediff.main([str(root), "x.sid", "--frames", "30", "--bisect"]) == 0
-    assert "every frame's memory is the machine's" in capsys.readouterr().out
-
-
 def test_bisect_reports_the_first_frame_the_reference_differs_in(tmp_path, capsys, monkeypatch):
-    root = tree(tmp_path / "hvsc", INIT + IRQ + NMI)
     real = framediff.frames._call  # pylint: disable=protected-access
 
     def corrupt(prog, host, k, rec, mem, bank=None):
@@ -75,6 +77,6 @@ def test_bisect_reports_the_first_frame_the_reference_differs_in(tmp_path, capsy
         return out
 
     monkeypatch.setattr(framediff.frames, "_call", corrupt)
-    assert framediff.main([str(root), "x.sid", "--frames", "30", "--bisect"]) == 1
-    out = capsys.readouterr().out
+    rc, out = run(tmp_path, capsys, "--frames", "30", "--bisect")
+    assert rc == 1
     assert "reference differs after frame 3" in out and "01f0 machine" in out
