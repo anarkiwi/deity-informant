@@ -13,6 +13,7 @@ from pathlib import Path
 
 from jennings.devices.mpu6502 import MPU
 from jennings.disassembler import Disassembler
+from pysidtracker.pathfuzz import first_true
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 # pylint: disable=wrong-import-position
@@ -70,13 +71,10 @@ def departure(s, call):
         g = list(o["reg"][:4])
         return any(o["pc"] == t[0] and g == list(t[1:5]) for t in steps[max(0, i - 1) : i + 2])
 
-    lo, hi = 0, len(steps) - 1
+    hi = len(steps) - 1
     if same(hi):
         return None
-    while lo < hi:
-        mid = (lo + hi) // 2
-        lo, hi = (mid + 1, hi) if same(mid) else (lo, mid)
-    return lo, steps, ref, mem
+    return first_true(lambda k: not same(k - 1), hi + 1) - 1, steps, ref, mem
 
 
 def main(argv=None):

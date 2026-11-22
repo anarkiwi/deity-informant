@@ -51,7 +51,7 @@ jobs:
       - name: Test images
         run: python tools/testimages.py
       - name: Test
-        run: pytest tests/ -n auto --cov=deity_informant --cov-fail-under=85
+        run: pytest tests/ --pysayme -n auto --cov=deity_informant --cov-fail-under=85
 
   rust:
     runs-on: ubuntu-latest

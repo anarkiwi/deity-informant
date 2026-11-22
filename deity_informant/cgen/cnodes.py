@@ -10,6 +10,7 @@ from pycparser import c_ast
 from pycparser.c_parser import Coord
 from wayward_eagle.c import Generator, format_c
 from wayward_eagle.c.printer import STYLE
+from wayward_eagle.c.reduce import fallthrough  # pylint: disable=unused-import
 
 #: Bits of each integer type the printer spells.
 BITS = {"uint8_t": 8, "int8_t": 8, "uint16_t": 16, "int16_t": 16}
@@ -145,12 +146,6 @@ def void(node):
 def ret(node=None):
     """``return node;``."""
     return c_ast.Return(node)
-
-
-def fallthrough():
-    """``__attribute__((fallthrough));``."""
-    attr = c_ast.AttributeSpecifier([c_ast.Attribute("fallthrough", None, None)])
-    return c_ast.AttributedStatement([attr], c_ast.EmptyStatement())
 
 
 def decl(name, ctype, init=None, storage=(), attrs=(), dim=False):
