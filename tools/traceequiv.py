@@ -23,6 +23,7 @@ from pathlib import Path  # noqa: E402
 
 from pebble import ProcessPool  # noqa: E402
 from tqdm import tqdm  # noqa: E402
+from vagrant_moses.c64 import psid_iomap  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -30,7 +31,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from deity_informant import c64, wholeprog  # noqa: E402
 import wpcorpus  # noqa: E402 pylint: disable=wrong-import-order
-from smclabel import iomap, sidfile  # noqa: E402 pylint: disable=wrong-import-order
+from smclabel import sidfile  # noqa: E402 pylint: disable=wrong-import-order
 
 BACKENDS = ("python", "native")
 
@@ -46,7 +47,7 @@ def run(img, song, backend, max_cycles=2_000_000):
     """One backend's banked run of ``song`` (``init``, ``play``, ``song``, ``calls``,
     ``clock``): ``(facts, records digest, check, cells, ...), seconds``."""
     init, play = song["init"], song["play"]
-    ports = {"init": iomap(init), "call": iomap(play)}
+    ports = {"init": psid_iomap(init), "call": psid_iomap(play)}
     t = time.perf_counter()
     host = c64._Host(  # pylint: disable=protected-access
         img, ntsc=song["clock"] == "NTSC", backend=backend

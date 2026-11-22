@@ -1,12 +1,12 @@
 """tools/wpsurvey.py: PSID loading, per-tune stats and the summary."""
 
 import json
-import struct
 import time
 import sys
 from pathlib import Path
 
 import pytest
+from pysidtracker.header import write_psid
 
 from deity_informant import NATIVE
 
@@ -20,9 +20,8 @@ CODE = bytes([0x60, 0x48, 0x20, 0x08, 0x10, 0x68, 0x60, 0xEA, 0x8D, 0x00, 0xD4, 
 
 
 def psid(load=0x1000, init=0x1000, play=0x1001, magic=b"PSID", inline=False):
-    hdr = magic + struct.pack(">HHHHHHHI", 2, 0x7C, 0 if inline else load, init, play, 1, 1, 0)
-    hdr += bytes(0x7C - len(hdr))
-    return hdr + (struct.pack("<H", load) if inline else b"") + CODE
+    kind = magic.decode()
+    return write_psid(kind=kind, load=load, init=init, play=play, image=CODE, embed_load=inline)
 
 
 def test_psid_parse():

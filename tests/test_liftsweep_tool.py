@@ -2,11 +2,11 @@
 
 import fcntl
 import json
-import struct
 import sys
 from pathlib import Path
 
 import pytest
+from pysidtracker.header import write_psid
 
 from deity_informant import NATIVE
 from deity_informant.cgen import mlir
@@ -26,8 +26,7 @@ SPIN = bytes.fromhex("a900 10fe")  # $1006: LDA #0; BPL *
 
 def sid(code, run=0x1006, init=0x1000, load=0x1000):
     """A PSID of ``code`` at ``load`` with entries ``init`` and ``run``."""
-    hdr = b"PSID" + struct.pack(">HHHHHHHI", 2, 0x7C, load, init, run, 1, 1, 0)
-    return hdr + b"\0" * 0x60 + struct.pack(">HBBBB", 0, 0, 0, 0, 0) + code
+    return write_psid(load=load, init=init, play=run, image=code)
 
 
 @pytest.fixture(name="mlir_ready", scope="module")

@@ -16,6 +16,7 @@ from pathlib import Path
 
 from pebble import ProcessPool
 from tqdm import tqdm
+from vagrant_moses.c64 import psid_iomap
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -23,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # pylint: disable=wrong-import-position
 from deity_informant import c64  # noqa: E402
 from deity_informant.smc.expect import lift_reason, machine_cell  # noqa: E402
-from smclabel import _parse, iomap, sidfile  # noqa: E402
+from smclabel import _parse, sidfile  # noqa: E402
 
 
 def selected(row):
@@ -43,7 +44,7 @@ def bank_check(path, calls, max_cycles=2_000_000, roms=None):
     kind, img, init, play, _ = tune
     if kind == "RSID" or not play:
         return {"tune": str(path), "skip": "irq-driven"}
-    ports = {"init": iomap(init), "call": iomap(play)}
+    ports = {"init": psid_iomap(init), "call": psid_iomap(play)}
     run = [(play, 0)] * calls
     res = c64.lift_check(img, play, run, run, [(init, 0)], ports, max_cycles, roms)
     if res.prog is None:

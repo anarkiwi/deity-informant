@@ -1,12 +1,12 @@
 """Strided intervals, effective-address facts and layout recovery on programs of known layout."""
 
 import json
-import struct
 import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
+from pysidtracker.header import write_psid
 from jennings.devices.mpu6502 import NativeMPU
 from jennings.isa import is_memory
 from jennings.memory import NativeMemory
@@ -388,8 +388,7 @@ thi: .byte 0
 
 
 def _psid(code, play, load=0x1000, init=0x1000):
-    hdr = b"PSID" + struct.pack(">HHHHHHHI", 2, 0x7C, load, init, play, 1, 1, 0)
-    return hdr + b"\0" * 0x60 + struct.pack(">HBBBB", 0x14, 0, 0, 0, 0) + code
+    return write_psid(load=load, init=init, play=play, image=code, flags=0x14)
 
 
 @native

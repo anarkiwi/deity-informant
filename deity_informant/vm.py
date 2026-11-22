@@ -8,7 +8,7 @@ frame play, and interrupt-driven cadence exactly as a real 6510 would.
 
 from __future__ import annotations
 
-from .lifter import STATUS_BITS, bus_only
+from .lifter import bus_only, pack_status, unpack_status
 
 # ---- P-Code -> Python source (per-op line; exec'd into a closure) ------------
 _BINOP = {
@@ -222,13 +222,10 @@ class PcodeVM:
         raise RuntimeError("JAM at %04X" % pc)
 
     def _status(self, brk=0):
-        r = self.reg
-        return sum(r[i] << s for i, s in STATUS_BITS) | 0x20 | ((brk or 0) << 4)
+        return pack_status(self.reg, 0x20 | (brk or 0) << 4)
 
     def _set_flags(self, p):
-        r = self.reg
-        for i, s in STATUS_BITS:
-            r[i] = (p >> s) & 1
+        unpack_status(p, self.reg)
 
     def _push(self, val):
         """Push one byte to the stack (driver synthetic frames); subclass-overridable seam."""

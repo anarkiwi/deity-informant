@@ -22,12 +22,13 @@ from tqdm import tqdm  # noqa: E402
 
 import liftsweep  # noqa: E402
 from deity_informant import cgen  # noqa: E402
-from deity_informant.lifter import OPS  # noqa: E402
+from jennings import isa  # noqa: E402
+from pysidtracker import parse_sid_header  # noqa: E402
 
 #: The I/O range the files are lifted with.
 VOLATILE = [(0xD000, 0xE000)]
-#: The addressing mode of a load by its opcode's low five bits.
-MODES = {0x11: "(zp),Y", 0x13: "(zp),Y", 0x01: "(zp,X)", 0x03: "(zp,X)"}
+#: The pointer loads' addressing modes as the rows name them.
+MODES = {"indy": "(zp),Y", "indx": "(zp,X)"}
 
 
 def _span(vals):
@@ -42,15 +43,15 @@ def rows(image, starts, facts, objects, ptr_sets):
     out = []
     for pc in sorted(starts):
         op = image[pc]
-        mode = MODES.get(op & 0x1F)
-        if mode is None or op & 0xE0 == 0x80:
+        mode = MODES.get(isa.mode(op))
+        if mode is None or isa.is_store(op):
             continue
         regs = facts.regs.get(pc)
         out.append(
             {
                 "pc": pc,
                 "mode": mode,
-                "zp": image[pc + 1],
+                "zp": image[(pc + 1) & 0xFFFF],
                 "y": _span(regs[2]) if regs and mode == "(zp),Y" else "-",
                 "reach": facts.reach.get(pc),
                 "proven": facts.proven.get(pc),
@@ -85,7 +86,7 @@ def accesses(image, starts, facts, machine, held):
     for pc in sorted(set(facts.bases) & set(starts)):
         _, _, blo, bhi = facts.bases[pc]
         proven = facts.proven.get(pc)
-        mn, mode = OPS.get(image[pc], ("???", "impl"))
+        mn, mode = isa.mnemonic(image[pc]), isa.mode(image[pc])
         if mode == "impl":
             continue
         out.append(
@@ -105,7 +106,7 @@ def survey(data, songs=None, every=False):
     called with ``A`` each of ``songs`` (default the header's count); with ``every`` those of
     every access of no one address of the other entries' lift (:func:`accesses`)."""
     image, entries, loaded, _ = liftsweep.program(data)
-    n = songs or int.from_bytes(data[14:16], "big") or 1
+    n = songs or parse_sid_header(data).songs or 1
     p, _ = cgen.lift(image, entries, VOLATILE, loaded=loaded, init=0, songs=range(n))
     if every:
         held = (loaded[0], max([loaded[1], *(b for a, b in p.written if a >= loaded[1])]))

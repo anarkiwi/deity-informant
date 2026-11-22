@@ -14,9 +14,10 @@ from pathlib import Path
 
 from jennings.devices.mpu6502 import MPU as _MPU
 from jennings.disassembler import Disassembler as _Disassembler
+from jennings.opcodes import ILLEGAL_OPCODES, MODE_LEN, OPCODES as OPS
 
 from .sleigh import build
-from .lifter import OPS, MODE_LEN, ILLEGAL_OPCODES, lift
+from .lifter import lift
 from .vm import PcodeVM, run_sub
 
 

@@ -22,8 +22,8 @@ from jennings.opcodes import MEM_MODES, OPCODES
 import vagrant_moses as vm
 from vagrant_moses import memmap as mm
 from vagrant_moses.bus import banking, port_read
-from vagrant_moses.c64 import poweron_ram
-from vagrant_moses.roms import BASIC_RUN, RomFetchError, load_roms, poweron_writes, rom_less
+from vagrant_moses.c64 import poweron_ram, psid_boot_image, psid_driver_tail, psid_iomap
+from vagrant_moses.roms import BASIC_RUN, load_roms, rom_less
 
 from .smc.classify import expected_reads, expected_writes, view
 from .smc.machine import (
@@ -36,6 +36,7 @@ from .smc.machine import (
     _Mem,
     weak,
 )
+from .lifter import unpack_status
 from .smc.oracle import writer_of
 from . import wholeprog
 from .trace import Facts
@@ -70,7 +71,6 @@ __all__ = [
     "boot",
     "Boot",
     "driver_io",
-    "iomap",
     "READ",
     "READ_BACK",
     "real_roms",
@@ -118,7 +118,6 @@ _STORED = {
     "STY": lambda a, x, y: y,
     "SAX": lambda a, x, y: a & x,
 }
-_FLAGS = ((8, 0), (9, 1), (10, 2), (11, 3), (13, 6), (14, 7))
 #: The native trace's address-form codes (``vagrant_moses.smc.Tracer``).
 FORMS = {
     m: i
@@ -184,12 +183,6 @@ def real_roms(**kwargs):
 #: BASIC's NEWSTT (per statement), sidplayfp's subtune hook in free BASIC ROM, its stop-key test
 #: and the SYS accumulator ``SAREG`` the hook loads with the song.
 NEWSTT, SUBTUNE_HOOK, STOP_TEST, SAREG = 0xA7AE, 0xBF53, 0xA82C, 0x030C
-#: The KERNAL IRQ's exit (acknowledge CIA 1, restore A/X/Y, RTI): the code of ``psiddrv.a65``'s
-#: ``irqret``, where sidplayfp points ``$0314`` for an RSID without the BASIC flag or a PSID.
-IRQ_EXIT = 0xEA7E
-#: The ROM-less KERNAL's reset entry, a JAM (``KernalRomBank::set``): ``psiddrv.a65``'s
-#: ``exception``, where sidplayfp points a PSID's BRK and NMI vectors.
-JAM = 0xFCE2
 
 
 class Boot(NamedTuple):
@@ -209,15 +202,6 @@ class Boot(NamedTuple):
         """The :meth:`~deity_informant.smc.machine.MachineOracle.run` arguments of this start."""
         return {"init": [self.init], "ports": {"init": self.port}, "io": self.io,
                 "start": self.start, "returns": self.returns}  # fmt: skip
-
-
-def iomap(addr):
-    """The $01 value sidplayfp banks in for PSID code at ``addr`` (``psiddrv::iomap``)."""
-    if addr < 0xA000:
-        return 0x37
-    if addr < 0xD000:
-        return 0x36
-    return 0x35 if addr >= 0xE000 else 0x34
 
 
 @lru_cache(maxsize=None)
@@ -262,22 +246,9 @@ def boot(image, load, end, init, song, ntsc=False, kind="RSID", cia=True, roms=N
       vagrant_moses.roms.RomFetchError: a ROM or the booted-KERNAL image is unavailable.
     """
     rsid = kind != "PSID"
-    img = bytearray(image)
-    img[:0x3FF] = bytes(0x3FF)
+    img = psid_boot_image(kind, load, end, init, ntsc, image, SENTINEL)
     if rsid:
-        runs = poweron_writes()
-        if runs is None:
-            raise RomFetchError("poweron: unavailable (offline, not cached)")
-        for addr, data in runs:
-            img[addr : addr + len(data)] = data
         roms = dict(roms or real_roms())
-    img[0x02A6] = 0 if ntsc else 1
-    vectors = () if kind == "BASIC" else (IRQ_EXIT,) if rsid else (IRQ_EXIT, JAM, JAM)
-    vec = b"".join(v.to_bytes(2, "little") for v in vectors)
-    img[mm.RAM_IRQ_VECTOR_LO : mm.RAM_IRQ_VECTOR_LO + len(vec)] = vec
-    for addr, v in ((0x2D, end), (0x2F, end), (0x31, end), (0xAC, load), (0xAE, end)):
-        img[addr : addr + 2] = (v & 0xFFFF).to_bytes(2, "little")
-    img[load:end] = image[load:end]
     if kind == "BASIC":
         basic = bytearray(roms[mm.BASIC_BASE])
         for addr, code in (
@@ -288,34 +259,17 @@ def boot(image, load, end, init, song, ntsc=False, kind="RSID", cia=True, roms=N
             basic[addr - mm.BASIC_BASE : addr - mm.BASIC_BASE + len(code)] = code
         roms[mm.BASIC_BASE] = bytes(basic)
         init = SUBTUNE_HOOK + 2
-    port = 0 if rsid else iomap(init)
+    port = 0 if rsid else psid_iomap(init)
     io, start = driver_io(ntsc, port, cia or rsid)
-    code, ret = _driver_tail(rsid, init)
-    img[SENTINEL - len(code) : SENTINEL] = code
+    code, ret = psid_driver_tail(kind, init, SENTINEL)
     if not rsid:
         init, start = SENTINEL - len(code), start - 5
     return Boot(img, roms, (init, song - 1), io, start, port or mm.BANK_DEFAULT, ret)
 
 
-def _driver_tail(rsid, init):
-    """``(code, returns)``: code before the sentinel standing in for ``psiddrv.a65``'s, cycle for
-    cycle, and where init returns in it. An RSID's init returns to ``lda``/``beq idle``; a PSID's
-    enters by ``sei``/``jmp init`` (``plp``'s I flag, ``jmp (initvec)``) and returns to
-    ``lda``/``beq``/``lda``/``beq run``/``cli``; each ``lda`` reads a byte of the code."""
-    s = SENTINEL
-    if rsid:
-        return bytes([0xAD, *(s - 1).to_bytes(2, "little"), 0xF0, 0x00]), s - 5
-    tail = bytes([0xAD, *(s - 11).to_bytes(2, "little"), 0xF0, 0x00])
-    tail += bytes([0xAD, *(s - 2).to_bytes(2, "little"), 0xF0, 0x00, 0x58])
-    return bytes([0x78, 0x4C, *init.to_bytes(2, "little")]) + tail, s - len(tail)
-
-
 def _reg(r):
     """The 16-entry register file of ``Program.call`` results from the machine's MPU."""
-    reg = [r.a, r.x, r.y, r.sp] + [0] * 12
-    for i, bit in _FLAGS:
-        reg[i] = (r.p >> bit) & 1
-    return reg
+    return unpack_status(r.p, [r.a, r.x, r.y, r.sp] + [0] * 12)
 
 
 def sentinel_for(image):
@@ -461,10 +415,7 @@ class CallRecords:
     def reg(self, k):
         """Record ``k``'s ``Program.call`` register file."""
         a, x, y, sp, p = (int(v) for v in self.meta[k, 2:])
-        reg = [a, x, y, sp] + [0] * 12
-        for i, bit in _FLAGS:
-            reg[i] = (p >> bit) & 1
-        return reg
+        return unpack_status(p, [a, x, y, sp] + [0] * 12)
 
     def slice(self, lo, hi):
         """The snaps of records ``lo`` to ``hi``, RAM as each record left it."""
@@ -617,11 +568,11 @@ class _Host(MachineOracle):
         mn = OPCODES[fetched[0]][0]
         w = writer_of(fetched[0])
         store = w is not None and w[0] == "cpu" and not w[2]
-        self._page1(pc, expected_reads(mem, pc, x, y, sp, store))
+        self._page1(pc, expected_reads(mem, pc, x, y, sp, store, a))
         if mn in _PUSHES:
             addrs = [0x100 | ((sp - k) & 0xFF) for k in range(_PUSHES[mn])]
         elif w is not None:
-            addrs = expected_writes(mem, pc, x, y, sp)
+            addrs = expected_writes(mem, pc, x, y, sp, a)
             self._page1(pc, addrs)
         else:
             return

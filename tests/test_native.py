@@ -5,7 +5,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from deity_informant import OPS, PcodeVM, lift
+from jennings.opcodes import OPCODES as OPS
+
+from deity_informant import PcodeVM, lift
 from deity_informant.hello_world import EXPECTED, ORG, PROGRAM
 
 native = pytest.importorskip("deity_informant._native")

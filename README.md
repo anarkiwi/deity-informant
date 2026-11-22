@@ -26,7 +26,7 @@ verified by replaying its I/O writes against the reference interpreter. See
 
 ## Components
 
-- `deity_informant/lifter.py` — `lift(mem, pc)` -> `{"ops", "len", "cyc", "pen", "ctrl", "prov", "stk"}` raw P-Code; `template(op)` -> `Template(ops, prov, len, cyc, ctrl, pen)`, one opcode's P-Code with its operand-bound constants; `CYCLETIME`/`EXTRACYCLES` tables.
+- `deity_informant/lifter.py` — `lift(mem, pc)` -> `{"ops", "len", "cyc", "pen", "ctrl", "prov", "stk"}` raw P-Code; `template(op)` -> `Template(ops, prov, len, cyc, ctrl, pen)`, one opcode's P-Code with its operand-bound constants; `pack_status`/`unpack_status` between the register file's flags and P. Cycle tables are `jennings.opcodes.CYCLES`/`EXTRA`.
 - `deity_informant/vm.py` — `PcodeVM` interpreter over a flat 64 KiB image (SID/VIC/CIA volatile IO modeled); `run_sub`/`run_irq`/`run_irq_driven` drivers (handler fixed, or resolved per entry via `vector(addr)`). `PcodeVM.dummies` (default set) makes the throw-away reads and a read-modify-write's dummy write; a machine that places them on its own cycles (the jennings MPU under vagrant-moses' Python backend) clears it, so the bus sees each once.
 - `deity_informant/cli.py` — `deity-informant` console script.
 - `deity_informant/sleigh/` — SLEIGH module (`languages/6510.slaspec` = stock 6502 + `6510_illegal.sinc`), `smc.py` (SMC context constructors), `build.py`, and `pypcode_context()` (a loaded pypcode `Context` for the 6510).

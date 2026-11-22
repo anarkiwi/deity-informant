@@ -14,6 +14,7 @@ import sys
 import time
 from pathlib import Path
 
+from pysidtracker.image import SidImage
 from tqdm import tqdm
 
 import cmetrics
@@ -141,15 +142,9 @@ def replay(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
 
 def psid(data):
     """``(load, init, play, start song, body)`` of a PSID/RSID file."""
-
-    def word(i):
-        return int.from_bytes(data[i : i + 2], "big")
-
-    body = data[word(6) :]
-    load = word(8)
-    if not load:
-        load, body = body[0] | body[1] << 8, body[2:]
-    return load, word(10), word(12), word(16), body
+    tune = SidImage.from_sid(data)
+    h = tune.header
+    return tune.load, h.init_address, h.play_address, h.start_song, tune.image
 
 
 def parse_calls(text, entries):

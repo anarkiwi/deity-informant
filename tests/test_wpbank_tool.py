@@ -1,11 +1,11 @@
 """tools/wpbank.py: row selection, the call comparison, the check loop and the tune runner."""
 
 import json
-import struct
 import sys
 from pathlib import Path
 
 import pytest
+from pysidtracker.header import write_psid
 
 pytest.importorskip("vagrant_moses")
 pytest.importorskip("pebble")
@@ -24,8 +24,7 @@ CODE = bytes.fromhex("60a9358501ad00e08d00d4ee00e060")
 
 
 def sid(magic=b"PSID", play=0x1001):
-    hdr = magic + struct.pack(">HHHHHHHI", 2, 0x7C, 0x1000, 0x1000, play, 1, 1, 0)
-    return hdr + bytes(0x7C - len(hdr)) + CODE
+    return write_psid(kind=magic.decode(), load=0x1000, init=0x1000, play=play, image=CODE)
 
 
 def record(halt="return", log=(), reg=None, ram=None):

@@ -17,6 +17,7 @@ from pathlib import Path
 
 from pebble import ProcessPool
 from tqdm import tqdm
+from vagrant_moses.c64 import psid_iomap
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -26,7 +27,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 from deity_informant.smc.asm import assemble  # noqa: E402
 from deity_informant.smc.machine import MachineOracle  # noqa: E402
 from deity_informant.smc.synthm import witnesses  # noqa: E402
-from smclabel import iomap, sidfile  # noqa: E402 pylint: disable=wrong-import-order
+from smclabel import sidfile  # noqa: E402 pylint: disable=wrong-import-order
 
 BACKENDS = ("python", "native")
 
@@ -62,7 +63,7 @@ def song_case(path, frames, max_cycles):
     kw = {"init": [(init, song)], "call_cycles": max_cycles}
     if kind == "PSID" and play:
         kw |= {"calls": [(play, song)] * frames}
-        kw |= {"ports": {"init": iomap(init), "call": iomap(play)}}
+        kw |= {"ports": {"init": psid_iomap(init), "call": psid_iomap(play)}}
     else:
         kw |= {"calls": [], "frames": frames, "irq_setup": True, "index_frames": True}
     return str(path), img, kw, frames

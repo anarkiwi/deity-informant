@@ -3,13 +3,13 @@
 import gc
 import hashlib
 import json
-import struct
 import sys
 import time
 from collections import Counter
 from pathlib import Path
 
 import pytest
+from pysidtracker.header import write_psid
 
 from deity_informant import NATIVE
 from deity_informant.smc import machine
@@ -30,9 +30,17 @@ IRQ = bytes.fromhex("78a9108d1403a9108d150358" "60eaeaea" "ad0ddc8d00d468a868aa6
 
 # pylint: disable-next=too-many-arguments,too-many-positional-arguments
 def sid(code, play, init=0x1000, magic=b"PSID", songs=1, speed=0, flags=0x14, load=0x1000):
-    hdr = magic + struct.pack(">HHHHHHHI", 2, 0x7C, load, init, play, songs, 1, speed)
-    hdr += b"\0" * 0x60 + struct.pack(">HBBBB", flags, 0, 0, 0, 0)
-    return hdr + code
+    kind = magic.decode()
+    return write_psid(
+        kind=kind,
+        load=load,
+        init=init,
+        play=play,
+        image=code,
+        songs=songs,
+        speed=speed,
+        flags=flags,
+    )
 
 
 def tree(tmp_path, basic=False):
@@ -135,10 +143,7 @@ def test_timeout_and_errors(tmp_path, monkeypatch):
     assert "error" in wpcorpus.run_song(str(root / "missing.sid"), {"path": "m", "song": 1}, 9)[0]
 
 
-def test_parsers(tmp_path):
-    db = tmp_path / "s.md5"
-    db.write_text("[Database]\n; /x.sid\nabc=1:02.5 0:03\n")
-    assert wpcorpus.songlengths(db) == {"abc": [62.5, 3.0]}
+def test_parsers():
     h = wpcorpus.header(sid(FLAT, 0x100B))
     assert (h["kind"], h["load"], h["play"], h["songs"], h["extra_sids"]) == (
         "PSID",
@@ -219,18 +224,12 @@ def test_basic_rsid_redo(tmp_path, real):  # pylint: disable=unused-argument
     assert rows_of(out)["basic.sid", 2]["irq"] == rows["basic.sid", 2]["irq"]
 
 
-def test_paths_and_sid_model(tmp_path):
+def test_paths(tmp_path):
     root, out = tree(tmp_path / "hvsc"), tmp_path / "out"
     (tmp_path / "paths").write_text("banked.sid\nbanked.sid\n")
     args = [str(root), "--out", str(out), "--jobs", "1", "--paths", str(tmp_path / "paths")]
     assert wpcorpus.main(args + ["--default-length", "0.5"]) == 0
     assert set(rows_of(out)) == {("banked.sid", 1)}
-    assert [wpcorpus.sid_model({"sid_models": [m, 0, 0]}) for m in range(4)] == [
-        "6581",
-        "6581",
-        "8580",
-        "6581",
-    ]
 
 
 def test_flat_evidence():
@@ -278,7 +277,7 @@ def _live():
 
 def test_songs_in_one_worker_leave_no_machine_behind(tmp_path):
     root = tree(tmp_path / "hvsc")
-    wpcorpus._worker(str(root / "DOCUMENTS" / "Songlengths.md5"))  # pylint: disable=W0212
+    wpcorpus._worker(str(root))  # pylint: disable=W0212
     songs = [(n, r) for n in ("flat.sid", "banked.sid", "irq.sid")
              for r in wpcorpus.plan(str(root / n), n, 0.5, 20_000)]  # fmt: skip
     before, rows = _live(), []
@@ -312,7 +311,7 @@ def test_irq_skip():
 def test_frame_run_reports_its_budget(tmp_path, monkeypatch):
     monkeypatch.setattr(machine, "WINDOW", 50_000)
     root = tree(tmp_path / "hvsc")
-    wpcorpus._worker(str(root / "DOCUMENTS" / "Songlengths.md5"))  # pylint: disable=W0212
+    wpcorpus._worker(str(root))  # pylint: disable=W0212
     row = wpcorpus.plan(str(root / "irq.sid"), "irq.sid", 60, 20_000)[0]
     full, _ = wpcorpus.run_song(str(root / "irq.sid"), row, 20_000, 10)
     assert full["outcome"] == "exact" and full["budget"] == "none"

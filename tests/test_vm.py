@@ -183,7 +183,7 @@ def test_tas_sets_sp_and_stores():
 def test_every_opcode_lifts():
     # the table is dense (all 256 NMOS bytes defined); lifting any byte must
     # produce a record, never a silent skip. Unknown bytes are a hard error.
-    assert len(P.OPS) == 256
+    assert len(P.lifter.OPCODES) == 256
     mem = bytearray(0x10000)
     for op in range(256):
         mem[0x1000] = op

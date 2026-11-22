@@ -19,7 +19,6 @@ from importlib.metadata import PackageNotFoundError, version
 
 from .lifter import (
     OPS,
-    MODE_LEN,
     MEM_MODES,
     ILLEGAL_OPCODES,
     MAGIC,
@@ -49,7 +48,6 @@ except PackageNotFoundError:  # pragma: no cover - source tree without install m
 
 __all__ = [
     "OPS",
-    "MODE_LEN",
     "MEM_MODES",
     "ILLEGAL_OPCODES",
     "MAGIC",

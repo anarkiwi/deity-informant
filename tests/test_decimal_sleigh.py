@@ -5,7 +5,7 @@ import re
 import numpy as np
 import pytest
 
-import decimal_ref as ref
+from jennings import testing as ref
 from pcode_eval import Machine
 from deity_informant.sleigh import build
 

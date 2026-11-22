@@ -14,6 +14,7 @@ from tqdm import tqdm
 
 from jennings.devices.mpu6502 import NativeMPU
 from jennings.memory import NativeMemory
+from jennings.isa import length, pointer_bytes
 from jennings.opcodes import OPCODES
 
 from . import devices, masks, polling, wholeprog
@@ -393,11 +394,11 @@ class Run:  # pylint: disable=too-many-instance-attributes
                 self.dev.write(x, v, self._at)
 
     def _base(self, mode, ops):
-        """The tags of the bytes holding the base of the access of an instruction in ``mode``
-        with operand bytes at ``ops``, before it runs: its zero-page pointer's or operand's."""
-        if mode in ("indx", "indy"):
-            zp = (self.mem[ops[0]] + (self.mpu.x if mode == "indx" else 0)) & 0xFF
-            return [self._tag(a, (None, a)) for a in (zp, (zp + 1) & 0xFF)]
+        """The tags of the bytes holding the base of the access of the instruction at the PC in
+        ``mode`` with operand bytes at ``ops``, before it runs: its pointer's or operand's."""
+        ptr = pointer_bytes(self.mem, self.mpu.pc, self.mpu.x)
+        if ptr is not None:
+            return [self._tag(a, (None, a)) for a in ptr]
         return [self.tags.get(a) for a in ops] if mode[:3] == "abs" else []
 
     def step(self):  # pylint: disable=too-many-branches
@@ -405,8 +406,7 @@ class Run:  # pylint: disable=too-many-instance-attributes
         mpu, mem, reg = self.mpu, self.mem, self.reg
         pc, sp = mpu.pc, mpu.sp
         name, mode = OPCODES[mem[pc]]
-        n = 2 if mode[:3] == "abs" else 0 if mode in ("impl", "acc") else 1
-        ops = [(pc + 1 + i) & 0xFFFF for i in range(n)]
+        ops = [(pc + 1 + i) & 0xFFFF for i in range(length(mem[pc]) - 1)]
         imm = self.tags.get(ops[0]) if mode == "imm" else None
         mtag, tags = None, self._base(mode, ops) if mode in _MEM else []
         self.acc, self._answered = [], set()

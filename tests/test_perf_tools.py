@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from pysidtracker.header import write_psid
 import zstandard
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
@@ -81,9 +82,7 @@ def test_factsequiv(tmp_path, capsys):
     import factsequiv  # pylint: disable=import-outside-toplevel
 
     code = bytes.fromhex("a9018d00d4a9028d01d460")  # LDA #1; STA $D400; LDA #2; STA $D401; RTS
-    hdr = b"PSID" + (2).to_bytes(2, "big") + (0x7C).to_bytes(2, "big") + bytes(2)
-    hdr += b"".join(v.to_bytes(2, "big") for v in (0x1000, 0x1000, 1, 1)) + bytes(4)
-    data = hdr + bytes(0x7C - len(hdr)) + (0x1000).to_bytes(2, "little") + code
+    data = write_psid(load=0x1000, init=0x1000, play=0x1000, image=code, embed_load=True)
     (tmp_path / "t.sid").write_bytes(data)
     img = factsequiv.wpcorpus.sidfile(data)[1]
     facts = trace.collect(img, lambda s: s.call(0x1000), 10_000).to_dict()

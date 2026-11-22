@@ -1,68 +1,12 @@
-"""Synthetic 6502 programs for whole-program lifting tests, assembled with jennings.
+"""Synthetic 6502 programs for whole-program lifting tests, assembled by ``smc.asm``.
 
 Code lives at $1000, data at $1800, generated code at $3000; ``IO`` is an arbitrary test I/O
 page treated as volatile. Each program is ``(source, entries, calls)``.
 """
 
-import re
-
-from jennings.assembler import Assembler
-from jennings.devices.mpu6502 import MPU
+from deity_informant.smc.asm import assemble, hi, lo  # pylint: disable=unused-import
 
 IO = (0xC000, 0xC100)
-_ASM = Assembler(MPU())
-
-
-def lo(v):
-    return v & 0xFF
-
-
-def hi(v):
-    return v >> 8 & 0xFF
-
-
-def assemble(src, org=0x1000):
-    """Two-pass assembly of ``label:``, ``.byte``, ``.org`` and instructions whose operands
-    may hold ``{expr}`` over labels; the image and the labels."""
-    lines = [ln.split(";")[0].strip() for ln in src.strip().splitlines()]
-    labels = {}
-    for final in (False, True):
-        img = bytearray(0x10000)
-        pc = org
-        for ln in lines:
-            m = re.match(r"(\w+):\s*(.*)", ln)
-            if m:
-                labels[m.group(1)] = pc
-                ln = m.group(2)
-            if not ln:
-                continue
-
-            def sub(mt, final=final):
-                v = eval(mt.group(2), {"lo": lo, "hi": hi}, labels) if final else 0x1234
-                return mt.group(1) + ("$%02X" % (v & 0xFF) if mt.group(1) == "#" else "$%04X" % v)
-
-            if ln.startswith(".org"):
-                pc = int(ln.split()[1].lstrip("$"), 16)
-                continue
-            if ln.startswith(".byte"):
-                vals = [
-                    eval(x.replace("$", "0x"), {"lo": lo, "hi": hi}, labels) if final else 0
-                    for x in ln[5:].split(",")
-                ]
-                img[pc : pc + len(vals)] = bytes(v & 0xFF for v in vals)
-                pc += len(vals)
-                continue
-            parts = ln.split(None, 1)
-            if len(parts) == 2:
-                m2 = re.match(r"^(#)(.+)()$|^(\(?)([^,)]+)(.*)$", parts[1])
-                g = [x for x in m2.groups() if x is not None] if m2 else []
-                if g and g[1] != "A" and g[1][0] not in "${":
-                    ln = "%s %s{%s}%s" % (parts[0], g[0], g[1], g[2])
-            text = re.sub(r"(#?)\{([^}]*)\}", sub, ln)
-            b = _ASM.assemble(text, pc)
-            img[pc : pc + len(b)] = bytes(b)
-            pc += len(b)
-    return img, labels
 
 
 PATCH = """

@@ -17,12 +17,12 @@ from dataclasses import dataclass, field, replace
 
 import networkx as nx
 import numpy as np
+from jennings.opcodes import MODE_LEN, OPCODES as OPS
 from pycparser import c_ast
 from wayward_eagle.c import prototypes, reduce_function
 from wayward_eagle.c import stmt as cs
 
 from .. import masks
-from ..lifter import MODE_LEN, OPS
 from . import llvmopt, mlir
 from .mlir import Op, _types
 from . import cnodes as cn, marks, recompute, regions, ssa

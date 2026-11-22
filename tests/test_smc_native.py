@@ -1,10 +1,10 @@
 """The machine oracle's native backend (vagrant-moses' SMC recorder) against the Python one."""
 
-import struct
 import sys
 from pathlib import Path
 
 import pytest
+from pysidtracker.header import write_psid
 
 from deity_informant.smc import machine
 from deity_informant.smc.machine import MachineOracle, native_cells
@@ -28,8 +28,9 @@ def test_native_labels_the_corpus_as_the_classifier(case):
 
 
 def _sid(code, init, play, magic=b"PSID", flags=0x14):
-    hdr = magic + struct.pack(">HHHHHHHI", 2, 0x7C, 0x1000, init, play, 1, 1, 0)
-    return hdr + b"\0" * 0x60 + struct.pack(">HBBBB", flags, 0, 0, 0, 0) + code
+    return write_psid(
+        kind=magic.decode(), load=0x1000, init=init, play=play, image=code, flags=flags
+    )
 
 
 @needs_recorder

@@ -40,10 +40,15 @@ def test_bdiff_exact_and_mismatch(tune, capsys):
     assert d["machine"][1] == (0xD400, 0, False) and d["lift"][1] == (0xD405, 0, False)
 
 
-def test_mtrace_departure(tune, capsys):
+def test_mtrace_departure(tune, capsys, monkeypatch):
     assert mtrace.main(["t.sid", "1", "1", "--hvsc", str(tune)]) == 0
     assert "no departure" in capsys.readouterr().out
     s = bdiff.session((tune / "t.sid").read_bytes(), 1, 2, mtrace.stepper(1))
     s["records"][1]["log"] = [(0xD41B, 1, False)]
-    lo, steps, ref, _ = mtrace.departure(s, 1)
+    d = mtrace.departure(s, 1)
+    lo, steps, ref, _ = d
     assert steps[lo][0] == 0x1008 and ref(lo + 1)["pc"] == 0x100D
+    monkeypatch.setattr(mtrace, "departure", lambda *_: d)
+    assert mtrace.main(["t.sid", "1", "1", "--hvsc", str(tune)]) == 1
+    line = next(x for x in capsys.readouterr().out.splitlines() if x.startswith(f"{lo} "))
+    assert "machine pc 1008" in line and line.endswith("BNE $100d")

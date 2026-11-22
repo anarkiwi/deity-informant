@@ -25,10 +25,11 @@ allows (`/scratch`); the tools mount the inputs' common parent read-only and wri
 
 ## SIDId
 
-`python tools/sidid.py PATH... [--json OUT]` prints `path<TAB>players` for every `.sid` named or
-found under a directory; `sidid.identify(paths)` returns `{path: [players]}`. All matching
-signatures are listed (`sidid -m`), SIDId's own pick first; versioned sub-signatures keep their
-`sidid.cfg` names (`(JCH_NewPlayer_V17)`), and an unidentified file has no names. Tunes of one
+`python tools/sidid.py PATH... [--json OUT] [--cfg CFG] [--jobs J]` prints `path<TAB>players` for
+every `.sid` named or found under a directory; `sidid.identify(paths)` returns `{path: [players]}`.
+It runs `pysidtracker.sidid` (SIDId's semantics over its bundled `sidid.cfg`, no Docker). All
+matching signatures are listed (`sidid -m`), SIDId's own pick first; versioned sub-signatures keep
+their `sidid.cfg` names (`(JCH_NewPlayer_V17)`), and an unidentified file has no names. Tunes of one
 player should yield one layout modulo relocation.
 
 ## sidreloc

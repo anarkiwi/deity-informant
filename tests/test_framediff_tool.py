@@ -1,11 +1,11 @@
 """tools/framediff.py: where a lifted interrupt frame differs from the machine's."""
 
 import hashlib
-import struct
 import sys
 from pathlib import Path
 
 import pytest
+from pysidtracker.header import write_psid
 
 from deity_informant import NATIVE, c64
 from deity_informant.smc.machine import core
@@ -27,9 +27,9 @@ NMI = bytes.fromhex("48 ad0ddd ad0003 8d18d4 68 40")
 
 
 def tree(root, code):
-    hdr = b"RSID" + struct.pack(">HHHHHHHI", 2, 0x7C, 0, 0x1000, 0, 1, 1, 0)
-    hdr += bytes(0x60) + struct.pack(">HBBBB", 0x4, 0, 0, 0, 0)
-    data = hdr + b"\x00\x10" + code
+    data = write_psid(
+        kind="RSID", load=0x1000, init=0x1000, play=0, image=code, flags=0x4, embed_load=True
+    )
     (root / "DOCUMENTS").mkdir(parents=True)
     (root / "x.sid").write_bytes(data)
     md5 = hashlib.md5(data).hexdigest()
