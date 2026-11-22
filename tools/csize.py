@@ -105,7 +105,7 @@ def original_bytes(image, org, pcs):
 
 
 def _placed(org, body):
-    """64 KiB of zeros with ``body`` at ``org``."""
+    """The address space, zeros but ``body`` at ``org``."""
     mem = np.zeros(0x10000, np.uint8)
     mem[org : org + len(body)] = np.frombuffer(bytes(body), np.uint8)[: 0x10000 - org]
     return mem

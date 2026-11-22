@@ -10,7 +10,7 @@ PC = 0x0800  # a code address clear of zero page / I/O for single-step fuzzing
 
 
 def image(prog, org=0x1000, data=None):
-    """A zeroed 64 KiB image with ``prog`` at ``org`` and optional ``data`` cells."""
+    """A zeroed address-space image with ``prog`` at ``org`` and optional ``data`` cells."""
     m = bytearray(0x10000)
     m[org : org + len(prog)] = prog
     for a, v in (data or {}).items():
