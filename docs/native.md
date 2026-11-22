@@ -72,13 +72,14 @@ patches only the `BINDS` positions;
 
 ## Generation
 
-`tools/gen_pcode.py` lifts each opcode under two sentinel sets in which the operand bytes and
-the zero-page pointer they name all differ. Ops, outputs, non-constant inputs, length,
-cycles and control/penalty kinds must be identical between the lifts; a constant that
-differs must have a `prov` entry whose slot reproduces it in both lifts, else generation
-fails. Branch and jump targets and penalty bases are checked against the operands. The
-`(zp),Y` pointer unique is the single unique holding the loaded pointer after executing each
-lift. `--check` (CI, and `tests/test_gen_pcode.py`) fails if the checked-in file differs.
+`tools/gen_pcode.py` emits `deity_informant.lifter.template(op)` for every opcode.
+`template` lifts the opcode under two sentinel sets in which the operand bytes and the
+zero-page pointer they name all differ. Ops, outputs, non-constant inputs, length, cycles
+and control/penalty kinds must be identical between the lifts; a constant that differs must
+have a `prov` entry whose slot reproduces it in both lifts, else it raises. Branch and jump
+targets and penalty bases are checked against the operands. The `(zp),Y` pointer unique is
+the 2-byte `INT_OR` word that `ZEXT(Y)` is added to.
+`--check` (CI, and `tests/test_gen_pcode.py`) fails if the checked-in file differs.
 
 ## Interpreter
 
