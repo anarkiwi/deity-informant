@@ -137,7 +137,8 @@ Where sidplayfp differs from real hardware or the spec it is followed: the SID v
 driver's IRQ exit, and a VBI PSID's CIA timer left stopped. Not reproduced: the driver's own
 bytes in RAM, its STOP vector ($0328) and NEWSTT trap for an RSID without the BASIC flag.
 `tools/sidcmp.py` compares the SID register changes of interrupt-driven songs with sidplayfp
-(the `anarkiwi/sidtrace` image, with the same ROMs).
+(the `anarkiwi/sidtrace` image through `pysidtracker.oracle.run_sidtrace`, with the same ROMs:
+an RSID's real ROMs mounted by its `roms_dir`).
 
 Labelling goes through `label(oracle, ...)`; it uses vagrant-moses' native SMC recorder when
 installed (`label_backend` `native`), else the Python classifier.

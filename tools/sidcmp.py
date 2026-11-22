@@ -9,15 +9,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 
 import vagrant_moses as vm
 from pysidtracker.gridcmp import change_offsets
 from pysidtracker.loader import psid_image
-from pysidtracker.oracle import read_sidtrace, register_changes
+from pysidtracker.oracle import read_sidtrace, register_changes, run_sidtrace
 from pysidtracker.registers import sid_model_for_flags
 from tqdm import tqdm
 from vagrant_moses import memmap as mm
@@ -68,14 +66,10 @@ def _roms(work):
 def sidtrace_changes(path, song, seconds, work, roms=True):
     """sidplayfp's SID register changes of ``song`` over ``seconds`` on the real ``roms`` (else
     its ROM-less set), cached in ``work``."""
-    tune = work / f"{Path(path).stem}.sid"
-    out = work / f"{tune.stem}_{song}_{seconds}{'' if roms else '_romless'}.csv.zst"
+    out = work / f"{Path(path).stem}_{song}_{seconds}{'' if roms else '_romless'}.csv.zst"
     if not out.exists():
-        shutil.copyfile(path, tune)
-        mount = ["-v", f"{_roms(work).resolve()}:/root/.local/share/sidplayfp:ro"] if roms else []
-        cmd = ["docker", "run", "--rm", "-v", f"{work.resolve()}:/work", *mount, IMAGE,
-               out.name, tune.name, f"-o{song}", f"-t{seconds}"]  # fmt: skip
-        subprocess.run(cmd, check=True, capture_output=True, timeout=600)
+        roms_dir = _roms(work) if roms else None
+        run_sidtrace(path, out, seconds=seconds, song=song, image=IMAGE, roms_dir=roms_dir)
     return register_changes(read_sidtrace(out))
 
 
