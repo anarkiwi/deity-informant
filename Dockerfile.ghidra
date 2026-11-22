@@ -22,7 +22,7 @@ RUN curl -fsSL -o /tmp/ghidra.zip "$GHIDRA_URL" \
 
 FROM eclipse-temurin:21-jdk AS run
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 python3-pip python3-dev g++ make \
+    && apt-get install -y --no-install-recommends python3 python3-pip python3-dev g++ make patch \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=ghidra /opt/ghidra /opt/ghidra
 ENV GHIDRA_INSTALL_DIR=/opt/ghidra
