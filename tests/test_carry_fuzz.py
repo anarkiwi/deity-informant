@@ -9,9 +9,8 @@ import random
 
 import pytest
 
-from test_wholeprog import differential, facts_for
-from wholeprog_progs import IO, assemble
-from deity_informant import NATIVE, wholeprog
+from test_wholeprog import differential, lift_entry
+from deity_informant import NATIVE
 
 pytestmark = pytest.mark.skipif(not NATIVE, reason="needs the native extension")
 
@@ -149,11 +148,9 @@ def _mem(img, words):
 @pytest.mark.parametrize("seed", [*range(80), 745, 1491, 2551, 4236, 2054, 292, 334])
 def test_random_carry_programs_are_exact(seed, cycles):
     src, calls = program(seed)
-    img, labels = assemble(src)
-    pcs = [labels["entry"]]
-    first = _mem(img, calls[0][2])
-    prog = wholeprog.lift(
-        first, pcs, [IO], facts_for(first, pcs, [(0, calls[0][0])]), cycles=cycles
+    first = [(0, calls[0][0])]
+    img, pcs, prog, _ = lift_entry(
+        src, first, prepare=lambda m: _mem(m, calls[0][2]), cycles=cycles
     )
     if src.startswith("entry:\n        SED") and "CLD" not in src[: src.rindex("CLD")]:
         assert prog.stats["fused_chains"] == 0
@@ -185,9 +182,7 @@ s:      ASL $50
         STA $1828,X
         RTS
 """
-    img, labels = assemble(src)
-    pcs = [labels["entry"]]
-    prog = wholeprog.lift(img, pcs, [IO], facts_for(img, pcs, [(0, 0)]))
+    img, pcs, prog, _ = lift_entry(src, [(0, 0)])
     chains = prog.chains
     assert prog.stats["chains"] == len(chains) == 4
     assert prog.stats["fused_chains"] == 3

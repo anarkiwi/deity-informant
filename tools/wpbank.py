@@ -10,12 +10,8 @@ import json
 import os
 import sys
 from collections import Counter
-from concurrent.futures import TimeoutError as FutureTimeout
-from concurrent.futures import as_completed
 from pathlib import Path
 
-from pebble import ProcessPool
-from tqdm import tqdm
 from vagrant_moses.c64 import psid_iomap
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -24,13 +20,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # pylint: disable=wrong-import-position
 from deity_informant import c64  # noqa: E402
 from deity_informant.smc.expect import lift_reason, machine_cell  # noqa: E402
-from smclabel import _parse, sidfile  # noqa: E402
+from deity_informant.smc.outcomes import parse_cell  # noqa: E402
+from smclabel import pool_rows, sidfile  # noqa: E402 pylint: disable=wrong-import-order
 
 
 def selected(row):
     """Whether an smclabel row is checked: a PSID needing banking, or any RSID whose cells are
     not all KERNAL-vector fetches."""
-    cells = [_parse(s) for s in row.get("cells", ())]
+    cells = [parse_cell(s) for s in row.get("cells", ())]
     if row.get("kind") == "RSID":
         return any(c.role != "kernal_vector" for c in cells)
     return any(machine_cell(c) and lift_reason(c) is None for c in cells)
@@ -68,6 +65,10 @@ def _job(a):
         return {"tune": str(a[0]), "error": repr(e)[:200]}
 
 
+def _failed(job, error):
+    return {"tune": str(job[0]), "error": error}
+
+
 def summary(rows):
     """Counts of checked, exact and failing tunes, and the inexact tunes."""
     ok = [r for r in rows if "exact" in r]
@@ -100,25 +101,8 @@ def main(argv=None):
     lines = Path(args.rows).read_text(encoding="utf-8").splitlines()
     paths = [r["path"] for r in map(json.loads, filter(None, lines)) if selected(r)]
     roms = c64.real_roms() if args.real_roms else None
-    out = open(args.out, "w", encoding="utf-8") if args.out else None  # noqa: SIM115
-    rows = []
-    with ProcessPool(max_workers=args.jobs) as pool:
-        futs = {
-            pool.schedule(
-                _job, args=((p, args.calls, args.max_cycles, roms),), timeout=args.timeout
-            ): p
-            for p in paths
-        }
-        for f in tqdm(as_completed(futs), total=len(paths), desc="wpbank", unit="tune"):
-            try:
-                r = f.result()
-            except FutureTimeout:
-                r = {"tune": str(futs[f]), "error": "timeout"}
-            rows.append(r)
-            if out:
-                out.write(json.dumps(r) + "\n")
-    if out:
-        out.close()
+    jobs = [(p, args.calls, args.max_cycles, roms) for p in paths]
+    rows = pool_rows(_job, jobs, args.jobs, args.timeout, "wpbank", _failed, args.out)
     print(json.dumps(summary(rows), indent=1))
     return 0
 

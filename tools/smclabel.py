@@ -15,6 +15,8 @@ import os
 import random
 import sys
 from collections import Counter
+from concurrent.futures import TimeoutError as FutureTimeout
+from concurrent.futures import as_completed
 from pathlib import Path
 
 from pebble import ProcessPool
@@ -31,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # pylint: disable=wrong-import-position
 from deity_informant.smc.expect import lift_reason  # noqa: E402
 from deity_informant.smc.machine import MachineOracle, core  # noqa: E402
-from deity_informant.smc.space import Cell  # noqa: E402
+from deity_informant.smc.outcomes import parse_cell  # noqa: E402
 
 
 def sidfile(data):
@@ -50,10 +52,49 @@ def sidfile(data):
     return h.magic.decode(), img, h.init_address or tune.load, h.play_address, max(h.songs, 1)
 
 
-def _parse(sid):
-    writer, channel, role, timing, mapping = sid.split(".")
-    rmw = channel.endswith("_rmw")
-    return Cell(writer, channel[:-4] if rmw else channel, rmw, role, timing, mapping)
+def sweep_parser(doc, timeout, timeout_help="wall-clock seconds per tune"):
+    """The arguments of a sweep over the tunes under ``root``: ``--sample``, ``--seed``,
+    ``--jobs`` and ``--timeout`` (default ``timeout``)."""
+    ap = argparse.ArgumentParser(description=doc.splitlines()[0])
+    ap.add_argument("root")
+    ap.add_argument("--sample", type=int, default=0, help="random tunes (0: all)")
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--jobs", type=int, default=os.cpu_count())
+    ap.add_argument("--timeout", type=float, default=timeout, help=timeout_help)
+    return ap
+
+
+def tunes(root, sample=0, seed=0):
+    """The ``.sid`` files under ``root``, sorted, or a ``seed``-ed random ``sample`` of them."""
+    paths = sorted(Path(root).rglob("*.sid"))
+    return random.Random(seed).sample(paths, min(sample, len(paths))) if sample else paths
+
+
+def pool_rows(fn, jobs, workers, timeout, desc, failed, out=None):
+    """The rows ``fn(job)`` of ``jobs`` in a pool of ``workers`` processes, each job at most
+    ``timeout`` seconds, in completion order with progress, each also written to the JSON
+    lines file ``out`` when given; a job that times out or raises gives
+    ``failed(job, "timeout" or the exception's repr)``."""
+    rows = []
+    with contextlib.ExitStack() as stack, ProcessPool(max_workers=workers) as pool:
+        f = stack.enter_context(open(out, "w", encoding="utf-8")) if out else None
+        futs = {pool.schedule(fn, (j,), timeout=timeout): j for j in jobs}
+        for fut in tqdm(as_completed(futs), total=len(futs), desc=desc, unit="tune"):
+            try:
+                row = fut.result()
+            except FutureTimeout:
+                row = failed(futs[fut], "timeout")
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                row = failed(futs[fut], repr(exc)[:200])
+            rows.append(row)
+            if f:
+                f.write(json.dumps(row) + "\n")
+    return rows
+
+
+def failed_path(job, error):
+    """The :func:`pool_rows` row of a failed job on the tune ``job[0]``."""
+    return {"path": str(job[0]), "error": error}
 
 
 def label_tune(path, frames, max_cycles):
@@ -103,7 +144,7 @@ def summary(rows):
         reasons = set()
         for sid in r["cells"]:
             per_cell[sid] += 1
-            reasons.add(lift_reason(_parse(sid)) or "lift-exact")
+            reasons.add(lift_reason(parse_cell(sid)) or "lift-exact")
         for reason in reasons:
             per_reason[reason] += 1
     return {
@@ -118,39 +159,16 @@ def summary(rows):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("root")
-    ap.add_argument("--sample", type=int, default=0, help="random tunes (0: all)")
-    ap.add_argument("--seed", type=int, default=0)
+    ap = sweep_parser(__doc__, 20.0)
+    ap.add_argument("--out", help="the rows as JSON lines")
     ap.add_argument("--frames", type=int, default=50)
-    ap.add_argument("--jobs", type=int, default=os.cpu_count())
-    ap.add_argument("--timeout", type=float, default=20.0, help="wall-clock seconds per tune")
     ap.add_argument("--max-cycles", type=int, default=2_000_000)
-    ap.add_argument("--out")
     args = ap.parse_args(argv)
     if not core():
         print("vagrant-moses native machine not available", file=sys.stderr)
         return 2
-    paths = sorted(Path(args.root).rglob("*.sid"))
-    if args.sample:
-        paths = random.Random(args.seed).sample(paths, min(args.sample, len(paths)))
-    rows = []
-    with contextlib.ExitStack() as stack, ProcessPool(max_workers=args.jobs) as pool:
-        out = stack.enter_context(open(args.out, "w", encoding="utf-8")) if args.out else None
-        fut = pool.map(
-            _job, [(p, args.frames, args.max_cycles) for p in paths], timeout=args.timeout
-        )
-        it = fut.result()
-        for path in tqdm(paths, desc="label", unit="tune"):
-            try:
-                row = next(it)
-            except StopIteration:
-                break
-            except Exception as exc:  # pylint: disable=broad-exception-caught
-                row = {"path": str(path), "error": repr(exc)[:80]}
-            rows.append(row)
-            if out:
-                out.write(json.dumps(row) + "\n")
+    jobs = [(p, args.frames, args.max_cycles) for p in tunes(args.root, args.sample, args.seed)]
+    rows = pool_rows(_job, jobs, args.jobs, args.timeout, "label", failed_path, args.out)
     print(json.dumps(summary(rows), indent=1))
     return 0
 

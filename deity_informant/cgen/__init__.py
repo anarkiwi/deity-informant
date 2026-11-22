@@ -1027,8 +1027,7 @@ def render(  # pylint: disable=too-many-locals,too-many-arguments,too-many-posit
         tables = constant & ~ran
     loaded = p.loaded
     if loaded is None:
-        span = np.flatnonzero(code)
-        loaded = (int(span[0]), int(span[-1]) + 1) if len(span) else (0, 0)
+        loaded = masks.hull(code)
     pairs = pointer_pairs(p.image, p.starts)
     data, plan, fixed = p.image, None, code
 

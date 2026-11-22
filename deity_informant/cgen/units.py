@@ -7,6 +7,7 @@ from __future__ import annotations
 import copy
 from typing import Callable, NamedTuple
 
+import networkx as nx
 from pycparser import c_ast
 
 from . import cnodes as cn
@@ -56,19 +57,12 @@ def _body(node, external):
 
 def owners(parts, entries):
     """``{name: frozenset(entries reaching it)}`` over the call graph of ``parts``."""
-    calls = {}
-    for p in parts:
-        for n in p.provides:
-            calls.setdefault(n, set()).update(p.calls)
+    provided = {n for p in parts for n in p.provides}
+    calls = nx.DiGraph((n, t) for p in parts for n in p.provides for t in p.calls if t in provided)
+    calls.add_nodes_from(entries)
     out = {}
     for e in entries:
-        seen, work = {e}, [e]
-        while work:
-            for t in calls.get(work.pop(), ()):
-                if t in calls and t not in seen:
-                    seen.add(t)
-                    work.append(t)
-        for n in seen:
+        for n in nx.descendants(calls, e) | {e}:
             out[n] = out.get(n, frozenset()) | {e}
     return out
 

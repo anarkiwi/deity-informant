@@ -24,6 +24,7 @@ from tqdm import tqdm  # noqa: E402
 
 import cgenplay  # noqa: E402
 from deity_informant import cgen, wholeprog  # noqa: E402
+from deity_informant.cgen.__main__ import addr_range  # noqa: E402
 
 NAMES = ("init", "run")
 #: The harness flags less ``-Werror``: a program that never returns compiles to C that warns.
@@ -132,11 +133,6 @@ def sweep(files, volatile, opts):
     return list(rows.values())
 
 
-def _range(text):
-    lo, hi = (int(x, 0) for x in text.split("-"))
-    return (lo, hi)
-
-
 def main(argv=None):
     """Command line: a row per file; exit 1 when a translation did not finish."""
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -145,7 +141,9 @@ def main(argv=None):
     ap.add_argument("--replay-timeout", type=float, default=120, help="seconds per replay")
     ap.add_argument("-n", type=int, default=200, help="calls of the second entry")
     ap.add_argument("--jobs", type=int, default=min(12, os.cpu_count() or 1))
-    ap.add_argument("--volatile", action="append", type=_range, help="LO-HI (default D000-E000)")
+    ap.add_argument(
+        "--volatile", action="append", type=addr_range, help="LO-HI (default D000-E000)"
+    )
     ap.add_argument("--image", help="64K memory the files are loaded over (default zeros)")
     ap.add_argument("--json", help="write the rows here")
     a = ap.parse_args(argv)

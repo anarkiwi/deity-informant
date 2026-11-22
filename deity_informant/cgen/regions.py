@@ -128,6 +128,16 @@ def pointer_pairs(image, starts):
     return pairs
 
 
+def _within(spans, lo, hi):
+    """The index of the span ``[a, b)`` of ``spans`` holding all of ``[lo, hi]``, else None."""
+    return next((j for j, (a, b) in enumerate(spans) if a <= lo and hi < b), None)
+
+
+def _covers(bits, lo, hi):
+    """Whether ``[lo, hi]`` is narrower than ``BOUNDED`` and every byte of it set in ``bits``."""
+    return hi - lo < BOUNDED and bool(bits[lo : hi + 1].all())
+
+
 def _join(out, a, b):
     """Append ``[a, b)`` to the sorted disjoint spans ``out``, merged with the last it meets."""
     if out and out[-1][1] >= a:
@@ -165,8 +175,7 @@ class Memory:  # pylint: disable=too-many-instance-attributes
 
     def _span(self, mask):
         """The span of ``mask``, widened over the regions it overlaps."""
-        span = np.flatnonzero(mask)
-        return self._widen(*((int(span[0]), int(span[-1]) + 1) if len(span) else (0, 0)))
+        return self._widen(*masks.hull(mask))
 
     def _widen(self, lo, hi, touch=False):
         """``[lo, hi)`` widened over the regions it overlaps (with ``touch``, or abuts)."""
@@ -277,7 +286,7 @@ class Memory:  # pylint: disable=too-many-instance-attributes
 
     def block_of(self, lo, hi):
         """The index of the block array holding ``[lo, hi]``, else None."""
-        return next((j for j, (a, b) in enumerate(self.blocks) if a <= lo and hi < b), None)
+        return _within(self.blocks, lo, hi)
 
     def padding(self, j, held=True):
         """The bytes of block array ``j`` neither a region's nor (``held``) a held span's: its
@@ -344,7 +353,7 @@ class Memory:  # pylint: disable=too-many-instance-attributes
 
     def holding(self, lo, hi):
         """The index of the held span ``[lo, hi]`` lies in, else None."""
-        return next((j for j, (a, b) in enumerate(self.held) if a <= lo and hi < b), None)
+        return _within(self.held, lo, hi)
 
     def spans_at(self, idx):
         """Per address of ``idx``, the index of the held span holding it, else -1."""
@@ -378,11 +387,11 @@ class Memory:  # pylint: disable=too-many-instance-attributes
 
     def is_volatile(self, lo, hi):
         """Whether all of ``[lo, hi]`` is volatile."""
-        return hi - lo < BOUNDED and bool(self.vol[lo : hi + 1].all())
+        return _covers(self.vol, lo, hi)
 
     def is_code(self, lo, hi):
         """Whether all of ``[lo, hi]`` is constant code."""
-        return hi - lo < BOUNDED and bool(self.code[lo : hi + 1].all())
+        return _covers(self.code, lo, hi)
 
     def sensitive_in(self, lo, hi):
         """Whether a read-sensitive address lies in ``[lo, hi]``."""

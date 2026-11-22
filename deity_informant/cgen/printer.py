@@ -22,7 +22,7 @@ from pycparser import c_ast
 from wayward_eagle.c import prototypes, reduce_function
 from wayward_eagle.c import stmt as cs
 
-from .. import masks
+from .. import masks, strided
 from . import llvmopt, mlir
 from .mlir import Op, _types
 from . import cnodes as cn, marks, recompute, regions, ssa
@@ -85,8 +85,7 @@ LOADS = {"LDA": 0, "LDX": 1, "LDY": 2, "LAX": 1}
 
 def meet(a, b):
     """The intersection of intervals ``a`` and ``b`` (``a`` where they do not meet)."""
-    lo, hi = max(a[0], b[0]), min(a[1], b[1])
-    return (lo, hi) if lo <= hi else a
+    return strided.meet(a, b) or a
 
 
 def lit(v, width):
@@ -2263,6 +2262,10 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         #: The branch whose condition is being printed (its node's last operation).
         self.term = None
 
+    def owned_blocks(self):
+        """The function's blocks in :attr:`owned`, in order."""
+        return [b for b in self.f.blocks if b.name in self.owned]
+
     def structure(self):
         """Structure the graph into statements."""
         s = Structurer(
@@ -2305,9 +2308,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         fused = self.fusion()
         for v, adj in self.item_refs(self.body, ()):
             use(v, ("adj" if adj else "far",))
-        for b in self.f.blocks:
-            if b.name not in self.owned:
-                continue
+        for b in self.owned_blocks():
             for o in b.ops[:-1]:
                 if id(o) in fused and o.name == "func.call":
                     continue
@@ -2398,7 +2399,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         constant offsets from variables (the root of a shared one is made a variable) and
         loads of a cell no write reaches before a use (:mod:`.recompute`)."""
         f, forced = self.f, set()
-        ops = [o for b in f.blocks if b.name in self.owned for o in b.ops[:-1]]
+        ops = [o for b in self.owned_blocks() for o in b.ops[:-1]]
         for o in ops:
             if len(o.res) == 1 and (self.uses.get(o.res[0]) or 0) > 1:
                 d = o
@@ -5040,8 +5041,8 @@ class Module:  # pylint: disable=too-many-instance-attributes
         funcs, sites = {}, {}
         prov = {"gotos": [], "reduced": [], "loops": [], "conditions": [], "switches": []}
         for c in cfuncs:
-            for b in c.f.blocks:
-                for o in b.ops if b.name in c.owned else ():
+            for b in c.owned_blocks():
+                for o in b.ops:
                     callee = o.prop("callee")[1:] if o.name == "func.call" else None
                     site = o.pc or (callee and o.prop("site") and o.int_prop("site"))
                     if site and callee in self.lifted:
@@ -5056,8 +5057,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
             each = self.copy_pcs.get(c.f.name, {})
             pcs = {
                 q
-                for b in c.f.blocks
-                if b.name in c.owned
+                for b in c.owned_blocks()
                 for o in b.ops
                 if o.pc is not None
                 for q in each.get(o.pc, [o.pc])

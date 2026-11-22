@@ -301,8 +301,8 @@ class Spill:
     Iterating yields them in order."""
 
     def __init__(self, budget=SPILL):
-        self.budget = budget
-        self.held, self.size, self.file, self.frames = [], 0, None, []
+        self.budget, self.file = budget, None
+        self.clear()
 
     def append(self, chunk):
         """Add ``chunk`` (bytes)."""
@@ -815,7 +815,7 @@ def outcome(bad):
 
 def reads(rec):
     """The values a machine record's device reads returned, in order."""
-    return bytes(v for _, v, w in rec["log"] or () if not w)
+    return bytes(v for _, v in read_entries(rec))
 
 
 def read_entries(rec):

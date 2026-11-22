@@ -12,7 +12,7 @@ from math import gcd
 
 import numpy as np
 
-__all__ = ["CAP", "Strided", "fold"]
+__all__ = ["CAP", "Strided", "fold", "meet"]
 
 #: Lattice points beyond which the members are dropped and only the interval is kept.
 CAP = 256
@@ -71,6 +71,13 @@ class Strided:
         """The strided interval of an iterable of integers."""
         v = np.unique(np.asarray(list(values), np.int64))
         return _make(int(v[0]), int(v[-1]), int(np.gcd.reduce(v - v[0])), v.tolist())
+
+
+def meet(a, b):
+    """The intersection of closed intervals ``a`` and ``b`` (``(lo, hi)`` pairs), None when
+    they are disjoint."""
+    lo, hi = max(a[0], b[0]), min(a[1], b[1])
+    return (lo, hi) if lo <= hi else None
 
 
 def _make(lo, hi, s, members):

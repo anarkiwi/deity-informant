@@ -14,7 +14,7 @@ from itertools import product
 from jennings.opcodes import OPCODES as OPS
 from vagrant_moses.machine import SOURCES, opcode_layout
 
-from ..lifter import lift
+from ..lifter import sentinel_lift
 
 __all__ = [
     "CHANNELS",
@@ -30,9 +30,6 @@ __all__ = [
     "cells",
 ]
 
-_PC = 0x1234
-_B1, _B2, _P1, _P2 = 0x5A, 0xC3, 0x71, 0x9E
-
 #: Address-expression forms a store's effective address can take, by template dataflow.
 CHANNELS = (
     "zp",
@@ -44,13 +41,6 @@ CHANNELS = (
     "unstable_high",
 )
 READ_CLASSES = ("data", "ptr_indirect", "stack_pull")
-
-
-def _image(op):
-    mem = bytearray(0x10000)
-    mem[_PC], mem[_PC + 1], mem[_PC + 2] = op, _B1, _B2
-    mem[_B1], mem[(_B1 + 1) & 0xFF] = _P1, _P2
-    return mem
 
 
 def _defs(ops):
@@ -177,7 +167,7 @@ def _classify_addr(feats):
 @lru_cache(maxsize=None)
 def store_channel(op):
     """``(channel, rmw)`` of ``op``'s store, or ``None`` when ``op`` does not store."""
-    rec = lift(_image(op), _PC)
+    rec = sentinel_lift(op)
     idx = [i for i, o in enumerate(rec["ops"]) if o[0] == "STORE"]
     if not idx:
         return None
@@ -191,7 +181,7 @@ def store_channel(op):
 def load_class(op):
     """Read-classes of ``op``'s loads (throw-away reads aside): ``data``, ``ptr_indirect``
     or ``stack_pull``."""
-    rec = lift(_image(op), _PC)
+    rec = sentinel_lift(op)
     ops, defs, prov = rec["ops"], _defs(rec["ops"]), _prov_by_key(rec)
     out = []
     for o in ops:

@@ -124,12 +124,29 @@ def differential(
     return m1
 
 
+def lift_entry(src, calls=None, entries=("entry",), volatile=(IO,), prepare=None, **kw):
+    """``(image, pcs, program, labels)``: ``src`` assembled and lifted at ``entries`` with the
+    facts the calls ``calls`` observe (none without), both from ``prepare`` of the image when
+    given."""
+    img, labels = assemble(src)
+    pcs = [labels[e] for e in entries]
+    mem = img if prepare is None else prepare(img)
+    facts = None if calls is None else facts_for(mem, pcs, calls)
+    return img, pcs, wholeprog.lift(mem, pcs, list(volatile), facts, **kw), labels
+
+
+def exact(src, calls, seen=None, **kw):
+    """``(program, labels)``: ``src`` lifted at ``entry`` with the facts of the calls ``seen``
+    (else ``calls``), once ``calls`` replay on it exactly."""
+    img, pcs, prog, labels = lift_entry(src, calls if seen is None else seen, **kw)
+    differential(img, prog, pcs, calls)
+    return prog, labels
+
+
 def lifted(name, optimize=True, fact_calls=None, cycles=False):
     src, entries, calls = PROGRAMS[name]
-    img, labels = assemble(source(src))
-    pcs = [labels[e] for e in entries]
-    facts = facts_for(img, pcs, calls if fact_calls is None else fact_calls)
-    prog = wholeprog.lift(img, pcs, [IO], facts, optimize=optimize, cycles=cycles)
+    seen = calls if fact_calls is None else fact_calls
+    img, pcs, prog, _ = lift_entry(source(src), seen, entries, optimize=optimize, cycles=cycles)
     return img, pcs, calls, prog
 
 
@@ -280,10 +297,7 @@ def test_code_write_invalidates(cycles):
 
 @pytest.mark.parametrize("cycles", [False, True])
 def test_stack_wrap(cycles):
-    img, labels = assemble(WRAP)
-    pc = [labels["entry"]]
-    prog = wholeprog.lift(img, pc, [IO], facts_for(img, pc, [(0, 0)] * 4), cycles=cycles)
-    differential(img, prog, pc, [(0, 0)] * 6)
+    prog, _ = exact(WRAP, [(0, 0)] * 6, [(0, 0)] * 4, cycles=cycles)
     assert sum(prog.deopts.values()) > 0
 
 
@@ -305,9 +319,7 @@ def test_entry_register_guard():
 
 
 def test_no_facts_is_exact():
-    img, labels = assemble(JMPIND)
-    pc = [labels["entry"]]
-    prog = wholeprog.lift(img, pc, [IO])
+    img, pc, prog, labels = lift_entry(JMPIND)
     differential(img, prog, pc, [(0, a) for a in range(4)])
     assert not prog.deopts and len(prog.jumps[labels["entry"] + 16]) == 4
     img, labels = assemble(JMPIND.replace("AND #$03\n        ASL A", "ASL A"))
@@ -451,11 +463,8 @@ def test_heights_from_facts(name, cycles):
 
 @pytest.mark.parametrize("cycles", [False, True])
 def test_soft_deopt_resumes_with_folded_register(cycles):
-    img, labels = assemble(CODEHIT)
-    pc = [labels["entry"]]
-    prog = wholeprog.lift(img, pc, [IO], facts_for(img, pc, [(0, 0)]), cycles=cycles)
+    prog, _ = exact(CODEHIT, [(0, 0), (0, 1), (0, 0)], [(0, 0)], cycles=cycles)
     assert prog.stats["code_guards"] > 0
-    differential(img, prog, pc, [(0, 0), (0, 1), (0, 0)])
     assert sum(prog.deopts.values()) > 0
 
 

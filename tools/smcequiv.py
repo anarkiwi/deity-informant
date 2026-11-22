@@ -10,12 +10,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import random
 import sys
 import time
 from pathlib import Path
 
-from pebble import ProcessPool
 from tqdm import tqdm
 from vagrant_moses.c64 import psid_iomap
 
@@ -27,7 +25,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 from deity_informant.smc.asm import assemble  # noqa: E402
 from deity_informant.smc.machine import MachineOracle  # noqa: E402
 from deity_informant.smc.synthm import witnesses  # noqa: E402
-from smclabel import sidfile  # noqa: E402 pylint: disable=wrong-import-order
+from smclabel import pool_rows, sidfile, tunes  # noqa: E402 pylint: disable=wrong-import-order
 
 BACKENDS = ("python", "native")
 
@@ -97,6 +95,10 @@ def _job(args):
     return {"name": str(args[0]), "skip": True} if case is None else compare(case)
 
 
+def _failed(job, error):
+    return {"name": str(job[0]), "error": error}
+
+
 def summary(rows):
     """Counts of agreeing rows and the per-unit labelling cost of each backend."""
     done = [r for r in rows if "equal" in r]
@@ -135,16 +137,9 @@ def main(argv=None):
     if args.corpus:
         rows += [compare(c) for c in tqdm(corpus_cases(), desc="corpus", unit="prog")]
     if args.hvsc:
-        paths = sorted(Path(args.hvsc).rglob("*.sid"))
-        paths = random.Random(args.seed).sample(paths, min(args.sample, len(paths)))
-        with ProcessPool(max_workers=args.jobs) as pool:
-            jobs = [(p, args.frames, args.max_cycles) for p in paths]
-            it = pool.map(_job, jobs, timeout=args.timeout).result()
-            for path in tqdm(paths, desc="hvsc", unit="song"):
-                try:
-                    rows.append(next(it))
-                except Exception as exc:  # pylint: disable=broad-exception-caught
-                    rows.append({"name": str(path), "error": repr(exc)[:120]})
+        paths = tunes(args.hvsc, args.sample, args.seed)
+        jobs = [(p, args.frames, args.max_cycles) for p in paths]
+        rows += pool_rows(_job, jobs, args.jobs, args.timeout, "hvsc", _failed)
     if args.out:
         Path(args.out).write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     print(json.dumps(summary(rows), indent=1))

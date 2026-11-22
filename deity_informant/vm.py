@@ -22,16 +22,13 @@ _BINOP = {
 _CMPOP = {"INT_EQUAL": "==", "INT_NOTEQUAL": "!=", "INT_LESS": "<", "INT_LESSEQUAL": "<="}
 
 
-def _rd_expr(vn):
-    sp, off, _sz = vn
-    if sp == "c":
-        return str(off)
-    return ("r[%d]" if sp == "r" else "u[%d]") % off
-
-
 def _lhs(vn):
     sp, off, _sz = vn
     return ("r[%d]" if sp == "r" else "u[%d]") % off
+
+
+def _rd_expr(vn):
+    return str(vn[1]) if vn[0] == "c" else _lhs(vn)
 
 
 def _emit_line(mn, out, ins):

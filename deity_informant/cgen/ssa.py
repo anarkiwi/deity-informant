@@ -11,8 +11,7 @@ class Coalescer:  # pylint: disable=too-many-instance-attributes
     ``c``): values connected by block-argument copies, merged where they do not interfere."""
 
     def __init__(self, c):
-        self.c, self.f = c, c.f
-        self.blocks = [b for b in self.f.blocks if b.name in c.owned]
+        self.c, self.f, self.blocks = c, c.f, c.owned_blocks()
         self.memo, self.at, self.edge, self.uses = {}, {}, {}, {}
         for b in self.blocks:
             self._block(b)

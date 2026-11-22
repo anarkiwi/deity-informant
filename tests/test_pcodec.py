@@ -7,13 +7,11 @@ from pathlib import Path
 
 import pytest
 
-import wholeprog_progs as W
-from deity_informant import NATIVE, trace, wholeprog
-from test_pcode2mlir import PROGRAMS, lifted, play
+from deity_informant import NATIVE
+from test_pcode2mlir import PROGRAMS, lift_source, lifted, play
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import cmetrics  # noqa: E402  pylint: disable=wrong-import-position
-import cplay  # noqa: E402  pylint: disable=wrong-import-position
 import pcode2c  # noqa: E402  pylint: disable=wrong-import-position
 import pcodec  # noqa: E402  pylint: disable=wrong-import-position
 
@@ -71,14 +69,6 @@ EXTRA = {
 }
 
 
-def lift_source(src, inputs):
-    """``(image, entry, inputs, funcs)`` of assembly ``src`` lifted with facts from ``inputs``."""
-    img, labels = W.assemble(src)
-    pc = labels["entry"]
-    facts = trace.collect(img, lambda s: [s.call(pc, a) for a in inputs])
-    return img, pc, inputs, wholeprog.lift(img, [pc], [W.IO], facts).functions
-
-
 def program(name):
     """The lifted test program ``name`` (the shared set or one of ``EXTRA``)."""
     if name in EXTRA:
@@ -94,9 +84,7 @@ def statements(text):
 def test_compact_matches_reference_with_ram(name, tmp_path):
     img, pc, inputs, funcs = program(name)
     text, info = pcodec.compact_c(funcs, pc)
-    (tmp_path / "p.c").write_text(text)
-    lib = cplay.build(tmp_path / "p.c", tmp_path / "p.so")
-    cplay.replay(lib, img, pc, inputs, [W.IO], skip=info["unobserved"])
+    play(tmp_path, text, img, pc, inputs, skip=info["unobserved"])
 
 
 @pytest.mark.parametrize("name", sorted(PROGRAMS) + sorted(EXTRA))
@@ -134,9 +122,15 @@ def test_callee_stack_slots_do_not_clobber_the_caller(tmp_path):
         play(tmp_path, text, img, pc, inputs)
 
 
-def test_compact_replay_detects_a_mutation(tmp_path):
+@pytest.mark.parametrize(
+    "emit",
+    [pcode2c.emit, lambda funcs, pc: pcodec.compact_c(funcs, pc)[0]],
+    ids=["pcode2c", "compact"],
+)
+def test_replay_detects_a_mutation(emit, tmp_path):
+    """A constant changed in the first ``io_write`` of either printer's C fails its replay."""
     img, pc, inputs, funcs = program("jumptab")
-    text = pcodec.compact_c(funcs, pc)[0]
+    text = emit(funcs, pc)
     wrong = re.sub(r"^(\s+io_write\(\w+, )", r"\1 1 ^ ", text, count=1, flags=re.M)
     assert wrong != text
     with pytest.raises(AssertionError):

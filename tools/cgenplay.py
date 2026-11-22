@@ -20,6 +20,7 @@ from tqdm import tqdm
 import cmetrics
 from cplay import fresh
 from deity_informant import cgen, wholeprog
+from deity_informant.cgen.__main__ import addr_range
 from deity_informant.lifter import lift
 from deity_informant.vm import PcodeVM, run_sub
 
@@ -164,9 +165,13 @@ def main(argv=None):  # pylint: disable=too-many-locals
     ap.add_argument("file")
     ap.add_argument("--psid", action="store_true", help="FILE is a PSID: init and play")
     ap.add_argument("--org", type=lambda s: int(s, 0), help="load address of a raw FILE")
-    ap.add_argument("--loaded", help="LO-HI (HI exclusive): the program's bytes in a raw FILE")
+    ap.add_argument(
+        "--loaded", type=addr_range, help="LO-HI (HI exclusive): the program's bytes in a raw FILE"
+    )
     ap.add_argument("--entry", action="append", default=[], help="PC:NAME")
-    ap.add_argument("--volatile", action="append", default=[], help="LO-HI (HI exclusive)")
+    ap.add_argument(
+        "--volatile", action="append", type=addr_range, default=[], help="LO-HI (HI exclusive)"
+    )
     ap.add_argument("--sensitive", action="append", default=[], type=lambda s: int(s, 0))
     ap.add_argument("--calls", default="", help="NAME:A*N,... (default init then 3000 plays)")
     ap.add_argument("--init", help="NAME of the entry called once, first (--psid: init)")
@@ -186,13 +191,11 @@ def main(argv=None):  # pylint: disable=too-many-locals
         calls = args.calls
     image = bytearray(0x10000)
     image[load : load + len(body)] = body
-    vol = [tuple(int(x, 0) for x in v.split("-")) for v in args.volatile]
+    vol = args.volatile
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     stem = out / Path(args.file).stem
-    loaded = (load, load + len(body))
-    if args.loaded:
-        loaded = tuple(int(x, 0) for x in args.loaded.split("-"))
+    loaded = args.loaded or (load, load + len(body))
     t = time.perf_counter()
     c, h, info = cgen.translate(
         image,

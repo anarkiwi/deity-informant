@@ -184,31 +184,32 @@ _ROLES = ("opcode", "operand", "ptr_indirect", "ret_addr")
 _TIMINGS = ("same_call_earlier", "earlier_call", "pre_lift", "same_insn")
 
 
-def synthesized(progress=False):
-    """Parametric witnesses over every (channel, role, timing) the synthesizer can express."""
+def _built(specs):
+    """The :class:`Program` of each ``(name, source, entries, calls[, init])`` in ``specs``
+    the oracle can run."""
     out = []
-    combos = [(c, r, t) for c in _CHANNELS for r in _ROLES for t in _TIMINGS]
-    for channel, role, timing in tqdm(combos, disable=not progress, desc="synth"):
-        spec = witness(channel, role, timing)
-        if spec is None:
-            continue
-        src, ents, calls, init = spec
+    for spec in specs:
         try:
-            out.append(Program("%s.%s.%s" % (channel, role, timing), src, ents, calls, init))
+            out.append(Program(*spec))
         except Exception:  # pylint: disable=broad-exception-caught
             continue
     return out
+
+
+def synthesized(progress=False):
+    """Parametric witnesses over every (channel, role, timing) the synthesizer can express."""
+    combos = [(c, r, t) for c in _CHANNELS for r in _ROLES for t in _TIMINGS]
+    specs = (
+        ("%s.%s.%s" % combo, *spec)
+        for combo in tqdm(combos, disable=not progress, desc="synth")
+        if (spec := witness(*combo)) is not None
+    )
+    return _built(specs)
 
 
 def targeted(progress=False):
     """Deterministic targeted witnesses, one per writer/role/timing family."""
-    out = []
-    for name, src, ents, calls in tqdm(_TARGETS, disable=not progress, desc="targeted"):
-        try:
-            out.append(Program(name, src, ents, calls))
-        except Exception:  # pylint: disable=broad-exception-caught
-            continue
-    return out
+    return _built(tqdm(_TARGETS, disable=not progress, desc="targeted"))
 
 
 def _rand_prog(rng, n):
@@ -260,15 +261,10 @@ def _rand_prog(rng, n):
 def fuzz(seed=0, rounds=300, length=6, progress=False):
     """Seeded SMC-heavy random programs; those the oracle can run become witnesses."""
     rng = random.Random(seed)
-    out = []
-    for i in tqdm(range(rounds), disable=not progress, desc="fuzz"):
-        try:
-            out.append(
-                Program("fuzz%04d" % i, _rand_prog(rng, length), ["entry"], [(0, 0), (0, 1)])
-            )
-        except Exception:  # pylint: disable=broad-exception-caught
-            continue
-    return out
+    return _built(
+        ("fuzz%04d" % i, _rand_prog(rng, length), ["entry"], [(0, 0), (0, 1)])
+        for i in tqdm(range(rounds), disable=not progress, desc="fuzz")
+    )
 
 
 def machine(progress=False):

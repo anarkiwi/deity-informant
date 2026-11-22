@@ -10,6 +10,8 @@ import re
 import pcodeopt as O
 from pcode2c import Names
 
+from deity_informant.cgen.cnodes import spell
+
 CT = {1: "uint8_t", 2: "uint16_t"}
 SYM = {
     "INT_ADD": "+",
@@ -65,10 +67,6 @@ class Printer:
     def __init__(self, names):
         self.names, self.cells, self.rename = names, {}, {}
 
-    def num(self, v):
-        """A constant."""
-        return str(v) if v < 10 else f"0x{v:X}"
-
     def mem(self, a, size):
         """A memory read or write place at address expression ``a``."""
         if a[0] == "c":
@@ -93,7 +91,7 @@ class Printer:
         """``e`` as C; ``ok``: the caller truncates the result, so arithmetic needs no cast."""
         k = e[0]
         if k == "c":
-            return self.num(e[1])
+            return spell(e[1])
         if k == "v":
             return self.rename.get(e[1], e[1])
         if k == "l":
@@ -105,7 +103,7 @@ class Printer:
 
         if name == "INT_ADD" and a[1][0] == "c" and a[1][1] > (1 << 8 * size - 1):
             neg = (1 << 8 * size) - a[1][1]
-            return wrap(f"{par(self.expr(a[0], esize(a[0]) == size))} - {self.num(neg)}")
+            return wrap(f"{par(self.expr(a[0], esize(a[0]) == size))} - {spell(neg)}")
         if name in O.ARITH:
             parts = [par(self.expr(x, esize(x) == size)) for x in a]
             return wrap(f"{parts[0]} {SYM[name]} {parts[1]}")

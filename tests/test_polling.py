@@ -169,51 +169,49 @@ def test_loops_are_the_storeless_cycles_reading_the_device():
     assert not loops_of(STORING)[2]
 
 
-@pytest.mark.parametrize(
-    "src,byte,varying",
-    [(KEPT, 0x30, set()), (TIMER, 0x80, {13}), (STATUS, 0x80, {0})],
-    ids=["kept", "timer", "status"],
-)
-def test_settle_gives_the_least_leaving_byte_and_what_varies(src, byte, varying):
-    """The least byte the loop leaves on, and the registers differing between such bytes."""
+def settled(src, model=False):
+    """``polling.settle`` of ``src``'s loop at ``wait`` (else ``init``) on its image, over the
+    device model's values with ``model``."""
     img, lab, loops = loops_of(src)
+    head = lab.get("wait", lab["init"])
     mpu = NativeMPU(memory=NativeMemory(bytes(img)))
-    got = polling.settle(loops[lab["wait"]], mpu.memory, polling.registers(mpu), lab["wait"])
-    assert got == (byte, frozenset(varying))
+    dev = devices.State(c64devices.MODEL) if model else None
+    return polling.settle(loops[head], mpu.memory, polling.registers(mpu), head, dev)
+
+
+STATUS_POLL = "init:\nwait:   LDA $D019\n        AND #$70\n        BEQ wait\n        RTS\n"
+LATCHED_POLL = "init:\nwait:   LDA $D011\n        AND #$40\n        BEQ wait\n        RTS\n"
 
 
 @pytest.mark.parametrize(
     "src,model,want",
     [
+        (KEPT, False, (0x30, frozenset())),
+        (TIMER, False, (0x80, frozenset({13}))),
+        (STATUS, False, (0x80, frozenset({0}))),
         (KEPT, True, (0x30, frozenset())),
-        (
-            "init:\nwait:   LDA $D019\n        AND #$70\n        BEQ wait\n        RTS\n",
-            True,
-            (0x70, frozenset()),
-        ),
-        (
-            "init:\nwait:   LDA $D019\n        AND #$70\n        BEQ wait\n        RTS\n",
-            False,
-            (0x10, frozenset({0})),
-        ),
-        ("init:\nwait:   LDA $D011\n        AND #$40\n        BEQ wait\n        RTS\n", True, None),
-        (
-            "init:\nwait:   LDA $D011\n        AND #$40\n        BEQ wait\n        RTS\n",
-            False,
-            (0x40, frozenset()),
-        ),
+        (STATUS_POLL, True, (0x70, frozenset())),
+        (STATUS_POLL, False, (0x10, frozenset({0}))),
+        (LATCHED_POLL, True, None),
+        (LATCHED_POLL, False, (0x40, frozenset())),
     ],
-    ids=["counter", "status-model", "status-any", "latched-model", "latched-any"],
+    ids=[
+        "kept",
+        "timer",
+        "status",
+        "counter",
+        "status-model",
+        "status-any",
+        "latched-model",
+        "latched-any",
+    ],
 )
-def test_settle_over_the_models_values(src, model, want):
-    """With the device model a loop is decided over the values the register answers (bits a
+def test_settle_gives_the_least_leaving_byte_and_what_varies(src, model, want):
+    """The least byte the loop leaves on, and the registers differing between such bytes.
+    With the device model a loop is decided over the values the register answers (bits a
     status register always reads set), and only where it leaves on values the device reads
     eventually (a latched bit never changes); without, over every byte."""
-    img, lab, loops = loops_of(src)
-    mpu = NativeMPU(memory=NativeMemory(bytes(img)))
-    dev = devices.State(c64devices.MODEL) if model else None
-    got = polling.settle(loops[lab["wait"]], mpu.memory, polling.registers(mpu), lab["wait"], dev)
-    assert got == want
+    assert settled(src, model) == want
 
 
 @pytest.mark.parametrize(
@@ -228,10 +226,7 @@ def test_settle_over_the_models_values(src, model, want):
 def test_settle_needs_one_exit_and_a_kept_state(src):
     """A loop leaving to one place or another by the byte it reads, or changing a register
     it reads on a pass it stays on, does not settle."""
-    img, lab, loops = loops_of(src)
-    head = lab.get("wait", lab["init"])
-    mpu = NativeMPU(memory=NativeMemory(bytes(img)))
-    assert polling.settle(loops[head], mpu.memory, polling.registers(mpu), head) is None
+    assert settled(src) is None
 
 
 def test_run_answers_the_poll_and_records_it():

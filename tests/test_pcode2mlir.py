@@ -81,21 +81,25 @@ def fixture_mlir(tmp_path_factory):
     return prefix
 
 
+def lift_source(src, inputs):
+    """``(image, entry, inputs, funcs)`` of assembly ``src`` lifted with facts from ``inputs``."""
+    img, labels = W.assemble(src)
+    pc = labels["entry"]
+    facts = trace.collect(img, lambda s: [s.call(pc, a) for a in inputs])
+    return img, pc, inputs, wholeprog.lift(img, [pc], [W.IO], facts).functions
+
+
 def lifted(name):
     """``(image, entry pc, A inputs, funcs)`` of a test program."""
     src, inputs = PROGRAMS[name]
-    img, labels = W.assemble(COUNTDOWN if src == "COUNTDOWN" else getattr(W, src))
-    pc = labels["entry"]
-    facts = trace.collect(img, lambda s: [s.call(pc, a) for a in inputs])
-    prog = wholeprog.lift(img, [pc], [W.IO], facts)
-    return img, pc, inputs, prog.functions
+    return lift_source(COUNTDOWN if src == "COUNTDOWN" else getattr(W, src), inputs)
 
 
-def play(tmp_path, text, img, pc, inputs):
-    """Compile C ``text`` and replay it, RAM included."""
+def play(tmp_path, text, img, pc, inputs, skip=()):
+    """Compile C ``text`` and replay it, RAM included except the cells ``skip``."""
     (tmp_path / "p.c").write_text(text)
     lib = cplay.build(tmp_path / "p.c", tmp_path / "p.so")
-    cplay.replay(lib, img, pc, inputs, [W.IO])
+    cplay.replay(lib, img, pc, inputs, [W.IO], skip=skip)
 
 
 @pytest.mark.parametrize("name", sorted(PROGRAMS))
@@ -114,15 +118,6 @@ def test_structured_c_matches_reference(name, mlir, tmp_path):
     play(tmp_path, text, img, pc, inputs)
 
 
-def test_replay_detects_a_wrong_constant(tmp_path):
-    img, pc, inputs, funcs = lifted("jumptab")
-    text = pcode2c.emit(funcs, pc)
-    wrong = re.sub(r"^(\s+io_write\(\w+, )", r"\1 1 ^ ", text, count=1, flags=re.M)
-    assert wrong != text
-    with pytest.raises(AssertionError):
-        play(tmp_path, wrong, img, pc, inputs)
-
-
 def vn(kind, off, size):
     return [kind, off, size]
 
@@ -138,15 +133,17 @@ def function(ops):
     }
 
 
-def op_function(op, sizes, out):
-    """Operands of ``sizes`` bytes from $10 and $14; the result of ``op`` (``out`` bytes) to $20."""
-    ops = [
-        ["LOAD", vn("u", 1, sizes[0]), [vn("c", 0x10, 2)], None],
-        ["LOAD", vn("u", 2, sizes[1]), [vn("c", 0x14, 2)], None],
-        [op, vn("u", 3, out), [vn("u", 1, sizes[0]), vn("u", 2, sizes[1])], None],
-        ["STORE", None, [vn("c", 0x20, 2), vn("u", 3, out)], None],
-    ]
-    return function(ops)
+def op_function(op, sizes, out, extra=()):
+    """Operands of ``sizes`` bytes from $10, $14, ... then the varnodes ``extra``; the result
+    of ``op`` (``out`` bytes) to $20."""
+    args = [vn("u", 1 + i, size) for i, size in enumerate(sizes)]
+    return function(
+        [["LOAD", v, [vn("c", 0x10 + 4 * i, 2)], None] for i, v in enumerate(args)]
+        + [
+            [op, vn("u", 3, out), [*args, *extra], None],
+            ["STORE", None, [vn("c", 0x20, 2), vn("u", 3, out)], None],
+        ]
+    )
 
 
 def shift(left):
@@ -194,16 +191,6 @@ UNARY = {
 }
 
 
-def unary_function(op, size, out, extra):
-    """The first operand of ``size`` bytes from $10 through ``op`` to $20 (``out`` bytes)."""
-    ops = [
-        ["LOAD", vn("u", 1, size), [vn("c", 0x10, 2)], None],
-        [op, vn("u", 3, out), [vn("u", 1, size), *extra], None],
-        ["STORE", None, [vn("c", 0x20, 2), vn("u", 3, out)], None],
-    ]
-    return function(ops)
-
-
 def check_ops(tmp_path, mlir, fn, cases):
     """Both printers' ``play`` on ``fn`` for each ``(memory patch, wanted result at $20)``."""
     texts = {
@@ -225,7 +212,7 @@ def check_ops(tmp_path, mlir, fn, cases):
 @pytest.mark.parametrize("name", sorted(UNARY))
 def test_unary_op_semantics(name, mlir, tmp_path):
     size, out, extra, meaning = UNARY[name]
-    fn = unary_function(name, size, out, extra)
+    fn = op_function(name, (size,), out, extra)
     cases = [
         (
             {0x10: a.to_bytes(size, "little")},

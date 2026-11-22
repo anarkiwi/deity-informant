@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from deity_informant.layout import address_bytes, table_entries  # noqa: E402
 import vtools  # noqa: E402 pylint: disable=wrong-import-order
+import csize  # noqa: E402 pylint: disable=wrong-import-order
 
 KINDS = ("words", "pointers", "tables", "records", "arrays", "parallel", "targets")
 EXACT = ("targets", "bytes_lo", "bytes_hi")
@@ -373,9 +374,7 @@ def consistency(groups, cache, calls, workers):
 
 def code_bytes(img, starts):
     """Addresses of the executed instructions' bytes, wrapping at ``$FFFF``."""
-    load, body = img
-    mem, at = np.zeros(0x10000, np.uint8), np.zeros(0x10000, bool)
-    mem[load : load + len(body)] = np.frombuffer(bytes(body), np.uint8)[: 0x10000 - load]
+    mem, at = csize.placed(*img), np.zeros(0x10000, bool)
     at[list(starts)] = True
     return set(np.flatnonzero(instruction_bytes(mem, at)).tolist())
 

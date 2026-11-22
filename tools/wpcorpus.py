@@ -10,7 +10,6 @@ for _v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
     os.environ.setdefault(_v, "1")
 
 # pylint: disable=wrong-import-position
-import argparse  # noqa: E402
 import hashlib  # noqa: E402
 import json  # noqa: E402
 import random  # noqa: E402
@@ -55,7 +54,7 @@ from deity_informant.smc.classify import (  # noqa: E402
 from deity_informant.smc.expect import lift_reason  # noqa: E402
 from deity_informant.smc.machine import _ENTRY, MachineOracle, Queue, _Mem, _frames  # noqa: E402
 from deity_informant.smc.oracle import writer_of  # noqa: E402
-from smclabel import sidfile  # noqa: E402 pylint: disable=wrong-import-order
+from smclabel import sidfile, sweep_parser  # noqa: E402 pylint: disable=wrong-import-order
 
 CLOCKS = ("unknown", "PAL", "NTSC", "PAL/NTSC")
 #: Init accesses logged to read the CPU port and CIA 1 timer A latch writes.
@@ -856,19 +855,14 @@ def _pool_map(pool, fn, jobs, timeouts, desc, on_result):
 
 
 def main(argv=None):  # pylint: disable=too-many-locals
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("root")
+    ap = sweep_parser(__doc__, 60, "seconds per song, plus")
     ap.add_argument("--out", required=True)
     ap.add_argument("--default-length", type=float, default=180.0, help="seconds, if unlisted")
     ap.add_argument("--max-cycles", type=int, default=2_000_000, help="per init or call")
-    ap.add_argument("--timeout", type=float, default=60, help="seconds per song, plus")
     ap.add_argument(
         "--call-timeout", type=float, help="seconds per call/frame (default by backend)"
     )
     ap.add_argument("--label-calls", type=int, default=1000, help="labelled calls/frames (0: all)")
-    ap.add_argument("--jobs", type=int, default=os.cpu_count())
-    ap.add_argument("--sample", type=int, default=0, help="random tunes (0: all)")
-    ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--backend", choices=("jit", "interp"), default="jit", help="lifted engine")
     ap.add_argument("--paths", help="file of tune paths relative to ROOT, one per line")
     ap.add_argument(

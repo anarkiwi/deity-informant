@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from collections import Counter
 
+import networkx as nx
+
 from . import marks
 
 #: Guards a deopt tests with no check call of its own, of an address: a check at its trap.
@@ -96,10 +98,10 @@ def emission(p, mod, order, trap_info):
         else:
             defs = _pick(lift, "at", pcs_of(fn, o.pc))
         checks.append({"kind": kind, "at": o.pc, "fn": fn, "defs": defs, "trap": k})
-    calls = _callees(mod)
+    calls = nx.DiGraph(_callees(mod))
     unproven = {}
     for c in (c for c in mod.entries if c.f.name in calls):
-        reach = _reached(calls, c.f.name)
+        reach = nx.descendants(calls, c.f.name) | {c.f.name}
         unproven[c.f.name] = sorted({d for x in checks if x["fn"] in reach for d in x["defs"]})
     for x in checks:
         del x["fn"]
@@ -176,14 +178,3 @@ def _callees(mod):
         }
         for f in mod.funcs
     }
-
-
-def _reached(calls, root):
-    """The functions ``root`` calls, through calls, and itself."""
-    seen, work = {root}, [root]
-    while work:
-        for t in calls.get(work.pop(), ()):
-            if t not in seen:
-                seen.add(t)
-                work.append(t)
-    return seen
