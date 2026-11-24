@@ -346,30 +346,22 @@ def regions(p):
 
 
 @pytest.mark.parametrize(
-    "src, reads",
-    [(SMC, ("rd", "again")), (ZPADD, ("rd", "nxt"))],
-    ids=["self-modified operand", "zero-page add with carry"],
+    "src, reads, first",
+    [
+        (SMC, ("rd", "again"), "rlo"),
+        (ZPADD, ("rd", "nxt"), "rlo"),
+        (JUMP, ("rd", "jl", "jh"), "slo"),
+        (VOICES, ("voice",), "vlo"),
+    ],
+    ids=["self-modified operand", "zero-page add with carry", "reloaded from data", "per voice"],
 )
-def test_stepped_pointer_reads_its_bases_block(src, reads):
-    """A row pointer in an operand (copied into another's), or a pair stepped by an add whose
-    carry goes into its high byte, keeps the block of the words zipped from the rows' tables."""
+def test_pointer_reads_the_block_its_bases_lie_in(src, reads, first):
+    """A pointer stepped in an operand, by an add whose carry reaches its high byte, reloaded
+    from the song's own bytes or stored per voice reads the block holding the words zipped
+    from the tables (or the song) it takes its bases from."""
     p, labels = lifted(src)
     got = regions(p)
-    assert {got[labels[r]] for r in reads} == {(labels["rlo"], labels["end"] - 1)}
-
-
-def test_pointer_reloaded_from_data():
-    """A pair whose bytes are read through itself points into what it points into."""
-    p, labels = lifted(JUMP)
-    got = regions(p)
-    assert {got[labels[k]] for k in ("rd", "jl", "jh")} == {(labels["slo"], labels["end"] - 1)}
-
-
-def test_per_voice_copies():
-    """Per-voice pairs `($21,X)` stored by `STA $21,X` from the zipped rows at the voice read
-    the rows' block (init's null pointers name none)."""
-    p, labels = lifted(VOICES)
-    assert regions(p)[labels["voice"]] == (labels["vlo"], labels["end"] - 1)
+    assert {got[labels[r]] for r in reads} == {(labels[first], labels["end"] - 1)}
 
 
 def test_bases_in_two_blocks_have_no_region():
@@ -379,19 +371,15 @@ def test_bases_in_two_blocks_have_no_region():
     assert "2 blocks" in dict(p.region_notes)[labels["rd"]]
 
 
-def test_exact_pointer_holds_its_bases():
+def test_exact_pointers_hold_their_bases():
     """A pair only ever holding the zipped rows' words is exact at its read, whose bases are
-    the least and greatest row."""
+    the least and greatest row; a pair adding to itself may hold any word past its bases, so
+    its accesses are not exact."""
     p, labels = lifted(EXACT, songs=2)
     assert regions(p)[labels["rd"]] == (labels["rlo"], labels["end"] - 1)
     got = {pc: (lo, hi) for pc, lo, hi in p.exact}
     assert got[labels["rd"]] == (labels["r0"], labels["r1"])
-
-
-def test_stepped_pointer_is_not_exact():
-    """A pair adding to itself may hold any word past its bases: its accesses are not exact."""
     p, labels = lifted(ZPADD)
-    assert labels["rd"] in regions(p)
     assert not {labels["rd"], labels["nxt"]} & {e[0] for e in p.exact}
 
 
