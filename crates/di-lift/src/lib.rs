@@ -24,6 +24,7 @@ pub mod objects;
 pub mod once;
 pub mod opt;
 pub mod par;
+pub mod pcells;
 pub mod pdefs;
 pub mod prof;
 pub mod ptr;
@@ -111,6 +112,9 @@ pub struct Opts {
     /// run below it instead of 0 (the same field of its last record, for a table of records), and
     /// each table an indexed load reads is its own object ([`tables`]).
     pub overrun_last: bool,
+    /// Per byte of `free`, its values on the runs of the songs the host calls init with, in
+    /// run order: what a pointer cell holds at an entry ([`pcells`]; empty: `free`'s).
+    pub played: Vec<(u16, Vec<u8>)>,
 }
 
 impl Default for Opts {
@@ -134,6 +138,7 @@ impl Default for Opts {
             player: false,
             overrun_zero: false,
             overrun_last: false,
+            played: Vec::new(),
         }
     }
 }
@@ -838,6 +843,19 @@ pub fn lift_banked(
         let hr = objects::held(opts.loaded, &g.written, &opts.holds, volatile);
         if let Some(h) = hr.filter(|_| opts.overrun_last) {
             g.owned = tables::tables(&g, &roots, h);
+            // A player's pointers read their regions of its song data ([`pcells`]).
+            if opts.player && opts.entry_sp.is_some() && !opts.once {
+                let run = Iv {
+                    lo: h.0,
+                    hi: h.1 - 1,
+                };
+                let blocks = objects::song_block(&g, run);
+                let played: FxHashMap<u16, Vec<u8>> = match opts.played.is_empty() {
+                    true => free.clone(),
+                    false => opts.played.iter().cloned().collect(),
+                };
+                g.regions = pcells::regions(&g, entries, &blocks, h, &played);
+            }
         }
         let (objs, proven) = objects::objects(
             &g,
@@ -1258,8 +1276,41 @@ pub fn lift_banked(
         .collect();
     owned.sort_unstable();
     owned.dedup();
+    let mut regions: Vec<(u16, u32, u32)> = (g.regions.of.iter())
+        .filter(|(k, _)| starts.binary_search(&k.0).is_ok())
+        .map(|(k, r)| (k.0, r.lo, r.hi))
+        .collect();
+    regions.sort_unstable();
+    regions.dedup();
+    let mut region_notes: Vec<(u16, String)> = (g.regions.notes.iter())
+        .filter(|n| starts.binary_search(&n.0).is_ok())
+        .cloned()
+        .collect();
+    region_notes.sort();
+    region_notes.dedup();
+    let mut exact: std::collections::BTreeMap<u16, Option<(u32, u32)>> = Default::default();
+    for (k, _) in g
+        .regions
+        .of
+        .iter()
+        .filter(|(k, _)| starts.binary_search(&k.0).is_ok())
+    {
+        let e = exact.entry(k.0).or_insert(g.regions.exact.get(k).copied());
+        *e = match (*e, g.regions.exact.get(k)) {
+            (Some((a, b)), Some(&(c, d))) => Some((a.min(c), b.max(d))),
+            _ => None,
+        };
+    }
+    let exact = (exact.into_iter())
+        .filter_map(|(pc, e)| e.map(|(a, b)| (pc, a, b)))
+        .collect();
+    let ptr_cells = pcells::export(&g.regions.cells, |pc| starts.binary_search(&pc).is_ok());
     Program {
         owned,
+        regions,
+        region_notes,
+        exact,
+        ptr_cells,
         last: if opts.overrun_last {
             last_entries(&g)
         } else {

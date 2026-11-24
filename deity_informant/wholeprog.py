@@ -69,6 +69,7 @@ def lift(
     driven=None,
     player=False,
     overrun="trap",
+    played=None,
 ):  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     """Lift ``entries`` of the program in ``image`` (the memory each entry starts from);
     ``cycles=True`` counts cycles and stamps volatile accesses with them; ``bank`` is a bank
@@ -99,7 +100,9 @@ def lift(
     lifted apart from the init that selects the song: its pointers from the song's data stay
     in the song's data block (*Machine model*); ``overrun="zero"`` that an access the memory
     map bounds reads 0 (a load) or does nothing (a store) where its address leaves its object,
-    instead of trapping (``"trap"``)."""
+    instead of trapping (``"trap"``), ``"last"`` the last entry of the run below it; ``played``
+    ``{addr: values}`` the values of ``free`` on the runs of the songs the host calls init with
+    alone, what a player's pointer holds at an entry (*Pointer regions*; None: ``free``'s)."""
     n = _native_or_raise()
     prog = n.lift_program(
         bytes(image),
@@ -128,6 +131,7 @@ def lift(
         ),
         player=player,
         overrun=overrun,
+        played=sorted((int(a), [int(x) for x in v]) for a, v in (played or {}).items()),
     )
     prog.backend = backend or BACKEND
     return prog

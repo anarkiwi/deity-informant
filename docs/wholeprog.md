@@ -1063,6 +1063,41 @@ the facts, so a proof holds on every execution that stays in lifted code.
   record table, each taking the least entries of them. A load whose addresses may leave its
   table is a memory-map access of the table's object (`Program.owned`, `Program.last`),
   reading the same byte of the last entry outside it (`exec`, the JIT and the C alike).
+- **Pointer regions** (`pcells.rs`, with *Last-entry tables* in a player's entries). A
+  *pointer cell* is the pair an access forms its address from: a `(zp),Y` pair, the pairs
+  `X` selects for `(zp,X)`, or the operand bytes of an absolute instruction the program
+  stores. Along the definitions reaching the access (*Pointer definitions*; a store through
+  a pointer cell writes none, as under the rule it stays in its region), each store of its
+  high byte is classified by the value it stores: a byte of a table read at one index value
+  with the low byte's partner store (two loads whose index register has the same
+  definitions; the table's extent clamps each index past it to its last entry), each plus a
+  base word of constants or of bytes the entries never write (init's, run by run); a
+  constant, with the constant the low byte's add takes (`ADC #lo(tab)` beside `LDA
+  #hi(tab); ADC #0`); a copy of another pair's high byte (that pair where it was read, an
+  offset added or not); a byte read through another pointer cell (that cell where it was
+  read); the cell's own byte or a read-modify-write of it (an add: `CLC; ADC lo; STA lo; BCC;
+  INC hi`, `LDA hi; ADC #0; STA hi`, `INC lo; BNE; INC hi`), which keeps its bases. A table
+  of pointers the entries write, indexed by a byte (a return stack, per-voice copies), is a
+  cell of its own: init's words and every store into it. At an entry the cell holds init's
+  words and what any store of it leaves. Its *bases* are the words found; a zero high byte is
+  a null pointer, never read through. Its *region* is the run of the song data block
+  (*Machine model*: no instruction, cell or variable of the entries) holding every base: an
+  access through it reads the region at the pointer plus its index, past it the region's
+  last byte (a store there writes nothing), so its address is bounded by construction while
+  the pointer is not (`Program.regions`). A pointer with no bases, or bases in several runs
+  or outside them, has no region (`Program.region_notes` gives why, each base with the store
+  giving it). A pointer is exact at an access where it holds one of its bases on every path
+  (`Program.exact`: the least and greatest base). The facts are computed with `overrun="last"`
+  in a player's lift (`Opts::played`, Python `played`: the values of `free` on the runs of the
+  declared songs' init) and change no lifted code.
+  `Program.ptr_cells` lists, per pair one access reads through with every access in one
+  region and no read of unknown address reaching its bytes, each store of its high byte
+  (its low byte's store in one straight run with it, and its kind: a zipped word with its
+  tables, load sites and base; a constant word only when both bytes are immediates; a copy,
+  a read through a pointer, an add, or other), its low byte's stores, each access (exact,
+  the low and high byte's definitions reaching it, whether a word init leaves is a base,
+  the index's interval), every other read of its bytes with the definitions of the bytes it
+  reads, and the definitions reaching the entries' returns.
 - **Stack extent** (`lib.rs`). With `entry_sp` declared, the stack bytes the program can hold
   are `[$100 + s + 1 - D, $1FF]`, `D` the deepest byte a push or an elided `CALL`'s return
   address reaches through the plans' call chains (all of page 1 for a recursive plan or an

@@ -891,6 +891,41 @@ impl Program {
         self.prog.owned.clone()
     }
 
+    /// Per access through a pointer cell, its region: ``[(pc, lo, hi)]``, bytes inclusive; a
+    /// load past it reads its last byte, a store there writes nothing.
+    #[getter]
+    fn regions(&self) -> Vec<(u16, u32, u32)> {
+        self.prog.regions.clone()
+    }
+
+    /// Per pointer access with no region, why: ``[(pc, text)]``.
+    #[getter]
+    fn region_notes(&self) -> Vec<(u16, String)> {
+        self.prog.region_notes.clone()
+    }
+
+    /// Per instruction start whose pointer accesses are all exact, holding one of their bases
+    /// on every path: ``[(pc, least base, greatest base)]``.
+    #[getter]
+    fn exact(&self) -> Vec<(u16, u32, u32)> {
+        self.prog.exact.clone()
+    }
+
+    /// Per pointer pair one access reads through, every access in one region and no read of
+    /// unknown address reaching its bytes: ``[(low byte, (lo, hi), stores, low stores,
+    /// accesses, reads, exits)]``: each store of its high byte ``(pc, low byte's mate pc or None,
+    /// kind, operands)`` (kind ``zip``: low and high table, their loads' pcs, the bases added;
+    /// ``const``: the word; ``copy``/``data``: the pair's low byte; ``add``; ``other``), each
+    /// store of its low byte ``(pc, high byte's mate pc or None)``, each access ``(pc, exact,
+    /// low byte's defs, high byte's defs, a word init leaves is a base, (least, greatest
+    /// index))``, each other read of its bytes ``(pc, low byte's defs, high byte's defs)``, and
+    /// ``exits`` the low and high byte's defs reaching the returns out of the program; a def
+    /// the pc of a store or None: what the entry holds.
+    #[getter]
+    fn ptr_cells(&self) -> Vec<di_lift::ir::PtrCell> {
+        self.prog.ptr_cells.clone()
+    }
+
     /// The pointer definitions (``deity_informant.wholeprog`` *Pointer definitions*), by id:
     /// ``[(loc, at, byte, by)]``, ``loc`` ``"w"`` the word at ``at`` and the byte past it,
     /// ``"x"`` or ``"y"`` a register indexing the run of data bytes starting at ``at``, ``"a"``,
@@ -1599,12 +1634,14 @@ pub fn reference_calls(
 /// leaves whatever the data (``Program.exit`` of its lift); ``player=True`` that the entries are
 /// a player's; ``overrun="zero"`` that an access the memory map bounds reads 0 or stores nothing
 /// outside its object instead of deopting (``"trap"``), ``"last"`` that such a load reads the
-/// last entry of the run below it and each table an indexed load reads is its own object.
+/// last entry of the run below it and each table an indexed load reads is its own object;
+/// ``played`` ``[(addr, values)]`` the values of ``free`` on the runs of the songs the host
+/// calls init with alone (a pointer cell's words at an entry; empty: ``free``'s).
 /// ``bank`` is a bank map: ``dir``/``data`` port
 /// cells, ``mask`` and ``pull`` bits, ``lut`` (configuration per effective port value),
 /// ``configs`` (per configuration 256 page kinds: 0 RAM, 1 ROM, 2 I/O) and ``rom``.
 #[pyfunction]
-#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None, fold=false, sensitive=None, free=vec![], alias=vec![], once=false, held=vec![], devices=None, holds=vec![], checked=false, known=vec![], driven=None, player=false, overrun="trap"))]
+#[pyo3(signature = (image, entries, volatile=vec![], facts=None, optimize=true, cycles=false, bank=None, entry_sp=None, loaded=None, fold=false, sensitive=None, free=vec![], alias=vec![], once=false, held=vec![], devices=None, holds=vec![], checked=false, known=vec![], driven=None, player=false, overrun="trap", played=vec![]))]
 #[allow(clippy::too_many_arguments)]
 pub fn lift_program(
     py: Python<'_>,
@@ -1630,6 +1667,7 @@ pub fn lift_program(
     driven: Option<Vec<(u16, Vec<u8>)>>,
     player: bool,
     overrun: &str,
+    played: Vec<(u16, Vec<u8>)>,
 ) -> PyResult<Program> {
     let (overrun_zero, overrun_last) = match overrun {
         "trap" => (false, false),
@@ -1664,6 +1702,7 @@ pub fn lift_program(
         player,
         overrun_zero,
         overrun_last,
+        played,
     };
     Ok(Program::new(py.detach(|| {
         di_lift::lift_banked(&img, &es, &volatile, &f, opts, bank.as_ref())

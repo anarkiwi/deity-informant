@@ -660,6 +660,18 @@ class Program:  # pylint: disable=too-many-instance-attributes
     last: list = ()
     #: With ``overrun="last"``, per indexed load its table ``(pc, lo, hi, entry size)``.
     owned: list = ()
+    #: With ``overrun="last"`` in a player, per access through a pointer cell its region
+    #: ``(pc, lo, hi)``, bytes inclusive (``Program.regions``), and per pointer access with no
+    #: region why (``Program.region_notes``).
+    regions: list = ()
+    region_notes: list = ()
+    #: Per instruction start whose pointer accesses are exact, its least and greatest base
+    #: ``(pc, lo, hi)`` (``Program.exact``).
+    exact: list = ()
+    #: Per pointer pair one access reads through, all its accesses in one region
+    #: (``Program.ptr_cells``): ``(low byte, (lo, hi), stores, low stores, accesses, reads,
+    #: exits)``.
+    ptr_cells: list = ()
     regs: dict | None = None
     bounded: dict | None = None
     init: tuple | None = None
@@ -939,6 +951,8 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
         if flat:
             alias = _aliases(first, other.states)
     free = None if other is None else other.values()
+    # The values init leaves its variables on the declared songs' runs alone.
+    sung = None if state is None or free is None else _played(state, free)
 
     # The values init's translation may leave in its variables, where its lift knows them.
     known = None if lone is None else lone.values
@@ -952,6 +966,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
             facts=facts,
             sensitive=sensitive,
             free=None if free is None else {a: v for a, v in free.items() if a not in held},
+            played=None if sung is None else {a: v for a, v in sung.items() if a not in held},
             alias=[g for g in alias if held.isdisjoint({g[0], g[0] + 1, g[1], g[1] + 1})],
             held=held,
             holds=[] if lone is None else list(lone.written),
@@ -981,6 +996,8 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
         for pc, ok, a, e in prog.overruns
     ]
     p.last, p.owned = [list(rs) for rs in prog.last], list(prog.owned)
+    p.regions, p.region_notes = list(prog.regions), list(prog.region_notes)
+    p.exact, p.ptr_cells = list(prog.exact), list(prog.ptr_cells)
     p.pdefs = [_pdefs(x) for x in (prog, lone) if x is not None]
     p.pvalues = dict(prog.pdefs_values)
     p.stores = {"play": trapinfo.stores(prog)}
@@ -1001,6 +1018,12 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
         p.objects += list(lone.objects)
         p.written += list(lone.written)
     return p, prog.stats
+
+
+def _played(state, free):
+    """``{addr: values}`` of the bytes of ``free`` on ``state``'s runs (the declared songs'),
+    in run order."""
+    return {a: state.states[:, a].tolist() for a in free}
 
 
 def _pdefs(prog):

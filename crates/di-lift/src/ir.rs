@@ -449,6 +449,19 @@ pub struct Program {
     /// With [`crate::Opts::overrun_last`], per indexed load its table `(pc, lo, hi, entry
     /// size)`, bytes inclusive, ascending ([`crate::tables`]).
     pub owned: Vec<(u16, u32, u32, u32)>,
+    /// With [`crate::Opts::overrun_last`] in a player's entries, per access through a pointer
+    /// cell its region `(pc, lo, hi)`, bytes inclusive, ascending ([`crate::pcells`]).
+    pub regions: Vec<(u16, u32, u32)>,
+    /// Per pointer access with no region, why ([`crate::pcells`]), ascending.
+    pub region_notes: Vec<(u16, String)>,
+    /// Per instruction start whose pointer accesses are all exact ([`crate::pcells`]), its
+    /// least and greatest base `(pc, lo, hi)`, ascending.
+    pub exact: Vec<(u16, u32, u32)>,
+    /// Per pointer pair one access reads through, all its accesses in one region: its low
+    /// byte, region `[lo, hi]`, the stores of its high byte (instruction start, its low
+    /// byte's mate, kind, the kind's operands) and its accesses (instruction start, exact,
+    /// the high byte's definitions reaching it, `None` the entry's) ([`crate::pcells`]).
+    pub ptr_cells: Vec<PtrCell>,
     /// Per instruction start the values `A`, `X` and `Y` hold on every run (bit `v` for
     /// `v`), ascending by start.
     pub regs: Vec<(u16, [[u64; 4]; 3])>,
@@ -549,3 +562,32 @@ impl std::fmt::Display for Program {
         Ok(())
     }
 }
+
+/// A pointer pair as [`Program::ptr_cells`] lists it: its low byte, region `(lo, hi)`, the
+/// stores of its high byte `(pc, low byte's mate, kind, operands)`, the stores of its low byte
+/// `(pc, high byte's mate)`, its accesses, its other reads `(pc, low byte's defs, high byte's
+/// defs)` and the low and high byte's defs reaching the returns out of the program.
+pub type PtrCell = (
+    u16,
+    (u32, u32),
+    Vec<(u16, Option<u16>, String, Vec<u32>)>,
+    Vec<(u16, Option<u16>)>,
+    Vec<PtrAccess>,
+    Vec<PtrRead>,
+    (Vec<Option<u16>>, Vec<Option<u16>>),
+);
+
+/// A read of a pointer pair's bytes: its pc and the definitions of its low and high byte.
+pub type PtrRead = (u16, Vec<Option<u16>>, Vec<Option<u16>>);
+
+/// An access through a pointer pair: its pc, whether exact, the definitions of its low and
+/// high byte reaching it (`None`: the entry's), whether a word init leaves is a base, and its
+/// least and greatest index.
+pub type PtrAccess = (
+    u16,
+    bool,
+    Vec<Option<u16>>,
+    Vec<Option<u16>>,
+    bool,
+    (u8, u8),
+);
