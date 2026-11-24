@@ -93,15 +93,27 @@ pub mod mem {
     pub const BANK: u32 = 16;
     /// A device in a bank's I/O window.
     pub const IO: u32 = 32;
+    /// An access the memory map bounds ([`crate::Opts::overrun_zero`]): where its address
+    /// lies outside the object ([`obj`], bits 16-31) a load reads 0 and a store does nothing.
+    pub const ZERO: u32 = 64;
     /// The configuration of a [`BANK`] access.
     pub const fn config(aux: u32) -> u8 {
         (aux >> 8) as u8
     }
+    /// The flags of an access reading 0 or storing nothing outside object `obj` ([`ZERO`]).
+    pub const fn zero(obj: u16) -> u32 {
+        ZERO | (obj as u32) << 16
+    }
+    /// The object of a [`ZERO`] access.
+    pub const fn obj(aux: u32) -> u16 {
+        (aux >> 16) as u16
+    }
 }
 
-/// An instruction start of the memory map's accesses, its objects' runs `[lo, hi]` and the
-/// hull `(lo, hi)` of its addresses ([`Program::overruns`]).
-pub type Overrun = (u16, Vec<(u32, u32)>, (u32, u32));
+/// An instruction start of the memory map's accesses, its objects' runs `[lo, hi]`, the
+/// hull `(lo, hi)` of its addresses and, with [`crate::Opts::overrun_last`], per run the first
+/// byte of its last entry and the entry size ([`Program::overruns`]).
+pub type Overrun = (u16, Vec<(u32, u32)>, (u32, u32), Vec<(u32, u32)>);
 
 /// One lifted op: `out = opc(ins[0], ins[1])`; `aux` is the target block (`BRANCH`,
 /// `CBRANCH`), target table (`BRANCHIND`), function (`CALL`), operation (`CALLOTHER`) or
@@ -160,9 +172,10 @@ impl LOp {
         matches!(self.opc, Opc::Load | Opc::Store) && self.aux & mem::VOLATILE != 0
     }
     /// A memory access the optimizer may forward and remember: not volatile, not a ROM
-    /// read or device, not resolved per configuration at run time.
+    /// read or device, not resolved per configuration at run time, not one reading 0 or
+    /// storing nothing outside its object.
     pub fn plain(&self) -> bool {
-        self.aux & (mem::VOLATILE | mem::ROM | mem::BANK | mem::IO) == 0
+        self.aux & (mem::VOLATILE | mem::ROM | mem::BANK | mem::IO | mem::ZERO) == 0
     }
     /// Has an effect beyond writing `out`.
     pub fn effectful(&self) -> bool {
@@ -252,11 +265,7 @@ pub struct Function {
     /// Carry registers (`NREG + nslots..`): the indices its computed transfers switch on past
     /// the write of their register ([`crate::carry`]); never machine state.
     pub ncarries: u32,
-    /// Spill registers (after the carry registers): the values an instruction keeps across the
-    /// join of an access the memory map skips outside its object ([`crate::Opts::overrun_zero`]);
-    /// never machine state.
-    pub nspills: u32,
-    /// Lane registers (after the spill registers): one bit each of a stack slot that packs
+    /// Lane registers (after the carry registers): one bit each of a stack slot that packs
     /// single-bit values ([`crate::lanes`]); never stack bytes.
     pub nlanes: u32,
     /// The slot indices whose stack bytes the function keeps in slot registers (the bytes of
@@ -287,11 +296,11 @@ pub struct Function {
 impl Function {
     /// Registers including promoted stack slots, carries and lanes.
     pub fn nregs(&self) -> usize {
-        NREG + (self.nslots + self.ncarries + self.nspills + self.nlanes) as usize
+        NREG + (self.nslots + self.ncarries + self.nlanes) as usize
     }
     /// The first lane register.
     pub fn lane0(&self) -> u32 {
-        NREG as u32 + self.nslots + self.ncarries + self.nspills
+        NREG as u32 + self.nslots + self.ncarries
     }
     /// The lane registers.
     pub fn lanes(&self) -> std::ops::Range<u32> {
@@ -434,6 +443,12 @@ pub struct Program {
     /// function), ascending: the runs `[lo, hi]` of the objects they are checked against and
     /// the hull `(lo, hi)` of the addresses they may take ([`crate::Opts::overrun_zero`]).
     pub overruns: Vec<Overrun>,
+    /// With [`crate::Opts::overrun_last`], per object its runs' last entries ascending: the
+    /// run's last byte, the first byte of its last entry and the entry size (else empty).
+    pub last: Vec<Vec<(u32, u32, u32)>>,
+    /// With [`crate::Opts::overrun_last`], per indexed load its table `(pc, lo, hi, entry
+    /// size)`, bytes inclusive, ascending ([`crate::tables`]).
+    pub owned: Vec<(u16, u32, u32, u32)>,
     /// Per instruction start the values `A`, `X` and `Y` hold on every run (bit `v` for
     /// `v`), ascending by start.
     pub regs: Vec<(u16, [[u64; 4]; 3])>,
@@ -515,6 +530,12 @@ impl std::fmt::Display for Program {
                             format!(" bank{}", mem::config(op.aux))
                         }
                         _ => String::new(),
+                    };
+                    let aux = match op.opc {
+                        Opc::Load | Opc::Store if op.aux & mem::ZERO != 0 => {
+                            format!("{aux} zero{}", mem::obj(op.aux))
+                        }
+                        _ => aux,
                     };
                     let out = if op.out.is_none() {
                         String::new()

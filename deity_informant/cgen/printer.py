@@ -387,8 +387,14 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         self.unread = set()
         #: The loads printed as their base and index (a block's checked read).
         self.split_reads = set()
-        #: Per access the memory map skips outside its object (:meth:`skips`), the object.
-        self.skipped = {}
+        #: Per access reading 0 or storing nothing outside its object (the lift's ``zero``
+        #: attribute: an access the memory map bounds, ``overrun="zero"``), the object.
+        self.skipped = {
+            id(o): o.int_prop("zero")
+            for b in self.blocks
+            for o in b.ops
+            if o.name in ("memref.load", "memref.store") and o.prop("zero") is not None
+        }
         self.addr_edges, self.arg_src, self.arg_block, self.dead = set(), {}, {}, set()
         self.flags = set()
         self.kparam, self.kvals, self.ktabs, self.kmemo, self.kiv = None, None, {}, {}, {}
@@ -494,57 +500,6 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         finally:
             self.ivs = saved
         return out
-
-    def skips(self):
-        """Make each access the memory map skips outside its object straight-line: a branch on
-        its ``objchk`` around a block of the access and pure operations alone, rejoining with 0
-        for a load's value, becomes that block in place of the branch, the access its helper's
-        (:attr:`skipped`: 0 or nothing outside the object)."""
-        for blk in list(self.blocks):
-            found = self.skip_of(blk.ops[-1]) if blk.ops else None
-            if found is None:
-                continue
-            x, j, body = found
-            self.skipped[id(x)] = j
-            blk.ops[-1:] = body.ops
-            for o in body.ops:
-                o.parent = blk
-            self.blocks.remove(body)
-            self.reindex()
-        if self.skipped:
-            self.block_of = {b.name: b for b in self.blocks}
-            self.idom = self.dominators()
-
-    def skip_of(self, term):
-        """``(access, object, block)`` where terminator ``term`` branches on ``objchk`` of the
-        address of the one access of a block of pure operations entered from it alone, which
-        rejoins its other edge (there each value it passes the same, or what the block makes of
-        a load's value 0), else None."""
-        test = self.defs.get(term.args[0]) if term.name == "cf.cond_br" else None
-        if test is None or test.name != "arith.cmpi" or self.const_of(test.args[1]) != 0:
-            return None
-        chk, pred = self.defs.get(test.args[0]), test.int_prop("predicate")
-        if chk is None or chk.prop("callee") != "@objchk" or pred not in (0, 1, 7, 8):
-            return None
-        (s_bad, i_bad, _), (s_ok, _, _) = term.edges()[:: 1 if pred in (1, 8) else -1]
-        body = self.block_of[s_ok]
-        acc = [o for o in body.ops[:-1] if o.name in ("memref.load", "memref.store")]
-        tail = body.ops[-1]
-        alone = self.pred_counts()[s_ok] == 1 and not body.args and len(acc) == 1
-        if not alone or tail.name != "cf.br" or tail.succs != [s_bad]:
-            return None
-        x, bad = acc[0], [term.args[i] for i in i_bad]
-        pure = all(self.pure(o) for o in body.ops[:-1] if o is not x)
-        if not pure or self.address(x) != chk.args[0]:
-            return None
-        env, memo = {r: np.int64(0) for r in x.res}, {}
-        for a, b in zip(bad, tail.args):
-            try:
-                if a != b and int(self.evaluate(b, env, memo)) != self.const_of(a):
-                    return None
-            except Unknown:
-                return None
-        return x, self.const_of(chk.args[1]), body
 
     def carry16(self):
         """Rewrite each 8-bit add whose carry only feeds the add of the byte above it as one
@@ -2185,7 +2140,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
                 e = self.promoted[id(o)][-1]
                 out.extend([e] if isinstance(e, str) else [])
                 continue
-            split = (id(o) in self.wide or id(o) in self.split_reads) and id(o) not in self.skipped
+            split = id(o) in self.wide or id(o) in self.split_reads
             if i == addr and split and self.base_index(o) is not None:
                 out.extend(self.base_index(o))
                 continue
@@ -2757,12 +2712,14 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         how = self.target(o)
         if id(o) in self.f.aware and self.mod.var_at and how[0] != "checked":
             how = ("any",)
-        if id(o) in self.f.skipped:
-            a = self.addr(self.f.address(o))
-            aware = id(o) in self.f.aware and bool(self.mod.var_at)
-            self.mod.helpers |= {"cgen_var"} if aware else set()
-            name = self.mod.zero_fn("rd", self.f.skipped[id(o)], aware)
-            return E(self.check("overrun", o, cn.call(name, a.node)), 0, 255, False, True, a.refs)
+        e = self.read(o, how)
+        if id(o) not in self.f.skipped:
+            return e
+        return E(self.zeroed(o, "rd", e.node), 0, 255, False, True, e.refs)
+
+    def read(self, o, how):
+        """The C expression of memory load ``o`` reaching memory as ``how`` has it
+        (:meth:`target`)."""
         if how[0] in ("region", "held"):
             return self.mem_ref(o, how[-1], how[0] == "held")
         if how[0] == "barray":
@@ -2876,7 +2833,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         x = next(
             (x for x in cont.ops if x.name == "memref.load" and f.address(x) == c.args[0]), None
         )
-        how = None if x is None else self.target(x)[0]
+        how = None if x is None or id(x) in f.skipped else self.target(x)[0]
         if how not in ("block", "barray"):
             return None
         if how == "barray":
@@ -2897,6 +2854,18 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         """Expression ``node`` marked as a check of access (or guard) ``o`` (*Translation
         cost*), ``trap`` the ``k`` its failure takes."""
         return cn.marked(node, self.mod.marks.add(("check", kind, o, self.f.name, trap)))
+
+    def zeroed(self, o, kind, node, v=None):
+        """The call standing for access ``o`` (``kind`` ``rd``, or ``wr`` storing ``v``) that
+        reads 0 or stores nothing outside its object, where the access prints as ``node``: its
+        object's helper taking the operands of the element or the reader's or writer's call
+        (:func:`_zero_shape`), else ``rd``'s or ``wr``'s of its address."""
+        j, shape = self.f.skipped[id(o)], _zero_shape(node)
+        if shape is None:
+            self.mod.helpers.add(kind)
+            shape = _zero_shape(cn.call(kind, self.addr(self.f.address(o)).node))
+        name = self.mod.zero_fn(kind, j, shape)
+        return self.check("overrun", o, cn.call(name, *shape[1], *([v] if v is not None else [])))
 
     def arm(self, node):
         """Expression ``node`` marked as the failure arm of the check last marked."""
@@ -3279,12 +3248,21 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         if id(o) in self.f.aware and self.mod.var_at:
             how = ("any",)
             self.mod.helpers.add("cgen_var")
-        if id(o) in self.f.skipped:
-            a = self.addr(self.f.address(o))
-            aware = id(o) in self.f.aware and bool(self.mod.var_at)
-            name = self.mod.zero_fn("wr", self.f.skipped[id(o)], aware)
-            out.append(self.check("overrun", o, cn.call(name, a.node, v)))
+        got = []
+        self.write(o, how, val, v, got)
+        if id(o) not in self.f.skipped:
+            out += got
             return
+        st = got[-1]
+        access = st.lvalue if isinstance(st, c_ast.Assignment) else None
+        access = _call(st, st.args.exprs[:-1]) if isinstance(st, c_ast.FuncCall) else access
+        out.append(self.zeroed(o, "wr", access, v))
+
+    def write(
+        self, o, how, val, v, out
+    ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        """The store of value ``val`` (printed ``v``) by ``o`` reaching memory as ``how`` has it
+        (:meth:`target`), appended to ``out``."""
         if how[0] == "var":
             ref, p = self.var(o), self.f.promoted[id(o)]
             names = self.mod.enum_of(p[1]) if p[0] == "s" else None
@@ -3547,11 +3525,11 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
 
     def falls(self, p, y):
         """Whether the edge from graph node ``p`` to ``y`` is the machine code's fall-through
-        into the next instruction."""
-        img, a = self.mod.mem.image, self.source_pc(p, y)
-        if not a:
+        into the next instruction (none into a node no instruction starts)."""
+        img, a, q = self.mod.mem.image, self.source_pc(p, y), self.first_pc(y)
+        if not a or not q:
             return False
-        a, b = regions.edge(img, a, self.first_pc(y))
+        a, b = regions.edge(img, a, q)
         return b == regions.successors(img, a)[0] and OPS.get(img[a]) != ("JMP", "abs")
 
     def head_pc(self, h):
@@ -3886,6 +3864,55 @@ def _count(array, ctype, body):
     )
 
 
+#: The arrays an element of which an access prints as.
+_ARRAY = re.compile(r"[RCB]\d+")
+#: The readers and writers whose address is their one operand, or the sum of their two (a
+#: base and a byte).
+_SUMMED = re.compile(r"(oob_)?(rd|wr)(B\d+|C\d+)?|B\d+r")
+
+
+def _zero_shape(node):
+    """``(name, operands, params, address, access)`` of access expression ``node``: an
+    array's element ``N[i]`` or ``CGEN_IX(N, b, y)``, or the call of a reader or writer of
+    :data:`_SUMMED`: its operands, the parameters standing for them, and the address and the
+    access over those; None for another."""
+    if isinstance(node, c_ast.ArrayRef) and _ARRAY.fullmatch(getattr(node.name, "name", "")):
+        n, i = node.name.name, cn.ident("i")
+        addr = cn.binop("+", cn.ident(f"{n}_ORG"), i)
+        return n, [node.subscript], [("i", "uint16_t")], addr, cn.index(n, i)
+    if not isinstance(node, c_ast.FuncCall):
+        return None
+    f, xs = node.name.name, list(node.args.exprs) if node.args else []
+    if f == "CGEN_IX":
+        n, (b, y) = xs[0].name, (cn.ident(x) for x in "by")
+        addr = cn.binop("+", cn.binop("+", cn.ident(f"{n}_ORG"), b), y)
+        params = [("b", "uint16_t"), ("y", "uint8_t")]
+        return f"{n}_ix", xs[1:], params, addr, cn.call(f, cn.ident(n), b, y)
+    if not _SUMMED.fullmatch(f) or len(xs) not in (1, 2):
+        return None
+    params = [("a", "uint16_t")] if len(xs) == 1 else [("p", "uint16_t"), ("y", "uint8_t")]
+    ids = [cn.ident(x) for x, _ in params]
+    addr = ids[0] if len(ids) == 1 else cn.binop("+", *ids)
+    return f, xs, params, addr, cn.call(f, *ids)
+
+
+def _at_zero(addr, params):
+    """``addr`` with its parameters 0: the constant part of a helper's address, or None."""
+    names = {x for x, _ in params}
+    if isinstance(addr, c_ast.ID):
+        return None if addr.name in names else addr
+    if isinstance(addr, c_ast.BinaryOp) and addr.op == "+":
+        parts = [_at_zero(x, params) for x in (addr.left, addr.right)]
+        kept = [x for x in parts if x is not None]
+        return kept[0] if len(kept) == 1 else (cn.binop("+", *kept) if kept else None)
+    return addr
+
+
+def _call(node, args):
+    """Call ``node`` with operands ``args``."""
+    return c_ast.FuncCall(node.name, c_ast.ExprList(list(args)))
+
+
 def _element(name, a):
     """``name[(uint16_t)(a - name_ORG)]``."""
     return cn.index(name, cn.cast("uint16_t", cn.binop("-", a, cn.ident(name + "_ORG"))))
@@ -3959,6 +3986,12 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.ptr_objects, self.objs_used, self.ptr_parts = [], set(), {}
         #: Per object of a pointer's check after its definition, ``(block, lo, k)``.
         self.ptr_slack = {}
+        #: Per object its runs' last entries, where a load outside it reads one (``Program.last``).
+        self.ptr_last = []
+        #: The objects whose ``cgen_lastj`` a helper calls (:meth:`last_of`).
+        self.lasts = set()
+        #: The objects some access may read below the first run of.
+        self.ptr_below = set()
         #: The block readers checking their address into an object (:meth:`checked_fn`).
         self.checked_fns = set()
         #: The block arrays read through their unchecked reader ``Bbr(base, index)``.
@@ -4029,8 +4062,6 @@ class Module:  # pylint: disable=too-many-instance-attributes
             f.name: [f.code_iv(o) for o in f.walk() if o.name == "memref.load"] for f in self.funcs
         }
         self.load(mlir.parse(llvmopt.combined(mlir.generic(self.top), prefix, ranges)))
-        for f in self.funcs:
-            f.skips()
 
     def copies_of(self, name, pc):
         """The instruction PCs of every copy of instruction ``pc`` of function ``name``."""
@@ -4605,47 +4636,90 @@ class Module:  # pylint: disable=too-many-instance-attributes
         runs = self.ptr_parts.get(j, [(lo, hi + 1)])
         return any(x <= a < y for x, y in runs)
 
-    def zero_fn(self, kind, j, aware=False):
-        """The name of the ``kind`` (``rd``, ``wr``) helper of an access that reads 0 or stores
-        nothing outside object ``j``, one per array and object (the bounds the ``.h``'s): the
-        element of the region or held span holding the object, else of the data block's
-        reader or writer over those its runs lie in, else (or where the access may reach a
-        promoted cell's variable, ``aware``) ``rd``/``wr``'s."""
+    def zero_fn(self, kind, j, shape):
+        """The name of the ``kind`` (``rd``, ``wr``) helper of an access of ``shape``
+        (:func:`_zero_shape`) that reads 0 or stores nothing outside object ``j`` (the bounds
+        the ``.h``'s): one per object and array, reader or writer, named after it, an
+        element's writer ``_wr``."""
         self.objs_used.add(j)
-        lo, hi = self.ptr_objects[j][:2]
-        found = None if aware else self.owners(self.ptr_parts.get(j, [(lo, hi + 1)]), kind == "rd")
-        if found is None:
-            base = kind
-            self.helpers.add(kind)
-        elif len(found[0]) + len(found[1]) > 1:
-            base = self.block_fn(kind, *found)
-        elif found[0]:
-            base = f"R{found[0][0]}"
-            self.regions_used.add(found[0][0])
-        else:
-            base = f"C{found[1][0]}"
-            self.used.add("CODE")
-            self.spans_used.add(found[1][0])
-        name = f"{base}z{j}" if kind == "rd" else f"{base}zw{j}"
-        self.zero_fns[name] = (kind, base, j)
+        base, _, params, addr, access = shape
+        call = isinstance(access, c_ast.FuncCall) and access.name.name != "CGEN_IX"
+        name = f"{base}_obj{j}" + ("_wr" if kind == "wr" and not call else "")
+        self.zero_fns[name] = (kind, j, params, addr, access, call)
         return name
 
     def zero_c(self):
         """The definitions of the helpers :meth:`zero_fn` names: the access when its address
-        lies in the object, else 0 or nothing."""
-        out, a, v = [], cn.ident("a"), cn.ident("v")
-        for name, (kind, base, j) in sorted(self.zero_fns.items()):
-            test = self.outside(j, E(a, 0, 0xFFFF))
-            array = base[:1] in "RC" and base[1:].isdigit()
+        lies in the object, else 0 (or with ``overrun="last"`` above its first run the access
+        of the last entry of the run below it, :meth:`last_of`) or nothing."""
+        out, v = [], cn.ident("v")
+        for name, (kind, j, params, addr, access, call) in sorted(self.zero_fns.items()):
+            test = self.outside(j, E(addr, 0, 0xFFFF))
             if kind == "rd":
-                el = _element(base, a) if array else cn.call(base, a)
-                head = cn.function(name, "uint8_t", [("a", "uint16_t")], ("static",), ("noinline",))
-                body = [cn.when(test, [cn.ret(cn.const(0))]), cn.ret(el)]
+                head = cn.function(name, "uint8_t", params, ("static",), ("noinline",))
+                miss = [cn.ret(cn.const(0))]
+                if j < len(self.ptr_last):
+                    at = self.last_of(j, addr)
+                    off = _at_zero(addr, params)
+                    first, rest = params[0][0], [x for x, _ in params[1:]]
+                    rebased = cn.cast(params[0][1], cn.binop("-", at, off) if off else at)
+                    lo = cn.const(self.ptr_objects[j][0])
+                    below = cn.binop("<", cn.cast("uint16_t", addr), lo)
+                    miss = [cn.when(below, [cn.ret(cn.const(0))])] if j in self.ptr_below else []
+                    miss.append(cn.assign(cn.ident(first), rebased))
+                    miss += [cn.assign(cn.ident(x), cn.const(0)) for x in rest]
+                body = [cn.when(test, miss), cn.ret(access)]
             else:
-                st = cn.assign(_element(base, a), v) if array else cn.call(base, a, v)
-                args = [("a", "uint16_t"), ("v", "uint8_t")]
-                head = cn.function(name, "void", args, ("static",), ("noinline",))
+                st = _call(access, [*access.args.exprs, v]) if call else cn.assign(access, v)
+                head = cn.function(
+                    name, "void", [*params, ("v", "uint8_t")], ("static",), ("noinline",)
+                )
                 body = [cn.when(test, [cn.ret()]), st]
+            out.append(cn.define(head, body))
+        return self.last_c() + out
+
+    def last_of(self, j, addr):
+        """The address a load outside object ``j`` at ``addr`` above its first run reads: the
+        same byte of the last entry of the run below it (``Program.last``): a constant for one
+        run of single-byte entries, else ``cgen_lastj``'s (:meth:`last_c`)."""
+        runs = self.ptr_last[j]
+        if len(runs) == 1 and runs[0][2] == 1:
+            return cn.const(runs[0][1])
+        self.lasts.add(j)
+        return cn.call(f"cgen_last{j}", addr)
+
+    def last_c(self):
+        """The definitions of the ``cgen_lastj`` :meth:`last_of` calls: the run below the
+        address by its last bytes, the entry's byte by the entry size."""
+        out, a, i = [], cn.ident("a"), cn.ident("i")
+        for j in sorted(self.lasts):
+            runs = self.ptr_last[j]
+            tabs = [
+                cn.decl(
+                    n, f"const {t}", cn.inits(*(f"0x{r[k]:X}" for r in runs)), ("static",), dim=True
+                )
+                for n, t, k in (
+                    ("hi", "uint16_t", 0),
+                    ("first", "uint16_t", 1),
+                    ("size", "uint8_t", 2),
+                )
+            ]
+            first, size = cn.index("first", i), cn.index("size", i)
+            span = cn.binop(
+                "-",
+                cn.binop("+", cn.cast("uint32_t", a), cn.binop("*", cn.const(0x10000), size)),
+                first,
+            )
+            body = [
+                *tabs,
+                cn.decl("i", "uint8_t", cn.const(len(runs) - 1)),
+                c_ast.While(
+                    cn.binop("&&", i, cn.binop(">=", cn.index("hi", i), a)),
+                    c_ast.UnaryOp("--", i),
+                ),
+                cn.ret(cn.cast("uint16_t", cn.binop("+", first, cn.binop("%", span, size)))),
+            ]
+            head = cn.function(f"cgen_last{j}", "uint16_t", [("a", "uint16_t")], ("static",))
             out.append(cn.define(head, body))
         return out
 

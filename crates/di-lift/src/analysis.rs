@@ -626,6 +626,8 @@ pub struct Graph {
     /// Per `(zp),Y` access whose pointer pair holds a set of words on every path, the words
     /// ([`crate::vsa::St::pw`]).
     pub ptr_sets: FxHashMap<u16, BTreeSet<u16>>,
+    /// Per indexed load of the last-entry rule, the table it owns ([`crate::tables`]).
+    pub owned: FxHashMap<(u16, u8, usize), crate::tables::Table>,
 }
 
 /// Stack-pointer effect of a `Next` instruction: pushes and pulls by count, `None` for an
@@ -1401,6 +1403,7 @@ impl Fixpoint<'_> {
                 }
                 let mut extents: FxHashMap<u16, Vec<crate::why::Extent>> = FxHashMap::default();
                 let g = Graph {
+                    owned: FxHashMap::default(),
                     reach: FxHashMap::default(),
                     bases: FxHashMap::default(),
                     proven: FxHashMap::default(),

@@ -1047,6 +1047,20 @@ the facts, so a proof holds on every execution that stays in lifted code.
   the code after it. A static lift meets each guarded access's interval, a load's proven hull
   (`Program.proven`) and a store's run (`Program.bounded`) with the addresses the guard's
   range gives.
+- **Last-entry tables** (`tables.rs`, `Opts::overrun_last`, Python `overrun="last"`). Each
+  table an absolute-indexed instruction of the entries reads is bounded to its own extent and
+  a load past it reads its last entry. A site's index is constant data where every value it
+  may hold comes, through registers and arithmetic, from immediates and bytes no store writes
+  (a pointer's read stays in the song's data, *Machine model*): it reads fixed entries and
+  makes no base. Every other site starts its operand's table at the operand plus the least
+  index any of its sites takes, with entries of the greatest common divisor of its index
+  values' differences. Two sites read at one index value (the register unchanged between
+  them along the flow) one entry apart are one table: the lower reads the upper's. A table
+  runs to the first start at least one entry past its own, the first instruction byte or the
+  end of the held bytes; columns read at one index value further apart than an entry are one
+  record table, each taking the least entries of them. A load whose addresses may leave its
+  table is a memory-map access of the table's object (`Program.owned`, `Program.last`),
+  reading the same byte of the last entry outside it (`exec`, the JIT and the C alike).
 - **Stack extent** (`lib.rs`). With `entry_sp` declared, the stack bytes the program can hold
   are `[$100 + s + 1 - D, $1FF]`, `D` the deepest byte a push or an elided `CALL`'s return
   address reaches through the plans' call chains (all of page 1 for a recursive plan or an

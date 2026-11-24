@@ -78,6 +78,8 @@ pub struct Exec {
     pub(crate) constcode: FixedBitSet,
     pub(crate) img: Box<[u8]>,
     pub(crate) objects: Vec<(u16, u16, Vec<u16>)>,
+    /// Per object its runs' last entries ([`crate::ir::Program::last`]).
+    pub(crate) last: Vec<Vec<(u32, u32, u32)>>,
     elide_ret: bool,
     cycles: bool,
     /// Per function: first value-file index and count of its stack slots, and which slots
@@ -208,6 +210,7 @@ impl Exec {
             constcode: FixedBitSet::with_capacity(0x10000),
             img: vec![0u8; 0x10000].into_boxed_slice(),
             objects: p.objects.clone(),
+            last: p.last.clone(),
             elide_ret: p.elide_ret,
             cycles: p.cycles,
             slots,
@@ -396,6 +399,24 @@ fn depths(fs: &[Function], cps: &[FixedBitSet]) -> Vec<Vec<(u32, u32)>> {
 }
 
 impl Exec {
+    /// `objchk(p, j)`: whether pointer `p` lies outside object `j`.
+    pub(crate) fn outside(&self, j: usize, p: u32) -> bool {
+        let (lo, hi, _) = self.objects[j];
+        p.wrapping_sub(lo as u32) & 0xffff > (hi - lo) as u32
+    }
+    /// The address a load of object `j` outside it at `a` reads with
+    /// [`crate::Opts::overrun_last`]: the same byte of the last entry of the run below it, None
+    /// where it reads 0 (below every run, or without last entries).
+    pub(crate) fn clamp(&self, j: usize, a: u32) -> Option<u16> {
+        let rs = self.last.get(j)?;
+        let (_, first, s) = rs[rs.iter().rposition(|r| r.0 < a)?];
+        Some((first + (a + 0x10000 * s - first) % s) as u16)
+    }
+    /// Whether an access with flags `aux` at address `a` reads 0 or stores nothing
+    /// ([`mem::ZERO`]).
+    pub(crate) fn skipped(&self, aux: u32, a: u32) -> bool {
+        aux & mem::ZERO != 0 && self.outside(mem::obj(aux) as usize, a)
+    }
     /// The native code, compiled on first use (`None` with cycles, which it does not
     /// cover, or when compilation fails).
     pub fn jit(&self) -> Option<&Jit> {
@@ -594,6 +615,14 @@ impl<'a> Runner<'a> {
                     Opc::Copy | Opc::IntZext => {
                         f[o.out as usize] = get(f, o.a) & mask(o.osz as u32)
                     }
+                    Opc::Load | Opc::Store if x.skipped(o.aux, get(f, o.a)) => {
+                        if o.opc == Opc::Load && o.osz != 0 {
+                            let at = x.clamp(mem::obj(o.aux) as usize, get(f, o.a));
+                            let aux = o.aux & !mem::zero(u16::MAX);
+                            f[o.out as usize] =
+                                at.map_or(0, |a| load(x.bank.as_ref(), bus, aux, a) as u32);
+                        }
+                    }
                     Opc::Load => {
                         if o.osz == 0 && get(f, o.b) == 0 {
                             continue;
@@ -656,9 +685,7 @@ impl<'a> Runner<'a> {
                             break (get(f, o.a) as u16, Stop::Deopt);
                         }
                         if o.aux == other::OBJCHK {
-                            let (lo, hi, _) = x.objects[get(f, o.b) as usize];
-                            let off = get(f, o.a).wrapping_sub(lo as u32) & 0xffff;
-                            f[o.out as usize] = (off > (hi - lo) as u32) as u32;
+                            f[o.out as usize] = x.outside(get(f, o.b) as usize, get(f, o.a)) as u32;
                             continue;
                         }
                         let a = get(f, o.a) as usize;

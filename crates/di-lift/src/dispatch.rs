@@ -415,7 +415,7 @@ pub(crate) fn indexed(t: &Template, b: [Option<u8>; 2], set: Option<(usize, Iv)>
 }
 
 /// Whether register `r` moves an address of template `t` (operand bytes `b`).
-fn moves(t: &Template, b: [Option<u8>; 2], r: usize) -> bool {
+pub(crate) fn moves(t: &Template, b: [Option<u8>; 2], r: usize) -> bool {
     indexed(t, b, Some((r, Iv::full(1))))
         .iter()
         .zip(indexed(t, b, None))

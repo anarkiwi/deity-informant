@@ -602,7 +602,8 @@ pub(crate) fn with_mem<R>(
 impl Program {
     /// Functions: ``{"pc", "entry", "blocks": [{"pc", "ops"}], "tables", "whys", "exits"}``;
     /// an op is ``[name, out, ins, aux, pc]``, varnodes ``[space, offset, size]``; ``aux`` is
-    /// the target block, table, callee, ``CALLOTHER`` name or ``"volatile"``, ``pc`` the
+    /// the target block, table, callee, ``CALLOTHER`` name, ``"volatile"`` or, for an access
+    /// reading 0 or storing nothing outside object ``j``, ``(j, volatile)``, ``pc`` the
     /// instruction the op was emitted for (0: made by the optimizer); a deopt or
     /// ``BRANCHIND`` standing for guards or a transfer has a sixth element, its index into
     /// ``exits``, each a list of indices into ``whys``, the guards (``docs/cgen.md``, *Trap
@@ -626,10 +627,10 @@ impl Program {
                         ),
                         Opc::Load | Opc::Store => (
                             op.opc.name(),
-                            if op.aux & mem::VOLATILE != 0 {
-                                "volatile".into_pyobject(py)?.into_any()
-                            } else {
-                                py.None().into_bound(py)
+                            match (op.aux & mem::VOLATILE != 0, op.aux & mem::ZERO != 0) {
+                                (v, true) => (mem::obj(op.aux), v).into_pyobject(py)?.into_any(),
+                                (true, _) => "volatile".into_pyobject(py)?.into_any(),
+                                _ => py.None().into_bound(py),
                             },
                         ),
                         Opc::Branch | Opc::CBranch | Opc::BranchInd | Opc::Call => {
@@ -876,6 +877,20 @@ impl Program {
         self.prog.objects.clone()
     }
 
+    /// With ``overrun="last"``, per object its runs' last entries ascending: ``[(last byte,
+    /// first byte of the last entry, entry size)]`` (else empty).
+    #[getter]
+    fn last(&self) -> Vec<Vec<(u32, u32, u32)>> {
+        self.prog.last.clone()
+    }
+
+    /// With ``overrun="last"``, per indexed load its table: ``[(pc, lo, hi, entry size)]``,
+    /// bytes inclusive (the last-entry rule's extents).
+    #[getter]
+    fn owned(&self) -> Vec<(u16, u32, u32, u32)> {
+        self.prog.owned.clone()
+    }
+
     /// The pointer definitions (``deity_informant.wholeprog`` *Pointer definitions*), by id:
     /// ``[(loc, at, byte, by)]``, ``loc`` ``"w"`` the word at ``at`` and the byte past it,
     /// ``"x"`` or ``"y"`` a register indexing the run of data bytes starting at ``at``, ``"a"``,
@@ -969,8 +984,9 @@ impl Program {
     }
 
     /// Per planned instruction start of the memory map's accesses (every copy's of an instance
-    /// function), ascending: ``[(pc, [(lo, hi)], (lo, hi))]``, the inclusive runs of the objects
-    /// they are checked against and the hull of the addresses they may take.
+    /// function), ascending: ``[(pc, [(lo, hi)], (lo, hi), [(first, size)])]``, the inclusive
+    /// runs of the objects they are checked against, the hull of the addresses they may take
+    /// and, with ``overrun="last"``, per run the first byte of its last entry and its size.
     #[getter]
     fn overruns(&self) -> Vec<di_lift::ir::Overrun> {
         self.prog.overruns.clone()
@@ -1582,7 +1598,8 @@ pub fn reference_calls(
 /// ``[(addr, values)]``, where the host calls the entries in a loop after its init, what init
 /// leaves whatever the data (``Program.exit`` of its lift); ``player=True`` that the entries are
 /// a player's; ``overrun="zero"`` that an access the memory map bounds reads 0 or stores nothing
-/// outside its object instead of deopting (``"trap"``).
+/// outside its object instead of deopting (``"trap"``), ``"last"`` that such a load reads the
+/// last entry of the run below it and each table an indexed load reads is its own object.
 /// ``bank`` is a bank map: ``dir``/``data`` port
 /// cells, ``mask`` and ``pull`` bits, ``lut`` (configuration per effective port value),
 /// ``configs`` (per configuration 256 page kinds: 0 RAM, 1 ROM, 2 I/O) and ``rom``.
@@ -1614,12 +1631,13 @@ pub fn lift_program(
     player: bool,
     overrun: &str,
 ) -> PyResult<Program> {
-    let overrun_zero = match overrun {
-        "trap" => false,
-        "zero" => true,
+    let (overrun_zero, overrun_last) = match overrun {
+        "trap" => (false, false),
+        "zero" => (true, false),
+        "last" => (true, true),
         _ => {
             return Err(pyo3::exceptions::PyValueError::new_err(
-                "overrun is \"trap\" or \"zero\"",
+                "overrun is \"trap\", \"zero\" or \"last\"",
             ))
         }
     };
@@ -1645,6 +1663,7 @@ pub fn lift_program(
         driven,
         player,
         overrun_zero,
+        overrun_last,
     };
     Ok(Program::new(py.detach(|| {
         di_lift::lift_banked(&img, &es, &volatile, &f, opts, bank.as_ref())

@@ -40,9 +40,10 @@ def main(argv=None):
     ap.add_argument("--lines", action="store_true", help="#line markers (translation cost)")
     ap.add_argument(
         "--overrun",
-        choices=("trap", "zero"),
+        choices=("trap", "zero", "last"),
         default="trap",
-        help="a memory-map access outside its object traps, or reads 0 and stores nothing",
+        help="a memory-map access outside its object traps, or reads 0 (or its last entry) "
+        "and stores nothing",
     )
     args = ap.parse_args(argv)
     data = Path(args.image).read_bytes()

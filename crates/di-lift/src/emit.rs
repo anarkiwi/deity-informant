@@ -16,7 +16,7 @@ use crate::vsa::NOREG;
 use crate::why::{complement, Kind, Why};
 use di_pcode::{reg as R, CtrlKind, Op, Opc, PenKind, Slot, Space, Template, Vn};
 use fixedbitset::FixedBitSet;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use std::collections::VecDeque;
 
 const NONE: Vn = Vn::NONE;
@@ -147,8 +147,8 @@ struct Em<'a, 'b> {
     /// Whether the current access lies outside the object the memory map keeps it in, when
     /// that skips it ([`Shared::zero`]): its own checks hold only where it is made.
     skip: Vn,
-    /// The sizes of the spill registers ([`SPILL`]).
-    spills: Vec<u8>,
+    /// The flags of the current access when skipped ([`mem::zero`]), else 0.
+    zflags: u32,
 }
 
 /// What emitting a function produced.
@@ -218,7 +218,7 @@ pub fn emit(
         mem: None,
         carries: &sh.carries[fi],
         skip: NONE,
-        spills: Vec::new(),
+        zflags: 0,
     };
     em.new_block(plan.pc);
     if em.cont {
@@ -323,58 +323,12 @@ pub fn emit(
             to,
         );
     }
-    em.f.nspills = em.spills.len() as u32;
-    if em.f.nspills > 0 {
-        let to = NREG as u32 + em.f.nslots + em.f.ncarries;
-        remap(
-            &mut em.f.blocks,
-            SPILL as u32..SPILL as u32 + em.f.nspills,
-            to,
-        );
-    }
     (em.f, em.n)
-}
-
-/// The offset of temporary `v`, if it is one.
-fn uoff(v: Vn) -> Option<u32> {
-    (v.space() == Space::Unique).then(|| v.off())
 }
 
 /// A check after an object's pointer is defined: its pair's address, bytes, check and whether
 /// its access is skipped ([`Em::skip`]).
 type After = (Vn, Iv, crate::objects::ObjChk, Vn);
-
-/// Appends to `keep` the values an instruction's checks so far hold: the zone test `zone`,
-/// the checks `chk` and the pointer checks `after`.
-fn held(keep: &mut Vec<Vn>, zone: Vn, chk: &[(Vn, Why)], after: &[After]) {
-    keep.push(zone);
-    keep.extend(chk.iter().map(|c| c.0));
-    keep.extend(after.iter().flat_map(|o| [o.0, o.3]));
-}
-
-/// The values of [`held`] at `keep[at..]` and the temporaries `live` at `keep[..]` read back
-/// after a join ([`Em::unless`]).
-fn rebind(
-    keep: &[Vn],
-    at: usize,
-    live: &[u32],
-    umap: &mut FxHashMap<u32, Vn>,
-    zone: &mut Vn,
-    chk: &mut [(Vn, Why)],
-    after: &mut [After],
-) {
-    for (u, &v) in live.iter().zip(keep) {
-        umap.insert(*u, v);
-    }
-    *zone = keep[at];
-    for (c, &v) in chk.iter_mut().zip(&keep[at + 1..]) {
-        c.0 = v;
-    }
-    let rest = &keep[at + 1 + chk.len()..];
-    for (o, v) in after.iter_mut().zip(rest.chunks(2)) {
-        (o.0, o.3) = (v[0], v[1]);
-    }
-}
 
 /// Renumbers the registers `from` of `blocks`' ops to start at `to`.
 fn remap(blocks: &mut [Block], from: std::ops::Range<u32>, to: u32) {
@@ -396,9 +350,6 @@ const ABOVE: u16 = NREG as u16 + 0x100;
 /// The register a function's first carry ([`crate::carry`]) is emitted in, numbered past its
 /// stack slots once they are known.
 const CARRY: u16 = NREG as u16 + 0x200;
-/// The register a function's first spill ([`Function::nspills`]) is emitted in, numbered past
-/// its carries once they are known.
-const SPILL: u16 = NREG as u16 + 0x300;
 
 impl<'a> Em<'a, '_> {
     fn new_block(&mut self, pc: u16) -> u32 {
@@ -524,7 +475,10 @@ impl<'a> Em<'a, '_> {
         };
         match self.backing(m, iv) {
             Some(Back::Rom) => match iv.value() {
-                Some(a) => self.emit(Opc::Copy, out, k(m.rom[a as usize] as u32, 1), NONE, 0),
+                Some(a) => {
+                    self.emit(Opc::Copy, out, k(m.rom[a as usize] as u32, 1), NONE, 0);
+                    self.unless_skipped(out);
+                }
                 None => self.emit(Opc::Load, out, addr, NONE, flags | mem::ROM),
             },
             _ if iv.value() == Some(m.data as u32) => {
@@ -533,6 +487,7 @@ impl<'a> Em<'a, '_> {
                 let nd = self.op(Opc::IntXor, 1, d, k(0xff, 1));
                 let lo = self.op(Opc::IntAnd, 1, nd, k(m.pull as u32, 1));
                 self.emit(Opc::IntOr, out, hi, lo, 0);
+                self.unless_skipped(out);
             }
             b => {
                 let f = flags | self.bflags(b, iv);
@@ -1054,88 +1009,13 @@ impl<'a> Em<'a, '_> {
         let ok = self.op(Opc::IntXor, 1, self.skip, k(1, 1));
         self.op(Opc::IntAnd, 1, c, ok)
     }
-    /// `body` where `skip` is clear, then on in a block both paths join, given `out` (the
-    /// register `body` writes, which holds 0 where it is skipped) and the values `keep`. A
-    /// temporary lives in its extended basic block alone, so each crosses the join in a spill
-    /// register and is replaced by the fresh temporary it is read back into.
-    fn unless(
-        &mut self,
-        skip: Vn,
-        out: Vn,
-        keep: &mut [Vn],
-        body: impl FnOnce(&mut Self, Vn),
-    ) -> Vn {
-        let mut taken = 0u32;
-        let mut spill = |em: &mut Self, size: u8| {
-            let j = match (em.spills.iter().enumerate())
-                .position(|(j, &s)| s == size && taken >> j & 1 == 0)
-            {
-                Some(j) => j,
-                None => {
-                    em.spills.push(size);
-                    em.spills.len() - 1
-                }
-            };
-            taken |= 1 << j;
-            reg(SPILL + j as u16, size)
-        };
-        let held: Vec<(usize, Vn)> = (keep.iter().enumerate())
-            .filter(|(_, v)| v.space() == Space::Unique)
-            .map(|(i, &v)| (i, v))
-            .collect();
-        let mut regs = Vec::with_capacity(held.len());
-        for &(_, v) in &held {
-            let s = spill(self, v.size() as u8);
-            self.emit(Opc::Copy, s, v, NONE, 0);
-            regs.push(s);
+    /// `v` where the current access is made, 0 where it is skipped ([`Em::skip`]).
+    fn unless_skipped(&mut self, v: Vn) {
+        if !self.skip.is_none() {
+            let ok = self.op(Opc::IntXor, 1, self.skip, k(1, 1));
+            let all = self.op(Opc::IntSub, 1, k(0, 1), ok);
+            self.emit(Opc::IntAnd, v, v, all, 0);
         }
-        let to = match out.space() {
-            Space::Unique => spill(self, out.size() as u8),
-            _ => out,
-        };
-        if !out.is_none() {
-            self.emit(Opc::Copy, to, k(0, out.size() as u8), NONE, 0);
-        }
-        let pc = self.f.blocks[self.cur].pc;
-        let (then, join) = (self.new_block(pc), self.new_block(pc));
-        self.emit(Opc::CBranch, NONE, skip, NONE, join);
-        self.emit(Opc::Branch, NONE, NONE, NONE, then);
-        self.cur = then as usize;
-        body(self, to);
-        self.emit(Opc::Branch, NONE, NONE, NONE, join);
-        self.cur = join as usize;
-        for ((i, v), s) in held.into_iter().zip(regs) {
-            keep[i] = self.op(Opc::Copy, v.size() as u8, s, NONE);
-        }
-        match out.space() {
-            Space::Unique => self.op(Opc::Copy, out.size() as u8, to, NONE),
-            _ => out,
-        }
-    }
-    /// The temporaries of template `ops` live after op `i`, as `umap` names them, and the
-    /// values the instruction's checks so far keep: what an access skipped at `i` keeps.
-    fn live_after(
-        ops: &[Op],
-        i: usize,
-        umap: &FxHashMap<u32, Vn>,
-        extra: impl IntoIterator<Item = Vn>,
-    ) -> (Vec<u32>, Vec<Vn>) {
-        let mut defs = FxHashSet::default();
-        let mut live = Vec::new();
-        for op in &ops[i + 1..] {
-            for v in op.ins.iter().filter(|v| v.space() == Space::Unique) {
-                if !defs.contains(&v.off()) && umap.contains_key(&v.off()) {
-                    live.push(v.off());
-                }
-            }
-            if op.out.space() == Space::Unique {
-                defs.insert(op.out.off());
-            }
-        }
-        live.sort_unstable();
-        live.dedup();
-        let vs = live.iter().map(|u| umap[u]).chain(extra).collect();
-        (live, vs)
     }
     /// `x | c` (one byte), `c` alone when `x` is [`NONE`].
     fn or(&mut self, x: Vn, c: Vn) -> Vn {
@@ -1528,7 +1408,7 @@ impl<'a> Em<'a, '_> {
         let mut zwhy = Vec::new();
         // The addresses the memory map's checks of the instruction test.
         let mut machined: Vec<Vn> = Vec::new();
-        for (i, op) in ops.iter().enumerate() {
+        for op in ops {
             let mut map = |em: &mut Self, v: Vn| -> Vn {
                 match v.space() {
                     _ if v.is_none() => NONE,
@@ -1585,10 +1465,11 @@ impl<'a> Em<'a, '_> {
                 // An access the memory map bounds deopts before it leaves the bytes it may; in
                 // overrun-zero, outside them a load reads 0 and a store does nothing.
                 let mapped = self.sh.g.objs.machine.get(&(pc, opc, ai));
-                self.skip = NONE;
+                (self.skip, self.zflags) = (NONE, 0);
                 match (mapped, machined.contains(&a)) {
                     (Some(&(obj, _)), _) if self.sh.zero => {
                         self.skip = self.obj_test(a, obj, None, "machine").0;
+                        self.zflags = mem::zero(obj);
                     }
                     (Some(&(obj, run)), false) => {
                         machined.push(a);
@@ -1677,45 +1558,19 @@ impl<'a> Em<'a, '_> {
                         continue;
                     }
                     (true, _) => self.store_flags(ac.addr) | mem::STACK,
+                    (false, Opc::Load) if quiet => {
+                        self.emit(Opc::Load, out, a, NONE, self.zflags);
+                        continue;
+                    }
                     (false, Opc::Load) => {
-                        let load = move |em: &mut Self, to: Vn| match quiet {
-                            true => em.emit(Opc::Load, to, a, NONE, 0),
-                            false => em.load_into(to, a, ac.addr, 0),
-                        };
-                        if self.skip.is_none() {
-                            load(self, out);
-                            continue;
-                        }
-                        let (mut live, mut keep) = Self::live_after(ops, i, umap, []);
-                        if let Some(j) = live.iter().position(|&u| Some(u) == uoff(op.out)) {
-                            live.remove(j);
-                            keep.remove(j);
-                        }
-                        let at = keep.len();
-                        held(&mut keep, zone, &chk, &objs_after);
-                        let got = self.unless(self.skip, out, &mut keep, load);
-                        rebind(&keep, at, &live, umap, &mut zone, &mut chk, &mut objs_after);
-                        if let Some(u) = uoff(op.out) {
-                            umap.insert(u, got);
-                        }
+                        self.load_into(out, a, ac.addr, self.zflags);
                         continue;
                     }
                     _ if quiet => 0,
                     _ => self.store_flags(ac.addr),
                 };
-                let (mut a, mut b) = (a, b);
-                if op.opc == Opc::Store && self.skip.is_none() {
-                    self.emit(Opc::Store, out, a, b, aux);
-                } else if op.opc == Opc::Store {
-                    let (live, mut keep) = Self::live_after(ops, i, umap, [a, b, self.skip]);
-                    let at = keep.len();
-                    held(&mut keep, zone, &chk, &objs_after);
-                    let store = |em: &mut Self, _| em.emit(Opc::Store, out, a, b, aux);
-                    self.unless(self.skip, NONE, &mut keep, store);
-                    (a, b, self.skip) = (keep[at - 3], keep[at - 2], keep[at - 1]);
-                    rebind(&keep, at, &live, umap, &mut zone, &mut chk, &mut objs_after);
-                }
                 if op.opc == Opc::Store {
+                    self.emit(Opc::Store, out, a, b, aux | self.zflags);
                     let pairs = self.sh.g.prot.chk.get(&(pc, opc, ai - 1));
                     for &q in pairs.into_iter().flatten().filter(|_| !stack) {
                         let (mut bad, why) = self.window(q);
@@ -1798,7 +1653,7 @@ impl<'a> Em<'a, '_> {
                 chk.push((self.made(bad), why));
             }
         }
-        self.skip = NONE;
+        (self.skip, self.zflags) = (NONE, 0);
         chk
     }
 

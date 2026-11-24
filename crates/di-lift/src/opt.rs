@@ -643,8 +643,9 @@ enum MemKey {
     Other(u32),
 }
 
-/// A known memory byte: key and value.
-type Known = (MemKey, Val);
+/// A known memory byte: key, the object of the load reading 0 outside it that read it
+/// ([`mem::ZERO`]; None: the byte itself) and value.
+type Known = (MemKey, Option<u16>, Val);
 
 #[derive(Default)]
 struct St {
@@ -1184,15 +1185,16 @@ fn number_block(lv: &mut Lvn, blk: &mut Block, tables: &[Vec<(u16, u32)>], st: &
                 }
                 let mk = lv.memkey(a);
                 let w = op.out.size();
-                let byte = op.plain() && w == 1;
+                let z = (op.aux & mem::ZERO != 0).then(|| mem::obj(op.aux));
+                let byte = w == 1 && (op.plain() || op.aux & !mem::zero(u16::MAX) == 0);
                 let hit = byte
-                    .then(|| st.mem.iter().find(|e| e.0 == mk).copied())
+                    .then(|| st.mem.iter().find(|e| (e.0, e.1) == (mk, z)).copied())
                     .flatten();
-                if let Some((_, v)) = hit {
+                if let Some((_, _, v)) = hit {
                     result = Some((v, false));
                 } else {
                     let held = match a {
-                        Val::K(x) if byte && op.aux & mem::VOLATILE == 0 => {
+                        Val::K(x) if byte && z.is_none() && op.aux & mem::VOLATILE == 0 => {
                             let i = cx.steady.binary_search_by_key(&x, |e| e.0 as u32);
                             i.ok().map(|i| cx.steady[i].1)
                         }
@@ -1200,7 +1202,7 @@ fn number_block(lv: &mut Lvn, blk: &mut Block, tables: &[Vec<(u16, u32)>], st: &
                     };
                     let s = lv.leaf(w as u8, held.unwrap_or(Iv::full(w)));
                     if byte {
-                        st.remember((mk, Val::S(s)));
+                        st.remember((mk, z, Val::S(s)));
                     }
                     result = Some((Val::S(s), true));
                 }
@@ -1214,12 +1216,12 @@ fn number_block(lv: &mut Lvn, blk: &mut Block, tables: &[Vec<(u16, u32)>], st: &
                 let mk = lv.memkey(a);
                 let w = op.ins[1].size();
                 let byte = op.plain() && w == 1;
-                if byte && st.mem.contains(&(mk, b)) {
+                if byte && st.mem.contains(&(mk, None, b)) {
                     continue;
                 }
                 st.forget(|e| lv.alias_w(e, mk, w));
                 if byte {
-                    st.remember((mk, b));
+                    st.remember((mk, None, b));
                 }
             }
             Opc::CBranch => {

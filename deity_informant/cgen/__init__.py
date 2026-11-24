@@ -655,6 +655,11 @@ class Program:  # pylint: disable=too-many-instance-attributes
     #: Per instruction start of the memory map's accesses, ascending: ``{"pc", "ok", "addr"}``,
     #: the inclusive runs of their objects and the hull of their addresses (*Memory*).
     overruns: list = ()
+    #: With ``overrun="last"``, per object its runs' last entries ``(last byte, first byte of
+    #: the last entry, entry size)`` (*Memory*).
+    last: list = ()
+    #: With ``overrun="last"``, per indexed load its table ``(pc, lo, hi, entry size)``.
+    owned: list = ()
     regs: dict | None = None
     bounded: dict | None = None
     init: tuple | None = None
@@ -680,14 +685,16 @@ class Program:  # pylint: disable=too-many-instance-attributes
 
     def unbounded(self):
         """``[(pc, why)]`` of the pointer accesses (``reach``) and memory-map accesses
-        (``machine``) no address set bounds: ``"checked"`` or ``"no set"``, with the index
-        of the object serving it or None."""
-        sets = {pc for pc, _ in self.addr_sets or {}} | {pc for pc, _ in self.data or {}}
+        (``machine``) no address set or table (``owned``) bounds: ``"checked"`` or ``"no
+        set"``, with the index of the object serving it or None."""
+        owned = {t[0] for t in self.owned}
+        sets = {pc for pc, _ in self.addr_sets or {}} | {pc for pc, _ in self.data or {}} | owned
         served = {pc: j for j, o in enumerate(self.objects) for pc in o[2]}
         out = []
         for pc in sorted(set(self.reach or {}) | set(self.machine)):
-            if pc in self.machine or pc not in sets:
-                out.append((pc, "checked" if pc in self.machine else "no set", served.get(pc)))
+            checked = pc in self.machine and pc not in owned
+            if checked or pc not in sets:
+                out.append((pc, "checked" if checked else "no set", served.get(pc)))
         return out
 
 
@@ -969,8 +976,11 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     p.objects, p.parts, p.slack = list(prog.objects), dict(prog.parts), dict(prog.slack)
     p.machine = frozenset(prog.machine)
     p.overruns = [
-        {"pc": pc, "ok": [list(r) for r in ok], "addr": list(a)} for pc, ok, a in prog.overruns
+        {"pc": pc, "ok": [list(r) for r in ok], "addr": list(a)}
+        | ({"last": list(map(list, e))} if e else {})
+        for pc, ok, a, e in prog.overruns
     ]
+    p.last, p.owned = [list(rs) for rs in prog.last], list(prog.owned)
     p.pdefs = [_pdefs(x) for x in (prog, lone) if x is not None]
     p.pvalues = dict(prog.pdefs_values)
     p.stores = {"play": trapinfo.stores(prog)}
@@ -1104,6 +1114,11 @@ def render(  # pylint: disable=too-many-locals,too-many-arguments,too-many-posit
     vars(mod).update(vars(_facts(p)))
     mod.ptr_objects, mod.ptr_parts = list(p.objects), dict(p.parts or {})
     mod.ptr_slack = dict(p.slack or {})
+    mod.ptr_last = list(p.last)
+    hulls = {o["pc"]: o["addr"][0] for o in p.overruns}
+    mod.ptr_below = {
+        j for j, (lo, _, pcs) in enumerate(p.objects) if any(hulls.get(pc, lo) < lo for pc in pcs)
+    }
     mod.regfile = regfile = [r for r, _ in regfile]
     mod.kpos = regfile.index(emit.KREG) if emit.KREG in regfile else None
     song = None
@@ -1245,6 +1260,7 @@ def render(  # pylint: disable=too-many-locals,too-many-arguments,too-many-posit
         "trap_info": trap_info,
         "overruns": list(p.overruns),
         "unbounded": p.unbounded(),
+        "tables": [list(t) for t in p.owned],
         "runtime_traps": {OOB_TRAP: "unheld"} if helpers & OOB_HELPERS else {},
         "emission": emission,
         "unknown_access": mem.unknown,
