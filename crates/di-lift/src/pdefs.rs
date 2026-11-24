@@ -23,6 +23,10 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct Flows<'a> {
     g: &'a Graph,
     rets: FxHashMap<u16, BTreeSet<u16>>,
+    /// Per procedure head, its instructions (calls stepped over to their return sites).
+    body: FxHashMap<u16, FxHashSet<u16>>,
+    /// Per return, the heads of the procedures it lies in.
+    heads: FxHashMap<u16, BTreeSet<u16>>,
 }
 
 /// The callees and return site of a call at `pc` (`JSR`, `BRK`).
@@ -50,6 +54,8 @@ impl<'a> Flows<'a> {
             }
         }
         let mut rets: FxHashMap<u16, BTreeSet<u16>> = FxHashMap::default();
+        let mut body: FxHashMap<u16, FxHashSet<u16>> = FxHashMap::default();
+        let mut heads: FxHashMap<u16, BTreeSet<u16>> = FxHashMap::default();
         for (&head, back) in &sites {
             let mut seen: FxHashSet<u16> = FxHashSet::default();
             let mut work = vec![head];
@@ -60,6 +66,7 @@ impl<'a> Flows<'a> {
                 for v in g.vars.get(&pc).into_iter().flatten() {
                     if returns(&v.flow) {
                         rets.entry(pc).or_default().extend(back);
+                        heads.entry(pc).or_default().insert(head);
                     }
                     match call(pc, &v.flow) {
                         Some((_, ret)) => work.push(ret),
@@ -67,8 +74,95 @@ impl<'a> Flows<'a> {
                     }
                 }
             }
+            body.insert(head, seen);
         }
-        Flows { g, rets }
+        Flows {
+            g,
+            rets,
+            body,
+            heads,
+        }
+    }
+
+    /// The procedure heads that write none of `writers`, in their own code or in a procedure
+    /// they call.
+    pub fn clean(&self, writers: &FxHashSet<u16>) -> FxHashSet<u16> {
+        let mut dirty: FxHashSet<u16> = (self.body.iter())
+            .filter(|(_, b)| b.iter().any(|pc| writers.contains(pc)))
+            .map(|(&h, _)| h)
+            .collect();
+        loop {
+            let more: Vec<u16> = (self.body.iter())
+                .filter(|(h, b)| {
+                    !dirty.contains(*h)
+                        && b.iter().any(|pc| {
+                            (self.g.vars.get(pc).into_iter().flatten()).any(|v| {
+                                call(*pc, &v.flow)
+                                    .is_some_and(|(ts, _)| ts.iter().any(|t| dirty.contains(t)))
+                            })
+                        })
+                })
+                .map(|(&h, _)| h)
+                .collect();
+            if more.is_empty() {
+                break;
+            }
+            dirty.extend(more);
+        }
+        (self.body.keys())
+            .filter(|h| !dirty.contains(h))
+            .copied()
+            .collect()
+    }
+
+    /// The instruction starts the definitions of a location reach past `pc`, the procedures
+    /// `clean` writing none of it: a call of clean procedures also reaches its return site, and
+    /// a return of clean procedures only reaches back to their callers through those calls.
+    pub fn succs_of(&self, pc: u16, clean: &FxHashSet<u16>) -> Vec<u16> {
+        let mut s = Vec::new();
+        for v in self.g.vars.get(&pc).into_iter().flatten() {
+            match call(pc, &v.flow) {
+                Some(([], ret)) => s.push(ret),
+                Some((ts, ret)) => {
+                    s.extend(ts);
+                    if ts.iter().all(|t| clean.contains(t)) {
+                        s.push(ret);
+                    }
+                }
+                None if returns(&v.flow) => {
+                    let hs = self.heads.get(&pc);
+                    if !hs.is_some_and(|hs| hs.iter().all(|h| clean.contains(h))) {
+                        s.extend(self.rets.get(&pc).into_iter().flatten());
+                    }
+                }
+                None => s.extend(flow_succs(&v.flow)),
+            }
+        }
+        s
+    }
+
+    /// The returns of the procedures rooted at `roots` (each call stepped over to its return
+    /// site): where an entry leaves the program.
+    pub fn exits(&self, roots: &[u16]) -> Vec<u16> {
+        let (mut seen, mut out): (FxHashSet<u16>, Vec<u16>) = Default::default();
+        let mut work = roots.to_vec();
+        while let Some(pc) = work.pop() {
+            if !seen.insert(pc) {
+                continue;
+            }
+            for v in self.g.vars.get(&pc).into_iter().flatten() {
+                if returns(&v.flow) {
+                    out.push(pc);
+                }
+                match call(pc, &v.flow) {
+                    Some((_, ret)) => work.push(ret),
+                    None => work.extend(flow_succs(&v.flow)),
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 
     /// The instruction starts definitions reach past `pc`.
@@ -170,7 +264,7 @@ pub fn reads(g: &Graph, pc: u16) -> BTreeSet<Loc> {
 
 /// How the instruction at `pc` writes each part of `loc` (the bytes of a word, a register):
 /// `Some(true)` replacing it, `Some(false)` where it may.
-fn writer(g: &Graph, pc: u16, loc: Loc) -> [Option<bool>; 2] {
+fn writer(g: &Graph, pc: u16, loc: Loc, skip: Skip) -> [Option<bool>; 2] {
     let vs = g.vars.get(&pc).map_or(&[][..], |v| &v[..]);
     let one = vs.len() == 1;
     let mut out = [None, None];
@@ -181,7 +275,9 @@ fn writer(g: &Graph, pc: u16, loc: Loc) -> [Option<bool>; 2] {
             }
             Loc::Reg(..) => {}
             Loc::Word(q) if !is_stack_op(v.op) => {
-                for a in v.acc.iter().filter(|a| a.store && !a.dummy && !a.back) {
+                for a in
+                    (v.acc.iter()).filter(|a| a.store && !a.dummy && !a.back && !skip(pc, v, a))
+                {
                     for (i, b) in [q as u32, q.wrapping_add(1) as u32].into_iter().enumerate() {
                         if a.addr.meets(b, b + 1) {
                             let exact = one && a.addr.value() == Some(b);
@@ -196,21 +292,29 @@ fn writer(g: &Graph, pc: u16, loc: Loc) -> [Option<bool>; 2] {
     out
 }
 
+/// Stores a location's definitions leave out: `(pc, variant, access)`.
+pub(crate) type Skip<'s> = &'s dyn Fn(u16, &Var, &crate::analysis::Access) -> bool;
+
 /// The definitions of one location: their bytes, and per instruction start writing it the
 /// definition it makes and whether it writes the whole byte.
-struct Local {
-    defs: Vec<Def>,
+pub(crate) struct Local {
+    pub(crate) defs: Vec<Def>,
     bytes: [FixedBitSet; 2],
-    writes: FxHashMap<u16, Vec<(usize, bool)>>,
+    pub(crate) writes: FxHashMap<u16, Vec<(usize, bool)>>,
 }
 
 impl Local {
     fn new(g: &Graph, pcs: &[u16], loc: Loc) -> Self {
+        Self::with(g, pcs, loc, &|_, _, _| false)
+    }
+
+    /// The definitions of `loc` by the instructions `pcs`, the stores `skip` names left out.
+    pub(crate) fn with(g: &Graph, pcs: &[u16], loc: Loc, skip: Skip) -> Self {
         let n = if matches!(loc, Loc::Word(_)) { 2 } else { 1 };
         let mut defs: Vec<Def> = (0..n).map(|i| (loc, i, None)).collect();
         let mut writes: FxHashMap<u16, Vec<(usize, bool)>> = FxHashMap::default();
         for &pc in pcs {
-            for (i, how) in writer(g, pc, loc).into_iter().enumerate() {
+            for (i, how) in writer(g, pc, loc, skip).into_iter().enumerate() {
                 if let Some(exact) = how {
                     writes.entry(pc).or_default().push((defs.len(), exact));
                     defs.push((loc, i as u8, Some(pc)));
@@ -230,7 +334,7 @@ impl Local {
     }
 
     /// The definitions reaching past `pc` from those reaching it.
-    fn transfer(&self, pc: u16, ins: &FixedBitSet) -> FixedBitSet {
+    pub(crate) fn transfer(&self, pc: u16, ins: &FixedBitSet) -> FixedBitSet {
         let mut out = ins.clone();
         for &(d, exact) in self.writes.get(&pc).into_iter().flatten() {
             if exact {
@@ -242,7 +346,7 @@ impl Local {
     }
 
     /// The definitions reaching each instruction start from `roots`.
-    fn reaching(&self, cfg: &Flows, roots: &[u16]) -> FxHashMap<u16, FixedBitSet> {
+    pub(crate) fn reaching(&self, cfg: &Flows, roots: &[u16]) -> FxHashMap<u16, FixedBitSet> {
         let empty = FixedBitSet::with_capacity(self.defs.len());
         let mut ins: FxHashMap<u16, FixedBitSet> = FxHashMap::default();
         let mut work: Vec<u16> = Vec::new();
@@ -253,11 +357,12 @@ impl Local {
             work.push(r);
         }
         let mut queued: FxHashSet<u16> = work.iter().copied().collect();
+        let clean = cfg.clean(&self.writes.keys().copied().collect());
         while let Some(pc) = work.pop() {
             queued.remove(&pc);
             let o = self.transfer(pc, &ins[&pc]);
             for s in cfg
-                .succs(pc)
+                .succs_of(pc, &clean)
                 .into_iter()
                 .filter(|s| cfg.g.vars.contains_key(s))
             {
