@@ -674,6 +674,9 @@ class Program:  # pylint: disable=too-many-instance-attributes
     #: Per lift (the entries', init's), its pointer definitions and where they reach
     #: (``Program.pdefs``, ``pdefs_at``, ``pdefs_past``).
     pdefs: list = ()
+    #: Per instruction start of the entries' lift, the ids into its ``pdefs`` definitions of
+    #: ``A``, ``X`` and ``Y`` as values reaching it (``Program.pdefs_values``).
+    pvalues: dict | None = None
 
 
 def _ranked(progs):
@@ -957,6 +960,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
         {"pc": pc, "ok": [list(r) for r in ok], "addr": list(a)} for pc, ok, a in prog.overruns
     ]
     p.pdefs = [_pdefs(x) for x in (prog, lone) if x is not None]
+    p.pvalues = dict(prog.pdefs_values)
     p.stores = {"play": trapinfo.stores(prog)}
     if init is not None:
         p.stores["init"] = trapinfo.stores(lone if lone is not None else bare)

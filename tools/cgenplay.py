@@ -1,10 +1,10 @@
 """Translate a program with ``deity_informant.cgen`` and play the C against the reference.
 
 ``python tools/cgenplay.py FILE (--psid | --org ORG --entry PC:NAME ...) --volatile LO-HI
-[--calls NAME:A*N,...] [--overrun zero] [-o DIR]`` compiles the ``.c`` with
+[--calls NAME:A*N,...] [--overrun zero|last] [-o DIR]`` compiles the ``.c`` with
 ``tools/cgenplay.c`` and checks each call's volatile writes (and reads of ``--sensitive``
-addresses) against the reference; with ``--overrun zero`` the reference plays the translation's
-rule (:class:`Overruns`).
+addresses) against the reference; with ``--overrun zero`` or ``last`` the reference plays the
+translation's rule (:class:`Overruns`).
 """
 
 import argparse
@@ -44,17 +44,19 @@ def entry_regs(a):
 
 
 class Overruns(PcodeVM):
-    """The reference with the overrun-zero rule of ``overruns`` (``info["overruns"]``): a
-    data access by one of their instructions (not the pointer fetch of ``(zp),Y`` or
-    ``(zp,X)``) at an address of its ``addr`` hull outside its ``ok`` runs reads 0 or writes
-    nothing. Each access of the ``volatile`` ranges is logged as ``(addr, value, written)``."""
+    """The reference with the overrun rule of ``overruns`` (``info["overruns"]``): a data
+    access by one of their instructions (not the pointer fetch of ``(zp),Y`` or ``(zp,X)``) at
+    an address of its ``addr`` hull outside its ``ok`` runs writes nothing and reads 0, or with
+    ``last`` (per run the first byte of its last entry and its size) the same byte of the last
+    entry of the run below it (the first run's when none is). Each access of the ``volatile``
+    ranges is logged as ``(addr, value, written)``."""
 
     __slots__ = ("at", "rules", "io", "log", "fetch")
 
     def __init__(self, image, overruns, volatile):
         super().__init__(image)
         self.volatile, self.at, self.log, self.fetch = False, None, [], 0
-        self.rules = {o["pc"]: (o["addr"], o["ok"]) for o in overruns}
+        self.rules = {o["pc"]: (o["addr"], o["ok"], o.get("last")) for o in overruns}
         self.io = volatile
 
     def skipped(self, a):
@@ -67,11 +69,20 @@ class Overruns(PcodeVM):
             return False
         return not any(lo <= a <= hi for lo, hi in rule[1])
 
+    def instead(self, a):
+        """The byte a skipped read of ``a`` reads by the current instruction's rule."""
+        _, ok, last = self.rules[self.at]
+        if not last:
+            return 0
+        i = max([k for k, (_, hi) in enumerate(ok) if hi < a] or [0])
+        first, size = last[i]
+        return self.mem[first + (a - first) % size]
+
     def _rd(self, addr, sz):
         val = 0
         for i in range(sz):
             a = (addr + i) & 0xFFFF
-            b = 0 if self.skipped(a) else self.mem[a]
+            b = self.instead(a) if self.skipped(a) else self.mem[a]
             if any(lo <= a < hi for lo, hi in self.io):
                 self.log.append((a, b, 0))
             val |= b << (8 * i)
@@ -177,7 +188,9 @@ def main(argv=None):  # pylint: disable=too-many-locals
     ap.add_argument("--init", help="NAME of the entry called once, first (--psid: init)")
     ap.add_argument("-n", type=int, default=3000, help="play calls after init with --psid")
     ap.add_argument("-o", "--out", default=".", help="directory for the .c, .h and library")
-    ap.add_argument("--overrun", choices=("trap", "zero"), default="trap", help="cgen overrun")
+    ap.add_argument(
+        "--overrun", choices=("trap", "zero", "last"), default="trap", help="cgen overrun"
+    )
     args = ap.parse_args(argv)
     data = Path(args.file).read_bytes()
     if args.psid:
@@ -220,7 +233,7 @@ def main(argv=None):  # pylint: disable=too-many-locals
     print(f"translate {wall:.3f} s ({stages})", flush=True)
     lib = build(stem.with_suffix(".c"), stem.with_suffix(".so"))
     pcs = {name: pc for pc, name in entries}
-    zero = info["overruns"] if args.overrun == "zero" else None
+    zero = info["overruns"] if args.overrun != "trap" else None
     n = replay(lib, image, pcs, parse_calls(calls, pcs), vol, args.sensitive, True, overruns=zero)
     print(f"{n} calls identical to the reference")
     return 0

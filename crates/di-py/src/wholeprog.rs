@@ -878,7 +878,8 @@ impl Program {
 
     /// The pointer definitions (``deity_informant.wholeprog`` *Pointer definitions*), by id:
     /// ``[(loc, at, byte, by)]``, ``loc`` ``"w"`` the word at ``at`` and the byte past it,
-    /// ``"x"`` or ``"y"`` a register indexing the run of data bytes starting at ``at``;
+    /// ``"x"`` or ``"y"`` a register indexing the run of data bytes starting at ``at``, ``"a"``,
+    /// ``"x"`` or ``"y"`` with ``at`` ``0xFFFFFFFF`` the register's value (``pdefs_values``);
     /// ``byte`` 0 the low byte (or the register), 1 the high; ``by`` the instruction writing
     /// it, ``None`` the value an entry starts with.
     #[getter]
@@ -887,6 +888,7 @@ impl Program {
         (self.prog.pdefs.defs.iter())
             .map(|&(l, byte, by)| match l {
                 Loc::Word(q) => ("w", q as u32, byte, by),
+                Loc::Reg(r, run) if r as usize == di_pcode::reg::A => ("a", run, byte, by),
                 Loc::Reg(r, run) if r as usize == di_pcode::reg::X => ("x", run, byte, by),
                 Loc::Reg(_, run) => ("y", run, byte, by),
             })
@@ -905,6 +907,13 @@ impl Program {
     #[getter]
     fn pdefs_past(&self) -> HashMap<u16, Vec<u32>> {
         self.prog.pdefs.past.iter().cloned().collect()
+    }
+
+    /// Per instruction start, the ids of the definitions of ``A``, ``X`` and ``Y`` as values
+    /// reaching it: ``{pc: [id, ...]}``.
+    #[getter]
+    fn pdefs_values(&self) -> HashMap<u16, Vec<u32>> {
+        self.prog.pdefs.values.iter().cloned().collect()
     }
 
     /// The runs of each object of several (a data block): ``{j: [(lo, hi), ...]}``, ``hi``
