@@ -949,7 +949,9 @@ the facts, so a proof holds on every execution that stays in lifted code.
   address replaces the byte's, one that may miss it adds its own. Definitions flow along the
   edges, into a call's callees and from a return back to the return sites of the calls of
   each procedure reaching it without a call (through tail calls too); an entry's returns
-  leave. `Program.pdefs` lists them by id (`(loc, at, byte, by)`: `loc` `"w"` the word at
+  leave. A location's definitions also pass a call whose callees (and theirs) never write it
+  straight to the return site, and a return of such procedures reaches the callers only
+  through those calls. `Program.pdefs` lists them by id (`(loc, at, byte, by)`: `loc` `"w"` the word at
   `at`, `"x"` or `"y"` the register of the run starting at `at`, `"a"`, `"x"` or `"y"` with
   `at` `0xFFFFFFFF` the register's value; `byte` 0 or 1; `by` the writer), `pdefs_at` the ids
   reaching each access's instruction, `pdefs_past` those of a word reaching past each
