@@ -148,7 +148,6 @@ def test_command_lines_take_the_rule(prefix, tmp_path):
     assert cgenplay.main([*args, "--calls", calls, "-o", str(tmp_path / "play")]) == 0
 
 
-
 def test_unbounded_lists_the_checked_accesses(prefix):
     """``info["unbounded"]`` holds each access the memory map checks, by instruction start,
     as checked with its object; a program whose accesses have exact addresses has none."""
