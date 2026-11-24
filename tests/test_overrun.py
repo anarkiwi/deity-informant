@@ -146,3 +146,17 @@ def test_command_lines_take_the_rule(prefix, tmp_path):
     assert re.search(r"\bR\d+zw\d+\(", T.body_of((tmp_path / "p.c").read_text(), "entry"))
     calls = ",".join(f"entry:{a}" for a in ARGS)
     assert cgenplay.main([*args, "--calls", calls, "-o", str(tmp_path / "play")]) == 0
+
+
+def test_unbounded_lists_the_checked_accesses(prefix):
+    """``info["unbounded"]`` holds each access the memory map checks, by instruction start,
+    as checked with its object; a program whose accesses have exact addresses has none."""
+    img, labels, loaded = pushread()
+    _, _, info = zero(prefix, img, labels, loaded)
+    got = {pc: (why, obj) for pc, why, obj in info["unbounded"]}
+    assert {labels["put"], labels["rd"], labels["cmp"]} <= set(got)
+    assert set(sites(info)) <= {pc for pc, (why, _) in got.items() if why == "checked"}
+    assert all(obj is not None for why, obj in got.values() if why == "checked")
+    exact = "entry: LDX #2\n LDA tab,X\n STA $C010\n RTS\ntab: .byte 1,2,3\nend:\n"
+    img, labels, loaded = T.assemble(exact)
+    assert zero(prefix, img, labels, loaded)[2]["unbounded"] == []

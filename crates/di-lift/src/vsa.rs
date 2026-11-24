@@ -1055,6 +1055,25 @@ pub(crate) fn refine(code: &Code, st: &St, flag: usize, want: bool) -> Option<St
     Some(s)
 }
 
+/// State the threads analysing one program share: a lock that clones its contents.
+#[derive(Default, Debug)]
+pub(crate) struct Shared<T>(std::sync::Mutex<T>);
+
+impl<T: Clone> Clone for Shared<T> {
+    fn clone(&self) -> Self {
+        Shared(std::sync::Mutex::new(self.lock().clone()))
+    }
+}
+
+impl<T> Shared<T> {
+    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, T> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    pub(crate) fn get_mut(&mut self) -> &mut T {
+        self.0.get_mut().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 /// The image and code cells.
 #[derive(Clone)]
 pub(crate) struct Code<'a> {
@@ -1115,7 +1134,7 @@ pub(crate) struct Code<'a> {
     /// class (absent: itself). The instructions of one class write one carried value.
     pub(crate) classes: FxHashMap<u32, u32>,
     /// The classes joins found to meet, to unite ([`Code::settle`]).
-    pub(crate) meets: std::cell::RefCell<Vec<(u32, u32)>>,
+    pub(crate) meets: Shared<Vec<(u32, u32)>>,
     /// The operands of the one run no input decides ([`crate::once`]).
     pub(crate) ran: &'a crate::once::Ran,
     /// What every entry starts with of the tracked bytes: the driver head ([`head`]).
@@ -1198,7 +1217,7 @@ impl<'a> Code<'a> {
     /// Note that groups `g` and `h` meet in a join.
     fn unite(&self, g: u32, h: u32) {
         if g != h && g != NOGRP && h != NOGRP {
-            self.meets.borrow_mut().push((g.min(h), g.max(h)));
+            self.meets.lock().push((g.min(h), g.max(h)));
         }
     }
     /// Unite the classes the joins found to meet; whether any changed.
@@ -4189,8 +4208,12 @@ pub fn analyze(
                 xy: [&xb, &yb],
                 insn: &bytes,
             };
-            let (assumed, mut bases, _, runs, _) = reach(&pass, &sets, &objs, &armed, given, false);
-            let (proven, sure, regs, _, bound) = reach(&pass, &sets, &objs, &armed, given, true);
+            // The passes share nothing they write: one thread each.
+            let ((assumed, mut bases, _, runs, _), (proven, sure, regs, _, bound)) =
+                crate::par::join(
+                    || reach(&pass, &sets, &objs, &armed, given, false),
+                    || reach(&pass, &sets, &objs, &armed, given, true),
+                );
             // An access the pass taking tables inside their extents never reaches has the
             // proof pass's hulls.
             for (k, h) in sure {
