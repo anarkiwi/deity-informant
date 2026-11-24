@@ -2,6 +2,8 @@
 so the addresses its accesses take and the branch arms it runs over the states up to the repeat
 are every run's, the check of a lift's bounds and decisions (no part of the lift)."""
 
+import pytest
+
 import test_cgen as T
 from deity_informant import orbit
 
@@ -38,23 +40,6 @@ pos:    .byte 0
 rows:   .byte 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
 end:
 """
-
-
-def test_orbit_addresses_and_arms():
-    """The orbit closes once init's state (the pair unset) and the three positions it steps
-    through have run, its read takes the pair and the rows past them (the wrap adds its
-    carry), the compare's branch runs one way; a read of a device, or too few calls, has none."""
-    img, labels, _ = T.assemble(STEP)
-    state = bytearray(img)
-    state[labels["pos"]] = 0
-    got = orbit.orbit(bytes(state), labels["play"], [T.W.IO], 50)
-    assert got is not None and got[0] == 4
-    rows = labels["rows"]
-    assert got[1][(labels["rd"], False)] == [0xFB, 0xFC, rows + 2, rows + 4, rows + 7]
-    bcs = labels["rd"] + 4
-    assert got[2][bcs] == [bcs + 2]
-    assert orbit.orbit(bytes(state), labels["play"], [T.W.IO], 2) is None
-    assert orbit.orbit(bytes(state), labels["dead"], [T.W.IO], 50) is None
 
 
 #: A read past a three-entry table whose byte indexes another table.
@@ -131,21 +116,29 @@ DRIFT = STEP.replace(
 ).replace("pos:    .byte 0", "pos:    .byte 0\ncnt:    .byte 0, 0, 0")
 
 
-def test_cover_stops_where_the_feed_repeats():
-    """Memory never repeats within the limit, so there is no orbit; the position, the only cell
-    feeding an address or a branch, repeats after three calls, which cover every access and arm
-    the orbit of :data:`STEP` has."""
-    img, labels, _ = T.assemble(DRIFT)
+@pytest.mark.parametrize(
+    "src,find,calls",
+    [(STEP, orbit.orbit, 4), (DRIFT, orbit.cover, 3)],
+    ids=["orbit", "cover"],
+)
+def test_orbit_and_cover_take_every_access_and_arm(src, find, calls):
+    """The orbit of :data:`STEP` closes once init's state and the three positions it steps
+    through have run; the drifting program's memory never repeats, so there is no orbit, but
+    its position, the only cell feeding an address or a branch, repeats after three calls
+    (the cover). Either takes the read's pair and rows (the wrap adds its carry) and runs the
+    compare's branch one way; a read of a device, or too few calls, has none."""
+    img, labels, _ = T.assemble(src)
     play = labels["play"]
-    assert orbit.orbit(bytes(img), play, [T.W.IO], 5000) is None
-    calls, got, succ = orbit.cover(bytes(img), play, [T.W.IO], 5000)
+    if find is orbit.cover:
+        assert orbit.orbit(bytes(img), play, [T.W.IO], 5000) is None
+    got = find(bytes(img), play, [T.W.IO], 5000)
     rows = labels["rows"]
-    assert calls == 3
-    assert got[(labels["rd"], False)] == [0xFB, 0xFC, rows + 2, rows + 4, rows + 7]
+    assert got[0] == calls
+    assert got[1][(labels["rd"], False)] == [0xFB, 0xFC, rows + 2, rows + 4, rows + 7]
     bcs = labels["rd"] + 4
-    assert succ[bcs] == [bcs + 2]
-    assert orbit.cover(bytes(img), play, [T.W.IO], 2) is None
-    assert orbit.cover(bytes(img), labels["dead"], [T.W.IO], 5000) is None
+    assert got[2][bcs] == [bcs + 2]
+    assert find(bytes(img), play, [T.W.IO], 2) is None
+    assert find(bytes(img), labels["dead"], [T.W.IO], 5000) is None
 
 
 def test_runs_reuse_where_the_sites_change_no_access():

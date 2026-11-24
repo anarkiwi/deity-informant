@@ -21,8 +21,7 @@ end:
 
 def lifted(src):
     img, labels, loaded = T.assemble(src)
-    ents = [(labels["init"], "init"), (labels["play"], "play")]
-    p, _ = cgen.lift(img, ents, [T.W.IO], loaded=loaded, init=0)
+    p, _ = cgen.lift(img, [(labels["play"], "play")], [T.W.IO], loaded=loaded)
     return p, labels
 
 
