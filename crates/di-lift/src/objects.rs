@@ -1038,7 +1038,7 @@ type AddrSrc = (FxHashSet<Src>, FxHashSet<Src>);
 
 /// Where a register's value after an instruction writing it comes from: its immediate, what
 /// it reads, another register, itself and what it reads, itself alone, or anything else.
-enum RegSrc {
+pub(crate) enum RegSrc {
     Imm,
     Load,
     Copy(usize),
@@ -1048,7 +1048,7 @@ enum RegSrc {
 }
 
 /// The source kind of a register an instruction of opcode `op` writes.
-fn reg_src(op: u8) -> RegSrc {
+pub(crate) fn reg_src(op: u8) -> RegSrc {
     use di_pcode::reg::{A, X, Y};
     match op {
         0xa9 | 0xa2 | 0xa0 => RegSrc::Imm,
@@ -2220,6 +2220,34 @@ pub(crate) fn writes(op: u8, r: usize) -> bool {
         .ops()
         .iter()
         .any(|o| o.out.space() == Space::Reg && o.out.off() as usize == r)
+}
+
+/// A player's song data block: the data bytes of the held run `run`, none an instruction's,
+/// a cell, or a variable (a byte one of the entries' stores writes at an address it names or
+/// one of its address set's), as `[lo, hi)` runs.
+pub(crate) fn song_block(g: &Graph, run: Iv) -> Vec<(u32, u32)> {
+    let mut code = g.cells.clone();
+    code.grow(0x10000);
+    for (&pc, vs) in &g.vars {
+        let n = vs
+            .iter()
+            .map(|v| di_pcode::Template::of(v.op).len)
+            .max()
+            .unwrap_or(1);
+        code.insert_range(pc as usize..(pc as usize + n as usize).min(0x10000));
+    }
+    let mut state = FixedBitSet::with_capacity(0x10000);
+    state.extend(g.aimed.values().flatten().map(|&a| a as usize));
+    for a in g.vars.values().flatten().flat_map(|v| &v.acc) {
+        if let Some(x) = a.addr.value().filter(|_| a.store && !a.dummy) {
+            state.insert(x as usize);
+        }
+    }
+    crate::runs(
+        (g.runs.iter())
+            .flat_map(|&(a, b)| a.max(run.lo)..b.min(run.hi + 1))
+            .filter(|&x| !code.contains(x as usize) && !state.contains(x as usize)),
+    )
 }
 
 #[cfg(test)]
