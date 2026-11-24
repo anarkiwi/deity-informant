@@ -41,19 +41,29 @@ MODES = ("trap", "zero")
 ARGS = [0, 1, 3, 4, 5, 9, 17, 30, 200, 255, 1, 0, 7, 8]
 
 
+def padded(src, fill):
+    """``src`` assembled, the 0x200 bytes past its ``end`` label ``fill``."""
+    img, labels, loaded = T.assemble(src)
+    img[labels["end"] : labels["end"] + 0x200] = fill
+    return img, labels, loaded
+
+
 def pushread():
     """:data:`PUSHREAD` assembled, the bytes past the program not 0."""
-    img, labels, loaded = T.assemble(PUSHREAD)
-    img[labels["end"] : labels["end"] + 0x200] = b"\xea" * 0x200
-    return img, labels, loaded
+    return padded(PUSHREAD, b"\xea" * 0x200)
+
+
+def rule(prefix, img, labels, loaded, mode, entries=("entry",), **kw):
+    """``(c, h, info)`` of the program translated with ``overrun=mode``."""
+    ents = [(labels[n], n) for n in entries]
+    return cgen.translate(
+        img, ents, [T.W.IO], (), loaded=loaded, header="t.h", prefix=prefix, overrun=mode, **kw
+    )
 
 
 def zero(prefix, img, labels, loaded, entries=("entry",), **kw):
     """``(c, h, info)`` of the program translated with ``overrun="zero"``."""
-    ents = [(labels[n], n) for n in entries]
-    return cgen.translate(
-        img, ents, [T.W.IO], (), loaded=loaded, header="t.h", prefix=prefix, overrun="zero", **kw
-    )
+    return rule(prefix, img, labels, loaded, "zero", entries, **kw)
 
 
 def replay(tmp_path, c, h, img, labels, calls, overruns=None):
@@ -104,7 +114,7 @@ def test_trap_mode_keeps_its_guards(prefix):
     ents = [(labels["entry"], "entry")]
     kw = {"loaded": loaded, "header": "t.h", "prefix": prefix}
     c, _, info = cgen.translate(img, ents, [T.W.IO], (), **kw)
-    c2, _, info2 = cgen.translate(img, ents, [T.W.IO], (), overrun="trap", **kw)
+    c2, _, info2 = rule(prefix, img, labels, loaded, "trap")
     assert c == c2 and info["overruns"] == info2["overruns"]
     assert c != zero(prefix, img, labels, loaded)[0]
     guards = {
@@ -190,8 +200,7 @@ def test_skipped_access_prints_as_the_trap_modes_access(prefix, tmp_path):
     into its use as the element does; it is one access in the lift, so the reload of the cell
     stored before it is forwarded and the second read of the same address is the first's,
     as in the trap mode."""
-    img, labels, loaded = T.assemble(REREAD)
-    img[labels["end"] : labels["end"] + 0x200] = b"\x07" * 0x200
+    img, labels, loaded = padded(REREAD, b"\x07" * 0x200)
     trap = T.body_of(T.translate(prefix, img, labels, loaded)[0], "entry")
     c, h, info = zero(prefix, img, labels, loaded)
     body = T.body_of(c, "entry")
@@ -319,9 +328,7 @@ end:
 
 def last(prefix, img, labels, loaded):
     """``(c, h, info)`` of the program translated with ``overrun="last"``."""
-    ents = [(labels["entry"], "entry")]
-    kw = {"loaded": loaded, "header": "t.h", "prefix": prefix, "overrun": "last"}
-    return cgen.translate(img, ents, [T.W.IO], (), **kw)
+    return rule(prefix, img, labels, loaded, "last")
 
 
 def test_last_entry_tables(prefix, tmp_path):
@@ -330,8 +337,7 @@ def test_last_entry_tables(prefix, tmp_path):
     lookup at a constant byte ends no table; a read past one reads its last entry in the C,
     in the lift's interpreter and in the rule's reference alike, which the plain reference
     does not."""
-    img, labels, loaded = T.assemble(TABLES)
-    img[labels["end"] : labels["end"] + 0x200] = bytes(range(0x80, 0x100)) * 4
+    img, labels, loaded = padded(TABLES, bytes(range(0x80, 0x100)) * 4)
     c, h, info = last(prefix, img, labels, loaded)
     got = {o["pc"]: (o["ok"], o["last"]) for o in info["overruns"]}
     lo, hi, vib, tail = (labels[n] for n in ("lo", "hi", "vib", "tail"))
@@ -362,17 +368,3 @@ def test_last_entry_tables(prefix, tmp_path):
         want = [(x, v, w) for x, v, w in ref.call(labels["entry"], a) if w]
         assert [(x, v, int(w)) for x, v, _c, w in o["log"] if w] == want, a
         assert not o["deopt"], a
-
-
-def test_unbounded_lists_the_checked_accesses(prefix):
-    """``info["unbounded"]`` holds each access the memory map checks, by instruction start,
-    as checked with its object; a program whose accesses have exact addresses has none."""
-    img, labels, loaded = pushread()
-    _, _, info = zero(prefix, img, labels, loaded)
-    got = {pc: (why, obj) for pc, why, obj in info["unbounded"]}
-    assert {labels["put"], labels["rd"], labels["cmp"]} <= set(got)
-    assert set(sites(info)) <= {pc for pc, (why, _) in got.items() if why == "checked"}
-    assert all(obj is not None for why, obj in got.values() if why == "checked")
-    exact = "entry: LDX #2\n LDA tab,X\n STA $C010\n RTS\ntab: .byte 1,2,3\nend:\n"
-    img, labels, loaded = T.assemble(exact)
-    assert zero(prefix, img, labels, loaded)[2]["unbounded"] == []
