@@ -117,7 +117,13 @@ pub struct PDefs {
     /// Per instruction start writing a word, and per anchor of a walk's check, the
     /// definitions of the word reaching past it.
     pub past: Vec<(u16, Vec<u32>)>,
+    /// Per instruction start, the definitions reaching it of `A`, `X` and `Y` as values
+    /// (locations `Reg(r, VALUE)`).
+    pub values: Vec<(u16, Vec<u32>)>,
 }
+
+/// The run of a register location that is the register's value, not an index.
+pub const VALUE: u32 = u32::MAX;
 
 /// Whether variant `v` moves the stack or the program counter through it.
 fn stack(v: &Var) -> bool {
@@ -315,6 +321,19 @@ pub fn defs(g: &Graph, roots: &[u16]) -> PDefs {
         }
         all.extend(local.defs);
     }
+    let mut values: BTreeMap<u16, BTreeSet<u32>> = BTreeMap::new();
+    for r in [di_pcode::reg::A, di_pcode::reg::X, di_pcode::reg::Y] {
+        let local = Local::new(g, &pcs, Loc::Reg(r as u8, VALUE));
+        let ins = local.reaching(&cfg, roots);
+        let base = all.len() as u32;
+        for (&pc, m) in &ins {
+            values
+                .entry(pc)
+                .or_default()
+                .extend(m.ones().map(|d| base + d as u32));
+        }
+        all.extend(local.defs);
+    }
     let flat = |m: BTreeMap<u16, BTreeSet<u32>>| {
         (m.into_iter())
             .map(|(k, v)| (k, v.into_iter().collect()))
@@ -324,5 +343,6 @@ pub fn defs(g: &Graph, roots: &[u16]) -> PDefs {
         defs: all,
         at: flat(at),
         past: flat(past),
+        values: flat(values),
     }
 }

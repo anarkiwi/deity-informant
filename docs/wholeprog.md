@@ -950,9 +950,11 @@ the facts, so a proof holds on every execution that stays in lifted code.
   edges, into a call's callees and from a return back to the return sites of the calls of
   each procedure reaching it without a call (through tail calls too); an entry's returns
   leave. `Program.pdefs` lists them by id (`(loc, at, byte, by)`: `loc` `"w"` the word at
-  `at`, `"x"` or `"y"` the register of the run starting at `at`; `byte` 0 or 1; `by` the
-  writer), `pdefs_at` the ids reaching each access's instruction, `pdefs_past` those of a
-  word reaching past each instruction writing it and each anchor of a walk's check.
+  `at`, `"x"` or `"y"` the register of the run starting at `at`, `"a"`, `"x"` or `"y"` with
+  `at` `0xFFFFFFFF` the register's value; `byte` 0 or 1; `by` the writer), `pdefs_at` the ids
+  reaching each access's instruction, `pdefs_past` those of a word reaching past each
+  instruction writing it and each anchor of a walk's check, `pdefs_values` (cgen's
+  `Program.pvalues`) those of `A`, `X` and `Y` as values reaching each instruction.
 - **Computed jumps** (`dispatch.rs`). A `JMP (ind)` whose pointer bytes are tagged on every
   path into it, a `JMP`/`JSR` whose cell operand bytes are (a byte that is not a cell is a
   constant), and an `RTS`/`RTI` whose return-address bytes are pushed so on every path, goes
@@ -1266,3 +1268,16 @@ from.
   with the lifted bytes first and runs on the reference while they differ.
 - A start runs from one backing: one executed from ROM in some configurations and from RAM in
   others is planned only where it is fetched as decoded (the rest deopt). `lift_many` is flat.
+
+## Phase times
+
+`deity_informant._native.phase_times()` returns `[(phase, seconds, runs)]` of the native
+lift's phases (`prof::span`) summed since its last call, and clears them. Phases nest.
+`par::map` and `par::join` run work on scoped threads made per call.
+
+## Orbit
+
+`deity_informant.orbit` runs a program's play routine on the reference CPU from a state and
+follows the cells it carries across calls until they repeat; `orbit.orbit`, `orbit.cover` and
+`orbit.Runs` return the calls' accesses and control edges. It is no part of the lift: a check
+of facts the lift derives from the code.
