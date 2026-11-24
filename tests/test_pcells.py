@@ -3,8 +3,10 @@ pointer is bounded by the block of song data its bases lie in, under the last-en
 lift's ``regions``, ``exact``, ``region_notes`` and ``ptr_cells`` facts.
 """
 
+import pytest
+
 import test_cgen as T
-from deity_informant import cgen
+from test_pdefs import lifted
 
 pytestmark = T.pytestmark
 
@@ -338,34 +340,22 @@ end:
 """
 
 
-def lifted(src, songs=1):
-    """``(program, labels)`` of init and play of ``src`` under the last-entry rule with
-    ``songs`` songs, the bytes past the program none of its own."""
-    img, labels, loaded = T.assemble(src)
-    img[labels["end"] : labels["end"] + 0x200] = bytes(range(0x80, 0x100)) * 4
-    ents = [(labels["init"], "init"), (labels["play"], "play")]
-    p, _ = cgen.lift(img, ents, [T.W.IO], loaded=loaded, init=0, songs=range(songs), overrun="last")
-    return p, labels
-
-
 def regions(p):
     """``{pc: (lo, hi)}`` of ``p.regions``."""
     return {pc: (lo, hi) for pc, lo, hi in p.regions}
 
 
-def test_self_modified_operand_reads_its_region():
-    """The row pointer in `rd`'s operand and its copy in `again`'s read the rows' block, their
-    bases the zipped words init and the reload past the tables' extent take."""
-    p, labels = lifted(SMC)
+@pytest.mark.parametrize(
+    "src, reads",
+    [(SMC, ("rd", "again")), (ZPADD, ("rd", "nxt"))],
+    ids=["self-modified operand", "zero-page add with carry"],
+)
+def test_stepped_pointer_reads_its_bases_block(src, reads):
+    """A row pointer in an operand (copied into another's), or a pair stepped by an add whose
+    carry goes into its high byte, keeps the block of the words zipped from the rows' tables."""
+    p, labels = lifted(src)
     got = regions(p)
-    assert got[labels["rd"]] == got[labels["again"]] == (labels["rlo"], labels["end"] - 1)
-
-
-def test_zero_page_pointer_added_with_carry():
-    """A pair stepped by an add whose carry goes into its high byte keeps its bases' block."""
-    p, labels = lifted(ZPADD)
-    got = regions(p)
-    assert got[labels["rd"]] == got[labels["nxt"]] == (labels["rlo"], labels["end"] - 1)
+    assert {got[labels[r]] for r in reads} == {(labels["rlo"], labels["end"] - 1)}
 
 
 def test_pointer_reloaded_from_data():

@@ -53,10 +53,14 @@ end:
 """
 
 
-def lifted(src):
+def lifted(src, songs=1):
+    """``(program, labels)`` of init and play of ``src`` under the last-entry rule with
+    ``songs`` songs, the bytes past the program none of its own."""
     img, labels, loaded = T.assemble(src)
+    img[labels["end"] : labels["end"] + 0x200] = bytes(range(0x80, 0x100)) * 4
     ents = [(labels["init"], "init"), (labels["play"], "play")]
-    p, _ = cgen.lift(img, ents, [T.W.IO], loaded=loaded, init=0, overrun="last")
+    kw = {"loaded": loaded, "init": 0, "songs": range(songs), "overrun": "last"}
+    p, _ = cgen.lift(img, ents, [T.W.IO], **kw)
     return p, labels
 
 
