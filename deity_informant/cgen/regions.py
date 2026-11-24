@@ -43,7 +43,9 @@ def edge(image, p, q):
     (``JMP``s the lift threads included), the edge of the transfer landing nearest before
     ``q`` on a chain from one of its successors (``JMP``s, and branches the flag the edge into
     them decides) whose instructions up to ``q`` only fall through, else its successor at or
-    before ``q``."""
+    before ``q``; ``[p, None]`` toward a block no instruction starts (``q`` None)."""
+    if q is None:
+        return [p, q]
     seen = set()
     while p not in seen:
         seen.add(p)

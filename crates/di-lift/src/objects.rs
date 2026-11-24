@@ -80,6 +80,8 @@ pub struct Objs {
     pub slack: FxHashMap<u16, (u16, u16, u16)>,
     /// The accesses a dominating check keeps in the bytes given ([`crate::cover`]).
     pub covered: FxHashMap<StoreKey, Iv>,
+    /// Per object of a table of entries of several bytes ([`crate::tables`]), the entry size.
+    pub stride: FxHashMap<u16, u32>,
 }
 
 /// A load through a pair: its instruction, access, the values of `Y` it adds and its base
@@ -1621,6 +1623,19 @@ fn machine_pass<H: Fn(Iv) -> bool>(
         };
         let a = v.acc[ai];
         if is_stack_op(op) || a.dummy || a.addr.value().is_some() {
+            continue;
+        }
+        // A table load past its table's extent reads its last entry there (the last-entry
+        // rule, [`crate::tables`]): its table is its object.
+        if let Some(t) = g.owned.get(&key) {
+            let run = Iv { lo: t.lo, hi: t.hi };
+            if !t.holds(a.addr) {
+                let obj = object_id(out, run.lo as u16, run.hi as u16, [pc].into_iter());
+                out.stride.insert(obj, t.stride);
+                out.machine.insert(key, (obj, run));
+                out.taken.insert(key, a.addr);
+            }
+            proven.push((key, (crate::vsa::meet(a.addr, run).unwrap_or(run), base)));
             continue;
         }
         // An access proven already is a plain access into the song's data block where its

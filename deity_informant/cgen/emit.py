@@ -44,6 +44,12 @@ def ty(size):
     return f"i{8 * size}"
 
 
+def _arg(v, sep=" :"):
+    """The block argument list ``(v : i8)`` passing ``v`` (``sep`` ``":"``: declaring it), or
+    none."""
+    return f"({v}{sep} i8)" if v else ""
+
+
 def _key(v):
     return ("r", v[1]) if v[0] == "r" else ("u", v[1], v[2])
 
@@ -134,15 +140,42 @@ class Body:  # pylint: disable=too-many-instance-attributes
             addr = self.op(f"arith.addi {addr}, {self.const(k, 2)} : i16")
         return self.op(f"arith.index_castui {addr} : i16 to index")
 
+    def unless(self, op, addr, call):
+        """The ``call`` (``io_read``'s or ``io_write``'s text) of access ``op`` that reads 0 or
+        stores nothing outside its object, made where ``addr`` lies in it: a branch on its
+        ``objchk`` around it; a load's value, 0 where it is skipped."""
+        j = self.const(op[3][0], 2)
+        bad = self.truth(self.op(f"func.call @objchk({addr}, {j}) : {EXTERNS['objchk']}"), 1)
+        label, zero = f"^b{self.block_id}_z{self.n}", op[1] and self.const(0, 1)
+        self.put(f"cf.cond_br {bad}, {label}j{_arg(zero)}, {label}")
+        self.lines.append(f"  {label}:")
+        val = self.op(call) if zero else self.put(call)
+        res = zero and self.new()
+        self.put(f"cf.br {label}j{_arg(val)}")
+        self.lines.append(f"  {label}j{_arg(res, ':')}:")
+        return res
+
+    @staticmethod
+    def zero(op):
+        """The attribute of an access reading 0 or storing nothing outside object ``j``
+        (``op[3]`` ``(j, volatile)``), else ``""``."""
+        return f" {{zero = {op[3][0]} : i16}}" if isinstance(op[3], (tuple, list)) else ""
+
+    @staticmethod
+    def volatile(op):
+        """Whether access ``op`` may be volatile."""
+        return op[3] == "volatile" or isinstance(op[3], (tuple, list)) and op[3][1]
+
     def load(self, op):
         """The value of a ``LOAD``: ``size`` bytes, least significant first."""
         out, addr = op[1], self.read(op[2][0])
-        if op[3] == "volatile":
+        if self.volatile(op):
             assert out[2] == 1, op
-            return self.op(f"func.call @io_read({addr}) : (i16) -> i8")
-        val = None
+            read = f"func.call @io_read({addr}) : (i16) -> i8"
+            return self.unless(op, addr, read) if self.zero(op) else self.op(read)
+        val, zero = None, self.zero(op)
         for k in range(out[2]):
-            byte = self.op(f"memref.load %M[{self.index(addr, k)}] : memref<65536xi8>")
+            byte = self.op(f"memref.load %M[{self.index(addr, k)}]{zero} : memref<65536xi8>")
             part = self.fit(byte, 1, out[2])
             if k:
                 sh = self.const(8 * k, out[2])
@@ -155,17 +188,22 @@ class Body:  # pylint: disable=too-many-instance-attributes
         """A ``STORE``: bytes least significant first."""
         addr, val = op[2]
         a, value = self.read(addr), self.read(val)
-        if op[3] == "volatile":
+        if self.volatile(op):
             assert val[2] == 1, op
-            self.put(f"func.call @io_write({a}, {value}) : (i16, i8) -> ()")
+            write = f"func.call @io_write({a}, {value}) : (i16, i8) -> ()"
+            if self.zero(op):
+                self.unless(op, a, write)
+            else:
+                self.put(write)
             return
+        zero = self.zero(op)
         for k in range(val[2]):
             part = value
             if k:
                 sh = self.const(8 * k, val[2])
                 part = self.op(f"arith.shrui {value}, {sh} : {ty(val[2])}")
             part = self.fit(part, val[2], 1)
-            self.put(f"memref.store {part}, %M[{self.index(a, k)}] : memref<65536xi8>")
+            self.put(f"memref.store {part}, %M[{self.index(a, k)}]{zero} : memref<65536xi8>")
 
     def dummy(self, op):
         """A throw-away read: an ``io_read`` when kept, made when its predicate is nonzero."""

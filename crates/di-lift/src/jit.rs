@@ -523,6 +523,42 @@ impl<'a, 'b> Fb<'a, 'b> {
     fn op(&mut self, o: &crate::exec::X) -> bool {
         let i32t = types::I32;
         match o.opc {
+            Opc::Load | Opc::Store if o.aux & mem::ZERO != 0 => {
+                let (made, skipped, cont) = (
+                    self.b.create_block(),
+                    self.b.create_block(),
+                    self.b.create_block(),
+                );
+                let p = self.get(o.a);
+                let bad = self.outside(mem::obj(o.aux) as usize, p);
+                self.b.ins().brif(bad, skipped, &[], made, &[]);
+                self.b.switch_to_block(made);
+                let plain = crate::exec::X {
+                    aux: o.aux & !mem::zero(u16::MAX),
+                    ..*o
+                };
+                self.op(&plain);
+                self.b.ins().jump(cont, &[]);
+                self.b.switch_to_block(skipped);
+                if o.opc == Opc::Load && o.osz != 0 {
+                    let rs = self.x.last.get(mem::obj(o.aux) as usize).cloned();
+                    let z = match rs {
+                        Some(rs) => {
+                            let at = self.clamp(&rs, p);
+                            let at = self.b.ins().band_imm_u(at, 0xffff);
+                            let v = self.load(&plain, at);
+                            let lo = self.x.objects[mem::obj(o.aux) as usize].0 as i64;
+                            let below = self.b.ins().icmp_imm_u(IntCC::UnsignedLessThan, p, lo);
+                            let zero = self.b.ins().iconst(i32t, 0);
+                            self.b.ins().select(below, zero, v)
+                        }
+                        None => self.b.ins().iconst(i32t, 0),
+                    };
+                    self.set(o.out, z);
+                }
+                self.b.ins().jump(cont, &[]);
+                self.b.switch_to_block(cont);
+            }
             Opc::Copy | Opc::IntZext => {
                 let a = self.get(o.a);
                 let v = self.mask(a, o.osz);
@@ -531,41 +567,7 @@ impl<'a, 'b> Fb<'a, 'b> {
             Opc::Load if o.osz == 0 => self.throwaway(o),
             Opc::Load => {
                 let a = self.addr(o.a);
-                let base = if o.aux & mem::ROM != 0 {
-                    Some(self.rom)
-                } else if o.aux & mem::RAM != 0 {
-                    Some(self.ram)
-                } else if o.aux & (SPACES | mem::VOLATILE) == 0 {
-                    Some(self.plain)
-                } else {
-                    None
-                };
-                let v = match base {
-                    Some(base) => {
-                        let p = self.at(base, a);
-                        let fl = MemFlags::new().with_notrap();
-                        match o.osz {
-                            2 => self.b.ins().uload16(i32t, fl, p, 0),
-                            4 => self.b.ins().load(i32t, fl, p, 0),
-                            3 => {
-                                let lo = self.b.ins().uload16(i32t, fl, p, 0);
-                                let hi = self.b.ins().uload8(i32t, fl, p, 2);
-                                let hi = self.b.ins().ishl_imm_u(hi, 16);
-                                self.b.ins().bor(lo, hi)
-                            }
-                            _ => self.b.ins().uload8(i32t, fl, p, 0),
-                        }
-                    }
-                    None => {
-                        let f = self.fnptr(offset_of!(Ctx, load));
-                        let aux = self.b.ins().iconst(i32t, o.aux as i64);
-                        let c = self
-                            .b
-                            .ins()
-                            .call_indirect(self.sigs[0], f, &[self.ctx, aux, a]);
-                        self.b.inst_results(c)[0]
-                    }
-                };
+                let v = self.load(o, a);
                 self.set(o.out, v);
             }
             Opc::Store => {
@@ -710,16 +712,89 @@ impl<'a, 'b> Fb<'a, 'b> {
 
     /// `objchk(p, j)`: whether `p` lies outside object `j`.
     fn objchk(&mut self, o: &crate::exec::X) {
-        let (lo, hi, _) = self.x.objects[(o.b & !IMM) as usize];
         let p = self.get(o.a);
-        let off = self.b.ins().iadd_imm_s(p, -(lo as i64));
-        let off = self.b.ins().band_imm_u(off, 0xffff);
-        let c = self
-            .b
-            .ins()
-            .icmp_imm_u(IntCC::UnsignedGreaterThan, off, (hi - lo) as i64);
+        let c = self.outside((o.b & !IMM) as usize, p);
         let out = self.b.ins().uextend(types::I32, c);
         self.set(o.out, out);
+    }
+
+    /// The value load `o` reads at address `a`.
+    fn load(&mut self, o: &crate::exec::X, a: Value) -> Value {
+        let i32t = types::I32;
+        let base = if o.aux & mem::ROM != 0 {
+            Some(self.rom)
+        } else if o.aux & mem::RAM != 0 {
+            Some(self.ram)
+        } else if o.aux & (SPACES | mem::VOLATILE) == 0 {
+            Some(self.plain)
+        } else {
+            None
+        };
+        match base {
+            Some(base) => {
+                let p = self.at(base, a);
+                let fl = MemFlags::new().with_notrap();
+                match o.osz {
+                    2 => self.b.ins().uload16(i32t, fl, p, 0),
+                    4 => self.b.ins().load(i32t, fl, p, 0),
+                    3 => {
+                        let lo = self.b.ins().uload16(i32t, fl, p, 0);
+                        let hi = self.b.ins().uload8(i32t, fl, p, 2);
+                        let hi = self.b.ins().ishl_imm_u(hi, 16);
+                        self.b.ins().bor(lo, hi)
+                    }
+                    _ => self.b.ins().uload8(i32t, fl, p, 0),
+                }
+            }
+            None => {
+                let f = self.fnptr(offset_of!(Ctx, load));
+                let aux = self.b.ins().iconst(i32t, o.aux as i64);
+                let c = self
+                    .b
+                    .ins()
+                    .call_indirect(self.sigs[0], f, &[self.ctx, aux, a]);
+                self.b.inst_results(c)[0]
+            }
+        }
+    }
+
+    /// The address a load outside an object of runs' last entries `rs` reads at `p` above its
+    /// first run ([`crate::exec::Exec::clamp`]).
+    fn clamp(&mut self, rs: &[(u32, u32, u32)], p: Value) -> Value {
+        let (_, first, s) = rs[0];
+        let mut t = self.entry_at(p, first, s);
+        for &(hi, first, s) in rs {
+            let at = self.entry_at(p, first, s);
+            let past = self
+                .b
+                .ins()
+                .icmp_imm_u(IntCC::UnsignedGreaterThan, p, hi as i64);
+            t = self.b.ins().select(past, at, t);
+        }
+        t
+    }
+
+    /// The byte of `p`'s offset in an entry of `s` bytes in the entry at `first`.
+    fn entry_at(&mut self, p: Value, first: u32, s: u32) -> Value {
+        if s == 1 {
+            return self.b.ins().iconst(types::I32, first as i64);
+        }
+        let d = self
+            .b
+            .ins()
+            .iadd_imm_s(p, 0x10000 * s as i64 - first as i64);
+        let m = self.b.ins().urem_imm_u(d, s as i64);
+        self.b.ins().iadd_imm_s(m, first as i64)
+    }
+
+    /// Whether pointer value `p` lies outside object `j`.
+    fn outside(&mut self, j: usize, p: Value) -> Value {
+        let (lo, hi, _) = self.x.objects[j];
+        let off = self.b.ins().iadd_imm_s(p, -(lo as i64));
+        let off = self.b.ins().band_imm_u(off, 0xffff);
+        self.b
+            .ins()
+            .icmp_imm_u(IntCC::UnsignedGreaterThan, off, (hi - lo) as i64)
     }
 
     fn codechk(&mut self, o: &crate::exec::X) {

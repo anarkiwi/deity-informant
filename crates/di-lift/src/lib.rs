@@ -28,6 +28,7 @@ pub mod pdefs;
 pub mod prof;
 pub mod ptr;
 pub mod scev;
+pub mod tables;
 pub mod vsa;
 pub mod walks;
 pub mod why;
@@ -106,6 +107,10 @@ pub struct Opts {
     /// its object reads 0 (a load) or does nothing (a store) instead of deopting: each keeps
     /// its own check, and no check at a pointer's definition stands for it (*Machine model*).
     pub overrun_zero: bool,
+    /// With [`Opts::overrun_zero`], a load past a run of its object reads the last entry of the
+    /// run below it instead of 0 (the same field of its last record, for a table of records), and
+    /// each table an indexed load reads is its own object ([`tables`]).
+    pub overrun_last: bool,
 }
 
 impl Default for Opts {
@@ -128,6 +133,7 @@ impl Default for Opts {
             driven: None,
             player: false,
             overrun_zero: false,
+            overrun_last: false,
         }
     }
 }
@@ -677,12 +683,14 @@ pub fn inclusive_runs(vs: impl IntoIterator<Item = u32>) -> Vec<(u32, u32)> {
 }
 
 /// The memory map's accesses of `g` at the planned `starts` (ascending) per instruction start
-/// ([`ir::Program::overruns`]).
-fn overruns(g: &analysis::Graph, starts: &[u16]) -> Vec<ir::Overrun> {
-    let mut by: std::collections::BTreeMap<u16, (Vec<(u32, u32)>, Iv)> = Default::default();
+/// ([`ir::Program::overruns`]), with `last` each run's last entry.
+fn overruns(g: &analysis::Graph, starts: &[u16], last: bool) -> Vec<ir::Overrun> {
+    type Runs = (Vec<(u32, u32, u32)>, Iv);
+    let mut by: std::collections::BTreeMap<u16, Runs> = Default::default();
     for (key, &(obj, run)) in
         (g.objs.machine.iter()).filter(|e| starts.binary_search(&e.0 .0).is_ok())
     {
+        let s = g.objs.stride.get(&obj).copied().unwrap_or(1);
         let rs = g
             .objs
             .parts
@@ -698,14 +706,36 @@ fn overruns(g: &analysis::Graph, starts: &[u16]) -> Vec<ir::Overrun> {
             .filter(|t| t.hi <= 0xffff)
             .unwrap_or(full);
         let e = by.entry(key.0).or_insert((Vec::new(), t));
-        e.0.extend(rs);
+        e.0.extend(rs.into_iter().map(|(lo, hi)| (lo, hi, s)));
         e.1 = vsa::hull(e.1, t);
     }
     (by.into_iter())
         .map(|(pc, (mut rs, t))| {
             rs.sort_unstable();
-            let ok = merged(rs).into_iter().map(|r| (r.0, r.1 - 1)).collect();
-            (pc, ok, (t.lo, t.hi))
+            rs.dedup();
+            // With last entries each run keeps its own, in step with its run.
+            let ok: Vec<(u32, u32)> = match last {
+                true => rs.iter().map(|r| (r.0, r.1)).collect(),
+                false => merged(rs.iter().map(|r| (r.0, r.1))),
+            };
+            let ok = ok.into_iter().map(|r| (r.0, r.1 - 1)).collect();
+            let ends = (rs.iter())
+                .filter(|_| last)
+                .map(|&(lo, hi, s)| (lo + (hi - lo) / s * s - s, s));
+            (pc, ok, (t.lo, t.hi), ends.collect())
+        })
+        .collect()
+}
+
+/// Per object of `g`, its runs' last entries ([`ir::Program::last`]).
+fn last_entries(g: &analysis::Graph) -> Vec<Vec<(u32, u32, u32)>> {
+    (g.objs.objects.iter().enumerate())
+        .map(|(j, &(lo, hi, _))| {
+            let s = g.objs.stride.get(&(j as u16)).copied().unwrap_or(1);
+            let rs = g.objs.parts.get(&(j as u16)).cloned();
+            (rs.unwrap_or(vec![(lo as u32, hi as u32 + 1)]).into_iter())
+                .map(|(lo, hi)| (hi - 1, lo + (hi - lo) / s * s - s, s))
+                .collect()
         })
         .collect()
 }
@@ -805,12 +835,16 @@ pub fn lift_banked(
                 &g.img, &g.cells, &g.vars, entries, matched, &g.disp, &given, xs,
             )
         };
+        let hr = objects::held(opts.loaded, &g.written, &opts.holds, volatile);
+        if let Some(h) = hr.filter(|_| opts.overrun_last) {
+            g.owned = tables::tables(&g, &roots, h);
+        }
         let (objs, proven) = objects::objects(
             &g,
             &roots,
             volatile,
             bank,
-            objects::held(opts.loaded, &g.written, &opts.holds, volatile),
+            hr,
             &seeds,
             &free,
             &held,
@@ -818,14 +852,19 @@ pub fn lift_banked(
             &unread,
             opts.overrun_zero,
         );
-        // The analysis takes the loads the memory map bounds to read 0 outside their objects.
-        let more: Vec<usize> = (objs.machine.keys())
-            .filter(|k| !zeroed.contains(k.0 as usize))
-            .filter(|k| {
+        // The analysis takes the loads the memory map bounds to read 0 outside their objects;
+        // with last entries, those that may read below their object's first run.
+        let more: Vec<usize> = (objs.machine.iter())
+            .filter(|(k, _)| !zeroed.contains(k.0 as usize))
+            .filter(|(k, &(obj, _))| {
+                let lo = objs.objects[obj as usize].0 as u32;
+                !opts.overrun_last || objs.taken.get(k).is_none_or(|t| t.lo < lo)
+            })
+            .filter(|(k, _)| {
                 let vs = g.vars.get(&k.0).into_iter().flatten();
                 vs.filter(|v| v.op == k.1).any(|v| !v.acc[k.2].store)
             })
-            .map(|k| k.0 as usize)
+            .map(|(k, _)| k.0 as usize)
             .collect();
         if opts.overrun_zero && !more.is_empty() {
             zeroed.extend(more);
@@ -1213,8 +1252,19 @@ pub fn lift_banked(
         }
     }
     let data = data_accesses(&g);
-    let overruns = overruns(&g, &starts);
+    let overruns = overruns(&g, &starts, opts.overrun_last);
+    let mut owned: Vec<(u16, u32, u32, u32)> = (g.owned.iter())
+        .map(|(k, t)| (k.0, t.lo, t.hi, t.stride))
+        .collect();
+    owned.sort_unstable();
+    owned.dedup();
     Program {
+        owned,
+        last: if opts.overrun_last {
+            last_entries(&g)
+        } else {
+            Vec::new()
+        },
         overruns,
         functions,
         entries: pcs

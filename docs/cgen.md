@@ -35,7 +35,7 @@ python tools/cgenplay.py tune.sid --psid --volatile 0xD400-0xD41D -o out/   # tr
 | `machine` | runs init (`postinit.run`; default the reference interpreter over `volatile`, whose device bytes hold what was written) |
 | `devices` | what the volatile addresses answer (*Devices*; default the C64's, `c64devices.MODEL`; `None`: any byte) |
 | `lines` | mark the `.c` with `#line` directives naming what each line's code comes from (*Translation cost*; CLI `--lines`) |
-| `overrun` | `"trap"` (the default) or `"zero"`: an access the memory map bounds outside its object traps, or reads 0 and stores nothing (*Memory*; CLI `--overrun`) |
+| `overrun` | `"trap"` (the default), `"zero"` or `"last"`: an access the memory map bounds outside its object traps, or reads 0 (or with `"last"` the last entry of the run below it, each indexed table its own object) and stores nothing (*Memory*; CLI `--overrun`) |
 
 `info` holds the stage times (`lift`, `mlir`, `layout`, `structure`, `print`), the regions
 `[(origin, length)]`, the code span, the traps in the `.c` (`{k: ("deopt", pc)}` or `("ind", pc,
@@ -757,18 +757,30 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   of its object it reads 0 (a load) or does nothing (a store), per byte, and the other
   checks of the access (zone, stack, window, code) test it only where it is made. Each access
   keeps its own check: none at a pointer's definition or over a window stands for it. The
-  lift makes it a branch around the access, the value 0 on the other path, before
-  optimization (`Opts::overrun_zero`), and its analysis takes such a load's values as its
-  bytes' and 0, none a table's byte (`vsa::Code::zeroed`), so nothing past the access
-  assumes its address inside the object.
-  The C calls one `noinline` helper per array and object (`R3z0(a)`, `C0z1(a)`, a data
-  block's `rdB2z0(a)`, `rdz0(a)` where the access may reach a promoted cell's variable; the
-  writers `R3zw0(a, v)`), whose test is the object's `.h` bounds (`CGEN_OBJj_ORG`/`_LIM`,
+  lift emits it as one access flagged with its object (`ir::mem::ZERO`,
+  `Opts::overrun_zero`), which its optimizer neither forwards into nor fuses, and the MLIR as
+  the `memref` access with a `zero` attribute (a volatile one as a branch on its `objchk`
+  around it); its analysis takes such a load's values as its bytes' and 0, none a table's
+  byte (`vsa::Code::zeroed`), so nothing past the access assumes its address inside the object.
+  The C calls one `noinline` helper per object and per array, reader or writer the access
+  would print as, taking that access's operands: `R3_obj0(i)` for `R3[i]`, `C1_ix_obj2(b, y)`
+  for `CGEN_IX(C1, b, y)`, `B0r_obj1(p, y)` for `B0r(p, y)`, `rd_obj0(a)` for `rd(a)`, an
+  element's writer `R3_obj0_wr(i, v)` (an access printing otherwise takes its address, through
+  `rd`/`wr`). Its test is the object's `.h` bounds
+  (`CGEN_OBJj_ORG`/`_LIM`,
   `cgen_outj`), with no branch or trap in the caller. `info["overruns"]` lists, by
   instruction start ascending (every copy's in an instance function), `{"pc", "ok", "addr"}`:
   the inclusive runs of the object its accesses are checked against and the hull of the
   addresses they may take (an access's pointer fetch, the zero-page pair of `(zp),Y` or
   `(zp,X)`, is no data access and is never skipped); in trap mode the same sites trap.
+- With `overrun="last"` a load past a run of its object reads the same byte of the last
+  entry of the run below it instead of 0 (one below every run still reads 0), and every table an
+  absolute-indexed load reads is its own object (wholeprog's *Last-entry tables*): a load whose
+  index may pass its table's extent is such an access, its helper reading the last entry
+  there (`cgen_lastj(a)` where the object has several runs or entries of several bytes).
+  Each `info["overruns"]` site then has `last`, per run of `ok` the first byte of its last
+  entry and the entry size, as `tools/cgenplay.py` and gravity-inversion's `sidtrace
+  --overruns` apply them; `info["tables"]` lists `[pc, lo, hi, size]` per indexed load.
   `info["unbounded"]` lists `[pc, why, object]` for each pointer or memory-map access no address
   set bounds (`Program.unbounded`): `"checked"` where the memory map checks it, else `"no set"`,
   with the index of the object serving it or None.
