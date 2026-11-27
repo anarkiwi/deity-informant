@@ -3977,10 +3977,9 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.order, self.edges, self.ids, self.entries = [], {}, new_ids(), []
         self.sites, self.made, self.lifted, self.prov = {}, Counter(), {}, {}
         self.copy_pcs, self.sets, self.kpos, self.tables = {}, {}, None, {}
-        #: ``{pc: addresses}`` each instruction's data accesses take over the program's run
-        #: from the state the lift starts at, where the host traced it (``site_addrs``).
-        self.traced_addrs = None
-        #: The instructions whose object checks those addresses prove (:meth:`traced_inside`).
+        #: The proven facts of every run (:class:`deity_informant.certified.Facts`), or None.
+        self.proof = None
+        #: The instructions whose object checks those facts prove (:meth:`traced_inside`).
         self.traced_proved = set()
         self.shared = set()
         #: The functions the cognitive-complexity reduction cut from the printed ones.
@@ -4638,17 +4637,17 @@ class Module:  # pylint: disable=too-many-instance-attributes
         return f"{name}c{j}"
 
     def traced_inside(self, f, o, j):
-        """Whether the host gives the addresses each instruction's accesses take over the
-        program's run (:attr:`traced_addrs`) and the check of ``o`` in function ``f`` into
-        object ``j`` never fails on it: its instruction (every copy's) never runs, or each
+        """Whether the proven facts (:attr:`proof`) show the check of ``o`` in function ``f``
+        into object ``j`` never fails: its instruction (every copy's) never runs, or each
         address it takes past the zero page lies in the object."""
-        seen = self.traced_addrs
-        if seen is None:
+        if self.proof is None:
             return False
         pcs = self.copy_pcs.get(f.name, {}).get(o.pc, [o.pc])
-        ran = [a for q in pcs for a in seen.get(q, ())]
+        ran = self.proof.addresses(pcs)
         at = [a for a in ran if a >= 0x100]
-        if ran and (not at or not all(self.inside(j, a) for a in at)):
+        if any(self.proof.ran(q) for q in pcs) and (
+            not at or not all(self.inside(j, a) for a in at)
+        ):
             return False
         self.traced_proved.update(pcs)
         return True

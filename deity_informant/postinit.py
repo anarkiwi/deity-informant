@@ -311,6 +311,8 @@ class Run:  # pylint: disable=too-many-instance-attributes
         self.tags, self.vals, self.acc = {}, {}, []
         #: ``{(pc, write): {address}}``: the effective addresses each instruction read, wrote.
         self.touched = {}
+        #: The instructions run and the ``(pc, next)`` edges between them within the call.
+        self.ran, self.edges = set(), set()
         self.reg = dict.fromkeys("axyc")
         self.chain = 0
         self.polls, self.reads, self.exact = polls or {}, [], True
@@ -413,6 +415,9 @@ class Run:  # pylint: disable=too-many-instance-attributes
         self._at = mpu.processorCycles + mpu.cycletime[mem[pc]] - 1
         mpu.step()
         self._at = None
+        self.ran.add(pc)
+        if mpu.sp <= 0xFD or mpu.pc != 1:
+            self.edges.add((pc, mpu.pc))
         for x, w in self.acc if mode in _MEM else ():
             if x == self.acc[-1][0]:
                 self.touched.setdefault((pc, w), set()).add(x)
