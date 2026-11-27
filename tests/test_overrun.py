@@ -368,3 +368,41 @@ def test_last_entry_tables(prefix, tmp_path):
         want = [(x, v, w) for x, v, w in ref.call(labels["entry"], a) if w]
         assert [(x, v, int(w)) for x, v, _c, w in o["log"] if w] == want, a
         assert not o["deopt"], a
+
+
+def traced(labels, rd=1):
+    """``site_addrs`` of :data:`PUSHREAD` called with ``A`` 0 then 1: each site's addresses,
+    the table read's through index ``rd``."""
+    return {
+        labels["put"]: {labels["stack"], labels["stack"] + 1},
+        labels["rd"]: {labels["tab"] + i for i in range(rd + 1)},
+        labels["cmp"]: {labels["tab"] + 1, labels["tab"] + 2},
+    }
+
+
+def test_traced_addresses_inside_their_objects_need_no_check(prefix, tmp_path):
+    """With the addresses every site takes over the run, the table read's all inside its
+    object, the read has no object check and is no unbounded access; the C still plays the
+    reference."""
+    img, labels, loaded = pushread()
+    c, h, info = rule(prefix, img, labels, loaded, "trap", site_addrs=traced(labels))
+    c0, _, plain = rule(prefix, img, labels, loaded, "trap")
+    rd = labels["rd"]
+    assert "CGEN_OBJ" in T.body_of(c0, "entry") and "CGEN_OBJ" not in T.body_of(c, "entry")
+    assert rd in info["traced_bounds"] and plain["traced_bounds"] == []
+    assert rd in {u[0] for u in plain["unbounded"]}
+    assert rd not in {u[0] for u in info["unbounded"]}
+    calls = [("entry", 0), ("entry", 1)]
+    assert replay(tmp_path, c, h, img, labels, calls) == len(calls)
+
+
+def test_traced_address_outside_its_object_keeps_the_check(prefix):
+    """A site one of whose traced addresses leaves its object keeps its check, as does one
+    with no traced address."""
+    img, labels, loaded = pushread()
+    c0 = rule(prefix, img, labels, loaded, "trap")[0]
+    far = {labels["rd"]: traced(labels, rd=200)[labels["rd"]]}
+    c, _, info = rule(prefix, img, labels, loaded, "trap", site_addrs=far)
+    assert c == c0 and labels["rd"] not in info["traced_bounds"]
+    none = rule(prefix, img, labels, loaded, "trap", site_addrs={})
+    assert none[0] == c0 and none[2]["traced_bounds"] == []

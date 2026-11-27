@@ -805,6 +805,19 @@ address its reads take apart; the address argument of `rd`, `wr`, `oob_*`, `rdCj
 `codechk`, which find the byte by it; and `cgen_var`'s switch over the promoted bytes'
 addresses.
 
+### Traced bounds
+
+`translate(..., site_addrs={pc: addresses})` takes the addresses each instruction's data
+accesses take over the program's whole run from the states the lift starts at: for a player
+with no input, init for each song and play from what it leaves to jennings' cover point
+(`deity_informant.orbit.cover`), after which every access has been seen. An object check
+whose instruction (every copy's, in an instance) has traced addresses, all inside the check's
+object, is none: the access prints unchecked and leaves `info["unbounded"]`;
+`info["traced_bounds"]` lists those instructions. An instruction with no traced address, or
+one with an address outside its object, keeps its check. The lift itself is unchanged: the
+addresses prove checks, they move no table and decide no branch, so a host whose run is not
+the program's whole run (input, a song it did not trace) must not pass them.
+
 ## Traps and computed jumps
 
 The lift resolves a `JMP (ind)` whose pointer is stored from loads of a constant table (or
