@@ -20,7 +20,7 @@ classifiers = [
     "Topic :: Software Development :: Disassemblers",
     "Topic :: System :: Emulators",
 ]
-dependencies = ["jennings>=0.23.0", "numpy", "networkx", "tqdm", "dd==0.6.0", "wayward-eagle>=0.5.0"]
+dependencies = ["jennings>=0.23.0", "numpy", "networkx", "tqdm", "dd==0.6.0", "wayward-eagle>=0.5.10"]
 
 [project.optional-dependencies]
 ghidra = ["pypcode"]
@@ -107,7 +107,6 @@ ignore-dists = ["pytest", "pytest-xdist", "pytest-cov", "pytest-timeout", "build
 "deity_informant/c64devices.py:TEST -> vagrant_moses.sidorder:TEST" = "the SID control bits; vagrant-moses is a downstream dev extra"
 "deity_informant/c64devices.py:SAW -> vagrant_moses.sidorder:SAW" = "the SID control bits; vagrant-moses is a downstream dev extra"
 "deity_informant/vm.py:vector.resolve -> vagrant_moses:read_vector" = "the VM core runs without vagrant-moses, a downstream dev extra"
-"tools/pcodec.py:Structurer.natural -> wayward_eagle.c.listflow:Graph.reachable" = "natural loop over P-Code block predecessors, not a listflow Graph method"
 "tools/cgenplay.py:psid -> pysidtracker:load_psid" = "needs the start song and the unplaced body, which load_psid does not return"
 "deity_informant/lifter.py:_adc_decimal -> deity_informant/lifter.py:_sbc_decimal" = "different NMOS BCD algorithms: ADC adds nibbles with a >9 adjust and derives carry/N/V from the intermediate; SBC subtracts with two borrow masks and returns only the accumulator"
 "deity_informant/lifter.py:_adc -> deity_informant/lifter.py:_sbc" = "different p-code: ADC's carry is the OR of two INT_CARRYs and overflow uses ~(A^v); SBC's carry is a 16-bit compare and overflow uses (A^v); ADC also takes carry and N/V from the decimal path"

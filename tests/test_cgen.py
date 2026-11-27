@@ -4415,16 +4415,14 @@ def test_dispatch_arms_sharing_a_tail_stay_in_the_dispatching_function(prefix, t
 def test_tails_one_procedure_holds_follow_the_goto_rule(prefix, tmp_path):
     """The same handlers reached from one procedure: its switch's two tails are joins, the
     one placed after the switch reached by ``break``, the other, which the rest of the
-    function follows, a function of its own each arm calls (no goto): the goto the
-    structuring placed for `JMP t2` is recorded as reduced."""
+    function follows, in each arm reaching it (no goto): the goto the structuring placed for
+    `JMP t2` is recorded as reduced."""
     src = FXSHARE.replace("        JSR fx2\n", "")
     _, labels, _ = assemble(src)
     c, _, info = check(prefix, tmp_path, src, entry_calls(range(4), 2))
-    assert len(entries_of(info)) == 2 and c.count("io_write(0xC004, ") == 1
+    assert len(entries_of(info)) == 2 and c.count("io_write(0xC004, ") == 2
     reduced = {tuple(e) for e in info["provenance"]["reduced"]}
     assert reduced == {(labels["h2"] + 2, labels["t2"])} and not info["provenance"]["gotos"]
-    pieces = [p for f in info["provenance"]["functions"].values() for p in f["pieces"]]
-    assert pieces and all(f"static void {p}(" in c for p in pieces)
 
 
 def test_shared_tail_a_jsr_targets_is_a_function(prefix, tmp_path):
