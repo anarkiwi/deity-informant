@@ -655,6 +655,9 @@ class Program:  # pylint: disable=too-many-instance-attributes
     #: Per instruction start of the memory map's accesses, ascending: ``{"pc", "ok", "addr"}``,
     #: the inclusive runs of their objects and the hull of their addresses (*Memory*).
     overruns: list = ()
+    #: The addresses each instruction's data accesses take over the program's run, where
+    #: the host traced it (:func:`translate`'s ``site_addrs``).
+    site_addrs: dict | None = None
     #: With ``overrun="last"``, per object its runs' last entries ``(last byte, first byte of
     #: the last entry, entry size)`` (*Memory*).
     last: list = ()
@@ -1114,6 +1117,7 @@ def render(  # pylint: disable=too-many-locals,too-many-arguments,too-many-posit
     mem = Memory(held(data), code, p.volatile, loaded, p.sensitive, pairs, tables, p.written)
     mem.init = bytes(data)
     mod = printer.Module(top, mem)
+    mod.traced_addrs = p.site_addrs
     mod.insn, mod.fixed = ran, fixed
     if p.fixed is not None:
         folded = masks.mask(at=p.fixed)
@@ -1282,7 +1286,8 @@ def render(  # pylint: disable=too-many-locals,too-many-arguments,too-many-posit
         "traps": {k: key for key, k in traps.items() if k in mod.traps},
         "trap_info": trap_info,
         "overruns": list(p.overruns),
-        "unbounded": p.unbounded(),
+        "unbounded": [u for u in p.unbounded() if u[0] not in mod.traced_proved],
+        "traced_bounds": sorted(mod.traced_proved),
         "tables": [list(t) for t in p.owned],
         "runtime_traps": {OOB_TRAP: "unheld"} if helpers & OOB_HELPERS else {},
         "emission": emission,
@@ -1353,6 +1358,7 @@ def translate(  # pylint: disable=too-many-arguments
     lines=False,
     split=False,
     overrun="trap",
+    site_addrs=None,
 ):
     """``(c_text, h_text, info)`` of the program in ``image`` (the whole address space) called
     at ``entries`` (``(pc, name)``, ``A`` the argument) with ``volatile`` ``[(lo, hi)]`` I/O
@@ -1364,7 +1370,11 @@ def translate(  # pylint: disable=too-many-arguments
     ``lines`` marks the ``.c`` with ``#line`` directives (*Translation cost*); ``split`` gives
     it as translation units ``{file: text}`` (:mod:`.units`); ``overrun="zero"`` makes an
     access the memory map bounds read 0 or store nothing outside its object instead of
-    trapping (*Memory*)."""
+    trapping (*Memory*); ``site_addrs`` ``{pc: addresses}`` are the addresses each
+    instruction's data accesses take over the program's whole run from the states the lift
+    starts at (:func:`deity_informant.orbit.cover`): an object check that never fails on
+    them is none
+    (*Traced bounds*)."""
     t0 = time.perf_counter()
     jf = jump_facts(facts, image) if facts is not None else None
     if devices is not None:
@@ -1383,6 +1393,7 @@ def translate(  # pylint: disable=too-many-arguments
         overrun,
     )
     p.sensitive, p.loaded = tuple(sensitive_reads), loaded
+    p.site_addrs = site_addrs
     lift_time = time.perf_counter() - t0
     c, h, info = render(p, header, prefix, lines, split)
     info["times"] = {"lift": lift_time, **info["times"]}

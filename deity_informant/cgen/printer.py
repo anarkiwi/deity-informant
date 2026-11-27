@@ -2847,6 +2847,8 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         if id(o) in self.fusion():
             return lit(0, 1)
         p, j = self.ex(o.args[0]), self.f.defs[o.args[1]].int_prop("value")
+        if self.mod.traced_inside(self.f, o, j):
+            return lit(0, 1)
         node = self.check("objchk", o, self.mod.outside(j, p), self.trap_after(o))
         return E(node, 0, 1, **join(p))
 
@@ -3975,6 +3977,11 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.order, self.edges, self.ids, self.entries = [], {}, new_ids(), []
         self.sites, self.made, self.lifted, self.prov = {}, Counter(), {}, {}
         self.copy_pcs, self.sets, self.kpos, self.tables = {}, {}, None, {}
+        #: ``{pc: addresses}`` each instruction's data accesses take over the program's run
+        #: from the state the lift starts at, where the host traced it (``site_addrs``).
+        self.traced_addrs = None
+        #: The instructions whose object checks those addresses prove (:meth:`traced_inside`).
+        self.traced_proved = set()
         self.shared = set()
         #: The functions the cognitive-complexity reduction cut from the printed ones.
         self.pieces = set()
@@ -4629,6 +4636,22 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.checked_fns.add((name, j))
         self.objs_used.add(self.ptr_slack.get(j, (j,))[0])
         return f"{name}c{j}"
+
+    def traced_inside(self, f, o, j):
+        """Whether the host gives the addresses each instruction's accesses take over the
+        program's run (:attr:`traced_addrs`) and the check of ``o`` in function ``f`` into
+        object ``j`` never fails on it: its instruction (every copy's) never runs, or each
+        address it takes past the zero page lies in the object."""
+        seen = self.traced_addrs
+        if seen is None:
+            return False
+        pcs = self.copy_pcs.get(f.name, {}).get(o.pc, [o.pc])
+        ran = [a for q in pcs for a in seen.get(q, ())]
+        at = [a for a in ran if a >= 0x100]
+        if ran and (not at or not all(self.inside(j, a) for a in at)):
+            return False
+        self.traced_proved.update(pcs)
+        return True
 
     def inside(self, j, a):
         """Whether address ``a`` lies in object ``j`` (one of its runs)."""
