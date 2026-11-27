@@ -397,12 +397,13 @@ def test_traced_addresses_inside_their_objects_need_no_check(prefix, tmp_path):
 
 
 def test_traced_address_outside_its_object_keeps_the_check(prefix):
-    """A site one of whose traced addresses leaves its object keeps its check, as does one
-    with no traced address."""
+    """A site one of whose traced addresses leaves its object keeps its check; one that never
+    runs has none, so the C is the same whichever sites a run takes."""
     img, labels, loaded = pushread()
-    c0 = rule(prefix, img, labels, loaded, "trap")[0]
-    far = {labels["rd"]: traced(labels, rd=200)[labels["rd"]]}
+    rd = labels["rd"]
+    far = {**traced(labels), rd: traced(labels, rd=200)[rd]}
     c, _, info = rule(prefix, img, labels, loaded, "trap", site_addrs=far)
-    assert c == c0 and labels["rd"] not in info["traced_bounds"]
-    none = rule(prefix, img, labels, loaded, "trap", site_addrs={})
-    assert none[0] == c0 and none[2]["traced_bounds"] == []
+    assert "CGEN_OBJ" in T.body_of(c, "entry") and rd not in info["traced_bounds"]
+    full = rule(prefix, img, labels, loaded, "trap", site_addrs=traced(labels))[0]
+    less = {k: v for k, v in traced(labels).items() if k != rd}
+    assert rule(prefix, img, labels, loaded, "trap", site_addrs=less)[0] == full

@@ -4638,15 +4638,17 @@ class Module:  # pylint: disable=too-many-instance-attributes
         return f"{name}c{j}"
 
     def traced_inside(self, f, o, j):
-        """Whether the host gives the addresses the instruction of ``o`` in function ``f``
-        (every copy's) takes over the program's run (:attr:`traced_addrs`) and each lies in
-        object ``j``: its check never fails."""
+        """Whether the host gives the addresses each instruction's accesses take over the
+        program's run (:attr:`traced_addrs`) and the check of ``o`` in function ``f`` into
+        object ``j`` never fails on it: its instruction (every copy's) never runs, or each
+        address it takes past the zero page lies in the object."""
         seen = self.traced_addrs
         if seen is None:
             return False
         pcs = self.copy_pcs.get(f.name, {}).get(o.pc, [o.pc])
-        at = [a for q in pcs for a in seen.get(q, ()) if a >= 0x100]
-        if not at or not all(self.inside(j, a) for a in at):
+        ran = [a for q in pcs for a in seen.get(q, ())]
+        at = [a for a in ran if a >= 0x100]
+        if ran and (not at or not all(self.inside(j, a) for a in at)):
             return False
         self.traced_proved.update(pcs)
         return True

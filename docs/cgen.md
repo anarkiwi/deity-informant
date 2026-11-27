@@ -811,10 +811,11 @@ addresses.
 accesses take over the program's whole run from the states the lift starts at: for a player
 with no input, init for each song and play from what it leaves to jennings' cover point
 (`deity_informant.orbit.cover`), after which every access has been seen. An object check
-whose instruction (every copy's, in an instance) has traced addresses, all inside the check's
-object, is none: the access prints unchecked and leaves `info["unbounded"]`;
-`info["traced_bounds"]` lists those instructions. An instruction with no traced address, or
-one with an address outside its object, keeps its check. The lift itself is unchanged: the
+whose instruction (every copy's, in an instance) never runs, or whose traced addresses all lie
+inside the check's object, is none: the access prints unchecked and leaves
+`info["unbounded"]`; `info["traced_bounds"]` lists those instructions. An instruction with an
+address outside its object keeps its check, so two songs of one player whose runs stay inside
+their objects get the same `.c` whichever instructions each runs. The lift itself is unchanged: the
 addresses prove checks, they move no table and decide no branch, so a host whose run is not
 the program's whole run (input, a song it did not trace) must not pass them.
 

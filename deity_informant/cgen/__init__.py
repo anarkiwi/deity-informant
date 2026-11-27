@@ -1372,7 +1372,8 @@ def translate(  # pylint: disable=too-many-arguments
     access the memory map bounds read 0 or store nothing outside its object instead of
     trapping (*Memory*); ``site_addrs`` ``{pc: addresses}`` are the addresses each
     instruction's data accesses take over the program's whole run from the states the lift
-    starts at (:func:`deity_informant.orbit.cover`): an object check they all pass is none
+    starts at (:func:`deity_informant.orbit.cover`): an object check that never fails on
+    them is none
     (*Traced bounds*)."""
     t0 = time.perf_counter()
     jf = jump_facts(facts, image) if facts is not None else None
