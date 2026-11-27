@@ -1460,9 +1460,9 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
 
     def strided_access(self, o):
         """``(addresses, w, base, k)`` of load or store ``o`` at a constant ``c`` plus a byte
-        ``w`` whose address set from the lift is ``n >= 2`` addresses at a stride ``k >= 2``
-        from ``c + base``, none wrapping past ``c + 255``: the records of an object ``w``
-        indexes, element ``(w - base) / k``; else None."""
+        ``w`` whose address set from the lift is ``n >= 2`` addresses at a stride ``k >= 2``, a
+        power of two (the element a shift, no division), from ``c + base``, none wrapping past
+        ``c + 255``: the records of an object ``w`` indexes, element ``(w - base) / k``."""
         if o.name not in ("memref.load", "memref.store") or o.pc in self.mod.copy_pcs.get(
             self.name, {}
         ):
@@ -1470,7 +1470,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         runs = self.mod.fx(self.name).addr_sets.get((o.pc, o.name == "memref.store"))
         addrs = sorted({a for lo, hi in runs or () for a in range(lo, hi)})
         steps = set(np.diff(addrs).tolist())
-        if len(addrs) < 2 or len(steps) != 1 or min(steps) < 2:
+        if len(addrs) < 2 or len(steps) != 1 or min(steps) < 2 or min(steps) & (min(steps) - 1):
             return None
         if (cw := self.byte_index(o)) is None:
             return None
@@ -2549,8 +2549,9 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             j = mem.held_span(*run, wide=True)
             if j is not None:
                 return ("checked", "held", j)
-        # An access the lift proves inside one region or held span reaches it unchecked.
-        sure = self.f.proven_iv(o)
+        # An access proven (run facts, else the lift) in one region or held span is unchecked.
+        got = self.mod.proven_set(self.f, o)
+        sure = (got[0], got[-1]) if got is not None else self.f.proven_iv(o)
         if sure is not None and (k := mem.region(*sure)) is not None:
             return ("region", k)
         if sure is not None and not is_write(o) and (j := mem.held_span(*sure)) is not None:
@@ -4080,6 +4081,22 @@ class Module:  # pylint: disable=too-many-instance-attributes
             return None
         return self.fx(name).addr_sets.get((o.pc, is_write(o)))
 
+    def proven_set(self, f, o):
+        """The ascending addresses access ``o`` of function ``f`` takes over every run, where
+        the proven facts (:attr:`proof`) give them: its instructions' (every copy's) accesses of
+        its kind met with its address interval; None where none of them runs or takes one."""
+        if self.proof is None or o.name not in ("memref.load", "memref.store"):
+            return None
+        pcs = self.copies_of(f.name, o.pc)
+        if not any(self.proof.ran(q) for q in pcs):
+            return None
+        lo, hi = f.addr_iv(o)
+        store = is_write(o)
+        got = sorted(
+            a for q in pcs for a in self.proof.accesses.get((q, store), ()) if lo <= a <= hi
+        )
+        return got or None
+
     def block(self, f, o):
         """The runs ``[(lo, hi)]`` (``hi`` exclusive) of the data block access ``o`` of function
         ``f`` may reach (a pointer from the program's data the memory map checks into it: its
@@ -4283,7 +4300,12 @@ class Module:  # pylint: disable=too-many-instance-attributes
 
     def touched(self, f, o, lo, hi, per):
         """``([(lo, hi)], why)``: the addresses access ``o`` of function ``f`` (address interval
-        ``(lo, hi)``, per copy ``per``) may touch, and the :data:`state.WHY` code of its kind."""
+        ``(lo, hi)``, per copy ``per``) may touch, and the :data:`state.WHY` code of its kind:
+        the proven ones where the facts give them (:meth:`proven_set`)."""
+        got = self.proven_set(f, o)
+        if got is not None:
+            runs = [(a, a + n - 1) for a, n in masks.runs(masks.mask(at=got))]
+            return runs, INDEXED if got[-1] - got[0] < regions.BOUNDED else POINTER
         blk = self.block(f, o)
         if blk:
             return [(a, b - 1) for a, b in blk], POINTER

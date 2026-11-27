@@ -1041,7 +1041,7 @@ def _proof(image, played, volatile, state, ran, lone):
         got = proofs.init(runs, pc)
         if got is None:
             raise proofs.Unproven("init is translated but its runs are not all exact")
-        out, starts = got, starts + proofs.states(runs)
+        out, starts = got, starts + proofs.left(runs)
     for pc, _ in played:
         out |= proofs.play(starts, pc, volatile)
     return out

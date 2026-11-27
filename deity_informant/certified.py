@@ -22,6 +22,7 @@ TAINT = "classes"
 ASSUMED = (
     "the native 6502 core is the machine and its flow tables name every input of each output",
     "play has no input: it loads no volatile address, and no excluded location carries state",
+    "the host calls each entry but init with A = 0 only",
     "init's probes read only values of the device model's sets",
 )
 
@@ -98,7 +99,10 @@ def play(states, pc, volatile, limit=LIMIT):
     vol = masks.mask(volatile)
     acc, edges, certs = {}, set(), []
     for state in tqdm(sorted({bytes(s) for s in states}), desc="certify", unit="state"):
-        cert = V.certify(state, pc, limit, max_cycles=MAX_CYCLES, exclude=_exclude(volatile))
+        try:
+            cert = V.certify(state, pc, limit, max_cycles=MAX_CYCLES, exclude=_exclude(volatile))
+        except RuntimeError as e:
+            raise Unproven(f"play at ${pc:04X} is not certified: {e}") from e
         if isinstance(cert, V.Open):
             raise Unproven(f"play at ${pc:04X} has no cover point within {limit} calls: {cert}")
         verdict = V.verify(state, cert, taint=TAINT)
@@ -131,6 +135,6 @@ def init(runs, pc):
     return Facts(acc, frozenset(executed), frozenset(edges), {pc: "runs"})
 
 
-def states(runs):
+def left(runs):
     """The 64 KiB images init's ``runs`` (:func:`init`'s) leave."""
     return [bytes(r.mem[0:0x10000]) for rs in runs for r in rs]

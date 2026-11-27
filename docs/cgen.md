@@ -805,19 +805,16 @@ address its reads take apart; the address argument of `rd`, `wr`, `oob_*`, `rdCj
 `codechk`, which find the byte by it; and `cgen_var`'s switch over the promoted bytes'
 addresses.
 
-### Traced bounds
+### Certified facts
 
-`translate(..., site_addrs={pc: addresses})` takes the addresses each instruction's data
-accesses take over the program's whole run from the states the lift starts at: for a player
-with no input, init for each song and play from what it leaves to jennings' cover point
-(`deity_informant.orbit.cover`), after which every access has been seen. An object check
-whose instruction (every copy's, in an instance) never runs, or whose traced addresses all lie
-inside the check's object, is none: the access prints unchecked and leaves
-`info["unbounded"]`; `info["traced_bounds"]` lists those instructions. An instruction with an
-address outside its object keeps its check, so two songs of one player whose runs stay inside
-their objects get the same `.c` whichever instructions each runs. The lift itself is unchanged: the
-addresses prove checks, they move no table and decide no branch, so a host whose run is not
-the program's whole run (input, a song it did not trace) must not pass them.
+`translate(..., certified=True)` proves each instruction's data accesses over every run
+([certified](certified.md)): play by a verified jennings certificate per state init leaves,
+init by its runs over every probe value. An object check whose instruction (every copy's, in an
+instance) never runs, or whose proven addresses past the zero page all lie inside the check's
+object, is none: the access prints unchecked and leaves `info["unbounded"]`;
+`info["traced_bounds"]` lists those instructions. An instruction with an address outside its
+object keeps its check. The same facts give each access the cells it touches and the region
+or held span it reaches unchecked.
 
 ## Traps and computed jumps
 
