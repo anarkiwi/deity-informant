@@ -370,40 +370,48 @@ def test_last_entry_tables(prefix, tmp_path):
         assert not o["deopt"], a
 
 
-def traced(labels, rd=1):
-    """``site_addrs`` of :data:`PUSHREAD` called with ``A`` 0 then 1: each site's addresses,
-    the table read's through index ``rd``."""
-    return {
-        labels["put"]: {labels["stack"], labels["stack"] + 1},
-        labels["rd"]: {labels["tab"] + i for i in range(rd + 1)},
-        labels["cmp"]: {labels["tab"] + 1, labels["tab"] + 2},
-    }
+#: :data:`PUSHREAD` with its push index fixed: called with ``A`` 0, the table read stays in it.
+PUSHFIXED = PUSHREAD.replace("        INC depth\n", "")
+#: A table read through an index wrapping at 8 over a 4-byte table: the run leaves it.
+WRAPREAD = """
+entry:  LDX idx
+rd:     LDA tab,X
+        STA $C010
+        INX
+        TXA
+        AND #7
+        STA idx
+        RTS
+idx:    .byte 0
+tab:    .byte 1,2,3,4
+end:
+"""
 
 
-def test_traced_addresses_inside_their_objects_need_no_check(prefix, tmp_path):
-    """With the addresses every site takes over the run, the table read's all inside its
-    object, the read has no object check and is no unbounded access; the C still plays the
-    reference."""
-    img, labels, loaded = pushread()
-    c, h, info = rule(prefix, img, labels, loaded, "trap", site_addrs=traced(labels))
-    c0, _, plain = rule(prefix, img, labels, loaded, "trap")
+def proven(prefix, src):
+    """``(c, h, img, labels, loaded, gone)`` of ``src`` (padded) translated with certified
+    facts: ``gone`` whether the facts prove its read at ``rd`` needs no object check."""
+    img, labels, loaded = padded(src, b"\xea" * 0x200)
+    c, h, info = rule(prefix, img, labels, loaded, "trap", certified=True)
     rd = labels["rd"]
-    assert "CGEN_OBJ" in T.body_of(c0, "entry") and "CGEN_OBJ" not in T.body_of(c, "entry")
-    assert rd in info["traced_bounds"] and plain["traced_bounds"] == []
-    assert rd in {u[0] for u in plain["unbounded"]}
-    assert rd not in {u[0] for u in info["unbounded"]}
-    calls = [("entry", 0), ("entry", 1)]
+    gone = rd in info["traced_bounds"] and rd not in {u[0] for u in info["unbounded"]}
+    return c, h, img, labels, loaded, gone
+
+
+def test_proven_addresses_inside_their_objects_need_no_check(prefix, tmp_path):
+    """With every run's addresses certified (play called with ``A`` 0), the table read's all
+    lie inside its object: the read has no object check and is no unbounded access; the C
+    still plays the reference."""
+    c, h, img, labels, loaded, gone = proven(prefix, PUSHFIXED)
+    c0, _, plain = rule(prefix, img, labels, loaded, "trap")
+    assert gone and "CGEN_OBJ" not in T.body_of(c, "entry")
+    assert "CGEN_OBJ" in T.body_of(c0, "entry") and plain["traced_bounds"] == []
+    assert labels["rd"] in {u[0] for u in plain["unbounded"]}
+    calls = [("entry", 0)] * 3
     assert replay(tmp_path, c, h, img, labels, calls) == len(calls)
 
 
-def test_traced_address_outside_its_object_keeps_the_check(prefix):
-    """A site one of whose traced addresses leaves its object keeps its check; one that never
-    runs has none, so the C is the same whichever sites a run takes."""
-    img, labels, loaded = pushread()
-    rd = labels["rd"]
-    far = {**traced(labels), rd: traced(labels, rd=200)[rd]}
-    c, _, info = rule(prefix, img, labels, loaded, "trap", site_addrs=far)
-    assert "CGEN_OBJ" in T.body_of(c, "entry") and rd not in info["traced_bounds"]
-    full = rule(prefix, img, labels, loaded, "trap", site_addrs=traced(labels))[0]
-    less = {k: v for k, v in traced(labels).items() if k != rd}
-    assert rule(prefix, img, labels, loaded, "trap", site_addrs=less)[0] == full
+def test_proven_address_outside_its_object_keeps_the_check(prefix):
+    """A read whose certified addresses leave its object keeps its check."""
+    c, _, _, _, _, gone = proven(prefix, WRAPREAD)
+    assert not gone and "CGEN_OBJ" in T.body_of(c, "entry")

@@ -7188,14 +7188,15 @@ def test_strided_records_are_struct_fields(prefix, tmp_path):
 
 
 def test_strided_records_indexed_by_a_parameter(prefix, tmp_path):
-    # A routine called with X = 0, 7, 14 indexes the records by X / 7.
+    # A routine called with X = 0, 7, 14 reaches records 7 bytes apart: a stride that is no
+    # power of two would make the element a division, so the records stay a region X indexes.
     c, _, info = check(prefix, tmp_path, STRIDED_CALLED, entry_calls([0], 6))
-    assert "rd(" not in c and "/ 7]" in c
+    assert "rd(" not in c and "/ 7]" not in c and "R0[v1]" in body_of(c, "f1")
     img, labels, loaded = assemble(STRIDED_CALLED)
     p, _ = cgen.lift(img, [(labels["entry"], "entry")], [W.IO], loaded=loaded)
     rec = labels["rec"]
     assert p.addr_sets[rec, False] == [(0x3000, 0x3001), (0x3007, 0x3008), (0x300E, 0x300F)]
-    assert info["state"]["vars"]["V0_f01[1]"] == 0x3008
+    assert not [a for a in info["state"]["vars"].values() if 0x3000 <= a < 0x3010]
 
 
 def test_strided_records_aliased_by_an_interval_stay_memory(prefix, tmp_path):

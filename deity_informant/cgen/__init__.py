@@ -18,7 +18,7 @@ from jennings.opcodes import MODE_LEN, OPCODES
 from pycparser import c_ast
 from wayward_eagle.c import format_c
 
-from .. import c64devices, masks, polling, postinit, wholeprog
+from .. import c64devices, certified as proofs, masks, polling, postinit, wholeprog
 from ..trace import Facts
 
 from . import cnodes as cn, cost, emit, mlir, printer, traps as trapinfo, units
@@ -655,9 +655,9 @@ class Program:  # pylint: disable=too-many-instance-attributes
     #: Per instruction start of the memory map's accesses, ascending: ``{"pc", "ok", "addr"}``,
     #: the inclusive runs of their objects and the hull of their addresses (*Memory*).
     overruns: list = ()
-    #: The addresses each instruction's data accesses take over the program's run, where
-    #: the host traced it (:func:`translate`'s ``site_addrs``).
-    site_addrs: dict | None = None
+    #: The proven facts of every run of the translation (:mod:`deity_informant.certified`),
+    #: where :func:`translate` was asked to certify them.
+    proof: proofs.Facts | None = None
     #: With ``overrun="last"``, per object its runs' last entries ``(last byte, first byte of
     #: the last entry, entry size)`` (*Memory*).
     last: list = ()
@@ -902,6 +902,7 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     machine=None,
     devices=c64devices.MODEL,
     overrun="trap",
+    certified=False,
 ):
     """The static lift of ``entries`` as a :class:`Program` and its ``stats``; ``facts``
     give computed-jump targets only, ``loaded`` the ``(lo, hi)`` the program was loaded to,
@@ -911,7 +912,10 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     runs on ``machine`` (:func:`deity_informant.postinit.run`), the other entries are lifted
     from what it leaves, every byte it stores a variable but those it leaves constant
     (:func:`_fixed`), and init from ``image`` where its lift reproduces every run (*Init*);
-    ``overrun`` is ``"trap"`` or ``"zero"`` (*Memory*)."""
+    ``overrun`` is ``"trap"`` or ``"zero"`` (*Memory*); ``certified``: ``Program.proof`` holds
+    the proven facts of every run (:func:`_proof`)."""
+    if certified and overrun != "trap":
+        raise ValueError("certified facts are of the machine's runs: overrun must be 'trap'")
     image, entries = bytes(image), list(entries)
     played, state, alias, start, lone, fixed = entries, None, [], image, None, frozenset()
     bare = None
@@ -1003,6 +1007,9 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
     p.exact, p.ptr_cells = list(prog.exact), list(prog.ptr_cells)
     p.pdefs = [_pdefs(x) for x in (prog, lone) if x is not None]
     p.pvalues = dict(prog.pdefs_values)
+    if certified:
+        ran = None if init is None else (entries[init][0], runs)
+        p.proof = _proof(image, played, volatile, state, ran, lone)
     p.stores = {"play": trapinfo.stores(prog)}
     if init is not None:
         p.stores["init"] = trapinfo.stores(lone if lone is not None else bare)
@@ -1021,6 +1028,23 @@ def lift(  # pylint: disable=too-many-arguments,too-many-positional-arguments,to
         p.objects += list(lone.objects)
         p.written += list(lone.written)
     return p, prog.stats
+
+
+def _proof(image, played, volatile, state, ran, lone):
+    """The proven facts (:mod:`deity_informant.certified`) of the entries ``played`` called
+    from each state init (``state``; ``ran``: its pc and runs per declared value, its lift
+    ``lone``) leaves, else from ``image``, and of init where it is translated."""
+    starts = [image] if state is None else [s.tobytes() for s in state.states]
+    out = proofs.Facts()
+    if lone is not None:
+        pc, runs = ran
+        got = proofs.init(runs, pc)
+        if got is None:
+            raise proofs.Unproven("init is translated but its runs are not all exact")
+        out, starts = got, starts + proofs.left(runs)
+    for pc, _ in played:
+        out |= proofs.play(starts, pc, volatile)
+    return out
 
 
 def _played(state, free):
@@ -1117,7 +1141,7 @@ def render(  # pylint: disable=too-many-locals,too-many-arguments,too-many-posit
     mem = Memory(held(data), code, p.volatile, loaded, p.sensitive, pairs, tables, p.written)
     mem.init = bytes(data)
     mod = printer.Module(top, mem)
-    mod.traced_addrs = p.site_addrs
+    mod.proof = p.proof
     mod.insn, mod.fixed = ran, fixed
     if p.fixed is not None:
         folded = masks.mask(at=p.fixed)
@@ -1288,6 +1312,7 @@ def render(  # pylint: disable=too-many-locals,too-many-arguments,too-many-posit
         "overruns": list(p.overruns),
         "unbounded": [u for u in p.unbounded() if u[0] not in mod.traced_proved],
         "traced_bounds": sorted(mod.traced_proved),
+        "certified": None if p.proof is None else p.proof.summary(),
         "tables": [list(t) for t in p.owned],
         "runtime_traps": {OOB_TRAP: "unheld"} if helpers & OOB_HELPERS else {},
         "emission": emission,
@@ -1358,7 +1383,7 @@ def translate(  # pylint: disable=too-many-arguments
     lines=False,
     split=False,
     overrun="trap",
-    site_addrs=None,
+    certified=False,
 ):
     """``(c_text, h_text, info)`` of the program in ``image`` (the whole address space) called
     at ``entries`` (``(pc, name)``, ``A`` the argument) with ``volatile`` ``[(lo, hi)]`` I/O
@@ -1370,11 +1395,8 @@ def translate(  # pylint: disable=too-many-arguments
     ``lines`` marks the ``.c`` with ``#line`` directives (*Translation cost*); ``split`` gives
     it as translation units ``{file: text}`` (:mod:`.units`); ``overrun="zero"`` makes an
     access the memory map bounds read 0 or store nothing outside its object instead of
-    trapping (*Memory*); ``site_addrs`` ``{pc: addresses}`` are the addresses each
-    instruction's data accesses take over the program's whole run from the states the lift
-    starts at (:func:`deity_informant.orbit.cover`): an object check that never fails on
-    them is none
-    (*Traced bounds*)."""
+    trapping (*Memory*); ``certified`` proves what every run of the translation does and
+    prints no check those facts prove never fails (*Certified facts*)."""
     t0 = time.perf_counter()
     jf = jump_facts(facts, image) if facts is not None else None
     if devices is not None:
@@ -1391,9 +1413,9 @@ def translate(  # pylint: disable=too-many-arguments
         machine,
         devices,
         overrun,
+        certified,
     )
     p.sensitive, p.loaded = tuple(sensitive_reads), loaded
-    p.site_addrs = site_addrs
     lift_time = time.perf_counter() - t0
     c, h, info = render(p, header, prefix, lines, split)
     info["times"] = {"lift": lift_time, **info["times"]}
