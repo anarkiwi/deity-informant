@@ -388,26 +388,30 @@ end:
 """
 
 
+def proven(prefix, src):
+    """``(c, h, img, labels, loaded, gone)`` of ``src`` (padded) translated with certified
+    facts: ``gone`` whether the facts prove its read at ``rd`` needs no object check."""
+    img, labels, loaded = padded(src, b"\xea" * 0x200)
+    c, h, info = rule(prefix, img, labels, loaded, "trap", certified=True)
+    rd = labels["rd"]
+    gone = rd in info["traced_bounds"] and rd not in {u[0] for u in info["unbounded"]}
+    return c, h, img, labels, loaded, gone
+
+
 def test_proven_addresses_inside_their_objects_need_no_check(prefix, tmp_path):
     """With every run's addresses certified (play called with ``A`` 0), the table read's all
     lie inside its object: the read has no object check and is no unbounded access; the C
     still plays the reference."""
-    img, labels, loaded = padded(PUSHFIXED, b"\xea" * 0x200)
-    c, h, info = rule(prefix, img, labels, loaded, "trap", certified=True)
+    c, h, img, labels, loaded, gone = proven(prefix, PUSHFIXED)
     c0, _, plain = rule(prefix, img, labels, loaded, "trap")
-    rd = labels["rd"]
-    assert "CGEN_OBJ" in T.body_of(c0, "entry") and "CGEN_OBJ" not in T.body_of(c, "entry")
-    assert rd in info["traced_bounds"] and plain["traced_bounds"] == []
-    assert rd in {u[0] for u in plain["unbounded"]}
-    assert rd not in {u[0] for u in info["unbounded"]}
+    assert gone and "CGEN_OBJ" not in T.body_of(c, "entry")
+    assert "CGEN_OBJ" in T.body_of(c0, "entry") and plain["traced_bounds"] == []
+    assert labels["rd"] in {u[0] for u in plain["unbounded"]}
     calls = [("entry", 0)] * 3
     assert replay(tmp_path, c, h, img, labels, calls) == len(calls)
 
 
 def test_proven_address_outside_its_object_keeps_the_check(prefix):
     """A read whose certified addresses leave its object keeps its check."""
-    img, labels, loaded = padded(WRAPREAD, b"\xea" * 0x200)
-    c, _, info = rule(prefix, img, labels, loaded, "trap", certified=True)
-    rd = labels["rd"]
-    assert "CGEN_OBJ" in T.body_of(c, "entry") and rd not in info["traced_bounds"]
-    assert rd in {u[0] for u in info["unbounded"]}
+    c, _, _, _, _, gone = proven(prefix, WRAPREAD)
+    assert not gone and "CGEN_OBJ" in T.body_of(c, "entry")
