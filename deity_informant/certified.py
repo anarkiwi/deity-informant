@@ -16,8 +16,8 @@ from . import masks
 LIMIT = 2_000_000
 #: The cycles one call may take.
 MAX_CYCLES = 10_000_000
-#: How ``verify`` taints the calls: one per class (jennings 0.26.0's every-call mode is unsound).
-TAINT = "classes"
+#: How ``verify`` taints the calls: every call, each from its own entry.
+TAINT = "calls"
 #: What a proven fact rests on, beside the check itself.
 ASSUMED = (
     "the native 6502 core is the machine and its flow tables name every input of each output",
