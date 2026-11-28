@@ -8,7 +8,7 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
-cranelift-codegen = "0.137"
+cranelift-codegen = "0.138"
 cranelift-frontend = "0.137"
 cranelift-jit = "0.137"
 cranelift-module = "0.137"
