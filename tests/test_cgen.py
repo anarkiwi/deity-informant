@@ -3115,6 +3115,30 @@ def test_intervals_asked_in_an_instances_context_are_its_own(prefix, tmp_path, m
     assert info["stats"]["instances"] == 1 and "CODE_K" not in c
 
 
+#: Three copies, each storing to its own table and reading it back indexed; the copies' tables
+#: lie further apart than a bounded access reaches, a pad between each.
+FARCOPY = (
+    "entry:  AND #$03\n        STA $13\n        STA $14\n"
+    + "".join(
+        f"v{k}:     LDX $13\n        LDA $14\n        STA d{k}\n        LDA d{k},X\n"
+        f"        STA $C00{k}\n        JMP v{k + 1}\nd{k}:     .byte 0,1,2,3\n"
+        f"p{k}:     .byte " + ",".join(["0"] * 0x100) + "\n"
+        for k in range(3)
+    )
+    + "v3:     RTS\nend:\n"
+)
+
+
+def test_copies_far_apart_touch_their_own_bytes(prefix, tmp_path):
+    """An instance whose copies each touch a few bytes, the copies' bytes further apart than
+    a bounded access reaches, touches those bytes alone: no pad byte between them is in a
+    region."""
+    [(labels, _, _, info)] = placed(prefix, tmp_path, entry_calls(range(4)), [FARCOPY])
+    assert info["stats"]["instances"] == 1
+    pads = [(labels[f"p{k}"], labels[f"p{k}"] + 0x100) for k in range(3)]
+    assert not [(o, n) for o, n in info["regions"] for a, b in pads if o < b and a < o + n]
+
+
 @pytest.mark.parametrize(
     "edit",
     [
