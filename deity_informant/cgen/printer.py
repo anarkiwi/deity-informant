@@ -4569,6 +4569,18 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 if run is not None and hi - lo >= regions.BOUNDED:
                     bound.append((lo, hi))
                     continue
+                # An instance's copies each in a bounded span touch their spans, one array.
+                if (
+                    per
+                    and hi - lo >= regions.BOUNDED
+                    and all(y - x < regions.BOUNDED for x, y in per)
+                ):
+                    ranges.extend(per)
+                    joined.append((lo, hi))
+                    stores.update(x for x, y in per if x == y and o.name == "memref.store")
+                    if is_write(o):
+                        writes.extend(per)
+                    continue
                 ranges.append((lo, hi))
                 if o.name == "memref.store" and lo == hi:
                     stores.add(lo)

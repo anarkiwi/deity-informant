@@ -587,7 +587,9 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   metadata stays the check's. `sensitive_reads` also goes to the lift, which makes no
   throw-away read that cannot reach one of them.
   An unknown access may touch every byte of `loaded`, so then every non-code byte of it is in a
-  region. Zero page, the stack page and RAM below the image are regions when accessed; a byte
+  region. An access of an instance whose copies' addresses are each narrower than a bounded
+  access, however far apart, is no unknown access: it touches each copy's bytes, one span
+  holding them all. Zero page, the stack page and RAM below the image are regions when accessed; a byte
   past the image is one only when a bounded store or a store with an address set writes it (the bytes between an instance's copies' bytes stay in
   their array): a read of any other byte past the image is out of bounds, but one at a constant
   address reads the machine's byte (below). A load whose bytes
