@@ -12,7 +12,7 @@ cranelift-codegen = "0.137"
 cranelift-frontend = "0.137"
 cranelift-jit = "0.137"
 cranelift-module = "0.137"
-cranelift-native = "0.137"
+cranelift-native = "0.138"
 di-pcode = { path = "../di-pcode" }
 fixedbitset = "0.5"
 petgraph = { version = "0.8", default-features = false, features = ["graphmap", "std"] }
