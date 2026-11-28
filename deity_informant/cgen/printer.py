@@ -1460,9 +1460,9 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
 
     def strided_access(self, o):
         """``(addresses, w, base, k)`` of load or store ``o`` at a constant ``c`` plus a byte
-        ``w`` whose address set from the lift is ``n >= 2`` addresses at a stride ``k >= 2``, a
-        power of two (the element a shift, no division), from ``c + base``, none wrapping past
-        ``c + 255``: the records of an object ``w`` indexes, element ``(w - base) / k``."""
+        ``w`` whose address set from the lift is ``n >= 2`` addresses at a stride ``k >= 2``
+        from ``c + base``, none wrapping past ``c + 255``: the records of an object ``w``
+        indexes, element ``(w - base) / k``; else None."""
         if o.name not in ("memref.load", "memref.store") or o.pc in self.mod.copy_pcs.get(
             self.name, {}
         ):
@@ -1470,7 +1470,7 @@ class Func:  # pylint: disable=too-many-instance-attributes,too-many-public-meth
         runs = self.mod.fx(self.name).addr_sets.get((o.pc, o.name == "memref.store"))
         addrs = sorted({a for lo, hi in runs or () for a in range(lo, hi)})
         steps = set(np.diff(addrs).tolist())
-        if len(addrs) < 2 or len(steps) != 1 or min(steps) < 2 or min(steps) & (min(steps) - 1):
+        if len(addrs) < 2 or len(steps) != 1 or min(steps) < 2:
             return None
         if (cw := self.byte_index(o)) is None:
             return None
@@ -4298,11 +4298,11 @@ class Module:  # pylint: disable=too-many-instance-attributes
             return None
         return tuple(m(h[i] for h in hulls) for i, m in enumerate((min, max, min, max)))
 
-    def touched(self, f, o, lo, hi, per):
+    def touched(self, f, o, lo, hi, per, proven=True):
         """``([(lo, hi)], why)``: the addresses access ``o`` of function ``f`` (address interval
         ``(lo, hi)``, per copy ``per``) may touch, and the :data:`state.WHY` code of its kind:
-        the proven ones where the facts give them (:meth:`proven_set`)."""
-        got = self.proven_set(f, o)
+        the proven ones where the facts give them (:meth:`proven_set`) and ``proven``."""
+        got = self.proven_set(f, o) if proven else None
         if got is not None:
             runs = [(a, a + n - 1) for a, n in masks.runs(masks.mask(at=got))]
             return runs, INDEXED if got[-1] - got[0] < regions.BOUNDED else POINTER
@@ -4345,6 +4345,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         (:func:`state.classify`) and mark each access of a promoted cell (``f.promoted``): a
         scalar's address, or a field's struct, field and element (a value of the copy index)."""
         why, found = np.zeros(0x10000, dtype=np.int8), []
+        lift = np.zeros(0x10000, dtype=np.int8)
         seen = np.zeros(0x10000, dtype=bool)
         for lo, hi in self.held_runs:
             why[lo : hi + 1] = INIT
@@ -4369,6 +4370,10 @@ class Module:  # pylint: disable=too-many-instance-attributes
                     why[step[0]] = np.where(sel == 0, INDEXED, sel)
                     continue
                 runs, kind = self.touched(f, o, lo, hi, per)
+                if self.proof is not None:
+                    for x, y in self.touched(f, o, lo, hi, per, False)[0]:
+                        sel = lift[x : y + 1]
+                        sel[sel == 0] = kind
                 if self.mapped(f, o, runs, kind):
                     f.aware.add(id(o))
                     if o.name == "memref.load":
@@ -4377,6 +4382,10 @@ class Module:  # pylint: disable=too-many-instance-attributes
                 for x, y in runs:
                     sel = why[x : y + 1]
                     sel[sel == 0] = kind
+        # A record family the lift alone keeps unpromoted is no field reached by a division.
+        for _, _, a, v in found:
+            if isinstance(v, tuple) and lift[a].any():
+                why[a] = np.where(why[a] == 0, INDEXED, why[a])
         stepped = [a for _, _, a, v in found if v is not None]
         st = classify(cells, [a for _, _, a, _ in found], why, stepped)
         self.state = st = _read_only(st, found, seen)

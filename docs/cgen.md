@@ -167,8 +167,8 @@ caller's return address. `tools/cgenplay.c` is a host harness.
      intersect or they hold one value, back edges first; only values a copy connects merge.
      The copies left are a parallel assignment, sequenced through a temporary where a
      destination is read by another's source.
-   - *Recomputation*: a load of one fixed, non-volatile cell used more than once prints at
-     each use when no operation that may write the cell (a store whose address interval
+   - *Recomputation*: a load of one fixed, non-volatile cell prints at each use (one use
+     included, a check that traps between them) when no operation that may write the cell (a store whose address interval
      holds it, a call) lies on a path from the load to a use.
    - *Units*: with `split`, the `.c` is several translation units by reachability in the call
      graph (`units.py`): `<stem>_state.c` the state's definitions (`CGEN_STORAGE`), one unit
