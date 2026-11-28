@@ -4009,6 +4009,24 @@ def test_held_spans_join_only_across_data(gap_data):
     assert mem.regions == ([(0x1004, 4)] if gap_data else [])
 
 
+@pytest.mark.parametrize("unknown_store", [False, True])
+def test_joined_interval_is_one_span_across_untouched_bytes(unknown_store):
+    """A joined interval is held in one span even where bytes between its targets are neither
+    constant, touched nor a region's."""
+    code = np.zeros(0x10000, dtype=bool)
+    code[0x1000:0x1040] = True
+    code[0x1010:0x1018] = code[0x1028:0x1030] = False
+    mem = regions.Memory(bytes(0x10000), code, [W.IO], (0x1000, 0x1040))
+    mem.partition(
+        [(0x1003, 0x1003), (0x1020, 0x1020), (0x1035, 0x1035)],
+        [0x1003, 0x1020, 0x1035],
+        unknown_store=unknown_store,
+        joined=[(0x1003, 0x1035)],
+    )
+    assert (mem.owner[0x1010:0x1018] < 0).all() and (mem.owner[0x1028:0x1030] < 0).all()
+    assert mem.holding(0x1003, 0x1035) is not None
+
+
 @pytest.mark.parametrize(
     "written,want",
     [

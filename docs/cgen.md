@@ -547,11 +547,12 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   Only the tables and the constant bytes a bounded access may reach are held in memory (all
   of them when a store of unknown address may need them for its code check): their runs,
   joined across gaps of data region bytes only (any other byte between them would be held as
-  data the program never reads) and widened over the data regions they overlap or abut (one
-  array, so `rd`/`wr` test one range for both), are the spans `C0, C1, ...`; those regions are
-  their slices (`#define R2 (C0 + (R2_ORG - C0_ORG))`), so each byte is held once, and
-  `Cj_DATA` marks a span's data bytes up to its last constant byte (`Cj_BITS`; every byte past
-  it is data). A load of unknown address
+  data the program never reads; the addresses of an instance's copies are one span, every
+  non-volatile byte between them held) and widened over the data regions they overlap or
+  abut (one array, so `rd`/`wr` test one range for both), are the spans `C0, C1, ...`; those
+  regions are their slices (`#define R2 (C0 + (R2_ORG - C0_ORG))`), so each byte is held
+  once, and `Cj_DATA` marks a span's data bytes up to its last constant byte (`Cj_BITS`;
+  every byte past it is data). A load of unknown address
   reaching other code reads `oob_rd`.
 - **Data regions** `R0, R1, ...` (ascending address, those only init's stores, block copies
   or the sources of init's copies touch after the others, so the `.c` names the same regions
