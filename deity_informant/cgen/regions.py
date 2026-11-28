@@ -226,7 +226,7 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         address (``unknown_store``) may need them to check it, and tables (data read as
         constant) always; a load of unknown address reaching other code reads ``oob_rd``.
         Each of the ``joined`` intervals (the addresses of an instance's copies) is held in one
-        span with the regions it touches, so the copies index one array; each of the ``wide``
+        span, every non-volatile byte of it, so the copies index one array; each of the ``wide``
         runs (pointer loads', :meth:`pointer_run`) is touched whatever its width. With
         ``writes`` (the bounded stores' ``(lo, hi)``) a byte past the loaded image that no
         store writes is in no region: a read of it is out of bounds (``oob_rd``). The bytes
@@ -260,7 +260,7 @@ class Memory:  # pylint: disable=too-many-instance-attributes
             touched[lo:hi] |= True if state is None else ~state[lo:hi]
         touched &= ~constant & ~self.vol
         for lo, hi in joined:
-            need[lo : hi + 1] |= constant[lo : hi + 1] | touched[lo : hi + 1]
+            need[lo : hi + 1] |= ~self.vol[lo : hi + 1]
         masks.mask(sources, True, out=touched)
         touched &= ~constant & ~self.vol
         touched |= masks.mask(blocks) & ~self.code & ~self.vol
