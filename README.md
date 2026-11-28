@@ -13,9 +13,8 @@ same player with other data, or loaded elsewhere, gives a byte-identical `.c`. R
 player reaches by fall-through or `JSR` are functions, unrolled per-voice copies (whole blocks
 alike up to operands) one function of the copy's index with its per-copy values in constant
 tables, and a voice loop's index bounds the accesses of the routine it calls. An init the host
-calls once, first, is run per argument value: the other entries are lifted from the memory
-it leaves, the bytes it stored variables, and init is translated as code run once where its
-lift reproduces every run, else replayed from per-argument copies the `.h` holds. A read through a
+calls once, first, is run per song and never translated: the other entries are lifted from
+the states it leaves, one `.c` for every song and one `.h` per song holding its state. A read through a
 pointer whose bases the analysis bounds (split tables a song byte indexes, constants, an
 offset in `Y`, the record lengths it advances by) is one bounds-checked read of the span
 holding them. Self-modified code cells every access reaches at a constant address are scalars,
@@ -41,7 +40,7 @@ verified by replaying its I/O writes against the reference interpreter. See
 - `tools/ghidra_layout.py`, `ghidra/6510/headless/ApplyLayout.java` — headless Ghidra export of layout maps (struct types, typed data, labels, data references) with a read-back check; see [docs/layout.md](docs/layout.md#ghidra-export).
 - `tools/wplift.py` — lift an image file whole and check it against the reference interpreter.
 - `tools/liftsweep.py` — translate PSID files to C under a wall-clock limit each and replay the C against the reference; see [docs/wholeprog.md](docs/wholeprog.md#termination).
-- `deity_informant/devices.py`, `deity_informant/c64devices.py` — device models (what a device register answers per abstract device state) and the C64's (VIC-II, SID, CIAs, colour RAM, 6510 port), used by the static lift, polling loops and init probes; see [docs/cgen.md](docs/cgen.md#devices).
+- `deity_informant/devices.py`, `deity_informant/c64devices.py` — device models (what a device register answers per abstract device state) and the C64's (VIC-II, SID, CIAs, colour RAM, 6510 port), used by the static lift and its polling loops; see [docs/cgen.md](docs/cgen.md#devices).
 - `deity_informant/c64.py`, `tools/wpbank.py` — the C64 host of bank-aware lifting: the 6510 port/PLA bank map (ROM-less or verified real ROMs), facts and per-call reference records from vagrant-moses' cycle-exact machine, and a check of bank-aware play lifts of HVSC tunes against it.
 - `tools/wpcorpus.py` — run every HVSC song once for its full length: flat or bank-aware lift, check, scenario cells, IRQ paths and speed per song, resumable; see [docs/corpus.md](docs/corpus.md).
 - `tools/sidcmp.py` — compare the machine's SID register changes for interrupt-driven songs, booted as sidplayfp does, with sidplayfp's (`anarkiwi/sidtrace`); see [docs/corpus.md](docs/corpus.md#boot-environment).

@@ -83,7 +83,7 @@ def replay(data, c, h, volatile, n, base=None):
         (Path(d) / "t.h").write_text(h, encoding="utf-8")
         lib = cgenplay.build(Path(d) / "t.c", Path(d) / "t.so", CFLAGS)
         try:
-            cgenplay.replay(lib, image, pcs, calls, volatile)
+            cgenplay.replay(lib, image, pcs, calls, volatile, noarg={NAMES[0]})
         except AssertionError as e:
             why = e.args[0] if e.args else ()
             kind = "deopt" if len(why) > 2 and why[2] == "trap" else "differs"

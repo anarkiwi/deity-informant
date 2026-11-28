@@ -100,7 +100,7 @@ def test_checks_past_one_per_pointer_definition(prefix):
     assert len(checks) == printed > 0
     defs = sorted({d for x in checks for d in x["defs"]})
     assert sorted(e["defs"][d][:4] for d in defs) == [["w", 0xFB, 0, None], ["w", 0xFB, 1, None]]
-    assert e["unproven"]["play"] == defs and not e["unproven"]["init"]
+    assert e["unproven"]["play"] == defs and "init" not in e["unproven"]
     assert len(kinds(e).get("E2", [])) == printed - 1
     assert all(e["traps"].get(x["trap"], 0) <= 1 for x in checks)
 

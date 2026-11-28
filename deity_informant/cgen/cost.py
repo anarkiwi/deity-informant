@@ -15,7 +15,7 @@ TRAP_CHECKS = ("index", "window", "zone", "stack")
 
 def _lift_of(p, mod):
     """The lift (0: the entries', 1: init's) an MLIR function's operations come from."""
-    scope = getattr(mod, "scope", {}) if p.lifted is not None else {}
+    scope = getattr(mod, "scope", {})
     return lambda fn: int(fn in scope)
 
 

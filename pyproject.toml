@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deity-informant"
-version = "0.41.3"
+version = "0.42.0"
 description = "NMOS 6510 illegal-opcode toolkit: a standalone 6510 -> raw-P-Code lifter + pure-Python P-Code VM, and a 6510 Ghidra/pypcode SLEIGH processor module."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -120,6 +120,5 @@ ignore-dists = ["pytest", "pytest-xdist", "pytest-cov", "pytest-timeout", "build
 "tests/test_cgen.py:trap_meta -> tests/test_wholeprog.py:exact" = "trap_meta translates to C and checks trap_info keys and kinds; exact lifts and replays calls against the reference interpreter; only the assemble/act/check shape is shared"
 "tests/test_guard_proofs.py:test_a_store_the_first_call_does_not_make_deopts -> tests/test_wholeprog.py:test_soft_deopt_resumes_with_folded_register" = "two-line uses of the shared exact() replay helper over different programs: stores the first call's facts never saw vs CODEHIT's code guard resuming with a folded register"
 "tests/test_status_fuzz.py:test_random_status_programs_are_exact -> tests/test_carry_fuzz.py:test_random_carry_programs_are_exact" = "different generators and per-call state: status_fuzz replays each call from its status byte's flags, carry_fuzz lifts a data-patched image, checks fused chains and replays each call with its own memory words and decimal flag"
-"tests/test_cgen.py:test_init_probe_of_a_derived_register_is_a_run_time_choice -> tests/test_cgen.py:test_timer_flag_wait_and_acknowledges_are_kept" = "different device models: a derived SID register's init fallback replayed against two values vs a CIA timer-flag machine model with its acknowledge reads replayed as sensitive"
 "tests/test_cgen.py:test_operand_patched_from_constants_is_a_known_store -> tests/test_cgen.py:test_table_inside_code_a_store_writes_is_data" = "different programs and claims: an operand patched from constants gives a direct store with no wr(), a table inside code written by a store becomes region elements whose indexed expressions are pinned"
 "tests/test_cgen.py:test_known_opcodes_are_cells_without_code_checks -> tests/test_cgen.py:test_indexed_stores_clear_operand_cells" = "different stats and claims: opcode cells of restored or indexed opcode stores vs operand cells of a clearing loop, whose field array and indexed zero stores are pinned"

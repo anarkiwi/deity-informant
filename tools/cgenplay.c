@@ -36,3 +36,9 @@ int call(void (*f)(uint8_t), uint8_t a) {
     f(a);
   return trapped;
 }
+int call0(void (*f)(void)) {
+  trapped = -1;
+  if (!setjmp(env))
+    f();
+  return trapped;
+}

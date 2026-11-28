@@ -29,13 +29,14 @@ def psid(src):
 
 
 def test_rows_name_each_pointer_load(tmp_path, capsys):
-    """The walk's load is listed with its pair, ``Y`` and a proven hull inside the runs;
-    ``--json`` writes the rows."""
+    """The walk's load is listed with its pair, ``Y`` and a proven hull holding the runs
+    (the song's pointer is song data: the hull is the data block's); ``--json`` writes the
+    rows."""
     data, labels = psid(TO.SIGN)
     rows = ptrloads.survey(data)
     [row] = [r for r in rows if r["pc"] == labels["loop"]]
     assert row["mode"] == "(zp),Y" and row["zp"] == 0xFB and row["y"] == "0-255"
-    assert labels["r0"] <= row["proven"][0] and row["proven"][1] < labels["play"]
+    assert row["proven"][0] <= labels["r0"] and labels["r3"] < row["proven"][1]
     f = tmp_path / "t.sid"
     f.write_bytes(data)
     out = tmp_path / "rows.json"

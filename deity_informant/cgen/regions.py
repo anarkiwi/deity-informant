@@ -216,7 +216,6 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         wide=(),
         writes=None,
         state=None,
-        sources=(),
         blocks=(),
         hulls=(),
     ):
@@ -232,8 +231,8 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         store writes is in no region: a read of it is out of bounds (``oob_rd``). The bytes
         of ``state`` (a mask: cells held as C variables) are in a region only where one of
         the ``accesses`` touches them. The regions only stores with address sets (``written``:
-        init's among them) or ``sources`` (init's copies, a run each) touch are numbered after
-        the others, so the ``.c`` names the same regions whatever songs init runs for. The
+        init's among them) touch are numbered after the others, so the ``.c`` names the same
+        regions whatever songs init runs for. The
         ``blocks`` runs (a data block's, ``hi`` exclusive) are regions, tables or not. Each of
         the ``hulls`` (a data block of several runs', ``hi`` exclusive) is one array (``Bj``,
         ``blocks``) the regions and held spans in it are slices of, indexed by address: its
@@ -261,8 +260,6 @@ class Memory:  # pylint: disable=too-many-instance-attributes
         touched &= ~constant & ~self.vol
         for lo, hi in joined:
             need[lo : hi + 1] |= ~self.vol[lo : hi + 1]
-        masks.mask(sources, True, out=touched)
-        touched &= ~constant & ~self.vol
         touched |= masks.mask(blocks) & ~self.code & ~self.vol
         found = masks.runs(touched)
         self.regions = sorted(found, key=lambda r: not played[r[0] : r[0] + r[1]].any())

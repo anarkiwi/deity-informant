@@ -30,9 +30,11 @@ python tools/cgenplay.py tune.sid --psid --volatile 0xD400-0xD41D -o out/   # tr
 | `facts` | `trace.Facts`, used only for targets of computed jumps the code does not resolve (below) |
 | `loaded` | the `[lo, hi)` bytes the program was loaded to (default: its code span) |
 | `header` | the name the `.c` includes |
-| `init` | the index of the entry the host calls once, first, on `image` (`None`, the default: entries in any order); run per argument value, and translated where its lift is exact for every one (*Init*) |
-| `songs` | the range of values of `A` the `init` entry is called with (default `[0]`); another traps |
-| `machine` | runs init (`postinit.run`; default the reference interpreter over `volatile`, whose device bytes hold what was written) |
+| `init` | the index of the entry the host calls once, first, on `image` (`None`, the default: entries in any order); run per song on `machine`, never translated (*Init*) |
+| `songs` | the values of `A` the `init` entry is run with, one `.h` each (default `[0]`) |
+| `code_states` | 64 KiB images, or `(image, calls)`, the other entries are lifted from besides the songs' states: they shape the `.c`, have no `.h` and, `certified`, add what play is seen to do from them in `calls` calls, uncertified ([certified](certified.md)) (*Init*) |
+| `song` | the one song whose `.h` is made (default every song's, `info["headers"]`) |
+| `machine` | runs init (`postinit.run`; default the reference interpreter over `volatile`, whose device bytes hold what was written): `machine(mem, pc, a)` gives the volatile accesses `(addr, value, write)` in order (pairs `(addr, value)`: writes only) and the addresses stored to |
 | `devices` | what the volatile addresses answer (*Devices*; default the C64's, `c64devices.MODEL`; `None`: any byte) |
 | `lines` | mark the `.c` with `#line` directives naming what each line's code comes from (*Translation cost*; CLI `--lines`) |
 | `overrun` | `"trap"` (the default), `"zero"` or `"last"`: an access the memory map bounds outside its object traps, or reads 0 (or with `"last"` the last entry of the run below it, each indexed table its own object) and stores nothing (*Memory*; CLI `--overrun`) |
@@ -49,7 +51,7 @@ some access has an unknown address and the
 `structure` counts: C `functions` (and the identical ones `folded` into them) and the
 `gotos` printed, the `provenance` of the printed constructs in the machine code (below), the instruction
 starts translated (`starts`), the cells held as C variables (`state`, *State*) and, with
-`init`, whether init is `"translated"` or `"replayed"` (`init`), and what the `.c` prints per
+`init`, `"replayed"` (`init`) and each song's `.h` (`headers`), and what the `.c` prints per
 original instruction and per check (`emission`, *Translation cost*).
 
 The host supplies `uint8_t io_read(uint16_t)`, `void io_write(uint16_t, uint8_t)` and
@@ -183,117 +185,48 @@ every operation, so a small line parser replaces a native dependency.
 
 ## Init
 
-With `init`, `translate` runs that entry once per value of `A` in `songs` (its declared
-argument values) on `machine`, for the `.h`, and decides the `.c` as if `A` may be any byte:
-the declared values reach only the `.h` (`CGEN_SONG0`, `CGEN_SONGS`, a replayed init's
-copies), so the `.c` is the same for every count of them. The other entries are lifted for
-every value init **takes** (`_domain`), and the declared ones: of the values its run on
-`machine` returns with (every `A` is run, as for the bytes it leaves constant), those whose
-stores lie in what a store of init's lift may write and on which that lift does not deopt;
-values whose machine runs leave one memory and volatile writes share the verdict of the least
-of them. A value it does not take (an index past its tables) is one init's translation traps
-on. The states the probes of a translated init may leave besides are its runs
-(`postinit.forks`) for the least value taken and the declared ones; operand pairs init sets
-from one word (`alias`, below) are those of the least value's runs that hold on every state. The
-other entries are lifted from the memory the least value's run leaves. The bytes those runs store outside the
-stack page and the volatile ranges are variables whose values are the runs' (`free`,
-[wholeprog](wholeprog.md#init)): the other entries' analysis takes none of them, so their lift
-holds for every run's state. Operand pairs init sets from one
-word at constant offsets are one variable (`alias`), from the provenance of its run on the
-jennings core (`postinit.Run`: each stored byte tagged as a constant, a byte loaded at an
-address or through a word, or a byte of an addition chain on a word) when init returns on the
-reference interpreter.
+With `init`, `translate` runs that entry on `machine` (`postinit.run`) once per song of `songs`
+and never translates it: the `.c` holds no code of init's. Each song's run leaves a state, and
+the other entries are lifted once from all of them and from `code_states` (64 KiB images that
+shape the code alone, run but never certified), so the `.c` is the same for
+every song and only the `.h` differs: `info["headers"]` holds each song's (`song=k`: that one
+alone), `h_text` the first's. A byte init stores is a variable whose value is the state's,
+the `.h`'s initial data; a state that is no song's has no `.h`.
 
-The bytes init leaves **constant** are the exception (`_fixed`): a byte init stores that holds
-one value after init for every value of `A` it returns with on `machine` (all 256 are run, so
-the values deciding it do not depend on the declared ones: `postinit.Init.same`) and that no
-store of the other entries' lift may write (`Program.stored`, a store's address set, else its
-address interval: a store of unknown address reaches every byte) is a byte of the image their
-lift starts from, lifted again with it `held`. A pair of bytes an instruction reads as one
-address is constant as a whole or not at all: a variable byte keeps the other a variable, the
-pair the word init's runs bound (*Pointer pairs*). A byte whose value differs between values of
-`A`, or one the other entries may write, stays a variable init sets. `info["fixed"]` lists them.
+The bytes init leaves **constant** are the exception (`_fixed`): a byte init stores holding
+one value in every state given (every song's and every code state) that no store of the other
+entries' lift may write (`Program.stored`, a store's address set, else its address interval)
+is a byte of the image their lift starts from, lifted again with it `held`. A pair of bytes an
+instruction reads as one address is constant as a whole or not at all: a variable byte keeps
+the other a variable. A byte whose value differs between states, or one the other entries may
+write, stays a variable: song data, read from the `.h` like any other byte, never a set of
+values the code switches over. `info["fixed"]` lists the constant bytes. A byte init stores
+that the entries write too, holding one value in every state, is the value the driver head
+starts from (`driven`, [wholeprog](wholeprog.md#driver-loop)) and every value init leaves it
+(`known`), so a cursor init zeroes and play wraps is bounded at every call.
 
-Their values are data: the other entries' functions read each as `K_<offset>`, the `.h`'s
-`#define`, named by the offset its variable would have (`S_<offset>`, *State*), and the `.c`
-holds no value computed from them. The lift loads a data operand of them from memory as it does
-a cell's (wholeprog `held`), so an operand init relocated is `K_336 | ((uint16_t)K_337 << 8)`
-(the compiler folds it), a pointer pair of them alike, a patched immediate or count `K_15`; the
-analysis takes their values, so the access through such an address is direct where its value
-lies in one region or span (`R2[(uint16_t)(K_... + y - R2_ORG)]`, `CGEN_IX(C0, K_... - C0_ORG,
-y)`), and an index guard of the instruction reading them (its bounds the lift draws from them)
-is `G_<offset>` (`if (G_1C < y) trap(k);`, the test's constants loads of `@G` no pass folds).
-Which region or span such an access goes through, whether a store through it needs `codechk`,
-and the code of an opcode or a branch's, jump's or call's target init leaves are decided by the
-values: data that moves a folded address into another region, or changes which code runs,
-changes the `.c` as code would. A byte is held only where an access other than a read by name
-reaches it: one at an address it does not fold (an index over the instruction holding it), or a
-translated init's store; a byte read only by name is in no array. A replayed init's `.h` holds
-their values in its image (no copy writes them); a translated init's code writes them, its
-storage starting from `image`, while the other entries' functions read the names.
+The constants' values are data: the other entries' functions read each as `K_<offset>`, the
+`.h`'s `#define`, named by the offset its variable would have (`S_<offset>`, *State*), and the
+`.c` holds no value computed from them. The lift loads a data operand of them from memory as
+it does a cell's (wholeprog `held`), so an operand init relocated is `K_336 | ((uint16_t)K_337
+<< 8)` (the compiler folds it), a pointer pair of them alike, a patched immediate or count
+`K_15`; the analysis takes their values, so the access through such an address is direct where
+its value lies in one region or span (`R2[(uint16_t)(K_... + y - R2_ORG)]`, `CGEN_IX(C0, K_...
+- C0_ORG, y)`), and an index guard of the instruction reading them (its bounds the lift draws
+from them) is `G_<offset>` (`if (G_1C < y) trap(k);`). Which region or span such an access goes
+through, whether a store through it needs `codechk`, and the code of an opcode or a branch's,
+jump's or call's target init leaves are decided by the values, which every state shares. A byte
+is held only where an access other than a read by name reaches it; a byte read only by name is
+in no array.
 
-Init is then lifted itself, from `image`, as an entry run once (`once`,
-[wholeprog](wholeprog.md#init): a store into code makes cells only of the instructions that
-may run after it, so a block copy over code init already ran leaves that code constant), for
-any `A`. It is **translated** when that lift is exact for each declared value:
-
-- lifted without throw-away reads, its run from `image` (`postinit.reproduces`) returns with
-  no deopt and no volatile read but those of its polling loops (*Polling loops*), so it
-  depends on nothing but `image` and `A`, makes the machine's volatile writes in order and
-  leaves the machine's values in the bytes init stores and the image's in the others (outside
-  the stack page and the volatile ranges);
-- every access of the reference's run for each value (`postinit.Run.touched`, effective
-  addresses per instruction) lies inside what the lift bounds it to: a pointer load's hulls
-  (`reach`, `proven`), a bounded store's array (`bounded`), an address set (`addr_sets`), so no
-  layout the lift's assumptions give traps on a declared value (`postinit.bounded`).
-
-Its functions join the other entries' in one module, each reading its own lift's facts (value
-sets, register sets, hulls, bounded stores, address sets: `printer.Module.fx`), init's entry
-function, into which the compiler inlines its body, included: a relocator's stores through a
-pointer from a table of patch sites write the sites' storage by their address set, not `wr`; its instruction
-bytes decode from `image`, the bytes it patches are cells unless the other entries' lift reads
-them as constants (which init then leaves), and the `.h` holds `image`. Init's entry function
-traps an `A` outside `CGEN_SONG0` and the `CGEN_SONGS` after it, then runs the translated code;
-a self-modified operand is a code cell (*State*), an `(zp),Y` block copy a pointer access
-(*Memory*). A guard only the declared values keep from trapping (an index into a table of
-the songs the argument selects, or one computed from it, past the table's extent) stays: its
-`implied_by` is `"entry"` (*Trap metadata*), found by lifting init again for the declared
-values alone (`checked`: the analysis takes them, no entry guard tests them) and taking the
-guards that lift leaves out; that lift decides nothing of the `.c`. Init's code is lifted from
-the image, so where the lift decides a branch from constant bytes init reads the `.c` follows
-those bytes. A translated init's lift bounds each byte every store that may write it writes with
-known addresses and values (`Program.values`, its image byte among them): the other entries'
-lift takes those as the byte's values (`known`), so a cell only such stores of init write is
-closed, its dispatch with no trap. What init's lift leaves at its return whatever the data (`Program.exit`: immediates
-and device answers, no table) starts the other entries' driver head (`driven`,
-[wholeprog](wholeprog.md#driver-loop)): a cursor init zeroes and play wraps is bounded at every
-call, so a read it indexes needs no check and a branch it decides folds.
-
-### Polling loops
-
-A polling loop (`polling.loops`, over init's lift) is a strongly connected set of instructions
-of constant bytes with no store, stack access, `SP` write or transfer but branches and jumps,
-reading only constant addresses, one instruction of them the device: a wait such as
-`L: LDA $D012; CMP #k; BNE L` or `L: BIT $DC0D; BPL L`. Each pass is the same function of
-the byte the device answers. Entered with registers `r`, the loop settles (`polling.settle`,
-each byte the device model answers in the run's device state, every byte for a register it
-does not describe, run on the jennings core from `r`) when every pass it stays on keeps the
-registers live into its entry (every register live where it is left), every byte it leaves on
-leaves to one instruction and, where the model gives sets a read eventually hits (a counter's
-values, a running timer's flag), one of them lies in the bytes it leaves on; the registers
-differing between those bytes vary. Time since the device writes before a wait is unknown
-after it.
-
-The reference's run (`postinit.Run`, `polls`) answers each loop's device read with the least
-byte it leaves on (`reads`), and is `exact` while every loop it enters settles, no varying
-register is read before it is written (a register still varying where init returns is not
-read) and it reads the device nowhere else. Init's lift is then run with those reads replayed
-in order and must make exactly them: the wait leaves the state the machine's run leaves on
-every device that ends it, so its exit values that stay live (`A = k` after `CMP #k`) are
-constants of its code, and the C waits as the code does, the device read each pass by
-`io_read`. Without `polls` a run that does not return on the reference interpreter has no
-trace; with them one returning only by its waits must stay `exact`. A polling loop in another
-entry is lifted as the loop it is, reading the device each pass.
+The runs of bytes init stores are data the host holds (`holds`, `Program.written`): the other
+entries' reads of them past the image are regions. The entries are a player's (`player`): a
+pointer from the song's data stays in the song's data block (*Machine model*). The init entry
+of the `.c` replays, in order, the song's volatile writes and its reads of the
+`sensitive_reads` addresses, whose reads have effects (`CGEN_IO_N`, `CGEN_IO_AT`,
+`CGEN_IO_VAL`, `CGEN_IO_W` 1 for a write, 0 for a read), and nothing else: a poll with no
+effect is not replayed, the song's state is the `.h`'s data, and the host calls init once,
+first.
 
 ### Devices
 
@@ -311,36 +244,6 @@ both SID models, PAL and NTSC, an access's cycle within its instruction and the 
 `tests/test_devices.py` checks every read of random programs on vagrant-moses' C64 lies in
 them. The static lift takes the lowered model (`Model.lower`, [wholeprog](wholeprog.md),
 *Devices*) with time unknown.
-
-### Probes
-
-A device read outside a polling loop of a register the model describes is a **probe**: the
-reference's run (`postinit.forks`) is made once per value of each probe's set in the run's
-device state, at most `postinit.FORKS` runs per argument value. Each must be reproduced by
-init's lift with its reads replayed (`postinit.reproduces`), and one of each value's runs must
-leave the machine's state. Translated, the C reads the device once (`io_read`) and takes the
-path the value selects, which is sound for any value of the set: the other entries are lifted
-from the states of every run (`Init.extended`), so a code byte the probe's paths patch
-differently (an opcode, an operand) is a cell with each run's value, and none of those bytes
-is held constant. A probe of voice 3's output after releasing its test bit (`LDA $D41B` read a
-few cycles after writing `$D412`) selecting between two patchings is a two-way choice.
-
-Otherwise init is **replayed**: an init whose run reads the device elsewhere (an undescribed
-register, a probe with too many runs, which is so settled at the machine's value), keeps or
-counts what it polls, deopts or leaves bounds the lift assumed. The init function then puts the state in place:
-
-- an `A` outside `CGEN_SONG0` and the `CGEN_SONGS` after it traps;
-- init's volatile writes are replayed in order (`CGEN_IO_*`, each distinct sequence once and
-  `CGEN_IO_ROW` per value when there are several);
-- the run's values are copied into the variables (`CGEN_CP_*`, per value `CP_FROM[s]` to
-  `CP_FROM[s + 1]`): the `.h` holds the image, or the first run's state, whichever needs the
-  smaller tables, and a run's values where they differ from it are copies of the bytes no run
-  changes (the longest run of bytes its values continue as, `bytes.find` over doubling then
-  halving lengths, when longer than a copy's six table bytes) or literal bytes (`CGEN_LIT`),
-  cut where an array ends; bytes the other entries never read are not held.
-
-A replayed init's `.c` is the same for every argument value, count of them and data init
-reads; only the `.h` differs. The host calls init once, first, on the image.
 
 ## Structuring
 
@@ -743,7 +646,7 @@ bytes of the span, and `at` each promoted byte's lvalue and original address (`{
   `(uint16_t)(p - CGEN_OBJj_ORG) > CGEN_OBJj_LIM` of the pair's pointer `p` before its trap:
   the `.h` names object `j`'s first byte and the last less it, as the data decide them, so
   the `.c` holds no pointer init leaves and no bound. The entries' lift takes the bytes past
-  the program init's lift writes as held (`holds`), as the spans hold them. A walk's check
+  the program init writes as held (`holds`), as the spans hold them. A walk's check
   (*Walks*, after the instruction setting `Y`) tests `p + y` alike; a load through
   a pair init leaves that the entries never store (*Seeds*) reads its words with no test.
 - An access whose bases lie in the program (an operand, a pointer's or operand cells'
@@ -931,10 +834,8 @@ lift proves). For `entry` and `index` guards on `A`, `X` or `Y`, `held` is what 
 every path through the function as emitted: `vals` (runs) left by the register guards and
 constants before it (copies keep a register's fact; other writes and calls lose it), `by` the
 guards that narrowed it and `src` the entry register it still holds; `implied_by` is then the
-traps whose guards already keep the register inside `ok` (`[]`: constants alone), with
-`"entry"` last where the entry's declared values do (holding init's `A` inside `songs`, or a
-guard of init's lift its lift for the declared values leaves out, *Init*: an argument outside
-them is invalid input the entry's trap stops), else `None`. A guard the register guards before it imply on every
+traps whose guards already keep the register inside `ok` (`[]`: constants alone), else
+`None`. A guard the register guards before it imply on every
 path is not emitted (wholeprog *Implied guards*), nor an index guard whose register holds only
 values inside `ok` on every run (`proven`), so neither has a trap. `opcode`, `codechk` and `cell` guards list their
 `writers`, `{pc, entry, exact}`: the stores that may write the byte, from the entries' lift
@@ -1017,16 +918,15 @@ at an unbounded song byte held in arrays ending with the program and trapping pa
 past the table tested), an opcode restored through
 the stack, a pointer into zero page with no stack check, a jump's or-ed high byte under
 relocation, determinism (repeated, with the blocks shuffled and under other hash seeds), play
-lifted from the state init leaves and init translated (a table-driven block copy with a
-self-modified length overwriting a routine init ran, with no copy tables; an init lifted run
-once against any number of times; an init reading the device replayed; a relocator's operands
-pointer variables bounded to the data they point into
-and one variable per source word; init relocating by `A`, reading data, making I/O writes the
-data decides or copying a block per value of `A`, replayed with the same `.c` for every value,
-count of values and data; a translated init storing at its song, the same `.c` for one, three or
-32 declared songs and its store guard implied by the entry; a probe patching an opcode settled at the machine's value), each
-value from a fresh image, and an llvm-mos build. `tools/cgenplay.py` does the
-same for a PSID (its init called once, first: `--init`) or raw image (`--loaded LO-HI`
+lifted from the states init leaves, init replayed (a table-driven block copy with a
+self-modified length overwriting a routine init ran, with no copy tables; an init polling or
+reading the device, its writes replayed in order; a relocator's operands constants of the
+header; init relocating by `A`, reading data, making I/O writes the data decides or copying a
+block per value of `A`, the same `.c` for every song, each song played from its own `.h`; an
+opcode init leaves per song a dispatch over the songs' opcodes; code states shaping the code
+with no `.h`; a probe patching an opcode settled at the machine's value), each song from a
+fresh image, and an llvm-mos build. `tools/cgenplay.py` does the
+same for a PSID (its init called once, first, for the one song its calls give: `--init`) or raw image (`--loaded LO-HI`
 names the program's bytes in a raw 64 KiB state, as a memory dump after an init routine) and
 prints `tools/cmetrics.py`'s table, the sizes, the computed jumps resolved from the code, the
 traps and the stage times. It also checks the lift's tail calls (a routine fallen into for its

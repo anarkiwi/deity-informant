@@ -102,8 +102,8 @@ def accesses(image, starts, facts, machine, held):
 
 
 def survey(data, songs=None, every=False):
-    """The rows of the pointer loads of the PSID bytes ``data``, init's lift's last, init
-    called with ``A`` each of ``songs`` (default the header's count); with ``every`` those of
+    """The rows of the pointer loads of the PSID bytes ``data``, init run with ``A`` each of
+    ``songs`` (default the header's count); with ``every`` those of
     every access of no one address of the other entries' lift (:func:`accesses`)."""
     image, entries, loaded, _ = liftsweep.program(data)
     n = songs or parse_sid_header(data).songs or 1
@@ -111,11 +111,7 @@ def survey(data, songs=None, every=False):
     if every:
         held = (loaded[0], max([loaded[1], *(b for a, b in p.written if a >= loaded[1])]))
         return accesses(p.image, p.starts, p, p.machine, held)
-    out = rows(p.image, p.starts, p, p.objects, p.ptr_sets)
-    if p.lifted:
-        _, starts, facts = p.lifted
-        out += rows(p.start, starts - p.starts, facts, p.objects, p.ptr_sets)
-    return out
+    return rows(p.image, p.starts, p, p.objects, p.ptr_sets)
 
 
 def _hex(v):

@@ -6,8 +6,11 @@ by its runs over every value its probes may read. Anything else raises :class:`U
 
 from dataclasses import dataclass, field
 
+import numpy as np
 from jennings.coverage import certificate as V
 from jennings.coverage import components as C
+from jennings.devices.mpu6502 import NativeMPU
+from jennings.memory import NativeMemory
 from tqdm import tqdm
 
 from . import masks
@@ -23,7 +26,7 @@ ASSUMED = (
     "the native 6502 core is the machine and its flow tables name every input of each output",
     "play has no input: it loads no volatile address, and no excluded location carries state",
     "the host calls each entry but init with A = 0 only",
-    "init's probes read only values of the device model's sets",
+    "each song's state is the one init leaves on the machine",
 )
 
 
@@ -40,7 +43,7 @@ class Facts:
             accesses, as it names them.
         executed: the instructions that run.
         edges: ``(pc, next)`` of consecutive instructions within a call.
-        proven: ``{entry pc: "certificate" or "runs"}``: how each entry's facts are proven.
+        proven: ``{entry pc: "certificate"}``: how each entry's facts are proven.
         certificates: per play state, its ``Certificate`` and ``Verdict``.
     """
 
@@ -121,20 +124,30 @@ def play(states, pc, volatile, limit=LIMIT):
     return Facts(acc, frozenset(executed), frozenset(edges), {pc: "certificate"}, tuple(certs))
 
 
-def init(runs, pc):
-    """The :class:`Facts` of init at ``pc`` from ``runs`` (per argument value, its
-    ``postinit.forks``); None where a value has none or one run is not exact."""
-    if not runs or any(not rs or not all(r.exact for r in rs) for rs in runs):
-        return None
-    acc, executed, edges = {}, set(), set()
-    for r in (r for rs in runs for r in rs):
-        for key, at in r.touched.items():
-            acc[key] = acc.get(key, frozenset()) | frozenset(at)
-        executed |= r.ran
-        edges |= r.edges
-    return Facts(acc, frozenset(executed), frozenset(edges), {pc: "runs"})
+#: Calls of play observed from a code state given no count of its own.
+CODE_CALLS = 256
 
 
-def left(runs):
-    """The 64 KiB images init's ``runs`` (:func:`init`'s) leave."""
-    return [bytes(r.mem[0:0x10000]) for rs in runs for r in rs]
+def observe(state, pc, volatile, calls=CODE_CALLS):
+    """The :class:`Facts` of ``calls`` calls of entry ``pc`` with ``A = 0`` from the 64 KiB
+    image ``state`` on the native core, as seen: no certificate, so no entry is proven by
+    them. :class:`Unproven` where a call does not return or loads a volatile address."""
+    vol = masks.mask(volatile)
+    mpu = NativeMPU(memory=NativeMemory(bytes(state)[:0x10000]))
+    acc, edges = {}, set()
+    for n in tqdm(range(calls), desc="observe", unit="call", leave=False, disable=None):
+        trace, log = mpu.run_to_rts_accesses(pc, 0, MAX_CYCLES)
+        if mpu.pc != 2:
+            raise Unproven(f"play at ${pc:04X} does not return on call {n}")
+        pcs = np.asarray(trace.pc, dtype=np.int64)
+        edges.update(zip(pcs[:-1].tolist(), pcs[1:].tolist()))
+        log = np.asarray(log, dtype=np.int64)
+        at, store, ea = log >> 17, (log >> 16) & 1, log & 0xFFFF
+        loads = ea[(store == 0) & vol[ea]]
+        if loads.size:
+            raise Unproven(f"play at ${pc:04X} loads a volatile address ${int(loads[0]):04X}")
+        for q, w, a in set(zip(at.tolist(), store.tolist(), ea.tolist())):
+            acc.setdefault((q, bool(w)), set()).add(a)
+    executed = {pc} | {a for a, _ in edges} | {b for _, b in edges}
+    accesses = {k: frozenset(v) for k, v in acc.items()}
+    return Facts(accesses, frozenset(executed), frozenset(edges))
