@@ -128,3 +128,34 @@ def test_translate_reports_its_facts(prefix):
         f"{labels['play']:04x}": "certificate",
     }
     assert info["certified"]["assumed"] == list(certified.ASSUMED)
+
+
+#: :data:`test_cgen.STRIDED_CALLED` with a load the lift bounds only by a whole byte of index,
+#: over the records; called with ``A`` 0, it reads below them.
+STRIDED_NEAR = T.STRIDED_CALLED.replace(
+    "entry:  LDX #0", "entry:  TAY\n        LDA $2FF0,Y\n        STA $C010\n        LDX #0"
+)
+
+
+def strided_c(prefix, src, certified_):
+    """The ``.c`` of ``src``'s entry, its facts certified or not."""
+    img, labels, loaded = T.assemble(src)
+    c, _, _ = cgen.translate(
+        img,
+        [(labels["entry"], "entry")],
+        [T.W.IO],
+        (),
+        loaded=loaded,
+        prefix=prefix,
+        certified=certified_,
+    )
+    return c
+
+
+def test_proof_adds_no_division(prefix):
+    """Records the lift promotes as fields reached by a division stay fields with the facts;
+    records the lift keeps as memory (a load it bounds by a whole byte reaches them) stay
+    memory although the facts show that load below them: the facts add no division."""
+    assert "/ 7]" in strided_c(prefix, T.STRIDED_CALLED, True)
+    assert "/ 7]" not in strided_c(prefix, STRIDED_NEAR, False)
+    assert "/ 7]" not in strided_c(prefix, STRIDED_NEAR, True)

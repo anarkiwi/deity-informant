@@ -1,5 +1,5 @@
-"""Loads recomputed where they are used: a load of a fixed memory cell read more than once is
-printed at each use instead of held in a variable when no operation that may write the cell
+"""Loads recomputed where they are used: a load of a fixed memory cell is printed at each use
+instead of held in a variable when no operation that may write the cell
 lies on any path from the load to a use (a forward dataflow over the function's blocks)."""
 
 from __future__ import annotations
@@ -115,7 +115,7 @@ class Recompute:
         for b in self.blocks:
             for o in b.ops[:-1]:
                 v = o.res[0] if len(o.res) == 1 else None
-                if v is None or v in self.c.inline or (self.c.uses.get(v) or 0) < 2:
+                if v is None or v in self.c.inline or not self.c.uses.get(v):
                     continue
                 if self.f.carry(v):
                     continue

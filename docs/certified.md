@@ -59,5 +59,10 @@ The C generator (`printer.Module.proven_set`) gives an access the addresses its 
   static interval;
 - it reaches the one region or held span its addresses lie in unchecked.
 
+The facts add no division: a record family whose element is a division of the index the code
+holds (`(w - base) / k`) is promoted as fields only where the lift's own address facts, without
+the proof, already admit it. Elsewhere the code keeps indexing the records' region by the
+offset it holds, which costs no element computation.
+
 The facts are those of the declared songs: two songs of one player can lift to different `.c`
 where their runs differ.
