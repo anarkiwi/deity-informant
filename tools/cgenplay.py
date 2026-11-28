@@ -29,10 +29,12 @@ CFLAGS = ("-std=c99", "-DCGEN_OOB_EXACT", "-O2", "-Wall", "-Wextra", "-Werror", 
 
 
 def build(src, out, flags=CFLAGS):
-    """Compile the generated ``src`` with the harness to a new shared library named after
-    ``out`` (:func:`cplay.fresh`); the loaded library."""
+    """Compile the generated ``src`` (a path, or a list of translation units) with the
+    harness to a new shared library named after ``out`` (:func:`cplay.fresh`); the loaded
+    library."""
     out = fresh(out)
-    subprocess.run(["gcc", *flags, "-o", str(out), str(src), str(HARNESS)], check=True)
+    srcs = [str(x) for x in (src if isinstance(src, list) else [src])]
+    subprocess.run(["gcc", *flags, "-o", str(out), *srcs, str(HARNESS)], check=True)
     return ctypes.CDLL(str(out))
 
 
@@ -110,12 +112,22 @@ class Overruns(PcodeVM):
 
 
 def replay(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
-    lib, image, pcs, calls, volatile, sensitive=(), progress=False, trap=None, overruns=None
+    lib,
+    image,
+    pcs,
+    calls,
+    volatile,
+    sensitive=(),
+    progress=False,
+    trap=None,
+    overruns=None,
+    noarg=(),
 ):
     """Play ``calls`` ``[(name, a)]`` of the library on its own memory and the reference at
     ``pcs[name]`` from ``image``; AssertionError at the first call whose log differs. With
     ``trap`` ``(n, k)`` call ``n`` traps with ``k`` and the replay ends there; with
-    ``overruns`` (``info["overruns"]``) the reference is :class:`Overruns`."""
+    ``overruns`` (``info["overruns"]``) the reference is :class:`Overruns`; the entries
+    ``noarg`` take no argument in C (a replayed init), the reference's ``A`` still ``a``."""
     ctypes.memmove(ctypes.addressof(ctypes.c_uint8.in_dll(lib, "IO")), bytes(image), 0x10000)
     logn = ctypes.c_uint32.in_dll(lib, "logn")
     loga = (ctypes.c_uint16 * (1 << 20)).in_dll(lib, "loga")
@@ -126,13 +138,14 @@ def replay(  # pylint: disable=too-many-arguments,too-many-positional-arguments,
         sens[i] = a
     ctypes.c_int.in_dll(lib, "nsensitive").value = len(sensitive)
     lib.call.argtypes = [ctypes.c_void_p, ctypes.c_uint8]
+    lib.call0.argtypes = [ctypes.c_void_p]
     fns = {name: ctypes.cast(getattr(lib, name), ctypes.c_void_p) for name in pcs}
     ref = bytearray(image)
     zero = None if overruns is None else Overruns(image, overruns, volatile)
     keep = set(sensitive)
     for n, (name, a) in enumerate(tqdm(calls, disable=not progress, desc="calls", unit="call")):
         logn.value = 0
-        k = lib.call(fns[name], a)
+        k = lib.call0(fns[name]) if name in noarg else lib.call(fns[name], a)
         if trap is not None and n == trap[0]:
             assert k == trap[1], (n, name, "trap", k, "want", trap[1])
             return n
@@ -209,6 +222,11 @@ def main(argv=None):  # pylint: disable=too-many-locals
     out.mkdir(parents=True, exist_ok=True)
     stem = out / Path(args.file).stem
     loaded = args.loaded or (load, load + len(body))
+    pcs = {name: pc for pc, name in entries}
+    plan = parse_calls(calls, pcs)
+    sung = sorted({a for name, a in plan if name == args.init})
+    if len(sung) > 1:
+        raise SystemExit(f"one song per replay: init is called with {sung}")
     t = time.perf_counter()
     c, h, info = cgen.translate(
         image,
@@ -218,6 +236,7 @@ def main(argv=None):  # pylint: disable=too-many-locals
         loaded=loaded,
         header=stem.with_suffix(".h").name,
         init=[n for _, n in entries].index(args.init) if args.init else None,
+        songs=sung or None,
         overrun=args.overrun,
     )
     wall = time.perf_counter() - t
@@ -232,9 +251,9 @@ def main(argv=None):  # pylint: disable=too-many-locals
     stages = ", ".join(f"{k} {v:.3f} s" for k, v in info["times"].items())
     print(f"translate {wall:.3f} s ({stages})", flush=True)
     lib = build(stem.with_suffix(".c"), stem.with_suffix(".so"))
-    pcs = {name: pc for pc, name in entries}
     zero = info["overruns"] if args.overrun != "trap" else None
-    n = replay(lib, image, pcs, parse_calls(calls, pcs), vol, args.sensitive, True, overruns=zero)
+    noarg = {args.init} if args.init else set()
+    n = replay(lib, image, pcs, plan, vol, args.sensitive, True, overruns=zero, noarg=noarg)
     print(f"{n} calls identical to the reference")
     return 0
 

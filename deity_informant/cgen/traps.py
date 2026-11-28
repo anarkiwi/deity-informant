@@ -5,11 +5,7 @@ pass and the analysis finds, the traps implying it, and the stores writing code 
 from ..wholeprog import REGS
 from .emit import ENTRY_REGS, exits, ops
 
-__all__ = ["ENTRY", "stores", "trap_info"]
-
-#: The ``implied_by`` of a guard the entry's declared argument values imply: an argument
-#: outside them is invalid input the entry's guard traps.
-ENTRY = "entry"
+__all__ = ["stores", "trap_info"]
 
 
 def stores(prog):
@@ -48,10 +44,8 @@ def _passes(ok, vals):
 
 
 def _union(implied):
-    """The traps of the ``implied_by`` lists ``implied``, ascending, then :data:`ENTRY` if any
-    has it."""
-    ks = {k for i in implied for k in i}
-    return sorted(ks - {ENTRY}) + [ENTRY] * (ENTRY in ks)
+    """The traps of the ``implied_by`` lists ``implied``, ascending."""
+    return sorted({k for i in implied for k in i})
 
 
 class _Census:
@@ -70,27 +64,16 @@ class _Census:
 
     def implied(self, fi, w):
         """The traps implying register guard ``w`` of function ``fi`` (``[]``: constants
-        alone), with :data:`ENTRY` where the entry's declared argument values do, or None."""
-        held, origin = w["held"], self.ctx["origin"]
-        if (w["kind"], w["at"], w["reg"]) in self.ctx["entailed"] and origin[fi]:
-            return [ENTRY]
+        alone), or None."""
+        held = w["held"]
         if held is None or not w["ok"]:
             return None
         by = {self.of[(fi, j)] for j in held["by"] if (fi, j) in self.of}
-        vals = _values(held["vals"])
-        if _passes(w["ok"], vals):
-            return sorted(by)
-        song = self.ctx["song"]
-        if song is not None and held["src"] == "a" and self.funcs[fi]["pc"] == song["fn"]:
-            vals &= set(range(song["lo"], song["hi"] + 1))
-            if _passes(w["ok"], vals):
-                return [*sorted(by), ENTRY]
-        return None
+        return sorted(by) if _passes(w["ok"], _values(held["vals"])) else None
 
     def writers(self, fi, w):
         """The stores writing what guard ``w`` of function ``fi`` checks, if it checks code."""
-        origin = self.ctx["origin"]
-        entry = "init" if origin is not None and origin[fi] else "play"
+        entry = "play"
         if w["kind"] == "opcode":
             return _writers(self.ctx["stores"], w["at"], w["at"])
         if w["kind"] == "codechk":
@@ -128,8 +111,6 @@ class _Census:
         """The metadata of the trap of ``key``."""
         whys = [(fi, j) for fi, j in self.whys.get(key, ()) if not self.passed(fi, j)]
         guards = [self.guard(fi, j, key[0] == "ind") for fi, j in whys]
-        if key in self.ctx["extra"]:
-            guards.insert(0, self.ctx["extra"][key])
         kinds = sorted({g["kind"] for g in guards})
         fis = {fi for fi, _ in whys if self.funcs[fi].get("copies")}
         implied = [g["implied_by"] for g in guards]
@@ -147,9 +128,7 @@ class _Census:
 
 def trap_info(funcs, traps, whys, used, ctx):
     """``{k: metadata}`` of the traps ``used`` of ``traps`` (``{key: k}``) of the lifted
-    ``funcs``, from ``whys`` (:func:`deity_informant.cgen.emit.emit`) and ``ctx``: ``origin``,
-    ``stores`` (``{entry: stores(...)}``), ``jumps``, ``song`` (init's ``{"fn", "lo", "hi",
-    "k"}`` or None), ``entailed`` (the guards ``(kind, at, reg)`` of init's lift the declared
-    argument values imply) and ``extra`` (``{key: guard}`` the render makes)."""
+    ``funcs``, from ``whys`` (:func:`deity_informant.cgen.emit.emit`) and ``ctx``: ``stores``
+    (``{entry: stores(...)}``) and ``jumps``."""
     c = _Census(funcs, traps, whys, ctx)
     return {k: c.trap(key) for key, k in traps.items() if k in used}

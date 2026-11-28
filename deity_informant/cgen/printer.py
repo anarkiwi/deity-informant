@@ -26,7 +26,7 @@ from .. import masks, strided
 from . import llvmopt, mlir
 from .mlir import Op, _types
 from . import cnodes as cn, marks, recompute, regions, ssa
-from .state import INDEXED, INIT, POINTER, UNKNOWN, State, classify
+from .state import INDEXED, POINTER, UNKNOWN, State, classify
 from .structure import Conds, Graph, Structurer, new_ids
 
 WIDTH = {"i1": 1, "i8": 8, "i16": 16, "i32": 8, "i64": 16, "index": 16}
@@ -2241,7 +2241,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         print as assignments: none tested against the bounds of the array or the regions it
         may write."""
         return self.f.exprable(items) and not any(
-            o.name == "memref.store" and self.target(o)[0] in ("bound", "set", "block")
+            o.name == "memref.store" and self.target(o)[0] in ("set", "block")
             for o in items[0][1].ops[:-1]
             if id(o) not in self.f.dropped
         )
@@ -2580,8 +2580,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
 
     def bound_region(self, o, lo, hi):
         """``("region", k)`` for a store the lift bounds to the array holding its base
-        (:meth:`Module.run_of`) whose addresses lie in region ``k``, ``("bound", k)`` when
-        they leave it (a write past it is out of bounds), else None."""
+        (:meth:`Module.run_of`) whose addresses lie in region ``k``, else None."""
         run = self.mod.run_of(self.f, o)
         if run is None:
             return None
@@ -2593,7 +2592,7 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
         k = ks.pop()
         org, n = mem.regions[k]
         inside = all(org <= a and b < org + n for a, b in per)
-        return ("region", k) if inside else ("bound", k)
+        return ("region", k) if inside else None
 
     def pointer(self, o):
         """Whether access ``o``'s address is a constant plus a value no byte extends: a
@@ -3289,13 +3288,6 @@ class CFunc:  # pylint: disable=too-many-instance-attributes,too-many-public-met
             for t, r in reversed(choices[:-1]):
                 st = c_ast.If(t, cn.assign(r, v), st)
             out.append(st)
-            return
-        if how[0] == "bound":
-            # A store inside the array holding its base, out of bounds past it.
-            ((test, el),) = self.mod.choices((how[1],), (), a.node, self.indexed(o))
-            self.mod.helpers.add("oob_wr")
-            test = self.check("bounded", o, test)
-            out.append(c_ast.If(test, cn.assign(el, v), self.arm(cn.call("oob_wr", a.node, v))))
             return
         fn = "oob_wr" if how[0] == "code" else "wr"
         self.mod.helpers.add(fn)
@@ -4015,19 +4007,12 @@ class Module:  # pylint: disable=too-many-instance-attributes
         self.opcodes = {}
         #: Per entry name, the C lines that start it (the host's check of its arguments).
         self.guards = {}
-        #: Runs ``(lo, hi)`` (inclusive) held in regions whatever reads them (init's sources).
-        self.held_runs = []
-        #: Per function name, the lift whose facts (:meth:`fx`) it reads, when not this one's.
-        self.scope = {}
         #: The instruction bytes each lift decodes as constant (opcodes intervals are read by).
         self.fixed = mem.code
         #: ``(mask, image, operands)``: the bytes init leaves constant (``Program.fixed``),
         #: the values it leaves in them, and those of them in the instructions planned.
         none = np.zeros(0x10000, dtype=bool)
         self.folded = (none, mem.image, none)
-        #: The functions of the other entries' lift, which read them as constants, when a
-        #: translated init's are others (None: every function).
-        self.after = None
         #: ``[(pc, value)]``: the constants of the tests of the instructions at ``pc`` the
         #: ``.h`` names, from bytes init leaves constant (``@G``'s elements).
         self.symbols = []
@@ -4109,19 +4094,19 @@ class Module:  # pylint: disable=too-many-instance-attributes
         lo, hi = f.addr_iv(o)
         return [(max(a, lo), min(b, hi + 1)) for a, b in runs if a <= hi and lo < b] or None
 
-    def fx(self, name):
+    def fx(self, _name):
         """The facts of the lift function ``name`` comes from: ``sets``, ``regs``, ``reach``,
         ``proven``, ``bounded`` and ``addr_sets``."""
-        return self.scope.get(name, self)
+        return self
 
     def unread_stores(self):
         """Mark the stores no load reads back (``f.unread``): every byte they may write lies
         outside the constant bytes of the code span (a store there is a code check) and
-        outside the addresses any load of the module may read, over every call, and the
-        sources of init's copies. What they hold is never observed: a return address a callee
-        pulls into a pointer whose reads are forwarded, a vector the lift resolved its
-        transfers through, the operand cells of a computed jump that switches on its index."""
-        read = masks.mask(self.held_runs, True)
+        outside the addresses any load of the module may read, over every call. What they
+        hold is never observed: a return address a callee pulls into a pointer whose reads are
+        forwarded, a vector the lift resolved its transfers through, the operand cells of a
+        computed jump that switches on its index."""
+        read = np.zeros(0x10000, dtype=bool)
         stores = []
         for f in self.funcs:
             for o, (lo, hi), per in f.accesses():
@@ -4347,8 +4332,6 @@ class Module:  # pylint: disable=too-many-instance-attributes
         why, found = np.zeros(0x10000, dtype=np.int8), []
         lift = np.zeros(0x10000, dtype=np.int8)
         seen = np.zeros(0x10000, dtype=bool)
-        for lo, hi in self.held_runs:
-            why[lo : hi + 1] = INIT
         cells = self.objects()
         for f in self.funcs:
             for o, (lo, hi), per in f.accesses():
@@ -4608,9 +4591,8 @@ class Module:  # pylint: disable=too-many-instance-attributes
             unknown,
             joined + wide,
             wide + bound,
-            writes + bound + self.held_runs,
+            writes + bound,
             self.state.mask(),
-            self.held_runs,
             sorted({r for f in self.funcs for r in self.blocks(f)}),
             sorted({h for f in self.funcs for h in self.block_hulls(f)}),
         )
@@ -4970,7 +4952,7 @@ class Module:  # pylint: disable=too-many-instance-attributes
         one."""
         if self.mem.vol[a]:
             return None
-        if self.folded[0][a] and (self.after is None or name in self.after):
+        if self.folded[0][a]:
             return self.folded[1][a]
         free = self.free is not None and self.free[a] and not self.mem.moves(a)
         return self.mem.image[a] if self.mem.constant[a] or free else None

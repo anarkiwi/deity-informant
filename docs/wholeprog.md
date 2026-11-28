@@ -346,8 +346,8 @@ the program, and checks it against the reference.
 ## Init
 
 A host whose program has an init runs it and lifts the other entries from the memory it leaves
-(`cgen`, [*Init*](cgen.md#init)), and lifts init alone with `once`; its run replays the reads
-of init's polling loops (`Program.call`'s `reads`, [*Polling loops*](cgen.md#polling-loops)).
+(`cgen`, [*Init*](cgen.md#init)). An entry that runs once, such as an init lifted alone, is
+lifted with `once`; its run can replay given device reads (`Program.call`'s `reads`).
 
 `once` declares that each entry runs once, from `image`: a store makes cells only of the bytes
 of the instructions that may run after it in the same call (reachable from it, a call matched
@@ -397,14 +397,11 @@ image, as `free` bytes are, for the runs a pointer pair's floor is taken from. I
 takes their values; its code loads a data operand of them from memory as a cell's (a branch's,
 jump's or call's stays its target), so the values are data of the code, not code.
 
-`known` (`{addr: values}`) gives a byte of `free` every value it may hold after init, where
-init's own lift bounds it (`Program.values` of that lift: the byte's entry value and those of
-every store that may write it, each of known addresses and values): its value set, so a cell
-only init writes, with known values, is closed. `checked=True` declares that the host checks
+`known` (`{addr: values}`) gives a byte of `free` every value it may hold after init (cgen
+gives a byte holding one value in every state init leaves that value): its value set, so a
+cell only init writes, with known values, is closed. `checked=True` declares that the host checks
 the entries' declared `A`, `X` and `Y` values before each call: the analysis takes them, and
-no entry guard tests them. A translated init is lifted for any `A`, so its lift holds whatever
-values the host declares; cgen lifts it again `checked` for the declared songs only to name the
-guards they imply (cgen [*Init*](cgen.md#init)).
+no entry guard tests them.
 
 ### Driver loop
 

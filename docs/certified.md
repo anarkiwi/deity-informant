@@ -17,13 +17,17 @@ the declared songs (or, with no init, from the image):
   the feed set taints an address, a control transfer or the feed set. Every later call then
   repeats one of the calls covered, so those accesses and edges are every one play takes.
 
-Init, called once per declared song, is proven by its runs over every value its device probes
-may read (`postinit.forks`): each run's accesses, instructions and edges. The states those runs
-leave are certified as play's starting states too, as are the machine's.
+A code state (`code_states`) is a made-up input that makes player code run: it is never
+lifted and has no `.h`, so it needs no certificate. `certified.observe` runs play from it on
+the native core a given number of calls (`(image, calls)`, default `certified.CODE_CALLS`)
+and its facts are what the run is seen to do: every instruction it runs is player
+behaviour, whether or not its state ever repeats.
 
 `Facts` holds the union: `accesses`, `executed`, `edges`, how each entry is proven
-(`proven`: `"certificate"` or `"runs"`) and the certificates with their verdicts.
-`info["certified"]` reports the counts, the verdicts and the assumptions.
+(`proven`: `"certificate"`) and the certificates with their verdicts.
+`info["certified"]` reports the counts, the verdicts and the assumptions;
+`info["code_states"]` the code states run and the instructions and edges they add beyond the
+songs'.
 
 ## What is refused
 
@@ -33,7 +37,8 @@ leave are certified as play's starting states too, as are the machine's.
   return;
 - the verdict is not ok, or it leans on an excluded location (`Verdict.assumed`);
 - play loads a volatile address (an input the certificate's model does not have);
-- init is translated but a declared song's runs are missing or not exact.
+- a code state's play does not return or loads a volatile address (the error names the
+  state).
 
 `certified=True` needs `overrun="trap"`: the facts are the machine's runs, which the zero rule's
 reads leave.
@@ -45,7 +50,8 @@ reads leave.
 - the native 6502 core is the machine, and its flow tables name every input of each output;
 - play has no input: it loads no volatile address, the stack page and the volatile ranges carry
   no state between calls, and the host calls it with `A = 0` only;
-- init's probes read only values of the device model's sets.
+- each song's state is the one init leaves on the machine (`postinit.run`); init is never
+  translated, so nothing of its code is proven.
 
 ## Consumers
 

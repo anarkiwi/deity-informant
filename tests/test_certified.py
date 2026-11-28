@@ -1,8 +1,7 @@
 """Proven run facts (``docs/certified.md``): play certified and verified from each state init
-leaves, init proven by its runs, and anything unproven refused."""
+leaves and each code state, and anything unproven refused."""
 
-from types import SimpleNamespace
-
+import numpy as np
 import pytest
 
 import test_cgen as T
@@ -63,15 +62,16 @@ def lifted(src, entries=("init", "play"), **kw):
 
 
 def test_play_accesses_are_certified():
-    """Play's table read takes exactly the four bytes the wrapping counter reaches; init's
-    store and every instruction of both entries are facts; each certificate verifies."""
+    """Play's table read takes exactly the four bytes the wrapping counter reaches and every
+    instruction of play is a fact; init, never translated, has none; each certificate
+    verifies."""
     p, labels = lifted(WRAP)
     fx = p.proof
     tab = labels["tab"]
     assert fx.accesses[(labels["rd"], False)] == frozenset(range(tab, tab + 4))
-    assert fx.accesses[(labels["init"] + 2, True)] == frozenset({labels["cur"]})
-    assert fx.proven == {labels["init"]: "runs", labels["play"]: "certificate"}
-    assert fx.ran(labels["keep"]) and fx.ran(labels["init"])
+    assert not any(pc < labels["play"] for pc, _ in fx.accesses)
+    assert fx.proven == {labels["play"]: "certificate"}
+    assert fx.ran(labels["keep"]) and not fx.ran(labels["init"])
     assert (labels["rd"], labels["rd"] + 3) in fx.edges
     assert fx.addresses([labels["rd"], labels["keep"]]) == set(range(tab, tab + 4)) | {
         labels["cur"]
@@ -107,15 +107,6 @@ def test_certified_facts_need_the_trap_rule():
         lifted(WRAP, overrun="zero")
 
 
-def test_init_without_exact_runs_has_no_facts():
-    """Init's facts need runs for every declared value, each exact."""
-    run = SimpleNamespace(exact=True, touched={(1, False): {2}}, ran={1}, edges=set())
-    assert certified.init([None], 1) is None
-    assert certified.init([[SimpleNamespace(**{**vars(run), "exact": False})]], 1) is None
-    got = certified.init([[run]], 1)
-    assert got.accesses == {(1, False): frozenset({2})} and got.proven == {1: "runs"}
-
-
 def test_translate_reports_its_facts(prefix):
     """``info["certified"]`` names how each entry is proven and what is assumed."""
     img, labels, loaded = T.assemble(WRAP)
@@ -123,11 +114,77 @@ def test_translate_reports_its_facts(prefix):
     _, _, info = cgen.translate(
         img, ents, [T.W.IO], (), loaded=loaded, init=0, songs=[0], prefix=prefix, certified=True
     )
-    assert info["certified"]["entries"] == {
-        f"{labels['init']:04x}": "runs",
-        f"{labels['play']:04x}": "certificate",
-    }
+    assert info["certified"]["entries"] == {f"{labels['play']:04x}": "certificate"}
     assert info["certified"]["assumed"] == list(certified.ASSUMED)
+
+
+#: Play counting in a 16-bit counter only where ``on`` is set, which init clears: the songs'
+#: runs never count; a code state setting it counts on every call, never repeating.
+GATED = """
+init:   LDA #$00
+        STA on
+        RTS
+play:   LDA on
+        BEQ done
+count:  INC lo
+        BNE done
+        INC hi
+done:   RTS
+on:     .byte 0
+lo:     .byte 0
+hi:     .byte 0
+end:
+"""
+
+
+def code_state(src, **at):
+    """``src``'s image with the bytes at the labels ``at`` set."""
+    img, labels, _ = T.assemble(src)
+    out = np.frombuffer(bytes(img), np.uint8).copy()
+    for name, v in at.items():
+        out[labels[name]] = v
+    return out
+
+
+def test_code_states_add_what_play_is_seen_to_do():
+    """A code state is run, not certified: play counting from it, which never repeats, adds
+    the instructions and accesses it is seen to make, no certificate, and ``info`` counts
+    them."""
+    p, labels = lifted(GATED)
+    assert not p.proof.ran(labels["count"])
+    on = code_state(GATED, on=1)
+    q, _ = lifted(GATED, code_states=[(on, 8)])
+    assert q.proof.ran(labels["count"]) and len(q.proof.certificates) == len(p.proof.certificates)
+    assert q.proof.accesses[(labels["count"], True)] == frozenset({labels["lo"]})
+    assert q.proof.proven == {labels["play"]: "certificate"}
+    added = q.proof.executed - p.proof.executed
+    assert (
+        q.observed
+        == {
+            "states": 1,
+            "executed": len(added),
+            "edges": len(q.proof.edges - p.proof.edges),
+        }
+        and labels["count"] in added
+    )
+    img, labels, loaded = T.assemble(GATED)
+    ents = [(labels["init"], "init"), (labels["play"], "play")]
+    kw = {"loaded": loaded, "init": 0, "certified": True, "code_states": [on]}
+    _, _, info = cgen.translate(img, ents, [T.W.IO], **kw)
+    assert info["code_states"]["states"] == 1 and info["code_states"]["executed"] >= 1
+
+
+@pytest.mark.parametrize("op", ["jmp", "lda"], ids=["spins", "volatile"])
+def test_a_code_state_that_fails_is_named(op):
+    """A code state whose play does not return (it spins), or loads a volatile address, is
+    refused, the error naming it."""
+    _, labels, _ = T.assemble(GATED)
+    bad = code_state(GATED, on=1)
+    at = labels["count"]
+    word = at if op == "jmp" else 0xC000
+    bad[at : at + 3] = [0x4C if op == "jmp" else 0xAD, word & 0xFF, word >> 8]
+    with pytest.raises(certified.Unproven, match="code state 0: .*(return|volatile)"):
+        lifted(GATED, code_states=[bad])
 
 
 #: :data:`test_cgen.STRIDED_CALLED` with a load the lift bounds only by a whole byte of index,

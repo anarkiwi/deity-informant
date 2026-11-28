@@ -1,11 +1,11 @@
-"""deity_informant.polling: device polling loops, and the init they leave translatable."""
+"""Device polling loops: play's lifted as loops, and the inits a machine runs that poll."""
 
 import pytest
 from jennings.devices.mpu6502 import NativeMPU
 from jennings.memory import NativeMemory
 
 import wholeprog_progs as W
-from deity_informant import NATIVE, c64devices, cgen, devices, polling, postinit, wholeprog
+from deity_informant import NATIVE, cgen
 
 pytestmark = pytest.mark.skipif(not NATIVE, reason="needs the native extension")
 
@@ -15,7 +15,8 @@ VOLATILE = [W.IO, (0xD000, 0xD400)]
 
 def machine(count=3, flag=0xC1, addr=0xC00D, volatile=VOLATILE):
     """A ``postinit`` machine on the jennings core: ``$D011``/``$D012`` the beam, ``addr``
-    answering 0 to its first ``count`` reads, then ``flag``; ``volatile`` logged."""
+    answering 0 to its first ``count`` reads, then ``flag``; ``volatile`` accesses logged
+    ``(addr, value, write)``."""
 
     def run(mem, pc, a):
         m = NativeMemory(bytes(mem))
@@ -30,12 +31,19 @@ def machine(count=3, flag=0xC1, addr=0xC00D, volatile=VOLATILE):
         m.subscribe_to_read([addr], status)
         io, stored = [], set()
 
+        def vol(x):
+            return any(lo <= x < hi for lo, hi in volatile)
+
         def wrote(x, v):
             stored.add(x)
-            if any(lo <= x < hi for lo, hi in volatile):
-                io.append((x, v))
+            if vol(x):
+                io.append((x, v, True))
 
-        m.observe_data_access(on_read=None, on_write=wrote, stack=True)
+        def read(x):
+            if vol(x):
+                io.append((x, flag if x == addr and seen[0] > count else m[x], False))
+
+        m.observe_data_access(on_read=read, on_write=wrote, stack=True)
         NativeMPU(memory=m).run_to_rts(pc, a, 10_000_000)
         m.observe_data_access(None, None)
         mem[:] = bytes(m[0:0x10000])
@@ -58,13 +66,6 @@ def lifted(src, **kw):
         machine=machine(**kw),
     )
     return p, labels
-
-
-def loops_of(src):
-    """``(image, labels, loops)``: the polling loops of ``src``'s ``init`` lifted once."""
-    img, lab = W.assemble(src, 0x1000)
-    prog = wholeprog.lift(img, [lab["init"]], VOLATILE, once=True)
-    return img, lab, polling.loops(img, prog.starts, prog.code, VOLATILE)
 
 
 PLAY = """
@@ -136,119 +137,6 @@ wait:   INX
 """ + PLAY
 
 
-@pytest.mark.timeout(120)
-@pytest.mark.parametrize(
-    "src,translated",
-    [
-        (RASTER, True),
-        (TIMER, True),
-        (KEPT, True),
-        (STATUS, False),
-        (STORING, False),
-        (COUNTING, False),
-    ],
-    ids=["raster", "timer", "kept", "status", "storing", "counting"],
-)
-def test_init_polling_is_translated_where_the_wait_settles(src, translated):
-    """Init waiting on the device is translated where the wait leaves one state on every byte
-    it leaves on and keeps it on every other: a raster line, a flag whose other bits are not
-    read, the compared byte left in ``A``; a varying byte stored, a store or a count is not."""
-    p, _ = lifted(src)
-    assert (p.lifted is not None) == translated
-
-
-def test_loops_are_the_storeless_cycles_reading_the_device():
-    """Only a cycle reading the device without writing is a polling loop: its instructions,
-    its one reading instruction and the registers live into it (all where it is left)."""
-    _, lab, loops = loops_of(KEPT)
-    w = lab["wait"]
-    assert set(loops) == {w, w + 3, w + 5}
-    loop = loops[w]
-    assert (loop.at, loop.addr) == (w, 0xD012)
-    assert loop.live[w] == frozenset(polling.REGS) - {0, 8, 9, 14}
-    assert not loops_of(STORING)[2]
-
-
-def settled(src, model=False):
-    """``polling.settle`` of ``src``'s loop at ``wait`` (else ``init``) on its image, over the
-    device model's values with ``model``."""
-    img, lab, loops = loops_of(src)
-    head = lab.get("wait", lab["init"])
-    mpu = NativeMPU(memory=NativeMemory(bytes(img)))
-    dev = devices.State(c64devices.MODEL) if model else None
-    return polling.settle(loops[head], mpu.memory, polling.registers(mpu), head, dev)
-
-
-STATUS_POLL = "init:\nwait:   LDA $D019\n        AND #$70\n        BEQ wait\n        RTS\n"
-LATCHED_POLL = "init:\nwait:   LDA $D011\n        AND #$40\n        BEQ wait\n        RTS\n"
-
-
-@pytest.mark.parametrize(
-    "src,model,want",
-    [
-        (KEPT, False, (0x30, frozenset())),
-        (TIMER, False, (0x80, frozenset({13}))),
-        (STATUS, False, (0x80, frozenset({0}))),
-        (KEPT, True, (0x30, frozenset())),
-        (STATUS_POLL, True, (0x70, frozenset())),
-        (STATUS_POLL, False, (0x10, frozenset({0}))),
-        (LATCHED_POLL, True, None),
-        (LATCHED_POLL, False, (0x40, frozenset())),
-    ],
-    ids=[
-        "kept",
-        "timer",
-        "status",
-        "counter",
-        "status-model",
-        "status-any",
-        "latched-model",
-        "latched-any",
-    ],
-)
-def test_settle_gives_the_least_leaving_byte_and_what_varies(src, model, want):
-    """The least byte the loop leaves on, and the registers differing between such bytes.
-    With the device model a loop is decided over the values the register answers (bits a
-    status register always reads set), and only where it leaves on values the device reads
-    eventually (a latched bit never changes); without, over every byte."""
-    assert settled(src, model) == want
-
-
-@pytest.mark.parametrize(
-    "src",
-    [
-        "init:   LDA $C00D\n        BMI one\n        BEQ two\n        JMP init\n"
-        "one:    RTS\ntwo:    RTS\n",
-        "init:   LDA #0\nwait:   ADC #1\n        BIT $C00D\n        BPL wait\n        RTS\n",
-    ],
-    ids=["two-exits", "accumulating"],
-)
-def test_settle_needs_one_exit_and_a_kept_state(src):
-    """A loop leaving to one place or another by the byte it reads, or changing a register
-    it reads on a pass it stays on, does not settle."""
-    assert settled(src) is None
-
-
-def test_run_answers_the_poll_and_records_it():
-    """The traced run answers the loop's device read with the byte it leaves on, recorded in
-    order, where the reference's device (the image byte) never satisfies it."""
-    img, lab, loops = loops_of(RASTER)
-    assert postinit.traced(img, lab["init"], 0, VOLATILE) is None
-    r = postinit.traced(img, lab["init"], 0, VOLATILE, loops)
-    assert r.exact and r.reads == [(0xD012, 0x30)]
-
-
-def test_run_reading_a_varying_register_is_not_exact():
-    """A register differing between the bytes the loop leaves on, read after it, ends the
-    run's exactness; a run returning only by a loop that does not settle is none."""
-    img, lab, loops = loops_of(STATUS)
-    img[0xC00D] = 0x80
-    r = postinit.traced(img, lab["init"], 0, VOLATILE, loops)
-    assert r is not None and not r.exact
-    img, lab, loops = loops_of(COUNTING)
-    assert postinit.traced(img, lab["init"], 0, VOLATILE, loops) is None
-
-
 #: Play waiting on bit 7 of ``$C00D``.
 PLAYWAIT = """
 init:   STA song
@@ -265,8 +153,9 @@ end:
 
 def test_play_polling_is_a_loop_reading_the_device():
     """A polling loop in an entry called any number of times is lifted as the loop it is,
-    reading the device each pass; the init beside it is translated."""
+    reading the device each pass; the init beside it is replayed and lifts no function."""
     p, labels = lifted(PLAYWAIT)
     fn = next(fn for fn in p.funcs if fn["pc"] == labels["play"])
     loads = [op[2][0] for b in fn["blocks"] for op in b["ops"] if op[0] == "LOAD"]
-    assert p.lifted is not None and any(vn[0] == "c" and vn[1] == 0xC00D for vn in loads)
+    assert any(vn[0] == "c" and vn[1] == 0xC00D for vn in loads)
+    assert labels["init"] not in {f["pc"] for f in p.funcs}
